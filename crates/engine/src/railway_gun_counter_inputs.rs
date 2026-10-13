@@ -135,7 +135,6 @@ pub struct Row {
     pub fresh_failures: [Option<&'static str>; 3],
     pub combat_references: Option<(usize, usize)>,
     pub combat_references_failure: Option<&'static str>,
-    pub transport: Option<crate::selected_transport_units::Row>,
 }
 
 /// Prepared full-reference output from the existing gun motion visit. Spans
@@ -749,15 +748,10 @@ fn walk_impl(
                         combats,
                     )?
                 };
-                let (naval_transfer, transfer_action_status, transfer) = naval_transfer(
-                    memory,
-                    base,
-                    gun,
-                    &mut registry,
-                    tooltip
-                        .as_ref()
-                        .is_some_and(|scratch| scratch.sample_hour.is_some()),
-                )?;
+                // The retired selected transport preview read the transfer's
+                // source province; the counter needs only its presence and status.
+                let (naval_transfer, transfer_action_status, _) =
+                    naval_transfer(memory, base, gun, &mut registry, false)?;
                 let railway_building_level = if province == 0 {
                     None
                 } else {
@@ -786,7 +780,7 @@ fn walk_impl(
                     read::<i32>(memory, at(gun, crailway_gun::REFERENCE_ENTRY_COUNT)?)
                         .ok_or("railway gun reference entry count unreadable")?;
                 let assignee_group = assignee_group(memory, base, gun, &mut registry)?;
-                let (stat, subunit_token, maximum_strength) = subunit_stats(memory, base, gun)?;
+                let (_, subunit_token, maximum_strength) = subunit_stats(memory, base, gun)?;
                 let current_strength =
                     read::<i64>(memory, at(gun, crailway_gun::CURRENT_STRENGTH)?)
                         .ok_or("railway gun current strength unreadable")?;
@@ -826,28 +820,6 @@ fn walk_impl(
                     arena.used = start + count;
                 }
                 output[len] = Row {
-                    transport: tooltip
-                        .as_ref()
-                        .and_then(|scratch| scratch.sample_hour)
-                        .map(|hour| {
-                            // Same original stat and transfer certificates. The
-                            // class13 +138 root is never selected/authenticated again.
-                            let weight = at(stat, csub_unit_definition::TRANSPORT_WEIGHT).and_then(
-                                |address| {
-                                    read(memory, address)
-                                        .ok_or("selected transport railway stat weight unreadable")
-                                },
-                            );
-                            crate::selected_transport_units::Row {
-                                unit: handle,
-                                sample_hour: hour,
-                                weight,
-                                transfer: Ok(transfer),
-                                coastal: Err(
-                                    "selected transport class13 coast predicate unreached",
-                                ),
-                            }
-                        }),
                     combat_references: reference_span,
                     combat_references_failure: reference_failure,
                     gun: handle,

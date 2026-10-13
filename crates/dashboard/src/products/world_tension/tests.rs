@@ -6,23 +6,24 @@ use replay::{
 };
 use std::sync::{Arc, atomic::AtomicBool};
 
-/// The world tension slot's hour on day `day`.
+/// The first hour of day `day`. The tension tables are read every hour, so
+/// every recorded hour holding them is a read; a quiet hour publishes the held
+/// read, which the fixtures repeat.
 fn tension_slot(day: i32) -> i32 {
-    let replay::cadence::Cadence::Daily(slot) = replay::cadence::cadence(TableId::WorldTension)
-    else {
-        panic!("WorldTension is read in a daily slot");
-    };
-    day * replay::cadence::STAGGER_PERIOD + slot as i32
+    assert_eq!(
+        replay::cadence::cadence(TableId::WorldTension),
+        replay::cadence::Cadence::Hourly
+    );
+    day * replay::cadence::STAGGER_PERIOD
 }
 
 /// A threat source: (country link, date, reason, current, final).
 type Threat = (u32, i32, &'static [u8], i64, i64);
 
 /// A world frame holding the tension tables: `aggregates` by slot, `sources` as
-/// listed, `total` the world tension. `read` times the slot's anchor walk.
+/// listed, `total` the world tension; the frame times their walk.
 fn tension_frame(
     hour: i32,
-    read: bool,
     austria: bool,
     total: i64,
     aggregates: &[(u32, i64)],
@@ -67,9 +68,7 @@ fn tension_frame(
                 })
                 .collect(),
         ));
-    if read {
-        frame.metrics.table_ns[TableId::WorldTension.index()] = 1;
-    }
+    frame.metrics.table_ns[TableId::WorldTension.index()] = 1;
     frame
 }
 
@@ -88,7 +87,7 @@ fn world_tension_sum_overflow_is_refused_instead_of_saturated() {
             "source sum",
         ),
     ] {
-        let frame = tension_frame(slot, true, true, 100_000, &aggregates, &sources);
+        let frame = tension_frame(slot, true, 100_000, &aggregates, &sources);
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
         let error = match scan(&replay, 1, &AtomicBool::new(false)) {
             Ok(_) => panic!("An overflowing sum was accepted"),
@@ -104,7 +103,7 @@ fn world_tension_retains_every_event_beyond_the_former_count_ceiling() {
     use crate::products::world_tension::scan;
     let slot = tension_slot(10);
     let sources = vec![(11, slot, b"Synthetic event".as_slice(), 0, 0); 200_001];
-    let frame = tension_frame(slot, true, true, 0, &[], &sources);
+    let frame = tension_frame(slot, true, 0, &[], &sources);
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
     let scanned = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
     assert_eq!(scanned.events.len(), sources.len());
@@ -123,50 +122,57 @@ fn world_tension_reads_carry_contributions_and_events_exactly_and_never_cross_ga
     );
     let claim: Threat = (21, slot - 500, b"Claims on Albania", 100_000, 200_000);
     let mut frames = Vec::new();
-    // A branch-start read one hour before the slot: Germany's war and Italy's claim.
+    // A branch-start read one hour before the day: Germany's war and Italy's claim.
     frames.push(tension_frame(
         slot - 1,
-        true,
         true,
         5_000,
         &[(7, 400_000), (8, 100_000)],
         &[war, claim],
     ));
-    // The slot's own read: Italy's claim has ramped up; Austria (slot 9) adds 50,000.
+    // The day's first read: Italy's claim has ramped up; Austria (slot 9) adds 50,000.
     let austria: Threat = (31, slot, b"Threat from actions", 50_000, 50_000);
     let claim_up: Threat = (21, slot - 500, b"Claims on Albania", 200_000, 200_000);
     frames.push(tension_frame(
         slot,
         true,
-        true,
         6_500,
         &[(7, 400_000), (8, 200_000), (9, 50_000)],
         &[war, claim_up, austria],
     ));
-    // Off-slot hours carry it; Austria is gone from Countries but its slot remembered.
+    // Quiet hours publish the held read; Austria is gone from Countries but its
+    // slot is remembered.
     for hour in 1..24 {
-        frames.push(tension_frame(slot + hour, false, false, 0, &[], &[]));
+        frames.push(tension_frame(
+            slot + hour,
+            false,
+            6_500,
+            &[(7, 400_000), (8, 200_000), (9, 50_000)],
+            &[war, claim_up, austria],
+        ));
     }
     // The next day's read: Italy's claim changed what it adds; slot 5 is never named.
     let claim_changed: Threat = (21, slot - 500, b"Claims on Albania", 200_000, 300_000);
-    frames.push(tension_frame(
-        slot + 24,
-        true,
-        false,
-        7_000,
-        &[(7, 400_000), (8, 200_000), (9, 50_000), (5, 50_000)],
-        &[
-            war,
-            claim_changed,
-            austria,
-            (99, slot + 20, b"Unknown", 50_000, 50_000),
-        ],
-    ));
-    frames.push(tension_frame(slot + 25, false, false, 0, &[], &[]));
-    // Hour 26 is a gap; hour 27 carries nothing, as no read follows the gap.
-    frames.push(tension_frame(slot + 27, false, false, 0, &[], &[]));
+    let next_day = |hour| {
+        tension_frame(
+            hour,
+            false,
+            7_000,
+            &[(7, 400_000), (8, 200_000), (9, 50_000), (5, 50_000)],
+            &[
+                war,
+                claim_changed,
+                austria,
+                (99, slot + 20, b"Unknown", 50_000, 50_000),
+            ],
+        )
+    };
+    frames.push(next_day(slot + 24));
+    frames.push(next_day(slot + 25));
+    // Hour 26 is a gap; the read at hour 27 starts a new segment.
+    frames.push(next_day(slot + 27));
     // A read without its aggregates is not a read.
-    let mut incomplete = tension_frame(slot + 48, true, false, 700, &[], &[]);
+    let mut incomplete = tension_frame(slot + 48, false, 700, &[], &[]);
     *incomplete.tables[TableId::ThreatCountryAggregates.index()] = TableView::Unavailable {
         reason: "fixture".into(),
     };
@@ -181,7 +187,6 @@ fn world_tension_reads_carry_contributions_and_events_exactly_and_never_cross_ga
     );
     frames.push(tension_frame(
         slot + 72,
-        true,
         false,
         100_000,
         &[(7, 12_000_000)],
@@ -190,7 +195,6 @@ fn world_tension_reads_carry_contributions_and_events_exactly_and_never_cross_ga
     // World tension that is not the cap of the sum, and aggregates that are not the sources'.
     frames.push(tension_frame(
         slot + 73,
-        true,
         false,
         5,
         &[(7, 1)],
@@ -212,16 +216,16 @@ fn world_tension_reads_carry_contributions_and_events_exactly_and_never_cross_ga
             )
         })
         .collect();
-    assert_eq!(
-        reads,
-        [
-            (-1, -1, true, "5000", "500000", "0"),
-            (0, 23, false, "6500", "650000", "0"),
-            (24, 25, false, "7000", "700000", "50000"),
-            (72, 72, true, "100000", "12000000", "0"),
-            (73, 73, false, "5", "1", "0"),
-        ]
-    );
+    let mut expected = vec![(-1, -1, true, "5000", "500000", "0")];
+    expected.extend((0..24).map(|hour| (hour, hour, false, "6500", "650000", "0")));
+    expected.extend([
+        (24, 24, false, "7000", "700000", "50000"),
+        (25, 25, false, "7000", "700000", "50000"),
+        (27, 27, true, "7000", "700000", "50000"),
+        (72, 72, true, "100000", "12000000", "0"),
+        (73, 73, false, "5", "1", "0"),
+    ]);
+    assert_eq!(reads, expected);
     let runs = |tag: &str| {
         scanned
             .countries
@@ -252,6 +256,7 @@ fn world_tension_reads_carry_contributions_and_events_exactly_and_never_cross_ga
         runs("GER"),
         [
             (-1, 25, "400000".into(), true),
+            (27, 27, "400000".into(), true),
             (72, 72, "12000000".into(), true),
             (73, 73, "1".into(), false)
         ]
@@ -260,12 +265,19 @@ fn world_tension_reads_carry_contributions_and_events_exactly_and_never_cross_ga
         runs("ITA"),
         [
             (-1, -1, "100000".into(), true),
-            (0, 25, "200000".into(), false)
+            (0, 25, "200000".into(), false),
+            (27, 27, "200000".into(), true)
         ]
     );
     // Austria keeps its tag after its country row is gone; its line starts from a
-    // recorded zero, so it is not a new segment.
-    assert_eq!(runs("D01 mod"), [(0, 25, "50000".into(), false)]);
+    // recorded zero, so it is not a new segment, and breaks only at the gap.
+    assert_eq!(
+        runs("D01 mod"),
+        [
+            (0, 25, "50000".into(), false),
+            (27, 27, "50000".into(), true)
+        ]
+    );
     assert_eq!(
         (
             scanned.tension_mismatches,
@@ -301,7 +313,7 @@ fn world_tension_reads_carry_contributions_and_events_exactly_and_never_cross_ga
                 "Declared war on Poland",
                 vec![(-1, "400000")],
                 -1,
-                24
+                27
             ),
             (
                 -500,
@@ -309,7 +321,7 @@ fn world_tension_reads_carry_contributions_and_events_exactly_and_never_cross_ga
                 "Claims on Albania",
                 vec![(-1, "200000"), (24, "300000")],
                 -1,
-                24
+                27
             ),
             (
                 0,
@@ -317,9 +329,9 @@ fn world_tension_reads_carry_contributions_and_events_exactly_and_never_cross_ga
                 "Threat from actions",
                 vec![(0, "50000")],
                 0,
-                24
+                27
             ),
-            (20, None, "Unknown", vec![(24, "50000")], 24, 24),
+            (20, None, "Unknown", vec![(24, "50000")], 24, 27),
             (
                 70,
                 Some("GER"),
@@ -339,13 +351,19 @@ fn world_tension_reply_states_its_scales_and_what_did_not_add_up() {
     let frames = vec![
         tension_frame(
             slot,
-            true,
             false,
             900,
             &[(7, 900_000), (4, 1)],
             &[(11, slot, b"War", 900_000, 900_000)],
         ),
-        tension_frame(slot + 1, false, false, 0, &[], &[]),
+        // The next hour publishes the held read again.
+        tension_frame(
+            slot + 1,
+            false,
+            900,
+            &[(7, 900_000), (4, 1)],
+            &[(11, slot, b"War", 900_000, 900_000)],
+        ),
     ];
     let replay = Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap());
     let source = crate::Source::from_replay(
@@ -384,8 +402,8 @@ fn world_tension_reply_states_its_scales_and_what_did_not_add_up() {
         ),
         (1_000, 100_000, "10000000")
     );
-    assert_eq!(reply.reads.len(), 1);
-    assert_eq!(reply.reads[0].unnamed_raw, "1");
+    assert_eq!(reply.reads.len(), 2);
+    assert!(reply.reads.iter().all(|read| read.unnamed_raw == "1"));
     assert_eq!(reply.warnings.len(), 3, "{:?}", reply.warnings);
     for start in [
         "Reads whose country contributions",
@@ -410,14 +428,14 @@ fn world_tension_remembers_countries_recorded_at_hours_without_its_tables() {
     let slot = tension_slot(20);
     let austria: Threat = (31, slot - 10, b"Threat from actions", 50_000, 50_000);
     // Austria (slot 9, link 31) is recorded only at an hour whose aggregates are missing.
-    let mut identified = tension_frame(slot - 24, true, true, 500, &[(9, 50_000)], &[austria]);
+    let mut identified = tension_frame(slot - 24, true, 500, &[(9, 50_000)], &[austria]);
     *identified.tables[TableId::ThreatCountryAggregates.index()] = TableView::Unavailable {
         reason: "fixture".into(),
     };
     // The next read no longer lists Austria's row or link, but its slot still contributes.
     let frames = vec![
         identified,
-        tension_frame(slot, true, false, 500, &[(9, 50_000)], &[austria]),
+        tension_frame(slot, false, 500, &[(9, 50_000)], &[austria]),
     ];
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
     let scanned = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
@@ -441,7 +459,7 @@ fn world_tension_keeps_one_event_when_its_country_is_named_at_a_later_read() {
     let slot = tension_slot(30);
     // Link 99 is unresolved at the first read and resolves to Germany's slot 7 at the next.
     let source: Threat = (99, 100, b"Threat from actions", 100_000, 100_000);
-    let mut named = tension_frame(slot + 24, true, false, 1_000, &[(7, 100_000)], &[source]);
+    let mut named = tension_frame(slot + 24, false, 1_000, &[(7, 100_000)], &[source]);
     let TableView::Complete(TableRows::CountryLinks(links)) =
         &mut *named.tables[TableId::CountryLinks.index()]
     else {
@@ -456,7 +474,7 @@ fn world_tension_keeps_one_event_when_its_country_is_named_at_a_later_read() {
         },
     );
     let frames = vec![
-        tension_frame(slot, true, false, 1_000, &[(7, 100_000)], &[source]),
+        tension_frame(slot, false, 1_000, &[(7, 100_000)], &[source]),
         named,
     ];
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
@@ -497,17 +515,10 @@ fn world_tension_keeps_two_countries_sharing_a_tag_apart() {
         });
     };
     // Slot 7 holds AAA and contributes.
-    let mut first = tension_frame(slot, true, false, 1_000, &[(7, 100_000)], &[]);
+    let mut first = tension_frame(slot, false, 1_000, &[(7, 100_000)], &[]);
     retag(&mut first, &[(7, b"AAA"), (8, b"ITA")]);
     // Slot 7 has left the countries but still contributes; slot 8 now holds AAA and contributes too.
-    let mut second = tension_frame(
-        slot + 24,
-        true,
-        false,
-        1_500,
-        &[(7, 100_000), (8, 50_000)],
-        &[],
-    );
+    let mut second = tension_frame(slot + 24, false, 1_500, &[(7, 100_000), (8, 50_000)], &[]);
     retag(&mut second, &[(8, b"AAA")]);
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first, second])]).unwrap();
     let scanned = scan(&replay, 1, &AtomicBool::new(false)).unwrap();

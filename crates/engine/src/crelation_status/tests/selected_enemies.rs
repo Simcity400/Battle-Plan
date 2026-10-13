@@ -30,10 +30,8 @@ fn current(source: &impl Memory, rows: &mut [WarRow], words: &mut [u32]) -> Link
             countries: words,
         },
         &mut Resolver::default(),
-        None,
         77,
     )
-    .0
 }
 fn trace(bytes: &[u8], fault: Option<usize>) -> Trace<'_> {
     Trace {
@@ -247,10 +245,8 @@ fn current_required_enemy_faults_keep_named_failure_and_later_links() {
                     countries: &mut words,
                 },
                 &mut Resolver::default(),
-                None,
                 77,
-            )
-            .0;
+            );
             assert_eq!(walk.wars, Outcome::Unavailable { reason });
             assert_eq!(walk.links, Outcome::Rows { len: 2 });
             assert_eq!(

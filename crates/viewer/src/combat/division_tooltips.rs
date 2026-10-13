@@ -1,4 +1,6 @@
-//! Committed and reserve entry hovers, rebuilt from simulation rows.
+//! Combatant and reserve hover builders, rebuilt from simulation rows.
+//! Division hover dispatch, stat composition, reserve reinforcement chance
+//! and division commander text.
 use super::{
     Selection, Values,
     binding::Bindings,
@@ -24,8 +26,8 @@ use installed_content::{
 use replay::{
     frame::DecodedFrame,
     rows::{
-        DivisionCombatModifiers, LandCombatDetailsRow, LandCombatDivisionRow, LandCombatSideRow,
-        tables,
+        LandCombatDetailsRow, LandCombatDivisionModifierRow, LandCombatDivisionRow,
+        LandCombatSideRow, Recorded, tables,
     },
 };
 use std::{
@@ -85,7 +87,8 @@ const MODIFIER_NAMES: [&str; 30] = [
     BM_NIGHT_MODIFIER,
 ];
 
-/// Shared modifier-name dispatch for actual combat and selected preview.
+/// Modifier-name dispatch shared by the combat hover
+/// and the selected army's attack list.
 pub(crate) fn modifier_name_key(id: u32) -> Result<&'static str, String> {
     MODIFIER_NAMES
         .get(id as usize)
@@ -151,7 +154,7 @@ fn combat_stat(
     loc: &Localisation,
     key: &str,
     [base, scale]: [i64; 2],
-    modifiers: &DivisionCombatModifiers,
+    modifiers: &LandCombatDivisionModifierRow,
     attack: bool,
     tactics: Result<&str, &str>,
 ) -> Result<String, String> {
@@ -217,7 +220,7 @@ fn combat_stat(
 }
 
 // default child dispatch. These two stat lines use the same
-// the game formatter as the special attack/defence hovers, without a combat
+// The game formatter as the special attack/defence hovers, without a combat
 // modifier breakdown. trimmed fixed-point formatting formats the headline
 // value before COMBAT_STAT: the magnitude by wrapping negation, its whole
 // part through the signed i32 formatter and every nonzero
@@ -229,7 +232,7 @@ fn fixed_decimal(value: i64) -> String {
     installed_content::fixed5::fixed5_to_string(value, -1)
 }
 
-/// the game frame 8/9: the two authored dice sizes are signed integers;
+/// The game frame 8/9: the two authored dice sizes are signed integers;
 /// native Fixed5 division first scales each by 100000 and returns 0xffffffff
 /// for a zero denominator. The bonus text is gated by the resulting ratio,
 /// while the defence reduction always appears in the delayed paragraph.
@@ -332,11 +335,16 @@ fn division_summary(
         &[("NAME", Argument::Text(name))],
     )?;
     if let Some(progress) = invasion {
-        text.push_str(&invasion_section(icons, loc, progress, row.scales)?);
+        let scales = row
+            .scales()
+            .ok_or("the division's scales are not recorded")?;
+        text.push_str(&invasion_section(icons, loc, progress, scales)?);
     }
     text.push_str(&base_stat(icons, loc, STAT_COMMON_ARMOR, row.armour)?);
     text.push_str("\n\n");
-    let hardness = row.stat_values[2];
+    let hardness = row
+        .stat_values()
+        .ok_or("the division's stats are not recorded")?[2];
     text.push_str(&builtin(
         icons,
         loc,
@@ -578,7 +586,7 @@ struct ModifierIconContext<'context, 'frame> {
     loc: &'context Localisation,
     side: u8,
     unit: &'frame LandCombatDivisionRow,
-    modifiers: Option<&'frame DivisionCombatModifiers>,
+    modifiers: Option<&'frame LandCombatDivisionModifierRow>,
     /// The opposing committed rows, or which one is missing.
     opponents: Result<Vec<&'frame LandCombatDivisionRow>, String>,
     /// The land combat defines, or why they are unavailable.
@@ -586,6 +594,114 @@ struct ModifierIconContext<'context, 'frame> {
     viewing_tag: Result<&'frame str, &'static str>,
     detail: &'frame LandCombatDetailsRow,
     template_inputs: &'context super::template_icons::Inputs<'frame>,
+    /// The hour's UnitLeaders and UnitLeaderTraits, or why each is unreadable.
+    leaders: Result<&'context Available<'frame, tables::UnitLeaders>, &'context str>,
+    leader_traits: Result<&'context Available<'frame, tables::UnitLeaderTraits>, &'context str>,
+}
+
+/// Division commander operands, from the hour's character
+/// tables: the raw saved name (commander+0x20, UnitLeaders.inherited_text_a,
+/// localised in the viewer's language), the skill level
+/// (skill level at +0x1B8 through the +0xE60 skill pointer) and every
+/// assigned trait (+0xDC8, count +0xDD4) in vector order, repeats included.
+#[derive(Debug, PartialEq, Eq)]
+struct DivisionCommander<'frame> {
+    name_token: &'frame [u8],
+    skill: i32,
+    traits: Vec<&'frame [u8]>,
+}
+
+/// Joins the division row's `commander` handle (`id << 32 | reference_type`)
+/// to its UnitLeaders row and UnitLeaderTraits rows, or names what is missing.
+fn division_commander<'frame>(
+    handle: u64,
+    leaders: Result<&Available<'frame, tables::UnitLeaders>, &str>,
+    traits: Result<&Available<'frame, tables::UnitLeaderTraits>, &str>,
+) -> Result<DivisionCommander<'frame>, String> {
+    let leaders = leaders.map_err(|reason| format!("UnitLeaders is unreadable ({reason})"))?;
+    let leader = leaders
+        .rows()
+        .iter()
+        .find(|row| (u64::from(row.id) << 32 | u64::from(row.reference_type)) == handle)
+        .ok_or_else(|| match leaders {
+            Available::Unavailable { reason } => {
+                format!("UnitLeaders is unavailable this hour ({reason})")
+            }
+            _ => format!("the division commander {handle} has no UnitLeaders row this hour"),
+        })?;
+    // Skill lookup dereferences the +0xE60 pointer unconditionally.
+    if leader.skill_status == 0 {
+        return Err(format!(
+            "the division commander {handle}'s UnitLeaders row records no skill object (commander+0xE60), needed to read its skill level"
+        ));
+    }
+    let traits = traits.map_err(|reason| format!("UnitLeaderTraits is unreadable ({reason})"))?;
+    let Available::Complete(traits) = traits else {
+        return Err(format!(
+            "UnitLeaderTraits is incomplete or unavailable this hour, so the division commander {handle}'s traits are unknown"
+        ));
+    };
+    let mut assigned: Vec<_> = traits
+        .iter()
+        .filter(|row| row.leader_reference == handle)
+        .collect();
+    assigned.sort_by_key(|row| row.ordinal);
+    Ok(DivisionCommander {
+        name_token: &leader.inherited_text_a,
+        skill: leader.skill_level,
+        traits: assigned
+            .into_iter()
+            .map(|row| row.token.as_slice())
+            .collect(),
+    })
+}
+
+/// Division commander hover (commander icon frame 12), with
+/// its delayed DIFFERENT_COMMANDER_DESC.
+fn commander_icon_tooltip(
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+    viewing_tag: Result<&str, &str>,
+    commander: &DivisionCommander<'_>,
+) -> Result<(String, Option<Result<String, String>>), String> {
+    let name = token(icons, loc, commander.name_token)
+        .map_err(|refusal| format!("the commander's recorded name: {refusal}"))?;
+    let mut text = builtin(
+        icons,
+        loc,
+        COMBAT_OTHER_COMMANDER_DESC,
+        &[
+            ("NAME", Argument::Text(&name)),
+            ("SKILL", Argument::Int32(commander.skill)),
+        ],
+    )?;
+    if !commander.traits.is_empty() {
+        text.push_str(&builtin(icons, loc, COMBAT_TRAIT_LIST_HEADER, &[])?);
+        for (index, trait_token) in commander.traits.iter().enumerate() {
+            if index != 0 {
+                text.push_str(&builtin(icons, loc, COMBAT_DETAIL_TRAIT_SEPARATOR, &[])?);
+            }
+            let trait_token = std::str::from_utf8(trait_token).map_err(|_| {
+                format!(
+                    "commander trait token {} is not UTF-8",
+                    String::from_utf8_lossy(trait_token)
+                )
+            })?;
+            // Localise the trait's token (+0x10) for the viewing country.
+            let name =
+                super::commander_tooltips::country_localized(icons, loc, viewing_tag, trait_token)?;
+            text.push_str(&builtin(
+                icons,
+                loc,
+                COMBAT_DETAIL_TRAIT_NAME,
+                &[("NAME", Argument::Text(&name))],
+            )?);
+        }
+    }
+    Ok((
+        text,
+        Some(builtin(icons, loc, DIFFERENT_COMMANDER_DESC, &[])),
+    ))
 }
 
 fn modifier_icon_tooltip(
@@ -638,52 +754,13 @@ fn modifier_icon_tooltip(
             }
             return Ok((text, Some(builtin(icons, loc, &format!("{key}_DESC"), &[]))));
         }
-        // the game returns an empty breakdown/description when the icon's
+        // The game returns an empty breakdown/description when the icon's
         // modifier is absent; the game still emits the authored header.
         return Ok((text, None));
     }
     if frame == 12 {
-        let commander = unit
-            .commander_inputs
-            .as_ref()
-            .ok_or_else(|| "the division's commander operands are not recorded".to_owned())?;
-        let name = token(icons, loc, &commander.name_token)
-            .map_err(|refusal| format!("the commander's recorded name: {refusal}"))?;
-        let mut text = builtin(
-            icons,
-            loc,
-            COMBAT_OTHER_COMMANDER_DESC,
-            &[
-                ("NAME", Argument::Text(&name)),
-                ("SKILL", Argument::Int32(commander.skill)),
-            ],
-        )?;
-        if !commander.traits.is_empty() {
-            text.push_str(&builtin(icons, loc, COMBAT_TRAIT_LIST_HEADER, &[])?);
-            for (index, trait_row) in commander.traits.iter().enumerate() {
-                if index != 0 {
-                    text.push_str(&builtin(icons, loc, COMBAT_DETAIL_TRAIT_SEPARATOR, &[])?);
-                }
-                let token = std::str::from_utf8(&trait_row.token).map_err(|_| {
-                    format!(
-                        "commander trait token {} is not UTF-8",
-                        String::from_utf8_lossy(&trait_row.token)
-                    )
-                })?;
-                let name =
-                    super::commander_tooltips::country_localized(icons, loc, viewing_tag, token)?;
-                text.push_str(&builtin(
-                    icons,
-                    loc,
-                    COMBAT_DETAIL_TRAIT_NAME,
-                    &[("NAME", Argument::Text(&name))],
-                )?);
-            }
-        }
-        return Ok((
-            text,
-            Some(builtin(icons, loc, DIFFERENT_COMMANDER_DESC, &[])),
-        ));
+        let commander = division_commander(unit.commander, context.leaders, context.leader_traits)?;
+        return commander_icon_tooltip(icons, loc, viewing_tag, &commander);
     }
     if frame == 13 {
         let defines = defines?;
@@ -767,11 +844,11 @@ fn modifier_icon_tooltip(
         ));
     }
     if frame == 16 {
-        let ratio = super::division_icons::fuel_ratio([
-            unit.fuel_inputs[0],
-            unit.fuel_inputs[1],
-            defines?.fuel_penalty_start_ratio,
-        ]);
+        let [fuel, capacity] = unit
+            .fuel_inputs()
+            .ok_or("the division's fuel and capacity are not recorded")?;
+        let ratio =
+            super::division_icons::fuel_ratio([fuel, capacity, defines?.fuel_penalty_start_ratio]);
         return Ok((
             builtin(
                 icons,
@@ -842,22 +919,42 @@ fn modifier_icon_tooltip(
     Ok((text, Some(delayed)))
 }
 
+/// Reinforcement outcome for a reserve division.
 #[derive(Debug, PartialEq, Eq)]
 enum Reinforcement {
+    /// A rejection arm: the chance is zero and the hover names the reason.
     Rejected(&'static str),
+    /// The chance arm: `REINFORCE_CHANCE`, the country's 0xFB, the initiative
+    /// term, the speed term and the contextual leader's 0xFB, summed.
     Chance {
         value: i64,
         base: i64,
         initiative: i64,
         speed: i64,
+        /// The contextual leader's 0xFB; its line shows only when nonzero.
+        leader: i64,
     },
+    /// The chance arm, whose speed share the recording does not hold.
+    Unrecorded(&'static str),
 }
 
-/// advance eligibility compares raw HP and current organisation against
+/// The chance arm's refusal in recordings before the reserve speed share.
+const RESERVE_SPEED_UNRECORDED: &str = "the reserve reinforcement speed share, which the chance adds, is not recorded in this recording";
+/// The chance arm's refusal where capture refused the share.
+const RESERVE_SPEED_REFUSED: &str = "the reserve reinforcement speed share was refused at capture: an operand was unreadable or took a form the port does not follow (collector status land_reserve_speed)";
+/// The two 0xFB source fragments of the chance arm, which wait for the
+/// shared per-owner modifier source dictionary of the naval combat hovers.
+const COUNTRY_SOURCES_UNRECORDED: &str = "the reserve chance's country reinforcement-rate sources (modifier breakdown over the country's +0x5B8 accumulator, key 0xFB) are not recorded";
+const COMMANDER_SOURCES_UNRECORDED: &str = "the reserve chance's commander line (the leader's +0x40 name and unit modifier breakdown at +0x10, key 0xFB) is not recorded";
+
+/// Advancement admission compares raw HP and current organisation against
 /// these executable constants, not authored defines.
 const ADVANCE_STRENGTH: i64 = 10_000;
 const ADVANCE_ORGANISATION: i64 = 100_000;
 
+/// Reinforcement arms in original order: not fighting (the +0xA8 advancement
+/// test), then too much width (COMBAT_OVER_WIDTH_PENALTY against its
+/// maximum), otherwise the chance.
 fn reinforcement(
     row: &LandCombatDivisionRow,
     condition: &Condition,
@@ -890,34 +987,37 @@ fn reinforcement(
             return Ok(Reinforcement::Rejected(COMREIC_TOO_MUCH_WIDTH));
         }
     }
+    // The speed share, which the collector composes with the live
+    // SLOWEST_SPEED (replay::rows::LandCombatDivisionRow::reinforcement_speed).
+    let share = match row.reinforcement_speed {
+        Recorded::NotRecorded => return Ok(Reinforcement::Unrecorded(RESERVE_SPEED_UNRECORDED)),
+        Recorded::Value(None) => return Ok(Reinforcement::Unrecorded(RESERVE_SPEED_REFUSED)),
+        Recorded::Value(Some(share)) => share,
+    };
+    // The country is the positive expeditionary owner, else the roster
+    // owner; the context holds that country's and the contextual leader's
+    // 0xFB and 0x250 keys.
     let country = modifier(&row.context, 0, false).ok_or_else(|| callback("reinforce rate"))?;
     let leader = modifier(&row.context, 0, true).ok_or_else(|| callback("reinforce rate"))?;
+    // mul(1 + country 0x250, initiative), then with a contextual leader
+    // mul(1 + leader 0x250, ...), then ARMY_INITIATIVE_REINFORCE_FACTOR.
     let initiative = mul(
-        row.initiative,
         100_000_i64
             .wrapping_add(modifier(&row.context, 2, false).ok_or_else(|| callback("initiative"))?),
+        row.initiative,
     );
     let initiative = if row.context.leader_modifier_kind == 0 {
         initiative
     } else {
         mul(
-            initiative,
             100_000_i64.wrapping_add(
                 modifier(&row.context, 2, true).ok_or_else(|| callback("initiative"))?,
             ),
+            initiative,
         )
     };
     let initiative = mul(initiative, defines.initiative_factor);
-    let speed = mul(
-        row.context.base_speed,
-        super::reinforcement_speed::modifier(row)
-            .map_err(|reason| format!("its reinforcement speed factor is unknown: {reason}"))?,
-    );
-    let speed = fraction(speed, defines.slowest_speed)
-        .ok_or_else(|| format!("the slowest-speed ratio: {}", super::fixed::TRAP))?
-        .wrapping_sub(100_000)
-        .clamp(0, 200_000);
-    let speed = mul(speed, defines.speed_bonus);
+    let speed = mul(share, defines.speed_bonus);
     Ok(Reinforcement::Chance {
         value: defines
             .chance
@@ -928,131 +1028,23 @@ fn reinforcement(
         base: defines.chance,
         initiative,
         speed,
+        leader,
     })
 }
 
-fn reserve_tree(
-    nodes: &[replay::rows::ModifierBreakdownNode],
-    definition: &replay::rows::ModifierDefinitionRow,
-    recorded: &str,
-    icons: &dyn TextIcons,
-    loc: &Localisation,
-) -> Result<String, String> {
-    dashboard::modifier_text::breakdown(
-        nodes,
-        dashboard::modifier_text::Breakdown {
-            depth: -1,
-            prefix: "",
-            suffix: "",
-        },
-        |node| {
-            let mut text = dashboard::scripted_text::stored_text(
-                loc,
-                recorded,
-                &node.name,
-                "reserve reinforcement modifier source",
-            )?;
-            super::binding::validate(icons, &text).map_err(|reason| {
-                format!("reserve reinforcement modifier source holds {reason}")
-            })?;
-            if !text.is_empty() {
-                text.push_str(": ");
-            }
-            text.push_str(
-                &super::modifier_text::value_text(
-                    definition, node.value, 2, false, false, icons, loc,
-                )
-                .map_err(|e| e.to_string())?,
-            );
-            Ok(text)
-        },
-    )
-}
-
-type ReserveSources = (String, Option<(String, String)>);
-fn reserve_sources(
-    frame: &DecodedFrame,
-    document: &Document,
-    row: &LandCombatDivisionRow,
-    divisions: &Available<'_, tables::Divisions>,
-    icons: &dyn TextIcons,
-    loc: &Localisation,
-) -> Result<ReserveSources, String> {
-    let sources = rows::<tables::ReserveModifierBreakdowns>(frame).map_err(|e| e.to_string())?;
-    let Available::Complete(sources) = sources else {
-        return Err("reserve reinforcement: ReserveModifierBreakdowns is incomplete".into());
-    };
-    let definitions = rows::<tables::ModifierDefinitions>(frame).map_err(|e| e.to_string())?;
-    if !definitions.is_complete() {
-        return Err("reserve reinforcement: ModifierDefinitions is incomplete".into());
-    }
-    let definition = definitions
-        .rows()
-        .iter()
-        .find(|r| r.index == engine::modifier_keys::LAND_REINFORCE_RATE)
-        .ok_or("reserve reinforcement: land_reinforce_rate definition is missing")?;
-    let unit = divisions
-        .rows()
-        .iter()
-        .find(|r| r.id == row.division)
-        .ok_or_else(|| {
-            format!(
-                "reserve reinforcement: division {} has no Divisions row",
-                row.division
-            )
-        })?;
-    // positive expeditionary owner, otherwise the roster owner.
-    let country = if unit.expeditionary_owner as i32 > 0 {
-        unit.expeditionary_owner
-    } else {
-        unit.roster_owner
-    };
-    let describe = |kind, owner| {
-        let source = sources
-            .iter()
-            .find(|r| r.kind == kind && r.owner == owner)
-            .ok_or_else(|| {
-                format!(
-                    "reserve reinforcement: modifier source kind {kind} owner {owner} is missing"
-                )
-            })?;
-        reserve_tree(
-            &source.nodes,
-            definition,
-            &document.recorded_language,
-            icons,
-            loc,
-        )
-    };
-    let country = describe(0, country as u64)?;
-    // the game emits the commander only when its getter is nonzero.
-    let commander = if modifier(&row.context, 0, true)
-        .ok_or("reserve reinforcement: commander eligibility callback is unsupported")?
-        != 0
-    {
-        let inputs = row
-            .commander_inputs
-            .as_ref()
-            .ok_or("reserve reinforcement: commander name is missing")?;
-        Some((
-            token(icons, loc, &inputs.name_token)?,
-            describe(row.context.leader_modifier_kind, row.commander)?,
-        ))
-    } else {
-        None
-    };
-    Ok((country, commander))
-}
-
+/// The reserve hover: BATTLE_REINFORCE_CHANCE2 with the chance, then the
+/// reinforcement text, with the hover parts it omits. A
+/// rejection's chance is zero; a chance arm without its speed share refuses
+/// by name.
 fn reinforcement_text(
     icons: &dyn TextIcons,
     loc: &Localisation,
     result: &Reinforcement,
-    sources: Result<&ReserveSources, String>,
-) -> Result<String, String> {
+) -> Result<(String, Vec<&'static str>), String> {
     let chance = match result {
         Reinforcement::Rejected(_) => 0,
         Reinforcement::Chance { value, .. } => *value,
+        Reinforcement::Unrecorded(reason) => return Err((*reason).into()),
     };
     let mut text = builtin(
         icons,
@@ -1060,15 +1052,19 @@ fn reinforcement_text(
         BATTLE_REINFORCE_CHANCE2,
         &[("VALUE", Argument::Fixed5(chance))],
     )?;
+    let mut omitted = Vec::new();
     match result {
-        Reinforcement::Rejected(key) => text.push_str(&builtin(icons, loc, key, &[])?),
+        Reinforcement::Rejected(key) => {
+            text.push_str(&builtin(icons, loc, key, &[])?);
+            text.push('\n');
+        }
         Reinforcement::Chance {
             base,
             initiative,
             speed,
+            leader,
             ..
         } => {
-            let (country, commander) = sources?;
             text.push_str(&builtin(
                 icons,
                 loc,
@@ -1076,7 +1072,8 @@ fn reinforcement_text(
                 &[("VALUE", Argument::Fixed5(*base))],
             )?);
             text.push('\n');
-            text.push_str(country);
+            // The country's 0xFB sources follow the base line natively.
+            omitted.push(COUNTRY_SOURCES_UNRECORDED);
             if *initiative != 0 {
                 text.push_str(&builtin(icons, loc, STAT_ARMY_INITIATIVE, &[])?);
                 text.push_str(&builtin(
@@ -1096,16 +1093,14 @@ fn reinforcement_text(
                 )?);
                 text.push('\n');
             }
-            if let Some((name, sources)) = commander {
-                text.push_str(name);
-                text.push_str(": ");
-                text.push_str(sources);
+            // The game names the commander only when its 0xFB is nonzero.
+            if *leader != 0 {
+                omitted.push(COMMANDER_SOURCES_UNRECORDED);
             }
-            return Ok(text);
         }
+        Reinforcement::Unrecorded(_) => unreachable!("refused above"),
     }
-    text.push('\n');
-    Ok(text)
+    Ok((text, omitted))
 }
 
 /// The committed entry's children the game gives the division summary.
@@ -1181,7 +1176,8 @@ pub(super) fn bind(
         .filter(|row| row.combat == id)
         .map(|row| ((row.side, row.division), row))
         .collect();
-    let modifier_rows = rows::<tables::LandCombatModifiers>(frame)?;
+    let member_rows = rows::<tables::LandCombatDivisionModifiers>(frame)?;
+    let members = super::details::division_modifiers(member_rows.rows(), id);
     let movements = rows::<tables::DivisionMovement>(frame)?;
     let all_divisions = rows::<tables::Divisions>(frame)?;
     let provinces = rows::<tables::Provinces>(frame)?;
@@ -1200,6 +1196,9 @@ pub(super) fn bind(
         incomplete,
     );
     let template_inputs = super::template_icons::Inputs::read(frame)?;
+    // The commander icon's name, skill and traits.
+    let leaders = rows::<tables::UnitLeaders>(frame).map_err(|error| error.to_string());
+    let leader_traits = rows::<tables::UnitLeaderTraits>(frame).map_err(|error| error.to_string());
     // Recorded daily with the template dictionary, so a rename shows from the
     // table's next daily capture.
     let template_names: BTreeMap<_, _> = rows::<tables::DivisionTemplates>(frame)?
@@ -1275,10 +1274,6 @@ pub(super) fn bind(
             (Ok(width), Ok(used)) => Ok((*width, *used)),
             (Err(reason), _) | (_, Err(reason)) => Err(reason.as_str()),
         };
-        let modifiers = modifier_rows
-            .rows()
-            .iter()
-            .find(|row| row.combat == id && row.side == side);
         let tactics = tactic_effects(
             icons,
             loc,
@@ -1314,25 +1309,18 @@ pub(super) fn bind(
                     continue;
                 }
                 let text = match reinforcement(row, condition, widths, land_defines) {
-                    Ok(result) => {
-                        let sources = if matches!(result, Reinforcement::Chance { .. }) {
-                            reserve_sources(frame, document, row, &all_divisions, icons, loc)
-                        } else {
-                            Ok((String::new(), None))
-                        };
-                        match reinforcement_text(
-                            icons,
-                            loc,
-                            &result,
-                            sources.as_ref().map_err(Clone::clone),
-                        ) {
-                            Ok(text) => hover_text(&text),
-                            Err(reason) => {
-                                *refused.entry(reason).or_default() += 1;
-                                None
+                    Ok(result) => match reinforcement_text(icons, loc, &result) {
+                        Ok((text, omitted)) => {
+                            for reason in omitted {
+                                *refused.entry(reason.to_owned()).or_default() += 1;
                             }
+                            hover_text(&text)
                         }
-                    }
+                        Err(reason) => {
+                            *refused.entry(reason).or_default() += 1;
+                            None
+                        }
+                    },
                     Err(reason) => {
                         out.warnings.push(format!(
                             "Land combat {id} division {unit}: the reserve reinforcement hover is omitted: {reason}."
@@ -1469,20 +1457,16 @@ pub(super) fn bind(
                     None
                 }
             };
-            // the game dispatches only five named children specially. Every
+            // The game dispatches only five named children specially. Every
             // other visible child of the committed row requests this summary.
             for key in SUMMARY_HOVERS {
                 set_hover(values, key, summary.clone(), None);
             }
-            let unit_modifiers = modifiers.and_then(|modifiers| {
-                modifiers
-                    .divisions
-                    .iter()
-                    .find(|modifier| modifier.division == *unit)
-            });
-            if let Some(modifiers) = unit_modifiers {
+            let unit_modifiers = members.get(&(side, *unit)).copied();
+            let numbers = row.scales().zip(row.stat_values());
+            if let (Some(modifiers), Some((scales, stats))) = (unit_modifiers, numbers) {
                 let attack = mul(
-                    mul(row.scales[2], row.scales[0]),
+                    mul(scales[2], scales[0]),
                     100_000_i64.wrapping_add(if side == 0 {
                         detail.attacker_bonus
                     } else {
@@ -1490,20 +1474,8 @@ pub(super) fn bind(
                     }),
                 );
                 for (widget, key, base, scale, attacking) in [
-                    (
-                        "soft_attack",
-                        STAT_ARMY_SOFT_ATTACK,
-                        row.stat_values[3],
-                        attack,
-                        true,
-                    ),
-                    (
-                        "hard_attack",
-                        STAT_ARMY_HARD_ATTACK,
-                        row.stat_values[4],
-                        attack,
-                        true,
-                    ),
+                    ("soft_attack", STAT_ARMY_SOFT_ATTACK, stats[3], attack, true),
+                    ("hard_attack", STAT_ARMY_HARD_ATTACK, stats[4], attack, true),
                     (
                         "defense",
                         if side == 0 {
@@ -1511,8 +1483,8 @@ pub(super) fn bind(
                         } else {
                             STAT_ARMY_DEFENSE
                         },
-                        row.stat_values[usize::from(side == 0)],
-                        mul(row.scales[3], row.scales[1]),
+                        stats[usize::from(side == 0)],
+                        mul(scales[3], scales[1]),
                         false,
                     ),
                 ] {
@@ -1544,9 +1516,14 @@ pub(super) fn bind(
                     };
                     set_hover(values, widget, text, description);
                 }
+            } else if unit_modifiers.is_some() {
+                out.warnings.push(format!(
+                    "Land combat {id} division {unit}: its stats and scales are not recorded, so its combat-stat hovers are omitted."
+                ));
+                refuse_hovers(values, STAT_HOVERS);
             } else {
                 out.warnings.push(format!(
-                    "Land combat {id} division {unit}: its LandCombatModifiers row is missing, so its combat-stat hovers are omitted and its first eight modifier-icon hovers show no breakdown."
+                    "Land combat {id} division {unit}: its LandCombatDivisionModifiers row is missing, so its combat-stat hovers are omitted and its first eight modifier-icon hovers show no breakdown."
                 ));
                 refuse_hovers(values, STAT_HOVERS);
             }
@@ -1572,6 +1549,8 @@ pub(super) fn bind(
                 viewing_tag,
                 detail,
                 template_inputs: &template_inputs,
+                leaders: leaders.as_ref().map_err(String::as_str),
+                leader_traits: leader_traits.as_ref().map_err(String::as_str),
             };
             let Some(grid) = values.get_mut("modifier_icons_container/list") else {
                 // details.rs builds the strip only for a division with a

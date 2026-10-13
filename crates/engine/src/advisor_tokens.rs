@@ -69,6 +69,56 @@ pub fn walk(
     )
 }
 
+/// The table header [`walk_carried`] gathers before reading any bucket.
+pub const HEADER: usize = 0x19;
+
+/// A caller's held token rows ([`walk_carried`]).
+pub trait TokenCarry {
+    /// Registers the authenticated manager before any bucket is read; when
+    /// the held table may be carried, its row and byte counts.
+    fn plan(&mut self, manager: usize, header: &[u8; HEADER]) -> Option<(usize, usize)>;
+    /// Writes the carryable held rows and bytes.
+    fn carry(&mut self, rows: &mut [Row], bytes: &mut [u8]);
+    /// The table read afresh and whole.
+    fn read(&mut self, rows: &[Row], bytes: &[u8]);
+}
+
+/// No held rows: the table is read.
+pub struct Fresh;
+impl TokenCarry for Fresh {
+    fn plan(&mut self, _: usize, _: &[u8; HEADER]) -> Option<(usize, usize)> {
+        None
+    }
+    fn carry(&mut self, _: &mut [Row], _: &mut [u8]) {}
+    fn read(&mut self, _: &[Row], _: &[u8]) {}
+}
+
+/// [`walk_growing`] with `carry` supplying the held table it proves
+/// current: the manager and table header are still read and authenticated,
+/// and a carried table's buckets and keys are not.
+pub fn walk_carried(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Row>,
+    bytes: &mut Vec<u8>,
+    carry: &mut impl TokenCarry,
+) -> NameWalk {
+    walk_inner(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(bytes),
+        carry,
+    )
+    .unwrap_or_else(|reason| NameWalk {
+        outcome: Outcome::Unavailable { reason },
+        bytes_len: 0,
+        required_bytes: 0,
+    })
+}
+
 /// Worker storage grows from the original native headers before publication.
 pub fn walk_growing(
     memory: &impl Memory,
@@ -93,10 +143,12 @@ pub fn walk_buffer(
     output: crate::walk::Buffer<'_, Row>,
     bytes: crate::walk::Buffer<'_, u8>,
 ) -> NameWalk {
-    walk_inner(memory, base, game_state, output, bytes).unwrap_or_else(|reason| NameWalk {
-        outcome: Outcome::Unavailable { reason },
-        bytes_len: 0,
-        required_bytes: 0,
+    walk_inner(memory, base, game_state, output, bytes, &mut Fresh).unwrap_or_else(|reason| {
+        NameWalk {
+            outcome: Outcome::Unavailable { reason },
+            bytes_len: 0,
+            required_bytes: 0,
+        }
     })
 }
 
@@ -106,6 +158,7 @@ fn walk_inner(
     game_state: usize,
     mut output: crate::walk::Buffer<'_, Row>,
     mut bytes: crate::walk::Buffer<'_, u8>,
+    carry: &mut impl TokenCarry,
 ) -> Result<NameWalk, &'static str> {
     let manager = game_state
         .checked_add(cgame_state::CHARACTER_MANAGER)
@@ -122,7 +175,7 @@ fn walk_inner(
     let table = manager
         .checked_add(TABLE)
         .ok_or("advisor token table address overflow")?;
-    let header = read::<[u8; 0x19]>(memory, table).ok_or("advisor token table unreadable")?;
+    let header = read::<[u8; HEADER]>(memory, table).ok_or("advisor token table unreadable")?;
     let word = |offset: usize| u32::from_le_bytes(header[offset..offset + 4].try_into().unwrap());
     let buckets = usize::try_from(u64::from_le_bytes(
         header[BUCKETS..BUCKETS + 8].try_into().unwrap(),
@@ -154,6 +207,18 @@ fn walk_inner(
         } else {
             Err("advisor token table counts keys in the empty buckets")
         };
+    }
+    if let Some((rows, needed)) = carry.plan(manager, &header)
+        && rows == count as usize
+        && output.ensure(rows)?
+        && bytes.ensure(needed)?
+    {
+        carry.carry(&mut output[..rows], &mut bytes[..needed]);
+        return Ok(NameWalk {
+            outcome: Outcome::Rows { len: rows },
+            bytes_len: needed,
+            required_bytes: needed,
+        });
     }
     let mut len = 0;
     let mut bytes_len = 0_usize;
@@ -208,6 +273,9 @@ fn walk_inner(
     }
     if live != count {
         return Err("advisor token buckets differ from the count");
+    }
+    if unread_rows == 0 {
+        carry.read(&output[..len], &bytes[..bytes_len]);
     }
     Ok(NameWalk {
         outcome: if unread_rows == 0 {

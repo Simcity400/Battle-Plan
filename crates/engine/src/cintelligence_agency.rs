@@ -6,7 +6,15 @@
 //! lengths and a caller-sized arena. Capacity shortages omit whole rows with
 //! exact demand; a bad header or terminator refuses the table.
 
-use crate::{Memory, ccountry, cpdx_array::Array, memory::Raw, read, walk::Outcome};
+use crate::{
+    Memory,
+    batch_fallback::{Ahead, Batch, Link},
+    ccountry,
+    cpdx_array::Array,
+    memory::{Raw, RecordField, RecordLayout, RecordSources, packed_fields},
+    read,
+    walk::Outcome,
+};
 
 /// CIntelligenceAgency primary vtable.
 pub const VTABLE_RVA: usize = 0x0296_b338;
@@ -187,17 +195,39 @@ fn walk_shared(
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let (mut len, mut bytes_len, mut required_bytes) = (0_usize, 0_usize, 0_usize);
         let mut unread_rows = 0_u32;
+        let mut ahead = None;
+        let mut block = [0_u8; BLOCK];
         for slot in 1..countries.count() {
-            let Some(country) = countries.at(slot)? else {
+            // The next slot's census entry and agency link are read while
+            // this country is, the agency's block hinted; each is used at
+            // its own place.
+            let (listed, link) = Ahead::take(&mut ahead, &countries, slot);
+            let Some(country) = listed? else {
                 continue;
             };
-            let Some(pointer) = root(memory, base, country)? else {
+            let root = root_block(memory, base, country, link, &mut block)?;
+            ahead = Ahead::read(
+                memory,
+                &countries,
+                slot + 1,
+                ccountry::INTELLIGENCE_AGENCY,
+                |agency| memory.prefetch(agency, BLOCK),
+            );
+            let Some((pointer, whole)) = root else {
                 continue;
             };
             each(country.id, pointer);
-            // Created agencies use their stored name verbatim, even when empty.
-            // Serialization writes the same bytes; never localise them again.
-            let name = Literal::read(memory, at(pointer, NAME)?)?;
+            // The agency-name tooltip copies +0x80 verbatim for a created
+            // agency, even an empty name; name assignment writes the same
+            // bytes. Never localise it again.
+            let name = if whole {
+                Literal::from_header(
+                    at(pointer, NAME)?,
+                    block[NAME..NAME + 32].try_into().unwrap(),
+                )?
+            } else {
+                Literal::read(memory, at(pointer, NAME)?)?
+            };
             Literal::validate(memory, [&name])?;
             required_bytes = required_bytes
                 .checked_add(name.len)
@@ -210,17 +240,26 @@ fn walk_shared(
                     .ok_or("agency row count overflow")?;
                 continue;
             }
-            let active = Array::read(memory, at(pointer, OPERATIVES)?, 8)
-                .ok_or("agency active roster unreadable or invalid")?;
+            let active = if whole {
+                Array::from_header(block[OPERATIVES..OPERATIVES + 16].try_into().unwrap(), 8)
+            } else {
+                Array::read(memory, at(pointer, OPERATIVES)?, 8)
+            }
+            .ok_or("agency active roster unreadable or invalid")?;
             Literal::copy_all(memory, [&name], &mut names[bytes_len..bytes_len + name.len])?;
+            let scalars = if whole {
+                Scalars::from_block(&block)
+            } else {
+                scalars(memory, pointer)?
+            };
             output[len] = Row {
                 country: country.id,
-                upgrade_progress_raw: field(memory, pointer, UPGRADE_PROGRESS)?,
-                defense_raw: field(memory, pointer, DEFENSE)?,
+                upgrade_progress_raw: scalars.upgrade_progress_raw,
+                defense_raw: scalars.defense_raw,
                 active_count: active.count as i32,
-                admission_ceiling: field(memory, pointer, OPERATIVE_ADMISSION_CEILING)?,
-                unknown_f0: field(memory, pointer, UNKNOWN_F0)?,
-                created: field(memory, pointer, CREATED)?,
+                admission_ceiling: scalars.admission_ceiling,
+                unknown_f0: scalars.unknown_f0,
+                created: scalars.created,
                 name: Name {
                     start: bytes_len,
                     len: name.len,
@@ -379,30 +418,167 @@ pub fn walk_captured_operatives_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
+/// The agency's bytes a row reads, from its vtable to its defense: its
+/// identity, name header, active roster header and scalars.
+const BLOCK: usize = DEFENSE + 8;
+
+/// [`root`] reading the agency's [`BLOCK`] whole into `block` after its link
+/// (as the walk holds it, [`Link`]), and whether it did. A block that does not
+/// read whole is read field by field as [`root`] and the row's reads do,
+/// once, and counted.
+fn root_block(
+    memory: &impl Memory,
+    base: usize,
+    country: ccountry::Country,
+    link: Link,
+    block: &mut [u8; BLOCK],
+) -> Result<Option<(usize, bool)>, &'static str> {
+    let pointer = agency_link(memory, country, link)?;
+    if pointer == 0 {
+        return Ok(None);
+    }
+    if !memory.copy(pointer, block) {
+        crate::batch_fallback::record(Batch::IntelligenceAgencies);
+        return Ok(authenticate(memory, base, country, pointer)?.map(|pointer| (pointer, false)));
+    }
+    let expected = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("agency vtable address overflow")?;
+    if u64::from_le_bytes(block[..8].try_into().unwrap()) != expected as u64 {
+        return Err("agency vtable mismatch");
+    }
+    let owner = &block[OWNER_COUNTRY..OWNER_COUNTRY + 8];
+    if u64::from_le_bytes(owner.try_into().unwrap()) != country.pointer as u64 {
+        return Err("agency owner pointer mismatch");
+    }
+    Ok(Some((pointer, true)))
+}
+
+fn agency_link(
+    memory: &impl Memory,
+    country: ccountry::Country,
+    link: Link,
+) -> Result<usize, &'static str> {
+    let link = link
+        .resolve(
+            memory,
+            country,
+            ccountry::INTELLIGENCE_AGENCY,
+            Batch::IntelligenceAgencies,
+        )
+        .ok_or("agency field unreadable")?;
+    usize::try_from(link).map_err(|_| "agency pointer overflow")
+}
+
 pub(crate) fn root(
     memory: &impl Memory,
     base: usize,
     country: ccountry::Country,
 ) -> Result<Option<usize>, &'static str> {
-    let pointer = usize::try_from(field::<u64>(
-        memory,
-        country.pointer,
-        ccountry::INTELLIGENCE_AGENCY,
-    )?)
-    .map_err(|_| "agency pointer overflow")?;
+    let pointer = agency_link(memory, country, Link::Unread)?;
     if pointer == 0 {
         return Ok(None);
     }
+    authenticate(memory, base, country, pointer)
+}
+
+/// The agency's vtable and owner checks.
+fn authenticate(
+    memory: &impl Memory,
+    base: usize,
+    country: ccountry::Country,
+    pointer: usize,
+) -> Result<Option<usize>, &'static str> {
     let expected = base
         .checked_add(VTABLE_RVA)
         .ok_or("agency vtable address overflow")?;
-    if read::<u64>(memory, pointer) != Some(expected as u64) {
+    // The vtable and owner, read back to back, in one guarded gather of the
+    // agency; the first field it did not complete fails as its read would.
+    const FIELDS: [RecordField; 2] = packed_fields([(0, 8), (OWNER_COUNTRY, 8)]);
+    const LAYOUT: RecordLayout<'static> = RecordLayout::new(&FIELDS, 16).unwrap();
+    if pointer.checked_add(OWNER_COUNTRY + 8).is_none() {
+        // Unreachable for a readable vtable; the reads it replaces.
+        if read::<u64>(memory, pointer) != Some(expected as u64) {
+            return Err("agency vtable mismatch");
+        }
+        if field::<u64>(memory, pointer, OWNER_COUNTRY)? != country.pointer as u64 {
+            return Err("agency owner pointer mismatch");
+        }
+        return Ok(Some(pointer));
+    }
+    let mut bytes = [0_u8; 16];
+    let copied = memory.copy_records(RecordSources::Pointers(&[pointer]), &LAYOUT, &mut bytes);
+    if copied < 1 {
         return Err("agency vtable mismatch");
     }
-    if field::<u64>(memory, pointer, OWNER_COUNTRY)? != country.pointer as u64 {
+    if u64::from_le_bytes(bytes[..8].try_into().unwrap()) != expected as u64 {
+        return Err("agency vtable mismatch");
+    }
+    if copied < 2 {
+        return Err("agency field unreadable");
+    }
+    if u64::from_le_bytes(bytes[8..].try_into().unwrap()) != country.pointer as u64 {
         return Err("agency owner pointer mismatch");
     }
     Ok(Some(pointer))
+}
+
+/// The scalar fields a row records.
+struct Scalars {
+    upgrade_progress_raw: i64,
+    defense_raw: i64,
+    admission_ceiling: i32,
+    unknown_f0: u32,
+    created: u8,
+}
+
+impl Scalars {
+    fn from_block(block: &[u8; BLOCK]) -> Self {
+        let word = |offset: usize| -> [u8; 8] { block[offset..offset + 8].try_into().unwrap() };
+        let half = |offset: usize| -> [u8; 4] { block[offset..offset + 4].try_into().unwrap() };
+        Self {
+            created: block[CREATED],
+            upgrade_progress_raw: i64::from_le_bytes(word(UPGRADE_PROGRESS)),
+            unknown_f0: u32::from_le_bytes(half(UNKNOWN_F0)),
+            admission_ceiling: i32::from_le_bytes(half(OPERATIVE_ADMISSION_CEILING)),
+            defense_raw: i64::from_le_bytes(word(DEFENSE)),
+        }
+    }
+}
+
+/// The row's five scalars, which the walk reads back to back: one guarded
+/// gather of the agency, in ascending field order. Every one of those reads
+/// fails with the same reason, so any incomplete field gives it.
+fn scalars(memory: &impl Memory, pointer: usize) -> Result<Scalars, &'static str> {
+    const FIELDS: [RecordField; 5] = packed_fields([
+        (CREATED, 1),
+        (UPGRADE_PROGRESS, 8),
+        (UNKNOWN_F0, 4),
+        (OPERATIVE_ADMISSION_CEILING, 4),
+        (DEFENSE, 8),
+    ]);
+    const LAYOUT: RecordLayout<'static> = RecordLayout::new(&FIELDS, 25).unwrap();
+    if pointer.checked_add(DEFENSE + 8).is_none() {
+        // Unreachable for an authenticated agency; the reads it replaces.
+        return Ok(Scalars {
+            upgrade_progress_raw: field(memory, pointer, UPGRADE_PROGRESS)?,
+            defense_raw: field(memory, pointer, DEFENSE)?,
+            admission_ceiling: field(memory, pointer, OPERATIVE_ADMISSION_CEILING)?,
+            unknown_f0: field(memory, pointer, UNKNOWN_F0)?,
+            created: field(memory, pointer, CREATED)?,
+        });
+    }
+    let mut bytes = [0_u8; 25];
+    if memory.copy_records(RecordSources::Pointers(&[pointer]), &LAYOUT, &mut bytes) != 5 {
+        return Err("agency field unreadable");
+    }
+    Ok(Scalars {
+        created: bytes[0],
+        upgrade_progress_raw: i64::from_le_bytes(bytes[1..9].try_into().unwrap()),
+        unknown_f0: u32::from_le_bytes(bytes[9..13].try_into().unwrap()),
+        admission_ceiling: i32::from_le_bytes(bytes[13..17].try_into().unwrap()),
+        defense_raw: i64::from_le_bytes(bytes[17..25].try_into().unwrap()),
+    })
 }
 
 fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
@@ -414,9 +590,402 @@ fn field<T: Raw>(memory: &impl Memory, pointer: usize, offset: usize) -> Result<
 }
 
 #[cfg(test)]
+#[path = "cintelligence_agency_cost_baseline.rs"]
+mod baseline;
+
+/// Synthetic images of countries that each have an agency (inline name and
+/// scalars) whose cryptology holds decryption states, for the gather tests
+/// (offset image) and the cost benches (real addresses).
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use crate::{
+        ccountry::synthetic::World, ccountry_decryption_state as state, ccryptology, msvc_string,
+    };
+
+    /// What [`populate`] writes through.
+    pub(crate) trait Image {
+        fn alloc(&mut self, len: usize) -> usize;
+        fn u64(&mut self, address: usize, value: u64);
+        fn u32(&mut self, address: usize, value: u32);
+        fn array(&mut self, header: usize, data: usize, count: u32);
+        /// The value a native vtable holds for `rva`.
+        fn vtable(&self, rva: usize) -> u64;
+    }
+
+    impl Image for World {
+        fn alloc(&mut self, len: usize) -> usize {
+            World::alloc(self, len)
+        }
+        fn u64(&mut self, address: usize, value: u64) {
+            World::u64(self, address, value);
+        }
+        fn u32(&mut self, address: usize, value: u32) {
+            World::u32(self, address, value);
+        }
+        fn array(&mut self, header: usize, data: usize, count: u32) {
+            World::array(self, header, data, count);
+        }
+        fn vtable(&self, rva: usize) -> u64 {
+            (self.module + rva) as u64
+        }
+    }
+
+    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+    impl Image for crate::crelation_status::bench::Arena {
+        fn alloc(&mut self, len: usize) -> usize {
+            crate::crelation_status::bench::Arena::alloc(self, len)
+        }
+        fn u64(&mut self, address: usize, value: u64) {
+            crate::crelation_status::bench::Arena::u64(self, address, value);
+        }
+        fn u32(&mut self, address: usize, value: u32) {
+            crate::crelation_status::bench::Arena::u32(self, address, value);
+        }
+        fn array(&mut self, header: usize, data: usize, count: u32) {
+            self.vector(header, data, count);
+        }
+        fn vtable(&self, rva: usize) -> u64 {
+            self.rva(rva)
+        }
+    }
+
+    /// Gives country `objects[slot]` (slots 1.., `objects[0]` unused) an
+    /// agency and a cryptology of `states` states.
+    pub(crate) fn populate(image: &mut impl Image, objects: &[usize], states: u32) {
+        let countries = objects.len() as u32 - 1;
+        for (slot, &country) in objects.iter().enumerate().skip(1) {
+            let slot = slot as u32;
+            let agency = image.alloc(0x140);
+            image.u64(agency, image.vtable(VTABLE_RVA));
+            image.u64(agency + OWNER_COUNTRY, country as u64);
+            image.u64(agency + NAME, u64::from_le_bytes(*b"AGENCY\0\0"));
+            image.u64(agency + NAME + msvc_string::LENGTH, 6);
+            image.u64(
+                agency + NAME + msvc_string::CAPACITY,
+                msvc_string::INLINE_CAPACITY,
+            );
+            image.u32(agency + CREATED, 1);
+            image.u64(agency + UPGRADE_PROGRESS, u64::from(slot) * 1_000);
+            image.u32(agency + UNKNOWN_F0, slot);
+            image.u32(agency + OPERATIVE_ADMISSION_CEILING, 3);
+            image.u64(agency + DEFENSE, u64::from(slot) * 7);
+            image.u64(country + ccountry::INTELLIGENCE_AGENCY, agency as u64);
+            let crypto = image.alloc(0x40);
+            image.u64(crypto, image.vtable(ccryptology::VTABLE_RVA));
+            image.u64(crypto + ccryptology::OWNER_COUNTRY, country as u64);
+            let rows = image.alloc(states as usize * state::STRIDE);
+            for index in 0..states {
+                let at = rows + index as usize * state::STRIDE;
+                image.u64(at, image.vtable(state::VTABLE_RVA));
+                image.u32(at + 8, (slot + index) % countries + 1);
+                image.u64(at + 24, u64::from(index) * 100);
+            }
+            image.array(crypto + ccryptology::DECRYPTION_STATES, rows, states);
+            image.u64(agency + CRYPTOLOGY, crypto as u64);
+        }
+    }
+
+    /// An offset image read through `SliceMemory`, module base 0.
+    pub(crate) fn intel_world(countries: u32, states: u32) -> World {
+        let mut w = World::new(0, countries, ccountry::INTELLIGENCE_AGENCY + 8);
+        let objects: Vec<usize> = (0..=countries).map(|slot| w.object(slot)).collect();
+        populate(&mut w, &objects, states);
+        w
+    }
+
+    /// A real-address image for `LiveMemory`: the arena (its base is the
+    /// module base) and the game state.
+    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+    pub(crate) fn intel_arena(
+        countries: usize,
+        states: u32,
+    ) -> (crate::crelation_status::bench::Arena, usize) {
+        use crate::crelation_status::bench::{Arena, countries as census};
+        let object = ccountry::INTELLIGENCE_AGENCY + 8;
+        let per_country = 12 + object + 16 + 0x140 + 0x40 + states as usize * state::STRIDE + 48;
+        let mut arena = Arena::new(0x10_0000 + (countries + 1) * per_country);
+        let (game_state, objects) = census(&mut arena, countries, object);
+        populate(&mut arena, &objects, states);
+        (arena, game_state)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{cgame_state, memory::SliceMemory};
+
+    /// Country `slot`'s agency in [`test_support::intel_world`].
+    fn agency(w: &crate::ccountry::synthetic::World, slot: u32) -> usize {
+        read::<u64>(&w.memory(), w.object(slot) + ccountry::INTELLIGENCE_AGENCY).unwrap() as usize
+    }
+
+    /// The batched walk over `memory` and the serial walk over
+    /// `serial_memory` (each its own source, so a one-shot fault meets each
+    /// walk) into `rows` rows and `names` name bytes: the batched walk's
+    /// rows, names and outcome, then the serial walk's.
+    fn both(
+        memory: &impl Memory,
+        serial_memory: &impl Memory,
+        w: &crate::ccountry::synthetic::World,
+        rows: usize,
+        names: usize,
+    ) -> [(crate::csubject_relation::NameWalk, Vec<Row>, Vec<u8>); 2] {
+        let mut walks = [(); 2].map(|_| (vec![Row::default(); rows], vec![0; names]));
+        let [(new_rows, new_names), (old_rows, old_names)] = &mut walks;
+        let new = super::walk(memory, 0, w.game_state(), new_rows, new_names);
+        let old = baseline::walk(serial_memory, 0, w.game_state(), old_rows, old_names);
+        let [(new_rows, new_names), (old_rows, old_names)] = walks;
+        [(new, new_rows, new_names), (old, old_rows, old_names)]
+    }
+
+    /// On healthy memory the batched walk returns the serial walk's rows,
+    /// names and outcome at 5,000 countries, truncated or not, reading each
+    /// agency's row as one block after its link: 2 spans per agency
+    /// instead of 10.
+    #[test]
+    fn batched_agencies_match_the_serial_walk_at_scale() {
+        use crate::memory::{CountedMemory, ReadCounts};
+        const COUNT: u32 = 5_000;
+        let w = test_support::intel_world(COUNT, 2);
+        let memory = CountedMemory::new(w.memory());
+        let prior = ReadCounts::take_current();
+        let mut rows = vec![Row::default(); COUNT as usize];
+        let mut names = vec![0; COUNT as usize * 6];
+        let new = super::walk(&memory, 0, w.game_state(), &mut rows, &mut names);
+        let new_reads = ReadCounts::take_current();
+        let mut old_rows = vec![Row::default(); COUNT as usize];
+        let mut old_names = vec![0; COUNT as usize * 6];
+        let old = baseline::walk(&memory, 0, w.game_state(), &mut old_rows, &mut old_names);
+        let old_reads = ReadCounts::take_current();
+        prior.add_current();
+        assert_eq!(
+            new.outcome,
+            Outcome::Rows {
+                len: COUNT as usize
+            }
+        );
+        assert_eq!((new, &rows, &names), (old, &old_rows, &old_names));
+        let n = u64::from(COUNT);
+        assert_eq!(new_reads.copy_calls + 8 * n, old_reads.copy_calls);
+        assert_eq!(new_reads.record_calls, old_reads.record_calls);
+        assert_eq!(new_reads.spans + 8 * n, old_reads.spans);
+        let [batched, serial] = both(
+            &w.memory(),
+            &w.memory(),
+            &w,
+            COUNT as usize - 2,
+            (COUNT as usize - 2) * 6,
+        );
+        assert_eq!(batched, serial);
+        assert!(matches!(
+            batched.0.outcome,
+            Outcome::Truncated { unread_rows: 2, .. }
+        ));
+    }
+
+    /// The faults the equality tests place: agency bytes the serial walk
+    /// never reads (its recruitment), its name header, the agency link of a
+    /// country read ahead and its defense.
+    fn fault_sites(w: &crate::ccountry::synthetic::World) -> [std::ops::Range<usize>; 4] {
+        let agency = agency(w, 3);
+        let link = w.object(4) + ccountry::INTELLIGENCE_AGENCY;
+        [
+            agency + RECRUITMENT..agency + RECRUITMENT + 8,
+            agency + NAME..agency + NAME + 32,
+            link..link + 8,
+            agency + DEFENSE..agency + DEFENSE + 8,
+        ]
+    }
+
+    /// This thread's IntelligenceAgencies fallbacks.
+    fn fallbacks() -> u64 {
+        crate::batch_fallback::count(crate::batch_fallback::Batch::IntelligenceAgencies)
+    }
+
+    /// A persistent fault gives the serial walk's result: a block it breaks
+    /// is read again field by field and a link whose read ahead failed is
+    /// read again at its turn, each once and counted once.
+    #[test]
+    fn a_persistent_agency_fault_gives_the_serial_result() {
+        use crate::batch_fallback::Faulty;
+        let w = test_support::intel_world(6, 2);
+        for (site, range) in fault_sites(&w).into_iter().enumerate() {
+            let before = fallbacks();
+            let memory = Faulty::new(w.memory(), vec![range], false);
+            let [batched, serial] = both(&memory, &memory, &w, 6, 36);
+            assert_eq!(batched, serial, "site {site}");
+            assert_eq!(fallbacks() - before, 1, "site {site}");
+            if site == 0 {
+                assert_eq!(batched.0.outcome, Outcome::Rows { len: 6 });
+            } else {
+                assert!(
+                    matches!(batched.0.outcome, Outcome::Unavailable { .. }),
+                    "site {site}"
+                );
+            }
+        }
+    }
+
+    /// A one-shot fault never refuses more than the serial walk: a block it
+    /// breaks reads again field by field, and a link read ahead that faulted
+    /// is read again at its turn, each counted once.
+    #[test]
+    fn a_one_shot_agency_fault_refuses_no_more_than_the_serial_walk() {
+        use crate::batch_fallback::Faulty;
+        let w = test_support::intel_world(6, 2);
+        let [healthy, _] = both(&w.memory(), &w.memory(), &w, 6, 36);
+        for (site, range) in fault_sites(&w).into_iter().enumerate() {
+            let once = || Faulty::new(w.memory(), vec![range.clone()], true);
+            let before = fallbacks();
+            let [batched, serial] = both(&once(), &once(), &w, 6, 36);
+            assert_eq!(fallbacks() - before, 1, "site {site}");
+            assert_eq!(batched, healthy, "site {site}");
+            assert_eq!(
+                matches!(serial.0.outcome, Outcome::Unavailable { .. }),
+                site != 0,
+                "site {site}"
+            );
+        }
+    }
+
+    /// [`test_support::intel_world`] of eight countries whose slot 3 is null
+    /// and slot 5 an alias of country 4, with a 40-byte heap name for
+    /// country 1, an empty name for country 2 and a 20-byte heap name for
+    /// country 6.
+    fn edge_world() -> crate::ccountry::synthetic::World {
+        use crate::msvc_string;
+        let mut w = test_support::intel_world(8, 2);
+        let table = crate::ccountry::synthetic::START + 0x1000;
+        let links = table + 9 * 8;
+        w.u64(table + 3 * 8, 0);
+        w.u64(table + 5 * 8, w.object(4) as u64);
+        w.u32(links + 5 * 4, 4);
+        for (slot, len) in [(1_u32, 40_usize), (6, 20)] {
+            let heap = w.alloc(len + 8);
+            w.put(heap, &vec![b'a' + slot as u8; len]);
+            let name = agency(&w, slot) + NAME;
+            w.u64(name, heap as u64);
+            w.u64(name + msvc_string::LENGTH, len as u64);
+            w.u64(name + msvc_string::CAPACITY, len as u64 + 7);
+        }
+        let name = agency(&w, 2) + NAME;
+        w.put(name, &[0; 8]);
+        w.u64(name + msvc_string::LENGTH, 0);
+        w
+    }
+
+    /// The batched walk matches the serial walk around null and alias
+    /// census slots and under every split of row and name capacity, with
+    /// heap and empty names, a long name omitted before shorter ones fit.
+    #[test]
+    fn batched_agencies_match_the_serial_walk_at_name_and_slot_edges() {
+        let w = edge_world();
+        for (rows, names) in [(6, 78), (6, 39), (6, 25), (6, 0), (3, 78), (0, 0)] {
+            let [batched, serial] = both(&w.memory(), &w.memory(), &w, rows, names);
+            assert_eq!(batched, serial, "rows {rows} names {names}");
+        }
+        let [full, _] = both(&w.memory(), &w.memory(), &w, 6, 78);
+        assert_eq!(full.0.outcome, Outcome::Rows { len: 6 });
+        assert_eq!(full.0.required_bytes, 78);
+    }
+
+    /// The agencies the walk hands its visitor (the upgrade capture's) are
+    /// the serial walk's, in its order, healthy or under a persistent fault
+    /// that ends the walk at a later country.
+    #[test]
+    fn upgrade_visits_match_the_serial_walk_under_persistent_faults() {
+        use crate::batch_fallback::Faulty;
+        use crate::walk::Buffer;
+        let w = edge_world();
+        let agency_six = agency(&w, 6);
+        let link = w.object(7) + ccountry::INTELLIGENCE_AGENCY;
+        let sites = [
+            None,
+            Some(agency_six + NAME..agency_six + NAME + 32),
+            Some(agency_six + DEFENSE..agency_six + DEFENSE + 8),
+            Some(link..link + 8),
+        ];
+        for (site, range) in sites.into_iter().enumerate() {
+            let memory = Faulty::new(w.memory(), range.into_iter().collect(), false);
+            let run = |serial: bool| {
+                let mut visits = Vec::new();
+                let mut rows = [Row::default(); 6];
+                let mut names = [0; 78];
+                let (rows_buffer, names_buffer) =
+                    (Buffer::Fixed(&mut rows), Buffer::Fixed(&mut names));
+                let visit = |country: u32, agency: usize| visits.push((country, agency));
+                let walk = if serial {
+                    baseline::walk_shared(
+                        &memory,
+                        0,
+                        w.game_state(),
+                        rows_buffer,
+                        names_buffer,
+                        visit,
+                    )
+                } else {
+                    walk_shared(&memory, 0, w.game_state(), rows_buffer, names_buffer, visit)
+                };
+                (walk, rows, names, visits)
+            };
+            let batched = run(false);
+            assert_eq!(batched, run(true), "site {site}");
+            assert_eq!(
+                matches!(batched.0.outcome, Outcome::Rows { len: 6 }),
+                site == 0,
+                "site {site}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "synthetic acquisition cost; release, affinity 0xF"]
+    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+    fn acquisition_cost() {
+        use crate::memory::{CountedMemory, LiveMemory, ReadCounts};
+        let countries = std::env::var("BATTLE_PLAN_INTEL_COST_COUNTRIES").or_else(|_| std::env::var("HOI4_INTEL_COST_COUNTRIES"))
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5_000_u32);
+        let (arena, state) = test_support::intel_arena(countries as usize, 3);
+        let offset = arena.base();
+        // SAFETY: the arena stays allocated and unchanged while read.
+        let memory = CountedMemory::new(unsafe { LiveMemory::new() });
+        let mut rows = vec![Row::default(); countries as usize];
+        let mut names = vec![0; countries as usize * 6];
+        for (label, gathered) in [("serial", false), ("batched", true)] {
+            let mut samples = Vec::new();
+            let mut reads = ReadCounts::ZERO;
+            for _ in 0..40 {
+                ReadCounts::take_current();
+                let start = std::time::Instant::now();
+                let walk = if gathered {
+                    super::walk(&memory, offset, state, &mut rows, &mut names)
+                } else {
+                    baseline::walk(&memory, offset, state, &mut rows, &mut names)
+                };
+                samples.push(start.elapsed().as_nanos() as f64);
+                reads = ReadCounts::take_current();
+                assert_eq!(
+                    walk.outcome,
+                    Outcome::Rows {
+                        len: countries as usize
+                    }
+                );
+                std::hint::black_box((&rows, &names));
+            }
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "intelligence_agencies {label} countries={countries} median_ns_per_country={:.1} copy_calls={} record_calls={} spans={}",
+                samples[20] / f64::from(countries),
+                reads.copy_calls,
+                reads.record_calls,
+                reads.spans
+            );
+        }
+    }
 
     fn walk(memory: &impl Memory, base: usize, state: usize, rows: &mut [Row]) -> Outcome {
         super::walk(memory, base, state, rows, &mut []).outcome

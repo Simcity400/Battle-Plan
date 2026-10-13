@@ -96,12 +96,91 @@ value_struct!(FuelDemandContext {
     sums: [i64; 24]
 });
 
+/// The hour a demand pack was read. A current writer reads every pack with
+/// its CountryFuel row, in the same walk (`fuel_demand::attach`), so the
+/// pack's hour is its host row's read hour and costs one tag byte that no
+/// read changes ([`crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FuelDemandHour {
+    /// Read at its host CountryFuel row's read hour.
+    #[default]
+    Host,
+    /// A current writer's explicit hour, when its capture had none: a tag
+    /// byte and the hour.
+    Stamped(i32),
+    /// An older recording's stored hour, four bytes without a tag.
+    Historical(i32),
+}
+
+impl FuelDemandHour {
+    /// The hour the pack was read, given the hour its host row was read.
+    pub fn at(self, read_hour: i32) -> i32 {
+        match self {
+            Self::Host => read_hour,
+            Self::Stamped(hour) | Self::Historical(hour) => hour,
+        }
+    }
+}
+
+impl Value for FuelDemandHour {
+    const MINIMUM_ENCODED_BYTES: usize = 1;
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        Ok(match (crate::rows::historical_stamp(), self) {
+            // The test-only historical writer stores the older layout.
+            (Some(_), _) => size_of::<i32>(),
+            (None, Self::Host) => 1,
+            (None, Self::Stamped(_) | Self::Historical(_)) => 1 + size_of::<i32>(),
+        })
+    }
+    /// What the source recording stored: an older recording's hour had no
+    /// tag.
+    fn recorded_bytes(&self) -> io::Result<usize> {
+        Ok(match self {
+            Self::Host => 1,
+            Self::Stamped(_) => 1 + size_of::<i32>(),
+            Self::Historical(_) => size_of::<i32>(),
+        })
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(*self)
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        match (crate::rows::historical_stamp(), *self) {
+            (Some(hour), Self::Host) | (Some(_), Self::Stamped(hour) | Self::Historical(hour)) => {
+                output.extend_from_slice(&hour.to_le_bytes())
+            }
+            (None, Self::Host) => output.push(0),
+            // A current writer stores any explicit hour with its tag.
+            (None, Self::Stamped(hour) | Self::Historical(hour)) => {
+                output.push(1);
+                output.extend_from_slice(&hour.to_le_bytes());
+            }
+        }
+        Ok(())
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        if input.format < crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT {
+            return input.i32().map(Self::Historical);
+        }
+        match input.u8()? {
+            0 => Ok(Self::Host),
+            1 => input.i32().map(Self::Stamped),
+            _ => Err(invalid("invalid fuel demand hour tag")),
+        }
+    }
+}
+
 /// Supplying-read current required-use rates at fixed5. These are independent
-/// of FuelAwardWindow's completed updates. Names are stored game-language
+/// of FuelAwardDay's completed updates. Names are stored game-language
 /// bytes from this boundary; consumers retain the shared language guard.
+///
+/// From [`crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT`] a recorded
+/// pack holds only its header (hour, identity and reasons); its six lists are
+/// FuelDemandParts rows, which [`with_demand_parts`] puts back. Older
+/// recordings hold the lists here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FuelDemandRead {
-    pub hour: i32,
+    pub hour: FuelDemandHour,
     pub country_instance: Option<u32>,
     pub divisions: Vec<FuelDemandUnit>,
     pub army_reason: Vec<u8>,
@@ -115,13 +194,270 @@ pub struct FuelDemandRead {
     pub contexts: Vec<FuelDemandContext>,
     pub reason: Vec<u8>,
 }
-value_struct!(FuelDemandRead { hour: i32, country_instance: Option<u32>,
+value_struct!(FuelDemandRead { hour: FuelDemandHour, country_instance: Option<u32>,
     divisions: Vec<FuelDemandUnit>, army_reason: Vec<u8>, groups: Vec<FuelDemandGroup>, group_reason: Vec<u8>,
     fleets: Vec<FuelDemandFleet>, task_forces: Vec<FuelDemandUnit>, navy_reason: Vec<u8>,
     sites: Vec<FuelDemandSite>, air_reason: Vec<u8>, contexts: Vec<FuelDemandContext>, reason: Vec<u8> });
 opaque_value!(FuelDemandRead);
 
+/// One part of a country's demand pack: an element of one of its lists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FuelDemandPart {
+    Division(FuelDemandUnit),
+    Group(FuelDemandGroup),
+    Fleet(FuelDemandFleet),
+    TaskForce(FuelDemandUnit),
+    Site(FuelDemandSite),
+    Context(FuelDemandContext),
+}
+
+impl Default for FuelDemandPart {
+    fn default() -> Self {
+        Self::Division(FuelDemandUnit::default())
+    }
+}
+
+impl FuelDemandPart {
+    /// The pack's lists, in key order.
+    pub const KINDS: u8 = 6;
+
+    /// The pack list the part belongs to.
+    pub fn kind(&self) -> u8 {
+        match self {
+            Self::Division(_) => 0,
+            Self::Group(_) => 1,
+            Self::Fleet(_) => 2,
+            Self::TaskForce(_) => 3,
+            Self::Site(_) => 4,
+            Self::Context(_) => 5,
+        }
+    }
+
+    /// The part's identity within its list: a unit, group or fleet
+    /// reference, a site's list and ordinal, a context's region.
+    pub fn ident(&self) -> u64 {
+        match self {
+            Self::Division(unit) | Self::TaskForce(unit) => unit.reference,
+            Self::Group(group) => group.reference,
+            Self::Fleet(fleet) => fleet.reference,
+            Self::Site(site) => (u64::from(site.list) << 32) | u64::from(site.ordinal),
+            Self::Context(context) => u64::from(context.region),
+        }
+    }
+}
+
+impl Value for FuelDemandPart {
+    const MINIMUM_ENCODED_BYTES: usize = 1;
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        engine::allocation::add(
+            1,
+            match self {
+                Self::Division(unit) | Self::TaskForce(unit) => Value::encoded_bytes(unit)?,
+                Self::Group(group) => Value::encoded_bytes(group)?,
+                Self::Fleet(fleet) => Value::encoded_bytes(fleet)?,
+                Self::Site(site) => Value::encoded_bytes(site)?,
+                Self::Context(context) => Value::encoded_bytes(context)?,
+            },
+        )
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(match self {
+            Self::Division(unit) => Self::Division(Value::try_clone(unit)?),
+            Self::Group(group) => Self::Group(Value::try_clone(group)?),
+            Self::Fleet(fleet) => Self::Fleet(Value::try_clone(fleet)?),
+            Self::TaskForce(unit) => Self::TaskForce(Value::try_clone(unit)?),
+            Self::Site(site) => Self::Site(Value::try_clone(site)?),
+            Self::Context(context) => Self::Context(Value::try_clone(context)?),
+        })
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        output.push(self.kind());
+        match self {
+            Self::Division(unit) | Self::TaskForce(unit) => Value::encode_reserved(unit, output),
+            Self::Group(group) => Value::encode_reserved(group, output),
+            Self::Fleet(fleet) => Value::encode_reserved(fleet, output),
+            Self::Site(site) => Value::encode_reserved(site, output),
+            Self::Context(context) => Value::encode_reserved(context, output),
+        }
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        Ok(match input.u8()? {
+            0 => Self::Division(Value::decode(input)?),
+            1 => Self::Group(Value::decode(input)?),
+            2 => Self::Fleet(Value::decode(input)?),
+            3 => Self::TaskForce(Value::decode(input)?),
+            4 => Self::Site(Value::decode(input)?),
+            5 => Self::Context(Value::decode(input)?),
+            _ => return Err(invalid("unknown fuel demand part")),
+        })
+    }
+}
+opaque_value!(FuelDemandPart);
+
+/// FuelDemandParts: one element of a CountryFuel row's demand pack lists,
+/// keyed by the row's country, its list (`kind`), its identity there
+/// ([`FuelDemandPart::ident`]) and, for an identity a list repeats, its
+/// occurrence among them in list order. A part keeps its key while others
+/// join or leave, so an hour that changes one division's rate stores only
+/// that row. `position` is its index in the native list, which restores the
+/// list's order (a wing's context index included). The table holds the
+/// parts of a complete CountryFuel read; a truncated read keeps its packs
+/// whole and the table is unavailable, as it is with an unavailable
+/// CountryFuel ([`crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FuelDemandPartRow {
+    pub country: u32,
+    pub kind: u8,
+    pub ident: u64,
+    pub occurrence: u16,
+    pub position: u32,
+    pub part: FuelDemandPart,
+}
+typed_codec!(FuelDemandPartRow, 115,
+ |row| (row.country as u128) << 83 | (row.kind as u128) << 80 | (row.ident as u128) << 16 | row.occurrence as u128,
+ |key| Self { country: (key >> 83) as u32, kind: ((key >> 80) & 7) as u8, ident: (key >> 16) as u64, occurrence: key as u16, ..Default::default() },
+ { 0 => (position): U32, 1 => (part): Opaque },
+ |row| { if row.kind >= FuelDemandPart::KINDS || row.part.kind() != row.kind || row.part.ident() != row.ident { return Err(invalid("fuel demand part outside its key")); } Ok(()) });
+
 impl FuelDemandRead {
+    /// Whether every element of the pack's lists has a FuelDemandParts key
+    /// and position: no identity repeats more than 65,536 times in a list,
+    /// and no list is longer than a position counts. A pack that is not stays
+    /// whole in its CountryFuel row ([`with_demand_parts`]).
+    pub fn splittable(&self) -> bool {
+        fn fits(mut idents: impl ExactSizeIterator<Item = u64>) -> bool {
+            if u32::try_from(idents.len().saturating_sub(1)).is_err() {
+                return false;
+            }
+            let mut seen: std::collections::BTreeMap<u64, u32> = std::collections::BTreeMap::new();
+            idents.all(|ident| {
+                let count = seen.entry(ident).or_insert(0);
+                *count += 1;
+                *count <= u32::from(u16::MAX) + 1
+            })
+        }
+        fits(self.divisions.iter().map(|unit| unit.reference))
+            && fits(self.groups.iter().map(|group| group.reference))
+            && fits(self.fleets.iter().map(|fleet| fleet.reference))
+            && fits(self.task_forces.iter().map(|unit| unit.reference))
+            && fits(
+                self.sites
+                    .iter()
+                    .map(|site| (u64::from(site.list) << 32) | u64::from(site.ordinal)),
+            )
+            && fits(
+                self.contexts
+                    .iter()
+                    .map(|context| u64::from(context.region)),
+            )
+    }
+
+    /// The pack's header, its lists left empty, and its lists' elements as
+    /// FuelDemandParts rows of `country`, in key order.
+    pub fn split(mut self, country: u32) -> io::Result<(Self, Vec<FuelDemandPartRow>)> {
+        let lists: [Vec<FuelDemandPart>; FuelDemandPart::KINDS as usize] = [
+            std::mem::take(&mut self.divisions)
+                .into_iter()
+                .map(FuelDemandPart::Division)
+                .collect(),
+            std::mem::take(&mut self.groups)
+                .into_iter()
+                .map(FuelDemandPart::Group)
+                .collect(),
+            std::mem::take(&mut self.fleets)
+                .into_iter()
+                .map(FuelDemandPart::Fleet)
+                .collect(),
+            std::mem::take(&mut self.task_forces)
+                .into_iter()
+                .map(FuelDemandPart::TaskForce)
+                .collect(),
+            std::mem::take(&mut self.sites)
+                .into_iter()
+                .map(FuelDemandPart::Site)
+                .collect(),
+            std::mem::take(&mut self.contexts)
+                .into_iter()
+                .map(FuelDemandPart::Context)
+                .collect(),
+        ];
+        let mut rows = Vec::new();
+        engine::allocation::reserve(&mut rows, lists.iter().map(Vec::len).sum())?;
+        for list in lists {
+            let mut seen: std::collections::BTreeMap<u64, u32> = std::collections::BTreeMap::new();
+            for (position, part) in list.into_iter().enumerate() {
+                let ident = part.ident();
+                let next = seen.entry(ident).or_insert(0);
+                let occurrence = u16::try_from(*next)
+                    .map_err(|_| invalid("fuel demand part identity repeats beyond its key"))?;
+                *next += 1;
+                rows.push(FuelDemandPartRow {
+                    country,
+                    kind: part.kind(),
+                    ident,
+                    occurrence,
+                    position: u32::try_from(position)
+                        .map_err(|_| invalid("fuel demand list too long"))?,
+                    part,
+                });
+            }
+        }
+        rows.sort_unstable_by_key(RowCodec::key);
+        Ok((self, rows))
+    }
+
+    /// Whether any of the pack's lists holds an element.
+    fn holds_lists(&self) -> bool {
+        !(self.divisions.is_empty()
+            && self.groups.is_empty()
+            && self.fleets.is_empty()
+            && self.task_forces.is_empty()
+            && self.sites.is_empty()
+            && self.contexts.is_empty())
+    }
+
+    /// Put a header's lists back from its country's parts, in any order.
+    /// Each list's positions must be exactly 0..n.
+    fn assemble(&mut self, parts: &[FuelDemandPartRow]) -> Result<(), &'static str> {
+        let mut lists: [Vec<(u32, &FuelDemandPart)>; FuelDemandPart::KINDS as usize] =
+            Default::default();
+        for row in parts {
+            lists
+                .get_mut(usize::from(row.kind))
+                .ok_or("fuel demand part kind unknown")?
+                .push((row.position, &row.part));
+        }
+        for list in &mut lists {
+            list.sort_unstable_by_key(|(position, _)| *position);
+            if list
+                .iter()
+                .enumerate()
+                .any(|(index, (position, _))| *position as usize != index)
+            {
+                return Err("fuel demand part positions do not make one list");
+            }
+        }
+        let [divisions, groups, fleets, task_forces, sites, contexts] = lists;
+        macro_rules! fill {
+            ($list:ident, $field:ident, $variant:ident) => {
+                self.$field = $list
+                    .into_iter()
+                    .map(|(_, part)| match part {
+                        FuelDemandPart::$variant(value) => Ok(value.clone()),
+                        _ => Err("fuel demand part differs from its list"),
+                    })
+                    .collect::<Result<_, _>>()?;
+            };
+        }
+        fill!(divisions, divisions, Division);
+        fill!(groups, groups, Group);
+        fill!(fleets, fleets, Fleet);
+        fill!(task_forces, task_forces, TaskForce);
+        fill!(sites, sites, Site);
+        fill!(contexts, contexts, Context);
+        Ok(())
+    }
+
     pub fn wing_rate(&self, wing: &FuelDemandWing) -> Result<i64, &'static str> {
         let inputs = wing
             .inputs
@@ -179,6 +515,65 @@ impl FuelDemandRead {
     }
 }
 
+/// One CountryFuel read's rows with each demand pack's lists in place.
+/// Recordings before [`crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT`]
+/// hold them in the pack, as does any pack that still holds a list; a later
+/// pack's lists are FuelDemandParts rows (`parts`, the same hour's view),
+/// which must then be complete. A pack whose parts are missing or
+/// inconsistent keeps empty lists and names why in its `reason`, on which
+/// every consumer of the pack already refuses it.
+pub fn with_demand_parts(
+    rows: &[CountryFuelRow],
+    parts: &crate::frame::TableView,
+    format: crate::format::FormatVersion,
+) -> io::Result<Vec<CountryFuelRow>> {
+    let mut rows = rows
+        .iter()
+        .map(RowCodec::try_clone)
+        .collect::<io::Result<Vec<_>>>()?;
+    if format.table_refusal(TableId::FuelDemandParts).is_some() {
+        return Ok(rows);
+    }
+    let parts = match parts {
+        crate::frame::TableView::Complete(parts) => Ok(parts
+            .rows::<tables::FuelDemandParts>()
+            .ok_or_else(|| invalid("FuelDemandParts view holds another table's rows"))?),
+        crate::frame::TableView::Truncated { .. } => Err("fuel demand parts are truncated"),
+        crate::frame::TableView::Unavailable { .. } => Err("fuel demand parts are unavailable"),
+    };
+    for row in &mut rows {
+        let Recorded::Value(pack) = &mut row.demand else {
+            continue;
+        };
+        if pack.holds_lists() {
+            continue;
+        }
+        let assembled = parts.and_then(|parts| {
+            // Parts sort by country first.
+            let start = parts.partition_point(|part| part.country < row.country);
+            let end = parts.partition_point(|part| part.country <= row.country);
+            pack.assemble(&parts[start..end])
+        });
+        if let Err(reason) = assembled {
+            *pack = FuelDemandRead {
+                hour: pack.hour,
+                country_instance: pack.country_instance,
+                reason: if pack.reason.is_empty() {
+                    reason.as_bytes().to_vec()
+                } else {
+                    std::mem::take(&mut pack.reason)
+                },
+                ..Default::default()
+            };
+        }
+    }
+    Ok(rows)
+}
+
+#[cfg(test)]
+#[path = "fuel_demand/parts_tests.rs"]
+mod parts_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,7 +595,7 @@ mod tests {
             ..Default::default()
         };
         let mut pack = FuelDemandRead {
-            hour: 77,
+            hour: FuelDemandHour::Stamped(77),
             country_instance: Some(9),
             divisions: vec![FuelDemandUnit {
                 reference: 1 << 32 | 29,

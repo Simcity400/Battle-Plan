@@ -344,7 +344,7 @@ pub fn scan(
                     });
                     last = identity.map(|identity| (identity, hour));
                     // Variant names and types, with where they are known (the shared catalogue).
-                    result.variants.observe(decoded);
+                    result.variants.observe(replay.format, decoded);
                     let stock = decoded.complete::<tables::Stockpiles>().ok();
                     let lines = decoded.complete::<tables::ProductionLines>().ok();
                     // Each table ends its own values where it is missing; the other goes on.
@@ -367,6 +367,7 @@ pub fn scan(
                     match logistics {
                         Some(rows)
                             if slot_read(
+                                replay.format,
                                 &decoded.metrics,
                                 TableId::LogisticsEquipment,
                                 decoded.hour,
@@ -436,7 +437,12 @@ pub fn scan(
                             result.ai.carry(hour);
                         }
                     }
-                    if !slot_read(&decoded.metrics, TableId::Stockpiles, decoded.hour) {
+                    if !slot_read(
+                        replay.format,
+                        &decoded.metrics,
+                        TableId::Stockpiles,
+                        decoded.hour,
+                    ) {
                         // Carried: the last read still holds, but only after a read of this identity.
                         result.stock.carry(hour);
                         result.carry_lines(hour);

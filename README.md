@@ -43,6 +43,7 @@ The [dashboard architecture](docs/dashboard.md) explains how recordings become d
 | Area | Responsibility |
 |---|---|
 | [Foreign-unwind fixture](tools/tap-foreign-unwind/README.md) | Out-of-game C++ and SEH checks for the production Tap. |
+| [Stack frames](tools/stack-frames.py) | Release collector frame sizes and the hourly hook's stack bound check. |
 
 ## Recording and dependency checks
 

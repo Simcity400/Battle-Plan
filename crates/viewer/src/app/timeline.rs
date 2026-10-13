@@ -296,6 +296,23 @@ impl Viewer {
         ui.painter()
             .rect_filled(rect, 0.0, egui::Color32::from_gray(65));
         let span = f64::from(last) - f64::from(first) + 1.0;
+        // A recorded event loss marks the interval leading to its second
+        // read, whose recorded events are incomplete; gaps paint over it, so
+        // a lost frame at that read stays visible.
+        for (after_hour, hour) in document.playback.replay().event_losses(branch) {
+            let left = rect.left()
+                + ((f64::from(after_hour) - f64::from(first) + 1.0) / span) as f32 * rect.width();
+            let right = rect.left()
+                + ((f64::from(hour) - f64::from(first) + 1.0) / span) as f32 * rect.width();
+            ui.painter().rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(left, rect.top()),
+                    egui::pos2(right.max(left + 1.0), rect.bottom()),
+                ),
+                0.0,
+                egui::Color32::GOLD,
+            );
+        }
         for gap in document
             .playback
             .replay()

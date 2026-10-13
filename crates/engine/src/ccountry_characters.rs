@@ -143,6 +143,7 @@ impl<'a> Records<'a> {
                 .ok_or("character record count overflow")?,
         )?;
         let mut batch = [0_u8; POINTERS_PER_READ * ACTIVE_RECORD_STRIDE];
+        let mut headers = [[0_u8; 16]; POINTERS_PER_READ];
         let mut first = 0;
         while first < records.count {
             if self.len == self.output.len() {
@@ -162,13 +163,38 @@ impl<'a> Records<'a> {
             if !read_slice(memory, address, batch) {
                 return Err("character records unreadable");
             }
-            for (offset, record) in batch.chunks_exact(ACTIVE_RECORD_STRIDE).enumerate() {
-                let pointer = usize::try_from(u64::from_le_bytes(record[..8].try_into().unwrap()))
-                    .map_err(|_| "character record pointer overflow")?;
+            // The characters are scattered objects: one guarded, prefetched
+            // batch copies every nonnull record's identity header so their
+            // misses overlap. Records are then checked in order, so the first
+            // fault is that of a read per record.
+            let pointers: [usize; POINTERS_PER_READ] = std::array::from_fn(|index| {
+                batch
+                    .get(index * ACTIVE_RECORD_STRIDE..index * ACTIVE_RECORD_STRIDE + 8)
+                    .map_or(0, |pointer| {
+                        u64::from_le_bytes(pointer.try_into().unwrap()) as usize
+                    })
+            });
+            let mut slots = headers.iter_mut().enumerate();
+            let identified = memory
+                .copy_scattered_prefetched(
+                    pointers,
+                    &mut std::array::from_fn(|_| {
+                        let (index, header) = slots.next().unwrap();
+                        &mut header[..if index < count && pointers[index] != 0 {
+                            16
+                        } else {
+                            0
+                        }]
+                    }),
+                )
+                .min(count);
+            for (offset, &pointer) in pointers[..count].iter().enumerate() {
                 let character = if pointer == 0 {
                     None
+                } else if offset >= identified {
+                    return Err("character identity unreadable");
                 } else {
-                    Some(ccharacter::identity_header(memory, base, pointer)?)
+                    Some(ccharacter::identity_from_header(base, headers[offset])?)
                 };
                 self.output[self.len] = ActiveRow {
                     country,
@@ -311,6 +337,35 @@ pub fn walk_growing(
     )
 }
 
+/// [`walk_growing`] for the countries `select` admits by native country id:
+/// an unselected country is not read and has no rows; a selected country's
+/// rows equal the whole walk's.
+pub fn walk_selected_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Row>,
+    bytes: &mut Vec<u8>,
+    select: &dyn Fn(u32) -> bool,
+) -> NameWalk {
+    walk_inner(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(bytes),
+        APPOINTED_ADVISORS,
+        true,
+        &mut Fresh,
+        select,
+    )
+    .unwrap_or_else(|reason| NameWalk {
+        outcome: Outcome::Unavailable { reason },
+        bytes_len: 0,
+        required_bytes: 0,
+    })
+}
+
 pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
@@ -326,6 +381,8 @@ pub fn walk_buffer(
         bytes,
         APPOINTED_ADVISORS,
         true,
+        &mut Fresh,
+        &|_| true,
     ) {
         Ok(walk) => walk,
         Err(reason) => NameWalk {
@@ -336,8 +393,81 @@ pub fn walk_buffer(
     }
 }
 
-/// Available advisors in native order. Slot bytes are skipped because
-/// exact-name lookup needs only character and idea operands.
+/// One authenticated country's available-advisor array, before any of its
+/// advisors is read: the country, its `CCountryCharacters` and the array's
+/// data pointer and count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pool {
+    pub country: u32,
+    pub object: usize,
+    pub data: usize,
+    pub count: u32,
+}
+
+/// A caller's held available-advisor rows per country
+/// ([`walk_available_carried`]).
+pub trait AvailableCarry {
+    /// Registers an authenticated pool before any advisor is read: a plan
+    /// token and, when its held rows may be carried, their row and byte
+    /// counts.
+    fn plan(&mut self, pool: &Pool) -> (usize, Option<(usize, usize)>);
+    /// Writes a carryable plan's rows, their idea offsets starting at
+    /// `bytes_start`, and their bytes.
+    fn carry(&mut self, token: usize, rows: &mut [Row], bytes: &mut [u8], bytes_start: usize);
+    /// One advisor of a pool read afresh: its character, before that
+    /// character's identity and the advisor's idea bytes are read.
+    fn advisor(&mut self, token: usize, character: usize);
+    /// A pool read afresh and whole: its rows and their bytes, whose idea
+    /// offsets start at `bytes_start`.
+    fn read(&mut self, token: usize, rows: &[Row], bytes: &[u8], bytes_start: usize);
+}
+
+/// No held rows: every pool is read.
+pub struct Fresh;
+impl AvailableCarry for Fresh {
+    fn plan(&mut self, _: &Pool) -> (usize, Option<(usize, usize)>) {
+        (0, None)
+    }
+    fn carry(&mut self, _: usize, _: &mut [Row], _: &mut [u8], _: usize) {}
+    fn advisor(&mut self, _: usize, _: usize) {}
+    fn read(&mut self, _: usize, _: &[Row], _: &[u8], _: usize) {}
+}
+
+/// [`walk_available_growing`] for the countries `select` admits by native
+/// country id, with `carry` supplying the rows of pools whose held read it
+/// proves current: every selected country, `CCountryCharacters` and array
+/// header is still read and authenticated, and a carried pool's advisors,
+/// characters and idea bytes are not. An unselected country is not read and
+/// has no rows; a selected country's rows equal the whole walk's.
+pub fn walk_available_carried(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Row>,
+    bytes: &mut Vec<u8>,
+    carry: &mut impl AvailableCarry,
+    select: &dyn Fn(u32) -> bool,
+) -> NameWalk {
+    walk_inner(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(bytes),
+        AVAILABLE_ADVISORS,
+        false,
+        carry,
+        select,
+    )
+    .unwrap_or_else(|reason| NameWalk {
+        outcome: Outcome::Unavailable { reason },
+        bytes_len: 0,
+        required_bytes: 0,
+    })
+}
+
+/// Available advisors in native order. Slot bytes are not read: the reached
+/// exact-name search needs only the character and idea operands.
 pub fn walk_available(
     memory: &impl Memory,
     base: usize,
@@ -386,6 +516,8 @@ pub fn walk_available_buffer(
         bytes,
         AVAILABLE_ADVISORS,
         false,
+        &mut Fresh,
+        &|_| true,
     )
     .unwrap_or_else(|reason| NameWalk {
         outcome: Outcome::Unavailable { reason },
@@ -464,6 +596,7 @@ fn demand_advisors(
     Ok((rows, bytes))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_inner(
     memory: &impl Memory,
     base: usize,
@@ -472,6 +605,8 @@ fn walk_inner(
     mut bytes: crate::walk::Buffer<'_, u8>,
     roster: usize,
     slots: bool,
+    carry: &mut impl AvailableCarry,
+    select: &dyn Fn(u32) -> bool,
 ) -> Result<NameWalk, &'static str> {
     let reason = |appointed, available| if slots { appointed } else { available };
     let module = |rva: usize| {
@@ -492,6 +627,9 @@ fn walk_inner(
         let Some(country) = countries.at(slot)? else {
             continue;
         };
+        if !select(country.id) {
+            continue;
+        }
         let object = country
             .pointer
             .checked_add(ccountry::CHARACTERS)
@@ -527,6 +665,30 @@ fn walk_inner(
             ))?;
             continue;
         }
+        let (token, carried) = carry.plan(&Pool {
+            country: country.id,
+            object,
+            data: advisors.data,
+            count: advisors.count,
+        });
+        if let Some((rows, needed)) = carried {
+            let end = len.checked_add(rows).ok_or("advisor row count overflow")?;
+            let bytes_end = bytes_len
+                .checked_add(needed)
+                .ok_or("available advisor string size overflow")?;
+            if rows == advisors.count as usize && output.ensure(end)? && bytes.ensure(bytes_end)? {
+                carry.carry(
+                    token,
+                    &mut output[len..end],
+                    &mut bytes[bytes_len..bytes_end],
+                    bytes_len,
+                );
+                len = end;
+                bytes_len = bytes_end;
+                continue;
+            }
+        }
+        let (pool_start, pool_bytes) = (len, bytes_len);
         let mut first = 0;
         while first < advisors.count && unread_rows == 0 {
             let count = ((advisors.count - first) as usize).min(POINTERS_PER_READ);
@@ -596,6 +758,7 @@ fn walk_inner(
                         "appointed advisor has a null character",
                         "available advisor has a null character",
                     ))?;
+                carry.advisor(token, character);
                 let identity = read::<[u8; 16]>(memory, character).ok_or(reason(
                     "appointed advisor character unreadable",
                     "available advisor character unreadable",
@@ -686,6 +849,14 @@ fn walk_inner(
                 bytes_len = end;
             }
             first += count as u32;
+        }
+        if unread_rows == 0 {
+            carry.read(
+                token,
+                &output[pool_start..len],
+                &bytes[pool_bytes..bytes_len],
+                pool_bytes,
+            );
         }
     }
     Ok(NameWalk {

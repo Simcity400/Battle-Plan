@@ -44,13 +44,21 @@ use std::{
 
 /// Baseline and borrowed conversion caches for one spool frame.
 pub(crate) struct SpoolConversion<'a, 'cache> {
-    pub(crate) template_names_baseline: Option<&'a [replay::rows::DivisionTemplateRow]>,
     pub(crate) variables_baseline: Option<(BaselineToken, &'a [ScriptVariablesRow])>,
     pub(crate) variables_scratch: &'a mut ScriptVariableComparison,
     pub(crate) characters: Option<&'a mut CharacterConversion<'cache>>,
     pub(crate) lexical: Option<&'a mut LexicalConversion<'cache>>,
     pub(crate) intel: Option<&'a mut IntelConversion<'cache>>,
     pub(crate) projection: Option<&'a mut Projection<'cache>>,
+    /// The conversion helpers and the spool thread's backlog verdict.
+    pub(crate) helper: Option<crate::spool_helper::Helpers<'a>>,
+}
+
+/// One hour's sliced read: the merged complete rows, or an update of the
+/// cached rows the encoder shares.
+enum Merged {
+    Rows(TableRows),
+    Update(BaselineToken, replay::sliced::SliceUpdate),
 }
 
 struct TableCache<T>([Option<T>; TABLE_COUNT]);
@@ -266,6 +274,33 @@ impl Distribution {
     }
 }
 
+/// Cumulative wall of a cost reported every hour without percentiles: its
+/// storage and status cost stay fixed however many hours are recorded.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct WallTotals {
+    calls: u64,
+    total_ns: u64,
+    max_ns: u64,
+}
+
+impl WallTotals {
+    pub(crate) fn record_ticks(&mut self, ticks: i64, frequency: u64) {
+        let ns = ((ticks.max(0) as u128 * 1_000_000_000) / u128::from(frequency)) as u64;
+        self.calls = self.calls.saturating_add(1);
+        self.total_ns = self.total_ns.saturating_add(ns);
+        self.max_ns = self.max_ns.max(ns);
+    }
+
+    pub(crate) fn status(&self) -> impl Serialize + use<> {
+        status!({
+            "calls": self.calls,
+            "total_ns": self.total_ns,
+            "mean_ns": if self.calls == 0 { 0.0 } else { self.total_ns as f64 / self.calls as f64 },
+            "max_ns": self.max_ns,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Default, Serialize)]
 pub(crate) struct DistributionStatus {
     calls: usize,
@@ -280,6 +315,9 @@ pub(crate) struct DistributionStatus {
 struct PendingBranch {
     start: BranchStart,
     gaps: Vec<Gap>,
+    /// The reads a resumed session's unobserved event interval lies between
+    /// ([`ControlRecord::EventLoss`]), written with the branch's context.
+    event_loss: Option<(i32, i32)>,
 }
 
 #[derive(Default)]
@@ -412,21 +450,6 @@ fn character_shadow_status<'a>(
     })
 }
 
-/// Borrow only the current branch's complete carry. No native shadow or guessed
-/// daily origin: the equality marker depends on this exact frame's daily bytes.
-fn template_names_cache(
-    cache: &TableCache<CachedTable>,
-    cached_branch: Option<BranchId>,
-    branch: BranchId,
-) -> Option<&[replay::rows::DivisionTemplateRow]> {
-    if cached_branch != Some(branch) {
-        return None;
-    }
-    match cache.get(&TableId::DivisionTemplates) {
-        Some(CachedTable::Complete(rows)) => rows.rows::<tables::DivisionTemplates>(),
-        _ => None,
-    }
-}
 fn character_cache(
     cache: &TableCache<CachedTable>,
     cached_branch: Option<BranchId>,
@@ -448,6 +471,11 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     directory: PathBuf,
     session: SessionStart,
     tracker: BranchTracker,
+    /// A reattached process session's recorded tail (branch, last hour)
+    /// until its first observation: event completeness was lost for part of
+    /// the interval since the read of that hour, while the recorder was
+    /// detached.
+    resumed: Option<(BranchId, i32)>,
     encoder: FrameEncoder,
     spool: SegmentedSpool<B>,
     disk_branch: Option<BranchId>,
@@ -457,11 +485,20 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     staggered_branch: Option<BranchId>,
     /// Paired with the latest CountryIntel cache, even before durable publication.
     country_intel_sample: Option<replay::rows::ReservedCountryIntelSample>,
+    /// Acquisition hour of the latest CountryIntel cache when it is complete,
+    /// the sample certified spotting navy lanes cite.
+    country_intel_hour: Option<i32>,
     /// The latest complete rows of each sliced table on `sliced_branch`.
     sliced_cache: TableCache<Arc<TableRows>>,
     /// The read hour of each (sliced table, owner) in `sliced_cache`.
     sliced_reads: ReadHours,
     sliced_branch: Option<BranchId>,
+    /// This frame's slice updates of `sliced_cache` rows, held until the
+    /// frame's write succeeds (the encoder then holds the updated rows) or
+    /// fails (the cache then takes the merged rows).
+    pending_slices: Vec<(TableId, Arc<replay::sliced::SliceUpdate>)>,
+    /// What this campaign's commits no longer hold, for freeing elsewhere.
+    retired: Vec<replay::frame::Retired>,
     /// Each production line's output on the current branch.
     line_output: crate::extended::line_output::Totals,
     operation_outcomes: crate::extended::operation_outcomes::Ledger,
@@ -510,6 +547,7 @@ impl Campaign {
         Ok(Self {
             directory,
             session: session.try_clone()?,
+            resumed: tracker.last_observation(),
             tracker,
             encoder: FrameEncoder::new(),
             spool,
@@ -520,9 +558,12 @@ impl Campaign {
             staggered_cache: TableCache::new(),
             staggered_branch: None,
             country_intel_sample: None,
+            country_intel_hour: None,
             sliced_cache: TableCache::new(),
             sliced_reads: ReadHours::new(),
             sliced_branch: None,
+            pending_slices: Vec::new(),
+            retired: Vec::new(),
             line_output: Default::default(),
             operation_outcomes: Default::default(),
             politics: Default::default(),
@@ -554,6 +595,7 @@ impl<B: SegmentBackend> Campaign<B> {
             self.pending.push(PendingBranch {
                 start,
                 gaps: Vec::new(),
+                event_loss: None,
             });
         }
         Ok(self.pending.last_mut().unwrap())
@@ -596,12 +638,28 @@ impl<B: SegmentBackend> Campaign<B> {
             .filter(|pending| Some(pending.start.id) == self.tracker.current_branch())
             .map_or(&[][..], |pending| pending.gaps.as_slice());
         let observation = self.tracker.observe(loaded, hour, signal, gaps)?;
-        self.pending_branch(observation.branch)?;
+        // A resumed session's first observation that continues its recorded
+        // branch ends an interval whose event completeness was lost while the
+        // recorder was detached, between the read of `after` and this attach's
+        // hooks. A new branch starts its own first interval instead.
+        let event_loss = self
+            .resumed
+            .take()
+            .filter(|&(branch, _)| observation.start.is_none() && observation.branch == branch)
+            .map(|(_, after)| (after, hour));
+        let pending = self.pending_branch(observation.branch)?;
+        if event_loss.is_some() {
+            pending.event_loss = event_loss;
+        }
         Ok(observation.branch)
     }
 
     /// Replace the rows of the owners this frame read in each sliced table's
     /// latest complete rows on this branch. A full read replaces everything.
+    /// When those rows are the encoder's shared baseline for this hour, the
+    /// frame carries the read as a slice update of them instead of a merged
+    /// copy: the encoder visits and replaces only the read owners' rows, and
+    /// the cache follows the write's outcome ([`Self::write`]).
     /// Without earlier complete rows a slice cannot stand alone: the table is
     /// unavailable and the next hour must read every slice (returns true).
     /// A failed acquisition publishes its failure and keeps earlier rows, whose
@@ -625,11 +683,14 @@ impl<B: SegmentBackend> Campaign<B> {
         selection: impl Fn(TableId) -> Option<&'a crate::slicing::SliceSelection>,
         walked: impl Fn(TableId) -> bool,
     ) -> io::Result<(bool, u32)> {
+        // An update whose write never ran leaves the cache as a failure does.
+        self.settle_failed_slices();
         if self.sliced_branch != Some(source.branch) {
             self.sliced_cache.clear();
             self.sliced_reads.clear();
             self.sliced_branch = Some(source.branch);
         }
+        let force = !self.spool.is_open();
         let mut retry = false;
         let mut unpublished = 0_u32;
         let mut frame_reads: [Option<Vec<(u32, i32)>>; TABLE_COUNT] = std::array::from_fn(|_| None);
@@ -655,11 +716,38 @@ impl<B: SegmentBackend> Campaign<B> {
             match input {
                 TableInput::Sampled(TableView::Complete(rows)) => {
                     let fresh = std::mem::replace(rows, TableRows::empty(table));
-                    let merged = if selection.force_full || replay::sliced::replaces_whole(&fresh) {
-                        fresh
+                    let update = (!selection.force_full
+                        && !replay::sliced::is_keyed(table)
+                        && !replay::sliced::replaces_whole(&fresh))
+                    .then(|| self.sliced_cache.get(&table))
+                    .flatten()
+                    .and_then(|previous| {
+                        self.encoder
+                            .slice_baseline(table, source.branch, hour, force)
+                            .filter(|(_, baseline)| Arc::ptr_eq(baseline, previous))
+                            .map(|(token, _)| (token, previous))
+                    });
+                    let merged = if let Some((token, previous)) = update {
+                        match replay::sliced::SliceUpdate::new(previous, fresh, captured, live) {
+                            Ok(update) => Merged::Update(token, update),
+                            Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+                                return Err(error);
+                            }
+                            Err(_) => {
+                                *input =
+                                    TableInput::Sampled(unavailable("sliced table merge failed"));
+                                if let Some(family) = crate::slicing::family_of(table) {
+                                    unpublished |= 1 << family;
+                                }
+                                retry = true;
+                                continue;
+                            }
+                        }
+                    } else if selection.force_full || replay::sliced::replaces_whole(&fresh) {
+                        Merged::Rows(fresh)
                     } else if let Some(previous) = self.sliced_cache.get(&table) {
                         match replay::sliced::merge_slice(previous, fresh, captured, live) {
-                            Ok(merged) => merged,
+                            Ok(merged) => Merged::Rows(merged),
                             Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
                                 return Err(error);
                             }
@@ -681,7 +769,14 @@ impl<B: SegmentBackend> Campaign<B> {
                         continue;
                     };
                     if !replay::sliced::is_keyed(table) {
-                        let owners = replay::sliced::try_owners(&merged)?;
+                        let owners = match &merged {
+                            Merged::Rows(rows) => replay::sliced::try_owners(rows)?,
+                            Merged::Update(_, update) => update.owners_after(
+                                self.sliced_cache
+                                    .get(&table)
+                                    .expect("updated rows are cached"),
+                            )?,
+                        };
                         let previous = &self.sliced_reads.0[table.index()];
                         let capacity = owners
                             .len()
@@ -719,9 +814,19 @@ impl<B: SegmentBackend> Campaign<B> {
                         reads.dedup_by_key(|entry| entry.0);
                         self.sliced_reads.0[table.index()] = reads;
                     }
-                    let merged = Arc::new(merged);
-                    self.sliced_cache.insert(table, Arc::clone(&merged));
-                    *input = TableInput::SharedComplete(merged);
+                    match merged {
+                        Merged::Rows(merged) => {
+                            let merged = Arc::new(merged);
+                            self.sliced_cache.insert(table, Arc::clone(&merged));
+                            *input = TableInput::SharedComplete(merged);
+                        }
+                        Merged::Update(token, update) => {
+                            let update = Arc::new(update);
+                            engine::allocation::reserve(&mut self.pending_slices, 1)?;
+                            self.pending_slices.push((table, Arc::clone(&update)));
+                            *input = TableInput::SliceUpdate { token, update };
+                        }
+                    }
                 }
                 TableInput::Sampled(TableView::Truncated { rows, missing }) => {
                     let missing = *missing;
@@ -780,6 +885,7 @@ impl<B: SegmentBackend> Campaign<B> {
                     .is_some_and(|family| unpublished & (1 << family) != 0)
                 {
                     self.sliced_cache.remove(&table);
+                    self.pending_slices.retain(|(pending, _)| *pending != table);
                     let previous = std::mem::take(&mut self.sliced_reads.0[table.index()]);
                     if frame_reads[table.index()].is_none() {
                         frame_reads[table.index()] = Some(previous);
@@ -811,6 +917,50 @@ impl<B: SegmentBackend> Campaign<B> {
         source.tables[TableId::SliceReads.index()] =
             TableInput::SharedComplete(Arc::new(TableRows::SliceReads(reads)));
         Ok((retry, unpublished))
+    }
+
+    /// Before this frame's commit: the producer lets go of the rows its slice
+    /// updates replace, so the encoder replaces them in place. Returns the
+    /// tables whose cache [`Self::adopt_slices`] refills.
+    fn release_slices(&mut self) -> [bool; TABLE_COUNT] {
+        let mut released = [false; TABLE_COUNT];
+        for (table, _) in self.pending_slices.drain(..) {
+            self.sliced_cache.remove(&table);
+            released[table.index()] = true;
+        }
+        released
+    }
+
+    /// After this frame's commit: the cache holds the encoder's updated rows.
+    fn adopt_slices(&mut self, released: [bool; TABLE_COUNT]) {
+        for table in TableId::ALL
+            .into_iter()
+            .filter(|table| released[table.index()])
+        {
+            if let Some(rows) = self.encoder.shared_baseline(table) {
+                self.sliced_cache.insert(table, Arc::clone(rows));
+            }
+        }
+    }
+
+    /// A frame whose slice updates were not committed: the cache takes the
+    /// merged rows they describe, as it holds the latest merge whatever the
+    /// write's outcome.
+    fn settle_failed_slices(&mut self) {
+        for (table, update) in std::mem::take(&mut self.pending_slices) {
+            let Some(previous) = self.sliced_cache.get(&table) else {
+                continue;
+            };
+            match update.merged(previous) {
+                Ok(merged) => {
+                    self.sliced_cache.insert(table, Arc::new(merged));
+                }
+                // Allocation failure ends the capture; nothing more is merged.
+                Err(_) => {
+                    self.sliced_cache.remove(&table);
+                }
+            }
+        }
     }
 
     #[cfg(test)]
@@ -857,6 +1007,7 @@ impl<B: SegmentBackend> Campaign<B> {
         if self.staggered_branch != Some(source.branch) {
             self.staggered_cache.clear();
             self.country_intel_sample = None;
+            self.country_intel_hour = None;
             self.staggered_branch = Some(source.branch);
         }
         let mut skipped = [false; TABLE_COUNT];
@@ -921,18 +1072,20 @@ impl<B: SegmentBackend> Campaign<B> {
                         }
                     }
                     // Only hourly tables are compared natively.
-                    TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. } => {
-                        CachedTable::Unavailable {
-                            reason: engine::allocation::string(
-                                "a native comparison cannot supply a shared recovery snapshot",
-                            )?,
-                        }
-                    }
+                    TableInput::ComparedEqual(_)
+                    | TableInput::ComparedChanges { .. }
+                    | TableInput::SliceUpdate { .. } => CachedTable::Unavailable {
+                        reason: engine::allocation::string(
+                            "a native comparison cannot supply a shared recovery snapshot",
+                        )?,
+                    },
                 };
                 // Keep the latest sample even if encoding or writing fails.
                 // Recovery resets the encoder, but can snapshot this allocation
                 // on an off hour without retaining a native capture buffer.
                 if table == TableId::CountryIntel {
+                    self.country_intel_hour =
+                        matches!(&cached, CachedTable::Complete(_)).then_some(source.hour);
                     self.country_intel_sample = if matches!(&cached, CachedTable::Complete(_)) {
                         intel_sample
                             .and_then(Result::ok)
@@ -1045,7 +1198,10 @@ impl<B: SegmentBackend> Campaign<B> {
             .pending
             .iter()
             .try_fold(usize::from(restarting) + extra, |count, pending| {
-                count.checked_add(1)?.checked_add(pending.gaps.len())
+                count
+                    .checked_add(1)?
+                    .checked_add(pending.gaps.len())?
+                    .checked_add(usize::from(pending.event_loss.is_some()))
             })
             .ok_or_else(engine::allocation::oom)?;
         let mut records = engine::allocation::vec(count)?;
@@ -1062,10 +1218,19 @@ impl<B: SegmentBackend> Campaign<B> {
             for gap in &pending.gaps {
                 records.push(Record::Gap(gap.try_clone()?));
             }
+            if let Some((after_hour, hour)) = pending.event_loss {
+                records.push(Record::Control(ControlRecord::EventLoss {
+                    session: self.session.id,
+                    branch: pending.start.id,
+                    after_hour,
+                    hour,
+                }));
+            }
         }
         Ok(records)
     }
 
+    #[cfg(test)]
     fn write(
         &mut self,
         source: impl Into<FrameInput>,
@@ -1074,7 +1239,20 @@ impl<B: SegmentBackend> Campaign<B> {
         unknown: u64,
         work: &mut WorkSample,
     ) -> io::Result<()> {
-        let source = source.into();
+        self.write_with(source.into(), qpc, signal, unknown, work, None)
+    }
+
+    /// [`Self::write`], encoding the frame's larger tables on the spool
+    /// thread and `helpers` at once.
+    fn write_with(
+        &mut self,
+        source: FrameInput,
+        qpc: i64,
+        signal: Option<i64>,
+        unknown: u64,
+        work: &mut WorkSample,
+        helpers: Option<crate::spool_helper::Helpers<'_>>,
+    ) -> io::Result<()> {
         let (branch, hour) = (source.branch, source.hour);
         let held_line_output = crate::extended::line_output::holds_publication(
             &source.tables[TableId::ProductionLineOutput.index()],
@@ -1082,7 +1260,7 @@ impl<B: SegmentBackend> Campaign<B> {
         let held_construction_ic = crate::extended::construction_ic::holds_publication(
             &source.tables[TableId::ConstructionLineOutput.index()],
         );
-        let result = self.write_inner(source, qpc, signal, unknown, work);
+        let result = self.write_inner(source, qpc, signal, unknown, work, helpers);
         if result.is_ok() {
             self.line_output.written(held_line_output);
             self.construction_ic.written(held_construction_ic);
@@ -1093,12 +1271,14 @@ impl<B: SegmentBackend> Campaign<B> {
             }
             // Codec/validation errors are failures too. Closing also prevents a
             // partially published context from being reused after such an error.
+            let _span = crate::spool_phases::SPOOL.span(crate::spool_phases::Phase::Write);
             let close_started = current_qpc();
             let _ = self.spool.finish_segment();
             *work.record_writes.get_or_insert(0) += current_qpc() - close_started;
             self.disk_branch = None;
             if error.kind() != io::ErrorKind::OutOfMemory && !crate::allocation::failed() {
                 self.encoder = FrameEncoder::new();
+                self.settle_failed_slices();
                 self.gap(
                     branch,
                     hour,
@@ -1117,6 +1297,7 @@ impl<B: SegmentBackend> Campaign<B> {
         signal: Option<i64>,
         unknown: u64,
         work: &mut WorkSample,
+        helpers: Option<crate::spool_helper::Helpers<'_>>,
     ) -> io::Result<()> {
         let (branch, hour) = (source.branch, source.hour);
         let restarting = !self.spool.is_open();
@@ -1124,12 +1305,26 @@ impl<B: SegmentBackend> Campaign<B> {
             self.encoder = FrameEncoder::new();
         }
         let encoding_started = current_qpc();
+        let span = crate::spool_phases::SPOOL.span(crate::spool_phases::Phase::Encode);
         let frame = {
             let _phase = crate::allocation::enter(crate::allocation::Phase::Encode);
-            self.encoder.prepare_bytes(source, restarting)
+            match helpers {
+                Some(helpers) => {
+                    let mut segments = crate::spool_segments::encode(
+                        &self.encoder,
+                        &source,
+                        (branch, hour, restarting),
+                        helpers,
+                    );
+                    self.encoder
+                        .prepare_bytes_with(source, restarting, &mut segments)
+                }
+                None => self.encoder.prepare_bytes(source, restarting),
+            }
         };
         work.frame_encoding = Some(current_qpc() - encoding_started);
         let mut prepared = frame?;
+        let span = span.switch(crate::spool_phases::Phase::Write);
         let write_started = current_qpc();
         let result = (|| {
             let mut context = self.context(restarting, 2)?;
@@ -1170,12 +1365,17 @@ impl<B: SegmentBackend> Campaign<B> {
             }
         })();
         work.record_writes = Some(current_qpc() - write_started);
+        let _span = span.switch(crate::spool_phases::Phase::Commit);
         match result {
             Ok(()) => {
                 if crate::allocation::failed() {
                     return Err(io::ErrorKind::OutOfMemory.into());
                 }
-                self.encoder.commit(prepared)?;
+                let released = self.release_slices();
+                let retired = self.encoder.commit_retiring(prepared)?;
+                self.adopt_slices(released);
+                engine::allocation::reserve(&mut self.retired, 1)?;
+                self.retired.push(retired);
                 self.disk_branch = Some(branch);
                 self.last_written = Some(hour);
                 self.pending.clear();
@@ -1631,13 +1831,10 @@ fn set_viewed(
 struct Statistics {
     game_score: crate::extended::game_score::Work,
     country_rosters: crate::extended::country_counters::RosterWork,
-    directed_wars: crate::extended::country_directed_wars::Work,
     reserved_visibility: crate::extended::reserved_visibility::Work,
     state_map_inputs: crate::acquisition_states::InputWork,
     railway_map_inputs: crate::acquisition_states::InputWork,
-    fresh_eta_inputs: crate::extended::division_eta_inputs::FreshWork,
-    selected_attack_inputs: crate::extended::attack_inputs::Work,
-    naval_movement: crate::extended::NavalMovementWork,
+    physical_navies: crate::extended::PhysicalNavyWork,
     battle_plan_child_fronts: crate::extended::plans::ChildFrontWork,
     battle_plan_execution: crate::extended::plans::ExecutionWork,
     division_naming: crate::extended::division_presentation::NamingWork,
@@ -1645,7 +1842,6 @@ struct Statistics {
     character_naming: crate::extended::character_inputs::NamingWork,
     supply_vehicles: crate::extended::supply_trains::VehicleWork,
     variable_seeds: crate::extended::intel::SeedWork,
-    naval_breakdowns: crate::extended::naval_details::BreakdownWork,
     war_snapshots: WarSnapshotWork,
     order_counters: OrderCounterWitness,
     hours: u64,
@@ -1678,7 +1874,7 @@ struct Statistics {
     input_demand_errors: u64,
     input_demand_last_error: Option<&'static str>,
     conversion: Distribution,
-    conversion_packs: [Distribution; crate::extended::PACK_NAMES.len()],
+    conversion_packs: [WallTotals; crate::extended::PACK_NAMES.len()],
     frame_encoding: Distribution,
     record_writes: Distribution,
     slices: [SliceWork; crate::slicing::FAMILIES.len()],
@@ -1695,13 +1891,10 @@ impl Default for Statistics {
     fn default() -> Self {
         Self {
             country_rosters: crate::extended::country_counters::RosterWork::default(),
-            directed_wars: Default::default(),
             reserved_visibility: crate::extended::reserved_visibility::Work::default(),
             state_map_inputs: crate::acquisition_states::InputWork::default(),
             railway_map_inputs: crate::acquisition_states::InputWork::default(),
-            fresh_eta_inputs: crate::extended::division_eta_inputs::FreshWork::default(),
-            selected_attack_inputs: crate::extended::attack_inputs::Work::default(),
-            naval_movement: crate::extended::NavalMovementWork::default(),
+            physical_navies: crate::extended::PhysicalNavyWork::default(),
             battle_plan_child_fronts: crate::extended::plans::ChildFrontWork::default(),
             battle_plan_execution: crate::extended::plans::ExecutionWork::default(),
             division_naming: crate::extended::division_presentation::NamingWork::default(),
@@ -1709,7 +1902,6 @@ impl Default for Statistics {
             character_naming: crate::extended::character_inputs::NamingWork::default(),
             supply_vehicles: crate::extended::supply_trains::VehicleWork::default(),
             variable_seeds: crate::extended::intel::SeedWork::default(),
-            naval_breakdowns: crate::extended::naval_details::BreakdownWork::default(),
             game_score: Default::default(),
             order_counters: OrderCounterWitness::default(),
             war_snapshots: WarSnapshotWork::default(),
@@ -1744,7 +1936,7 @@ impl Default for Statistics {
             input_demand_errors: 0,
             input_demand_last_error: None,
             conversion: Distribution::default(),
-            conversion_packs: std::array::from_fn(|_| Distribution::default()),
+            conversion_packs: [WallTotals::default(); crate::extended::PACK_NAMES.len()],
             frame_encoding: Distribution::default(),
             record_writes: Distribution::default(),
             slices: std::array::from_fn(|_| SliceWork::default()),
@@ -1955,6 +2147,15 @@ pub struct Processor {
     /// Sliced families a conversion withheld; the runtime has the collector
     /// forget their fingerprint stores.
     unpublished_families: u32,
+    /// Converts map tables and lane-0 helper packs beside this thread, and
+    /// lane 1 too when the second helper is absent.
+    helper: Option<crate::spool_helper::SpoolHelper>,
+    /// Converts lane-1 helper packs beside this thread and the first helper.
+    second_helper: Option<crate::spool_helper::SpoolHelper>,
+    /// The spool thread's latest backlog verdict, which the helper follows.
+    backlogged: bool,
+    /// Decisions of the comparison before encoding.
+    comparison: Box<crate::spool_compare::Counters>,
 }
 
 impl Processor {
@@ -1977,7 +2178,27 @@ impl Processor {
             suppress_origin: false,
             retry_full: false,
             unpublished_families: 0,
+            helper: None,
+            second_helper: None,
+            backlogged: false,
+            comparison: Box::default(),
         })
+    }
+
+    /// Hand a conversion helper to this processor: the first converts the map
+    /// tables and both helper lanes, a second takes lane 1. Without one, the
+    /// spool thread converts every table itself with identical output.
+    pub(crate) fn set_helper(&mut self, helper: crate::spool_helper::SpoolHelper) {
+        if self.helper.is_none() {
+            self.helper = Some(helper);
+        } else {
+            self.second_helper = Some(helper);
+        }
+    }
+
+    /// The capture-buffer backlog verdict for the next conversion.
+    pub(crate) fn set_backlogged(&mut self, backlogged: bool) {
+        self.backlogged = backlogged;
     }
 
     pub fn set_verified_session(&mut self, session: SessionStart) {
@@ -2003,8 +2224,14 @@ impl Processor {
     /// A failed or racing off-thread sizing hint loses no captured data; it is
     /// counted here and never becomes the session warning.
     pub(crate) fn observe_input_demand_error(&mut self, reason: &'static str) {
-        self.stats.input_demand_errors = self.stats.input_demand_errors.saturating_add(1);
-        self.stats.input_demand_last_error = Some(reason);
+        self.observe_input_demand_errors(1, reason);
+    }
+
+    /// `count` such errors, `last` the latest; the sizing thread reports them
+    /// together.
+    pub(crate) fn observe_input_demand_errors(&mut self, count: u64, last: &'static str) {
+        self.stats.input_demand_errors = self.stats.input_demand_errors.saturating_add(count);
+        self.stats.input_demand_last_error = Some(last);
     }
 
     /// Off-thread observations prepare storage without affecting session warnings.
@@ -2124,6 +2351,7 @@ impl Processor {
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
+        let span = crate::spool_phases::SPOOL.span(crate::spool_phases::Phase::Observe);
         if let Some(clock) = captured.clock.as_ref() {
             crate::allocation::set_context(crate::allocation::Context {
                 campaign_id: clock.campaign_id.as_bytes().try_into().ok(),
@@ -2134,10 +2362,7 @@ impl Processor {
         } else {
             crate::allocation::set_context(Default::default());
         }
-        if let Some(clock) = captured.clock.as_ref() {
-            captured
-                .extended
-                .observe_attack_inputs(clock.hour, &mut self.stats.selected_attack_inputs);
+        if captured.clock.is_some() {
             captured
                 .state_inputs
                 .observe(&mut self.stats.state_map_inputs)?;
@@ -2146,25 +2371,20 @@ impl Processor {
                 .observe_railway_inputs(&mut self.stats.railway_map_inputs)?;
             captured
                 .extended
-                .observe_fresh_eta_inputs(&mut self.stats.fresh_eta_inputs)?;
-            captured
-                .extended
-                .observe_naval_movement(&mut self.stats.naval_movement)?;
+                .observe_physical_navies(&mut self.stats.physical_navies)?;
             captured
                 .extended
                 .observe_battle_plan_child_fronts(&mut self.stats.battle_plan_child_fronts);
             captured
                 .extended
                 .observe_battle_plan_execution(&mut self.stats.battle_plan_execution);
-            captured
-                .extended
-                .observe_directed_wars(&mut self.stats.directed_wars);
             self.stats
                 .game_score
                 .observe(captured.extended.game_score_status())?;
-            captured
-                .extended
-                .observe_country_rosters(&mut self.stats.country_rosters)?;
+            captured.extended.observe_country_rosters(
+                &mut self.stats.country_rosters,
+                self.session.qpc_frequency,
+            )?;
             captured
                 .extended
                 .observe_reserved_visibility(&mut self.stats.reserved_visibility)?;
@@ -2183,9 +2403,6 @@ impl Processor {
             captured
                 .extended
                 .observe_variable_seeds(&mut self.stats.variable_seeds);
-            self.stats
-                .naval_breakdowns
-                .observe(captured.extended.naval_breakdown_status())?;
         }
         // A clockless frame read nothing; its selections belong to an older hour.
         for (index, _family) in crate::slicing::FAMILIES
@@ -2201,7 +2418,7 @@ impl Processor {
             captured.wars_snapshot.capacity(),
         );
         let mut branch = None;
-        let result = self.prepare_frame_inner(captured, &mut branch);
+        let result = self.prepare_frame_inner(captured, &mut branch, span);
         if let Err(error) = &result {
             self.stats.order_counters.observe(
                 captured,
@@ -2217,6 +2434,7 @@ impl Processor {
         &mut self,
         captured: &Captured,
         bound_branch: &mut Option<BranchId>,
+        span: crate::spool_phases::Span<'static>,
     ) -> io::Result<PreparedFrame> {
         let Some(clock) = captured.clock.as_ref() else {
             self.unknown_loss(1);
@@ -2233,7 +2451,19 @@ impl Processor {
         };
         let suppress = self.suppress_origin;
         let unknown = self.unknown_pending;
-        let campaign = self.campaign(&id)?;
+        self.campaign(&id)?;
+        let helper = self
+            .helper
+            .as_ref()
+            .map(|first| crate::spool_helper::Helpers {
+                first,
+                second: self.second_helper.as_ref(),
+                backlogged: self.backlogged,
+            });
+        let campaign = self
+            .campaigns
+            .get_mut(&id)
+            .expect("an opened campaign remains admitted");
         crate::allocation::set_context(crate::allocation::Context {
             campaign_id: clock.campaign_id.as_bytes().try_into().ok(),
             branch: None,
@@ -2284,26 +2514,24 @@ impl Processor {
             branch,
             clock.hour,
             !campaign.spool.is_open(),
-            &mut campaign.projection_scratch,
+            &campaign.projection_scratch,
         );
+        span.finish();
         let (mut source, pack_ticks) = decoded_with_costs(
             captured,
             clock.borrowed(),
             branch,
             &mut SpoolConversion {
                 variables_baseline,
-                template_names_baseline: template_names_cache(
-                    &campaign.staggered_cache,
-                    campaign.staggered_branch,
-                    branch,
-                ),
                 variables_scratch: &mut campaign.variables_scratch,
                 characters: Some(&mut characters),
                 lexical: Some(&mut lexical),
                 intel: Some(&mut intel),
                 projection: Some(&mut projection),
+                helper,
             },
         );
+        let span = crate::spool_phases::SPOOL.span(crate::spool_phases::Phase::Merge);
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
@@ -2352,7 +2580,6 @@ impl Processor {
         let skipped = campaign
             .try_apply_staggered_inputs(&mut source, captured.extended.country_intel_sample())?;
         campaign.assemble_reserved_intel_sample(&mut source);
-        crate::fixed_layout::mask_attack(&mut source.tables, captured.fixed_layout.as_ref())?;
         if let Some(layout) = &captured.fixed_layout {
             crate::fixed_layout::apply(&mut source.tables, layout)?;
         }
@@ -2360,15 +2587,18 @@ impl Processor {
             conversion: current_qpc() - conversion_started,
             ..WorkSample::default()
         };
+        let span = span.switch(crate::spool_phases::Phase::Statistics);
         let sampled = CapturedStatistics::capture(captured)?;
         let witness = PreparedOrderWitness::capture(captured, Some(branch));
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
+        let clock = clock.copy_owned()?;
+        span.finish();
         Ok(PreparedFrame {
             source,
             id,
-            clock: clock.copy_owned()?,
+            clock,
             qpc: captured.qpc,
             unknown,
             retry_full,
@@ -2392,7 +2622,7 @@ impl Processor {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
         let PreparedFrame {
-            source,
+            mut source,
             id,
             clock,
             qpc,
@@ -2421,13 +2651,35 @@ impl Processor {
             .campaigns
             .get_mut(&id)
             .expect("prepared campaign remains admitted");
-        let result = campaign.write(
+        // Compare before encoding with the same restart verdict the write uses.
+        let helpers = self
+            .helper
+            .as_ref()
+            .map(|first| crate::spool_helper::Helpers {
+                first,
+                second: self.second_helper.as_ref(),
+                backlogged: self.backlogged,
+            });
+        crate::spool_compare::compare_frame(
+            &campaign.encoder,
+            crate::spool_compare::Target {
+                branch,
+                hour: source.hour,
+                restarting: !campaign.spool.is_open(),
+            },
+            &mut source,
+            helpers,
+            &self.comparison,
+        );
+        let result = campaign.write_with(
             source,
             qpc,
             Some(clock.play_session_started_at),
             unknown,
             &mut work,
+            helpers,
         );
+        let _span = crate::spool_phases::SPOOL.span(crate::spool_phases::Phase::Commit);
         witness.bind(&mut self.stats.order_counters, &result);
         if let Err(error) = &result {
             self.error(error);
@@ -2576,6 +2828,21 @@ impl Processor {
         }
     }
 
+    /// What the campaigns' commits no longer hold, for freeing off this thread.
+    pub(crate) fn take_retired(&mut self) -> Vec<replay::frame::Retired> {
+        let mut retired = Vec::new();
+        for (_, campaign) in &mut self.campaigns {
+            if retired.is_empty() {
+                retired = std::mem::take(&mut campaign.retired);
+            } else if engine::allocation::reserve(&mut retired, campaign.retired.len()).is_ok() {
+                retired.append(&mut campaign.retired);
+            } else {
+                campaign.retired.clear();
+            }
+        }
+        retired
+    }
+
     pub fn take_retry_full(&mut self) -> bool {
         std::mem::take(&mut self.retry_full)
     }
@@ -2638,11 +2905,7 @@ impl Processor {
         let conversion = stats.conversion.status()?;
         let frame_encoding = stats.frame_encoding.status()?;
         let record_writes = stats.record_writes.status()?;
-        let mut conversion_packs =
-            [DistributionStatus::default(); crate::extended::PACK_NAMES.len()];
-        for (value, cost) in conversion_packs.iter_mut().zip(&stats.conversion_packs) {
-            *value = cost.status()?;
-        }
+        let country_rosters = stats.country_rosters.status()?;
         // Per-family copy-only mirrors, built outside the status `json!` so
         // the macro stays under its recursion limit as families move over.
         let research_walk_ns = [
@@ -2660,14 +2923,8 @@ impl Processor {
             stats.table_ns[replay::rows::TableId::AdvisorRoles.index()],
             stats.table_ns[replay::rows::TableId::UnitLeaders.index()],
             stats.table_ns[replay::rows::TableId::UnitLeaderTraits.index()],
-            stats.table_ns[replay::rows::TableId::UnitLeaderTraitExperience.index()],
         ];
-        let projects_copy_ns = [
-            stats.table_ns[replay::rows::TableId::ProjectPrograms.index()],
-            stats.table_ns[replay::rows::TableId::Projects.index()],
-            stats.table_ns[replay::rows::TableId::ProjectHistory.index()],
-            stats.table_ns[replay::rows::TableId::ProjectBreakthroughs.index()],
-        ];
+        let projects_copy_ns = decode::PROJECTS.map(|table| stats.table_ns[table.index()]);
         let lexical_copy_ns = [stats.table_ns[replay::rows::TableId::LexicalTokens.index()]];
         let variants_walk_ns = [
             stats.table_ns[replay::rows::TableId::VariantDefinitions.index()],
@@ -2691,10 +2948,6 @@ impl Processor {
             stats.table_ns[decode::DIVISIONS[3].index()],
             stats.table_ns[decode::DIVISIONS[4].index()],
             stats.table_ns[decode::DIVISIONS[5].index()],
-        ];
-        let focus_copy_ns = [
-            stats.table_ns[decode::FOCUS[0].index()],
-            stats.table_ns[decode::FOCUS[1].index()],
         ];
         let production_rest_copy_ns = [
             stats.table_ns[decode::PRODUCTION_REST[0].index()],
@@ -2764,25 +3017,33 @@ impl Processor {
                 background_sync.push(status!({
                     "campaign": id.as_str(), "requested": work.requested, "completed": work.completed,
                     "pending": work.pending, "total_ns": work.total_ns, "max_ns": work.max_ns,
+                    "threads": work.threads,
                 }));
             }
         }
         let spool_work = status!({
                 "conversion": conversion,
-                "conversion_packs": sequence(crate::extended::PACK_NAMES.iter().zip(conversion_packs)
-                    .map(|(name, cost)| status!({"name": name, "cost": cost}))),
-                "conversion_packs_scope": "nested within conversion; excludes core and map tables",
+                "conversion_packs": sequence(crate::extended::PACK_NAMES.iter().zip(&stats.conversion_packs)
+                    .map(|(name, cost)| status!({"name": name, "cost": cost.status()}))),
+                "conversion_packs_scope": "cumulative calls, total and maximum wall per pack conversion, on the spool thread or, for packs with a helper marker, a conversion helper; nested within conversion; excludes core and map tables",
                 "frame_encoding": frame_encoding,
                 "record_writes": record_writes,
                 "table_rows_storage_bytes": std::mem::size_of::<TableRows>(),
                 "background_sync": {
-                    "scope": "current open segments; periodic durability worker wall, overlapping normal spool work; completed includes failed requests; forced barriers remain in record_writes",
+                    "scope": "current open segments; periodic durability worker wall, overlapping normal spool work; completed includes failed requests; threads counts the segment's persistent worker, started once and reused by every request; forced barriers remain in record_writes",
                     "segments": owned_sequence(background_sync),
                 },
                 "native_projection": sequence(self.campaigns.values().map(|campaign| campaign.projection_scratch.status())),
+                "comparison": self.comparison.status(),
                 "lexical_conversion": lexical_conversion_status(self.campaigns.values().map(|campaign| &campaign.lexical_conversion)),
                 "intel_shadow": intel_shadow_status(self.campaigns.values().map(|campaign| &campaign.intel_shadow)),
                 "character_shadow": character_shadow_status(self.campaigns.values().map(|campaign| &campaign.character_shadow)),
+                "phases": crate::spool_phases::SPOOL.status(self.session.qpc_frequency),
+                "helper_phases": crate::spool_phases::HELPER.status(self.session.qpc_frequency),
+                "sizing_phases": crate::spool_phases::SIZING.status(self.session.qpc_frequency),
+                "conversion_helper": self.helper.is_some(),
+                "conversion_helpers": usize::from(self.helper.is_some()) + usize::from(self.second_helper.is_some()),
+                "conversion_helper_scope": "conversion_helper: whether a persistent helper converts the map tables and the helper packs beside the spool thread; conversion_helpers: how many started, the second converting lane 1 of the helper packs; with none the spool thread converts every table itself",
 
         }).join(work);
         let value = status!({
@@ -2864,29 +3125,25 @@ impl Processor {
             "unknown_losses_pending": self.unknown_pending,
             "spool_work": spool_work,
             "war_owned_snapshots": stats.war_snapshots.status(),
-            "naval_modifier_breakdowns": stats.naval_breakdowns.status(),
             "game_score": stats.game_score.status(),
             "division_naming": stats.division_naming.status(),
             "counter_tooltip_inputs": stats.counter_tooltip_inputs.status(),
-            "selected_attack_inputs": stats.selected_attack_inputs.status(),
-            "country_rosters": stats.country_rosters.status(),
-            "directed_wars": stats.directed_wars.status(),
+            "country_rosters": country_rosters,
             "fresh_map_inputs": crate::status::status!({
                 "states": stats.state_map_inputs.status(),
                 "railway": stats.railway_map_inputs.status(),
-                "units": stats.fresh_eta_inputs.status(),
-                "naval": stats.naval_movement.status(),
+                "physical_navies": stats.physical_navies.status(),
             }),
             "battle_plan_child_fronts": stats.battle_plan_child_fronts.status(),
             "battle_plan_execution": stats.battle_plan_execution.status(),
             "character_naming": stats.character_naming.status(),
             "supply_vehicles": stats.supply_vehicles.status(),
+            "supply_node_walk": crate::extended::supply_trains::node_walk_data(),
             "script_variable_seeds": stats.variable_seeds.status(),
             "scientist_activity": crate::extended::projects::scientist_active_data(),
             "instant_decisions": crate::extended::visibility::instant_decisions_data(),
             "political_runtime_scalars": crate::extended::visibility::runtime_scalars_data(),
             "selected_ordered_enemies":crate::extended::visibility::ordered_enemy_data(),
-            "selected_areas":crate::extended::country_naval_movement_inputs::area_data(),
             "unit_combat_references":crate::extended::unit_combat_references::data(),
             "air_wing_names": crate::map_capture::air_wing_name_data(),
             "railway_gun_names": crate::extended::railway_guns::name_data(),
@@ -2895,11 +3152,10 @@ impl Processor {
             "railway_gun_movement_arrows": crate::extended::railway_guns::movement_arrow_data(),
             "task_force_movement_arrows": crate::extended::naval_counters::movement_arrow_data(),
             "task_force_fresh_eta": crate::extended::naval_counters::fresh_eta_data(),
-            "transport_mission_inputs": crate::extended::transport_mission_shared::status(),
-            "transport_convoys": crate::extended::transport_convoys::status(),
-            "transport_boundary_admission": crate::transport_admission::status(),
+            "task_force_counter_phases": crate::extended::naval_counters::phase_data(),
+            "naval_combat_member_phases": crate::extended::naval_details::member_phase_data(),
             "transport_subject_access": crate::extended::visibility::transport_subject_data(),
-            "ship_strike_readiness": crate::extended::ship_models::strike_data(),
+            "ship_model_operands": crate::extended::ship_models::optional_data(),
             "country_original_tags": crate::extended::country_appearance::original_tag_data(),
             "reserved_reverse_visibility": stats.reserved_visibility.status(),
             "reserved_land_theatres": crate::extended::naval_history::reserved_land_data(),
@@ -2913,7 +3169,6 @@ impl Processor {
             "buildings_walk_ns": buildings_walk_ns,
             "wars_walk_ns": wars_walk_ns,
             "divisions_copy_ns": divisions_copy_ns,
-            "focus_copy_ns": focus_copy_ns,
             "production_rest_copy_ns": production_rest_copy_ns,
             "construction_rest_copy_ns": construction_rest_copy_ns,
             "map_walk_ns": map_walk_ns,
@@ -3044,6 +3299,38 @@ pub(crate) fn table_iter<S: TableSchema, T>(
     }
 }
 
+/// The controller-area node a province row holds
+/// ([`engine::cprovince::Row::area_node`]): the area it labels.
+fn area_node(
+    nodes: &engine::controller_areas::Output,
+    province: &engine::cprovince::Row,
+) -> Option<replay::rows::ControllerAreaNode> {
+    let node = nodes.nodes.get(province.area_node? as usize)?;
+    Some(replay::rows::ControllerAreaNode {
+        first_land: node.first_land,
+        neighbours: nodes.neighbours(node).map(<[u32]>::to_vec),
+    })
+}
+
+/// [`area_node`] compared with a baseline row without building it.
+fn area_node_equal(
+    nodes: &engine::controller_areas::Output,
+    province: &engine::cprovince::Row,
+    previous: &ProvinceRow,
+) -> bool {
+    let current = province
+        .area_node
+        .and_then(|index| nodes.nodes.get(index as usize));
+    match (&previous.area_node, current) {
+        (replay::rows::Recorded::Value(None), None) => true,
+        (replay::rows::Recorded::Value(Some(previous)), Some(node)) => {
+            previous.first_land == node.first_land
+                && previous.neighbours.as_deref() == nodes.neighbours(node)
+        }
+        _ => false,
+    }
+}
+
 /// States with both display names from the frame's name arena; a span outside
 /// the bytes the walk copied denies the table.
 fn state_table(
@@ -3133,7 +3420,9 @@ fn sampled_frame(source: FrameInput) -> replay::frame::DecodedFrame {
             .map(|input| match input {
                 TableInput::Sampled(view) => view,
                 TableInput::SharedComplete(rows) => TableView::Complete((*rows).clone()),
-                TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. } => {
+                TableInput::ComparedEqual(_)
+                | TableInput::ComparedChanges { .. }
+                | TableInput::SliceUpdate { .. } => {
                     panic!("fixture expected ordinary sampled rows")
                 }
             })
@@ -3150,12 +3439,12 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> replay::frame
             branch,
             &mut SpoolConversion {
                 variables_baseline: None,
-                template_names_baseline: None,
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: None,
                 intel: None,
                 projection: None,
+                helper: None,
             },
         )
         .0,
@@ -3179,228 +3468,392 @@ fn decoded_with_costs(
         .clock
         .is_none()
         .then_some("clock unreadable at hook entry");
-    let counters = captured.counters;
+    let span = crate::spool_phases::SPOOL.span(crate::spool_phases::Phase::ConvertCore);
     let tables = if let Some(reason) = failure {
         unavailable_tables(reason)
     } else {
-        let [
-            players,
-            controllers,
-            land,
-            fleets,
-            task_forces,
-            ships,
-            naval,
-            naval_participants,
-            air,
-            orders,
-        ] = crate::map_spool::table_inputs(&captured.map, conversion.projection.as_deref_mut());
-        let core = [
-            table::<tables::Clock, _>(
-                Outcome::Rows { len: 1 },
-                std::slice::from_ref(&clock),
-                |clock| ClockRow {
-                    hour: clock.hour,
-                    play_time: clock.play_time,
-                    play_session_started_at: clock.play_session_started_at,
-                    seed: clock.seed,
-                    speed: clock.speed,
-                    debug_current_ref_id: counters.and_then(|c| c.debug_current_ref_id),
-                    unit: counters.and_then(|c| c.unit),
-                    order_index: counters.and_then(|c| c.order_index),
-                    front_index: counters.and_then(|c| c.front_index),
-                    theatre_index: counters.and_then(|c| c.theatre_index),
-                    theater_group_index: counters.and_then(|c| c.theater_group_index),
-                    military_deployment_line_index: counters
-                        .and_then(|c| c.military_deployment_line_index),
-                    military_deployment_conveyor_index: counters
-                        .and_then(|c| c.military_deployment_conveyor_index),
-                    equipment_variant_index: counters.and_then(|c| c.equipment_variant_index),
-                    country_leader_index: counters.and_then(|c| c.country_leader_index),
-                    navy_id: counters.and_then(|c| c.navy_id),
-                    land_combat_id: counters.and_then(|c| c.land_combat_id),
-                    multiplayer_random_count: counters.and_then(|c| c.multiplayer_random_count),
-                },
-            )
-            .into(),
-            table::<tables::Campaign, _>(
-                Outcome::Rows { len: 1 },
-                std::slice::from_ref(&clock),
-                |clock| CampaignRow {
-                    id: engine::allocation::owned_vec(engine::allocation::copy_vec(
-                        clock.campaign_id,
-                    )),
-                },
-            )
-            .into(),
-            project_table::<tables::Countries, _>(
-                conversion.projection.as_deref_mut(),
-                captured.countries_result,
-                &captured.countries,
-                |country| u128::from(country.id),
-                |country, previous| {
-                    country.id == previous.id
-                        && country.canonical_slot == previous.canonical_slot
-                        && country.tag.as_bytes() == previous.tag
-                        && country.political_power_raw == previous.political_power_raw
-                        && country.command_power_raw == previous.command_power_raw
-                        && country.stability_raw == previous.stability_raw
-                        && country.war_support_raw == previous.war_support_raw
-                        && country.convoys_raw == previous.convoys_raw
-                        && country.manpower_residual == previous.manpower_residual
-                        && replay::rows::Recorded::Value(country.border_land_doctrine_level)
-                            == previous.border_land_doctrine_level
-                        && country.peace_conference_participant
-                            == previous.peace_conference_participant
-                },
-                |country| CountryRow {
-                    id: country.id,
-                    canonical_slot: country.canonical_slot,
-                    tag: engine::allocation::owned_vec(engine::allocation::copy_vec(
-                        country.tag.as_bytes(),
-                    )),
-                    political_power_raw: country.political_power_raw,
-                    command_power_raw: country.command_power_raw,
-                    stability_raw: country.stability_raw,
-                    war_support_raw: country.war_support_raw,
-                    convoys_raw: country.convoys_raw,
-                    peace_conference_participant: country.peace_conference_participant,
-                    manpower_residual: country.manpower_residual,
-                    border_land_doctrine_level: replay::rows::Recorded::Value(
-                        country.border_land_doctrine_level,
-                    ),
-                },
-            ),
-            scalar_table::<tables::CountryLinks, _>(
-                conversion.projection.as_deref_mut(),
-                captured.links_result,
-                &captured.links,
-                |link| u128::from(link.id),
-                |link| CountryLinkRow {
-                    id: link.id,
-                    canonical_slot: link.canonical_slot,
-                },
-            ),
-            project_table::<tables::Provinces, _>(
-                conversion.projection.as_deref_mut(),
-                captured.provinces_result,
-                &captured.provinces.rows,
-                |province| u128::from(province.id),
-                |province, previous| {
-                    province.id == previous.id
-                        && province.state == previous.state
-                        && province.owner == previous.owner
-                        && province.controller == previous.controller
-                        && province.victory_points == previous.victory_points
-                        && province.fort_positive == previous.fort_positive
-                        && province.move_gate == previous.move_gate
-                        && province.port_sea == previous.port_sea
-                        && captured
-                            .extended
-                            .province_area_matches(province.id, &previous.selected_areas)
-                        && replay::rows::Recorded::Value(crate::fixed_layout::province_attack(
-                            captured.extended.province_attack(province.id),
-                            captured.fixed_layout.as_ref(),
-                        )) == previous.attack
-                },
-                |province| ProvinceRow {
-                    id: province.id,
-                    state: province.state,
-                    owner: province.owner,
-                    controller: province.controller,
-                    victory_points: province.victory_points,
-                    fort_positive: province.fort_positive,
-                    move_gate: province.move_gate,
-                    port_sea: province.port_sea,
-                    selected_areas: replay::rows::Recorded::Value(
-                        captured.extended.province_area(province.id),
-                    ),
-                    attack: replay::rows::Recorded::Value(crate::fixed_layout::province_attack(
-                        captured.extended.province_attack(province.id),
-                        captured.fixed_layout.as_ref(),
-                    )),
-                },
-            ),
-            state_table(captured, conversion.projection.as_deref_mut()),
-            scalar_table::<tables::Divisions, _>(
-                conversion.projection.as_deref_mut(),
-                captured.divisions_result,
-                &captured.divisions,
-                |division| u128::from(division.id),
-                |division| DivisionRow {
-                    id: division.id,
-                    roster_owner: division.roster_owner,
-                    logical_owner: division.logical_owner,
-                    expeditionary_owner: division.expeditionary_owner,
-                    province: division.province,
-                    template: division.template,
-                    hit_points: division.hit_points,
-                    organisation: division.organisation,
-                    orders_group: division.orders_group,
-                    reveal_skip: division.reveal_skip,
-                },
-            ),
-            scalar_table::<tables::WarRelations, _>(
-                conversion.projection.as_deref_mut(),
-                captured.wars_result,
-                &captured.wars,
-                |war| (u128::from(war.first_country) << 32) | u128::from(war.second_country),
-                |war| WarRelationRow {
-                    first_country: war.first_country,
-                    second_country: war.second_country,
-                    start_hour: war.start_hour,
-                    end_hour: war.end_hour,
-                    cancel: war.cancel,
-                    first_casualties: war.first_casualties,
-                    second_casualties: war.second_casualties,
-                    first_unknown_casualties: war.first_unknown_casualties,
-                    second_unknown_casualties: war.second_unknown_casualties,
-                    first_was_instigator: war.first_was_instigator,
-                },
-            ),
-            faction_table(captured).into(),
-            scalar_table::<tables::FactionMembers, _>(
-                conversion.projection.as_deref_mut(),
-                captured.faction_members_result,
-                &captured.faction_members,
-                |member| u128::from(member.country),
-                |member| FactionMemberRow {
-                    country: member.country,
-                    faction: member.faction,
-                    ordinal: member.ordinal,
-                },
-            ),
-            players,
-            controllers,
-            land,
-            fleets,
-            task_forces,
-            ships,
-            naval,
-            naval_participants,
-            air,
-            orders,
-        ];
         let mut tables = unavailable_tables("table was not acquired");
+        match conversion.helper {
+            None => {
+                let map = crate::map_spool::table_inputs(
+                    &captured.map,
+                    conversion.projection.as_deref_mut(),
+                );
+                let core = core_tables(captured, &clock, conversion.projection.as_deref_mut());
+                for (destination, value) in tables.iter_mut().zip(core.into_iter().chain(map)) {
+                    *destination = value;
+                }
+                tables[TableId::BorderConflicts.index()] = border_conflicts_table(captured).into();
+                let _packs = span.switch(crate::spool_phases::Phase::ConvertPacks);
+                pack_ticks = captured
+                    .extended
+                    .insert_tables(clock.hour, &mut tables, conversion, false)
+                    .map(Some);
+            }
+            Some(helpers) => {
+                pack_ticks =
+                    convert_with_helper(captured, &clock, conversion, helpers, &mut tables, span);
+            }
+        }
+        tables
+    };
+    let mut input = FrameInput {
+        branch,
+        hour: clock.hour,
+        tables,
+        metrics,
+    };
+    // Every converted table's stepped fields are rounded to their display
+    // steps (replay::display) before merges, carries and comparisons read
+    // them, so a row that drifted only below the game's display precision
+    // equals its baseline. Projected rows arrive rounded (crate::projection);
+    // a table still shared with its producer's cache is rounded only while
+    // this hour holds its sole reference, and the encoder rounds the rest.
+    input.round_to_display();
+    (input, pack_ticks)
+}
+
+/// Clock through FactionMembers: the core tables before the map tables.
+fn core_tables(
+    captured: &Captured,
+    clock: &Clock<&[u8]>,
+    mut projection: Option<&mut crate::projection::Projection<'_>>,
+) -> [TableInput; 10] {
+    let counters = captured.counters;
+    [
+        table::<tables::Clock, _>(
+            Outcome::Rows { len: 1 },
+            std::slice::from_ref(clock),
+            |clock| ClockRow {
+                hour: clock.hour,
+                play_time: clock.play_time,
+                play_session_started_at: clock.play_session_started_at,
+                seed: clock.seed,
+                speed: clock.speed,
+                debug_current_ref_id: counters.and_then(|c| c.debug_current_ref_id),
+                unit: counters.and_then(|c| c.unit),
+                order_index: counters.and_then(|c| c.order_index),
+                front_index: counters.and_then(|c| c.front_index),
+                theatre_index: counters.and_then(|c| c.theatre_index),
+                theater_group_index: counters.and_then(|c| c.theater_group_index),
+                military_deployment_line_index: counters
+                    .and_then(|c| c.military_deployment_line_index),
+                military_deployment_conveyor_index: counters
+                    .and_then(|c| c.military_deployment_conveyor_index),
+                equipment_variant_index: counters.and_then(|c| c.equipment_variant_index),
+                country_leader_index: counters.and_then(|c| c.country_leader_index),
+                navy_id: counters.and_then(|c| c.navy_id),
+                land_combat_id: counters.and_then(|c| c.land_combat_id),
+                multiplayer_random_count: counters.and_then(|c| c.multiplayer_random_count),
+            },
+        )
+        .into(),
+        table::<tables::Campaign, _>(
+            Outcome::Rows { len: 1 },
+            std::slice::from_ref(clock),
+            |clock| CampaignRow {
+                id: engine::allocation::owned_vec(engine::allocation::copy_vec(clock.campaign_id)),
+            },
+        )
+        .into(),
+        project_table::<tables::Countries, _>(
+            projection.as_deref_mut(),
+            captured.countries_result,
+            &captured.countries,
+            |country| u128::from(country.id),
+            |country, previous| {
+                country.id == previous.id
+                    && country.canonical_slot == previous.canonical_slot
+                    && country.tag.as_bytes() == previous.tag
+                    && country.political_power_raw == previous.political_power_raw
+                    && country.command_power_raw == previous.command_power_raw
+                    && country.stability_raw == previous.stability_raw
+                    && country.war_support_raw == previous.war_support_raw
+                    && country.convoys_raw == previous.convoys_raw
+                    && country.manpower_residual == previous.manpower_residual
+                    && replay::rows::Recorded::Value(country.border_land_doctrine_level)
+                        == previous.border_land_doctrine_level
+                    && country.peace_conference_participant == previous.peace_conference_participant
+            },
+            |country| CountryRow {
+                id: country.id,
+                canonical_slot: country.canonical_slot,
+                tag: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                    country.tag.as_bytes(),
+                )),
+                political_power_raw: country.political_power_raw,
+                command_power_raw: country.command_power_raw,
+                stability_raw: country.stability_raw,
+                war_support_raw: country.war_support_raw,
+                convoys_raw: country.convoys_raw,
+                peace_conference_participant: country.peace_conference_participant,
+                manpower_residual: country.manpower_residual,
+                border_land_doctrine_level: replay::rows::Recorded::Value(
+                    country.border_land_doctrine_level,
+                ),
+            },
+        ),
+        scalar_table::<tables::CountryLinks, _>(
+            projection.as_deref_mut(),
+            captured.links_result,
+            &captured.links,
+            |link| u128::from(link.id),
+            |link| CountryLinkRow {
+                id: link.id,
+                canonical_slot: link.canonical_slot,
+            },
+        ),
+        project_table::<tables::Provinces, _>(
+            projection.as_deref_mut(),
+            captured.provinces_result,
+            &captured.provinces.rows,
+            |province| u128::from(province.id),
+            |province, previous| {
+                province.id == previous.id
+                    && province.state == previous.state
+                    && province.owner == previous.owner
+                    && province.controller == previous.controller
+                    && province.victory_points == previous.victory_points
+                    && province.fort_positive == previous.fort_positive
+                    && province.move_gate == previous.move_gate
+                    && province.port_sea == previous.port_sea
+                    && replay::rows::Recorded::Value(province.fort_bunker) == previous.fort_bunker
+                    && previous.selected_areas
+                        == replay::rows::Recorded::Value(replay::rows::Retired)
+                    && previous.attack
+                        == replay::rows::Recorded::Value(replay::rows::Witnessed(None))
+                    && previous.controller_area
+                        == replay::rows::Recorded::Value(province.controller_area)
+                    && previous.owner_area == replay::rows::Recorded::Value(province.owner_area)
+                    && area_node_equal(&captured.provinces.area_nodes, province, previous)
+            },
+            |province| ProvinceRow {
+                id: province.id,
+                state: province.state,
+                owner: province.owner,
+                controller: province.controller,
+                victory_points: province.victory_points,
+                fort_positive: province.fort_positive,
+                move_gate: province.move_gate,
+                port_sea: province.port_sea,
+                fort_bunker: replay::rows::Recorded::Value(province.fort_bunker),
+                selected_areas: replay::rows::Recorded::Value(replay::rows::Retired),
+                // No province operand is witnessed; current writers leave it empty.
+                attack: replay::rows::Recorded::Value(replay::rows::Witnessed(None)),
+                controller_area: replay::rows::Recorded::Value(province.controller_area),
+                owner_area: replay::rows::Recorded::Value(province.owner_area),
+                area_node: replay::rows::Recorded::Value(area_node(
+                    &captured.provinces.area_nodes,
+                    province,
+                )),
+            },
+        ),
+        state_table(captured, projection.as_deref_mut()),
+        scalar_table::<tables::Divisions, _>(
+            projection.as_deref_mut(),
+            captured.divisions_result,
+            &captured.divisions,
+            |division| u128::from(division.id),
+            |division| DivisionRow {
+                id: division.id,
+                roster_owner: division.roster_owner,
+                logical_owner: division.logical_owner,
+                expeditionary_owner: division.expeditionary_owner,
+                province: division.province,
+                template: division.template,
+                hit_points: division.hit_points,
+                organisation: division.organisation,
+                orders_group: division.orders_group,
+                reveal_skip: division.reveal_skip,
+            },
+        ),
+        scalar_table::<tables::WarRelations, _>(
+            projection.as_deref_mut(),
+            captured.wars_result,
+            &captured.wars,
+            |war| (u128::from(war.first_country) << 32) | u128::from(war.second_country),
+            |war| WarRelationRow {
+                first_country: war.first_country,
+                second_country: war.second_country,
+                start_hour: war.start_hour,
+                end_hour: war.end_hour,
+                cancel: war.cancel,
+                first_casualties: war.first_casualties,
+                second_casualties: war.second_casualties,
+                first_unknown_casualties: war.first_unknown_casualties,
+                second_unknown_casualties: war.second_unknown_casualties,
+                first_was_instigator: war.first_was_instigator,
+            },
+        ),
+        faction_table(captured).into(),
+        scalar_table::<tables::FactionMembers, _>(
+            projection,
+            captured.faction_members_result,
+            &captured.faction_members,
+            |member| u128::from(member.country),
+            |member| FactionMemberRow {
+                country: member.country,
+                faction: member.faction,
+                ordinal: member.ordinal,
+            },
+        ),
+    ]
+}
+
+/// One hour's map tables and the helper packs converted by the helpers while
+/// this thread converts the core tables and the other packs: the first helper
+/// converts the map tables and lane 0, the second lane 1, or the first both
+/// lanes when it is alone. Every table lands in the slot the serial order
+/// fills, and the ordinary-job refusal is applied after every share merged,
+/// so the frame is the serial one.
+fn convert_with_helper(
+    captured: &Captured,
+    clock: &Clock<&[u8]>,
+    conversion: &mut SpoolConversion<'_, '_>,
+    helpers: crate::spool_helper::Helpers<'_>,
+    tables: &mut [TableInput; TABLE_COUNT],
+    span: crate::spool_phases::Span<'static>,
+) -> [Option<i64>; crate::extended::PACK_NAMES.len()] {
+    use crate::spool_phases::{HELPER, Phase};
+    struct HelperOutput {
+        map: Option<[TableInput; 10]>,
+        packs: [Option<TableInput>; TABLE_COUNT],
+        costs: [i64; crate::extended::PACK_NAMES.len()],
+    }
+    let projection = conversion
+        .projection
+        .as_ref()
+        .map(|projection| **projection);
+    let hour = clock.hour;
+    let view = captured.extended.helper_view();
+    let map = &captured.map;
+    let context = crate::allocation::context();
+    // The characters and intel packs convert on a helper lane with the spool
+    // caches lent for this join; the spool thread converts the rest with its
+    // other caches.
+    let SpoolConversion {
+        variables_baseline,
+        variables_scratch,
+        characters,
+        lexical,
+        intel,
+        projection: own_projection,
+        helper: _,
+    } = conversion;
+    let lent = std::sync::Mutex::new(crate::extended::LentCaches {
+        characters: characters.take(),
+        intel: intel.take(),
+        variables_baseline: *variables_baseline,
+        variables_scratch: Some(&mut **variables_scratch),
+    });
+    let mut spare_scratch = ScriptVariableComparison::default();
+    let mut conversion = SpoolConversion {
+        variables_baseline: None,
+        variables_scratch: &mut spare_scratch,
+        characters: None,
+        lexical: lexical.as_deref_mut(),
+        intel: None,
+        projection: own_projection.as_deref_mut(),
+        helper: None,
+    };
+    let lane = |lanes: u8, with_map: bool, output: &std::sync::Mutex<Option<HelperOutput>>| {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
+        crate::allocation::set_context(context);
+        let caches = {
+            let mut lent = lent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let lane_a = lanes & 0b01 != 0;
+            crate::extended::LentCaches {
+                characters: if lanes & 0b10 != 0 {
+                    lent.characters.take()
+                } else {
+                    None
+                },
+                intel: if lane_a { lent.intel.take() } else { None },
+                variables_baseline: if lane_a {
+                    lent.variables_baseline
+                } else {
+                    None
+                },
+                variables_scratch: if lane_a {
+                    lent.variables_scratch.take()
+                } else {
+                    None
+                },
+            }
+        };
+        let mut projection = projection;
+        let span = HELPER.span(Phase::ConvertCore);
+        let map = with_map.then(|| crate::map_spool::table_inputs(map, projection.as_mut()));
+        let span = span.switch(Phase::ConvertPacks);
+        let mut packs = std::array::from_fn(|_| None);
+        let mut costs = [0; crate::extended::PACK_NAMES.len()];
+        view.tables(
+            hour,
+            lanes,
+            projection.as_mut(),
+            caches,
+            &mut packs,
+            &mut costs,
+        );
+        span.finish();
+        *output
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(HelperOutput { map, packs, costs });
+    };
+    let (first, second) = (std::sync::Mutex::new(None), std::sync::Mutex::new(None));
+    let first_lanes = if helpers.second.is_some() { 0b01 } else { 0b11 };
+    let first_job = || lane(first_lanes, true, &first);
+    let second_job = || lane(0b10, false, &second);
+    let mut pack_ticks = [None; crate::extended::PACK_NAMES.len()];
+    let own = || {
+        let conversion = &mut conversion;
+        let core = core_tables(captured, clock, conversion.projection.as_deref_mut());
         for (destination, value) in tables.iter_mut().zip(core) {
             *destination = value;
         }
         tables[TableId::BorderConflicts.index()] = border_conflicts_table(captured).into();
+        let span = span.switch(Phase::ConvertPacks);
         pack_ticks = captured
             .extended
-            .insert_tables(clock.hour, &mut tables, conversion)
+            .insert_tables(clock.hour, tables, conversion, true)
             .map(Some);
-        tables
+        span.switch(Phase::HelperWait)
     };
-    (
-        FrameInput {
-            branch,
-            hour: clock.hour,
-            tables,
-            metrics,
-        },
-        pack_ticks,
-    )
+    let wait = match helpers.second {
+        Some(second_helper) => helpers.first.join(helpers.backlogged, &first_job, || {
+            second_helper.join(helpers.backlogged, &second_job, own)
+        }),
+        None => helpers.first.join(helpers.backlogged, &first_job, own),
+    };
+    wait.finish();
+    for output in [first, second] {
+        let Some(HelperOutput { map, packs, costs }) = output
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        else {
+            continue;
+        };
+        if let Some(map) = map {
+            for (destination, value) in tables[TableId::Players.index()..].iter_mut().zip(map) {
+                *destination = value;
+            }
+        }
+        for (destination, value) in tables.iter_mut().zip(packs) {
+            if let Some(value) = value {
+                *destination = value;
+            }
+        }
+        for (ticks, cost) in pack_ticks.iter_mut().zip(costs) {
+            if cost != 0 {
+                *ticks = Some(cost);
+            }
+        }
+    }
+    captured.extended.refuse_failed_ordinary(tables);
+    pack_ticks
 }
 
 /// The BorderConflicts outcome after a Provinces walk: unavailable with it,
@@ -3447,7 +3900,28 @@ fn border_conflicts_table(captured: &Captured) -> TableView {
 }
 
 fn unavailable_tables(reason: &'static str) -> [TableInput; TABLE_COUNT] {
-    std::array::from_fn(|_| TableInput::Sampled(unavailable(reason)))
+    std::array::from_fn(|index| {
+        TableInput::Sampled(match retired_reason(TableId::ALL[index]) {
+            Some(retired) => unavailable(retired),
+            None => unavailable(reason),
+        })
+    })
+}
+
+/// A retired table's catalogued refusal, which every recording decodes in its
+/// place; no pack produces the table, so its frame view is this refusal.
+fn retired_reason(table: TableId) -> Option<&'static str> {
+    static REASONS: std::sync::OnceLock<[Option<String>; TABLE_COUNT]> = std::sync::OnceLock::new();
+    REASONS.get_or_init(|| {
+        let current = replay::format::FormatVersion::CURRENT.version();
+        std::array::from_fn(|index| {
+            let table = TableId::ALL[index];
+            (!table.last_change().present(current))
+                .then(|| replay::format::FormatVersion::CURRENT.table_refusal(table))
+                .flatten()
+        })
+    })[table.index()]
+    .as_deref()
 }
 
 #[cfg(test)]
@@ -3477,6 +3951,9 @@ pub(crate) fn allocation_failure_frame(hour: i32) -> Captured {
     frame.map.land_participants_len = 2;
     frame
 }
+
+#[cfg(test)]
+mod byte_identity_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3633,67 +4110,6 @@ mod tests {
     }
 
     #[test]
-    fn naval_breakdown_status_counts_arena_refusals_before_growth() {
-        use crate::extended::naval_details::fixtures::capture_live_shape_fixed_breakdown;
-        use engine::naval_ship_modifier_breakdown::REQUEST_CAPACITY;
-        let mut processor = Processor {
-            root: PathBuf::new(),
-            history: PreparedCampaigns::default(),
-            session: session(),
-            campaigns: Campaigns::new(),
-            stats: Statistics::default(),
-            unknown_pending: 0,
-            suppress_origin: false,
-            retry_full: false,
-            unpublished_families: 0,
-        };
-        let mut source = Captured::new();
-        capture_live_shape_fixed_breakdown(&mut source.extended);
-        source.clock = Some(Clock {
-            campaign_id: Default::default(),
-            ..clock(10)
-        });
-        // A rejected frame still contributes its capture refusal, before any
-        // filesystem work. Reusing an older clockless frame counts nothing.
-        assert!(processor.prepare_frame(&source).is_err());
-        let status = processor.json()["naval_modifier_breakdowns"].clone();
-        assert_eq!(status["refused_hours"], 1);
-        assert_eq!(status["refusals"][REQUEST_CAPACITY], 1);
-        for arena in ["requests", "roots", "nodes", "text_bytes", "depth"] {
-            assert!(
-                status["latest_arenas"][arena]["required"].as_u64().unwrap() > 0,
-                "{arena}"
-            );
-            assert_eq!(status["latest_arenas"][arena]["capacity"], 0);
-        }
-        assert!(
-            status["latest_arenas"]["requests"]["required"]
-                .as_u64()
-                .unwrap()
-                > 100
-        );
-        assert_eq!(status["latest_arenas"]["depth"]["required"], 4);
-        source.clock = None;
-        assert!(processor.prepare_frame(&source).is_err());
-        assert_eq!(processor.json()["naval_modifier_breakdowns"], status);
-        source
-            .extended
-            .grow(&mut crate::extended::Capacities::default());
-        source.extended.reset();
-        capture_live_shape_fixed_breakdown(&mut source.extended);
-        source.clock = Some(Clock {
-            campaign_id: Default::default(),
-            ..clock(11)
-        });
-        assert!(processor.prepare_frame(&source).is_err());
-        let status = processor.json()["naval_modifier_breakdowns"].clone();
-        assert_eq!(status["hours"], 2);
-        assert_eq!(status["available_hours"], 1);
-        assert_eq!(status["refused_hours"], 1);
-        assert_eq!(status["refusals"], serde_json::json!({REQUEST_CAPACITY: 1}));
-    }
-
-    #[test]
     fn war_snapshot_work_includes_rejected_consumed_frame_without_io() {
         let mut processor = Processor {
             root: PathBuf::new(),
@@ -3705,6 +4121,10 @@ mod tests {
             suppress_origin: false,
             retry_full: false,
             unpublished_families: 0,
+            helper: None,
+            second_helper: None,
+            backlogged: false,
+            comparison: Box::default(),
         };
         let mut source = Captured::new();
         source.wars_snapshot_sampled = true;
@@ -3753,18 +4173,40 @@ mod tests {
             clock(11).borrowed(),
             1,
             &mut SpoolConversion {
-                template_names_baseline: None,
                 variables_baseline: Some(baseline),
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: None,
                 intel: None,
                 projection: None,
+                helper: None,
             },
         );
         assert_eq!(
             input.tables,
             unavailable_tables("clock unreadable at hook entry")
+        );
+    }
+
+    #[test]
+    fn pack_costs_keep_fixed_totals_however_many_hours_are_recorded() {
+        let mut stats = Statistics::default();
+        let before = std::mem::size_of_val(&stats.conversion_packs);
+        for hour in 0..10_000_i64 {
+            stats.conversion_packs[3].record_ticks(hour % 7, 10_000_000);
+        }
+        // Totals, not a per-hour sample list: nothing grows with the hours.
+        assert_eq!(std::mem::size_of_val(&stats.conversion_packs), before);
+        let status = serde_json::to_value(stats.conversion_packs[3].status()).unwrap();
+        assert_eq!(status["calls"], 10_000);
+        assert_eq!(status["max_ns"], 600);
+        assert_eq!(
+            status["total_ns"],
+            (0..10_000_u64).map(|hour| hour % 7 * 100).sum::<u64>()
+        );
+        assert_eq!(
+            serde_json::to_value(stats.conversion_packs[4].status()).unwrap()["mean_ns"],
+            0.0
         );
     }
 
@@ -3877,6 +4319,10 @@ mod tests {
             suppress_origin: false,
             retry_full: false,
             unpublished_families: 0,
+            helper: None,
+            second_helper: None,
+            backlogged: false,
+            comparison: Box::default(),
         };
         for ns in [100, 200, 300] {
             processor.stats.callback.record_ns(ns);
@@ -4023,6 +4469,10 @@ mod tests {
             suppress_origin: false,
             retry_full: false,
             unpublished_families: 0,
+            helper: None,
+            second_helper: None,
+            backlogged: false,
+            comparison: Box::default(),
         };
         assert_eq!(processor.json()["table_reads_recorded"], false);
         let counts = ReadCounts {
@@ -4074,6 +4524,10 @@ mod tests {
             suppress_origin: false,
             retry_full: false,
             unpublished_families: 0,
+            helper: None,
+            second_helper: None,
+            backlogged: false,
+            comparison: Box::default(),
         };
         processor.stats.table_ns[replay::rows::TableId::ResearchTechnologies.index()] = 11;
         processor.stats.table_ns[replay::rows::TableId::ResearchSlots.index()] = 22;
@@ -4668,8 +5122,10 @@ mod tests {
             ]
         );
         for division in divisions.rows::<tables::Divisions>().unwrap() {
+            // Capture stores organisation at its display step, a tenth
+            // truncated toward zero (replay::display); the sentinel stays.
             assert_eq!(division.hit_points, i64::MIN);
-            assert_eq!(division.organisation, 9_007_199_254_740_993);
+            assert_eq!(division.organisation, 9_007_199_254_740_000);
             assert_eq!(division.template, u64::MAX);
             assert_eq!(division.expeditionary_owner, 0);
             assert_eq!(division.orders_group, (57_u64 << 32) | 53);
@@ -4692,8 +5148,12 @@ mod tests {
                 fort_positive: 0,
                 move_gate: 0,
                 port_sea: 0,
-                attack: Recorded::Value(replay::rows::ProvinceAttackInputs::default()),
+                attack: Recorded::Value(replay::rows::Witnessed(None)),
                 selected_areas: Default::default(),
+                fort_bunker: Recorded::Value(None),
+                controller_area: Default::default(),
+                owner_area: Default::default(),
+                area_node: Default::default(),
             }]))
         );
         let value = &frame.complete::<tables::Clock>().unwrap()[0];
@@ -5161,15 +5621,20 @@ mod tests {
     }
 
     fn campaign() -> (Campaign<MemoryBackend>, Rc<RefCell<Store>>) {
+        let mut tracker = BranchTracker::new();
+        tracker.begin_session(session().id).unwrap();
+        campaign_with(tracker)
+    }
+
+    fn campaign_with(tracker: BranchTracker) -> (Campaign<MemoryBackend>, Rc<RefCell<Store>>) {
         let store = Rc::new(RefCell::new(Store::default()));
         let session = session();
-        let mut tracker = BranchTracker::new();
-        tracker.begin_session(session.id).unwrap();
         (
             Campaign {
                 world_generation: None,
                 directory: PathBuf::new(),
                 session,
+                resumed: tracker.last_observation(),
                 tracker,
                 encoder: FrameEncoder::new(),
                 spool: SegmentedSpool::new(MemoryBackend(store.clone())),
@@ -5179,9 +5644,12 @@ mod tests {
                 staggered_cache: TableCache::new(),
                 staggered_branch: None,
                 country_intel_sample: None,
+                country_intel_hour: None,
                 sliced_cache: TableCache::new(),
                 sliced_reads: ReadHours::new(),
                 sliced_branch: None,
+                pending_slices: Vec::new(),
+                retired: Vec::new(),
                 line_output: Default::default(),
                 operation_outcomes: Default::default(),
                 politics: Default::default(),
@@ -5374,6 +5842,130 @@ mod tests {
             ControlRecord::GapSummary { dropped_frames: 3, reason, .. } if reason.contains("hour range are unknown"))));
     }
 
+    fn recovered(store: &Rc<RefCell<Store>>) -> Replay {
+        let recovered: Vec<_> = store
+            .borrow()
+            .segments
+            .iter()
+            .map(|(&index, bytes)| (index, recover_prefix(bytes)))
+            .collect();
+        Replay::from_recovered(ID.to_vec(), &recovered).unwrap()
+    }
+
+    fn event_losses(replay: &Replay) -> Vec<(BranchId, i32, i32)> {
+        replay
+            .controls
+            .iter()
+            .filter_map(|control| match *control {
+                ControlRecord::EventLoss {
+                    session: owner,
+                    branch,
+                    after_hour,
+                    hour,
+                } => {
+                    assert_eq!(owner, session().id);
+                    Some((branch, after_hour, hour))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A same-process reattach that continues its branch records an event
+    /// loss between the detached session's last read and the reattached
+    /// session's first: event completeness was lost for part of that interval.
+    /// A fresh session, and a reattach whose first observation starts another
+    /// branch, record none.
+    #[test]
+    fn a_same_process_reattach_records_the_unobserved_event_interval_once() {
+        // The frames' Clock rows carry this load signal; the resumed tail reads it.
+        let signal = clock(10).play_session_started_at;
+        let (mut first, store) = campaign();
+        let branch = publish(&mut first, 10, signal).unwrap();
+        publish(&mut first, 11, signal).unwrap();
+        first.detach(0).unwrap();
+        let earlier = recovered(&store);
+        assert!(event_losses(&earlier).is_empty());
+        let reattach = || {
+            let history = recovered(&store).into_history().unwrap();
+            campaign_with(history.tracker_for(&session()).unwrap())
+        };
+
+        let (mut second, appended) = reattach();
+        assert_eq!(publish(&mut second, 12, signal).unwrap(), branch);
+        assert_eq!(publish(&mut second, 13, signal).unwrap(), branch);
+        second.detach(0).unwrap();
+        let resumed = recovered(&appended);
+        assert_eq!(event_losses(&resumed), [(branch, 11, 12)]);
+        assert_eq!(resumed.event_losses(branch).collect::<Vec<_>>(), [(11, 12)]);
+        assert!(resumed.gaps.is_empty());
+        assert_eq!(resumed.recorded_hours(branch).unwrap(), vec![12, 13]);
+
+        // Time passed while detached: the first observation is a new branch,
+        // whose first interval is its own, so no loss is recorded.
+        let (mut moved, later) = reattach();
+        assert_ne!(publish(&mut moved, 15, signal).unwrap(), branch);
+        moved.detach(0).unwrap();
+        assert!(event_losses(&recovered(&later)).is_empty());
+    }
+
+    /// The reattached session's first frame can fail after its context was
+    /// written, or be lost to the queue: the event loss still ends at that
+    /// first observation, is kept once after the retry, and the lost frame
+    /// stays its own gap.
+    #[test]
+    fn a_reattach_whose_first_frame_is_lost_keeps_one_event_loss_and_the_gap() {
+        let signal = clock(10).play_session_started_at;
+        let (mut first, store) = campaign();
+        let branch = publish(&mut first, 10, signal).unwrap();
+        publish(&mut first, 11, signal).unwrap();
+        first.detach(0).unwrap();
+        let reattach = || {
+            let history = recovered(&store).into_history().unwrap();
+            campaign_with(history.tracker_for(&session()).unwrap())
+        };
+
+        let (mut failed, appended) = reattach();
+        appended.borrow_mut().fail_frame_flush = true;
+        assert!(publish(&mut failed, 12, signal).is_err());
+        assert_eq!(publish(&mut failed, 13, signal).unwrap(), branch);
+        failed.detach(0).unwrap();
+        let retried = recovered(&appended);
+        assert_eq!(event_losses(&retried), [(branch, 11, 12)]);
+        assert!(
+            retried
+                .gaps
+                .iter()
+                .any(|gap| gap.first_hour == 12 && gap.last_hour == 12)
+        );
+
+        let (mut dropped, later) = reattach();
+        dropped
+            .lost(
+                &LostObservation {
+                    campaign_id: owned_text(ID),
+                    first_hour: 12,
+                    last_hour: 12,
+                    loaded_hour: Some(11),
+                    load_signal: Some(signal),
+                    count: 1,
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(publish(&mut dropped, 13, signal).unwrap(), branch);
+        dropped.detach(0).unwrap();
+        let queued = recovered(&later);
+        assert_eq!(event_losses(&queued), [(branch, 11, 12)]);
+        assert_eq!(queued.recorded_hours(branch).unwrap(), vec![13]);
+        assert!(
+            queued
+                .gaps
+                .iter()
+                .any(|gap| gap.first_hour == 12 && gap.last_hour == 12)
+        );
+    }
+
     #[test]
     fn campaign_preflight_retries_unopened_campaigns_before_consuming_any_witness() {
         let second = b"31b7cc84-3028-4f65-8e0d-adf2f37ca1a6".as_slice();
@@ -5421,6 +6013,10 @@ mod tests {
             suppress_origin: false,
             retry_full: false,
             unpublished_families: 0,
+            helper: None,
+            second_helper: None,
+            backlogged: false,
+            comparison: Box::default(),
         };
         let loss = LostObservation {
             campaign_id: owned_text(b"../invalid"),
@@ -5804,6 +6400,138 @@ mod tests {
         }
     }
 
+    /// The supply trains (owner decision 2026-10-11: daily slices, hourly
+    /// before) merge by country: a country's node and vertex rows and its
+    /// inventory row take the same read hour, an hour's slice keeps every
+    /// other country's rows and hours, and a vanished country leaves at once.
+    #[test]
+    fn supply_trains_merge_each_countrys_nodes_and_inventory_at_its_read_hour() {
+        use crate::slicing::SliceSelection;
+        use replay::rows::{SupplyNodeRow, TrainInventoryRow};
+        const VERTEX: u32 = SupplyNodeRow::VERTEX;
+        let nodes = |rows: &[(u32, u32, i64)]| {
+            TableRows::SupplyNodes(
+                rows.iter()
+                    .map(|&(country, index, available)| SupplyNodeRow {
+                        country,
+                        index,
+                        available,
+                        ..Default::default()
+                    })
+                    .collect(),
+            )
+        };
+        let trains = |rows: &[(u32, u32)]| {
+            TableRows::TrainInventory(
+                rows.iter()
+                    .map(|&(country, node_count)| TrainInventoryRow {
+                        country,
+                        node_count,
+                        ..Default::default()
+                    })
+                    .collect(),
+            )
+        };
+        let input = |hour: i32, read_nodes: TableRows, read_trains: TableRows| {
+            let mut input: FrameInput = staggered_frame(1, hour, false).into();
+            input.tables[TableId::SupplyNodes.index()] =
+                TableInput::Sampled(TableView::Complete(read_nodes));
+            input.tables[TableId::TrainInventory.index()] =
+                TableInput::Sampled(TableView::Complete(read_trains));
+            input
+        };
+        let held = |input: &FrameInput, table: TableId| {
+            let TableInput::SharedComplete(rows) = &input.tables[table.index()] else {
+                panic!("{table:?} merged")
+            };
+            TableRows::clone(rows)
+        };
+        let read_hours = |input: &FrameInput, table: TableId| {
+            let TableInput::SharedComplete(rows) = &input.tables[TableId::SliceReads.index()]
+            else {
+                panic!("slice reads assembled")
+            };
+            let TableRows::SliceReads(rows) = &**rows else {
+                panic!("slice read rows")
+            };
+            rows.iter()
+                .filter(|row| row.table == table.index() as u32)
+                .map(|row| (row.owner, row.sample_hour))
+                .collect::<Vec<_>>()
+        };
+        let (mut campaign, _) = campaign();
+        // Hour 0 is a full hour: every country is read.
+        let mut full = input(
+            0,
+            nodes(&[(1, 0, 10), (1, VERTEX | 7, 0), (2, 0, 20), (25, 0, 250)]),
+            trains(&[(1, 1), (2, 1), (25, 1)]),
+        );
+        assert!(!merge_with(
+            &mut campaign,
+            &mut full,
+            SliceSelection::for_test(0, true, &[]).with_census(&[1, 2, 25])
+        ));
+        // Hour 1 reads slice 1, countries 1 and 25; country 2 keeps hour 0.
+        let mut slice = input(
+            1,
+            nodes(&[(1, 0, 11), (1, VERTEX | 8, 0), (25, 0, 251)]),
+            trains(&[(1, 1), (25, 1)]),
+        );
+        assert!(!merge_with(
+            &mut campaign,
+            &mut slice,
+            SliceSelection::for_test(1, false, &[]).with_census(&[1, 2, 25])
+        ));
+        assert_eq!(
+            held(&slice, TableId::SupplyNodes),
+            nodes(&[(1, 0, 11), (1, VERTEX | 8, 0), (2, 0, 20), (25, 0, 251)])
+        );
+        assert_eq!(
+            held(&slice, TableId::TrainInventory),
+            trains(&[(1, 1), (2, 1), (25, 1)])
+        );
+        for table in [TableId::SupplyNodes, TableId::TrainInventory] {
+            assert_eq!(
+                read_hours(&slice, table),
+                [(1, 1), (2, 0), (25, 1)],
+                "{table:?}"
+            );
+        }
+        // Hour 3 reads nobody: every country holds its own read and hour.
+        let mut quiet = input(3, nodes(&[]), trains(&[]));
+        assert!(!merge_with(
+            &mut campaign,
+            &mut quiet,
+            SliceSelection::for_test(3, false, &[]).with_census(&[1, 2, 25])
+        ));
+        assert_eq!(
+            held(&quiet, TableId::SupplyNodes),
+            held(&slice, TableId::SupplyNodes)
+        );
+        for table in [TableId::SupplyNodes, TableId::TrainInventory] {
+            assert_eq!(
+                read_hours(&quiet, table),
+                [(1, 1), (2, 0), (25, 1)],
+                "{table:?}"
+            );
+        }
+        // A census without country 25 drops its rows now, not at its slice.
+        let mut vanished = input(4, nodes(&[]), trains(&[]));
+        assert!(!merge_with(
+            &mut campaign,
+            &mut vanished,
+            SliceSelection::for_test(4, false, &[]).with_census(&[1, 2])
+        ));
+        assert_eq!(
+            held(&vanished, TableId::SupplyNodes),
+            nodes(&[(1, 0, 11), (1, VERTEX | 8, 0), (2, 0, 20)])
+        );
+        assert_eq!(
+            held(&vanished, TableId::TrainInventory),
+            trains(&[(1, 1), (2, 1)])
+        );
+    }
+
     #[test]
     fn slices_replace_only_their_owners_and_keep_other_owners_rows_and_hours() {
         use crate::slicing::SliceSelection;
@@ -6058,6 +6786,7 @@ mod tests {
         };
         let mut expected = BTreeMap::new();
         let mut held: BTreeMap<u32, (i64, i32)> = BTreeMap::new();
+        let mut allocation = None;
         for hour in 0..=745 {
             let branch = campaign.observe(None, hour, Some(1)).unwrap();
             let full = hour == 0;
@@ -6071,6 +6800,13 @@ mod tests {
                 &mut input,
                 SliceSelection::for_test(hour, full, &[])
             ));
+            // Between keyframes the read updates the rows the encoder shares
+            // with the cache; the first hour and the keyframe carry them whole.
+            assert_eq!(
+                matches!(merged(&input), TableInput::SliceUpdate { .. }),
+                hour != 0 && hour != 720,
+                "hour {hour}"
+            );
             let want = research_rows(
                 &held
                     .iter()
@@ -6087,6 +6823,21 @@ mod tests {
                     &mut WorkSample::default(),
                 )
                 .unwrap();
+            let cached = campaign.sliced_cache.get(&TableId::ResearchInputs).unwrap();
+            let shared = campaign
+                .encoder
+                .shared_baseline(TableId::ResearchInputs)
+                .unwrap();
+            assert!(Arc::ptr_eq(cached, shared), "hour {hour}");
+            // Equal row counts replace the held rows in place: one allocation
+            // from each whole table to the next.
+            let current = Arc::as_ptr(cached);
+            if hour != 0 && hour != 720 {
+                assert_eq!(allocation, Some(current), "hour {hour}");
+            }
+            allocation = Some(current);
+            // Each commit hands back what it no longer holds.
+            assert_eq!(campaign.retired.len(), hour as usize + 1);
         }
         campaign.spool.finish_segment().unwrap();
         let frames: Vec<_> = store
@@ -6136,6 +6887,106 @@ mod tests {
             }
         }
         assert_eq!(keyframes, [0, 720]);
+    }
+
+    fn frames_of(store: &Rc<RefCell<Store>>) -> Vec<replay::frame::Frame> {
+        store
+            .borrow()
+            .segments
+            .values()
+            .flat_map(|bytes| recover_prefix(bytes).records)
+            .filter_map(|record| match record {
+                Record::Frame(frame) => Some(frame),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A slice update whose write fails leaves the cache with the merged rows
+    /// of that hour, as a merged copy would have been cached, and the next
+    /// hours merge into them.
+    #[test]
+    fn a_failed_slice_update_write_caches_the_merged_rows_of_its_hour() {
+        use crate::slicing::SliceSelection;
+        use replay::frame::{FrameDecoder, TableUpdate};
+        for fail_encoding in [false, true] {
+            let (mut campaign, store) = campaign();
+            let write = |campaign: &mut Campaign<MemoryBackend>,
+                         hour: i32,
+                         rows: &[(u32, u32, i64, i32)],
+                         full: bool,
+                         fail: bool| {
+                let branch = campaign.observe(None, hour, Some(1)).unwrap();
+                let mut input =
+                    sliced_input(branch, hour, TableView::Complete(research_rows(rows)));
+                let early: Vec<u32> = rows.iter().map(|row| row.0).collect();
+                assert!(!merge_with(
+                    campaign,
+                    &mut input,
+                    SliceSelection::for_test(hour, full, &early)
+                ));
+                assert_eq!(
+                    matches!(merged(&input), TableInput::SliceUpdate { .. }),
+                    !full && campaign.spool.is_open(),
+                    "hour {hour}"
+                );
+                if fail && fail_encoding {
+                    input.tables[TableId::UnitIntel.index()] =
+                        TableView::Complete(TableRows::Clock(Vec::new())).into();
+                }
+                store.borrow_mut().fail_frame_flush = fail && !fail_encoding;
+                let result = campaign.write(
+                    input,
+                    1000 + i64::from(hour),
+                    Some(1),
+                    0,
+                    &mut WorkSample::default(),
+                );
+                store.borrow_mut().fail_frame_flush = false;
+                assert_eq!(result.is_err(), fail, "hour {hour}");
+            };
+            write(
+                &mut campaign,
+                0,
+                &[(1, 0, 10, 0), (2, 0, 20, 0), (3, 0, 30, 0)],
+                true,
+                false,
+            );
+            // Hour 1 updates owner 1 and its write fails.
+            write(&mut campaign, 1, &[(1, 0, 11, 1)], false, true);
+            assert!(campaign.pending_slices.is_empty());
+            assert_eq!(
+                **campaign.sliced_cache.get(&TableId::ResearchInputs).unwrap(),
+                research_rows(&[(1, 0, 11, 1), (2, 0, 20, 0), (3, 0, 30, 0)])
+            );
+            // Hour 2 restarts the spool with a keyframe of the merged rows.
+            write(&mut campaign, 2, &[(2, 0, 22, 2)], false, false);
+            let last = frames_of(&store).pop().unwrap();
+            assert!(last.keyframe);
+            assert_eq!(
+                last.tables[TableId::ResearchInputs.index()],
+                TableUpdate::Snapshot(research_rows(&[
+                    (1, 0, 11, 1),
+                    (2, 0, 22, 2),
+                    (3, 0, 30, 0)
+                ]))
+            );
+            // Hour 3 updates the rows the keyframe committed.
+            write(&mut campaign, 3, &[(3, 0, 33, 3)], false, false);
+            let mut decoder = FrameDecoder::new();
+            let mut decoded = None;
+            for frame in frames_of(&store).iter().filter(|frame| frame.hour >= 2) {
+                decoded = Some(decoder.advance(frame).unwrap().clone());
+            }
+            assert_eq!(
+                *decoded.unwrap().tables[TableId::ResearchInputs.index()],
+                TableView::Complete(research_rows(&[
+                    (1, 0, 11, 1),
+                    (2, 0, 22, 2),
+                    (3, 0, 33, 3)
+                ]))
+            );
+        }
     }
 
     fn staggered_frame(branch: BranchId, hour: i32, skip: bool) -> DecodedFrame {
@@ -6189,6 +7040,14 @@ mod tests {
                 }
             }
         }
+        // A retired table decodes as its catalogued refusal.
+        for table in TableId::ALL {
+            if let Some(reason) = super::retired_reason(table) {
+                tables[table.index()] = TableView::Unavailable {
+                    reason: reason.into(),
+                };
+            }
+        }
         DecodedFrame {
             branch,
             hour,
@@ -6197,11 +7056,16 @@ mod tests {
         }
     }
 
-    /// Rows of a staggered (daily) table.
+    /// A staggered (daily) table.
+    const DAILY: TableId = TableId::AirAces;
+
+    /// Rows of [`DAILY`].
     fn daily_rows(value: u8) -> TableRows {
-        TableRows::ProvinceNames(vec![replay::rows::ProvinceNameRow {
-            province: 7,
+        assert!(replay::cadence::is_staggered(DAILY));
+        TableRows::AirAces(vec![replay::rows::AirAceRow {
+            id: 7,
             name: vec![0, 0xff, value],
+            ..Default::default()
         }])
     }
 
@@ -6552,7 +7416,11 @@ mod tests {
         }
         // The first frame's ticks came before the observation began; hour 1
         // carries hour 0's publication; hour 2 publishes hour 1's two ticks.
-        assert_eq!(published, [(0, 0, 0), (0, 0, 0), (4, 4, 0)]);
+        let retired = replay::rows::RetiredI64::default();
+        assert_eq!(
+            published,
+            [(0, retired, 0), (0, retired, 0), (4, retired, 0)]
+        );
     }
 
     /// Each hour's drained construction output reaches the branch totals whether
@@ -6815,12 +7683,12 @@ mod tests {
             branch,
             &mut SpoolConversion {
                 variables_baseline: None,
-                template_names_baseline: None,
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: Some(&mut reuse),
                 intel: None,
                 projection: None,
+                helper: None,
             },
         );
         assert_eq!(
@@ -7068,12 +7936,12 @@ mod tests {
             1,
             &mut SpoolConversion {
                 variables_baseline: None,
-                template_names_baseline: None,
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: None,
                 intel: Some(&mut reuse),
                 projection: None,
+                helper: None,
             },
         );
         assert_eq!(
@@ -7160,12 +8028,12 @@ mod tests {
                             branch,
                             &mut SpoolConversion {
                                 variables_baseline: None,
-                                template_names_baseline: None,
                                 variables_scratch: &mut ScriptVariableComparison::default(),
                                 characters: Some(&mut reuse),
                                 lexical: None,
                                 intel: None,
                                 projection: None,
+                                helper: None,
                             },
                         )
                         .0;
@@ -7184,6 +8052,8 @@ mod tests {
                 campaign
                     .write(current, 1001, Some(1), 0, &mut WorkSample::default())
                     .unwrap();
+                // The runtime frees what the commit handed back.
+                campaign.retired.clear();
                 assert!(previous.upgrade().is_none());
                 let next = character_frame(&mut campaign, branch, 2, 10);
                 assert!(matches!(
@@ -7205,7 +8075,7 @@ mod tests {
     fn staggered_complete_cache_and_encoder_share_refreshes_off_hours_and_keyframes() {
         let (mut campaign, store) = campaign();
         let mut reference = FrameEncoder::new();
-        let table = TableId::ProvinceNames;
+        let table = DAILY;
         let mut value = 1;
         let mut previous_allocation = None;
         let mut previous_hour = None;
@@ -7242,7 +8112,7 @@ mod tests {
                 staggered_frame(branch, hour, true).into()
             };
             let sampled_literal = match &input.tables[table.index()] {
-                TableInput::Sampled(TableView::Complete(TableRows::ProvinceNames(rows))) => {
+                TableInput::Sampled(TableView::Complete(TableRows::AirAces(rows))) => {
                     Some(rows[0].name.as_ptr())
                 }
                 _ => None,
@@ -7253,9 +8123,7 @@ mod tests {
                 assert!(Arc::ptr_eq(rows, cached_complete(&campaign, table)));
                 if let Some(pointer) = sampled_literal {
                     assert_eq!(
-                        rows.rows::<tables::ProvinceNames>().unwrap()[0]
-                            .name
-                            .as_ptr(),
+                        rows.rows::<tables::AirAces>().unwrap()[0].name.as_ptr(),
                         pointer
                     );
                 }
@@ -7273,6 +8141,8 @@ mod tests {
                     &mut WorkSample::default(),
                 )
                 .unwrap();
+            // The runtime frees what the commit handed back.
+            campaign.retired.clear();
             let rows = cached_complete(&campaign, table);
             assert_eq!(
                 Arc::strong_count(rows),
@@ -7308,7 +8178,7 @@ mod tests {
     #[test]
     fn latest_shared_sample_survives_encoding_or_write_failure_and_recovery_snapshots_it() {
         use replay::frame::TableUpdate;
-        let table = TableId::ProvinceNames;
+        let table = DAILY;
         for fail_encoding in [false, true] {
             let (mut campaign, store) = campaign();
             let branch = campaign.observe(None, 0, Some(1)).unwrap();
@@ -7376,7 +8246,6 @@ mod tests {
     #[test]
     fn open_spool_carries_skip_marker_but_restart_materializes_cached_rows() {
         use replay::frame::{FrameDecoder, TableUpdate};
-        use replay::rows::TableId;
         let (mut campaign, _) = campaign();
         let branch = campaign.observe(None, 0, Some(1)).unwrap();
         let mut first = staggered_frame(branch, 0, false);
@@ -7393,11 +8262,11 @@ mod tests {
         let mut second = staggered_frame(branch, 1, true);
         campaign.apply_staggered_cache(&mut second);
         assert!(
-            matches!(&*second.tables[TableId::ProvinceNames.index()], TableView::Unavailable { reason } if reason == replay::cadence::SKIPPED_REASON)
+            matches!(&*second.tables[DAILY.index()], TableView::Unavailable { reason } if reason == replay::cadence::SKIPPED_REASON)
         );
         let encoded = campaign.encoder.encode(second, false).unwrap();
         assert_eq!(
-            encoded.tables[TableId::ProvinceNames.index()],
+            encoded.tables[DAILY.index()],
             TableUpdate::Unchanged { baseline: 0 }
         );
         assert_eq!(decoder.apply(&encoded).unwrap(), first.clone_with_hour(1));
@@ -7418,21 +8287,21 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         let mut first = staggered_frame(branch, 0, false);
         let skipped = campaign.apply_staggered_cache(&mut first);
-        assert!(!skipped[TableId::ProvinceNames.index()]);
+        assert!(!skipped[DAILY.index()]);
         let frame = encoder.encode(first.clone(), false).unwrap();
         assert!(matches!(
-            frame.tables[TableId::ProvinceNames.index()],
+            frame.tables[DAILY.index()],
             TableUpdate::Snapshot(_)
         ));
         assert_eq!(decoder.apply(&frame).unwrap(), first);
         let mut second = staggered_frame(branch, 1, true);
         let skipped = campaign.apply_staggered_cache(&mut second);
-        assert!(skipped[TableId::ProvinceNames.index()]);
+        assert!(skipped[DAILY.index()]);
         assert!(!skipped[TableId::Clock.index()]);
         assert_eq!(second, first.clone_with_hour(1));
         let frame = encoder.encode(second.clone(), false).unwrap();
         assert_eq!(
-            frame.tables[TableId::ProvinceNames.index()],
+            frame.tables[DAILY.index()],
             TableUpdate::Unchanged { baseline: 0 }
         );
         assert_eq!(decoder.apply(&frame).unwrap(), second);
@@ -7468,14 +8337,16 @@ mod tests {
         let mut expected_tables: [Option<TableView>; TABLE_COUNT] = std::array::from_fn(|_| None);
         for hour in 0..48 {
             let mut hourly = staggered_frame(branch, hour, false);
-            *hourly.tables[TableId::ProvinceNames.index()] =
-                TableView::Complete(daily_rows(hour as u8));
+            *hourly.tables[DAILY.index()] = TableView::Complete(daily_rows(hour as u8));
             let hourly_frame = hourly_encoder.encode(hourly.clone(), false).unwrap();
             let hourly_decoded = hourly_decoder.apply(&hourly_frame).unwrap().clone();
             let mut staggered = hourly;
             for table in TableId::ALL {
                 let index = table.index();
-                if replay::cadence::should_walk(table, hour, hour == 0) {
+                // A retired table is never walked; both recordings decode
+                // its catalogued refusal every hour.
+                let retired = super::retired_reason(table).is_some();
+                if retired || replay::cadence::should_walk(table, hour, hour == 0) {
                     expected_tables[index] = Some((*hourly_decoded.tables[index]).clone());
                 } else {
                     *staggered.tables[index] = TableView::Unavailable {
@@ -7499,16 +8370,15 @@ mod tests {
 
     #[test]
     fn branch_start_clears_staggered_cache() {
-        use replay::rows::TableId;
         let (mut campaign, _) = campaign();
         let mut first = staggered_frame(1, 0, false);
         campaign.apply_staggered_cache(&mut first);
         let mut second = staggered_frame(2, 1, true);
         let skipped = campaign.apply_staggered_cache(&mut second);
-        assert!(skipped[TableId::ProvinceNames.index()]);
+        assert!(skipped[DAILY.index()]);
         assert!(
             matches!(
-                &*second.tables[TableId::ProvinceNames.index()],
+                &*second.tables[DAILY.index()],
                 TableView::Unavailable { reason } if reason.contains("full refresh required")
             ),
             "new branch must not carry stale rows"
@@ -7566,242 +8436,5 @@ mod tests {
             "post-truncation refresh must be a snapshot, not delta/unchanged"
         );
         assert_eq!(decoder.apply(&frame).unwrap(), second);
-    }
-
-    // PRIVATE UNRUN: append INSIDE collector/spooling.rs existing tests module.
-
-    #[test]
-    fn shared_attack_scalars_are_masked_after_spool_carry_and_survive_delta_and_independent_keyframes()
-     {
-        engine::executable_tables::initialize_for_tests()
-            .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
-        use replay::frame::FrameDecoder;
-        use replay::rows::{
-            CountryAttackInputs, CountryCounterInputRow, ProvinceAttackInputs, Recorded,
-            ReservedCountryNamingRow, TableRows, WeatherRegionAttackInputs, WeatherRegionRow,
-        };
-        let (mut campaign, _) = campaign();
-        let branch = campaign.observe(None, 0, Some(1)).unwrap();
-        let held = [
-            (
-                TableId::CountryCounterInputs,
-                Arc::new(TableRows::CountryCounterInputs(vec![
-                    CountryCounterInputRow {
-                        country: 3,
-                        owned_state_count: -23,
-                        controlled_state_count: 17,
-                        attack: Recorded::Value(CountryAttackInputs {
-                            sample_hour: 0,
-                            land_night_attack: Some(i64::MIN),
-                            land_bunker_effectiveness_factor: Some(i64::MAX),
-                        }),
-                        ..Default::default()
-                    },
-                ])),
-            ),
-            (
-                TableId::ReservedCountryNaming,
-                Arc::new(TableRows::ReservedCountryNaming(vec![
-                    ReservedCountryNamingRow {
-                        tag: b"synthetic-reserved".to_vec(),
-                        built: 3,
-                        attack: Recorded::Value(Some(CountryAttackInputs {
-                            sample_hour: 0,
-                            land_night_attack: Some(-17),
-                            land_bunker_effectiveness_factor: Some(29),
-                        })),
-                        ..Default::default()
-                    },
-                ])),
-            ),
-            (
-                TableId::Provinces,
-                Arc::new(TableRows::Provinces(vec![ProvinceRow {
-                    id: 7,
-                    fort_positive: 1,
-                    victory_points: -13,
-                    attack: Recorded::Value(ProvinceAttackInputs {
-                        sample_hour: 0,
-                        fort_sum: Some(3),
-                        land_bunker_effectiveness_factor: Some(47),
-                    }),
-                    ..Default::default()
-                }])),
-            ),
-            (
-                TableId::WeatherRegions,
-                Arc::new(TableRows::WeatherRegions(vec![WeatherRegionRow {
-                    id: 0,
-                    max_snow: i64::MAX,
-                    light_rain: 1,
-                    heavy_rain: 0,
-                    snow: 255,
-                    blizzard: 1,
-                    sandstorm: 2,
-                    arctic_water: 3,
-                    attack: Recorded::Value(WeatherRegionAttackInputs {
-                        sample_hour: 0,
-                        attack: Some(-9_007_199_254_740_993),
-                        breakthrough: Some(100_000),
-                    }),
-                }])),
-            ),
-        ];
-        let valid = engine::fixed_layout::Report {
-            static_token_maximum: 0x6000,
-            gap: Ok(()),
-            modifiers: [Ok(()); engine::fixed_layout::GAP as usize],
-            tokens: [Ok(()); engine::fixed_layout::TOKEN_IDS.len()],
-        };
-        let mut bad = valid;
-        bad.modifiers[engine::modifier_keys::LAND_NIGHT_ATTACK as usize] =
-            Err("fixture fixed slot moved");
-        let layouts: [crate::fixed_layout::Layout; 3] =
-            [Ok(valid), Err("fixture witness interrupted"), Ok(bad)];
-        let mut decoder = FrameDecoder::new();
-        for (hour, layout) in layouts.iter().enumerate() {
-            let mut source: FrameInput = staggered_frame(branch, hour as i32, hour != 0).into();
-            campaign.apply_staggered_inputs(&mut source);
-            // Recovery may supply SharedComplete after assembly. These immutable
-            // held rows deliberately still contain the old nonzero scalar values.
-            for (table, rows) in &held {
-                source.tables[table.index()] = TableInput::SharedComplete(Arc::clone(rows));
-            }
-            crate::fixed_layout::mask_attack(&mut source.tables, Some(layout)).unwrap();
-            crate::fixed_layout::apply(&mut source.tables, layout).unwrap();
-            let frame = campaign.encoder.encode_input(source, hour != 1).unwrap();
-            let decoded = decoder.apply(&frame).unwrap();
-            let country = &decoded.complete::<tables::CountryCounterInputs>().unwrap()[0];
-            assert_eq!(
-                (country.owned_state_count, country.controlled_state_count),
-                (-23, 17)
-            );
-            assert_eq!(
-                country.attack,
-                Recorded::Value(CountryAttackInputs {
-                    sample_hour: 0,
-                    land_night_attack: (hour == 0).then_some(i64::MIN),
-                    land_bunker_effectiveness_factor: (hour == 0).then_some(i64::MAX)
-                })
-            );
-            let reserved = &decoded.complete::<tables::ReservedCountryNaming>().unwrap()[0];
-            assert_eq!(
-                (&reserved.tag[..], reserved.built),
-                (&b"synthetic-reserved"[..], 3)
-            );
-            assert_eq!(
-                reserved.attack,
-                Recorded::Value(Some(CountryAttackInputs {
-                    sample_hour: 0,
-                    land_night_attack: (hour == 0).then_some(-17),
-                    land_bunker_effectiveness_factor: (hour == 0).then_some(29)
-                }))
-            );
-            let province = &decoded.complete::<tables::Provinces>().unwrap()[0];
-            assert_eq!((province.fort_positive, province.victory_points), (1, -13));
-            assert_eq!(
-                province.attack,
-                Recorded::Value(ProvinceAttackInputs {
-                    sample_hour: 0,
-                    fort_sum: Some(3),
-                    land_bunker_effectiveness_factor: (hour == 0).then_some(47)
-                })
-            );
-            let weather = &decoded.complete::<tables::WeatherRegions>().unwrap()[0];
-            assert_eq!(
-                (
-                    weather.light_rain,
-                    weather.heavy_rain,
-                    weather.snow,
-                    weather.blizzard,
-                    weather.sandstorm,
-                    weather.arctic_water
-                ),
-                (1, 0, 255, 1, 2, 3)
-            );
-            assert_eq!(
-                weather.attack,
-                Recorded::Value(WeatherRegionAttackInputs {
-                    sample_hour: 0,
-                    attack: (hour == 0).then_some(-9_007_199_254_740_993),
-                    breakthrough: (hour == 0).then_some(100_000)
-                })
-            );
-            if hour != 1 {
-                let alone = FrameDecoder::new().apply(&frame).unwrap();
-                for (table, _) in &held {
-                    assert_eq!(alone.tables[table.index()], decoded.tables[table.index()]);
-                }
-            }
-        }
-        // Masking cloned SharedComplete rows; it did not mutate recovery owners.
-        let TableRows::CountryCounterInputs(rows) = &*held[0].1 else {
-            unreachable!()
-        };
-        assert_eq!(
-            rows[0].attack,
-            Recorded::Value(CountryAttackInputs {
-                sample_hour: 0,
-                land_night_attack: Some(i64::MIN),
-                land_bunker_effectiveness_factor: Some(i64::MAX)
-            })
-        );
-    }
-
-    #[test]
-    fn province_attack_mask_is_part_of_the_scalar_projection_comparison_certificate() {
-        use crate::projection::{Projection, ProjectionScratch, scalar_table};
-        use replay::rows::{ProvinceAttackInputs, Recorded};
-        let mut encoder = replay::frame::FrameEncoder::new();
-        let mut scratch = ProjectionScratch::default();
-        let mut decoder = replay::frame::FrameDecoder::new();
-        // Native fixed-slot changes must remain invisible when the fixed layout
-        // is refused. The healthy fort sum and sample hour are still exact inputs.
-        let raw = ProvinceAttackInputs {
-            sample_hour: 17,
-            fort_sum: Some(3),
-            land_bunker_effectiveness_factor: Some(47),
-        };
-        for (hour, bunker, equal) in [(0, 47, false), (1, -29, true)] {
-            let native = [ProvinceRow {
-                id: 7,
-                fort_positive: 1,
-                attack: Recorded::Value(ProvinceAttackInputs {
-                    land_bunker_effectiveness_factor: Some(bunker),
-                    ..raw
-                }),
-                ..Default::default()
-            }];
-            let input = scalar_table::<tables::Provinces, _>(
-                Some(&mut Projection::new(&encoder, 1, hour, false, &mut scratch)),
-                Outcome::Rows { len: 1 },
-                &native,
-                |row| u128::from(row.id),
-                |row| {
-                    let mut projected = row.clone();
-                    let Recorded::Value(value) = &row.attack else {
-                        panic!("current scalar fixture")
-                    };
-                    projected.attack =
-                        Recorded::Value(crate::fixed_layout::province_attack(*value, None));
-                    projected
-                },
-            );
-            assert_eq!(matches!(input, TableInput::ComparedEqual(_)), equal);
-            let mut frame: FrameInput = staggered_frame(1, hour, false).into();
-            frame.tables[TableId::Provinces.index()] = input;
-            // Production final masking leaves already-certified province inputs
-            // intact; it must not force conversion or invalidate the certificate.
-            crate::fixed_layout::mask_attack(&mut frame.tables, None).unwrap();
-            let encoded = encoder.encode_input(frame, false).unwrap();
-            let actual = decoder.apply(&encoded).unwrap();
-            assert_eq!(
-                actual.complete::<tables::Provinces>().unwrap()[0].attack,
-                Recorded::Value(ProvinceAttackInputs {
-                    land_bunker_effectiveness_factor: None,
-                    ..raw
-                })
-            );
-        }
     }
 }

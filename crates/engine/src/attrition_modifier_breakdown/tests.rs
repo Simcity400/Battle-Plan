@@ -40,13 +40,6 @@ impl Fixture {
         self.word(address, data as u64);
         self.word(address + 8, (count as u64) * 0x1_0000_0001);
     }
-    fn pointers(&mut self, address: usize, values: &[usize]) {
-        let data = self.alloc(values.len() * 8);
-        for (index, &value) in values.iter().enumerate() {
-            self.word(data + index * 8, value as u64);
-        }
-        self.array(address, data, values.len());
-    }
     fn node(&mut self, name: &[u8], values: &[(u32, i64)], children: &[usize]) -> usize {
         let address = self.alloc(0xb0);
         let entries = self.alloc(values.len() * 16);
@@ -97,6 +90,7 @@ fn buffers<'a>(
         text_required: 0,
         stack: crate::walk::Buffer::Fixed(stack),
         stack_required: 0,
+        repeats: None,
     }
 }
 
@@ -133,6 +127,7 @@ fn cold_worker_formatter_arenas_keep_five_thousand_native_labels_and_later_tree_
             text_required: 0,
             stack: crate::walk::Buffer::Growing(&mut stack),
             stack_required: 0,
+            repeats: None,
         };
         capture(&fixture, 0, &mut captured).unwrap();
         assert_eq!(
@@ -404,57 +399,277 @@ fn attrition_root_or_request_shortage_never_certifies_a_partial_identity_census(
     assert_eq!(capture(&fixture, 0, &mut buffers), Err(REQUEST_CAPACITY));
 }
 
-#[test]
-#[cfg(windows)]
-fn attrition_live_census_sizing_keeps_cached_name_and_origins_when_tree_is_unreadable() {
-    use crate::{
-        carmy, ccountry, cgame_state, cname_group_member, cprovince, cunit, cunit_supply_inputs,
+/// The fixture with its reads logged in order, failing each address in
+/// `faults` once (a one-shot fault such as a guard page) and each in
+/// `persistent` every time.
+struct Logged<'a> {
+    fixture: &'a Fixture,
+    reads: std::cell::RefCell<Vec<(usize, usize)>>,
+    faults: std::cell::RefCell<Vec<usize>>,
+    persistent: &'a [usize],
+}
+
+impl Memory for Logged<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.reads.borrow_mut().push((address, output.len()));
+        if self.persistent.contains(&address) {
+            return false;
+        }
+        let mut faults = self.faults.borrow_mut();
+        if let Some(at) = faults.iter().position(|&fault| fault == address) {
+            faults.remove(at);
+            return false;
+        }
+        self.fixture.copy(address, output)
+    }
+}
+
+/// One capture's published trees and its demand (requests, roots, nodes,
+/// text, stack).
+#[derive(Debug, PartialEq)]
+struct Trees {
+    roots: Vec<Root>,
+    nodes: Vec<RawNode>,
+    text: Vec<u8>,
+    demand: [usize; 5],
+}
+
+/// One capture of `requests` with the given faults: its trees, and the
+/// reads it made in order.
+fn logged_capture(
+    fixture: &Fixture,
+    requests: &[Request],
+    faults: &[usize],
+    persistent: &[usize],
+    repeats: Option<&mut RepeatCache>,
+) -> (Trees, Vec<(usize, usize)>) {
+    let memory = Logged {
+        fixture,
+        reads: std::cell::RefCell::new(Vec::new()),
+        faults: std::cell::RefCell::new(faults.to_vec()),
+        persistent,
     };
+    let mut requests = requests.to_vec();
+    let (mut roots, mut nodes, mut text, mut stack) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let len = requests.len();
+    let mut buffers = Buffers {
+        requests: crate::walk::Buffer::Growing(&mut requests),
+        request_len: len,
+        request_required: len,
+        roots: crate::walk::Buffer::Growing(&mut roots),
+        root_len: 0,
+        root_required: 0,
+        nodes: crate::walk::Buffer::Growing(&mut nodes),
+        node_len: 0,
+        node_required: 0,
+        text: crate::walk::Buffer::Growing(&mut text),
+        text_len: 0,
+        text_required: 0,
+        stack: crate::walk::Buffer::Growing(&mut stack),
+        stack_required: 0,
+        repeats,
+    };
+    capture(&memory, 0, &mut buffers).unwrap();
+    let lens = (buffers.root_len, buffers.node_len, buffers.text_len);
+    let demand = [
+        buffers.request_required,
+        buffers.root_required,
+        buffers.node_required,
+        buffers.text_required,
+        buffers.stack_required,
+    ];
+    let trees = Trees {
+        roots: roots[..lens.0].to_vec(),
+        nodes: nodes[..lens.1].to_vec(),
+        text: text[..lens.2].to_vec(),
+        demand,
+    };
+    (trees, memory.reads.into_inner())
+}
+
+/// Whether `reads` are `every` in order with only repeats of reads that
+/// succeeded earlier left out (`one_shot`: the addresses that fail once).
+fn omits_only_successful_repeats(
+    reads: &[(usize, usize)],
+    every: &[(usize, usize)],
+    one_shot: &[usize],
+) -> bool {
+    let mut faults = one_shot.to_vec();
+    let mut succeeded: Vec<(usize, usize)> = Vec::new();
+    let mut next = 0;
+    for &read in every {
+        if reads.get(next) == Some(&read) {
+            next += 1;
+        } else if !succeeded.contains(&read) {
+            return false;
+        }
+        if let Some(at) = faults.iter().position(|&fault| fault == read.0) {
+            faults.remove(at);
+        } else if !succeeded.contains(&read) {
+            succeeded.push(read);
+        }
+    }
+    next == reads.len()
+}
+
+/// `reads` with each repeat of an earlier read that succeeded removed: a
+/// failed read (`one_shot`, once per entry) stays every time it is made
+/// until it succeeds.
+fn without_repeats(reads: &[(usize, usize)], one_shot: &[usize]) -> Vec<(usize, usize)> {
+    let mut faults = one_shot.to_vec();
+    let mut kept: Vec<(usize, usize)> = Vec::new();
+    let mut succeeded: Vec<(usize, usize)> = Vec::new();
+    for &read in reads {
+        if succeeded.contains(&read) {
+            continue;
+        }
+        kept.push(read);
+        if let Some(at) = faults.iter().position(|&fault| fault == read.0) {
+            faults.remove(at);
+        } else {
+            succeeded.push(read);
+        }
+    }
+    kept
+}
+
+/// Three keys over one tree: a branch with a heap-held label, a leaf it
+/// lists twice and a leaf with a short label; and a second accumulator
+/// sharing that short leaf.
+fn repeated_tree(fixture: &mut Fixture) -> ([u32; 3], usize, usize, [usize; 2]) {
+    let keys = [
+        modifier_keys::ATTRITION,
+        modifier_keys::HEAT_ATTRITION,
+        modifier_keys::REFIT_SPEED,
+    ];
+    let long = fixture.node(
+        b"a label held on the heap",
+        &[(keys[0], 5), (keys[2], 7)],
+        &[],
+    );
+    let short = fixture.node(b"short", &[(keys[1], 3)], &[]);
+    let branch = fixture.node(
+        b"branch",
+        &[(keys[0], 1), (keys[1], 2), (keys[2], 0)],
+        &[long, short, long],
+    );
+    let root = fixture.node(b"", &[], &[branch]);
+    let other = fixture.node(b"other", &[(keys[1], 4)], &[short]);
+    (keys, root, other, [long, short])
+}
+
+/// Every key of one accumulator reads only what an earlier key did not:
+/// the cached capture's reads are the uncached capture's with each repeat
+/// of an earlier read removed, in the same order, and its trees and demand
+/// are equal.
+#[test]
+fn an_accumulators_keys_repeat_no_read_and_build_the_same_trees() {
     let mut fixture = Fixture::new();
-    let state = fixture.alloc(0x500);
-    let country = fixture.alloc(0x2000);
-    let province = fixture.alloc(0x200);
-    let army = fixture.alloc(0x800);
-    let member = fixture.alloc(0xb0);
-    fixture.word(country, ccountry::VTABLE_RVA as u64);
-    fixture.put(country + ccountry::ID, &1_u32.to_le_bytes());
-    fixture.pointers(state + cgame_state::COUNTRIES, &[0, country]);
-    let links = fixture.alloc(8);
-    fixture.put(links + 4, &1_u32.to_le_bytes());
-    fixture.array(state + cgame_state::COUNTRY_LINKS, links, 2);
-    fixture.word(province, cprovince::VTABLE_RVA as u64);
-    fixture.put(province + cprovince::ID, &1_u32.to_le_bytes());
-    fixture.pointers(state + cgame_state::PROVINCES, &[0, province]);
-    fixture.word(army, carmy::VTABLE_RVA as u64);
-    fixture.word(
-        army + carmy::SECONDARY_BASE,
-        carmy::SECONDARY_VTABLE_RVA as u64,
-    );
-    fixture.word(army + cunit::HANDLE, (1_u64 << 32) | 51);
-    fixture.put(army + cunit::ROSTER_OWNER, &1_u32.to_le_bytes());
-    fixture.put(army + cunit::LOGICAL_OWNER, &1_u32.to_le_bytes());
-    fixture.word(army + cunit::LOCATION, province as u64);
-    fixture.word(
-        army + crate::carmy_combat_inputs::NAME_GROUP_MEMBER,
-        member as u64,
-    );
-    fixture.pointers(country + ccountry::DIVISIONS, &[army]);
-    fixture.word(member, cname_group_member::VTABLE_RVA as u64);
-    fixture.put(member + cname_group_member::CACHED_NAME, b"exact name");
-    fixture.word(member + cname_group_member::CACHED_NAME + 16, 10);
-    fixture.word(member + cname_group_member::CACHED_NAME + 24, 15);
-    let origins = fixture.alloc(2 * cunit_supply_inputs::ORIGIN_STRIDE);
-    fixture.array(army + cunit_supply_inputs::ORIGINS, origins, 2);
-    // Scalars read an empty root; its independent formatter child is null.
-    let broken = fixture.alloc(8);
-    fixture.array(country + ccountry::MODIFIER_ACCUMULATOR + 0x18, broken, 1);
-    let demand = demand(&fixture, 0, state).unwrap();
-    assert_eq!(
-        (demand.rows, demand.cached_name_text, demand.supply_origins),
-        (1, 10, 2)
-    );
-    assert_eq!(
-        (demand.requests, demand.roots, demand.nodes, demand.depth),
-        (1, 1, 1, 1)
-    );
+    let (keys, root, _, _) = repeated_tree(&mut fixture);
+    let requests = keys.map(|key| Request {
+        accumulator: root,
+        key,
+    });
+    let (trees, every) = logged_capture(&fixture, &requests, &[], &[], None);
+    let mut cache = RepeatCache::default();
+    let (cached, reads) = logged_capture(&fixture, &requests, &[], &[], Some(&mut cache));
+    assert!(trees.roots.iter().all(|root| root.failure.is_none()));
+    assert_eq!(cached, trees);
+    assert_eq!(reads, without_repeats(&every, &[]));
+    assert!(reads.len() * 2 < every.len());
+}
+
+/// Enough distinct reads to grow the cache's slots several times keep
+/// every repeat served and every tree equal.
+#[test]
+fn a_wide_tree_grows_the_cache_and_repeats_no_read() {
+    let mut fixture = Fixture::new();
+    let keys = [modifier_keys::ATTRITION, modifier_keys::HEAT_ATTRITION];
+    let leaves: Vec<_> = (0..200_i64)
+        .map(|index| {
+            let label = format!("leaf {index} with a label held on the heap");
+            fixture.node(
+                label.as_bytes(),
+                &[(keys[(index % 2) as usize], index + 1)],
+                &[],
+            )
+        })
+        .collect();
+    let root = fixture.node(b"root", &[(keys[0], 1)], &leaves);
+    let requests = keys.map(|key| Request {
+        accumulator: root,
+        key,
+    });
+    let (trees, every) = logged_capture(&fixture, &requests, &[], &[], None);
+    let mut cache = RepeatCache::default();
+    let (cached, reads) = logged_capture(&fixture, &requests, &[], &[], Some(&mut cache));
+    assert_eq!(cached, trees);
+    assert_eq!(reads, without_repeats(&every, &[]));
+    assert!(cache.allocated_bytes() > 0);
+}
+
+/// Another accumulator reads its own tree afresh, a shared node included,
+/// and a capture an hour later reads everything again.
+#[test]
+fn repeats_are_kept_only_within_one_accumulator_and_one_capture() {
+    let mut fixture = Fixture::new();
+    let (keys, root, other, [_, short]) = repeated_tree(&mut fixture);
+    let requests: Vec<_> = [root, other]
+        .into_iter()
+        .flat_map(|accumulator| keys.map(|key| Request { accumulator, key }))
+        .collect();
+    let (trees, _) = logged_capture(&fixture, &requests, &[], &[], None);
+    let mut cache = RepeatCache::default();
+    for _ in 0..2 {
+        let (cached, reads) = logged_capture(&fixture, &requests, &[], &[], Some(&mut cache));
+        assert_eq!(cached, trees);
+        let header = (short + 0x18, 16);
+        assert_eq!(reads.iter().filter(|&&read| read == header).count(), 2);
+    }
+}
+
+/// A read that fails is not kept: the next key's walk meets the source
+/// again, as the uncached walks do, so a one-shot fault (of a child header,
+/// an accumulator's entry header or entries, or a heap label's terminator,
+/// which `msvc_string::Descriptor::from_header` reads first, or its bytes)
+/// fails only the first key's tree, and a persistent one every
+/// key's. The cached capture makes the uncached capture's reads with only
+/// the repeats of successful reads removed.
+#[test]
+fn a_failed_read_is_made_again_by_the_next_key() {
+    let mut fixture = Fixture::new();
+    let (keys, root, _, [long, _]) = repeated_tree(&mut fixture);
+    let requests = keys.map(|key| Request {
+        accumulator: root,
+        key,
+    });
+    let entries = u64::from_le_bytes(fixture.0[long..long + 8].try_into().unwrap()) as usize;
+    let label =
+        u64::from_le_bytes(fixture.0[long + 0x48..long + 0x50].try_into().unwrap()) as usize;
+    let label_len = b"a label held on the heap".len();
+    for fault in [long + 0x18, long, entries, label + label_len, label] {
+        let (trees, every) = logged_capture(&fixture, &requests, &[fault], &[], None);
+        assert!(trees.roots[0].failure.is_some(), "{fault:#x}");
+        assert!(trees.roots[1..].iter().all(|root| root.failure.is_none()));
+        let mut cache = RepeatCache::default();
+        let (cached, reads) = logged_capture(&fixture, &requests, &[fault], &[], Some(&mut cache));
+        assert_eq!(cached, trees, "{fault:#x}");
+        // A failed lookup is made again whole, the reads that succeeded
+        // before its fault included, as the uncached lookups make it.
+        assert!(
+            omits_only_successful_repeats(&reads, &every, &[fault]),
+            "{fault:#x}"
+        );
+        assert!(reads.len() < every.len());
+        assert!(reads.iter().filter(|read| read.0 == fault).count() >= 2);
+    }
+    let fault = long + 0x18;
+    let (trees, every) = logged_capture(&fixture, &requests, &[], &[fault], None);
+    assert!(trees.roots.iter().all(|root| root.failure.is_some()));
+    let mut cache = RepeatCache::default();
+    let (cached, reads) = logged_capture(&fixture, &requests, &[], &[fault], Some(&mut cache));
+    assert_eq!(cached, trees);
+    assert_eq!(reads, without_repeats(&every, &[fault; 3]));
+    assert!(omits_only_successful_repeats(&reads, &every, &[fault; 3]));
 }

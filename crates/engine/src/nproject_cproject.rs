@@ -86,13 +86,15 @@ impl Row {
     }
 }
 
-/// Visits each authenticated country's single project pool.
+/// Visits the single project pool of each authenticated country `select`
+/// admits by native id; an unselected country's status and pool are not read.
 /// Pool count is the engine's signed live extent; no collector-specific cap or
 /// speculative adjacent pool/status scan is used.
 fn for_each_pool<M: Memory>(
     memory: &M,
     base: usize,
     game_state: usize,
+    select: &mut dyn FnMut(u32) -> bool,
     mut visit: impl FnMut(
         &ccountry::Reader<'_, M>,
         ccountry::Country,
@@ -106,6 +108,9 @@ fn for_each_pool<M: Memory>(
             continue;
         };
         found_country = true;
+        if !select(country.id) {
+            continue;
+        }
         let status = nproject_cprogram_status::from_country(memory, base, country, &countries)?;
         let projects = nproject_cproject_pool::from_status(memory, base, status)?;
         visit(&countries, country, projects)?;
@@ -120,7 +125,15 @@ fn for_each_pool<M: Memory>(
 /// the owning country. Only capacity limits the walk; exact engine-native
 /// values are neither rounded nor inferred from the saved completion flags.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_tables(memory, base, game_state, Buffer::Fixed(output), None).0
+    walk_tables(
+        memory,
+        base,
+        game_state,
+        Buffer::Fixed(output),
+        None,
+        &mut |_| true,
+    )
+    .0
 }
 
 /// One authenticated pool census produces both tables. Lifecycle/state failures
@@ -165,7 +178,28 @@ pub fn walk_with_history_buffer(
     projects: Buffer<'_, Row>,
     histories: Buffer<'_, history::Row>,
 ) -> (Outcome, Outcome) {
-    walk_tables(memory, base, game_state, projects, Some(histories))
+    walk_tables(
+        memory,
+        base,
+        game_state,
+        projects,
+        Some(histories),
+        &mut |_| true,
+    )
+}
+
+/// [`walk_with_history_buffer`] over the pools of the countries `select`
+/// admits by native id only: their rows, in the same order and with the same
+/// failure precedence, as a walk of every pool returns them.
+pub fn walk_with_history_selected(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    projects: Buffer<'_, Row>,
+    histories: Buffer<'_, history::Row>,
+    select: &mut dyn FnMut(u32) -> bool,
+) -> (Outcome, Outcome) {
+    walk_tables(memory, base, game_state, projects, Some(histories), select)
 }
 
 fn walk_tables(
@@ -174,6 +208,7 @@ fn walk_tables(
     game_state: usize,
     mut projects: Buffer<'_, Row>,
     mut histories: Option<Buffer<'_, history::Row>>,
+    select: &mut dyn FnMut(u32) -> bool,
 ) -> (Outcome, Outcome) {
     let mut project_len = 0_usize;
     let mut project_unread = 0_u32;
@@ -192,178 +227,189 @@ fn walk_tables(
             .checked_add(VTABLE_RVA)
             .ok_or("project vtable overflow")? as u64;
         let decoder = machine::Decoder::new(base)?;
-        for_each_pool(memory, base, game_state, |countries, country, pool| {
-            // Original signed project-pool extent.
-            if project_error.is_none() {
-                projects.ensure(
-                    project_len
-                        .checked_add(pool.count as usize)
-                        .ok_or("project row count overflow")?,
-                )?;
-            }
-            let mut index = 0;
-            // Alias resolution is valid for this one synchronous pool census.
-            // It never survives into another callback or comparison read.
-            let mut authenticated_owner = country.id;
-            while index < pool.count {
-                let capture_project = project_error.is_none() && project_len < projects.len();
-                let mut count = BATCH.min((pool.count - index) as usize);
-                if capture_project {
-                    count = count.min(projects.len() - project_len);
+        for_each_pool(
+            memory,
+            base,
+            game_state,
+            select,
+            |countries, country, pool| {
+                // The project-pool walker supplies the original signed
+                // project-pool extent.
+                if project_error.is_none() {
+                    projects.ensure(
+                        project_len
+                            .checked_add(pool.count as usize)
+                            .ok_or("project row count overflow")?,
+                    )?;
                 }
-                for (ordinal, pointer) in pointers[..count].iter_mut().enumerate() {
-                    *pointer = pool
-                        .element(index + ordinal as u32, POOL_STRIDE)
-                        .ok_or("project address overflow")?;
-                }
-                let layout = if capture_project {
-                    &PROJECT_LAYOUT
-                } else {
-                    &PROJECT_HEADER_LAYOUT
-                };
-                let fields = layout.fields();
-                let copied = memory.copy_records(
-                    RecordSources::Pointers(&pointers[..count]),
-                    layout,
-                    &mut headers[..count * RECORD_SIZE],
-                );
-                if copied > count * fields.len() {
-                    return Err("project batch copy count invalid");
-                }
-                if copied < count * fields.len() && copied.is_multiple_of(fields.len()) {
-                    return Err("project identity unreadable");
-                }
-                let header_count = copied.div_ceil(fields.len());
-                if header_count == 0 {
-                    return Err("project identity unreadable");
-                }
-                if copied < count * fields.len() {
-                    // A flag read failed after its header completed. Keep all
-                    // history headers, then continue after that record without
-                    // retrying its failed field or accessing its state machine.
-                    project_error = Some("project lifecycle unreadable");
-                }
-                for ordinal in 0..header_count {
-                    let bytes = &headers[ordinal * RECORD_SIZE..(ordinal + 1) * RECORD_SIZE];
-                    if u64_at(bytes, 0) != expected {
-                        return Err("project vtable mismatch");
+                let mut index = 0;
+                // Alias resolution is valid for this one synchronous pool census.
+                // It never survives into another callback or comparison read.
+                let mut authenticated_owner = country.id;
+                while index < pool.count {
+                    let capture_project = project_error.is_none() && project_len < projects.len();
+                    let mut count = BATCH.min((pool.count - index) as usize);
+                    if capture_project {
+                        count = count.min(projects.len() - project_len);
                     }
-                    if u32_at(bytes, TYPE) != REFERENCE_TYPE {
-                        return Err("project reference type mismatch");
+                    for (ordinal, pointer) in pointers[..count].iter_mut().enumerate() {
+                        *pointer = pool
+                            .element(index + ordinal as u32, POOL_STRIDE)
+                            .ok_or("project address overflow")?;
                     }
-                    if u32_at(bytes, ID) == 0 {
-                        return Err("project local id is zero");
-                    }
-                    let owner = u32_at(bytes, OWNER);
-                    if owner != authenticated_owner {
-                        if countries.resolve(owner)?.pointer != country.pointer {
-                            return Err("project pool owner mismatch");
-                        }
-                        authenticated_owner = owner;
-                    }
-                    machine_pointers[ordinal] = usize::try_from(u64_at(bytes, STATE_MACHINE))
-                        .map_err(|_| "project state address overflow")?;
-                }
-                if capture_project && project_error.is_none() {
-                    // The recorded words, then each row's current phase.
-                    let copied = memory.copy_records(
-                        RecordSources::Pointers(&machine_pointers[..header_count]),
-                        &machine::LAYOUT,
-                        &mut machines[..header_count * machine::FIELDS_SIZE],
-                    );
-                    let copied = copied == header_count * machine::FIELDS.len() && {
-                        for (ordinal, source) in
-                            phase_pointers[..header_count].iter_mut().enumerate()
-                        {
-                            *source = machine::phase_source(
-                                machine_pointers[ordinal],
-                                machine_fields(&machines, ordinal),
-                            );
-                        }
-                        memory.copy_records(
-                            RecordSources::Pointers(&phase_pointers[..header_count]),
-                            &machine::PHASE_LAYOUT,
-                            &mut phases[..header_count * machine::PHASE_SIZE],
-                        ) == header_count
+                    let layout = if capture_project {
+                        &PROJECT_LAYOUT
+                    } else {
+                        &PROJECT_HEADER_LAYOUT
                     };
-                    if !copied {
-                        project_error = Some("project state machine unreadable");
+                    let fields = layout.fields();
+                    let copied = memory.copy_records(
+                        RecordSources::Pointers(&pointers[..count]),
+                        layout,
+                        &mut headers[..count * RECORD_SIZE],
+                    );
+                    if copied > count * fields.len() {
+                        return Err("project batch copy count invalid");
                     }
-                }
-                for ordinal in 0..header_count {
-                    let bytes = &headers[ordinal * RECORD_SIZE..(ordinal + 1) * RECORD_SIZE];
-                    let owner = u32_at(bytes, OWNER);
-                    let id = u32_at(bytes, ID);
-                    if project_error.is_none() {
-                        if !capture_project {
-                            project_unread = project_unread
-                                .checked_add(1)
-                                .ok_or("project row count overflow")?;
-                        } else {
-                            let row = (|| {
-                                let flags = &bytes[HEADER_LEN..];
-                                if flags.iter().any(|&flag| flag > 1) {
-                                    return Err("project lifecycle flag invalid");
+                    if copied < count * fields.len() && copied.is_multiple_of(fields.len()) {
+                        return Err("project identity unreadable");
+                    }
+                    let header_count = copied.div_ceil(fields.len());
+                    if header_count == 0 {
+                        return Err("project identity unreadable");
+                    }
+                    if copied < count * fields.len() {
+                        // A flag read failed after its header completed. Keep all
+                        // history headers, then continue after that record without
+                        // retrying its failed field or accessing its state machine.
+                        project_error = Some("project lifecycle unreadable");
+                    }
+                    for ordinal in 0..header_count {
+                        let bytes = &headers[ordinal * RECORD_SIZE..(ordinal + 1) * RECORD_SIZE];
+                        if u64_at(bytes, 0) != expected {
+                            return Err("project vtable mismatch");
+                        }
+                        if u32_at(bytes, TYPE) != REFERENCE_TYPE {
+                            return Err("project reference type mismatch");
+                        }
+                        if u32_at(bytes, ID) == 0 {
+                            return Err("project local id is zero");
+                        }
+                        let owner = u32_at(bytes, OWNER);
+                        if owner != authenticated_owner {
+                            if countries.resolve(owner)?.pointer != country.pointer {
+                                return Err("project pool owner mismatch");
+                            }
+                            authenticated_owner = owner;
+                        }
+                        machine_pointers[ordinal] =
+                            usize::try_from(u64_at(bytes, STATE_MACHINE))
+                                .map_err(|_| "project state address overflow")?;
+                    }
+                    if capture_project && project_error.is_none() {
+                        // The recorded words, then each row's current phase.
+                        let copied = memory.copy_records(
+                            RecordSources::Pointers(&machine_pointers[..header_count]),
+                            &machine::LAYOUT,
+                            &mut machines[..header_count * machine::FIELDS_SIZE],
+                        );
+                        let copied = copied == header_count * machine::FIELDS.len() && {
+                            for (ordinal, source) in
+                                phase_pointers[..header_count].iter_mut().enumerate()
+                            {
+                                *source = machine::phase_source(
+                                    machine_pointers[ordinal],
+                                    machine_fields(&machines, ordinal),
+                                );
+                            }
+                            memory.copy_records(
+                                RecordSources::Pointers(&phase_pointers[..header_count]),
+                                &machine::PHASE_LAYOUT,
+                                &mut phases[..header_count * machine::PHASE_SIZE],
+                            ) == header_count
+                        };
+                        if !copied {
+                            project_error = Some("project state machine unreadable");
+                        }
+                    }
+                    for ordinal in 0..header_count {
+                        let bytes = &headers[ordinal * RECORD_SIZE..(ordinal + 1) * RECORD_SIZE];
+                        let owner = u32_at(bytes, OWNER);
+                        let id = u32_at(bytes, ID);
+                        if project_error.is_none() {
+                            if !capture_project {
+                                project_unread = project_unread
+                                    .checked_add(1)
+                                    .ok_or("project row count overflow")?;
+                            } else {
+                                let row = (|| {
+                                    let flags = &bytes[HEADER_LEN..];
+                                    if flags.iter().any(|&flag| flag > 1) {
+                                        return Err("project lifecycle flag invalid");
+                                    }
+                                    let phase = ordinal * machine::PHASE_SIZE;
+                                    Ok(Row {
+                                        owner,
+                                        local_id: id,
+                                        definition_id: u32_at(bytes, DEFINITION_HANDLE),
+                                        program_reference: u64_at(bytes, PROGRAM_REFERENCE_TYPE),
+                                        started: flags[0],
+                                        completed: flags[1],
+                                        state: decoder.decode(
+                                            machine_pointers[ordinal],
+                                            machine_fields(&machines, ordinal),
+                                            phases[phase..phase + machine::PHASE_SIZE]
+                                                .try_into()
+                                                .unwrap(),
+                                        )?,
+                                    })
+                                })();
+                                match row {
+                                    Ok(row) => {
+                                        projects[project_len] = row;
+                                        project_len += 1;
+                                    }
+                                    Err(reason) => project_error = Some(reason),
                                 }
-                                let phase = ordinal * machine::PHASE_SIZE;
-                                Ok(Row {
-                                    owner,
-                                    local_id: id,
-                                    definition_id: u32_at(bytes, DEFINITION_HANDLE),
-                                    program_reference: u64_at(bytes, PROGRAM_REFERENCE_TYPE),
-                                    started: flags[0],
-                                    completed: flags[1],
-                                    state: decoder.decode(
-                                        machine_pointers[ordinal],
-                                        machine_fields(&machines, ordinal),
-                                        phases[phase..phase + machine::PHASE_SIZE]
-                                            .try_into()
-                                            .unwrap(),
-                                    )?,
-                                })
+                            }
+                        }
+                        if let Some(output) = histories.as_mut().filter(|_| history_error.is_none())
+                        {
+                            let result = (|| {
+                                let array = history_array(bytes[..HEADER_LEN].try_into().unwrap())?;
+                                // Project history update retains this history
+                                // vector in its parent header.
+                                output.ensure(
+                                    history_len
+                                        .checked_add(array.count as usize)
+                                        .ok_or("project history row count overflow")?,
+                                )?;
+                                let read_count =
+                                    (array.count as usize).min(output.len() - history_len) as u32;
+                                history_unread = history_unread
+                                    .checked_add(array.count - read_count)
+                                    .ok_or("project history omitted row count overflow")?;
+                                for ordinal in 0..read_count {
+                                    let address = array
+                                        .element(ordinal, history::STRIDE)
+                                        .ok_or("project history row address overflow")?;
+                                    output[history_len] = history::read_row(
+                                        memory, base, address, owner, id, ordinal,
+                                    )?;
+                                    history_len += 1;
+                                }
+                                Ok(())
                             })();
-                            match row {
-                                Ok(row) => {
-                                    projects[project_len] = row;
-                                    project_len += 1;
-                                }
-                                Err(reason) => project_error = Some(reason),
+                            if let Err(reason) = result {
+                                history_error = Some(reason);
                             }
                         }
                     }
-                    if let Some(output) = histories.as_mut().filter(|_| history_error.is_none()) {
-                        let result = (|| {
-                            let array = history_array(bytes[..HEADER_LEN].try_into().unwrap())?;
-                            // The parent header retains this history vector.
-                            output.ensure(
-                                history_len
-                                    .checked_add(array.count as usize)
-                                    .ok_or("project history row count overflow")?,
-                            )?;
-                            let read_count =
-                                (array.count as usize).min(output.len() - history_len) as u32;
-                            history_unread = history_unread
-                                .checked_add(array.count - read_count)
-                                .ok_or("project history omitted row count overflow")?;
-                            for ordinal in 0..read_count {
-                                let address = array
-                                    .element(ordinal, history::STRIDE)
-                                    .ok_or("project history row address overflow")?;
-                                output[history_len] =
-                                    history::read_row(memory, base, address, owner, id, ordinal)?;
-                                history_len += 1;
-                            }
-                            Ok(())
-                        })();
-                        if let Err(reason) = result {
-                            history_error = Some(reason);
-                        }
-                    }
+                    index += header_count as u32;
                 }
-                index += header_count as u32;
-            }
-            Ok(())
-        })
+                Ok(())
+            },
+        )
     })();
     if let Err(reason) = result {
         return (
@@ -596,6 +642,67 @@ mod tests {
             );
         }
         bytes
+    }
+
+    /// A walk over a selection reads an unselected country's status and pool
+    /// not at all and returns the selected pools' rows as a full walk does.
+    #[test]
+    fn a_selected_walk_reads_only_the_selected_pools() {
+        struct Reads<'a> {
+            memory: SliceMemory<'a>,
+            status: std::cell::Cell<bool>,
+        }
+        impl Memory for Reads<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                if (STATUS..STATUS + 0x100).contains(&address) {
+                    self.status.set(true);
+                }
+                self.memory.copy(address, destination)
+            }
+        }
+        let bytes = fixture();
+        let memory = Reads {
+            memory: SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            status: Default::default(),
+        };
+        let mut full = (vec![], vec![]);
+        let expected = walk_with_history_growing(&memory.memory, 0, GAME, &mut full.0, &mut full.1);
+        let mut projects = vec![];
+        let mut histories = vec![];
+        let mut selected = |id: u32| id == 3;
+        assert_eq!(
+            walk_with_history_selected(
+                &memory,
+                0,
+                GAME,
+                Buffer::Growing(&mut projects),
+                Buffer::Growing(&mut histories),
+                &mut selected,
+            ),
+            expected
+        );
+        assert!(memory.status.get());
+        assert_eq!((projects, histories), full);
+        let memory = Reads {
+            status: Default::default(),
+            ..memory
+        };
+        let (mut projects, mut histories) = (vec![], vec![]);
+        assert_eq!(
+            walk_with_history_selected(
+                &memory,
+                0,
+                GAME,
+                Buffer::Growing(&mut projects),
+                Buffer::Growing(&mut histories),
+                &mut |_| false,
+            ),
+            (Outcome::Rows { len: 0 }, Outcome::Rows { len: 0 })
+        );
+        assert!(!memory.status.get());
     }
 
     #[test]

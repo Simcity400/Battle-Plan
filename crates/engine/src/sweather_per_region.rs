@@ -63,29 +63,6 @@ pub const FIELDS: [RecordField; 7] = {
 pub const RECORD_BYTES: usize = 18;
 
 pub(crate) fn walk(memory: &impl Memory, base: usize, array: Array, output: &mut [Row]) -> Outcome {
-    walk_with_attack(
-        memory,
-        base,
-        array,
-        output,
-        0,
-        &mut [],
-        &mut crate::selected_attack::ScalarMetadata::default(),
-    )
-}
-
-/// Reuse original dense identity/flags gather; the suffix has independent
-/// current-pass numeric/cache failures and never changes the prefix outcome.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn walk_with_attack(
-    memory: &impl Memory,
-    base: usize,
-    array: Array,
-    output: &mut [Row],
-    hour: i32,
-    attack: &mut [crate::selected_attack::WeatherAttack],
-    metadata: &mut crate::selected_attack::ScalarMetadata,
-) -> Outcome {
     let Some(vtable) = base.checked_add(VTABLE_RVA) else {
         return Outcome::Unavailable {
             reason: "module address overflow",
@@ -98,21 +75,7 @@ pub(crate) fn walk_with_attack(
         &FIELDS,
         RECORD_BYTES,
         output,
-        |index, record, copied| {
-            let row = decode_record(index, record, copied, vtable)?;
-            if let Some(destination) = attack.get_mut(index as usize) {
-                *destination = match array.element(index, STRIDE) {
-                    Some(pointer) => crate::selected_attack::WeatherAttack::capture_authenticated(
-                        memory, base, pointer, hour, metadata,
-                    ),
-                    None => crate::selected_attack::WeatherAttack::refused(
-                        hour,
-                        "selected attack weather region address invalid",
-                    ),
-                };
-            }
-            Ok(row)
-        },
+        |index, record, copied| decode_record(index, record, copied, vtable),
     )
 }
 

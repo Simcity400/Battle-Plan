@@ -33,6 +33,9 @@ pub const GET_OR_CREATE_RECORD_RVA: usize = 0x0195_0340;
 pub const UPDATE_RECORD_RVA: usize = 0x0194_f590;
 /// Pruning records older than the runtime timeout from both vectors.
 pub const PRUNE_RVA: usize = 0x0195_01b0;
+/// `NGame.AIR_LOG_TIMEOUT_HOURS`, loaded as an i32 and subtracted from the game
+/// clock at `+0x468` when pruning air records.
+pub const LOG_TIMEOUT_RVA: usize = 0x0331_da14;
 
 /// One non-null slot from a completely enumerated, authenticated CStrategicAir
 /// region table. The slot index is the native strategic-region id. Addresses
@@ -452,6 +455,283 @@ fn outcome(len: usize, unread_rows: u32) -> Outcome {
     } else {
         Outcome::Truncated { len, unread_rows }
     }
+}
+
+/// One `SDamageEntry`: its cause and signed fixed5 amount.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Damage {
+    pub cause: u32,
+    pub amount: i64,
+}
+
+/// One `SAirWingCombatData` with both damage vectors in native order.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Record {
+    pub wing_id: u32,
+    pub date: i32,
+    pub planes: i32,
+    pub mission_mask: u32,
+    pub selection: u8,
+    pub classification: u8,
+    pub copied: u8,
+    pub attributed_country: u32,
+    /// `+0x20` (causes 0, 1, 2, 6, 7) and `+0x38` (3, 4, 5, 9, 10).
+    pub damage: [Vec<Damage>; 2],
+}
+
+/// One record vector of a holder: its native count, and the records from
+/// `first` to the end in native order.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Side {
+    pub count: u32,
+    pub first: u32,
+    pub records: Vec<Record>,
+}
+
+/// One holder: its raw owner and both record vectors (`+0x08`, the wings of
+/// the owner's country; `+0x20`, the others').
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Holder {
+    pub owner: u32,
+    pub sides: [Side; 2],
+}
+
+/// Reads a holder whose address an authenticated census or the record updater
+/// named. `since: None` reads every record; `Some(hour)` reads only each
+/// vector's maximal suffix dated at or after `hour`, the records record
+/// lookup's reverse scan can still reach and the updater can still change: one
+/// date read finds the suffix, then each record and its damage is read in
+/// native order. No allocation beyond the returned vectors (checked growth), no
+/// retry and no engine call.
+pub fn read_holder(
+    memory: &impl Memory,
+    base: usize,
+    address: usize,
+    since: Option<i32>,
+) -> Result<Holder, &'static str> {
+    let mut identity = [0_u8; ROOT_RECORD_BYTES];
+    let copied = memory.copy_records(
+        RecordSources::Pointers(&[address]),
+        &ROOT_LAYOUT,
+        &mut identity,
+    );
+    let expected = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("module address overflow")?;
+    if copied == 0 || u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected as u64 {
+        return Err("air combat region vtable mismatch or unreadable");
+    }
+    if copied < ROOT_FIELDS.len() {
+        return Err("air combat region header unreadable");
+    }
+    let mut holder = Holder {
+        owner: u32::from_le_bytes(identity[8..12].try_into().unwrap()),
+        ..Default::default()
+    };
+    for (side, header) in [12_usize, 28].into_iter().enumerate() {
+        let vector = Array::from_header(
+            identity[header..header + 16].try_into().unwrap(),
+            sair_wing_combat_data::STRIDE,
+        )
+        .ok_or("air combat record vector invalid")?;
+        let mut first = vector.count;
+        if let Some(since) = since {
+            while first > 0 {
+                let record = vector
+                    .element(first - 1, sair_wing_combat_data::STRIDE)
+                    .ok_or("air combat record address overflow")?;
+                let date = record
+                    .checked_add(sair_wing_combat_data::DATE)
+                    .and_then(|at| crate::read::<i32>(memory, at))
+                    .ok_or("air combat record date unreadable")?;
+                if date < since {
+                    break;
+                }
+                first -= 1;
+            }
+        } else {
+            first = 0;
+        }
+        let out = &mut holder.sides[side];
+        out.count = vector.count;
+        out.first = first;
+        crate::allocation::reserve_exact(&mut out.records, (vector.count - first) as usize)
+            .map_err(|_| "air combat record allocation failed")?;
+        for ordinal in first..vector.count {
+            let record = vector
+                .element(ordinal, sair_wing_combat_data::STRIDE)
+                .ok_or("air combat record address overflow")?;
+            out.records.push(read_record(memory, base, record)?);
+        }
+    }
+    Ok(holder)
+}
+
+fn read_record(memory: &impl Memory, base: usize, address: usize) -> Result<Record, &'static str> {
+    let row = sair_wing_combat_data::read_row(memory, base, address, 0, 0, 0, 0)?;
+    let mut damage: [Vec<Damage>; 2] = Default::default();
+    for (channel, offset) in [
+        sair_wing_combat_data::FIRST_DAMAGE,
+        sair_wing_combat_data::SECOND_DAMAGE,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let header = address
+            .checked_add(offset)
+            .ok_or("air damage vector address overflow")?;
+        let entries = Array::read(memory, header, sdamage_entry::STRIDE)
+            .ok_or("air damage vector unreadable or invalid")?;
+        crate::allocation::reserve_exact(&mut damage[channel], entries.count as usize)
+            .map_err(|_| "air damage allocation failed")?;
+        for index in 0..entries.count {
+            let entry = entries
+                .element(index, sdamage_entry::STRIDE)
+                .ok_or("air damage entry address overflow")?;
+            let entry = sdamage_entry::read_row(memory, base, entry, row.key, channel as u8)?;
+            damage[channel].push(Damage {
+                cause: entry.cause,
+                amount: entry.amount,
+            });
+        }
+    }
+    Ok(Record {
+        wing_id: row.key.wing_id,
+        date: row.key.date,
+        planes: row.planes,
+        mission_mask: row.mission_mask,
+        selection: row.selection,
+        classification: row.key.classification,
+        copied: row.copied,
+        attributed_country: row.attributed_country,
+        damage,
+    })
+}
+
+/// Every non-null holder of every authenticated country air object, in
+/// census and region order: the `+0x170` table is read in pointer batches.
+pub fn visit_holders(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut visitor: impl FnMut(Root) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    cstrategic_air::visit(memory, base, game_state, |country| {
+        holders_of(memory, country, &mut visitor)
+    })
+}
+
+fn holders_of(
+    memory: &impl Memory,
+    country: cstrategic_air::Root,
+    visitor: &mut impl FnMut(Root) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    let regions = country
+        .address
+        .checked_add(cstrategic_air::REGION_COMBAT)
+        .and_then(|at| Array::read(memory, at, 8))
+        .ok_or("air combat region roster unreadable or invalid")?;
+    let mut slots = [0_usize; ROOT_BATCH];
+    let mut slot_bytes = [0_u8; ROOT_BATCH * 8];
+    let mut first = 0;
+    while first < regions.count {
+        let count = ((regions.count - first) as usize).min(ROOT_BATCH);
+        for (index, slot) in slots[..count].iter_mut().enumerate() {
+            *slot = regions.element(first + index as u32, 8).unwrap_or(0);
+        }
+        let copied = memory.copy_records(
+            RecordSources::Pointers(&slots[..count]),
+            &POINTER_LAYOUT,
+            &mut slot_bytes[..count * 8],
+        );
+        if copied < count {
+            return Err("air combat region pointer unreadable or address overflow");
+        }
+        for index in 0..count {
+            let bytes = slot_bytes[index * 8..index * 8 + 8].try_into().unwrap();
+            let address = usize::try_from(u64::from_le_bytes(bytes))
+                .map_err(|_| "air combat region pointer address overflow")?;
+            if address != 0 {
+                visitor(Root {
+                    country: country.country,
+                    region: first + index as u32,
+                    address,
+                })?;
+            }
+        }
+        first += count as u32;
+    }
+    Ok(())
+}
+
+/// The table position of `holder` among the holders of the country air object
+/// whose raw reference (`CStrategicAir+0x90`, copied to the holder's `+0x38`
+/// when the holder is created) is `owner`: the slot `CStrategicAirManager+0x30`
+/// holds at the owner's canonical slot, authenticated as
+/// [`cstrategic_air::visit`] does. `None` when no table slot holds `holder`.
+pub fn locate(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    owner: u32,
+    holder: usize,
+) -> Result<Option<Root>, &'static str> {
+    let canonical = crate::ccountry::Reader::new(memory, base, game_state)?
+        .resolve(owner)?
+        .canonical_slot;
+    let manager = game_state
+        .checked_add(crate::cgame_state::STRATEGIC_AIR_MANAGER)
+        .and_then(|at| crate::read::<u64>(memory, at))
+        .and_then(|pointer| usize::try_from(pointer).ok())
+        .ok_or("strategic air manager pointer unreadable or address overflow")?;
+    let expected = base
+        .checked_add(crate::cstrategic_air_manager::VTABLE_RVA)
+        .ok_or("strategic air manager vtable address overflow")?;
+    if manager == 0 || crate::read::<u64>(memory, manager) != Some(expected as u64) {
+        return Err("strategic air manager vtable unreadable or mismatched");
+    }
+    let slots = manager
+        .checked_add(crate::cstrategic_air_manager::COUNTRY_AIR)
+        .and_then(|at| Array::read(memory, at, 8))
+        .ok_or("strategic air country roster unreadable or invalid")?;
+    let Some(slot) = slots.element(canonical, 8) else {
+        return Ok(None);
+    };
+    let air = crate::read::<u64>(memory, slot)
+        .and_then(|pointer| usize::try_from(pointer).ok())
+        .ok_or("strategic air country pointer unreadable or address overflow")?;
+    if air == 0 {
+        return Ok(None);
+    }
+    let expected = base
+        .checked_add(cstrategic_air::VTABLE_RVA)
+        .ok_or("strategic air country vtable address overflow")?;
+    if crate::read::<u64>(memory, air) != Some(expected as u64) {
+        return Err("strategic air country vtable unreadable or mismatched");
+    }
+    let country = air
+        .checked_add(cstrategic_air::COUNTRY)
+        .and_then(|at| crate::read::<u32>(memory, at))
+        .ok_or("strategic air country reference unreadable or address overflow")?;
+    if country != owner {
+        return Ok(None);
+    }
+    let mut found = None;
+    holders_of(
+        memory,
+        cstrategic_air::Root {
+            address: air,
+            country,
+            canonical_slot: canonical,
+        },
+        &mut |root| {
+            if root.address == holder && found.is_none() {
+                found = Some(root);
+            }
+            Ok(())
+        },
+    )?;
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -1012,5 +1292,85 @@ mod tests {
                 }
             );
         }
+    }
+
+    /// A holder read from an hour on takes each vector's suffix dated at or
+    /// after it, with the native counts; a whole read takes every record and
+    /// its damage in native order.
+    #[test]
+    fn a_holder_read_takes_the_dated_suffix_or_every_record() {
+        let mut bytes = fixture();
+        put(
+            &mut bytes,
+            FIRST + sair_wing_combat_data::STRIDE + sair_wing_combat_data::DATE,
+            &5_i32.to_le_bytes(),
+        );
+        let memory = SliceMemory {
+            base: MEMORY_BASE,
+            bytes: &bytes,
+        };
+        let tail = read_holder(&memory, IMAGE_BASE, REGION, Some(0)).unwrap();
+        assert_eq!(tail.owner, 77);
+        assert_eq!((tail.sides[0].count, tail.sides[0].first), (2, 1));
+        assert_eq!(tail.sides[0].records.len(), 1);
+        assert_eq!(
+            (
+                tail.sides[0].records[0].date,
+                tail.sides[0].records[0].wing_id,
+                tail.sides[0].records[0].classification
+            ),
+            (5, 9, 1)
+        );
+        assert_eq!((tail.sides[1].count, tail.sides[1].first), (1, 1));
+        assert!(tail.sides[1].records.is_empty());
+        let whole = read_holder(&memory, IMAGE_BASE, REGION, None).unwrap();
+        assert_eq!(whole.sides[0].first, 0);
+        assert_eq!(whole.sides[0].records.len(), 2);
+        assert_eq!(whole.sides[1].records[0].wing_id, 10);
+        assert_eq!(
+            whole.sides[0].records[0].damage[0],
+            [
+                Damage {
+                    cause: u32::MAX,
+                    amount: i64::MAX
+                },
+                Damage {
+                    cause: 1,
+                    amount: i64::MIN
+                },
+            ]
+        );
+        assert!(whole.sides[0].records[0].damage[1].is_empty());
+        assert_eq!(
+            read_holder(&memory, IMAGE_BASE, REGION + 8, None),
+            Err("air combat region vtable mismatch or unreadable")
+        );
+    }
+
+    /// The census visits every non-null holder with its container and
+    /// region, and a holder is located through its owner's table only.
+    #[test]
+    fn holders_are_visited_and_located_through_their_owners_table() {
+        let bytes = world_fixture();
+        let memory = SliceMemory {
+            base: MEMORY_BASE,
+            bytes: &bytes,
+        };
+        let mut roots = Vec::new();
+        visit_holders(&memory, IMAGE_BASE, GAME, |root| {
+            roots.push((root.country, root.region, root.address));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(roots, [(2, 0, REGION)]);
+        let found = locate(&memory, IMAGE_BASE, GAME, 2, REGION)
+            .unwrap()
+            .unwrap();
+        assert_eq!((found.country, found.region, found.address), (2, 0, REGION));
+        assert!(
+            locate(&memory, IMAGE_BASE, GAME, 2, REGION + 0x100)
+                .unwrap()
+                .is_none()
+        );
     }
 }

@@ -2113,16 +2113,19 @@ fn theatre_read_dates_follow_daily_slot_reads_and_survive_off_slot_keyframes() {
     changed.metrics.table_ns[TableId::AirTheatres.index()] = 1;
     let carried_again = theatre_frame(next_read + 1, b"Changed theatre read");
     assert!(!crate::metadata::slot_read(
+        replay::format::FormatVersion::CURRENT,
         &carried.metrics,
         TableId::AirTheatres,
         carried.hour
     ));
     assert!(crate::metadata::slot_read(
+        replay::format::FormatVersion::CURRENT,
         &changed.metrics,
         TableId::AirTheatres,
         changed.hour
     ));
     assert!(!crate::metadata::slot_read(
+        replay::format::FormatVersion::CURRENT,
         &carried_again.metrics,
         TableId::AirTheatres,
         carried_again.hour

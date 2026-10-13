@@ -18,78 +18,6 @@ use replay::{
     },
 };
 
-pub(crate) struct TransportCapture<'a> {
-    pub guard: Result<(), &'static str>,
-    pub receivers: &'a mut super::transport_receivers::Captured,
-    pub shared: &'a mut super::transport_mission_shared::Shared,
-}
-
-struct RiskCapture<'a> {
-    guard: Result<(), &'static str>,
-    receivers: Option<&'a mut super::transport_receivers::Captured>,
-    ships: Option<&'a mut dyn ctask_force::OriginalRiskShips>,
-}
-
-/// Detection cache pair from the admitted original mission control, one sixteen
-/// byte observation. Earlier native skips never demand this independent source.
-fn capture_receiver_cache(memory: &impl Memory, control: &mut super::transport_receivers::Control) {
-    if control.packet.in_regions.is_some_and(|flag| flag != 0)
-        && control
-            .packet
-            .combat_references
-            .is_some_and(|count| count <= 0)
-    {
-        control.packet.detection_cache = control
-            .pointer
-            .checked_add(ctask_force::NAVAL_MISSION)
-            .and_then(|root| root.checked_add(0x20))
-            .and_then(|at| engine::read::<[u8; 16]>(memory, at))
-            .map(|bytes| {
-                [
-                    i64::from_le_bytes(bytes[..8].try_into().unwrap()),
-                    i64::from_le_bytes(bytes[8..].try_into().unwrap()),
-                ]
-            });
-    }
-}
-
-fn project_receiver_risk(
-    control: &mut super::transport_receivers::Control,
-    original: Option<engine::ctask_force::MissionRiskInputs>,
-) {
-    let Some(original) = original else {
-        control.packet.risk = None;
-        return;
-    };
-    control.packet.combined_detection = original.combined_detection.ok().flatten();
-    control.packet.risk =
-        Some(replay::rows::TransportReceiverRisk {
-            coordination: original.coordination.ok().flatten(),
-            spotting_chance: original.spotting_chance.ok().flatten(),
-            night_spotting_chance: original.night_spotting_chance.ok().flatten(),
-            visibility: original.visibility.ok().flatten(),
-            speed_base: original.speed_base.ok().flatten(),
-            speed_modifier: original.speed_modifier.ok().flatten(),
-            terrain_class: original.terrain_class.ok().flatten(),
-            stats: original.stats.ok().flatten().map(|stats| {
-                replay::rows::TransportTaskForceStats {
-                    detection_138: stats.detection_138.ok(),
-                    visibility_148: stats.visibility_148.ok(),
-                    visibility_150: stats.visibility_150.ok(),
-                    carrier_detection_160: stats.carrier_detection_160.ok(),
-                }
-            }),
-            roster_owner: original.roster_owner.ok().flatten(),
-            location: original.location.ok().flatten(),
-            region: original.region.ok().flatten(),
-            location_controller: original.location_controller.ok().flatten(),
-            detached_activity: original.detached_activity.ok().flatten(),
-            ship_count: original.ship_count.ok().flatten(),
-            targeted_spotting_modifier: original.targeted_spotting_modifier.ok().flatten(),
-            actual_terrain_speed: original.actual_terrain_speed.ok().flatten(),
-        });
-}
-
 pub const N: usize = 4;
 pub const TABLES: [TableId; N] = [
     TableId::TaskForceCounterInputs,
@@ -110,6 +38,50 @@ static ARROW_REFUSALS: [std::sync::atomic::AtomicU64; 6] =
 
 static FRESH_REFUSALS: [std::sync::atomic::AtomicU64; 6] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 6];
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: read each task force's fields directly, without its gather.
+    static TASK_GATHER_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn task_gather_enabled() -> bool {
+    #[cfg(test)]
+    return !TASK_GATHER_OFF.get();
+    #[cfg(not(test))]
+    true
+}
+
+/// Captures, task forces walked, and QPC ticks of the whole walk and of its
+/// mission and motion (with fresh ETA) readers, cumulative.
+static PHASES: [std::sync::atomic::AtomicU64; 5] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 5];
+
+/// Where the task-force counter walk's time goes.
+pub(crate) fn phase_data() -> impl serde::Serialize {
+    let load = |index: usize| PHASES[index].load(std::sync::atomic::Ordering::Relaxed);
+    let mut frequency = 0;
+    // SAFETY: an out pointer to a live local.
+    let hz = unsafe {
+        windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
+    } != 0;
+    let ns = |ticks: u64| {
+        (hz && frequency > 0)
+            .then(|| (u128::from(ticks) * 1_000_000_000 / frequency as u128) as u64)
+    };
+    crate::status::status!({
+        "captures": load(0),
+        "task_forces": load(1),
+        "walk_ns": ns(load(2)),
+        "missions_ns": ns(load(3)),
+        "motion_ns": ns(load(4)),
+        "fresh_eta_task_forces": engine::ctask_force::FRESH_ETA[0]
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "fresh_eta_ns": ns(engine::ctask_force::FRESH_ETA[1]
+            .load(std::sync::atomic::Ordering::Relaxed)),
+        "scope": "cumulative since attach: the counter walk's captures, task forces visited, and the whole walk's time with the part spent in the mission reader and the motion reader, of which fresh_eta_ns is the fresh ETA graph (every motion capture since attach, counted in fresh_eta_task_forces); the rest is the fleet and task-force census, counter, cached-name, supply and port-mission reads",
+    })
+}
 
 pub(crate) fn fresh_eta_data() -> impl serde::Serialize {
     crate::status::status!({
@@ -283,6 +255,136 @@ pub struct Captured {
     port_bytes: Arena<u8>,
     /// Reader Drop erases transient registry pointers before acquisition exits.
     port_answers: Arena<ctask_force::port_mission::ReferenceAnswer>,
+    /// The fresh ETA graph's certified censuses, kept across hours.
+    censuses: CensusStore,
+}
+
+/// The fresh ETA graph's censuses of certified receivers (roster countries'
+/// and fleet leaders' modifier trees, which the naval tree family
+/// certifies), each under the receiver's certificate taken before the census
+/// was read. A complete capture holds the censuses whose receivers still have
+/// that certificate when it ends; the frame's next capture is served them
+/// while the certificate still holds when served and the hour's sampled
+/// slice does not cover the receiver. A covered receiver is read afresh and
+/// compared with its held census when both were read under the same
+/// certificate and it still holds; a difference poisons the naval tree
+/// watches. The held censuses leave the store when a capture begins and
+/// return only when it completes, so a capture that does not complete (or an
+/// Ordinary family that fails: [`Captured::forget_censuses`]) holds nothing.
+#[derive(Default)]
+struct CensusStore {
+    /// Sorted by [`ctask_force::HeldCensus::identity`].
+    held: Vec<ctask_force::HeldCensus>,
+    /// The censuses held before this capture, sorted by identity.
+    previous: Vec<ctask_force::HeldCensus>,
+    /// Those this capture may be served (outside the sampled slice).
+    serve: Vec<ctask_force::HeldCensus>,
+    /// The certified censuses this capture used.
+    log: Vec<ctask_force::HeldCensus>,
+}
+
+/// A receiver's stable key for the sampled slice.
+fn census_key(receiver: usize) -> u64 {
+    (receiver >> 4) as u64
+}
+
+/// The census of `identity` in `sorted`.
+fn held_census(
+    sorted: &[ctask_force::HeldCensus],
+    identity: &ctask_force::CensusIdentity,
+) -> Option<ctask_force::HeldCensus> {
+    sorted
+        .binary_search_by_key(identity, ctask_force::HeldCensus::identity)
+        .ok()
+        .map(|index| sorted[index])
+}
+
+impl CensusStore {
+    /// Before a capture: take the held censuses out, and those it may be
+    /// served.
+    fn prepare(&mut self, check: crate::sampled_verify::Check) {
+        self.previous.clear();
+        std::mem::swap(&mut self.held, &mut self.previous);
+        self.serve.clear();
+        self.log.clear();
+        if engine::allocation::advisory(|| {
+            engine::allocation::reserve(&mut self.serve, self.previous.len())
+        })
+        .is_err()
+        {
+            return;
+        }
+        self.serve.extend(
+            self.previous
+                .iter()
+                .filter(|census| !check.covers(census_key(census.receiver))),
+        );
+    }
+
+    /// After a capture: compare the covered receivers' fresh censuses with
+    /// the held ones read under the same certificate, then hold this
+    /// capture's censuses whose receivers' certificates are still the ones
+    /// taken before them (nothing when it did not complete). Returns how
+    /// many censuses were served, verified and mismatched.
+    fn finish(
+        &mut self,
+        complete: bool,
+        check: crate::sampled_verify::Check,
+        certificate: impl Fn(usize) -> Option<ctask_force::Certificate>,
+    ) -> (u64, u64, u64) {
+        let (mut served, mut verified, mut mismatches) = (0_u64, 0_u64, 0_u64);
+        self.log
+            .sort_unstable_by_key(ctask_force::HeldCensus::identity);
+        self.log.dedup_by_key(|census| census.identity());
+        self.held.clear();
+        if complete
+            && engine::allocation::advisory(|| {
+                engine::allocation::reserve(&mut self.held, self.log.len())
+            })
+            .is_ok()
+        {
+            for census in &self.log {
+                let identity = census.identity();
+                // No writer moved the receiver since its census was taken.
+                let holds = certificate(census.receiver) == Some(census.certificate);
+                if held_census(&self.serve, &identity)
+                    .is_some_and(|held| held.certificate == census.certificate)
+                {
+                    // The reader served exactly this census.
+                    served += 1;
+                } else if holds
+                    && check.covers(census_key(census.receiver))
+                    && let Some(held) = held_census(&self.previous, &identity)
+                    && held.certificate == census.certificate
+                {
+                    verified += 1;
+                    mismatches += u64::from(held.values != census.values);
+                }
+                if holds {
+                    self.held.push(*census);
+                }
+            }
+        }
+        self.previous.clear();
+        self.serve.clear();
+        (served, verified, mismatches)
+    }
+
+    /// Hold nothing, keeping the allocations.
+    fn forget(&mut self) {
+        self.held.clear();
+        self.previous.clear();
+        self.serve.clear();
+        self.log.clear();
+    }
+
+    fn allocated_bytes(&self) -> usize {
+        (self.held.capacity()
+            + self.previous.capacity()
+            + self.serve.capacity()
+            + self.log.capacity())
+            * size_of::<ctask_force::HeldCensus>()
+    }
 }
 impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -307,9 +409,28 @@ impl Captured {
             port_searchers: Arena::new(capacity.port_searchers),
             port_avoided: Arena::new(capacity.port_avoided),
             port_bytes: Arena::new(capacity.port_bytes),
+            censuses: CensusStore::default(),
             port_answers: Arena::new(capacity.port_answers),
         }
     }
+    /// Hold no census of the counter walk: an Ordinary family that failed
+    /// (a part refused, panicked or stopped, wherever this pack was) keeps
+    /// nothing a later capture could be served. The per-hour reset keeps
+    /// them.
+    pub fn forget_censuses(&mut self) {
+        self.censuses.forget();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_census(&mut self, census: ctask_force::HeldCensus) {
+        self.censuses.held.push(census);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn held_censuses(&self) -> usize {
+        self.censuses.held.len()
+    }
+
     pub fn reset(&mut self) {
         self.clear_fresh_owner_demands();
         self.task_forces.reset();
@@ -342,6 +463,7 @@ impl Captured {
             + self.port_avoided.allocated_bytes()
             + self.port_bytes.allocated_bytes()
             + self.port_answers.allocated_bytes()
+            + self.censuses.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.task_forces.grow(&mut capacity.task_forces);
@@ -399,57 +521,7 @@ impl Captured {
         hour: Option<i32>,
         modifier_guard: Result<(), &'static str>,
     ) -> [u64; N] {
-        self.capture_impl(
-            memory,
-            base,
-            state,
-            hour,
-            modifier_guard,
-            RiskCapture {
-                guard: modifier_guard,
-                receivers: None,
-                ships: None,
-            },
-        )
-    }
-
-    pub(crate) fn capture_with_transport(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        state: usize,
-        hour: i32,
-        modifier_guard: Result<(), &'static str>,
-        transport: TransportCapture<'_>,
-    ) -> [u64; N] {
-        let TransportCapture {
-            guard: risk_guard,
-            receivers,
-            shared,
-        } = transport;
-        let ticks = {
-            let mut observer = shared.risk_ships_mut().observer(memory, base, hour).ok();
-            self.capture_impl(
-                memory,
-                base,
-                state,
-                Some(hour),
-                modifier_guard,
-                RiskCapture {
-                    guard: risk_guard,
-                    receivers: Some(&mut *receivers),
-                    ships: observer
-                        .as_mut()
-                        .map(|observer| observer as &mut dyn ctask_force::OriginalRiskShips),
-                },
-            )
-        };
-        for control in &receivers.controls.first[..receivers.controls.len] {
-            shared.receiver(control.packet);
-        }
-        receivers.retire();
-        shared.finish();
-        ticks
+        self.capture_impl(memory, base, state, hour, modifier_guard)
     }
 
     fn capture_impl(
@@ -459,18 +531,22 @@ impl Captured {
         state: usize,
         hour: Option<i32>,
         modifier_guard: Result<(), &'static str>,
-        risk: RiskCapture<'_>,
     ) -> [u64; N] {
-        let RiskCapture {
-            guard: risk_guard,
-            mut receivers,
-            ships: risk_ships,
-        } = risk;
         self.clear_fresh_owner_demands();
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
         // Answers are valid for one capture only; clearing keeps the reserved room.
         self.combats.clear();
+        // Each task force's fixed fields in one guarded call, selected as the
+        // walk reaches it and served to every reader below.
+        let tasks = engine::cship::SwitchedObject::new(memory, ctask_force::TASK_FIELDS);
+        let memory = &tasks;
+        // The walk's task forces and the time its mission and motion readers
+        // took, for status.
+        let (mut visited, mut missions_ticks, mut motion_ticks) = (0_u64, 0_u64, 0_u64);
+        // The certified censuses this frame held and may serve this hour.
+        let check = crate::sampled_verify::current_burned_in(crate::naval_tree_changes::VERIFY);
+        self.censuses.prepare(check);
         let mut motion = ctask_force::MapMotionCollector::new_growing(
             memory,
             base,
@@ -479,12 +555,14 @@ impl Captured {
             &mut self.paths.first,
             &mut self.combats,
         )
-        .with_fresh_modifier_guard(modifier_guard);
+        .with_fresh_modifier_guard(modifier_guard)
+        .with_censuses(ctask_force::Censuses {
+            held: &self.censuses.serve,
+            certify: &crate::naval_tree_changes::sequence,
+            log: &mut self.censuses.log,
+        });
         if let Some(hour) = hour {
             motion = motion.with_fresh_hour(hour);
-        }
-        if let Some(observer) = risk_ships {
-            motion = motion.with_risk_ship_observer(observer);
         }
         let mut missions = ctask_force::MissionCollector::new_growing(
             memory,
@@ -526,110 +604,21 @@ impl Captured {
                 Some(&mut supply),
                 port.as_mut(),
             ),
-            |pointer, id| missions.visit(pointer, id),
-            |pointer, id, original| {
-                let joined = receivers.as_deref_mut().map_or(Ok(false), |receivers| {
-                    receivers.supply_counter(memory, pointer, id, original)
-                });
-                if joined == Ok(true) {
-                    let mut count = None;
-                    let mut owner = None;
-                    let risk = motion.visit_with_original_counter_contribution_observed(
-                        pointer,
-                        id,
-                        match original {
-                            Some(original) => original.map(|row| row.is_in_regions),
-                            None => receivers
-                                .as_deref()
-                                .and_then(|receivers| {
-                                    receivers.controls.first[..receivers.controls.len]
-                                        .binary_search_by_key(&pointer, |control| control.pointer)
-                                        .ok()
-                                        .and_then(|index| {
-                                            receivers.controls.first[index].packet.in_regions
-                                        })
-                                })
-                                .ok_or(
-                                    "transport unattempted counter in-regions acquisition refused",
-                                ),
-                        },
-                        true,
-                        risk_guard,
-                        &mut count,
-                        &mut owner,
-                    );
-                    if let Some(receivers) = receivers.as_deref_mut() {
-                        let index = receivers.controls.first[..receivers.controls.len]
-                            .binary_search_by_key(&pointer, |control| control.pointer)
-                            .expect("joined original receiver");
-                        let control = &mut receivers.controls.first[index];
-                        control.packet.combat_references = count.and_then(Result::ok);
-                        control.packet.logical_owner = owner
-                            .unwrap_or_else(|| {
-                                pointer
-                                    .checked_add(engine::cunit::LOGICAL_OWNER)
-                                    .and_then(|at| engine::read(memory, at))
-                                    .ok_or("transport receiver logical owner unreadable")
-                            })
-                            .ok();
-                        project_receiver_risk(control, risk.ok());
-                        capture_receiver_cache(memory, control);
-                    }
-                } else {
-                    if joined.is_err()
-                        && let Some(receivers) = receivers.as_deref_mut()
-                    {
-                        receivers.refuse_join(pointer);
-                    }
-                    motion.visit(pointer, id);
+            |pointer, id| {
+                let started = qpc();
+                visited += 1;
+                if task_gather_enabled() {
+                    tasks.select(pointer);
                 }
+                missions.visit(pointer, id);
+                missions_ticks += qpc().saturating_sub(started).max(0) as u64;
+            },
+            |pointer, id, _original| {
+                let started = qpc();
+                motion.visit(pointer, id);
+                motion_ticks += qpc().saturating_sub(started).max(0) as u64;
             },
         );
-        // Genuine outside-census receivers borrow this SAME current-pass graph;
-        // no ordinary motion row, route or census membership is manufactured.
-        if let Some(receivers) = receivers {
-            for control in &mut receivers.controls.first[..receivers.controls.len] {
-                if control.counter_attempted {
-                    continue;
-                }
-                let pointer = control.pointer;
-                let in_regions = pointer
-                    .checked_add(ctask_force::NAVAL_MISSION)
-                    .and_then(|root| root.checked_add(0x30))
-                    .and_then(|at| engine::read::<u8>(memory, at))
-                    .ok_or("transport outside receiver in-regions unreadable");
-                control.packet.in_regions = in_regions.ok();
-                let count = if in_regions.is_ok_and(|flag| flag != 0) {
-                    pointer
-                        .checked_add(engine::cunit::COMBAT_REFERENCE_COUNT)
-                        .and_then(|at| engine::read::<i32>(memory, at))
-                        .ok_or("transport outside receiver combat count unreadable")
-                } else {
-                    Err("transport outside receiver combat count unreached")
-                };
-                control.packet.combat_references = count.ok();
-                control.packet.logical_owner = pointer
-                    .checked_add(engine::cunit::LOGICAL_OWNER)
-                    .and_then(|at| engine::read(memory, at));
-                control.packet.received_supply_ratio = pointer
-                    .checked_add(engine::cunit::RECEIVED_SUPPLY_RATIO)
-                    .and_then(|at| engine::read(memory, at));
-                let demand = engine::transport_ledger_observation::risk_demand(
-                    Ok(true),
-                    Ok(true),
-                    in_regions,
-                    count,
-                );
-                let risk = motion.borrow_mission_contribution(
-                    Ok((pointer, control.packet.task_force)),
-                    demand,
-                    true,
-                    risk_guard,
-                );
-                project_receiver_risk(control, risk.ok());
-                capture_receiver_cache(memory, control);
-            }
-        }
 
         let port = port
             .map(ctask_force::port_mission::Collector::finish)
@@ -647,12 +636,25 @@ impl Captured {
         self.names.required = names.required;
         self.supply_origins.len = supply.len;
         self.supply_origins.required = supply.required;
+        let total = qpc().saturating_sub(begin).max(0) as u64;
+        for (phase, value) in PHASES
+            .iter()
+            .zip([1, visited, total, missions_ticks, motion_ticks])
+        {
+            phase.fetch_add(value, std::sync::atomic::Ordering::Relaxed);
+        }
         // A walk that fails leaves the motion and mission censuses unknown too.
         let failed = match captured.task_forces {
             Outcome::Unavailable { reason } => Some(reason),
             _ => None,
         };
         let walked = motion.finish(failed);
+        let (served, verified, mismatches) = self.censuses.finish(
+            matches!(walked.outcome, Outcome::Rows { .. }),
+            check,
+            crate::naval_tree_changes::sequence,
+        );
+        crate::naval_tree_changes::censuses(served, verified, mismatches);
         let registered = missions.finish(failed);
         self.missions.outcome = registered.outcome;
         self.regions.len = registered.regions_len;
@@ -764,8 +766,9 @@ impl Captured {
                 Some(owned_vec(copy_vec(bytes)))
             }))))
         });
+        // The frame's reset capture holds only this hour's port operands.
         Some(NavalPortMissionInputs {
-            sample_hour: input.sample_hour,
+            sample_hour: replay::rows::PacketHour::Host,
             searching,
             engagement_target: input.engagement_target.map(|target| NavalEngagementTarget {
                 reference: target.reference,
@@ -798,6 +801,7 @@ impl Captured {
     /// Same-pass authenticated roster owners of admitted moving task forces.
     /// The caller also requires a complete motion outcome before certifying its
     /// domain; failures and truncation cannot stand for an empty owner set.
+    #[cfg(test)]
     pub(crate) fn fresh_owner_demands(
         &self,
     ) -> impl Iterator<Item = (u32, Result<engine::ccountry::Country, &'static str>)> + '_ {
@@ -927,7 +931,7 @@ impl Captured {
                 naval_transfer: Recorded::Value(r.naval_transfer),
                 combat_links: Recorded::Value(r.combat_links),
                 fresh: Recorded::Value(r.fresh.map(|fresh| FreshTaskForceCounterEta {
-                    sample_hour: fresh.sample_hour,
+                    sample_hour: replay::rows::PacketHour::Host,
                     base_speed: fresh.base_speed.ok(),
                     speed_modifier: fresh.speed_modifier.ok(),
                     terrain_class: fresh.terrain_class.ok(),
@@ -973,6 +977,51 @@ mod tests {
     use super::*;
     use engine::memory::SliceMemory;
     use replay::rows::TableRows;
+
+    /// A source recording every single (unbatched) copy.
+    struct Singles<'a> {
+        source: &'a SliceMemory<'a>,
+        singles: std::cell::RefCell<Vec<(usize, usize)>>,
+        /// Guarded calls of any kind.
+        calls: std::cell::Cell<usize>,
+    }
+
+    impl Memory for Singles<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.singles.borrow_mut().push((address, output.len()));
+            self.calls.set(self.calls.get() + 1);
+            self.source.copy(address, output)
+        }
+
+        fn copy_records(
+            &self,
+            sources: engine::memory::RecordSources<'_>,
+            layout: &engine::memory::RecordLayout<'_>,
+            destination: &mut [u8],
+        ) -> usize {
+            self.calls.set(self.calls.get() + 1);
+            self.source.copy_records(sources, layout, destination)
+        }
+
+        fn copy_scattered<const M: usize>(
+            &self,
+            addresses: [usize; M],
+            destinations: &mut [&mut [u8]; M],
+        ) -> usize {
+            self.calls.set(self.calls.get() + 1);
+            self.source.copy_scattered(addresses, destinations)
+        }
+
+        fn copy_scattered_prefetched<const M: usize>(
+            &self,
+            addresses: [usize; M],
+            destinations: &mut [&mut [u8]; M],
+        ) -> usize {
+            self.calls.set(self.calls.get() + 1);
+            self.source
+                .copy_scattered_prefetched(addresses, destinations)
+        }
+    }
 
     #[test]
     fn default_cold_storage_captures_original_headers_and_live_hints() {
@@ -1062,15 +1111,46 @@ mod tests {
         bytes[0x7200..0x7203].copy_from_slice(b"mod");
         p64(&mut bytes, 0x7210, 3);
         p64(&mut bytes, 0x7218, 15);
-        let memory = SliceMemory {
+        let slice = SliceMemory {
             base: 0,
             bytes: &bytes,
+        };
+        let memory = Singles {
+            source: &slice,
+            singles: Default::default(),
+            calls: Default::default(),
         };
         let mut capacity = Capacities::default();
         let mut captured = Captured::with_capacities(&capacity);
         assert_eq!(captured.allocated_bytes(), 0);
         captured.capture_with_hour(&memory, 0, STATE, 123, Err("fixture modifier refusal"));
         assert_eq!(captured.outcomes(), [Outcome::Rows { len: 1 }; N]);
+        // The counter, cached-name and supply readers' task-force fields come
+        // from one gather: none is read alone.
+        let singles = memory.singles.borrow();
+        for (offset, len) in [(0x258, 32), (engine::cunit_supply_inputs::ORIGINS, 16)] {
+            assert!(
+                !singles.contains(&(TASK + offset, len)),
+                "{offset:#x} read alone"
+            );
+        }
+        drop(singles);
+        // Guarded calls of one capture, with and without the gather.
+        let calls = |gather: bool| {
+            TASK_GATHER_OFF.set(!gather);
+            memory.calls.set(0);
+            let mut captured = Captured::with_capacities(&Capacities::default());
+            captured.capture_with_hour(&memory, 0, STATE, 123, Err("fixture modifier refusal"));
+            TASK_GATHER_OFF.set(false);
+            memory.calls.get()
+        };
+        let (gathered, direct) = (calls(true), calls(false));
+        eprintln!("TASK_FORCE_COUNTER_CALLS gathered {gathered} direct {direct}");
+        assert!(
+            gathered + 10 <= direct,
+            "{gathered} calls gathered, {direct} direct"
+        );
+        let memory = slice;
         assert_eq!(
             (
                 captured.rosters.len,
@@ -1127,73 +1207,6 @@ mod tests {
             ),
             (1, 1, 3, 4)
         );
-    }
-
-    #[test]
-    fn transport_receiver_cache_keeps_one_observation_signed_lanes_and_native_gates() {
-        use std::cell::RefCell;
-
-        struct CacheMemory {
-            address: usize,
-            bytes: [u8; 16],
-            fail: bool,
-            reads: RefCell<Vec<(usize, usize)>>,
-        }
-        impl Memory for CacheMemory {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                self.reads.borrow_mut().push((address, output.len()));
-                if self.fail || address != self.address || output.len() != self.bytes.len() {
-                    return false;
-                }
-                output.copy_from_slice(&self.bytes);
-                true
-            }
-        }
-
-        let pointer = 0x1000;
-        let address = pointer + ctask_force::NAVAL_MISSION + 0x20;
-        let mut bytes = [0; 16];
-        bytes[..8].copy_from_slice(&i64::MIN.to_le_bytes());
-        bytes[8..].copy_from_slice(&i64::MAX.to_le_bytes());
-        let mut memory = CacheMemory {
-            address,
-            bytes,
-            fail: false,
-            reads: RefCell::new(Vec::new()),
-        };
-        let mut control = super::super::transport_receivers::Control {
-            pointer,
-            packet: replay::rows::TransportMissionReceiver {
-                in_regions: Some(255),
-                combat_references: Some(-1),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        capture_receiver_cache(&memory, &mut control);
-        assert_eq!(control.packet.detection_cache, Some([i64::MIN, i64::MAX]));
-        assert_eq!(*memory.reads.borrow(), [(address, 16)]);
-
-        memory.reads.borrow_mut().clear();
-        memory.fail = true;
-        control.packet.combat_references = Some(0);
-        capture_receiver_cache(&memory, &mut control);
-        assert_eq!(control.packet.detection_cache, None);
-        assert_eq!(*memory.reads.borrow(), [(address, 16)]);
-
-        memory.reads.borrow_mut().clear();
-        for (in_regions, combat_references) in [
-            (None, Some(0)),
-            (Some(0), Some(0)),
-            (Some(1), None),
-            (Some(1), Some(1)),
-        ] {
-            control.packet.in_regions = in_regions;
-            control.packet.combat_references = combat_references;
-            capture_receiver_cache(&memory, &mut control);
-            assert_eq!(control.packet.detection_cache, None);
-        }
-        assert!(memory.reads.borrow().is_empty());
     }
 
     #[test]
@@ -1425,7 +1438,7 @@ mod tests {
         assert_eq!(
             rows[0].fresh,
             Recorded::Value(Some(FreshTaskForceCounterEta {
-                sample_hour: 123,
+                sample_hour: replay::rows::PacketHour::Host,
                 base_speed: None,
                 speed_modifier: Some(i64::MIN),
                 terrain_class: Some(-1),
@@ -1579,6 +1592,8 @@ mod tests {
             (supply.ship_demand.count, supply.ship_demand.value),
             (3, 190_000)
         );
+        // Amounts at the footer's display step; a nonzero amount below half a
+        // step keeps one step with its sign (UnitSupplyInputs::STEP).
         let origins = supply.origins.as_ref().unwrap();
         assert_eq!(
             (
@@ -1586,11 +1601,11 @@ mod tests {
                 origins[1].requested,
                 origins[1].received
             ),
-            (13, 3, -4)
+            (13, 1_000, -1_000)
         );
         capture.supply_origins.first[1].received = 999;
         assert_eq!(
-            origins[1].received, -4,
+            origins[1].received, -1_000,
             "projection owns the original ordered bytes"
         );
         for reason in [
@@ -1616,7 +1631,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 (supply.asked, supply.received, supply.disruption),
-                (190_000, 23_000, -9)
+                (190_000, 23_000, -1_000)
             );
             assert_eq!(supply.ship_demand.count, 3);
             assert!(supply.origins.is_none());
@@ -1735,7 +1750,7 @@ mod tests {
             .unwrap()
             .as_ref()
             .unwrap();
-        assert_eq!(packet.sample_hour, 123);
+        assert_eq!(packet.sample_hour, replay::rows::PacketHour::Host);
         assert_eq!(packet.searching.as_ref().unwrap()[1].roster_owner, Some(0));
         assert_eq!(packet.searching.as_ref().unwrap()[2].reference, None);
         assert_eq!(
@@ -1832,5 +1847,291 @@ mod tests {
             ),
             (0, 0, 0, 0, 0, 0, 0)
         );
+    }
+
+    /// A census of `receiver`'s tree with `raw`, as the reader logs it.
+    fn census(receiver: usize, raw: i64, certificate: (u64, u64)) -> ctask_force::HeldCensus {
+        let mut census = ctask_force::HeldCensus {
+            receiver,
+            address: receiver + 0x5b8,
+            certificate,
+            ..Default::default()
+        };
+        census.keys[0] = 7;
+        census.values[0] = engine::modifier_accumulator::Value { raw, present: true };
+        census
+    }
+
+    /// The reader's step for one certified census whose tree holds `current`:
+    /// take the receiver's certificate, then serve the held census under it or
+    /// read `current` (counted in `reads`), and log what it used. Returns the
+    /// value used.
+    fn use_census(
+        store: &mut CensusStore,
+        registry: &crate::watch_registry::WatchRegistry,
+        receiver: usize,
+        current: i64,
+        reads: &mut usize,
+    ) -> i64 {
+        let certificate = registry.sequence(receiver);
+        let fresh = census(receiver, current, certificate.unwrap_or_default());
+        let used = certificate
+            .and_then(|certificate| {
+                held_census(&store.serve, &fresh.identity())
+                    .filter(|held| held.certificate == certificate)
+            })
+            .unwrap_or_else(|| {
+                *reads += 1;
+                fresh
+            });
+        if certificate.is_some() {
+            store.log.push(used);
+        }
+        used.values[0].raw
+    }
+
+    /// A capture of every receiver in `trees` (receiver, current value): the
+    /// values used and the census counts.
+    fn census_capture(
+        store: &mut CensusStore,
+        registry: &crate::watch_registry::WatchRegistry,
+        check: crate::sampled_verify::Check,
+        trees: &[(usize, i64)],
+        reads: &mut usize,
+    ) -> (Vec<i64>, (u64, u64, u64)) {
+        store.prepare(check);
+        let used = trees
+            .iter()
+            .map(|&(receiver, current)| use_census(store, registry, receiver, current, reads))
+            .collect();
+        (
+            used,
+            store.finish(true, check, |receiver| registry.sequence(receiver)),
+        )
+    }
+
+    const TREE: usize = 0x10_0000;
+
+    /// A census read under a certificate is not held once a writer moves it
+    /// before the capture completes, though the capture registered the
+    /// receiver for the first time: its certificate was taken before the
+    /// read, not at completion, so the next capture reads the new values.
+    #[test]
+    fn a_fresh_census_is_not_held_past_a_writer_after_its_read() {
+        use crate::sampled_verify::Check;
+        let registry = crate::watch_registry::WatchRegistry::enabled(64);
+        let mut store = CensusStore::default();
+        let mut reads = 0;
+        store.prepare(Check::Nothing);
+        assert_eq!(use_census(&mut store, &registry, TREE, 10, &mut reads), 10);
+        // A hooked writer rebuilds the tree before the capture completes.
+        drop(registry.notify(TREE));
+        store.finish(true, Check::Nothing, |receiver| registry.sequence(receiver));
+        assert!(
+            store.held.is_empty(),
+            "the census is not held past the writer"
+        );
+        let (used, _) = census_capture(
+            &mut store,
+            &registry,
+            Check::Nothing,
+            &[(TREE, 11)],
+            &mut reads,
+        );
+        assert_eq!((used, reads), (vec![11], 2));
+    }
+
+    /// A served census is not held again once a writer moves its certificate
+    /// after it was served: the next capture reads the tree afresh.
+    #[test]
+    fn a_served_census_is_not_held_past_a_writer_after_it_was_served() {
+        use crate::sampled_verify::Check;
+        let registry = crate::watch_registry::WatchRegistry::enabled(64);
+        let mut store = CensusStore::default();
+        let mut reads = 0;
+        census_capture(
+            &mut store,
+            &registry,
+            Check::Nothing,
+            &[(TREE, 10)],
+            &mut reads,
+        );
+        assert_eq!(store.held.len(), 1);
+        store.prepare(Check::Nothing);
+        assert_eq!(use_census(&mut store, &registry, TREE, 10, &mut reads), 10);
+        assert_eq!(reads, 1, "served");
+        drop(registry.notify(TREE));
+        let (served, _, _) =
+            store.finish(true, Check::Nothing, |receiver| registry.sequence(receiver));
+        assert_eq!(served, 1);
+        assert!(store.held.is_empty(), "the served census is not held again");
+        let (used, _) = census_capture(
+            &mut store,
+            &registry,
+            Check::Nothing,
+            &[(TREE, 11)],
+            &mut reads,
+        );
+        assert_eq!((used, reads), (vec![11], 2));
+    }
+
+    /// A writer before the receiver's first registration (which the registry
+    /// cannot observe) precedes the read that registration precedes, so the
+    /// census holds its result and is served unchanged.
+    #[test]
+    fn a_writer_before_the_first_registration_is_read() {
+        use crate::sampled_verify::Check;
+        let registry = crate::watch_registry::WatchRegistry::enabled(64);
+        let mut store = CensusStore::default();
+        let mut reads = 0;
+        drop(registry.notify(TREE));
+        let (used, _) = census_capture(
+            &mut store,
+            &registry,
+            Check::Nothing,
+            &[(TREE, 11)],
+            &mut reads,
+        );
+        assert_eq!(used, [11]);
+        let (used, (served, _, _)) = census_capture(
+            &mut store,
+            &registry,
+            Check::Nothing,
+            &[(TREE, 11)],
+            &mut reads,
+        );
+        assert_eq!((used, served, reads), (vec![11], 1, 1));
+    }
+
+    /// A covered receiver is read afresh and compared with its held census
+    /// only when both reads had the same certificate and it still holds; a
+    /// held census whose tree changed without a writer is a mismatch.
+    #[test]
+    fn a_covered_census_is_compared_under_one_certificate() {
+        use crate::sampled_verify::Check;
+        let registry = crate::watch_registry::WatchRegistry::enabled(64);
+        let mut store = CensusStore::default();
+        let mut reads = 0;
+        census_capture(
+            &mut store,
+            &registry,
+            Check::Nothing,
+            &[(TREE, 10)],
+            &mut reads,
+        );
+        let (used, counts) = census_capture(
+            &mut store,
+            &registry,
+            Check::Every,
+            &[(TREE, 10)],
+            &mut reads,
+        );
+        assert_eq!((used, counts, reads), (vec![10], (0, 1, 0), 2));
+        // An unhooked write.
+        let (used, counts) = census_capture(
+            &mut store,
+            &registry,
+            Check::Every,
+            &[(TREE, 12)],
+            &mut reads,
+        );
+        assert_eq!((used, counts), (vec![12], (0, 1, 1)));
+        // A hooked write between the held read and the fresh one.
+        drop(registry.notify(TREE));
+        let (used, counts) = census_capture(
+            &mut store,
+            &registry,
+            Check::Every,
+            &[(TREE, 13)],
+            &mut reads,
+        );
+        assert_eq!((used, counts), (vec![13], (0, 0, 0)));
+        // A hooked write during the fresh read.
+        store.prepare(Check::Every);
+        use_census(&mut store, &registry, TREE, 13, &mut reads);
+        drop(registry.notify(TREE));
+        assert_eq!(
+            store.finish(true, Check::Every, |receiver| registry.sequence(receiver)),
+            (0, 0, 0)
+        );
+        assert!(store.held.is_empty());
+    }
+
+    /// A capture that does not complete, or never reaches its completion,
+    /// leaves nothing to serve; forgetting keeps the allocations.
+    #[test]
+    fn an_incomplete_census_capture_holds_nothing() {
+        use crate::sampled_verify::Check;
+        let registry = crate::watch_registry::WatchRegistry::enabled(64);
+        let mut store = CensusStore::default();
+        let mut reads = 0;
+        census_capture(
+            &mut store,
+            &registry,
+            Check::Nothing,
+            &[(TREE, 10)],
+            &mut reads,
+        );
+        store.prepare(Check::Nothing);
+        use_census(&mut store, &registry, TREE, 10, &mut reads);
+        store.finish(false, Check::Nothing, |receiver| {
+            registry.sequence(receiver)
+        });
+        assert!(store.held.is_empty());
+        census_capture(
+            &mut store,
+            &registry,
+            Check::Nothing,
+            &[(TREE, 10)],
+            &mut reads,
+        );
+        assert_eq!(store.held.len(), 1);
+        // A capture that panics between preparation and completion.
+        store.prepare(Check::Nothing);
+        assert!(store.held.is_empty(), "taken out while the capture runs");
+        store.prepare(Check::Nothing);
+        assert!(store.serve.is_empty());
+        census_capture(
+            &mut store,
+            &registry,
+            Check::Nothing,
+            &[(TREE, 10)],
+            &mut reads,
+        );
+        assert_eq!(store.held.len(), 1);
+        let bytes = store.allocated_bytes();
+        store.forget();
+        assert!(store.held.is_empty() && store.serve.is_empty() && store.log.is_empty());
+        assert_eq!(store.allocated_bytes(), bytes);
+    }
+
+    /// 5,000 distinct receivers (one census each, as many countries as the
+    /// sizing tests take) are all held, all served in the next capture and
+    /// all compared under full verification, by sorted lookups.
+    #[test]
+    fn censuses_of_5000_receivers_are_held_served_and_verified() {
+        use crate::sampled_verify::Check;
+        const RECEIVERS: usize = 5_000;
+        let registry =
+            crate::watch_registry::WatchRegistry::enabled((4 * RECEIVERS).next_power_of_two());
+        let mut store = CensusStore::default();
+        let mut reads = 0;
+        // Allocated one after another, used in reverse.
+        let trees: Vec<_> = (0..RECEIVERS)
+            .rev()
+            .map(|index| (TREE + index * 0x1310, index as i64))
+            .collect();
+        census_capture(&mut store, &registry, Check::Nothing, &trees, &mut reads);
+        assert_eq!((store.held.len(), reads), (RECEIVERS, RECEIVERS));
+        assert!(
+            store
+                .held
+                .is_sorted_by_key(ctask_force::HeldCensus::identity)
+        );
+        let (_, counts) = census_capture(&mut store, &registry, Check::Nothing, &trees, &mut reads);
+        assert_eq!((counts, reads), ((RECEIVERS as u64, 0, 0), RECEIVERS));
+        let (_, counts) = census_capture(&mut store, &registry, Check::Every, &trees, &mut reads);
+        assert_eq!(counts, (0, RECEIVERS as u64, 0));
+        assert_eq!(store.held.len(), RECEIVERS);
     }
 }

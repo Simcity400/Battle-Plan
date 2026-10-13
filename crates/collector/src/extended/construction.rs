@@ -129,6 +129,7 @@ impl Buildings {
         self.state_buildings.allocated_bytes() + self.province_buildings.allocated_bytes()
     }
 
+    #[cfg(test)]
     pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
@@ -137,19 +138,70 @@ impl Buildings {
         hour: i32,
         force_full: bool,
     ) -> u64 {
+        self.capture_carried(memory, base, game_state, hour, force_full, None)
+    }
+
+    /// `store` carries the rows of statuses no hooked writer touched since
+    /// the held read, and both tables whole on a quiet hour
+    /// ([`BuildingStore`]); without it every status is read.
+    pub(crate) fn capture_carried(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        store: Option<&mut BuildingStore>,
+    ) -> u64 {
         if !replay::cadence::should_walk(TableId::StateBuildings, hour, force_full) {
             self.fail(replay::cadence::SKIPPED_REASON);
             return 0;
         }
-        let _reads = read_accounting::table(TABLES[0]);
-        let begin = qpc();
-        let buildings = cbuilding_status::walk(
+        let check = crate::sampled_verify::Check::burned_in(hour, crate::building_changes::VERIFY);
+        self.capture_with(
             memory,
             base,
             game_state,
-            &mut self.state_buildings.rows,
-            &mut self.province_buildings.rows,
-        );
+            store.map(|store| (store, &crate::building_changes::Observer as _, check)),
+        )
+    }
+
+    /// One capture, carrying through `reuse` when present. A quiet hour
+    /// walks no location; its ticks and reads are charged to the same
+    /// table, like a walk's.
+    #[allow(clippy::type_complexity)]
+    fn capture_with(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        reuse: Option<(
+            &mut BuildingStore,
+            &dyn crate::building_changes::Changes,
+            crate::sampled_verify::Check,
+        )>,
+    ) -> u64 {
+        let _reads = read_accounting::table(TABLES[0]);
+        let begin = qpc();
+        let buildings = match reuse {
+            Some((store, changes, check)) => building_store::capture(
+                memory,
+                base,
+                game_state,
+                &mut self.state_buildings.rows,
+                &mut self.province_buildings.rows,
+                store,
+                changes,
+                check,
+            ),
+            None => cbuilding_status::walk(
+                memory,
+                base,
+                game_state,
+                &mut self.state_buildings.rows,
+                &mut self.province_buildings.rows,
+            ),
+        };
         self.state_buildings.outcome = buildings.states;
         self.province_buildings.outcome = buildings.provinces;
         elapsed(begin)
@@ -679,6 +731,8 @@ fn elapsed(begin: i64) -> u64 {
     (qpc() - begin).max(0) as u64
 }
 
+mod building_store;
+pub(crate) use building_store::BuildingStore;
 mod owned;
 #[cfg(test)]
 pub(crate) use owned::copy_construction_rest_refresh;

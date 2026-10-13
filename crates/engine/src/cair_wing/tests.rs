@@ -74,6 +74,14 @@ fn fixture() -> Vec<u8> {
     p32(&mut bytes, REGION + 0x58, u32::MAX);
     bytes
 }
+/// The stored-name header the census gathers with `wing`'s row.
+fn name_header(bytes: &[u8], wing: usize) -> Option<[u8; crate::msvc_string::STRIDE]> {
+    Some(
+        bytes[wing + NAME..wing + NAME + crate::msvc_string::STRIDE]
+            .try_into()
+            .unwrap(),
+    )
+}
 fn capture(bytes: &[u8], rows: &mut [Row]) -> Outcome {
     walk(&SliceMemory { base: 0, bytes }, 0, GS, rows)
 }
@@ -267,7 +275,14 @@ fn worker_wing_name_growth_uses_one_original_large_header_and_named_native_fault
     let mut storage = vec![b'p'];
     let (mut used, mut required) = (1, 1);
     assert_eq!(
-        capture_name_growing(&memory, WING_A, &mut storage, &mut used, &mut required),
+        capture_name_growing(
+            &memory,
+            WING_A,
+            None,
+            &mut storage,
+            &mut used,
+            &mut required
+        ),
         Ok((1, text.len()))
     );
     assert_eq!(used, text.len() + 1);
@@ -276,12 +291,11 @@ fn worker_wing_name_growth_uses_one_original_large_header_and_named_native_fault
     assert_eq!(storage[1..used], text);
     assert_eq!(
         *memory.reads.borrow(),
+        // The whole header, then the heap text with its terminator.
         [
-            (WING_A + NAME + msvc_string::LENGTH, 8),
-            (WING_A + NAME + msvc_string::CAPACITY, 8),
-            (WING_A + NAME, 8),
-            (0xe000 + text.len(), 1),
+            (WING_A + NAME, msvc_string::STRIDE),
             (0xe000, text.len()),
+            (0xe000 + text.len(), 1),
         ]
     );
     let failed = Traced {
@@ -290,7 +304,14 @@ fn worker_wing_name_growth_uses_one_original_large_header_and_named_native_fault
         fault: Some(0xe000),
     };
     assert_eq!(
-        capture_name_growing(&failed, WING_A, &mut storage, &mut used, &mut required),
+        capture_name_growing(
+            &failed,
+            WING_A,
+            None,
+            &mut storage,
+            &mut used,
+            &mut required
+        ),
         Err(NameFailure::Native(NameReadError::Unreadable))
     );
     assert_eq!(used, text.len() + 1);
@@ -312,10 +333,17 @@ fn worker_wing_name_growth_uses_one_original_large_header_and_named_native_fault
         fault: None,
     };
     assert_eq!(
-        capture_name_growing(&failed, WING_B, &mut storage, &mut used, &mut required),
+        capture_name_growing(
+            &failed,
+            WING_B,
+            None,
+            &mut storage,
+            &mut used,
+            &mut required
+        ),
         Err(NameFailure::Native(NameReadError::Header))
     );
-    assert_eq!(failed.reads.borrow().len(), 2);
+    assert_eq!(failed.reads.borrow().len(), 1);
     assert_eq!(used, text.len() + 1);
 }
 
@@ -660,22 +688,16 @@ fn game_score_leaf_census_survives_unrelated_details_and_keeps_plane_fault_indep
                 Ok(i32::MIN)
             }
         );
+        // Each plane count is gathered with its row, and read once more
+        // only by the serial reads after a gather the fault stopped.
         let reads = memory.reads.borrow();
-        assert_eq!(
-            reads
+        for wing in [WING_A, WING_B] {
+            let planes = reads
                 .iter()
-                .filter(|&&(at, _)| at == WING_A + PLANE_COUNT)
-                .count(),
-            1
-        );
-        assert_eq!(
-            reads
-                .iter()
-                .filter(|&&(at, _)| at == WING_B + PLANE_COUNT)
-                .count(),
-            1
-        );
-        assert!(!reads.iter().any(|&(at, _)| at == WING_B + BASE_OVERRIDE));
+                .filter(|&&(at, _)| at == wing + PLANE_COUNT)
+                .count();
+            assert!((1..=2).contains(&planes), "{fault:x} {wing:x} {planes}");
+        }
     }
     let legacy = Traced {
         bytes: &bytes,
@@ -892,7 +914,8 @@ fn shared_walk_three_capacities_match_independent_walks_with_one_read_sequence()
                         Admitted {
                             map: index < map_capacity,
                             sources: index < source_capacity,
-                            naval: index < naval_capacity
+                            naval: index < naval_capacity,
+                            name_header: name_header(&bytes, [WING_A, WING_B][index]),
                         }
                     );
                     if admitted.naval {
@@ -948,6 +971,7 @@ fn growing_naval_projection_uses_the_original_pool_range_without_rereads() {
             &memory,
             0,
             GS,
+            EVERY_OWNER,
             Buffer::Growing(&mut map),
             Buffer::Growing(&mut sources),
             0,
@@ -968,6 +992,97 @@ fn growing_naval_projection_uses_the_original_pool_range_without_rereads() {
             "growth keeps the original body observations and faults"
         );
     }
+}
+
+/// One part of a census split by owner slots, as the AirWing parts walk it.
+struct Part {
+    walked: GameScoreWalk,
+    rows: Vec<Row>,
+    owners: Vec<(u32, Option<usize>)>,
+    scores: Vec<u64>,
+}
+
+fn part(bytes: &[u8], slots: std::ops::Range<u32>) -> Part {
+    let mut rows = Vec::new();
+    let mut owners = Vec::new();
+    let mut scores = Vec::new();
+    let walked = walk_shared_game_score_buffers_with_owners(
+        &SliceMemory { base: 0, bytes },
+        0,
+        GS,
+        slots,
+        Buffer::Growing(&mut rows),
+        Buffer::Growing(&mut Vec::new()),
+        0,
+        None,
+        Some(usize::MAX),
+        |_, _, _, _| {},
+        |_, leaf| scores.push(leaf.id),
+        |slot, entry| owners.push((slot, entry)),
+    );
+    rows.truncate(walked.shared.map.len());
+    Part {
+        walked,
+        rows,
+        owners,
+        scores,
+    }
+}
+
+#[test]
+fn owner_slot_parts_walk_only_their_slots_and_end_where_the_serial_walk_ends() {
+    let mut bytes = fixture();
+    let serial = part(&bytes, EVERY_OWNER);
+    assert!(!serial.walked.ended);
+    assert_eq!(serial.walked.shared.map, Outcome::Rows { len: 2 });
+    // Slot 1 holds the only owner: the parts before and after it are empty.
+    let parts = [0..1, 1..2, 2..u32::MAX].map(|slots| part(&bytes, slots));
+    assert_eq!(
+        parts
+            .each_ref()
+            .map(|part| (part.walked.shared.map, part.walked.ended)),
+        [
+            (Outcome::Rows { len: 0 }, false),
+            (Outcome::Rows { len: 2 }, false),
+            (Outcome::Rows { len: 0 }, false),
+        ]
+    );
+    assert_eq!(
+        parts
+            .iter()
+            .flat_map(|part| part.rows.clone())
+            .collect::<Vec<_>>(),
+        serial.rows
+    );
+    assert_eq!(
+        parts
+            .iter()
+            .flat_map(|part| part.owners.clone())
+            .collect::<Vec<_>>(),
+        serial.owners
+    );
+    assert_eq!(
+        parts
+            .iter()
+            .flat_map(|part| part.scores.clone())
+            .collect::<Vec<_>>(),
+        serial.scores
+    );
+    // A roster fault ends the part that meets it, as it ends the serial walk.
+    p64(&mut bytes, POOL_OBJECT, 0);
+    let serial = part(&bytes, EVERY_OWNER).walked;
+    let faulted = part(&bytes, 1..2).walked;
+    assert!(serial.ended && faulted.ended);
+    assert_eq!(faulted.shared, serial.shared);
+    assert!(!part(&bytes, 0..1).walked.ended);
+    // Without a manager only the part that starts the census witnesses the
+    // slots, every one of them as the serial walk does.
+    p64(&mut bytes, GS + cgame_state::STRATEGIC_AIR_MANAGER, 0);
+    let first = part(&bytes, 0..1);
+    let later = part(&bytes, 1..u32::MAX);
+    assert!(first.walked.ended && later.walked.ended);
+    assert_eq!(first.owners, [(0, None), (1, None), (2, None), (3, None)]);
+    assert!(later.owners.is_empty());
 }
 
 #[test]
@@ -1033,7 +1148,8 @@ fn shared_walk_leaf_faults_preserve_each_independently_capped_consumer() {
                             Admitted {
                                 map: map_capacity != 0,
                                 sources: source_capacity != 0,
-                                naval: naval_capacity != 0
+                                naval: naval_capacity != 0,
+                                name_header: name_header(&bytes, WING_A),
                             }
                         );
                     }
@@ -1101,14 +1217,14 @@ fn shared_walk_naval_only_survivor_keeps_later_mandatory_roster_failure_preceden
                 Admitted {
                     map: true,
                     sources: true,
-                    naval: true
+                    naval: true,
+                    name_header: name_header(&bytes, WING_A),
                 }
             )]
         );
-        assert!(memory.reads.borrow().contains(&(WINGS + 8, 8)));
-        if later_fault == 1 {
-            assert!(memory.reads.borrow().contains(&(WINGS + 16, 8)));
-        }
+        // The pool's wing pointers, read as one run, reach past the bad wing.
+        let run = if later_fault == 1 { 24 } else { 16 };
+        assert!(memory.reads.borrow().contains(&(WINGS, run)));
         if later_fault == 2 {
             assert!(memory.reads.borrow().contains(&(POOLS + 8, 8)));
         }
@@ -1141,7 +1257,8 @@ fn shared_walk_full_naval_lane_does_not_hide_map_or_source_only_admissions() {
                 Admitted {
                     map: map_capacity == 2,
                     sources: source_capacity == 2,
-                    naval: naval_capacity == 2
+                    naval: naval_capacity == 2,
+                    name_header: name_header(&bytes, WING_B),
                 }
             )
         );
@@ -1629,4 +1746,804 @@ fn equipment_extension_preserves_duplicate_variants_zero_and_signed_amounts() {
         read_equipment(&memory, 0, WING_A, &wing, &mut output),
         Outcome::Unavailable { .. }
     ));
+}
+
+/// Two wings on missions in one region: the pass authenticates the region
+/// once and both rows name it; the adjacent eligibility counter and limit are
+/// one exact eight-byte read, and a fault in either half still refuses the
+/// row as before.
+#[test]
+fn a_pass_authenticates_a_shared_mission_region_once_and_reads_eligibility_in_one_span() {
+    let mut bytes = fixture();
+    p64(&mut bytes, WING_B + 0xc0, REGION as u64);
+    p32(&mut bytes, WING_A + ELIGIBILITY_COUNTER, 7);
+    p32(&mut bytes, WING_A + ELIGIBILITY_LIMIT, 9);
+    let memory = Traced {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault: None,
+    };
+    let mut rows = [Row::default(); 2];
+    assert_eq!(walk(&memory, 0, GS, &mut rows), Outcome::Rows { len: 2 });
+    assert_eq!(
+        rows.map(|row| row.mission_region),
+        [Some(u32::MAX), Some(u32::MAX)]
+    );
+    assert_eq!(
+        (rows[0].eligibility_counter, rows[0].eligibility_limit),
+        (7, 9)
+    );
+    let reads = memory.reads.borrow();
+    let region_reads = reads
+        .iter()
+        .filter(|&&(at, _)| (REGION..REGION + 0x60).contains(&at))
+        .count();
+    assert_eq!(region_reads, 3, "{reads:x?}");
+    for wing in [WING_A, WING_B] {
+        assert!(reads.contains(&(wing + ELIGIBILITY_COUNTER, 8)));
+        assert!(!reads.iter().any(|&(at, _)| at == wing + ELIGIBILITY_LIMIT));
+    }
+    drop(reads);
+    // Each walk is a fresh pass: a region rewritten between walks is read.
+    p32(&mut bytes, REGION + 0x58, 5);
+    assert_eq!(capture(&bytes, &mut rows), Outcome::Rows { len: 2 });
+    assert_eq!(rows.map(|row| row.mission_region), [Some(5), Some(5)]);
+    for fault in [WING_A + ELIGIBILITY_COUNTER, WING_A + ELIGIBILITY_LIMIT] {
+        let memory = Traced {
+            bytes: &bytes,
+            reads: Default::default(),
+            fault: Some(fault),
+        };
+        assert_eq!(
+            walk(&memory, 0, GS, &mut rows),
+            Outcome::Unavailable {
+                reason: "air wing row field unreadable or address overflow"
+            },
+            "{fault:x}"
+        );
+    }
+}
+
+/// The pool's pointer array is hinted before its run is read; the rows
+/// are then gathered, so no wing is hinted. The per-object reference hints
+/// each wing after its pointer and before its own fields. Hints change no
+/// read, its order or a row.
+#[test]
+fn census_hints_the_pointer_array_and_each_serially_read_wing() {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Event {
+        Read(usize, usize),
+        Hint(usize),
+    }
+    struct Logged<'a> {
+        bytes: &'a [u8],
+        events: std::cell::RefCell<Vec<Event>>,
+    }
+    impl Memory for Logged<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.events
+                .borrow_mut()
+                .push(Event::Read(address, destination.len()));
+            SliceMemory {
+                base: 0,
+                bytes: self.bytes,
+            }
+            .copy(address, destination)
+        }
+        fn prefetch(&self, address: usize, _len: usize) {
+            self.events.borrow_mut().push(Event::Hint(address));
+        }
+    }
+    let bytes = fixture();
+    let mut plain = [Row::default(); 2];
+    assert_eq!(capture(&bytes, &mut plain), Outcome::Rows { len: 2 });
+    for serial in [false, true] {
+        let memory = Logged {
+            bytes: &bytes,
+            events: Default::default(),
+        };
+        let mut rows = [Row::default(); 2];
+        SERIAL.set(serial);
+        assert_eq!(walk(&memory, 0, GS, &mut rows), Outcome::Rows { len: 2 });
+        SERIAL.set(false);
+        assert_eq!(rows, plain);
+        let events = memory.events.into_inner();
+        let at = |event: Event| events.iter().position(|&seen| seen == event);
+        let first_pointer = if serial {
+            at(Event::Read(WINGS, 8))
+        } else {
+            at(Event::Read(WINGS, 16))
+        }
+        .unwrap();
+        assert!(at(Event::Hint(WINGS)).unwrap() < first_pointer);
+        for (slot, wing) in [WING_A, WING_B].into_iter().enumerate() {
+            let field = events
+                .iter()
+                .position(
+                    |event| matches!(*event, Event::Read(at, _) if (wing..wing + 0x1000).contains(&at)),
+                )
+                .unwrap();
+            assert!(first_pointer < field, "{wing:x}");
+            match at(Event::Hint(wing)) {
+                Some(hint) => {
+                    assert!(serial, "{wing:x}");
+                    let pointer = at(Event::Read(WINGS + slot * 8, 8)).unwrap();
+                    assert!(pointer < hint && hint < field, "{wing:x}");
+                }
+                None => assert!(!serial, "{wing:x}"),
+            }
+        }
+        // Without the hints the reads are the same, in the same order.
+        let reads: Vec<Event> = events
+            .into_iter()
+            .filter(|event| matches!(event, Event::Read(..)))
+            .collect();
+        let traced = Traced {
+            bytes: &bytes,
+            reads: Default::default(),
+            fault: None,
+        };
+        SERIAL.set(serial);
+        walk(&traced, 0, GS, &mut plain);
+        SERIAL.set(false);
+        let expected: Vec<Event> = traced
+            .reads
+            .into_inner()
+            .into_iter()
+            .map(|(at, len)| Event::Read(at, len))
+            .collect();
+        assert_eq!(reads, expected);
+    }
+}
+
+/// A census world of `countries` owners, each with one pool of
+/// `wings(country)` wings with distinct ids and plane counts: inline names,
+/// a heap name on every seventh wing, a mission region on every fifth.
+struct Scale {
+    bytes: Vec<u8>,
+    wings: usize,
+    owners: Vec<usize>,
+    pools: Vec<usize>,
+    wing_pointers: Vec<usize>,
+    /// Each wing occurrence's pointer slot in its pool's vector.
+    slots: Vec<usize>,
+    region: usize,
+    /// Each built country's catalogue pointer slot, link and object.
+    catalogue: Vec<usize>,
+    links: Vec<usize>,
+    countries: Vec<usize>,
+}
+
+impl Scale {
+    const WING_SIZE: usize = 0xa00;
+    const HEAP_NAME: usize = 20;
+
+    fn new(countries: usize, wings: impl Fn(usize) -> usize) -> Self {
+        Self::build(countries, wings, false)
+    }
+
+    /// With `zero`, slot zero also holds an air owner, whose catalogue
+    /// object (raw ID zero) the scored census authenticates.
+    fn build(countries: usize, wings: impl Fn(usize) -> usize, zero: bool) -> Self {
+        let first = usize::from(!zero);
+        let total: usize = (first..=countries).map(&wings).sum();
+        let countries_at = 0x10000;
+        let links_at = countries_at + (countries + 1) * 8;
+        let objects_at = (links_at + (countries + 1) * 4 + 15) & !15;
+        let owners_at = objects_at + (countries + 1) * 16;
+        let owner_objects = owners_at + (countries + 1) * 8;
+        let pool_objects = owner_objects + (countries + 1) * 0xa0;
+        let pointers_at = pool_objects + (countries + 1) * 0x50;
+        let wings_at = (pointers_at + total * 8 + 15) & !15;
+        let texts_at = wings_at + total * Self::WING_SIZE;
+        let region = texts_at + total * 32;
+        let mut scale = Self {
+            bytes: vec![0; region + 0x100],
+            wings: total,
+            owners: Vec::with_capacity(countries),
+            pools: Vec::with_capacity(countries),
+            wing_pointers: Vec::with_capacity(total),
+            slots: Vec::with_capacity(total),
+            region,
+            catalogue: Vec::new(),
+            links: Vec::new(),
+            countries: Vec::new(),
+        };
+        let bytes = &mut scale.bytes;
+        p64(bytes, region, cstrategic_region::VTABLE_RVA as u64);
+        p64(
+            bytes,
+            region + cstrategic_region::SECONDARY,
+            cstrategic_region::SECONDARY_VTABLE_RVA as u64,
+        );
+        p32(bytes, region + cstrategic_region::ID, 77);
+        array(
+            bytes,
+            GS + cgame_state::COUNTRIES,
+            countries_at,
+            countries as u32 + 1,
+        );
+        array(
+            bytes,
+            GS + cgame_state::COUNTRY_LINKS,
+            links_at,
+            countries as u32 + 1,
+        );
+        p64(
+            bytes,
+            GS + cgame_state::STRATEGIC_AIR_MANAGER,
+            MANAGER as u64,
+        );
+        p64(bytes, MANAGER, cstrategic_air_manager::VTABLE_RVA as u64);
+        array(
+            bytes,
+            MANAGER + cstrategic_air_manager::COUNTRY_AIR,
+            owners_at,
+            countries as u32 + 1,
+        );
+        let mut wing_at = wings_at;
+        let mut pointer_at = pointers_at;
+        for country in first..=countries {
+            let object = objects_at + country * 16;
+            p64(bytes, countries_at + country * 8, object as u64);
+            p32(bytes, links_at + country * 4, country as u32);
+            p64(bytes, object, ccountry::VTABLE_RVA as u64);
+            p32(bytes, object + ccountry::ID, country as u32);
+            scale.catalogue.push(countries_at + country * 8);
+            scale.links.push(links_at + country * 4);
+            scale.countries.push(object);
+            let owner = owner_objects + country * 0xa0;
+            let pool = pool_objects + country * 0x50;
+            p64(bytes, owners_at + country * 8, owner as u64);
+            p64(bytes, owner, cstrategic_air::VTABLE_RVA as u64);
+            p32(bytes, owner + cstrategic_air::COUNTRY, country as u32);
+            array(bytes, owner + cstrategic_air::POOLS, pool + 0x48, 1);
+            p64(bytes, pool + 0x48, pool as u64);
+            p64(bytes, pool, cair_wing_pool::VTABLE_RVA as u64);
+            p64(bytes, pool + cair_wing_pool::OWNER, owner as u64);
+            p64(
+                bytes,
+                pool + cair_wing_pool::AIR_BASE_REFERENCE,
+                country as u64,
+            );
+            let count = wings(country);
+            array(
+                bytes,
+                pool + cair_wing_pool::WINGS,
+                pointer_at,
+                count as u32,
+            );
+            scale.owners.push(owner);
+            scale.pools.push(pool);
+            for _ in 0..count {
+                let ordinal = scale.wing_pointers.len();
+                p64(bytes, pointer_at, wing_at as u64);
+                scale.slots.push(pointer_at);
+                pointer_at += 8;
+                p64(bytes, wing_at, VTABLE_RVA as u64);
+                p64(bytes, wing_at + SECONDARY, SECONDARY_VTABLE_RVA as u64);
+                p64(bytes, wing_at + SECONDARY + 8, ordinal as u64 + 1);
+                p64(bytes, wing_at + POOL, pool as u64);
+                p32(bytes, wing_at + PLANE_COUNT, ordinal as u32);
+                p32(bytes, wing_at + COUNTRY_OVERRIDE, country as u32);
+                if ordinal % 5 == 1 {
+                    p64(
+                        bytes,
+                        wing_at + MISSION + air_mission::REGION,
+                        region as u64,
+                    );
+                }
+                let name = wing_at + NAME;
+                if ordinal % 7 == 3 {
+                    let text = texts_at + ordinal * 32;
+                    bytes[text..text + Self::HEAP_NAME].fill(b'a' + (ordinal % 26) as u8);
+                    p64(bytes, name, text as u64);
+                    p64(
+                        bytes,
+                        name + crate::msvc_string::LENGTH,
+                        Self::HEAP_NAME as u64,
+                    );
+                    p64(bytes, name + crate::msvc_string::CAPACITY, 31);
+                } else {
+                    let text = format!("w{ordinal}");
+                    bytes[name..name + text.len()].copy_from_slice(text.as_bytes());
+                    p64(bytes, name + crate::msvc_string::LENGTH, text.len() as u64);
+                    p64(bytes, name + crate::msvc_string::CAPACITY, 15);
+                }
+                scale.wing_pointers.push(wing_at);
+                wing_at += Self::WING_SIZE;
+            }
+        }
+        scale
+    }
+
+    /// The heap text of `ordinal`, a heap-named wing.
+    fn heap_text(&self, ordinal: usize) -> usize {
+        let name = self.wing_pointers[ordinal] + NAME;
+        u64::from_le_bytes(self.bytes[name..name + 8].try_into().unwrap()) as usize
+    }
+
+    fn memory(&self) -> SliceMemory<'_> {
+        SliceMemory {
+            base: 0,
+            bytes: &self.bytes,
+        }
+    }
+}
+
+/// Everything one census publishes or visits, names with their refusals.
+#[derive(Debug, PartialEq)]
+struct Census {
+    shared: SharedWalk,
+    score: Outcome,
+    ended: bool,
+    rows: Vec<Row>,
+    sources: Vec<Source>,
+    names: Vec<Result<(usize, usize), NameFailure>>,
+    name_bytes: Vec<u8>,
+    name_required: usize,
+    visits: Vec<(usize, [bool; 3])>,
+    scores: Vec<(usize, u64, Result<i32, &'static str>)>,
+    owners: Vec<(u32, Option<usize>)>,
+}
+
+/// Growing projections, or fixed map, source and naval capacities.
+type Capacities = Option<[usize; 3]>;
+
+/// The census through the gathered path, or the per-object reference
+/// ([`serial_reference`]); with the gathered walk's fallbacks, which it
+/// also counted for status.
+fn census(memory: &impl Memory, serial: bool, capacities: Capacities) -> (Census, u32) {
+    let [map, source, naval] = capacities.unwrap_or([0; 3]);
+    let mut rows = vec![Row::default(); map];
+    let mut sources = vec![Source::default(); source];
+    let (mut name_bytes, mut used, mut name_required) = (Vec::new(), 0, 0);
+    let mut names = Vec::new();
+    let mut visits = Vec::new();
+    let mut scores = Vec::new();
+    let mut owners = Vec::new();
+    let recorded = crate::batch_fallback::count(crate::batch_fallback::Batch::AirWingCensus);
+    SERIAL.set(serial);
+    let walked = walk_shared_game_score_buffers_with_owners(
+        memory,
+        0,
+        GS,
+        EVERY_OWNER,
+        if capacities.is_some() {
+            Buffer::Fixed(&mut rows)
+        } else {
+            Buffer::Growing(&mut rows)
+        },
+        if capacities.is_some() {
+            Buffer::Fixed(&mut sources)
+        } else {
+            Buffer::Growing(&mut sources)
+        },
+        naval,
+        None,
+        Some(usize::MAX),
+        |pointer, _, _, admitted| {
+            if admitted.map {
+                names.push(capture_name_growing(
+                    memory,
+                    pointer,
+                    admitted.name_header,
+                    &mut name_bytes,
+                    &mut used,
+                    &mut name_required,
+                ));
+            }
+            visits.push((pointer, [admitted.map, admitted.sources, admitted.naval]))
+        },
+        |pointer, leaf| scores.push((pointer, leaf.id, leaf.planes)),
+        |slot, entry| owners.push((slot, entry)),
+    );
+    SERIAL.set(false);
+    assert_eq!(
+        crate::batch_fallback::count(crate::batch_fallback::Batch::AirWingCensus) - recorded,
+        u64::from(walked.row_fallbacks),
+        "every fallback is counted for status"
+    );
+    rows.truncate(walked.shared.map.len());
+    sources.truncate(walked.shared.sources.len());
+    name_bytes.truncate(used);
+    (
+        Census {
+            shared: walked.shared,
+            score: walked.score,
+            ended: walked.ended,
+            rows,
+            sources,
+            names,
+            name_bytes,
+            name_required,
+            visits,
+            scores,
+            owners,
+        },
+        walked.row_fallbacks,
+    )
+}
+
+/// Fails copies that touch any of `faults`: every one, or each fault's first.
+struct Faulted<'a> {
+    bytes: &'a [u8],
+    faults: Vec<usize>,
+    once: bool,
+    met: std::cell::RefCell<Vec<bool>>,
+}
+
+impl<'a> Faulted<'a> {
+    fn new(bytes: &'a [u8], faults: &[usize], once: bool) -> Self {
+        Self {
+            bytes,
+            faults: faults.to_vec(),
+            once,
+            met: std::cell::RefCell::new(vec![false; faults.len()]),
+        }
+    }
+}
+
+impl Memory for Faulted<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        let mut met = self.met.borrow_mut();
+        for (&fault, met) in self.faults.iter().zip(met.iter_mut()) {
+            if address <= fault && fault < address + destination.len() && !*met {
+                *met = self.once;
+                return false;
+            }
+        }
+        SliceMemory {
+            base: 0,
+            bytes: self.bytes,
+        }
+        .copy(address, destination)
+    }
+}
+
+/// Fixed capacities below, at and beyond the census, and growing storage.
+const CAPACITIES: [Capacities; 4] = [None, Some([1, 2, 1]), Some([70, 0, 3]), Some([0, 0, 0])];
+
+/// On healthy memory the gathered census publishes and visits exactly what
+/// the parent's per-object walk does, for 5,000 owners and their wings, in
+/// about two fewer guarded copies a wing: rows and name headers 64 a copy,
+/// and each pool's pointers in one run.
+#[test]
+fn gathered_census_equals_the_per_object_reads_at_five_thousand_countries() {
+    let scale = Scale::new(5_000, |country| country % 3);
+    let (serial, _) = census(&scale.memory(), true, None);
+    let (gathered, fallbacks) = census(&scale.memory(), false, None);
+    assert_eq!(serial.rows.len(), scale.wings);
+    assert!(serial.names.iter().all(Result::is_ok));
+    assert!(serial.rows.iter().any(|row| row.mission_region == Some(77)));
+    assert_eq!(
+        serial
+            .visits
+            .iter()
+            .map(|visit| visit.0)
+            .collect::<Vec<_>>(),
+        scale.wing_pointers
+    );
+    assert_eq!(gathered, serial);
+    assert_eq!(fallbacks, 0);
+    let counted = |serial| {
+        let memory = crate::memory::CountingMemory::new(&scale.bytes);
+        census(&memory, serial, None);
+        memory.calls.get()
+    };
+    let (serial, gathered) = (counted(true), counted(false));
+    assert!(
+        serial >= gathered + 2 * scale.wings,
+        "{serial} {gathered} {}",
+        scale.wings
+    );
+    // Fixed projections that truncate, and those that admit nothing.
+    let scale = Scale::new(200, |country| country % 3);
+    for capacities in CAPACITIES {
+        assert_eq!(
+            census(&scale.memory(), false, capacities),
+            (census(&scale.memory(), true, capacities).0, 0),
+            "{capacities:?}"
+        );
+    }
+}
+
+/// A fault at any census read gives the parent walk's result when it
+/// persists, and when it clears after its first touch either the healthy
+/// result (the gather met it, and the per-object reads that followed did
+/// not) or the parent's own: never more refusal than it would give.
+#[test]
+fn gathered_census_faults_refuse_no_more_than_the_per_object_reads() {
+    // Two gathers' worth of wings, so a fault lands before, inside and
+    // after a replay boundary.
+    let scale = Scale::new(100, |country| 1 + country % 2);
+    let mut faults = vec![
+        scale.region,
+        scale.region + cstrategic_region::ID,
+        scale.heap_text(3),
+        scale.heap_text(66) + Scale::HEAP_NAME,
+    ];
+    for ordinal in [0, 1, 63, 64, 65, scale.wings - 1] {
+        let wing = scale.wing_pointers[ordinal];
+        faults.extend([
+            scale.slots[ordinal],
+            wing,
+            wing + SECONDARY + 8,
+            wing + PLANE_COUNT,
+            wing + MISSION + air_mission::REGION,
+            wing + ELIGIBILITY_COUNTER,
+            wing + COUNTRY_OVERRIDE,
+            wing + NAME,
+            wing + NAME + crate::msvc_string::LENGTH,
+        ]);
+    }
+    for country in [0, 40, 99] {
+        let pool = scale.pools[country];
+        faults.extend([
+            scale.catalogue[country],
+            scale.links[country],
+            scale.countries[country],
+            scale.countries[country] + ccountry::ID,
+            scale.owners[country],
+            scale.owners[country] + cstrategic_air::COUNTRY,
+            pool,
+            pool + cair_wing_pool::AIR_BASE_REFERENCE,
+            pool + cair_wing_pool::WINGS,
+        ]);
+    }
+    for capacities in CAPACITIES {
+        let healthy = census(&scale.memory(), true, capacities).0;
+        for &fault in &faults {
+            let run = |serial, once| {
+                census(
+                    &Faulted::new(&scale.bytes, &[fault], once),
+                    serial,
+                    capacities,
+                )
+                .0
+            };
+            let reference = run(true, false);
+            if capacities.is_none() {
+                assert_ne!(reference, healthy, "{fault:x}");
+            }
+            assert_eq!(run(false, false), reference, "{fault:x} {capacities:?}");
+            let once = run(false, true);
+            assert!(
+                once == healthy || once == run(true, true),
+                "{fault:x} {capacities:?}: {once:?}"
+            );
+        }
+    }
+    // A fault the gather meets once is counted, and its per-wing reads
+    // recover.
+    let wing = scale.wing_pointers[64];
+    let healthy = census(&scale.memory(), true, None).0;
+    assert_eq!(
+        census(
+            &Faulted::new(&scale.bytes, &[wing + NAME], true),
+            false,
+            None
+        ),
+        (healthy, 1)
+    );
+}
+
+/// A persistent fault at the last pointer of a 64-pointer run gives the
+/// parent's prefix and failure, after one pointer-run fallback.
+#[test]
+fn a_pointer_run_fault_at_its_last_pointer_gives_the_parents_prefix() {
+    let scale = Scale::new(3, |country| if country == 1 { 64 } else { 1 });
+    let faulted = || Faulted::new(&scale.bytes, &[scale.slots[63]], false);
+    let (reference, _) = census(&faulted(), true, None);
+    assert_eq!(reference.visits.len(), 63);
+    assert_eq!(
+        reference.shared.map,
+        Outcome::Unavailable {
+            reason: "air wing roster pointer unreadable or address overflow"
+        }
+    );
+    assert_eq!(census(&faulted(), false, None), (reference, 1));
+}
+
+/// A gather that stops in a wing's name header, after its row fields, keeps
+/// that row; the name's refusal reason and the arena demand are the
+/// parent's, for a header and for a heap text's terminator.
+#[test]
+fn a_gather_stopped_in_a_name_keeps_the_row_its_refusal_and_the_demand() {
+    use crate::raid_tooltip_operands::NameReadError;
+    let scale = Scale::new(40, |_| 2);
+    for (ordinal, fault, reason) in [
+        (
+            10,
+            scale.wing_pointers[10] + NAME + crate::msvc_string::LENGTH,
+            NameReadError::Unreadable,
+        ),
+        (
+            31,
+            scale.heap_text(31) + Scale::HEAP_NAME,
+            NameReadError::Unreadable,
+        ),
+    ] {
+        let faulted = || Faulted::new(&scale.bytes, &[fault], false);
+        let (reference, _) = census(&faulted(), true, None);
+        assert_eq!(reference.rows.len(), scale.wings);
+        assert_eq!(
+            reference.names[ordinal],
+            Err(NameFailure::Native(reason)),
+            "{fault:x}"
+        );
+        // A heap terminator lies outside the gathered header: no fallback.
+        let fallbacks = u32::from(ordinal == 10);
+        assert_eq!(
+            census(&faulted(), false, None),
+            (reference, fallbacks),
+            "{fault:x}"
+        );
+    }
+}
+
+/// A wing whose pointer repeats across a replay boundary keeps both
+/// occurrences, in order, with their own pool ordinals.
+#[test]
+fn a_repeated_wing_across_a_replay_boundary_keeps_its_occurrences() {
+    let mut scale = Scale::new(2, |country| if country == 1 { 66 } else { 1 });
+    let repeated = scale.wing_pointers[63];
+    let slot = scale.slots[64];
+    p64(&mut scale.bytes, slot, repeated as u64);
+    let (reference, _) = census(&scale.memory(), true, None);
+    assert_eq!(reference.visits[63].0, repeated);
+    assert_eq!(reference.visits[64].0, repeated);
+    assert_eq!(
+        (
+            reference.rows[63].pool_ordinal,
+            reference.rows[64].pool_ordinal
+        ),
+        (63, 64)
+    );
+    assert_eq!(reference.rows[63].id, reference.rows[64].id);
+    for capacities in CAPACITIES {
+        assert_eq!(
+            census(&scale.memory(), false, capacities),
+            (census(&scale.memory(), true, capacities).0, 0),
+            "{capacities:?}"
+        );
+    }
+}
+
+/// A census that a wing ends does not publish a later country's refusal or
+/// witness, which the roster read ahead.
+#[test]
+fn a_census_ended_by_a_wing_does_not_publish_a_later_countrys_refusal() {
+    let scale = Scale::new(10, |_| 1);
+    let faults = [
+        scale.wing_pointers[4],
+        scale.owners[5] + cstrategic_air::COUNTRY,
+    ];
+    let faulted = || Faulted::new(&scale.bytes, &faults, false);
+    let (reference, _) = census(&faulted(), true, None);
+    assert!(reference.ended);
+    assert_eq!(
+        reference.shared.map,
+        Outcome::Unavailable {
+            reason: "air wing primary vtable mismatch"
+        }
+    );
+    assert_eq!(reference.owners.last().map(|owner| owner.0), Some(5));
+    assert_eq!(census(&faulted(), false, None), (reference, 1));
+}
+
+/// A header gathered with the row captures as the whole-header read does,
+/// and the capture then reads only the text and its terminator.
+#[test]
+fn gathered_name_header_captures_as_the_whole_header_read() {
+    use crate::msvc_string;
+    let text = vec![b'y'; 40];
+    let mut bytes = fixture();
+    bytes.resize(0xe000 + text.len() + 1, 0);
+    bytes[0xe000..0xe000 + text.len()].copy_from_slice(&text);
+    p64(&mut bytes, WING_A + NAME, 0xe000);
+    p64(
+        &mut bytes,
+        WING_A + NAME + msvc_string::LENGTH,
+        text.len() as u64,
+    );
+    p64(
+        &mut bytes,
+        WING_A + NAME + msvc_string::CAPACITY,
+        text.len() as u64,
+    );
+    let capture = |header| {
+        let memory = Traced {
+            bytes: &bytes,
+            reads: Default::default(),
+            fault: None,
+        };
+        let mut storage = Vec::new();
+        let (mut used, mut required) = (0, 0);
+        let span = capture_name_growing(
+            &memory,
+            WING_A,
+            header,
+            &mut storage,
+            &mut used,
+            &mut required,
+        );
+        (span, storage, memory.reads.into_inner())
+    };
+    let read = capture(None);
+    let gathered = capture(name_header(&bytes, WING_A));
+    assert_eq!(read.0, Ok((0, text.len())));
+    assert_eq!((read.0, &read.1), (gathered.0, &gathered.1));
+    assert_eq!(read.2[0], (WING_A + NAME, msvc_string::STRIDE));
+    assert_eq!(read.2[1..], gathered.2[..]);
+}
+
+/// A scored census whose slot-zero owner authenticates through its
+/// catalogue object: healthy, and under persistent and one-shot faults at
+/// that catalogue, its object and the owner, and at a later country's
+/// catalogue read ahead, it gives the parent walk's census, plane results
+/// included, or never more refusal than the parent's.
+#[test]
+fn a_slot_zero_owner_and_catalogue_faults_refuse_no_more_than_the_parent() {
+    let scale = Scale::build(80, |country| 1 + country % 2, true);
+    assert_eq!(scale.owners.len(), 81);
+    let (healthy, fallbacks) = census(&scale.memory(), false, None);
+    assert_eq!(fallbacks, 0);
+    assert_eq!(healthy, census(&scale.memory(), true, None).0);
+    assert_eq!(healthy.owners[0], (0, Some(scale.owners[0])));
+    assert_eq!(healthy.rows[0].owner, 0);
+    // A plane-count fault leaves the score leaf with its own refusal.
+    let planes = scale.wing_pointers[1] + PLANE_COUNT;
+    let (faulted, _) = census(
+        &Faulted::new(&scale.bytes, &[planes], false),
+        false,
+        Some([0; 3]),
+    );
+    assert_eq!(
+        faulted.scores[1].2,
+        Err("game score air-wing plane count unreadable")
+    );
+    let mut faults = vec![planes];
+    for country in [0, 1, 60] {
+        faults.extend([
+            scale.catalogue[country],
+            scale.links[country],
+            scale.countries[country],
+            scale.countries[country] + ccountry::ID,
+            scale.owners[country] + cstrategic_air::COUNTRY,
+        ]);
+    }
+    for capacities in CAPACITIES {
+        let healthy = census(&scale.memory(), true, capacities).0;
+        for &fault in &faults {
+            let run = |serial, once| {
+                census(
+                    &Faulted::new(&scale.bytes, &[fault], once),
+                    serial,
+                    capacities,
+                )
+                .0
+            };
+            let reference = run(true, false);
+            assert_eq!(run(false, false), reference, "{fault:x} {capacities:?}");
+            let once = run(false, true);
+            assert!(
+                once == healthy || once == run(true, true),
+                "{fault:x} {capacities:?}: {once:?}"
+            );
+        }
+    }
+    // A later country's catalogue, read ahead, is not published once an
+    // earlier wing ends the census.
+    let faults = [scale.wing_pointers[3], scale.catalogue[5]];
+    let faulted = || Faulted::new(&scale.bytes, &faults, false);
+    let (reference, _) = census(&faulted(), true, None);
+    assert!(reference.ended);
+    assert_eq!(
+        reference.shared.map,
+        Outcome::Unavailable {
+            reason: "air wing primary vtable mismatch"
+        }
+    );
+    assert_eq!(census(&faulted(), false, None), (reference, 1));
 }

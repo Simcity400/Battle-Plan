@@ -1,13 +1,17 @@
 //! Shared primary unit base for divisions and task forces.
 
-use crate::{Memory, carmy, cpdx_array::Array, read};
+use crate::{Memory, carmy, cpdx_array::Array, memory::FieldBatch, read};
+
 mod combat_references;
 pub use combat_references::{COMBAT_BORDER_WAR, COMBAT_LAND, COMBAT_NAVAL, MapCombatReference};
-pub(crate) use combat_references::{CombatReferencesCapture, read_unit_combat_references};
-/// Counter references resolve to the secondary reference-object base.
-/// The reference type alone does not authenticate class: null or colliding IDs
-/// can receive a dynamically minted type. Exact vtable, class and full registry
-/// identity authenticate the unit.
+pub(crate) use combat_references::{
+    CombatReferencesCapture, MapCombatIdentityMemo, read_unit_combat_references,
+};
+/// Native counter references resolve to the secondary reference object at
+/// primary+10, and the counter consumes classes 0, 1 and 13. The reference type
+/// is not a class witness: id assignment replaces a null or colliding id with a
+/// dynamic id, type 0x1268 plus the dynamic type counter (4713 in saved
+/// divisions). Exact vtable, class and registry join authenticate.
 pub(crate) fn counter_identity(
     memory: &impl Memory,
     base: usize,
@@ -261,17 +265,54 @@ pub(crate) fn read_movement_arrow_scalars(
     if unit == 0 {
         return MovementArrowScalars::default();
     }
+    // The four fields in one guarded call; each stays independent
+    // (`FieldBatch`: a failed field fails alone, later ones read singly).
+    let offsets = [
+        carmy::MOVEMENT_NUMERATOR,
+        RETREAT,
+        WITHDRAWAL,
+        NAVAL_TRANSFER_MEMBERSHIP,
+    ];
+    let Some(addresses) = gathered_addresses(unit, offsets) else {
+        return MovementArrowScalars {
+            numerator: unit
+                .checked_add(carmy::MOVEMENT_NUMERATOR)
+                .and_then(|at| read(memory, at)),
+            retreat: unit.checked_add(RETREAT).and_then(|at| read(memory, at)),
+            withdrawal: read_withdrawal(memory, unit),
+            naval_transfer: unit
+                .checked_add(NAVAL_TRANSFER_MEMBERSHIP)
+                .and_then(|at| read::<u64>(memory, at))
+                .map(|pointer| u8::from(pointer != 0)),
+        };
+    };
+    let fields = FieldBatch::gather(
+        memory,
+        [
+            (addresses[0], 8),
+            (addresses[1], 1),
+            (addresses[2], 1),
+            (addresses[3], 8),
+        ],
+    );
     MovementArrowScalars {
-        numerator: unit
-            .checked_add(carmy::MOVEMENT_NUMERATOR)
-            .and_then(|at| read(memory, at)),
-        retreat: unit.checked_add(RETREAT).and_then(|at| read(memory, at)),
-        withdrawal: read_withdrawal(memory, unit),
-        naval_transfer: unit
-            .checked_add(NAVAL_TRANSFER_MEMBERSHIP)
-            .and_then(|at| read::<u64>(memory, at))
+        numerator: fields.get(memory, 0),
+        retreat: fields.get(memory, 1),
+        withdrawal: fields.get(memory, 2),
+        naval_transfer: fields
+            .get::<u64>(memory, 3)
             .map(|pointer| u8::from(pointer != 0)),
     }
+}
+
+/// `unit`'s field addresses, or `None` when one overflows (the caller then
+/// reads singly, keeping its own refusals).
+fn gathered_addresses<const N: usize>(unit: usize, offsets: [usize; N]) -> Option<[usize; N]> {
+    let addresses = offsets.map(|offset| unit.checked_add(offset));
+    addresses
+        .iter()
+        .all(Option::is_some)
+        .then(|| addresses.map(Option::unwrap))
 }
 
 pub(crate) fn read_withdrawal(memory: &impl Memory, unit: usize) -> Option<u8> {
@@ -402,21 +443,47 @@ fn read_map_motion_impl(
         unit.checked_add(offset)
             .ok_or("unit motion address overflow")
     };
-    let target_pointer = read::<u64>(memory, at(MOVEMENT_TARGET)?)
-        .and_then(|p| usize::try_from(p).ok())
-        .ok_or("unit movement target pointer unreadable")?;
+    // The target and the three headers in one guarded call, each consulted
+    // where it is read (`FieldBatch`); a unit whose fields would overflow
+    // reads them singly.
+    let fields = gathered_addresses(
+        unit,
+        [
+            MOVEMENT_TARGET,
+            ORDINARY_ROUTE_DATA,
+            ALTERNATE_ROUTE_DATA,
+            COMBAT_REFERENCE_DATA,
+        ],
+    )
+    .map(|[target, ordinary, alternate, combats]| {
+        FieldBatch::gather(
+            memory,
+            [(target, 8), (ordinary, 16), (alternate, 16), (combats, 16)],
+        )
+    });
+    let header = |index: usize, offset| match &fields {
+        Some(fields) => Ok(fields.get::<[u8; 16]>(memory, index)),
+        None => at(offset).map(|address| read::<[u8; 16]>(memory, address)),
+    };
+    let target_pointer = match &fields {
+        Some(fields) => fields.get::<u64>(memory, 0),
+        None => read::<u64>(memory, at(MOVEMENT_TARGET)?),
+    }
+    .and_then(|p| usize::try_from(p).ok())
+    .ok_or("unit movement target pointer unreadable")?;
     let target = registered_province(memory, base, provinces, target_pointer)?;
-    let route = |offset| {
-        Array::read(memory, at(offset)?, 4)
+    let route = |index, offset| {
+        header(index, offset)?
+            .and_then(|header| Array::from_header(header, 4))
             .filter(|route| route.count <= provinces.count)
             .ok_or("unit route invalid or longer than the province roster")
     };
-    let ordinary = route(ORDINARY_ROUTE_DATA)?;
-    let alternate = route(ALTERNATE_ROUTE_DATA)?;
-    // Visit combats only until the first one the owner attacks in;
-    // the original header bounds the walk.
-    let combat_header = at(COMBAT_REFERENCE_DATA)
-        .and_then(|address| read::<[u8; 16]>(memory, address).ok_or("unit combat vector invalid"));
+    let ordinary = route(1, ORDINARY_ROUTE_DATA)?;
+    let alternate = route(2, ALTERNATE_ROUTE_DATA)?;
+    // The vector is walked only until the first combat the owner attacks in, as
+    // `Unit_GetActionCode` walks it; its header bounds the walk.
+    let combat_header = header(3, COMBAT_REFERENCE_DATA)
+        .and_then(|header| header.ok_or("unit combat vector invalid"));
     if let Some(count) = count {
         *count = Some(combat_header.map(|header| {
             i32::from_le_bytes(header[12..16].try_into().expect("signed combat count"))
@@ -1030,5 +1097,33 @@ impl FirstCombatMemo {
             Some(&(role, _)) => Ok(role),
             None => combat_role(memory, base, game_state, combat, Some(owner)),
         }
+    }
+}
+
+#[cfg(test)]
+mod arrow_tests {
+    use super::*;
+
+    /// The four movement-arrow fields are read in one guarded call, and each
+    /// keeps its own value.
+    #[test]
+    fn movement_arrow_scalars_are_gathered_in_one_call() {
+        const UNIT: usize = 0x100;
+        let mut bytes = vec![0; 0x1000];
+        bytes[UNIT + carmy::MOVEMENT_NUMERATOR..][..8].copy_from_slice(&(-7_i64).to_le_bytes());
+        bytes[UNIT + RETREAT] = 1;
+        bytes[UNIT + WITHDRAWAL] = 2;
+        bytes[UNIT + NAVAL_TRANSFER_MEMBERSHIP..][..8].copy_from_slice(&9_u64.to_le_bytes());
+        let memory = crate::memory::CountingMemory::new(&bytes);
+        assert_eq!(
+            read_movement_arrow_scalars(&memory, UNIT),
+            MovementArrowScalars {
+                numerator: Some(-7),
+                retreat: Some(1),
+                withdrawal: Some(2),
+                naval_transfer: Some(1),
+            }
+        );
+        assert_eq!(memory.calls.get(), 1);
     }
 }

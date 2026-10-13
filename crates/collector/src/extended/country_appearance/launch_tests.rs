@@ -31,18 +31,10 @@ fn empty_navy(capture: &mut Captured, hour: Option<i32>) {
         base: 0,
         bytes: &bytes,
     };
-    let mut movement = naval::Captured::new(naval::Capacities::default());
-    movement.capture(
-        &memory,
-        0,
-        0x1000,
-        hour,
-        naval::OwnerCensus {
-            owners: [],
-            failure: Some("unrelated moving-owner refusal"),
-        },
-        capture.naval_movement_mut(),
-    );
+    let mut navies = naval::Captured::new(naval::Capacities::default());
+    let mut reader = navies.begin(&memory, 0, 0x1000, hour, capture.launch_sources_mut());
+    navies.finish();
+    reader.clear();
 }
 
 #[test]
@@ -52,14 +44,14 @@ fn packet_projection_keeps_independent_vectors_and_refuses_without_hour() {
     capture.launch_state_result = Err("test state roster refusal");
     empty_navy(&mut capture, Some(71));
     let TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)) =
-        capture.reserved_table_attack(None, None)
+        capture.reserved_table(None)
     else {
         panic!("healthy naming prefix");
     };
     let replay::rows::Recorded::Value(Some(packet)) = &rows[0].launch_sources else {
         panic!("current packet");
     };
-    assert_eq!(packet.sample_hour, 71);
+    assert_eq!(packet.sample_hour, replay::rows::PacketHour::Host);
     assert_eq!(
         packet.naval_bases,
         replay::rows::LaunchNavalBases::Bases(vec![])
@@ -85,7 +77,7 @@ fn healthy_internal_launch_cannot_publish_after_mandatory_naming_failure() {
         reason: "test mandatory naming refusal",
     };
     assert!(matches!(
-        capture.reserved_table_attack(None, None),
+        capture.reserved_table(None),
         TableView::Unavailable { .. }
     ));
 }

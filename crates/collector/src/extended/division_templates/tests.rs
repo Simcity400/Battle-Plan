@@ -70,14 +70,15 @@ fn capacity() -> Capacities {
         icon_rows: 2,
         icon_bytes: 32,
         name_bytes: 32,
-        memo: 8,
         database: 8,
         locals: 8,
     }
 }
 
+/// Both tables are read every hour, the dictionary from the icon walk, and
+/// unreadable memory fails both rather than claiming an empty roster.
 #[test]
-fn daily_refresh_reads_templates_and_bad_memory_cannot_claim_empty() {
+fn every_hour_reads_both_tables_and_bad_memory_cannot_claim_empty() {
     let mut capture = Captured::with_capacities(&capacity());
     let present = CountedMemory::new(fixture());
     let missing = CountedMemory::new(SliceMemory {
@@ -85,36 +86,18 @@ fn daily_refresh_reads_templates_and_bad_memory_cannot_claim_empty() {
         bytes: &[],
     });
     for (hour, force) in (-24..24).map(|hour| (hour, false)).chain([(0, true)]) {
+        assert!(replay::cadence::should_walk(TABLES[0], hour, force));
         let reads = crate::read_accounting::Capture::new();
         capture.capture(&present, 0, 0x1000, hour, force);
         let read = reads.finish();
-        // The counter inputs are walked every hour.
         assert!(read[TABLES[1].index()].spans > 0);
-        if !replay::cadence::should_walk(TABLES[0], hour, force) {
-            assert_eq!(
-                read[TABLES[0].index()],
-                crate::read_accounting::ZERO[TABLES[0].index()]
-            );
-            assert_eq!(
-                capture.outcomes(),
-                [
-                    Outcome::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON
-                    },
-                    Outcome::Rows { len: 1 }
-                ]
-            );
-            continue;
-        }
-        assert!(read[TABLES[0].index()].spans > 0);
+        // Unobserved, the name key behind the nonempty literal is read.
+        assert!(read[TABLES[0].index()].spans > 0, "{hour}");
         assert_eq!(
             capture.outcomes(),
             [Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 }]
         );
-
-        let reads = crate::read_accounting::Capture::new();
         capture.capture(&missing, 0, 0x1000, hour, force);
-        assert!(reads.finish()[TABLES[0].index()].spans > 0);
         let [Outcome::Unavailable { reason }, Outcome::Unavailable { .. }] = capture.outcomes()
         else {
             panic!("unreadable templates must fail at hour {hour}");
@@ -122,6 +105,64 @@ fn daily_refresh_reads_templates_and_bad_memory_cannot_claim_empty() {
         assert_ne!(reason, replay::cadence::SKIPPED_REASON);
         assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
         assert!(matches!(capture.tables()[1], TableView::Unavailable { .. }));
+    }
+}
+
+/// The hourly job reads the icon and demanded names directly, then publishes
+/// both tables from that walk; taking its preacquisition performs no live read.
+#[test]
+fn hourly_template_job_publishes_direct_walk_rows() {
+    use crate::acquisition_jobs::TemplatesRequest;
+    use engine::country_memory::Cache;
+    use std::sync::Arc;
+
+    let mut source = fixture();
+    let mut capture = Captured::vacant();
+    for (hour, literal, custom_icon) in [(7, &b"Alpha"[..], 11_i32), (8, &b"Bravo"[..], 22)] {
+        set_name(&mut source, literal, b"fallback");
+        source.bytes[0x5000 + native::CUSTOM_ICON..][..4]
+            .copy_from_slice(&custom_icon.to_le_bytes());
+        let mut countries = Arc::new(Cache::try_with_capacity(256).unwrap());
+        let countries = Cache::prepare_shared(&mut countries, &source, 0, 0x1000).unwrap();
+        let mut request = TemplatesRequest::take(&countries, 0, 0x1000, &mut capture, hour, false);
+        request.run(&source);
+        request.restore(&mut capture, None);
+        // An unreadable source cannot affect the already acquired tables.
+        capture.capture(
+            &SliceMemory {
+                base: 0,
+                bytes: &[],
+            },
+            0,
+            0x1000,
+            hour,
+            false,
+        );
+        assert_eq!(capture.outcomes(), [Outcome::Rows { len: 1 }; N]);
+        let [
+            TableView::Complete(replay::rows::TableRows::DivisionTemplates(dictionary)),
+            TableView::Complete(replay::rows::TableRows::DivisionTemplateIcons(icons)),
+        ] = capture.tables()
+        else {
+            panic!("complete template job tables at {hour}");
+        };
+        assert_eq!(dictionary.len(), 1);
+        assert_eq!(dictionary[0].name, literal);
+        assert_eq!(
+            dictionary[0].name_key,
+            Recorded::Value(b"fallback".to_vec())
+        );
+        assert_eq!(icons.len(), 1);
+        assert_eq!(icons[0].template, dictionary[0].template);
+        assert_eq!(icons[0].custom_icon, custom_icon);
+        assert_eq!(icons[0].priority_unit_name, b"infantry");
+        assert_eq!(
+            icons[0]
+                .display_name_inputs(hour, Some(&dictionary[0]))
+                .unwrap()
+                .literal,
+            literal
+        );
     }
 }
 
@@ -347,15 +388,8 @@ fn hourly_equality_and_same_day_rename_use_exact_same_frame_bytes() {
     let mut capture = Captured::with_capacities(&capacity());
     let mut source = fixture();
     capture.capture(&source, 0, 0x1000, 9, true);
-    let [
-        TableView::Complete(replay::rows::TableRows::DivisionTemplates(dictionary)),
-        _,
-    ] = capture.tables()
-    else {
-        panic!("dictionary fixture")
-    };
     assert!(matches!(
-        displayed(capture.table_inputs(None)).display_name,
+        displayed(capture.table_inputs()).display_name,
         Recorded::Value(Some(TemplateDisplayName {
             value: TemplateNameValue::SameAsDivisionTemplates,
             ..
@@ -363,31 +397,47 @@ fn hourly_equality_and_same_day_rename_use_exact_same_frame_bytes() {
     ));
     capture.capture(&source, 0, 0x1000, 10, false);
     assert!(matches!(
-        displayed(capture.table_inputs(Some(&dictionary))).display_name,
+        displayed(capture.table_inputs()).display_name,
         Recorded::Value(Some(TemplateDisplayName {
-            sample_hour: 10,
+            sample_hour: replay::rows::PacketHour::Host,
             value: TemplateNameValue::SameAsDivisionTemplates
         }))
     ));
+    // A rename reaches the same hour's dictionary, so the name certifies
+    // against it.
     set_name(&mut source, b"Renamed", b"unused");
     capture.capture(&source, 0, 0x1000, 11, false);
-    let renamed = displayed(capture.table_inputs(Some(&dictionary)));
+    let [
+        TableView::Complete(replay::rows::TableRows::DivisionTemplates(dictionary)),
+        _,
+    ] = capture.tables()
+    else {
+        panic!("renamed dictionary")
+    };
+    assert_eq!(dictionary[0].name, b"Renamed");
+    let renamed = displayed(capture.table_inputs());
     assert_eq!(
-        renamed.display_name_inputs(11, None).unwrap().literal,
+        renamed
+            .display_name_inputs(11, Some(&dictionary[0]))
+            .unwrap()
+            .literal,
         b"Renamed"
     );
     assert_eq!(renamed.priority_unit_name, b"infantry");
 }
 
+/// The dictionary is complete at every hour, so a display name equal to it
+/// is a same-frame certificate; a failed dictionary needs a self-contained
+/// override.
 #[test]
-fn no_daily_baseline_and_failed_daily_capture_need_self_contained_overrides() {
+fn every_hour_certifies_against_the_same_frame_and_a_failed_dictionary_overrides() {
     let mut capture = Captured::with_capacities(&capacity());
     let source = fixture();
     capture.capture(&source, 0, 0x1000, 10, false);
     assert!(matches!(
-        displayed(capture.table_inputs(None)).display_name,
+        displayed(capture.table_inputs()).display_name,
         Recorded::Value(Some(TemplateDisplayName {
-            value: TemplateNameValue::Changed { .. },
+            value: TemplateNameValue::SameAsDivisionTemplates,
             ..
         }))
     ));
@@ -398,13 +448,8 @@ fn no_daily_baseline_and_failed_daily_capture_need_self_contained_overrides() {
     capture.rows.outcome = Outcome::Unavailable {
         reason: "synthetic dictionary failure",
     };
-    let baseline = [DivisionTemplateRow {
-        template: 0xffff_ffff_0000_0034,
-        name: vec![b'A', 0, 255],
-        ..Default::default()
-    }];
     assert!(matches!(
-        displayed(capture.table_inputs(Some(&baseline))).display_name,
+        displayed(capture.table_inputs()).display_name,
         Recorded::Value(Some(TemplateDisplayName {
             value: TemplateNameValue::Changed { .. },
             ..
@@ -418,7 +463,7 @@ fn name_arena_growth_keeps_the_first_heading_and_counts_exact_demand() {
     size.name_bytes = 0;
     let mut capture = Captured::with_capacities(&size);
     capture.capture(&fixture(), 0, 0x1000, 9, true);
-    let row = displayed(capture.table_inputs(None));
+    let row = displayed(capture.table_inputs());
     assert!(matches!(row.display_name, Recorded::Value(Some(_))));
     assert_eq!(row.priority_unit_name, b"infantry");
     assert_eq!(row.model_unreadable, 0);
@@ -516,7 +561,7 @@ fn optional_model_failure_does_not_remove_fresh_name_inputs() {
     source.bytes[0x5000 + native::SUBUNIT_COUNTS + 12..0x5000 + native::SUBUNIT_COUNTS + 16]
         .copy_from_slice(&2_u32.to_le_bytes()); // length beyond capacity
     capture.capture(&source, 0, 0x1000, 9, true);
-    let row = displayed(capture.table_inputs(None));
+    let row = displayed(capture.table_inputs());
     assert_eq!(row.model_unreadable, 1);
     assert!(matches!(row.display_name, Recorded::Value(Some(_))));
 }

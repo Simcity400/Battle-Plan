@@ -5,13 +5,14 @@ import type { OptionField } from '../../dashboard/options';
 import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
 
 /** What a row shows when the game has no picture for it: most kinds never do (wars, peace, factions);
- * laws, advisors, focuses, projects and stockpiles fall back to these only when their artwork is missing. */
+ * laws, advisors, focuses, projects, stockpiles and strikes fall back to these only when their artwork is missing. */
 export const EVENT_ICONS: Record<EventFeedKind, IconName> = {
   warStarted: 'swords', warDeclared: 'swords', warJoined: 'swords', civilWarWarTransferred: 'flag-torn',
-  annexed: 'flag-plus', peace: 'olive-branch', capitulated: 'flag', ceasedToExist: 'flag-x',
+  annexed: 'flag-plus', warEnded: 'olive-branch', released: 'flag-plus', stateTransferred: 'map',
+  peaceConferenceStarted: 'handshake', peace: 'olive-branch', capitulated: 'flag', ceasedToExist: 'flag-x',
   factionJoined: 'users-plus', factionLeft: 'users-minus', becameSubject: 'link', guaranteeGranted: 'shield-check',
   rulingPartyChanged: 'ballot', lawChanged: 'parliament', advisorHired: 'star', focusCompleted: 'target',
-  projectFinished: 'flask', nukesIncreased: 'sparkle',
+  projectFinished: 'flask', nukesIncreased: 'sparkle', nuclearStrike: 'sunburst',
 };
 
 export const CATEGORIES = [

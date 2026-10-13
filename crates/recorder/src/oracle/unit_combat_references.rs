@@ -111,7 +111,7 @@ mod tests {
     use replay::rows::{LandCombatDetailsRow, LandCombatRow, UnitCombatReference};
     fn packet(hour: i32) -> UnitCombatReferences {
         UnitCombatReferences {
-            sample_hour: hour,
+            sample_hour: replay::rows::PacketHour::Stamped(hour),
             entries: vec![
                 UnitCombatReference {
                     combat: u64::MAX,
@@ -132,7 +132,7 @@ mod tests {
             (Recorded::Value(None), 0, 1),
             (
                 Recorded::Value(Some(UnitCombatReferences {
-                    sample_hour: frame.hour,
+                    sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
                     entries: Vec::new(),
                 })),
                 0,
@@ -224,7 +224,7 @@ mod tests {
                 }]));
             let actual = u8::from(border.is_some());
             let packet = UnitCombatReferences {
-                sample_hour: frame.hour,
+                sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
                 entries: vec![UnitCombatReference {
                     combat: u64::MAX,
                     kind: 1 - actual,

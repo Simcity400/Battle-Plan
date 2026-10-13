@@ -85,22 +85,13 @@ pub struct Row {
     pub country_instance: Option<u32>,
     pub current_raw: i64,
     pub maximum_raw: i64,
-    pub gain_raw: i64,
-    pub gain_from_states_raw: i64,
     pub lend_lease_gain_raw: i64,
-    pub lend_lease_consumption_raw: i64,
-    pub cost_raw: i64,
-    pub gain_per_oil_raw: i64,
-    pub history_index: i32,
-    pub remaining_hours: i32,
     /// Sum of the ring entries' fuel gain, fixed5.
     pub ring_gain_raw: i64,
     /// Sum of the ring entries' consumed fuel, /32768.
     pub ring_consumed_raw: i64,
     /// Sum of the ring entries' other fuel, /32768.
     pub ring_other_raw: i64,
-    /// Per-consumer sums of the ring entries' requested fuel, fixed5.
-    pub ring_requested_raw: [i64; entry::CONSUMER_VALUES],
     /// Per-consumer sums of the ring entries' received fuel, fixed5.
     pub ring_received_raw: [i64; entry::CONSUMER_VALUES],
 }
@@ -281,22 +272,20 @@ fn read_status(
         .filter(|&p| p != 0)
         .ok_or("fuel status pointer unreadable or null")?;
     // These spans contain only the vtable and requested fields: the scalars
-    // with the consumer header, the ring header, the history cursor and the
-    // owner; the pending entry and the allocator words are not read. All
-    // buffers are stack-owned, and one guarded scatter avoids per-field SEH
-    // calls.
+    // with the consumer header, the ring header and the owner; the pending
+    // entry, the allocator words and the retired history cursor are not
+    // read. All buffers are stack-owned, and one guarded scatter avoids
+    // per-field SEH calls.
     let mut head = [0; CONSUMERS + 16];
     let mut ring = [0; 16];
-    let mut cursor = [0; 8];
     let mut owner = [0; 8];
     let copied = memory.copy_scattered(
         [
             status,
             status.checked_add(HISTORY_RING).unwrap_or(0),
-            status.checked_add(HISTORY_INDEX).unwrap_or(0),
             status.checked_add(COUNTRY).unwrap_or(0),
         ],
-        &mut [&mut head, &mut ring, &mut cursor, &mut owner],
+        &mut [&mut head, &mut ring, &mut owner],
     );
     if copied == 0 {
         return Err("fuel status quantities unreadable");
@@ -308,9 +297,6 @@ fn read_status(
         return Err("fuel status history ring header unreadable");
     }
     if copied < 3 {
-        return Err("fuel status history cursor unreadable");
-    }
-    if copied < 4 {
         return Err("fuel status country pointer unreadable");
     }
     if u64::from_le_bytes(owner) != country.pointer as u64 {
@@ -337,14 +323,7 @@ fn read_status(
                 .and_then(|p| read(memory, p)),
             current_raw: i64_at(&head, CURRENT),
             maximum_raw: i64_at(&head, MAXIMUM),
-            gain_raw: i64_at(&head, GAIN),
-            gain_from_states_raw: i64_at(&head, GAIN_FROM_STATES),
             lend_lease_gain_raw: i64_at(&head, LEND_LEASE_GAIN),
-            lend_lease_consumption_raw: i64_at(&head, LEND_LEASE_CONSUMPTION),
-            cost_raw: i64_at(&head, COST),
-            gain_per_oil_raw: i64_at(&head, GAIN_PER_OIL),
-            history_index: i32_at(&cursor, 0),
-            remaining_hours: i32_at(&cursor, REMAINING_HOURS - HISTORY_INDEX),
             ..Row::default()
         },
         consumers,
@@ -386,39 +365,21 @@ fn ring_sums(mut row: Row, ring: &[u8]) -> Result<Row, &'static str> {
         entry::GAIN,
         entry::CONSUMED,
         entry::OTHER,
-        entry::REQUESTED,
-        entry::REQUESTED + 8,
-        entry::REQUESTED + 16,
         entry::RECEIVED,
         entry::RECEIVED + 8,
         entry::RECEIVED + 16,
     ];
-    let mut sums = [0_i128; 9];
+    let mut sums = [0_i128; 6];
     for bytes in ring.chunks_exact(entry::STRIDE) {
         for (sum, offset) in sums.iter_mut().zip(offsets) {
             *sum += i128::from(i64_at(bytes, offset));
         }
     }
-    let [
-        gain,
-        consumed,
-        other,
-        requested_0,
-        requested_1,
-        requested_2,
-        received_0,
-        received_1,
-        received_2,
-    ] = sums.map(i64::try_from);
+    let [gain, consumed, other, received_0, received_1, received_2] = sums.map(i64::try_from);
     let overflow = |_| "fuel history ring sum exceeds i64";
     row.ring_gain_raw = gain.map_err(overflow)?;
     row.ring_consumed_raw = consumed.map_err(overflow)?;
     row.ring_other_raw = other.map_err(overflow)?;
-    row.ring_requested_raw = [
-        requested_0.map_err(overflow)?,
-        requested_1.map_err(overflow)?,
-        requested_2.map_err(overflow)?,
-    ];
     row.ring_received_raw = [
         received_0.map_err(overflow)?,
         received_1.map_err(overflow)?,

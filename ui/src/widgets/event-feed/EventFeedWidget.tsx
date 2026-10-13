@@ -18,9 +18,10 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import { CATEGORIES, EVENT_ICONS, OPTIONS } from './definition';
 import { Icon } from '../../components/Icons';
-import { eventCountryName, eventDescription, eventSentence, eventTooltip, notRecorded } from './eventFeedData';
+import { eventCountryName, eventDescription, eventSentence, eventTags, eventTooltip, notRecorded } from './eventFeedData';
 import type { FeedEvent, FeedFilter } from './eventFeedData';
 import { useEventFeed } from './useEventFeed';
 import './eventFeed.css';
@@ -55,8 +56,14 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
   const feed = useEventFeed(runtime, track, active && match.ready && inBranch, hour, filter, filterKey, widget.time.mode === 'follow');
   const [visible, setVisible] = useState<readonly LogRow<FeedEvent>[]>(NO_ROWS);
   const wanted = useMemo(() => logCountryRequests(visible, row => ({ hour: row.item.event.nameHour,
-    tags: [...row.item.event.tags, ...ideaTargetTags(row.item.item?.idea)] })), [visible]);
+    tags: [...eventTags(row.item.event), ...ideaTargetTags(row.item.item?.idea)] })), [visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && inBranch);
+  const wantedStates = useMemo(() => visible.flatMap(row => {
+    const event = row.item.event;
+    return [event.cause?.state, event.strike?.state].flatMap(state => state == null ? [] : [{ hour: event.hour, state }]);
+  }), [visible]);
+  const stateAt = useStateNamesAt(runtime.client, track, wantedStates, active && inBranch);
+  const stateName = useCallback((hour: number, state: number) => stateAt(hour, state).name, [stateAt]);
   const labels = useCallback((row: LogRow<FeedEvent>) => {
     const at = labelAt(row.item.event.nameHour);
     return (tag: string) => {
@@ -94,14 +101,14 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
         return <>
           {artwork && <span className="log-art" aria-hidden="true">{at.item?.icon ? <img src={at.item.icon} alt="" />
             : <span className="event-feed-icon" style={{ '--event-colour': tokens.categories[category.palette] } as CSSProperties}><Icon name={EVENT_ICONS[at.event.kind]} /></span>}</span>}
-          <span className="log-text">{eventSentence(at).map((part, index) => 'tag' in part ? <span key={index}>
+          <span className="log-text">{eventSentence(at, stateName).map((part, index) => 'tag' in part ? <span key={index}>
             <CountryFlagUrl className="log-flag" url={label(part.tag).flag} reason={label(part.tag).flagReason} pending={label(part.tag).flagPending} /><b>{label(part.tag).name}</b>
           </span> : <span key={index}>{part.text}</span>)}</span>
           <span className="log-tag"><i style={{ background: tokens.categories[category.palette] }} />{category.label}</span>
         </>;
       }}
-      describe={row => eventDescription(row.item, tag => labels(row)(tag).name)}
-      tooltip={row => eventTooltip(row.item, tag => labels(row)(tag).name)}
+      describe={row => eventDescription(row.item, tag => labels(row)(tag).name, stateName)}
+      tooltip={row => eventTooltip(row.item, tag => labels(row)(tag).name, stateName)}
       menu={row => [jumpItem(runtime, track.id, row.hour)]} empty="No recorded events match these settings." />
     {feed.errors.size > 0 && <div className="event-feed-load">Some events couldn’t load. <button type="button" onClick={feed.retryPages}>Retry</button></div>}
   </div>;

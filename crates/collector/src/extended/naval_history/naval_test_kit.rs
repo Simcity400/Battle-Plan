@@ -2,6 +2,15 @@ use super::{Capacities, Captured, NavalCopyContext, NavalCopyReport, NavalJob};
 use engine::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub(crate) fn stage_wings(memory: &impl Memory, job: &mut NavalJob) {
+    let mut wings = wing_census(memory, job);
+    job.install_wings(&mut wings);
+}
+
+/// The wing census bounded by `job`'s membership capacity, not installed.
+pub(crate) fn wing_census(
+    memory: &impl Memory,
+    job: &NavalJob,
+) -> crate::extended::air::AirWingJob {
     let mut wings = crate::extended::air::AirWingJob::fixture();
     let context = crate::extended::air::AirWingCopyContext {
         hour: 0,
@@ -14,7 +23,7 @@ pub(crate) fn stage_wings(memory: &impl Memory, job: &mut NavalJob) {
         game_score: false,
     };
     assert!(crate::extended::air::copy_air_refresh(memory, context, &mut wings).raw_ok);
-    job.install_wings(&mut wings);
+    wings
 }
 
 pub(crate) const BASE: usize = 0;
@@ -30,7 +39,7 @@ const MEMBER2: usize = 0x34000;
 const NAMES: usize = 0x35000;
 const OOB_TABLE: usize = 0x60000;
 const OOB_BUCKETS: usize = 0x61000;
-const OOB_GROUP: usize = 0x62000;
+pub(crate) const OOB_GROUP: usize = 0x62000;
 const OOB_MEMBERS: usize = 0x63000;
 const OOB_MEMBER: usize = 0x650b8;
 const OOB_UNIT: usize = 0x65000;
@@ -295,7 +304,7 @@ pub(crate) fn direct(memory: &impl Memory) -> Split {
     collect(memory, &Capacities::fixture())
 }
 
-fn decoded(captured: &Captured) -> Split {
+pub(crate) fn decoded(captured: &Captured) -> Split {
     Split {
         land_outcome: captured.land.outcome,
         land: captured.land.rows.clone(),

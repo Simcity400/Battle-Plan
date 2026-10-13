@@ -391,13 +391,14 @@ fn authenticated_empty_and_unreadable_state_are_distinct_per_table() {
         reader.ideas(&mut [], &mut []).outcome,
         Outcome::Rows { len: 0 }
     );
+    // A byte other than 0 or 1 is true, as the elections predicate tests it.
     put(&mut bytes, STATUS + ELECTIONS_ALLOWED, [2]);
     let memory = SliceMemory {
         base: COUNTRY_POINTER,
         bytes: &bytes,
     };
     let reader = Reader::new(&memory, BASE, COUNTRY_POINTER).unwrap();
-    assert_eq!(reader.row(), Err("elections allowed is not a boolean"));
+    assert!(reader.row().unwrap().has_elections);
     assert_eq!(
         reader.ideas(&mut [], &mut []).outcome,
         Outcome::Rows { len: 0 }

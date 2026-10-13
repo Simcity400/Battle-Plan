@@ -442,10 +442,7 @@ fn native_stack_kind_uses_viewer_animation_and_native_neighbor_ordinal() {
 fn routes_mark_which_stack_kinds_are_native() {
     use replay::{
         frame::{DecodedFrame, Metrics, TableView},
-        rows::{
-            DivisionEtaInputsRow, DivisionMovementRow, DivisionRow, TableId, TableRows,
-            WeatherRegionRow,
-        },
+        rows::{DivisionMovementRow, DivisionRow, TableId, TableRows},
     };
     let mut frame = DecodedFrame {
         branch: 1,
@@ -488,43 +485,40 @@ fn routes_mark_which_stack_kinds_are_native() {
                 combat_province: 2,
                 ..Default::default()
             },
-            attacking(3, vec![9]),
+            DivisionMovementRow {
+                base_speed: Some(100_000).into(),
+                ..attacking(3, vec![9])
+            },
             attacking(4, Vec::new()),
         ]));
     let map = MovementMap::from_parts(&[(1, LAND, land(&[2])), (2, LAND, land(&[1]))]);
     let anchor = |id: u32| Some([id as f32, 0.0, 0.0]);
-    for rows in [
-        TableRows::DivisionEtaInputs(vec![DivisionEtaInputsRow {
-            division: 1,
-            ..Default::default()
-        }]),
-        TableRows::Provinces(vec![]),
-        TableRows::States(vec![]),
-        TableRows::WeatherProvinces(vec![]),
-        TableRows::WeatherRegions(vec![WeatherRegionRow::default()]),
-    ] {
-        let index = rows.table().index();
-        *frame.tables[index] = TableView::Complete(rows);
-    }
+    // Timing content knows provinces 1 and 9 without an edge between them,
+    // so 3's first hop takes the native 100000 distance; the counter map
+    // below still cannot place it.
     let timing = crate::map::division_eta::MovementContent {
-        map: MovementMap::from_parts::<ProvinceTerrain>(&[]),
-        defines: Default::default(),
+        map: MovementMap::from_parts(&[(1, LAND, Vec::new()), (9, LAND, Vec::new())]),
+        defines: replay::eta_derive::Defines {
+            outer_scale: 100_000,
+            ..Default::default()
+        },
         rail: Ok(installed_content::movement::RailMovementDefines {
             speed: [0; 4],
             maximum_level: 0,
         }),
-        naval: Err("unrelated naval defines are unavailable".into()),
         task_force_terrain: Err("unrelated task-force terrain is unavailable".into()),
     };
     let etas = crate::map::division_eta::Etas::read(&frame, Some(&timing)).unwrap();
-    // An empty recorded route derives zero; the other members have no ETA operands.
-    assert_eq!(etas.get(1), Some((0, 0)));
-    assert_eq!(etas.get(2), None);
+    // Only 3 moves with a base speed: one hour at 1 km/h. 1 and 2 have no
+    // route and 4 has no location.
+    assert_eq!(etas.get(3), Some((100_000, 100_000)));
+    assert_eq!(etas.get(1), None);
+    assert_eq!(etas.get(4), None);
     let kinds = |map: Option<&MovementMap>| {
         let routes = DivisionRoutes::read(&frame, &etas, map, &anchor).unwrap();
         [1, 2, 3, 4].map(|id| {
             let route = &routes.by_division[&id];
-            assert_eq!(route.eta, if id == 1 { Some((0, 0)) } else { None });
+            assert_eq!(route.eta, etas.get(id));
             (route.stack_kind, route.kind_resolved)
         })
     };

@@ -1,21 +1,28 @@
 //! The viewer's one movement-timing source.
 //!
-//! Derives stored-route timing with [`replay::eta_derive`] from
-//! `DivisionEtaInputs` and this hour's province, state and weather rows, and
-//! each moving division's first-edge progress from `DivisionMovement`. Edge
-//! distances, crossing kinds, terrain operands and the movement defines come
-//! from the matching content stack ([`MovementContent`]), never the recording.
+//! Each moving division's first-edge progress follows route integration over its
+//! recorded `DivisionMovement` route ([`eta_derive::division_progress`]). Its
+//! arrival times are estimates ([`eta_derive::estimate`]): the native walk
+//! over the recorded route from `Divisions.province`, every edge
+//! at the division movement speed given by the recorded
+//! stat-block base speed (`DivisionMovement.base_speed`) alone, floored at the
+//! native 1 km/h and scaled by the content's movement scale. The game also
+//! applies each edge's terrain, infrastructure, weather, river, supply, air,
+//! organisation and fuel terms, which the recording does not hold, so an
+//! estimate drifts from the game wherever those apply or change mid-route.
+//! Edge distances, terrain flags and the movement defines come from the
+//! matching content stack ([`MovementContent`]), never the recording.
 //!
-//! The counter arrival uses [`CounterQueries`], an on-demand native route
-//! query with exact current-hour operands and an explicit viewer route policy.
-//! The stored-route pair remains available for aggregate timing and progress.
-//! The progress is the movement-arrow fill target for a selected unit of the
-//! player's own country; a navy also requires its task force's selection word.
-//! The viewer's selection drives the movement-arrow layer. Counter and figure
-//! positions use the settled route point in [`super::counter_move`].
+//! The progress is the game's movement-arrow fill target (`+0x28`), and
+//! The game draws that arrow only for a unit of the player's own country
+//! that is selected (`unit+0xC`; for a navy also its task force's `+0x24`
+//! word). The viewer's selection drives the movement-arrow layer. Counter
+//! and figure positions use the settled route point in [`super::counter_move`].
 //!
-//! The derivation refuses a row it cannot rebuild exactly rather than
-//! substituting a zero: a refused division has no ETA or no progress.
+//! Counter hovers ([`CounterQueries`]) word a division's estimate, a railway
+//! gun's fresh native route query and a task force's stored route. A row the
+//! hour cannot measure has no estimate or no progress rather than a
+//! substituted zero, and keeps its reason.
 
 use super::tables::rows;
 mod fresh_search;
@@ -25,9 +32,7 @@ mod naval;
 mod railway;
 #[path = "division_eta/classes/task_force.rs"]
 mod task_force;
-use installed_content::movement::{
-    MovementDefines, MovementMap, NavalMovementDefines, RailMovementDefines,
-};
+use installed_content::movement::{MovementDefines, MovementMap, RailMovementDefines};
 use replay::{
     eta_derive::{self, Defines, ProvinceOperands},
     frame::DecodedFrame,
@@ -36,6 +41,7 @@ use replay::{
 use std::{
     cell::OnceCell,
     collections::{BTreeMap, VecDeque},
+    fmt::Write as _,
     io,
     sync::{Arc, Mutex},
 };
@@ -94,13 +100,13 @@ impl EtaCache {
     }
 }
 
-/// How many ETA rows were derived and which rows were refused.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// How many moving divisions have an arrival estimate, and why the others do not.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
-    pub derived: usize,
-    /// Rows the derivation refused: an operand this hour does not hold, or
-    /// content geometry the route needs.
-    pub refused: usize,
+    /// Moving divisions with an arrival estimate.
+    pub estimated: usize,
+    /// Moving divisions without one, counted by the estimate's refusal.
+    pub refused: BTreeMap<Arc<str>, usize>,
     /// Divisions whose first-edge progress (the arrow fill target) cannot be rebuilt.
     pub progress_refused: usize,
     /// Moving divisions whose route the content map cannot place; they stand
@@ -112,22 +118,37 @@ pub struct Report {
 }
 
 impl Report {
+    /// Moving divisions without an arrival estimate.
+    pub fn refused_total(&self) -> usize {
+        self.refused.values().sum()
+    }
+
     /// The dump report's line, or `None` for an hour with no movement at all.
     pub fn line(&self) -> Option<String> {
-        (self.derived != 0
-            || self.refused != 0
+        let refused = self.refused_total();
+        (self.estimated != 0
+            || refused != 0
             || self.progress_refused != 0
             || self.routes_unresolved != 0
             || self.route_hops_skipped != 0)
             .then(|| {
-                format!(
-                    "Movement timing: {} ETA rows derived, {} ETA rows refused, {} progress rows refused, {} routes unplaced, {} route hops skipped",
-                    self.derived,
-                    self.refused,
-                    self.progress_refused,
-                    self.routes_unresolved,
-                    self.route_hops_skipped
-                )
+                let mut line = format!(
+                    "Movement timing: {} arrival estimates, {refused} estimates refused",
+                    self.estimated
+                );
+                for (index, (reason, count)) in self.refused.iter().enumerate() {
+                    let open = if index == 0 { " (" } else { "; " };
+                    let _ = write!(line, "{open}{count} {reason}");
+                }
+                if !self.refused.is_empty() {
+                    line.push(')');
+                }
+                let _ = write!(
+                    line,
+                    ", {} progress rows refused, {} routes unplaced, {} route hops skipped",
+                    self.progress_refused, self.routes_unresolved, self.route_hops_skipped
+                );
+                line
             })
     }
 }
@@ -140,7 +161,6 @@ pub struct MovementContent {
     pub map: MovementMap,
     pub defines: Defines,
     pub rail: Result<RailMovementDefines, String>,
-    pub naval: Result<NavalMovementDefines, String>,
     pub(crate) task_force_terrain: Result<task_force::TerrainSpeedContent, String>,
 }
 
@@ -157,7 +177,6 @@ impl MovementContent {
                 river_crossing_three: defines.river_crossing_three,
             },
             rail: defines.rail,
-            naval: defines.naval,
             task_force_terrain: Err("fresh task force terrain content is unavailable".into()),
         }
     }
@@ -189,21 +208,25 @@ pub(crate) struct CounterPreview {
 }
 
 impl CounterQueries<'_> {
+    /// A prospective route to `target`: the native route search
+    /// for divisions and railway guns. A task force's search needs range,
+    /// theatre and nearest-base admission inputs the recording does not hold,
+    /// so its preview refuses by name.
     pub(crate) fn preview(
         &self,
         unit: CounterUnit,
         target: u32,
         local_option: bool,
     ) -> Result<CounterPreview, String> {
-        self.query(|inputs, moves| match unit {
-            CounterUnit::Division(handle) => inputs.derive_to(moves, handle, target, local_option),
-            CounterUnit::TaskForce(handle) => {
-                task_force::derive_to(inputs, moves, handle, target, local_option)
+        match unit {
+            CounterUnit::Division(handle) => {
+                self.query(|inputs, moves| inputs.derive_to(moves, handle, target, local_option))
             }
-            CounterUnit::Railway(handle) => {
+            CounterUnit::TaskForce(_) => Err(task_force::ADMISSION_UNRECORDED.into()),
+            CounterUnit::Railway(handle) => self.query(|inputs, moves| {
                 railway::derive_to(inputs, moves, handle, target, local_option)
-            }
-        })
+            }),
+        }
     }
 }
 
@@ -214,6 +237,7 @@ pub(crate) struct CounterQueries<'a> {
     frame: &'a DecodedFrame,
     world: OnceCell<super::raids::script::World<'a>>,
     inputs: OnceCell<fresh_search::Inputs<'a>>,
+    etas: OnceCell<Result<Arc<Etas>, String>>,
     cells: super::raids::reach::Cells,
     common: super::raids::reach::CommonCells<'a>,
 }
@@ -225,6 +249,7 @@ impl<'a> CounterQueries<'a> {
             frame,
             world: OnceCell::new(),
             inputs: OnceCell::new(),
+            etas: OnceCell::new(),
             cells: Default::default(),
             common: super::raids::reach::CommonCells::new(frame),
         }
@@ -304,25 +329,15 @@ impl<'a> CounterQueries<'a> {
         moves.selected_transport_message(selected, target, &content)
     }
 
-    /// The local route preference is a viewer policy, never a captured operand.
-    pub(super) fn remaining(
-        &self,
-        movement: &replay::rows::DivisionMovementRow,
-        ours: bool,
-        local_option: bool,
-    ) -> Result<i64, String> {
-        self.query(|inputs, moves| {
-            inputs.derive(
-                moves,
-                movement,
-                if ours {
-                    fresh_search::Endpoint::Destination
-                } else {
-                    fresh_search::Endpoint::Next
-                },
-                local_option,
-            )
-        })
+    /// A division's arrival duration from this hour's shared estimates
+    /// ([`Hour::etas`](crate::document::Hour::etas)); see [`arrival`].
+    pub(super) fn division_remaining(&self, division: u64, ours: bool) -> Result<i64, String> {
+        let etas = self.etas.get_or_init(|| {
+            crate::document::Hour::new(self.content, self.frame, 0.0)
+                .etas()
+                .map_err(|error| error.to_string())
+        });
+        arrival(etas.as_deref().map_err(Clone::clone)?, division, ours)
     }
 
     pub(super) fn railway_remaining(
@@ -334,13 +349,24 @@ impl<'a> CounterQueries<'a> {
         self.query(|inputs, moves| railway::derive(inputs, moves, gun, ours, local_option))
     }
 
+    /// A task force's arrival over its stored ordinary route
+    /// (`TaskForceMapMotion.path`), searching no route.
     pub(crate) fn task_force_remaining(
         &self,
         motion: &replay::rows::TaskForceMapMotionRow,
         ours: bool,
-        local_option: bool,
     ) -> Result<i64, String> {
-        self.query(|inputs, moves| task_force::derive(inputs, moves, motion, ours, local_option))
+        let content = self
+            .content
+            .movement
+            .as_deref()
+            .ok_or("task force arrival movement content is unavailable")?;
+        let inputs = self
+            .inputs
+            .get_or_init(|| fresh_search::Inputs::new(self.frame, content));
+        task_force::derive(inputs, motion, ours, |from| {
+            self.content.icons.raids.selected_region(from)
+        })
     }
 
     fn query<T>(
@@ -371,34 +397,76 @@ impl<'a> CounterQueries<'a> {
     }
 }
 
-/// One hour's `(next_remaining, destination_remaining)` and first-edge progress
-/// per division handle.
+/// The counter arrival line's duration for a division: the
+/// estimate to its destination for the viewing country's own unit and to its
+/// next province otherwise, or the estimate's refusal by name.
+pub(super) fn arrival(etas: &Etas, division: u64, ours: bool) -> Result<i64, String> {
+    let (next, destination) = etas.estimate(division).map_err(str::to_owned)?;
+    Ok(if ours { destination } else { next })
+}
+
+/// The province operands an estimate reads: the content terrain, whose flags
+/// decide the embark edge. `None` for a province the content
+/// map lacks, which an estimate refuses as missing geometry.
+fn operands(map: &MovementMap, province: u32) -> Option<ProvinceOperands> {
+    map.terrain(province).map(|terrain| ProvinceOperands {
+        terrain_flags: terrain.flags,
+        terrain_index: terrain.index,
+        ..Default::default()
+    })
+}
+
+/// One hour's arrival estimates and first-edge progress per division handle.
 #[derive(Clone, Debug, Default)]
 pub struct Etas {
     by_division: Pairs,
+    /// Why a division the hour moves has no estimate.
+    estimate_gaps: BTreeMap<u64, Arc<str>>,
     progress: BTreeMap<u64, i64>,
     /// Why a division the hour moves has no progress.
     progress_gaps: BTreeMap<u64, &'static str>,
     report: Report,
 }
 
+/// Why a division without a moving route has no estimate.
+const NO_ROUTE: &str = "it has no ordinary route this hour";
+/// Why no moving division has an estimate or progress without content.
+const NO_CONTENT: &str = "the content's movement map (terrain and movement defines) failed to load";
+/// Why a moving division absent from the hour's census has neither.
+const NO_LOCATION: &str = "it has no Divisions row this hour";
+
 impl Etas {
     /// `movement` is `None` when the content's movement map failed to load:
-    /// every moving division then has neither progress nor an ETA.
+    /// every moving division then has neither progress nor an estimate.
     pub fn read(frame: &DecodedFrame, movement: Option<&MovementContent>) -> io::Result<Self> {
         derive(frame, movement)
     }
 
-    /// This division's `(next_remaining, destination_remaining)`, native signed
-    /// fixed5, or `None` where the hour cannot derive it.
+    /// This division's estimated `(next_remaining, destination_remaining)`,
+    /// native signed fixed5 hours, or `None` where the hour has none.
     pub fn get(&self, division: u64) -> Option<(i64, i64)> {
         self.by_division.get(&division).copied()
     }
 
-    /// First-edge movement fraction in signed fixed5, sentinel and all, or why
-    /// the hour cannot rebuild it. Zero for an empty route. It drives the selected
-    /// own unit's movement-arrow fill target (see the module docs) and naval
-    /// invasion progress in a combat division hover; a counter never reads it.
+    /// The same estimate, or why the hour has none: for a moving division the
+    /// replay estimate's own refusal (for example a recording that holds no
+    /// `DivisionMovement.base_speed`).
+    pub fn estimate(&self, division: u64) -> Result<(i64, i64), &str> {
+        match self.by_division.get(&division) {
+            Some(pair) => Ok(*pair),
+            None => Err(self
+                .estimate_gaps
+                .get(&division)
+                .map_or(NO_ROUTE, |reason| reason)),
+        }
+    }
+
+    /// Native first-edge movement fraction in signed fixed5, sentinel and all,
+    /// or why the hour cannot rebuild it. Zero for an empty route. In the game
+    /// it drives the movement arrow's fill target (`+0x28`) of a selected own
+    /// unit (see the module docs) and the naval invasion progress in a
+    /// combat's division hover; a counter never reads
+    /// it.
     pub fn progress(&self, division: u64) -> Result<i64, &'static str> {
         match self.progress.get(&division) {
             Some(progress) => Ok(*progress),
@@ -410,205 +478,86 @@ impl Etas {
         }
     }
 
-    pub fn report(&self) -> Report {
-        self.report
+    pub fn report(&self) -> &Report {
+        &self.report
+    }
+
+    /// Records why `division` has no estimate; equal reasons share one string.
+    fn refuse(&mut self, division: u64, reason: &str) {
+        let reason = match self.report.refused.get_key_value(reason) {
+            Some((reason, _)) => Arc::clone(reason),
+            None => Arc::from(reason),
+        };
+        *self.report.refused.entry(Arc::clone(&reason)).or_default() += 1;
+        self.estimate_gaps.insert(division, reason);
     }
 }
 
 /// `(next_remaining, destination_remaining)` per division handle.
 type Pairs = BTreeMap<u64, (i64, i64)>;
 
-/// Every division the hour can rebuild, and how many it refused.
-fn derive(frame: &DecodedFrame, movement_content: Option<&MovementContent>) -> io::Result<Etas> {
-    let movement: BTreeMap<u64, _> = rows::<tables::DivisionMovement>(frame)?
-        .rows()
-        .iter()
-        .map(|row| (row.division, row))
-        .collect();
-    let inputs = rows::<tables::DivisionEtaInputs>(frame)?;
-    let inputs = inputs.rows();
+/// Every moving division's progress and estimate, or why it has none.
+fn derive(frame: &DecodedFrame, content: Option<&MovementContent>) -> io::Result<Etas> {
+    let movement = rows::<tables::DivisionMovement>(frame)?;
     let mut etas = Etas::default();
     // A division with no route stands still: progress zero needs no content.
-    for row in movement.values().filter(|row| row.path_total == 0) {
-        if let Some(value) = eta_derive::movement_progress(
-            row,
-            None,
-            None,
-            |_| None,
-            |_, _| None,
-            &Defines::default(),
-        ) {
-            etas.progress.insert(row.division, value);
-        } else {
-            etas.progress_gaps.insert(
-                row.division,
-                "eta_derive::movement_progress refuses its empty route",
-            );
-        }
-    }
-    let Some(content_map) = movement_content else {
-        etas.report.refused = inputs.len();
-        etas.report.progress_refused = movement.len() - etas.progress.len();
-        for division in movement.keys() {
-            if !etas.progress.contains_key(division) {
-                etas.progress_gaps.entry(*division).or_insert(
-                    "the content's movement map (terrain and movement defines) failed to load",
-                );
-            }
-        }
-        return Ok(etas);
-    };
-    let (map, defines) = (&content_map.map, &content_map.defines);
-    let location: BTreeMap<u64, u32> = rows::<tables::Divisions>(frame)?
-        .rows()
-        .iter()
-        .map(|row| (row.id, row.province))
-        .collect();
-    // Ordinary province and state IDs are dense and small. The index retains
-    // direct lookup for those while bounding storage for sparse replay keys.
-    // A province without content terrain is absent, never the null terrain.
-    let terrain_rows: Vec<(u32, ProvinceOperands)> = rows::<tables::Provinces>(frame)?
-        .rows()
-        .iter()
-        .filter_map(|row| {
-            let terrain = map.terrain(row.id)?;
-            Some((
-                row.id,
-                ProvinceOperands {
-                    terrain_flags: terrain.flags,
-                    terrain_index: terrain.index,
-                    fort_positive: row.fort_positive != 0,
-                    state: row.state,
-                },
-            ))
-        })
-        .collect();
-    let provinces = indexed(&terrain_rows, |&row| row);
-    let distance = |from, to| map.distance(from, to);
-    for row in inputs.iter().filter(|row| row.valid_at(frame.hour)) {
-        let Some(movement) = movement.get(&row.division) else {
-            continue;
-        };
-        match eta_derive::movement_progress(
-            movement,
-            Some(row),
-            location.get(&row.division).copied(),
-            |id| provinces.get(id),
-            distance,
-            defines,
-        ) {
+    for row in movement.rows().iter().filter(|row| row.path_total == 0) {
+        match eta_derive::division_progress(row, None, |_| None, |_, _| None, &Defines::default()) {
             Some(value) => {
                 etas.progress.insert(row.division, value);
             }
             None => {
                 etas.progress_gaps.insert(
                     row.division,
-                    "eta_derive::movement_progress refuses its recorded route with the content map",
+                    "eta_derive::division_progress refuses its empty route",
                 );
             }
         }
     }
-    for division in movement.keys() {
-        if !etas.progress.contains_key(division) {
-            etas.progress_gaps
-                .entry(*division)
-                .or_insert("it has no DivisionEtaInputs row valid this hour");
+    let moving = movement.rows().iter().filter(|row| row.path_total != 0);
+    let Some(content) = content else {
+        for row in moving {
+            etas.progress_gaps.insert(row.division, NO_CONTENT);
+            etas.refuse(row.division, NO_CONTENT);
         }
-    }
-    etas.report.progress_refused = movement.len() - etas.progress.len();
-    let Some(snow) = snow_provinces(frame)? else {
-        // No weather census or ceiling: every ETA row is unrebuildable;
-        // progress stands.
-        etas.report.refused = inputs.len();
+        etas.report.progress_refused = etas.progress_gaps.len();
         return Ok(etas);
     };
-    let infrastructure = indexed(rows::<tables::States>(frame)?.rows(), |row| {
-        (row.id, row.movement_infrastructure)
-    });
-    for row in inputs {
-        if !row.valid_at(frame.hour) {
-            etas.report.refused += 1;
+    let (map, defines) = (&content.map, &content.defines);
+    let location: BTreeMap<u64, u32> = rows::<tables::Divisions>(frame)?
+        .rows()
+        .iter()
+        .map(|row| (row.id, row.province))
+        .collect();
+    let province = |id| operands(map, id);
+    let distance = |from, to| map.distance(from, to);
+    for row in moving {
+        let Some(&at) = location.get(&row.division) else {
+            etas.progress_gaps.insert(row.division, NO_LOCATION);
+            etas.refuse(row.division, NO_LOCATION);
             continue;
+        };
+        match eta_derive::division_progress(row, Some(at), province, distance, defines) {
+            Some(value) => {
+                etas.progress.insert(row.division, value);
+            }
+            None => {
+                etas.progress_gaps.insert(
+                    row.division,
+                    "eta_derive::division_progress refuses its recorded route with the content map",
+                );
+            }
         }
-        let pair = movement
-            .get(&row.division)
-            .zip(location.get(&row.division))
-            .and_then(|(movement, &location)| {
-                eta_derive::derive(
-                    row,
-                    movement,
-                    location,
-                    |id| provinces.get(id),
-                    |id| infrastructure.get(id),
-                    |id| snow.get(id).unwrap_or(false),
-                    distance,
-                    |from, to| map.crossing_kind(from, to),
-                    defines,
-                )
-            });
-        match pair {
-            Some(pair) => {
+        match eta_derive::estimate(row, at, province, distance, defines) {
+            Ok(pair) => {
                 etas.by_division.insert(row.division, pair);
             }
-            None => etas.report.refused += 1,
+            Err(reason) => etas.refuse(row.division, &reason),
         }
     }
-    etas.report.derived = etas.by_division.len();
+    etas.report.estimated = etas.by_division.len();
+    etas.report.progress_refused = etas.progress_gaps.len();
     Ok(etas)
-}
-
-/// Ordinary province and state IDs are dense, but replay keys allow all u32
-/// values. Keep allocation proportional to recorded rows even for sparse IDs.
-enum OperandIndex<V> {
-    Dense(Vec<Option<V>>),
-    Sparse(BTreeMap<u32, V>),
-}
-
-impl<V: Copy> OperandIndex<V> {
-    fn get(&self, id: u32) -> Option<V> {
-        match self {
-            Self::Dense(values) => values.get(id as usize).copied().flatten(),
-            Self::Sparse(values) => values.get(&id).copied(),
-        }
-    }
-}
-
-fn indexed<R, V: Copy>(rows: &[R], key: impl Fn(&R) -> (u32, V)) -> OperandIndex<V> {
-    let length = rows
-        .iter()
-        .map(|row| u64::from(key(row).0) + 1)
-        .max()
-        .unwrap_or(0);
-    if length > rows.len().saturating_mul(4) as u64 {
-        return OperandIndex::Sparse(rows.iter().map(key).collect());
-    }
-    let mut out = vec![None; length as usize];
-    for row in rows {
-        let (id, value) = key(row);
-        out[id as usize] = Some(value);
-    }
-    OperandIndex::Dense(out)
-}
-
-/// `cweather_manager::movement_snow` from the recorded words: permanent plus
-/// current snow, wrapping as the engine adds, clamped to the ceiling, indexed
-/// by province id. `None` where the snow census or the ceiling is missing,
-/// which refuses rather than reading a missing operand as no snow.
-fn snow_provinces(frame: &DecodedFrame) -> io::Result<Option<OperandIndex<bool>>> {
-    let provinces = rows::<tables::WeatherProvinces>(frame)?;
-    let regions = rows::<tables::WeatherRegions>(frame)?;
-    let Some(ceiling) = regions.rows().first().map(|row| row.max_snow) else {
-        return Ok(None);
-    };
-    if !provinces.is_complete() {
-        return Ok(None);
-    }
-    Ok(Some(indexed(provinces.rows(), |row| {
-        (
-            row.id,
-            row.permanent_snow.wrapping_add(row.snow).min(ceiling) > 0,
-        )
-    })))
 }
 
 #[cfg(test)]

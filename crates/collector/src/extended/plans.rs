@@ -65,8 +65,6 @@ pub struct Capacities {
     handles: usize,
     /// InvasionPreparations rows: the census's naval invasion orders.
     invasions: usize,
-    /// Their route unit owners' nonzero co-belligerent target slots.
-    co_belligerents: usize,
     execution: order_execution::Capacity,
     country_references: usize,
     country_links: usize,
@@ -107,12 +105,112 @@ impl Capacities {
         self.country_links = self.country_links.max(slots);
     }
 }
+/// The Fronts table: the fronts this pass's plans bind, with their sections
+/// and pairs. The Orders job binds them ([`cfront::bound`], which reads
+/// nothing); the Fronts job reads them ([`Self::capture`]) beside the
+/// ChildFronts job, off the Orders job, and the plans take them back before
+/// the tables ([`Captured::take_fronts`], [`Captured::install_fronts`]).
+pub struct Fronts {
+    rows: CaptureRows<cfront::Row>,
+    sections: Arena<cfront_section::Row>,
+    pairs: Arena<u32>,
+    handles: Vec<u64>,
+    required_handles: usize,
+    /// This pass's bound fronts until they are read; `None` once read, or
+    /// when no plan pass bound them.
+    bound: Option<cfront::Bound>,
+    /// Failed before the Fronts job could read it (the Orders job's
+    /// failure, or no plan source): that reason stands over the job's own.
+    failed: bool,
+    ticks: u64,
+}
+
+impl Fronts {
+    fn new(c: &Capacities) -> Self {
+        Self {
+            rows: CaptureRows::new(c.fronts),
+            sections: Arena::new(c.sections),
+            pairs: Arena::new(c.pairs),
+            handles: owned_vec(engine::allocation::filled(c.handles, 0)),
+            required_handles: 0,
+            bound: None,
+            failed: false,
+            ticks: 0,
+        }
+    }
+    /// The place the plans keep while the Fronts job holds their fronts.
+    fn vacant() -> Self {
+        Self::new(&Capacities::default())
+    }
+    fn reset(&mut self) {
+        self.rows.reset();
+        self.sections.reset();
+        self.pairs.reset();
+        self.required_handles = 0;
+        self.bound = None;
+        self.failed = false;
+        self.ticks = 0;
+    }
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.rows.allocated_bytes()
+            + self.sections.allocated_bytes()
+            + self.pairs.allocated_bytes()
+            + self.handles.capacity() * size_of::<u64>()
+    }
+    fn grow(&mut self, c: &mut Capacities) {
+        self.rows.grow(&mut c.fronts);
+        self.sections.grow(&mut c.sections);
+        self.pairs.grow(&mut c.pairs);
+        grow_capacity(&mut c.handles, self.required_handles);
+        grow_vec(&mut self.handles, c.handles);
+    }
+    /// Binds this pass's fronts from its plans: the first, read-free phase.
+    fn bind(&mut self, plans: &[corder_instance::PlanRow], source: Outcome) {
+        self.bound = Some(cfront::bound(plans, source, &mut self.handles));
+        self.failed = false;
+    }
+    fn fail(&mut self, outcome: Outcome) {
+        self.rows.outcome = outcome;
+        self.sections.len = 0;
+        self.pairs.len = 0;
+        self.bound = None;
+        self.failed = true;
+    }
+    /// Reads the bound fronts, their sections and pairs (the Fronts job). The
+    /// rows, refusals and their order are the single walk's (`cfront::walk`).
+    /// Returns its ticks; nothing to read returns zero.
+    pub(crate) fn capture(&mut self, memory: &impl Memory, base: usize) -> u64 {
+        let Some(bound) = self.bound.take() else {
+            return 0;
+        };
+        let _reads = crate::read_accounting::table(TableId::Fronts);
+        let begin = qpc();
+        let front = cfront::walk_bound(
+            memory,
+            base,
+            bound,
+            &self.handles,
+            &mut self.rows.rows,
+            &mut self.sections.first,
+            &mut self.pairs.first,
+        );
+        self.required_handles = self.required_handles.max(front.required_handles);
+        self.rows.outcome = front.outcome;
+        self.sections.len = front.sections;
+        self.sections.required = front.required_sections;
+        self.pairs.len = front.pairs;
+        self.pairs.required = front.required_pairs;
+        let ticks = qpc().saturating_sub(begin).max(0) as u64;
+        self.ticks += ticks;
+        ticks
+    }
+}
+
 pub struct Captured {
     plans: CaptureRows<corder_instance::PlanRow>,
     colors: CaptureRows<corders_group::PlanRow>,
-    fronts: CaptureRows<cfront::Row>,
+    fronts: Fronts,
     invasions: CaptureRows<invasion_preparations::Row>,
-    co_belligerents: Arena<u32>,
     /// The invasion terms' modifier metadata, read once per pass.
     memo: DefinitionMemo,
     assigned: Arena<u64>,
@@ -120,6 +218,10 @@ pub struct Captured {
     child_scratch: corder_instance::child_fronts::Scratch,
     /// Area/header/payload failures are field-local; the core row still stands.
     pub(crate) child_front_failures: [usize; 3],
+    /// The child-front area phase of this pass, which the Orders job ran and
+    /// the ChildFronts job completes once the Naval copy is in
+    /// ([`Self::visit_child_fronts`]); `None` once completed or failed.
+    child_walk: Option<corder_instance::child_fronts::Walk>,
     links: Arena<u32>,
     /// ArmyOrderPlans' order-name bytes and OrdersGroupPlans' group-name bytes,
     /// each in its own arena that the walker grows from `len`. Rows hold
@@ -129,12 +231,9 @@ pub struct Captured {
     names: Arena<u8>,
     group_names: Arena<u8>,
     root_orders: Arena<u32>,
-    sections: Arena<cfront_section::Row>,
-    pairs: Arena<u32>,
-    handles: Vec<u64>,
-    /// Sort scratch for the ArmyOrderPlans rows; grows to the row count.
-    order: Vec<(u128, u32)>,
-    required_handles: usize,
+    /// The ArmyOrderPlans rows' order; grows to the row count. After this
+    /// pass's complete walk it gives each census order's plan row.
+    order: corder_instance::PlanOrder,
     ticks: [u64; N],
     supplied: bool,
     /// Original assigned-host provenance and execution observations move
@@ -353,7 +452,6 @@ impl Captured {
                 pairs: 0,
                 handles: 0,
                 invasions: 0,
-                co_belligerents: 0,
                 execution: order_execution::Capacity::default(),
                 country_references: 0,
                 country_links: 0,
@@ -368,23 +466,19 @@ impl Captured {
         let mut capture = Self {
             plans: CaptureRows::new(c.plans),
             colors: CaptureRows::new(c.groups),
-            fronts: CaptureRows::new(c.fronts),
+            fronts: Fronts::new(c),
             invasions: CaptureRows::new(c.invasions),
-            co_belligerents: Arena::new(c.co_belligerents),
             memo: DefinitionMemo::with_capacity(if placeholder { 0 } else { 3 }),
             assigned: Arena::new(c.assigned),
             child_sections: Arena::new(c.child_sections),
             child_scratch: Default::default(),
             child_front_failures: [0; 3],
+            child_walk: None,
             links: Arena::new(c.links),
             names: Arena::new(c.names),
             group_names: Arena::new(c.names),
             root_orders: Arena::new(c.root_orders),
-            sections: Arena::new(c.sections),
-            pairs: Arena::new(c.pairs),
-            handles: owned_vec(engine::allocation::filled(c.handles, 0)),
-            order: Vec::new(),
-            required_handles: 0,
+            order: corder_instance::PlanOrder::default(),
             ticks: [0; N],
             supplied: false,
             assigned_hosts: if placeholder {
@@ -425,18 +519,15 @@ impl Captured {
         self.colors.reset();
         self.fronts.reset();
         self.invasions.reset();
-        self.co_belligerents.reset();
         self.memo.clear();
         self.assigned.reset();
         self.child_sections.reset();
         self.child_front_failures = [0; 3];
+        self.child_walk = None;
         self.links.reset();
         self.names.reset();
         self.group_names.reset();
         self.root_orders.reset();
-        self.sections.reset();
-        self.pairs.reset();
-        self.required_handles = 0;
         self.ticks = [0; N];
         self.supplied = false;
         self.assigned_hosts.reset();
@@ -447,7 +538,6 @@ impl Captured {
             + self.colors.allocated_bytes()
             + self.fronts.allocated_bytes()
             + self.invasions.allocated_bytes()
-            + self.co_belligerents.allocated_bytes()
             + self.memo.allocated_bytes()
             + self.assigned.allocated_bytes()
             + self.child_sections.allocated_bytes()
@@ -456,10 +546,7 @@ impl Captured {
             + self.names.allocated_bytes()
             + self.group_names.allocated_bytes()
             + self.root_orders.allocated_bytes()
-            + self.sections.allocated_bytes()
-            + self.pairs.allocated_bytes()
-            + self.handles.capacity() * size_of::<u64>()
-            + self.order.capacity() * size_of::<(u128, u32)>()
+            + self.order.allocated_bytes()
             + self.assigned_hosts.allocated_bytes()
             + self.execution.allocated_bytes()
             + self.execution_countries.allocated_bytes()
@@ -467,9 +554,8 @@ impl Captured {
     pub fn grow(&mut self, c: &mut Capacities) {
         self.plans.grow(&mut c.plans);
         self.colors.grow(&mut c.groups);
-        self.fronts.grow(&mut c.fronts);
+        self.fronts.grow(c);
         self.invasions.grow(&mut c.invasions);
-        self.co_belligerents.grow(&mut c.co_belligerents);
         self.assigned.grow(&mut c.assigned);
         self.child_sections.grow(&mut c.child_sections);
         self.links.grow(&mut c.links);
@@ -478,10 +564,6 @@ impl Captured {
         self.group_names.grow(&mut group_names);
         c.names = c.names.max(group_names);
         self.root_orders.grow(&mut c.root_orders);
-        self.sections.grow(&mut c.sections);
-        self.pairs.grow(&mut c.pairs);
-        grow_capacity(&mut c.handles, self.required_handles);
-        grow_vec(&mut self.handles, c.handles);
         grow_capacity(&mut c.assigned, self.assigned_hosts.required());
         let _ = self.assigned_hosts.try_grow(c.assigned);
         let required = self.execution.required_capacity();
@@ -604,6 +686,8 @@ impl Captured {
                 rows: &orders.rows.rows[..orders.rows.outcome.len()],
                 source: orders.rows.outcome,
                 geometry: &orders.geometry[..orders.geometry_len],
+                plan_rows: self.order.rows(),
+                census: orders.successor_lists().census(),
             },
             sources,
             &countries,
@@ -627,6 +711,9 @@ impl Captured {
     /// lengths and the original native headers. `visits` and `successors` are
     /// the census of this same job; nothing from another hour is passed.
     /// `game_state` is this pass's, for the invasions' countries and provinces.
+    /// The child fronts' owner operands wait for the Naval copy of this pass:
+    /// [`Self::visit_child_fronts`] completes them.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn visit(
         &mut self,
@@ -640,9 +727,74 @@ impl Captured {
         order_source: Outcome,
         owned_orders: &[corder_instance::Row],
         owned_paths: &[u32],
-        group_source: Option<&super::naval_history::NavalJob>,
+    ) -> u64 {
+        self.visit_with(
+            memory,
+            base,
+            game_state,
+            roots,
+            visits,
+            successors,
+            root_source,
+            order_source,
+            owned_orders,
+            owned_paths,
+            None,
+        )
+    }
+    /// [`Self::visit`] for a census stitched from parts
+    /// ([`crate::orders_parts`]): the parts walked their own plans, which are
+    /// stitched here (`corder_instance::stitch_plans`, reading nothing), and
+    /// `part_ticks` is their plan-walk time; every other pass over the
+    /// stitched census runs here as in the single job. Called on the
+    /// OrdersStitch worker.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn visit_parts(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        roots: &[corders_group::Root],
+        visits: &[corder_instance::Visit],
+        successors: &corder_instance::SuccessorLists,
+        root_source: Outcome,
+        order_source: Outcome,
+        owned_orders: &[corder_instance::Row],
+        owned_paths: &[u32],
+        parts: &[corder_instance::PlanPart<'_>],
+        part_ticks: u64,
+    ) -> u64 {
+        self.visit_with(
+            memory,
+            base,
+            game_state,
+            roots,
+            visits,
+            successors,
+            root_source,
+            order_source,
+            owned_orders,
+            owned_paths,
+            Some((parts, part_ticks)),
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn visit_with(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        roots: &[corders_group::Root],
+        visits: &[corder_instance::Visit],
+        successors: &corder_instance::SuccessorLists,
+        root_source: Outcome,
+        order_source: Outcome,
+        owned_orders: &[corder_instance::Row],
+        owned_paths: &[u32],
+        parts: Option<(&[corder_instance::PlanPart<'_>], u64)>,
     ) -> u64 {
         self.supplied = true;
+        self.child_walk = None;
         self.execution.enable_worker_growth();
         self.assigned_hosts.enable_worker_growth();
         self.execution_countries.enable_worker_growth();
@@ -687,20 +839,32 @@ impl Captured {
         self.ticks[1] += qpc().saturating_sub(begin).max(0) as u64;
         read_phase.select(TABLES[0]);
         let begin = qpc();
-        let report = corder_instance::walk_plans_ordered_with_sources(
-            memory,
-            base,
-            roots,
-            visits,
-            successors,
-            order_source,
-            &mut self.plans.rows,
-            &mut self.assigned.first,
-            &mut self.links.first,
-            &mut self.names.first,
-            &mut self.order,
-            Some(&mut self.assigned_hosts),
-        );
+        let report = match parts {
+            None => corder_instance::walk_plans_ordered_with_sources(
+                memory,
+                base,
+                roots,
+                visits,
+                successors,
+                order_source,
+                &mut self.plans.rows,
+                &mut self.assigned.first,
+                &mut self.links.first,
+                &mut self.names.first,
+                &mut self.order,
+                Some(&mut self.assigned_hosts),
+            ),
+            Some((parts, _)) => corder_instance::stitch_plans(
+                parts,
+                order_source,
+                &mut self.plans.rows,
+                &mut self.assigned.first,
+                &mut self.links.first,
+                &mut self.names.first,
+                &mut self.order,
+                Some(&mut self.assigned_hosts),
+            ),
+        };
         self.plans.outcome = report.outcome;
         self.assigned.len = report.assigned;
         self.assigned.required = report.required_assigned;
@@ -720,19 +884,18 @@ impl Captured {
                 rows: owned_orders,
                 source: order_source,
                 geometry: owned_paths,
+                plan_rows: self.order.rows(),
+                census: successors.census(),
             },
             &mut self.plans.rows[..report.outcome.len()],
             report.outcome,
             &countries,
         );
         if let Outcome::Rows { len } = report.outcome {
-            // Owned OOB index preparation is charged to this optional plan
-            // phase. Failed/empty core plans need no index; successful queries
-            // preserve exact root-batch faults and return the index for Naval.
-            let group_source = group_source
-                .filter(|_| len != 0)
-                .map(super::naval_history::OrderGroupSource::new);
-            let children = corder_instance::child_fronts::walk(
+            // Everything the child fronts read from live memory alone; the
+            // owners' army-group operands come from this pass's OOB copy,
+            // which the ChildFronts job brings to `visit_child_fronts`.
+            let areas = corder_instance::child_fronts::walk_areas(
                 memory,
                 base,
                 game_state,
@@ -742,37 +905,25 @@ impl Captured {
                 owned_paths,
                 order_source,
                 &mut self.plans.rows[..len],
-                &mut self.child_sections.first,
+                self.order.rows(),
+                successors.census(),
                 &mut self.child_scratch,
-                group_source.as_ref(),
             );
-            self.child_sections.len = children.sections;
-            self.child_sections.required = children.required_sections;
+            self.child_sections.len = 0;
+            self.child_sections.required = 0;
             self.child_front_failures = [
-                children.area_failures,
-                children.header_failures,
-                children.section_failures,
+                areas.area_failures,
+                areas.header_failures,
+                areas.section_failures,
             ];
+            self.child_walk = Some(areas);
         }
         self.ticks[0] += qpc().saturating_sub(begin).max(0) as u64;
         read_phase.select(TABLES[2]);
         let begin = qpc();
-        let front = cfront::walk(
-            memory,
-            base,
-            &self.plans.rows,
-            report.outcome,
-            &mut self.handles,
-            &mut self.fronts.rows,
-            &mut self.sections.first,
-            &mut self.pairs.first,
-        );
-        self.required_handles = self.required_handles.max(front.required_handles);
-        self.fronts.outcome = front.outcome;
-        self.sections.len = front.sections;
-        self.sections.required = front.required_sections;
-        self.pairs.len = front.pairs;
-        self.pairs.required = front.required_pairs;
+        // The fronts' reads are the Fronts job's (`Fronts::capture`); only
+        // their binding, which reads nothing, is this job's.
+        self.fronts.bind(&self.plans.rows, report.outcome);
         self.ticks[2] += qpc().saturating_sub(begin).max(0) as u64;
         read_phase.select(TABLES[3]);
         let begin = qpc();
@@ -781,40 +932,112 @@ impl Captured {
             base,
             game_state,
             visits,
+            successors.census(),
             order_source,
             &self.memo,
             &countries,
             &mut self.invasions.rows,
-            &mut self.co_belligerents.first,
         );
         self.invasions.outcome = invasions.outcome;
-        self.co_belligerents.len = invasions.slots;
-        self.co_belligerents.required = invasions.required_slots;
         self.ticks[3] += qpc().saturating_sub(begin).max(0) as u64;
         let total = qpc().saturating_sub(begin_all).max(0) as u64;
         self.ticks[0] += total.saturating_sub(self.ticks.iter().sum::<u64>() - before);
-        // The order records this job's census gathered for these plans.
+        // The order records this job's census gathered for these plans; a
+        // stitched census's parts walked their own, gathers included.
         let (_, census_ticks) = successors.plan_gathers();
+        let census_ticks = census_ticks + parts.map_or(0, |(_, part_ticks)| part_ticks);
         self.ticks[0] += census_ticks;
         total + census_ticks
     }
+    /// Completes this pass's child fronts on the ChildFronts worker, after
+    /// the Orders job's [`Self::visit`]: each type-2 order's owner
+    /// discriminator and army-group child count from `group_source`, this
+    /// same pass's Naval copy (`None` when it failed or was refused, which
+    /// refuses those operands and never falls back to `memory`), then the
+    /// demanded stored entries from `memory`. `roots` is the Orders job's
+    /// census. Rows, spans and counts are the single child-front walk's.
+    /// Without a completed area phase in this pass it does nothing.
+    pub fn visit_child_fronts(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        roots: &[corders_group::Root],
+        group_source: Option<&super::naval_history::NavalJob>,
+    ) -> u64 {
+        let Some(areas) = self.child_walk.take() else {
+            return 0;
+        };
+        let _reads = crate::read_accounting::table(TABLES[0]);
+        let begin = qpc();
+        let len = self.plans.outcome.len();
+        // Indexing the OOB copy costs a pass over all of it: build it only
+        // when an owner's operands are demanded. Without that demand the
+        // walk never consults the source, so its absence changes nothing.
+        let group_source = group_source
+            .filter(|_| self.child_scratch.needs_group_source())
+            .map(super::naval_history::OrderGroupSource::new);
+        let children = corder_instance::child_fronts::walk_groups(
+            memory,
+            base,
+            roots,
+            &mut self.plans.rows[..len],
+            &mut self.child_sections.first,
+            &mut self.child_scratch,
+            group_source.as_ref(),
+            areas,
+        );
+        drop(group_source);
+        self.child_sections.len = children.sections;
+        self.child_sections.required = children.required_sections;
+        self.child_front_failures = [
+            children.area_failures,
+            children.header_failures,
+            children.section_failures,
+        ];
+        let ticks = qpc().saturating_sub(begin).max(0) as u64;
+        self.ticks[0] += ticks;
+        ticks
+    }
+
+    /// Whether this pass's child-front group phase may allocate: only when
+    /// an owner's army-group operands are demanded, for the OOB source's
+    /// index, the group index and the section arena. Without that demand
+    /// [`Self::visit_child_fronts`] grows nothing, so its job may run on the
+    /// joining thread.
+    pub(crate) fn child_fronts_allocate(&self) -> bool {
+        self.child_walk.is_some() && self.child_scratch.needs_group_source()
+    }
+
+    /// The ChildFronts job failed, or never completed this pass's area
+    /// phase: no plan publishes child-front operands, each counted as an
+    /// area refusal, as when the walk's scratch cannot begin. The core plans
+    /// and every other operand, which the Orders job completed, stand.
+    pub(crate) fn fail_child_fronts(&mut self) {
+        let len = self.plans.outcome.len();
+        for plan in &mut self.plans.rows[..len] {
+            plan.child_fronts = None;
+        }
+        self.child_walk = None;
+        self.child_sections.len = 0;
+        self.child_sections.required = 0;
+        self.child_front_failures = [len, 0, 0];
+    }
+
     /// Terminal worker/admission failure; no partial table may be published.
     pub(crate) fn fail(&mut self, reason: &'static str) {
         let outcome = Outcome::Unavailable { reason };
         self.plans.outcome = outcome;
         self.colors.outcome = outcome;
-        self.fronts.outcome = outcome;
+        self.fronts.fail(outcome);
         self.invasions.fail(outcome);
-        self.co_belligerents.len = 0;
         self.assigned.len = 0;
         self.child_sections.len = 0;
         self.child_front_failures = [0; 3];
+        self.child_walk = None;
         self.links.len = 0;
         self.names.len = 0;
         self.group_names.len = 0;
         self.root_orders.len = 0;
-        self.sections.len = 0;
-        self.pairs.len = 0;
         self.ticks = [0; N];
         self.supplied = true;
         self.assigned_hosts.fail(reason);
@@ -827,10 +1050,46 @@ impl Captured {
             };
             self.plans.outcome = outcome;
             self.colors.outcome = outcome;
-            self.fronts.outcome = outcome;
+            self.fronts.fail(outcome);
             self.invasions.outcome = outcome;
+        } else if self.child_walk.is_some() {
+            // The area phase ran but its group phase did not: no child-front
+            // operand of this pass is complete.
+            self.fail_child_fronts();
         }
-        self.ticks
+        if self.fronts.bound.is_some() {
+            // Bound but never read: the Fronts job did not return them.
+            self.fronts.fail(Outcome::Unavailable {
+                reason: "front acquisition did not run",
+            });
+        }
+        let mut ticks = self.ticks;
+        ticks[2] += self.fronts.ticks;
+        ticks
+    }
+    /// Loan this pass's bound fronts to the Fronts job; the plans keep an
+    /// empty place until [`Self::install_fronts`].
+    pub(crate) fn take_fronts(&mut self) -> Fronts {
+        std::mem::replace(&mut self.fronts, Fronts::vacant())
+    }
+    /// The fronts the Fronts job read. A failed job fails the Fronts table
+    /// only; the plans and every other table stand. A part that had already
+    /// failed upstream (the Orders job's failure, which stops or refuses the
+    /// pool its Fronts job is then submitted to) keeps that reason: the job's
+    /// rejection or cancellation never replaces it.
+    pub(crate) fn install_fronts(&mut self, mut fronts: Fronts, completed: bool) {
+        if !completed && !fronts.failed {
+            fronts.fail(Outcome::Unavailable {
+                reason: "front acquisition failed",
+            });
+        }
+        self.fronts = fronts;
+    }
+    /// The Fronts job's pass inline, for the tests and benches that run one
+    /// hour's Orders job by hand.
+    #[cfg(test)]
+    pub(crate) fn capture_fronts(&mut self, memory: &impl Memory, base: usize) -> u64 {
+        self.fronts.capture(memory, base)
     }
     fn name(&self, (start, len): (usize, usize)) -> Vec<u8> {
         owned_vec(copy_vec(&self.names.first[start..start + len]))
@@ -859,7 +1118,7 @@ impl Captured {
         [
             self.plans.outcome,
             self.colors.outcome,
-            self.fronts.outcome,
+            self.fronts.rows.outcome,
             self.invasions.outcome,
         ]
     }
@@ -922,13 +1181,13 @@ impl Captured {
                     )),
                 }
             }),
-            table::<tables::Fronts, _>(outcomes[2], &self.fronts.rows, |r| {
+            table::<tables::Fronts, _>(outcomes[2], &self.fronts.rows.rows, |r| {
                 let mut row = FrontRow {
                     front: r.front,
                     ..Default::default()
                 };
                 let sections =
-                    &self.sections.first[r.section_start..r.section_start + r.section_len];
+                    &self.fronts.sections.first[r.section_start..r.section_start + r.section_len];
                 let pairs = sections
                     .iter()
                     .try_fold(0_usize, |count, section| {
@@ -946,7 +1205,7 @@ impl Captured {
                 for section in sections {
                     row.section_ids.push(section.id);
                     row.province_pairs.extend_from_slice(
-                        &self.pairs.first
+                        &self.fronts.pairs.first
                             [section.pair_start..section.pair_start + section.pair_len],
                     );
                     row.section_ends.push(row.province_pairs.len() as u32);
@@ -966,13 +1225,7 @@ impl Captured {
                     leader_applies: r.leader_applies,
                     days_term: r.days_term,
                     unit_owner: r.unit_owner,
-                    zero_war_present: r.zero_relation.war_present,
-                    zero_war_retired: r.zero_relation.war_retired,
-                    zero_co_belligerent: r.zero_relation.co_belligerent,
-                    co_belligerents: owned_vec(copy_vec(
-                        &self.co_belligerents.first
-                            [r.co_belligerent_start..r.co_belligerent_start + r.co_belligerent_len],
-                    )),
+                    ..Default::default()
                 }
             }),
         ]
@@ -980,10 +1233,133 @@ impl Captured {
 }
 
 #[cfg(test)]
+#[path = "plans/orders_parts_fixture.rs"]
+mod orders_parts_fixture;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use engine::{creference_registry as registry, reference_bucket as bucket};
     use std::collections::BTreeMap;
+
+    /// The invasion walk (the Orders job) and the fronts (the Fronts job)
+    /// are independent acquisitions in separate jobs: a fault that clears
+    /// after its first touch and lies under both refuses exactly one of the
+    /// two tables, whichever reaches it first in time, never both and never
+    /// neither; a persistent fault refuses each where its own read fails, as
+    /// one job did.
+    #[test]
+    fn a_one_shot_fault_shared_by_fronts_and_invasions_refuses_exactly_one() {
+        struct Domain<'a> {
+            image: &'a Image,
+            faults: [usize; 2],
+            once: bool,
+            spent: std::cell::Cell<bool>,
+        }
+        impl Memory for Domain<'_> {
+            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+                let covers = self
+                    .faults
+                    .iter()
+                    .any(|&fault| at <= fault && fault < at + output.len());
+                if covers && (!self.once || !self.spent.replace(true)) {
+                    return false;
+                }
+                self.image.copy(at, output)
+            }
+        }
+        const FRONT: u64 = (1 << 32) | cfront::REFERENCE_TYPE as u64;
+        let mut image = image();
+        image.u32(
+            ORDER + corder_instance::TYPE,
+            corder_instance::TYPE_INVASION as u32,
+        );
+        // An invasion is named: its name strings are empty inline strings,
+        // so its plan, and the plan census the fronts are bound from,
+        // completes.
+        for offset in corder_instance::NAME_STRINGS {
+            image.u64(ORDER + offset + 0x18, 15);
+        }
+        image.u64(ORDER + corder_instance::FRONT_BINDING, FRONT);
+        // The front's registry root is null: an absent front, no row.
+        let root = registry::LOW_ROOTS_RVA + cfront::REFERENCE_TYPE as usize * 8;
+        image.u64(root, 0);
+        // An empty province table: the invasion walk's first own read.
+        let provinces = engine::cgame_state::PROVINCES;
+        image.u64(provinces, 0);
+        image.u32(provinces + 8, 0);
+        image.u32(provinces + 12, 0);
+        let run = |once: bool| {
+            let memory = Domain {
+                image: &image,
+                faults: [root, provinces],
+                once,
+                spent: Default::default(),
+            };
+            let mut c = Captured::with_capacities(&Capacities::default());
+            pass(&memory, &mut c);
+            c.capture();
+            let outcomes = c.outcomes();
+            // Neither fault lies under the plans: each refusal below is the
+            // fronts' or the invasions' own.
+            assert_eq!(outcomes[0], Outcome::Rows { len: 1 }, "once {once}");
+            (outcomes[2], outcomes[3])
+        };
+        let array = "invasion preparation array unreadable or invalid";
+        let (fronts, invasions) = run(true);
+        assert_eq!(
+            matches!(fronts, Outcome::Unavailable { .. }) as u8
+                + matches!(invasions, Outcome::Unavailable { .. }) as u8,
+            1,
+            "{fronts:?} {invasions:?}"
+        );
+        // The Orders job reaches the invasions before the Fronts job runs.
+        assert_eq!(invasions, Outcome::Unavailable { reason: array });
+        assert_eq!(fronts, Outcome::Rows { len: 0 });
+        assert_eq!(
+            run(false),
+            (
+                Outcome::Unavailable {
+                    reason: "reference root unreadable"
+                },
+                Outcome::Unavailable { reason: array }
+            )
+        );
+    }
+
+    /// InvasionPreparations rows leave the walk in census order; the table
+    /// holds them by key (`spooling::table` sorts them, and the frame encoder
+    /// refuses rows out of key order), so its row order is the key's.
+    #[test]
+    fn invasion_preparations_are_published_in_key_order_whatever_the_walk_order() {
+        let group = |id: u64| (id << 32) | u64::from(corders_group::REFERENCE_TYPE);
+        let walked =
+            [(group(9), 2), (group(3), 7), (group(9), 1)].map(|(owner_group, instance)| {
+                invasion_preparations::Row {
+                    owner_group,
+                    instance,
+                    ..Default::default()
+                }
+            });
+        let TableView::Complete(replay::rows::TableRows::InvasionPreparations(published)) =
+            table::<tables::InvasionPreparations, _>(Outcome::Rows { len: 3 }, &walked, |r| {
+                InvasionPreparationRow {
+                    owner_group: r.owner_group,
+                    instance: r.instance,
+                    ..Default::default()
+                }
+            })
+        else {
+            panic!("a complete table");
+        };
+        assert_eq!(
+            published
+                .iter()
+                .map(|row| (row.owner_group, row.instance))
+                .collect::<Vec<_>>(),
+            [(group(3), 7), (group(9), 1), (group(9), 2)]
+        );
+    }
     #[derive(Default)]
     struct Image(BTreeMap<usize, u8>);
     impl Image {
@@ -1042,7 +1418,9 @@ mod tests {
         m.u32(ORDER + corder_instance::ID, 9);
         m
     }
-    fn pass(m: &impl Memory, c: &mut Captured) {
+    /// The Orders job's census and plans, without the ChildFronts job's
+    /// group phase; returns the roots of its census.
+    fn orders_pass(m: &impl Memory, c: &mut Captured) -> Vec<corders_group::Root> {
         let mut groups = [corders_group::Root::default(); 4];
         let mut visits = vec![corder_instance::Visit::default(); 8];
         let mut successors = corder_instance::SuccessorLists::default();
@@ -1069,8 +1447,290 @@ mod tests {
             r.outcome,
             &orders[..r.outcome.len()],
             &paths[..r.geometry_len],
-            None,
         );
+        groups[..r.root_outcome.len()].to_vec()
+    }
+    /// The Orders, ChildFronts and Fronts jobs, as an hour runs them.
+    fn pass(m: &impl Memory, c: &mut Captured) {
+        let roots = orders_pass(m, c);
+        c.visit_child_fronts(m, 0, &roots, None);
+        c.capture_fronts(m, 0);
+    }
+
+    /// The census and plans the Orders job walks in parts, the OrdersPart
+    /// jobs walk theirs and the OrdersStitch job stitches capture what one
+    /// job walking every group captures: the census's outcome, rows,
+    /// geometry and census order, and every plan table, the child fronts and
+    /// fronts read over it included. Every part count at 40 countries, and
+    /// one, two and the most parts at 1,500 and 5,000 countries' worth of
+    /// groups (3,000 and 10,000 groups, 6,000 and 20,000 orders).
+    #[test]
+    fn orders_in_parts_capture_what_the_single_job_captures() {
+        use crate::extended::bench_world::{self, Shape};
+        use crate::orders_parts::MAX_PARTS;
+        for (countries, counts) in [
+            (40, (1..=MAX_PARTS).collect::<Vec<_>>()),
+            (1_500, vec![1, 2, MAX_PARTS]),
+            (5_000, vec![1, 2, MAX_PARTS]),
+        ] {
+            let world = bench_world::build(
+                countries,
+                Shape {
+                    named: true,
+                    theatre_links: true,
+                },
+            );
+            parts_capture_what_the_single_job_captures(&world, &counts, false);
+        }
+    }
+
+    /// All splits must retain material downstream output: shared bound fronts,
+    /// child areas completed with the real same-pass Naval OOB producer, assigned
+    /// hosts, geometry, links, names and invasion preparations.
+    #[test]
+    fn orders_in_parts_capture_nonempty_fronts_children_and_invasions() {
+        let world = orders_parts_fixture::build();
+        let counts: Vec<_> = (1..=crate::orders_parts::MAX_PARTS).collect();
+        parts_capture_what_the_single_job_captures(&world, &counts, true);
+    }
+
+    fn assert_nonempty_order_parts_fixture(orders: &crate::map_capture::Orders, plans: &Captured) {
+        use orders_parts_fixture::{FRONTS, GROUPS, ORDERS};
+        assert_eq!(orders.root_outcome, Outcome::Rows { len: GROUPS });
+        assert_eq!(orders.rows.outcome, Outcome::Rows { len: ORDERS });
+        assert_eq!(orders.geometry_len, ORDERS * 3);
+        assert_eq!(orders.successor_lists().census().len(), ORDERS);
+        for row in &orders.rows.rows[..ORDERS] {
+            assert_eq!((row.path_len, row.target_len), (2, 1));
+            assert_eq!(
+                &orders.geometry[row.path_start..row.path_start + row.path_len],
+                &[1, 2]
+            );
+            let group_index = (row.owner_group >> 32) as u32 - 1;
+            assert_eq!(orders.geometry[row.target_start], 17 + group_index);
+        }
+        assert_eq!(
+            plans.outcomes(),
+            [
+                Outcome::Rows { len: ORDERS },
+                Outcome::Rows { len: GROUPS },
+                Outcome::Rows { len: FRONTS },
+                Outcome::Rows { len: GROUPS },
+            ]
+        );
+        assert_eq!(plans.assigned.len, GROUPS * 2);
+        assert_eq!(
+            plans.assigned_hosts.outcome(),
+            Outcome::Rows { len: GROUPS * 2 }
+        );
+        assert_eq!(plans.links.len, GROUPS * 4);
+        assert!(plans.names.len > 0);
+        assert!(plans.group_names.len > 0);
+        assert_eq!(plans.root_orders.len, ORDERS);
+        assert_eq!(plans.child_front_failures, [0; 3]);
+        assert_eq!(plans.child_sections.len, GROUPS * 2);
+        assert_eq!(plans.fronts.sections.len, FRONTS * 2);
+        assert_eq!(plans.fronts.pairs.len, FRONTS * 4);
+        assert_eq!(
+            &plans.fronts.pairs.first[..FRONTS * 4],
+            &[1, 2, 2, 1, 1, 2, 2, 1]
+        );
+        for (index, sections) in plans.fronts.sections.first[..FRONTS * 2]
+            .chunks_exact(2)
+            .enumerate()
+        {
+            assert_eq!((sections[0].id, sections[1].id), (9, 3), "front {index}");
+            assert_eq!((sections[0].pair_len, sections[1].pair_len), (4, 0));
+        }
+        // PlanOrder::rows exposes each census entry's plan row. Visit's pointer
+        // is private to engine; compare the full authenticated identity order
+        // through this existing API instead of comparing pointer-map slots.
+        let census: Vec<_> = plans
+            .order
+            .rows()
+            .iter()
+            .map(|&row| plans.plans.rows[row as usize].key())
+            .collect();
+        let expected: Vec<_> = (1..=GROUPS)
+            .flat_map(|group| {
+                let handle = ((group as u64) << 32) | u64::from(corders_group::REFERENCE_TYPE);
+                (1..=3).map(move |instance| (u128::from(handle) << 32) | instance)
+            })
+            .collect();
+        assert_eq!(census, expected);
+        for plan in &plans.plans.rows[..ORDERS] {
+            assert_eq!(plan.front_valid, 1);
+            if plan.instance == 1 {
+                let child = plan.child_fronts.expect("line child area");
+                assert_eq!(child.area_province_count, 4);
+                assert_eq!(child.count, Some(2));
+                assert_eq!(child.group_child_count, Some(2));
+                let (start, len) = child
+                    .sections
+                    .expect("accepted Naval source and child payload");
+                assert_eq!(len, 2);
+                let sections = &plans.child_sections.first[start..start + len];
+                assert_eq!(
+                    (sections[0].segment_start, sections[0].segment_end),
+                    (-1, 0)
+                );
+                assert_eq!((sections[1].segment_start, sections[1].segment_end), (0, 1));
+                assert!(sections.iter().all(|section| section.group != 0));
+            } else {
+                assert_eq!(plan.assigned_len, 1);
+            }
+        }
+        for (index, invasion) in plans.invasions.rows[..GROUPS].iter().enumerate() {
+            assert_eq!(
+                (invasion.instance, invasion.target, invasion.unit_owner),
+                (3, 2, 1)
+            );
+            assert_eq!(invasion.progress, 123_456 + index as i64);
+        }
+    }
+
+    fn parts_capture_what_the_single_job_captures(
+        world: &crate::extended::bench_world::World,
+        counts: &[usize],
+        nonempty: bool,
+    ) {
+        use crate::map_capture::{MapCapacities, Orders};
+        use crate::orders_parts::Split;
+        let memory = world.slice();
+        let observed = |orders: &Orders, plans: &mut Captured| {
+            let mut naval = super::super::naval_history::NavalJob::new();
+            if nonempty {
+                naval.capture_roots_growing(orders.roots(), orders.root_outcome);
+                let report = super::super::naval_history::copy_naval_refresh_growing(
+                    &memory,
+                    super::super::naval_history::NavalCopyContext {
+                        base: world.base,
+                        game_state: world.game_state,
+                        hour: 1,
+                        force_full: false,
+                    },
+                    &mut naval,
+                );
+                assert!(report.raw_ok, "same-pass Naval OOB copy must complete");
+            }
+            plans.visit_child_fronts(
+                &memory,
+                world.base,
+                orders.roots(),
+                nonempty.then_some(&naval),
+            );
+            plans.capture_fronts(&memory, world.base);
+            if nonempty {
+                assert_nonempty_order_parts_fixture(orders, plans);
+            }
+            // Full census identity order via the completed plan walk's placement,
+            // independent of the census hash table's private pointer/slot layout.
+            let census: Vec<_> = plans
+                .order
+                .rows()
+                .iter()
+                .map(|&row| plans.plans.rows[row as usize].key())
+                .collect();
+            format!(
+                "{:?}",
+                (
+                    orders.rows.outcome,
+                    orders.root_outcome,
+                    &orders.rows.rows[..orders.rows.outcome.len()],
+                    &orders.geometry[..orders.geometry_len],
+                    census,
+                    (
+                        &plans.assigned.first[..plans.assigned.len],
+                        plans.assigned_hosts.pointers(),
+                        &plans.links.first[..plans.links.len],
+                        &plans.names.first[..plans.names.len],
+                        &plans.group_names.first[..plans.group_names.len],
+                        &plans.root_orders.first[..plans.root_orders.len],
+                        &plans.child_sections.first[..plans.child_sections.len],
+                        plans.child_front_failures,
+                        &plans.fronts.sections.first[..plans.fronts.sections.len],
+                        &plans.fronts.pairs.first[..plans.fronts.pairs.len],
+                    ),
+                    plans.tables(),
+                )
+            )
+        };
+        let mut single = Orders::for_test(&MapCapacities::default());
+        single.walk_roots_growing(&memory, world.base);
+        single.walk(&memory, world.base);
+        assert_eq!(
+            single.rows.outcome,
+            Outcome::Rows {
+                len: world.orders as usize
+            }
+        );
+        let mut plans = Captured::with_capacities(&Capacities::default());
+        plans.visit(
+            &memory,
+            world.base,
+            world.game_state,
+            single.roots(),
+            single.visits(),
+            single.successor_lists(),
+            single.root_outcome,
+            single.rows.outcome,
+            &single.rows.rows[..single.rows.outcome.len()],
+            &single.geometry[..single.geometry_len],
+        );
+        assert_eq!(
+            plans.plans.outcome,
+            Outcome::Rows {
+                len: world.orders as usize
+            }
+        );
+        let expected = observed(&single, &mut plans);
+        for &parts in counts {
+            let mut orders = Orders::for_test(&MapCapacities::default());
+            let mut plans = Captured::with_capacities(&Capacities::default());
+            // The nonempty fixture repeats with retained destinations and part
+            // storage, and acquires parts in opposite orders on the second pass.
+            for repeat in 0..if nonempty { 2 } else { 1 } {
+                orders.walk_roots_growing(&memory, world.base);
+                orders.begin_parts(Split::even(parts, orders.roots()), 10_000_000);
+                orders.prepare_parts();
+                assert_eq!(orders.part_count(), parts);
+                if repeat == 0 {
+                    orders.walk_first_part(&memory, world.base);
+                }
+                for step in 1..parts {
+                    let index = if repeat == 0 { step } else { parts - step };
+                    let mut part = orders.take_part(index).unwrap();
+                    part.run(&memory, world.base);
+                    orders.return_part(index, part);
+                }
+                if repeat != 0 {
+                    orders.walk_first_part(&memory, world.base);
+                }
+                let part_ticks = orders.stitch();
+                assert!(!orders.failed());
+                let plan_parts = orders.plan_parts().unwrap();
+                plans.visit_parts(
+                    &memory,
+                    world.base,
+                    world.game_state,
+                    orders.roots(),
+                    orders.visits(),
+                    orders.successor_lists(),
+                    orders.root_outcome,
+                    orders.rows.outcome,
+                    &orders.rows.rows[..orders.rows.outcome.len()],
+                    &orders.geometry[..orders.geometry_len],
+                    &plan_parts[..parts],
+                    part_ticks,
+                );
+                assert_eq!(
+                    observed(&orders, &mut plans),
+                    expected,
+                    "{} groups, {parts} parts, pass {repeat}",
+                    world.groups
+                );
+            }
+        }
     }
     fn execution_image() -> Image {
         let mut image = image();
@@ -1384,16 +2044,7 @@ mod tests {
             if mode == 3 {
                 pool.shutdown().unwrap();
             }
-            let request = captured.take_late_request(
-                &countries,
-                &mut orders,
-                true,
-                0,
-                0,
-                1,
-                false,
-                Box::default(),
-            );
+            let request = captured.take_late_request(&countries, &mut orders, true, 0, 0, 1, false);
             assert!(Arc::ptr_eq(&request.countries, &countries));
             assert_eq!(
                 captured.plans.allocated_bytes(),
@@ -1435,6 +2086,7 @@ mod tests {
                 (request, completed)
             };
             captured.restore_late_request(request, completed, &mut orders);
+            captured.install_order_transport();
             assert_eq!(
                 captured.plans.tables(),
                 expected,
@@ -1462,6 +2114,46 @@ mod tests {
             );
             pool.shutdown().unwrap();
         }
+    }
+    #[test]
+    fn child_fronts_wait_for_their_group_phase_whose_absence_refuses_only_them() {
+        let m = image();
+        let mut c = Captured::with_capacities(&Capacities::default());
+        pass(&m, &mut c);
+        c.capture();
+        assert_eq!(c.child_front_failures, [0; 3]);
+        let complete = c.tables();
+        assert!(matches!(
+            &complete[0],
+            TableView::Complete(replay::rows::TableRows::ArmyOrderPlans(rows)) if rows.len() == 1
+        ));
+        // A group phase without this pass's area phase reads nothing.
+        assert!(!c.child_fronts_allocate());
+        assert_eq!(c.visit_child_fronts(&m, 0, &[], None), 0);
+        assert_eq!(c.child_front_failures, [0; 3]);
+
+        // The Orders job alone: its child fronts are refused when the hour
+        // assembles, each plan counted, and every core row stands.
+        c.reset();
+        orders_pass(&m, &mut c);
+        // An empty child array: the group phase grows nothing, so its job may
+        // run on the joining thread.
+        assert!(!c.child_fronts_allocate());
+        // The Fronts job runs beside it either way.
+        c.capture_fronts(&m, 0);
+        c.capture();
+        assert_eq!(c.child_front_failures, [1, 0, 0]);
+        assert_eq!(c.tables(), complete);
+
+        // A failed ChildFronts job likewise.
+        c.reset();
+        orders_pass(&m, &mut c);
+        c.fail_child_fronts();
+        assert_eq!(c.visit_child_fronts(&m, 0, &[], None), 0);
+        c.capture_fronts(&m, 0);
+        c.capture();
+        assert_eq!(c.child_front_failures, [1, 0, 0]);
+        assert_eq!(c.tables(), complete);
     }
     #[test]
     fn primary_plan_styles_and_colors_spool_exact_bytes() {
@@ -1521,13 +2213,13 @@ mod tests {
         pass(&m, &mut c);
         c.capture();
         c.assigned.required = capacity.assigned + 1;
-        c.pairs.required = capacity.pairs + 1;
-        c.required_handles = capacity.handles + 1;
+        c.fronts.pairs.required = capacity.pairs + 1;
+        c.fronts.required_handles = capacity.handles + 1;
         c.grow(&mut capacity);
         assert!(capacity.assigned > 16384 && capacity.pairs > 65536 && capacity.handles > 2048);
         assert_eq!(c.assigned.first.len(), capacity.assigned);
-        assert_eq!(c.pairs.first.len(), capacity.pairs);
-        assert_eq!(c.handles.len(), capacity.handles);
+        assert_eq!(c.fronts.pairs.first.len(), capacity.pairs);
+        assert_eq!(c.fronts.handles.len(), capacity.handles);
         c.reset();
         c.capture();
         assert!(
@@ -1700,7 +2392,6 @@ mod tests {
             pairs: 0,
             handles: 0,
             invasions: 0,
-            co_belligerents: 0,
             execution: order_execution::Capacity::default(),
             country_references: 0,
             country_links: 0,
@@ -1784,7 +2475,6 @@ mod tests {
             pairs: 0,
             handles: 0,
             invasions: 0,
-            co_belligerents: 0,
             execution: order_execution::Capacity::default(),
             country_references: 0,
             country_links: 0,
@@ -1820,12 +2510,14 @@ mod tests {
 }
 
 /// Ignored capture-cost bench; see `bench_world` for the assumed scale. Each
-/// case times the Orders job's pass through the plain slice and through the
-/// production guarded source: the ArmyOrders census, which gathers the plans'
-/// order records, then the plan visit. Each table's time is its own ticks,
-/// the census's plan gathers included in ArmyOrderPlans; `order-census` is
-/// the census without them. It also counts one pass's source requests per
-/// table, charged as the Orders job charges them.
+/// case times one hour's Orders, ChildFronts and Fronts passes inline,
+/// through the plain slice and through the production guarded source: the
+/// ArmyOrders census, which gathers the plans' order records, the plan
+/// visit, the child fronts' group phase and the fronts' acquisition. Each
+/// table's time is its own ticks (`Captured::capture`, the Fronts job's
+/// acquisition in Fronts), the census's plan gathers included in
+/// ArmyOrderPlans; `order-census` is the census without them. It also counts
+/// one pass's source requests per table, charged as the jobs charge them.
 #[cfg(test)]
 mod l3b_bench {
     use super::*;
@@ -1890,8 +2582,9 @@ mod l3b_bench {
                 census.outcome,
                 &self.rows[..census.outcome.len()],
                 &self.geometry[..census.geometry_len],
-                None,
             );
+            self.captured.visit_child_fronts(memory, base, roots, None);
+            self.captured.capture_fronts(memory, base);
             (census_ticks, plan_ticks)
         }
     }
@@ -1926,7 +2619,8 @@ mod l3b_bench {
             let (census, gathered) = pass.run(memory, world.base, roots, root_outcome);
             censuses.push(census);
             gathers.push(gathered);
-            tables.push(pass.captured.ticks);
+            // The combined ticks: the Fronts pass's own acquisition included.
+            tables.push(pass.captured.capture());
         };
         // The first pass grows every arena; later passes reuse them.
         run();

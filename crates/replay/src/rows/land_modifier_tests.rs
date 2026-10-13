@@ -1,0 +1,179 @@
+//! LandCombatDivisionModifiers' one row a combat member, and the side rows
+//! LandCombatModifiers keeps ([`compatibility::LAND_MODIFIER_ROWS_FORMAT`]).
+use super::*;
+use crate::format::FormatVersion;
+use crate::rows::compatibility::LAND_MODIFIER_ROWS_FORMAT;
+use crate::value::{Value, value_struct};
+
+fn member(ordinal: u32, entries: Vec<CombatModifierValue>) -> LandCombatDivisionModifierRow {
+    LandCombatDivisionModifierRow {
+        combat: u64::MAX,
+        side: 1,
+        ordinal,
+        division: (0x35 << 32) | 0x33,
+        entries,
+    }
+}
+
+fn entry(id: u32, value_a: i64, value_b: i64) -> CombatModifierValue {
+    CombatModifierValue {
+        id,
+        value_a,
+        value_b,
+    }
+}
+
+/// One element of the side list LandCombatModifiers held before
+/// [`LAND_MODIFIER_ROWS_FORMAT`], as its writers encoded it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct OldDivision {
+    division: u64,
+    ordinal: u32,
+    entries: Vec<CombatModifierValue>,
+}
+value_struct!(OldDivision { division: u64, ordinal: u32, entries: Vec<CombatModifierValue> });
+
+/// An Opaque field: its payload's length, then the payload.
+fn opaque(value: &impl Value, output: &mut Vec<u8>) {
+    let mut payload = Vec::new();
+    Value::encode(value, &mut payload).unwrap();
+    output.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    output.extend(payload);
+}
+
+#[test]
+fn land_combat_division_modifiers_hold_a_row_a_member_keyed_as_its_combat_row() {
+    // Keyed (combat, side, ordinal) as LandCombatDivisions, with the
+    // division handle and its ordered entries.
+    let table = TableId::LandCombatDivisionModifiers;
+    assert_eq!(table.field_name(0), Some("division"));
+    assert_eq!(table.field_name(1), Some("entries"));
+    assert_eq!(table.field_count(), 2);
+    let row = member(u32::MAX, vec![entry(7, 10, -20)]);
+    assert_eq!(
+        row.key(),
+        LandCombatDivisionRow {
+            combat: row.combat,
+            side: row.side,
+            ordinal: row.ordinal,
+            ..Default::default()
+        }
+        .key()
+    );
+    for row in [
+        row.clone(),
+        member(0, Vec::new()),
+        // Repeated ids keep their order.
+        member(
+            3,
+            vec![
+                entry(u32::MAX, i64::MIN, i64::MAX),
+                entry(0, -10, 0),
+                entry(0, -10, 0),
+            ],
+        ),
+    ] {
+        let mut bytes = Vec::new();
+        encode_row(&row, 0, &mut bytes).unwrap();
+        let mut input = Decoder::new(&bytes);
+        assert_eq!(
+            decode_row::<LandCombatDivisionModifierRow>(0, &mut input).unwrap(),
+            row
+        );
+        input.finish().unwrap();
+    }
+}
+
+#[test]
+fn one_division_whose_entries_change_stores_only_its_row() {
+    let before = [
+        member(0, vec![entry(1, 1_000, 0)]),
+        member(1, vec![entry(1, 1_000, 0), entry(2, 50, -50)]),
+    ];
+    let mut after = before.clone();
+    after[1].entries[1].value_a = 60;
+    assert!(before[0].delta(Some(&before[0])).unwrap().is_none());
+    let delta = after[1].delta(Some(&before[1])).unwrap().unwrap();
+    assert_eq!(delta.mask, 1 << 1);
+    assert_eq!(delta.apply(Some(before[1].clone())).unwrap(), after[1]);
+    // Values below a displayed step round onto it, so a drift inside one
+    // stores no change.
+    let mut drifted = after[1].clone();
+    drifted.entries[1].value_a = 69;
+    drifted.round_to_display();
+    assert_eq!(drifted, after[1]);
+    assert!(after[1].delta(Some(&drifted)).unwrap().is_none());
+}
+
+#[test]
+fn land_combat_modifiers_keep_their_side_rows_framing_and_border_values() {
+    // A row a side with its border values; the list of every member's
+    // entries is a tombstone in the same Opaque position, so every container
+    // layout frames older rows exactly as it framed them before.
+    let table = TableId::LandCombatModifiers;
+    assert_eq!(table.field_name(0), Some("border_values"));
+    assert_eq!(table.field_name(1), Some("divisions"));
+    assert!(matches!(table.schema(), [Kind::Opaque, Kind::Opaque]));
+    let row = LandCombatModifierRow {
+        combat: 62,
+        side: 1,
+        border_values: Some([i64::MIN, 0, i64::MAX]),
+        divisions: Retired,
+    };
+    let mut bytes = Vec::new();
+    encode_row(&row, 0, &mut bytes).unwrap();
+    let mut current = Vec::new();
+    table.encode_key(row.key(), 0, &mut current).unwrap();
+    opaque(&row.border_values, &mut current);
+    // Current writers store an empty list payload.
+    current.extend_from_slice(&0_u32.to_le_bytes());
+    assert_eq!(bytes, current);
+    let mut input = Decoder::new(&bytes);
+    assert_eq!(
+        decode_row::<LandCombatModifierRow>(0, &mut input).unwrap(),
+        row
+    );
+    input.finish().unwrap();
+
+    // The previous format's row, with its genuine member list: its border
+    // values decode and its list is discarded through its framing.
+    let previous = FormatVersion::read(LAND_MODIFIER_ROWS_FORMAT - 1).unwrap();
+    let mut old = Vec::new();
+    table.encode_key(row.key(), 0, &mut old).unwrap();
+    opaque(&row.border_values, &mut old);
+    opaque(
+        &vec![
+            OldDivision {
+                division: (0x35 << 32) | 0x33,
+                ordinal: 0,
+                entries: vec![entry(4, 10, -10), entry(4, 10, -10)],
+            },
+            OldDivision {
+                division: 9,
+                ordinal: 1,
+                entries: Vec::new(),
+            },
+        ],
+        &mut old,
+    );
+    let mut input = Decoder::new(&old);
+    input.format = previous.version();
+    assert_eq!(
+        decode_row::<LandCombatModifierRow>(0, &mut input).unwrap(),
+        row
+    );
+    input.finish().unwrap();
+    // The previous format keeps LandCombatModifiers whole and refuses only
+    // the member rows it did not record, by name.
+    assert_eq!(previous.fields(table), 2);
+    assert!(previous.table_refusal(table).is_none());
+    let reason = previous
+        .table_refusal(TableId::LandCombatDivisionModifiers)
+        .unwrap();
+    assert!(reason.contains("LandCombatDivisionModifiers"), "{reason}");
+    assert!(
+        FormatVersion::CURRENT
+            .table_refusal(TableId::LandCombatDivisionModifiers)
+            .is_none()
+    );
+}

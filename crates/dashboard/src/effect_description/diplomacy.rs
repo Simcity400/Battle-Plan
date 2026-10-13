@@ -1,6 +1,11 @@
 use super::*;
 use replay::rows::tables;
 
+/// create_wargoal's owned-wargoal test reads a roster the
+/// recording does not hold.
+pub(super) const CREATE_WARGOAL_UNRECORDED: &str =
+    "create_wargoal's owned-wargoal test reads OwnedWargoals, which is not recorded";
+
 impl Renderer<'_, '_, '_> {
     pub(super) fn purchase_contract(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         // seller/buyer are scoped operands; factory count floors to
@@ -176,122 +181,18 @@ impl Renderer<'_, '_, '_> {
             .wargoals
             .or(cached.wargoals.as_ref())
             .ok_or_else(|| self.content_gap("Wargoal definitions"))?;
-        let Some(goal) = database.find(goal.as_bytes())? else {
-            return Ok(String::new()); // null object.
-        };
+        if database.find(goal.as_bytes())?.is_none() {
+            return Ok(String::new()); // No matching wargoal type.
+        }
         let source = self.current_country(scopes)?;
         if target == 0 || source == 0 {
             return Err("create_wargoal needs reserved country zero diplomacy/name inputs".into());
         }
-        let recorded = self.context.text.recorded();
-        let frame = self.context.text.frame();
-        let roster = frame
-            .complete::<tables::OwnedWargoals>()
-            .map_err(|why| why.to_string())?;
-        // only the first generator is read. Other
-        // generator modes leave this explicit vector empty;
-        // description does not execute their dynamic state selection.
-        let generator = fields.iter().find(|field| field.keyword_is("generator"));
-        for row in roster {
-            let owner = recorded
-                .slot(row.country)
-                .ok_or_else(|| format!("CountryLinks lacks OwnedWargoals owner {}", row.country))?;
-            if owner != source {
-                continue;
-            }
-            // recipient is the target or
-            // one of its stored direct subjects, with native country aliases.
-            let recipient = if row.recipient == 0 {
-                0
-            } else {
-                recorded.slot(row.recipient).ok_or_else(|| {
-                    format!(
-                        "CountryLinks lacks OwnedWargoals recipient {}",
-                        row.recipient
-                    )
-                })?
-            };
-            if recipient != target {
-                let appearance = frame
-                    .complete::<tables::CountryAppearance>()
-                    .map_err(|why| why.to_string())?
-                    .iter()
-                    .find(|row| recorded.slot(row.country) == Some(target))
-                    .ok_or("CountryAppearance lacks target's ordered subjects")?;
-                let subjects = appearance.subjects.require("CountryAppearance.subjects")?;
-                let mut matches = false;
-                for raw in subjects {
-                    let subject = if *raw == 0 {
-                        0
-                    } else {
-                        recorded
-                            .slot(*raw as u32)
-                            .ok_or_else(|| format!("CountryLinks lacks ordered subject {raw}"))?
-                    };
-                    if subject == recipient {
-                        matches = true;
-                        break;
-                    }
-                }
-                if !matches {
-                    continue;
-                }
-            }
-            let token = self
-                .context
-                .world()?
-                .token(row.goal_type as u32)?
-                .ok_or_else(|| {
-                    format!("LexicalTokens lacks owned wargoal type {}", row.goal_type)
-                })?;
-            if installed_content::tokens::Token::c_str(token) != installed_content::tokens::Token::c_str(goal) {
-                continue;
-            }
-            // an empty existing state set covers any generator;
-            // otherwise every explicit claim must match a pointer,
-            // with invalid authored state IDs resolving to null/recorded zero.
-            if row.states.is_empty() {
-                return Ok(String::new());
-            }
-            let mut covered = true;
-            for entry in generator
-                .and_then(|field| field.value.items())
-                .unwrap_or_default()
-            {
-                let id = installed_content::crt::scan_i32(entry.value.scalar().unwrap_or_default())
-                    .stored()
-                    .unwrap_or(0) as u32;
-                let state = self.valid_state(id)?.map_or(0, |state| state.id);
-                if !row.states.contains(&state) {
-                    covered = false;
-                    break;
-                }
-            }
-            if covered {
-                return Ok(String::new());
-            }
-        }
-        if self
-            .context
-            .localisation
-            .get("EFFECT_CREATE_WARGOAL")
-            .is_none()
-        {
-            return Err("native localisation key EFFECT_CREATE_WARGOAL is not defined".into());
-        }
-        let source = self.country_name(source, false)?;
-        let target = self.country_name(target, false)?;
-        let goal = self.localised(goal, &[], scopes, false)?;
-        self.line(
-            b"EFFECT_CREATE_WARGOAL",
-            &[
-                ("COUNTRY", Argument::Text(&source)),
-                ("WARGOAL", Argument::Text(&goal)),
-                ("TARGET", Argument::Text(&target)),
-            ],
-            scopes,
-            true,
-        )
+        // The game then walks the source's owned wargoals and drops the line
+        // when one already covers this type, target (or a direct subject of
+        // it) and claims. That roster is not recorded, so whether the line
+        // shows cannot be decided.
+        Err(CREATE_WARGOAL_UNRECORDED.into())
     }
 
     pub(super) fn faction_influence(

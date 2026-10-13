@@ -275,7 +275,6 @@ pub(crate) fn direct(memory: &impl engine::Memory, capacities: &Capacities) -> C
     captured.advisors.primary(results[2]);
     captured.units.primary(results[3]);
     captured.traits.primary(results[4]);
-    captured.trait_experience.primary(results[5]);
     captured
 }
 
@@ -290,14 +289,14 @@ pub(crate) fn split(
         force_full: false,
         base: BASE,
         game_state: GAME_STATE,
-        active: [true; 6],
+        active: [true; 5],
         trait_rows,
         trait_bytes,
     };
     let mut first = CharactersJob::new();
     let report = copy_characters_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
-    let mut ticks = [0u64; 6];
+    let mut ticks = [0u64; 5];
     captured.decode_characters_payload(BASE, &first, &mut ticks);
     (captured, report, first)
 }
@@ -360,9 +359,4 @@ pub(crate) fn assert_matches_direct(split: &Captured, direct: &Captured) {
     assert_eq!(split.advisors_table(), direct.advisors_table());
     assert_buffer("units", &split.units, &direct.units);
     assert_buffer("traits", &split.traits, &direct.traits);
-    assert_buffer(
-        "experience",
-        &split.trait_experience,
-        &direct.trait_experience,
-    );
 }

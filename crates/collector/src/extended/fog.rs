@@ -648,7 +648,7 @@ impl Captured {
                     && r.capacity_raw == old.capacity_raw
                     && wings(r) == old.wings
                     && self.carrier.equal(r, &old.carrier)
-                    && self.carrier.planes_equal(r, &old.transport_planes)
+                    && old.transport_planes == rows::Recorded::Value(rows::Retired)
             },
             |r| rows::AirBaseRegistrationRow {
                 base: r.base,
@@ -656,7 +656,7 @@ impl Captured {
                 capacity_raw: r.capacity_raw,
                 wings: owned_vec(copy_vec(wings(r))),
                 carrier: self.carrier.packet(r),
-                transport_planes: self.carrier.planes(r),
+                transport_planes: rows::Recorded::Value(rows::Retired),
             },
         )
     }
@@ -705,8 +705,8 @@ impl Captured {
             job,
             &[],
             &mut super::air::carrier::Bases::new(0),
-            Err("transport carrier legacy decode has no current-hour admission"),
             decode_ticks,
+            None,
         );
     }
 
@@ -723,15 +723,17 @@ impl Captured {
 
     /// The optional observer shares this exact mandatory pass. Every optional
     /// read is served by the separate owned carrier log, including failures;
-    /// no live memory is available to the decoder.
+    /// no live memory is available to the decoder. `reuse` appends the rows of
+    /// state bases whose held segment it walked before
+    /// ([`super::air::DecodedRegistrations`]).
     pub(crate) fn decode_registrations_with_carrier_payload(
         &mut self,
         base: usize,
         job: &super::air::AirBasesJob,
         base_rows: &[cair_base::Row],
         carrier_bases: &mut super::air::carrier::Bases,
-        transport_planes: Result<(), &'static str>,
         decode_ticks: &mut [u64; super::air::AIR_BASES_N],
+        mut reuse: Option<&mut (dyn cair_base::RegistrationReuse + '_)>,
     ) {
         use crate::raw::Recorded;
         let recorded = Recorded::build(&job.log);
@@ -747,6 +749,11 @@ impl Captured {
             .seed
             .and_then(|()| ccountry::Reader::new(&optional, base, job.game_state));
         let refusal = optional_countries.as_ref().err().copied();
+        // The slots this pass's acquisition took ([`crate::air_base_changes`]).
+        let slots = cair_base::SlotMode {
+            dense: job.slot_run.dense,
+            full: &job.slot_full,
+        };
         let original_buffers = cair_base::RegistrationBuffers {
             registrations: &mut self.registrations.rows,
             wings: &mut self.wings.first,
@@ -765,15 +772,16 @@ impl Captured {
                     job.game_state,
                     &countries,
                     buffers,
-                )
-                .with_transport_planes(transport_planes);
-                let first = cair_base::walk_registrations_with_carrier(
+                );
+                let first = cair_base::walk_registrations_with_carrier_planned(
                     &recorded,
                     base,
                     job.game_state,
                     original_buffers,
                     base_rows,
                     &mut carrier,
+                    slots,
+                    reuse.as_deref_mut(),
                 );
                 // Registrations stop at their first failure, while the
                 // independent AirBases walk can accept later host bases and
@@ -799,7 +807,6 @@ impl Captured {
             };
             carrier_bases.install(lengths, demand);
             self.carrier.install(lengths, demand);
-            self.carrier.admit_transport_planes(transport_planes);
             carrier_bases.index_rows();
             self.carrier.index_rows();
             first
@@ -811,7 +818,14 @@ impl Captured {
             carrier_bases.install(cair_base::CarrierLengths::default(), demand);
             self.carrier
                 .install(cair_base::CarrierLengths::default(), demand);
-            cair_base::walk_registrations(&recorded, base, job.game_state, original_buffers)
+            cair_base::walk_registrations_planned(
+                &recorded,
+                base,
+                job.game_state,
+                original_buffers,
+                slots,
+                reuse,
+            )
         };
         self.required_links = first.required_links;
         arena_first(

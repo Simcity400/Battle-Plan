@@ -2,6 +2,226 @@ use super::*;
 use crate::{creference_registry as registry, reference_bucket as bucket};
 use std::collections::BTreeMap;
 
+mod batched_orders {
+    use super::*;
+    use std::cell::Cell;
+
+    struct Source<'a> {
+        image: &'a MemoryImage,
+        fault: Option<usize>,
+        once: bool,
+        spent: Cell<bool>,
+    }
+
+    impl Memory for Source<'_> {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            if self
+                .fault
+                .is_some_and(|fault| at <= fault && fault < at + out.len())
+                && (!self.once || !self.spent.replace(true))
+            {
+                return false;
+            }
+            self.image.copy(at, out)
+        }
+    }
+
+    struct Reads<'a> {
+        source: Source<'a>,
+        serial: bool,
+        census: Cell<usize>,
+    }
+
+    impl Memory for Reads<'_> {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            // Force the original root-pointer walk, without changing payloads.
+            if self.serial && (0x2000_0000..0x3000_0000).contains(&at) && out.len() > 8 {
+                return false;
+            }
+            self.source.copy(at, out)
+        }
+        fn copy_records(
+            &self,
+            sources: RecordSources<'_>,
+            layout: &RecordLayout<'_>,
+            out: &mut [u8],
+        ) -> usize {
+            if layout.fields() == CENSUS_FIELDS {
+                if self.serial {
+                    return 0;
+                }
+                self.census.set(self.census.get() + 1);
+            }
+            self.source.copy_records(sources, layout, out)
+        }
+    }
+
+    fn world(countries: usize, orders: usize) -> (MemoryImage, Vec<corders_group::Root>) {
+        let mut image = MemoryImage::default();
+        image.u64(BASE + registry::INVALID_REFERENCE_RVA, u64::MAX);
+        let mut groups = Vec::new();
+        for country in 0..countries {
+            let group = 0x1000_0000 + country * 0x1000;
+            let roster = 0x2000_0000 + country * 0x1000;
+            image.bytes(group, &[0; 0x240]);
+            image.bytes(roster, &vec![0; orders * 8]);
+            image.array(
+                group + corders_group::PRIMARY_ORDER_DATA,
+                roster,
+                orders as u32,
+            );
+            groups.push(corders_group::Root {
+                pointer: group,
+                handle: ((country as u64 + 1) << 32) | corders_group::REFERENCE_TYPE as u64,
+                country: country as u32 + 1,
+            });
+            for order in 0..orders {
+                let pointer = 0x3000_0000 + country * 0x100000 + order * 0x1000;
+                image.order(pointer, order as u32 + 1, TYPE_LINE);
+                image.u64(pointer + OWNER, group as u64);
+                image.u64(roster + order * 8, pointer as u64);
+            }
+        }
+        (image, groups)
+    }
+
+    pub(super) fn capture(
+        image: &MemoryImage,
+        groups: &[corders_group::Root],
+        serial: bool,
+        fault: Option<usize>,
+        once: bool,
+    ) -> (PartWalk, Census, usize) {
+        let memory = Reads {
+            source: Source {
+                image,
+                fault,
+                once,
+                spent: Cell::new(false),
+            },
+            serial,
+            census: Cell::new(0),
+        };
+        let mut storage = CensusStorage::default();
+        let part = walk_listing_successors_part(
+            &memory,
+            BASE,
+            &mut storage.rows,
+            &mut storage.geometry,
+            groups,
+            Outcome::Rows { len: groups.len() },
+            0..groups.len(),
+            &mut storage.visits,
+            &mut storage.lists,
+        );
+        (part, Census::of(part.walk, &storage), memory.census.get())
+    }
+
+    #[test]
+    fn healthy_five_thousand_countries_equal_the_serial_census() {
+        let (image, groups) = world(5_000, 2);
+        let batched = capture(&image, &groups, false, None, false);
+        let serial = capture(&image, &groups, true, None, false);
+        assert_eq!(batched.0, serial.0);
+        assert_eq!(batched.1, serial.1);
+        assert_eq!(batched.0.walk.outcome, Outcome::Rows { len: 10_000 });
+        assert_eq!(batched.2, 5_000);
+    }
+
+    #[test]
+    fn persistent_fault_keeps_the_serial_entry_failure_and_prefix() {
+        let (image, groups) = world(3, 32);
+        for offset in [
+            0,
+            OWNER,
+            ID,
+            TYPE,
+            ACTIVE,
+            PARADROP_TARGET,
+            PATH_DATA,
+            TARGET_STATE_DATA,
+        ] {
+            let at = 0x3000_0000 + 20 * 0x1000 + offset;
+            let batched = capture(&image, &groups, false, Some(at), false);
+            let serial = capture(&image, &groups, true, Some(at), false);
+            assert_eq!(batched.0, serial.0, "offset {offset:#x}");
+            assert_eq!(batched.1, serial.1, "offset {offset:#x}");
+            assert_eq!(
+                batched.0.failure.unwrap().entering,
+                Some(0x3000_0000 + 20 * 0x1000)
+            );
+        }
+    }
+
+    #[test]
+    fn one_shot_fault_withholds_no_more_and_counts_the_fallback() {
+        let (image, groups) = world(1, 32);
+        let at = 0x3000_0000 + 20 * 0x1000 + PATH_DATA;
+        let serial = capture(&image, &groups, true, Some(at), true);
+        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::OrderCensus);
+        let batched = capture(&image, &groups, false, Some(at), true);
+        assert_eq!(
+            crate::batch_fallback::count(crate::batch_fallback::Batch::OrderCensus),
+            before + 1
+        );
+        assert!(batched.0.walk.visited >= serial.0.walk.visited);
+        assert_eq!(batched.0.walk.outcome, Outcome::Rows { len: 32 });
+        assert_eq!(batched.1, capture(&image, &groups, true, None, false).1);
+    }
+
+    #[test]
+    fn request_count_is_one_census_gather_per_sixteen_roots() {
+        let (image, groups) = world(1, 65);
+        let (_, census, requests) = capture(&image, &groups, false, None, false);
+        assert_eq!(census.walk.outcome, Outcome::Rows { len: 65 });
+        assert_eq!(requests, 5, "the old census made no roster-wide gather");
+        // Replaces 65 scalar identity gathers and 130 vector-header reads.
+        assert_eq!(65 * 3 - requests, 190);
+    }
+    #[test]
+    fn aliases_null_slots_descendants_and_first_failure_equal_serial() {
+        for case in 0..5 {
+            let (mut image, groups) = world(1, 32);
+            let first = 0x3000_0000;
+            let roster = 0x2000_0000;
+            match case {
+                0 => image.u64(roster + 8, 0),
+                1 => image.u64(roster + 8, first as u64),
+                2 => image.array(first + SUCCESSOR_DATA, roster + 8, 1),
+                3 => image.u64(first, 0),
+                _ => {}
+            }
+            let fault = match case {
+                3 => Some(first + 4 * 0x1000),
+                4 => Some(roster + 20 * 8),
+                _ => None,
+            };
+            let batch = capture(&image, &groups, false, fault, false);
+            let serial = capture(&image, &groups, true, fault, false);
+            assert_eq!(batch.0, serial.0, "case {case}: entry and retained prefix");
+            assert_eq!(batch.1, serial.1, "case {case}: rows, geometry and visits");
+        }
+    }
+
+    #[test]
+    fn aliased_roster_one_shot_recovers_in_one_counted_fallback() {
+        let (mut image, groups) = world(1, 32);
+        let at = 0x2000_0000 + 8;
+        image.array(0x3000_0000 + SUCCESSOR_DATA, at, 1);
+        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::OrderCensus);
+        let batch = capture(&image, &groups, false, Some(at), true);
+        assert_eq!(
+            crate::batch_fallback::count(crate::batch_fallback::Batch::OrderCensus),
+            before + 1
+        );
+        let serial = capture(&image, &groups, true, Some(at), true);
+        // OWNER DECISION 2026-10-12: a speculative root-slot copy can spend
+        // the transient fault before DFS. Recovery may publish more, never less.
+        assert!(batch.0.walk.visited >= serial.0.walk.visited);
+        assert_eq!(batch.1, capture(&image, &groups, true, None, false).1);
+    }
+}
+
 const BASE: usize = 0x1000_0000;
 const TABLE: usize = 0x10000;
 const BUCKETS: usize = 0x11000;
@@ -676,7 +896,7 @@ fn plan_dependents_are_hinted_one_batch_before_their_reads() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
+        &mut PlanOrder::default(),
     );
     assert_eq!(walk.outcome, Outcome::Rows { len: 3 + extra });
     let events = memory.events.into_inner();
@@ -690,10 +910,8 @@ fn plan_dependents_are_hinted_one_batch_before_their_reads() {
     };
     // Census order decides the batches.
     let batch_of = |pointer: usize| {
-        visits
-            .iter()
-            .filter(|visit| visit.pointer != 0)
-            .position(|visit| visit.pointer == pointer)
+        census_orders(&visits, lists.census())
+            .position(|(_, visit)| visit.pointer == pointer)
             .unwrap()
             / PLAN_BATCH
     };
@@ -934,7 +1152,7 @@ fn planned_with(
         &mut Vec::new(),
         &mut links,
         &mut names,
-        &mut Vec::new(),
+        &mut PlanOrder::default(),
     );
     let mut group_rows = vec![corders_group::PlanRow::default(); 1];
     let mut roots = Vec::new();
@@ -965,7 +1183,41 @@ fn planned_with(
     }
 }
 
+/// A row with its spans' offsets cleared, then the predecessor and successor
+/// links and the name bytes its spans name.
+type ResolvedRow = (PlanRow, Vec<u32>, Vec<u32>, Vec<Vec<u8>>);
+
 impl Planned {
+    /// The rows with each arena span replaced by the values it names. Two
+    /// censuses of the same orders that entered them in different orders
+    /// lay the arenas out in their own census orders; these are equal.
+    fn resolved(&self) -> Vec<ResolvedRow> {
+        let links = |start: usize, len: usize| self.links[start..start + len].to_vec();
+        self.rows
+            .iter()
+            .map(|row| {
+                let bare = PlanRow {
+                    assigned_start: 0,
+                    predecessors_start: 0,
+                    successors_start: 0,
+                    names: [(0, 0); 6],
+                    ..*row
+                };
+                let names = row
+                    .names
+                    .iter()
+                    .map(|&(start, len)| self.names[start..start + len].to_vec())
+                    .collect();
+                (
+                    bare,
+                    links(row.predecessors_start, row.predecessors_len),
+                    links(row.successors_start, row.successors_len),
+                    names,
+                )
+            })
+            .collect()
+    }
+
     fn assert_same_rows(&self, other: &Self, case: &str) {
         assert_eq!(
             (self.orders, &self.rows, &self.links, &self.names),
@@ -1079,8 +1331,22 @@ fn census_successor_lists_give_the_rows_of_rereading_them() {
         let reread = planned(&image, &changed, false);
         reused.assert_same_rows(&reread, &format!("header change {change}"));
         if change < 2 {
+            // A fresh census of the changed memory may enter the orders in
+            // another order (here SECOND before CHILD), and its arenas follow
+            // its own census order: the rows and the values their spans name
+            // are the reused census's.
             let fresh = planned(&changed, &changed, false);
-            reused.assert_same_rows(&fresh, &format!("header change {change}, fresh census"));
+            let case = format!("header change {change}, fresh census");
+            assert_eq!(
+                (reused.orders, reused.resolved()),
+                (fresh.orders, fresh.resolved()),
+                "orders: {case}"
+            );
+            assert_eq!(
+                (reused.groups, &reused.group_rows, &reused.roots),
+                (fresh.groups, &fresh.group_rows, &fresh.roots),
+                "groups: {case}"
+            );
         } else {
             assert_eq!(
                 reused.orders,
@@ -1712,12 +1978,34 @@ fn group_hq_distance_keeps_raw_signed_words_and_isolated_failures() {
         );
         assert_eq!(rows[0].hq_distance, Some(raw));
         assert_eq!(rows[0].invasion_source_distance, Some(raw));
-        assert!(
-            image
-                .1
-                .borrow()
-                .contains(&(GROUP + corders_group::HQ_DISTANCE, 4))
-        );
+        // The distance comes from its own word, in the group's gathered
+        // suffix record.
+        assert!(image.1.borrow().iter().any(|&(at, len)| {
+            at <= GROUP + corders_group::HQ_DISTANCE
+                && GROUP + corders_group::HQ_DISTANCE + 4 <= at + len
+        }));
+        let gathered = rows;
+        // The per-field reads give the same rows, and a fault in bytes a
+        // record spans but no field reads (inside identity through country,
+        // and between the suffix words) only drops that record: the
+        // per-field reads still isolate every failure as before.
+        for (hole, per_field) in [
+            (None, true),
+            (Some((GROUP + 0x20, 8)), false),
+            (Some((GROUP + corders_group::HQ_DISTANCE + 4, 4)), false),
+        ] {
+            let holed = Holed {
+                image: &image,
+                hole,
+                per_field,
+                payloads: &[],
+            };
+            assert_eq!(
+                corders_group::walk_counter_inputs(&holed, BASE, &roots, source, &mut rows),
+                Outcome::Rows { len: 1 }
+            );
+            assert_eq!(rows, gathered, "{hole:x?} {per_field}");
+        }
         let holed = Holed {
             image: &image,
             hole: Some((GROUP + corders_group::HQ_DISTANCE, 4)),
@@ -1897,7 +2185,7 @@ fn original_assigned_host_lane_has_no_reads_and_shortage_preserves_core_plans() 
             &mut assigned,
             &mut links,
             &mut names,
-            &mut Vec::new(),
+            &mut PlanOrder::default(),
             hosts.as_deref_mut(),
         );
         (
@@ -2202,7 +2490,7 @@ fn census_plan_records_give_the_plan_walks_own_rows_and_failures() {
             &mut assigned,
             &mut links,
             &mut names,
-            &mut Vec::new(),
+            &mut PlanOrder::default(),
         );
         let reads = image.1.borrow().clone();
         let mut group_rows = vec![corders_group::PlanRow::default(); roots.len()];
@@ -2395,7 +2683,7 @@ fn a_census_over_walked_roots_is_the_census_that_walks_them() {
                 &mut assigned,
                 &mut links,
                 &mut names,
-                &mut Vec::new(),
+                &mut PlanOrder::default(),
             );
             output.truncate(plan.outcome.len());
             links.truncate(plan.links);
@@ -2616,41 +2904,1420 @@ fn visit_slots_are_the_remainder_slots_of_every_table() {
     }
 }
 
-/// Sorting `(key, row)` pairs and permuting gives the rows a whole-row
-/// sort gives, for every cycle shape.
+/// Placing each census order by its key before decoding gives the rows a
+/// whole-row sort gives, for every cycle shape, and each census order's row.
 #[test]
-fn pair_sort_permutation_matches_a_whole_row_sort() {
+fn placed_rows_match_a_whole_row_sort_and_name_each_census_orders_row() {
     let mut state = 0x9e37_79b9_u64;
     for len in [0, 1, 2, 3, 17, 64, 257] {
-        let rows: Vec<PlanRow> = (0..len)
-            .map(|index| {
+        let groups: Vec<_> = (0..7)
+            .map(|handle| corders_group::Root {
+                handle,
+                ..Default::default()
+            })
+            .collect();
+        let visits: Vec<Visit> = (0..len)
+            .flat_map(|index| {
                 state ^= state << 13;
                 state ^= state >> 7;
                 state ^= state << 17;
-                PlanRow {
-                    owner_group: state % 7,
-                    instance: (state >> 8) as u32 ^ index,
-                    section: index,
-                    ..Default::default()
-                }
+                // Census tables keep empty slots between orders.
+                [
+                    Visit {
+                        pointer: 0x1000 + index,
+                        owner: (state % 7) as usize,
+                        instance: (state >> 8) as u32 ^ index as u32,
+                        ..Default::default()
+                    },
+                    Visit::default(),
+                ]
             })
             .collect();
-        let mut expected = rows.clone();
-        expected.sort_by_key(|row| row.key());
-        let mut order: Vec<(u128, u32)> = rows
-            .iter()
-            .enumerate()
-            .map(|(row, plan)| (plan.key(), row as u32))
-            .collect();
-        order.sort_unstable_by_key(|&(key, _)| key);
-        let mut actual = rows.clone();
-        permute(&mut actual, &mut order);
+        let key = |visit: &Visit| {
+            (u128::from(groups[visit.owner].handle) << 32) | u128::from(visit.instance)
+        };
+        let mut expected: Vec<_> = visits.iter().filter(|v| v.pointer != 0).map(key).collect();
+        expected.sort_unstable();
+        let mut order = PlanOrder::default();
         assert_eq!(
-            actual.iter().map(|row| row.key()).collect::<Vec<_>>(),
-            expected.iter().map(|row| row.key()).collect::<Vec<_>>()
+            order.place(&groups, census_orders(&visits, &[]), len),
+            Ok(false)
         );
-        let mut sections: Vec<_> = actual.iter().map(|row| row.section).collect();
-        sections.sort_unstable();
-        assert_eq!(sections, (0..len).collect::<Vec<_>>());
+        let mut placed = vec![0; len];
+        for (ordinal, visit) in visits.iter().filter(|v| v.pointer != 0).enumerate() {
+            placed[order.rows()[ordinal] as usize] = key(visit);
+        }
+        assert_eq!(placed, expected);
+    }
+    // A repeated key is reported; the walk fails with it after the decode.
+    let groups = [corders_group::Root::default()];
+    let twice = [Visit {
+        pointer: 1,
+        instance: 9,
+        ..Default::default()
+    }; 2];
+    assert_eq!(
+        PlanOrder::default().place(&groups, census_orders(&twice, &[]), 2),
+        Ok(true)
+    );
+}
+
+/// A guess is taken only when its row holds the key: a stale, short or
+/// absent placement finds what the binary search finds.
+#[test]
+fn keyed_rows_take_a_matching_guess_and_search_otherwise() {
+    let rows = [3_u128, 5, 8, 13];
+    let calls = std::cell::Cell::new(0);
+    let counted = |row: &u128| {
+        calls.set(calls.get() + 1);
+        *row
+    };
+    assert_eq!(keyed_row(&rows, Some(2), 8, counted), Ok(2));
+    assert_eq!(calls.get(), 1, "a matching guess costs one key");
+    for guess in [None, Some(0), Some(3), Some(4), Some(u32::MAX)] {
+        for (index, &key) in rows.iter().enumerate() {
+            assert_eq!(keyed_row(&rows, guess, key, |row| *row), Ok(index));
+        }
+        assert_eq!(
+            keyed_row(&rows, guess, 6, |row| *row),
+            rows.binary_search(&6)
+        );
+    }
+}
+
+/// A complete walk leaves each census order's row; a failed one leaves none
+/// for the passes that follow it.
+#[test]
+fn the_plan_walk_leaves_each_census_orders_row_only_when_complete() {
+    let (image, _) = plan_fixture();
+    let mut groups = [corders_group::Root::default(); 8];
+    let mut visits = vec![Visit::default(); 16];
+    let mut lists = SuccessorLists::default();
+    let (mut census_rows, mut geometry) = (Vec::new(), Vec::new());
+    let census = walk_listing_successors(
+        &image,
+        BASE,
+        &mut census_rows,
+        &mut geometry,
+        &mut groups,
+        &mut visits,
+        &mut lists,
+    );
+    let roots = &groups[..census.root_outcome.len()];
+    let (mut rows, mut assigned, mut links, mut names) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut order = PlanOrder::default();
+    let walk = walk_plans_ordered(
+        &image,
+        BASE,
+        roots,
+        &visits,
+        &lists,
+        census.outcome,
+        &mut rows,
+        &mut assigned,
+        &mut links,
+        &mut names,
+        &mut order,
+    );
+    assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
+    assert_eq!(order.rows().len(), 3);
+    for (ordinal, (_, visit)) in census_orders(&visits, lists.census()).enumerate() {
+        let row = &rows[order.rows()[ordinal] as usize];
+        assert_eq!(
+            (row.owner_group, row.instance),
+            (roots[visit.owner].handle, visit.instance)
+        );
+    }
+    assert!(rows[..3].is_sorted_by_key(|row| row.key()));
+    let failed = walk_plans_ordered(
+        &image,
+        BASE,
+        roots,
+        &visits,
+        &lists,
+        Outcome::Unavailable { reason: "census" },
+        &mut rows,
+        &mut assigned,
+        &mut links,
+        &mut names,
+        &mut order,
+    );
+    assert!(matches!(failed.outcome, Outcome::Unavailable { .. }));
+    assert!(order.rows().is_empty());
+}
+
+/// The census copies each group's three order roster headers at once.
+#[test]
+fn the_census_copies_a_groups_roster_headers_once() {
+    let image = fixture();
+    let (mut rows, mut geometry) = (Vec::new(), Vec::new());
+    let mut groups = vec![corders_group::Root::default(); 8];
+    let mut visits = vec![Visit::default(); 16];
+    let walk = walk_listing_successors(
+        &image,
+        BASE,
+        &mut rows,
+        &mut geometry,
+        &mut groups,
+        &mut visits,
+        &mut SuccessorLists::default(),
+    );
+    assert!(matches!(walk.outcome, Outcome::Rows { .. }));
+    let reads = image.1.borrow();
+    let rosters = (GROUP + corders_group::PRIMARY_ORDER_DATA, ORDER_ROSTERS);
+    assert_eq!(reads.iter().filter(|&&read| read == rosters).count(), 1);
+    for offset in [
+        corders_group::PRIMARY_ORDER_DATA,
+        corders_group::SECONDARY_ORDER_DATA,
+        corders_group::TERTIARY_ORDER_DATA,
+    ] {
+        assert!(!reads.contains(&(GROUP + offset, 16)));
+    }
+}
+
+/// One touch of census memory: an advisory hint, or a read of `(address, len)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Touch {
+    Hint(usize),
+    Read(usize, usize),
+}
+
+/// Logs every hint and read in order, and fails the first read covering
+/// `fault` once: a guard page faults on first touch and then clears. A hint
+/// never touches it.
+struct Trace<'a> {
+    image: &'a MemoryImage,
+    log: std::cell::RefCell<Vec<Touch>>,
+    fault: Option<usize>,
+    spent: std::cell::Cell<bool>,
+    serial: bool,
+}
+
+impl Memory for Trace<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        if self.serial && address == ROOTS && output.len() > 8 {
+            return false;
+        }
+        self.log
+            .borrow_mut()
+            .push(Touch::Read(address, output.len()));
+        if let Some(fault) = self.fault
+            && address <= fault
+            && fault < address + output.len()
+            && !self.spent.replace(true)
+        {
+            return false;
+        }
+        self.image.copy(address, output)
+    }
+
+    fn copy_records(
+        &self,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
+        out: &mut [u8],
+    ) -> usize {
+        if self.serial && layout.fields() == CENSUS_FIELDS {
+            return 0;
+        }
+        struct Scalar<'a, 'b>(&'a Trace<'b>);
+        impl Memory for Scalar<'_, '_> {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                self.0.copy(at, out)
+            }
+        }
+        Scalar(self).copy_records(sources, layout, out)
+    }
+
+    fn prefetch(&self, address: usize, _len: usize) {
+        self.log.borrow_mut().push(Touch::Hint(address));
+    }
+}
+
+/// The listing census over `image`, faulting the first read of `fault`:
+/// its walk, rows and geometry, and every touch in order.
+fn traced_census(image: &MemoryImage, fault: Option<usize>) -> (Walk, Vec<Row>, Vec<Touch>) {
+    traced_census_mode(image, fault, false)
+}
+
+fn traced_census_mode(
+    image: &MemoryImage,
+    fault: Option<usize>,
+    serial: bool,
+) -> (Walk, Vec<Row>, Vec<Touch>) {
+    let memory = Trace {
+        image,
+        log: Default::default(),
+        fault,
+        serial,
+        spent: Default::default(),
+    };
+    let (mut rows, mut geometry) = (Vec::new(), Vec::new());
+    let walk = walk_listing_successors(
+        &memory,
+        BASE,
+        &mut rows,
+        &mut geometry,
+        &mut [corders_group::Root::default(); 8],
+        &mut vec![Visit::default(); 16],
+        &mut SuccessorLists::default(),
+    );
+    rows.truncate(walk.outcome.len());
+    (walk, rows, memory.log.into_inner())
+}
+
+/// An entered order's vector headers are hinted ahead of its field copy,
+/// and each is still read where it was: the graph header after the
+/// geometry, a primary root's virtual-successor header after its ordinary
+/// descendants.
+#[test]
+fn header_hints_lead_and_header_reads_keep_their_order() {
+    let image = fixture();
+    let (walk, _, log) = traced_census(&image, None);
+    assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
+    let at = |touch: Touch| {
+        log.iter()
+            .position(|logged| *logged == touch)
+            .unwrap_or_else(|| panic!("{touch:x?} missing"))
+    };
+    let fields = at(Touch::Read(FIRST, 8));
+    for offset in [
+        PATH_DATA,
+        TARGET_STATE_DATA,
+        SUCCESSOR_DATA,
+        VIRTUAL_SUCCESSOR_DATA,
+    ] {
+        assert!(at(Touch::Hint(FIRST + offset)) < fields, "{offset:#x}");
+    }
+    assert!(at(Touch::Read(FIRST + PATH_DATA, 16)) > fields);
+    assert!(at(Touch::Read(PATH, 12)) < at(Touch::Read(FIRST + SUCCESSOR_DATA, 16)));
+    assert!(at(Touch::Read(CHILD, 8)) < at(Touch::Read(FIRST + VIRTUAL_SUCCESSOR_DATA, 16)));
+    // The child begins no virtual-successor graph: not even hinted.
+    assert!(!log.contains(&Touch::Hint(CHILD + VIRTUAL_SUCCESSOR_DATA)));
+}
+
+/// Aliased one-shot faults may move to a speculative batch under the relaxed
+/// read-order rule, but the batch must never withhold more than serial reads.
+#[test]
+fn a_shared_one_shot_fault_is_met_at_the_censuss_own_first_touch() {
+    // The first touch of `fault`, which must be `read`, after `hint`.
+    let met_after_hint = |log: &[Touch], fault: usize, read: Touch, hint: usize| {
+        let first = log
+            .iter()
+            .position(|touch| {
+                matches!(*touch, Touch::Read(address, len)
+                    if address <= fault && fault < address + len)
+            })
+            .expect("the fault is touched");
+        assert_eq!(log[first], read);
+        let hinted = log
+            .iter()
+            .position(|touch| *touch == Touch::Hint(hint))
+            .expect("the shared header is hinted");
+        assert!(hinted < first, "{hint:#x} hinted after the first touch");
+    };
+    // The path payload aliases the successor header: the geometry copy,
+    // before any header read, meets the fault.
+    let mut aliased = fixture();
+    aliased.array(FIRST + PATH_DATA, FIRST + SUCCESSOR_DATA, 1);
+    let (walk, rows, log) = traced_census(&aliased, Some(FIRST + SUCCESSOR_DATA));
+    met_after_hint(
+        &log,
+        FIRST + SUCCESSOR_DATA,
+        Touch::Read(FIRST + SUCCESSOR_DATA, 4),
+        FIRST + SUCCESSOR_DATA,
+    );
+    assert_eq!(
+        walk.outcome,
+        Outcome::Unavailable {
+            reason: "army order geometry unreadable"
+        }
+    );
+    assert_eq!((walk.visited, walk.geometry_len, rows.len()), (0, 0, 0));
+
+    // The successor aliases the second roster slot. Under the owner's
+    // relaxed rule the root-slot chunk may spend this one-shot fault first;
+    // its counted scalar fallback must withhold no more than the serial DFS.
+    let mut roster = fixture();
+    roster.array(FIRST + SUCCESSOR_DATA, ROOTS + 8, 1);
+    let (walk, rows, log) = traced_census(&roster, Some(ROOTS + 8));
+    let (serial, serial_rows, _) = traced_census_mode(&roster, Some(ROOTS + 8), true);
+    assert_eq!(
+        serial.outcome,
+        Outcome::Unavailable {
+            reason: "army order pointer unreadable or null"
+        }
+    );
+    assert_eq!((serial.visited, serial.geometry_len), (1, 5));
+    assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
+    assert!(walk.visited >= serial.visited && rows.len() >= serial_rows.len());
+    let first = log
+        .iter()
+        .find(|touch| {
+            matches!(**touch, Touch::Read(at, len)
+        if at <= ROOTS + 8 && ROOTS + 8 < at + len)
+        })
+        .unwrap();
+    assert_eq!(*first, Touch::Read(ROOTS, 16));
+
+    // A 16-order chain: entering the 16th fills a plan-record batch, whose
+    // gather meets the fault on that order's successor header first and only
+    // leaves its optional record incomplete; the census's own header read
+    // after it succeeds.
+    const NODES: usize = 0x50000;
+    const EDGES: usize = 0x70000;
+    let mut chain = fixture();
+    chain.array(GROUP + corders_group::PRIMARY_ORDER_DATA, ROOTS, 1);
+    chain.bytes(EDGES, &[0; 0x200]);
+    chain.array(FIRST + SUCCESSOR_DATA, EDGES, 1);
+    chain.u64(EDGES, NODES as u64);
+    for index in 0..15 {
+        let node = NODES + index * 0x1000;
+        chain.order(node, index as u32 + 1, TYPE_LINE);
+        if index < 14 {
+            let edges = EDGES + (index + 1) * 0x10;
+            chain.array(node + SUCCESSOR_DATA, edges, 1);
+            chain.u64(edges, (node + 0x1000) as u64);
+        }
+    }
+    let last = NODES + 14 * 0x1000;
+    let (walk, rows, log) = traced_census(&chain, Some(last + SUCCESSOR_DATA));
+    assert_eq!(walk.outcome, Outcome::Rows { len: 16 });
+    assert_eq!((walk.visited, rows.len()), (16, 16));
+    let covering = |touch: &Touch| {
+        matches!(*touch, Touch::Read(address, len)
+            if address <= last + SUCCESSOR_DATA && last + SUCCESSOR_DATA < address + len)
+    };
+    let first = log.iter().position(covering).unwrap();
+    assert_ne!(log[first], Touch::Read(last + SUCCESSOR_DATA, 16));
+    let hinted = log
+        .iter()
+        .position(|touch| *touch == Touch::Hint(last + SUCCESSOR_DATA))
+        .expect("the 16th order's successor header is hinted");
+    assert!(hinted < first);
+}
+
+/// The census's order is its own: groups in handle order, then each order as
+/// the census entered it (here FIRST, its successor CHILD, then SECOND),
+/// whatever slots the pointer-hashed table gives them. A pass over the census
+/// meets its first failure in that order: with FIRST's predecessor header and
+/// SECOND's member header both invalid, the plan walk refuses with FIRST's
+/// reason even where the table holds SECOND first.
+#[test]
+fn passes_meet_orders_in_census_order_whatever_the_table_layout() {
+    let (mut image, _) = plan_fixture();
+    image.u32(FIRST + PREDECESSOR_DATA + 12, 5);
+    image.u32(SECOND + ASSIGNED_MEMBER_DATA + 12, 5);
+    let mut inverted = 0;
+    for capacity in [8, 16, 32, 64, 128, 256, 512, 1024] {
+        let mut groups = [corders_group::Root::default(); 8];
+        let mut visits = vec![Visit::default(); capacity];
+        let mut lists = SuccessorLists::default();
+        let census = walk_listing_successors(
+            &image,
+            BASE,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut groups,
+            &mut visits,
+            &mut lists,
+        );
+        assert_eq!(census.outcome, Outcome::Rows { len: 3 });
+        let ordered: Vec<usize> = census_orders(&visits, lists.census())
+            .map(|(_, visit)| visit.pointer)
+            .collect();
+        assert_eq!(ordered, [FIRST, CHILD, SECOND], "capacity {capacity}");
+        let table: Vec<usize> = census_orders(&visits, &[])
+            .map(|(_, visit)| visit.pointer)
+            .collect();
+        let slot = |pointer| table.iter().position(|&at| at == pointer).unwrap();
+        if slot(SECOND) < slot(FIRST) {
+            inverted += 1;
+        }
+        let walk = walk_plans_ordered(
+            &image,
+            BASE,
+            &groups[..1],
+            &visits,
+            &lists,
+            census.outcome,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut PlanOrder::default(),
+        );
+        assert_eq!(
+            walk.outcome,
+            Outcome::Unavailable {
+                reason: "plan graph header invalid"
+            },
+            "capacity {capacity}"
+        );
+    }
+    assert!(inverted != 0, "no table layout held SECOND before FIRST");
+}
+
+/// `groups` groups with ascending handles, each with a primary roster of
+/// `orders` orders, its first order succeeding into its second. Returns the
+/// image and each group's order pointers.
+fn groups_fixture(groups: usize, orders: usize) -> (MemoryImage, Vec<Vec<usize>>) {
+    let mut image = fixture();
+    image.u64(BASE + registry::INVALID_REFERENCE_RVA, u64::MAX);
+    image.u32(TABLE + registry::COUNT, groups as u32);
+    let mut pointers = Vec::new();
+    for group in 0..groups {
+        let pointer = GROUP + group * 0x2000;
+        let handle = ((group as u64 + 1) << 32) | corders_group::REFERENCE_TYPE as u64;
+        let slot = BUCKETS + group * bucket::STRIDE;
+        image.bytes(slot + bucket::DISTANCE, &[1]);
+        image.u64(slot + bucket::TYPE, handle);
+        image.u64(slot + bucket::OBJECT, pointer as u64);
+        image.bytes(pointer, &[0; 0x240]);
+        image.u64(pointer, (BASE + corders_group::VTABLE_RVA) as u64);
+        image.u64(pointer + corders_group::HANDLE, handle);
+        image.u32(pointer + corders_group::COUNTRY, group as u32 + 1);
+        let roster = 0x90000 + group * 0x100;
+        image.bytes(roster, &[0; 0x100]);
+        image.array(
+            pointer + corders_group::PRIMARY_ORDER_DATA,
+            roster,
+            orders as u32,
+        );
+        let mut owned = Vec::new();
+        for index in 0..orders {
+            let order = 0x100000 + group * 0x10000 + index * 0x1000;
+            image.order(order, index as u32 + 1, TYPE_LINE);
+            image.u64(order + OWNER, pointer as u64);
+            image.u64(roster + index * 8, order as u64);
+            // Each group's first order is a named move with a two-province
+            // path.
+            if index == 0 {
+                image.u32(order + TYPE, TYPE_MOVE as u32);
+                for offset in NAME_STRINGS {
+                    image.u64(order + offset + crate::msvc_string::CAPACITY, 15);
+                }
+                let text = 0xc0000 + group * 0x100;
+                image.bytes(text, b"Operation Bagration\0");
+                let unique = order + NAME_STRINGS[4];
+                image.u64(unique, text as u64);
+                image.u64(unique + crate::msvc_string::LENGTH, 19);
+                image.u64(unique + crate::msvc_string::CAPACITY, 31);
+                let path = 0xb0000 + group * 0x100;
+                image.bytes(path, &[0; 8]);
+                image.u32(path, group as u32 + 10);
+                image.u32(path + 4, group as u32 + 20);
+                image.array(order + PATH_DATA, path, 2);
+            }
+            owned.push(order);
+        }
+        if orders >= 2 {
+            let list = 0xa0000 + group * 0x100;
+            image.bytes(list, &[0; 8]);
+            image.u64(list, owned[1] as u64);
+            image.array(owned[0] + SUCCESSOR_DATA, list, 1);
+            let back = 0xa8000 + group * 0x100;
+            image.bytes(back, &[0; 8]);
+            image.u64(back, owned[0] as u64);
+            image.array(owned[1] + PREDECESSOR_DATA, back, 1);
+        }
+        pointers.push(owned);
+    }
+    (image, pointers)
+}
+
+/// Gives `order`, group `group`'s order `index`, `count` assigned members,
+/// each the scheduled member of its own authenticated division
+/// ([`member_unit`]).
+fn assign_members(image: &mut MemoryImage, order: usize, group: usize, index: usize, count: usize) {
+    let members = 0xd0000 + (group * 16 + index) * 0x40;
+    image.bytes(members, &[0; 0x40]);
+    for member in 0..count {
+        let unit = member_unit(group, index, member);
+        image.bytes(unit, &[0; 0x100]);
+        image.u64(unit, (BASE + crate::carmy::VTABLE_RVA) as u64);
+        image.u64(
+            unit + crate::carmy::SECONDARY_BASE,
+            (BASE + crate::carmy::SECONDARY_VTABLE_RVA) as u64,
+        );
+        image.u64(
+            unit + crate::cunit::HANDLE,
+            (((group * 16 + index) as u64 + 1) << 32) | (0x33 + member as u64),
+        );
+        image.u64(
+            members + member * 8,
+            (unit + crate::cunit::SCHEDULED_MEMBER) as u64,
+        );
+    }
+    image.array(order + ASSIGNED_MEMBER_DATA, members, count as u32);
+}
+
+/// The division [`assign_members`] gives group `group`'s order `index` as
+/// its member `member`.
+fn member_unit(group: usize, index: usize, member: usize) -> usize {
+    0xe0000 + (group * 16 + index) * 0x400 + member * 0x100
+}
+
+/// The roots of `image`'s groups in `capacity` slots, and their outcome.
+fn order_roots(image: &MemoryImage, capacity: usize) -> (Vec<corders_group::Root>, Outcome) {
+    let mut groups = vec![corders_group::Root::default(); capacity];
+    let outcome = corders_group::walk_roots(image, BASE, &mut groups);
+    (groups, outcome)
+}
+
+/// Every way to cut `count` groups into consecutive nonempty parts, as the
+/// parts' ranges, each also with an empty part before the first and after
+/// the last.
+fn group_splits(count: usize) -> Vec<Vec<std::ops::Range<usize>>> {
+    (0_u32..1 << count.saturating_sub(1))
+        .flat_map(|cuts| {
+            let mut starts = vec![0];
+            starts.extend((1..count).filter(|&at| cuts & (1 << (at - 1)) != 0));
+            let ends = starts.iter().skip(1).copied().chain([count]);
+            let split: Vec<_> = starts
+                .iter()
+                .copied()
+                .zip(ends)
+                .map(|(start, end)| start..end)
+                .collect();
+            let leading = std::iter::once(0..0).chain(split.clone()).collect();
+            let trailing = split
+                .iter()
+                .cloned()
+                .chain(std::iter::once(count..count))
+                .collect();
+            [split, leading, trailing]
+        })
+        .collect()
+}
+
+/// A census's storage, reused across passes as the collector reuses it.
+#[derive(Default)]
+struct CensusStorage {
+    rows: Vec<Row>,
+    geometry: Vec<u32>,
+    visits: Vec<Visit>,
+    lists: SuccessorLists,
+}
+
+/// One census's state: its walk, the rows it retained (a complete census's in
+/// key order, a failed one's entered rows in entry order), its geometry, its
+/// entered orders by census sequence and its census order.
+#[derive(Debug, PartialEq)]
+struct Census {
+    walk: Walk,
+    rows: Vec<Row>,
+    geometry: Vec<u32>,
+    entered: Vec<(u32, usize, usize, u32)>,
+    order: Vec<usize>,
+}
+
+impl Census {
+    fn of(walk: Walk, storage: &CensusStorage) -> Self {
+        let retained = match walk.outcome {
+            Outcome::Rows { len } => len,
+            _ => walk.visited,
+        };
+        let mut entered: Vec<_> = storage
+            .visits
+            .iter()
+            .filter(|visit| visit.pointer != 0)
+            .map(|visit| (visit.sequence, visit.pointer, visit.owner, visit.instance))
+            .collect();
+        entered.sort_unstable();
+        Self {
+            walk,
+            rows: storage.rows[..retained].to_vec(),
+            geometry: storage.geometry[..walk.geometry_len].to_vec(),
+            entered,
+            order: storage
+                .lists
+                .census()
+                .iter()
+                .map(|&slot| storage.visits[slot as usize].pointer)
+                .collect(),
+        }
+    }
+}
+
+/// The census one walk over all of `groups` takes, into `storage`.
+fn serial_census(
+    image: &MemoryImage,
+    groups: &[corders_group::Root],
+    root_outcome: Outcome,
+    storage: &mut CensusStorage,
+) -> Census {
+    let walk = walk_listing_successors_of(
+        image,
+        BASE,
+        &mut storage.rows,
+        &mut storage.geometry,
+        groups,
+        root_outcome,
+        &mut storage.visits,
+        &mut storage.lists,
+    );
+    Census::of(walk, storage)
+}
+
+/// Each part's census over its range of `groups`, in its own storage.
+fn part_censuses(
+    image: &MemoryImage,
+    groups: &[corders_group::Root],
+    root_outcome: Outcome,
+    ranges: &[std::ops::Range<usize>],
+) -> Vec<(PartWalk, CensusStorage)> {
+    ranges
+        .iter()
+        .map(|range| {
+            let mut part = CensusStorage::default();
+            let walk = walk_listing_successors_part(
+                image,
+                BASE,
+                &mut part.rows,
+                &mut part.geometry,
+                groups,
+                root_outcome,
+                range.clone(),
+                &mut part.visits,
+                &mut part.lists,
+            );
+            (walk, part)
+        })
+        .collect()
+}
+
+/// The parts' censuses stitched into `storage`.
+fn stitch_part_censuses(
+    parts: &[(PartWalk, CensusStorage)],
+    storage: &mut CensusStorage,
+) -> Census {
+    let views: Vec<CensusPart<'_>> = parts
+        .iter()
+        .map(|(walk, part)| CensusPart {
+            walk: *walk,
+            rows: &part.rows,
+            geometry: &part.geometry,
+            visits: &part.visits,
+        })
+        .collect();
+    let walk = stitch_census(
+        &views,
+        &mut storage.rows,
+        &mut storage.geometry,
+        &mut storage.visits,
+        &mut storage.lists,
+    );
+    Census::of(walk, storage)
+}
+
+/// Census parts over consecutive group ranges, stitched, leave the state one
+/// walk over all the groups leaves, whatever the split: its walk and counts,
+/// its rows (in key order once complete, the entered ones in entry order on
+/// a failure), its geometry, its entered orders and its census order. That
+/// holds wherever the first failure in group order lies: a refusal before
+/// any group, which touches nothing the previous pass left; an order two
+/// parts both enter, before, at or after a part's own failure; a duplicate
+/// key, alone or before a later failure; and more orders than a batch.
+#[test]
+fn stitched_census_parts_are_the_single_census_for_every_split() {
+    let (_, pointers) = groups_fixture(4, 3);
+    let unavailable = |reason| Outcome::Unavailable { reason };
+    let mut cases: Vec<(&str, MemoryImage, usize, Outcome)> = Vec::new();
+    cases.push((
+        "clean",
+        groups_fixture(4, 3).0,
+        8,
+        Outcome::Rows { len: 12 },
+    ));
+    cases.push((
+        "more than a batch",
+        groups_fixture(6, 3).0,
+        8,
+        Outcome::Rows { len: 18 },
+    ));
+    // Four groups in three root slots: refused before any group.
+    cases.push((
+        "refused",
+        groups_fixture(4, 3).0,
+        3,
+        unavailable("orders group scratch capacity exhausted"),
+    ));
+    // An order whose vtable is wrong, in the third group.
+    let (mut image, _) = groups_fixture(4, 3);
+    image.u64(pointers[2][1], 0);
+    cases.push((
+        "vtable",
+        image,
+        8,
+        unavailable("army order vtable mismatch"),
+    ));
+    // Failures in the first and the last group: the first wins.
+    let (mut image, _) = groups_fixture(4, 3);
+    image.u64(pointers[0][2] + OWNER, 0);
+    image.u64(pointers[3][0], 0);
+    cases.push((
+        "first of two",
+        image,
+        8,
+        unavailable("army order owner backlink mismatch"),
+    ));
+    // The last group's roster enters the second group's third order first,
+    // then a broken order: the shared order is met first.
+    let (mut image, _) = groups_fixture(4, 3);
+    image.u64(0x90000 + 3 * 0x100, pointers[1][2] as u64);
+    image.u64(pointers[3][1], 0);
+    cases.push((
+        "shared first",
+        image,
+        8,
+        unavailable("army order shared across owning groups"),
+    ));
+    // The broken order first, then the shared one: the broken order wins.
+    let (mut image, _) = groups_fixture(4, 3);
+    image.u64(pointers[3][0], 0);
+    image.u64(0x90000 + 3 * 0x100 + 8, pointers[1][2] as u64);
+    cases.push((
+        "broken first",
+        image,
+        8,
+        unavailable("army order vtable mismatch"),
+    ));
+    // The shared order is the third group's first root and the second
+    // group's successor target.
+    let (mut image, _) = groups_fixture(4, 3);
+    image.u64(0x90000 + 2 * 0x100, pointers[1][1] as u64);
+    cases.push((
+        "shared successor",
+        image,
+        8,
+        unavailable("army order shared across owning groups"),
+    ));
+    // Two orders of one group with one instance id.
+    let (mut image, _) = groups_fixture(4, 3);
+    image.u32(pointers[2][2] + ID, 1);
+    cases.push((
+        "duplicate key",
+        image,
+        8,
+        unavailable("duplicate native army order reference"),
+    ));
+    // A successor cycle in the second group.
+    let (mut image, _) = groups_fixture(4, 3);
+    image.bytes(0xa4000, &[0; 8]);
+    image.u64(0xa4000, pointers[1][0] as u64);
+    image.array(pointers[1][1] + SUCCESSOR_DATA, 0xa4000, 1);
+    cases.push(("cycle", image, 8, unavailable("army order successor cycle")));
+    // A virtual successor cycle in the third group: its first order is its
+    // own virtual successor.
+    let (mut image, _) = groups_fixture(4, 3);
+    image.bytes(0xa4100, &[0; 8]);
+    image.u64(0xa4100, pointers[2][0] as u64);
+    image.array(pointers[2][0] + VIRTUAL_SUCCESSOR_DATA, 0xa4100, 1);
+    cases.push((
+        "virtual cycle",
+        image,
+        8,
+        unavailable("army order virtual successor cycle"),
+    ));
+    // The third group's first order's path is unreadable.
+    let (mut image, _) = groups_fixture(4, 3);
+    image.u64(pointers[2][0] + PATH_DATA, 0xdead_0000);
+    cases.push((
+        "geometry",
+        image,
+        8,
+        unavailable("army order geometry unreadable"),
+    ));
+    // The last group's first order succeeds into the second group's third
+    // order, which that group entered first.
+    let (mut image, _) = groups_fixture(4, 3);
+    image.u64(0xa0000 + 3 * 0x100, pointers[1][2] as u64);
+    cases.push((
+        "successor into an earlier group",
+        image,
+        8,
+        unavailable("army order shared across owning groups"),
+    ));
+    // A duplicate key, then a broken order in a later group: the run never
+    // completes, so the broken order wins.
+    let (mut image, _) = groups_fixture(4, 3);
+    image.u32(pointers[1][2] + ID, 1);
+    image.u64(pointers[3][1], 0);
+    cases.push((
+        "duplicate then broken",
+        image,
+        8,
+        unavailable("army order vtable mismatch"),
+    ));
+    // Each storage first holds the clean census of a previous pass.
+    let (before, _) = groups_fixture(4, 3);
+    let (before_groups, before_outcome) = order_roots(&before, 8);
+    for (name, image, capacity, expected) in &cases {
+        let (groups, root_outcome) = order_roots(image, *capacity);
+        let mut storage = CensusStorage::default();
+        serial_census(&before, &before_groups, before_outcome, &mut storage);
+        let serial = serial_census(image, &groups, root_outcome, &mut storage);
+        assert_eq!(serial.walk.outcome, *expected, "{name}");
+        let splits = group_splits(root_outcome.len());
+        assert_eq!(splits.len(), 3 << (root_outcome.len() - 1), "{name}");
+        for ranges in splits {
+            let mut storage = CensusStorage::default();
+            let previous = part_censuses(
+                &before,
+                &before_groups,
+                before_outcome,
+                std::slice::from_ref(&(0..4)),
+            );
+            stitch_part_censuses(&previous, &mut storage);
+            let parts = part_censuses(image, &groups, root_outcome, &ranges);
+            let stitched = stitch_part_censuses(&parts, &mut storage);
+            assert_eq!(stitched, serial, "{name} {ranges:?}");
+        }
+    }
+    let state = |name| {
+        let (_, image, capacity, _) = cases.iter().find(|(case, ..)| *case == name).unwrap();
+        let (groups, root_outcome) = order_roots(image, *capacity);
+        serial_census(image, &groups, root_outcome, &mut CensusStorage::default())
+    };
+    // A failed census retains what it entered: here the first two groups'
+    // orders, with their paths, and the third group's first order.
+    let vtable = state("vtable");
+    assert_eq!(
+        (
+            vtable.walk.visited,
+            vtable.rows.len(),
+            vtable.geometry.len(),
+            vtable.entered.len()
+        ),
+        (7, 7, 6, 7)
+    );
+    assert!(vtable.order.is_empty());
+    let shared = state("shared first");
+    assert_eq!((shared.walk.visited, shared.rows.len()), (9, 9));
+    // A refusal before any group keeps the previous pass's entered orders but
+    // no census order.
+    let mut storage = CensusStorage::default();
+    serial_census(&before, &before_groups, before_outcome, &mut storage);
+    let (groups, root_outcome) = order_roots(&cases[2].1, 3);
+    let refused = serial_census(&cases[2].1, &groups, root_outcome, &mut storage);
+    assert_eq!((refused.walk.visited, refused.entered.len()), (0, 12));
+    assert!(refused.order.is_empty());
+}
+
+/// A plan walk's storage.
+#[derive(Default)]
+struct PlanStorage {
+    rows: Vec<PlanRow>,
+    assigned: Vec<u64>,
+    links: Vec<u32>,
+    names: Vec<u8>,
+    order: PlanOrder,
+}
+
+/// One plan walk's state: its outcome and assigned demand, its rows, the
+/// arenas through its counts, its placement, and its assigned hosts with
+/// their demand and verdict.
+#[derive(Debug, PartialEq)]
+struct Plans {
+    outcome: Outcome,
+    required_assigned: usize,
+    rows: Vec<PlanRow>,
+    assigned: Vec<u64>,
+    links: Vec<u32>,
+    names: Vec<u8>,
+    placement: Vec<u32>,
+    hosts: Vec<usize>,
+    required_hosts: usize,
+    hosts_outcome: Outcome,
+}
+
+impl Plans {
+    fn of(walk: PlanWalk, storage: &PlanStorage, hosts: &AssignedSources) -> Self {
+        Self {
+            outcome: walk.outcome,
+            required_assigned: walk.required_assigned,
+            rows: storage.rows[..walk.outcome.len()].to_vec(),
+            assigned: storage.assigned[..walk.assigned].to_vec(),
+            links: storage.links[..walk.links].to_vec(),
+            names: storage.names[..walk.names].to_vec(),
+            placement: storage.order.rows().to_vec(),
+            hosts: hosts.pointers().to_vec(),
+            required_hosts: hosts.required(),
+            hosts_outcome: hosts.outcome(),
+        }
+    }
+}
+
+/// An assigned host lane: growing on the worker, or of a fixed `capacity`.
+fn host_lane(capacity: Option<usize>) -> AssignedSources {
+    match capacity {
+        Some(capacity) => AssignedSources::try_with_capacity(capacity).unwrap(),
+        None => {
+            let mut hosts = AssignedSources::default();
+            hosts.enable_worker_growth();
+            hosts
+        }
+    }
+}
+
+/// The census and plan walk over `image` with a host lane of `capacity`, and
+/// for every split into consecutive parts, each part's census and plan walk
+/// (with growing lanes), stitched into storage and a lane of `capacity`.
+#[allow(clippy::type_complexity)]
+fn serial_and_stitched_plans(
+    image: &MemoryImage,
+    capacity: Option<usize>,
+) -> (Plans, Vec<(Vec<std::ops::Range<usize>>, Plans)>) {
+    let (groups, root_outcome) = order_roots(image, 8);
+    let count = root_outcome.len();
+    let serial = {
+        let mut census = CensusStorage::default();
+        let walk = serial_census(image, &groups, root_outcome, &mut census).walk;
+        let mut plans = PlanStorage::default();
+        let mut hosts = host_lane(capacity);
+        let walk = walk_plans_ordered_with_sources(
+            image,
+            BASE,
+            &groups[..count],
+            &census.visits,
+            &census.lists,
+            walk.outcome,
+            &mut plans.rows,
+            &mut plans.assigned,
+            &mut plans.links,
+            &mut plans.names,
+            &mut plans.order,
+            Some(&mut hosts),
+        );
+        Plans::of(walk, &plans, &hosts)
+    };
+    let mut splits = Vec::new();
+    for ranges in group_splits(count) {
+        let censuses = part_censuses(image, &groups, root_outcome, &ranges);
+        let walks: Vec<(PlanWalk, PlanStorage, AssignedSources)> = censuses
+            .iter()
+            .map(|(census, part)| {
+                let mut plans = PlanStorage::default();
+                let mut hosts = host_lane(None);
+                let walk = walk_plans_ordered_with_sources(
+                    image,
+                    BASE,
+                    &groups[..count],
+                    &part.visits,
+                    &part.lists,
+                    census.walk.outcome,
+                    &mut plans.rows,
+                    &mut plans.assigned,
+                    &mut plans.links,
+                    &mut plans.names,
+                    &mut plans.order,
+                    Some(&mut hosts),
+                );
+                (walk, plans, hosts)
+            })
+            .collect();
+        let census = stitch_part_censuses(&censuses, &mut CensusStorage::default()).walk;
+        let parts: Vec<PlanPart<'_>> = walks
+            .iter()
+            .zip(&censuses)
+            .map(|((walk, plans, hosts), (census, part))| PlanPart {
+                walk: *walk,
+                rows: &plans.rows,
+                assigned: &plans.assigned,
+                links: &plans.links,
+                names: &plans.names,
+                order: &plans.order,
+                hosts: Some(hosts),
+                orders: &part.rows[..census.walk.visited.min(part.rows.len())],
+            })
+            .collect();
+        let mut plans = PlanStorage::default();
+        let mut hosts = host_lane(capacity);
+        let walk = stitch_plans(
+            &parts,
+            census.outcome,
+            &mut plans.rows,
+            &mut plans.assigned,
+            &mut plans.links,
+            &mut plans.names,
+            &mut plans.order,
+            Some(&mut hosts),
+        );
+        splits.push((ranges, Plans::of(walk, &plans, &hosts)));
+    }
+    (serial, splits)
+}
+
+/// Plan walks over census parts, stitched, leave the state the plan walk over
+/// the single census leaves, whatever the split: rows with their arena spans
+/// (an unnamed order's unacquired), the arenas through the counts, the
+/// assigned demand, the placement, and the assigned hosts retained with their
+/// demand and verdict. That holds for a complete walk over more orders than a
+/// batch, for the first failure in census order with the arenas and hosts
+/// acquired before it, for a host lane that fills, alone or before a core
+/// failure, and for the census's refusal.
+#[test]
+fn stitched_plan_parts_are_the_single_plan_walk_for_every_split() {
+    // Six groups of three orders, more than a plan batch; each group's first
+    // order has two assigned divisions and its last three.
+    let with_members = || {
+        let (mut image, pointers) = groups_fixture(6, 3);
+        for (group, orders) in pointers.iter().enumerate() {
+            assign_members(&mut image, orders[0], group, 0, 2);
+            assign_members(&mut image, orders[2], group, 2, 3);
+        }
+        (image, pointers)
+    };
+    let (_, pointers) = with_members();
+    let unavailable = |reason| Outcome::Unavailable { reason };
+    let mut cases: Vec<(&str, MemoryImage, Option<usize>, Outcome)> = Vec::new();
+    cases.push(("clean", with_members().0, None, Outcome::Rows { len: 18 }));
+    // An invalid predecessor header in the third group.
+    let (mut image, _) = with_members();
+    image.u32(pointers[2][1] + PREDECESSOR_DATA + 12, 5);
+    cases.push((
+        "predecessors",
+        image,
+        None,
+        unavailable("plan graph header invalid"),
+    ));
+    // Plan failures in the second and the fifth group: the first wins.
+    let (mut image, _) = with_members();
+    image.u32(pointers[4][1] + PREDECESSOR_DATA + 12, 5);
+    image.u32(pointers[1][2] + ASSIGNED_MEMBER_DATA + 12, 5);
+    cases.push((
+        "first of two",
+        image,
+        None,
+        unavailable("plan assigned member header invalid"),
+    ));
+    // The fourth group's last order's second division is not one: the
+    // divisions before it are acquired and retained.
+    let member = || {
+        let (mut image, _) = with_members();
+        image.u64(member_unit(3, 2, 1), 0);
+        image
+    };
+    cases.push((
+        "member",
+        member(),
+        None,
+        unavailable("plan assigned division identity mismatch"),
+    ));
+    // A host lane of seven: it fills in the second group, the core plans
+    // complete, and its demand counts every division.
+    cases.push((
+        "host capacity",
+        with_members().0,
+        Some(7),
+        Outcome::Rows { len: 18 },
+    ));
+    // The lane fills, then the core walk fails.
+    cases.push((
+        "host capacity then member",
+        member(),
+        Some(7),
+        unavailable("plan assigned division identity mismatch"),
+    ));
+    // A census failure refuses the plans.
+    let (mut image, _) = with_members();
+    image.u64(pointers[1][2], 0);
+    cases.push((
+        "census",
+        image,
+        None,
+        unavailable("plans require a complete army order census"),
+    ));
+    let mut states = Vec::new();
+    for (name, image, capacity, expected) in &cases {
+        let (serial, splits) = serial_and_stitched_plans(image, *capacity);
+        assert_eq!(serial.outcome, *expected, "{name}");
+        assert_eq!(splits.len(), 3 * 32, "{name}");
+        for (ranges, stitched) in splits {
+            assert_eq!(stitched, serial, "{name} {ranges:?}");
+        }
+        states.push(serial);
+    }
+    let clean = &states[0];
+    assert_eq!(
+        (
+            clean.assigned.len(),
+            clean.links.len(),
+            clean.names.len(),
+            clean.hosts.len()
+        ),
+        (30, 12, 6 * 19, 30)
+    );
+    // Through the fourth group's last order's first division: fifteen in the
+    // first three groups, two in the fourth group's first order and one.
+    let member = &states[3];
+    assert_eq!(
+        (
+            member.assigned.len(),
+            member.required_assigned,
+            member.hosts.len(),
+            member.required_hosts
+        ),
+        (18, 18, 18, 20)
+    );
+    assert_eq!(
+        member.hosts_outcome,
+        unavailable("plan assigned hosts require complete core plans")
+    );
+    assert_eq!(member.names.len(), 4 * 19);
+    assert!(member.rows.is_empty() && member.placement.is_empty());
+    let filled = &states[4];
+    assert_eq!((filled.hosts.len(), filled.required_hosts), (7, 30));
+    assert_eq!(
+        filled.hosts_outcome,
+        unavailable("plan assigned host capacity exceeded")
+    );
+    let both = &states[5];
+    assert_eq!((both.hosts.len(), both.required_hosts), (7, 20));
+    assert_eq!(
+        both.hosts_outcome,
+        unavailable("plan assigned hosts require complete core plans")
+    );
+}
+
+/// A fault that clears after its first touch, at the invalid reference
+/// every part's plan walk reads first, is met by whichever part reads it
+/// first in time and recorded once: that part fails, the other completes,
+/// and the stitched plans fail with its reason, keeping the arenas of the
+/// parts before it. Met by the first part, that is the single walk's state
+/// under the same fault.
+#[test]
+fn a_one_shot_fault_two_parts_share_is_met_in_time_order_and_recorded_once() {
+    struct OneShot<'a> {
+        image: &'a MemoryImage,
+        at: usize,
+        spent: std::cell::Cell<bool>,
+    }
+    impl Memory for OneShot<'_> {
+        fn copy(&self, address: usize, out: &mut [u8]) -> bool {
+            if address <= self.at && self.at < address + out.len() && !self.spent.replace(true) {
+                return false;
+            }
+            self.image.copy(address, out)
+        }
+    }
+    let (image, _) = groups_fixture(4, 3);
+    let (groups, root_outcome) = order_roots(&image, 8);
+    let groups = &groups[..root_outcome.len()];
+    let ranges = [0..2, 2..4];
+    let censuses = part_censuses(&image, groups, root_outcome, &ranges);
+    let census = stitch_part_censuses(&censuses, &mut CensusStorage::default()).walk;
+    assert_eq!(census.outcome, Outcome::Rows { len: 12 });
+    let at = BASE + registry::INVALID_REFERENCE_RVA;
+    let reason = "plan field unreadable or address overflow";
+    // The single walk under the same fault.
+    let serial = {
+        let memory = OneShot {
+            image: &image,
+            at,
+            spent: Default::default(),
+        };
+        let mut storage = CensusStorage::default();
+        let walk = serial_census(&image, groups, root_outcome, &mut storage).walk;
+        let mut plans = PlanStorage::default();
+        let mut hosts = host_lane(None);
+        let walk = walk_plans_ordered_with_sources(
+            &memory,
+            BASE,
+            groups,
+            &storage.visits,
+            &storage.lists,
+            walk.outcome,
+            &mut plans.rows,
+            &mut plans.assigned,
+            &mut plans.links,
+            &mut plans.names,
+            &mut plans.order,
+            Some(&mut hosts),
+        );
+        Plans::of(walk, &plans, &hosts)
+    };
+    assert_eq!(serial.outcome, Outcome::Unavailable { reason });
+    for first in [0, 1] {
+        let memory = OneShot {
+            image: &image,
+            at,
+            spent: Default::default(),
+        };
+        // The parts' plan walks in time order: `first`, then the other.
+        let mut walks: [Option<(PlanWalk, PlanStorage, AssignedSources)>; 2] = [None, None];
+        for index in [first, 1 - first] {
+            let (part_walk, part) = &censuses[index];
+            let mut plans = PlanStorage::default();
+            let mut hosts = host_lane(None);
+            let walk = walk_plans_ordered_with_sources(
+                &memory,
+                BASE,
+                groups,
+                &part.visits,
+                &part.lists,
+                part_walk.walk.outcome,
+                &mut plans.rows,
+                &mut plans.assigned,
+                &mut plans.links,
+                &mut plans.names,
+                &mut plans.order,
+                Some(&mut hosts),
+            );
+            walks[index] = Some((walk, plans, hosts));
+        }
+        let walks = walks.map(Option::unwrap);
+        let failed: Vec<usize> = (0..2)
+            .filter(|&index| matches!(walks[index].0.outcome, Outcome::Unavailable { .. }))
+            .collect();
+        assert_eq!(failed, [first], "one part records the fault, once");
+        let parts: Vec<PlanPart<'_>> = walks
+            .iter()
+            .zip(&censuses)
+            .map(|((walk, plans, hosts), (census, part))| PlanPart {
+                walk: *walk,
+                rows: &plans.rows,
+                assigned: &plans.assigned,
+                links: &plans.links,
+                names: &plans.names,
+                order: &plans.order,
+                hosts: Some(hosts),
+                orders: &part.rows[..census.walk.visited.min(part.rows.len())],
+            })
+            .collect();
+        let mut plans = PlanStorage::default();
+        let mut hosts = host_lane(None);
+        let walk = stitch_plans(
+            &parts,
+            census.outcome,
+            &mut plans.rows,
+            &mut plans.assigned,
+            &mut plans.links,
+            &mut plans.names,
+            &mut plans.order,
+            Some(&mut hosts),
+        );
+        let stitched = Plans::of(walk, &plans, &hosts);
+        assert_eq!(stitched.outcome, Outcome::Unavailable { reason }, "{first}");
+        // The parts before the failing one keep their arenas.
+        let links: usize = walks[..first].iter().map(|(walk, ..)| walk.links).sum();
+        assert_eq!(stitched.links.len(), links, "{first}");
+        if first == 0 {
+            assert_eq!(stitched, serial);
+        } else {
+            assert_ne!(links, 0);
+        }
+    }
+}
+
+/// The assigned hosts of a member chunk are gathered in one record copy,
+/// whose misses overlap, rather than read one by one; the rows are the same.
+/// A host whose gathered span failed is not read as a span again: its fields
+/// are read one by one, and the failure is theirs.
+#[test]
+fn assigned_hosts_of_a_member_chunk_are_gathered_in_one_record_copy() {
+    struct Gathers<'a> {
+        image: &'a MemoryImage,
+        hosts: std::cell::RefCell<Vec<Vec<usize>>>,
+        fault: Option<usize>,
+    }
+    impl Memory for Gathers<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if self.fault == Some(address) {
+                self.image.1.borrow_mut().push((address, output.len()));
+                return false;
+            }
+            self.image.copy(address, output)
+        }
+        fn copy_records(
+            &self,
+            sources: crate::memory::RecordSources<'_>,
+            layout: &RecordLayout<'_>,
+            destination: &mut [u8],
+        ) -> usize {
+            if layout.stride() == ASSIGNED_SPAN {
+                self.hosts.borrow_mut().push(
+                    (0..sources.len())
+                        .filter_map(|row| sources.pointer(row))
+                        .collect(),
+                );
+            }
+            let Some(count) = layout.count(sources, destination.len()) else {
+                return 0;
+            };
+            let mut completed = 0;
+            for row in 0..sources.len() {
+                for field in layout.fields() {
+                    let address = sources.pointer(row).unwrap() + field.source_offset;
+                    let at = row * layout.stride() + field.destination_offset;
+                    if !self.copy(address, &mut destination[at..at + field.len]) {
+                        return completed;
+                    }
+                    completed += 1;
+                }
+            }
+            debug_assert_eq!(completed, count);
+            completed
+        }
+    }
+    let (image, _) = plan_fixture();
+    let mut groups = [corders_group::Root::default(); 8];
+    let mut visits = vec![Visit::default(); 16];
+    let census = walk(
+        &image,
+        BASE,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut groups,
+        &mut visits,
+    );
+    for fault in [None, Some(PLAN_UNIT)] {
+        let memory = Gathers {
+            image: &image,
+            hosts: Default::default(),
+            fault,
+        };
+        let (mut rows, mut assigned) = (Vec::new(), Vec::new());
+        image.1.borrow_mut().clear();
+        let report = walk_plans(
+            &memory,
+            BASE,
+            &groups[..census.root_outcome.len()],
+            &visits,
+            census.outcome,
+            &mut rows,
+            &mut assigned,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+        assert_eq!(*memory.hosts.borrow(), [vec![PLAN_UNIT; 3]], "{fault:?}");
+        let span_reads = image
+            .1
+            .borrow()
+            .iter()
+            .filter(|&&read| read == (PLAN_UNIT, ASSIGNED_SPAN))
+            .count();
+        match fault {
+            None => {
+                assert_eq!(report.outcome, Outcome::Rows { len: 3 });
+                assert_eq!(assigned[..report.assigned], [0xffff_fffe_0000_0033; 3]);
+                // Each host span is read once, by the gather.
+                assert_eq!(span_reads, 3);
+            }
+            Some(_) => {
+                assert_eq!(
+                    report.outcome,
+                    Outcome::Unavailable {
+                        reason: "plan assigned division identity mismatch"
+                    }
+                );
+                // The gather's failed span is not read again: the vtable
+                // field is.
+                assert_eq!(span_reads, 1);
+                assert!(image.1.borrow().contains(&(PLAN_UNIT, 8)));
+            }
+        }
     }
 }

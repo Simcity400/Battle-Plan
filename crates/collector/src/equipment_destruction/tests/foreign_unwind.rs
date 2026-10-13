@@ -148,7 +148,7 @@ fn registered(address: usize) -> bool {
 #[ignore = "parent-only actual Land detour C++/SEH; requires shared probe and reviewed Hook"]
 fn production_land_detour_foreign_unwind() {
     let _probe_guard = probe::SERIAL.lock().unwrap();
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let probe = probe::Probe::load();
     let site = land_foreign_damage_target as *const () as usize;
     let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
@@ -283,7 +283,7 @@ fn production_land_detour_foreign_unwind() {
 #[ignore = "parent-only actual foreign C++/SEH; requires BATTLE_PLAN_TAP_UNWIND_PROBE and reviewed shared Hook"]
 fn production_return_call_foreign_unwind() {
     let _probe_guard = probe::SERIAL.lock().unwrap();
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let probe = probe::Probe::load();
     let site = land_foreign_return_site as *const () as usize;
     assert_eq!(

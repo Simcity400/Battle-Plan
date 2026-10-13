@@ -1,7 +1,5 @@
 //! CRailwayManager's persistent rail province and directed edge state.
 
-use std::collections::HashMap;
-
 use crate::{
     Memory, cgame_state,
     cpdx_array::Array,
@@ -29,7 +27,10 @@ pub const COOLDOWN_PROVINCE_COUNT: usize = 0x2c;
 pub const PROVINCE_INFO_STRIDE: usize = 8;
 /// Manager constructor sizing and zero-filling the province table.
 pub const CONSTRUCTOR_RVA: usize = 0x00e7_d380;
-/// Province-info lookup/creation stores the selected table slot.
+/// Railway manager scalar deleting destructor (vtable slot 0); destruction
+/// stores the vtable and frees every info object.
+pub const DESTRUCTOR_RVA: usize = 0x00e7_d660;
+/// Railway province-info creation stores `table[id]`.
 pub const GET_OR_CREATE_PROVINCE_INFO_RVA: usize = 0x00e7_d6d0;
 /// Railway token loader can allocate and replace info slots.
 pub const LOAD_TOKEN_RVA: usize = 0x00e8_0320;
@@ -38,179 +39,11 @@ pub const SET_PROVINCE_ON_COOLDOWN_RVA: usize = 0x00e7_f9b0;
 /// Cooldown updater decrements values and removes expired IDs.
 pub const UPDATE_COOLDOWNS_RVA: usize = 0x00e7_f160;
 
-/// Successful directed-edge speeds shared within one hourly acquisition.
-/// The query has no division operand. Clear storage before every capture to
-/// reread dynamic map inputs. Worker caches grow from reached dependencies;
-/// vacant callback caches use the complete direct reader without allocation.
-pub(crate) struct MovementSpeeds {
-    key: Option<(usize, usize)>,
-    entries: HashMap<(usize, usize), i64>,
-    worker_growth: bool,
-    infrastructure: HashMap<usize, i64>,
-    inputs: MovementInputs,
-}
-
-/// Lazy current-pass dependencies shared by different directed edges. A hit
-/// retains the complete successful authentication that admitted that value.
-struct MovementInputs {
-    provinces: Option<Array>,
-    identities: HashMap<usize, u32>,
-    slots: Option<Array>,
-    defines: [Option<i64>; 5],
-}
-
-impl MovementInputs {
-    fn clear(&mut self) {
-        self.provinces = None;
-        self.identities.clear();
-        self.slots = None;
-        self.defines.fill(None);
-    }
-    fn province(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        provinces: Array,
-        pointer: usize,
-    ) -> Result<u32, &'static str> {
-        if let Some(&id) = self.identities.get(&pointer) {
-            return Ok(id);
-        }
-        let id = eta_province(memory, base, provinces, pointer)?;
-        crate::allocation::reserve_map(&mut self.identities, 1)
-            .map_err(|_| "ETA province cache allocation failed")?;
-        self.identities.insert(pointer, id);
-        Ok(id)
-    }
-}
-
-fn current<T: Copy>(
-    slot: Option<&mut Option<T>>,
-    read: impl FnOnce() -> Result<T, &'static str>,
-) -> Result<T, &'static str> {
-    if let Some(value) = slot.as_deref().copied().flatten() {
-        return Ok(value);
-    }
-    let value = read()?;
-    if let Some(slot) = slot {
-        *slot = Some(value);
-    }
-    Ok(value)
-}
-
-impl MovementSpeeds {
-    pub fn try_new(capacity: usize) -> std::io::Result<Self> {
-        let mut memo = Self::vacant();
-        memo.worker_growth = true;
-        // Known directed-edge query demand prepares the edge cache. State and
-        // province dependencies grow only when reached by the corresponding queries.
-        crate::allocation::reserve_map(&mut memo.entries, capacity)?;
-        Ok(memo)
-    }
-
-    #[cfg(test)]
-    pub fn new(capacity: usize) -> Self {
-        Self::try_new(capacity).unwrap()
-    }
-
-    pub fn vacant() -> Self {
-        Self {
-            key: None,
-            inputs: MovementInputs {
-                provinces: None,
-                identities: HashMap::new(),
-                slots: None,
-                defines: [None; 5],
-            },
-            entries: HashMap::new(),
-            worker_growth: false,
-            infrastructure: HashMap::new(),
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.key = None;
-        self.inputs.clear();
-        self.entries.clear();
-        self.infrastructure.clear();
-    }
-
-    pub fn allocated_bytes(&self) -> usize {
-        self.entries.capacity() * size_of::<(usize, usize, i64)>()
-            + self.infrastructure.capacity() * size_of::<(usize, i64)>()
-            + self.inputs.identities.capacity() * size_of::<(usize, u32)>()
-    }
-
-    pub fn get(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        state: usize,
-        from: usize,
-        to: usize,
-    ) -> Result<i64, &'static str> {
-        if self.key.is_some_and(|key| key != (base, state)) {
-            self.clear();
-        }
-        self.key = Some((base, state));
-        if !self.worker_growth {
-            return movement_speed(memory, base, state, from, to);
-        }
-        if let Some(&speed) = self.entries.get(&(from, to)) {
-            return Ok(speed);
-        }
-        let infrastructure = &mut self.infrastructure;
-        let result = movement_speed_with_infrastructure(
-            memory,
-            base,
-            state,
-            from,
-            to,
-            Some(&mut self.inputs),
-            |province| Self::infrastructure(infrastructure, memory, base, state, province),
-        );
-        let speed = match result {
-            Ok(speed) => speed,
-            Err(reason) => {
-                self.clear();
-                return Err(reason);
-            }
-        };
-        crate::allocation::reserve_map(&mut self.entries, 1)
-            .map_err(|_| "ETA edge cache allocation failed")?;
-        self.entries.insert((from, to), speed);
-        Ok(speed)
-    }
-
-    /// Different destination provinces share the same current state fraction.
-    /// Keep the province-to-state read, then reuse that state's complete,
-    /// authenticated lookup. No entry survives the hourly clear.
-    fn infrastructure(
-        entries: &mut HashMap<usize, i64>,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        province: usize,
-    ) -> Result<i64, &'static str> {
-        let state = eta_read::<u64>(memory, province, cprovince::STATE)? as usize;
-        if state == 0 {
-            return Ok(0);
-        }
-        if let Some(&value) = entries.get(&state) {
-            return Ok(value);
-        }
-        let value = eta_state_infrastructure(memory, base, game_state, state)?;
-        crate::allocation::reserve_map(entries, 1)
-            .map_err(|_| "ETA state cache allocation failed")?;
-        entries.insert(state, value);
-        Ok(value)
-    }
-}
-
-/// Passive railway movement speed before the army's outer scale. Road and
-/// directed rail speeds compete by signed maximum. Rail damage and cooldown
-/// come from departure province. No calls, retained pointers, allocation or
-/// replacement census.
+/// Passive railway speed computation, before CArmy's outer movement-speed
+/// scale. Road infrastructure and the directed rail edge compete by signed
+/// maximum; rail damage and cooldown are read from the departure province, not
+/// the arrival. No engine calls, retained pointers, allocation, or replacement
+/// census.
 pub fn movement_speed(
     memory: &impl Memory,
     base: usize,
@@ -218,54 +51,18 @@ pub fn movement_speed(
     from: usize,
     to: usize,
 ) -> Result<i64, &'static str> {
-    movement_speed_with_infrastructure(memory, base, state, from, to, None, |province| {
-        eta_infrastructure(memory, base, state, province)
-    })
-}
-
-fn movement_speed_with_infrastructure(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    from: usize,
-    to: usize,
-    mut inputs: Option<&mut MovementInputs>,
-    infrastructure: impl FnOnce(usize) -> Result<i64, &'static str>,
-) -> Result<i64, &'static str> {
-    let provinces = current(
-        inputs.as_deref_mut().map(|inputs| &mut inputs.provinces),
-        || eta_array(memory, state, cgame_state::PROVINCES, 8),
-    )?;
-    let mut province = |pointer| match inputs.as_deref_mut() {
-        Some(inputs) => inputs.province(memory, base, provinces, pointer),
-        None => eta_province(memory, base, provinces, pointer),
-    };
-    let from_id = province(from)?;
-    let to_id = province(to)?;
-    let infrastructure = infrastructure(to)?;
-    // All four speed defines are signed fixed5 qwords.
-    let road_base = current(inputs.as_deref_mut().map(|v| &mut v.defines[0]), || {
-        eta_read::<i64>(memory, base, 0x0331_cf40)
-    })?;
-    let road_scale = current(inputs.as_deref_mut().map(|v| &mut v.defines[1]), || {
-        eta_read::<i64>(memory, base, 0x0331_cfd0)
-    })?;
+    let provinces = eta_array(memory, state, cgame_state::PROVINCES, 8)?;
+    let from_id = eta_province(memory, base, provinces, from)?;
+    let to_id = eta_province(memory, base, provinces, to)?;
+    let infrastructure = eta_infrastructure(memory, base, state, to)?;
+    // Railway speed computation: all four defines are signed fixed5 qwords.
+    let road_base = eta_read::<i64>(memory, base, 0x0331_cf40)?;
+    let road_scale = eta_read::<i64>(memory, base, 0x0331_cfd0)?;
     let road = road_base.wrapping_add(infrastructure.wrapping_mul(road_scale) / 100_000);
-    let percentage = railway_percentage_from_ids(
-        memory,
-        base,
-        state,
-        provinces,
-        (from, from_id),
-        to_id,
-        inputs.as_deref_mut(),
-    )?;
-    let rail_base = current(inputs.as_deref_mut().map(|v| &mut v.defines[3]), || {
-        eta_read::<i64>(memory, base, 0x0331_d068)
-    })?;
-    let rail_scale = current(inputs.map(|v| &mut v.defines[4]), || {
-        eta_read::<i64>(memory, base, 0x0331_d0e8)
-    })?;
+    let percentage =
+        railway_percentage_from_ids(memory, base, state, provinces, (from, from_id), to_id)?;
+    let rail_base = eta_read::<i64>(memory, base, 0x0331_d068)?;
+    let rail_scale = eta_read::<i64>(memory, base, 0x0331_d0e8)?;
     let rail = rail_base.wrapping_add(percentage.wrapping_mul(rail_scale) / 100_000);
     Ok(road.max(rail))
 }
@@ -282,7 +79,7 @@ pub fn railway_percentage(
     let provinces = eta_array(memory, state, cgame_state::PROVINCES, 8)?;
     let from_id = eta_province(memory, base, provinces, from)?;
     let to_id = eta_province(memory, base, provinces, to)?;
-    railway_percentage_from_ids(memory, base, state, provinces, (from, from_id), to_id, None)
+    railway_percentage_from_ids(memory, base, state, provinces, (from, from_id), to_id)
 }
 
 fn railway_percentage_from_ids(
@@ -292,17 +89,13 @@ fn railway_percentage_from_ids(
     provinces: Array,
     from: (usize, u32),
     to_id: u32,
-    mut inputs: Option<&mut MovementInputs>,
 ) -> Result<i64, &'static str> {
-    let slots = current(inputs.as_deref_mut().map(|v| &mut v.slots), || {
-        let manager = eta_pointer(memory, state, cgame_state::RAIL_MANAGER)?;
-        eta_vtable(memory, base, manager, VTABLE_RVA)?;
-        let slots = eta_array(memory, manager, PROVINCE_INFO_TABLE, 8)?;
-        if slots.count != provinces.count {
-            return Err("ETA railway province extent mismatch");
-        }
-        Ok(slots)
-    })?;
+    let manager = eta_pointer(memory, state, cgame_state::RAIL_MANAGER)?;
+    eta_vtable(memory, base, manager, VTABLE_RVA)?;
+    let slots = eta_array(memory, manager, PROVINCE_INFO_TABLE, 8)?;
+    if slots.count != provinces.count {
+        return Err("ETA railway province extent mismatch");
+    }
     let slot = slots.element(from.1, 8).ok_or("ETA railway slot absent")?;
     let node = eta_read::<u64>(memory, slot, 0)? as usize;
     let mut weighted_level = 0_i64;
@@ -352,11 +145,9 @@ fn railway_percentage_from_ids(
             }
         }
     }
-    // The denominator define is signed i32, unlike speed defines.
-    // Zero returns zero rather than the fixed-point sentinel.
-    let denominator = current(inputs.map(|v| &mut v.defines[2]), || {
-        eta_read::<i32>(memory, base, 0x0331_bfe0).map(i64::from)
-    })? * 100_000;
+    // Sign-extended denominator: this denominator define is an i32, unlike the
+    // speed defines. Zero returns zero, not the fixed-point sentinel.
+    let denominator = i64::from(eta_read::<i32>(memory, base, 0x0331_bfe0)?) * 100_000;
     if denominator == 0 {
         Ok(0)
     } else {
@@ -553,6 +344,38 @@ fn eta_state_infrastructure(
     eta_ratio(i64::from(healthy) * 100_000, i64::from(maximum) * 100_000)
 }
 
+/// The manager's cooldown province list `+0x20` (count `+0x2C`) in list order,
+/// duplicates kept: the occurrences the daily countdown pass decrements, each
+/// naming the province whose info it writes. Stored as the native signed ids'
+/// bits.
+pub fn cooldown_list(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    ids: &mut Vec<u32>,
+) -> Result<(), &'static str> {
+    ids.clear();
+    let manager = game_state
+        .checked_add(cgame_state::RAIL_MANAGER)
+        .and_then(|p| read::<u64>(memory, p))
+        .and_then(|p| usize::try_from(p).ok())
+        .filter(|&p| p != 0)
+        .ok_or("rail manager unreadable or null")?;
+    let vtable = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("module address overflow")?;
+    if read::<u64>(memory, manager) != Some(vtable as u64) {
+        return Err("rail manager vtable mismatch");
+    }
+    let list = manager
+        .checked_add(COOLDOWN_PROVINCES)
+        .and_then(|p| Array::read(memory, p, 4))
+        .ok_or("rail cooldown list unreadable or invalid")?;
+    crate::allocation::resize_default(ids, list.count as usize)
+        .map_err(|_| "rail cooldown list allocation failed")?;
+    crate::cpdx_array::copy_u32s(memory, list, ids, "rail cooldown list unreadable")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Outcomes {
     pub provinces: Outcome,
@@ -574,6 +397,222 @@ impl Outcomes {
             edges: Outcome::Unavailable { reason },
         }
     }
+}
+
+/// One authenticated rail info as the walk gathered it this hour, before
+/// any of its edges, levels or building are read: the bytes every hour
+/// still gathers for every slot. A held read of the same info and bytes,
+/// which no hooked writer touched since ([`crate::railway_mutations`]), has
+/// the same edges, building row and levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RailLocation {
+    pub province: u32,
+    pub info: usize,
+    /// The info's building status `+0x10`, authenticated as its province's
+    /// `+0x190`.
+    pub building_status: usize,
+    /// The info's vtable, definition `+0x08` and status `+0x10`.
+    pub identity: [u8; 24],
+    /// The province table this walk authenticates far endpoints against.
+    pub provinces: Array,
+    /// The cooldown `+0x68`, when it copied.
+    pub cooldown: Option<i32>,
+    /// The pair header `+0x38` with the count `+0x44`, when both copied.
+    pub pairs: Option<[u8; 16]>,
+}
+
+/// What every walk reads before any slot: the manager and its slot table
+/// `+0x08`, authenticated against the game state's province table. A held
+/// batch is published only under the header it was read with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RailHeader {
+    pub manager: usize,
+    pub rail: Array,
+    pub provinces: Array,
+}
+
+/// One info's outputs: its cooldown `+0x68`, its directed edges in pair
+/// order, its building row and its indexed levels. The row's selected level
+/// span starts at zero and indexes `levels`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InfoOutputs<'a> {
+    pub cooldown: i32,
+    pub edges: &'a [edge::Row],
+    pub building: fresh_inputs::RailwayBuildingRow,
+    pub levels: &'a [i32],
+}
+
+/// The outputs of every info of one slot batch, in slot order, as its last
+/// complete read published them: one cooldown row and one building row per
+/// info, the infos' edges concatenated, and their levels concatenated with
+/// each building row's selected span starting within `levels`.
+#[derive(Debug, Clone, Copy)]
+pub struct HeldBatch<'a> {
+    pub cooldowns: &'a [info::Row],
+    pub edges: &'a [edge::Row],
+    pub buildings: &'a [fresh_inputs::RailwayBuildingRow],
+    pub levels: &'a [i32],
+}
+
+/// A caller's held outputs per rail info and per slot batch of
+/// [`PROVINCE_BATCH`] slots ([`walk_with_selection_growing_carried`]).
+pub trait RailCarry {
+    /// The authenticated header, once per walk before any batch.
+    fn tables(&mut self, _header: &RailHeader) {}
+    /// Before slot batch `first..first + count` is read: its held outputs
+    /// when the carry proves that no native writer touched any slot or info
+    /// of the batch since its last complete read under this header. The
+    /// walk then publishes them without reading anything of the batch, or,
+    /// when its outputs cannot take the whole batch, reads it.
+    fn quiet_batch(&mut self, _first: u32, _count: u32) -> Option<HeldBatch<'_>> {
+        None
+    }
+    /// The batch [`Self::quiet_batch`] returned was published.
+    fn carried_batch(&mut self) {}
+    /// Registers an authenticated info before any of its edges, levels or
+    /// building are read, returning a plan token and whether its held
+    /// outputs may be carried.
+    fn plan(&mut self, location: &RailLocation) -> (usize, bool);
+    /// A carryable plan's held outputs; `None` reads the info afresh.
+    fn held(&self, token: usize) -> Option<InfoOutputs<'_>>;
+    /// A carryable plan was published from its held outputs.
+    fn carried(&mut self, token: usize);
+    /// A planned info read afresh: its outputs when its cooldown, edges,
+    /// building row and levels were each acquired whole, otherwise `None`.
+    fn read(&mut self, token: usize, outputs: Option<InfoOutputs<'_>>);
+    /// A batch [`Self::quiet_batch`] did not publish was read: each of its
+    /// planned infos was carried or read.
+    fn read_batch(&mut self) {}
+}
+
+/// No held outputs: every info is read.
+pub struct Fresh;
+impl RailCarry for Fresh {
+    fn plan(&mut self, _: &RailLocation) -> (usize, bool) {
+        (0, false)
+    }
+    fn held(&self, _: usize) -> Option<InfoOutputs<'_>> {
+        None
+    }
+    fn carried(&mut self, _: usize) {}
+    fn read(&mut self, _: usize, _: Option<InfoOutputs<'_>>) {}
+}
+
+/// Whether a fresh building row acquired every field it reports.
+fn whole(row: &fresh_inputs::RailwayBuildingRow) -> bool {
+    row.building.is_ok()
+        && row.selection.is_some_and(|selection| {
+            selection.levels.is_ok()
+                && selection.pair_count.is_ok()
+                && selection.building_level.is_ok()
+        })
+}
+
+/// `row` with its selected level span starting at `first`.
+fn rebased(
+    mut row: fresh_inputs::RailwayBuildingRow,
+    first: usize,
+) -> fresh_inputs::RailwayBuildingRow {
+    if let Some(selection) = row.selection.as_mut()
+        && let Ok(span) = selection.levels.as_mut()
+    {
+        span.first = first;
+    }
+    row
+}
+
+/// Held edges appended exactly as [`read_edges`] would store the same
+/// pairs: grown first, then truncated with every omitted row counted.
+fn append_edges(
+    output: &mut Buffer<'_, edge::Row>,
+    progress: &mut Progress,
+    rows: &[edge::Row],
+) -> Result<(), &'static str> {
+    let required = progress
+        .len
+        .checked_add(rows.len())
+        .ok_or("rail edge demand overflow")?;
+    output.ensure(required)?;
+    let take = rows.len().min(output.len() - progress.len);
+    progress.omit((rows.len() - take) as u32);
+    output[progress.len..progress.len + take].copy_from_slice(&rows[..take]);
+    progress.len += take;
+    Ok(())
+}
+
+/// Whether `ensure` gives room for `more` rows after `len`.
+fn fits(len: usize, more: usize, ensure: impl FnOnce(usize) -> Result<bool, &'static str>) -> bool {
+    len.checked_add(more)
+        .is_some_and(|required| ensure(required) == Ok(true))
+}
+
+/// Publishes a quiet batch's held outputs where reading the batch would
+/// store the same infos' rows: each cooldown row, the edges, the levels
+/// with each building row's span rebased onto them, the same demand and
+/// the same refusal of an earlier failed table. Returns `false`, having
+/// stored nothing, when the outputs cannot take the whole batch.
+#[allow(clippy::too_many_arguments)]
+fn publish_held(
+    held: HeldBatch<'_>,
+    province_output: &mut Buffer<'_, info::Row>,
+    province_progress: &mut Progress,
+    edge_output: &mut Buffer<'_, edge::Row>,
+    edge_progress: &mut Progress,
+    building_output: Option<&mut Buffer<'_, fresh_inputs::RailwayBuildingRow>>,
+    building_progress: &mut Progress,
+    levels: Option<&mut selected_inputs::LevelBuffer<'_>>,
+    building_required: &mut usize,
+) -> bool {
+    let (Some(building_output), Some(levels)) = (building_output, levels) else {
+        return false;
+    };
+    let infos = held.cooldowns.len();
+    if held.buildings.len() != infos {
+        return false;
+    }
+    let (Some(level_end), Some(required)) = (
+        levels.len.checked_add(held.levels.len()),
+        levels.required.checked_add(held.levels.len()),
+    ) else {
+        return false;
+    };
+    if !fits(building_progress.len, infos, |n| building_output.ensure(n))
+        || !fits(levels.len, held.levels.len(), |n| levels.values.ensure(n))
+        || (province_progress.error.is_none()
+            && !fits(province_progress.len, infos, |n| province_output.ensure(n)))
+        || (edge_progress.error.is_none()
+            && !fits(edge_progress.len, held.edges.len(), |n| {
+                edge_output.ensure(n)
+            }))
+    {
+        return false;
+    }
+    if province_progress.error.is_none() {
+        province_output[province_progress.len..province_progress.len + infos]
+            .copy_from_slice(held.cooldowns);
+        province_progress.len += infos;
+    }
+    if edge_progress.error.is_none() {
+        let end = edge_progress.len + held.edges.len();
+        edge_output[edge_progress.len..end].copy_from_slice(held.edges);
+        edge_progress.len = end;
+    }
+    let base = levels.len;
+    levels.values[base..level_end].copy_from_slice(held.levels);
+    levels.len = level_end;
+    levels.required = required;
+    for row in held.buildings {
+        let mut row = *row;
+        if let Some(selection) = row.selection.as_mut()
+            && let Ok(span) = selection.levels.as_mut()
+        {
+            span.first += base;
+        }
+        building_output[building_progress.len] = row;
+        building_progress.len += 1;
+    }
+    *building_required += infos;
+    true
 }
 
 #[derive(Default)]
@@ -624,6 +663,7 @@ pub fn walk(
         Buffer::Fixed(edge_output),
         None,
         None,
+        &mut Fresh,
     )
     .rows
 }
@@ -646,6 +686,7 @@ pub fn walk_with_buildings(
         Buffer::Fixed(edge_output),
         Some(Buffer::Fixed(building_output)),
         None,
+        &mut Fresh,
     )
 }
 
@@ -674,6 +715,7 @@ pub fn walk_with_selection(
         Buffer::Fixed(edge_output),
         Some(Buffer::Fixed(building_output)),
         Some(&mut buffer),
+        &mut Fresh,
     );
     levels.len = buffer.len;
     levels.required = buffer.required;
@@ -691,6 +733,38 @@ pub fn walk_with_selection_growing(
     building_output: &mut Vec<fresh_inputs::RailwayBuildingRow>,
     levels: &mut selected_inputs::GrowingLevels<'_>,
 ) -> BuildingOutcomes {
+    walk_with_selection_growing_carried(
+        memory,
+        base,
+        game_state,
+        province_output,
+        edge_output,
+        building_output,
+        levels,
+        &mut Fresh,
+    )
+}
+
+/// [`walk_with_selection_growing`] with `carry` supplying held outputs. A
+/// batch of [`PROVINCE_BATCH`] slots the carry proves untouched
+/// ([`RailCarry::quiet_batch`]) is published from its held outputs without
+/// reading any of its slots. In every other batch each slot's info
+/// identity, backlinks, cooldown and pair header are gathered and
+/// authenticated in slot order with unchanged reasons, and every info's
+/// cooldown row comes from this hour's gather; there a carried info's
+/// edges, indexed levels and building are not read. Held outputs take the
+/// places a fresh read would give them.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_with_selection_growing_carried(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    province_output: &mut Vec<info::Row>,
+    edge_output: &mut Vec<edge::Row>,
+    building_output: &mut Vec<fresh_inputs::RailwayBuildingRow>,
+    levels: &mut selected_inputs::GrowingLevels<'_>,
+    carry: &mut impl RailCarry,
+) -> BuildingOutcomes {
     building_output.fill(fresh_inputs::RailwayBuildingRow::default());
     let mut buffer = selected_inputs::LevelBuffer {
         values: Buffer::Growing(levels.values),
@@ -705,12 +779,14 @@ pub fn walk_with_selection_growing(
         Buffer::Growing(edge_output),
         Some(Buffer::Growing(building_output)),
         Some(&mut buffer),
+        carry,
     );
     levels.len = buffer.len;
     levels.required = buffer.required;
     outcomes
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_inner(
     memory: &impl Memory,
     base: usize,
@@ -719,6 +795,7 @@ fn walk_inner(
     mut edge_output: Buffer<'_, edge::Row>,
     mut building_output: Option<Buffer<'_, fresh_inputs::RailwayBuildingRow>>,
     mut levels: Option<&mut selected_inputs::LevelBuffer<'_>>,
+    carry: &mut impl RailCarry,
 ) -> BuildingOutcomes {
     let mut province_progress = Progress::default();
     let mut edge_progress = Progress::default();
@@ -778,8 +855,37 @@ fn walk_inner(
         let mut neighbor_batch = ProvinceBatch::new();
         let mut edge_scratch = EdgeScratch::new();
         let mut building_sources = [fresh_inputs::RailwaySource::default(); PROVINCE_BATCH];
+        // A carry needs the building rows and levels it holds.
+        let carrying = building_output.is_some() && levels.is_some();
+        if carrying {
+            carry.tables(&RailHeader {
+                manager,
+                rail,
+                provinces,
+            });
+        }
+        let mut plans = [Plan::Unplanned; PROVINCE_BATCH];
         for first in (0..rail.count).step_by(PROVINCE_BATCH) {
             let count = (rail.count - first).min(PROVINCE_BATCH as u32);
+            let published = carrying
+                && match carry.quiet_batch(first, count) {
+                    Some(held) => publish_held(
+                        held,
+                        &mut province_output,
+                        &mut province_progress,
+                        &mut edge_output,
+                        &mut edge_progress,
+                        building_output.as_mut(),
+                        &mut building_progress,
+                        levels.as_deref_mut(),
+                        &mut building_required,
+                    ),
+                    None => false,
+                };
+            if published {
+                carry.carried_batch();
+                continue;
+            }
             let address = rail
                 .element(first, PROVINCE_INFO_STRIDE)
                 .ok_or("rail slot address overflow")?;
@@ -876,6 +982,37 @@ fn walk_inner(
                 {
                     return Err("rail info province backlink mismatch");
                 }
+                // Registration precedes every read it certifies: the edges,
+                // the indexed levels and the building below.
+                plans[entry] = Plan::Unplanned;
+                let held = if carrying {
+                    let (token, carried) = carry.plan(&RailLocation {
+                        province,
+                        info: infos[entry],
+                        building_status: status,
+                        identity: header.try_into().unwrap(),
+                        provinces,
+                        cooldown: (cooldown_copied > entry).then(|| {
+                            i32::from_le_bytes(
+                                cooldowns[entry * 4..entry * 4 + 4].try_into().unwrap(),
+                            )
+                        }),
+                        pairs: (pairs_copied > entry && counts_copied > entry).then(|| {
+                            pairs_headers[entry * 16..entry * 16 + 16]
+                                .try_into()
+                                .unwrap()
+                        }),
+                    });
+                    let held = if carried { carry.held(token) } else { None };
+                    plans[entry] = if held.is_some() {
+                        Plan::Carried { token }
+                    } else {
+                        Plan::Read { token, edges: None }
+                    };
+                    held
+                } else {
+                    None
+                };
                 if building_output.is_some() {
                     building_required += 1;
                     building_sources[entry] = fresh_inputs::RailwaySource {
@@ -902,11 +1039,14 @@ fn walk_inner(
                         },
                         selection: levels.as_deref_mut().map(|levels| {
                             selected_inputs::SelectionRow {
-                                levels: levels.read(
-                                    memory,
-                                    infos[entry],
-                                    definition_pointers[entry],
-                                ),
+                                levels: match held {
+                                    Some(held) => levels.append(held.levels),
+                                    None => levels.read(
+                                        memory,
+                                        infos[entry],
+                                        definition_pointers[entry],
+                                    ),
+                                },
                                 pair_count: if counts_copied > entry {
                                     Ok(i32::from_le_bytes(
                                         pair_counts[entry * 4..entry * 4 + 4].try_into().unwrap(),
@@ -917,7 +1057,15 @@ fn walk_inner(
                                 ..Default::default()
                             }
                         }),
+                        carried: false,
                     };
+                    // Held levels that did not fit leave the building to the
+                    // fresh read: their failure decides its selected demand.
+                    let source = &mut building_sources[entry];
+                    source.carried = held.is_some()
+                        && source
+                            .selection
+                            .is_some_and(|selection| selection.levels.is_ok());
                 }
                 if province_progress.error.is_none() {
                     if province_progress.len == province_output.len() {
@@ -934,7 +1082,14 @@ fn walk_inner(
                         province_progress.error = Some("rail cooldown unreadable");
                     }
                 }
-                if edge_progress.error.is_none() {
+                let edge_start = (edge_progress.len, edge_progress.unread);
+                if let (Some(held), None) = (held, edge_progress.error) {
+                    if let Err(reason) =
+                        append_edges(&mut edge_output, &mut edge_progress, held.edges)
+                    {
+                        edge_progress.error = Some(reason);
+                    }
+                } else if edge_progress.error.is_none() {
                     let pairs = (pairs_copied > entry && counts_copied > entry)
                         .then(|| {
                             Array::from_header(
@@ -963,20 +1118,37 @@ fn walk_inner(
                         edge_progress.error = Some(reason);
                     }
                 }
+                if let Plan::Read { edges, .. } = &mut plans[entry] {
+                    *edges = (edge_progress.error.is_none()
+                        && edge_progress.unread == edge_start.1)
+                        .then_some((edge_start.0, edge_progress.len));
+                }
             }
             if let Some(output) = building_output.as_deref_mut() {
                 let take = live.min(output.len() - building_progress.len);
+                let first_row = building_progress.len;
                 let outcome = fresh_inputs::railway_buildings(
                     memory,
                     base,
                     &building_sources[..live],
-                    &mut output[building_progress.len..building_progress.len + take],
+                    &mut output[first_row..first_row + take],
                 );
                 building_progress.len += outcome.len();
                 match outcome {
                     Outcome::Truncated { unread_rows, .. } => building_progress.omit(unread_rows),
                     Outcome::Unavailable { reason } => building_progress.error = Some(reason),
                     Outcome::Rows { .. } => {}
+                }
+                if carrying {
+                    settle(
+                        carry,
+                        &plans[..live],
+                        &building_sources[..live],
+                        (output, first_row, outcome.len()),
+                        &edge_output,
+                        levels.as_deref(),
+                    );
+                    carry.read_batch();
                 }
                 building_sources[..live].fill(fresh_inputs::RailwaySource::default());
             }
@@ -1002,8 +1174,70 @@ fn walk_inner(
         },
     }
 }
-/// Provinces authenticated per guarded round, and the exact record each needs.
-const PROVINCE_BATCH: usize = 64;
+/// One batch entry's part in a carry: read afresh, with its edge span when
+/// its edges were read whole, or published from its held outputs.
+#[derive(Clone, Copy)]
+enum Plan {
+    Unplanned,
+    Read {
+        token: usize,
+        edges: Option<(usize, usize)>,
+    },
+    Carried {
+        token: usize,
+    },
+}
+
+/// After a batch's building rows: each carried info's held row takes its
+/// fresh row's place with this hour's level span, and each info read afresh
+/// reports its whole outputs to the carry.
+fn settle(
+    carry: &mut impl RailCarry,
+    plans: &[Plan],
+    sources: &[fresh_inputs::RailwaySource],
+    (output, first_row, written): (&mut [fresh_inputs::RailwayBuildingRow], usize, usize),
+    edges: &[edge::Row],
+    levels: Option<&selected_inputs::LevelBuffer<'_>>,
+) {
+    let values = levels.map_or(&[][..], |levels| &levels.values[..levels.len]);
+    for (entry, (plan, source)) in plans.iter().zip(sources).enumerate() {
+        let row = (entry < written).then_some(first_row + entry);
+        match *plan {
+            Plan::Unplanned => {}
+            Plan::Carried { token } => {
+                let span = source.selection.and_then(|selection| selection.levels.ok());
+                if let (Some(row), Some(span), Some(held), true) =
+                    (row, span, carry.held(token), source.carried)
+                {
+                    output[row] = rebased(held.building, span.first);
+                }
+                carry.carried(token);
+            }
+            Plan::Read { token, edges: span } => {
+                let outputs = (|| {
+                    let (start, end) = span?;
+                    let building = output[row?];
+                    if !whole(&building) {
+                        return None;
+                    }
+                    let levels = building.selection?.levels.ok()?;
+                    Some(InfoOutputs {
+                        cooldown: source.cooldown.ok()?,
+                        edges: &edges[start..end],
+                        building: rebased(building, 0),
+                        levels: values.get(levels.first..levels.first.checked_add(levels.len)?)?,
+                    })
+                })();
+                carry.read(token, outputs);
+            }
+        }
+    }
+}
+
+/// Provinces authenticated per guarded round, and the exact record each
+/// needs. A carry holds and publishes whole batches of these slots
+/// ([`RailCarry::quiet_batch`]), batch `n` being slots `n * 64..`.
+pub const PROVINCE_BATCH: usize = 64;
 const PROVINCE_RECORD_BYTES: usize = 20;
 const SLOT_FIELD: [RecordField; 1] = [RecordField {
     source_offset: 0,

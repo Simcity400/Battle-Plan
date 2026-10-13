@@ -29,10 +29,31 @@ impl Capacities {
 
 pub struct Captured {
     rows: CaptureRows<carmy::IconInputsRow>,
+    /// This hour's rows were captured by their own job, right after the
+    /// division sources joined; the Late capture keeps them, and its worker
+    /// ticks.
+    early: Option<u64>,
 }
 impl Captured {
     pub(crate) fn fail_capture(&mut self, reason: &'static str) {
         self.rows.fail(Outcome::Unavailable { reason });
+    }
+
+    /// Rows the ArmyIcons job captured are this hour's: the Late capture
+    /// keeps them ([`Self::take_early`]) and a Late failure leaves them.
+    pub(crate) fn set_early(&mut self, ticks: u64) {
+        self.early = Some(ticks);
+    }
+
+    pub(crate) fn take_early(&mut self) -> Option<u64> {
+        self.early.take()
+    }
+
+    /// A Late failure fails rows that job owns.
+    pub(crate) fn fail_late(&mut self, reason: &'static str) {
+        if self.early.take().is_none() {
+            self.fail_capture(reason);
+        }
     }
 
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -43,6 +64,7 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
+            early: None,
         }
     }
     pub fn reset(&mut self) {
@@ -172,6 +194,9 @@ mod tests {
                     secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA as u64),
                     handle: Some(source.division),
                     roster_owner: Some(source.country),
+                    // The census gathers both icon fields with the seed.
+                    separate_counter: Some(255),
+                    alternate_template: Some(0),
                     ..Default::default()
                 })
                 .collect();
@@ -240,6 +265,8 @@ mod tests {
             secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA as u64),
             handle: Some(source.division),
             roster_owner: Some(source.country),
+            separate_counter: Some(255),
+            alternate_template: Some(0),
             ..Default::default()
         };
         let mut bytes = [0; 0x800];
@@ -306,10 +333,15 @@ mod tests {
                 reason: "army icon source seed absent"
             }
         );
-        // A later missing seed cannot precede the first row's private payload failure.
+        // A later missing seed cannot precede the first row's private payload
+        // failure, here a field the census gather could not read.
         let missing = SliceMemory {
             base: 0,
             bytes: &[],
+        };
+        let failed = carmy::DivisionSeed {
+            separate_counter: None,
+            ..seed
         };
         assert_eq!(
             read(
@@ -318,7 +350,7 @@ mod tests {
                 &[source; 2],
                 Outcome::Rows { len: 2 },
                 &mut rows,
-                Some(&[seed])
+                Some(&[failed])
             ),
             Outcome::Unavailable {
                 reason: "army separate-counter byte unreadable"

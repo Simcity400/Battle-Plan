@@ -20,6 +20,56 @@ pub struct MapCombatReference {
     pub kind: u8,
 }
 
+/// Successful combat identities from one movement capture. The callback parks
+/// the game before the hourly update until every worker joins: the combat
+/// objects and the reference registry cannot be rebuilt/deleted during this
+/// pass. Link rebuilding binds the secondary object and its full reference;
+/// registry insertion files that object. Keep both witnessed identities
+/// together, keyed by module and primary pointer, only until clear. Failures
+/// are never retained, so the next occurrence still makes its read.
+#[derive(Default)]
+pub(crate) struct MapCombatIdentityMemo {
+    entries: std::collections::HashMap<(usize, usize), MapCombatReference>,
+    registry: crate::creference_registry::HeaderResolver,
+}
+
+impl MapCombatIdentityMemo {
+    pub(crate) fn reserve(&mut self, capacity: usize) -> std::io::Result<()> {
+        let additional = capacity.saturating_sub(self.entries.len());
+        crate::allocation::reserve_map(&mut self.entries, additional)
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.registry = Default::default();
+    }
+
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.entries.capacity() * (size_of::<((usize, usize), MapCombatReference)>() + 1)
+    }
+
+    fn identity(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        pointer: usize,
+    ) -> Result<(u64, u8), &'static str> {
+        let key = (base, pointer);
+        if let Some(value) = self.entries.get(&key) {
+            return Ok((value.combat, value.kind));
+        }
+        let (combat, kind) = super::map_combat_identity(memory, base, pointer, &mut self.registry)?;
+        // Storage follows the caller's complete reference arena. A fixed
+        // caller with no memo room still reads every occurrence, without
+        // inserting, allocating, or changing any acquisition failure.
+        if self.entries.len() < self.entries.capacity() {
+            self.entries
+                .insert(key, MapCombatReference { combat, kind });
+        }
+        Ok((combat, kind))
+    }
+}
+
 pub(crate) struct CombatReferencesCapture<'a> {
     pub entries: crate::walk::Buffer<'a, MapCombatReference>,
     pub required: usize,
@@ -63,7 +113,10 @@ impl<'a> CombatReferencesCapture<'a> {
         if self.failure.is_some() {
             return;
         }
-        match super::map_combat_identity(memory, base, pointer, registry) {
+        self.observe_identity(super::map_combat_identity(memory, base, pointer, registry));
+    }
+    fn observe_identity(&mut self, identity: Result<(u64, u8), &'static str>) {
+        match identity {
             Ok((combat, kind)) => {
                 let Some(slot) = self.entries.get_mut(self.written) else {
                     self.refuse("unit combat-reference arena capacity exceeded");
@@ -104,7 +157,9 @@ impl<'a> CombatReferencesCapture<'a> {
 
 /// Division's established movement reader already acquired the first pointer.
 /// Reuse it and the same copied header; read each unvisited tail pointer once.
-/// Some(empty) requires an authenticated zero count and final header agreement.
+/// A nonempty vector's header must agree after its elements are read; an
+/// empty one is the header the seed copied at this boundary, with no read in
+/// between, so it is not read again.
 pub(crate) fn read_unit_combat_references(
     memory: &impl Memory,
     base: usize,
@@ -112,7 +167,20 @@ pub(crate) fn read_unit_combat_references(
     header: [u8; 16],
     first: usize,
     output: &mut [MapCombatReference],
-    registry: &mut crate::creference_registry::HeaderResolver,
+    memo: &mut MapCombatIdentityMemo,
+) -> Result<usize, &'static str> {
+    read_unit_combat_references_with(memory, unit, header, first, output, |pointer| {
+        memo.identity(memory, base, pointer)
+    })
+}
+
+fn read_unit_combat_references_with(
+    memory: &impl Memory,
+    unit: usize,
+    header: [u8; 16],
+    first: usize,
+    output: &mut [MapCombatReference],
+    mut identity: impl FnMut(usize) -> Result<(u64, u8), &'static str>,
 ) -> Result<usize, &'static str> {
     let vector = Array::from_header(header, 8).ok_or("unit combat-reference vector invalid")?;
     let mut capture = CombatReferencesCapture::new(output);
@@ -132,13 +200,15 @@ pub(crate) fn read_unit_combat_references(
                 capture.refuse("unit combat-reference pointer unreadable or null");
                 break;
             };
-            capture.observe(memory, base, pointer, registry);
+            capture.observe_identity(identity(pointer));
             if capture.failure.is_some() {
                 break;
             }
         }
     }
-    capture.finish(memory, unit, header);
+    if vector.count != 0 {
+        capture.finish(memory, unit, header);
+    }
     capture.result()
 }
 

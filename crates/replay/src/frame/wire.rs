@@ -226,143 +226,20 @@ impl Frame {
         let mut tables = allocation::vec(TABLE_COUNT)?;
         for table in TableId::ALL {
             let change = &history[table.index()];
-            let gap = change.table_gap(table, format.version());
-            if !change.present(format.version()) {
-                let reason =
-                    gap.ok_or_else(|| invalid("absent table has no catalogued lifetime gap"))?;
-                tables.push(TableUpdate::Unavailable { reason });
-                continue;
-            }
-            input.recorded_fields = change.fields(table, format.version());
-            let update_start = input.remaining();
-            let status = input.u8()?;
-            if let Some(reason) = gap {
-                if keyframe && status != 0 && status != 4 {
-                    return Err(invalid("keyframe contains a dependent or partial table"));
-                }
-                let fields = change.fields(table, format.version());
-                match status {
-                    0 => table.skip_snapshot(fields, input)?,
-                    1 => {
-                        input.i32()?;
-                        table.skip_delta(fields, input)?;
+            let retain = selected.is_none_or(|tables| tables.contains(&table));
+            let update = decode_retained_update(table, change, format, keyframe, retain, input)?;
+            tables.push(
+                if retain
+                    || matches!(update, TableUpdate::Incompatible { .. })
+                    || !change.present(format.version())
+                {
+                    update
+                } else {
+                    TableUpdate::Unavailable {
+                        reason: "Table not selected for reconstruction".into(),
                     }
-                    2 => {
-                        input.i32()?;
-                    }
-                    3 => {
-                        if input.u32()? == 0 {
-                            return Err(invalid("truncated table has no missing rows"));
-                        }
-                        table.skip_snapshot(fields, input)?;
-                    }
-                    4 => {
-                        if input.string()?.is_empty() {
-                            return Err(invalid("unavailable table needs a reason"));
-                        }
-                    }
-                    _ => return Err(invalid("unknown table status")),
-                }
-                tables.push(TableUpdate::Incompatible {
-                    reason,
-                    source_format: format,
-                    recorded_bytes: update_start - input.remaining(),
-                });
-                continue;
-            }
-            if status == 1 && selected.is_some_and(|tables| !tables.contains(&table)) {
-                input.i32()?;
-                let count =
-                    decode_row_count(table, input, table.minimum_delta_bytes_at(input.format))?;
-                let mut changed = allocation::vec(count)?;
-                let mut previous_key = 0;
-                for _ in 0..count {
-                    let key = rows::validate_delta_row(table, previous_key, input)?;
-                    previous_key = key;
-                    changed.push(key);
-                }
-                let count = decode_row_count(table, input, 1)?;
-                let mut deleted = allocation::vec(count)?;
-                let mut previous_key = 0;
-                for _ in 0..count {
-                    let key = table.decode_key(previous_key, input)?;
-                    previous_key = key;
-                    deleted.push(key);
-                }
-                validate_delta_keys(table, changed.iter().copied(), &deleted)?;
-                if keyframe {
-                    return Err(invalid("keyframe contains a dependent or partial table"));
-                }
-                tables.push(TableUpdate::Unavailable {
-                    reason: "Table not selected for reconstruction".into(),
-                });
-                continue;
-            }
-            let update = match status {
-                0 => TableUpdate::Snapshot(decode_rows(table, input)?),
-                1 => {
-                    let baseline = input.i32()?;
-                    let count =
-                        decode_row_count(table, input, table.minimum_delta_bytes_at(input.format))?;
-                    let mut changed = allocation::vec(count)?;
-                    let mut previous_key = 0;
-                    for _ in 0..count {
-                        let row = rows::decode_delta(table, previous_key, input)?;
-                        previous_key = row.key;
-                        changed.push(row);
-                    }
-                    let count = decode_row_count(table, input, 1)?;
-                    let mut deleted = allocation::vec(count)?;
-                    let mut previous_key = 0;
-                    for _ in 0..count {
-                        let key = table.decode_key(previous_key, input)?;
-                        previous_key = key;
-                        deleted.push(key);
-                    }
-                    validate_delta(table, &changed, &deleted)?;
-                    TableUpdate::Delta {
-                        baseline,
-                        changed,
-                        deleted,
-                    }
-                }
-                2 => TableUpdate::Unchanged {
-                    baseline: input.i32()?,
                 },
-                3 => {
-                    let missing = input.u32()?;
-                    if missing == 0 {
-                        return Err(invalid("truncated table has no missing rows"));
-                    }
-                    TableUpdate::Truncated {
-                        rows: decode_rows(table, input)?,
-                        missing,
-                    }
-                }
-                4 => {
-                    let reason = input.string()?;
-                    if reason.is_empty() {
-                        return Err(invalid("unavailable table needs a reason"));
-                    }
-                    TableUpdate::Unavailable { reason }
-                }
-                _ => return Err(invalid("unknown table status")),
-            };
-            if keyframe
-                && !matches!(
-                    update,
-                    TableUpdate::Snapshot(_) | TableUpdate::Unavailable { .. }
-                )
-            {
-                return Err(invalid("keyframe contains a dependent or partial table"));
-            }
-            tables.push(if selected.is_none_or(|tables| tables.contains(&table)) {
-                update
-            } else {
-                TableUpdate::Unavailable {
-                    reason: "Table not selected for reconstruction".into(),
-                }
-            });
+            );
         }
         Ok(Self {
             branch,
@@ -372,6 +249,157 @@ impl Frame {
             tables: tables.try_into().unwrap(),
         })
     }
+}
+
+/// Decode one table's update in `format`, from its status byte. Absent tables
+/// read nothing; a catalogued layout gap discards the update's bytes by its
+/// proven framing and keeps their length.
+pub(crate) fn decode_update(
+    table: TableId,
+    change: &LastChange,
+    format: FormatVersion,
+    keyframe: bool,
+    input: &mut Decoder<'_>,
+) -> io::Result<TableUpdate> {
+    decode_retained_update(table, change, format, keyframe, true, input)
+}
+
+/// [`decode_update`], validating an unretained delta's rows without
+/// allocating them.
+fn decode_retained_update(
+    table: TableId,
+    change: &LastChange,
+    format: FormatVersion,
+    keyframe: bool,
+    retain: bool,
+    input: &mut Decoder<'_>,
+) -> io::Result<TableUpdate> {
+    input.format = format.version();
+    let gap = change.table_gap(table, format.version());
+    if !change.present(format.version()) {
+        let reason = gap.ok_or_else(|| invalid("absent table has no catalogued lifetime gap"))?;
+        return Ok(TableUpdate::Unavailable { reason });
+    }
+    input.recorded_fields = change.fields(table, format.version());
+    let update_start = input.remaining();
+    let status = input.u8()?;
+    if let Some(reason) = gap {
+        if keyframe && status != 0 && status != 4 {
+            return Err(invalid("keyframe contains a dependent or partial table"));
+        }
+        let fields = change.fields(table, format.version());
+        match status {
+            0 => table.skip_snapshot(fields, input)?,
+            1 => {
+                input.i32()?;
+                table.skip_delta(fields, input)?;
+            }
+            2 => {
+                input.i32()?;
+            }
+            3 => {
+                if input.u32()? == 0 {
+                    return Err(invalid("truncated table has no missing rows"));
+                }
+                table.skip_snapshot(fields, input)?;
+            }
+            4 => {
+                if input.string()?.is_empty() {
+                    return Err(invalid("unavailable table needs a reason"));
+                }
+            }
+            _ => return Err(invalid("unknown table status")),
+        }
+        return Ok(TableUpdate::Incompatible {
+            reason,
+            source_format: format,
+            recorded_bytes: update_start - input.remaining(),
+        });
+    }
+    if status == 1 && !retain {
+        input.i32()?;
+        let count = decode_row_count(table, input, table.minimum_delta_bytes_at(input.format))?;
+        let mut changed = allocation::vec(count)?;
+        let mut previous_key = 0;
+        for _ in 0..count {
+            let key = rows::validate_delta_row(table, previous_key, input)?;
+            previous_key = key;
+            changed.push(key);
+        }
+        let count = decode_row_count(table, input, 1)?;
+        let mut deleted = allocation::vec(count)?;
+        let mut previous_key = 0;
+        for _ in 0..count {
+            let key = table.decode_key(previous_key, input)?;
+            previous_key = key;
+            deleted.push(key);
+        }
+        validate_delta_keys(table, changed.iter().copied(), &deleted)?;
+        if keyframe {
+            return Err(invalid("keyframe contains a dependent or partial table"));
+        }
+        return Ok(TableUpdate::Unavailable {
+            reason: "Table not selected for reconstruction".into(),
+        });
+    }
+    let update = match status {
+        0 => TableUpdate::Snapshot(decode_rows(table, input)?),
+        1 => {
+            let baseline = input.i32()?;
+            let count = decode_row_count(table, input, table.minimum_delta_bytes_at(input.format))?;
+            let mut changed = allocation::vec(count)?;
+            let mut previous_key = 0;
+            for _ in 0..count {
+                let row = rows::decode_delta(table, previous_key, input)?;
+                previous_key = row.key;
+                changed.push(row);
+            }
+            let count = decode_row_count(table, input, 1)?;
+            let mut deleted = allocation::vec(count)?;
+            let mut previous_key = 0;
+            for _ in 0..count {
+                let key = table.decode_key(previous_key, input)?;
+                previous_key = key;
+                deleted.push(key);
+            }
+            validate_delta(table, &changed, &deleted)?;
+            TableUpdate::Delta {
+                baseline,
+                changed,
+                deleted,
+            }
+        }
+        2 => TableUpdate::Unchanged {
+            baseline: input.i32()?,
+        },
+        3 => {
+            let missing = input.u32()?;
+            if missing == 0 {
+                return Err(invalid("truncated table has no missing rows"));
+            }
+            TableUpdate::Truncated {
+                rows: decode_rows(table, input)?,
+                missing,
+            }
+        }
+        4 => {
+            let reason = input.string()?;
+            if reason.is_empty() {
+                return Err(invalid("unavailable table needs a reason"));
+            }
+            TableUpdate::Unavailable { reason }
+        }
+        _ => return Err(invalid("unknown table status")),
+    };
+    if keyframe
+        && !matches!(
+            update,
+            TableUpdate::Snapshot(_) | TableUpdate::Unavailable { .. }
+        )
+    {
+        return Err(invalid("keyframe contains a dependent or partial table"));
+    }
+    Ok(update)
 }
 
 fn encode_rows(table: TableId, values: &TableRows, out: &mut Vec<u8>) -> io::Result<()> {

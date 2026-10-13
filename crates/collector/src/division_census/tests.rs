@@ -1,6 +1,131 @@
 use super::*;
 use crate::sampling::divisions_test_kit as kit;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoreEvent {
+    Copy(usize, usize),
+    Hint(usize, usize),
+}
+
+struct CoreHintMemory<'a> {
+    bytes: &'a [u8],
+    events: RefCell<Vec<CoreEvent>>,
+    fault: Cell<Option<usize>>,
+    once: bool,
+    hints: bool,
+}
+
+impl CoreHintMemory<'_> {
+    fn copies(&self) -> Vec<(usize, usize)> {
+        self.events
+            .borrow()
+            .iter()
+            .filter_map(|event| match *event {
+                CoreEvent::Copy(at, len) => Some((at, len)),
+                CoreEvent::Hint(..) => None,
+            })
+            .collect()
+    }
+}
+
+impl Memory for CoreHintMemory<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.events
+            .borrow_mut()
+            .push(CoreEvent::Copy(address, output.len()));
+        if self
+            .fault
+            .get()
+            .is_some_and(|at| address <= at && at - address < output.len())
+        {
+            if self.once {
+                self.fault.set(None);
+            }
+            output.fill(0xff);
+            return false;
+        }
+        kit::memory(self.bytes).copy(address, output)
+    }
+
+    fn prefetch(&self, address: usize, len: usize) {
+        if self.hints {
+            self.events.borrow_mut().push(CoreEvent::Hint(address, len));
+        }
+    }
+}
+
+#[test]
+fn core_hints_cover_template_skip_and_preserve_ordered_partial_faults() {
+    let mut bytes = kit::fixture();
+    let roster = kit::C0 + ccountry::DIVISIONS;
+    for offset in [8, 12] {
+        bytes[roster + offset..roster + offset + 4].copy_from_slice(&9_u32.to_le_bytes());
+    }
+    for index in 0..9 {
+        let pointer = [kit::A1, kit::A2][index % 2];
+        bytes[0x23000 + index * 8..0x23008 + index * 8]
+            .copy_from_slice(&(pointer as u64).to_le_bytes());
+    }
+    for capacity in [0, 1, 3, 4, 5, 8, 10] {
+        for once in [false, true] {
+            for fault in [
+                None,
+                Some(kit::GAME_STATE + cgame_state::PROVINCES + 7),
+                Some(kit::LTAB + 4),
+                Some(kit::P1 + 7),
+                Some(kit::P1 + cprovince::ID + 2),
+                Some(kit::PTAB + 8 + 7),
+                Some(0x40000 + 7),
+                Some(0x40000 + creferenced_division_template::TYPE + 7),
+                Some(0x40000 + creferenced_division_template::REVEAL_SKIP),
+                Some(0x41000 + 7),
+            ] {
+                let make_census = || {
+                    let mut census = Census::new();
+                    census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
+                    census
+                };
+                let mut actual = make_census();
+                let mut direct = make_census();
+                let make_memory = |hints| CoreHintMemory {
+                    bytes: &bytes,
+                    events: RefCell::new(Vec::new()),
+                    fault: Cell::new(fault),
+                    once,
+                    hints,
+                };
+                let hinted = make_memory(true);
+                let unhinted = make_memory(false);
+                let allocated = actual.allocated_bytes();
+                actual.capture_core(&hinted, capacity);
+                direct.capture_core(&unhinted, capacity);
+                assert_eq!(actual.outcome(capacity), direct.outcome(capacity));
+                assert_eq!(actual.rows, direct.rows);
+                assert_eq!(actual.sources, direct.sources);
+                assert_eq!(actual.allocated_bytes(), allocated);
+                assert_eq!(hinted.copies(), unhinted.copies());
+                assert_eq!(hinted.fault.get(), unhinted.fault.get());
+                if fault.is_none() && capacity != 0 {
+                    let events = hinted.events.borrow();
+                    let skip =
+                        CoreEvent::Hint(0x40000 + creferenced_division_template::REVEAL_SKIP, 1);
+                    assert_eq!(
+                        events.iter().filter(|&&event| event == skip).count(),
+                        capacity.min(9),
+                        "only admitted nonnull templates are hinted"
+                    );
+                    let hint = events.iter().position(|&event| event == skip).unwrap();
+                    let owner = events
+                        .iter()
+                        .position(|&event| event == CoreEvent::Copy(kit::LTAB + 4, 4))
+                        .unwrap();
+                    assert!(hint < owner, "child hints precede serial projection");
+                }
+            }
+        }
+    }
+}
 
 struct Observed<'a> {
     bytes: &'a [u8],
@@ -513,16 +638,12 @@ fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
             let observed = make_memory();
             census.capture_core(&observed, capacity);
             let actual_reads = observed.reads.borrow();
-            let serial_reads = serial.reads.borrow();
-            let mut remaining = serial_reads.iter();
-            for read in actual_reads.iter() {
-                assert!(remaining.any(|original| original == read));
-            }
-            if expected.is_err() {
-                assert_eq!(actual_reads.last(), serial_reads.last());
-            } else if capacity > 0 {
-                // One root, one owner link per row, and exactly one complete
-                // authentication of each shared child (3 + 3 + 1 calls).
+            // OWNER DECISION 2026-10-12 permits bounded read reordering:
+            // province batches can precede the owner link, so their trace
+            // need not be a subsequence of the original row-at-a-time walk.
+            // Persistent faults must still preserve its rows and refusal;
+            // successful reads and byte accounting remain exact below.
+            if expected.is_ok() && capacity > 0 {
                 assert_eq!(actual_reads.len(), 1 + capacity + 7);
             }
             assert_eq!(census.rows, rows);
@@ -548,6 +669,26 @@ fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
                     Err(reason) => Outcome::Unavailable { reason },
                 }
             );
+        }
+    }
+}
+
+/// A run of 64 templates, groups or provinces allocated one after another
+/// keeps at least 40 of them in the walk's memo at once, at any object size
+/// from 16 bytes to 32 KiB: a lookup that finds another object's entry reads
+/// the identity again. The multiplicative hash this replaces put such a run
+/// in 5 slots at a 0x2D40 stride and 6 at 0x16A0 or 0x43E0, so cycling
+/// through it read nearly every identity afresh.
+#[test]
+fn strided_core_identities_keep_most_of_a_run_in_the_memo() {
+    for base in [0x1_2345_6780_usize, 0x2_0000_0000, 0x7ff0_1234_5670] {
+        for stride in (0x10..=0x8000).step_by(0x10) {
+            let mut used = [false; CORE_IDENTITY_SLOTS];
+            for index in 0..64 {
+                used[CoreIdentities::slot(base + index * stride)] = true;
+            }
+            let held = used.iter().filter(|&&used| used).count();
+            assert!(held >= 40, "base {base:#x}, stride {stride:#x}: {held}");
         }
     }
 }
@@ -784,4 +925,183 @@ fn growing_inputs_keep_original_fault_precedence_and_read_trace() {
             "fault {ordinal}"
         );
     }
+}
+
+/// A shared province's vtable and id, and a template's vtable, handle and
+/// reveal-skip byte, are each one guarded gather.
+#[test]
+fn core_children_authenticate_in_one_gather_each() {
+    /// Counts guarded calls: a gather is one call, as it is live.
+    struct Calls<'a>(&'a [u8], std::cell::Cell<usize>);
+    impl Memory for Calls<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.1.set(self.1.get() + 1);
+            kit::memory(self.0).copy(address, output)
+        }
+        fn copy_records(
+            &self,
+            sources: RecordSources<'_>,
+            layout: &RecordLayout<'_>,
+            destination: &mut [u8],
+        ) -> usize {
+            self.1.set(self.1.get() + 1);
+            kit::memory(self.0).copy_records(sources, layout, destination)
+        }
+    }
+    let mut bytes = kit::fixture();
+    let roster = kit::C0 + ccountry::DIVISIONS;
+    for offset in [8, 12] {
+        bytes[roster + offset..roster + offset + 4].copy_from_slice(&9u32.to_le_bytes());
+    }
+    for index in 0..9 {
+        let pointer = [kit::A1, kit::A2][index % 2];
+        bytes[0x23000 + index * 8..0x23008 + index * 8]
+            .copy_from_slice(&(pointer as u64).to_le_bytes());
+    }
+    let mut census = Census::new();
+    census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
+    let calls = Calls(&bytes, Default::default());
+    census.capture_core(&calls, 10);
+    assert_eq!(census.outcome(10), complete(10, 0));
+    // The province array, one owner link per row, and the shared children:
+    // the province's gather and registered slot, the template's gather and
+    // the group's identity.
+    assert_eq!(calls.1.get(), 1 + 10 + 4);
+}
+
+/// The census walked in parts over consecutive country slots and joined in
+/// slot order equals one walk of every slot: the seeds (a failed span in
+/// each part included), the roster slots, the outcomes and the counts. A
+/// walk failure in a later part is the census's failure, as the serial
+/// walk's first one.
+#[test]
+fn parts_joined_in_slot_order_equal_one_walk() {
+    use many::*;
+    const COUNTRIES: u32 = 6;
+    const PER: u32 = 2;
+    let army = |slot: u32, index: u32| ARMY + ((slot - 1) * PER + index) as usize * 0x800;
+    let mut bytes = world(COUNTRIES, PER);
+    let base = &bytes[ARMY..ARMY + 0x100].to_vec();
+    for slot in 1..=COUNTRIES {
+        for index in 0..PER {
+            let at = army(slot, index);
+            bytes[at..at + 0x100].copy_from_slice(base);
+            let handle = ((slot * PER + index) as u64) << 32 | 1;
+            bytes[at + engine::cunit::HANDLE..][..8].copy_from_slice(&handle.to_le_bytes());
+            let entry = roster(slot, PER) + index as usize * 8;
+            bytes[entry..entry + 8].copy_from_slice(&(at as u64).to_le_bytes());
+        }
+    }
+    // A failed span in each of the three parts.
+    let faults = [army(1, 1), army(4, 0), army(6, 1)].map(|at| at + carmy::STRENGTH);
+    struct Faults<'a>(&'a [u8], Vec<usize>);
+    impl Memory for Faults<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if self
+                .1
+                .iter()
+                .any(|&fault| address <= fault && address.saturating_add(output.len()) > fault)
+            {
+                return false;
+            }
+            kit::memory(self.0).copy(address, output)
+        }
+    }
+    let walk = |memory: &Faults| {
+        let mut serial = Census::new_worker();
+        serial.capture_inputs_growing(memory, 0, GAME_STATE);
+        let mut parted = Census::new_worker();
+        parted.capture_inputs_part(memory, 0, GAME_STATE, (1, 3));
+        parted.reserve_join(serial.join_capacity());
+        for slots in [(3, 5), (5, u32::MAX)] {
+            let mut part = Census::new_worker();
+            part.capture_inputs_part(memory, 0, GAME_STATE, slots);
+            if parted.joinable() {
+                parted.absorb(&mut part).unwrap();
+            }
+        }
+        // The core reads the joined census as it reads the serial one.
+        for census in [&mut serial, &mut parted] {
+            census.capture_core(memory, 64);
+        }
+        (serial, parted)
+    };
+    let observe = |census: &Census| {
+        let inputs = census.unit_inputs().unwrap();
+        let mut counts = vec![replay::rows::DivisionCensusRow::default(); 16];
+        let mut rows = vec![carmy::Row::default(); 16];
+        let rows_outcome = census.install_rows(&mut rows);
+        (
+            (
+                inputs.seeds().to_vec(),
+                inputs.outcome(),
+                inputs.intel_sources().entries.to_vec(),
+                inputs.intel_sources().outcome,
+            ),
+            (census.census_result, census.row_error, census.overflowed),
+            (census.install_counts(&mut counts), counts),
+            (rows_outcome, rows, census.sources.clone()),
+            (
+                census.required,
+                census.required_slots,
+                census.core_roots.map(|roots| roots.found),
+            ),
+        )
+    };
+    let (serial, parted) = walk(&Faults(&bytes, faults.to_vec()));
+    assert_eq!(serial.census_result, Outcome::Rows { len: 12 });
+    assert_eq!(
+        serial
+            .unit_inputs()
+            .unwrap()
+            .seeds()
+            .iter()
+            .filter(|seed| seed.strength.is_none())
+            .count(),
+        3
+    );
+    assert_eq!(observe(&parted), observe(&serial));
+    // The join copied into storage the first part's worker reserved.
+    let capacity = parted.entries.capacity();
+    assert!(capacity >= 12);
+    // The next hour splits the twelve entries no finer than whole countries.
+    let mut starts = [0; MAX_PARTS - 1];
+    assert_eq!(parts_for(12), 1);
+    assert_eq!(serial.part_starts(&mut starts), 0);
+
+    // A roster failure in the second part is the census's failure.
+    let mut failing = faults.to_vec();
+    failing.push(country(4) + ccountry::DIVISIONS);
+    let (serial, parted) = walk(&Faults(&bytes, failing));
+    assert!(matches!(serial.census_result, Outcome::Unavailable { .. }));
+    let refusal = |census: &Census| {
+        let inputs = census.unit_inputs().unwrap();
+        let mut rows = vec![carmy::Row::default(); 16];
+        (
+            census.census_result,
+            census.row_error,
+            inputs.outcome(),
+            inputs.intel_sources().outcome,
+            census.install_rows(&mut rows),
+            census.core_roots.is_some(),
+            census.joinable(),
+        )
+    };
+    assert_eq!(refusal(&parted), refusal(&serial));
+    assert!(!parted.joinable());
+}
+
+/// Parts split the census's entries into about equal shares, at country
+/// boundaries.
+#[test]
+fn part_starts_split_entries_evenly_at_country_boundaries() {
+    let mut census = Census::new_worker();
+    let entries = 4 * 1_500;
+    census.entries = vec![Entry::default(); entries];
+    // A country per 100 entries, in slots 1, 2, ...
+    census.slot_ends = (1..=60).map(|slot| (slot, slot * 100)).collect();
+    let mut starts = [0; MAX_PARTS - 1];
+    assert_eq!(parts_for(entries), 4);
+    assert_eq!(census.part_starts(&mut starts), 3);
+    assert_eq!(starts, [16, 31, 46]);
 }

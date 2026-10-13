@@ -1,6 +1,7 @@
-//! Hourly land manpower and supply operands for every division in the census.
-//! Fixed fields are owned DivisionSeed copies; only contributor entries remain
-//! live here. Supply classification belongs to the dashboard.
+//! Hourly land manpower and naval-transfer operands for every division in the
+//! census. Fixed fields are owned DivisionSeed copies; only contributor entries
+//! remain live here. The division's supply ratio and grace are DivisionStatus's
+//! (`carmy::StatusPacket`), taken from the same seed.
 use crate::{
     Memory, carmy, carmy_manpower_values,
     cpdx_array::Array,
@@ -19,9 +20,6 @@ pub struct Row {
     pub division: u64,
     pub start: usize,
     pub len: usize,
-    pub received_supply: i64,
-    pub maximum_grace: i64,
-    pub remaining_grace: i64,
     pub naval_transfer: bool,
 }
 #[derive(Clone, Copy, Debug)]
@@ -136,12 +134,7 @@ fn capture_buffer(
             if seed.primary_vtable != Some((base + carmy::VTABLE_RVA) as u64) {
                 return Err("division land primary identity unavailable");
             }
-            if seed.handle != Some(seed.division)
-                || seed.counter_supply_status.is_none()
-                || seed.naval_transfer_membership.is_none()
-                || seed.supply_grace_maximum.is_none()
-                || seed.supply_grace_remaining.is_none()
-            {
+            if seed.handle != Some(seed.division) || seed.naval_transfer_membership.is_none() {
                 return Err("division land shared operands unavailable");
             }
             let header = seed
@@ -175,9 +168,6 @@ fn capture_buffer(
                 division: seed.division,
                 start: used,
                 len: array.count as usize,
-                received_supply: seed.counter_supply_status.unwrap(),
-                maximum_grace: seed.supply_grace_maximum.unwrap(),
-                remaining_grace: seed.supply_grace_remaining.unwrap(),
                 naval_transfer: seed.naval_transfer_membership.unwrap() != 0,
             };
             used += array.count as usize;
@@ -300,10 +290,12 @@ mod sizing_tests {
                 division: ((ordinal as u64 + 1) << 32) | 1,
                 primary_vtable: Some(carmy::VTABLE_RVA as u64),
                 handle: Some(((ordinal as u64 + 1) << 32) | 1),
-                counter_supply_status: Some(-5),
-                supply_grace_maximum: Some(7),
-                supply_grace_remaining: Some(-2),
-                naval_transfer_membership: Some(0),
+                // The supply operands are DivisionStatus's; an unread one
+                // never withholds the land row.
+                counter_supply_status: None,
+                supply_grace_maximum: None,
+                supply_grace_remaining: None,
+                naval_transfer_membership: Some(ordinal % 2),
                 manpower_values: Some(header),
                 ..Default::default()
             })
@@ -351,7 +343,7 @@ mod sizing_tests {
             for (ordinal, row) in rows[..count].iter().enumerate() {
                 assert_eq!(row.division, sources[ordinal].division);
                 assert_eq!(row.len, entries as usize);
-                assert_eq!(row.received_supply, -5);
+                assert_eq!(row.naval_transfer, ordinal % 2 == 1);
                 assert_eq!(
                     contributors[row.start + row.len - 1],
                     Contributor {

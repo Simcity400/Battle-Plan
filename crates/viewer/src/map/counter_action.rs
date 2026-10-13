@@ -552,7 +552,7 @@ mod tests {
                     .map(|&(country, slot)| CountryCounterInputRow {
                         country,
                         directed_wars: Recorded::Value(Some(DirectedWars {
-                            sample_hour,
+                            sample_hour: replay::rows::PacketHour::Stamped(sample_hour),
                             receiver_raw_id: country as i32,
                             receiver_slot: slot,
                             matrix_count: 4,
@@ -1097,7 +1097,7 @@ mod tests {
         let owners = BTreeMap::from([(7, 100)]);
         let links = BTreeMap::new();
         let packet = |entries| UnitCombatReferences {
-            sample_hour: 10,
+            sample_hour: replay::rows::PacketHour::Stamped(10),
             entries,
         };
         let mut movement = DivisionMovementRow {
@@ -1168,7 +1168,7 @@ mod tests {
             division: 7,
             combat_count: 1,
             combat_references: Recorded::Value(Some(UnitCombatReferences {
-                sample_hour: frame.hour,
+                sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
                 entries: vec![UnitCombatReference {
                     combat: 41,
                     kind: 2,
@@ -1233,7 +1233,7 @@ mod tests {
             division: 7,
             combat_count: 3,
             combat_references: Recorded::Value(Some(UnitCombatReferences {
-                sample_hour: frame.hour,
+                sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
                 entries: vec![
                     UnitCombatReference {
                         combat: 41,
@@ -1313,7 +1313,7 @@ mod tests {
         naval.sides[0].summary.countries = (1..=5_000).collect();
         set(&mut frame, TableRows::NavalCombatDetails(vec![naval]));
         let packet = UnitCombatReferences {
-            sample_hour: frame.hour,
+            sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
             entries: vec![UnitCombatReference {
                 combat: 41,
                 kind: 2,

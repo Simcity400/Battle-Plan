@@ -7,7 +7,10 @@ use crate::{
 
 /// CNationalFocusProgress primary vtable.
 pub const VTABLE_RVA: usize = 0x0272_3d30;
-/// CNationalFocusProgress current CNationalFocus pointer.
+/// Focus progress's owning country pointer; the constructor stores its RDX
+/// argument here.
+pub const COUNTRY: usize = 0x08;
+/// Focus progress's current focus pointer, dereferenced by country focus acquisition.
 pub const CURRENT: usize = 0x10;
 /// CNationalFocusProgress current CContinuousNationalFocus pointer.
 pub const CONTINUOUS: usize = 0x18;
@@ -117,10 +120,30 @@ impl Tokens<'_> {
     }
 }
 
+// The daily focus update and completed-focus query use these exact existing
+// fields, kept in one root record.
+const ROOT_FIELDS: [crate::memory::RecordField; 6] = crate::memory::packed_fields([
+    (0, 8),
+    (CURRENT, 16),
+    (PROGRESS, 8),
+    (PAUSED, 1),
+    (COMPLETED_COUNT, 4),
+    (COMPLETED_DATA, 16),
+]);
+const ROOT_LAYOUT: crate::memory::RecordLayout<'static> =
+    crate::memory::RecordLayout::new(&ROOT_FIELDS, 53).unwrap();
+const STRING_FIELDS: [crate::memory::RecordField; 1] = crate::memory::packed_fields([(0, 32)]);
+const STRING_LAYOUT: crate::memory::RecordLayout<'static> =
+    crate::memory::RecordLayout::new(&STRING_FIELDS, 32).unwrap();
+const COMPLETED_FIELDS: [crate::memory::RecordField; 1] =
+    crate::memory::packed_fields([(cnational_focus::TOKEN, 32)]);
+const COMPLETED_LAYOUT: crate::memory::RecordLayout<'static> =
+    crate::memory::RecordLayout::new(&COMPLETED_FIELDS, 32).unwrap();
+
 /// Reads one authenticated country's current focus state and completed roster
 /// into caller-owned storage. Country enumeration/authentication belongs to the
-/// caller. No engine functions, allocation, retry, token cache or event hooks
-/// are used. Summary and completion failures remain independent after the common
+/// caller. Exact-field batches use advisory worker storage; a failed batch
+/// permits one original serial pass, without engine calls or event hooks. Summary and completion failures remain independent after the common
 /// focus-status root is authenticated; arena exhaustion never shortens a token.
 pub fn walk(
     memory: &impl Memory,
@@ -181,6 +204,16 @@ pub fn walk_buffer(
         .and_then(|at| read::<u64>(memory, at))
         .and_then(|value| usize::try_from(value).ok())
         .filter(|&value| value != 0);
+    let roots = [root.unwrap_or(0)];
+    let roots = &roots[..usize::from(root.is_some())];
+    let root_batch = crate::governance_batch::Records::gather(
+        memory,
+        crate::batch_fallback::Batch::GovernanceFocusProgress,
+        crate::memory::RecordSources::Pointers(roots),
+        &ROOT_LAYOUT,
+    );
+    let batched = root_batch.view(memory);
+    let memory = &batched;
     let result = match root {
         Some(root)
             if base
@@ -251,6 +284,29 @@ fn summary(
     if completed_count < 0 {
         return Err("completed focus count is negative");
     }
+    let mut strings = [0; 3];
+    let mut string_count = 0;
+    for (pointer, offset) in [
+        (tree, cnational_focus_tree::TOKEN),
+        (current, cnational_focus::TOKEN),
+        (continuous, ccontinuous_national_focus::TOKEN),
+    ] {
+        if let Ok(pointer) = usize::try_from(pointer)
+            && pointer != 0
+            && let Some(string) = pointer.checked_add(offset)
+        {
+            strings[string_count] = string;
+            string_count += 1;
+        }
+    }
+    let batch = crate::governance_batch::Records::gather(
+        memory,
+        crate::batch_fallback::Batch::GovernanceFocusDefinitions,
+        crate::memory::RecordSources::Pointers(&strings[..string_count]),
+        &STRING_LAYOUT,
+    );
+    let batched = batch.view(memory);
+    let memory = &batched;
     let definitions = [
         optional_token(memory, tree, cnational_focus_tree::TOKEN)?,
         optional_token(memory, current, cnational_focus::TOKEN)?,
@@ -306,6 +362,27 @@ fn completed_rows(
     let roster = Array::read(memory, at(root, COMPLETED_DATA)?, COMPLETED_STRIDE)
         .ok_or("completed focus roster unreadable or invalid")?;
     output.ensure(roster.count as usize)?;
+    let admitted = output.len().min(roster.count as usize);
+    let pointer_batch = crate::governance_batch::Records::gather(
+        memory,
+        crate::batch_fallback::Batch::GovernanceFocusPointers,
+        crate::memory::RecordSources::Strided {
+            base: roster.data,
+            stride: COMPLETED_STRIDE,
+            count: admitted,
+        },
+        &crate::governance_batch::POINTER_LAYOUT,
+    );
+    let targets = pointer_batch.targets(0);
+    let definition_batch = crate::governance_batch::Records::gather(
+        memory,
+        crate::batch_fallback::Batch::GovernanceFocusDefinitions,
+        crate::memory::RecordSources::Pointers(&targets),
+        &COMPLETED_LAYOUT,
+    );
+    let pointers = pointer_batch.view(memory);
+    let definitions = definition_batch.view(&pointers);
+    let memory = &definitions;
     let mut len = 0;
     let mut unread_rows = 0;
     for ordinal in 0..roster.count {
@@ -762,3 +839,11 @@ mod tests {
         assert_eq!(result.completed_outcome, Outcome::Rows { len: 2 });
     }
 }
+
+#[cfg(test)]
+#[path = "cnational_focus_progress/serial.rs"]
+mod serial;
+
+#[cfg(test)]
+#[path = "cnational_focus_progress/batch_tests.rs"]
+mod batch_tests;

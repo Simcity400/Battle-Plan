@@ -13,8 +13,6 @@ fn projection_compares_every_model_field_and_preserves_encoded_boundaries() {
         let mut capture = Captured::with_capacities(&Capacities {
             rows: 2,
             modifiers: SnapshotCapacity::default(),
-            strike_modifiers: SnapshotCapacity::default(),
-            strike_metadata: 0,
         });
         let mut row = cship::ModelRow {
             ship: u64::MAX,
@@ -23,13 +21,6 @@ fn projection_compares_every_model_field_and_preserves_encoded_boundaries() {
             formation_flags: 1 << 63,
             ..Default::default()
         };
-        row.strike = Some(cship::ShipStrikeInputs {
-            light_attack: Some(i64::MIN),
-            heavy_attack: Some(i64::MAX),
-            light_piercing: Some(-1),
-            torpedo_attack: Some(0),
-            torpedo_cooldown_modifier: Some(0),
-        });
         row.hull_sprite.bytes[..3].copy_from_slice(&[65, 0, 255]);
         row.hull_sprite.len = 3;
         row.fallback_sprite.bytes[..2].copy_from_slice(&[255, 0]);
@@ -50,7 +41,7 @@ fn projection_compares_every_model_field_and_preserves_encoded_boundaries() {
         frame.tables[TABLES[0].index()] = table;
         frame
     };
-    for change in 0..38 {
+    for change in 0..30 {
         let mut current = fixture();
         match change {
             0 => {}
@@ -96,26 +87,6 @@ fn projection_compares_every_model_field_and_preserves_encoded_boundaries() {
             27 => current.rows.rows[0].anti_air_base = i64::MIN,
             28 => current.rows.rows[0].subunit_index = Some(i32::MIN),
             29 => current.rows.rows[0].subunit_index = Some(0),
-            30 => current.rows.rows[0].strike = None,
-            31 => current.rows.rows[0].strike.as_mut().unwrap().light_attack = None,
-            32 => current.rows.rows[0].strike.as_mut().unwrap().light_attack = Some(0),
-            33 => current.rows.rows[0].strike.as_mut().unwrap().heavy_attack = None,
-            34 => current.rows.rows[0].strike.as_mut().unwrap().light_piercing = Some(0),
-            35 => current.rows.rows[0].strike.as_mut().unwrap().torpedo_attack = None,
-            36 => {
-                current.rows.rows[0]
-                    .strike
-                    .as_mut()
-                    .unwrap()
-                    .torpedo_cooldown_modifier = None
-            }
-            37 => {
-                current.rows.rows[0]
-                    .strike
-                    .as_mut()
-                    .unwrap()
-                    .torpedo_cooldown_modifier = Some(i64::MAX)
-            }
             _ => unreachable!(),
         }
         let mut baseline = frame(1, 100, fixture().table_inputs(None));
@@ -136,14 +107,14 @@ fn projection_compares_every_model_field_and_preserves_encoded_boundaries() {
         let mut reference = FrameEncoder::new();
         projected.encode_input(baseline.clone(), false).unwrap();
         reference.encode_input(baseline, false).unwrap();
-        let mut scratch = ProjectionScratch::default();
-        let mut projection = Projection::new(&projected, branch, hour, force, &mut scratch);
+        let scratch = ProjectionScratch::default();
+        let mut projection = Projection::new(&projected, branch, hour, force, &scratch);
         fixture().table_inputs(Some(&mut projection));
         let inputs = current.table_inputs(Some(&mut projection));
         if matches!(change, 0 | 14) {
             assert!(matches!(inputs[0], TableInput::ComparedEqual(_)));
         }
-        if (1..=13).contains(&change) || matches!(change, 23 | 27..=37) {
+        if (1..=13).contains(&change) || matches!(change, 23 | 27..=29) {
             let TableInput::ComparedChanges { indices, .. } = &inputs[0] else {
                 panic!("model field {change} must replace its row");
             };
@@ -176,8 +147,6 @@ fn source_faults_capacity_and_empty_primary_census_remain_explicit() {
     let mut capacity = Capacities {
         rows: 0,
         modifiers: SnapshotCapacity::default(),
-        strike_modifiers: SnapshotCapacity::default(),
-        strike_metadata: 0,
     };
     let mut capture = Captured::with_capacities(&capacity);
     capture.begin_sources();
@@ -186,7 +155,7 @@ fn source_faults_capacity_and_empty_primary_census_remain_explicit() {
         len: 1,
         unread_rows: 3,
     });
-    capture.capture_owned(&memory, CaptureContext::legacy(0));
+    capture.capture_owned(&memory, CaptureContext::new(0));
     assert_eq!(
         capture.outcomes(),
         [Outcome::Truncated {
@@ -200,12 +169,12 @@ fn source_faults_capacity_and_empty_primary_census_remain_explicit() {
     capture.begin_sources();
     capture.visit_source(0, &cship::Row::default());
     capture.finish_sources(Outcome::Rows { len: 1 });
-    capture.capture_owned(&memory, CaptureContext::legacy(0));
+    capture.capture_owned(&memory, CaptureContext::new(0));
     assert!(matches!(capture.outcomes()[0], Outcome::Unavailable { .. }));
     capture.reset();
     capture.begin_sources();
     capture.finish_sources(Outcome::Rows { len: 0 });
-    capture.capture_owned(&memory, CaptureContext::legacy(0));
+    capture.capture_owned(&memory, CaptureContext::new(0));
     assert_eq!(capture.outcomes(), [Outcome::Rows { len: 0 }]);
     assert!(matches!(capture.tables()[0], TableView::Complete(_)));
 }
@@ -214,8 +183,6 @@ fn owned_seed_handoff_preserves_order_demand_and_clears_callback_pointers() {
     let mut capacity = Capacities {
         rows: 2,
         modifiers: SnapshotCapacity::default(),
-        strike_modifiers: SnapshotCapacity::default(),
-        strike_metadata: 0,
     };
     let mut capture = Captured::with_capacities(&capacity);
     capture.begin_sources();
@@ -263,7 +230,7 @@ fn owned_seed_handoff_preserves_order_demand_and_clears_callback_pointers() {
             panic!("accepted failure must not retry cleared sources")
         }
     }
-    capture.capture_owned(&NoRead, CaptureContext::legacy(0));
+    capture.capture_owned(&NoRead, CaptureContext::new(0));
     assert_eq!(
         capture.outcomes(),
         [Outcome::Unavailable {
@@ -287,8 +254,6 @@ fn census(ships: u64, rows: usize) -> Captured {
     let mut capture = Captured::with_capacities(&Capacities {
         rows,
         modifiers: SnapshotCapacity::default(),
-        strike_modifiers: SnapshotCapacity::default(),
-        strike_metadata: 0,
     });
     capture.begin_sources();
     for id in 1..=ships {
@@ -333,12 +298,15 @@ fn model(seed: &Seed) -> cship::ModelRow {
 
 /// Run the real capture of one range; ship `fail` (if any) fails to read.
 fn run(capture: &mut Captured, fail: Option<u64>) -> CaptureReport {
-    capture.capture_with(0, |this, seed| {
-        this.record(|_| match fail {
-            Some(id) if id == seed.row.id => Err("synthetic ship read failure"),
-            _ => Ok(model(&seed)),
-        })
-    })
+    capture.capture_with(
+        |this, seed| {
+            this.record(|_| match fail {
+                Some(id) if id == seed.row.id => Err("synthetic ship read failure"),
+                _ => Ok(model(&seed)),
+            })
+        },
+        |_| {},
+    )
 }
 
 /// The table of `ships` ships captured unsplit or in `parts`.
@@ -418,8 +386,6 @@ fn families_of_ten_thousand_ships_grow_their_parts_and_never_truncate() {
     let mut capacity = Capacities {
         rows: 4096,
         modifiers: SnapshotCapacity::default(),
-        strike_modifiers: SnapshotCapacity::default(),
-        strike_metadata: 0,
     };
     let mut capture = Captured::with_capacities(&capacity);
     // The first census overflows the family, which grows.
@@ -465,8 +431,6 @@ fn a_range_a_part_cannot_hold_is_unavailable_not_partial() {
     capture.extra[0] = Captured::part(&Capacities {
         rows: 2,
         modifiers: SnapshotCapacity::default(),
-        strike_modifiers: SnapshotCapacity::default(),
-        strike_metadata: 0,
     });
     capture.split_details(2);
     let mut part = capture.take_part(0);
@@ -519,20 +483,23 @@ fn every_part_is_bounded_by_the_whole_read_ceiling() {
     let mut parts: Vec<_> = (0..3).map(|index| capture.take_part(index)).collect();
     run(&mut capture, None);
     for part in &mut parts {
-        part.capture_with(0, |this, seed| {
-            this.record(|this| {
-                if seed.row.id == 2049 {
-                    let bounded = BoundedMemory {
-                        inner: &Free,
-                        used: &this.copied,
-                    };
-                    if !bounded.copy(0, &mut large) {
-                        return Err(BUDGET_EXCEEDED);
+        part.capture_with(
+            |this, seed| {
+                this.record(|this| {
+                    if seed.row.id == 2049 {
+                        let bounded = BoundedMemory {
+                            inner: &Free,
+                            used: &this.copied,
+                        };
+                        if !bounded.copy(0, &mut large) {
+                            return Err(BUDGET_EXCEEDED);
+                        }
                     }
-                }
-                Ok(model(&seed))
-            })
-        });
+                    Ok(model(&seed))
+                })
+            },
+            |_| {},
+        );
     }
     for (index, part) in parts.into_iter().enumerate() {
         capture.restore_part(index, part);
@@ -546,8 +513,6 @@ fn model_conversion_preserves_primary_handles_text_and_counter_operands() {
     let mut capture = Captured::with_capacities(&Capacities {
         rows: 1,
         modifiers: SnapshotCapacity::default(),
-        strike_modifiers: SnapshotCapacity::default(),
-        strike_metadata: 0,
     });
     let row = &mut capture.rows.rows[0];
     row.ship = 51 | (1 << 32);
@@ -597,6 +562,11 @@ fn model_conversion_preserves_primary_handles_text_and_counter_operands() {
         (i64::MIN, i64::MAX, u64::MAX)
     );
     assert_eq!(counter.anti_air_base, i64::MIN + 1);
+    // The port strike-force readiness operands are no longer read.
+    assert_eq!(
+        rows[0].strike,
+        replay::rows::Recorded::Value(replay::rows::Retired)
+    );
 }
 
 #[test]
@@ -618,8 +588,6 @@ fn hull_projection_tracks_each_refused_scalar_and_null_ordinal() {
         let mut capture = Captured::with_capacities(&Capacities {
             rows: 1,
             modifiers: SnapshotCapacity::default(),
-            strike_modifiers: SnapshotCapacity::default(),
-            strike_metadata: 0,
         });
         capture.rows.rows[0] = cship::ModelRow {
             ship: (42 << 32) | 51,
@@ -686,8 +654,8 @@ fn hull_projection_tracks_each_refused_scalar_and_null_ordinal() {
                 false,
             )
             .unwrap();
-        let mut scratch = ProjectionScratch::default();
-        let mut projection = Projection::new(&projected, 1, 101, false, &mut scratch);
+        let scratch = ProjectionScratch::default();
+        let mut projection = Projection::new(&projected, 1, 101, false, &scratch);
         let inputs = fixture(hull).table_inputs(Some(&mut projection));
         if change == 0 {
             assert!(matches!(inputs[0], TableInput::ComparedEqual(_)));
@@ -712,8 +680,6 @@ fn growing_ship_census_keeps_the_first_mod_population_and_prepares_every_split()
     let mut capture = Captured::with_capacities(&Capacities {
         rows: 0,
         modifiers: SnapshotCapacity::default(),
-        strike_modifiers: SnapshotCapacity::default(),
-        strike_metadata: 0,
     });
     for ships in [5_000_u64, 12_001] {
         capture.begin_sources();
@@ -756,8 +722,6 @@ fn cold_ship_models_use_only_original_census_and_later_population_demand() {
     let capacity = Capacities::default();
     assert_eq!(capacity.rows, 0);
     assert_eq!(capacity.modifiers, SnapshotCapacity::default());
-    assert_eq!(capacity.strike_modifiers, SnapshotCapacity::default());
-    assert_eq!(capacity.strike_metadata, 0);
     let mut capture = Captured::with_capacities(&capacity);
     assert_eq!(capture.allocated_bytes(), 0);
     assert_eq!(part_rows(0), 0);

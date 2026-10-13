@@ -158,7 +158,6 @@ pub(crate) struct Registrations {
     pub pools_len: usize,
     indexed: bool,
     demand: CarrierDemand,
-    transport_planes_admitted: bool,
 }
 
 impl Registrations {
@@ -170,7 +169,6 @@ impl Registrations {
             pools_len: 0,
             indexed: true,
             demand: CarrierDemand::default(),
-            transport_planes_admitted: false,
         }
     }
     pub fn reset(&mut self) {
@@ -178,10 +176,6 @@ impl Registrations {
         self.pools_len = 0;
         self.indexed = true;
         self.demand = CarrierDemand::default();
-        self.transport_planes_admitted = false;
-    }
-    pub fn admit_transport_planes(&mut self, admission: Result<(), &'static str>) {
-        self.transport_planes_admitted = admission.is_ok();
     }
     pub fn install(&mut self, lengths: CarrierLengths, demand: CarrierDemand) {
         if lengths.registrations > self.rows.len() || lengths.pools > self.pools.len() {
@@ -272,51 +266,6 @@ impl Registrations {
                 pools,
             }
         }))
-    }
-    /// Plane sums use the predecessor's pool ordering without
-    /// extending the existing opaque carrier payload's historical bytes.
-    pub fn planes(
-        &self,
-        source: &cair_base::RegistrationRow,
-    ) -> rows::Recorded<Option<Vec<Option<i32>>>> {
-        if !self.transport_planes_admitted {
-            return rows::Recorded::Value(None);
-        }
-        rows::Recorded::Value(
-            self.row(source.base, source.slot)
-                .and_then(|row| self.pool_slice(row, source.wings_len))
-                .map(|pools| {
-                    allocation::owned_vec(allocation::collect_vec(
-                        pools.iter().map(|pool| pool.planes_raw),
-                    ))
-                }),
-        )
-    }
-    pub fn planes_equal(
-        &self,
-        source: &cair_base::RegistrationRow,
-        old: &rows::Recorded<Option<Vec<Option<i32>>>>,
-    ) -> bool {
-        let rows::Recorded::Value(old) = old else {
-            return false;
-        };
-        if !self.transport_planes_admitted {
-            return old.is_none();
-        }
-        let current = self
-            .row(source.base, source.slot)
-            .and_then(|row| self.pool_slice(row, source.wings_len));
-        match (current, old) {
-            (None, None) => true,
-            (Some(current), Some(old)) => {
-                current.len() == old.len()
-                    && current
-                        .iter()
-                        .zip(old)
-                        .all(|(current, old)| current.planes_raw == *old)
-            }
-            _ => false,
-        }
     }
     /// Compare borrowed values before allocating a changed replay row.
     pub fn equal(
@@ -559,7 +508,6 @@ pub(crate) struct Memo {
     pub registrations: Vec<CarrierRegistration>,
     pub pools: Vec<CarrierPool>,
     pub demand: CarrierDemand,
-    pub transport_planes_admitted: bool,
 }
 impl Memo {
     pub fn bytes(&self) -> (u64, u64) {
@@ -616,7 +564,6 @@ impl Memo {
         self.has_bulk = log.has_bulk;
         self.faults = log.fault;
         self.demand = demand;
-        self.transport_planes_admitted = registrations.transport_planes_admitted;
         true
     }
     pub fn restore(&self, bases: &mut Bases, registrations: &mut Registrations) {
@@ -634,7 +581,6 @@ impl Memo {
         };
         bases.install(lengths, self.demand);
         registrations.install(lengths, self.demand);
-        registrations.transport_planes_admitted = self.transport_planes_admitted;
         // Memo outputs were saved after worker key preparation.
         bases.indexed = true;
         registrations.indexed = true;

@@ -247,6 +247,9 @@ fn side_units_keep_stored_order_and_report_their_demand() {
             weapon_terms: &mut Vec::new(),
             weapon_lengths: [0; 2],
             weapon_required: [0; 2],
+            doctrine_keys: Default::default(),
+            term_metadata: Default::default(),
+            source_memo: Default::default(),
             commander_inputs: crate::walk::Buffer::Fixed(&mut []),
             commander_inputs_len: 0,
             commander_inputs_required: 0,
@@ -351,18 +354,44 @@ fn null_commander_never_falls_back_to_the_last_leader() {
 #[test]
 fn detail_rows_preserve_native_widths_and_report_bounded_copy_cost() {
     use std::cell::{Cell, RefCell};
+    /// One call per copy or scattered copy; `reads` lists every span,
+    /// `singles` the spans read alone.
     struct Count<'a> {
         inner: DetailMemory<'a>,
         calls: Cell<usize>,
         bytes: Cell<usize>,
         reads: RefCell<Vec<(usize, usize)>>,
+        singles: RefCell<Vec<(usize, usize)>>,
+    }
+    impl Count<'_> {
+        fn span(&self, address: usize, output: &mut [u8]) -> bool {
+            self.bytes.set(self.bytes.get() + output.len());
+            self.reads.borrow_mut().push((address, output.len()));
+            self.inner.copy(address, output)
+        }
     }
     impl Memory for Count<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.calls.set(self.calls.get() + 1);
-            self.bytes.set(self.bytes.get() + output.len());
-            self.reads.borrow_mut().push((address, output.len()));
-            self.inner.copy(address, output)
+            self.singles.borrow_mut().push((address, output.len()));
+            self.span(address, output)
+        }
+        fn copy_scattered<const N: usize>(
+            &self,
+            addresses: [usize; N],
+            destinations: &mut [&mut [u8]; N],
+        ) -> usize {
+            self.calls.set(self.calls.get() + 1);
+            for (completed, (address, destination)) in addresses
+                .into_iter()
+                .zip(destinations.iter_mut())
+                .enumerate()
+            {
+                if !destination.is_empty() && !self.span(address, destination) {
+                    return completed;
+                }
+            }
+            N
         }
     }
     let world = detail_world();
@@ -371,6 +400,7 @@ fn detail_rows_preserve_native_widths_and_report_bounded_copy_cost() {
         calls: Cell::new(0),
         bytes: Cell::new(0),
         reads: RefCell::default(),
+        singles: RefCell::default(),
     };
     let mut details = [DetailsRow::default(); 1];
     let mut ships = vec![cfex_member::DetailsRow::default(); 2];
@@ -394,6 +424,9 @@ fn detail_rows_preserve_native_widths_and_report_bounded_copy_cost() {
         weapon_terms: &mut Vec::new(),
         weapon_lengths: [0; 2],
         weapon_required: [0; 2],
+        doctrine_keys: Default::default(),
+        term_metadata: Default::default(),
+        source_memo: Default::default(),
         commander_inputs: crate::walk::Buffer::Fixed(&mut []),
         commander_inputs_len: 0,
         commander_inputs_required: 0,
@@ -458,6 +491,36 @@ fn detail_rows_preserve_native_widths_and_report_bounded_copy_cost() {
                     .count(),
                 1,
                 "nested header at {member:#x}+{offset:#x}"
+            );
+        }
+    }
+    // A member's identity, nested headers, fixed scalars, text headers and
+    // last-target record share one guarded call.
+    let singles = memory.singles.borrow();
+    for member in [MEMBER_A, MEMBER_D] {
+        for offset in [
+            cfex_member::DAMAGE_ENTRIES,
+            cfex_member::CONVOY_HANDLE,
+            cfex_member::BUILD_COST_IC,
+            cfex_member::RECEIVED_CRITICALS,
+            cfex_member::ESCAPE_PROGRESS,
+            // The member record also serves the identity, the four text
+            // headers and the last-target record.
+            0,
+            cfex_member::GROUP,
+            cfex_member::STATE,
+            0x48,
+            0x68,
+            0x88,
+            cfex_member::ATTRIBUTION_NAME,
+            0x138,
+            0x148,
+        ] {
+            assert!(
+                !singles
+                    .iter()
+                    .any(|&(address, _)| address == member + offset),
+                "{member:#x}+{offset:#x} read alone"
             );
         }
     }
@@ -552,6 +615,9 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
             weapon_terms: &mut Vec::new(),
             weapon_lengths: [0; 2],
             weapon_required: [0; 2],
+            doctrine_keys: Default::default(),
+            term_metadata: Default::default(),
+            source_memo: Default::default(),
             commander_inputs: crate::walk::Buffer::Fixed(&mut []),
             commander_inputs_len: 0,
             commander_inputs_required: 0,
@@ -670,6 +736,9 @@ fn side_external_planes_keep_their_first_group_owner() {
             weapon_terms: &mut Vec::new(),
             weapon_lengths: [0; 2],
             weapon_required: [0; 2],
+            doctrine_keys: Default::default(),
+            term_metadata: Default::default(),
+            source_memo: Default::default(),
             commander_inputs: crate::walk::Buffer::Fixed(&mut []),
             commander_inputs_len: 0,
             commander_inputs_required: 0,
@@ -1173,6 +1242,9 @@ fn a_registry_past_4096_combats_is_walked_whole_and_truncates_by_demand() {
             weapon_terms: &mut Vec::new(),
             weapon_lengths: [0; 2],
             weapon_required: [0; 2],
+            doctrine_keys: Default::default(),
+            term_metadata: Default::default(),
+            source_memo: Default::default(),
             commander_inputs: crate::walk::Buffer::Fixed(&mut []),
             commander_inputs_len: 0,
             commander_inputs_required: 0,
@@ -1273,6 +1345,9 @@ fn walk_whole_mode(
         weapon_terms: &mut Vec::new(),
         weapon_lengths: [0; 2],
         weapon_required: [0; 2],
+        doctrine_keys: Default::default(),
+        term_metadata: Default::default(),
+        source_memo: Default::default(),
         commander_inputs: crate::walk::Buffer::Fixed(&mut []),
         commander_inputs_len: 0,
         commander_inputs_required: 0,

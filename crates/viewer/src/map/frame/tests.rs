@@ -262,42 +262,14 @@ fn the_capture_frame_constants_are_reproduced() {
 }
 
 #[test]
-fn seasonal_turns_use_zero_based_dates_and_truncated_fixed_point() {
-    assert_eq!(seasonal_rotation(172 * 24), -500_000);
-    assert_eq!(seasonal_rotation(355 * 24), 500_000);
-    assert_eq!(seasonal_rotation(173 * 24), -494_540);
-    assert_eq!(seasonal_rotation(356 * 24), 494_510);
-    assert_eq!(seasonal_rotation(0), 445_060);
+fn the_sun_direction_normalizes_the_simulation_target() {
     for day in 0..365 {
         let hour = day * 24;
-        assert_eq!(
-            seasonal_direction_raw(hour),
-            seasonal_direction_raw(hour + 23)
-        );
-        assert_eq!(
-            seasonal_direction_raw(hour),
-            seasonal_direction_raw(hour + 365 * 24)
-        );
-        assert_eq!(
-            seasonal_direction_raw(hour),
-            seasonal_direction_raw(hour - 365 * 24)
-        );
-        assert!(seasonal_rotation(hour).abs() <= 500_000);
         let [x, y, z] = seasonal_direction(hour);
         assert_eq!(x, 0.0);
         // Squaring the rounded f32 components adds another rounding step.
         assert!((y * y + z * z - 1.0).abs() <= 3.0 * f32::EPSILON);
     }
-}
-
-#[test]
-fn seasonal_trig_keeps_native_quadrants_and_polynomial_error() {
-    assert_eq!(seasonal_sine(0), 0);
-    assert_eq!(seasonal_sine(157_080), 100_453);
-    assert_eq!(seasonal_sine(314_159), 1);
-    assert_eq!(seasonal_sine(628_319), 0);
-    assert_eq!(seasonal_sine(-157_080), -100_453);
-    assert_eq!(seasonal_direction_raw(264 * 24)[2], SEASON_SCALE);
 }
 
 #[test]

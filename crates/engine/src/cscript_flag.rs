@@ -1,6 +1,9 @@
 //! CScriptFlag's exact token, set date, signed value and expiry countdown.
 
-use crate::Memory;
+use crate::{
+    Memory,
+    memory::{RecordField, RecordLayout},
+};
 
 /// CScriptFlag stride.
 pub const STRIDE: usize = 0x30;
@@ -32,16 +35,35 @@ pub struct Row {
     pub remaining_days: i16,
 }
 
+/// The three exact field spans `read_row` gathers, packed in its order.
+const FIELDS: [RecordField; 3] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 12,
+    },
+    RecordField {
+        source_offset: DATE,
+        destination_offset: 12,
+        len: 12,
+    },
+    RecordField {
+        source_offset: DATE_SECONDARY,
+        destination_offset: 24,
+        len: 12,
+    },
+];
+/// Packed bytes of one row's three spans.
+pub const FIELD_BYTES: usize = 36;
+/// One dense row's spans for strided record gathers over a manager's rows.
+pub const LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&FIELDS, FIELD_BYTES).expect("script flag field layout");
+
 pub fn read_row(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'static str> {
     let at = |offset| {
         pointer
             .checked_add(offset)
             .ok_or("flag row address overflow")
-    };
-    let expected = |rva| {
-        base.checked_add(rva)
-            .map(|p| p as u64)
-            .ok_or("module address overflow")
     };
     let mut token = [0_u8; 12];
     let mut date = [0_u8; 12];
@@ -53,6 +75,21 @@ pub fn read_row(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row
     {
         return Err("script flag fields unreadable");
     }
+    decode(base, &token, &date, &value)
+}
+
+/// Authenticate and decode one row's spans as gathered by `LAYOUT`.
+pub fn decode_fields(base: usize, fields: &[u8]) -> Result<Row, &'static str> {
+    let [token, date, value] = [0, 12, 24].map(|at| &fields[at..at + 12]);
+    decode(base, token, date, value)
+}
+
+fn decode(base: usize, token: &[u8], date: &[u8], value: &[u8]) -> Result<Row, &'static str> {
+    let expected = |rva| {
+        base.checked_add(rva)
+            .map(|p| p as u64)
+            .ok_or("module address overflow")
+    };
     if u64::from_le_bytes(token[..8].try_into().unwrap()) != expected(VTABLE_RVA)? {
         return Err("script flag vtable mismatch");
     }

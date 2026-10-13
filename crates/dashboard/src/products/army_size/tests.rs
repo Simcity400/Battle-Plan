@@ -82,7 +82,8 @@ pub(super) fn frame(hour: i32) -> DecodedFrame {
             logical_owner: 20,
             expeditionary_owner: 11,
             template: 5,
-            hit_points: 1_234_567,
+            // Whole display steps (replay::display), as recorded.
+            hit_points: 1_230_000,
             ..Default::default()
         },
         DivisionRow {
@@ -387,7 +388,7 @@ fn army_size_scoreboard_agrees_with_product_for_every_measure_and_attribution() 
                     (ArmyMeasure::Manpower, ArmyAttribution::Host) => 750.0,
                     (ArmyMeasure::Divisions, ArmyAttribution::Owner) => 3.0,
                     (ArmyMeasure::Divisions, ArmyAttribution::Host) => 1.0,
-                    (ArmyMeasure::Strength, ArmyAttribution::Owner) => 32.34567,
+                    (ArmyMeasure::Strength, ArmyAttribution::Owner) => 32.3,
                     (ArmyMeasure::Strength, ArmyAttribution::Host) => 20.0,
                     (ArmyMeasure::Battalions, ArmyAttribution::Owner) => 12.0,
                     (ArmyMeasure::Battalions, ArmyAttribution::Host) => 6.0,
@@ -1026,7 +1027,7 @@ fn army_size_incremental_hp_and_template_edits_do_only_changed_row_work() {
         match decoded.hour {
             100 => assert_eq!(
                 (total.values[1], total.values[4]),
-                (Some(3_234_567), Some(12))
+                (Some(3_230_000), Some(12))
             ),
             101 => assert_eq!(
                 (total.values[1], total.values[4]),
@@ -1102,7 +1103,7 @@ fn army_size_incremental_transfers_deletions_and_missing_templates_preserve_tota
                 assert_eq!((origin.values[0], host.values[0]), (Some(0), Some(1)));
                 assert_eq!(
                     (origin.values[1], host.values[1]),
-                    (Some(0), Some(1_234_567))
+                    (Some(0), Some(1_230_000))
                 );
                 assert_eq!(origin.values[4], Some(0));
                 assert_eq!(
@@ -1155,7 +1156,7 @@ fn army_size_incremental_bad_baselines_stay_missing_until_snapshot_recovery() {
         state.compose(decoded);
         let inventory = state.inventory.as_ref().unwrap();
         match hour {
-            100 => assert_eq!(inventory.totals(1, true).values[1], Some(3_234_567)),
+            100 => assert_eq!(inventory.totals(1, true).values[1], Some(3_230_000)),
             101 | 102 => assert!(!inventory.known()),
             103 => {
                 assert_eq!(inventory.totals(1, true).values[1], Some(5_000_000));
@@ -1533,7 +1534,7 @@ fn army_size_invalid_sparse_rows_name_the_gap_and_preserve_census() {
     );
     let values = result.tracks["origin"].runs.last().unwrap().totals.values;
     assert_eq!(values[0], Some(3));
-    assert_eq!(values[1], Some(3_234_567));
+    assert_eq!(values[1], Some(3_230_000));
     assert_eq!(values[4], Some(12));
 }
 
@@ -1646,7 +1647,7 @@ fn army_size_manpower_native_total_owner_host_and_missing_input() {
         .unwrap()
         .unwrap()
         .raw,
-        3_234_567
+        3_230_000
     );
     let mut runs = Vec::new();
     visit_army_runs(

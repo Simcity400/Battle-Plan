@@ -523,16 +523,16 @@ pub fn navy_hubs_buffer(
     Ok(count)
 }
 
-/// Fleet-leader [`TASK_FORCE_KEYS`]; unresolved leaders add nothing.
-pub fn leader_modifiers(
+/// A fleet leader's navy-leader object, authenticated; `None` when the
+/// reference resolves to nothing, which adds nothing.
+pub fn fleet_leader(
     memory: &impl Memory,
     base: usize,
     leader: u64,
     resolve: Resolve<'_>,
-    out: &mut [Value; 4],
-) -> Result<(), &'static str> {
+) -> Result<Option<usize>, &'static str> {
     let Some(pointer) = resolve(leader)? else {
-        return Ok(());
+        return Ok(None);
     };
     identity(
         memory,
@@ -541,6 +541,20 @@ pub fn leader_modifiers(
         cnavy_leader::VTABLE_RVA,
         "fleet leader is not a navy leader",
     )?;
+    Ok(Some(pointer))
+}
+
+/// A fleet leader's [`TASK_FORCE_KEYS`]; unresolved leaders add nothing.
+pub fn leader_modifiers(
+    memory: &impl Memory,
+    base: usize,
+    leader: u64,
+    resolve: Resolve<'_>,
+    out: &mut [Value; 4],
+) -> Result<(), &'static str> {
+    let Some(pointer) = fleet_leader(memory, base, leader, resolve)? else {
+        return Ok(());
+    };
     accumulator::lookup_many_at(
         memory,
         at(pointer, LEADER_MODIFIERS)?,
@@ -550,17 +564,18 @@ pub fn leader_modifiers(
     Ok(())
 }
 
-/// Four ordered accumulators of a kind-two headquarters unit leader.
-/// Unresolved character or leader references, or another kind, add nothing.
-pub fn headquarters_modifiers(
+/// The objects naval HQ support reads for one headquarters commander: its
+/// kind-2 unit leader and the four skill objects (`UNIT_LEADER_SOURCES`), in
+/// its order. `None` for an unresolved character/unit leader or another leader
+/// kind, which adds nothing.
+pub fn headquarters_sources(
     memory: &impl Memory,
     base: usize,
     character: u64,
     resolve: Resolve<'_>,
-    out: &mut [[Value; 4]; 4],
-) -> Result<(), &'static str> {
+) -> Result<Option<(usize, [usize; 4])>, &'static str> {
     let Some(character) = resolve(character)? else {
-        return Ok(());
+        return Ok(None);
     };
     identity(
         memory,
@@ -591,7 +606,7 @@ pub fn headquarters_modifiers(
         }
     };
     let Some(leader) = leader else {
-        return Ok(());
+        return Ok(None);
     };
     if field::<i32>(
         memory,
@@ -600,16 +615,36 @@ pub fn headquarters_modifiers(
         "unit leader kind unreadable",
     )? != 2
     {
-        return Ok(());
+        return Ok(None);
     }
-    for (source, values) in UNIT_LEADER_SOURCES.into_iter().zip(out.iter_mut()) {
-        let pointer: u64 = field(memory, leader, source, "unit leader source unreadable")?;
+    let mut sources = [0; 4];
+    for (offset, source) in UNIT_LEADER_SOURCES.into_iter().zip(&mut sources) {
+        let pointer: u64 = field(memory, leader, offset, "unit leader source unreadable")?;
         if pointer == 0 {
             return Err("unit leader modifier source null");
         }
+        *source = usize::try_from(pointer).map_err(|_| "unit leader source unreadable")?;
+    }
+    Ok(Some((leader, sources)))
+}
+
+/// Naval HQ support for one headquarters commander: the four accumulators of a
+/// kind-2 unit leader, in its order. An unresolved character/unit leader or
+/// another leader kind adds nothing.
+pub fn headquarters_modifiers(
+    memory: &impl Memory,
+    base: usize,
+    character: u64,
+    resolve: Resolve<'_>,
+    out: &mut [[Value; 4]; 4],
+) -> Result<(), &'static str> {
+    let Some((_, sources)) = headquarters_sources(memory, base, character, resolve)? else {
+        return Ok(());
+    };
+    for (source, values) in sources.into_iter().zip(out.iter_mut()) {
         accumulator::lookup_many_at(
             memory,
-            at(pointer as usize, SOURCE_MODIFIERS)?,
+            at(source, SOURCE_MODIFIERS)?,
             &TASK_FORCE_KEYS,
             values,
         )?;

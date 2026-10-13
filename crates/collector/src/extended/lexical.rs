@@ -2456,7 +2456,9 @@ mod conversion_tests {
                 assert_eq!(TableView::Complete((**rows).clone()), expected)
             }
             TableInput::Sampled(actual) => assert_eq!(actual, &expected),
-            TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. } => {
+            TableInput::ComparedEqual(_)
+            | TableInput::ComparedChanges { .. }
+            | TableInput::SliceUpdate { .. } => {
                 panic!("lexical reuse must retain full encoder validation")
             }
         }

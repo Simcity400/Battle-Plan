@@ -25,6 +25,7 @@ pub(super) fn compare(
     save: &Save,
     countries: &CountryContext<'_>,
     tokens: &TokenNames<'_>,
+    essential_caps: Result<&BTreeMap<Vec<u8>, i32>, String>,
     report: &mut Report,
 ) -> io::Result<()> {
     let mut complete_comparison = report
@@ -41,7 +42,7 @@ pub(super) fn compare(
         compare_ace_inputs(frame, save, countries, report)
     });
     complete_comparison &= report.attempt("visibility StockpileArchetypes", |report| {
-        compare_stockpile_archetypes(frame, save, countries, report)
+        compare_stockpile_archetypes(frame, save, countries, tokens, essential_caps, report)
     });
     complete_comparison &=
         report.attempt("visibility inputs", |report| record_inputs(frame, report));
@@ -184,12 +185,7 @@ fn compare_transport_subject_access(
             report.difference(&label, "capture refused", "current subject status inputs");
             continue;
         };
-        super::pass_inputs::eq(
-            report,
-            &format!("{label}.sample_hour"),
-            packet.sample_hour,
-            frame.hour,
-        );
+        report.packet_fresh(&label, packet.sample_hour, frame.hour);
         if packet.complete_owner {
             super::pass_inputs::eq(
                 report,
@@ -250,7 +246,7 @@ mod transport_subject_tests {
             country: 11,
             target_index: 1,
             transport_subject: Recorded::Value(Some(TransportSubjectAccess {
-                sample_hour: 7,
+                sample_hour: replay::rows::PacketHour::Stamped(7),
                 complete_owner: true,
                 ..Default::default()
             })),
@@ -288,7 +284,27 @@ mod transport_subject_tests {
     }
 }
 
-/// The navy writer saves only signed-positive CHAR access modes. The table retains
+/// The access-mode writer's secondary+A8 (=primary+B0) emits a pair only for CHAR > 0.
+/// A fresh native save cannot explicitly contain zero/high-bit modes. Keep
+/// duplicates and unsupported saved forms visible instead of normalizing them.
+pub(super) fn saved_access_modes(pairs: &[(u32, u8)]) -> io::Result<BTreeMap<u32, u8>> {
+    let mut expected = BTreeMap::new();
+    for &(region, mode) in pairs {
+        if (mode as i8) <= 0 {
+            return Err(invalid(format!(
+                "saved navy access region {region} mode {mode} cannot be emitted by native signed-positive gate"
+            )));
+        }
+        if expected.insert(region, mode).is_some() {
+            return Err(invalid(format!(
+                "saved navy access has repeated signed-positive region {region}"
+            )));
+        }
+    }
+    Ok(expected)
+}
+
+/// The access-mode writer saves only signed-positive CHAR access modes. The table retains
 /// every nonzero raw byte; omitted high-bit values have no exact save witness.
 pub(super) fn compare_naval_access(
     frame: &DecodedFrame,
@@ -299,9 +315,9 @@ pub(super) fn compare_naval_access(
     let rows = complete::<tables::NavalRegionAccess>(frame)?;
     let mut expected: BTreeMap<(&[u8], u32), u8> = BTreeMap::new();
     for (tag, country) in report.canonical_countries(&save.countries) {
-        for (region, mode) in super::selected_transport::saved_access_modes(
-            country.naval_region_access.as_deref().unwrap_or(&[]),
-        )? {
+        for (region, mode) in
+            saved_access_modes(country.naval_region_access.as_deref().unwrap_or(&[]))?
+        {
             expected.insert((tag.as_slice(), region), mode);
         }
     }
@@ -344,11 +360,11 @@ pub(super) fn compare_naval_access(
 
 /// `AceRangeInputs` against the saved ace rosters (`countries.<tag>.ace`, in
 /// roster order) and the saved wings' `ace` references. The ace block carries
-/// `alive` but not its assigned-wing reference; the save names that wing
-/// only through the wing's ace reference, which the game keeps paired with it (assignment, deployment, deletion and
-/// disband; the ace-death update clears neither). The table is sliced
-/// with `RaidCountryInputs`, its family's hour source: only owners read at
-/// the frame's hour are compared.
+/// `alive` but not its assigned wing `ace+0xE8`; the save names that wing
+/// only from the wing side, the wing's `+0x2E8` reference, which ace assignment
+/// keeps paired with it (assignment, deployment, deletion
+/// and disband; marking an ace dead clears neither). The table is read
+/// for every country each hour.
 pub(super) fn compare_ace_inputs(
     frame: &DecodedFrame,
     save: &Save,
@@ -356,11 +372,6 @@ pub(super) fn compare_ace_inputs(
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = complete::<tables::AceRangeInputs>(frame)?;
-    let reads = complete::<tables::SliceReads>(frame)?;
-    let sampled = |slot: u32| {
-        replay::sliced::read_hour(reads, replay::rows::TableId::RaidCountryInputs, slot)
-            == Some(frame.hour)
-    };
     let mut wing_of = BTreeMap::new();
     for wing in &save.air.wings {
         if let Some(ace) = wing.ace
@@ -373,7 +384,6 @@ pub(super) fn compare_ace_inputs(
     }
     let wing_ids: BTreeSet<u64> = save.air.wings.iter().map(|wing| wing.id).collect();
     let mut expected = BTreeMap::new();
-    let mut earlier = BTreeSet::new();
     for ace in &save.air.aces {
         let Some(country) = countries.by_tag.get(ace.country.as_slice()) else {
             report.difference(
@@ -388,9 +398,7 @@ pub(super) fn compare_ace_inputs(
             continue;
         };
         let slot = country.canonical_slot;
-        if !sampled(slot) {
-            earlier.insert(slot);
-        } else if expected.insert((slot, ace.id), ace).is_some() {
+        if expected.insert((slot, ace.id), ace).is_some() {
             return Err(invalid(format!(
                 "{} saves ace {} twice",
                 String::from_utf8_lossy(&ace.country),
@@ -400,10 +408,6 @@ pub(super) fn compare_ace_inputs(
     }
     let mut compared = 0;
     for row in rows {
-        if !sampled(row.canonical_slot) {
-            earlier.insert(row.canonical_slot);
-            continue;
-        }
         let label = format!("AceRangeInputs slot {} ace {}", row.canonical_slot, row.ace);
         let Some(saved) = expected.remove(&(row.canonical_slot, row.ace)) else {
             report.difference(label, "present", "absent");
@@ -437,15 +441,6 @@ pub(super) fn compare_ace_inputs(
             "present",
         );
     }
-    if !earlier.is_empty() {
-        report.limitation(
-            &format!(
-                "{} countries' rows were read before this hour (sliced, daily) and are not compared; compare at a full-refresh hour",
-                earlier.len()
-            ),
-            "AceRangeInputs",
-        );
-    }
     report.compared("AceRangeInputs", compared);
     report.limitation(
         "the ace modifier getter results (key 5 on the ace's own and its type's modifiers) are computed from ace types, not saved",
@@ -455,28 +450,43 @@ pub(super) fn compare_ace_inputs(
 }
 
 /// `StockpileArchetypes` against the saved stockpile. The table is the first
-/// array of each country's stockpile pool; the save writes
-/// only its variant rows (`equipments`). Every quantity reaches both
-/// through the variant-pool update, which adds
-/// it to the variant and to its archetype's total, so each total is the sum of
-/// its variants' saved amounts. A
-/// variant's archetype is its `VariantDefinitions.archetype_token`. The
-/// table is sliced with `RaidCountryInputs`, its family's hour source: only
-/// owners read at the frame's hour are compared.
+/// array of each country's `production status+0x200` pool, kept for the
+/// archetypes a raid type lists as essential, in whole units capped at the
+/// largest amount any raid type requires (`essential_caps`, by archetype
+/// name); the save writes only the pool's variant rows (`equipments`,
+/// the variant quantity writer). Every quantity reaches both through
+/// variant quantity insertion, which adds it to
+/// the variant and to its archetype's total (the definition's `+0x4D8`), so
+/// each total is the sum of its variants' saved amounts. A variant's
+/// archetype is its `VariantDefinitions.archetype_token`. Every country is
+/// read each hour.
 pub(super) fn compare_stockpile_archetypes(
     frame: &DecodedFrame,
     save: &Save,
     countries: &CountryContext<'_>,
+    tokens: &TokenNames<'_>,
+    essential_caps: Result<&BTreeMap<Vec<u8>, i32>, String>,
     report: &mut Report,
 ) -> io::Result<()> {
     /// `variant addition` clamps each running sum to this bound.
     const LIMIT: i128 = 0x53e2_d620_fb40;
     let rows = complete::<tables::StockpileArchetypes>(frame)?;
-    let reads = complete::<tables::SliceReads>(frame)?;
-    let sampled = |slot: u32| {
-        replay::sliced::read_hour(reads, replay::rows::TableId::RaidCountryInputs, slot)
-            == Some(frame.hour)
+    let caps = match essential_caps {
+        Ok(caps) => caps,
+        Err(reason) => {
+            report.limitation(
+                &format!("the raid types' essential archetypes are not known: {reason}"),
+                "StockpileArchetypes",
+            );
+            report.compared("StockpileArchetypes", 0);
+            return Ok(());
+        }
     };
+    // Each essential archetype's cap, by the token the rows carry.
+    let cap_of: BTreeMap<u32, i32> = tokens
+        .iter()
+        .filter_map(|(&token, &name)| caps.get(name).map(|&cap| (token, cap)))
+        .collect();
     let archetype_of: BTreeMap<u64, u32> = complete::<tables::VariantDefinitions>(frame)?
         .iter()
         .map(|row| (row.id, row.archetype_token))
@@ -501,6 +511,7 @@ pub(super) fn compare_stockpile_archetypes(
             })?;
         for entry in &pool.equipment {
             match archetype_of.get(&entry.variant) {
+                Some(archetype) if !cap_of.contains_key(archetype) => {}
                 Some(&archetype) => {
                     *expected.entry((tag.as_slice(), archetype)).or_default() +=
                         i128::from(entry.amount.raw);
@@ -519,12 +530,18 @@ pub(super) fn compare_stockpile_archetypes(
     let mut compared = 0;
     let mut zero_only = 0;
     let mut seen = BTreeSet::new();
-    let mut earlier = BTreeSet::new();
     for row in rows {
-        if !sampled(row.canonical_slot) {
-            earlier.insert(row.canonical_slot);
+        let Some(&cap) = cap_of.get(&row.archetype) else {
+            report.difference(
+                format!(
+                    "StockpileArchetypes slot {} archetype {}",
+                    row.canonical_slot, row.archetype
+                ),
+                row.units,
+                "no raid type lists this archetype as essential",
+            );
             continue;
-        }
+        };
         let tag = by_slot.get(&row.canonical_slot).copied().ok_or_else(|| {
             invalid(format!(
                 "StockpileArchetypes slot {} has no captured country",
@@ -543,9 +560,11 @@ pub(super) fn compare_stockpile_archetypes(
             row.archetype
         );
         if !saved.contains_key(tag) {
-            report.difference(label, row.quantity_raw, "no saved country");
+            report.difference(label, row.units, "no saved country");
             continue;
         }
+        // Compare the signed integer obtained by truncating total / 100000.
+        let units = |sum: i128| ((sum / 100_000) as i64 as i32).min(cap);
         match expected.remove(&(tag, row.archetype)) {
             Some(sum) if sum.abs() > LIMIT => report.limitation(
                 "the saved variant amounts of this archetype sum past the bound variant addition clamps each running total to; the clamped total depends on the unsaved order of additions",
@@ -553,25 +572,19 @@ pub(super) fn compare_stockpile_archetypes(
             ),
             Some(sum) => {
                 compared += 1;
-                if i128::from(row.quantity_raw) != sum {
-                    report.difference(label, row.quantity_raw, sum);
+                if row.units != units(sum) {
+                    report.difference(label, row.units, units(sum));
                 }
             }
-            None if row.quantity_raw != 0 => {
+            None if row.units != 0 => {
                 compared += 1;
-                report.difference(label, row.quantity_raw, "no saved variant of this archetype");
+                report.difference(label, row.units, "no saved variant of this archetype");
             }
             None => zero_only += 1,
         }
     }
-    let read_now = |tag: &[u8]| {
-        countries
-            .by_tag
-            .get(tag)
-            .is_some_and(|country| sampled(country.canonical_slot))
-    };
     for ((tag, archetype), sum) in expected {
-        if !underived.contains_key(tag) && read_now(tag) {
+        if !underived.contains_key(tag) && countries.by_tag.contains_key(tag) {
             report.difference(
                 format!(
                     "StockpileArchetypes {} archetype {archetype}",
@@ -582,7 +595,7 @@ pub(super) fn compare_stockpile_archetypes(
             );
         }
     }
-    for (tag, variant) in underived.into_iter().filter(|(tag, _)| read_now(tag)) {
+    for (tag, variant) in underived {
         report.limitation(
             "a saved stockpile variant has no VariantDefinitions row (a variant created after the table's last daily read), so its archetype and this country's archetype totals are not derived",
             format!(
@@ -595,15 +608,6 @@ pub(super) fn compare_stockpile_archetypes(
         report.limitation(
             "a zero archetype total with no saved variant is kept by variant addition, which never removes an entry, while the saved pool may omit its zero variants (allow_zero_entries=no); its membership is not certified",
             format!("StockpileArchetypes: {zero_only} zero totals"),
-        );
-    }
-    if !earlier.is_empty() {
-        report.limitation(
-            &format!(
-                "{} countries' rows were read before this hour (sliced, daily) and are not compared; compare at a full-refresh hour",
-                earlier.len()
-            ),
-            "StockpileArchetypes",
         );
     }
     report.compared("StockpileArchetypes", compared);

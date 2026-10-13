@@ -1,7 +1,7 @@
 use crate::{
     Memory, cgame_state,
     cpdx_array::Array,
-    memory::FieldBatch,
+    memory::{FieldBatch, RecordField, RecordLayout, RecordSources},
     read,
     walk::{self, Outcome},
 };
@@ -129,9 +129,11 @@ pub(crate) fn copy_ids(
                 pointer.checked_add(ID).unwrap_or(0)
             }
         });
+        // The states are scattered objects: hint every id's line first so
+        // their misses overlap. Hints read nothing.
         let mut fields = ids.iter_mut().enumerate();
         let read_ids = memory
-            .copy_scattered(
+            .copy_scattered_prefetched(
                 addresses,
                 &mut std::array::from_fn(|_| {
                     let (index, bytes) = fields.next().unwrap();
@@ -605,7 +607,7 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [
 
 /// Both country tags follow the identity gates. Keep their separate spans so
 /// a failed controller never changes the owner-first failure or copied prefix.
-fn read_country_tags(memory: &impl Memory, pointer: usize) -> Result<[u32; 2], &'static str> {
+pub fn read_country_tags(memory: &impl Memory, pointer: usize) -> Result<[u32; 2], &'static str> {
     let owner = pointer.checked_add(OWNER).ok_or("state address overflow")?;
     let Some(controller) = pointer.checked_add(CONTROLLER) else {
         // Preserve the scalar prefix before a later address overflow. Never
@@ -720,6 +722,19 @@ pub fn read_continents(
     census: Outcome,
     rows: &mut [Row],
 ) {
+    read_continents_selected(memory, base, game_state, census, rows, |_| true);
+}
+
+/// [`read_continents`] for the census rows `selected` admits by index; the
+/// others keep their values.
+pub fn read_continents_selected(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    census: Outcome,
+    rows: &mut [Row],
+    selected: impl Fn(usize) -> bool,
+) {
     let database = (|| {
         // State database singleton and constructor layout.
         let database = base
@@ -743,7 +758,10 @@ pub fn read_continents(
             .and_then(|address| Array::read(memory, address, 8))?;
         (null != 0).then_some((states, continents, null))
     })();
-    for row in rows.iter_mut().take(census.len()) {
+    for (index, row) in rows.iter_mut().take(census.len()).enumerate() {
+        if !selected(index) {
+            continue;
+        }
         row.continent = (|| {
             let (states, continents, null) = database?;
             let state = states
@@ -802,6 +820,19 @@ pub fn read_movement_infrastructure(
     census: Outcome,
     rows: &mut [Row],
 ) -> Outcome {
+    read_movement_infrastructure_selected(memory, base, game_state, census, rows, |_| true)
+}
+
+/// [`read_movement_infrastructure`] for the census rows `selected` admits by
+/// index; the others keep their values.
+pub fn read_movement_infrastructure_selected(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    census: Outcome,
+    rows: &mut [Row],
+    selected: impl Fn(usize) -> bool,
+) -> Outcome {
     let result = (|| {
         if let Outcome::Unavailable { reason } = census {
             return Err(reason);
@@ -815,7 +846,10 @@ pub fn read_movement_infrastructure(
             .filter(|array| array.count >= 2)
             .ok_or("state movement root invalid")?;
         let mut infrastructure = None;
-        for row in rows.iter_mut() {
+        for (index, row) in rows.iter_mut().enumerate() {
+            if !selected(index) {
+                continue;
+            }
             let pointer = array
                 .element(row.id, 8)
                 .and_then(|address| read::<u64>(memory, address))
@@ -842,7 +876,14 @@ pub fn read_names(
     rows: &mut [Row],
     bytes: &mut [u8],
 ) -> NameWalk {
-    read_names_buffer(memory, game_state, census, rows, walk::Buffer::Fixed(bytes))
+    read_names_carried(
+        memory,
+        game_state,
+        census,
+        rows,
+        walk::Buffer::Fixed(bytes),
+        |_| None,
+    )
 }
 
 pub fn read_names_growing(
@@ -852,21 +893,27 @@ pub fn read_names_growing(
     rows: &mut [Row],
     bytes: &mut Vec<u8>,
 ) -> NameWalk {
-    read_names_buffer(
+    read_names_carried(
         memory,
         game_state,
         census,
         rows,
         walk::Buffer::Growing(bytes),
+        |_| None,
     )
 }
 
-fn read_names_buffer(
+/// [`read_names`] where `carried` supplies, by row index, the custom and
+/// owner name bytes of a row the caller proves current: they are copied into
+/// the arena at the row's place without reading the state, so the arena and
+/// every span equal a fresh read's.
+pub fn read_names_carried<'h>(
     memory: &impl Memory,
     game_state: usize,
     census: Outcome,
     rows: &mut [Row],
     mut bytes: walk::Buffer<'_, u8>,
+    mut carried: impl FnMut(usize) -> Option<[&'h [u8]; 2]>,
 ) -> NameWalk {
     use crate::msvc_string::{Descriptor, STRIDE};
     const SPAN: usize = SECONDARY_DISPLAY_NAME - PRIMARY_DISPLAY_NAME + STRIDE;
@@ -888,6 +935,30 @@ fn read_names_buffer(
             .ok_or("state name root invalid")?;
         let mut kept = len;
         for (index, row) in rows.iter_mut().enumerate() {
+            if let Some([custom, owner]) = carried(index) {
+                let wanted = custom
+                    .len()
+                    .checked_add(owner.len())
+                    .ok_or("state name size overflow")?;
+                required_bytes = required_bytes
+                    .checked_add(wanted)
+                    .ok_or("state name size overflow")?;
+                bytes.ensure(required_bytes)?;
+                if kept < len || wanted > bytes.len() - bytes_len {
+                    kept = kept.min(index);
+                    continue;
+                }
+                for (source, span) in [(custom, &mut row.custom_name), (owner, &mut row.owner_name)]
+                {
+                    bytes[bytes_len..bytes_len + source.len()].copy_from_slice(source);
+                    *span = NameSpan {
+                        start: bytes_len,
+                        len: source.len(),
+                    };
+                    bytes_len += source.len();
+                }
+                continue;
+            }
             let pointer = array
                 .element(row.id, 8)
                 .and_then(|address| read::<u64>(memory, address))
@@ -1092,6 +1163,197 @@ pub fn read_flags(
         })
     })();
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
+}
+
+/// Bytes of [`Globals`].
+const GLOBAL_BYTES: usize = 8 + 8 + 4 + 1 + 4 + 4 + 4 + 16 + 8 + 4 + 8 + 16;
+
+/// The operands every state's movement and railway infrastructure terms and
+/// continent share, as raw bytes: the building database and its infrastructure
+/// definition (database `+0x3B0`; its type `+0x8`, lookup flag `+0x20`, maxima
+/// `+0x2B8` and `+0x2BC`, ordinal `+0x2E0`), the database's template array, the
+/// infrastructure movement-penalty and maximum-level defines, and the state
+/// database with its continent array. Only loaders write them; a caller holding
+/// rows computed from them compares this every hour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Globals([u8; GLOBAL_BYTES]);
+
+/// This hour's [`Globals`]; `None` when an infrastructure operand does not
+/// read or a pointer is null, which a fresh read refuses. The continent part
+/// is optional to a fresh read, so an unreadable one is kept as zero bytes.
+pub fn globals(memory: &impl Memory, base: usize) -> Option<Globals> {
+    use crate::{cbuilding_database as database, cbuilding_template as template};
+    let mut bytes = [0_u8; GLOBAL_BYTES];
+    let mut at = 0;
+    let mut put = |value: &[u8]| {
+        bytes[at..at + value.len()].copy_from_slice(value);
+        at += value.len();
+    };
+    let field = |pointer: usize, offset: usize| pointer.checked_add(offset);
+    let building_database = read::<u64>(memory, field(base, database::SINGLETON_RVA)?)
+        .filter(|&pointer| pointer != 0)?;
+    put(&building_database.to_le_bytes());
+    let building_database = usize::try_from(building_database).ok()?;
+    let definition =
+        read::<u64>(memory, field(building_database, 0x3b0)?).filter(|&pointer| pointer != 0)?;
+    put(&definition.to_le_bytes());
+    let definition = usize::try_from(definition).ok()?;
+    put(&read::<[u8; 4]>(
+        memory,
+        field(definition, template::TYPE_ID)?,
+    )?);
+    put(&read::<[u8; 1]>(
+        memory,
+        field(definition, template::LOOKUP_ENABLED_CANDIDATE)?,
+    )?);
+    put(&read::<[u8; 4]>(memory, field(definition, 0x2b8)?)?);
+    put(&read::<[u8; 4]>(
+        memory,
+        field(definition, template::SCOPE)?,
+    )?);
+    put(&read::<[u8; 4]>(
+        memory,
+        field(definition, template::DATABASE_ORDINAL)?,
+    )?);
+    put(&read::<[u8; 16]>(
+        memory,
+        field(building_database, database::TEMPLATES)?,
+    )?);
+    put(&read::<[u8; 8]>(memory, field(base, 0x0331_aac0)?)?);
+    put(&read::<[u8; 4]>(memory, field(base, 0x0331_b5b4)?)?);
+    // The state database singleton, as read_continents reads it.
+    let state_database = field(base, 0x0331_6ca0)
+        .and_then(|address| read::<u64>(memory, address))
+        .unwrap_or(0);
+    put(&state_database.to_le_bytes());
+    put(&usize::try_from(state_database)
+        .ok()
+        .filter(|&pointer| pointer != 0)
+        .and_then(|pointer| field(pointer, 0x58))
+        .and_then(|address| read::<[u8; 16]>(memory, address))
+        .unwrap_or([0; 16]));
+    debug_assert_eq!(at, GLOBAL_BYTES);
+    Some(Globals(bytes))
+}
+
+/// The raw header of the state-id-indexed array, [`walk`]'s root.
+pub fn header(memory: &impl Memory, game_state: usize) -> Option<[u8; 16]> {
+    game_state
+        .checked_add(cgame_state::STATES)
+        .and_then(|address| read(memory, address))
+}
+
+const SLOT_LAYOUT: RecordLayout<'static> = RecordLayout::new(
+    &[RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    }],
+    8,
+)
+.expect("valid slot layout");
+
+/// The pointer of every state slot after the reserved slot zero, in slot
+/// order ([`walk`] reads the same slots), in guarded record copies of 64;
+/// `output[index]` is slot `index + 1`.
+pub fn read_slots(
+    memory: &impl Memory,
+    array: Array,
+    output: &mut [usize],
+) -> Result<(), &'static str> {
+    const BATCH: usize = 64;
+    if array.count == 0 || output.len() != array.count as usize - 1 {
+        return Err("state slot destination does not match header");
+    }
+    let mut bytes = [0_u8; BATCH * 8];
+    for (batch, output) in output.chunks_mut(BATCH).enumerate() {
+        let first = u32::try_from(batch * BATCH + 1).map_err(|_| "table address overflow")?;
+        let base = array.element(first, 8).ok_or("table address overflow")?;
+        let count = output.len();
+        if memory.copy_records(
+            RecordSources::Strided {
+                base,
+                stride: 8,
+                count,
+            },
+            &SLOT_LAYOUT,
+            &mut bytes[..count * 8],
+        ) != count
+        {
+            return Err("table pointer unreadable");
+        }
+        for (pointer, bytes) in output.iter_mut().zip(bytes.chunks_exact(8)) {
+            *pointer = u64::from_le_bytes(bytes.try_into().unwrap()) as usize;
+        }
+    }
+    Ok(())
+}
+
+const MANPOWER_LAYOUT: RecordLayout<'static> = RecordLayout::new(
+    &[
+        RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: 8,
+        },
+        RecordField {
+            source_offset: ID,
+            destination_offset: 8,
+            len: 4,
+        },
+        RecordField {
+            source_offset: MANPOWER_AVAILABLE,
+            destination_offset: 12,
+            len: 4,
+        },
+    ],
+    16,
+)
+.expect("valid manpower layout");
+
+/// Each listed state's identity (vtable and id, as [`walk`] checks them) and
+/// stored manpower, in guarded record copies of 64. A failed or mismatching
+/// field fails the whole read.
+pub fn read_manpower(
+    memory: &impl Memory,
+    base: usize,
+    pointers: &[usize],
+    ids: &[u32],
+    output: &mut [i32],
+) -> Result<(), &'static str> {
+    const BATCH: usize = 64;
+    if pointers.len() != ids.len() || pointers.len() != output.len() {
+        return Err("state manpower destination does not match sources");
+    }
+    let vtable = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("module address overflow")? as u64;
+    let mut bytes = [0_u8; BATCH * 16];
+    for ((pointers, ids), output) in pointers
+        .chunks(BATCH)
+        .zip(ids.chunks(BATCH))
+        .zip(output.chunks_mut(BATCH))
+    {
+        let count = pointers.len();
+        if memory.copy_records(
+            RecordSources::Pointers(pointers),
+            &MANPOWER_LAYOUT,
+            &mut bytes[..count * 16],
+        ) != count * 3
+        {
+            return Err("state manpower available unreadable");
+        }
+        for ((record, &id), output) in bytes.chunks_exact(16).zip(ids).zip(output.iter_mut()) {
+            if u64::from_le_bytes(record[..8].try_into().unwrap()) != vtable {
+                return Err("state vtable mismatch");
+            }
+            if u32::from_le_bytes(record[8..12].try_into().unwrap()) != id {
+                return Err("state id differs from slot");
+            }
+            *output = i32::from_le_bytes(record[12..16].try_into().unwrap());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

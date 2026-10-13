@@ -27,8 +27,9 @@ mod native_reference;
 mod rosters;
 pub use native_reference::{NativeReferenceContext, NativeReferenceMemo};
 pub use rosters::{
-    CounterRosters, EffectRosterDemand, EffectRosters, NEIGHBORS, RosterDemand, RosterSpan,
-    counter_effect_roster_demand, counter_roster_demand, counter_roster_demand_with_pride_observer,
+    CarriedRosters, CarriedSpans, CounterRosters, EffectRosterDemand, EffectRosters, NEIGHBORS,
+    POLICY_STATUS_NULL, RosterDemand, RosterSpan, counter_effect_roster_demand,
+    counter_roster_demand, counter_roster_demand_with_pride_observer,
 };
 
 /// Country primary vtable.
@@ -408,6 +409,84 @@ pub struct Row {
     pub border_land_doctrine_level: Option<i32>,
 }
 
+/// The fixed-offset scalars of one country the Countries row reads, with
+/// their sizes, gathered in this order in one guarded scattered copy
+/// ([`Memory::copy_scattered_prefetched`]): the political status pointer,
+/// the manpower residual, command power, stability, war support, the peace
+/// conference byte, the convoy cache validity and the identity instance.
+const GATHERED: [(usize, usize); 8] = [
+    (POLITICAL_STATUS, 8),
+    (MANPOWER + crate::ccountry_manpower::RESIDUAL, 4),
+    (COMMAND_POWER, 8),
+    (STABILITY, 8),
+    (WAR_SUPPORT, 8),
+    (PEACE_CONFERENCE_PARTICIPANT, 1),
+    (CONVOY_STATE + cconvoys::CACHE_VALID, 1),
+    (ID_INSTANCE, 4),
+];
+const GATHERED_STATUS: usize = 0;
+const GATHERED_MANPOWER: usize = 1;
+const GATHERED_COMMAND_POWER: usize = 2;
+const GATHERED_STABILITY: usize = 3;
+const GATHERED_WAR_SUPPORT: usize = 4;
+const GATHERED_PEACE: usize = 5;
+const GATHERED_CONVOY_VALID: usize = 6;
+const GATHERED_INSTANCE: usize = 7;
+
+/// One country's [`GATHERED`] copy: the fields it completed, the one it
+/// faulted on, if any, and the ones after it, which it never reached.
+struct Fields {
+    values: [[u8; 8]; GATHERED.len()],
+    copied: usize,
+}
+
+impl Fields {
+    fn gather(memory: &impl Memory, pointer: usize) -> Self {
+        let mut values = [[0_u8; 8]; GATHERED.len()];
+        let addresses = GATHERED.map(|(offset, _)| pointer.checked_add(offset).unwrap_or(0));
+        let [a, b, c, d, e, f, g, h] = values.each_mut();
+        let copied = memory.copy_scattered_prefetched(
+            addresses,
+            &mut [
+                &mut a[..GATHERED[0].1],
+                &mut b[..GATHERED[1].1],
+                &mut c[..GATHERED[2].1],
+                &mut d[..GATHERED[3].1],
+                &mut e[..GATHERED[4].1],
+                &mut f[..GATHERED[5].1],
+                &mut g[..GATHERED[6].1],
+                &mut h[..GATHERED[7].1],
+            ],
+        );
+        Self { values, copied }
+    }
+
+    /// Field `index` of the country at `pointer`, as its own guarded read
+    /// would return it: the copied value; `None` for the field the copy
+    /// faulted on, which is not read again; a read of its own for a field
+    /// after it, which the copy never reached. The address overflow is the
+    /// row's own refusal, as before.
+    fn get<T: crate::memory::Raw>(
+        &self,
+        memory: &impl Memory,
+        pointer: usize,
+        index: usize,
+    ) -> Result<Option<T>, &'static str> {
+        let (offset, len) = GATHERED[index];
+        debug_assert_eq!(len, size_of::<T>());
+        let address = pointer
+            .checked_add(offset)
+            .ok_or("country address overflow")?;
+        Ok(match index.cmp(&self.copied) {
+            std::cmp::Ordering::Less => {
+                crate::memory::scalar_from_bytes::<T>(&self.values[index][..len])
+            }
+            std::cmp::Ordering::Equal => None,
+            std::cmp::Ordering::Greater => read::<T>(memory, address),
+        })
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LinkRow {
     /// Raw link id: the index in the current-world country links.
@@ -462,7 +541,7 @@ pub struct AppearanceRow<T = Text<256>, G = Text<8>, I = Text<128>> {
     /// the rest of the row readable. Owned worker text follows its native length.
     pub old_names: Option<[T; 3]>,
     /// Exact signed +0x130C word. Positive selects the original string even
-    /// when empty; nonpositive selects the own tag in GetOriginalTagOrTag.
+    /// when empty; nonpositive selects the own tag in original-tag lookup.
     pub original_tag_reference: i32,
     original_tag_is_name_tag: bool,
     pub original_tag: Option<crate::csubject_relation::Name>,
@@ -1355,6 +1434,22 @@ pub fn read_reserved_naming_observed(
         None,
     )
 }
+pub fn read_reserved_naming_observed_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    names: &mut Vec<u8>,
+    journal: &mut crate::raw_country_observations::Journal,
+) -> ReservedNamingWalk {
+    read_reserved_naming_observed_inner(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(names),
+        Some(journal),
+        None,
+    )
+}
 pub type ReservedNamingObserver<'a, M> = dyn FnMut(
         Result<&Reader<'_, M>, &'static str>,
         Result<Country, &'static str>,
@@ -1924,7 +2019,113 @@ pub fn walk_appearance_observed_growing(
         Some(journal),
     )
 }
+/// The globals of one [`walk_appearance_carrying_growing`] beside each
+/// country: the naming context every row's name operands read, and the
+/// country link header, whose count bounds the native ids.
+#[derive(Clone, Copy, Debug)]
+pub struct AppearanceGlobals {
+    pub naming: NamingContext,
+    pub links: Array,
+}
+
+/// A worker-owned appearance row.
+pub type OwnedAppearanceRow = AppearanceRow<
+    crate::capture_text::Owned,
+    crate::capture_text::Owned,
+    crate::capture_text::Owned,
+>;
+
+impl OwnedAppearanceRow {
+    /// Overwrites this row with `held`, an earlier complete read of the same
+    /// country, reusing this row's text storage; `original_tag` keeps the
+    /// held span, which the caller places. On a refusal (text storage cannot
+    /// grow) the row is partly written and must be read instead.
+    pub fn copy_held(&mut self, held: &Self) -> Result<(), &'static str> {
+        fn text(
+            into: &mut crate::capture_text::Owned,
+            from: &crate::capture_text::Owned,
+        ) -> Result<(), &'static str> {
+            into.prepare(from.len)
+                .map_err(|_| "held appearance text allocation failed")?;
+            into.copy_prepared(from.as_bytes())
+        }
+        self.country = held.country;
+        self.subjects = held.subjects;
+        self.rgba = held.rgba;
+        self.ui_rgba = held.ui_rgba;
+        text(&mut self.cosmetic_tag, &held.cosmetic_tag)?;
+        text(&mut self.name_tag, &held.name_tag)?;
+        text(&mut self.leader_ideology, &held.leader_ideology)?;
+        self.leader_character = held.leader_character;
+        text(&mut self.graphical_culture, &held.graphical_culture)?;
+        text(&mut self.graphical_culture_2d, &held.graphical_culture_2d)?;
+        self.overlord = held.overlord;
+        match &held.old_names {
+            Some(names) => {
+                let into = self.old_names.get_or_insert_with(Default::default);
+                for (into, from) in into.iter_mut().zip(names) {
+                    text(into, from)?;
+                }
+            }
+            None => self.old_names = None,
+        }
+        self.original_tag_reference = held.original_tag_reference;
+        self.original_tag_is_name_tag = held.original_tag_is_name_tag;
+        self.original_tag = held.original_tag;
+        self.original_tag_failure = held.original_tag_failure;
+        Ok(())
+    }
+}
+
+/// [`walk_appearance_observed_growing`], except that `carry` is offered
+/// each country, in walk order, with its row's storage first: when it fills
+/// the row from an earlier read it proved current and returns true, nothing
+/// of that country is read or journalled. Every other country is read as
+/// there.
+#[allow(clippy::type_complexity)]
+pub fn walk_appearance_carrying_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    dynamic_boundary: u32,
+    output: &mut Vec<OwnedAppearanceRow>,
+    journal: &mut crate::raw_country_observations::Journal,
+    carry: &mut dyn FnMut(AppearanceGlobals, Country, &mut OwnedAppearanceRow) -> bool,
+) -> Outcome {
+    walk_appearance_carrying_inner(
+        memory,
+        base,
+        game_state,
+        dynamic_boundary,
+        crate::walk::Buffer::Growing(output),
+        Some(journal),
+        carry,
+    )
+}
 fn walk_appearance_observed_inner<
+    T: crate::capture_text::Value,
+    G: crate::capture_text::Value,
+    I: crate::capture_text::Value,
+>(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    dynamic_boundary: u32,
+    output: crate::walk::Buffer<'_, AppearanceRow<T, G, I>>,
+    journal: Option<&mut crate::raw_country_observations::Journal>,
+) -> Outcome {
+    walk_appearance_carrying_inner(
+        memory,
+        base,
+        game_state,
+        dynamic_boundary,
+        output,
+        journal,
+        &mut |_, _, _| false,
+    )
+}
+#[allow(clippy::type_complexity)]
+fn walk_appearance_carrying_inner<
     T: crate::capture_text::Value,
     G: crate::capture_text::Value,
     I: crate::capture_text::Value,
@@ -1935,6 +2136,7 @@ fn walk_appearance_observed_inner<
     dynamic_boundary: u32,
     mut output: crate::walk::Buffer<'_, AppearanceRow<T, G, I>>,
     mut journal: Option<&mut crate::raw_country_observations::Journal>,
+    carry: &mut dyn FnMut(AppearanceGlobals, Country, &mut AppearanceRow<T, G, I>) -> bool,
 ) -> Outcome {
     let result = (|| {
         let reader = Reader::new(memory, base, game_state)?;
@@ -1946,6 +2148,10 @@ fn walk_appearance_observed_inner<
                 .ok_or("country link tags unreadable or invalid")?,
             dynamic_boundary,
         };
+        let globals = AppearanceGlobals {
+            naming,
+            links: reader.arrays()[1],
+        };
         let mut len = 0;
         let mut unread_rows = 0_u32;
         let mut found_country = false;
@@ -1955,13 +2161,15 @@ fn walk_appearance_observed_inner<
             };
             found_country = true;
             let fits = if let Some(destination) = output.get_mut(len) {
-                *destination = read_appearance_observed_inner(
-                    memory,
-                    base,
-                    country,
-                    naming,
-                    journal.as_deref_mut(),
-                )?;
+                if !carry(globals, country, &mut *destination) {
+                    *destination = read_appearance_observed_inner(
+                        memory,
+                        base,
+                        country,
+                        naming,
+                        journal.as_deref_mut(),
+                    )?;
+                }
                 len += 1;
                 true
             } else {
@@ -2307,6 +2515,18 @@ impl<'a, M: Memory> Reader<'a, M> {
     /// Includes the reserved sentinel; country-table iteration starts at one.
     pub fn count(&self) -> u32 {
         self.countries.count
+    }
+
+    /// The canonical country at `slot` when this pass's authenticated census
+    /// already holds it, without reading anything: the address of a later
+    /// slot a walk may hint ahead of time, never a row or an authentication.
+    pub fn known(&self, slot: u32) -> Option<Country> {
+        self.authenticated?
+            .slots
+            .get(slot as usize)
+            .copied()
+            .flatten()
+            .filter(|country| country.canonical_slot == slot)
     }
 
     /// Skips null slots and authenticated aliases, publishing each object once.
@@ -3124,7 +3344,13 @@ fn walk_observed_inner<M: Memory>(
             if tag.len == 0 {
                 return Err("country tag empty");
             }
-            let status = read::<u64>(memory, at(POLITICAL_STATUS)?)
+            // The country's own scalars in one guarded scattered copy, in
+            // the order the row checks them ([`Fields::get`]): the field it
+            // faults on refuses with its own reason and is not read again,
+            // and a field after it is read alone where the row reaches it.
+            let fields = Fields::gather(memory, pointer);
+            let status = fields
+                .get::<u64>(memory, pointer, GATHERED_STATUS)?
                 .ok_or("political status pointer unreadable")?;
             let political_power_raw = if status == 0 {
                 None
@@ -3157,7 +3383,9 @@ fn walk_observed_inner<M: Memory>(
                 tag,
                 political_power_raw,
                 politics_witness: (|| {
-                    let instance = read::<u32>(memory, at(ID_INSTANCE).ok()?)?;
+                    let instance = fields
+                        .get::<u32>(memory, pointer, GATHERED_INSTANCE)
+                        .ok()??;
                     let party = if status == 0 {
                         None
                     } else {
@@ -3174,19 +3402,25 @@ fn walk_observed_inner<M: Memory>(
                     Some((instance, party))
                 })(),
                 border_land_doctrine_level: None,
-                manpower_residual: read::<i32>(
-                    memory,
-                    at(MANPOWER + crate::ccountry_manpower::RESIDUAL)?,
-                )
-                .ok_or("country manpower residual unreadable")?,
-                command_power_raw: scalar(COMMAND_POWER)?,
-                stability_raw: scalar(STABILITY)?,
-                war_support_raw: scalar(WAR_SUPPORT)?,
-                peace_conference_participant: read::<u8>(memory, at(PEACE_CONFERENCE_PARTICIPANT)?)
+                manpower_residual: fields
+                    .get::<i32>(memory, pointer, GATHERED_MANPOWER)?
+                    .ok_or("country manpower residual unreadable")?,
+                command_power_raw: fields
+                    .get::<i64>(memory, pointer, GATHERED_COMMAND_POWER)?
+                    .ok_or("country scalar unreadable")?,
+                stability_raw: fields
+                    .get::<i64>(memory, pointer, GATHERED_STABILITY)?
+                    .ok_or("country scalar unreadable")?,
+                war_support_raw: fields
+                    .get::<i64>(memory, pointer, GATHERED_WAR_SUPPORT)?
+                    .ok_or("country scalar unreadable")?,
+                peace_conference_participant: fields
+                    .get::<u8>(memory, pointer, GATHERED_PEACE)?
                     .ok_or("peace conference participation unreadable")?,
                 convoys_raw: {
                     let cache = (|| {
-                        let valid = read::<u8>(memory, at(CONVOY_STATE + cconvoys::CACHE_VALID)?)
+                        let valid = fields
+                            .get::<u8>(memory, pointer, GATHERED_CONVOY_VALID)?
                             .ok_or("convoy cache validity unreadable")?;
                         let raw = if valid == 0 {
                             None
@@ -3579,7 +3813,20 @@ pub struct CounterInputsRow {
     pub mio_policies: Option<RosterSpan>,
     pub neighbor_reason: Option<&'static str>,
     pub policy_reason: Option<&'static str>,
+    /// The accumulator's ([`MODIFIER_ACCUMULATOR`]) raw entries for
+    /// [`ATTACK_MODIFIER_KEYS`], `None` for an absent key; the outer `None`
+    /// is this field's own read refusal.
+    pub attack_modifiers: Option<[Option<i64>; 2]>,
 }
+
+/// `land_night_attack` (0x103) and `land_bunker_effectiveness_factor` (0x272):
+/// the country terms of the selected army's attack list (night attack for the
+/// division's owner, bunker effectiveness for the target's controller), in the
+/// accumulator's ascending key order.
+pub const ATTACK_MODIFIER_KEYS: [u32; 2] = [
+    crate::modifier_keys::LAND_NIGHT_ATTACK,
+    crate::modifier_keys::LAND_BUNKER_EFFECTIVENESS_FACTOR,
+];
 
 /// Uses the shared authenticated country census and authenticates each country
 /// before its fields. The owned-state array header must be a valid CPdxArray.
@@ -3594,6 +3841,7 @@ pub fn walk_counter_inputs(
         base,
         game_state,
         crate::walk::Buffer::Fixed(output),
+        None,
         None,
         None,
         None,
@@ -3617,6 +3865,7 @@ pub fn walk_counter_inputs_with_rosters(
         Some(rosters),
         None,
         None,
+        None,
     )
 }
 
@@ -3635,6 +3884,7 @@ pub fn walk_counter_inputs_with_effect_rosters(
         crate::walk::Buffer::Fixed(output),
         Some(rosters),
         Some(effects),
+        None,
         None,
     )
 }
@@ -3659,6 +3909,7 @@ pub fn walk_counter_inputs_with_effect_rosters_observed<'a, M: Memory>(
         Some(rosters),
         Some(effects),
         Some(observed),
+        None,
     )
 }
 
@@ -3681,9 +3932,52 @@ pub fn walk_counter_inputs_with_effect_rosters_observed_growing<'a, M: Memory>(
         Some(rosters),
         Some(effects),
         Some(observed),
+        None,
     )
 }
 
+/// A caller's offer to carry a country of
+/// [`walk_counter_inputs_carried_growing`]: given the authenticated country
+/// and this read's roster arenas, it returns the row of an earlier complete
+/// read it proved current, with that read's rosters placed in the arenas
+/// ([`CarriedRosters::append`]) and the row's spans naming them, or `None`
+/// to have the country read.
+pub type CounterCarry<'a> = dyn for<'r, 's, 'e, 'f> FnMut(
+        Country,
+        &'r mut CounterRosters<'s>,
+        &'e mut EffectRosters<'f>,
+    ) -> Option<CounterInputsRow>
+    + 'a;
+
+/// [`walk_counter_inputs_with_effect_rosters_observed_growing`], except that
+/// `carry` is offered each country in walk order once its identity (the
+/// vtable and `+ID` the walk checks before any field) is confirmed: a
+/// carried country's row stands for all of its reads. Every other country is
+/// read there, in the same order and with the same outcomes and first fault.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_counter_inputs_carried_growing<'a, M: Memory>(
+    memory: &'a M,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<CounterInputsRow>,
+    rosters: &mut CounterRosters<'_>,
+    effects: &mut EffectRosters<'_>,
+    observed: &mut Option<Result<Reader<'a, M>, &'static str>>,
+    carry: &mut CounterCarry<'_>,
+) -> Outcome {
+    walk_counter_inputs_inner(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+        Some(rosters),
+        Some(effects),
+        Some(observed),
+        Some(carry),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn walk_counter_inputs_inner<'a, M: Memory>(
     memory: &'a M,
     base: usize,
@@ -3692,6 +3986,7 @@ fn walk_counter_inputs_inner<'a, M: Memory>(
     mut rosters: Option<&mut CounterRosters<'_>>,
     mut effects: Option<&mut EffectRosters<'_>>,
     observed: Option<&mut Option<Result<Reader<'a, M>, &'static str>>>,
+    mut carry: Option<&mut CounterCarry<'_>>,
 ) -> Outcome {
     let mut unobserved = None;
     let observed = observed.unwrap_or(&mut unobserved);
@@ -3727,10 +4022,54 @@ fn walk_counter_inputs_inner<'a, M: Memory>(
                     .checked_add(offset)
                     .ok_or("country counter address overflow")
             };
-            if read::<u64>(memory, country.pointer) != Some(expected as u64)
-                || read::<u32>(memory, at(ID)?) != Some(country.id)
+            let identify = || -> Result<(), &'static str> {
+                if read::<u64>(memory, country.pointer) != Some(expected as u64)
+                    || read::<u32>(memory, at(ID)?) != Some(country.id)
+                {
+                    return Err("country counter identity changed");
+                }
+                Ok(())
+            };
+            // A carried country's row stands for every read below; its
+            // identity is confirmed first, as for a country read.
+            let mut identified = false;
+            if fits
+                && let Some(carry) = carry.as_deref_mut()
+                && let Some(rosters) = rosters.as_deref_mut()
+                && let Some(effects) = effects.as_deref_mut()
             {
-                return Err("country counter identity changed");
+                identify()?;
+                identified = true;
+                if let Some(row) = carry(country, rosters, effects) {
+                    output[len] = row;
+                    len += 1;
+                    continue;
+                }
+            }
+            // The country's fields below are independent of one another:
+            // hint their lines first so their misses overlap. Hints read
+            // nothing, so rows and the first fault are unchanged.
+            let hint = |offset: usize, len| {
+                memory.prefetch(country.pointer.wrapping_add(offset), len);
+            };
+            for (offset, len) in [
+                (PRIDE_OF_THE_FLEET, 8),
+                (OWNED_STATES, 16),
+                (CONTROLLED_STATES, 16),
+                (DIVISIONS, 16),
+            ] {
+                hint(offset, len);
+            }
+            if rosters.is_some() {
+                hint(CORE_STATES, 16);
+                hint(CHARACTERS, 8);
+            }
+            if effects.is_some() {
+                hint(rosters::NEIGHBORS, 16);
+                hint(PRODUCTION_STATUS, 8);
+            }
+            if !identified {
+                identify()?;
             }
             let pride = read::<u64>(memory, at(PRIDE_OF_THE_FLEET)?)
                 .ok_or("country pride of the fleet unreadable")?;
@@ -3793,8 +4132,18 @@ fn walk_counter_inputs_inner<'a, M: Memory>(
                     .ok_or("country counter unread row count overflow")?;
                 continue;
             }
+            let mut attack = [crate::modifier_accumulator::Value::default(); 2];
+            let attack_modifiers = crate::modifier_accumulator::lookup_many(
+                memory,
+                country.pointer,
+                &ATTACK_MODIFIER_KEYS,
+                &mut attack,
+            )
+            .ok()
+            .map(|()| attack.map(|value| value.present.then_some(value.raw)));
             output[len] = CounterInputsRow {
                 country: country.id,
+                attack_modifiers,
                 pride_of_the_fleet: pride,
                 owned_state_count: states.count as i32,
                 controlled_state_count: controlled.count as i32,
@@ -6439,6 +6788,87 @@ mod tests {
         );
     }
 
+    /// The country's own scalars are one guarded copy: the old walk read
+    /// each alone. A field the copy could not reach is still read alone, so a
+    /// fault keeps its old refusal and the fields before it.
+    #[test]
+    fn country_scalars_are_gathered_in_one_guarded_copy() {
+        let bytes = countries_with_aliases();
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut expected = [Row::default(); 2];
+        assert_eq!(
+            walk(&memory, 0, 0x1000, &mut expected),
+            Outcome::Rows { len: 1 }
+        );
+        let census = crate::read_census::ReadCensus::new(&memory);
+        let mut rows = [Row::default(); 2];
+        assert_eq!(
+            walk(&census, 0, 0x1000, &mut rows),
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(rows, expected);
+        // A source that guards each of the eight scalars on its own, as the
+        // old walk read them.
+        struct Unbatched<'a, M>(&'a M);
+        impl<M: Memory> Memory for Unbatched<'_, M> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.0.copy(address, output)
+            }
+            fn copy_scattered<const N: usize>(
+                &self,
+                addresses: [usize; N],
+                destinations: &mut [&mut [u8]; N],
+            ) -> usize {
+                if N != 8 {
+                    return self.0.copy_scattered(addresses, destinations);
+                }
+                for (index, (address, destination)) in addresses
+                    .into_iter()
+                    .zip(destinations.iter_mut())
+                    .enumerate()
+                {
+                    if !self.0.copy(address, destination) {
+                        return index;
+                    }
+                }
+                N
+            }
+        }
+        let alone = crate::read_census::ReadCensus::new(&memory);
+        assert_eq!(
+            walk(&Unbatched(&alone), 0, 0x1000, &mut rows),
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(rows, expected);
+        // Eight guarded reads became one.
+        assert_eq!(alone.calls(), census.calls() + 7);
+        // A denied stability read: the copy faults there, and the row refuses
+        // with stability's own reason without reading it again.
+        struct Denied<'a>(SliceMemory<'a>);
+        impl Memory for Denied<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                address != 0x2000 + STABILITY && self.0.copy(address, output)
+            }
+        }
+        assert_eq!(
+            walk(
+                &Denied(SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes,
+                }),
+                0,
+                0x1000,
+                &mut rows
+            ),
+            Outcome::Unavailable {
+                reason: "country scalar unreadable"
+            }
+        );
+    }
+
     #[test]
     fn politics_witness_walk_acquires_all_five_thousand_native_country_rows() {
         let mut world = synthetic::World::new(0x4000_0000, 5_000, PEACE_CONFERENCE_PARTICIPANT + 8);
@@ -6913,10 +7343,13 @@ mod tests {
                     owned_state_count: 3,
                     controlled_state_count: 5,
                     first_division: (7_u64 << 32) | 4,
+                    // An empty accumulator holds neither key.
+                    attack_modifiers: Some([None, None]),
                     ..Default::default()
                 },
                 CounterInputsRow {
                     country: 2,
+                    attack_modifiers: Some([None, None]),
                     ..Default::default()
                 },
             ]
@@ -6934,8 +7367,8 @@ mod tests {
                 complete_cost.0 - census.calls(),
                 complete_cost.1 - census.bytes()
             ),
-            (6, 68),
-            "country 2 adds an identity check, its three fields and its empty roster header"
+            (7, 84),
+            "country 2 adds an identity check, its three fields, its empty roster header and its accumulator header"
         );
         // A null slot 0 is no fallback unit; a slot that is not an army is refused.
         put(&mut bytes, 0x12000, &0_u64.to_le_bytes());

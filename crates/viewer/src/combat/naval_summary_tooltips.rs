@@ -16,102 +16,8 @@ use replay::{
 };
 use std::io;
 
-/// Each ship modifier source has an ordered cloned-child tree. Its labels
-/// are stored text without source keys, so another display language cannot
-/// reconstruct them. Print every nonzero leaf regardless of hierarchy depth.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Render recorded modifier trees with explicit scaling, label policy and text resources"
-)]
-pub(super) fn ship_modifier_breakdown(
-    nodes: &[replay::rows::ModifierBreakdownNode],
-    definition: &replay::rows::ModifierDefinitionRow,
-    scale: i64,
-    prefix: &str,
-    recorded_language: &str,
-    icons: &dyn TextIcons,
-    loc: &Localisation,
-    show_names: bool,
-) -> Result<String, String> {
-    dashboard::modifier_text::breakdown(
-        nodes,
-        dashboard::modifier_text::Breakdown {
-            depth: -1,
-            prefix,
-            suffix: "",
-        },
-        |node| {
-            let mut text = if show_names {
-                dashboard::scripted_text::stored_text(
-                    loc,
-                    recorded_language,
-                    &node.name,
-                    "naval ship modifier source",
-                )?
-            } else {
-                String::new()
-            };
-            super::binding::validate(icons, &text)
-                .map_err(|reason| format!("naval ship modifier source holds {reason}"))?;
-            if !text.is_empty() {
-                text.push_str(": ");
-            }
-            text.push_str(
-                &super::modifier_text::value_text(
-                    definition,
-                    super::fixed::mul(node.value, scale),
-                    2,
-                    false,
-                    false,
-                    icons,
-                    loc,
-                )
-                .map_err(|reason| reason.to_string())?,
-            );
-            Ok(text)
-        },
-    )
-}
-
-/// Table 270 shares each stable accumulator/key tree among its native source
-/// occurrences. The join borrows nodes while restoring
-/// source order; no tree is copied for another combat or ship.
-#[derive(Clone, Copy)]
-pub(super) struct NavalTreeUse<'a> {
-    pub tree: &'a replay::rows::NavalModifierBreakdownRow,
-    pub use_: &'a replay::rows::NavalModifierUse,
-}
-
-impl std::ops::Deref for NavalTreeUse<'_> {
-    type Target = replay::rows::NavalModifierBreakdownRow;
-    fn deref(&self) -> &Self::Target {
-        self.tree
-    }
-}
-
-pub(super) fn expanded_trees(
-    rows: &[replay::rows::NavalModifierBreakdownRow],
-) -> Vec<NavalTreeUse<'_>> {
-    let mut expanded = Vec::new();
-    for tree in rows {
-        for use_ in &tree.uses {
-            expanded.push(NavalTreeUse { tree, use_ });
-        }
-    }
-    expanded.sort_unstable_by_key(|row| row.use_.order);
-    expanded
-}
-
-#[cfg(test)]
-pub(super) fn test_tree_use(tree: &replay::rows::NavalModifierBreakdownRow) -> NavalTreeUse<'_> {
-    NavalTreeUse {
-        tree,
-        use_: &tree.uses[0],
-    }
-}
-
-// the game chooses these executable keys for paired stat text and
-// background widgets. the game makes the delayed second string.
+// Executable keys for paired stat text and background widgets.
+// The tooltip also has a delayed second string.
 super::text::tooltip_keys! {
     COMBAT_STAT_LIGHT_GUNS_INFO = "combat_stat_light_guns_info",
     COMBAT_STAT_HEAVY_GUNS_INFO = "combat_stat_heavy_guns_info",
@@ -185,14 +91,46 @@ const DAMAGE_WEAPONS: [&str; 5] = [
     DAMAGE_DEALT_AIR,
 ];
 
-/// the game saturates a failed or overflowing fixed5 ratio to 0xffffffff.
+/// The game saturates a failed or overflowing fixed5 ratio to 0xffffffff.
 fn damage_ratio(value: i64, denominator: i64) -> i64 {
     super::fixed::fraction(value, denominator).unwrap_or(super::fixed::EXCEPTIONAL)
 }
 
-/// the game renders two screening descriptions from the fresh census. Its
-/// static bonus blocks are named content modifiers; only the
-/// rare 0x1B3 country correction needs a live source tree.
+/// Prefix the screen-box description with the side's country
+/// 0x1B3 source breakdown when it takes the correction branch: the country
+/// bonus applied, or a zero uncorrected result for a side with a country and
+/// no eligible submarine (the breakdown is appended even when the numerical
+/// bonus is not positive). Source formatting receives null province and
+/// commander, so only the country's tree prints, without a trailing newline.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the correction branch's census, side and text resources are separate operands"
+)]
+fn country_correction(
+    carrier: bool,
+    census: &Census,
+    screening: &Screening,
+    combat: u64,
+    side: &NavalCombatSideDetails,
+    opposing: &NavalCombatSideDetails,
+    trees: &super::naval_trees::Sources<'_>,
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+) -> Result<String, String> {
+    let branch = screening.country_bonus_applied
+        || (screening.capital == 0
+            && !side.summary.countries.is_empty()
+            && census.eligible_submarines == 0);
+    let mut text = String::new();
+    if !carrier && branch {
+        trees.side(combat, side, opposing, 0x1b3, "", &mut text, icons, loc)?;
+    }
+    Ok(text)
+}
+
+/// Render two screening descriptions from the fresh census. Static bonus
+/// blocks use named content modifiers; the screen
+/// box starts with the 0x1B3 country correction ([`country_correction`]).
 #[expect(
     clippy::too_many_arguments,
     reason = "native screening text has separate combat and content operands"
@@ -323,38 +261,39 @@ fn screening_description(
     Ok((text, dropped))
 }
 
-/// the game writes the fresh positioning description in this order. Its
-/// source text is ordered country/weather/terrain/commander
-/// breakdown for keys 0x1B2 and, for an early defender, 0x5A. the game
-/// then prepends the immediate heading and one newline.
+/// Write the fresh positioning description in this order into an empty
+/// string: the base line, the country/weather/terrain/commander
+/// sources of key 0x1B2 and, for an early defender, of 0x5A with the opposing
+/// commander (`sources`), the escort bonus, the relative terms and the
+/// penalty block. Then prepend the immediate heading and one
+/// newline.
 fn positioning_description(
     terms: super::naval_positioning::Terms,
-    sources: &str,
+    sources: impl FnOnce(&mut String) -> Result<(), String>,
     defines: &installed_content::naval_combat_defines::Defines,
     icons: &dyn TextIcons,
     loc: &Localisation,
 ) -> Result<String, String> {
-    let mut text = builtin(icons, loc, POSITIONING_INFO, &[])?;
-    text.push('\n');
+    let mut description = String::new();
     if terms.base != 0 {
-        text.push_str(&builtin(
+        description.push_str(&builtin(
             icons,
             loc,
             MODIFIER_BASE_VALUE_PERCENTAGE,
             &[("VALUE", Argument::Fixed5(terms.base))],
         )?);
-        text.push('\n');
+        description.push('\n');
     }
-    text.push_str(sources);
+    sources(&mut description)?;
     if terms.escort > 1_000 {
-        text.push_str(&builtin(
+        description.push_str(&builtin(
             icons,
             loc,
             CONVOY_ESCORT_POSITIONING_BONUS,
             &[("VALUE", Argument::Fixed5(terms.escort))],
         )?);
-        if !text.ends_with('\n') {
-            text.push('\n');
+        if !description.ends_with('\n') {
+            description.push('\n');
         }
     }
     for (amount, key) in [
@@ -375,18 +314,18 @@ fn positioning_description(
         if amount == 0 {
             continue;
         }
-        text.push_str(&builtin(
+        description.push_str(&builtin(
             icons,
             loc,
             key,
             &[("NUM", Argument::Fixed5(amount))],
         )?);
-        text.push('\n');
+        description.push('\n');
     }
     if terms.value < super::fixed::ONE {
-        text.push('\n');
-        text.push_str(&builtin(icons, loc, POSITIONING_PENALTY_INFO, &[])?);
-        text.push('\n');
+        description.push('\n');
+        description.push_str(&builtin(icons, loc, POSITIONING_PENALTY_INFO, &[])?);
+        description.push('\n');
         for (impact, key, argument) in [
             (defines.positioning_impacts[0], BM_ATTACK_VALUE, "VALUE"),
             // These two lines use the fixed-point argument NUM.
@@ -395,13 +334,13 @@ fn positioning_description(
         ] {
             let penalty = impact.wrapping_sub(super::fixed::mul(terms.value, impact));
             if penalty > 0 {
-                text.push_str(&builtin(
+                description.push_str(&builtin(
                     icons,
                     loc,
                     key,
                     &[(argument, Argument::Fixed5(penalty.wrapping_neg()))],
                 )?);
-                text.push('\n');
+                description.push('\n');
             }
         }
         let reveal = defines.positioning_impacts[2].wrapping_sub(super::fixed::mul(
@@ -409,74 +348,19 @@ fn positioning_description(
             defines.positioning_impacts[2],
         ));
         if reveal > 0 {
-            text.push_str(&builtin(icons, loc, STAT_NAVY_SUB_VISIBILITY, &[])?);
-            text.push_str(&builtin(
+            description.push_str(&builtin(icons, loc, STAT_NAVY_SUB_VISIBILITY, &[])?);
+            description.push_str(&builtin(
                 icons,
                 loc,
                 STAT_NAVY_SUB_VISIBILITY_MOD_DIFF,
                 &[("VALUE", Argument::Fixed5(reveal))],
             )?);
-            text.push('\n');
+            description.push('\n');
         }
     }
-    Ok(text)
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Select captured sources by combat and side while keeping text resources explicit"
-)]
-fn positioning_sources(
-    id: u64,
-    side: u8,
-    early_defender: bool,
-    trees: &[NavalTreeUse<'_>],
-    definitions: &[replay::rows::ModifierDefinitionRow],
-    recorded_language: &str,
-    icons: &dyn TextIcons,
-    loc: &Localisation,
-) -> Result<String, String> {
-    let mut text = String::new();
-    for key in [Some(0x1b2), early_defender.then_some(0x5a)]
-        .into_iter()
-        .flatten()
-    {
-        let definition = definitions
-            .iter()
-            .find(|row| row.index == key)
-            .ok_or_else(|| format!("positioning modifier definition {key:#x} is absent"))?;
-        let sources: Vec<_> = trees
-            .iter()
-            .filter(|row| {
-                row.use_.combat == id
-                    && row.use_.side == side
-                    && row.use_.battle_slot == u32::MAX
-                    && row.key == key
-            })
-            .collect();
-        if !sources.iter().any(|row| row.use_.source_scope == 0) {
-            return Err(format!(
-                "positioning key {key:#x} has no captured country source"
-            ));
-        }
-        for source in sources {
-            text.push_str(&ship_modifier_breakdown(
-                &source.nodes,
-                definition,
-                super::fixed::ONE,
-                "",
-                recorded_language,
-                icons,
-                loc,
-                true,
-            )?);
-            // the game does not add a newline after the country source, but
-            // ensures one after weather, terrain and commander, even empty.
-            if source.use_.source_scope != 0 && !text.ends_with('\n') {
-                text.push('\n');
-            }
-        }
-    }
+    let mut text = builtin(icons, loc, POSITIONING_INFO, &[])?;
+    text.push('\n');
+    text.push_str(&description);
     Ok(text)
 }
 
@@ -741,7 +625,7 @@ fn side_hovers(
     }
 }
 
-/// the game only needs a model for an uncategorized ship's
+/// The game only needs a model for an uncategorized ship's
 /// carrier predicate. A missing unrelated model table must not
 /// withhold a submarine/convoy-only side's complete screening explanation.
 fn screening_inputs<'a>(
@@ -789,6 +673,58 @@ fn screening_inputs<'a>(
     Ok((census, screening, defines))
 }
 
+/// Show the positioning description, built around the ordered
+/// country/weather/terrain/commander breakdown of key
+/// 0x1B2 (and of 0x5A with the opposing commander for an early defender).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the hover's fresh terms, both sides, trees and text resources are separate operands"
+)]
+fn positioning_hover(
+    out: &mut Bindings,
+    id: u64,
+    name: &str,
+    side: usize,
+    detail: &replay::rows::NavalCombatDetailsRow,
+    terms: Option<super::naval_positioning::Terms>,
+    trees: &super::naval_trees::Sources<'_>,
+    defines: Option<&installed_content::naval_combat_defines::Defines>,
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+) {
+    let positioning = (|| {
+        let terms =
+            terms.ok_or("fresh positioning operands or fixed modifier layout are unavailable")?;
+        let defines = defines.ok_or("matching naval combat defines are unavailable")?;
+        let (own, opposing) = (&detail.sides[side], &detail.sides[1 - side]);
+        positioning_description(
+            terms,
+            |text| {
+                trees.side(detail.combat, own, opposing, 0x1b2, "", text, icons, loc)?;
+                if terms.early_defender {
+                    trees.side(detail.combat, own, opposing, 0x5a, "", text, icons, loc)?;
+                }
+                Ok(())
+            },
+            defines,
+            icons,
+            loc,
+        )
+    })();
+    for key in [
+        format!("header_container/{name}_wnd/stat_positioning"),
+        format!("header_container/{name}_wnd/stat_positioning_bg"),
+    ] {
+        let hover = positioning.as_ref().ok().and_then(|text| hover_text(text));
+        set_hover(&mut out.values, key, hover, None);
+    }
+    if let Err(reason) = positioning {
+        out.refuse(format!(
+            "Naval combat {id} {name} positioning hover is unavailable: {reason}"
+        ));
+    }
+}
+
 /// Native dynamic stat callbacks own their widgets even when a historical
 /// operand is absent.
 pub(super) fn bind(
@@ -809,11 +745,7 @@ pub(super) fn bind(
     let live_ships = rows::<tables::Ships>(frame)?;
     let dense_rows = rows::<tables::NavalCombatAirBaseWingHandles>(frame)?;
     let wings = rows::<tables::AirWings>(frame)?;
-    let trees = rows::<tables::NavalModifierBreakdowns>(frame)?;
-    let breakdown_layout =
-        replay::fixed_layout::validate_recording(frame, replay::fixed_layout::NAVAL_BREAKDOWNS);
-    let expanded = trees.is_complete().then(|| expanded_trees(trees.rows()));
-    let raw_definitions = rows::<tables::ModifierDefinitions>(frame)?;
+    let trees = super::naval_trees::Sources::read(frame, &document.recorded_language)?;
     let definitions = Definitions::read(frame, &document.modifier_names)?;
     let keyed_models = models
         .is_complete()
@@ -840,7 +772,7 @@ pub(super) fn bind(
             [None; 2]
         };
     for (side, name) in ["left", "right"].into_iter().enumerate() {
-        // the game returns false before selecting a stat when both
+        // The game returns false before selecting a stat when both
         // primary country references are empty.
         if !detail.sides[side].summary.countries.is_empty() {
             side_hovers(
@@ -853,44 +785,18 @@ pub(super) fn bind(
                 &detail.sides[1 - side],
                 document.icons.combat.naval_defines.as_ref(),
             );
-            let position_keys = [
-                format!("header_container/{name}_wnd/stat_positioning"),
-                format!("header_container/{name}_wnd/stat_positioning_bg"),
-            ];
-            let positioning = (|| {
-                let terms = position_terms[side]
-                    .ok_or("fresh positioning operands or fixed modifier layout are unavailable")?;
-                let defines = icons
-                    .naval_defines
-                    .as_ref()
-                    .ok_or("matching naval combat defines are unavailable")?;
-                breakdown_layout.as_ref().map_err(Clone::clone)?;
-                if !trees.is_complete() || !raw_definitions.is_complete() {
-                    return Err(
-                        "NavalModifierBreakdowns or ModifierDefinitions is incomplete".to_owned(),
-                    );
-                }
-                let source_text = positioning_sources(
-                    id,
-                    side as u8,
-                    terms.early_defender,
-                    expanded.as_deref().unwrap_or(&[]),
-                    raw_definitions.rows(),
-                    &document.recorded_language,
-                    icons,
-                    loc,
-                )?;
-                positioning_description(terms, &source_text, defines, icons, loc)
-            })();
-            for key in position_keys {
-                let hover = positioning.as_ref().ok().and_then(|text| hover_text(text));
-                set_hover(&mut out.values, key, hover, None);
-            }
-            if let Err(reason) = positioning {
-                out.refuse(format!(
-                    "Naval combat {id} {name} positioning hover is unavailable: {reason}"
-                ));
-            }
+            positioning_hover(
+                out,
+                id,
+                name,
+                side,
+                detail,
+                position_terms[side],
+                &trees,
+                icons.naval_defines.as_ref(),
+                icons,
+                loc,
+            );
             let screening_inputs = screening_inputs(
                 id,
                 side as u8,
@@ -906,48 +812,17 @@ pub(super) fn bind(
                 let delayed = (|| {
                     let (census, screening, defines) =
                         screening_inputs.as_ref().map_err(Clone::clone)?;
-                    // the game calls 0x1B3 when the uncorrected result is
-                    // zero; its source description is still appended when
-                    // the numerical country bonus is not positive.
-                    let correction_branch = screening.country_bonus_applied
-                        || (screening.capital == 0
-                            && !detail.sides[side].summary.countries.is_empty()
-                            && census.eligible_submarines == 0);
-                    let correction = if !carrier && correction_branch {
-                        breakdown_layout.as_ref().map_err(Clone::clone)?;
-                        if !trees.is_complete() || !raw_definitions.is_complete() {
-                            return Err("NavalModifierBreakdowns or ModifierDefinitions is incomplete for the country screening correction".to_owned());
-                        }
-                        let source = expanded
-                            .as_deref()
-                            .unwrap_or(&[])
-                            .iter()
-                            .find(|row| {
-                                row.use_.combat == id
-                                    && row.use_.side == side as u8
-                                    && row.use_.battle_slot == u32::MAX
-                                    && row.use_.source_scope == 0
-                                    && row.key == 0x1b3
-                            })
-                            .ok_or("the country screening correction has no captured 0x1B3 tree")?;
-                        let definition = raw_definitions
-                            .rows()
-                            .iter()
-                            .find(|row| row.index == 0x1b3)
-                            .ok_or("the 0x1B3 modifier definition is absent")?;
-                        ship_modifier_breakdown(
-                            &source.nodes,
-                            definition,
-                            super::fixed::ONE,
-                            "",
-                            &document.recorded_language,
-                            icons,
-                            loc,
-                            true,
-                        )?
-                    } else {
-                        String::new()
-                    };
+                    let correction = country_correction(
+                        carrier,
+                        census,
+                        screening,
+                        detail.combat,
+                        &detail.sides[side],
+                        &detail.sides[1 - side],
+                        &trees,
+                        icons,
+                        loc,
+                    )?;
                     screening_description(
                         carrier,
                         census,

@@ -231,6 +231,7 @@ fn walk_from(
         let (mut len, mut bytes_len, mut required_bytes) = (0_usize, 0_usize, 0_usize);
         let mut unread_rows = 0_u32;
         let mut highest_slot = 0;
+        let mut batch = OwnedBatch::new();
         if matrix {
             for slot in 1..reader.countries.count() {
                 if reader.countries.at(slot)?.is_some() {
@@ -262,7 +263,7 @@ fn walk_from(
             }
             let mut matrix_pointers = [0; 64];
             for index in 0..source.count {
-                let pointer = if matrix {
+                let (pointer, head) = if matrix {
                     if index % 64 == 0 {
                         reader.matrix_pointers(source, index, diplomacy, &mut matrix_pointers)?;
                     }
@@ -270,24 +271,40 @@ fn walk_from(
                     if pointer == 0 {
                         continue;
                     }
-                    pointer
+                    (pointer, None)
                 } else {
-                    let entry = reader.element(source, index)?;
+                    let at = index as usize % BATCH;
+                    if at == 0 {
+                        batch.read(&reader, source, index);
+                    }
+                    let entry = match batch.entry(at) {
+                        Some(entry) => entry,
+                        None => reader.element(source, index)?,
+                    };
                     if entry == 0 {
                         return Err("null subject relation root entry");
                     }
-                    if reader.field::<u32>(entry, TYPE_ID)? != TYPE_VALUE {
+                    let subject = match batch.subject(at) {
+                        Some(subject) => subject,
+                        None => reader.field::<u32>(entry, TYPE_ID)? == TYPE_VALUE,
+                    };
+                    if !subject {
                         continue;
                     }
-                    entry
+                    (entry, batch.head(at))
                 };
-                let mut row = match reader.relation(pointer, country, matrix.then_some(index), pass)
-                {
-                    Ok(Some(row)) => row,
-                    Ok(None) => continue,
-                    Err(reason) => return Err(reason),
+                let mut row =
+                    match reader.relation(pointer, country, matrix.then_some(index), head, pass) {
+                        Ok(Some(row)) => row,
+                        Ok(None) => continue,
+                        Err(reason) => return Err(reason),
+                    };
+                let state = match head {
+                    Some(head) => {
+                        usize::try_from(head.state).map_err(|_| "subject pointer overflow")?
+                    }
+                    None => reader.pointer(pointer, AUTONOMY_STATE)?,
                 };
-                let state = reader.pointer(pointer, AUTONOMY_STATE)?;
                 let (source, name_len) = definition_name(memory, state)?;
                 required_bytes = required_bytes
                     .checked_add(name_len)
@@ -326,6 +343,165 @@ fn walk_from(
         })
     })();
     result.unwrap_or_else(unavailable)
+}
+
+/// Owned entries read ahead per batch.
+const BATCH: usize = 64;
+/// A subject relation's bytes from its vtable to its autonomy ratio: every
+/// field [`Reader::relation`] and the walk read from the relation itself.
+const HEAD: usize = AUTONOMY_RATIO + 8;
+
+/// A subject relation's own fields, from one read of its [`HEAD`].
+#[derive(Clone, Copy)]
+struct Head {
+    vtable: u64,
+    type_id: u32,
+    overlord: u32,
+    subject: u32,
+    start_hour: i32,
+    end_hour: i32,
+    cancel: u8,
+    retired: u8,
+    state: u64,
+    autonomy_ratio: i64,
+}
+
+impl Head {
+    fn new(bytes: &[u8]) -> Self {
+        let word = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+        let half = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        Self {
+            vtable: word(0),
+            type_id: half(TYPE_ID),
+            overlord: half(OVERLORD),
+            subject: half(SUBJECT),
+            start_hour: half(START_HOUR) as i32,
+            end_hour: half(crelation::END_HOUR) as i32,
+            cancel: bytes[crelation::CANCEL],
+            retired: bytes[crelation::RETIRED],
+            state: word(AUTONOMY_STATE),
+            autonomy_ratio: word(AUTONOMY_RATIO) as i64,
+        }
+    }
+}
+
+/// Up to [`BATCH`] owned entries of one country, read ahead of the serial
+/// walk: their pointers in one copy, the type words of those before the
+/// first null in one gather, and the heads of the subject relations among
+/// them in another. Each is used at its entry's turn, after the serial
+/// walk's checks; one the batch did not read is read there as the serial
+/// walk reads it, and such a fallback is counted.
+struct OwnedBatch {
+    entries: [usize; BATCH],
+    /// Entries, and type words, read.
+    read: usize,
+    typed: usize,
+    subjects: [bool; BATCH],
+    /// Each entry's head, by its place in `heads`, when read.
+    head_of: [Option<u8>; BATCH],
+    heads: [u8; BATCH * HEAD],
+}
+
+impl OwnedBatch {
+    fn new() -> Self {
+        Self {
+            entries: [0; BATCH],
+            read: 0,
+            typed: 0,
+            subjects: [false; BATCH],
+            head_of: [None; BATCH],
+            heads: [0; BATCH * HEAD],
+        }
+    }
+
+    fn read<M: Memory>(&mut self, reader: &Reader<'_, M>, source: Array, first: u32) {
+        use crate::memory::{RecordField, RecordLayout, RecordSources};
+        const TYPE: [RecordField; 1] = [RecordField {
+            source_offset: TYPE_ID,
+            destination_offset: 0,
+            len: 4,
+        }];
+        const TYPE_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&TYPE, 4).expect("valid record layout");
+        const WHOLE: [RecordField; 1] = [RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: HEAD,
+        }];
+        const HEAD_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&WHOLE, HEAD).expect("valid record layout");
+        let count = ((source.count - first) as usize).min(BATCH);
+        (self.read, self.typed) = (0, 0);
+        self.head_of = [None; BATCH];
+        let mut raw = [0_u8; BATCH * 8];
+        let read = source
+            .element(first, 8)
+            .is_some_and(|address| read_slice(reader.memory, address, &mut raw[..count * 8]));
+        if !read {
+            crate::batch_fallback::record(crate::batch_fallback::Batch::Subjects);
+            return;
+        }
+        for (entry, bytes) in self
+            .entries
+            .iter_mut()
+            .zip(raw[..count * 8].chunks_exact(8))
+        {
+            *entry = u64::from_le_bytes(bytes.try_into().unwrap()) as usize;
+        }
+        self.read = count;
+        let live = self.entries[..count]
+            .iter()
+            .position(|&entry| entry == 0)
+            .unwrap_or(count);
+        let mut types = [0_u8; BATCH * 4];
+        self.typed = reader
+            .memory
+            .copy_records(
+                RecordSources::Pointers(&self.entries[..live]),
+                &TYPE_LAYOUT,
+                &mut types[..live * 4],
+            )
+            .min(live);
+        let mut subjects = [0; BATCH];
+        let mut found = 0;
+        for (at, bytes) in types[..self.typed * 4].chunks_exact(4).enumerate() {
+            self.subjects[at] = u32::from_le_bytes(bytes.try_into().unwrap()) == TYPE_VALUE;
+            if self.subjects[at] {
+                subjects[found] = self.entries[at];
+                self.head_of[at] = Some(found as u8);
+                found += 1;
+            }
+        }
+        let heads = reader
+            .memory
+            .copy_records(
+                RecordSources::Pointers(&subjects[..found]),
+                &HEAD_LAYOUT,
+                &mut self.heads[..found * HEAD],
+            )
+            .min(found);
+        for slot in &mut self.head_of {
+            if slot.is_some_and(|place| place as usize >= heads) {
+                *slot = None;
+            }
+        }
+        if self.typed < live || heads < found {
+            crate::batch_fallback::record(crate::batch_fallback::Batch::Subjects);
+        }
+    }
+
+    fn entry(&self, at: usize) -> Option<usize> {
+        (at < self.read).then(|| self.entries[at])
+    }
+
+    fn subject(&self, at: usize) -> Option<bool> {
+        (at < self.typed).then(|| self.subjects[at])
+    }
+
+    fn head(&self, at: usize) -> Option<Head> {
+        let place = self.head_of[at]? as usize;
+        Some(Head::new(&self.heads[place * HEAD..(place + 1) * HEAD]))
+    }
 }
 
 pub(crate) fn unavailable(reason: &'static str) -> NameWalk {
@@ -606,23 +782,46 @@ impl<'a, M: Memory> Reader<'a, M> {
         )
     }
 
+    /// One relation's row; `head`, when the batch read it, gives the
+    /// relation's own fields in place of their reads.
     fn relation(
         &self,
         pointer: usize,
         owner: ccountry::Country,
         matrix_index: Option<u32>,
+        head: Option<Head>,
         pass: &mut Pass<'_>,
     ) -> Result<Option<Row>, &'static str> {
-        self.vtable(pointer, VTABLE_RVA, "subject relation vtable mismatch")?;
-        if self.field::<u32>(pointer, TYPE_ID)? != TYPE_VALUE {
-            return Err("subject matrix contains another relation type");
-        }
-        let retired = self.field::<u8>(pointer, crelation::RETIRED)? != 0;
-        let overlord = self.field::<u32>(pointer, OVERLORD)?;
-        let subject = self.field::<u32>(pointer, SUBJECT)?;
-        // Shared-vision subject predicates read the current status pointer and type,
-        // never retirement. Link removal uninstalls the subject: retired relations
-        // count while installed, while relations left only in owned vectors do not.
+        let (retired, overlord, subject) = match head {
+            Some(head) => {
+                let expected = self
+                    .base
+                    .checked_add(VTABLE_RVA)
+                    .ok_or("module address overflow")?;
+                if head.vtable != expected as u64 {
+                    return Err("subject relation vtable mismatch");
+                }
+                if head.type_id != TYPE_VALUE {
+                    return Err("subject matrix contains another relation type");
+                }
+                (head.retired != 0, head.overlord, head.subject)
+            }
+            None => {
+                self.vtable(pointer, VTABLE_RVA, "subject relation vtable mismatch")?;
+                if self.field::<u32>(pointer, TYPE_ID)? != TYPE_VALUE {
+                    return Err("subject matrix contains another relation type");
+                }
+                (
+                    self.field::<u8>(pointer, crelation::RETIRED)? != 0,
+                    self.field::<u32>(pointer, OVERLORD)?,
+                    self.field::<u32>(pointer, SUBJECT)?,
+                )
+            }
+        };
+        // The shared-vision subject terms read only the status +0x288 pointer
+        // and its type, never the retired byte, and link clearing (vf22) is
+        // what uninstalls a subject. So a retired relation counts exactly while
+        // it is still installed; one left only in an owned vector is skipped.
         if retired && matrix_index.is_none() && !self.installed(pointer, overlord, subject, pass) {
             return Ok(None);
         }
@@ -676,17 +875,32 @@ impl<'a, M: Memory> Reader<'a, M> {
         if owner.canonical_slot != first.canonical_slot {
             return Ok(None);
         }
-        Ok(Some(Row {
-            overlord,
-            subject,
-            start_hour: self.field(pointer, START_HOUR)?,
-            end_hour: self.field(pointer, crelation::END_HOUR)?,
-            cancel: self.field(pointer, crelation::CANCEL)?,
-            autonomy_ratio: self.field(pointer, AUTONOMY_RATIO)?,
-            state: Name::default(),
+        Ok(Some(match head {
+            Some(head) => Row {
+                overlord,
+                subject,
+                start_hour: head.start_hour,
+                end_hour: head.end_hour,
+                cancel: head.cancel,
+                autonomy_ratio: head.autonomy_ratio,
+                state: Name::default(),
+            },
+            None => Row {
+                overlord,
+                subject,
+                start_hour: self.field(pointer, START_HOUR)?,
+                end_hour: self.field(pointer, crelation::END_HOUR)?,
+                cancel: self.field(pointer, crelation::CANCEL)?,
+                autonomy_ratio: self.field(pointer, AUTONOMY_RATIO)?,
+                state: Name::default(),
+            },
         }))
     }
 }
+
+#[cfg(test)]
+#[path = "csubject_relation_cost_baseline.rs"]
+mod baseline;
 
 #[cfg(test)]
 mod tests;

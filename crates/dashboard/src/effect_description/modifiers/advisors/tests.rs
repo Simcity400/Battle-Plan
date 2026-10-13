@@ -470,3 +470,32 @@ fn format99_advisor_ideas_render_recorded_tooltips_in_slot_order() {
         }
     }
 }
+
+/// AvailableAdvisors is read once a game day per country (owner decision
+/// 2026-10-11): a pool SliceReads dates to an earlier hour of the day still
+/// names its advisor, from the held rows the frame carries.
+#[test]
+fn a_pool_read_earlier_in_the_day_still_names_its_advisor() {
+    let (mut fixture, _folder) = fixture();
+    let read_at = fixture.frame.hour - 23;
+    *fixture.frame.tables[TableId::SliceReads.index()] =
+        TableView::Complete(TableRows::SliceReads(vec![SliceReadRow {
+            table: TableId::AvailableAdvisors.index() as u32,
+            owner: 100,
+            sample_hour: read_at,
+        }]));
+    *fixture.frame.tables[TableId::AdvisorRoles.index()] = TableView::Unavailable {
+        reason: "synthetic unavailable".into(),
+    };
+    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), Vec::new());
+    let result = fixture.render(
+        "add_ideas={SYN_ADVISOR SYN_ADVISOR}",
+        &mut fresh(),
+        Content {
+            ideas: Some(&ideas),
+            ..Default::default()
+        },
+    );
+    assert!(result.refusals.is_empty(), "{:?}", result.refusals);
+    assert_eq!(result.text, "Add First, First");
+}

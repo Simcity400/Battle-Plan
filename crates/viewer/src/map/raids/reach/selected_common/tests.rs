@@ -32,7 +32,7 @@ fn subject_frame() -> DecodedFrame {
             country: 30,
             target_index: 2,
             transport_subject: Recorded::Value(Some(TransportSubjectAccess {
-                sample_hour: hour,
+                sample_hour: replay::rows::PacketHour::Stamped(hour),
                 complete_owner: true,
                 ..Default::default()
             })),
@@ -51,7 +51,7 @@ fn subject_query(frame: &DecodedFrame, current_only: bool) -> Fact<bool> {
     if current_only {
         CommonMoveWorld::current_subject_access(&moves, 2, 3)
     } else {
-        moves.common_transport_access(30, 40)
+        moves.common_discloses_access(30, 40, true)
     }
 }
 
@@ -83,7 +83,7 @@ fn selected_current_subject_pointer_overrides_historical_subject_dates() {
                 country: 30,
                 target_index: 3,
                 transport_subject: Recorded::Value(Some(TransportSubjectAccess {
-                    sample_hour: hour,
+                    sample_hour: replay::rows::PacketHour::Stamped(hour),
                     target_raw: Some(40),
                     subject: Some(ZeroSubjectInputs {
                         relation_type: Some(engine::csubject_relation::TYPE_VALUE),
@@ -314,7 +314,7 @@ fn strait_frame() -> DecodedFrame {
             .map(|country| CountryCounterInputRow {
                 country,
                 directed_wars: Recorded::Value(Some(DirectedWars {
-                    sample_hour: 12,
+                    sample_hour: replay::rows::PacketHour::Stamped(12),
                     receiver_raw_id: country as i32,
                     receiver_slot: if country == 30 { 2 } else { 3 },
                     matrix_count: 4,
@@ -595,15 +595,24 @@ fn selected_common_route_keeps_the_callers_class_when_handles_coincide() {
 }
 
 #[test]
-fn selected_transport_nonbase_and_current_location_guards_avoid_the_held_union() {
+fn selected_transport_follows_areas_and_naval_bases_and_refuses_past_them() {
     use crate::map::unit_selection::Unit;
-    use replay::rows::{DivisionRow, NavalBaseRow, ProvinceAreaInputs};
-    let check = |frame: &DecodedFrame, target| {
-        let assets = assets();
+    use replay::rows::{
+        ControllerAreaNode, DivisionRow, NavalBaseRow, ProvinceRow, RailwayGunCounterInputRow,
+    };
+    let check = |frame: &DecodedFrame, selection: &[Unit], target| {
+        let mut assets = assets();
+        assets.geometry.land.extend([1, 2, 3]);
+        assets.moves = Ok(installed_content::unit_path::MoveGraph::new(
+            &installed_content::province_graph::ProvinceGraph::default(),
+            &assets.geometry,
+        ));
         let world = World::read(frame, assets.facts());
         let cells = Cells::default();
         let common = CommonCells::new(frame);
-        let loc = installed_content::localisation::Localisation::default();
+        let loc = [("TRANSPORT_NO_FROM_NAVAL_BASE".into(), "No port here".into())]
+            .into_iter()
+            .collect();
         let keys = BTreeMap::new();
         let text = CommonText {
             frame,
@@ -613,9 +622,40 @@ fn selected_transport_nonbase_and_current_location_guards_avoid_the_held_union()
         };
         Moves::for_common(&world, &assets, &cells, &common)
             .unwrap()
-            .selected_transport_message(&[Unit::Division(FORCE)], target, &text)
+            .selected_transport_message(selection, target, &text)
+    };
+    let none = || -> Result<installed_content::unit_path::selected_transport::Outputs, String> {
+        Ok(Default::default())
+    };
+    let bases = |frame: &mut DecodedFrame, provinces: &[u32]| {
+        put::<tables::NavalBases>(
+            frame,
+            provinces
+                .iter()
+                .map(|&province| NavalBaseRow {
+                    province,
+                    ..Default::default()
+                })
+                .collect(),
+        );
     };
     let mut frame = strait_frame();
+    // Provinces 1 and 2 share controller area 1; province 3 is area 3.
+    put::<tables::Provinces>(
+        &mut frame,
+        [(1, 1), (2, 1), (3, 3)]
+            .map(|(id, area)| ProvinceRow {
+                id,
+                controller_area: Recorded::Value(Some(area)),
+                owner_area: Recorded::Value(Some(area)),
+                area_node: Recorded::Value((id == area).then(|| ControllerAreaNode {
+                    first_land: Some(id),
+                    neighbours: Some(Vec::new()),
+                })),
+                ..Default::default()
+            })
+            .into(),
+    );
     put::<tables::Divisions>(
         &mut frame,
         vec![DivisionRow {
@@ -624,47 +664,44 @@ fn selected_transport_nonbase_and_current_location_guards_avoid_the_held_union()
             ..Default::default()
         }],
     );
-    put::<tables::NavalBases>(
+    bases(&mut frame, &[2]);
+    let army = [Unit::Division(FORCE)];
+    // A complete base census proves a target without a naval base has no
+    // transport fragment, before any retired operand is demanded.
+    for target in [1, 3] {
+        assert_eq!(check(&frame, &army, target), none());
+    }
+    // A selection with no army or railway gun has none either.
+    assert_eq!(check(&frame, &[Unit::TaskForce(FORCE)], 2), none());
+    // The selected transport line compares controller areas before its source==target guard; the
+    // unit standing at the target has no fragment.
+    assert_eq!(check(&frame, &army, 2), none());
+    // From a base in the same area the transport admission passes its naval-base branches
+    // and reaches the retired transfer operand.
+    bases(&mut frame, &[1, 2]);
+    assert_eq!(check(&frame, &army, 1), Err(TRANSPORT_RETIRED.into()));
+    // Without a source base, a target in the same area needs no transport.
+    bases(&mut frame, &[1, 3]);
+    assert_eq!(check(&frame, &army, 1), none());
+    // Another area: a land source without a base asks the army's retired
+    // real-template coastal test.
+    assert_eq!(check(&frame, &army, 3), Err(TRANSPORT_RETIRED.into()));
+    // A railway gun there is rejected by name, in the secondary output that
+    // participates only in the selected tooltip's length gate.
+    put::<tables::RailwayGunCounterInputs>(
         &mut frame,
-        vec![NavalBaseRow {
+        vec![RailwayGunCounterInputRow {
+            gun: FORCE,
             province: 2,
             ..Default::default()
         }],
     );
     assert_eq!(
-        check(&frame, 1),
-        Ok(installed_content::unit_path::selected_transport::Outputs::default())
-    );
-    // Compare area pointers before testing source against target. Supply that
-    // independent observation; the held risk union stays absent.
-    let mut provinces = frame.complete::<tables::Provinces>().unwrap().to_vec();
-    provinces
-        .iter_mut()
-        .find(|row| row.id == 2)
-        .unwrap()
-        .selected_areas = Some(ProvinceAreaInputs {
-        sample_hour: frame.hour,
-        controller: 2,
-        ..Default::default()
-    })
-    .into();
-    put::<tables::Provinces>(&mut frame, provinces);
-    assert_eq!(
-        check(&frame, 2),
-        Ok(installed_content::unit_path::selected_transport::Outputs::default())
-    );
-    assert!(check(&frame, 3).is_ok()); // Complete base census proves non-base.
-    put::<tables::NavalBases>(
-        &mut frame,
-        vec![NavalBaseRow {
-            province: 3,
-            ..Default::default()
-        }],
-    );
-    assert!(
-        check(&frame, 3)
-            .unwrap_err()
-            .contains("selected province area acquisition refused")
+        check(&frame, &[Unit::RailwayGun(FORCE)], 3),
+        Ok(installed_content::unit_path::selected_transport::Outputs {
+            primary: Vec::new(),
+            secondary: b"No port here".to_vec(),
+        })
     );
 }
 
@@ -716,7 +753,7 @@ fn selected_primary_combat_scan_keeps_order_and_border_duration_uses_its_own_gat
             division: FORCE,
             combat_count: 2,
             combat_references: Recorded::Value(Some(UnitCombatReferences {
-                sample_hour: 12,
+                sample_hour: replay::rows::PacketHour::Stamped(12),
                 entries: vec![
                     UnitCombatReference { combat: 8, kind: 1 },
                     UnitCombatReference { combat: 9, kind: 2 },

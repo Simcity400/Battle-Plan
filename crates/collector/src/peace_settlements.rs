@@ -515,6 +515,7 @@ fn drain_mode(output: &mut Storage, continuous: bool, growing: bool) -> Result<u
 }
 
 unsafe extern "system" fn observe(conference: usize) {
+    let _timing = crate::hook_timing::enter(crate::hook_timing::Family::PeaceSettlements);
     ACTIVE.fetch_add(1, Ordering::SeqCst);
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
     if ENABLED.load(Ordering::Acquire) {

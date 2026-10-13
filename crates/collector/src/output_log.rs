@@ -17,6 +17,16 @@ pub struct Log {
     pub required: AtomicUsize,
 }
 
+/// Hook path: `value` raised to at least `minimum`, with the locked exchange
+/// of `fetch_max` only when that raises it. Demand maxima settle within a few
+/// intervals, after which nearly every raise would leave them unchanged.
+#[inline(always)]
+pub fn raise(value: &AtomicUsize, minimum: usize, order: Ordering) {
+    if value.load(Ordering::Relaxed) < minimum {
+        value.fetch_max(minimum, order);
+    }
+}
+
 pub struct Call<'a>(&'a Log);
 impl Drop for Call<'_> {
     fn drop(&mut self) {

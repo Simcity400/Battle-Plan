@@ -5,10 +5,16 @@
 pub trait Changes {
     fn revision(&self, array: usize) -> Option<(u64, u64)>;
     fn verify(&self) -> bool;
-    /// Optional quiet revision covering every writer in this observation domain.
+    /// Optional quiet revision covering every writer of a watched holder.
     /// Callers still validate fresh owner/header dependencies before reuse.
     fn quiet_revision(&self) -> Option<(u64, u64)> {
         None
+    }
+    /// A revision every writer moves, including writers of holders no
+    /// revision watches. A walk that reads unwatched holders afresh compares
+    /// it across the walk; by default the quiet revision.
+    fn any_revision(&self) -> Option<(u64, u64)> {
+        self.quiet_revision()
     }
 }
 
@@ -66,10 +72,12 @@ impl Cache {
     }
 
     /// Called with ordinary off-thread buffer growth, never during acquisition.
+    /// Growth only appends default keys: the certified ones keep naming the
+    /// native holders and the arena offsets the owner's growth preserves, so
+    /// the cache stays valid.
     pub fn grow(&mut self, rows: usize) -> std::io::Result<()> {
         if self.keys.len() < rows {
             crate::allocation::resize(&mut self.keys, rows, Key::default())?;
-            self.invalidate();
         }
         Ok(())
     }
@@ -93,6 +101,15 @@ impl Cache {
             })
     }
 
+    /// Every key of the latest walk holds a revision: no entry was left to
+    /// be read afresh every hour for want of a watch.
+    pub fn all_watched(&self) -> bool {
+        self.valid
+            && self.keys[..self.used]
+                .iter()
+                .all(|key| key.revision.is_some())
+    }
+
     /// Current owned occurrences must match the exact old share before its
     /// header-only prepared program may run. Never deduplicate aliases.
     pub fn matches_census(&self, rows: &[crate::ccharacter_manager::PortraitIdentity]) -> bool {
@@ -112,6 +129,14 @@ impl Cache {
         self.scope = scope;
         self.valid = true;
         self.counts = Counts::default();
+    }
+
+    /// The keys whose entries the previous walk certified for reuse.
+    pub(crate) fn certified(&self) -> impl Iterator<Item = &Key> {
+        let used = if self.valid { self.used } else { 0 };
+        self.keys[..used]
+            .iter()
+            .filter(|key| key.revision.is_some())
     }
 
     pub(crate) fn matches(&self, index: usize, key: Key) -> bool {
@@ -154,6 +179,35 @@ mod tests {
                 previous.capacity() * std::mem::size_of::<Key>()
             );
         }
+    }
+
+    /// Expanding the keys keeps a certified walk: its keys, extent, scope and
+    /// validity, so the next walk over the same census still reuses them.
+    #[test]
+    fn growth_keeps_the_certified_keys() {
+        let mut cache = Cache::new(1).unwrap();
+        let scope = (1, 2, 0, 4);
+        let key = Key {
+            pointer: 100,
+            character: 7,
+            header: [3; 16],
+            start: 4,
+            revision: Some((2, 9)),
+        };
+        cache.begin(scope);
+        cache.remember(0, key);
+        cache.finish(1);
+        cache.grow(8).unwrap();
+        assert_eq!(cache.keys.len(), 8);
+        let row = crate::ccharacter_manager::PortraitIdentity {
+            pointer: key.pointer,
+            character: key.character,
+        };
+        assert!(cache.matches_census(&[row]));
+        assert!(cache.all_watched());
+        cache.begin(scope);
+        assert!(cache.matches(0, key));
+        assert_eq!(cache.certified().count(), 1);
     }
 
     #[test]

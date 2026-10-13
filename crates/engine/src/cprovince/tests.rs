@@ -409,11 +409,13 @@ fn exact_field_batches_cover_boundaries_and_shared_states_are_read_once_per_walk
                 controller: u32::MAX - index as u32 - 1,
                 victory_points: 0,
                 fort_positive: 0,
-                attack_fort_sum: Some(0),
-                attack_state: Some(0x13000),
                 // A land province with no owner area; the fixture has none.
                 move_gate: u8::from((index + 1) % 4 == 1) * Row::MOVE_NULL_OWNER_AREA,
                 port_sea: 0,
+                fort_bunker: None,
+                controller_area: None,
+                owner_area: None,
+                area_node: None,
             }
         );
     }
@@ -723,7 +725,8 @@ fn scattered_fields_preserve_native_values_without_reading_struct_gaps() {
     for blocked in [
         0x1408..0x1438,
         0x143c..0x14a4,
-        // +0xB0 (the border-conflict set size) and +0xD8 are now read.
+        // +0xB0 (the border-conflict set size) and +0xD0..+0xE0 (both
+        // area pointers) are now read.
         0x14a8..0x14b0,
         0x1a08..0x1a58,
         0x1a5c..0x1ac8,
@@ -747,10 +750,12 @@ fn scattered_fields_preserve_native_values_without_reading_struct_gaps() {
                     controller: 0xf123_4567,
                     victory_points: 0,
                     fort_positive: 0,
-                    attack_fort_sum: Some(0),
-                    attack_state: Some(0x1a00),
                     move_gate: Row::MOVE_NULL_OWNER_AREA,
                     port_sea: 0,
+                    fort_bunker: None,
+                    controller_area: None,
+                    owner_area: None,
+                    area_node: None,
                 },
                 Row {
                     id: 2,
@@ -759,14 +764,55 @@ fn scattered_fields_preserve_native_values_without_reading_struct_gaps() {
                     controller: 0,
                     victory_points: 0,
                     fort_positive: 0,
-                    attack_fort_sum: Some(0),
-                    attack_state: Some(0),
                     move_gate: 0,
                     port_sea: 0,
+                    fort_bunker: None,
+                    controller_area: None,
+                    owner_area: None,
+                    area_node: None,
                 },
             ]
         );
     }
+}
+
+/// Both area pointers arrive with the movement gather, in row order, with
+/// the province and its definition; the owner area still decides the gate.
+#[test]
+fn the_walk_gathers_both_area_pointers_with_the_movement_fields() {
+    let mut bytes = provinces();
+    put(
+        &mut bytes,
+        0x400 + CONTROLLER_AREA,
+        &0x5000_u64.to_le_bytes(),
+    );
+    put(&mut bytes, 0x400 + OWNER_AREA, &0x6000_u64.to_le_bytes());
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let mut capture = Capture::try_with_capacity(2, 2, 0).unwrap();
+    assert_eq!(capture.walk(&memory, 0, 0x1000), Outcome::Rows { len: 2 });
+    assert_eq!(
+        capture.areas[..2],
+        [
+            crate::controller_areas::Pointers {
+                province: 0x1400,
+                definition: 0x1800,
+                controller: 0x5000,
+                owner: 0x6000,
+            },
+            crate::controller_areas::Pointers {
+                province: 0x1600,
+                definition: 0x1900,
+                controller: 0,
+                owner: 0,
+            },
+        ]
+    );
+    assert_eq!(capture.rows[0].move_gate & Row::MOVE_NULL_OWNER_AREA, 0);
+    // The walk labels nothing; the collector's area step does.
+    assert_eq!(capture.rows[0].controller_area, None);
 }
 
 #[test]
@@ -1161,10 +1207,12 @@ fn ownership_comes_from_the_state_and_raw_controller_zero_is_preserved() {
             controller: 0,
             victory_points: 0,
             fort_positive: 0,
-            attack_fort_sum: Some(0),
-            attack_state: Some(0x1600),
             move_gate: Row::MOVE_NULL_OWNER_AREA,
             port_sea: 0,
+            fort_bunker: None,
+            controller_area: None,
+            owner_area: None,
+            area_node: None,
         }
     );
     bytes[0x400] ^= 1;
@@ -1333,7 +1381,6 @@ fn scattered_reference_walk(
         }
         for (row, fields) in output[admitted..len].iter_mut().zip(&fields[..staged]) {
             row.fort_positive = u8::from(fields.fort_sum > 0);
-            row.attack_fort_sum = Some(fields.fort_sum);
             row.move_gate = fields.move_gate;
             row.port_sea = fields.port_sea;
         }
@@ -2033,4 +2080,360 @@ fn default_geometry_has_no_chosen_province_or_neighbour_population() {
             neighbour_entries: 0
         }
     );
+}
+
+/// The territory epochs of the carry tests' hours.
+const TAKE: Option<[u64; 2]> = Some([3, 4]);
+
+fn carrying() -> Capture {
+    let mut capture = Capture::with_capacity(0, 0, 0);
+    capture.province_store = Some(Box::new(carry::RowStore::new()));
+    capture
+}
+
+fn carry_hour(
+    capture: &mut Capture,
+    memory: &impl Memory,
+    take: Option<[u64; 2]>,
+    covers: &dyn Fn(u64) -> bool,
+    verify: bool,
+) -> (Outcome, carry::Counts) {
+    let outcome = capture.walk_carrying(memory, 0, 0x1000, take, covers, verify);
+    (outcome, capture.province_store.as_ref().unwrap().counts())
+}
+
+fn mark(capture: &mut Capture, provinces: &[u32], states: &[u32]) {
+    let (marked, marked_states) = capture.province_store.as_mut().unwrap().marks_mut();
+    marked.extend_from_slice(provinces);
+    marked_states.extend_from_slice(states);
+}
+
+fn slice(bytes: &[u8]) -> SliceMemory<'_> {
+    SliceMemory {
+        base: 0x1000,
+        bytes,
+    }
+}
+
+/// The capture equals a full walk of the same memory: rows, area pointers,
+/// conflict rows and their groups.
+fn assert_full_read(capture: &Capture, memory: &impl Memory, len: usize) {
+    let mut full = Capture::with_capacity(0, 0, 0);
+    assert_eq!(full.walk_growing(memory, 0, 0x1000), Outcome::Rows { len });
+    assert_eq!(capture.rows[..len], full.rows[..len]);
+    assert_eq!(capture.areas[..len], full.areas[..len]);
+    assert_eq!(capture.conflict_walk, full.conflict_walk);
+    let conflicts = full.conflict_walk.outcome.len();
+    assert_eq!(capture.conflicts[..conflicts], full.conflicts[..conflicts]);
+    let groups = full.conflict_walk.groups_len;
+    assert_eq!(capture.groups[..groups], full.groups[..groups]);
+}
+
+/// Fixture offset of province `id` in `many_provinces`.
+fn province_at(id: usize) -> usize {
+    0x1000 + (id - 1) * 0x200
+}
+
+/// `many_provinces(67)` with province 3 fortified (one healthy level of a
+/// weight-one template), stateless and controlled by country 7, and
+/// provinces 10 and 11 in state 90, 30 and 31 in state 91.
+fn carry_fixture() -> Vec<u8> {
+    use crate::{cbuilding, cbuilding_template};
+    let mut bytes = many_provinces(67);
+    bytes.resize(0x20000, 0);
+    let at = |offset: usize| (offset + 0x1000) as u64;
+    let fortified = province_at(3);
+    put(&mut bytes, fortified + STATE, &0_u64.to_le_bytes());
+    put(&mut bytes, fortified + CONTROLLER, &7_u32.to_le_bytes());
+    let buildings = fortified + MOVEMENT_BUILDINGS;
+    put(&mut bytes, buildings, &at(0x14000).to_le_bytes());
+    put(&mut bytes, buildings + 8, &1_u32.to_le_bytes());
+    put(&mut bytes, buildings + 12, &1_u32.to_le_bytes());
+    put(&mut bytes, 0x14000, &at(0x14100).to_le_bytes());
+    put(
+        &mut bytes,
+        0x14100 + cbuilding::HEALTHY_LEVEL,
+        &1_i16.to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        0x14100 + cbuilding::TEMPLATE,
+        &at(0x14400).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        0x14400 + cbuilding_template::MOVEMENT_FORT_WEIGHT,
+        &1_i32.to_le_bytes(),
+    );
+    for (state, id, owner, provinces) in [
+        (0x12800, 90_u32, 5_u32, [10, 11]),
+        (0x12a00, 91, 6, [30, 31]),
+    ] {
+        put(
+            &mut bytes,
+            state,
+            &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(&mut bytes, state + cstate::ID, &id.to_le_bytes());
+        put(&mut bytes, state + cstate::OWNER, &owner.to_le_bytes());
+        for province in provinces {
+            put(
+                &mut bytes,
+                province_at(province) + STATE,
+                &at(state).to_le_bytes(),
+            );
+        }
+    }
+    bytes
+}
+
+fn traced(bytes: &[u8]) -> TracedMemory<'_> {
+    TracedMemory {
+        bytes,
+        blocked: None,
+        guards: std::cell::Cell::new(0),
+        reads: std::cell::RefCell::new(Vec::new()),
+    }
+}
+
+/// A quiet hour reads the province table and, for the fortified province,
+/// the state link `fort_bunker` follows; no other province field. It
+/// publishes exactly what a full walk of the same memory reads.
+#[test]
+fn a_quiet_hour_reads_no_carried_province_and_equals_a_full_read() {
+    let bytes = carry_fixture();
+    let memory = traced(&bytes);
+    let mut capture = carrying();
+    let (outcome, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    assert_eq!(outcome, Outcome::Rows { len: 67 });
+    assert!(counts.full && counts.read == 67);
+    assert!(capture.province_store.as_ref().unwrap().holds());
+    assert_eq!(capture.rows[2].fort_positive, 1);
+    assert_eq!(capture.rows[2].fort_bunker, Some(0));
+    memory.reads.borrow_mut().clear();
+    let (outcome, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    assert_eq!(outcome, Outcome::Rows { len: 67 });
+    assert_eq!(
+        counts,
+        carry::Counts {
+            carried: 67,
+            refreshed: 1,
+            quiet: true,
+            ..carry::Counts::default()
+        }
+    );
+    let header = 0x1000 + cgame_state::PROVINCES;
+    let table = 0x1300..0x1300 + 68 * 8;
+    let fort_state = (0x1000 + province_at(3) + STATE, 8);
+    for &(address, len) in memory.reads.borrow().iter() {
+        assert!(
+            (address >= header && address + len <= header + 16)
+                || (table.contains(&address) && address + len <= table.end)
+                || (address, len) == fort_state,
+            "{address:#x}+{len}"
+        );
+    }
+    assert_eq!(
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&read| read == fort_state)
+            .count(),
+        1
+    );
+    assert_eq!(capture.carried_rows(), 67);
+    assert_full_read(&capture, &memory, 67);
+}
+
+/// Marked provinces are read: directly, through the state their held row
+/// links (an owner change), through a reset state whose list no longer
+/// names them, and a province whose slot moved; the rest is carried.
+#[test]
+fn marked_provinces_states_resets_and_moved_slots_are_read_again() {
+    let mut bytes = carry_fixture();
+    let mut capture = carrying();
+    assert_eq!(
+        carry_hour(&mut capture, &slice(&bytes), TAKE, &|_| false, false).0,
+        Outcome::Rows { len: 67 }
+    );
+    // Province 5's controller, state 90's owner, state 91 reset (its
+    // provinces unlinked) and province 4 moved with new victory points.
+    put(
+        &mut bytes,
+        province_at(5) + CONTROLLER,
+        &44_u32.to_le_bytes(),
+    );
+    put(&mut bytes, 0x12800 + cstate::OWNER, &8_u32.to_le_bytes());
+    for id in [30, 31] {
+        put(&mut bytes, province_at(id) + STATE, &0_u64.to_le_bytes());
+    }
+    let moved = bytes[province_at(4)..province_at(4) + 0x200].to_vec();
+    put(&mut bytes, 0x16000, &moved);
+    put(&mut bytes, 0x16000 + VICTORY_POINTS, &12_i32.to_le_bytes());
+    put(&mut bytes, 0x300 + 4 * 8, &0x17000_u64.to_le_bytes());
+    let memory = traced(&bytes);
+    mark(&mut capture, &[5], &[91, 90]);
+    let (outcome, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    assert_eq!(outcome, Outcome::Rows { len: 67 });
+    assert_eq!((counts.read, counts.carried), (6, 61));
+    assert!(!counts.quiet && !counts.full);
+    assert_eq!(capture.rows[4].controller, 44);
+    assert_eq!((capture.rows[9].owner, capture.rows[10].owner), (8, 8));
+    assert_eq!((capture.rows[29].state, capture.rows[29].owner), (0, 0));
+    assert_eq!(capture.rows[3].victory_points, 12);
+    assert_full_read(&capture, &memory, 67);
+    // The marks were consumed; the next hour carries the new rows.
+    let (_, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    assert_eq!((counts.read, counts.carried), (0, 67));
+    assert_full_read(&capture, &memory, 67);
+}
+
+/// A province in a border conflict is read with its groups every hour, so
+/// a group that joins the border war unmarked is published at once.
+#[test]
+fn conflicted_provinces_and_their_groups_are_read_every_hour() {
+    let mut memory = conflict_fixture();
+    let mut capture = carrying();
+    assert_eq!(
+        carry_hour(&mut capture, &memory, TAKE, &|_| false, false).0,
+        Outcome::Rows { len: 3 }
+    );
+    assert_eq!(capture.conflict_walk.groups_len, 1);
+    put(
+        &mut memory.bytes,
+        0x19000 + crate::corders_group::BORDER_WAR,
+        &1_u64.to_le_bytes(),
+    );
+    let (outcome, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    assert_eq!(outcome, Outcome::Rows { len: 3 });
+    assert_eq!((counts.read, counts.carried), (1, 2));
+    assert_eq!(capture.conflict_walk.groups_len, 2);
+    assert_full_read(&capture, &memory, 3);
+}
+
+/// An unmarked change is caught when its province is in the hour's slice:
+/// the fresh row is published and the store poisoned, so the next hour
+/// reads every province.
+#[test]
+fn the_slice_catches_an_unmarked_change_and_poisons_the_carry() {
+    let mut bytes = carry_fixture();
+    let mut capture = carrying();
+    carry_hour(&mut capture, &slice(&bytes), TAKE, &|_| false, false);
+    put(
+        &mut bytes,
+        province_at(7) + VICTORY_POINTS,
+        &5_i32.to_le_bytes(),
+    );
+    let memory = slice(&bytes);
+    let (_, counts) = carry_hour(&mut capture, &memory, TAKE, &|id| id == 7 || id == 8, false);
+    assert_eq!(capture.rows[6].victory_points, 5);
+    assert_eq!(
+        (
+            counts.carried,
+            counts.read,
+            counts.verified,
+            counts.mismatches
+        ),
+        (65, 2, 2, 1)
+    );
+    assert!(capture.province_store.as_ref().unwrap().poisoned());
+    assert_full_read(&capture, &memory, 67);
+    let (_, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    assert!(counts.full && counts.read == 67 && counts.carried == 0);
+}
+
+/// Under verification every province is read; each carryable one is
+/// compared and the fresh rows are published.
+#[test]
+fn verification_reads_every_province_and_compares_the_carryable_ones() {
+    let mut bytes = carry_fixture();
+    let mut capture = carrying();
+    carry_hour(&mut capture, &slice(&bytes), TAKE, &|_| false, true);
+    mark(&mut capture, &[9], &[]);
+    let (_, counts) = carry_hour(&mut capture, &slice(&bytes), TAKE, &|_| false, true);
+    assert_eq!(
+        (
+            counts.read,
+            counts.carried,
+            counts.verified,
+            counts.mismatches
+        ),
+        (67, 0, 66, 0)
+    );
+    put(
+        &mut bytes,
+        province_at(21) + CONTROLLER,
+        &9_u32.to_le_bytes(),
+    );
+    let memory = slice(&bytes);
+    let (_, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, true);
+    assert_eq!((counts.verified, counts.mismatches), (67, 1));
+    assert_eq!(capture.rows[20].controller, 9);
+    assert!(capture.province_store.as_ref().unwrap().poisoned());
+    assert_full_read(&capture, &memory, 67);
+}
+
+/// A walk that fails, or a take that refused or moved, holds nothing: the
+/// next hour reads every province.
+#[test]
+fn a_failed_walk_or_an_uncertified_take_holds_nothing() {
+    let good = carry_fixture();
+    let mut bytes = good.clone();
+    let memory = slice(&good);
+    let mut capture = carrying();
+    carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    // Province 10 marked and no longer a province: the walk fails.
+    put(&mut bytes, province_at(10), &0_u64.to_le_bytes());
+    mark(&mut capture, &[10], &[]);
+    assert_eq!(
+        carry_hour(&mut capture, &slice(&bytes), TAKE, &|_| false, false).0,
+        Outcome::Unavailable {
+            reason: "province vtable mismatch"
+        }
+    );
+    assert!(!capture.province_store.as_ref().unwrap().holds());
+    let (_, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    assert!(counts.full && counts.read == 67);
+    // A refused take reads everything and holds nothing.
+    let (_, counts) = carry_hour(&mut capture, &memory, None, &|_| false, false);
+    assert!(counts.full);
+    assert!(!capture.province_store.as_ref().unwrap().holds());
+    let (_, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    assert!(counts.full);
+    // A moved epoch reads everything and holds the new one.
+    let (_, counts) = carry_hour(&mut capture, &memory, Some([3, 5]), &|_| false, false);
+    assert!(counts.full);
+    let (_, counts) = carry_hour(&mut capture, &memory, Some([3, 5]), &|_| false, false);
+    assert_eq!(counts.carried, 67);
+    // A requested refresh reads everything once.
+    capture.province_store.as_mut().unwrap().force_full = true;
+    let (_, counts) = carry_hour(&mut capture, &memory, Some([3, 5]), &|_| false, false);
+    assert!(counts.full);
+    assert_full_read(&capture, &memory, 67);
+}
+
+/// The area pointers of carried rows come from the store; the area step
+/// reads again those it compares, into the capture and the store.
+#[test]
+fn carried_rows_read_their_area_pointers_again_on_request() {
+    let mut bytes = carry_fixture();
+    let mut capture = carrying();
+    carry_hour(&mut capture, &slice(&bytes), TAKE, &|_| false, false);
+    put(
+        &mut bytes,
+        province_at(5) + CONTROLLER_AREA,
+        &0x18000_u64.to_le_bytes(),
+    );
+    let memory = slice(&bytes);
+    carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    assert_eq!(capture.areas[4].controller, 0);
+    capture
+        .refresh_carried_areas(&memory, &|id| id == 5)
+        .unwrap();
+    assert_eq!(capture.areas[4].controller, 0x18000);
+    assert_full_read(&capture, &memory, 67);
+    // The store holds the fresh pointers for the next carried hour.
+    carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    assert_eq!(capture.areas[4].controller, 0x18000);
 }

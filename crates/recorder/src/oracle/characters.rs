@@ -129,9 +129,6 @@ pub(super) fn compare(
         complete &= report.attempt("UnitLeaderTraits", |report| {
             compare_traits(frame, manager, tokens, unrepresented.as_ref(), report)
         });
-        complete &= report.attempt("UnitLeaderTraitExperience", |report| {
-            compare_trait_experience(frame, manager, tokens, unrepresented.as_ref(), report)
-        });
         complete &= report.attempt("CharacterRoleTraits", |report| {
             compare_role_traits(frame, manager, tokens, country_leader_traits, report)
         });
@@ -1018,12 +1015,6 @@ fn compare_leaders(
                 expected.skill,
             );
         }
-        report.scalar(
-            &label,
-            "experience",
-            Some(row.experience),
-            Some(&expected.experience),
-        );
         equal(
             report,
             format!("{label}.components"),
@@ -1156,74 +1147,6 @@ fn compare_traits(
     } else {
         Err(invalid(format!(
             "assigned traits use fixed15 formatter token 0x167, not a directly serialized lexical spelling: {formatted_tokens:?}"
-        )))
-    }
-}
-
-fn compare_trait_experience(
-    frame: &DecodedFrame,
-    manager: &saved::Manager,
-    tokens: &TokenNames<'_>,
-    unrepresented: Option<&BTreeSet<u64>>,
-    report: &mut Report,
-) -> io::Result<()> {
-    let mut seen = BTreeSet::new();
-    let mut count = 0;
-    let mut formatted_tokens = Vec::new();
-    for row in complete::<tables::UnitLeaderTraitExperience>(frame)? {
-        let key = (row.leader_reference, row.ordinal);
-        if !seen.insert(key) {
-            return Err(invalid("duplicate trait experience position"));
-        }
-        if !trait_owner_comparable(manager, unrepresented, row.leader_reference, report) {
-            continue;
-        }
-        let Some(expected) = manager
-            .unit_leaders
-            .get(&row.leader_reference)
-            .and_then(|leader| leader.trait_experience.get(row.ordinal as usize))
-        else {
-            membership(report, "trait experience", key, true);
-            continue;
-        };
-        count += 1;
-        let label = format!("leader trait experience {key:?}");
-        // The trait writer writes its key through the token writer; its reserved fixed15 token
-        // needs formatting rather than a literal dictionary comparison.
-        if row.token_id == engine::cpdx_lexer::FIXED15_TOKEN as i32 {
-            formatted_tokens.push(key);
-        } else {
-            trait_token_value(
-                report,
-                &format!("{label}.token"),
-                tokens,
-                row.token_id,
-                &expected.token,
-            );
-        }
-        report.scalar(
-            &label,
-            "experience",
-            Some(row.experience),
-            Some(&expected.experience),
-        );
-    }
-    for (&id, leader) in &manager.unit_leaders {
-        for ordinal in 0..leader.trait_experience.len() {
-            let ordinal = u32::try_from(ordinal)
-                .map_err(|_| invalid("saved trait experience ordinal exceeds u32"))?;
-            if !seen.contains(&(id, ordinal)) {
-                membership(report, "trait experience", (id, ordinal), false);
-            }
-        }
-    }
-    report.compared("UnitLeaderTraitExperience", count);
-    report.limitation("trait serializer resolves the native lexer ID; captured definition ordinals and separate definition-string bytes are not serialized", "UnitLeaderTraitExperience");
-    if formatted_tokens.is_empty() {
-        Ok(())
-    } else {
-        Err(invalid(format!(
-            "trait experience keys use fixed15 formatter token 0x167, not a directly serialized lexical spelling: {formatted_tokens:?}"
         )))
     }
 }

@@ -7,7 +7,7 @@
 //! sample. Spans never bridge a gap, an incomplete
 //! table or a change of country identity. Appointed advisors are not ideas the
 //! game lists as active: they come from `HiredAdvisors` (the country's
-//! appointed-advisor list, also daily), each with its idea token, seat and
+//! appointed-advisor list, also hourly), each with its idea token, seat and
 //! character, so an advisor span keeps the seat and character recorded for it;
 //! an hour without both tables complete is unobserved. Other ideas take their
 //! category and slot from content. Nothing is assumed about which categories

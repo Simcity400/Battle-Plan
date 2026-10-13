@@ -112,15 +112,19 @@ pub(super) fn compare(
     succeeded &= report.attempt("projects RaidFacilities", |report| {
         compare_facilities(frame, pack, countries, tokens, report)
     });
-    // The project family's daily slot comes from the cadence table.
-    let staggered = !report.refresh_is_current(replay::rows::TableId::Projects, frame.hour);
-    if staggered {
-        for table in [
-            replay::rows::TableId::ProjectPrograms,
-            replay::rows::TableId::Projects,
-            replay::rows::TableId::ProjectHistory,
-            replay::rows::TableId::ProjectBreakthroughs,
-        ] {
+    // Each table's refresh comes from the cadence table: Projects and
+    // ProjectHistory are read every hour, the panel-only programs and
+    // breakthroughs on their daily slot.
+    use replay::rows::TableId;
+    let [programs, projects, history, breakthroughs] = [
+        TableId::ProjectPrograms,
+        TableId::Projects,
+        TableId::ProjectHistory,
+        TableId::ProjectBreakthroughs,
+    ]
+    .map(|table| {
+        let current = report.refresh_is_current(table, frame.hour);
+        if !current {
             report.limitation(
                 &format!("Projects {}", replay::cadence::STAGGER_LIMITATION),
                 format!(
@@ -130,27 +134,28 @@ pub(super) fn compare(
                 ),
             );
         }
-    }
+        current
+    });
     succeeded &= report.attempt("projects ProjectPrograms", |report| {
-        if staggered {
+        if !programs {
             return Ok(());
         }
         compare_programs(frame, pack, countries, tokens, report)
     });
     succeeded &= report.attempt("projects Projects", |report| {
-        if staggered {
+        if !projects {
             return Ok(());
         }
         compare_projects(frame, pack, countries, tokens, report)
     });
     succeeded &= report.attempt("projects ProjectHistory", |report| {
-        if staggered {
+        if !history {
             return Ok(());
         }
         compare_history(frame, pack, countries, tokens, report)
     });
     succeeded &= report.attempt("projects ProjectBreakthroughs", |report| {
-        if staggered {
+        if !breakthroughs {
             return Ok(());
         }
         compare_breakthroughs(frame, pack, countries, tokens, report)

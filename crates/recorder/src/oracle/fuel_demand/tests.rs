@@ -59,7 +59,7 @@ fn skipped_zero_wing_owner_witness_keeps_override_fallback_and_failure_independe
         country: 101,
         country_instance: Recorded::Value(Some(9)),
         demand: Recorded::Value(FuelDemandRead {
-            hour: frame.hour,
+            hour: FuelDemandHour::Stamped(frame.hour),
             country_instance: Some(9),
             sites: vec![FuelDemandSite {
                 wings: vec![FuelDemandWing {
@@ -176,7 +176,7 @@ fn ordinary_fleet_saved_name_must_be_present_even_when_empty() {
             country: 101,
             country_instance: Recorded::Value(Some(9)),
             demand: Recorded::Value(FuelDemandRead {
-                hour: frame.hour,
+                hour: FuelDemandHour::Stamped(frame.hour),
                 country_instance: Some(9),
                 fleets: vec![FuelDemandFleet {
                     reference: id,
@@ -234,7 +234,7 @@ fn fresh_cached_demand_save_witness_detects_signed_difference_and_rejects_held_d
         country: 101,
         country_instance: Recorded::Value(Some(9)),
         demand: Recorded::Value(FuelDemandRead {
-            hour: frame.hour,
+            hour: FuelDemandHour::Stamped(frame.hour),
             country_instance: Some(9),
             divisions: vec![FuelDemandUnit {
                 reference: 7_u64 << 32 | 29,
@@ -279,6 +279,9 @@ fn fresh_cached_demand_save_witness_detects_signed_difference_and_rejects_held_d
     let Recorded::Value(pack) = &mut held.demand else {
         panic!()
     };
-    pack.hour -= 1;
+    let FuelDemandHour::Stamped(hour) = &mut pack.hour else {
+        panic!()
+    };
+    *hour -= 1;
     assert!(run(&mut frame, held).0.is_err());
 }

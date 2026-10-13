@@ -3,25 +3,54 @@
 //! records country, target relation, selected HQ leader and content-loaded
 //! preparation terms without calling the game.
 //!
-//! The target is the first path province's state controller, or zero without
-//! a path or state. Country preparation speed is always selected. Relation
+//! The target is the first path province's state controller, or zero without a
+//! path or state. Country preparation speed is always selected. Relation
 //! preparation speed requires a positive target distinct under country aliases;
 //! the relation-day term uses any present row, including reserved slot zero.
 //! Leader speed requires both leader and HQ provider, and the provider's root
-//! order must be this invasion. The country's preparation-day term remains separate.
-//! Fixed5 scaling, truncation to days and the final hour conversion retain their order.
+//! order must be this invasion. The country's preparation-day term remains
+//! separate. Fixed5 scaling, truncation to days and the final hour conversion
+//! retain their order.
 //!
 //! Root-order selection uses the first primary order assigned to the member,
 //! searching its own group before its parent. A disagreeing cache is not
-//! simulation state. HQ providers are embedded unit members; their primary
-//! unit accessors and member vtables authenticate that relationship. The
-//! selected leader accumulator is independently scaled by the content-loaded
-//! HQ communication factor.
+//! simulation state. HQ providers are embedded unit members; their primary unit
+//! accessors and member vtables authenticate that relationship. The selected
+//! leader accumulator is independently scaled by the content-loaded HQ
+//! communication factor.
 //!
-//! Route-cost inputs retain the chosen unit owner's reserved relation and
-//! nonzero co-belligerent target slots. Candidates select reads without supplying
-//! predicate bytes; other countries' bytes are not read. The country census
-//! supplies the first division handle for the final unit-selection fallback.
+//! The root order is the answer `root_order` computes before it compares its
+//! cache (`+0x20`): the first primary order (`COrdersGroup+0x98`, count
+//! `+0xA4`) of the member's group (`+0x08`) whose assigned members
+//! (`COrderInstance+0x210`, count `+0x21C`) include the member (first
+//! assigned-order search), else the same over the group's parent (`+0x1B8`). A
+//! cache that disagrees is the game's own stale-cache assertion, not simulation
+//! state.
+//!
+//! The provider (`+0x68`) is read as the member `single_hq_unit + 0xB8` names.
+//! HQ unit lookup returns the provider's vtable slot `+0x20`. The only
+//! orders-group member objects are embedded by unit construction at
+//! `CUnit+0xB8`. The member vtables of units, divisions, task forces and
+//! railway guns, each at object offset 0xB8, return the primary unit (`this -
+//! 0xB8`) in that slot. Every store to `+0x68` is a unit's `+0xB8` or zero:
+//! deployed-leader assignment, the loader (token 0x41BF, a unit dynamic cast)
+//! and HQ-provider clearing. So `single_hq_unit + 0xB8` is the provider, as the
+//! group's HQ-order virtual passes `+0x68` to `root_order` directly.
+//!
+//! The leader's `+0x418` is the accumulator of its `+0x408` CModifier, the
+//! block unit modifier selection returns. HQ modifier scaling, called on the
+//! group's `+0x88` during deployed-leader assignment, clears it, copies the
+//! leader's `+0x358` accumulator into it and scales it by the HQ communication
+//! define.
+//!
+//! The walk also records the owner of the unit the naval-invasion route check
+//! searches with (see `route_unit`). The path-cost operands read for that owner
+//! in its mode-0 search, its slot-0 relation bytes and nonzero co-belligerent
+//! targets, are the owner's CountryCounterInputs row of the same hour, so this
+//! walk reads no relation. `ccountry::walk_counter_inputs` also records each
+//! country's first roster division handle, the route's last unit fallback.
+//!
+//! No engine function is called.
 
 use crate::{
     Memory, carmy_leader, ccountry, cdiplomacy_status, cgame_state, corder_instance, corders_group,
@@ -64,11 +93,6 @@ pub struct Row {
     pub days_term: i64,
     /// Raw `CUnit+0x1E0` owner of the route unit, zero without one.
     pub unit_owner: u32,
-    /// That owner's slot-0 relation operands.
-    pub zero_relation: crelation_status::ZeroRelation,
-    /// Span of that owner's nonzero co-belligerent target slots, ascending.
-    pub co_belligerent_start: usize,
-    pub co_belligerent_len: usize,
 }
 
 impl Row {
@@ -394,70 +418,66 @@ fn route_unit(
     pointer(memory, roster.data, 0)
 }
 
-/// What [`walk`] wrote: its rows and the co-belligerent slots they span.
+/// What [`walk`] wrote: its rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
     pub outcome: Outcome,
-    pub slots: usize,
-    pub required_slots: usize,
 }
 
 /// Every naval invasion of a complete ArmyOrders census of this pass, in
 /// census order. The province table is read only once an invasion is found.
 /// Country references share the pass's lazy native reference context: raw
 /// zero never requires the positive country/link headers. A row that does not
-/// fit is counted; any failure makes
-/// the table unavailable. An owner's co-belligerent slots are read once per
-/// walk; a row whose slots do not fit is counted with the demand.
+/// fit is counted; any failure makes the table unavailable.
 #[allow(clippy::too_many_arguments)]
 pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     visits: &[corder_instance::Visit],
+    census: &[u32],
     source: Outcome,
     memo: &DefinitionMemo,
     countries: &ccountry::NativeReferenceContext<'_, impl Memory>,
     output: &mut [Row],
-    slots: &mut [u32],
 ) -> Walk {
     walk_buffer(
         memory,
         base,
         game_state,
         visits,
+        census,
         source,
         memo,
         countries,
         crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(slots),
     )
 }
 
-/// Worker acquisition follows the complete order census and original route
-/// operands without publishing a capacity-short hour.
+/// Worker acquisition follows the same complete order census and original
+/// route-check unit, without publishing a capacity-short hour.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     visits: &[corder_instance::Visit],
+    census: &[u32],
     source: Outcome,
     memo: &DefinitionMemo,
     countries: &ccountry::NativeReferenceContext<'_, impl Memory>,
     output: &mut Vec<Row>,
-    slots: &mut Vec<u32>,
 ) -> Walk {
     walk_buffer(
         memory,
         base,
         game_state,
         visits,
+        census,
         source,
         memo,
         countries,
         crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(slots),
     )
 }
 
@@ -467,13 +487,12 @@ fn walk_buffer(
     base: usize,
     game_state: usize,
     visits: &[corder_instance::Visit],
+    census: &[u32],
     source: Outcome,
     memo: &DefinitionMemo,
     countries: &ccountry::NativeReferenceContext<'_, impl Memory>,
     mut output: crate::walk::Buffer<'_, Row>,
-    mut slots: crate::walk::Buffer<'_, u32>,
 ) -> Walk {
-    let (mut used, mut required_slots) = (0, 0);
     let result = (|| {
         let Outcome::Rows { len: expected } = source else {
             return Err("invasion preparations require a complete army order census");
@@ -481,7 +500,7 @@ fn walk_buffer(
         output.ensure(expected)?;
         let mut context = None;
         let (mut len, mut unread, mut seen) = (0, 0_u32, 0);
-        for visit in visits.iter().filter(|visit| visit.pointer != 0) {
+        for (_, visit) in corder_instance::census_orders(visits, census) {
             seen += 1;
             let order = visit.pointer;
             if field::<i32>(memory, order, corder_instance::TYPE)? != corder_instance::TYPE_INVASION
@@ -497,34 +516,10 @@ fn walk_buffer(
             let mut row = read_invasion(memory, base, countries, table, order, memo)?;
             let group = pointer(memory, order, corder_instance::OWNER)?;
             let unit = route_unit(memory, countries, order, group)?;
-            let mut fits = true;
             if unit != 0 {
                 row.unit_owner = field(memory, unit, cunit::LOGICAL_OWNER)?;
-                if let Some(earlier) = output[..len]
-                    .iter()
-                    .find(|earlier| earlier.unit_owner == row.unit_owner)
-                {
-                    row.zero_relation = earlier.zero_relation;
-                    row.co_belligerent_start = earlier.co_belligerent_start;
-                    row.co_belligerent_len = earlier.co_belligerent_len;
-                } else {
-                    // Resolve the selected country from its already computed canonical slot.
-                    let owner = countries.resolve(row.unit_owner)?;
-                    row.zero_relation = crelation_status::zero_relation(memory, base, owner)?;
-                    let free = slots.suffix(used);
-                    let (written, needed) = crelation_status::co_belligerents_native_buffer(
-                        memory, base, countries, owner, free,
-                    )?;
-                    required_slots += needed;
-                    fits = written == needed;
-                    if fits {
-                        row.co_belligerent_start = used;
-                        row.co_belligerent_len = written;
-                        used += written;
-                    }
-                }
             }
-            match output.get_mut(len).filter(|_| fits) {
+            match output.get_mut(len) {
                 Some(slot) => {
                     *slot = row;
                     len += 1;
@@ -550,8 +545,6 @@ fn walk_buffer(
     })();
     Walk {
         outcome: result.unwrap_or_else(|reason| Outcome::Unavailable { reason }),
-        slots: used,
-        required_slots: required_slots.max(used),
     }
 }
 

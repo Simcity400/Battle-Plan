@@ -575,6 +575,59 @@ fn naval_decode_grows_shared_memberships_from_the_original_census() {
     assert_eq!(captured.wing_sources.rows[..2], job.wing_sources);
 }
 
+/// The Naval copy leaves before the wing census joins and takes it when it
+/// returns: its raw phase reads no wing value, so it decodes as a copy given
+/// the census first does. Without a census (the wing job failed) a copy that
+/// walked the theatres is refused at the install, as a copy that found none
+/// installed is.
+#[test]
+fn a_copy_whose_wing_census_follows_it_decodes_as_one_given_it_first() {
+    use super::naval_test_kit as kit;
+    let bytes = kit::fixture();
+    let memory = kit::memory(&bytes);
+    let context = NavalCopyContext {
+        hour: 0,
+        force_full: true,
+        base: kit::BASE,
+        game_state: kit::GAME_STATE,
+    };
+    let decode = |job: &NavalJob| {
+        let mut captured = Captured::with_capacities(&Capacities::fixture());
+        super::decode_naval_payload(&mut captured, kit::BASE, job, &mut [0; NAVAL_PACK_N]);
+        (
+            kit::decoded(&captured),
+            captured.wing_sources.outcome,
+            captured.wing_sources.rows.clone(),
+        )
+    };
+    let mut first = NavalJob::fixture();
+    kit::stage_wings(&memory, &mut first);
+    assert!(super::copy_naval_refresh(&memory, context, &mut first).raw_ok);
+
+    let mut following = NavalJob::fixture();
+    let mut wings = kit::wing_census(&memory, &following);
+    following.defer_wings();
+    let report = super::copy_naval_refresh(&memory, context, &mut following);
+    assert!(report.raw_ok, "the copy reads no wing value");
+    assert!(following.theatres_active);
+    let (_, stands) = following.install_wings_after(Some(&mut wings));
+    assert!(stands);
+    assert!(following.theatres_active, "the copy's cadence is kept");
+    assert_eq!(following.wing_outcome, first.wing_outcome);
+    assert_eq!(following.log.spans.len(), first.log.spans.len());
+    assert_eq!(decode(&following), decode(&first));
+
+    // The wing job failed: the theatres were walked without its census.
+    let mut refused = NavalJob::fixture();
+    refused.defer_wings();
+    assert!(super::copy_naval_refresh(&memory, context, &mut refused).raw_ok);
+    assert_eq!(refused.install_wings_after(None), (0, false));
+    assert!(!refused.positive_raw_complete);
+    // As a copy that found no census installed.
+    let mut unstaged = NavalJob::fixture();
+    assert!(!super::copy_naval_refresh(&memory, context, &mut unstaged).raw_ok);
+}
+
 #[test]
 fn naval_decode_bounds_shared_memberships_to_frame_capacity() {
     use super::naval_test_kit as kit;
@@ -1112,7 +1165,7 @@ fn supremacy_and_sunk_offslot_jobs_skip_reads_and_decoding() {
     let mut captured = owned_failure_fixture();
     for hour in 0..24 {
         captured.prepare_hour(hour, false);
-        if hour != 23 {
+        if !replay::cadence::is_refresh(replay::rows::TableId::NavalSupremacy, hour) {
             let report = copy_supremacy_refresh(
                 &NoReads,
                 SupremacyCopyContext {
@@ -1130,7 +1183,7 @@ fn supremacy_and_sunk_offslot_jobs_skip_reads_and_decoding() {
             captured.decode_supremacy_payload(0, &supremacy, &mut ticks);
             assert_eq!((captured.supremacy.outcome, ticks), (SKIPPED, [0]));
         }
-        if hour != 19 {
+        if !replay::cadence::is_refresh(replay::rows::TableId::SunkShips, hour) {
             let report = copy_sunk_refresh(
                 &NoReads,
                 SunkCopyContext {
@@ -1341,13 +1394,16 @@ fn rail_tables_are_hourly_tier_h_with_no_refresh_gate() {
 }
 
 #[test]
-fn supremacy_uses_slot_23() {
+fn supremacy_uses_slot_0() {
+    // The sorted cache is rebuilt inside the update entered at hour 23
+    // by the daily game update; slot 0 is the first
+    // sample of its epoch.
     use replay::rows::TableId;
     assert!(replay::cadence::is_staggered(TableId::NavalSupremacy));
     for hour in -24_i32..48 {
         assert_eq!(
             replay::cadence::is_refresh(TableId::NavalSupremacy, hour),
-            hour.rem_euclid(24) == 23
+            hour.rem_euclid(24) == 0
         );
     }
 }

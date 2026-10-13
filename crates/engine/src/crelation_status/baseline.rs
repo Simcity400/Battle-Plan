@@ -153,6 +153,21 @@ impl Baseline {
         self.counts
     }
 
+    /// The country id of the valid owner recorded with `diplomacy`.
+    pub fn owner(&self, diplomacy: usize) -> Option<u32> {
+        let recorded = &self.by_diplomacy[..self.recorded];
+        let at = recorded
+            .binary_search_by_key(&diplomacy, |&(diplomacy, _)| diplomacy)
+            .ok()?;
+        let owner = self.owners.get(recorded[at].1 as usize)?;
+        owner.valid().then_some(owner.id)
+    }
+
+    /// Nonzero opinions recorded, for sizing the caller's observation.
+    pub fn rows(&self) -> usize {
+        self.rows.iter().map(Vec::len).sum()
+    }
+
     /// Owners currently valid.
     pub fn valid_owners(&self) -> usize {
         self.owners.iter().filter(|owner| owner.valid()).count()
@@ -714,6 +729,29 @@ mod tests {
             [emitted(100, 30, 9), emitted(100, 4, -3), emitted(200, 1, 7)]
         );
         assert_eq!(counters.opinions, 3);
+    }
+
+    /// A drained mark's diplomacy names the valid owner recorded with it;
+    /// an invalid owner or an unknown diplomacy names none.
+    #[test]
+    fn owners_are_found_by_their_recorded_diplomacy() {
+        let identity = |id: u32, diplomacy| Identity {
+            country: 0x1000 + id as usize,
+            id,
+            diplomacy,
+            matrix: Array::default(),
+        };
+        let baseline = Baseline {
+            owners: vec![Identity::default(), identity(7, 0x500), Identity::default()],
+            rows: vec![vec![], vec![Row::default(); 2], vec![]],
+            by_diplomacy: vec![(0x300, 2), (0x500, 1)],
+            recorded: 2,
+            ..Baseline::default()
+        };
+        assert_eq!(baseline.owner(0x500), Some(7));
+        assert_eq!(baseline.owner(0x300), None);
+        assert_eq!(baseline.owner(0x400), None);
+        assert_eq!(baseline.rows(), 2);
     }
 }
 

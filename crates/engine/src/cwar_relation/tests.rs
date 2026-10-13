@@ -179,7 +179,9 @@ fn war_rows_grow_from_owned_headers_on_five_thousand_country_world() {
     use crate::ccountry::synthetic::World;
     let mut output = Vec::new();
     let mut scratch = OwnedSnapshotScratch::try_with_capacity(0).unwrap();
+    let mut wars = Vec::new();
     for pairs in [2_000_u32, 2_500] {
+        let mut created = Vec::new();
         let mut world = World::new(0, 5_000, 0x1100);
         let mut diplomacies = vec![0; 5_001];
         for slot in 1..=5_000 {
@@ -199,7 +201,9 @@ fn war_rows_grow_from_owned_headers_on_five_thousand_country_world() {
             world.u32(war + crelation::TYPE_ID, TYPE);
             world.u32(war + crelation::FIRST_COUNTRY, first);
             world.u32(war + crelation::SECOND_COUNTRY, second);
+            world.u64(war + SECOND_UNKNOWN_CASUALTIES, u64::from(pair));
             world.u64(owned, war as u64);
+            created.push(war);
             for (owner, target, serializable) in [(first, second, true), (second, first, false)] {
                 let diplomacy = diplomacies[owner as usize];
                 let matrix = world.alloc((target as usize + 1) * 8);
@@ -232,13 +236,33 @@ fn war_rows_grow_from_owned_headers_on_five_thousand_country_world() {
                 0,
                 world.game_state(),
                 &mut output,
-                &mut scratch
+                &mut scratch,
+                Some(&mut wars)
             ),
             Outcome::Rows {
                 len: pairs as usize
             }
         );
         assert_eq!(output[pairs as usize - 1].second_country, pairs * 2);
+        // Each row's war, in row order, for the casualty reads of later hours.
+        assert_eq!(wars, created);
+        let mut rows = output[..pairs as usize].to_vec();
+        for (row, war) in rows.iter_mut().zip(&wars) {
+            row.second_unknown_casualties = -1;
+            world.u64(war + FIRST_CASUALTIES, 7);
+        }
+        assert!(read_casualties(&world.memory(), &wars, &mut rows));
+        for (pair, row) in rows.iter().enumerate() {
+            assert_eq!(row.first_casualties, 7);
+            assert_eq!(row.second_unknown_casualties, pair as i64);
+            assert_eq!(row.first_country, output[pair].first_country);
+        }
+        assert!(!read_casualties(&world.memory(), &wars[1..], &mut rows));
+        assert!(!read_casualties(
+            &world.memory(),
+            &[usize::MAX - 0x10],
+            &mut rows[..1]
+        ));
     }
 }
 

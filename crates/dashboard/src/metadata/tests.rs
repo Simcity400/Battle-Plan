@@ -60,14 +60,17 @@ fn initial_catalogue_discards_countries_and_player_when_block_verification_fails
 #[test]
 fn catalogue_campaign_failure_becomes_a_gap_and_tries_the_next_block() {
     let next_hour = 100 + replay::KEYFRAME_INTERVAL as i32;
-    let recording = Replay::from_records(
-        CAMPAIGN.into(),
-        &[records(
-            1,
-            vec![source(1, 100, Some(1)), source(1, next_hour, Some(2))],
-        )],
-    )
-    .unwrap();
+    // Interleaved blocks, so the next block does not anchor to the replaced one.
+    let recording = interleaved(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(
+                1,
+                vec![source(1, 100, Some(1)), source(1, next_hour, Some(2))],
+            )],
+        )
+        .unwrap(),
+    );
     assert_eq!(recording.index.len(), 2);
     let block = &recording.index[0];
     let mut frame = recording.read_block(block).unwrap().remove(0);
@@ -591,9 +594,18 @@ fn metadata_compatibility_opens_format94_and_surfaces_every_named_gap() {
     payload.extend_from_slice(&frame.metrics.pool_bytes.to_le_bytes());
     payload.extend_from_slice(&frame.metrics.dropped_frames.to_le_bytes());
     let mut at = current.len() - sizes.iter().sum::<usize>();
+    let current_format = replay::format::FormatVersion::CURRENT.version();
     for table in TableId::ALL {
         let end = at + sizes[table.index()];
-        if table.last_change().present(format.version()) {
+        if table.last_change().present(format.version())
+            && !table.last_change().present(current_format)
+        {
+            // A table retired since: the historical writer published it, here
+            // as an unavailable update the reader discards by name.
+            assert_eq!(sizes[table.index()], 0, "{table:?}");
+            payload.push(4);
+            put_bytes(&mut payload, b"historical fixture holds no rows").unwrap();
+        } else if table.last_change().present(format.version()) {
             // Only unchanged nonempty prefixes, empty snapshots and unavailable
             // updates can be copied directly into this historical fixture.
             assert!(sizes[table.index()] > 0, "{table:?}");
@@ -883,13 +895,24 @@ fn a_slot_hour_reads_its_tables_even_when_another_table_is_charged() {
     let mut charged = replay::frame::Metrics::default();
     charged.table_ns[TableId::ProvinceSupply.index()] = 1_051_200;
     for table in [TableId::CountryFuel, TableId::CountryExperience] {
-        assert!(super::slot_read(&charged, table, day + slot));
-        assert!(!super::slot_read(&charged, table, day + slot + 1));
+        assert!(super::slot_read(
+            replay::format::FormatVersion::CURRENT,
+            &charged,
+            table,
+            day + slot
+        ));
+        assert!(!super::slot_read(
+            replay::format::FormatVersion::CURRENT,
+            &charged,
+            table,
+            day + slot + 1
+        ));
     }
     // A full hour times the slot's tables off their slot hour.
     let mut full = replay::frame::Metrics::default();
     full.table_ns[TableId::CountryExperience.index()] = 72_100;
     assert!(super::slot_read(
+        replay::format::FormatVersion::CURRENT,
         &full,
         TableId::CountryFuel,
         day + slot + 9
@@ -897,25 +920,128 @@ fn a_slot_hour_reads_its_tables_even_when_another_table_is_charged() {
 }
 
 #[test]
+fn a_recording_dates_tables_by_the_cadence_of_its_format() {
+    use replay::format::FormatVersion;
+    let previous = FormatVersion::read(FormatVersion::CURRENT.version() - 1).unwrap();
+    let day = 1000 * replay::cadence::STAGGER_PERIOD;
+    let untimed = replay::frame::Metrics::default();
+    // WorldTension and Projects were read daily in the previous format and are
+    // read every hour now.
+    for (table, slot) in [(TableId::WorldTension, 18), (TableId::Projects, 4)] {
+        for hour in day..day + replay::cadence::STAGGER_PERIOD {
+            assert_eq!(
+                super::slot_read(previous, &untimed, table, hour),
+                hour == day + slot,
+                "{table:?} at {hour}"
+            );
+            assert!(super::slot_read(
+                FormatVersion::CURRENT,
+                &untimed,
+                table,
+                hour
+            ));
+        }
+    }
+    // A full hour timing a table of the old slot dates its siblings; a table of
+    // another old slot does not.
+    let mut sibling = replay::frame::Metrics::default();
+    sibling.table_ns[TableId::TheatreAreas.index()] = 1;
+    assert!(super::slot_read(
+        previous,
+        &sibling,
+        TableId::WorldTension,
+        day + 3
+    ));
+    let mut other = replay::frame::Metrics::default();
+    other.table_ns[TableId::ProvinceNames.index()] = 1;
+    assert!(!super::slot_read(
+        previous,
+        &other,
+        TableId::WorldTension,
+        day + 3
+    ));
+}
+
+/// Products date tables only through the recording's format
+/// (`replay::cadence::cadence_in`, through `slot_read` here), so a later
+/// cadence change cannot redate an older recording. Test modules may name
+/// today's cadence to build their fixtures.
+#[test]
+fn products_never_read_todays_cadence_directly() {
+    fn visit(directory: &std::path::Path, offenders: &mut Vec<String>) {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|name| name != "tests") {
+                    visit(&path, offenders);
+                }
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !name.ends_with(".rs")
+                || name.ends_with("tests.rs")
+                || matches!(
+                    name.as_str(),
+                    "metadata.rs" | "test_fixtures.rs" | "mod_fixtures.rs"
+                )
+            {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            // An inline test module ends the production code it follows.
+            let production = text
+                .lines()
+                .take_while(|line| {
+                    !(line.starts_with("mod ") && line.contains("tests") && line.ends_with('{'))
+                })
+                .collect::<Vec<_>>();
+            for (index, line) in production.iter().enumerate() {
+                if line.contains("cadence::cadence(") || line.contains("cadence::is_refresh(") {
+                    offenders.push(format!("{}:{}", path.display(), index + 1));
+                }
+            }
+        }
+    }
+    let mut offenders = Vec::new();
+    visit(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut offenders,
+    );
+    assert!(offenders.is_empty(), "{offenders:#?}");
+}
+
+#[test]
 fn country_intel_is_dated_only_by_its_measured_walk() {
     let slot = daily_slot_of(TableId::CountryIntel);
     let hour = 1000 * replay::cadence::STAGGER_PERIOD + slot;
     assert!(!super::slot_read(
+        replay::format::FormatVersion::CURRENT,
         &replay::frame::Metrics::default(),
         TableId::CountryIntel,
         hour
     ));
     let mut timed = replay::frame::Metrics::default();
     timed.table_ns[TableId::CountryIntel.index()] = 1;
-    assert!(super::slot_read(&timed, TableId::CountryIntel, hour + 5));
+    assert!(super::slot_read(
+        replay::format::FormatVersion::CURRENT,
+        &timed,
+        TableId::CountryIntel,
+        hour + 5
+    ));
     // Intel can move off its slot independently of the other daily walks.
     let sibling = TableId::LogisticsEquipment;
     assert_eq!(daily_slot_of(sibling), slot);
-    assert!(!super::slot_read(&timed, sibling, hour + 5));
+    assert!(!super::slot_read(
+        replay::format::FormatVersion::CURRENT,
+        &timed,
+        sibling,
+        hour + 5
+    ));
     let mut sibling_timed = replay::frame::Metrics::default();
     sibling_timed.table_ns[sibling.index()] = 1;
     for sampled_hour in [hour, hour + 5] {
         assert!(!super::slot_read(
+            replay::format::FormatVersion::CURRENT,
             &sibling_timed,
             TableId::CountryIntel,
             sampled_hour
@@ -976,27 +1102,70 @@ fn a_table_is_read_by_its_slot_or_timing_and_a_deferred_intel_walk_proves_nothin
     // Intel deferred at the slot hour, then retried alone. Its retry cannot
     // date the logistics rows carried from the slot read.
     let deferred = walked(&[TableId::LogisticsEquipment]);
-    assert!(slot_read(&deferred, TableId::LogisticsEquipment, slot));
-    assert!(!slot_read(&deferred, TableId::CountryIntel, slot));
+    assert!(slot_read(
+        replay::format::FormatVersion::CURRENT,
+        &deferred,
+        TableId::LogisticsEquipment,
+        slot
+    ));
+    assert!(!slot_read(
+        replay::format::FormatVersion::CURRENT,
+        &deferred,
+        TableId::CountryIntel,
+        slot
+    ));
     let retry = walked(&[TableId::CountryIntel]);
-    assert!(slot_read(&retry, TableId::CountryIntel, slot + 1));
-    assert!(!slot_read(&retry, TableId::LogisticsEquipment, slot + 1));
+    assert!(slot_read(
+        replay::format::FormatVersion::CURRENT,
+        &retry,
+        TableId::CountryIntel,
+        slot + 1
+    ));
+    assert!(!slot_read(
+        replay::format::FormatVersion::CURRENT,
+        &retry,
+        TableId::LogisticsEquipment,
+        slot + 1
+    ));
 
     let fuel = slot_hour(TableId::CountryFuel);
     let shared = walked(&[TableId::CountryFuelConsumers]);
-    assert!(slot_read(&shared, TableId::CountryFuel, fuel));
-    assert!(!slot_read(&walked(&[]), TableId::CountryFuel, fuel + 1));
+    assert!(slot_read(
+        replay::format::FormatVersion::CURRENT,
+        &shared,
+        TableId::CountryFuel,
+        fuel
+    ));
+    assert!(!slot_read(
+        replay::format::FormatVersion::CURRENT,
+        &walked(&[]),
+        TableId::CountryFuel,
+        fuel + 1
+    ));
     // Off-slot timing dates its own slot only. A full read needs evidence
     // for the other slots too, and Intel always needs its own timing.
     let off_slot = fuel + 3;
-    assert!(slot_read(&shared, TableId::CountryFuel, off_slot));
+    assert!(slot_read(
+        replay::format::FormatVersion::CURRENT,
+        &shared,
+        TableId::CountryFuel,
+        off_slot
+    ));
     for table in [
         TableId::Stockpiles,
         TableId::ProductionLines,
         TableId::LogisticsEquipment,
         TableId::CountryIntel,
     ] {
-        assert!(!slot_read(&shared, table, off_slot), "{table:?}");
+        assert!(
+            !slot_read(
+                replay::format::FormatVersion::CURRENT,
+                &shared,
+                table,
+                off_slot
+            ),
+            "{table:?}"
+        );
     }
     let full = walked(&[
         TableId::CountryFuelConsumers,
@@ -1011,23 +1180,57 @@ fn a_table_is_read_by_its_slot_or_timing_and_a_deferred_intel_walk_proves_nothin
         TableId::LogisticsEquipment,
         TableId::CountryIntel,
     ] {
-        assert!(slot_read(&full, table, off_slot), "{table:?}");
+        assert!(
+            slot_read(
+                replay::format::FormatVersion::CURRENT,
+                &full,
+                table,
+                off_slot
+            ),
+            "{table:?}"
+        );
     }
     let stock = slot_hour(TableId::Stockpiles);
     assert!(slot_read(
+        replay::format::FormatVersion::CURRENT,
         &walked(&[TableId::DeploymentLines]),
         TableId::ProductionLines,
         stock
     ));
-    assert!(!slot_read(&walked(&[]), TableId::Stockpiles, stock + 1));
+    assert!(!slot_read(
+        replay::format::FormatVersion::CURRENT,
+        &walked(&[]),
+        TableId::Stockpiles,
+        stock + 1
+    ));
     // Resources are now hourly; a lack of daily-slot timing cannot make them carried.
     for table in [TableId::CountryResources, TableId::ResourceExchanges] {
-        assert!(slot_read(&walked(&[]), table, fuel));
-        assert!(slot_read(&walked(&[]), table, fuel + 2));
+        assert!(slot_read(
+            replay::format::FormatVersion::CURRENT,
+            &walked(&[]),
+            table,
+            fuel
+        ));
+        assert!(slot_read(
+            replay::format::FormatVersion::CURRENT,
+            &walked(&[]),
+            table,
+            fuel + 2
+        ));
     }
     // The shared economy read can be charged to an hourly anchor instead.
-    assert!(slot_read(&walked(&[]), TableId::CountryFuel, fuel));
-    assert!(slot_read(&walked(&[]), TableId::LogisticsEquipment, slot));
+    assert!(slot_read(
+        replay::format::FormatVersion::CURRENT,
+        &walked(&[]),
+        TableId::CountryFuel,
+        fuel
+    ));
+    assert!(slot_read(
+        replay::format::FormatVersion::CURRENT,
+        &walked(&[]),
+        TableId::LogisticsEquipment,
+        slot
+    ));
 }
 
 #[test]
@@ -1182,6 +1385,38 @@ fn repair_trailer_crc(bytes: &mut [u8]) {
     let start = u64::from_le_bytes(bytes[footer + 4..footer + 12].try_into().unwrap()) as usize;
     let crc = crc32fast::hash(&bytes[start..footer]);
     bytes[footer + 20..].copy_from_slice(&crc.to_le_bytes());
+}
+
+/// The same recording with every block stored interleaved: one zstd frame of
+/// length-prefixed plain frames, which no other block anchors to.
+fn interleaved(recording: Replay) -> Replay {
+    let blocks: Vec<Vec<u8>> = recording
+        .index
+        .iter()
+        .map(|block| {
+            let frames = recording.read_block(block).unwrap();
+            let mut raw = (frames.len() as u32).to_le_bytes().to_vec();
+            for frame in frames {
+                let mut payload = Vec::new();
+                frame.encode(&mut payload).unwrap();
+                raw.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                raw.extend(payload);
+            }
+            raw
+        })
+        .collect();
+    let mut replay = recording;
+    for (position, raw) in blocks.iter().enumerate() {
+        let compressed = zstd::encode_all(raw.as_slice(), 3).unwrap();
+        replay = Replay::open(replace_block(
+            &replay,
+            position,
+            &compressed,
+            raw.len() as u64,
+        ))
+        .unwrap();
+    }
+    replay
 }
 
 fn replace_last_block(replay: &Replay, compressed: &[u8], raw_length: u64) -> Vec<u8> {

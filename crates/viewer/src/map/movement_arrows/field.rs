@@ -542,7 +542,7 @@ mod tests {
                 CountryCounterInputRow {
                     country: 100,
                     directed_wars: Recorded::Value(Some(DirectedWars {
-                        sample_hour: 12,
+                        sample_hour: replay::rows::PacketHour::Stamped(12),
                         receiver_raw_id: 100,
                         receiver_slot: 1,
                         matrix_count: 3,
@@ -560,7 +560,7 @@ mod tests {
                 CountryCounterInputRow {
                     country: 200,
                     directed_wars: Recorded::Value(Some(DirectedWars {
-                        sample_hour: 12,
+                        sample_hour: replay::rows::PacketHour::Stamped(12),
                         receiver_raw_id: 200,
                         receiver_slot: 2,
                         matrix_count: 3,

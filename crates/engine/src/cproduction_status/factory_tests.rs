@@ -414,3 +414,192 @@ fn growing_factory_storage_does_not_hide_an_original_status_fault() {
         }
     );
 }
+
+/// The serial walk: each canonical country's row read on its own
+/// ([`read_factories`]), in slot order, stopping at the first failure.
+fn serial(memory: &impl Memory, count: usize) -> Outcome {
+    let result = (|| {
+        let countries = ccountry::Reader::new(memory, 0, MEMORY_BASE)?;
+        let mut vtables = [0; 6];
+        for (vtable, rva) in vtables
+            .iter_mut()
+            .zip(std::iter::once(VTABLE_RVA).chain(CONSUMERS.iter().map(|&(_, rva)| rva)))
+        {
+            *vtable = rva;
+        }
+        let mut len = 0;
+        for slot in 1..countries.count() {
+            if let Some(country) = countries.at(slot)? {
+                read_factories(memory, &vtables, country)?;
+                len += 1;
+            }
+        }
+        Ok(Outcome::Rows { len })
+    })();
+    let _ = count;
+    result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
+}
+
+/// The population over [`crate::batch_fallback::Faulty`]: `at` faults on
+/// every touch, or only on its first when `once`.
+fn faulty<'a>(bytes: &'a [u8], at: &[usize], once: bool) -> crate::batch_fallback::Faulty<'a> {
+    crate::batch_fallback::Faulty::new(
+        SliceMemory {
+            base: MEMORY_BASE,
+            bytes,
+        },
+        at.iter().map(|&address| address..address + 1).collect(),
+        once,
+    )
+}
+
+/// The address of `index`'s country, its status pointer and its status.
+fn addresses(bytes: &[u8], index: usize) -> (usize, usize, usize) {
+    let memory = SliceMemory {
+        base: MEMORY_BASE,
+        bytes,
+    };
+    let countries = ccountry::Reader::new(&memory, 0, MEMORY_BASE).unwrap();
+    let country = countries.at(index as u32 + 1).unwrap().unwrap().pointer;
+    let pointer = country + ccountry::PRODUCTION_STATUS;
+    let status = u64::from_le_bytes(bytes[pointer - MEMORY_BASE..][..8].try_into().unwrap());
+    (country, pointer, status as usize)
+}
+
+/// The fixture memory with its guarded calls counted.
+struct Counted<'a> {
+    memory: SliceMemory<'a>,
+    calls: std::cell::Cell<usize>,
+}
+impl Memory for Counted<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.calls.set(self.calls.get() + 1);
+        self.memory.copy(address, output)
+    }
+    fn copy_records(
+        &self,
+        sources: crate::memory::RecordSources<'_>,
+        layout: &RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        self.calls.set(self.calls.get() + 1);
+        self.memory.copy_records(sources, layout, destination)
+    }
+}
+
+/// The batched walk gives the serial walk's rows on healthy memory at 5,000
+/// countries, over the callback's country census and without it, with two
+/// guarded calls per batch of countries instead of two per country.
+#[test]
+fn batched_factories_equal_the_serial_walk_at_five_thousand_countries() {
+    let count = 5_000;
+    let bytes = population(count);
+    let source = SliceMemory {
+        base: MEMORY_BASE,
+        bytes: &bytes,
+    };
+    assert_eq!(serial(&source, count), Outcome::Rows { len: count });
+    let mut cache = crate::country_memory::Cache::with_capacity(1 << 16);
+    let view = cache.prepare(&source, 0, MEMORY_BASE);
+    let counted = Counted {
+        memory: SliceMemory {
+            base: MEMORY_BASE,
+            bytes: &bytes,
+        },
+        calls: std::cell::Cell::new(0),
+    };
+    let mut rows = Vec::new();
+    let mut plain = Vec::new();
+    assert_eq!(
+        walk_factories_growing(&view, 0, MEMORY_BASE, &mut rows),
+        Outcome::Rows { len: count }
+    );
+    assert_eq!(
+        walk_factories_growing(&counted, 0, MEMORY_BASE, &mut plain),
+        Outcome::Rows { len: count }
+    );
+    for (index, row) in rows[..count].iter().enumerate() {
+        assert_eq!(*row, expected_row(index, index as u32 + 1));
+    }
+    assert_eq!(plain[..count], rows[..count]);
+    // The census reads stay; the statuses take two calls per batch instead
+    // of a pointer read and three span copies per country.
+    let serial_calls = Counted {
+        memory: SliceMemory {
+            base: MEMORY_BASE,
+            bytes: &bytes,
+        },
+        calls: std::cell::Cell::new(0),
+    };
+    assert_eq!(serial(&serial_calls, count), Outcome::Rows { len: count });
+    assert_eq!(
+        counted.calls.get() + 4 * count,
+        serial_calls.calls.get() + 2 * count.div_ceil(BATCH)
+    );
+}
+
+/// A fault that persists gives the serial walk's outcome and reason: a
+/// status span, a status pointer, a null status pointer, and a status fault
+/// in a batch before a country the census cannot read.
+#[test]
+fn a_persistent_fault_gives_the_serial_result() {
+    let count = 100;
+    let mut bytes = population(count);
+    let (_, pointer, status) = addresses(&bytes, 40);
+    let (_, _, earlier) = addresses(&bytes, 44);
+    let (later, _, _) = addresses(&bytes, 50);
+    for persistent in [
+        vec![status + MILITARY_FACTORIES + 8],
+        vec![status],
+        vec![pointer],
+        vec![earlier + COUNTRY, later],
+    ] {
+        let memory = faulty(&bytes, &persistent, false);
+        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories);
+        let mut rows = Vec::new();
+        let outcome = walk_factories_growing(&memory, 0, MEMORY_BASE, &mut rows);
+        // The batch met the fault and was read again country by country.
+        assert!(
+            crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories) > before,
+            "{persistent:x?}"
+        );
+        assert!(
+            matches!(outcome, Outcome::Unavailable { .. }),
+            "{persistent:x?}"
+        );
+        assert_eq!(outcome, serial(&memory, count), "{persistent:x?}");
+    }
+    put(&mut bytes, pointer, &0_u64.to_le_bytes());
+    let memory = faulty(&bytes, &[], false);
+    let before = crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories);
+    assert_eq!(
+        walk_factories_growing(&memory, 0, MEMORY_BASE, &mut Vec::new()),
+        serial(&memory, count)
+    );
+    assert!(crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories) > before);
+}
+
+/// A one-shot fault refuses no more than the serial walk: the failed batch
+/// is read again country by country, once, and every row is published.
+#[test]
+fn a_one_shot_fault_refuses_no_more_than_the_serial_walk() {
+    let count = 100;
+    let bytes = population(count);
+    let (_, pointer, status) = addresses(&bytes, 40);
+    for once in [pointer, status, status + MILITARY_FACTORIES + 8] {
+        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories);
+        let memory = faulty(&bytes, &[once], true);
+        let mut rows = Vec::new();
+        assert_eq!(
+            walk_factories_growing(&memory, 0, MEMORY_BASE, &mut rows),
+            Outcome::Rows { len: count },
+            "{once:#x}"
+        );
+        for (index, row) in rows[..count].iter().enumerate() {
+            assert_eq!(*row, expected_row(index, index as u32 + 1));
+        }
+        assert!(
+            crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories) > before
+        );
+    }
+}

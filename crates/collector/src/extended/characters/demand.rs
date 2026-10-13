@@ -5,23 +5,21 @@ use super::{
 };
 use crate::country_scale::{DemandFailures, raise, rows};
 
-static FAILURES: [DemandFailures; 7] = [const { DemandFailures::new() }; 7];
+static FAILURES: [DemandFailures; 6] = [const { DemandFailures::new() }; 6];
 static LIVE_ROLES: [std::sync::atomic::AtomicUsize; 4] =
     [const { std::sync::atomic::AtomicUsize::new(0) }; 4];
-static LIVE_TRAITS: [[std::sync::atomic::AtomicUsize; 2]; 2] =
-    [const { [const { std::sync::atomic::AtomicUsize::new(0) }; 2] }; 2];
+static LIVE_TRAITS: [std::sync::atomic::AtomicUsize; 2] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 2];
 
 pub(super) fn initial_roles(part: usize) -> usize {
     LIVE_ROLES[part].load(std::sync::atomic::Ordering::Relaxed)
 }
 
-pub(super) fn initial_traits() -> [cunit_leader::TraitDemand; 2] {
-    LIVE_TRAITS
-        .each_ref()
-        .map(|hint| cunit_leader::TraitDemand {
-            rows: hint[0].load(std::sync::atomic::Ordering::Relaxed),
-            bytes: hint[1].load(std::sync::atomic::Ordering::Relaxed),
-        })
+pub(super) fn initial_traits() -> cunit_leader::TraitDemand {
+    cunit_leader::TraitDemand {
+        rows: LIVE_TRAITS[0].load(std::sync::atomic::Ordering::Relaxed),
+        bytes: LIVE_TRAITS[1].load(std::sync::atomic::Ordering::Relaxed),
+    }
 }
 
 pub(crate) fn status() -> impl serde::Serialize {
@@ -30,7 +28,6 @@ pub(crate) fn status() -> impl serde::Serialize {
             "roster",
             "unit_leaders",
             "unit_leader_traits",
-            "unit_leader_trait_experience",
             "country_leader_roles",
             "unit_leader_text",
             "advisor_definitions",
@@ -51,7 +48,7 @@ pub(super) fn presize(
     let roster = FAILURES[0].observe(ccharacter_manager::Roster::read(memory, base, state))?;
     super::census::remember_roster(roster.count() as usize);
     if let Ok(demand) =
-        FAILURES[6].observe(engine::cadvisor::definitions_demand(memory, base, state))
+        FAILURES[5].observe(engine::cadvisor::definitions_demand(memory, base, state))
     {
         let total_rows = demand[0].rows.saturating_add(demand[1].rows);
         let total_bytes = demand[0].bytes.saturating_add(demand[1].bytes);
@@ -68,13 +65,13 @@ pub(super) fn presize(
             .ok_or("country leader demand overflow"),
         engine::walk::Outcome::Unavailable { reason } => Err(reason),
     };
-    if let Ok(leaders) = FAILURES[4].observe(leaders) {
+    if let Ok(leaders) = FAILURES[3].observe(leaders) {
         raise(&mut capacity.rows[1], rows(leaders, 1));
         LIVE_ROLES[1].fetch_max(leaders, std::sync::atomic::Ordering::Relaxed);
     }
     let mut units = 0_usize;
     let mut unit_bytes = 0_usize;
-    let mut traits = [cunit_leader::TraitDemand::default(); 2];
+    let mut traits = cunit_leader::TraitDemand::default();
     let mut refusal = None;
     for index in 0..roster.count() {
         let unit = (|| {
@@ -111,39 +108,34 @@ pub(super) fn presize(
                 .ok_or("unit leader text demand overflow")?;
             Ok(())
         })();
-        if let Err(reason) = FAILURES[5].observe(text) {
+        if let Err(reason) = FAILURES[4].observe(text) {
             refusal.get_or_insert(reason);
         }
-        for (index, total) in traits.iter_mut().enumerate() {
-            let demand = cunit_leader::trait_demand(memory, base, pointer, id, index == 1)
-                .and_then(|next| {
-                    let next = cunit_leader::TraitDemand {
-                        rows: total
-                            .rows
-                            .checked_add(next.rows)
-                            .ok_or("unit leader trait sizing row count overflow")?,
-                        bytes: total
-                            .bytes
-                            .checked_add(next.bytes)
-                            .ok_or("unit leader trait sizing byte count overflow")?,
-                    };
-                    *total = next;
-                    Ok(())
-                });
-            if let Err(reason) = FAILURES[index + 2].observe(demand) {
-                refusal.get_or_insert(reason);
-            }
+        let demand =
+            cunit_leader::trait_demand(memory, base, pointer, id, false).and_then(|next| {
+                traits = cunit_leader::TraitDemand {
+                    rows: traits
+                        .rows
+                        .checked_add(next.rows)
+                        .ok_or("unit leader trait sizing row count overflow")?,
+                    bytes: traits
+                        .bytes
+                        .checked_add(next.bytes)
+                        .ok_or("unit leader trait sizing byte count overflow")?,
+                };
+                Ok(())
+            });
+        if let Err(reason) = FAILURES[2].observe(demand) {
+            refusal.get_or_insert(reason);
         }
     }
     raise(&mut capacity.rows[3], rows(units, 1));
     LIVE_ROLES[0].fetch_max(units, std::sync::atomic::Ordering::Relaxed);
     raise(&mut capacity.bytes[3], rows(unit_bytes, 1));
-    for (index, demand) in traits.into_iter().enumerate() {
-        LIVE_TRAITS[index][0].fetch_max(demand.rows, std::sync::atomic::Ordering::Relaxed);
-        LIVE_TRAITS[index][1].fetch_max(demand.bytes, std::sync::atomic::Ordering::Relaxed);
-        raise(&mut capacity.rows[index + 4], rows(demand.rows, 1));
-        raise(&mut capacity.bytes[index + 4], rows(demand.bytes, 1));
-    }
+    LIVE_TRAITS[0].fetch_max(traits.rows, std::sync::atomic::Ordering::Relaxed);
+    LIVE_TRAITS[1].fetch_max(traits.bytes, std::sync::atomic::Ordering::Relaxed);
+    raise(&mut capacity.rows[4], rows(traits.rows, 1));
+    raise(&mut capacity.bytes[4], rows(traits.bytes, 1));
     refusal.map_or(Ok(()), Err)
 }
 

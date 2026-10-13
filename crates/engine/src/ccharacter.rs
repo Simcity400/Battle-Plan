@@ -662,6 +662,41 @@ pub fn identity(
     Ok((id, country))
 }
 
+/// `View::read`'s identity authentication with up to three more fixed spans
+/// of the same object in the same scattered read. Returns the native id and
+/// how many of those spans were copied, in order; an empty span counts as
+/// copied. A span whose address overflows is not copied.
+pub fn identity_with_spans(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    offsets: [usize; 3],
+    spans: [&mut [u8]; 3],
+) -> Result<(u32, usize), &'static str> {
+    let mut identity = [0; 16];
+    let [first, second, third] = spans;
+    let [a, b, c] = offsets.map(|offset| pointer.checked_add(offset).unwrap_or(0));
+    let completed = memory.copy_scattered(
+        [pointer, a, b, c],
+        &mut [&mut identity[..], first, second, third],
+    );
+    if completed == 0 {
+        return Err("character identity unreadable");
+    }
+    let expected = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("module address overflow")?;
+    if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected as u64
+        || u32::from_le_bytes(identity[TYPE..ID].try_into().unwrap()) != REFERENCE_TYPE
+    {
+        return Err("character vtable or reference type mismatch");
+    }
+    Ok((
+        u32::from_le_bytes(identity[ID..16].try_into().unwrap()),
+        completed - 1,
+    ))
+}
+
 /// The authenticated CCharacter id behind a role's parent pointer: the vtable
 /// and reference type (+0x08) must match before the id (+0x0c) is returned.
 pub(crate) fn identity_header(
@@ -670,6 +705,11 @@ pub(crate) fn identity_header(
     pointer: usize,
 ) -> Result<u32, &'static str> {
     let header = read::<[u8; 16]>(memory, pointer).ok_or("character identity unreadable")?;
+    identity_from_header(base, header)
+}
+
+/// [`identity_header`] over its 16 header bytes, already copied.
+pub(crate) fn identity_from_header(base: usize, header: [u8; 16]) -> Result<u32, &'static str> {
     let expected = base
         .checked_add(VTABLE_RVA)
         .ok_or("module address overflow")?;
@@ -796,7 +836,9 @@ impl Literal {
 mod tests;
 
 mod portraits;
-pub use portraits::{PortraitRow, PortraitWalk, walk_portraits, walk_portraits_growing};
+pub use portraits::{
+    PortraitRow, PortraitWalk, sample_reused_portraits, walk_portraits, walk_portraits_growing,
+};
 
 fn portrait_header(memory: &impl Memory, pointer: usize) -> Result<[u8; 16], &'static str> {
     let country_at = at(pointer, COUNTRY)?;

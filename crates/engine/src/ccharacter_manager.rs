@@ -61,6 +61,15 @@ pub struct PortraitCensus {
     unchanged: bool,
     /// Native roster length of the latest acquisition, kept until growth.
     required: usize,
+    /// Names the rows since the latest [`Self::begin`]: no other census or
+    /// acquisition ever had it.
+    stamp: u64,
+}
+
+/// A census stamp no earlier acquisition had.
+fn fresh_stamp() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl PortraitCensus {
@@ -77,6 +86,7 @@ impl PortraitCensus {
             written: 0,
             unchanged: false,
             required: 0,
+            stamp: fresh_stamp(),
         })
     }
 
@@ -110,6 +120,7 @@ impl PortraitCensus {
     }
 
     pub fn begin(&mut self, base: usize, state: usize) {
+        self.stamp = fresh_stamp();
         self.unchanged = self.complete && self.scope == (base, state);
         self.written = 0;
         self.required = 0;
@@ -143,6 +154,11 @@ impl PortraitCensus {
     /// hashing or assuming that equal roster headers imply equal elements.
     pub fn unchanged(&self) -> bool {
         self.complete && self.unchanged
+    }
+
+    /// Equal stamps name the same rows: no acquisition began since.
+    pub fn stamp(&self) -> u64 {
+        self.stamp
     }
 
     pub fn rows(&self, base: usize, state: usize) -> Option<&[PortraitIdentity]> {
@@ -290,6 +306,13 @@ impl Cursor {
         };
         ccharacter::View::read(memory, self.roster.base, pointer, roster, ordinal, required)
             .map(Some)
+    }
+
+    /// The next roster occurrence's pointer, in `next`'s order and with its
+    /// pointer failures, for a consumer that authenticates the identity in
+    /// its own gather (`ccharacter::identity_with_spans`).
+    pub fn next_occurrence(&mut self, memory: &impl Memory) -> Result<Option<usize>, &'static str> {
+        Ok(self.next_pointer(memory)?.map(|(pointer, _, _)| pointer))
     }
 
     /// Stage the selected first-source fields for one native pointer page.

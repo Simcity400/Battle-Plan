@@ -42,7 +42,6 @@ fn applied(line: u64, variant: u64, units: i64, spent_raw: i64) -> ProductionLin
         since_hour: hour(0),
         exact: true,
         spent_raw: Recorded::Value(Some(spent_raw)),
-        instant_raw: Recorded::Value(Some(0)),
         ..Default::default()
     }
 }
@@ -1145,14 +1144,12 @@ fn production_spending_widens_independent_native_totals_instead_of_multiplying_t
 }
 
 #[test]
-fn production_spending_signed_changes_and_instant_progress_are_independent_of_units() {
+fn production_spending_signed_changes_are_independent_of_units() {
     engine::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let mut first = applied(1, 1, 2, i64::MAX);
-    first.instant_raw = Recorded::Value(Some(5_000_000));
+    let first = applied(1, 1, 2, i64::MAX);
     let mut last = applied(1, 1, 3, i64::MIN);
     last.exact = false;
-    last.instant_raw = Recorded::Value(None);
     let mut frames = day(0, vec![line(1, 1, 7)], Some(vec![first]));
     frames.extend(day(1, vec![line(1, 1, -1)], Some(vec![last])));
     let scanned = scan(frames);

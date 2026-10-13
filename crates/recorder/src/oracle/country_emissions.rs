@@ -42,21 +42,6 @@ pub(super) fn country_items<'a>(
     }
 }
 
-pub(super) fn mission_spotting_caches(
-    document: &SaveDocument,
-    frame: &DecodedFrame,
-    keys: [&[u8]; 2],
-) -> io::Result<installed_content::save::naval_missions::MissionSpottingCaches> {
-    match layout(frame) {
-        Ok(Some(layout)) => document.project(&layout)?.mission_spotting_caches(keys),
-        Ok(None) => document.mission_spotting_caches(keys),
-        Err(reason) if document.has_repeated_country_tags()? => Err(invalid(format!(
-            "full repeated-country mission spotting view requires its physical census: {reason}"
-        ))),
-        Err(_) => document.mission_spotting_caches(keys),
-    }
-}
-
 fn layout(frame: &DecodedFrame) -> io::Result<Option<Vec<CountryEmissionIdentity>>> {
     if cadence::cadence(TableId::ReservedCountryNaming) != Cadence::Hourly {
         return Err(invalid(

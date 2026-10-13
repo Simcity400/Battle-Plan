@@ -138,6 +138,7 @@ fn fresh_attrition_heat_factor_fault_keeps_weather_winter_and_source_identities(
         HEAT_ATTRITION_FACTOR,
         HEAT_SOURCE,
         &mut sources,
+        &mut Memo::default(),
     )
     .unwrap()
     .unwrap();
@@ -152,6 +153,7 @@ fn fresh_attrition_heat_factor_fault_keeps_weather_winter_and_source_identities(
         WINTER_ATTRITION_FACTOR,
         WINTER_SOURCE,
         &mut sources,
+        &mut Memo::default(),
     )
     .unwrap()
     .unwrap();
@@ -179,7 +181,8 @@ fn fresh_attrition_heat_factor_fault_keeps_weather_winter_and_source_identities(
             HEAT_ATTRITION,
             HEAT_ATTRITION_FACTOR,
             HEAT_SOURCE,
-            &mut unknown_sources
+            &mut unknown_sources,
+            &mut Memo::default()
         )
         .is_err()
     );
@@ -207,7 +210,8 @@ fn fresh_attrition_nonpositive_thermal_base_does_not_read_country_or_leader() {
             HEAT_ATTRITION,
             HEAT_ATTRITION_FACTOR,
             HEAT_SOURCE,
-            &mut sources
+            &mut sources,
+            &mut Memo::default()
         ),
         Ok(None)
     );
@@ -319,4 +323,91 @@ fn fresh_attrition_terrain_label_shortage_and_faults_keep_uncommitted_span_and_p
         Ok(Some((3, 0)))
     );
     assert_eq!((names.len, names.required), (3, 3));
+}
+
+/// Two divisions of one country in one weather province ask the same keyed
+/// reads. The second must receive the first division's exact results, the
+/// unreadable heat factor included, without reading memory again; a disabled
+/// memo reads everything twice, as before the memo existed.
+#[test]
+fn attrition_memo_shares_keyed_reads_and_failures_between_divisions() {
+    let mut fixture = Fixture::new();
+    fixture.modifiers(
+        0x1000,
+        0x2000,
+        &[
+            (ATTRITION, 500),
+            (WINTER_ATTRITION, 10_000),
+            (HEAT_ATTRITION, 20_000),
+        ],
+    );
+    fixture.modifiers(
+        0x3000,
+        0x4000,
+        &[
+            (WINTER_ATTRITION_FACTOR, 20_000),
+            (HEAT_ATTRITION_FACTOR, -20_000),
+        ],
+    );
+    fixture.blocked = Some(0x4018);
+    let seed = carmy::DivisionSeed {
+        orders_group: Some(0),
+        ..Default::default()
+    };
+    let run = |memo: &mut Memo| {
+        let mut sources = [Ok(None); SOURCE_COUNT];
+        let heat = thermal(
+            &fixture,
+            0,
+            &seed,
+            0x1000,
+            Ok(0x3000),
+            Ok(80_000),
+            HEAT_ATTRITION,
+            HEAT_ATTRITION_FACTOR,
+            HEAT_SOURCE,
+            &mut sources,
+            memo,
+        );
+        let winter = thermal(
+            &fixture,
+            0,
+            &seed,
+            0x1000,
+            Ok(0x3000),
+            Ok(80_000),
+            WINTER_ATTRITION,
+            WINTER_ATTRITION_FACTOR,
+            WINTER_SOURCE,
+            &mut sources,
+            memo,
+        );
+        let attrition = memo.modifier(&fixture, 0, 0x1000, ATTRITION);
+        (heat, winter, attrition, sources)
+    };
+    let reads = || fixture.reads.borrow().len();
+    let direct = run(&mut Memo::default());
+    assert!(direct.0.unwrap().unwrap().country_factor.is_err());
+    let direct_reads = reads();
+    assert_eq!(run(&mut Memo::default()), direct);
+    assert_eq!(
+        reads(),
+        2 * direct_reads,
+        "a disabled memo reads every time"
+    );
+    fixture.reads.borrow_mut().clear();
+    let mut memo = Memo::new();
+    assert_eq!(run(&mut memo), direct);
+    assert_eq!(reads(), direct_reads);
+    assert_eq!(run(&mut memo), direct);
+    assert_eq!(
+        reads(),
+        direct_reads,
+        "the second division read memoized operands"
+    );
+    assert_eq!(memo.counts(), (10, 5));
+    memo.clear();
+    assert_eq!(memo.counts(), (0, 0));
+    assert_eq!(run(&mut memo), direct);
+    assert_eq!(reads(), 2 * direct_reads, "a cleared memo reads again");
 }

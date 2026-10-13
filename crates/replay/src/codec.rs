@@ -94,6 +94,10 @@ impl<'a> Decoder<'a> {
     pub fn remaining(&self) -> usize {
         self.bytes.len()
     }
+    /// The unread bytes, for callers that report the exact span a read consumed.
+    pub(crate) fn rest(&self) -> &'a [u8] {
+        self.bytes
+    }
     pub fn take(&mut self, length: usize) -> io::Result<&'a [u8]> {
         if length > self.bytes.len() {
             return Err(invalid_static("truncated field"));

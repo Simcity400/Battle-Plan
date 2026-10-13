@@ -8,6 +8,9 @@ const CACHED_BRANCHES: usize = 4;
 
 #[derive(Default)]
 struct WorldBuilder {
+    /// The recording's format, which dates its daily tables
+    /// ([`crate::metadata::slot_read`]).
+    format: replay::format::FormatVersion,
     countries: BTreeMap<(u32, u32), Builder>,
     campaign_start: Option<i32>,
     warnings: BTreeMap<String, usize>,
@@ -33,7 +36,7 @@ impl WorldBuilder {
         });
         // A first successful read still admits a previously unadmitted row set.
         // Otherwise unchanged compact rows need only continuity, not new maps.
-        let read = slot_read(&frame.metrics, TableId::Projects, frame.hour);
+        let read = slot_read(self.format, &frame.metrics, TableId::Projects, frame.hour);
         if unchanged
             && (!read
                 || self
@@ -111,6 +114,7 @@ impl WorldBuilder {
             };
             seen.insert(identity);
             let builder = self.countries.entry(identity).or_insert_with(|| Builder {
+                format: self.format,
                 compact: true,
                 campaign_start: self.campaign_start,
                 ..Default::default()
@@ -151,6 +155,7 @@ fn scan_completions(
         }
     }
     let mut world = WorldBuilder {
+        format: scan.format,
         campaign_start: scan.campaign_start,
         ..Default::default()
     };

@@ -222,6 +222,9 @@ struct Ace {
 }
 #[derive(Default)]
 struct Scan {
+    /// The recording's format, which dates its daily tables
+    /// ([`crate::metadata::slot_read`]).
+    format: replay::format::FormatVersion,
     first: i32,
     last: i32,
     windows: Vec<HourSpan>,
@@ -278,9 +281,9 @@ impl Scan {
             self.active.clear();
             self.known = false;
         }
-        self.variants.observe(frame);
+        self.variants.observe(self.format, frame);
         let rows = frame.complete::<tables::AirAces>();
-        let read = slot_read(&frame.metrics, TableId::AirAces, hour);
+        let read = slot_read(self.format, &frame.metrics, TableId::AirAces, hour);
         match rows {
             Err(_) => {
                 self.close(self.last_frame.unwrap_or(hour.saturating_sub(1)));
@@ -498,6 +501,7 @@ fn scan(replay: &Replay, branch_id: u64, flag: &AtomicBool) -> io::Result<Scan> 
         .ok_or_else(|| crate::invalid("Branch not in this recording"))?;
     let (first, last) = branch_bounds(replay, branch);
     let mut result = Scan {
+        format: replay.format,
         first,
         last,
         windows: replay
@@ -813,8 +817,12 @@ fn recording_available(
                         unread = true;
                         break;
                     }
-                    if slot_read(&decoded.metrics, TableId::AirAces, decoded.hour)
-                        && let Ok(rows) = decoded.complete::<tables::AirAces>()
+                    if slot_read(
+                        replay.format,
+                        &decoded.metrics,
+                        TableId::AirAces,
+                        decoded.hour,
+                    ) && let Ok(rows) = decoded.complete::<tables::AirAces>()
                     {
                         let mut ids = HashSet::new();
                         if rows.iter().all(|row| ids.insert(row.id)) {

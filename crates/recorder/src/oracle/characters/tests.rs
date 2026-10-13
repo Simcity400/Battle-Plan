@@ -4,7 +4,7 @@ use replay::{
     frame::{Metrics, TableView},
     rows::{
         ActiveAbilityRow, CharacterRow, Recorded, TableId, TableRows, UnitLeaderRow,
-        UnitLeaderTraitExperienceRow, UnitLeaderTraitRow,
+        UnitLeaderTraitRow,
     },
 };
 
@@ -493,7 +493,6 @@ fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
             skill_status: 2,
             skill_valid: 1,
             skill_level: i32::MAX,
-            experience: -9_007_199_254_740_993,
             components: [i32::MIN, 3, 2, 1],
             owner: 102,
             ..Default::default()
@@ -506,16 +505,15 @@ fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
             token: b"separate unsaved token bytes".to_vec(),
             ..Default::default()
         }]));
-    *frame.tables[TableId::UnitLeaderTraitExperience.index()] =
-        TableView::Complete(TableRows::UnitLeaderTraitExperience(vec![
-            UnitLeaderTraitExperienceRow {
-                leader_reference: leader,
-                ordinal: 0,
-                token_id: 7,
-                experience: 1,
-                ..Default::default()
-            },
-        ]));
+    // A current recording refuses the retired table by name; the save still
+    // holds the leader's experience and trait experience, which no recorded
+    // value answers and no comparison reads.
+    *frame.tables[TableId::UnitLeaderTraitExperience.index()] = TableView::Unavailable {
+        reason: format!(
+            "UnitLeaderTraitExperience retired at format {0}; this recording is format {0}",
+            replay::FORMAT_VERSION
+        ),
+    };
     let pack = saved::Pack {
         portraits: Default::default(),
         manager: Some(saved::Manager {
@@ -582,7 +580,6 @@ fn character_tables_are_compared_at_every_hour() {
         TableId::AdvisorRoles,
         TableId::UnitLeaders,
         TableId::UnitLeaderTraits,
-        TableId::UnitLeaderTraitExperience,
     ] {
         assert_eq!(
             replay::cadence::cadence(table),
@@ -598,12 +595,12 @@ fn character_tables_are_compared_at_every_hour() {
         (7, b"progress"),
         (8, b"GER_template"),
     ]);
-    let TableView::Complete(TableRows::UnitLeaderTraitExperience(rows)) =
-        &mut *frame.tables[TableId::UnitLeaderTraitExperience.index()]
+    let TableView::Complete(TableRows::UnitLeaders(rows)) =
+        &mut *frame.tables[TableId::UnitLeaders.index()]
     else {
         unreachable!()
     };
-    rows[0].experience += 1;
+    rows[0].skill_level -= 1;
     for hour in [1, 21] {
         frame.hour = hour;
         let mut report = Report::default();
@@ -645,7 +642,7 @@ fn gender_oracle_rejects_mismatch_and_absent_writer_field() {
 }
 
 #[test]
-fn leader_oracle_checks_native_precision_full_backlinks_and_independent_traits() {
+fn leader_oracle_checks_full_backlinks_and_independent_traits() {
     let (mut frame, pack, country) = fixture();
     let links = BTreeMap::from([(102, &country)]);
     let tokens = BTreeMap::from([
@@ -662,9 +659,7 @@ fn leader_oracle_checks_native_precision_full_backlinks_and_independent_traits()
     else {
         unreachable!()
     };
-    let leader = &mut rows[0];
-    leader.experience += 1;
-    leader.character_type ^= 1;
+    rows[0].character_type ^= 1;
     let TableView::Complete(TableRows::UnitLeaderTraits(rows)) =
         &mut *frame.tables[TableId::UnitLeaderTraits.index()]
     else {
@@ -674,8 +669,8 @@ fn leader_oracle_checks_native_precision_full_backlinks_and_independent_traits()
     trait_row.token_id = 7;
     let mut report = Report::default();
     compare(&frame, &pack, &links, &tokens, NO_TRAITS, &mut report).unwrap();
-    assert_eq!(report.differences.len(), 4, "{:?}", report.differences);
-    *frame.tables[TableId::UnitLeaderTraitExperience.index()] = TableView::Unavailable {
+    assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    *frame.tables[TableId::UnitLeaderTraits.index()] = TableView::Unavailable {
         reason: "read fault".into(),
     };
     assert!(
@@ -1193,7 +1188,7 @@ fn native_identity_and_string_omission_do_not_use_display_fallbacks() {
 }
 
 #[test]
-fn nonempty_dictionary_checks_all_three_spellings_and_preserves_missing_negative_ids() {
+fn nonempty_dictionary_checks_character_and_trait_spellings_and_preserves_missing_negative_ids() {
     let (mut frame, pack, country) = fixture();
     let links = BTreeMap::from([(102, &country)]);
     let tokens = BTreeMap::from([
@@ -1211,7 +1206,7 @@ fn nonempty_dictionary_checks_all_three_spellings_and_preserves_missing_negative
     );
     assert_eq!(
         report.limitations["trait lexer literal contains an interior NUL; the text stream's projection is unproved, so this token spelling is unverified"].len(),
-        2
+        1
     );
     let wrong = BTreeMap::from([
         (5, b"wrong character".as_slice()),
@@ -1220,7 +1215,7 @@ fn nonempty_dictionary_checks_all_three_spellings_and_preserves_missing_negative
     ]);
     let mut report = Report::default();
     compare(&frame, &pack, &links, &wrong, NO_TRAITS, &mut report).unwrap();
-    assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
     let TableView::Complete(TableRows::Characters(rows)) =
         &mut *frame.tables[TableId::Characters.index()]
     else {
@@ -1241,7 +1236,7 @@ fn nonempty_dictionary_checks_all_three_spellings_and_preserves_missing_negative
 }
 
 #[test]
-fn reserved_trait_formatter_fails_both_tables_after_independent_experience_comparison() {
+fn reserved_trait_formatter_fails_traits_after_independent_leader_comparison() {
     let (mut frame, pack, country) = fixture();
     let TableView::Complete(TableRows::Characters(rows)) =
         &mut *frame.tables[TableId::Characters.index()]
@@ -1257,13 +1252,12 @@ fn reserved_trait_formatter_fails_both_tables_after_independent_experience_compa
         unreachable!()
     };
     rows[0].token_id = 0x167;
-    let TableView::Complete(TableRows::UnitLeaderTraitExperience(rows)) =
-        &mut *frame.tables[TableId::UnitLeaderTraitExperience.index()]
+    let TableView::Complete(TableRows::UnitLeaders(rows)) =
+        &mut *frame.tables[TableId::UnitLeaders.index()]
     else {
         unreachable!()
     };
-    rows[0].token_id = 0x167;
-    rows[0].experience += 1;
+    rows[0].skill_level -= 1;
     let mut report = Report::default();
     assert!(
         compare(
@@ -1276,13 +1270,13 @@ fn reserved_trait_formatter_fails_both_tables_after_independent_experience_compa
         )
         .is_err()
     );
-    assert_eq!(report.failed_comparisons.len(), 2);
-    for table in ["UnitLeaderTraits", "UnitLeaderTraitExperience"] {
-        assert!(report.failed_comparisons[table].contains("fixed15 formatter token 0x167"));
-        assert_eq!(report.compared_tables[table], 1);
-    }
+    assert_eq!(report.failed_comparisons.len(), 1);
+    assert!(
+        report.failed_comparisons["UnitLeaderTraits"].contains("fixed15 formatter token 0x167")
+    );
+    assert_eq!(report.compared_tables["UnitLeaderTraits"], 1);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-    assert!(report.differences[0].contains("experience"));
+    assert!(report.differences[0].contains("skill"));
 }
 
 #[test]
@@ -1306,14 +1300,8 @@ fn missing_dictionary_keeps_position_census_and_raw_value_comparisons() {
         .find(|(reason, _)| reason.contains("lexer literal is not recorded"))
         .unwrap()
         .1;
-    // Character token and template tag, trait and trait experience.
-    assert_eq!(missing_names.len(), 4);
-    let TableView::Complete(TableRows::UnitLeaderTraitExperience(rows)) =
-        &mut *frame.tables[TableId::UnitLeaderTraitExperience.index()]
-    else {
-        unreachable!()
-    };
-    rows[0].experience += 1;
+    // Character token and template tag, and trait.
+    assert_eq!(missing_names.len(), 3);
     let TableView::Complete(TableRows::UnitLeaders(rows)) =
         &mut *frame.tables[TableId::UnitLeaders.index()]
     else {
@@ -1330,7 +1318,7 @@ fn missing_dictionary_keeps_position_census_and_raw_value_comparisons() {
         &mut report,
     )
     .unwrap();
-    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(
         !report
             .differences
@@ -1353,13 +1341,7 @@ fn unavailable_advisors_and_traits_preserve_later_table_results_and_errors() {
     else {
         unreachable!()
     };
-    rows[0].experience += 1;
-    let TableView::Complete(TableRows::UnitLeaderTraitExperience(rows)) =
-        &mut *frame.tables[TableId::UnitLeaderTraitExperience.index()]
-    else {
-        unreachable!()
-    };
-    rows[0].experience += 1;
+    rows[0].skill_level -= 1;
     pack.abilities
         .get_mut(b"GER".as_slice())
         .unwrap()
@@ -1389,15 +1371,10 @@ fn unavailable_advisors_and_traits_preserve_later_table_results_and_errors() {
     );
     assert!(report.failed_comparisons["UnitLeaderTraits"].contains("assigned trait read fault"));
     assert_eq!(report.compared_tables["UnitLeaders"], 1);
-    assert_eq!(report.compared_tables["UnitLeaderTraitExperience"], 1);
-    for table in [
-        "UnitLeaders",
-        "UnitLeaderTraitExperience",
-        "ActiveAbilities",
-    ] {
+    for table in ["UnitLeaders", "ActiveAbilities"] {
         assert_eq!(report.difference_groups[table], 1);
     }
-    assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
 }
 
 #[test]
@@ -1406,17 +1383,16 @@ fn unavailable_leader_categories_do_not_invent_extra_trait_owners() {
     *frame.tables[TableId::UnitLeaders.index()] = TableView::Unavailable {
         reason: "unit leader read fault".into(),
     };
-    let TableView::Complete(TableRows::UnitLeaderTraitExperience(rows)) =
-        &mut *frame.tables[TableId::UnitLeaderTraitExperience.index()]
+    let TableView::Complete(TableRows::UnitLeaderTraits(rows)) =
+        &mut *frame.tables[TableId::UnitLeaderTraits.index()]
     else {
         unreachable!()
     };
-    rows[0].experience += 1;
-    rows.push(UnitLeaderTraitExperienceRow {
+    rows[0].token_id = 7;
+    rows.push(UnitLeaderTraitRow {
         leader_reference: handle(4713, 1),
         ordinal: 0,
-        token_id: 7,
-        experience: 123,
+        token_id: 6,
         ..Default::default()
     });
     let mut report = Report::default();
@@ -1425,16 +1401,15 @@ fn unavailable_leader_categories_do_not_invent_extra_trait_owners() {
             &frame,
             &pack,
             &BTreeMap::from([(102, &country)]),
-            &BTreeMap::new(),
+            &BTreeMap::from([(6, b"assigned".as_slice()), (7, b"progress")]),
             NO_TRAITS,
             &mut report
         )
         .is_err()
     );
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-    assert!(report.differences[0].contains("experience"));
+    assert!(report.differences[0].contains("token"));
     assert_eq!(report.compared_tables["UnitLeaderTraits"], 1);
-    assert_eq!(report.compared_tables["UnitLeaderTraitExperience"], 1);
     assert!(report.compared_tables.contains_key("ActiveAbilities"));
     assert!(
         report

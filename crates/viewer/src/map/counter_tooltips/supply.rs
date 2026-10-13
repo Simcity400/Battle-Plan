@@ -1,5 +1,8 @@
-//! Supply child footers aggregate recorded consumer receipts.
-//! Nearby hubs do not establish receipt amounts.
+//! Supply child footer: aggregate the consumer inputs, then format their text.
+//! Receipts are recorded consumer amounts, never inferred from nearby hubs.
+//! Divisions, railway guns and task forces record the footer's operands at
+//! its display step ([`UnitSupplyInputs::STEP`]), so a footer over several
+//! units sums the printed hundredths.
 
 use super::*;
 use replay::rows::{Recorded, UnitSupplyDemand, UnitSupplyInputs};
@@ -321,53 +324,50 @@ fn province_name(context: &Context<'_>, id: i32) -> Result<String, String> {
     localise(context.loc, &region.name_key, &[])
 }
 
+const NOT_RECORDED: &str = "consumer supply inputs were not recorded";
+const UNREADABLE: &str = "consumer supply inputs were unreadable when recorded";
+
+/// A railway gun's or a division's supply child.
 pub(super) fn append(context: &Context<'_>, input: &CounterHover, out: &mut Tooltip) {
     let members = (|| {
-        let guns = if input.railway_gun {
-            Some(
-                context
-                    .frame
-                    .complete::<tables::RailwayGunCounterInputs>()
-                    .map_err(|e| e.to_string())?,
-            )
-        } else {
-            None
-        };
-        let divisions = if input.railway_gun {
-            None
-        } else {
-            Some(
-                context
-                    .frame
-                    .complete::<tables::Divisions>()
-                    .map_err(|error| error.to_string())?,
-            )
-        };
-        let members = input
-            .members
-            .iter()
-            .filter_map(|&id| {
-                // Resolve original full references and skips known
-                // dangling ones before demanding a consumer supply packet.
-                let supply = if let Some(guns) = guns {
-                    let index = guns.binary_search_by_key(&id, |row| row.gun).ok()?;
-                    Ok(&guns[index].supply)
-                } else {
-                    if divisions
-                        .is_some_and(|rows| rows.binary_search_by_key(&id, |row| row.id).is_err())
-                    {
-                        return None;
-                    }
-                    context.status(id).map(|status| &status.supply)
+        let mut members = Vec::new();
+        // The game resolves original full references and skips known
+        // dangling ones before demanding a consumer supply packet; only a
+        // complete census proves a dangling skip.
+        if input.railway_gun {
+            let guns = context
+                .frame
+                .complete::<tables::RailwayGunCounterInputs>()
+                .map_err(|e| e.to_string())?;
+            for &id in input.members.iter() {
+                let Ok(index) = guns.binary_search_by_key(&id, |row| row.gun) else {
+                    continue;
                 };
-                Some(supply.and_then(|supply| match supply {
-                    Recorded::NotRecorded => Err("consumer supply inputs were not recorded".into()),
-                    Recorded::Value(value) => value.as_ref().ok_or_else(|| {
-                        "consumer supply inputs were unreadable when recorded".into()
-                    }),
-                }))
-            })
-            .collect::<Vec<Result<&UnitSupplyInputs, String>>>();
+                members.push(match &guns[index].supply {
+                    Recorded::NotRecorded => Err(NOT_RECORDED.to_owned()),
+                    Recorded::Value(value) => value.clone().ok_or_else(|| UNREADABLE.to_owned()),
+                });
+            }
+        } else {
+            let divisions = context
+                .frame
+                .complete::<tables::Divisions>()
+                .map_err(|error| error.to_string())?;
+            for &id in input.members.iter() {
+                if divisions.binary_search_by_key(&id, |row| row.id).is_err() {
+                    continue;
+                }
+                members.push(context.status(id).and_then(|status| {
+                    match &status.supply {
+                        Recorded::NotRecorded => Err(NOT_RECORDED.to_owned()),
+                        Recorded::Value(value) => value
+                            .as_ref()
+                            .map(|footer| UnitSupplyInputs::from(footer.clone()))
+                            .ok_or_else(|| UNREADABLE.to_owned()),
+                    }
+                }));
+            }
+        }
         Ok::<_, String>(members)
     })();
     let members = match members {
@@ -377,6 +377,10 @@ pub(super) fn append(context: &Context<'_>, input: &CounterHover, out: &mut Tool
             return;
         }
     };
+    let members = members
+        .iter()
+        .map(|member| member.as_ref().map_err(Clone::clone))
+        .collect::<Vec<Result<&UnitSupplyInputs, String>>>();
     let mut result = Tooltip::default();
     member_footer(context, &members, &mut result);
     if !result.body.is_empty() {

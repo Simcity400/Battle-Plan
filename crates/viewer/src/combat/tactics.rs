@@ -832,7 +832,11 @@ impl Context<'_> {
                 let greater = comparison == Operator::Greater;
                 let mut actual = if greater { 100_000 } else { 0 };
                 for unit in self.participants {
-                    let hardness = self.division(*unit).map_err(|why| fail(&why))?.stat_values[2];
+                    let hardness = self
+                        .division(*unit)
+                        .map_err(|why| fail(&why))?
+                        .stat_values()
+                        .ok_or_else(|| fail("a participant's stats are not recorded"))?[2];
                     actual = if greater {
                         actual.min(hardness)
                     } else {

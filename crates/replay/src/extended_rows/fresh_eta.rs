@@ -1,157 +1,11 @@
-//! Current-hour simulation operands for a freshly searched counter route.
+//! Current-hour railway route admission inputs recorded beside the counters.
+//!
+//! The fresh counter-route speed graph, the owner movement packet (its river,
+//! naval, theatre and transport-speed domains) and the reserved nearest-base
+//! caches retired at [`crate::rows::compatibility::RETIRED_INPUTS_FORMAT`];
+//! playback estimates arrival times from routes and each division's base
+//! speed instead.
 use super::*;
-
-/// Independent domains sampled at `sample_hour`. A consumer requires that hour
-/// to equal its frame hour before using any domain. Missing inputs never fall
-/// back to the legacy carried, stored-route operands.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct FreshCounterEta {
-    pub sample_hour: i32,
-    /// Actual stored first-edge speed, used only for progress subtraction when
-    /// the fresh route begins with that same edge.
-    pub current_speed: Option<i64>,
-    pub normal: Option<FreshNormalEta>,
-    pub rail: Option<StrategicRedeploymentInputs>,
-}
-value_struct!(FreshCounterEta {
-    sample_hour: i32,
-    current_speed: Option<i64>,
-    normal: Option<FreshNormalEta>,
-    rail: Option<StrategicRedeploymentInputs>,
-});
-
-/// Prepared normal-speed graph at the division's actual simulation context,
-/// plus every terrain contribution admitted by the live route domain. A failed
-/// terrain acquisition withholds this whole domain, never a numerical zero.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct FreshNormalEta {
-    pub speed_modifier: i64,
-    pub speed_base: i64,
-    /// Native unreached organisation/fuel branches retain absence.
-    pub speed_org: Option<i64>,
-    pub speed_fuel: Option<i64>,
-    pub fort_penalty: i64,
-    pub snow_penalty: i64,
-    pub river_adjustment: i64,
-    pub river_leader: i64,
-    pub terrain_speed: Vec<TerrainSpeed>,
-}
-value_struct!(FreshNormalEta {
-    speed_modifier: i64,
-    speed_base: i64,
-    speed_org: Option<i64>,
-    speed_fuel: Option<i64>,
-    fort_penalty: i64,
-    snow_penalty: i64,
-    river_adjustment: i64,
-    river_leader: i64,
-    terrain_speed: Vec<TerrainSpeed>,
-});
-
-/// Owner-shared current-hour inputs. Present lists carry the complete demanded
-/// key domain in unique increasing `target_slot` or `region` order; an absent
-/// list or entry value is unavailable, not zero. Owners
-/// retain the enclosing country row's key, while river targets are canonical
-/// slots and transport keys are strategic-region IDs.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct CountryMovementInputs {
-    pub sample_hour: i32,
-    pub river: Option<Vec<ControllerRiverSpeed>>,
-    pub transport: Option<Vec<RegionTransportSpeed>>,
-    pub naval: Option<NavalPathInputs>,
-    pub theatre: Option<TheatreControllerAreas>,
-}
-value_struct!(CountryMovementInputs {
-    sample_hour: i32,
-    river: Option<Vec<ControllerRiverSpeed>>,
-    transport: Option<Vec<RegionTransportSpeed>>,
-    naval: Option<NavalPathInputs>,
-    theatre: Option<TheatreControllerAreas>,
-});
-
-/// A demanded roster owner's native navy slot and independent stored lists.
-/// Foreign indices are physical manager slots, in native order with repeated
-/// and zero occurrences retained. They are never country-link references.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct NavalPathInputs {
-    pub navy_slot: u32,
-    pub present: bool,
-    pub foreign_navy_slots: Option<Vec<u32>>,
-    pub supply_hubs: Option<Vec<u32>>,
-}
-value_struct!(NavalPathInputs {
-    navy_slot: u32,
-    present: bool,
-    foreign_navy_slots: Option<Vec<u32>>,
-    supply_hubs: Option<Vec<u32>>,
-});
-
-/// Exact membership of the target's actual controller-area pointer in ALL
-/// owned theatre lists. Provinces are positive, sorted and unique; the null
-/// witness preserves a native null-area comparison independently of the list.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct TheatreControllerAreas {
-    pub provinces: Vec<u32>,
-    pub null_controller_area: bool,
-}
-value_struct!(TheatreControllerAreas {
-    provinces: Vec<u32>,
-    null_controller_area: bool,
-});
-
-/// One current-hour shared packet. Each demanded physical navy slot occurs
-/// once, in unique increasing order. The reserved theatre domain remains
-/// independent of a nearest-cache refusal.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct CountryNavalMovementInputs {
-    pub sample_hour: i32,
-    pub nearest_caches: Option<Vec<PhysicalNavyNearestCache>>,
-    pub reserved_theatre: Option<TheatreControllerAreas>,
-}
-value_struct!(CountryNavalMovementInputs {
-    sample_hour: i32,
-    nearest_caches: Option<Vec<PhysicalNavyNearestCache>>,
-    reserved_theatre: Option<TheatreControllerAreas>,
-});
-
-/// The native cache is indexed by province ID. A null entry is None, while a
-/// nonnull authenticated naval base whose stored province is zero is Some(0).
-/// An absent vector is a refusal specific to this valid physical navy.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct PhysicalNavyNearestCache {
-    pub slot: u32,
-    pub present: bool,
-    pub nearest_bases: Option<Vec<Option<u32>>>,
-}
-value_struct!(PhysicalNavyNearestCache {
-    slot: u32,
-    present: bool,
-    nearest_bases: Option<Vec<Option<u32>>>,
-});
-
-/// Effective RIVER_CROSSING_FACTOR_AGAINST operand for a canonical controller
-/// slot. Slot zero selects the native relation at zero and is a real key.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct ControllerRiverSpeed {
-    pub target_slot: u32,
-    pub modifier: Option<i64>,
-}
-value_struct!(ControllerRiverSpeed {
-    target_slot: u32,
-    modifier: Option<i64>,
-});
-
-/// Raw native transport speed before the route caller's scale, keyed by the
-/// source province's strategic-region ID rather than a runtime census slot.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct RegionTransportSpeed {
-    pub region: u32,
-    pub speed: Option<i64>,
-}
-value_struct!(RegionTransportSpeed {
-    region: u32,
-    speed: Option<i64>,
-});
 
 /// Selected source rail-info building. `building: None` is an observed null
 /// building; the enclosing row's absent optional state is unreached or
@@ -194,9 +48,6 @@ value_struct!(RailwaySelectionInputs {
     building_level: Option<Option<i16>>,
 });
 
-opaque_value!(Option<FreshCounterEta>);
-opaque_value!(Option<CountryMovementInputs>);
-opaque_value!(Option<CountryNavalMovementInputs>);
 opaque_value!(Option<RailwayBuildingState>);
 opaque_value!(Option<RailwaySelectionInputs>);
 
@@ -212,116 +63,6 @@ mod tests {
         assert_eq!(T::decode(&mut input).unwrap(), *value);
         input.finish().unwrap();
         bytes
-    }
-
-    fn fresh() -> FreshCounterEta {
-        FreshCounterEta {
-            sample_hour: i32::MIN,
-            current_speed: Some(i64::MIN),
-            normal: Some(FreshNormalEta {
-                speed_modifier: i64::MIN,
-                speed_base: i64::MAX,
-                speed_org: Some(-1),
-                speed_fuel: None,
-                fort_penalty: 0,
-                snow_penalty: -1,
-                river_adjustment: i64::MAX,
-                river_leader: i64::MIN,
-                terrain_speed: vec![
-                    TerrainSpeed {
-                        terrain: 1,
-                        modifier: 0,
-                    },
-                    TerrainSpeed {
-                        terrain: i32::MAX,
-                        modifier: i64::MAX,
-                    },
-                ],
-            }),
-            rail: Some(StrategicRedeploymentInputs {
-                country_modifier: i64::MIN,
-                state_modifier: Some(i64::MAX),
-                friendly_state_modifier: None,
-            }),
-        }
-    }
-
-    #[test]
-    fn fresh_operands_preserve_raw_widths_and_non_route_terrain_keys() {
-        let bytes = round_trip(&fresh());
-        assert_eq!(&bytes[..4], &i32::MIN.to_le_bytes());
-        assert_eq!(bytes[4], 1);
-        assert_eq!(&bytes[5..13], &i64::MIN.to_le_bytes());
-        let health = RailwayBuildingHealth {
-            level: i16::MIN,
-            healthy: i16::MAX,
-            partial: Some(i64::MIN),
-        };
-        let bytes = round_trip(&health);
-        assert_eq!(&bytes[..5], &[0, 0x80, 0xff, 0x7f, 1]);
-        assert_eq!(&bytes[5..], &i64::MIN.to_le_bytes());
-    }
-
-    #[test]
-    fn one_unavailable_speed_domain_preserves_the_others() {
-        for value in [
-            FreshCounterEta {
-                normal: None,
-                ..fresh()
-            },
-            FreshCounterEta {
-                rail: None,
-                ..fresh()
-            },
-            FreshCounterEta {
-                current_speed: None,
-                ..fresh()
-            },
-        ] {
-            round_trip(&value);
-        }
-        let river = vec![
-            ControllerRiverSpeed {
-                target_slot: 0,
-                modifier: Some(0),
-            },
-            ControllerRiverSpeed {
-                target_slot: 91,
-                modifier: None,
-            },
-            ControllerRiverSpeed {
-                target_slot: u32::MAX,
-                modifier: Some(i64::MIN),
-            },
-        ];
-        let transport = vec![RegionTransportSpeed {
-            region: u32::MAX,
-            speed: Some(i64::MAX),
-        }];
-        for value in [
-            CountryMovementInputs {
-                river: Some(river.clone()),
-                transport: Some(transport.clone()),
-                ..Default::default()
-            },
-            CountryMovementInputs {
-                river: None,
-                transport: Some(transport),
-                ..Default::default()
-            },
-            CountryMovementInputs {
-                river: Some(river),
-                transport: None,
-                ..Default::default()
-            },
-            CountryMovementInputs {
-                river: Some(Vec::new()),
-                transport: Some(Vec::new()),
-                ..Default::default()
-            },
-        ] {
-            round_trip(&value);
-        }
     }
 
     #[test]
@@ -349,106 +90,6 @@ mod tests {
         assert_eq!(encoded[0], [0]);
         assert_eq!(encoded[1], [1, 0]);
         assert_eq!(encoded[2], [1, 1, 0, 0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn malformed_fresh_payloads_refuse_instead_of_defaulting_domains() {
-        let bytes = round_trip(&fresh());
-        for end in 0..bytes.len() {
-            assert!(FreshCounterEta::decode(&mut Decoder::new(&bytes[..end])).is_err());
-        }
-        let mut invalid_speed_tag = bytes;
-        invalid_speed_tag[4] = 2;
-        assert!(FreshCounterEta::decode(&mut Decoder::new(&invalid_speed_tag)).is_err());
-        // Present river domain declaring more entries than its payload holds.
-        assert!(
-            CountryMovementInputs::decode(&mut Decoder::new(&[
-                0, 0, 0, 0, 1, 0xff, 0xff, 0xff, 0xff
-            ]))
-            .is_err()
-        );
-        assert!(CountryMovementInputs::decode(&mut Decoder::new(&[0, 0, 0, 0, 2, 0])).is_err());
-        assert!(RailwayBuildingState::decode(&mut Decoder::new(&[2])).is_err());
-    }
-
-    fn naval() -> CountryNavalMovementInputs {
-        CountryNavalMovementInputs {
-            sample_hour: i32::MIN,
-            nearest_caches: Some(vec![
-                PhysicalNavyNearestCache {
-                    slot: 0,
-                    present: false,
-                    nearest_bases: Some(Vec::new()),
-                },
-                PhysicalNavyNearestCache {
-                    slot: u32::MAX,
-                    present: true,
-                    nearest_bases: Some(vec![None, Some(0), Some(u32::MAX)]),
-                },
-            ]),
-            reserved_theatre: Some(TheatreControllerAreas {
-                provinces: vec![1, u32::MAX],
-                null_controller_area: true,
-            }),
-        }
-    }
-
-    #[test]
-    fn physical_cache_null_zero_repeat_and_independent_domains_round_trip() {
-        let bytes = round_trip(&naval());
-        for end in 0..bytes.len() {
-            assert!(CountryNavalMovementInputs::decode(&mut Decoder::new(&bytes[..end])).is_err());
-        }
-        round_trip(&CountryNavalMovementInputs {
-            nearest_caches: None,
-            ..naval()
-        });
-        round_trip(&CountryNavalMovementInputs {
-            reserved_theatre: None,
-            ..naval()
-        });
-        round_trip(&CountryMovementInputs {
-            sample_hour: i32::MAX,
-            river: None,
-            transport: Some(Vec::new()),
-            naval: Some(NavalPathInputs {
-                navy_slot: 71,
-                present: true,
-                foreign_navy_slots: Some(vec![0, 3, 3, 0]),
-                supply_hubs: None,
-            }),
-            theatre: Some(TheatreControllerAreas {
-                provinces: vec![1, 71],
-                null_controller_area: false,
-            }),
-        });
-        let absent = round_trip(&Recorded::<Option<CountryMovementInputs>>::Value(None));
-        let empty = round_trip(&Recorded::Value(Some(CountryMovementInputs::default())));
-        assert_ne!(absent, empty);
-    }
-
-    #[test]
-    fn reserved_shared_packet_changes_only_its_existing_table_suffix() {
-        let previous = ReservedCountryNamingRow {
-            tag: b"zero".to_vec(),
-            ..Default::default()
-        };
-        check_suffix(
-            TableId::ReservedCountryNaming,
-            15,
-            &previous,
-            &ReservedCountryNamingRow {
-                movement: Some(naval()).into(),
-                ..previous.clone()
-            },
-        );
-        let row = ReservedCountryNamingRow {
-            movement: Some(naval()).into(),
-            ..previous
-        };
-        let decoded = historical_prefix(TableId::ReservedCountryNaming, 15, &row);
-        assert_eq!(decoded.movement, Recorded::NotRecorded);
-        assert_eq!(decoded.tag, b"zero");
     }
 
     fn check_suffix<T: RowCodec + Fields + std::fmt::Debug>(
@@ -481,41 +122,23 @@ mod tests {
             numerator: i64::MIN,
             ..Default::default()
         };
-        check_suffix(
-            TableId::DivisionMovement,
-            18,
-            &previous,
-            &DivisionMovementRow {
-                fresh: Some(fresh()).into(),
-                ..previous.clone()
-            },
-        );
-        let previous = CountryCounterInputRow {
-            forward_visibility: crate::rows::Recorded::Value(None),
-            country: u32::MAX,
-            ..Default::default()
+        for speed in [Some(0), Some(i64::MIN), Some(400_000)] {
+            check_suffix(
+                TableId::DivisionMovement,
+                22,
+                &previous,
+                &DivisionMovementRow {
+                    base_speed: speed.into(),
+                    ..previous.clone()
+                },
+            );
+        }
+        // A refusal after a read changes only the speed.
+        let read = DivisionMovementRow {
+            base_speed: Some(400_000).into(),
+            ..previous.clone()
         };
-        check_suffix(
-            TableId::CountryCounterInputs,
-            13,
-            &previous,
-            &CountryCounterInputRow {
-                movement: Some(CountryMovementInputs {
-                    sample_hour: i32::MIN,
-                    river: Some(vec![ControllerRiverSpeed {
-                        target_slot: 0,
-                        modifier: Some(0),
-                    }]),
-                    transport: Some(vec![RegionTransportSpeed {
-                        region: 71,
-                        speed: None,
-                    }]),
-                    ..Default::default()
-                })
-                .into(),
-                ..previous.clone()
-            },
-        );
+        check_suffix(TableId::DivisionMovement, 22, &read, &previous);
         let previous = StateRow {
             id: u32::MAX,
             movement_infrastructure: 918,
@@ -701,7 +324,7 @@ mod tests {
             map_entity: u8::MAX,
             withdrawal: Some(u8::MAX).into(),
             movement_priority: Some(i32::MIN).into(),
-            fresh: Some(fresh()).into(),
+            base_speed: Some(i64::MAX).into(),
             ..Default::default()
         };
         let decoded = historical_prefix(TableId::DivisionMovement, 18, &row);
@@ -715,6 +338,15 @@ mod tests {
                 combat_references: Recorded::NotRecorded,
                 selected: Recorded::NotRecorded,
                 transport: Recorded::NotRecorded,
+                base_speed: Recorded::NotRecorded,
+                ..row.clone()
+            }
+        );
+        // Format 101 recorded everything but the base speed.
+        assert_eq!(
+            historical_prefix(TableId::DivisionMovement, 22, &row),
+            DivisionMovementRow {
+                base_speed: Recorded::NotRecorded,
                 ..row.clone()
             }
         );
@@ -729,13 +361,7 @@ mod tests {
             forward_visibility: crate::rows::Recorded::Value(None),
             country: u32::MAX,
             first_division: u64::MAX,
-            movement: Some(CountryMovementInputs {
-                sample_hour: i32::MAX,
-                river: Some(Vec::new()),
-                transport: None,
-                ..Default::default()
-            })
-            .into(),
+            movement: Recorded::Value(Retired),
             ..Default::default()
         };
         let decoded = historical_prefix(TableId::CountryCounterInputs, 13, &row);
@@ -764,59 +390,8 @@ mod tests {
         assert_eq!(decoded.cooldown_ticks, row.cooldown_ticks);
     }
 
-    #[test]
-    fn movement_idle_refused_and_observed_zero_profiles_have_distinct_encodings() {
-        let mut idle = fresh();
-        idle.current_speed = None;
-        let mut zero = idle.clone();
-        zero.current_speed = Some(0);
-        let packets = [None, Some(idle), Some(zero)];
-        let baseline = DivisionMovementRow {
-            division: 71,
-            ..Default::default()
-        };
-        let mut encoded = Vec::new();
-        for packet in packets {
-            let row = DivisionMovementRow {
-                fresh: Recorded::Value(packet),
-                ..baseline.clone()
-            };
-            let mut bytes = Vec::new();
-            row.encode_fields(&mut bytes).unwrap();
-            let mut input = Decoder::new(&bytes);
-            assert_eq!(
-                DivisionMovementRow::decode_fields(row.key(), &mut input).unwrap(),
-                row
-            );
-            input.finish().unwrap();
-            encoded.push(bytes);
-        }
-        assert_ne!(encoded[0], encoded[1]);
-        assert_ne!(encoded[1], encoded[2]);
-        assert_ne!(encoded[0], encoded[2]);
-        let previous = DivisionMovementRow {
-            fresh: Some(fresh()).into(),
-            ..baseline
-        };
-        for packet in [
-            None,
-            Some(FreshCounterEta {
-                current_speed: None,
-                ..fresh()
-            }),
-        ] {
-            check_suffix(
-                TableId::DivisionMovement,
-                18,
-                &previous,
-                &DivisionMovementRow {
-                    fresh: Recorded::Value(packet),
-                    ..previous.clone()
-                },
-            );
-        }
-    }
-
+    /// The retired table keeps its published framing, which older recordings
+    /// need to discard it.
     #[test]
     fn published_eta_snapshot_and_delta_keep_all_eighteen_fields_and_bytes() {
         let row = DivisionEtaInputsRow {

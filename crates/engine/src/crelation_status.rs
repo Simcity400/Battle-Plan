@@ -11,12 +11,6 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-mod directed_war;
-pub use directed_war::{
-    DIRECTED_WAR_FAULT_NAMES, DirectedWarBuffers, DirectedWarObservation, DirectedWarOutput,
-    DirectedWarOwner, DirectedWarWalk,
-};
-
 mod baseline;
 use baseline::Identity;
 pub use baseline::{Baseline, Counts as BaselineCounts, Mark, Observation};
@@ -231,6 +225,192 @@ const LINK_BYTES: usize = 52;
 const LINK_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&LINK_FIELDS, LINK_BYTES).expect("valid link layout");
 
+/// The owned relation types whose matrix status supplies a link bit.
+fn original_candidate(kind: u32) -> bool {
+    matches!(
+        kind,
+        cattache_relation::TYPE
+            | cair_base_access_relation::TYPE
+            | coffer_air_base_access_relation::TYPE
+            | cmilitary_access_relation::TYPE
+            | coffer_military_access_relation::TYPE
+            | cdocking_rights_relation::TYPE
+            | coffer_docking_rights_relation::TYPE
+    )
+}
+
+/// A matrix cell pointer.
+const CELL_FIELDS: [RecordField; 1] = [field(0, 0, 8)];
+const CELL_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&CELL_FIELDS, 8).expect("valid matrix cell layout");
+
+/// A candidate status's link fields ([`LINK_FIELDS`]) and its transport
+/// subject pointer, which the walk reads next.
+const CANDIDATE_FIELDS: [RecordField; 8] = [
+    LINK_FIELDS[0],
+    LINK_FIELDS[1],
+    LINK_FIELDS[2],
+    LINK_FIELDS[3],
+    LINK_FIELDS[4],
+    LINK_FIELDS[5],
+    LINK_FIELDS[6],
+    field(SUBJECT_RELATION, LINK_BYTES, 8),
+];
+const CANDIDATE_BYTES: usize = LINK_BYTES + 8;
+const CANDIDATE_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&CANDIDATE_FIELDS, CANDIDATE_BYTES).expect("valid candidate layout");
+
+/// One batch of owned relations' distinct political candidates: each
+/// target slot, its matrix status, that status's link fields and its
+/// transport subject pointer.
+struct Candidates {
+    len: usize,
+    others: [u32; BATCH],
+    statuses: [usize; BATCH],
+    records: [u8; BATCH * CANDIDATE_BYTES],
+}
+
+impl Candidates {
+    fn new() -> Self {
+        Self {
+            len: 0,
+            others: [0; BATCH],
+            statuses: [0; BATCH],
+            records: [0; BATCH * CANDIDATE_BYTES],
+        }
+    }
+
+    /// The gathered status, link fields and transport subject pointer of
+    /// target slot `other`.
+    fn find(&self, other: u32) -> Option<(usize, [u8; LINK_BYTES], u64)> {
+        let at = self.others[..self.len]
+            .iter()
+            .position(|&slot| slot == other)?;
+        let record = &self.records[at * CANDIDATE_BYTES..][..CANDIDATE_BYTES];
+        Some((
+            self.statuses[at],
+            record[..LINK_BYTES].try_into().unwrap(),
+            u64::from_le_bytes(record[LINK_BYTES..].try_into().unwrap()),
+        ))
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: the serial walk, which gathers no candidate ahead.
+    static SERIAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Tests: `walk` as the serial walk makes it, with no candidate gathered or
+/// resolved ahead ([`gather_candidates`]).
+#[cfg(test)]
+pub(crate) fn serially<T>(walk: impl FnOnce() -> T) -> T {
+    SERIAL.set(true);
+    let result = walk();
+    SERIAL.set(false);
+    result
+}
+
+/// The relaxed read order (owner decision 2026-10-12): the distinct
+/// political candidates of one batch of owned `records` (the targets the
+/// walk resolves them to, as it does), then every candidate's matrix cell in
+/// one guarded gather, then every cell's status link fields and transport
+/// subject pointer in another,
+/// read before the walk visits them, a duplicate or skipped candidate
+/// included. The walk then takes each candidate's status and fields from
+/// `candidates` and applies its own checks in its own order, so healthy
+/// memory gives its rows and refusals. Anything that does not complete (a
+/// resolution, the matrix header, a cell, a null cell, a status) leaves
+/// `candidates` empty and returns false: the walk then reads each
+/// candidate itself, once, as the serial walk does, which gives its result
+/// for a fault that persists and refuses no more for one that does not.
+#[allow(clippy::too_many_arguments)]
+fn gather_candidates(
+    memory: &impl Memory,
+    countries: &ccountry::Reader<'_, impl Memory>,
+    resolver: &mut Resolver,
+    country: ccountry::Country,
+    diplomacy: usize,
+    matrix: &mut Option<Result<Array, &'static str>>,
+    records: &[u8],
+    candidates: &mut Candidates,
+) -> bool {
+    candidates.len = 0;
+    #[cfg(test)]
+    if SERIAL.get() {
+        return true;
+    }
+    let mut gathered = || {
+        for record in records.chunks_exact(OWNED_BYTES) {
+            let word = |at: usize| u32::from_le_bytes(record[at..at + 4].try_into().unwrap());
+            if !original_candidate(word(0)) {
+                continue;
+            }
+            let a = resolver.resolve(countries, word(4)).ok()?.canonical_slot;
+            let b = resolver.resolve(countries, word(8)).ok()?.canonical_slot;
+            let other = if a == country.canonical_slot {
+                b
+            } else if b == country.canonical_slot {
+                a
+            } else {
+                return None;
+            };
+            if other != country.canonical_slot
+                && !candidates.others[..candidates.len].contains(&other)
+            {
+                candidates.others[candidates.len] = other;
+                candidates.len += 1;
+            }
+        }
+        let count = candidates.len;
+        if count == 0 {
+            return Some(());
+        }
+        let array = match *matrix {
+            Some(result) => result.ok()?,
+            None => {
+                let array = diplomacy
+                    .checked_add(cdiplomacy_status::RELATIONS)
+                    .and_then(|address| Array::read(memory, address, 8))?;
+                *matrix = Some(Ok(array));
+                array
+            }
+        };
+        let mut cells = [0_usize; BATCH];
+        for (cell, &other) in cells.iter_mut().zip(&candidates.others[..count]) {
+            *cell = array.element(other, 8)?;
+        }
+        let mut words = [0_u8; BATCH * 8];
+        if memory.copy_records(
+            RecordSources::Pointers(&cells[..count]),
+            &CELL_LAYOUT,
+            &mut words[..count * 8],
+        ) != count
+        {
+            return None;
+        }
+        for (status, word) in candidates.statuses[..count]
+            .iter_mut()
+            .zip(words[..count * 8].chunks_exact(8))
+        {
+            *status = usize::try_from(u64::from_le_bytes(word.try_into().unwrap()))
+                .ok()
+                .filter(|&pointer| pointer != 0)?;
+        }
+        (memory.copy_records(
+            RecordSources::Pointers(&candidates.statuses[..count]),
+            &CANDIDATE_LAYOUT,
+            &mut candidates.records[..count * CANDIDATE_BYTES],
+        ) == count * CANDIDATE_FIELDS.len())
+        .then_some(())
+    };
+    if gathered().is_some() {
+        return true;
+    }
+    candidates.len = 0;
+    false
+}
+
 /// Visits every raw u32 link of one vector in native order, in guarded batches.
 fn for_each_link(
     memory: &impl Memory,
@@ -276,20 +456,6 @@ pub fn links(
     wars: WarOutput<'_>,
     resolver: &mut Resolver,
 ) -> LinkWalk {
-    links_observed(memory, base, game_state, output, wars, resolver, None).0
-}
-
-/// Same sparse pass with an optional bounded, independently refusing direct
-/// war observer. No consumer or selection chooses its candidate population.
-pub fn links_observed(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [LinkRow],
-    wars: WarOutput<'_>,
-    resolver: &mut Resolver,
-    directed: Option<DirectedWarOutput<'_>>,
-) -> (LinkWalk, DirectedWarWalk) {
     links_observed_inner(
         memory,
         base,
@@ -297,17 +463,14 @@ pub fn links_observed(
         Buffer::Fixed(output),
         wars.into(),
         resolver,
-        directed.map(Into::into),
         None,
         None,
-        &[],
     )
 }
 
 /// Same authenticated diplomacy pass, with complete ordered +98 occurrences
 /// for every authenticated positive receiver and actual reserved receiver.
 /// Old set-only callers stay unchanged.
-#[allow(clippy::too_many_arguments)]
 pub fn links_observed_current(
     memory: &impl Memory,
     base: usize,
@@ -315,9 +478,8 @@ pub fn links_observed_current(
     output: &mut [LinkRow],
     wars: WarOutput<'_>,
     resolver: &mut Resolver,
-    directed: Option<DirectedWarOutput<'_>>,
     hour: i32,
-) -> (LinkWalk, DirectedWarWalk) {
+) -> LinkWalk {
     links_observed_inner(
         memory,
         base,
@@ -325,21 +487,24 @@ pub fn links_observed_current(
         Buffer::Fixed(output),
         wars.into(),
         resolver,
-        directed.map(Into::into),
         Some(hour),
         None,
-        &[],
     )
 }
 
-/// Same original pass and owner certificate for both subject predicates.
-/// Installation/removal follows owned relation lifetime; replacement removes
-/// old memberships before first-owner destruction and registers the new relation
-/// in the owner vectors. Reset clears each subject before the status pointer,
-/// and loading uses the same installer. No pointer or bitmap crosses callbacks;
-/// `Resolver::begin` retires earlier country/diplomacy identities. Dates and
-/// retired state are unreached, and these paths do not prove thread quiescence.
-#[allow(clippy::too_many_arguments)]
+/// Same original pass, with subject shared-vision inputs and one owner
+/// certificate. Subject application and clearing install/remove +288 through
+/// the same owned relation lifetime as relation replacement. The installing
+/// setter, used by application helpers and clearing, removes the old
+/// +D0/+20/+E8 memberships before first-owner destruction, and registers a
+/// replacement in +D0 and owner +20. Reset calls each subject's vf22 before
+/// directly clearing +288; destruction calls that reset. Loading constructs
+/// through the relation factory, reads the relation, then initialization unless
+/// duplicated dispatches vf21 (subject application), so loading uses the same
+/// installer. No status/subject pointer or seen bitmap crosses this callback;
+/// Resolver::begin retires prior country/diplomacy identities. Dates and the
+/// retired byte never enter the shared-vision predicates. These source paths do
+/// not independently prove the collector boundary's thread quiescence.
 pub fn links_observed_transport(
     memory: &impl Memory,
     base: usize,
@@ -347,39 +512,8 @@ pub fn links_observed_transport(
     output: &mut [LinkRow],
     wars: WarOutput<'_>,
     resolver: &mut Resolver,
-    directed: Option<DirectedWarOutput<'_>>,
     sample_hour: i32,
-) -> (LinkWalk, DirectedWarWalk) {
-    links_observed_transport_demands(
-        memory,
-        base,
-        game_state,
-        output,
-        wars,
-        resolver,
-        directed,
-        sample_hour,
-        &[],
-    )
-}
-
-/// Same original transport pass with query-identified sparse demand. The
-/// caller admits this world occurrence's identities and preserves hourly
-/// quiescence. Replacement destroys the prior relation before changing the
-/// war pointer, so status lifetime alone cannot admit concurrent predicates.
-/// Demand sorts by receiver raw ID; refused suffixes retain original rows.
-#[allow(clippy::too_many_arguments)]
-pub fn links_observed_transport_demands(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [LinkRow],
-    wars: WarOutput<'_>,
-    resolver: &mut Resolver,
-    directed: Option<DirectedWarOutput<'_>>,
-    sample_hour: i32,
-    demands: &[crate::directed_war_queries::Demand],
-) -> (LinkWalk, DirectedWarWalk) {
+) -> LinkWalk {
     links_observed_inner(
         memory,
         base,
@@ -387,26 +521,22 @@ pub fn links_observed_transport_demands(
         Buffer::Fixed(output),
         wars.into(),
         resolver,
-        directed.map(Into::into),
         Some(sample_hour),
         Some(sample_hour),
-        demands,
     )
 }
 
-/// Same original pass with worker-owned storage; native observations are never restarted.
-#[allow(clippy::too_many_arguments)]
-pub fn links_observed_transport_demands_growing(
+/// Same original transport pass with worker-owned storage; native
+/// observations are never restarted.
+pub fn links_observed_transport_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     output: &mut Vec<LinkRow>,
     wars: WarBuffers<'_>,
     resolver: &mut Resolver,
-    directed: Option<DirectedWarBuffers<'_>>,
     sample_hour: i32,
-    demands: &[crate::directed_war_queries::Demand],
-) -> (LinkWalk, DirectedWarWalk) {
+) -> LinkWalk {
     links_observed_inner(
         memory,
         base,
@@ -414,10 +544,8 @@ pub fn links_observed_transport_demands_growing(
         Buffer::Growing(output),
         wars,
         resolver,
-        directed,
         Some(sample_hour),
         Some(sample_hour),
-        demands,
     )
 }
 
@@ -429,12 +557,9 @@ fn links_observed_inner(
     mut output: Buffer<'_, LinkRow>,
     mut wars: WarBuffers<'_>,
     resolver: &mut Resolver,
-    directed: Option<DirectedWarBuffers<'_>>,
     ordered_hour: Option<i32>,
     transport_hour: Option<i32>,
-    demands: &[crate::directed_war_queries::Demand],
-) -> (LinkWalk, DirectedWarWalk) {
-    let mut directed = directed_war::Observer::new(directed, demands);
+) -> LinkWalk {
     let mut countries_len = 0_usize;
     let mut required_countries = 0_usize;
     let mut ordered_refusals = 0_u32;
@@ -456,6 +581,7 @@ fn links_observed_inner(
         let mut slots = [0_u8; BATCH * 8];
         let mut pointers = [0_usize; BATCH];
         let mut records = [0_u8; BATCH * OWNED_BYTES];
+        let mut candidates = Candidates::new();
         // The targets of this country's rows in `output[start..len]`.
         let mut emitted = target_words(countries.count())?;
         // Independent suffix observations must neither suppress original
@@ -571,6 +697,22 @@ fn links_observed_inner(
             {
                 return Err("country diplomacy unreadable");
             }
+            // Each owner's first owned-relation pointers and its enemy
+            // vector header, which its pass reads one owner at a time: their
+            // misses overlap the batch. Hints read nothing, so rows and the
+            // first fault are unchanged.
+            for (record, &diplomacy) in diplomacy_records[..present * DIPLOMACY_BYTES]
+                .chunks_exact(DIPLOMACY_BYTES)
+                .zip(&diplomacy_pointers[..present])
+            {
+                if let Some(owned) = Array::from_header(record[16..32].try_into().unwrap(), 8) {
+                    memory.prefetch(owned.data, owned.count.min(BATCH as u32) as usize * 8);
+                }
+                memory.prefetch(
+                    diplomacy.wrapping_add(cdiplomacy_status::ENEMY_COUNTRIES),
+                    16,
+                );
+            }
             for index in 0..present {
                 let country = members[index].expect("filled for every present country");
                 let fields = &country_records[index * COUNTRY_BYTES..][..COUNTRY_BYTES];
@@ -584,10 +726,10 @@ fn links_observed_inner(
                 }
                 let owned = Array::from_header(record[16..32].try_into().unwrap(), 8)
                     .ok_or("owned relation vector unreadable or invalid")?;
-                // The optional war observer reads the header once per owner;
-                // without it, the original linking-only demand stays lazy.
-                let mut matrix = directed.begin(memory, country, diplomacy, owned.count);
-                // Owned relations and the owner suffix supply complete row demand.
+                // The matrix header is read lazily, once per owner.
+                let mut matrix: Option<Result<Array, &'static str>> = None;
+                // Owned relations and the owner suffix are the complete row
+                // demand.
                 output.ensure(
                     len.checked_add(owned.count as usize)
                         .and_then(|n| n.checked_add(usize::from(transport_hour.is_some())))
@@ -640,39 +782,28 @@ fn links_observed_inner(
                     {
                         return Err("owned relation fields unreadable");
                     }
-                    for (occurrence, record) in records[..count * OWNED_BYTES]
-                        .chunks_exact(OWNED_BYTES)
-                        .enumerate()
-                    {
+                    // The batch's political candidates' matrix cells, then
+                    // their statuses, each in one guarded gather; the walk
+                    // below takes them instead of reading each candidate's.
+                    if !gather_candidates(
+                        memory,
+                        &countries,
+                        resolver,
+                        country,
+                        diplomacy,
+                        &mut matrix,
+                        &records[..count * OWNED_BYTES],
+                        &mut candidates,
+                    ) {
+                        crate::batch_fallback::record(crate::batch_fallback::Batch::RelationLinks);
+                    }
+                    for record in records[..count * OWNED_BYTES].chunks_exact(OWNED_BYTES) {
                         let word =
                             |at: usize| u32::from_le_bytes(record[at..at + 4].try_into().unwrap());
-                        if word(0) == cwar_relation::TYPE {
-                            directed.candidate(
-                                memory,
-                                base,
-                                &countries,
-                                resolver,
-                                country,
-                                diplomacy,
-                                matrix,
-                                pointers[occurrence],
-                                word(4),
-                                word(8),
-                            );
-                        }
                         if word(0) == cwar_relation::TYPE && record[12] != 0 {
                             retired_war = true;
                         }
-                        let original_candidate = matches!(
-                            word(0),
-                            cattache_relation::TYPE
-                                | cair_base_access_relation::TYPE
-                                | coffer_air_base_access_relation::TYPE
-                                | cmilitary_access_relation::TYPE
-                                | coffer_military_access_relation::TYPE
-                                | cdocking_rights_relation::TYPE
-                                | coffer_docking_rights_relation::TYPE
-                        );
+                        let original_candidate = original_candidate(word(0));
                         if !original_candidate {
                             if let Some(sample_hour) = transport_hour
                                 && !subject_domain_failed
@@ -757,32 +888,38 @@ fn links_observed_inner(
                         if other == country.canonical_slot || word & bit != 0 {
                             continue;
                         }
-                        let matrix = match matrix {
-                            Some(result) => result?,
+                        let (status, record, subject) = match candidates.find(other) {
+                            Some((status, record, subject)) => (status, record, Some(subject)),
                             None => {
-                                (*matrix.insert(
-                                    diplomacy
-                                        .checked_add(cdiplomacy_status::RELATIONS)
-                                        .and_then(|address| Array::read(memory, address, 8))
-                                        .ok_or("relation matrix unreadable or invalid"),
-                                ))?
+                                let matrix = match matrix {
+                                    Some(result) => result?,
+                                    None => {
+                                        (*matrix.insert(
+                                            diplomacy
+                                                .checked_add(cdiplomacy_status::RELATIONS)
+                                                .and_then(|address| Array::read(memory, address, 8))
+                                                .ok_or("relation matrix unreadable or invalid"),
+                                        ))?
+                                    }
+                                };
+                                let status = matrix
+                                    .element(other, 8)
+                                    .and_then(|address| read::<u64>(memory, address))
+                                    .and_then(|pointer| usize::try_from(pointer).ok())
+                                    .filter(|&pointer| pointer != 0)
+                                    .ok_or("relation status missing from matrix")?;
+                                let mut record = [0_u8; LINK_BYTES];
+                                if memory.copy_records(
+                                    RecordSources::Pointers(&[status]),
+                                    &LINK_LAYOUT,
+                                    &mut record,
+                                ) < LINK_FIELDS.len()
+                                {
+                                    return Err("relation status link fields unreadable");
+                                }
+                                (status, record, None)
                             }
                         };
-                        let status = matrix
-                            .element(other, 8)
-                            .and_then(|address| read::<u64>(memory, address))
-                            .and_then(|pointer| usize::try_from(pointer).ok())
-                            .filter(|&pointer| pointer != 0)
-                            .ok_or("relation status missing from matrix")?;
-                        let mut record = [0_u8; LINK_BYTES];
-                        if memory.copy_records(
-                            RecordSources::Pointers(&[status]),
-                            &LINK_LAYOUT,
-                            &mut record,
-                        ) < LINK_FIELDS.len()
-                        {
-                            return Err("relation status link fields unreadable");
-                        }
                         let word =
                             |at: usize| u64::from_le_bytes(record[at..at + 8].try_into().unwrap());
                         if word(0) != status_vtable {
@@ -817,11 +954,18 @@ fn links_observed_inner(
                         } else {
                             transport_hour.map(|sample_hour| {
                                 subject_seen[other as usize / 64] |= bit;
-                                transport_access::capture(memory, base, status, target, |raw| {
-                                    resolver
-                                        .resolve(&countries, raw)
-                                        .map(|value| value.canonical_slot)
-                                })
+                                transport_access::capture_with(
+                                    memory,
+                                    base,
+                                    status,
+                                    subject,
+                                    target,
+                                    |raw| {
+                                        resolver
+                                            .resolve(&countries, raw)
+                                            .map(|value| value.canonical_slot)
+                                    },
+                                )
                                 .map(|subject| TransportSubject {
                                     sample_hour,
                                     complete_owner: false,
@@ -856,9 +1000,6 @@ fn links_observed_inner(
                     }
                     first += count as u32;
                 }
-                directed.demands(
-                    memory, base, &countries, resolver, country, diplomacy, matrix,
-                );
                 for row in &output[start..len] {
                     emitted[row.target as usize / 64] = 0;
                 }
@@ -960,8 +1101,7 @@ fn links_observed_inner(
             ),
         ))
     })();
-    directed.finish(result.as_ref().err().copied());
-    let walk = match result {
+    match result {
         Ok((links, wars)) => LinkWalk {
             links,
             wars,
@@ -978,8 +1118,7 @@ fn links_observed_inner(
             required_countries,
             ordered_refusals,
         },
-    };
-    (walk, directed.walk)
+    }
 }
 
 /// One directed country pair whose cached opinion dword is nonzero.
@@ -2094,13 +2233,60 @@ fn status_in_matrix(
     Ok(status)
 }
 
-fn country_target(
+/// One co-belligerent candidate's directed byte: [`status_in_matrix`], then
+/// [`country_target_with`] over the country links, then the +310 byte. The status's identity, target and
+/// byte sit on four separate lines of a scattered object, so after the matrix
+/// element they are copied in one guarded, prefetched batch whose misses
+/// overlap, and checked in the order of the separate reads: the first fault
+/// is theirs.
+fn co_candidate_byte(
     memory: &impl Memory,
+    base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
-    status: usize,
+    diplomacy: usize,
+    matrix: Array,
     slot: u32,
-) -> Result<(), &'static str> {
-    country_target_with(memory, status, slot, |raw| countries.link(raw))
+) -> Result<u8, &'static str> {
+    let status = matrix
+        .element(slot, 8)
+        .and_then(|at| read::<u64>(memory, at))
+        .and_then(|p| usize::try_from(p).ok())
+        .filter(|&p| p != 0)
+        .ok_or("relation status missing")?;
+    status
+        .checked_add(CO_BELLIGERENT)
+        .ok_or("relation status address overflow")?;
+    let mut vtable = [0_u8; 8];
+    let mut owner = [0_u8; 8];
+    let mut target = [0_u8; 4];
+    let mut byte = [0_u8; 1];
+    // CO_BELLIGERENT is the furthest field, so none of these overflow.
+    let copied = memory.copy_scattered_prefetched(
+        [
+            status,
+            status + DIPLOMACY_STATUS,
+            status + TARGET_COUNTRY,
+            status + CO_BELLIGERENT,
+        ],
+        &mut [&mut vtable, &mut owner, &mut target, &mut byte],
+    );
+    if copied < 2
+        || Some(u64::from_le_bytes(vtable)) != base.checked_add(VTABLE_RVA).map(|p| p as u64)
+        || u64::from_le_bytes(owner) != diplomacy as u64
+    {
+        return Err("relation status identity mismatch");
+    }
+    if copied < 3 {
+        return Err("relation status target unreadable");
+    }
+    let raw = u32::from_le_bytes(target);
+    if raw == 0 || countries.link(raw)? != Some(slot) {
+        return Err("relation status target differs from matrix slot");
+    }
+    if copied < 4 {
+        return Err("co-belligerent byte unreadable");
+    }
+    Ok(byte[0])
 }
 
 fn country_target_with(
@@ -2299,13 +2485,9 @@ pub fn co_belligerent_inputs_observed_buffer(
                 return Ok(());
             }
             *word |= bit;
-            let status = status_in_matrix(memory, base, diplomacy, matrix, slot)?;
-            country_target(memory, countries, status, slot)?;
-            if read::<u8>(memory, status + CO_BELLIGERENT)
-                .ok_or("co-belligerent byte unreadable")?
-                != 0
-            {
-                // Wartime-ally rebuilding supplies these candidate headers.
+            if co_candidate_byte(memory, base, countries, diplomacy, matrix, slot)? != 0 {
+                // Wartime ally rebuilding supplies these native candidate
+                // headers.
                 output.ensure(
                     required_targets
                         .checked_add(1)
@@ -2904,48 +3086,8 @@ fn diplomacy_root(
     Ok(pointer)
 }
 
-/// One owner's authenticated movement relation matrix in a frozen acquisition.
-/// Reuses the same root, status and alias checks as the diplomacy readers.
-pub(crate) struct MovementRelations {
-    diplomacy: usize,
-    matrix: Array,
-}
-
-impl MovementRelations {
-    pub(crate) fn new(
-        memory: &impl Memory,
-        base: usize,
-        country: ccountry::Country,
-    ) -> Result<Self, &'static str> {
-        if country.pointer == 0 || country.id == 0 || country.canonical_slot == 0 {
-            return Err("movement relation owner is not an authenticated positive country");
-        }
-        let diplomacy = diplomacy_root(memory, base, country)?;
-        Ok(Self {
-            diplomacy,
-            matrix: relation_matrix(memory, diplomacy)?,
-        })
-    }
-
-    pub(crate) fn status(
-        &self,
-        memory: &impl Memory,
-        base: usize,
-        countries: &ccountry::Reader<'_, impl Memory>,
-        slot: u32,
-    ) -> Result<usize, &'static str> {
-        let status = status_in_matrix(memory, base, self.diplomacy, self.matrix, slot)?;
-        if slot == 0 {
-            zero_target(memory, status)?;
-        } else {
-            country_target(memory, countries, status, slot)?;
-        }
-        Ok(status)
-    }
-}
-
-/// One guarded contiguous pointer copy. A null slot is a fault because
-/// construction eagerly fills every matrix cell.
+/// One guarded copy of the contiguous pointer span; a null slot is a fault
+/// because diplomacy construction constructs every matrix cell eagerly.
 fn read_pointers(
     memory: &impl Memory,
     matrix: Array,

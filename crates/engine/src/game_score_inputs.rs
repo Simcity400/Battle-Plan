@@ -5,8 +5,12 @@
 //! leave each score component independently unknown.
 
 use crate::{
-    Memory, cair_base, cair_wing, cair_wing_pool, ccountry, cfleet, cpdx_array::Array,
-    cstrategic_air, cstrategic_air_manager, read, walk::Outcome,
+    Memory, cair_base, cair_wing, cair_wing_pool, ccountry, cfleet,
+    cpdx_array::Array,
+    cstrategic_air, cstrategic_air_manager,
+    memory::{RecordField, RecordLayout, RecordSources},
+    read,
+    walk::Outcome,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,28 +207,21 @@ fn walk_country_inputs_buffer(
                 }
                 let mut sum = 0_i32;
                 let mut failure = None;
-                for index in 0..roster.count {
-                    let value = roster
-                        .element(index, 8)
-                        .and_then(|at| read::<u64>(memory, at))
-                        .and_then(|pointer| usize::try_from(pointer).ok())
-                        .ok_or("game score fleet pointer unreadable")
-                        .and_then(|pointer| read_fleet_count(memory, base, pointer));
-                    let row = match value {
-                        Ok(row) => row,
-                        Err(error) => FleetCount {
-                            fleet: 0,
-                            task_forces: Err(error),
-                        },
-                    };
-                    match row.task_forces {
-                        Ok(count) => sum = sum.wrapping_add(count),
-                        Err(error) => {
-                            failure.get_or_insert(error);
+                let mut first = 0;
+                while first < roster.count {
+                    let count = ((roster.count - first) as usize).min(FLEET_BATCH);
+                    let rows = &mut fleets[fleet_len..fleet_len + count];
+                    read_fleet_batch(memory, base, roster, first, rows);
+                    for row in rows.iter() {
+                        match row.task_forces {
+                            Ok(count) => sum = sum.wrapping_add(count),
+                            Err(error) => {
+                                failure.get_or_insert(error);
+                            }
                         }
                     }
-                    fleets[fleet_len] = row;
-                    fleet_len += 1;
+                    fleet_len += count;
+                    first += count as u32;
                 }
                 failure.map_or(Ok(sum), Err)
             })();
@@ -525,7 +522,98 @@ pub fn arena_demand(
     Ok(sizing)
 }
 
-/// Navy reads each fleet's signed task count without following task payloads.
+const FLEET_BATCH: usize = 64;
+/// A fleet's identity (vtable and handle) and its task-force count.
+const FLEET_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 16,
+    },
+    RecordField {
+        source_offset: cfleet::TASK_FORCE_COUNT,
+        destination_offset: 16,
+        len: 4,
+    },
+];
+const FLEET_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&FLEET_FIELDS, 20).expect("valid fleet layout");
+
+/// Fleets `first..first + output.len()` of one roster, as
+/// [`read_fleet_count`] reads each after its pointer: the pointers in one
+/// read and the identities and counts in one gather, which resumes after a
+/// fleet that stops it; that fleet is read alone, so every fleet keeps the
+/// result and failure of its own reads.
+fn read_fleet_batch(
+    memory: &impl Memory,
+    base: usize,
+    roster: Array,
+    first: u32,
+    output: &mut [FleetCount],
+) {
+    let failed = |error| FleetCount {
+        fleet: 0,
+        task_forces: Err(error),
+    };
+    let count = output.len();
+    let mut raw = [0_u8; FLEET_BATCH * 8];
+    let pointers_read = roster
+        .element(first, 8)
+        .is_some_and(|at| crate::memory::read_slice(memory, at, &mut raw[..count * 8]));
+    if !pointers_read {
+        for (index, row) in output.iter_mut().enumerate() {
+            *row = roster
+                .element(first + index as u32, 8)
+                .and_then(|at| read::<u64>(memory, at))
+                .and_then(|pointer| usize::try_from(pointer).ok())
+                .ok_or("game score fleet pointer unreadable")
+                .and_then(|pointer| read_fleet_count(memory, base, pointer))
+                .unwrap_or_else(failed);
+        }
+        return;
+    }
+    let mut pointers = [0_usize; FLEET_BATCH];
+    for (pointer, word) in pointers.iter_mut().zip(raw[..count * 8].chunks_exact(8)) {
+        *pointer = u64::from_le_bytes(word.try_into().unwrap()) as usize;
+    }
+    let mut records = [0_u8; FLEET_BATCH * 20];
+    let mut gathered = [false; FLEET_BATCH];
+    let mut start = 0;
+    while start < count {
+        let copied = memory.copy_records(
+            RecordSources::Pointers(&pointers[start..count]),
+            &FLEET_LAYOUT,
+            &mut records[start * 20..count * 20],
+        );
+        let whole = copied / FLEET_FIELDS.len();
+        gathered[start..start + whole].fill(true);
+        start += whole + 1;
+    }
+    let expected = base.checked_add(cfleet::VTABLE_RVA);
+    for (index, row) in output.iter_mut().enumerate() {
+        if !gathered[index] || pointers[index] == 0 {
+            *row = read_fleet_count(memory, base, pointers[index]).unwrap_or_else(failed);
+            continue;
+        }
+        let record = &records[index * 20..index * 20 + 20];
+        if expected != Some(u64::from_le_bytes(record[..8].try_into().unwrap()) as usize) {
+            *row = failed("game score fleet vtable mismatch");
+            continue;
+        }
+        let fleet = u64::from_le_bytes(record[8..16].try_into().unwrap());
+        if fleet == 0 {
+            *row = failed("game score fleet handle is null");
+            continue;
+        }
+        *row = FleetCount {
+            fleet,
+            task_forces: Ok(i32::from_le_bytes(record[16..20].try_into().unwrap())),
+        };
+    }
+}
+
+/// Navy reads each fleet's task-force array count at +0xc, without following
+/// tasks.
 pub fn read_fleet_count(
     memory: &impl Memory,
     base: usize,
@@ -638,17 +726,18 @@ pub fn read_first_sites_buffer(
         if required > output.len() {
             return Err("game score first air-site arena exhausted");
         }
-        for index in 0..sites.count {
-            output[index as usize] = sites
-                .element(index, 8)
-                .and_then(|at| read::<u64>(memory, at))
-                .and_then(|pointer| usize::try_from(pointer).ok())
-                .ok_or("game score air-site pointer unreadable")
-                .and_then(|pointer| read_air_site(memory, base, canonical_slot, pointer))
-                .unwrap_or_else(|error| AirSite {
-                    base: 0,
-                    access: Err(error),
-                });
+        let mut first = 0;
+        while first < sites.count {
+            let count = ((sites.count - first) as usize).min(SITE_BATCH);
+            read_site_batch(
+                memory,
+                base,
+                canonical_slot,
+                sites,
+                first,
+                &mut output[first as usize..first as usize + count],
+            );
+            first += count as u32;
         }
         Ok(required)
     })();
@@ -668,7 +757,179 @@ pub fn read_first_sites_buffer(
     }
 }
 
-/// Air-base access tests signed bounds and a non-null container, independent of capacity.
+const SITE_BATCH: usize = 64;
+/// A site's identity and its country-container vector header (data, capacity
+/// and the count the access gate bounds by).
+const SITE_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 16,
+    },
+    RecordField {
+        source_offset: cair_base::COUNTRY_CONTAINERS,
+        destination_offset: 16,
+        len: 16,
+    },
+];
+const SITE_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&SITE_FIELDS, 32).expect("valid air-site layout");
+const ACCESS_FIELD: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: 8,
+}];
+const ACCESS_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&ACCESS_FIELD, 8).expect("valid air-site access layout");
+
+/// Sites `first..first + output.len()` of one first-site roster, as
+/// [`read_air_site`] reads each after its pointer: the pointers in one read,
+/// the identities and container headers in one gather and the access words in
+/// another. A site the batch could not read whole is read alone from the
+/// first such site, so every site keeps the result and failure of its own
+/// reads.
+fn read_site_batch(
+    memory: &impl Memory,
+    base: usize,
+    canonical_slot: u32,
+    sites: Array,
+    first: u32,
+    output: &mut [AirSite],
+) {
+    let alone = |index: u32| {
+        sites
+            .element(index, 8)
+            .and_then(|at| read::<u64>(memory, at))
+            .and_then(|pointer| usize::try_from(pointer).ok())
+            .ok_or("game score air-site pointer unreadable")
+            .and_then(|pointer| read_air_site(memory, base, canonical_slot, pointer))
+            .unwrap_or_else(|error| AirSite {
+                base: 0,
+                access: Err(error),
+            })
+    };
+    let count = output.len();
+    let mut raw = [0_u8; SITE_BATCH * 8];
+    let pointers_read = sites
+        .element(first, 8)
+        .is_some_and(|at| crate::memory::read_slice(memory, at, &mut raw[..count * 8]));
+    if !pointers_read {
+        for (index, site) in output.iter_mut().enumerate() {
+            *site = alone(first + index as u32);
+        }
+        return;
+    }
+    let mut pointers = [0_usize; SITE_BATCH];
+    for (pointer, word) in pointers.iter_mut().zip(raw[..count * 8].chunks_exact(8)) {
+        *pointer = u64::from_le_bytes(word.try_into().unwrap()) as usize;
+    }
+    // Gathered whole: the rows before the first that stops a gather; that
+    // row is read alone and the gather resumes after it.
+    let mut records = [0_u8; SITE_BATCH * 32];
+    let mut gathered = [false; SITE_BATCH];
+    let mut start = 0;
+    while start < count {
+        let copied = memory.copy_records(
+            RecordSources::Pointers(&pointers[start..count]),
+            &SITE_LAYOUT,
+            &mut records[start * 32..count * 32],
+        );
+        let whole = copied / SITE_FIELDS.len();
+        gathered[start..start + whole].fill(true);
+        start += whole + 1;
+    }
+    let expected = base.checked_add(cair_base::VTABLE_RVA);
+    // Sites whose access word is read, with its address.
+    let mut access_rows = [0_usize; SITE_BATCH];
+    let mut access_at = [0_usize; SITE_BATCH];
+    let mut accesses = 0;
+    for (index, site) in output.iter_mut().enumerate() {
+        let pointer = pointers[index];
+        if !gathered[index] || pointer == 0 {
+            *site = read_air_site(memory, base, canonical_slot, pointer).unwrap_or_else(|error| {
+                AirSite {
+                    base: 0,
+                    access: Err(error),
+                }
+            });
+            continue;
+        }
+        let record = &records[index * 32..index * 32 + 32];
+        let word = |at: usize| u64::from_le_bytes(record[at..at + 8].try_into().unwrap());
+        if expected != Some(word(0) as usize) {
+            *site = AirSite {
+                base: 0,
+                access: Err("game score air-site vtable mismatch"),
+            };
+            continue;
+        }
+        let handle = word(8);
+        if handle == 0 {
+            *site = AirSite {
+                base: 0,
+                access: Err("game score air-site handle is null"),
+            };
+            continue;
+        }
+        let bound = i32::from_le_bytes(record[28..32].try_into().unwrap());
+        let access = (|| {
+            let slot = i32::try_from(canonical_slot)
+                .map_err(|_| "game score air-site country index invalid")?;
+            if slot >= bound {
+                return Ok(None);
+            }
+            let data = usize::try_from(word(16))
+                .map_err(|_| "game score air-site container address overflow")?;
+            if data == 0 {
+                return Err("game score air-site container pointer is null");
+            }
+            data.checked_add(canonical_slot as usize * 8)
+                .map(Some)
+                .ok_or("game score air-site container address overflow")
+        })();
+        *site = AirSite {
+            base: handle,
+            access: match access {
+                Ok(None) => Ok(false),
+                Ok(Some(at)) => {
+                    access_rows[accesses] = index;
+                    access_at[accesses] = at;
+                    accesses += 1;
+                    // Set from the access gather below.
+                    Err("game score air-site access unreadable")
+                }
+                Err(error) => Err(error),
+            },
+        };
+    }
+    let mut words = [0_u8; SITE_BATCH * 8];
+    let mut read_words = [false; SITE_BATCH];
+    let mut start = 0;
+    while start < accesses {
+        let copied = memory.copy_records(
+            RecordSources::Pointers(&access_at[start..accesses]),
+            &ACCESS_LAYOUT,
+            &mut words[start * 8..accesses * 8],
+        );
+        read_words[start..start + copied].fill(true);
+        start += copied + 1;
+    }
+    for (entry, &index) in access_rows[..accesses].iter().enumerate() {
+        // A word that stopped its gather fails alone exactly as it did.
+        let value = if read_words[entry] {
+            Some(u64::from_le_bytes(
+                words[entry * 8..entry * 8 + 8].try_into().unwrap(),
+            ))
+        } else {
+            read::<u64>(memory, access_at[entry])
+        };
+        output[index].access = value
+            .map(|value| value != 0)
+            .ok_or("game score air-site access unreadable");
+    }
+}
+
+/// The access gate tests signed bounds and a nonnull container, not capacity.
 pub fn read_air_site(
     memory: &impl Memory,
     base: usize,

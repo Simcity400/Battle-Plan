@@ -1,15 +1,173 @@
-//! Own singleton attrition tooltips from fresh ordered terms.
-//! The earlier counter cache cannot supply these details.
+//! Own singleton attrition child: the counter's division attrition calculation
+//! uses caller mode zero and prepends `ATTRITION_TOTAL` to its per-source lines.
+//!
+//! The total is the one the counter itself shows,
+//! `DivisionStatus.attrition_value` (+0x438), stored by the hourly division
+//! update from the same calculation (zero while the game state's +0xA39 byte
+//! is clear). The attrition-presence predicate compares it with the threshold
+//! for the counter's attrition glyph. The game's hover evaluates the total afresh, so
+//! a term that changes after the hourly update (acclimatization, a modifier)
+//! shows there first.
+//!
+//! The lines follow the game in its order, each derived exactly from the
+//! recording and its content where its operands are recorded:
+//! - upkeep: `ATTRITION_UPKEEP` when nonzero. Its value
+//!   `P(max(0, 1 + owner 0x54), UNIT_UPKEEP_ATTRITION)` with the
+//!   positive expeditionary owner, else the roster owner, is the product
+//!   the attrition-presence predicate compares with, which DivisionStatus
+//!   records as `attrition_threshold`;
+//! - terrain: for a unit with a positive route count (unit+0x20C) and a clear
+//!   strategic-redeployment byte (+0x2AF) on a valid terrain (+0x10, zero only
+//!   for the installed null terrain), `ATTRITION_TERRAIN` with the terrain's
+//!   name and
+//!   upkeep plus the getter's `attrition` (0x4F) of its common modifier
+//!   (`+0xB8`) when that sum is nonzero;
+//! - training: `TRAINING_ATTRITION` for an exercising unit
+//!   (DivisionStatus.exercising) with a
+//!   route count below one;
+//! - border war: for a state whose border war is active
+//!   (StateFlags.border_conflict_active),
+//!   `BORDER_WAR_HEADER` and `BORDER_WAR_ATTRITION`, the enemy share
+//!   for the state and logical owner in mode zero, scaled by
+//!   `BORDER_WAR_ATTRITION_FACTOR`;
+//! - supply: absent when the stepped recorded supply proves the game's
+//!   threshold-normalized availability is whole (below).
+//!
+//! The other lines read operands the recording does not hold, and each is
+//! refused by name: the terrain line's held-variant equipment term
+//! (equipment-variant field +0x3A0), the state modifier for the country
+//! (keys 0x4F/0x1EE/0x1EF), an undecided supply penalty (out-of-supply days
+//! division+0x498 and the 0x5E/0x17F factors), the upkeep (0x54) and country
+//! (0x4F) modifier source trees of `country+0x5B8`, and a moving unit's
+//! weather, heat, winter and moving-state blocks.
 
 use super::*;
-use engine::carmy_attrition::{
-    COUNTRY_SOURCE, HEAT_SOURCE, STATE_SOURCE, UPKEEP_SOURCE, WEATHER_SOURCE, WINTER_SOURCE,
-};
-use replay::rows::{ArmyAttritionInputs, AttritionModifierSource, AttritionThermal};
+use replay::modifier_registry::Registry;
+use std::{collections::BTreeMap, io};
+
+const ONE: i64 = 100_000;
+
+const EQUIPMENT_UNRECORDED: &str = "the per-terrain attrition of the division's held variants (equipment variant+0x3A0) is not recorded";
+const STATE_UNRECORDED: &str = "the state's attrition modifiers for the roster owner (keys 0x4F, 0x1EE and 0x1EF) are not recorded";
+const SUPPLY_UNRECORDED: &str = "the out-of-supply days (division+0x498) and out-of-supply factors (0x5E, 0x17F) of a unit below the supply threshold are not recorded";
+const UPKEEP_SOURCES_UNRECORDED: &str =
+    "the country's unit_upkeep_attrition_factor sources (country+0x5B8, key 0x54) are not recorded";
+const WEATHER_UNRECORDED: &str = "a moving unit's province weather, heat and winter sources, acclimatization and moving-state sources are not recorded";
+const COUNTRY_SOURCES_UNRECORDED: &str =
+    "the country's attrition sources (country+0x5B8, key 0x4F, depth 2) are not recorded";
+
+/// The content the lines read: three defines and each terrain category's
+/// stored `attrition` entry.
+pub(crate) struct Content {
+    /// `NMilitary.TRAINING_ATTRITION`.
+    training: i64,
+    /// `NMilitary.BORDER_WAR_ATTRITION_FACTOR`.
+    border_factor: i64,
+    /// `NSupply.SUPPLY_THRESHOLD_FOR_ARMY_ATTRITION`, which its
+    /// loader clamps to [0, 100000].
+    supply_threshold: i64,
+    /// The terrain database in load order: one-based ordinal
+    /// (`terrain+0x88`) minus one.
+    terrains: Vec<Terrain>,
+}
+
+struct Terrain {
+    /// The category's name (terrain+0x18), which `ATTRITION_TERRAIN`
+    /// localises.
+    name: Vec<u8>,
+    /// The stored `attrition` entry of the category's common modifier
+    /// (`+0xA8`, accumulator `+0xB8`); `None` when the category has none.
+    attrition: Option<i64>,
+}
+
+impl Content {
+    pub(crate) fn read(
+        defines: &installed_content::defines::Defines,
+        terrain: &installed_content::terrain::TerrainDefinitions,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            training: defines.fixed5("NMilitary", "TRAINING_ATTRITION")?,
+            border_factor: defines.fixed5("NMilitary", "BORDER_WAR_ATTRITION_FACTOR")?,
+            supply_threshold: defines
+                .fixed5("NSupply", "SUPPLY_THRESHOLD_FOR_ARMY_ATTRITION")?
+                .clamp(0, ONE),
+            terrains: terrain
+                .categories
+                .iter()
+                .map(|category| Terrain {
+                    name: category.name.clone(),
+                    attrition: category
+                        .modifiers
+                        .values
+                        .iter()
+                        .find(|value| value.name == "attrition")
+                        .map(|value| value.value),
+                })
+                .collect(),
+        })
+    }
+}
+
+/// What the lines read beyond the frame.
+struct Lookups<'b> {
+    content: &'b Content,
+    /// A province's one-based terrain ordinal (`terrain+0x88`); zero
+    /// is the null terrain.
+    terrain: &'b dyn Fn(u32) -> Result<i32, String>,
+    /// The border war's enemy share in mode zero, for a raw country link
+    /// and a state id.
+    border: &'b dyn Fn(u32, u32) -> Result<i64, String>,
+}
+
+/// Attrition returns zero and writes nothing when the unit has neither a
+/// route province (the first province of
+/// a positive ordinary route) nor a location (unit+0x1F0).
+fn located(context: &Context<'_>, id: u64) -> Result<bool, String> {
+    if context.division(id)?.province != 0 {
+        return Ok(true);
+    }
+    let movement = context.movement(id)?;
+    if movement.path_total as i32 <= 0 {
+        return Ok(false);
+    }
+    movement
+        .path
+        .first()
+        .map(|&first| first != 0)
+        .ok_or_else(|| "the attrition route province is among the route's unrecorded hops".into())
+}
+
+/// The attrition province: the first province of a positive route,
+/// else the location.
+fn selected_province(context: &Context<'_>, id: u64) -> Result<u32, String> {
+    let movement = context.movement(id)?;
+    if movement.path_total as i32 > 0 {
+        let first = *movement
+            .path
+            .first()
+            .ok_or("the attrition route province is among the route's unrecorded hops")?;
+        if first != 0 {
+            return Ok(first);
+        }
+    }
+    Ok(context.division(id)?.province)
+}
+
+/// The province's state (`province+0xC0`); zero without one.
+fn province_state(context: &Context<'_>, province: u32) -> Result<u32, String> {
+    let rows = context
+        .frame
+        .complete::<tables::Provinces>()
+        .map_err(|e| e.to_string())?;
+    rows.binary_search_by_key(&province, |row| row.id)
+        .map(|at| rows[at].state)
+        .map_err(|_| format!("Provinces province {province} is absent"))
+}
 
 fn fragment(context: &Context<'_>, out: &mut Tooltip, label: &str, text: Result<String, String>) {
     match text.and_then(|text| displayable(context.icons, text)) {
         Ok(text) if !text.is_empty() => {
+            // Ensure the existing text ends with a newline before each line.
             crate::combat::text::ensure_newlines(&mut out.title, 1);
             out.title.push_str(&text);
         }
@@ -18,144 +176,11 @@ fn fragment(context: &Context<'_>, out: &mut Tooltip, label: &str, text: Result<
     }
 }
 
-fn missing(field: &str) -> String {
-    format!("DivisionStatus.attrition_inputs.{field} was unreadable when recorded")
-}
-
-fn scalar(
-    context: &Context<'_>,
-    out: &mut Tooltip,
-    key: &str,
-    field: &str,
-    value: Option<i64>,
-    argument: &str,
-) {
-    match value {
-        Some(0) => (),
-        Some(value) => fragment(
-            context,
-            out,
-            field,
-            localise(context.loc, key, &[(argument, Arg::Fixed5(value))]),
-        ),
-        None => refuse(out, field, missing(field)),
-    }
-}
-
-fn tree(
-    context: &Context<'_>,
-    source: Option<Option<AttritionModifierSource>>,
-    field: &str,
-) -> Result<String, String> {
-    let source = source
-        .ok_or_else(|| missing(field))?
-        .ok_or_else(|| format!("attrition {field} formatter source is absent"))?;
-    let rows = context
-        .frame
-        .complete::<tables::AttritionModifierBreakdowns>()
-        .map_err(|e| e.to_string())?;
-    let row = rows
-        .binary_search_by_key(&(source.accumulator, source.key), |row| {
-            (row.accumulator, row.key)
-        })
-        .map(|at| &rows[at])
-        .map_err(|_| {
-            format!(
-                "attrition {field} accumulator {} key {} tree is absent",
-                source.accumulator, source.key
-            )
-        })?;
-    let nodes = row
-        .nodes
-        .as_ref()
-        .ok_or_else(|| format!("attrition {field} tree was unreadable when recorded"))?;
-    let definitions = context
-        .frame
-        .complete::<tables::ModifierDefinitions>()
-        .map_err(|e| e.to_string())?;
-    let definition = definitions
-        .binary_search_by_key(&source.key, |row| row.index)
-        .map(|at| &definitions[at])
-        .map_err(|_| format!("attrition modifier definition {} is absent", source.key))?;
-    if definition.feature_selector != 0 {
-        if definition.eligibility == 0 {
-            return Ok(String::new());
-        }
-        let features = context
-            .frame
-            .complete::<tables::SimulationFeatures>()
-            .map_err(|e| e.to_string())?;
-        let [features] = features else {
-            return Err("modifier feature singleton is absent".into());
-        };
-        if definition.feature_selector & features.dlc_mask == 0 {
-            return Ok(String::new());
-        }
-    }
-    dashboard::modifier_text::breakdown(
-        nodes,
-        dashboard::modifier_text::Breakdown {
-            depth: source.depth,
-            prefix: "",
-            suffix: "",
-        },
-        |node| {
-            let mut name = dashboard::scripted_text::stored_text(
-                context.loc,
-                context.recorded_language,
-                &node.name,
-                "attrition modifier source",
-            )?;
-            if !name.is_empty() {
-                name.push_str(": ");
-            }
-            let value = node.value.wrapping_mul(source.scale) / 100_000;
-            name.push_str(
-                &crate::combat::modifier_text::value_text(
-                    definition,
-                    value,
-                    2,
-                    false,
-                    false,
-                    context.icons,
-                    context.loc,
-                )
-                .map_err(|e| e.to_string())?,
-            );
-            displayable(context.icons, name)
-        },
-    )
-}
-
-fn source_block(
-    context: &Context<'_>,
-    out: &mut Tooltip,
-    input: &ArmyAttritionInputs,
-    index: usize,
-    key: &str,
-    field: &str,
-    separator: &str,
-) {
-    // A source-copy failure preserves the separately known native heading.
-    fragment(
-        context,
-        out,
-        field,
-        localise(context.loc, key, &[]).map(|heading| format!("{heading}{separator}")),
-    );
-    // The native caller concatenates the source immediately after the separator.
-    match tree(context, input.sources[index], field)
-        .and_then(|text| displayable(context.icons, text))
-    {
-        Ok(text) => out.title.push_str(&text),
-        Err(reason) => refuse(out, field, reason),
-    }
-}
-
-/// Include a plus sign at zero; use a fixed-point
-/// product before division, red positive / green negative / yellow zero.
+/// The coloured percent formatter: the fixed5
+/// product with a hundred, `+` at zero too, red when positive, green when
+/// negative, yellow at zero.
 fn coloured_percent(value: i64, precision: i32) -> String {
-    let scaled = value.wrapping_mul(10_000_000) / 100_000;
+    let scaled = value.wrapping_mul(10_000_000) / ONE;
     let colour = match scaled.signum() {
         1 => 'R',
         -1 => 'G',
@@ -166,318 +191,271 @@ fn coloured_percent(value: i64, precision: i32) -> String {
     format!("\u{11}{colour}{sign}{number}%\u{11}!")
 }
 
-fn thermal(
+/// Supply fixed5 division: a zero divisor or a
+/// sentinel numerator gives the fixed5 NaN word.
+fn fraction(numerator: i64, denominator: i64) -> i64 {
+    if denominator == 0
+        || (numerator as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd
+    {
+        return 0xffff_ffff;
+    }
+    numerator.wrapping_mul(ONE).wrapping_div(denominator)
+}
+
+/// Whether the supply penalty is zero whatever the out-of-supply days:
+/// its threshold-normalized availability `min(ONE, available / threshold)`
+/// is whole, which leaves no missing share to scale. `available` is
+/// `clamp(max(remaining grace / SUPPLY_GRACE hours, received ratio), 0, ONE)`
+/// when the maximum grace (division+0x600) is positive, else zero; a zero
+/// threshold normalizes to ONE. The recorded ratio and remaining grace are
+/// truncated toward zero to their display steps, so for nonnegative values
+/// they bound the native ones from below and a whole availability from them
+/// is whole natively; otherwise the penalty is undecided.
+fn supply_absent(
+    status: &DivisionStatusRow,
+    grace_hours: Result<i32, String>,
+    threshold: i64,
+) -> Result<bool, String> {
+    if threshold == 0 {
+        return Ok(true);
+    }
+    let maximum = *status
+        .supply_grace_maximum
+        .require("DivisionStatus.supply_grace_maximum")?;
+    if maximum <= 0 {
+        return Ok(false);
+    }
+    let remaining = *status
+        .supply_grace_remaining
+        .require("DivisionStatus.supply_grace_remaining")?;
+    if remaining < 0 || status.supply_ratio < 0 {
+        return Ok(false);
+    }
+    let hours = i64::from(grace_hours?).wrapping_mul(ONE);
+    let available = fraction(remaining, hours)
+        .max(status.supply_ratio)
+        .clamp(0, ONE);
+    Ok(fraction(available, threshold).min(ONE) >= ONE)
+}
+
+fn terrain(
     context: &Context<'_>,
+    lookups: &Result<&Lookups<'_>, String>,
+    upkeep: i64,
+    province: u32,
     out: &mut Tooltip,
-    input: &ArmyAttritionInputs,
-    value: Option<Option<AttritionThermal>>,
-    index: usize,
-    field: &str,
 ) {
-    match value {
-        Some(None) => (),
-        None => refuse(out, field, missing(field)),
-        Some(Some(_)) => {
-            fragment(
-                context,
-                out,
-                field,
-                tree(context, input.sources[index], field).map(|text| format!(" - {text}")),
-            );
-            // Country and commander factor text remains independently available
-            // even when either numeric factor could not be acquired.
-            for (index, label) in [
-                (index + 1, "country thermal modifiers"),
-                (index + 2, "commander thermal modifiers"),
-            ] {
-                if input.sources[index] == Some(None) {
-                    continue;
-                }
-                match tree(context, input.sources[index], label)
-                    .and_then(|text| displayable(context.icons, text))
-                {
-                    Ok(text) => out.title.push_str(&text),
-                    Err(reason) => refuse(out, label, reason),
-                }
-            }
+    let line: Result<Option<(&Terrain, i64)>, String> = (|| {
+        let lookups = lookups.as_ref().map_err(Clone::clone)?;
+        let ordinal = (lookups.terrain)(province)?;
+        if ordinal == 0 {
+            return Ok(None);
         }
+        let terrain = usize::try_from(ordinal - 1)
+            .ok()
+            .and_then(|at| lookups.content.terrains.get(at))
+            .ok_or_else(|| {
+                format!("terrain ordinal {ordinal} is outside the content's terrain database")
+            })?;
+        // Sum the common modifier's accumulator (+0xB8), key 0x4F.
+        let attrition = match terrain.attrition {
+            None => 0,
+            Some(raw) => {
+                let registry = Registry::from_frame(context.frame)?;
+                registry.effective(registry.named("attrition")?, raw)?
+            }
+        };
+        Ok(Some((terrain, upkeep.wrapping_add(attrition))))
+    })();
+    match line {
+        Ok(None) | Ok(Some((_, 0))) => (),
+        Ok(Some((terrain, value))) => {
+            let text = context
+                .loc
+                .localise(&terrain.name)
+                .map_err(|e| e.to_string())
+                .and_then(|name| {
+                    localise(
+                        context.loc,
+                        "ATTRITION_TERRAIN",
+                        &[("TERR", Arg::Text(&name)), ("ATT", Arg::Fixed5(value))],
+                    )
+                });
+            fragment(context, out, "attrition terrain", text);
+            // The equipment line follows inside the same branch when nonzero.
+            refuse(out, "attrition equipment", EQUIPMENT_UNRECORDED);
+        }
+        Err(reason) => refuse(out, "attrition terrain", reason),
     }
 }
 
-fn terrain(context: &Context<'_>, out: &mut Tooltip, input: &ArmyAttritionInputs) {
-    let terrain = match &input.terrain {
-        Some(None) => return,
-        Some(Some(terrain)) => terrain,
-        None => {
-            refuse(out, "attrition terrain", missing("terrain"));
+fn lines(context: &Context<'_>, lookups: Result<&Lookups<'_>, String>, id: u64, out: &mut Tooltip) {
+    let status = match context.status(id) {
+        Ok(status) => status,
+        Err(reason) => {
+            refuse(out, "attrition lines", reason);
             return;
         }
     };
-    let before_equipment = input
-        .upkeep
-        .zip(terrain.attrition)
-        .map(|(upkeep, terrain)| upkeep.wrapping_add(terrain));
-    match before_equipment {
-        Some(0) => (), // Native also suppresses the equipment line in this case.
-        None => refuse(
-            out,
-            "attrition terrain",
-            missing("terrain.attrition or upkeep"),
-        ),
-        Some(value) => {
-            let text = (|| {
-                let key = terrain
-                    .name
-                    .as_deref()
-                    .ok_or_else(|| missing("terrain.name"))?;
-                let name = context.loc.localise(key).map_err(|e| e.to_string())?;
-                localise(
-                    context.loc,
-                    "ATTRITION_TERRAIN",
-                    &[("TERR", Arg::Text(&name)), ("ATT", Arg::Fixed5(value))],
-                )
-            })();
-            fragment(context, out, "attrition terrain", text);
-            // Display the unweighted sum before the native floor. Repeated
-            // current-equipment rows are counted once each, regardless of amount.
-            scalar(
-                context,
-                out,
-                "ATTRITION_EQUIPMENT",
-                "attrition equipment",
-                terrain.equipment,
-                "ATT",
-            );
-        }
-    }
-}
-
-fn details(
-    context: &Context<'_>,
-    input: &ArmyAttritionInputs,
-    out: &mut Tooltip,
-    border_ratio: Result<Option<i64>, String>,
-) {
-    match input.province {
-        Some(None) => return,
-        None => {
-            refuse(out, "attrition location", missing("province"));
-            return;
-        }
-        Some(Some(_)) => (),
-    }
-    scalar(
-        context,
-        out,
-        "ATTRITION_UPKEEP",
-        "attrition upkeep",
-        input.upkeep,
-        "VALUE",
-    );
-    terrain(context, out, input);
-    match input.state {
-        Some(value) => scalar(
+    let upkeep = status.attrition_threshold;
+    if upkeep != 0 {
+        fragment(
             context,
             out,
-            "ATTRITION_STATE",
-            "attrition state",
-            value.or(Some(0)),
-            "ATT",
-        ),
-        None => refuse(out, "attrition state", missing("state")),
-    }
-    match input.supply {
-        Some(supply) if supply.penalty == Some(0) => (),
-        Some(supply) => {
-            let text = (|| {
-                let value = supply
-                    .penalty
-                    .ok_or_else(|| missing("supply.penalty"))?
-                    .wrapping_mul(
-                        supply
-                            .attrition_factor
-                            .ok_or_else(|| missing("supply.attrition_factor"))?,
-                    )
-                    / 100_000;
-                localise(
-                    context.loc,
-                    "ATTRITION_SUPPLY",
-                    &[("ATT", Arg::Text(&coloured_percent(value, 2)))],
-                )
-            })();
-            fragment(context, out, "attrition supply", text);
-        }
-        None => refuse(out, "attrition supply", missing("supply")),
-    }
-    match input.country_upkeep_modifier {
-        Some(0) => (),
-        Some(_) => source_block(
-            context,
-            out,
-            input,
-            UPKEEP_SOURCE,
-            "ATTRITION_UPKEEP_MODIFIERS",
-            "attrition upkeep modifiers",
-            "\n",
-        ),
-        None => refuse(
-            out,
-            "attrition upkeep modifiers",
-            missing("country_upkeep_modifier"),
-        ),
-    }
-    match input.moving_state {
-        Some(None | Some(0)) => (),
-        Some(Some(_)) => source_block(
-            context,
-            out,
-            input,
-            STATE_SOURCE,
-            "ATTRITION_STATE_MODIFIERS",
-            "attrition moving state",
-            "\n",
-        ),
-        None => refuse(out, "attrition moving state", missing("moving_state")),
-    }
-    match input.weather {
-        Some(None) => (),
-        None => refuse(out, "attrition weather", missing("weather")),
-        Some(Some(weather)) => {
-            match weather.attrition {
-                Some(0) => (),
-                Some(_) => source_block(
-                    context,
-                    out,
-                    input,
-                    WEATHER_SOURCE,
-                    "ATTRITION_WEATHER_MODIFIERS",
-                    "attrition weather modifiers",
-                    "\n    ",
-                ),
-                None => refuse(
-                    out,
-                    "attrition weather modifiers",
-                    missing("weather.attrition"),
-                ),
-            }
-            thermal(
-                context,
-                out,
-                input,
-                weather.heat,
-                HEAT_SOURCE,
-                "attrition heat",
-            );
-            thermal(
-                context,
-                out,
-                input,
-                weather.winter,
-                WINTER_SOURCE,
-                "attrition winter",
-            );
-        }
-    }
-    match input.training_attrition {
-        Some(None) => (),
-        Some(Some(value)) => fragment(
-            context,
-            out,
-            "attrition training",
+            "attrition upkeep",
             localise(
                 context.loc,
-                "TRAINING_ATTRITION",
-                &[("VALUE", Arg::Text(&coloured_percent(value, 1)))],
-            )
-            .map(|text| format!("{text}\n")),
-        ),
-        None => refuse(out, "attrition training", missing("training_attrition")),
+                "ATTRITION_UPKEEP",
+                &[("VALUE", Arg::Fixed5(upkeep))],
+            ),
+        );
     }
-    match input.border {
-        Some(None) => (),
-        None => refuse(out, "attrition border", missing("border")),
-        Some(Some(border)) => {
-            fragment(
-                context,
-                out,
-                "attrition border heading",
-                localise(context.loc, "BORDER_WAR_HEADER", &[]).map(|text| format!("{text}\n")),
-            );
-            let value = border_ratio
+    let province = selected_province(context, id);
+    let movement = context.movement(id);
+    let moving = movement
+        .as_ref()
+        .map_err(Clone::clone)
+        .map(|movement| movement.path_total as i32 > 0 && movement.strategic_redeployment == 0);
+    match (&moving, &province) {
+        (Ok(false), _) => (),
+        (Ok(true), Ok(province)) => terrain(context, &lookups, upkeep, *province, out),
+        (Err(reason), _) | (Ok(true), Err(reason)) => refuse(out, "attrition terrain", reason),
+    }
+    let state = province
+        .clone()
+        .and_then(|province| province_state(context, province));
+    match &state {
+        Ok(0) => (),
+        Ok(_) => refuse(out, "attrition state", STATE_UNRECORDED),
+        Err(reason) => refuse(out, "attrition state", reason.clone()),
+    }
+    let supply = lookups.as_ref().map_err(Clone::clone).and_then(|lookups| {
+        supply_absent(
+            status,
+            context.supply_grace.clone(),
+            lookups.content.supply_threshold,
+        )
+    });
+    match supply {
+        Ok(true) => (),
+        Ok(false) => refuse(out, "attrition supply", SUPPLY_UNRECORDED),
+        Err(reason) => refuse(out, "attrition supply", reason),
+    }
+    refuse(out, "attrition upkeep modifiers", UPKEEP_SOURCES_UNRECORDED);
+    // The moving-state, weather, heat and winter blocks run for a moving unit
+    // whose logical owner is at war (mode 0).
+    match &moving {
+        Ok(false) => (),
+        Ok(true) => refuse(out, "attrition weather", WEATHER_UNRECORDED),
+        Err(reason) => refuse(out, "attrition weather", reason.clone()),
+    }
+    match &movement {
+        Ok(movement) if status.exercising != 0 && (movement.path_total as i32) < 1 => {
+            let text = lookups
                 .as_ref()
                 .map_err(Clone::clone)
-                .and_then(|value| value.ok_or_else(|| "attrition border ratio is absent".into()))
-                .and_then(|value| {
-                    border
-                        .factor
-                        .ok_or_else(|| missing("border.factor"))
-                        .map(|factor| value.wrapping_mul(factor) / 100_000)
-                });
-            fragment(
-                context,
-                out,
-                "attrition border",
-                value
-                    .and_then(|value| {
-                        localise(
-                            context.loc,
-                            "BORDER_WAR_ATTRITION",
-                            &[("VAL", Arg::Fixed5(value))],
-                        )
-                    })
-                    .map(|text| format!("{text}\n")),
-            );
-        }
-    }
-    let country_tree = tree(
-        context,
-        input.sources[COUNTRY_SOURCE],
-        "attrition country modifiers",
-    );
-    match country_tree {
-        Ok(why) if why.is_empty() => (),
-        Ok(why) => match input.country_attrition_modifier {
-            Some(value) => {
-                let multiplier = 100_000_i64.wrapping_add(value).max(0);
-                let number = installed_content::fixed5::fixed5_to_string(multiplier, 2);
-                fragment(
-                    context,
-                    out,
-                    "attrition country modifiers",
+                .and_then(|lookups| {
                     localise(
                         context.loc,
-                        "ATTRITION_MULMOD_BY",
-                        &[("MOD", Arg::Text(&number)), ("WHY", Arg::Text(&why))],
+                        "TRAINING_ATTRITION",
+                        &[(
+                            "VALUE",
+                            Arg::Text(&coloured_percent(lookups.content.training, 1)),
+                        )],
                     )
-                    .map(|text| format!("{text}\n")),
-                );
-            }
-            None => {
-                refuse(
-                    out,
-                    "attrition country multiplier",
-                    missing("country_attrition_modifier"),
-                );
-                fragment(context, out, "attrition country modifiers", Ok(why));
-            }
-        },
-        Err(reason) => refuse(out, "attrition country modifiers", reason),
+                })
+                .map(|text| format!("{text}\n"));
+            fragment(context, out, "attrition training", text);
+        }
+        Ok(_) => (),
+        Err(reason) if status.exercising != 0 => refuse(out, "attrition training", reason.clone()),
+        Err(_) => (),
     }
-    // Numeric total ignores label and source-tree faults, and never substitutes
-    // the cached status attrition value for a missing fresh term.
-    let total = border_ratio.and_then(|ratio| input.evaluate(ratio).map_err(str::to_owned));
-    match total
-        .and_then(|value| {
+    if let Ok(state) = state
+        && state != 0
+    {
+        border(context, &lookups, id, state, out);
+    }
+    refuse(
+        out,
+        "attrition country modifiers",
+        COUNTRY_SOURCES_UNRECORDED,
+    );
+}
+
+fn border(
+    context: &Context<'_>,
+    lookups: &Result<&Lookups<'_>, String>,
+    id: u64,
+    state: u32,
+    out: &mut Tooltip,
+) {
+    let active = (|| {
+        let flags = context
+            .frame
+            .complete::<tables::StateFlags>()
+            .map_err(|e| e.to_string())?;
+        let row = flags
+            .iter()
+            .find(|row| row.state == state)
+            .ok_or_else(|| format!("StateFlags state {state} is absent"))?;
+        Ok::<_, String>(
+            *row.border_conflict_active
+                .require("StateFlags.border_conflict_active")?
+                != 0,
+        )
+    })();
+    match active {
+        Ok(false) => return,
+        Ok(true) => (),
+        Err(reason) => {
+            refuse(out, "attrition border", reason);
+            return;
+        }
+    }
+    fragment(
+        context,
+        out,
+        "attrition border heading",
+        localise(context.loc, "BORDER_WAR_HEADER", &[]).map(|text| format!("{text}\n")),
+    );
+    let value = (|| {
+        let lookups = lookups.as_ref().map_err(Clone::clone)?;
+        let owner = context.division(id)?.logical_owner;
+        let share = (lookups.border)(owner, state)?;
+        Ok::<_, String>(share.wrapping_mul(lookups.content.border_factor) / ONE)
+    })();
+    fragment(
+        context,
+        out,
+        "attrition border",
+        value
+            .and_then(|value| {
+                localise(
+                    context.loc,
+                    "BORDER_WAR_ATTRITION",
+                    &[("VAL", Arg::Fixed5(value))],
+                )
+            })
+            .map(|text| format!("{text}\n")),
+    );
+}
+
+/// `ATTRITION_TOTAL` with the counter's cached total, before the lines.
+fn total(context: &Context<'_>, id: u64, out: &mut Tooltip) {
+    let total = context
+        .status(id)
+        .and_then(|status| {
             localise(
                 context.loc,
                 "ATTRITION_TOTAL",
-                &[("TOT", Arg::Fixed5(value))],
+                &[("TOT", Arg::Fixed5(status.attrition_value))],
             )
         })
-        .and_then(|text| displayable(context.icons, text))
-    {
+        .and_then(|text| displayable(context.icons, text));
+    match total {
         Ok(mut header) => {
-            // The game starts the detail body on a new line before prepending total.
+            // The game starts the line body on a new line before prepending the total.
             if !out.title.is_empty() && !out.title.starts_with('\n') {
                 crate::combat::text::ensure_newlines(&mut header, 1);
             }
@@ -485,47 +463,76 @@ fn details(
         }
         Err(reason) => refuse(out, "attrition total", reason),
     }
-    // Trim completed tooltip text at line-feed, tab, carriage-return and space boundaries.
-    // Keep interior separators; boundary breaks are not display rows.
+    // Trim completed tooltip text with its four whitespace bytes.
     out.title = out.title.trim_matches(['\n', '\t', '\r', ' ']).to_owned();
 }
 
-pub(super) fn append(context: &Context<'_>, id: u64, out: &mut Tooltip) {
-    let input = context.status(id).and_then(|status| {
-        status
-            .attrition_inputs
-            .require("DivisionStatus.attrition_inputs")
-    });
-    let input = match input {
-        Ok(input) => input,
+fn append_with(
+    context: &Context<'_>,
+    lookups: Result<&Lookups<'_>, String>,
+    id: u64,
+    out: &mut Tooltip,
+) {
+    match located(context, id) {
+        Ok(true) => (),
+        Ok(false) => return,
         Err(reason) => {
-            refuse(out, "attrition detail", reason);
+            refuse(out, "attrition total", reason);
+            return;
+        }
+    }
+    lines(context, lookups, id, out);
+    total(context, id, out);
+}
+
+pub(super) fn append(context: &Context<'_>, id: u64, out: &mut Tooltip) {
+    let Some(content) = context.content else {
+        append_with(
+            context,
+            Err("the counter content is unavailable".into()),
+            id,
+            out,
+        );
+        return;
+    };
+    let attrition = match &content.counters.attrition {
+        Ok(attrition) => attrition,
+        Err(reason) => {
+            append_with(context, Err(reason.clone()), id, out);
             return;
         }
     };
-    let border_ratio = match input.border {
-        Some(Some(border)) => (|| {
-            border.factor.ok_or_else(|| missing("border.factor"))?;
-            let country = border.country.ok_or_else(|| missing("border.country"))?;
-            let state = border.state.ok_or_else(|| missing("border.state"))?;
-            let content = context
-                .content
-                .ok_or("attrition border content unavailable")?;
-            let links = context
-                .links
-                .as_ref()
-                .map_err(Clone::clone)?
-                .iter()
+    let links: Result<BTreeMap<u32, u32>, String> = context
+        .links
+        .as_ref()
+        .map(|rows| {
+            rows.iter()
                 .map(|row| (row.id, row.canonical_slot))
-                .collect();
-            content
-                .province_hover
-                .border_ratio(context.frame, country, state, &links)
-                .map(Some)
-        })(),
-        _ => Ok(None),
+                .collect()
+        })
+        .map_err(Clone::clone);
+    let terrain = |province: u32| -> Result<i32, String> {
+        content
+            .movement
+            .as_deref()
+            .ok_or("the movement map is unavailable")?
+            .map
+            .terrain(province)
+            .map(|terrain| terrain.index)
+            .ok_or_else(|| format!("province {province} has no terrain record"))
     };
-    details(context, input, out, border_ratio);
+    let border = |country: u32, state: u32| -> Result<i64, String> {
+        let links = links.as_ref().map_err(Clone::clone)?;
+        content
+            .province_hover
+            .border_enemy_share(context.frame, country, links, state)
+    };
+    let lookups = Lookups {
+        content: attrition,
+        terrain: &terrain,
+        border: &border,
+    };
+    append_with(context, Ok(&lookups), id, out);
 }
 
 #[cfg(test)]

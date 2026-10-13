@@ -419,6 +419,112 @@ fn seeded_accumulator_keeps_faults_and_class_branch_lazy() {
     assert_eq!(source.count(ARMY + cunit::CLASS), 0);
 }
 
+/// The memoized selection gives each division the seeded selection or its
+/// first failure, reading the group, its leader, the HQ provider with the
+/// HQ's primary root and the feature flags once a pass; each division's own
+/// member is still its own read, while the root orders and member chunks its
+/// own root resolves through are read once a pass.
+#[test]
+fn memoized_selection_matches_seeded_and_reads_group_inputs_once_a_pass() {
+    let member = |army: usize| army + crate::corders_group_member::HOST_OFFSET;
+    let mut fixture = Fixture::new();
+    fixture.root(GROUP, group::PRIMARY_ORDER_DATA, ARMY);
+    fixture.bytes[member(ARMY) + PRIMARY_ROOT_DIRTY] = 1;
+    let division = |pointer, class| carmy::DivisionSeed {
+        pointer,
+        orders_group: Some(GROUP),
+        class: Some(class),
+        ..Default::default()
+    };
+    // ARMY's root differs from its HQ's (alternate); the HQ division's own
+    // root is its HQ's; a nonzero class never reaches the HQ.
+    let seeds = [division(ARMY, 0), division(HQ, 0), division(ARMY, 1)];
+    for fault in [
+        None,
+        Some(GROUP),
+        Some(GROUP + group::HQ_PROVIDER),
+        Some(MEMBERS),
+    ] {
+        let seeded = Observed::new(Fixture {
+            bytes: fixture.bytes.clone(),
+            flags: fixture.flags,
+        });
+        seeded.fault.set(fault);
+        let expected = seeds.map(|seed| movement_accumulator_seeded(&seeded, 0, &seed));
+        if fault.is_none() {
+            assert_eq!(
+                expected,
+                [
+                    Ok(Some(LEADER + 0x4d8)),
+                    Ok(Some(LEADER + 0x418)),
+                    Ok(Some(LEADER + 0x418))
+                ]
+            );
+        }
+        let memoized = Observed::new(Fixture {
+            bytes: fixture.bytes.clone(),
+            flags: fixture.flags,
+        });
+        memoized.fault.set(fault);
+        let mut memo = LeaderMemo::try_with_capacity(seeds.len()).unwrap();
+        for pass in 0..2 {
+            memo.clear();
+            memoized.reads.borrow_mut().clear();
+            let actual =
+                seeds.map(|seed| movement_accumulator_memoized(&memoized, 0, &seed, &mut memo));
+            assert_eq!(actual, expected, "{fault:?} pass {pass}");
+            // The group's leader word, the HQ provider and the flags are each
+            // read at most once a pass, a failed read included.
+            for address in [
+                GROUP + group::LEADER,
+                GROUP + group::HQ_PROVIDER,
+                crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+            ] {
+                assert!(memoized.count(address) <= 1, "{fault:?} {address:#x}");
+            }
+            assert!(memoized.reads.borrow().len() < seeded.reads.borrow().len());
+        }
+        match fault {
+            None => {
+                assert_eq!(memoized.count(GROUP + group::LEADER), 1);
+                assert_eq!(seeded.count(GROUP + group::LEADER), seeds.len());
+                assert_eq!(memoized.count(GROUP + group::HQ_PROVIDER), 1);
+                assert_eq!(seeded.count(GROUP + group::HQ_PROVIDER), 2);
+                // Both class-zero divisions still read their own member's
+                // root; the HQ's is read once for the group.
+                assert_eq!(memoized.count(member(ARMY) + PRIMARY_ROOT_DIRTY), 1);
+                assert_eq!(memoized.count(member(HQ) + PRIMARY_ROOT_DIRTY), 2);
+                // The root order's members: once for the HQ's root and once
+                // for both divisions' own roots, which share the chunk.
+                assert_eq!(memoized.count(MEMBERS), 2);
+                assert_eq!(seeded.count(MEMBERS), 4);
+            }
+            Some(GROUP) => {
+                assert_eq!(memoized.count(GROUP), 1);
+                assert_eq!(seeded.count(GROUP), seeds.len());
+            }
+            Some(_) => {}
+        }
+    }
+    // A memo with no room selects exactly as the seeded selection.
+    let seeded = Observed::new(Fixture {
+        bytes: fixture.bytes.clone(),
+        flags: fixture.flags,
+    });
+    let unkept = Observed::new(Fixture {
+        bytes: fixture.bytes.clone(),
+        flags: fixture.flags,
+    });
+    let mut vacant = LeaderMemo::vacant();
+    for seed in seeds {
+        assert_eq!(
+            movement_accumulator_memoized(&unkept, 0, &seed, &mut vacant),
+            movement_accumulator_seeded(&seeded, 0, &seed)
+        );
+    }
+    assert!(unkept.count(GROUP + group::LEADER) == seeds.len());
+}
+
 #[test]
 fn different_primary_roots_select_alternate_and_clean_staleness_is_not_repaired() {
     let mut f = Fixture::new();
@@ -436,6 +542,27 @@ fn different_primary_roots_select_alternate_and_clean_staleness_is_not_repaired(
     );
     f.word(HQ + carmy::PRIMARY_ORDER, ROOT as u64);
     assert_eq!(movement_accumulator(&f, 0, ARMY), Ok(Some(LEADER + 0x418)));
+}
+
+/// The land combat skill hover tests separate-HQ eligibility of a side's units
+/// for whichever leader the side selected; it is the movement block's choice.
+#[test]
+fn separate_hq_order_is_the_movement_block_choice_without_the_leader_block() {
+    let mut f = Fixture::new();
+    f.root(GROUP, group::PRIMARY_ORDER_DATA, ARMY);
+    f.bytes[ARMY + crate::corders_group_member::HOST_OFFSET + PRIMARY_ROOT_DIRTY] = 1;
+    assert_eq!(movement_accumulator(&f, 0, ARMY), Ok(Some(LEADER + 0x4d8)));
+    assert_eq!(separate_hq_order(&f, 0, ARMY), Ok(true));
+    f.flags = 0;
+    assert_eq!(separate_hq_order(&f, 0, ARMY), Ok(false));
+    f.flags = 1 << 17;
+    f.word(ARMY + cunit::CLASS, 1);
+    assert_eq!(separate_hq_order(&f, 0, ARMY), Ok(false));
+    f.word(ARMY + cunit::CLASS, 0);
+    assert_eq!(separate_hq_order(&f, 0, ARMY), Ok(true));
+    // The deployed-leader predicate needs the group's own leader.
+    f.word(GROUP + group::LEADER, 0);
+    assert_eq!(separate_hq_order(&f, 0, ARMY), Ok(false));
 }
 
 #[test]

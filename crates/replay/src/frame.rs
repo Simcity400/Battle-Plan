@@ -14,9 +14,10 @@ mod decoder;
 mod encoder;
 mod wire;
 
+pub(crate) use self::wire::decode_update;
 pub use self::{
     decoder::FrameDecoder,
-    encoder::{FrameEncoder, PreparedFrame},
+    encoder::{FrameContext, FrameEncoder, PreparedFrame, Retired, TableSegment},
 };
 use engine::allocation;
 
@@ -39,6 +40,32 @@ pub struct Metrics {
     pub table_ns: [u64; TABLE_COUNT],
     pub pool_bytes: u64,
     pub dropped_frames: u64,
+}
+
+/// `Metrics::table_ns` of a table read in an hour whose recording keeps which
+/// tables were read but not how long they took. Nonzero, so the read stays a
+/// read; never a time.
+pub const READ_TIME_NOT_RECORDED: u64 = u64::MAX;
+
+impl Metrics {
+    /// The metrics a replay block stores: which tables were read, as
+    /// [`READ_TIME_NOT_RECORDED`], and the exact callback total, pool bytes
+    /// and dropped-frame counter. Spool frames keep every read time in
+    /// nanoseconds.
+    pub fn stored(&self) -> Self {
+        let mut stored = self.clone();
+        for ns in &mut stored.table_ns {
+            if *ns != 0 {
+                *ns = READ_TIME_NOT_RECORDED;
+            }
+        }
+        stored
+    }
+
+    /// Whether this hour's table read times were recorded.
+    pub fn table_times_recorded(&self) -> bool {
+        !self.table_ns.contains(&READ_TIME_NOT_RECORDED)
+    }
 }
 
 impl Default for Metrics {
@@ -190,11 +217,42 @@ pub enum TableInput {
         indices: Vec<usize>,
         rows: TableRows,
     },
+    /// An owner-sliced table as an update of this encoder's shared complete
+    /// baseline: every row of the update's owners is replaced by its rows,
+    /// the read the producer's merge of the same rows describes
+    /// ([`crate::sliced::SliceUpdate`]). It encodes and commits exactly as
+    /// that merged complete table would, without materialising it; commit
+    /// replaces the rows inside the baseline.
+    SliceUpdate {
+        token: BaselineToken,
+        update: Arc<crate::sliced::SliceUpdate>,
+    },
 }
 
 impl From<TableView> for TableInput {
     fn from(view: TableView) -> Self {
         Self::Sampled(view)
+    }
+}
+
+impl TableInput {
+    /// Round the stepped fields of the rows this input owns to their display
+    /// steps ([`crate::display`]): complete, truncated and replacement rows,
+    /// and shared rows only while this input holds their sole reference.
+    /// Compared and slice inputs name rows a baseline already holds.
+    pub fn round_to_display(&mut self) {
+        match self {
+            Self::Sampled(TableView::Complete(rows) | TableView::Truncated { rows, .. })
+            | Self::ComparedChanges { rows, .. } => rows.round_to_display(),
+            Self::SharedComplete(rows) => {
+                if let Some(rows) = Arc::get_mut(rows) {
+                    rows.round_to_display();
+                }
+            }
+            Self::Sampled(TableView::Unavailable { .. })
+            | Self::ComparedEqual(_)
+            | Self::SliceUpdate { .. } => {}
+        }
     }
 }
 
@@ -225,6 +283,15 @@ pub struct FrameInput {
     pub hour: Hour,
     pub tables: [TableInput; TABLE_COUNT],
     pub metrics: Metrics,
+}
+
+impl FrameInput {
+    /// [`TableInput::round_to_display`] for every table.
+    pub fn round_to_display(&mut self) {
+        for table in &mut self.tables {
+            table.round_to_display();
+        }
+    }
 }
 
 impl From<DecodedFrame> for FrameInput {
@@ -397,6 +464,33 @@ fn validate_delta_keys(
         }
     }
     Ok(())
+}
+
+/// The view a current recording decodes for a table its format does not
+/// record (a retired table), or None for a recorded table. Test sources that
+/// supply every table replace retired ones with it, as decoding would.
+#[cfg(test)]
+pub(crate) fn current_absence(table: TableId) -> Option<TableView> {
+    let format = crate::format::FormatVersion::CURRENT.version();
+    let change = table.last_change();
+    (!change.present(format)).then(|| TableView::Unavailable {
+        reason: change
+            .table_gap(table, format)
+            .expect("absent table has a catalogued gap"),
+    })
+}
+
+/// [`current_absence`] applied to every table of a test source, whose timing
+/// a current recording also omits.
+#[cfg(test)]
+pub(crate) fn retire_absent(mut frame: DecodedFrame) -> DecodedFrame {
+    for table in TableId::ALL {
+        if let Some(view) = current_absence(table) {
+            *frame.tables[table.index()] = view;
+            frame.metrics.table_ns[table.index()] = 0;
+        }
+    }
+    frame
 }
 
 #[cfg(test)]

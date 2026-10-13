@@ -265,8 +265,8 @@ fn hourly_losses_parent_capacity_preserves_full_growth_demand_and_progress() {
             unread_rows: 3
         }
     );
-    assert_eq!(c.rows.rows[0].attacker_progress, 50_000);
-    assert_eq!(c.rows.rows[0].defender_progress, 50_000);
+    // Only the combat's handle: progress is playback's.
+    assert_eq!(c.rows.rows[0], 1 << 32 | 62);
     c.grow(&mut capacity);
     assert!(capacity.rows >= 5);
     read(&mut c, &worlds);
@@ -278,7 +278,7 @@ fn hourly_losses_parent_capacity_preserves_full_growth_demand_and_progress() {
 #[test]
 fn hourly_losses_worker_growth_captures_five_thousand_combats_without_coverage_loss() {
     use crate::land_events::test_support;
-    let _guard = test_support::EXCLUSIVE.lock().unwrap();
+    let _guard = test_support::own();
     test_support::reset();
     let mut events = crate::extended::land_events::Captured::with_capacities(
         &crate::extended::land_events::Capacities { words: 0 },

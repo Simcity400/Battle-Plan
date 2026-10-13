@@ -167,6 +167,7 @@ fn gathered_pointer_handle(
     Ok(handle)
 }
 
+#[cfg(test)]
 pub(crate) fn plan_identity(
     memory: &impl Memory,
     base: usize,
@@ -175,7 +176,8 @@ pub(crate) fn plan_identity(
     plan_identity_gathered(memory, base, root, Gathered::NONE)
 }
 
-/// [`plan_identity`] taking what `record` gathered from the root.
+/// Re-authenticates a census root's handle and country, taking what
+/// `record` gathered from the root.
 pub(crate) fn plan_identity_gathered(
     memory: &impl Memory,
     base: usize,
@@ -428,27 +430,8 @@ pub fn walk_plans(
     }
 }
 
-/// Callback-local observation from the original counter loop. Pointer and
-/// authenticated handle failures are retained; no consumer retries group+88.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DirectCommander {
-    pub group: u64,
-    pub pointer: Result<usize, &'static str>,
-    pub leader: Result<Option<u64>, &'static str>,
-    pub enroute_days: Result<i32, &'static str>,
-}
-impl Default for DirectCommander {
-    fn default() -> Self {
-        Self {
-            group: 0,
-            pointer: Err("group commander not observed"),
-            leader: Err("group commander not observed"),
-            enroute_days: Err("group commander not observed"),
-        }
-    }
-}
-
-/// Orders-group presentation byte, keyed by the group's full handle.
+/// The orders-group byte used by command execution, keyed by the group's full
+/// handle.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CounterInputsRow {
     pub group: u64,
@@ -482,31 +465,66 @@ pub fn walk_counter_inputs_in_state(
     source: Outcome,
     output: &mut [CounterInputsRow],
 ) -> Outcome {
-    counter_inputs(memory, base, game_state, roots, source, output, None)
+    counter_inputs(memory, base, game_state, roots, source, output)
 }
 
-/// Shares each original +88 selecting occurrence and army-leader identity
-/// with independent commander inputs. Controls must cover the admitted roots.
-pub fn walk_counter_inputs_with_commanders(
+/// What [`counter_inputs`] reads from each group before its optional
+/// suffix, as `(offset, len)`: identity through country and the withdrawing
+/// byte; and the suffix's own: the leader pointer and the border-war pointer
+/// through the invasion-source distance. Each is gathered in one record per
+/// group a batch at a time.
+const COUNTER_PREFIX_SPANS: [(usize, usize); 2] = [(0, COUNTRY + 4), (WITHDRAWING, 1)];
+const COUNTER_PREFIX_FIELDS: [RecordField; 2] = packed_fields(COUNTER_PREFIX_SPANS);
+const COUNTER_PREFIX_STRIDE: usize = packed_stride(COUNTER_PREFIX_SPANS);
+const COUNTER_PREFIX_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&COUNTER_PREFIX_FIELDS, COUNTER_PREFIX_STRIDE)
+        .expect("valid group counter layout");
+const COUNTER_PREFIX_MAP: [u16; WITHDRAWING + 1] = packed_map(COUNTER_PREFIX_SPANS);
+const COUNTER_SUFFIX_SPANS: [(usize, usize); 2] = [
+    (LEADER, 8),
+    (BORDER_WAR, INVASION_SOURCE_DISTANCE + 4 - BORDER_WAR),
+];
+const COUNTER_SUFFIX_FIELDS: [RecordField; 2] = packed_fields(COUNTER_SUFFIX_SPANS);
+const COUNTER_SUFFIX_STRIDE: usize = packed_stride(COUNTER_SUFFIX_SPANS);
+const COUNTER_SUFFIX_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&COUNTER_SUFFIX_FIELDS, COUNTER_SUFFIX_STRIDE)
+        .expect("valid group counter suffix layout");
+const COUNTER_SUFFIX_MAP: [u16; INVASION_SOURCE_DISTANCE + 4] = packed_map(COUNTER_SUFFIX_SPANS);
+const COUNTER_BATCH: usize = crate::corder_instance::PLAN_BATCH;
+/// What the registry census reads from each group: its identity and country.
+const ROOT_SPANS: [(usize, usize); 2] = [(0, 16), (COUNTRY, 4)];
+const ROOT_FIELDS: [RecordField; 2] = packed_fields(ROOT_SPANS);
+const ROOT_STRIDE: usize = packed_stride(ROOT_SPANS);
+const ROOT_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&ROOT_FIELDS, ROOT_STRIDE).expect("valid group root layout");
+
+/// Gathers one `layout` record for each of `roots`.
+fn gather_counter_records(
     memory: &impl Memory,
-    base: usize,
-    game_state: usize,
     roots: &[Root],
-    source: Outcome,
-    output: &mut [CounterInputsRow],
-    commanders: &mut [DirectCommander],
-) -> Outcome {
-    counter_inputs(
+    layout: &RecordLayout<'_>,
+    records: &mut [u8],
+    complete: &mut [bool],
+) {
+    let mut pointers = [0_usize; COUNTER_BATCH];
+    for (pointer, root) in pointers.iter_mut().zip(roots) {
+        *pointer = root.pointer;
+    }
+    gather_records(
         memory,
-        base,
-        game_state,
-        roots,
-        source,
-        output,
-        Some(commanders),
-    )
+        &pointers[..roots.len()],
+        layout,
+        &mut records[..roots.len() * layout.stride()],
+        &mut complete[..roots.len()],
+    );
 }
 
+/// Groups are read a batch at a time: one guarded record per group gathers
+/// its identity, country and withdrawing byte, and once every root is
+/// established, a second its suffix pointers and distances. A group whose
+/// record did not complete makes its original per-field reads instead, so
+/// rows, the established prefix and every failure are those of the
+/// per-field walk; a suffix fault never reaches the prefix.
 fn counter_inputs(
     memory: &impl Memory,
     base: usize,
@@ -514,8 +532,10 @@ fn counter_inputs(
     roots: &[Root],
     source: Outcome,
     output: &mut [CounterInputsRow],
-    mut commanders: Option<&mut [DirectCommander]>,
 ) -> Outcome {
+    let mut prefix = [0_u8; COUNTER_BATCH * COUNTER_PREFIX_STRIDE];
+    let mut suffix = [0_u8; COUNTER_BATCH * COUNTER_SUFFIX_STRIDE];
+    let mut complete = [false; COUNTER_BATCH];
     let result = (|| {
         let (count, missing) = match source {
             Outcome::Rows { len } => (len, 0),
@@ -526,18 +546,39 @@ fn counter_inputs(
             .get(..count)
             .ok_or("orders group counter census exceeds its buffer")?;
         let len = count.min(output.len());
-        for (root, row) in roots.iter().zip(output.iter_mut()) {
-            plan_identity(memory, base, *root)?;
-            let withdrawing =
-                crate::corder_instance::plan_field::<u8>(memory, root.pointer, WITHDRAWING)?;
-            *row = CounterInputsRow {
-                group: root.handle,
-                withdrawing,
-                hq_distance: None,
-                leader_enroute_days: None,
-                border_war_presence: None,
-                invasion_source_distance: None,
-            };
+        for first in (0..len).step_by(COUNTER_BATCH) {
+            let batch = &roots[first..(first + COUNTER_BATCH).min(len)];
+            gather_counter_records(
+                memory,
+                batch,
+                &COUNTER_PREFIX_LAYOUT,
+                &mut prefix,
+                &mut complete,
+            );
+            for (index, (root, row)) in batch.iter().zip(&mut output[first..]).enumerate() {
+                let record = Gathered::row(
+                    &COUNTER_PREFIX_LAYOUT,
+                    &COUNTER_PREFIX_MAP,
+                    &prefix,
+                    &complete,
+                    index,
+                );
+                plan_identity_gathered(memory, base, *root, record)?;
+                let withdrawing = crate::corder_instance::gathered_field::<u8>(
+                    memory,
+                    root.pointer,
+                    WITHDRAWING,
+                    record,
+                )?;
+                *row = CounterInputsRow {
+                    group: root.handle,
+                    withdrawing,
+                    hq_distance: None,
+                    leader_enroute_days: None,
+                    border_war_presence: None,
+                    invasion_source_distance: None,
+                };
+            }
         }
         let unread = (count - len) as u32 + missing;
         Ok(if unread == 0 {
@@ -552,64 +593,65 @@ fn counter_inputs(
     let outcome = result.unwrap_or_else(|reason| Outcome::Unavailable { reason });
     // Every established root identity/withdrawing byte is copied before the
     // optional tooltip suffix. A failure here does not truncate those roots.
-    // Independent group controls use the authenticated registry census even
-    // if a primary withdrawing read failed; their selecting read is attempted
-    // once per current root and is never retried by a later consumer.
-    if let Some(controls) = commanders.as_deref_mut() {
-        for (index, root) in roots.iter().take(source.len()).enumerate() {
-            if index >= controls.len() {
-                break;
-            }
-            let pointer = counter_tooltips::direct_leader(memory, root.pointer);
-            let prior = controls[..index]
-                .iter()
-                .find(|row| row.pointer == pointer && pointer.is_ok());
-            let (leader, enroute_days) = if let Some(prior) = prior {
-                (prior.leader, prior.enroute_days)
-            } else {
-                let leader = pointer.and_then(|pointer| {
-                    counter_tooltips::authenticate_leader(memory, base, pointer)
-                });
-                let enroute_days = counter_tooltips::leader_enroute_observed(
-                    memory, base, game_state, pointer, leader,
-                );
-                (leader, enroute_days)
+    let established = outcome.len();
+    let mut resolver = registry::HeaderResolver::default();
+    for first in (0..established).step_by(COUNTER_BATCH) {
+        let end = (first + COUNTER_BATCH).min(established);
+        let batch = &roots[first..end];
+        gather_counter_records(
+            memory,
+            batch,
+            &COUNTER_SUFFIX_LAYOUT,
+            &mut suffix,
+            &mut complete,
+        );
+        for (index, (root, row)) in batch.iter().zip(&mut output[first..end]).enumerate() {
+            let record = Gathered::row(
+                &COUNTER_SUFFIX_LAYOUT,
+                &COUNTER_SUFFIX_MAP,
+                &suffix,
+                &complete,
+                index,
+            );
+            row.hq_distance = record.get::<i32>(HQ_DISTANCE).or_else(|| {
+                root.pointer
+                    .checked_add(HQ_DISTANCE)
+                    .and_then(|address| read(memory, address))
+            });
+            row.border_war_presence = record
+                .get::<u64>(BORDER_WAR)
+                .or_else(|| {
+                    root.pointer
+                        .checked_add(BORDER_WAR)
+                        .and_then(|address| read::<u64>(memory, address))
+                })
+                .map(|pointer| u8::from(pointer != 0));
+            // `leader_enroute_days` with the gathered leader pointer.
+            let leader = match record.get::<u64>(LEADER) {
+                Some(pointer) => {
+                    usize::try_from(pointer).map_err(|_| "HQ cooldown leader pointer overflow")
+                }
+                None => counter_tooltips::direct_leader(memory, root.pointer),
             };
-            controls[index] = DirectCommander {
-                group: root.handle,
-                pointer,
+            let observed = leader.and_then(|pointer| {
+                counter_tooltips::authenticate_leader(memory, base, pointer, &mut resolver)
+            });
+            row.leader_enroute_days = counter_tooltips::leader_enroute_observed(
+                memory,
+                base,
+                game_state,
                 leader,
-                enroute_days,
-            };
+                observed,
+                &mut resolver,
+            )
+            .ok();
+            row.invasion_source_distance =
+                record.get::<i32>(INVASION_SOURCE_DISTANCE).or_else(|| {
+                    root.pointer
+                        .checked_add(INVASION_SOURCE_DISTANCE)
+                        .and_then(|address| read(memory, address))
+                });
         }
-    }
-    for (index, (root, row)) in roots
-        .iter()
-        .zip(output.iter_mut())
-        .take(outcome.len())
-        .enumerate()
-    {
-        row.hq_distance = root
-            .pointer
-            .checked_add(HQ_DISTANCE)
-            .and_then(|address| read(memory, address));
-        row.border_war_presence = root
-            .pointer
-            .checked_add(BORDER_WAR)
-            .and_then(|address| read::<u64>(memory, address))
-            .map(|pointer| u8::from(pointer != 0));
-        row.leader_enroute_days = match commanders.as_deref() {
-            Some(controls) => controls
-                .get(index)
-                .and_then(|control| control.enroute_days.ok()),
-            None => {
-                counter_tooltips::leader_enroute_days(memory, base, game_state, root.pointer).ok()
-            }
-        };
-        row.invasion_source_distance = root
-            .pointer
-            .checked_add(INVASION_SOURCE_DISTANCE)
-            .and_then(|address| read(memory, address));
     }
     outcome
 }
@@ -708,6 +750,19 @@ pub fn walk_roots_buffer(
             if !read_slice(memory, address, &mut bytes[..slots * bucket::STRIDE]) {
                 return Err("orders registry buckets unreadable");
             }
+            // The chunk's buckets are validated first, in bucket order, and
+            // the groups they name, up to the first invalid bucket and within
+            // the output's capacity, are gathered in one guarded record copy
+            // (read order relaxed, owner 2026-10-12): their misses overlap.
+            // Each group is then decoded in bucket order with the single
+            // walk's checks, so healthy memory gives its roots and a
+            // persistent fault its first failure. From the first group the
+            // gather did not complete, the groups are read alone, as the
+            // single walk reads them: one counted fallback per chunk.
+            let mut pointers = [0_usize; 64];
+            let mut handles = [0_u64; 64];
+            let mut gathered = 0;
+            let mut invalid = None;
             for entry in bytes[..slots * bucket::STRIDE].chunks_exact(bucket::STRIDE) {
                 let probe = entry[bucket::DISTANCE];
                 if probe == 0 {
@@ -715,7 +770,8 @@ pub fn walk_roots_buffer(
                 }
                 if probe == bucket::TERMINAL_DISTANCE || u16::from(probe) > u16::from(distance) + 1
                 {
-                    return Err("orders registry bucket distance invalid");
+                    invalid = Some("orders registry bucket distance invalid");
+                    break;
                 }
                 occupied = occupied
                     .checked_add(1)
@@ -723,34 +779,73 @@ pub fn walk_roots_buffer(
                 let handle =
                     u64::from_le_bytes(entry[bucket::TYPE..bucket::OBJECT].try_into().unwrap());
                 if handle as u32 != REFERENCE_TYPE {
-                    return Err("orders registry handle type mismatch");
+                    invalid = Some("orders registry handle type mismatch");
+                    break;
                 }
-                if copied == output.len() {
+                if copied + gathered == output.len() {
                     continue;
                 }
-                let pointer = usize::try_from(u64::from_le_bytes(
+                let Ok(pointer) = usize::try_from(u64::from_le_bytes(
                     entry[bucket::OBJECT..bucket::STRIDE].try_into().unwrap(),
-                ))
-                .map_err(|_| "orders group address overflow")?;
-                let identity =
-                    read::<[u8; 16]>(memory, pointer).ok_or("orders group identity unreadable")?;
-                let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap());
+                )) else {
+                    invalid = Some("orders group address overflow");
+                    break;
+                };
+                pointers[gathered] = pointer;
+                handles[gathered] = handle;
+                gathered += 1;
+            }
+            let mut records = [0_u8; 64 * ROOT_STRIDE];
+            let completed = if gathered == 0 {
+                0
+            } else {
+                memory.copy_records(
+                    crate::memory::RecordSources::Pointers(&pointers[..gathered]),
+                    &ROOT_LAYOUT,
+                    &mut records[..gathered * ROOT_STRIDE],
+                )
+            };
+            if completed < gathered * ROOT_FIELDS.len() {
+                crate::batch_fallback::record(crate::batch_fallback::Batch::OrderRoots);
+            }
+            for index in 0..gathered {
+                let (pointer, handle) = (pointers[index], handles[index]);
+                let mut record = [0_u8; ROOT_STRIDE];
+                // Identity and country; the fields a gather completed name
+                // the one that failed.
+                let fields = if completed >= (index + 1) * ROOT_FIELDS.len() {
+                    record.copy_from_slice(&records[index * ROOT_STRIDE..][..ROOT_STRIDE]);
+                    ROOT_FIELDS.len()
+                } else {
+                    memory.copy_records(
+                        crate::memory::RecordSources::Pointers(&[pointer]),
+                        &ROOT_LAYOUT,
+                        &mut record,
+                    )
+                };
+                if fields == 0 {
+                    return Err("orders group identity unreadable");
+                }
+                let vtable = u64::from_le_bytes(record[..8].try_into().unwrap());
                 if ![normal_vtable, group_vtable].contains(&vtable) {
                     return Err("orders group vtable mismatch");
                 }
-                if u64::from_le_bytes(identity[8..].try_into().unwrap()) != handle {
+                if u64::from_le_bytes(record[8..16].try_into().unwrap()) != handle {
                     return Err("orders group registry handle mismatch");
                 }
-                let country = pointer
-                    .checked_add(COUNTRY)
-                    .and_then(|p| read::<u32>(memory, p))
-                    .ok_or("orders group country unreadable")?;
+                if fields < ROOT_FIELDS.len() {
+                    return Err("orders group country unreadable");
+                }
+                let country = u32::from_le_bytes(record[16..].try_into().unwrap());
                 output[copied] = Root {
                     pointer,
                     handle,
                     country,
                 };
                 copied += 1;
+            }
+            if let Some(reason) = invalid {
+                return Err(reason);
             }
             first += slots as u32;
         }

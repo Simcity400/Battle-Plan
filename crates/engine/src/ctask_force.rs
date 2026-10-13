@@ -15,7 +15,10 @@ use crate::{
 };
 
 mod fresh_eta;
-pub use fresh_eta::{FreshEtaInputs, MissionRiskInputs, OriginalRiskShips};
+pub use fresh_eta::{
+    CENSUS_KEYS, CensusIdentity, Censuses, Certificate, FreshEtaInputs, HeldCensus,
+    MissionRiskInputs, OriginalRiskShips,
+};
 mod cached_name;
 pub(crate) use cached_name::cached_name_buffer;
 pub use cached_name::{cached_name, cached_name_demand};
@@ -235,9 +238,60 @@ pub struct SupplyOrigins<'a> {
 /// Attached naval-HQ array whose count gates combat presentation.
 pub const ATTACHED_HEADQUARTERS: usize = 0x728;
 
-/// Authenticate embedded naval mission from its vtable and task-force
-/// back-pointer in the first 16 bytes. Every reader checks each observed
-/// force independently of sibling buffer capacity.
+/// Task-force fields the hourly counter walk's readers (counter inputs,
+/// cached name, supply, port mission, missions, map motion and fresh ETA)
+/// read for each task force, each span enclosing their exact reads: the
+/// identity and handle; the supply scalars, received ratio and origin
+/// header; the stats pointer; the combat count; the owners, location and
+/// both routes; the movement and arrow scalars; the cached name; the risk
+/// flags; the fleet and ship roster; the embedded naval mission and mission
+/// id, region status, bombardment region and accessible regions; the
+/// underway and convoy words; the repair link and detached activity; the
+/// last repair mission and fuel; the local accumulator header; and the
+/// attached-HQ array. The walk's caller gathers them in one guarded call per
+/// task force ([`crate::cship::SwitchedObject`]).
+pub const TASK_FIELDS: [(usize, usize); 30] = {
+    use crate::{cnaval_mission as mission, cunit_supply_inputs as supply};
+    [
+        (0, 32),
+        (supply::ASKED, 16),
+        (supply::RECEIVED, 32),
+        (supply::FROM_STATE, 32),
+        (supply::AIRPLANE_DEMAND, 32),
+        (0x138, 8),
+        (0x1a8, 16),
+        (cunit::ROSTER_OWNER, 32),
+        (cunit::ORDINARY_ROUTE_DATA, 32),
+        (cunit::ALTERNATE_ROUTE_DATA, 32),
+        (0x240, 16),
+        (cached_name::NAME, crate::msvc_string::STRIDE),
+        (0x2ae, 2),
+        (0x2f8, 8),
+        (FLEET, 8),
+        (0x348, 16),
+        (NAVAL_MISSION, 24),
+        (NAVAL_MISSION + mission::IS_IN_REGIONS, 8),
+        (NAVAL_MISSION + mission::BOMBARDMENT_REGION, 8),
+        (0x3d0, 8),
+        (0x400, 8),
+        (NAVAL_MISSION + mission::ACCESSIBLE_REGIONS, 16),
+        (0x468, 8),
+        (0x478, 8),
+        (REPAIR_PARENT, 16),
+        (REPAIR_LAST_MISSION, 24),
+        (0x610, 16),
+        (0x668, 16),
+        (ATTACHED_HEADQUARTERS, 16),
+        (0x740, 16),
+    ]
+};
+
+/// Authenticates a task force's embedded CNavalMission from the first 16 bytes
+/// read at [`NAVAL_MISSION`]: the CNavalMission vtable, then the `+0x08`
+/// task-force back-pointer (mission construction initializes both during
+/// task-force construction). Every reader of the mission checks it for every
+/// task force it observes, so no reader's authentication depends on another
+/// reader's buffer having room.
 pub(crate) fn authenticate_mission(
     header: &[u8],
     base: usize,
@@ -427,6 +481,12 @@ impl MissionRiskDemand {
     }
 }
 
+/// Task forces whose fresh ETA operands the motion collector captured, and
+/// the QPC ticks those captures took, cumulative (diagnostics only: no row
+/// depends on them).
+pub static FRESH_ETA: [std::sync::atomic::AtomicU64; 2] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
+
 /// Collects [`MapMotionRow`]s for the task forces the fleet walk authenticates,
 /// through [`cunit::read_map_motion`], the reader railway guns share. A full row
 /// buffer or route arena truncates the table; a bad read makes it unavailable.
@@ -521,6 +581,15 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
             fresh_hour: None,
             fresh: fresh_eta::Reader::new(memory, base, game_state),
         }
+    }
+
+    /// Serve the fresh ETA reader the certified censuses in `censuses.held`
+    /// (country and fleet-leader modifier trees) while `censuses.certify`
+    /// still gives the certificate each was read under, and log every
+    /// certified census it uses under the certificate taken before it.
+    pub fn with_censuses(mut self, censuses: Censuses<'a>) -> Self {
+        self.fresh = self.fresh.with_censuses(censuses);
+        self
     }
 
     /// Supplies this callback's simulation hour. The legacy constructor has no
@@ -771,6 +840,7 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
             &mut self.combat_registry,
         )
         .ok();
+        let started = crate::clock::qpc();
         let fresh = self.fresh_hour.map(|hour| {
             if let Some((demand, guard)) = risk {
                 let contributor = demand.contributor();
@@ -788,6 +858,13 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
                 (eta, owner, None)
             }
         });
+        if fresh.is_some() {
+            FRESH_ETA[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            FRESH_ETA[1].fetch_add(
+                crate::clock::since(started),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
         self.rows[self.len] = MapMotionRow {
             id,
             target: motion.target,

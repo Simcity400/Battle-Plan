@@ -80,7 +80,7 @@ fn world(countries: usize) -> (Vec<u8>, Vec<DivisionSeed>) {
     (bytes, seeds)
 }
 #[test]
-fn ordered_contributors_signed_amounts_supply_and_whole_list_capacity() {
+fn ordered_contributors_signed_amounts_and_whole_list_capacity() {
     let (bytes, mut seeds) = world(1);
     let base = bytes.as_ptr() as usize;
     let memory = SliceMemory {
@@ -111,7 +111,14 @@ fn ordered_contributors_signed_amounts_supply_and_whole_list_capacity() {
             unread_rows: 10
         }
     );
+    // The supply ratio and grace are DivisionStatus's record; an unread one
+    // never withholds the land rows.
     seeds[0].counter_supply_status = None;
+    seeds[1].supply_grace_maximum = None;
+    seeds[2].supply_grace_remaining = None;
+    let r = capture(&seeds, &mut entries);
+    assert_eq!(r.outcome, Outcome::Rows { len: 10 });
+    seeds[0].naval_transfer_membership = None;
     assert!(matches!(
         capture(&seeds, &mut entries).outcome,
         Outcome::Unavailable { .. }
@@ -131,8 +138,8 @@ fn failed_headers_entries_and_identity_are_unavailable() {
         let mut seed = seeds[0];
         match missing {
             0 => seed.manpower_values = None,
-            1 => seed.supply_grace_maximum = None,
-            2 => seed.supply_grace_remaining = None,
+            1 => seed.naval_transfer_membership = None,
+            2 => seed.handle = None,
             _ => unreachable!(),
         }
         assert!(matches!(

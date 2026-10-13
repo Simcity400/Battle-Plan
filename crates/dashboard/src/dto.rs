@@ -62,6 +62,23 @@ pub struct BranchMetadata {
     pub sample_boundary: String,
     /// Reported capture losses, not a claim that recovered frames are absent.
     pub gaps: Vec<RecordingGap>,
+    /// Recorded event losses: intervals between two reads whose recorded
+    /// events are incomplete because the recorder was detached for part of
+    /// them. They are not gaps; a lost frame at either read is its own gap.
+    /// Absent when the branch has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub event_losses: Option<Vec<RecordingEventLoss>>,
+}
+
+/// An interval between the reads of `after_hour` and `hour` whose recorded
+/// events are incomplete (`ControlRecord::EventLoss`).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingEventLoss {
+    pub after_hour: i32,
+    pub hour: i32,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]

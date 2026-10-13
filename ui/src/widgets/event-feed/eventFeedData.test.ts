@@ -256,8 +256,64 @@ test('technology completion rows are outside the Event feed contract', () => {
     /event feed reply is malformed/);
 });
 
+test('native causes say how an event happened, name the ally and the state, and older rows say none was recorded', () => {
+  const cause = { how: 'a call to arms', within: 'a diplomatic action', conference: null, state: null,
+    ally: 'mod | ally', reason: 'ally', notes: ['against every enemy of the ally side'] };
+  const data = validateEventFeedReply(reply([
+    row('warJoined', 'warsPeace', 120, { exact: true, tags: ['mod | joiner', 'mod | enemy'],
+      participants: ['mod | joiner', 'mod | enemy'], cause }),
+    row('stateTransferred', 'warsPeace', 121, { exact: true, tags: ['mod | taker', 'mod | loser'],
+      participants: ['mod | taker', 'mod | loser'], cause: { ...cause, how: 'an annexation', ally: null, reason: null,
+        notes: [], state: 64, conference: '30064771121' } }),
+    row('warEnded', 'warsPeace', 122, { exact: true, tags: ['mod | a', 'mod | b'], participants: ['mod | a', 'mod | b'] }),
+  ]));
+  const rows = filteredEventRows(data, all);
+  const state = (_hour: number, id: number) => `Danzig (${id})`;
+  assert.equal(eventDescription(rows[2].item, tag => tag, state),
+    'mod | joiner joined the war against mod | enemy through a call to arms, alongside mod | ally');
+  assert.equal(eventDescription(rows[1].item, tag => tag, state),
+    'mod | taker took Danzig (64) from mod | loser through an annexation');
+  assert.equal(eventDescription(rows[0].item, tag => tag), 'mod | a and mod | b were no longer at war');
+  const joined = eventTooltip(rows[2].item, tag => tag)[0].rows!;
+  assert.deepEqual(joined.slice(1, 5).map(item => [item.label, item.value]), [['How', 'a call to arms'],
+    ['During', 'a diplomatic action'], ['Hostility reason', 'ally'], ['against every enemy of the ally side', undefined]]);
+  assert.equal(eventTooltip(rows[1].item, tag => tag)[0].rows!.find(item => item.label === 'Peace conference')?.value, '30064771121');
+  assert.equal(eventTooltip(rows[0].item, tag => tag)[0].rows!.find(item => item.label === 'Cause')?.value,
+    'Not recorded in this recording');
+  assert.throws(() => validateEventFeedReply({ ...data, rows: [{ ...data.rows[0], cause: { ...cause, ally: 7 } }] }), /malformed/);
+  assert.throws(() => validateEventFeedReply(reply([row('lawChanged', 'politics', 120, { cause })])), /malformed/);
+});
+
+test('a nuclear strike names its bomb, launcher and target owner, with totals only for fully recorded parts', () => {
+  const strike = { province: 13000, state: 2, buildingLevels: 2.5, warSupport: -20, units: 3, manpowerLost: 2500,
+    equipmentLost: null, notRecorded: ['equipment: equipment destruction writers not forwarded (1×)'] };
+  const data = reply([row('nuclearStrike', 'warsPeace', 115, {
+    exact: true, readHour: 116, tags: ['mod | country', 'mod,partner'], participants: ['mod | country', 'mod,partner'],
+    item: 0, strike,
+  }), row('nuclearStrike', 'warsPeace', 117, {
+    exact: true, readHour: 117, tags: ['mod | country'], participants: ['mod | country', null],
+    strike: { ...strike, state: null, notRecorded: [] },
+  })]);
+  data.items = [{ ...named, name: 'Thermonuclear Bomb' }];
+  const rows = filteredEventRows(validateEventFeedReply(data), all);
+  const at = (hour: number) => rows.find(candidate => candidate.item.event.hour === hour)!.item;
+  assert.equal(eventDescription(at(115), tag => tag), 'mod | country dropped Thermonuclear Bomb on mod,partner');
+  assert.equal(eventDescription(at(117), tag => tag),
+    'mod | country dropped a nuclear bomb of a type not known on a province without a state');
+  const tooltip = eventTooltip(at(115), tag => tag, (hour, state) => hour === 115 && state === 2 ? 'Moscow' : null)[0].rows!;
+  const value = (label: string) => tooltip.find(entry => entry.label === label)?.value;
+  assert.equal(value('State'), 'Moscow');
+  assert.equal(value('Building levels destroyed'), (2.5).toLocaleString());
+  assert.equal(value('War support'), '-20%');
+  assert.equal(value('Equipment destroyed'), 'Not fully recorded');
+  assert.equal(value('Not recorded'), strike.notRecorded[0]);
+  assert.throws(() => validateEventFeedReply({ ...data, rows: [{ ...data.rows[0], strike: undefined }] }), /malformed/);
+  assert.throws(() => validateEventFeedReply(reply([row('lawChanged', 'politics', 120, { strike })])), /malformed/);
+});
+
 test('kinds without game artwork have their own icon', async () => {
   const { EVENT_ICONS } = await import('./definition.ts');
   assert.deepEqual([EVENT_ICONS.warDeclared, EVENT_ICONS.civilWarWarTransferred, EVENT_ICONS.peace, EVENT_ICONS.capitulated,
     EVENT_ICONS.becameSubject, EVENT_ICONS.rulingPartyChanged], ['swords', 'flag-torn', 'olive-branch', 'flag', 'link', 'ballot']);
+  assert.deepEqual([EVENT_ICONS.warEnded, EVENT_ICONS.peaceConferenceStarted, EVENT_ICONS.nuclearStrike], ['olive-branch', 'handshake', 'sunburst']);
 });

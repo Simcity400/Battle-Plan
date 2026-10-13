@@ -142,10 +142,15 @@ impl World {
                 row + sweather_per_province::ID,
                 &(slot as u32).to_le_bytes(),
             );
-            put(
-                row + sweather_per_province::TEMPERATURE,
-                &((slot as i64 % 100 - 50) * 100_000).to_le_bytes(),
-            );
+            for word in [
+                sweather_per_province::TEMPERATURE,
+                sweather_per_province::STAGED_TEMPERATURE,
+            ] {
+                put(
+                    row + word,
+                    &((slot as i64 % 100 - 50) * 100_000).to_le_bytes(),
+                );
+            }
             put(
                 row + sweather_per_province::RAW_MUD,
                 &[(slot % 2 * 7) as u8],
@@ -192,7 +197,12 @@ impl World {
             // +/-1..2 degrees and full fixed5 fractions, selected deterministically.
             let step =
                 ((slot * 131 % 200_000 + 1) as i64) * if slot.is_multiple_of(2) { 1 } else { -1 };
-            self.bytes[offset..offset + 8].copy_from_slice(&raw.wrapping_add(step).to_le_bytes());
+            let committed = raw.wrapping_add(step).to_le_bytes();
+            self.bytes[offset..offset + 8].copy_from_slice(&committed);
+            // A commit leaves the staged temperature equal to the committed one.
+            let staged = offset - sweather_per_province::TEMPERATURE
+                + sweather_per_province::STAGED_TEMPERATURE;
+            self.bytes[staged..staged + 8].copy_from_slice(&committed);
         }
         count
     }
@@ -210,8 +220,12 @@ fn temperature_delta(
             .encode_change(Some(old), previous_key, &mut bytes)
             .unwrap()
         {
-            assert_eq!(new.delta(Some(old)).unwrap().unwrap().mask, 1 << 4);
-            changed += 1;
+            // Each typed read anchors the pass, whose checksum slot zero carries.
+            let mask = new.delta(Some(old)).unwrap().unwrap().mask & !(1 << 13);
+            if mask != 0 {
+                assert_eq!(mask, 1 << 4);
+                changed += 1;
+            }
             previous_key = new.key();
         }
     }
@@ -287,9 +301,7 @@ fn province_hover_weather_bench() {
                 &live,
                 WeatherCopyContext {
                     base: 0,
-                    hour: 0,
                     game_state: world.state(),
-                    attack_guard: Ok(()),
                 },
                 &mut job,
             );
@@ -297,7 +309,7 @@ fn province_hover_weather_bench() {
             assert!(report.raw_ok);
             captured.raw_mode = true;
             let start = Instant::now();
-            captured.decode_weather_payload(0, &job, &mut [0; N]);
+            captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
             let decoded = start.elapsed().as_secs_f64() * 1e6;
             assert_eq!(captured.provinces.outcome, Outcome::Rows { len: provinces });
             let [_, TableView::Complete(rows)] = captured.tables() else {
@@ -344,9 +356,7 @@ fn province_hover_weather_bench() {
             &memory,
             WeatherCopyContext {
                 base: 0,
-                hour: 0,
                 game_state: world.state(),
-                attack_guard: Ok(()),
             },
             &mut job,
         );
@@ -367,6 +377,91 @@ fn province_hover_weather_bench() {
             delta.0,
             delta.1,
             provinces * 9
+        );
+    }
+}
+
+/// Where a weather hour's guarded read time goes at the vanilla census size:
+/// province records, province clocks, the two display arrays and the
+/// province window one ordinary pass visits (`provinces_per_update`, 584 in
+/// vanilla `common/weather.txt`). Cold: the world is evicted from cache
+/// before each pass, as a game hour finds it.
+/// `cargo test --release -p collector weather_component_bench -- --ignored --nocapture`
+#[test]
+#[ignore = "synthetic guarded weather component timing"]
+fn weather_component_bench() {
+    let world = World::new(13_414);
+    let provinces = world.array().count as usize;
+    let mut evict = vec![0_u8; 256 << 20];
+    let province_layout = RecordLayout::new(
+        &sweather_per_province::FIELDS,
+        sweather_per_province::RECORD_BYTES,
+    )
+    .unwrap();
+    let clock_layout = RecordLayout::new(
+        &sweather_per_province::CLOCK_FIELDS,
+        sweather_per_province::CLOCK_RECORD_BYTES,
+    )
+    .unwrap();
+    let live = unsafe { LiveMemory::new() };
+    let clocks = Array::read(
+        &SliceMemory {
+            base: world.origin,
+            bytes: &world.bytes,
+        },
+        world.origin + MANAGER + cweather_manager::PROVINCE_CLOCKS,
+        sweather_per_province::CLOCK_STRIDE,
+    )
+    .unwrap();
+    let window = Array {
+        data: world.array().data,
+        count: 584,
+    };
+    let mut payload = DensePayload::new(provinces * sweather_per_province::RECORD_BYTES);
+    let mut clock_payload =
+        DensePayload::new(provinces * sweather_per_province::CLOCK_RECORD_BYTES);
+    let mut samples: [Vec<f64>; 3] = Default::default();
+    for round in 0..15 {
+        for (part, sample) in samples.iter_mut().enumerate() {
+            evict.fill(round as u8);
+            black_box(&evict);
+            let started = Instant::now();
+            match part {
+                0 => {
+                    payload.clear();
+                    payload.prepare(Some(world.array()), province_layout.stride());
+                    payload.capture(&live, sweather_per_province::STRIDE, &province_layout);
+                }
+                1 => {
+                    clock_payload.clear();
+                    clock_payload.prepare(Some(clocks), clock_layout.stride());
+                    clock_payload.capture(
+                        &live,
+                        sweather_per_province::CLOCK_STRIDE,
+                        &clock_layout,
+                    );
+                }
+                _ => {
+                    payload.clear();
+                    payload.prepare(Some(window), province_layout.stride());
+                    payload.capture(&live, sweather_per_province::STRIDE, &province_layout);
+                }
+            }
+            sample.push(started.elapsed().as_secs_f64() * 1e3);
+        }
+    }
+    for (name, mut sample) in [
+        "province records",
+        "province clocks",
+        "one pass window (584)",
+    ]
+    .into_iter()
+    .zip(samples)
+    {
+        sample.sort_by(f64::total_cmp);
+        println!(
+            "WEATHER_COMPONENT {name}: {:.3} ms median ({:.3}..{:.3})",
+            sample[7], sample[0], sample[14]
         );
     }
 }

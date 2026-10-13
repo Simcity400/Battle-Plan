@@ -94,8 +94,8 @@ pub(crate) fn read_hits(
         8,
         EntryOutput::Slice(&mut buffers.plane_naval_hits),
         &mut buffers.plane_hit_lengths[1],
-        |p| crate::naval_combat_hit::read(memory, base, p),
-        true,
+        |memory, p| crate::naval_combat_hit::read(memory, base, p),
+        Some(&crate::naval_combat_hit::RECORD),
     )?;
     for (index, array) in arrays[1..].iter().copied().enumerate() {
         row.air_hits[index] = append_entries(
@@ -104,8 +104,8 @@ pub(crate) fn read_hits(
             8,
             EntryOutput::Slice(&mut buffers.plane_air_hits),
             &mut buffers.plane_hit_lengths[0],
-            |p| crate::naval_combat_air_hit::read(memory, base, p),
-            true,
+            |memory, p| crate::naval_combat_air_hit::read(memory, base, p),
+            Some(&crate::naval_combat_air_hit::RECORD),
         )?;
     }
     Ok(())
@@ -329,6 +329,9 @@ mod presentation_cache_tests {
             weapon_terms: &mut Vec::new(),
             weapon_lengths: [0; 2],
             weapon_required: [0; 2],
+            doctrine_keys: Default::default(),
+            term_metadata: Default::default(),
+            source_memo: Default::default(),
             commander_inputs: crate::walk::Buffer::Fixed(&mut []),
             commander_inputs_len: 0,
             commander_inputs_required: 0,

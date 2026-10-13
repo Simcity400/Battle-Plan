@@ -69,6 +69,20 @@ pub struct Presentation {
 }
 
 impl Presentation {
+    /// A copy whose vectors are allocated fallibly, as a capture's are.
+    pub fn copied(&self) -> std::io::Result<Self> {
+        use crate::allocation::copy_vec;
+        let [first, second, third] = &self.fallback_text;
+        Ok(Self {
+            fallback_text: [copy_vec(first)?, copy_vec(second)?, copy_vec(third)?],
+            portraits: copy_vec(&self.portraits)?,
+            portrait_text: copy_vec(&self.portrait_text)?,
+            role_traits: copy_vec(&self.role_traits)?,
+            role_trait_text: copy_vec(&self.role_trait_text)?,
+            ..*self
+        })
+    }
+
     pub fn allocated_bytes(&self) -> usize {
         self.fallback_text.iter().map(Vec::capacity).sum::<usize>()
             + self.portrait_text.capacity()

@@ -24,6 +24,27 @@ fn suspension_flags_keep_raw_bytes_and_refuse_short_reads() {
 }
 
 #[test]
+fn temperature_pass_words_keep_native_widths_and_refuse_short_reads() {
+    let mut bytes = vec![0; SEED + 4];
+    bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[UPDATE_CURSOR..UPDATE_CURSOR + 4].copy_from_slice(&13_413_i32.to_le_bytes());
+    bytes[PROVINCES_PER_UPDATE..PROVINCES_PER_UPDATE + 4].copy_from_slice(&(-1_i32).to_le_bytes());
+    bytes[SEED..SEED + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let reader = Reader::with_manager(&memory, 0, 0x1000).unwrap();
+    assert_eq!(reader.temperature_words(), Ok((13_413, -1, u32::MAX)));
+    let short = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes[..SEED + 3],
+    };
+    let reader = Reader::with_manager(&short, 0, 0x1000).unwrap();
+    assert!(reader.temperature_words().is_err());
+}
+
+#[test]
 fn custom_sea_reads_only_the_live_regions_ordered_active_words() {
     const IMAGE: usize = 0x1400_0000;
     const START: usize = 0x1000;

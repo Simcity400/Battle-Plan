@@ -176,8 +176,8 @@ politics_kind!(
     Stop = 11
 );
 
-/// All links are raw country IDs; tokens join LexicalTokens, characters join
-/// Characters, and object references retain all native CReference bits.
+/// All links are raw country IDs; tokens join LexicalTokens, characters join Characters,
+/// and object references retain all native reference bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PowerIdentity {
     pub action: PowerAction,

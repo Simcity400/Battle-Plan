@@ -8,7 +8,6 @@ fn fixture_capacities() -> Capacities {
         wars: 8,
         war_links: 8,
         naval_access: 8,
-        ..Default::default()
     }
 }
 
@@ -115,7 +114,7 @@ fn appended_feature_failures_preserve_features_and_recover_through_the_codec() {
                 instant_decisions: replay::rows::Recorded::Value(instant),
                 runtime_scalars: replay::rows::Recorded::Value(
                     replay::rows::PoliticalRuntimeScalars {
-                        sample_hour: hour as i32,
+                        sample_hour: replay::rows::PacketHour::Host,
                         ..Default::default()
                     },
                 ),
@@ -216,17 +215,11 @@ fn one_failed_input_leaves_the_others_and_the_hourly_features_fail_too() {
     captured.fail_capture(1, false, "worker stopped");
     let outcomes = captured.outcomes();
     // SimulationFeatures is hourly: `human_ai` can be toggled at runtime.
-    // NavalRegionAccess is daily: off its slot a failure is a skip.
-    assert!(outcomes[..5].iter().all(|outcome| *outcome
+    // NavalRegionAccess is hourly too, so its failure is no skip.
+    assert!(outcomes[..6].iter().all(|outcome| *outcome
         == Outcome::Unavailable {
             reason: "worker stopped"
         }));
-    assert_eq!(
-        outcomes[5],
-        Outcome::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON
-        }
-    );
     captured.links.outcome = Outcome::Rows { len: 1 };
     captured.links.rows[0] = crelation_status::LinkRow {
         country: 5,
@@ -301,7 +294,7 @@ fn ordered_enemy_suffix_preserves_current_occurrences_and_refuses_independently(
     assert_eq!(
         rows[0].ordered,
         replay::rows::Recorded::Value(Some(replay::rows::OrderedEnemyInputs {
-            sample_hour: 47,
+            sample_hour: replay::rows::PacketHour::Host,
             entries: vec![7, 0, 7, 9],
         }))
     );
@@ -311,7 +304,7 @@ fn ordered_enemy_suffix_preserves_current_occurrences_and_refuses_independently(
     assert_eq!(
         read(&captured)[0].ordered,
         replay::rows::Recorded::Value(Some(replay::rows::OrderedEnemyInputs {
-            sample_hour: 47,
+            sample_hour: replay::rows::PacketHour::Host,
             entries: Vec::new(),
         }))
     );
@@ -326,4 +319,61 @@ fn ordered_enemy_suffix_preserves_current_occurrences_and_refuses_independently(
         read(&captured)[0].ordered,
         replay::rows::Recorded::Value(None)
     );
+}
+
+/// NavalRegionAccess is read every hour; a quiet hour publishes the held read
+/// without reading any navy, and an hour after the access setter or the navy
+/// reset ran reads afresh.
+#[test]
+fn quiet_region_access_hours_publish_the_held_read() {
+    use crate::world_input_changes::{self as changes, Domain, Held, Isolated};
+    let changes = Isolated::new();
+    let row = cstrategic_navy::AccessRow {
+        country: 7,
+        region: 12,
+        mode: 2,
+    };
+    let held = std::sync::Mutex::new(Held::new(Vec::new()));
+    {
+        let mut held = held.lock().unwrap();
+        let plan = held.plan(Domain::RegionAccess, &changes, false);
+        let plan = plan.read(Domain::RegionAccess, &changes);
+        held.settle(
+            Domain::RegionAccess,
+            &changes,
+            plan,
+            true,
+            |_| false,
+            |rows| changes::assign(rows, &[row]),
+        );
+    }
+    // No navy is readable: a fresh read fails, a carried hour does not.
+    let memory = engine::memory::SliceMemory {
+        base: 0,
+        bytes: &[],
+    };
+    let mut captured = Captured::with_capacities(&fixture_capacities());
+    crate::sampled_verify::begin_hour(3);
+    captured.capture_naval_access(&memory, 0, 0x1000, false, true, &changes, &held);
+    if changes::VERIFY {
+        assert!(matches!(
+            captured.naval_access.outcome,
+            Outcome::Unavailable { .. }
+        ));
+        return;
+    }
+    assert_eq!(captured.naval_access.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(captured.naval_access.rows[0], row);
+    // A full hour reads.
+    captured.capture_naval_access(&memory, 0, 0x1000, true, true, &changes, &held);
+    assert!(matches!(
+        captured.naval_access.outcome,
+        Outcome::Unavailable { .. }
+    ));
+    // The failed read held nothing, so the next quiet hour reads too.
+    captured.capture_naval_access(&memory, 0, 0x1000, false, true, &changes, &held);
+    assert!(matches!(
+        captured.naval_access.outcome,
+        Outcome::Unavailable { .. }
+    ));
 }

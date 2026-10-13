@@ -413,6 +413,12 @@ impl Space {
 /// `countries` canonical countries; country 1 is the overlord of every
 /// other one, and its owned vector holds all those subjects.
 fn overlord_census(countries: usize) -> (Vec<u8>, Vec<Row>) {
+    overlord_census_of(countries, |_| true)
+}
+
+/// [`overlord_census`] whose countries `is_subject` rejects own no relation and
+/// are no relation's endpoint.
+fn overlord_census_of(countries: usize, is_subject: impl Fn(usize) -> bool) -> (Vec<u8>, Vec<Row>) {
     let mut space = Space {
         bytes: vec![0; 0x2000],
     };
@@ -502,7 +508,7 @@ fn overlord_census(countries: usize) -> (Vec<u8>, Vec<Row>) {
     let mut hub_matrix = vec![0_u64; countries + 1];
     let mut hub_owned = Vec::new();
     let mut rows = Vec::new();
-    for subject in 2..=countries {
+    for subject in (2..=countries).filter(|&slot| is_subject(slot)) {
         let relation = space.alloc(0x68);
         p64(&mut space.bytes, relation, VTABLE_RVA as u64);
         p32(&mut space.bytes, relation + TYPE_ID, TYPE_VALUE);
@@ -684,4 +690,408 @@ fn owned_subject_walk_at_census_scale_is_linear_in_relations() {
             unread_rows: (COUNTRIES - 11) as u32
         }
     );
+}
+
+/// [`overlord_census`] whose overlord's owned vector also holds a relation
+/// of another type after every third subject, with every tenth subject
+/// relation retired but still installed: the census, the overlord's owned
+/// vector header and its serial rows.
+fn mixed_census(countries: usize) -> (Vec<u8>, Array, Vec<Row>) {
+    mixed_census_of(countries, |_| true)
+}
+
+/// [`mixed_census`] over [`overlord_census_of`].
+fn mixed_census_of(
+    countries: usize,
+    is_subject: impl Fn(usize) -> bool,
+) -> (Vec<u8>, Array, Vec<Row>) {
+    let (bytes, rows) = overlord_census_of(countries, is_subject);
+    let hub = |bytes: &[u8]| {
+        let memory = SliceMemory { base: 0, bytes };
+        let reader = Reader::new(&memory, 0, GS).unwrap();
+        let country = reader.countries.at(1).unwrap().unwrap();
+        let diplomacy = reader.diplomacy(country).unwrap();
+        let owned = reader
+            .array(diplomacy, cdiplomacy_status::OWNED_RELATIONS)
+            .unwrap();
+        let entries: Vec<u64> = (0..owned.count)
+            .map(|index| reader.element(owned, index).unwrap() as u64)
+            .collect();
+        (diplomacy, entries)
+    };
+    let (diplomacy, subjects) = hub(&bytes);
+    let mut space = Space { bytes };
+    let mut entries = Vec::new();
+    for (index, &relation) in subjects.iter().enumerate() {
+        entries.push(relation);
+        if index % 10 == 0 {
+            space.bytes[relation as usize + crelation::RETIRED] = 1;
+        }
+        if index % 3 == 2 {
+            let other = space.alloc(0x68);
+            p32(&mut space.bytes, other + TYPE_ID, 0x30d0);
+            entries.push(other as u64);
+        }
+    }
+    space.vector(diplomacy + cdiplomacy_status::OWNED_RELATIONS, &entries);
+    let owned = Array {
+        data: u64::from_le_bytes(
+            space.bytes[diplomacy + cdiplomacy_status::OWNED_RELATIONS
+                ..diplomacy + cdiplomacy_status::OWNED_RELATIONS + 8]
+                .try_into()
+                .unwrap(),
+        ) as usize,
+        count: entries.len() as u32,
+    };
+    (space.bytes, owned, rows)
+}
+
+/// The batched owned walk over `memory` and the serial one over
+/// `serial_memory` (each its own source, so a one-shot fault meets each
+/// walk), each with fresh snapshot storage, `rows` rows and `names` name
+/// bytes: the batched walk's rows, names and outcome, then the serial walk's.
+fn batched_and_serial(
+    memory: &impl Memory,
+    serial_memory: &impl Memory,
+    rows: usize,
+    names: usize,
+) -> [(NameWalk, Vec<Row>, Vec<u8>); 2] {
+    let mut walks = [(); 2].map(|_| (vec![Row::default(); rows], vec![0; names]));
+    let [(new_rows, new_names), (old_rows, old_names)] = &mut walks;
+    let new = walk_owned(
+        memory,
+        0,
+        GS,
+        new_rows,
+        new_names,
+        &mut OwnedSnapshotScratch::default(),
+    );
+    let old = baseline::walk_owned(
+        serial_memory,
+        0,
+        GS,
+        old_rows,
+        old_names,
+        &mut OwnedSnapshotScratch::default(),
+    );
+    let [(new_rows, new_names), (old_rows, old_names)] = walks;
+    [(new, new_rows, new_names), (old, old_rows, old_names)]
+}
+
+/// On healthy memory the batched owned walk returns the serial walk's rows,
+/// names and outcome at 5,000 countries, truncated or not, with retired
+/// installed subjects and relations of another type among the entries, in
+/// fewer guarded copies.
+#[test]
+fn batched_subjects_match_the_serial_walk_at_scale() {
+    use crate::memory::{CountedMemory, ReadCounts};
+    const COUNTRIES: usize = 5_000;
+    let (bytes, _, expected) = mixed_census(COUNTRIES);
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let [batched, serial] = batched_and_serial(&memory, &memory, COUNTRIES, COUNTRIES * 6);
+    assert_eq!(batched.0.outcome, Outcome::Rows { len: COUNTRIES - 1 });
+    assert_eq!(batched.1[..COUNTRIES - 1], expected[..]);
+    assert_eq!(batched, serial);
+    let [batched, serial] =
+        batched_and_serial(&memory, &memory, COUNTRIES - 10, (COUNTRIES - 10) * 6);
+    assert_eq!(batched, serial);
+    assert!(matches!(
+        batched.0.outcome,
+        Outcome::Truncated { unread_rows: 9, .. }
+    ));
+    let counted = CountedMemory::new(memory);
+    let mut counts = [ReadCounts::ZERO; 2];
+    for (index, count) in counts.iter_mut().enumerate() {
+        let prior = ReadCounts::take_current();
+        let mut rows = vec![Row::default(); COUNTRIES];
+        let mut names = vec![0; COUNTRIES * 6];
+        let mut scratch = OwnedSnapshotScratch::default();
+        if index == 0 {
+            walk_owned(&counted, 0, GS, &mut rows, &mut names, &mut scratch);
+        } else {
+            baseline::walk_owned(&counted, 0, GS, &mut rows, &mut names, &mut scratch);
+        }
+        *count = ReadCounts::take_current();
+        prior.add_current();
+    }
+    let [new, old] = counts;
+    // Each subject's five head reads and four field reads are one gathered
+    // span; each entry and type word joins its batch.
+    assert!(
+        new.copy_calls + 8 * (COUNTRIES as u64 - 1) < old.copy_calls,
+        "{new:?} {old:?}"
+    );
+    assert!(new.spans < old.spans, "{new:?} {old:?}");
+}
+
+/// The faults the equality tests place: the overlord's owned entry 10 (in
+/// the first batch, which the walk reads before any membership scan of that
+/// vector), the type word of a relation of another type, bytes of a
+/// subject's head the serial walk never reads and a subject's autonomy
+/// ratio.
+fn subject_fault_sites(bytes: &[u8], owned: Array) -> [std::ops::Range<usize>; 4] {
+    let entry = |index: usize| {
+        let at = owned.data + index * 8;
+        u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize
+    };
+    // Every fourth entry from entry 3 is of another type.
+    let element = owned.data + 10 * 8;
+    let other = entry(3) + TYPE_ID;
+    let gap = entry(6) + SUBJECT + 4;
+    let ratio = entry(9) + AUTONOMY_RATIO;
+    [
+        element..element + 8,
+        other..other + 4,
+        gap..gap + 4,
+        ratio..ratio + 8,
+    ]
+}
+
+/// A persistent fault gives the serial walk's result: a batch it breaks is
+/// read again entry by entry, once, and counted once; the head gap breaks
+/// two batches, the overlord's and its subject's.
+#[test]
+fn a_persistent_subject_fault_gives_the_serial_result() {
+    use crate::batch_fallback::{Batch, Faulty, count};
+    let (bytes, owned, _) = mixed_census(200);
+    for (site, (range, counted)) in subject_fault_sites(&bytes, owned)
+        .into_iter()
+        .zip([1, 1, 2, 1])
+        .enumerate()
+    {
+        let before = count(Batch::Subjects);
+        let memory = Faulty::new(
+            SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            vec![range],
+            false,
+        );
+        let [batched, serial] = batched_and_serial(&memory, &memory, 200, 200 * 6);
+        assert_eq!(batched, serial, "site {site}");
+        assert_eq!(count(Batch::Subjects) - before, counted, "site {site}");
+        if site == 2 {
+            assert_eq!(batched.0.outcome, Outcome::Rows { len: 199 });
+        }
+    }
+}
+
+/// A one-shot fault never refuses more than the serial walk: whatever batch
+/// it breaks is read again entry by entry, so the batched walk keeps the
+/// healthy rows.
+#[test]
+fn a_one_shot_subject_fault_refuses_no_more_than_the_serial_walk() {
+    use crate::batch_fallback::Faulty;
+    let (bytes, owned, _) = mixed_census(200);
+    let healthy = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let [expected, _] = batched_and_serial(&healthy, &healthy, 200, 200 * 6);
+    for (site, range) in subject_fault_sites(&bytes, owned).into_iter().enumerate() {
+        let memory = Faulty::new(
+            SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            vec![range],
+            true,
+        );
+        let mut rows = vec![Row::default(); 200];
+        let mut names = vec![0; 200 * 6];
+        let walk = walk_owned(
+            &memory,
+            0,
+            GS,
+            &mut rows,
+            &mut names,
+            &mut OwnedSnapshotScratch::default(),
+        );
+        assert_eq!((walk, rows, names), expected, "site {site}");
+    }
+}
+
+/// Country `slot`'s diplomacy and owned vector header in a census image.
+fn owned_of(bytes: &[u8], slot: u32) -> (usize, Array) {
+    let memory = SliceMemory { base: 0, bytes };
+    let reader = Reader::new(&memory, 0, GS).unwrap();
+    let country = reader.countries.at(slot).unwrap().unwrap();
+    let diplomacy = reader.diplomacy(country).unwrap();
+    let owned = reader
+        .array(diplomacy, cdiplomacy_status::OWNED_RELATIONS)
+        .unwrap();
+    (diplomacy, owned)
+}
+
+/// The batched walk stops where the serial walk stops, with its partial
+/// rows, names and name demand, across batch boundaries and under every
+/// split of row and name capacity: a first null at an overlord's owned
+/// entry 0, 63 or 64, a duplicate entry in a later batch, a subject
+/// country whose only owned entry is null after the overlord's partly used
+/// last batch, and names of several lengths (an empty one and a long heap
+/// one among them) that run out before the rows do or after.
+#[test]
+fn batched_subjects_stop_where_the_serial_walk_stops() {
+    let (healthy, hub, _) = mixed_census(200);
+    // Every seventh subject relation names a long heap definition and every
+    // eleventh an empty one.
+    let mut named = Space {
+        bytes: healthy.clone(),
+    };
+    let long = named.alloc(0x40);
+    let empty = named.alloc(0x40);
+    let heap = named.alloc(32);
+    named.bytes[heap..heap + 22].copy_from_slice(b"a_much_longer_autonomy");
+    let name = long + autonomy_state_definition::NAME;
+    p64(&mut named.bytes, name, heap as u64);
+    p64(&mut named.bytes, name + msvc_string::LENGTH, 22);
+    p64(&mut named.bytes, name + msvc_string::CAPACITY, 31);
+    let name = empty + autonomy_state_definition::NAME;
+    p64(&mut named.bytes, name + msvc_string::CAPACITY, 15);
+    let entry = |bytes: &[u8], array: Array, index: usize| {
+        let at = array.data + index * 8;
+        u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize
+    };
+    let mut subject = 0;
+    for index in 0..hub.count as usize {
+        let relation = entry(&healthy, hub, index);
+        if u32::from_le_bytes(
+            healthy[relation + TYPE_ID..relation + TYPE_ID + 4]
+                .try_into()
+                .unwrap(),
+        ) != TYPE_VALUE
+        {
+            continue;
+        }
+        let definition = match subject {
+            n if n % 7 == 3 => Some(long),
+            n if n % 11 == 5 => Some(empty),
+            _ => None,
+        };
+        if let Some(definition) = definition {
+            p64(
+                &mut named.bytes,
+                relation + AUTONOMY_STATE,
+                definition as u64,
+            );
+        }
+        subject += 1;
+    }
+    let null_at = |bytes: &[u8], array: Array, index: usize| {
+        let mut bytes = bytes.to_vec();
+        p64(&mut bytes, array.data + index * 8, 0);
+        bytes
+    };
+    let duplicate = {
+        let mut bytes = named.bytes.clone();
+        let first = entry(&bytes, hub, 0);
+        p64(&mut bytes, hub.data + 70 * 8, first as u64);
+        bytes
+    };
+    let (_, last) = owned_of(&named.bytes, 200);
+    let images = [
+        named.bytes.clone(),
+        null_at(&named.bytes, hub, 0),
+        null_at(&named.bytes, hub, 63),
+        null_at(&named.bytes, hub, 64),
+        duplicate,
+        null_at(&named.bytes, last, 0),
+    ];
+    for (image, bytes) in images.iter().enumerate() {
+        let memory = SliceMemory { base: 0, bytes };
+        for (rows, names) in [
+            (200, 200 * 22),
+            (200, 50 * 6 + 3),
+            (200, 0),
+            (40, 200 * 22),
+            (63, 63 * 6),
+            (0, 0),
+        ] {
+            let [batched, serial] = batched_and_serial(&memory, &memory, rows, names);
+            assert_eq!(batched, serial, "image {image} rows {rows} names {names}");
+            if image > 0 {
+                assert!(
+                    matches!(batched.0.outcome, Outcome::Unavailable { .. }),
+                    "image {image} rows {rows} names {names}"
+                );
+            }
+        }
+    }
+}
+
+/// The batched walk resets its batch at every country and skips census
+/// slots as the serial walk does: the overlord's owned vector ends in a
+/// partly used batch, slot 2 is null and slot 3 an alias of country 4 (two
+/// countries that are no relation's endpoint), and country 4 owns its
+/// relation. Healthy, with country 4's only owned entry null, and with a
+/// later subject relation's name invalid after the name arena has run out
+/// with rows to spare, every capacity split matches the serial walk.
+#[test]
+fn batched_subjects_skip_null_and_alias_slots_and_refuse_late_invalid_names() {
+    let (mut bytes, hub, _) = mixed_census_of(200, |slot| slot != 2 && slot != 3);
+    assert_ne!(
+        hub.count % BATCH as u32,
+        0,
+        "the overlord's last batch is partial"
+    );
+    let word = |bytes: &[u8], at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+    let census = word(&bytes, GS + cgame_state::COUNTRIES) as usize;
+    let links = word(&bytes, GS + cgame_state::COUNTRY_LINKS) as usize;
+    let country_four = word(&bytes, census + 4 * 8);
+    p64(&mut bytes, census + 2 * 8, 0);
+    p64(&mut bytes, census + 3 * 8, country_four);
+    p32(&mut bytes, links + 3 * 4, 4);
+    let (_, four) = owned_of(&bytes, 4);
+    assert_eq!(four.count, 1);
+    let mut null_four = bytes.clone();
+    p64(&mut null_four, four.data, 0);
+    // The 150th subject relation in the overlord's vector names a definition
+    // whose inline name has no terminator.
+    let mut bad_name = Space {
+        bytes: bytes.clone(),
+    };
+    let definition = bad_name.alloc(0x40);
+    let name = definition + autonomy_state_definition::NAME;
+    bad_name.bytes[name..name + 7].copy_from_slice(b"puppetx");
+    p64(&mut bad_name.bytes, name + msvc_string::LENGTH, 6);
+    p64(&mut bad_name.bytes, name + msvc_string::CAPACITY, 15);
+    let late = (0..hub.count as usize)
+        .map(|index| word(&bytes, hub.data + index * 8) as usize)
+        .filter(|&relation| {
+            u32::from_le_bytes(
+                bytes[relation + TYPE_ID..relation + TYPE_ID + 4]
+                    .try_into()
+                    .unwrap(),
+            ) == TYPE_VALUE
+        })
+        .nth(150)
+        .unwrap();
+    p64(
+        &mut bad_name.bytes,
+        late + AUTONOMY_STATE,
+        definition as u64,
+    );
+    for (image, bytes) in [bytes, null_four, bad_name.bytes].iter().enumerate() {
+        let memory = SliceMemory { base: 0, bytes };
+        for (rows, names) in [
+            (200, 200 * 6),
+            (200, 50 * 6 + 3),
+            (200, 0),
+            (40, 200 * 6),
+            (0, 0),
+        ] {
+            let [batched, serial] = batched_and_serial(&memory, &memory, rows, names);
+            assert_eq!(batched, serial, "image {image} rows {rows} names {names}");
+            let refused = matches!(batched.0.outcome, Outcome::Unavailable { .. });
+            assert_eq!(
+                refused,
+                image > 0,
+                "image {image} rows {rows} names {names}"
+            );
+        }
+    }
 }

@@ -222,6 +222,7 @@ fn air_force_unchanged_tables_obey_variant_read_dates_and_gaps() {
             ..Default::default()
         }]));
     assert!(!crate::metadata::slot_read(
+        replay::format::FormatVersion::CURRENT,
         &before.metrics,
         TableId::VariantDefinitions,
         19
@@ -234,6 +235,7 @@ fn air_force_unchanged_tables_obey_variant_read_dates_and_gaps() {
     let mut after_gap = before.clone();
     after_gap.hour = 23;
     assert!(!crate::metadata::slot_read(
+        replay::format::FormatVersion::CURRENT,
         &after_gap.metrics,
         TableId::VariantDefinitions,
         23

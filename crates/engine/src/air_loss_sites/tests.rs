@@ -249,7 +249,7 @@ fn air_loss_current_cursor_layout_and_short_fields_are_guarded() {
 }
 
 #[test]
-fn air_loss_reload_cursor_country_and_signed_delta_changes_refuse_the_event() {
+fn air_loss_reload_cursor_record_and_signed_delta_changes_refuse_the_event() {
     let mut f = Fixture::new();
     let snapshot = f.before(0, 1);
     f.u32(WINDOW + loop_history_window::CURRENT_SLOT, 0);
@@ -260,11 +260,19 @@ fn air_loss_reload_cursor_country_and_signed_delta_changes_refuse_the_event() {
     );
     let mut f = Fixture::new();
     let snapshot = f.before(0, 1);
-    f.u32(AIR + cstrategic_air::COUNTRY, 3);
+    f.pointer(WINDOW + loop_history_window::RECORD_FIELDS, VALUES);
     assert_eq!(
         after(&f.memory(), BASE, GAME, &snapshot),
-        Err("air loss writer country changed during call")
+        Err("air loss writer current record changed during call")
     );
+    // A history the call created is authenticated in full.
+    let mut f = Fixture::new();
+    f.pointer(0x13800 + 23 * 8, 0);
+    let snapshot = f.before(0, 1);
+    f.pointer(0x13800 + 23 * 8, HISTORY);
+    assert!(after(&f.memory(), BASE, GAME, &snapshot).is_ok());
+    f.u32(AIR + cstrategic_air::COUNTRY, 0);
+    assert!(after(&f.memory(), BASE, GAME, &snapshot).is_err());
     let mut f = Fixture::new();
     f.value(30, i64::MIN);
     let snapshot = f.before(0, 0);
@@ -273,6 +281,48 @@ fn air_loss_reload_cursor_country_and_signed_delta_changes_refuse_the_event() {
         after(&f.memory(), BASE, GAME, &snapshot),
         Err("air loss writer delta overflow")
     );
+}
+
+/// The current record reads each field it checks, in order, and the two
+/// selected words in one guarded copy of exactly those spans.
+#[test]
+fn air_loss_current_record_reads_the_selected_words_in_one_copy() {
+    let mut f = Fixture::new();
+    f.value(30, 7);
+    f.value(31, 9);
+    let memory = crate::memory::CountingMemory {
+        inner: f.memory(),
+        calls: std::cell::Cell::new(0),
+        bytes: std::cell::Cell::new(0),
+    };
+    let current = current(&memory, BASE, HISTORY, 30, 1).unwrap();
+    assert_eq!(
+        (current.record, current.slot, current.fields),
+        (RECORD, 29, [7, 9])
+    );
+    // History 4 reads / 28 bytes, window 7 / 49, slot pointer 1 / 8,
+    // record 2 / 24, then both words in one copy.
+    assert_eq!((memory.calls.get(), memory.bytes.get()), (15, 125));
+}
+
+/// With a history before the call, the writer changes only its two selected
+/// words, so `after` reads the current slot and record in one guarded copy
+/// of exactly those fields and the words in another.
+#[test]
+fn air_loss_after_an_existing_history_reads_only_the_witnesses_and_words() {
+    let mut f = Fixture::new();
+    let snapshot = f.before(0, 1);
+    f.value(30, 100_000);
+    f.value(31, 100_000);
+    let memory = crate::memory::CountingMemory {
+        inner: f.memory(),
+        calls: std::cell::Cell::new(0),
+        bytes: std::cell::Cell::new(0),
+    };
+    let change = after(&memory, BASE, GAME, &snapshot).unwrap();
+    assert_eq!((change.country, change.daily_slot), (snapshot.country, 29));
+    assert_eq!(change.fields, [100_000; 2]);
+    assert_eq!((memory.calls.get(), memory.bytes.get()), (2, 4 + 8 + 2 * 8));
 }
 
 #[test]
@@ -499,6 +549,163 @@ fn air_loss_five_thousand_countries_have_distinct_authenticated_loss_records() {
         assert_eq!(change.fields[0], 100_000);
         assert_eq!(change.fields[1], 100_000);
     }
+}
+
+/// Fails every copy that touches `fault`: always, or only the first.
+struct Faulted<'a> {
+    inner: SliceMemory<'a>,
+    fault: usize,
+    once: bool,
+    met: std::cell::Cell<bool>,
+}
+
+impl Memory for Faulted<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        let touches = (address..address + destination.len()).contains(&self.fault);
+        if touches && !(self.once && self.met.replace(true)) {
+            return false;
+        }
+        self.inner.copy(address, destination)
+    }
+}
+
+impl ScaleFixture {
+    const SINGLETON: usize = 0x3000;
+    const REGION: usize = 0x2800;
+
+    /// The gathered operands of country `ordinal`'s loss, and the serial
+    /// reads' composition of the same call.
+    fn call(
+        &self,
+        memory: &impl Memory,
+        ordinal: usize,
+        enemy: u8,
+        cause: i32,
+    ) -> Option<Gathered> {
+        let air = self.airs[ordinal];
+        gather(
+            memory,
+            BASE,
+            self.address + Self::SINGLETON,
+            air,
+            self.wings[ordinal],
+            self.address + Self::REGION,
+            enemy,
+            cause,
+            [air + cstrategic_air::COUNTRY; 2],
+        )
+    }
+
+    fn serial(
+        &self,
+        memory: &impl Memory,
+        ordinal: usize,
+        enemy: u8,
+        cause: i32,
+    ) -> Result<Gathered, &'static str> {
+        let air = self.airs[ordinal];
+        let region = cstrategic_region::id(memory, BASE, self.address + Self::REGION)?.unwrap();
+        let game = read::<u64>(memory, self.address + Self::SINGLETON).ok_or("game")? as usize;
+        let hour = read::<i32>(memory, game + cgame_state::CURRENT_HOUR).ok_or("hour")?;
+        let family = selected_family(memory, BASE, self.wings[ordinal], enemy)?;
+        let snapshot = before(memory, BASE, game, air, region, enemy, cause, family)?;
+        let opponent = opponent(memory, [air + cstrategic_air::COUNTRY; 2], enemy)?;
+        Ok(Gathered {
+            region,
+            game,
+            hour,
+            family,
+            snapshot,
+            opponent,
+        })
+    }
+}
+
+/// On healthy memory every country's gathered call equals the serial reads,
+/// in six gathered copies, the words and the country resolution instead of
+/// about forty guarded reads.
+#[test]
+fn air_loss_gathered_call_equals_the_serial_reads_at_five_thousand_countries() {
+    let mut f = ScaleFixture::new(5_000);
+    let game = f.address;
+    f.pointer(ScaleFixture::SINGLETON, game);
+    for ordinal in 0..f.airs.len() {
+        let offset = f.values[ordinal] - f.address;
+        for field in 0..FIELD_COUNT {
+            let value =
+                (ordinal * FIELD_COUNT + field) as i64 * if field % 2 == 0 { 1 } else { -1 };
+            f.bytes(offset + field * 8, &value.to_le_bytes());
+        }
+    }
+    for ordinal in 0..f.airs.len() {
+        for (enemy, cause) in [(0, 1), (1, 6)] {
+            let serial = f.serial(&f.memory(), ordinal, enemy, cause).unwrap();
+            assert_eq!(serial.snapshot.country, ordinal as u32 + 1);
+            assert_ne!(serial.snapshot.fields, [0; 2]);
+            assert_eq!(f.call(&f.memory(), ordinal, enemy, cause), Some(serial));
+        }
+    }
+    fn counting(f: &ScaleFixture) -> crate::memory::CountingMemory<'_> {
+        crate::memory::CountingMemory {
+            inner: f.memory(),
+            calls: std::cell::Cell::new(0),
+            bytes: std::cell::Cell::new(0),
+        }
+    }
+    let memory = counting(&f);
+    f.serial(&memory, 0, 0, 1).unwrap();
+    let serial = memory.calls.get();
+    let memory = counting(&f);
+    crate::ccountry::Reader::new(&memory, BASE, game)
+        .unwrap()
+        .resolve(1)
+        .unwrap();
+    let resolution = memory.calls.get();
+    let memory = counting(&f);
+    f.call(&memory, 0, 0, 1).unwrap();
+    assert_eq!(memory.calls.get(), 6 + resolution);
+    assert!(serial >= memory.calls.get() + 20, "{serial}");
+}
+
+/// A fault at any operand withholds the gathered call, so the hook takes the
+/// serial reads: a persistent fault refuses there as before, and a one-shot
+/// fault the gather met leaves the serial reads the healthy result, never
+/// more refusal than they would give.
+#[test]
+fn air_loss_gathered_faults_fall_back_to_the_serial_reads() {
+    let mut f = ScaleFixture::new(4);
+    let game = f.address;
+    f.pointer(ScaleFixture::SINGLETON, game);
+    let healthy = f.serial(&f.memory(), 1, 0, 1).unwrap();
+    let healthy_reads = {
+        let reads = std::cell::RefCell::new(Vec::new());
+        struct Traced<'a>(SliceMemory<'a>, &'a std::cell::RefCell<Vec<(usize, usize)>>);
+        impl Memory for Traced<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                self.1.borrow_mut().push((address, destination.len()));
+                self.0.copy(address, destination)
+            }
+        }
+        f.call(&Traced(f.memory(), &reads), 1, 0, 1).unwrap();
+        reads.into_inner()
+    };
+    for &(address, _) in &healthy_reads {
+        let faulted = |once| Faulted {
+            inner: f.memory(),
+            fault: address,
+            once,
+            met: std::cell::Cell::new(false),
+        };
+        let persistent = faulted(false);
+        assert_eq!(f.call(&persistent, 1, 0, 1), None, "{address:#x}");
+        assert!(f.serial(&persistent, 1, 0, 1).is_err(), "{address:#x}");
+        let once = faulted(true);
+        assert_eq!(f.call(&once, 1, 0, 1), None, "{address:#x}");
+        assert_eq!(f.serial(&once, 1, 0, 1), Ok(healthy), "{address:#x}");
+    }
+    // A check the serial reads refuse withholds the gathered call too.
+    f.u32(ScaleFixture::REGION + cstrategic_region::ID, 7);
+    assert_eq!(f.call(&f.memory(), 1, 0, 1), None);
 }
 
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]

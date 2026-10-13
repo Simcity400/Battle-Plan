@@ -1,6 +1,13 @@
 //! Hourly ordered native inputs with independently bounded owned payloads.
+//!
+//! Before each capture, the entries the previous capture of the share
+//! certified for reuse whose character is in the hour's sampled-verification
+//! slice ([`crate::sampled_verify`], keyed by character id) are read afresh
+//! and compared with the held descriptors; a difference poisons reuse and
+//! the capture reads every entry afresh.
 use crate::{
     projection::{Projection, project_table},
+    sampled_verify::Check,
     sampling::qpc,
     spooling::unavailable,
     table_capture::{Arena, CaptureRows},
@@ -60,6 +67,8 @@ struct Certificate {
     scope: (usize, usize, usize, bool),
     revision: (u64, u64),
     acquired: engine::cprovince::UnitOrderWalk,
+    /// Every entry of the walk these rows came from held a watch.
+    watched: bool,
 }
 
 /// One share of the roster: its rows and their portrait entries.
@@ -69,6 +78,10 @@ pub struct Part {
     cache: engine::portrait_cache::Cache,
     plan: crate::snapshot_plan::SnapshotPlan,
     certified: Option<Certificate>,
+    /// The stamp of the portrait census whose occurrences this share's
+    /// latest quiet hour matched, the cache unchanged since: a census with
+    /// it repeats them without a comparison.
+    matched: Option<u64>,
 }
 impl Part {
     fn new(c: &Capacities) -> Self {
@@ -88,6 +101,7 @@ impl Part {
             .unwrap_or_else(|_| engine::portrait_cache::Cache::empty()),
             plan: crate::snapshot_plan::SnapshotPlan::new(spans, bytes),
             certified: None,
+            matched: None,
         }
     }
     pub(crate) fn vacant() -> Self {
@@ -97,6 +111,7 @@ impl Part {
             cache: engine::portrait_cache::Cache::empty(),
             plan: crate::snapshot_plan::SnapshotPlan::new(0, 0),
             certified: None,
+            matched: None,
         }
     }
     fn reset(&mut self) {
@@ -143,43 +158,81 @@ impl Part {
             part,
             census,
             &crate::portrait_changes::Observer,
+            crate::sampled_verify::current_burned_in(cfg!(feature = "portrait_verify")),
         )
     }
 
-    fn capture_observed(
+    /// Verify mode ([`Check::Every`]) compares every hit inside the walk.
+    pub(crate) fn capture_observed(
         &mut self,
         memory: &impl Memory,
         context: CaptureContext,
         part: usize,
         census: Option<&engine::ccharacter_manager::PortraitCensus>,
         observer: &dyn engine::portrait_cache::Changes,
+        check: Check,
     ) -> u64 {
         self.plan.enable_worker_growth();
         let _reads = crate::read_accounting::table(TableId::CharacterPortraits);
         let begin = qpc();
+        if cfg!(feature = "portrait_changes") && check.sampled() {
+            // The raw memory, outside the prepared program's trace.
+            let [verified, mismatches] = ccharacter::sample_reused_portraits(
+                memory,
+                &self.cache,
+                &self.arena.first,
+                observer,
+                |character| check.covers(u64::from(character)),
+            );
+            crate::portrait_changes::sampled(verified, mismatches);
+            if mismatches != 0 {
+                // Nothing certifies reuse: this capture reads every entry.
+                self.invalidate();
+            }
+        }
         self.reset();
         let before = observer.quiet_revision();
+        let before_any = observer.any_revision();
         let identities = census.and_then(|census| census.rows(context.base, context.game_state));
         let scope = (context.base, context.game_state, part, identities.is_some());
+        let stamp = census.map(engine::ccharacter_manager::PortraitCensus::stamp);
         let same_census = identities.is_none_or(|rows| {
             let first = rows.len() * part / PARTS;
             let last = rows.len() * (part + 1) / PARTS;
-            self.cache.matches_census(&rows[first..last])
+            (stamp.is_some() && self.matched == stamp)
+                || self.cache.matches_census(&rows[first..last])
         });
+        // The quiet revision covers only watched holders, so it certifies
+        // only a capture whose every entry held a watch.
+        let quiet_since =
+            |previous: Certificate| previous.watched && Some(previous.revision) == before;
         let certified = !cfg!(feature = "portrait_verify")
             && before.is_some()
             && same_census
             && self.certified.is_some_and(|previous| {
-                previous.scope == scope
-                    && (Some(previous.revision) == before || self.cache.unchanged(observer))
+                previous.scope == scope && (quiet_since(previous) || self.cache.unchanged(observer))
             });
-        if self.plan.begin(memory, certified) {
+        // A quiet hour reads nothing: the census, freshly read by the roster
+        // job, repeats this share's occurrences, and no writer of a watched
+        // holder ran since the last complete capture began, so every holder,
+        // header and descriptor is the one it read. Without a census the plan
+        // rereads the roster and identities itself; an entry without a watch
+        // is read every hour.
+        let quiet = certified && identities.is_some() && self.certified.is_some_and(quiet_since);
+        // A quiet hour leaves the cache as it matched this census.
+        self.matched = stamp.filter(|_| quiet);
+        if quiet {
+            crate::portrait_changes::record_quiet_part();
+        }
+        if quiet || self.plan.begin(memory, certified) {
             if before == observer.quiet_revision() {
-                let acquired = self.certified.expect("certified previous rows").acquired;
+                let previous = self.certified.expect("certified previous rows");
+                let acquired = previous.acquired;
                 self.certified = before.map(|revision| Certificate {
                     scope,
                     revision,
                     acquired,
+                    watched: previous.watched,
                 });
                 self.rows.outcome = acquired.outcome;
                 self.arena.len = acquired.len;
@@ -235,12 +288,19 @@ impl Part {
             };
             self.cache.invalidate();
         }
+        let watched = cfg!(feature = "portrait_changes") && self.cache.all_watched();
+        // Any writer during the walk may have torn an unwatched holder's read.
         self.certified = before
-            .filter(|_| complete && before == observer.quiet_revision())
+            .filter(|_| {
+                complete
+                    && before == observer.quiet_revision()
+                    && before_any == observer.any_revision()
+            })
             .map(|revision| Certificate {
                 scope,
                 revision,
                 acquired,
+                watched,
             });
         let ticks = qpc().saturating_sub(begin).max(0) as u64;
         crate::portrait_changes::record_work(false, ticks);
@@ -251,6 +311,7 @@ impl Part {
         self.cache.invalidate();
         self.plan.invalidate();
         self.certified = None;
+        self.matched = None;
     }
 }
 
@@ -449,36 +510,14 @@ impl Captured {
 #[cfg(test)]
 mod owned_tests {
     use super::*;
+    use crate::extended::characters::characters_test_kit as kit;
+    use engine::ccharacter_manager::{PortraitCensus, PortraitIdentity, Roster};
+    use std::cell::{Cell, RefCell};
 
-    #[cfg(all(feature = "portrait_changes", not(feature = "portrait_verify")))]
-    #[test]
-    fn warm_shared_plan_reads_only_headers_and_mutation_reacquires_descriptors() {
-        use crate::extended::characters::characters_test_kit as kit;
-        use engine::ccharacter_manager::{PortraitCensus, PortraitIdentity, Roster};
-        use std::cell::{Cell, RefCell};
-        struct Observer(Cell<u64>);
-        impl engine::portrait_cache::Changes for Observer {
-            fn revision(&self, _: usize) -> Option<(u64, u64)> {
-                Some((1, self.0.get()))
-            }
-            fn quiet_revision(&self) -> Option<(u64, u64)> {
-                Some((1, self.0.get()))
-            }
-            fn verify(&self) -> bool {
-                false
-            }
-        }
-        struct Source<'a> {
-            bytes: &'a [u8],
-            calls: RefCell<Vec<(usize, usize)>>,
-            fault: Option<usize>,
-        }
-        impl Memory for Source<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                self.calls.borrow_mut().push((address, output.len()));
-                self.fault != Some(address) && kit::memory(self.bytes).copy(address, output)
-            }
-        }
+    /// The fixture roster's census with one portrait entry for its first
+    /// character: the bytes, the census, that character's portrait header
+    /// address and the entry's offset in the bytes.
+    fn share_fixture() -> (Vec<u8>, PortraitCensus, usize, usize) {
         let mut bytes = kit::mapped_fixture();
         let roster = Roster::read(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE).unwrap();
         let mut census = PortraitCensus::try_new(4).unwrap();
@@ -501,6 +540,292 @@ mod owned_tests {
         bytes[offset + 8..offset + 12].copy_from_slice(&1_u32.to_le_bytes());
         bytes[offset + 12..offset + 16].copy_from_slice(&1_u32.to_le_bytes());
         bytes[entry + 0x28..entry + 0x30].copy_from_slice(&15_u64.to_le_bytes());
+        (bytes, census, header, entry)
+    }
+
+    /// Writers of holders no capture watches (armies, ships, leader UI
+    /// items) move only the any-writer revision: a share stays quiet across
+    /// them, but one that runs during a walk withholds that walk's
+    /// certificate, since it may have torn an unwatched holder's read.
+    #[cfg(all(feature = "portrait_changes", not(feature = "portrait_verify")))]
+    #[test]
+    fn unwatched_writers_keep_shares_quiet_and_void_a_walk_they_overlap() {
+        /// Every holder watched and still; `any` moves on each look while
+        /// `during` is set.
+        struct Observer {
+            any: Cell<u64>,
+            during: Cell<bool>,
+        }
+        impl engine::portrait_cache::Changes for Observer {
+            fn revision(&self, _: usize) -> Option<(u64, u64)> {
+                Some((1, 0))
+            }
+            fn quiet_revision(&self) -> Option<(u64, u64)> {
+                Some((1, 0))
+            }
+            fn any_revision(&self) -> Option<(u64, u64)> {
+                let any = self.any.get();
+                self.any.set(any + u64::from(self.during.get()));
+                Some((1, any))
+            }
+            fn verify(&self) -> bool {
+                false
+            }
+        }
+        /// Memory that counts its reads.
+        struct Counted<'a> {
+            bytes: &'a [u8],
+            reads: Cell<usize>,
+        }
+        impl Memory for Counted<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.reads.set(self.reads.get() + 1);
+                kit::memory(self.bytes).copy(address, output)
+            }
+        }
+        let (bytes, census, _, _) = share_fixture();
+        let context = CaptureContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+        };
+        let mut capacities = Capacities { rows: 4, arena: 4 };
+        let mut part = Part::new(&capacities);
+        let observer = Observer {
+            any: Cell::new(0),
+            during: Cell::new(true),
+        };
+        let mut capture = |part: &mut Part| {
+            let memory = Counted {
+                bytes: &bytes,
+                reads: Cell::new(0),
+            };
+            part.capture_observed(
+                &memory,
+                context,
+                1,
+                Some(&census),
+                &observer,
+                Check::Nothing,
+            );
+            assert_eq!(part.rows.outcome, Outcome::Rows { len: 1 });
+            part.grow(&mut capacities);
+            memory.reads.get()
+        };
+        assert!(capture(&mut part) > 0);
+        observer.during.set(false);
+        assert!(
+            capture(&mut part) > 0,
+            "an overlapped walk certifies nothing"
+        );
+        for _ in 0..3 {
+            observer.any.set(observer.any.get() + 5);
+            assert_eq!(
+                capture(&mut part),
+                0,
+                "unwatched writers leave the share quiet"
+            );
+        }
+    }
+
+    /// A quiet share reads nothing; a writer elsewhere in the domain leaves
+    /// the share's prepared program to reread only its header; a writer of
+    /// the share's holder reacquires its descriptors.
+    #[cfg(all(feature = "portrait_changes", not(feature = "portrait_verify")))]
+    #[test]
+    fn quiet_shares_read_nothing_warm_plans_read_only_headers_and_mutation_reacquires() {
+        /// Every holder's revision, and the whole domain's.
+        struct Observer {
+            holders: Cell<u64>,
+            domain: Cell<u64>,
+        }
+        impl engine::portrait_cache::Changes for Observer {
+            fn revision(&self, _: usize) -> Option<(u64, u64)> {
+                Some((1, self.holders.get()))
+            }
+            fn quiet_revision(&self) -> Option<(u64, u64)> {
+                Some((1, self.domain.get()))
+            }
+            fn verify(&self) -> bool {
+                false
+            }
+        }
+        struct Source<'a> {
+            bytes: &'a [u8],
+            calls: RefCell<Vec<(usize, usize)>>,
+            fault: Option<usize>,
+        }
+        impl Memory for Source<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.calls.borrow_mut().push((address, output.len()));
+                self.fault != Some(address) && kit::memory(self.bytes).copy(address, output)
+            }
+        }
+        let (mut bytes, census, header, entry) = share_fixture();
+        let context = CaptureContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+        };
+        let mut capacities = Capacities { rows: 4, arena: 4 };
+        let mut part = Part::new(&capacities);
+        let observer = Observer {
+            holders: Cell::new(0),
+            domain: Cell::new(0),
+        };
+        let bump = |cell: &Cell<u64>| cell.set(cell.get() + 1);
+        for version in 0..2 {
+            bytes[entry + 8] = version;
+            observer.holders.set(u64::from(version));
+            bump(&observer.domain);
+            for pass in 0..4 {
+                if pass == 2 {
+                    // A writer of another holder.
+                    bump(&observer.domain);
+                }
+                let source = Source {
+                    bytes: &bytes,
+                    calls: RefCell::new(vec![]),
+                    fault: None,
+                };
+                // Three roster entries: share 1 contains exactly the first one.
+                part.capture_observed(
+                    &source,
+                    context,
+                    1,
+                    Some(&census),
+                    &observer,
+                    Check::Nothing,
+                );
+                assert_eq!(part.rows.outcome, Outcome::Rows { len: 1 });
+                assert_eq!(part.arena.first[0].is_set, version);
+                match pass {
+                    0 => assert!(source.calls.borrow().len() > 1),
+                    2 => assert_eq!(*source.calls.borrow(), [(header, 16)]),
+                    _ => assert!(
+                        source.calls.borrow().is_empty(),
+                        "a quiet share reads nothing"
+                    ),
+                }
+                part.grow(&mut capacities);
+            }
+        }
+        // A writer elsewhere: the prepared header read faults.
+        bump(&observer.domain);
+        let source = Source {
+            bytes: &bytes,
+            calls: RefCell::new(vec![]),
+            fault: Some(header),
+        };
+        part.capture_observed(
+            &source,
+            context,
+            1,
+            Some(&census),
+            &observer,
+            Check::Nothing,
+        );
+        assert!(matches!(part.rows.outcome, Outcome::Unavailable { .. }));
+        assert_eq!(
+            *source.calls.borrow(),
+            [(header, 16)],
+            "failed prepared header must not be retried"
+        );
+    }
+
+    /// The fixture roster's portrait census, acquired afresh: the same
+    /// occurrences under a new stamp.
+    #[cfg(all(feature = "portrait_changes", not(feature = "portrait_verify")))]
+    fn census_of(bytes: &[u8]) -> PortraitCensus {
+        let roster = Roster::read(&kit::memory(bytes), kit::BASE, kit::GAME_STATE).unwrap();
+        let mut census = PortraitCensus::try_new(4).unwrap();
+        census.begin(kit::BASE, kit::GAME_STATE);
+        for index in 0..roster.count() {
+            let entry = roster.at(&kit::memory(bytes), index).unwrap();
+            census.push(PortraitIdentity {
+                pointer: entry.pointer,
+                character: entry.id,
+            });
+        }
+        census.finish(roster.count() as usize);
+        census
+    }
+
+    /// The hourly frame growth keeps a quiet share quiet: after its row floor
+    /// rose and its keys grew, a census acquired again over the same
+    /// occurrences still matches the share's certified keys, and the hour
+    /// reads nothing.
+    #[cfg(all(feature = "portrait_changes", not(feature = "portrait_verify")))]
+    #[test]
+    fn a_quiet_share_stays_quiet_across_growth_and_a_new_census() {
+        struct Observer;
+        impl engine::portrait_cache::Changes for Observer {
+            fn revision(&self, _: usize) -> Option<(u64, u64)> {
+                Some((1, 0))
+            }
+            fn quiet_revision(&self) -> Option<(u64, u64)> {
+                Some((1, 0))
+            }
+            fn verify(&self) -> bool {
+                false
+            }
+        }
+        struct Counted<'a> {
+            bytes: &'a [u8],
+            reads: Cell<usize>,
+        }
+        impl Memory for Counted<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.reads.set(self.reads.get() + 1);
+                kit::memory(self.bytes).copy(address, output)
+            }
+        }
+        let (bytes, census, _, _) = share_fixture();
+        let context = CaptureContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+        };
+        let mut capacities = Capacities { rows: 4, arena: 4 };
+        let mut part = Part::new(&capacities);
+        let capture = |part: &mut Part, census: &PortraitCensus| {
+            let memory = Counted {
+                bytes: &bytes,
+                reads: Cell::new(0),
+            };
+            part.capture_observed(&memory, context, 1, Some(census), &Observer, Check::Nothing);
+            assert_eq!(part.rows.outcome, Outcome::Rows { len: 1 });
+            memory.reads.get()
+        };
+        assert!(capture(&mut part, &census) > 0);
+        part.grow(&mut capacities);
+        assert_eq!(capture(&mut part, &census), 0);
+        // The roster grew past the share's floor.
+        capacities.rows = 64;
+        part.grow(&mut capacities);
+        let again = census_of(&bytes);
+        assert_ne!(again.stamp(), census.stamp());
+        assert_eq!(
+            capture(&mut part, &again),
+            0,
+            "growth keeps the share's certified descriptors"
+        );
+    }
+
+    #[cfg(all(feature = "portrait_changes", not(feature = "portrait_verify")))]
+    #[test]
+    fn sampled_shares_find_an_unobserved_entry_write_within_one_rotation() {
+        struct Observer(Cell<u64>);
+        impl engine::portrait_cache::Changes for Observer {
+            fn revision(&self, _: usize) -> Option<(u64, u64)> {
+                Some((1, self.0.get()))
+            }
+            fn quiet_revision(&self) -> Option<(u64, u64)> {
+                Some((1, self.0.get()))
+            }
+            fn verify(&self) -> bool {
+                false
+            }
+        }
+        let (mut bytes, census, _, entry) = share_fixture();
+        let identity = census.rows(kit::BASE, kit::GAME_STATE).unwrap()[0];
         let context = CaptureContext {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
@@ -508,39 +833,46 @@ mod owned_tests {
         let mut capacities = Capacities { rows: 4, arena: 4 };
         let mut part = Part::new(&capacities);
         let observer = Observer(Cell::new(0));
-        for version in 0..2 {
-            bytes[entry + 8] = version;
-            observer.0.set(u64::from(version));
-            for pass in 0..3 {
-                let source = Source {
-                    bytes: &bytes,
-                    calls: RefCell::new(vec![]),
-                    fault: None,
-                };
-                // Three roster entries: share 1 contains exactly the first one.
-                part.capture_observed(&source, context, 1, Some(&census), &observer);
-                assert_eq!(part.rows.outcome, Outcome::Rows { len: 1 });
-                assert_eq!(part.arena.first[0].is_set, version);
-                if pass == 0 {
-                    assert!(source.calls.borrow().len() > 1);
-                } else {
-                    assert_eq!(*source.calls.borrow(), [(header, 16)]);
-                }
-                part.grow(&mut capacities);
-            }
-        }
-        let source = Source {
-            bytes: &bytes,
-            calls: RefCell::new(vec![]),
-            fault: Some(header),
+        // Share 1 holds exactly the first character; its prepared program
+        // serves the later hours.
+        let mut capture = |part: &mut Part, bytes: &[u8], check| {
+            part.capture_observed(
+                &kit::memory(bytes),
+                context,
+                1,
+                Some(&census),
+                &observer,
+                check,
+            );
+            assert_eq!(part.rows.outcome, Outcome::Rows { len: 1 });
+            part.grow(&mut capacities);
+            part.arena.first[0].is_set
         };
-        part.capture_observed(&source, context, 1, Some(&census), &observer);
-        assert!(matches!(part.rows.outcome, Outcome::Unavailable { .. }));
-        assert_eq!(
-            *source.calls.borrow(),
-            [(header, 16)],
-            "failed prepared header must not be retried"
-        );
+        for _ in 0..3 {
+            assert_eq!(capture(&mut part, &bytes, Check::Nothing), 0);
+        }
+        let mismatches = || {
+            serde_json::to_value(crate::portrait_changes::status()).unwrap()["sampled_mismatches"]
+                .as_u64()
+                .unwrap()
+        };
+        let before = mismatches();
+        // A write no hook observed.
+        bytes[entry + 8] = 7;
+        for hour in 0..24 {
+            let is_set = capture(&mut part, &bytes, Check::Slice { hour });
+            if hour as u32 == identity.character % 24 {
+                assert_eq!(is_set, 7, "the fresh entry is published");
+                assert!(mismatches() > before);
+                assert_eq!(
+                    serde_json::to_value(crate::portrait_changes::status()).unwrap()["poisoned"],
+                    true
+                );
+                return;
+            }
+            assert_eq!(is_set, 0, "hour {hour} reuses the held entry");
+        }
+        panic!("not found within one rotation");
     }
 
     #[test]
@@ -583,8 +915,8 @@ mod owned_tests {
                 false,
             )
             .unwrap();
-        let mut scratch = crate::projection::ProjectionScratch::default();
-        let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
+        let scratch = crate::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
         assert!(matches!(
             capture.table_inputs(Some(&mut projection))[0],
             TableInput::ComparedEqual(_)

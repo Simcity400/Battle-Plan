@@ -643,6 +643,45 @@ fn recorded_settlements_refuse_an_in_branch_gap_and_note_the_branch_start() {
     assert!(report.differences.is_empty(), "{:?}", report.differences);
 }
 
+/// A conference resident before a recorded event loss and gone after it
+/// needs no finalizer capture across the loss; without the loss, or with
+/// one on another branch or between other reads, it still does.
+#[test]
+fn recorded_event_loss_stops_finalizer_completeness_crossing_it() {
+    use replay::spool::ControlRecord;
+    let saved = empty_settlement_save();
+    let mut resident = frame(100);
+    *resident.tables[TableId::PeaceBids.index()] =
+        TableView::Complete(TableRows::PeaceBids(vec![row(100)]));
+    let check = |loss: Option<(u64, i32, i32)>| {
+        let mut replay = settlement_replay(vec![frame(99), resident.clone(), frame(101)]);
+        if let Some((branch, after_hour, hour)) = loss {
+            replay.controls.push(ControlRecord::EventLoss {
+                session: 1,
+                branch,
+                after_hour,
+                hour,
+            });
+        }
+        let mut report = Report::default();
+        compare_recorded_settlements(&replay, &frame(101), &saved, &mut report).unwrap();
+        report
+    };
+    let crossed = check(Some((1, 100, 101)));
+    assert!(crossed.differences.is_empty(), "{:?}", crossed.differences);
+    assert!(
+        crossed
+            .limitations
+            .keys()
+            .any(|reason| reason.starts_with("a recorded event loss"))
+    );
+    for loss in [None, Some((2, 100, 101)), Some((1, 99, 100))] {
+        let strict = check(loss);
+        assert_eq!(strict.differences.len(), 1, "{loss:?}");
+        assert!(strict.differences[0].contains("finalized capture"));
+    }
+}
+
 #[test]
 fn bids_compare_native_operands_and_never_waive_a_changed_field() {
     let saved = projects::parse(&installed_content::parser::parse(br"countries={} peace_conference={active_peace={id={id=3 type=7} history={MOD_B={bidding={country=MOD_B actions={custom_demand={taker=MOD_B giver=MOD_A negotiator=MOD_C cost=-2 status=3 state=17 demilitarized_zone=yes}}}}}}}").unwrap().items).unwrap();

@@ -1,7 +1,7 @@
 //! Air-group icon hovers assembled from each recorded plane's operands.
 use super::binding::{TextIcons, builtin, displayable};
 use installed_content::localisation::{Argument, Localisation};
-use replay::rows::{ModifierDefinitionRow, NavalCombatPlane, NavalCombatShipRow};
+use replay::rows::NavalCombatPlane;
 
 // Hover keys and selected category names are resolved through content localisation.
 super::text::tooltip_keys! {
@@ -116,55 +116,7 @@ pub(crate) fn wing_short_name(loc: &Localisation, tag: &str, key: &str) -> Resul
     super::text::localise(loc, &selected, &[])
 }
 
-/// the game appends each linked carrier source's
-/// cloned child tree in the Table 270 source order. The winning HQ influence
-/// and doctrine/critical display scales are the same as the ship hovers.
-pub(super) fn carrier_key_breakdown(
-    member: &NavalCombatShipRow,
-    rows: &[&super::naval_summary_tooltips::NavalTreeUse<'_>],
-    definition: Option<&ModifierDefinitionRow>,
-    key: u32,
-    recorded_language: &str,
-    loc: &Localisation,
-    icons: &dyn TextIcons,
-) -> Result<String, String> {
-    let mut text = String::new();
-    for row in rows {
-        if row.key != key {
-            return Err("carrier modifier tree key differs from requested sortie key".into());
-        }
-        if !super::naval_environment::breakdown_visible(
-            &member.weapon_context,
-            key,
-            row.use_.source_scope,
-            row.use_.source_index,
-        )
-        .ok_or("carrier sortie HQ influence selection is unavailable")?
-        {
-            continue;
-        }
-        let definition = definition.ok_or("carrier sortie modifier has no recorded definition")?;
-        let scale = super::naval_environment::breakdown_scale(
-            &member.weapon_context,
-            row.use_.source_scope,
-            row.use_.source_index,
-        )
-        .ok_or("carrier sortie modifier source scale is unavailable")?;
-        text.push_str(&super::naval_summary_tooltips::ship_modifier_breakdown(
-            &row.nodes,
-            definition,
-            scale,
-            "  ",
-            recorded_language,
-            icons,
-            loc,
-            !matches!(row.use_.source_scope, 12..=15),
-        )?);
-    }
-    Ok(text)
-}
-
-/// the game joins distinct wing short names with comma-space,
+/// Join distinct wing short names with comma-space,
 /// then formats its two native header branches and the recorded hit vectors.
 #[allow(clippy::too_many_arguments)] // The plane's recorded row, its native texts and text resources.
 pub(super) fn plane_hover(
@@ -292,7 +244,7 @@ pub(super) fn plane_hover(
             }
         }
     }
-    // the game appends first eligible wing text after the
+    // The game appends first eligible wing text after the
     // damaged-ship block, inserting one newline only when one is needed.
     if !efficiency_suffix.is_empty() {
         if !text.is_empty() && !text.ends_with('\n') {
@@ -342,7 +294,7 @@ pub(super) fn group_hover(
     Ok(text)
 }
 
-/// the game appends the overall efficiency and an optional host-organisation
+/// The game appends the overall efficiency and an optional host-organisation
 /// parenthesis for the first wing whose air base has no state.
 pub(super) fn carrier_org_suffix(
     final_efficiency: i64,
@@ -384,7 +336,7 @@ pub(super) fn carrier_org_suffix(
     Ok(text)
 }
 
-/// the game appends the efficiency explanation only for an active carrier
+/// The game appends the efficiency explanation only for an active carrier
 /// wing whose sortie efficiency differs from ONE. The factors are the already
 /// recorded sortie inputs; its fixed-base line deliberately uses the define
 /// even during the initial stance interval, as the native formatter does.
@@ -433,7 +385,7 @@ pub(super) fn efficiency_prefix(
         &[("VAL", Argument::Fixed5(sortie_efficiency))],
     )?;
     text.push('\n');
-    // the game formats this base percent at precision zero, green H.
+    // The game formats this base percent at precision zero, green H.
     let base = installed_content::fixed5::fixed5_percent(base, 0, true);
     text.push_str(&builtin(icons, loc, STAT_BASE_VALUE, &[])?);
     text.push_str(&format!("\u{11}H{base}\u{11}!\n"));
@@ -475,7 +427,7 @@ pub(super) fn efficiency_prefix(
                 text.push_str("    ");
                 text.push_str(&builtin(icons, loc, MODIFIER_CARRIER_NIGHT_TRAFFIC, &[])?);
                 text.push_str(": ");
-                // the game hard-codes green here, including a negative
+                // The game hard-codes green here, including a negative
                 // country modifier; the subtotal above retains its own red.
                 let country = installed_content::fixed5::fixed5_percent(country_night, 0, true);
                 text.push_str(&format!("\u{11}G{country}\u{11}!"));
@@ -487,7 +439,7 @@ pub(super) fn efficiency_prefix(
     displayable(icons, text)
 }
 
-/// the game emits this line after a nonzero box-2/3 screening bonus; its
+/// The game emits this line after a nonzero box-2/3 screening bonus; its
 /// caller in the game supplies the two-space indentation string.
 pub(super) fn screening_line(
     value: i64,
@@ -682,71 +634,10 @@ mod tests {
             screening_line(20_000, &loc(), &NoIcons).unwrap(),
             "  Screen 0.20\n"
         );
+        assert_eq!(screening_line(0, &loc(), &NoIcons).unwrap(), "");
         assert_eq!(
             carrier_org_suffix(100_000, 70_000, &loc(), &NoIcons).unwrap(),
             ""
         );
-    }
-
-    #[test]
-    fn linked_carrier_source_trees_keep_capture_order_for_both_sortie_keys() {
-        for key in [0x24, 0x1b6] {
-            let tree = |name: &[u8], scope| replay::rows::NavalModifierBreakdownRow {
-                key,
-                uses: vec![replay::rows::NavalModifierUse {
-                    source_scope: scope,
-                    ..Default::default()
-                }],
-                nodes: vec![
-                    replay::rows::ModifierBreakdownNode {
-                        children: 1,
-                        ..Default::default()
-                    },
-                    replay::rows::ModifierBreakdownNode {
-                        value: 20_000,
-                        name: name.to_vec(),
-                        ..Default::default()
-                    },
-                ],
-                ..Default::default()
-            };
-            let first = tree(b"First", 0);
-            let second = tree(b"Second", 1);
-            let definition = ModifierDefinitionRow {
-                index: key,
-                precision: 2,
-                ..Default::default()
-            };
-            let first_use = crate::combat::naval_summary_tooltips::test_tree_use(&first);
-            let second_use = crate::combat::naval_summary_tooltips::test_tree_use(&second);
-            assert_eq!(
-                carrier_key_breakdown(
-                    &NavalCombatShipRow::default(),
-                    &[&first_use, &second_use],
-                    Some(&definition),
-                    key,
-                    "english",
-                    &loc(),
-                    &NoIcons,
-                )
-                .unwrap(),
-                concat!(
-                    "  First: \u{11}R+0.20\u{11}!\n",
-                    "  Second: \u{11}R+0.20\u{11}!\n",
-                )
-            );
-            assert!(
-                carrier_key_breakdown(
-                    &NavalCombatShipRow::default(),
-                    &[&first_use],
-                    Some(&definition),
-                    key + 1,
-                    "english",
-                    &loc(),
-                    &NoIcons,
-                )
-                .is_err()
-            );
-        }
     }
 }

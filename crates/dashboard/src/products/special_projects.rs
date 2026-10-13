@@ -1,5 +1,7 @@
-//! Special projects over one country's branch. Daily values are admitted only
-//! at slot_read, carried within consecutive recorded hours, never over a gap.
+//! Special projects over one country's branch. Rows are admitted at slot_read,
+//! which is every hour of the sliced projects family (cadence.rs: a country is
+//! read when a hooked writer marks it or after the daily pass, and carried
+//! exactly otherwise), carried within consecutive recorded hours, never over a gap.
 //! Character names and scoped project names are resolved at each frame's hour.
 
 use super::{
@@ -477,6 +479,9 @@ pub(crate) fn check_content(
 
 #[derive(Default)]
 struct Builder {
+    /// The recording's format, which dates its daily tables
+    /// ([`crate::metadata::slot_read`]).
+    format: replay::format::FormatVersion,
     episodes: Vec<ProjectEpisode>,
     /// Matching episodes survive unrecorded hours, but their runs do not.
     open: BTreeMap<(u32, u32), usize>,
@@ -919,7 +924,7 @@ impl Builder {
             self.admitted = false;
             return;
         };
-        let read = slot_read(&frame.metrics, TableId::Projects, hour);
+        let read = slot_read(self.format, &frame.metrics, TableId::Projects, hour);
         if read {
             self.admitted = true;
             if !self.compact {
@@ -1105,6 +1110,7 @@ fn project(
             .unwrap_or_else(|error| error.into_inner()) = Default::default();
     }
     let mut result = Builder {
+        format: scan.format,
         campaign_start: scan.campaign_start,
         ..Default::default()
     };
@@ -1577,38 +1583,78 @@ mod tests {
     }
 
     #[test]
-    fn reads_are_admitted_by_the_slot_and_runs_break_at_gaps_and_incomplete_tables() {
+    fn every_recorded_hour_is_read_and_runs_break_at_gaps_and_incomplete_tables() {
         engine::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        // The sliced projects family records every hour's rows exactly: a
+        // country is read when a hooked writer marks it or after the daily
+        // pass, and carried otherwise. No hour waits for a daily slot.
+        assert_eq!(
+            replay::cadence::cadence(TableId::Projects),
+            replay::cadence::Cadence::Sliced
+        );
         let mut builder = Builder::default();
         builder.observe(&frame(99, false, 1), "mod tag", None);
-        assert!(builder.episodes.is_empty());
-        builder.observe(&frame(101, true, 1), "mod tag", None);
+        assert_eq!(builder.episodes.len(), 1);
+        builder.observe(&frame(101, false, 1), "mod tag", None);
         builder.observe(&frame(102, false, 1), "mod tag", None);
-        assert_eq!(builder.episodes.len(), 1);
-        assert_eq!(builder.episodes[0].runs.len(), 1);
-        assert_eq!(builder.episodes[0].runs[0].last_hour, 102);
-        assert_eq!(builder.reads, [101]);
         builder.observe(&frame(110, false, 1), "mod tag", None);
-        assert_eq!(builder.episodes.len(), 1); // a carried baseline after a gap is not a read
-        builder.observe(&frame(111, true, 1), "mod tag", None);
-        assert_eq!(builder.episodes.len(), 1);
-        let mut incomplete = frame(112, true, 1);
+        builder.observe(&frame(111, false, 1), "mod tag", None);
+        let mut incomplete = frame(112, false, 1);
         *incomplete.tables[TableId::Projects.index()] = TableView::Unavailable {
             reason: "not captured".into(),
         };
         builder.observe(&incomplete, "mod tag", None);
         builder.observe(&frame(113, false, 1), "mod tag", None);
-        builder.observe(&frame(114, true, 1), "mod tag", None);
+        builder.observe(&frame(114, false, 1), "mod tag", None);
+        // One project, one episode; neither a gap nor an incomplete hour is given a value.
         assert_eq!(builder.episodes.len(), 1);
+        assert_eq!(builder.reads, [99, 101, 102, 110, 111, 113, 114]);
+        let spans = [(99, 99), (101, 102), (110, 111), (113, 114)];
         assert_eq!(
             builder
                 .available
                 .iter()
                 .map(|s| (s.first_hour, s.last_hour))
                 .collect::<Vec<_>>(),
-            [(101, 102), (111, 111), (114, 114)]
+            spans
         );
+        assert_eq!(
+            builder.episodes[0]
+                .runs
+                .iter()
+                .map(|run| (run.first_hour, run.last_hour))
+                .collect::<Vec<_>>(),
+            spans
+        );
+    }
+
+    #[test]
+    fn an_older_recording_reads_projects_only_at_their_daily_slot() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let day = 1000 * replay::cadence::STAGGER_PERIOD;
+        let mut builder = Builder {
+            format: replay::format::FormatVersion::read(
+                replay::format::FormatVersion::CURRENT.version() - 1,
+            )
+            .unwrap(),
+            ..Builder::default()
+        };
+        // The previous format read Projects daily at hour 4 and carried them.
+        for hour in day + 2..day + 7 {
+            builder.observe(&frame(hour, false, 1), "mod tag", None);
+        }
+        assert_eq!(builder.reads, [day + 4]);
+        assert_eq!(
+            builder
+                .available
+                .iter()
+                .map(|s| (s.first_hour, s.last_hour))
+                .collect::<Vec<_>>(),
+            [(day + 4, day + 6)]
+        );
+        assert_eq!(builder.episodes[0].start.hour, day + 4);
     }
 
     #[test]

@@ -26,6 +26,16 @@ pub(super) const TREE_CHILDREN: usize = 200;
 pub(super) const CHILD_ENTRIES: usize = 8;
 pub(super) const ROOT_ENTRIES: usize = 300;
 pub(super) const SHIPS_PER_COMBAT: usize = 30;
+/// The lexer witness, the doctrine key generators' and dictionary's pointers
+/// and a marker, served at their module globals once
+/// [`Fixture::with_doctrines`] wrote them.
+const LEXER: usize = 0xe_8000;
+const LEXER_MARK: u32 = 0x1e8e;
+/// Entries of each doctrine node's modifier in [`Fixture::with_doctrines`].
+const DOCTRINE_ENTRIES: usize = 4;
+/// Entries of a ship's, a medal store's and a task force's weapon-context
+/// accumulator in [`Fixture::live_sized`].
+pub(super) const LIVE_ENTRIES: [usize; 3] = [30, 8, 10];
 pub(super) const SHIP_TABLE: usize = 0x8_0000;
 pub(super) const SHIP_BUCKETS: usize = 0x8_1000;
 pub(super) const SHIP_MASK: usize = 16383;
@@ -425,6 +435,149 @@ impl Fixture {
             }
         }
     }
+    /// [`Self::new`] with weapon-context accumulators of about a late-war
+    /// save's size: each country's (`+0x5B8`, [`ROOT_ENTRIES`] in either
+    /// fixture) and, here only, each ship's own (`+0x750`), each medal
+    /// store's (`+0x1B0`) and each task force's (`+0x668`)
+    /// ([`LIVE_ENTRIES`]); the base fixture leaves those empty.
+    pub(crate) fn live_sized(combats: usize) -> Self {
+        let mut this = Self::new(combats);
+        for slot in 0..COUNTRY_COUNT {
+            let task = TASK_BASE + slot * TASK_STRIDE;
+            this.entries(task + 0xb00 + 0x1b0, LIVE_ENTRIES[1], 400);
+            this.entries(task + 0x668, LIVE_ENTRIES[2], 500);
+        }
+        for index in 0..combats {
+            for ordinal in 0..SHIPS_PER_COMBAT {
+                let ship = BODIES + index * STRIDE + 0xc000 + ordinal * 0xa00;
+                this.entries(ship + 0x750, LIVE_ENTRIES[0], 300);
+            }
+        }
+        this
+    }
+
+    /// This fixture with a doctrine tree of `nodes` nodes on every task force
+    /// (keys 1 to `nodes`, each node's modifier [`DOCTRINE_ENTRIES`] entries,
+    /// shared as content is) and the lexer the doctrine key selection reads:
+    /// an empty modifier-key dictionary, so every node selects no country key.
+    pub(crate) fn with_doctrines(mut self, nodes: usize) -> Self {
+        assert!(nodes > 0);
+        let tokens = self.allocate((nodes + 1) * 32);
+        for index in 0..=nodes {
+            self.u64(tokens + index * 32 + 24, 15);
+        }
+        let generator = self.allocate(0x60);
+        for offset in [0x28, 0x48] {
+            self.u64(generator + offset, 15);
+        }
+        let dictionary = self.allocate(16);
+        self.u64(dictionary, dictionary as u64);
+        self.u64(dictionary + 8, dictionary as u64);
+        let mut witness = [0_u8; 64];
+        witness[0] = 1;
+        for offset in [4, 12] {
+            witness[offset..offset + 4].copy_from_slice(&(nodes as u32).to_le_bytes());
+        }
+        witness[48..56].copy_from_slice(&(tokens as u64).to_le_bytes());
+        for offset in [56, 60] {
+            witness[offset..offset + 4].copy_from_slice(&(nodes as u32 + 1).to_le_bytes());
+        }
+        self.put(LEXER, &witness);
+        self.u64(LEXER + 0x40, generator as u64);
+        self.u64(LEXER + 0x48, dictionary as u64);
+        self.u32(LEXER + 0x50, LEXER_MARK);
+        let modifiers = self.allocate(nodes * 0x20);
+        for node in 0..nodes {
+            let modifier = modifiers + node * 0x20;
+            self.entries(modifier + 0x10, DOCTRINE_ENTRIES, 700);
+        }
+        for slot in 0..COUNTRY_COUNT {
+            let task = TASK_BASE + slot * TASK_STRIDE;
+            let head = self.pointer(task + 0x640);
+            let first = self.allocate(nodes * 0x38);
+            let last = first + (nodes - 1) * 0x38;
+            self.u64(task + 0x648, nodes as u64);
+            self.u64(head, first as u64);
+            self.u64(head + 8, first as u64);
+            self.u64(head + 0x10, last as u64);
+            for index in 0..nodes {
+                let node = first + index * 0x38;
+                self.u64(node, head as u64);
+                let previous = if index == 0 { head } else { node - 0x38 };
+                let next = if node == last { head } else { node + 0x38 };
+                self.u64(node + 8, previous as u64);
+                self.u64(node + 0x10, next as u64);
+                self.u32(node + 0x20, index as u32 + 1);
+                self.u32(node + 0x28, 1);
+                self.u32(node + 0x2c, 2);
+                self.u64(node + 0x30, (modifiers + index * 0x20) as u64);
+            }
+        }
+        self
+    }
+
+    /// This fixture with every task force at the first combat's province
+    /// (needs a combat), every country's diplomacy matrix (no relation held)
+    /// and the weather manager's province records, so each ship's weapon
+    /// context reads its task force's location terms.
+    pub(crate) fn with_locations(mut self) -> Self {
+        let province = BODIES + 0xb00;
+        let provinces = self.allocate(2 * 0x330);
+        self.array(WEATHER + 0x370, provinces, 2);
+        // The selected terrain's name and an empty class hash (one bucket),
+        // so every class takes the terrain's default records.
+        self.inline(TERRAIN + 0x18, b"ocean");
+        let buckets = self.allocate(12);
+        self.u64(TERRAIN + 0x1b8, buckets as u64);
+        self.u32(TERRAIN + 0x1b8 + 12, 0);
+        for slot in 0..COUNTRY_COUNT {
+            let country = COUNTRY_BASE + slot * COUNTRY_STRIDE;
+            let diplomacy = self.allocate(0x40);
+            let relations = self.allocate((COUNTRY_COUNT + 1) * 8);
+            self.u64(
+                diplomacy,
+                (IMAGE + engine::cdiplomacy_status::VTABLE_RVA) as u64,
+            );
+            self.array(
+                diplomacy + engine::cdiplomacy_status::RELATIONS,
+                relations,
+                COUNTRY_COUNT + 1,
+            );
+            self.u64(
+                country + engine::ccountry::DIPLOMACY_STATUS,
+                diplomacy as u64,
+            );
+            let task = TASK_BASE + slot * TASK_STRIDE;
+            self.u64(task + engine::cunit::LOCATION, province as u64);
+        }
+        self
+    }
+
+    /// This fixture with no member's ship registered: every member is read
+    /// without a live ship (no ship fields, no weapon context), to split a
+    /// member's cost.
+    pub(crate) fn without_live_ships(mut self, combats: usize) -> Self {
+        for index in 0..combats {
+            for ordinal in 0..SHIPS_PER_COMBAT {
+                let member = BODIES + index * STRIDE + 0x3000 + ordinal * 0x300;
+                let handle = self.pointer(member + engine::cfex_member::SHIP_HANDLE) as u64;
+                let at = SHIP_BUCKETS + Self::bucket(handle) * engine::reference_bucket::STRIDE;
+                self.put(at, &[0; engine::reference_bucket::STRIDE]);
+            }
+        }
+        self
+    }
+
+    /// An accumulator at `at` of `count` entries, keys ascending from `key`.
+    fn entries(&mut self, at: usize, count: usize, key: u32) {
+        let data = self.allocate(count * 16);
+        self.array(at, data, count);
+        for entry in 0..count {
+            self.u32(data + entry * 16, key + entry as u32);
+            self.u64(data + entry * 16 + 8, 1000 + entry as u64);
+        }
+    }
+
     pub(super) fn pointer(&self, at: usize) -> usize {
         u64::from_le_bytes(self.0[at - STATE..at - STATE + 8].try_into().unwrap()) as usize
     }
@@ -476,6 +629,30 @@ impl Fixture {
 }
 impl Memory for Fixture {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        if u32::from_le_bytes(
+            self.0[LEXER + 0x50 - STATE..LEXER + 0x54 - STATE]
+                .try_into()
+                .unwrap(),
+        ) == LEXER_MARK
+        {
+            let witness = IMAGE + engine::cpdx_lexer::INITIALIZED_RVA;
+            let served = if (witness..witness + 64).contains(&address) {
+                Some(LEXER + (address - witness))
+            } else if address == IMAGE + 0x0337_2490 || address == IMAGE + 0x0337_2488 {
+                Some(LEXER + 0x40)
+            } else if address == IMAGE + 0x0306_ebd8 {
+                Some(LEXER + 0x48)
+            } else {
+                None
+            };
+            if let Some(at) = served {
+                return SliceMemory {
+                    base: STATE,
+                    bytes: &self.0,
+                }
+                .copy(at, destination);
+            }
+        }
         if address == IMAGE + cgame_state::SINGLETON_RVA && destination.len() == 8 {
             destination.copy_from_slice(&(STATE as u64).to_le_bytes());
             return true;
@@ -533,11 +710,12 @@ impl Memory for Fixture {
     }
 }
 
-/// Independently authored broad four-level trees, carrier fighter/bomber
-/// requests and both early-combat and escape keys. Never presize tree arenas.
+/// Independently authored broad four-level modifier trees on the combat's
+/// accumulators, carrier fighters and bombers, and early-combat and escaping
+/// ships: the live shape of a busy naval hour.
 pub(super) fn live_shape() -> LiveShape {
     let mut memory = Fixture::new(3);
-    let keys = engine::naval_ship_modifier_breakdown::KEYS;
+    let keys = TREE_KEYS;
     memory.u64(
         WING + 0x200 + engine::csub_unit_definition::AIR_FLAGS,
         0x400,
@@ -698,6 +876,10 @@ pub(super) fn live_shape() -> LiveShape {
     LiveShape(memory)
 }
 
+/// The modifier keys the fixture's trees carry: sortie efficiencies, the
+/// escape and positioning keys and screening.
+const TREE_KEYS: [u32; 9] = [0x24, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x1b2, 0x1b3, 0x1b6];
+
 pub(super) struct LiveShape(pub(super) Fixture);
 impl Memory for LiveShape {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -711,86 +893,18 @@ impl Memory for LiveShape {
             output.copy_from_slice(&(SHIP_TABLE as u64).to_le_bytes());
             return true;
         }
-        if address == IMAGE + engine::naval_ship_modifier_breakdown::COMBAT_INITIAL_DURATION_RVA
-            && output.len() == 4
-        {
-            output.copy_from_slice(&12_i32.to_le_bytes());
-            return true;
-        }
         self.0.copy(address, output)
     }
 }
 
-/// Status fixtures independently exercise a fixed breakdown reader after
-/// acquiring its source rows, keeping deliberate arena refusals observable.
-pub(crate) fn capture_live_shape_fixed_breakdown(captured: &mut crate::extended::Captured) {
-    use engine::{
-        naval_ship_modifier_breakdown as breakdown,
-        walk::{Buffer, Outcome},
-    };
+/// The live shape's hour, captured as production captures it.
+pub(crate) fn capture_live_shape(captured: &mut crate::extended::Captured) {
     let memory = live_shape();
     let c = &mut captured.naval_details;
-    let retained = (
-        std::mem::take(&mut c.breakdown_requests.first),
-        std::mem::take(&mut c.breakdown_roots.first),
-        std::mem::take(&mut c.breakdown_nodes.first),
-        std::mem::take(&mut c.breakdown_text.first),
-        std::mem::take(&mut c.breakdown_depth.first),
-    );
     let mut capacity = super::Capacities::default();
-    capacity.raise_for_live_breakdowns(breakdown::demand(&memory, IMAGE, STATE).unwrap());
+    capacity.raise_for_live_details(
+        engine::naval_combat_demand::demand(&memory, IMAGE, STATE).unwrap(),
+    );
     c.try_grow_hint(&capacity).unwrap();
     c.capture(&memory, IMAGE, STATE);
-    (
-        c.breakdown_requests.first,
-        c.breakdown_roots.first,
-        c.breakdown_nodes.first,
-        c.breakdown_text.first,
-        c.breakdown_depth.first,
-    ) = retained;
-    let (Outcome::Rows { len: combats }, Outcome::Rows { len: members }) =
-        (c.details.outcome, c.ships.outcome)
-    else {
-        panic!("fixed breakdown fixture requires complete source rows")
-    };
-    let mut buffers = breakdown::Buffers {
-        requests: Buffer::Fixed(&mut c.breakdown_requests.first),
-        request_len: 0,
-        request_required: 0,
-        roots: Buffer::Fixed(&mut c.breakdown_roots.first),
-        root_len: 0,
-        root_required: 0,
-        nodes: Buffer::Fixed(&mut c.breakdown_nodes.first),
-        node_len: 0,
-        node_required: 0,
-        text: Buffer::Fixed(&mut c.breakdown_text.first),
-        text_len: 0,
-        text_required: 0,
-        stack: Buffer::Fixed(&mut c.breakdown_depth.first),
-        stack_required: 0,
-    };
-    c.breakdown_outcome = match breakdown::capture(
-        &memory,
-        IMAGE,
-        STATE,
-        &c.details.rows[..combats],
-        &c.ships.rows[..members],
-        &c.planes.first[..c.planes.len],
-        &c.weapon_sources.first[..c.weapon_sources.len],
-        &mut buffers,
-    ) {
-        Ok(()) => Outcome::Rows {
-            len: buffers.root_len,
-        },
-        Err(reason) => Outcome::Unavailable { reason },
-    };
-    c.breakdown_requests.len = buffers.request_len;
-    c.breakdown_requests.required = buffers.request_required;
-    c.breakdown_roots.len = buffers.root_len;
-    c.breakdown_roots.required = buffers.root_required;
-    c.breakdown_nodes.len = buffers.node_len;
-    c.breakdown_nodes.required = buffers.node_required;
-    c.breakdown_text.len = buffers.text_len;
-    c.breakdown_text.required = buffers.text_required;
-    c.breakdown_depth.required = buffers.stack_required;
 }

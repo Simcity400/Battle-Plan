@@ -283,88 +283,6 @@ fn zero_capacity_rail_supplement_has_the_legacy_read_trace() {
     assert_eq!(result.required, 2);
 }
 #[test]
-fn hourly_rail_speed_reuse_preserves_direction_capacity_faults_and_refresh() {
-    struct Observed<'a> {
-        inner: &'a EtaMemory,
-        reads: std::cell::RefCell<Vec<usize>>,
-    }
-    impl Memory for Observed<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.reads.borrow_mut().push(address);
-            self.inner.copy(address, output)
-        }
-    }
-    let mut source = eta_fixture();
-    let mut memo = MovementSpeeds::new(1);
-    let observed = Observed {
-        inner: &source,
-        reads: Default::default(),
-    };
-    let expected = movement_speed(&observed, 0, MEMORY_BASE, 0x1600, 0x1900);
-    let reads = observed.reads.take();
-    assert_eq!(
-        memo.get(&observed, 0, MEMORY_BASE, 0x1600, 0x1900),
-        expected
-    );
-    assert_eq!(observed.reads.take(), reads);
-    for _ in 0..10 {
-        assert_eq!(
-            memo.get(&observed, 0, MEMORY_BASE, 0x1600, 0x1900),
-            expected
-        );
-    }
-    assert!(observed.reads.take().is_empty());
-    // A full result cache still acquires a different directed edge. Its
-    // current roots/defines and the already authenticated departure can
-    // now be reused, while the destination and source rail slot remain.
-    let reverse = movement_speed(&observed, 0, MEMORY_BASE, 0x1900, 0x1600);
-    observed.reads.take();
-    assert_ne!(reverse, expected);
-    assert_eq!(memo.get(&observed, 0, MEMORY_BASE, 0x1900, 0x1600), reverse);
-    assert_eq!(
-        observed.reads.take(),
-        [0x1600 + cprovince::STATE, 0x1500 + 2 * 8]
-    );
-    // Every cold fault preserves the ordinary reader's result and prefix.
-    for address in reads {
-        source.refused = Some(address);
-        let observed = Observed {
-            inner: &source,
-            reads: Default::default(),
-        };
-        let expected = movement_speed(&observed, 0, MEMORY_BASE, 0x1600, 0x1900);
-        let prefix = observed.reads.take();
-        assert!(expected.is_err());
-        for capacity in [0, 1, 64] {
-            let mut memo = MovementSpeeds::new(capacity);
-            for _ in 0..2 {
-                assert_eq!(
-                    memo.get(&observed, 0, MEMORY_BASE, 0x1600, 0x1900),
-                    expected
-                );
-                assert_eq!(observed.reads.take(), prefix);
-            }
-        }
-    }
-    source.refused = None;
-    put(
-        &mut source.bytes,
-        0x1000 + info::COOLDOWN_TICKS,
-        1_i32.to_le_bytes(),
-    );
-    memo.clear();
-    assert_eq!(
-        memo.get(&source, 0, MEMORY_BASE, 0x1600, 0x1900),
-        Ok(200_000)
-    );
-    // Clear also reacquires faults introduced in the following hour.
-    source.refused = Some(0x2000 + info::COOLDOWN_TICKS);
-    memo.clear();
-    assert!(memo.get(&source, 0, MEMORY_BASE, 0x1600, 0x1900).is_err());
-    assert_eq!(MovementSpeeds::new(0).allocated_bytes(), 0);
-}
-
-#[test]
 fn eta_rail_speed_uses_directed_edge_damage_and_cooldown() {
     let mut memory = eta_fixture();
     assert_eq!(
@@ -469,8 +387,7 @@ fn eta_infrastructure_uses_healthy_levels_and_native_maximum_precedence() {
     put(bytes, 0x7000 + b::TEMPLATE, 0x7000_u64.to_le_bytes());
     put(bytes, 0x7000 + b::LEVEL, 4_i16.to_le_bytes());
     put(bytes, 0x7000 + b::HEALTHY_LEVEL, 2_i16.to_le_bytes());
-    // Distinct provinces in one state must share the full infrastructure
-    // lookup, while retaining each province-to-state acquisition.
+    // Distinct provinces in one state reach the same infrastructure lookup.
     put(bytes, 0x600 + cprovince::STATE, 0x5000_u64.to_le_bytes());
     struct Observed<'a> {
         source: &'a EtaMemory,
@@ -487,90 +404,23 @@ fn eta_infrastructure_uses_healthy_levels_and_native_maximum_precedence() {
             source: &memory,
             reads: Default::default(),
         };
-        let expected = eta_infrastructure(&observed, 0, MEMORY_BASE, 0x1900);
-        let direct_reads = observed.reads.take();
-        for capacity in [0, 1, 64] {
-            let mut memo = MovementSpeeds::new(capacity);
-            assert_eq!(
-                MovementSpeeds::infrastructure(
-                    &mut memo.infrastructure,
-                    &observed,
-                    0,
-                    MEMORY_BASE,
-                    0x1900
-                ),
-                expected
-            );
-            assert_eq!(observed.reads.take(), direct_reads);
-            assert_eq!(
-                MovementSpeeds::infrastructure(
-                    &mut memo.infrastructure,
-                    &observed,
-                    0,
-                    MEMORY_BASE,
-                    0x1600
-                ),
-                expected
-            );
-            let warm = observed.reads.take();
-            assert_eq!(warm, [0x1600 + cprovince::STATE]);
-            memo.clear();
-            assert_eq!(
-                MovementSpeeds::infrastructure(
-                    &mut memo.infrastructure,
-                    &observed,
-                    0,
-                    MEMORY_BASE,
-                    0x1900
-                ),
-                expected
-            );
-            assert_eq!(observed.reads.take(), direct_reads);
-        }
-        direct_reads
+        assert_eq!(
+            eta_infrastructure(&observed, 0, MEMORY_BASE, 0x1900),
+            Ok(50_000)
+        );
+        observed.reads.take()
     };
+    assert_eq!(
+        eta_infrastructure(&memory, 0, MEMORY_BASE, 0x1600),
+        Ok(50_000)
+    );
+    // Every read on the successful path is required.
     for address in direct_reads {
         memory.refused = Some(address);
-        let observed = Observed {
-            source: &memory,
-            reads: Default::default(),
-        };
-        let expected = eta_infrastructure(&observed, 0, MEMORY_BASE, 0x1900);
-        let prefix = observed.reads.take();
-        assert!(expected.is_err());
-        for capacity in [0, 1, 64] {
-            let mut memo = MovementSpeeds::new(capacity);
-            for _ in 0..2 {
-                assert_eq!(
-                    MovementSpeeds::infrastructure(
-                        &mut memo.infrastructure,
-                        &observed,
-                        0,
-                        MEMORY_BASE,
-                        0x1900
-                    ),
-                    expected
-                );
-                assert_eq!(observed.reads.take(), prefix);
-            }
-        }
+        assert!(eta_infrastructure(&memory, 0, MEMORY_BASE, 0x1900).is_err());
     }
     memory.refused = None;
-    let mut memo = MovementSpeeds::new(64);
-    assert_eq!(
-        MovementSpeeds::infrastructure(&mut memo.infrastructure, &memory, 0, MEMORY_BASE, 0x1900),
-        Ok(50_000)
-    );
-    assert_eq!(
-        eta_infrastructure(&memory, 0, MEMORY_BASE, 0x1900),
-        Ok(50_000)
-    );
     put(&mut memory.bytes, 0x6000 + 0x2bc, 0_i32.to_le_bytes());
-    memo.clear();
-    assert_eq!(
-        MovementSpeeds::infrastructure(&mut memo.infrastructure, &memory, 0, MEMORY_BASE, 0x1900),
-        Ok(25_000)
-    );
     assert_eq!(
         eta_infrastructure(&memory, 0, MEMORY_BASE, 0x1900),
         Ok(25_000)
@@ -581,11 +431,6 @@ fn eta_infrastructure_uses_healthy_levels_and_native_maximum_precedence() {
         Ok(40_000)
     );
     put(&mut memory.bytes, 0x7000 + b::TEMPLATE, 0_u64.to_le_bytes());
-    memo.clear();
-    assert!(
-        MovementSpeeds::infrastructure(&mut memo.infrastructure, &memory, 0, MEMORY_BASE, 0x1900)
-            .is_err()
-    );
     assert!(eta_infrastructure(&memory, 0, MEMORY_BASE, 0x1900).is_err());
 }
 
@@ -1160,66 +1005,4 @@ fn reused_edge_scratch_keeps_invalid_prefixes_and_overflow_independent_of_old_by
         &mut scratch,
     );
     compare_reused_edge_scratch(&bytes, None, provinces, pairs, 68, 0, &mut scratch);
-}
-
-#[test]
-fn railway_worker_retains_five_thousand_original_edge_and_province_dependencies() {
-    const QUERIES: usize = 5_001;
-    const SLOTS: usize = QUERIES + 2;
-    const INFO_TABLE: usize = 0x100000;
-    const ROSTER: usize = 0x110000;
-    const PROVINCES: usize = 0x200000;
-    let mut source = eta_fixture();
-    source.bytes.resize(PROVINCES + SLOTS * 0x400, 0);
-    array(
-        &mut source.bytes,
-        0x400 + PROVINCE_INFO_TABLE,
-        INFO_TABLE as u64,
-        SLOTS as u32,
-        SLOTS as u32,
-    );
-    array(
-        &mut source.bytes,
-        cgame_state::PROVINCES,
-        ROSTER as u64,
-        SLOTS as u32,
-        SLOTS as u32,
-    );
-    for id in 1..SLOTS {
-        let pointer = PROVINCES + id * 0x400;
-        put(
-            &mut source.bytes,
-            ROSTER - MEMORY_BASE + id * 8,
-            (pointer as u64).to_le_bytes(),
-        );
-        put(
-            &mut source.bytes,
-            pointer - MEMORY_BASE,
-            (cprovince::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(
-            &mut source.bytes,
-            pointer - MEMORY_BASE + cprovince::ID,
-            (id as u32).to_le_bytes(),
-        );
-    }
-    let mut memo = MovementSpeeds::new(1);
-    let to = PROVINCES + (SLOTS - 1) * 0x400;
-    for id in 1..=QUERIES {
-        let from = PROVINCES + id * 0x400;
-        assert_eq!(memo.get(&source, 0, MEMORY_BASE, from, to), Ok(200_000));
-    }
-    assert_eq!(memo.entries.len(), QUERIES);
-    assert_eq!(memo.inputs.identities.len(), QUERIES + 1);
-    // Repeated late dependencies use their original successful observation.
-    source.refused = Some(PROVINCES + QUERIES * 0x400);
-    assert_eq!(
-        memo.get(&source, 0, MEMORY_BASE, PROVINCES + QUERIES * 0x400, to),
-        Ok(200_000)
-    );
-    memo.clear();
-    assert!(
-        memo.get(&source, 0, MEMORY_BASE, PROVINCES + QUERIES * 0x400, to)
-            .is_err()
-    );
 }

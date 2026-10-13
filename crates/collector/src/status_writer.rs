@@ -200,6 +200,7 @@ pub(crate) fn measure_bytes(bytes: &mut Vec<u8>, directories: &[PathBuf]) -> io:
     Ok(())
 }
 fn run(inner: &Inner, write: &impl Fn(&Path, &[u8]) -> io::Result<()>) {
+    crate::thread_cpu::register(crate::thread_cpu::Role::Status);
     let _phase = allocation::enter(allocation::Phase::Status);
     allocation::attempted_hour(None);
     let mut stopping_since: Option<Instant> = None;

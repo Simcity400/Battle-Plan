@@ -301,6 +301,89 @@ fn hourly_cost_at_1500_and_5000_countries() {
     }
 }
 
+/// The pass shares authenticated building templates across states and
+/// countries; every score still equals the per-building native count.
+#[test]
+fn shared_templates_keep_every_factory_score_native() {
+    use crate::{cbuilding, cbuilding_status, cbuilding_template, cstate};
+    let mut w = cost_fixture(4);
+    // Positive, zero, negative and wrapping production sums.
+    let words: [[u32; 2]; 4] = [[1, 0], [0, 0], [0, (-5_i32) as u32], [i32::MAX as u32, 1]];
+    let templates = words.map(|[first, second]| {
+        let template = w.alloc(cbuilding_template::SIZE);
+        w.u64(template, cbuilding_template::VTABLE_RVA as u64);
+        w.u32(
+            template + cbuilding_template::WAR_OVERVIEW_PRODUCTION[0],
+            first,
+        );
+        w.u32(
+            template + cbuilding_template::WAR_OVERVIEW_PRODUCTION[1],
+            second,
+        );
+        template
+    });
+    for slot in 1..=4_u32 {
+        let cores = read::<u64>(
+            &w.memory(),
+            w.object(slot) + ccountry::WAR_OVERVIEW_CORE_STATES,
+        )
+        .unwrap() as usize;
+        for core in 0..4 {
+            let state = read::<u64>(&w.memory(), cores + core * 8).unwrap() as usize;
+            let buildings = read::<u64>(
+                &w.memory(),
+                state + cstate::BUILDING_STATUS + cbuilding_status::ACTIVE_BUILDINGS,
+            )
+            .unwrap() as usize;
+            for index in 0..8 {
+                let building = read::<u64>(&w.memory(), buildings + index * 8).unwrap() as usize;
+                let pick = (slot as usize + core + index) % templates.len();
+                w.u64(building + cbuilding::TEMPLATE, templates[pick] as u64);
+                let level = (slot as usize * 3 + core + index) as i16;
+                w.put(building + cbuilding::LEVEL, &level.to_le_bytes());
+            }
+        }
+    }
+    let mut expected = [CountryRow::default(); 4];
+    let mut scores = [CountryRow::default(); 4];
+    assert!(
+        baseline::walk(
+            &w.memory(),
+            0,
+            w.game_state(),
+            &mut [OwnedRow::default(); 4],
+            &mut [cwar_goal::relation::Row::default(); 8],
+            &mut expected,
+        )
+        .iter()
+        .all(|o| matches!(o, Outcome::Rows { .. }))
+    );
+    assert!(
+        walk(
+            &w.memory(),
+            0,
+            w.game_state(),
+            &mut [OwnedRow::default(); 4],
+            &mut [cwar_goal::relation::Row::default(); 8],
+            &mut scores,
+        )
+        .iter()
+        .all(|o| matches!(o, Outcome::Rows { .. }))
+    );
+    let scored: Vec<_> = scores
+        .iter()
+        .filter(|row| row.score_available == 1)
+        .map(|row| (row.country, row.factories))
+        .collect();
+    // The viewpoint and its enemy share every template and differ in total.
+    assert_eq!(scored.len(), 2, "{scores:?}");
+    assert_ne!(scored[0].1, scored[1].1);
+    for (country, factories) in scored {
+        let native = expected.iter().find(|row| row.country == country).unwrap();
+        assert_eq!(factories, native.factories, "country {country}");
+    }
+}
+
 #[test]
 fn score_failures_keep_owned_and_goals_and_the_first_reason() {
     let mut w = cost_fixture(2);

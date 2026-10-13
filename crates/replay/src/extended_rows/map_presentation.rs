@@ -26,9 +26,9 @@ pub struct CountryAppearanceRow {
     /// The runtime 2D graphical culture used as a prefix for technology
     /// sprites in the equipment icon fallback; empty when unset.
     pub graphical_culture_2d: Vec<u8>,
-    /// The CCharacter id of the same first country leader. `None` when
-    /// `leader_ideology` is empty (no leader), or when the leader's character
-    /// could not be read; never zero for missing.
+    /// The character id of the same first country leader. `None` when `leader_ideology`
+    /// is empty (no leader), or when the leader's character could not be read; never zero
+    /// for missing.
     pub leader_character: Option<u32>,
     /// The name, adjective and definite name before the last rebuild that
     /// changed them, exact bytes in the recording client's language. Display
@@ -53,7 +53,8 @@ pub struct CountryAppearanceRow {
     /// Positive selects original_tag, including an empty string; nonpositive
     /// selects the own tag. None is unreadable; NotRecorded is a historical gap.
     pub original_tag_reference: Recorded<Option<i32>>,
-    pub transport_convoys: Recorded<Option<TransportConvoys>>,
+    /// Retired selected transport convoy pool and reservations.
+    pub transport_convoys: Recorded<Retired>,
 }
 impl CountryAppearanceRow {
     /// The stored primary colour as sRGB bytes. The floats already carry the
@@ -101,25 +102,9 @@ value_struct!(ShipCounterInputs {
     positive_equipment_flags: u64
 });
 
-/// Current hourly cached weapon bases and the fleet-leader torpedo modifier.
-/// Every failed scalar is independent; known zero remains Some(0).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct ShipStrikeInputs {
-    pub light_attack: Option<i64>,
-    pub heavy_attack: Option<i64>,
-    pub light_piercing: Option<i64>,
-    pub torpedo_attack: Option<i64>,
-    pub torpedo_cooldown_modifier: Option<i64>,
-}
-value_struct!(ShipStrikeInputs {
-    light_attack: Option<i64>, heavy_attack: Option<i64>, light_piercing: Option<i64>,
-    torpedo_attack: Option<i64>, torpedo_cooldown_modifier: Option<i64>
-});
-opaque_value!(Option<ShipStrikeInputs>);
-
-/// Current selected-variant operands for composition comparison.
-/// The general definition ordinal resolves through recorded Equipment content,
-/// including generated definitions; daily variant rows do not substitute here.
+/// Current selected-variant operands of the native composition comparator. The general
+/// definition ordinal resolves through recorded Equipment content, including generated
+/// definitions; daily variant rows do not substitute here.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct HullVariantInputs {
     pub definition_index: Option<i32>,
@@ -150,9 +135,8 @@ pub struct ShipModelRow {
     /// resolves the original name even when multiple definitions have token0.
     /// None is a field-local guarded refusal; old formats use NotRecorded.
     pub subunit_index: Recorded<Option<i32>>,
-    /// Fresh each hourly ShipModels acquisition. None is packet refusal;
-    /// individual guarded scalar failures remain inside a present packet.
-    pub strike: Recorded<Option<ShipStrikeInputs>>,
+    /// Retired strike operands of the port strike-force readiness hover.
+    pub strike: Recorded<Retired>,
     /// Fresh current tuple for the already selected variant; a null variant
     /// demands none. Individual later failures never erase an earlier field.
     pub hull_variant: Recorded<Option<HullVariantInputs>>,
@@ -260,7 +244,7 @@ pub struct NavalSearcher {
     pub reference: Option<u64>,
     /// None is resolver/identity refusal; false is a known dangling reference.
     pub resolves: Option<bool>,
-    /// Generic CUnit PRIMARY+1D8, independent of logical owner and unit class.
+    /// Generic unit PRIMARY+1D8, independent of logical owner and unit class.
     pub roster_owner: Option<u32>,
 }
 value_struct!(NavalSearcher { reference: Option<u64>, resolves: Option<bool>, roster_owner: Option<u32> });
@@ -276,7 +260,7 @@ value_struct!(NavalEngagementTarget { reference: u64, resolves: Option<bool> });
 /// Ordered genuine port/strike mission inputs for a callback hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalPortMissionInputs {
-    pub sample_hour: i32,
+    pub sample_hour: PacketHour,
     pub searching: Option<Vec<NavalSearcher>>,
     pub engagement_target: Option<NavalEngagementTarget>,
     /// Raw bytes and native order. A later unknown string cannot invalidate
@@ -284,7 +268,7 @@ pub struct NavalPortMissionInputs {
     pub avoided_ship_types: Option<Vec<Option<Vec<u8>>>>,
 }
 value_struct!(NavalPortMissionInputs {
-    sample_hour: i32, searching: Option<Vec<NavalSearcher>>,
+    sample_hour: PacketHour, searching: Option<Vec<NavalSearcher>>,
     engagement_target: Option<NavalEngagementTarget>, avoided_ship_types: Option<Vec<Option<Vec<u8>>>>
 });
 opaque_value!(Option<NavalPortMissionInputs>);
@@ -309,10 +293,10 @@ pub struct TaskForceCounterInputRow {
     /// independent guarded-read/name-arena refusal; older formats use
     /// NotRecorded. Display keeps the recording-language guard.
     pub name: Recorded<Option<Vec<u8>>>,
-    /// Stored CSupplyConsumer inputs for the detailed at-sea supply footer.
-    /// None is an independent scalar-read refusal; an absent origins vector
-    /// preserves the scalar pack and records its own read/arena refusal.
-    /// Older formats use NotRecorded. No task-force save path is established.
+    /// Stored supply-consumer inputs for the detailed at-sea supply footer. None is an
+    /// independent scalar-read refusal; an absent origins vector preserves the scalar
+    /// pack and records its own read/arena refusal. Older formats use NotRecorded. No
+    /// task-force save path is established.
     pub supply: Recorded<Option<UnitSupplyInputs>>,
     /// Ordered port operands; unrelated name, supply and motion failures do
     /// not withhold this packet, or vice versa. Older formats use NotRecorded.
@@ -321,19 +305,18 @@ pub struct TaskForceCounterInputRow {
 typed_codec!(TaskForceCounterInputRow, 64, |r| r.task_force as u128, |k| Self { task_force: k as u64, ..Default::default() },
  { 0 => (is_in_regions): U8, 1 => (running_away): U8, 2 => (engagement_rule): I32, 3 => (mission_region_count): I32, 4 => (bombardment_region): U32, 5 => (repair_parent): U64, 6 => (detached_activity): I32, 7 => (repair_last_mission): I32, 8 => (received_supply_ratio): I64, 9 => (attached_headquarters): I32, 10 => (name): Opaque, 11 => (supply): Opaque, 12 => (port_mission): Opaque }, |_r| Ok(()));
 
-/// Hourly simulation operands of every class-13 railway gun, keyed by its full
-/// handle. Owners are raw country tags; `province` is its authenticated location
-/// (zero when its roster holds it unlocated). The mixed province occupant order
-/// is already in ProvinceUnitOrder; nothing here is a client's rendered icon,
-/// selected country or camera state. `railway_building_level` is the signed
-/// level of the railway building at the gun's province (`None` for a null rail
-/// info or building pointer), the location warning's input. `combat_role` is 0
-/// without a combat, 1 when the logical owner attacks in its first combat and
-/// 2 otherwise; `combat_province` is that combat's province. `combat_count` is the
-/// stored CUnit combat-vector count, and `attacking` whether the owner attacks in
-/// any of those combats (`Unit_GetActionCode`'s combat branch). `reference_entry_count`
-/// is the stored count (`+0x42C`) of the gun's own combat reference array, the
-/// save's `combat` list.
+/// Hourly simulation operands of every class-13 railway gun, keyed by its full handle.
+/// Owners are raw country tags; `province` is its authenticated location (zero when its
+/// roster holds it unlocated). The mixed province occupant order is already in
+/// ProvinceUnitOrder; nothing here is a client's rendered icon, selected country or
+/// camera state. `railway_building_level` is the signed level of the railway building at
+/// the gun's province (`None` for a null rail info or building pointer), the location
+/// warning's input. `combat_role` is 0 without a combat, 1 when the logical owner attacks
+/// in its first combat and 2 otherwise; `combat_province` is that combat's province.
+/// `combat_count` is the stored unit combat-vector count, and `attacking` whether the
+/// owner attacks in any of those combats (the unit-action query's combat branch).
+/// `reference_entry_count` is the stored count (`+0x42C`) of the gun's own combat
+/// reference array, the save's `combat` list.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RailwayGunCounterInputRow {
     pub gun: u64,
@@ -362,9 +345,9 @@ pub struct RailwayGunCounterInputRow {
     pub attacking: u8,
     pub ordinary_path: Vec<u32>,
     pub alternate_path: Vec<u32>,
-    /// CRailwayGun's stored CUnit name (primary+0x258), exact bytes. The
-    /// getter/setter retain no authored-name provenance; display only in the
-    /// recording's language. `None` is a guarded acquisition refusal.
+    /// railway gun's stored unit name (primary+0x258), exact bytes. The getter/setter
+    /// retain no authored-name provenance; display only in the recording's language.
+    /// `None` is a guarded acquisition refusal.
     pub name: Recorded<Option<Vec<u8>>>,
     /// Hourly first-edge native duration inputs, present for a positive
     /// ordinary route. None is outside demand or a counted capture failure;
@@ -380,7 +363,8 @@ pub struct RailwayGunCounterInputRow {
     /// route. Each failed domain stays absent; a transfer skips land inputs.
     pub fresh: Recorded<Option<FreshRailwayCounterEta>>,
     pub combat_references: Recorded<Option<UnitCombatReferences>>,
-    pub transport: Recorded<Option<UnitTransportInputs>>,
+    /// Retired selected transport weight and transfer operands.
+    pub transport: Recorded<Retired>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -397,19 +381,19 @@ value_struct!(RailwayGunEtaOperands {
 });
 opaque_value!(Option<RailwayGunEtaOperands>);
 
-/// Fresh class13 route inputs. Require `sample_hour == frame.hour`; carried
-/// first-edge inputs never substitute for an absent common domain. Known
-/// absence of the unit's actual orders group is `Some(0)`, independently
-/// of the railway assignee group already recorded by the counter prefix.
+/// Fresh class13 route inputs. Require `sample_hour.fresh_at(frame.hour)`; carried
+/// first-edge inputs never substitute for an absent common domain. Native absence of the
+/// genuine unit+0xc0 group is `Some(0)`, independently of the railway assignee group
+/// already recorded by the counter prefix.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FreshRailwayCounterEta {
-    pub sample_hour: i32,
+    pub sample_hour: PacketHour,
     pub maximum_speed: Option<i64>,
     pub land_supply_factor: Option<i64>,
     pub orders_group: Option<u64>,
 }
 value_struct!(FreshRailwayCounterEta {
-    sample_hour: i32,
+    sample_hour: PacketHour,
     maximum_speed: Option<i64>,
     land_supply_factor: Option<i64>,
     orders_group: Option<u64>,
@@ -426,13 +410,13 @@ mod fresh_railway_eta_tests {
     fn fresh_packet_keeps_refused_zero_and_signed_extreme_operands_distinct() {
         for inputs in [
             FreshRailwayCounterEta {
-                sample_hour: i32::MIN,
+                sample_hour: PacketHour::Host,
                 maximum_speed: Some(i64::MIN),
                 land_supply_factor: Some(i64::MAX),
                 orders_group: Some(u64::MAX),
             },
             FreshRailwayCounterEta {
-                sample_hour: 0,
+                sample_hour: PacketHour::Host,
                 maximum_speed: Some(0),
                 land_supply_factor: None,
                 orders_group: Some(0),
@@ -453,7 +437,7 @@ mod fresh_railway_eta_tests {
                     .is_err()
             );
         }
-        assert!(FreshRailwayCounterEta::decode(&mut Decoder::new(&[0, 0, 0, 0, 2])).is_err());
+        assert!(FreshRailwayCounterEta::decode(&mut Decoder::new(&[2])).is_err());
     }
 
     #[test]
@@ -471,7 +455,7 @@ mod fresh_railway_eta_tests {
             fresh: None.into(),
             combat_count: 1,
             combat_references: Some(UnitCombatReferences {
-                sample_hour: -81,
+                sample_hour: PacketHour::Host,
                 entries: vec![UnitCombatReference {
                     combat: u64::MAX,
                     kind: 0,
@@ -482,7 +466,7 @@ mod fresh_railway_eta_tests {
         };
         let row = RailwayGunCounterInputRow {
             fresh: Some(FreshRailwayCounterEta {
-                sample_hour: -81,
+                sample_hour: PacketHour::Host,
                 maximum_speed: Some(0),
                 land_supply_factor: None,
                 orders_group: Some(u64::MAX),
@@ -588,9 +572,9 @@ pub struct CountryCounterInputRow {
     /// exact retired byte (zero for a null pointer). Independent of the cache
     /// set; these native runtime operands have no text-save counterpart.
     pub zero_war: Recorded<Option<[u8; 2]>>,
-    /// Current-hour owner-shared river and transport operands for fresh route
-    /// queries. The domains and their entry refusals remain independent.
-    pub movement: Recorded<Option<CountryMovementInputs>>,
+    /// Retired owner-shared transport speeds of the selected transport
+    /// preview; the river, naval and theatre domains retired before them.
+    pub movement: Recorded<Retired>,
     /// Exact status0 +288 subject pointer/type/parties, independent of zero_war
     /// and the directed cache. None is a guarded refusal; text saves omit slot0.
     pub zero_subject: Recorded<Option<ZeroSubjectInputs>>,
@@ -608,12 +592,24 @@ pub struct CountryCounterInputRow {
     /// reached target faction use same-hour country/faction evidence. Older
     /// recordings retain NotRecorded.
     pub forward_visibility: Recorded<Option<ReverseZeroVisibilityInputs>>,
-    /// Fresh own-country night and fort scalars.
-    pub attack: Recorded<CountryAttackInputs>,
+    /// The selected-attack scalars recordings through format 101 captured
+    /// ([`CountryAttackInputs`], effective values); current writers leave it
+    /// empty ([`Witnessed`]) and record [`Self::attack_modifiers`] instead.
+    pub attack: Recorded<Witnessed<CountryAttackInputs>>,
+    /// The direct-war packet recordings through format 101 captured. Current
+    /// writers store None: playback derives every cell from the hour's
+    /// WarRelations ([`crate::directed_war_derive`]), and an older packet,
+    /// where present, still answers for its receiver.
     pub directed_wars: Recorded<Option<DirectedWars>>,
+    /// The country accumulator's raw `land_night_attack` and
+    /// `land_bunker_effectiveness_factor` entries, which the selected
+    /// army's attack list reads for the division's owner and the target's
+    /// controller ([`crate::attack_derive`]). None is a counted read refusal;
+    /// older formats use NotRecorded.
+    pub attack_modifiers: Recorded<Option<CountryAttackModifiers>>,
 }
 typed_codec!(CountryCounterInputRow, 32, |r| r.country as u128, |k| Self { country: k as u32, ..Default::default() },
- { 0 => (pride_of_the_fleet): U64, 1 => (owned_state_count): I32, 2 => (controlled_state_count): I32, 3 => (first_division): U64, 4 => (owned_states): Opaque, 5 => (controlled_states): Opaque, 6 => (core_states): Opaque, 7 => (army_leaders): Opaque, 8 => (navy_leaders): Opaque, 9 => (mio_policies): Opaque, 10 => (neighbors): Opaque, 11 => (co_belligerents): Opaque, 12 => (zero_war): Opaque, 13 => (movement): Opaque, 14 => (zero_subject): Opaque, 15 => (pride_name): Opaque, 16 => (forward_visibility): Opaque, 17 => (attack): Opaque, 18 => (directed_wars): Opaque }, |_row| {
+ { 0 => (pride_of_the_fleet): U64, 1 => (owned_state_count): I32, 2 => (controlled_state_count): I32, 3 => (first_division): U64, 4 => (owned_states): Opaque, 5 => (controlled_states): Opaque, 6 => (core_states): Opaque, 7 => (army_leaders): Opaque, 8 => (navy_leaders): Opaque, 9 => (mio_policies): Opaque, 10 => (neighbors): Opaque, 11 => (co_belligerents): Opaque, 12 => (zero_war): Opaque, 13 => (movement): Opaque, 14 => (zero_subject): Opaque, 15 => (pride_name): Opaque, 16 => (forward_visibility): Opaque, 17 => (attack): Opaque, 18 => (directed_wars): Opaque, 19 => (attack_modifiers): Opaque }, |_row| {
     Ok(())
 });
 
@@ -685,12 +681,12 @@ impl Value for LaunchNavalBases {
 /// Base and state IDs retain their exact bits; no persistent handle is inferred.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ReservedLaunchSources {
-    pub sample_hour: i32,
+    pub sample_hour: PacketHour,
     pub naval_bases: LaunchNavalBases,
     pub owned_states: Option<Vec<u32>>,
 }
 value_struct!(ReservedLaunchSources {
-    sample_hour: i32,
+    sample_hour: PacketHour,
     naval_bases: LaunchNavalBases,
     owned_states: Option<Vec<u32>>,
 });
@@ -727,14 +723,14 @@ opaque_value!(Option<ReverseZeroVisibilityInputs>);
 /// The complete vector length is the observed matrix count, including slot0;
 /// no country census count is substituted. An absent cell is uncertified,
 /// distinct from a present cell's native null or independently skipped reads.
-/// Consumers require sample_hour to equal the queried branch frame's hour.
+/// Consumers require `sample_hour.fresh_at` the queried branch frame's hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ReservedReverseVisibilityInputs {
-    pub sample_hour: i32,
+    pub sample_hour: PacketHour,
     pub cells: Vec<Option<ReverseZeroVisibilityInputs>>,
 }
 value_struct!(ReservedReverseVisibilityInputs {
-    sample_hour: i32,
+    sample_hour: PacketHour,
     cells: Vec<Option<ReverseZeroVisibilityInputs>>,
 });
 opaque_value!(Option<ReservedReverseVisibilityInputs>);
@@ -828,9 +824,9 @@ pub struct ReservedCountryNamingRow {
     /// Reserved faction identity: Some(0) is null, otherwise an authenticated
     /// full faction handle. None is a refusal.
     pub faction: Recorded<Option<u64>>,
-    /// Current-hour shared physical navy caches and reserved owner theatre
-    /// membership. None is an independent current capture refusal.
-    pub movement: Recorded<Option<CountryNavalMovementInputs>>,
+    /// Retired naval movement packet: physical navy nearest-base caches and
+    /// reserved owner theatre membership, read only by fresh counter routes.
+    pub movement: Recorded<Retired>,
     /// Fresh actual Country0 theatre count, only after the entire owner-zero
     /// LandTheatres suffix commits with complete regular/army native roster
     /// proof. Some(0) certifies the fresh empty theatre vector; None refuses.
@@ -847,17 +843,17 @@ pub struct ReservedCountryNamingRow {
     /// daily/deferred/forced sample. None is unadmitted; a carried value keeps
     /// its acquisition hour. Historical field absence remains NotRecorded.
     pub country_intel_sample: Recorded<Option<ReservedCountryIntelSample>>,
-    pub attack: Recorded<Option<CountryAttackInputs>>,
-    /// Demand-only exact signed raw mapping and spelling observations.
-    pub raw_country_observations: Recorded<Option<RawCountryObservations>>,
-    /// Hourly all-physical navy pass and its authentic mission receiver
-    /// dictionary, independent of selection. Available only with this
-    /// singleton's complete required naming prefix.
-    pub transport_mission_inputs: Recorded<Option<TransportMissionInputs>>,
+    /// Actual Country0's selected-attack scalars as recordings through format
+    /// 101 captured them ([`CountryAttackInputs`]); current writers leave it
+    /// empty ([`Witnessed`]).
+    pub attack: Recorded<Witnessed<Option<CountryAttackInputs>>>,
+    /// Retired raw mapping and spelling observations of the selected-attack map.
+    pub raw_country_observations: Recorded<Retired>,
+    /// Retired transport mission packet of the selected transport preview.
+    pub transport_mission_inputs: Recorded<Retired>,
 }
 typed_codec!(ReservedCountryNamingRow, 0, |_row| 0, |_key| Self::default(),
 { 0 => (tag): Bytes, 1 => (name_tag): Bytes, 2 => (cosmetic_tag): Bytes, 3 => (leader_ideology): Bytes, 4 => (group): Opaque, 5 => (overlord): I32, 6 => (autonomy): Opaque, 7 => (built): U8, 8 => (original_tag): Opaque, 9 => (original_tag_reference): OptionalI32, 10 => (original_tag_buckets): Opaque, 11 => (country_array): Opaque, 12 => (owned_state_count): OptionalI32, 13 => (dynamic_tag_boundary): OptionalI32, 14 => (faction): OptionalU64, 15 => (movement): Opaque, 16 => (land_theatre_count): OptionalU32, 17 => (launch_sources): Opaque, 18 => (reverse_visibility): Opaque, 19 => (country_intel_sample): Opaque, 20 => (attack): Opaque, 21 => (raw_country_observations): Opaque, 22 => (transport_mission_inputs): Opaque }, |row| {
-    if let Recorded::Value(Some(packet)) = &row.raw_country_observations { packet.check()?; }
    if row.built & !7 != 0 {
        Err(invalid("reserved country naming witness has unknown bits"))
    } else {
@@ -879,15 +875,21 @@ pub struct OrdersGroupCounterInputRow {
     /// Stored signed value used by the invasion communications branch.
     /// Distinct from +0x1C4 HQ distance; None is a counted independent refusal.
     pub invasion_source_distance: Recorded<Option<i32>>,
-    pub attack: Recorded<OrdersGroupAttackInputs>,
+    /// The commander operands recordings through format 101 captured
+    /// ([`OrdersGroupAttackInputs`]); current writers leave it empty
+    /// ([`Witnessed`]) unless the collector's `attack_witness` diagnostic
+    /// sampled one of the group's divisions.
+    pub attack: Recorded<Witnessed<OrdersGroupAttackInputs>>,
+    /// The direct commander's attack operands (`orders group+0x88`,
+    /// [`CommanderAttackStats`]): `Some(None)` for a group without one, None for a
+    /// counted read refusal. Older formats use NotRecorded.
+    pub commander_attack: Recorded<Option<Option<CommanderAttackStats>>>,
 }
 typed_codec!(OrdersGroupCounterInputRow, 64, |r| r.group as u128, |k| Self { group: k as u64, ..Default::default() },
  { 0 => (withdrawing): U8, 1 => (hq_distance): OptionalI32,
    2 => (leader_enroute_days): OptionalI32, 3 => (border_war_presence): Opaque,
-   4 => (invasion_source_distance): OptionalI32, 5 => (attack): Opaque }, |row| {
-    if let Recorded::Value(packet) = &row.attack { packet.check()?; }
-    Ok(())
-});
+   4 => (invasion_source_distance): OptionalI32, 5 => (attack): Opaque,
+   6 => (commander_attack): Opaque }, |_row| Ok(()));
 
 /// Picture-directory inputs for the same HQ scope as LeaderPortraits,
 /// keyed by leader handle. `country` is the raw leader-country reference.
@@ -1048,8 +1050,8 @@ typed_codec!(DivisionTemplateIconRow, 64, |row| row.template as u128,
  |key| Self { template: key as u64, ..Default::default() },
  { 0 => (priority_unit): U32, 1 => (priority_unit_name): Bytes, 2 => (custom_icon): I32, 3 => (custom_icon_nato): U8, 4 => (representative): U32, 5 => (representative_local): U8, 6 => (subunits): Opaque, 7 => (country): I32, 8 => (foreign_country): I32, 9 => (model_category): OptionalU64, 10 => (model_entity): Bytes, 11 => (excluded_variants): U64List, 12 => (model_unreadable): U8, 13 => (formation_division_count): OptionalI32, 14 => (display_name): Opaque }, |_row| Ok(()));
 
-/// Sparse native CProvince overrides. Absence from a complete current table
-/// means no override; bytes can be a localization key, not rendered text.
+/// Sparse native province overrides. Absence from a complete current table means no
+/// override; bytes can be a localization key, not rendered text.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ProvinceNameRow {
     pub province: u32,

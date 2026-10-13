@@ -1,8 +1,13 @@
-//! Province override bytes. Native row/text storage grows only off-thread.
+//! Province override bytes, read every hour. An hour whose province name
+//! domain is quiet ([`crate::world_input_changes`]: no rename or reset effect
+//! ran since the held read) publishes the held read without reading any
+//! province. Native row/text storage grows only off-thread or on the Slow
+//! job's worker.
 use crate::{
     sampling::qpc,
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
+    world_input_changes::{self as changes, Changes, Domain, Held, Plan},
 };
 use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, cprovince, walk::Outcome};
@@ -10,11 +15,18 @@ use replay::{
     frame::TableView,
     rows::{ProvinceNameRow, TableId, tables},
 };
+use std::sync::Mutex;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ProvinceNames];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] =
     &[("province name overrides and province census", 0, &[0])];
+
+/// The latest complete read's rows and override bytes.
+type Names = (Vec<cprovince::NameRow>, Vec<u8>);
+
+/// The held read, between the Slow job's captures (one runs at a time).
+static HELD: Mutex<Held<Names>> = Mutex::new(Held::new((Vec::new(), Vec::new())));
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
@@ -78,6 +90,28 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
+        self.capture_held(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            &changes::Observer,
+            &HELD,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_held(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        changes: &impl Changes,
+        held: &Mutex<Held<Names>>,
+    ) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         self.reset();
         if !replay::cadence::should_walk(TABLES[0], hour, force_full) {
@@ -87,6 +121,30 @@ impl Captured {
             return [0];
         }
         let started = qpc();
+        let mut held = held.try_lock().ok();
+        let plan = held.as_ref().map_or(Plan::READ, |held| {
+            held.plan(Domain::ProvinceNames, changes, force_full)
+        });
+        if plan.carry
+            && let Some(held) = &held
+        {
+            let (rows, bytes) = held.carried(Domain::ProvinceNames);
+            let ensured = (
+                engine::walk::Buffer::Growing(&mut self.names.rows).ensure(rows.len()),
+                engine::walk::Buffer::Growing(&mut self.bytes.first).ensure(bytes.len()),
+            );
+            self.names.outcome = match ensured {
+                (Ok(_), Ok(_)) => {
+                    self.names.rows[..rows.len()].copy_from_slice(rows);
+                    self.bytes.first[..bytes.len()].copy_from_slice(bytes);
+                    self.bytes.len = bytes.len();
+                    self.bytes.required = bytes.len();
+                    Outcome::Rows { len: rows.len() }
+                }
+                (Err(reason), _) | (_, Err(reason)) => Outcome::Unavailable { reason },
+            };
+            return [qpc().saturating_sub(started).max(0) as u64];
+        }
         let first = cprovince::walk_names_growing(
             memory,
             base,
@@ -97,6 +155,27 @@ impl Captured {
         self.names.outcome = first.outcome;
         self.bytes.len = first.bytes_len;
         self.bytes.required = first.required_bytes;
+        if let Some(held) = &mut held {
+            let read = match first.outcome {
+                Outcome::Rows { len } => Some((
+                    &self.names.rows[..len],
+                    &self.bytes.first[..first.bytes_len],
+                )),
+                _ => None,
+            };
+            held.settle(
+                Domain::ProvinceNames,
+                changes,
+                plan.read(Domain::ProvinceNames, changes),
+                read.is_some(),
+                |(rows, bytes)| read.is_some_and(|read| (&rows[..], &bytes[..]) != read),
+                |(rows, bytes)| {
+                    read.is_some_and(|(fresh, text)| {
+                        changes::assign(rows, fresh) && changes::assign(bytes, text)
+                    })
+                },
+            );
+        }
         [qpc().saturating_sub(started).max(0) as u64]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -173,7 +252,7 @@ mod tests {
     use engine::memory::{CountedMemory, SliceMemory};
 
     #[test]
-    fn names_are_read_on_refresh_and_full_hours_and_preserve_native_failure() {
+    fn names_are_read_every_hour_and_preserve_native_failure() {
         let memory = CountedMemory::new(SliceMemory {
             base: 0,
             bytes: &[],
@@ -185,34 +264,32 @@ mod tests {
             let [Outcome::Unavailable { reason }] = capture.outcomes() else {
                 panic!("unreadable names must fail at hour {hour}");
             };
-            if !force && hour.rem_euclid(24) != 1 {
-                assert_eq!(reads.finish(), crate::read_accounting::ZERO);
-                assert_eq!(reason, replay::cadence::SKIPPED_REASON);
-                continue;
-            }
-            assert!(reads.finish()[TABLES[0].index()].spans > 0);
+            assert!(reads.finish()[TABLES[0].index()].spans > 0, "hour {hour}");
             assert_ne!(reason, replay::cadence::SKIPPED_REASON);
             assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
         }
     }
 
-    #[test]
-    fn live_override_changes_and_removal_are_captured_after_off_slot_hours() {
-        const BASE: usize = 0x1000;
-        const PROVINCE: usize = 0x2000;
-        const POINTERS: usize = 0x1400;
-        fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
-            let start = address - BASE;
-            bytes[start..start + value.len()].copy_from_slice(value);
-        }
-        fn name(bytes: &mut [u8], value: &[u8]) {
-            assert!(value.len() < 16);
-            let address = PROVINCE + cprovince::NAME_OVERRIDE;
-            put(bytes, address, &[0; 16]);
-            put(bytes, address, value);
-            put(bytes, address + 16, &(value.len() as u64).to_le_bytes());
-            put(bytes, address + 24, &15_u64.to_le_bytes());
-        }
+    const BASE: usize = 0x1000;
+    const PROVINCE: usize = 0x2000;
+    const POINTERS: usize = 0x1400;
+
+    fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
+        let start = address - BASE;
+        bytes[start..start + value.len()].copy_from_slice(value);
+    }
+
+    fn name(bytes: &mut [u8], value: &[u8]) {
+        assert!(value.len() < 16);
+        let address = PROVINCE + cprovince::NAME_OVERRIDE;
+        put(bytes, address, &[0; 16]);
+        put(bytes, address, value);
+        put(bytes, address + 16, &(value.len() as u64).to_le_bytes());
+        put(bytes, address + 24, &15_u64.to_le_bytes());
+    }
+
+    /// One province census of a single province, id 1.
+    fn census() -> Vec<u8> {
         let mut bytes = vec![0; 0x2000];
         let root = BASE + engine::cgame_state::PROVINCES;
         put(&mut bytes, root, &(POINTERS as u64).to_le_bytes());
@@ -225,48 +302,95 @@ mod tests {
             &(cprovince::VTABLE_RVA as u64).to_le_bytes(),
         );
         put(&mut bytes, PROVINCE + cprovince::ID, &1_u32.to_le_bytes());
+        bytes
+    }
+
+    fn rows(expected: &[u8]) -> TableView {
+        TableView::Complete(replay::rows::TableRows::ProvinceNames(
+            if expected.is_empty() {
+                vec![]
+            } else {
+                vec![ProvinceNameRow {
+                    province: 1,
+                    name: expected.to_vec(),
+                }]
+            },
+        ))
+    }
+
+    /// A rename or reset reaches the very next hour; daily reads (the old
+    /// slot 1) showed it up to a day late.
+    #[test]
+    fn live_override_changes_and_removal_are_captured_the_next_hour() {
+        let mut bytes = census();
         let mut capture = Captured::with_capacities(&Capacities::default());
-        for (hour, value, expected) in [
-            (1, &b"Original"[..], Some(&b"Original"[..])),
-            (2, &b"Renamed"[..], None),
-            (25, &b"Renamed"[..], Some(&b"Renamed"[..])),
-            (26, &b""[..], None),
-            (49, &b""[..], Some(&b""[..])),
+        for (hour, value) in [
+            (1, &b"Original"[..]),
+            (2, &b"Renamed"[..]),
+            (3, &b"Renamed"[..]),
+            (4, &b""[..]),
         ] {
             name(&mut bytes, value);
-            capture.capture(
-                &SliceMemory {
-                    base: BASE,
-                    bytes: &bytes,
-                },
-                0,
-                BASE,
-                hour,
-                false,
-            );
-            let [table] = capture.tables();
-            if let Some(expected) = expected {
-                let expected_rows = if expected.is_empty() {
-                    vec![]
-                } else {
-                    vec![ProvinceNameRow {
-                        province: 1,
-                        name: expected.to_vec(),
-                    }]
-                };
-                assert_eq!(
-                    table,
-                    TableView::Complete(replay::rows::TableRows::ProvinceNames(expected_rows))
-                );
-            } else {
-                assert_eq!(
-                    table,
-                    TableView::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON.into()
-                    }
-                );
-            }
+            let memory = SliceMemory {
+                base: BASE,
+                bytes: &bytes,
+            };
+            capture.capture(&memory, 0, BASE, hour, false);
+            assert_eq!(capture.tables(), [rows(value)], "hour {hour}");
         }
+    }
+
+    /// A quiet hour publishes the held read without reading a province; an
+    /// hour after a writer ran, a full hour and the domain's comparison hour
+    /// read afresh.
+    #[test]
+    fn quiet_hours_publish_the_held_read_without_reading() {
+        let changes = changes::Isolated::new();
+        let held = Mutex::new(Held::new((Vec::new(), Vec::new())));
+        let mut bytes = census();
+        let mut capture = Captured::with_capacities(&Capacities::default());
+        let mut at = |bytes: &[u8], hour: i32, force_full: bool| {
+            crate::sampled_verify::begin_hour(hour);
+            let memory = CountedMemory::new(SliceMemory { base: BASE, bytes });
+            let reads = crate::read_accounting::Capture::new();
+            capture.capture_held(&memory, 0, BASE, hour, force_full, &changes, &held);
+            let spans = reads.finish()[TABLES[0].index()].spans;
+            (capture.tables(), spans)
+        };
+        // Hour 1 avoids the domain's comparison hour (its index, 0).
+        name(&mut bytes, b"Original");
+        let (table, spans) = at(&bytes, 1, false);
+        assert_eq!(table, [rows(b"Original")]);
+        assert!(spans > 0);
+        // Memory changes without a hooked writer: a quiet hour still
+        // publishes the held read, and reads nothing.
+        name(&mut bytes, b"Unseen");
+        let (table, spans) = at(&bytes, 2, false);
+        if changes::VERIFY {
+            assert_eq!(table, [rows(b"Unseen")]);
+            assert!(changes.poisoned(Domain::ProvinceNames));
+            return;
+        }
+        assert_eq!((table, spans), ([rows(b"Original")], 0));
+        // A full hour reads.
+        let (table, spans) = at(&bytes, 3, true);
+        assert_eq!(table, [rows(b"Unseen")]);
+        assert!(spans > 0);
+        // A rename effect ran: the next hour reads it.
+        name(&mut bytes, b"Renamed");
+        changes.write(Domain::ProvinceNames);
+        assert_eq!(at(&bytes, 4, false).0, [rows(b"Renamed")]);
+        assert_eq!(at(&bytes, 5, false), ([rows(b"Renamed")], 0));
+        // The comparison hour of the burned-in rotation reads a quiet hour
+        // afresh; an unseen write poisons the domain, and every later hour
+        // reads.
+        name(&mut bytes, b"Missed");
+        let rotation = crate::sampled_verify::BURNED_IN_ROTATION as i32;
+        let (table, spans) = at(&bytes, rotation, false);
+        assert_eq!(table, [rows(b"Missed")]);
+        assert!(spans > 0);
+        assert!(changes.poisoned(Domain::ProvinceNames));
+        assert!(at(&bytes, rotation + 1, false).1 > 0);
     }
 
     #[test]

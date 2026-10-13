@@ -660,6 +660,118 @@ fn worker_province_order_population_jump_grows_from_original_headers() {
     assert_eq!(*grown.reads.borrow(), *fixed.reads.borrow());
 }
 
+/// An occupant the census holds takes its handle and backlink from there:
+/// rows, handles, demand and land visits equal the plain walk's, and its
+/// object, registry bucket and backlink are never read. The other occupants
+/// read as before.
+#[test]
+fn census_divisions_take_identity_and_backlink_from_the_census_without_reads() {
+    fn observed(bytes: &[u8]) -> Observed<'_> {
+        Observed {
+            bytes,
+            reads: RefCell::new(Vec::new()),
+            fault_at: None,
+            change_at: None,
+        }
+    }
+    let counts = [5, 2];
+    let bytes = fixture(counts);
+    let plain = observed(&bytes);
+    let (mut rows, mut handles) = (Vec::new(), Vec::new());
+    let mut plain_land = Vec::new();
+    let expected = walk_unit_order_growing_with_land(
+        &plain,
+        0,
+        STATE,
+        &mut rows,
+        &mut handles,
+        |province, handle| {
+            plain_land.push((province, handle));
+            Ok(())
+        },
+    );
+    assert_eq!(expected.outcome, Outcome::Rows { len: 1 });
+    let division = KnownUnit {
+        handle: HANDLES[0],
+        location: PROVINCE,
+    };
+    let census = observed(&bytes);
+    let (mut known_rows, mut known_handles) = (Vec::new(), Vec::new());
+    let mut land = Vec::new();
+    let actual = walk_unit_order_growing_with_known(
+        &census,
+        0,
+        STATE,
+        &mut known_rows,
+        &mut known_handles,
+        |unit| (unit == UNITS[0]).then_some(division),
+        |province, handle| {
+            land.push((province, handle));
+            Ok(())
+        },
+    );
+    assert_eq!(actual, expected);
+    assert_eq!((known_rows, known_handles), (rows, handles));
+    assert_eq!(land, plain_land);
+    assert_eq!(land, [(1, HANDLES[0]); 2]);
+    let skipped = [
+        (UNITS[0], 32),
+        (bucket(HANDLES[0]), 24),
+        (UNITS[0] + cunit::LOCATION, 8),
+    ];
+    let mut remaining: Vec<_> = plain
+        .reads
+        .borrow()
+        .iter()
+        .copied()
+        .filter(|read| !skipped.contains(read))
+        .collect();
+    let mut reads = census.reads.borrow().clone();
+    assert!(
+        skipped
+            .iter()
+            .all(|read| plain.reads.borrow().contains(read))
+    );
+    assert!(skipped.iter().all(|read| !reads.contains(read)));
+    // The registry header now follows the first occupant the census lacks.
+    remaining.sort_unstable();
+    reads.sort_unstable();
+    assert_eq!(reads, remaining);
+
+    // A census division whose census location is elsewhere, or that sits in
+    // the naval lane, is the walk's backlink refusal, without reading it.
+    for (unit, location) in [(UNITS[0], PROVINCE + 8), (UNITS[1], PROVINCE)] {
+        let census = observed(&bytes);
+        let refused = walk_unit_order_growing_with_known(
+            &census,
+            0,
+            STATE,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            |at| {
+                (at == unit).then_some(KnownUnit {
+                    handle: HANDLES[if unit == UNITS[0] { 0 } else { 1 }],
+                    location,
+                })
+            },
+            |_, _| Ok(()),
+        );
+        assert_eq!(
+            refused.outcome,
+            Outcome::Unavailable {
+                reason: "province unit roster backlink mismatch"
+            }
+        );
+        assert!(
+            census
+                .reads
+                .borrow()
+                .iter()
+                .all(|&(address, _)| address != unit && address != unit + cunit::LOCATION)
+        );
+    }
+}
+
 #[test]
 fn province_order_demand_has_no_chosen_occupant_or_aggregate_ceiling() {
     let mut bytes = fixture([0, 0]);
@@ -679,6 +791,71 @@ fn province_order_demand_has_no_chosen_occupant_or_aggregate_ceiling() {
         Outcome::Truncated {
             len: 0,
             unread_rows: 1
+        }
+    );
+}
+
+/// A listed walk gives each listed province the plain walk's row, handles,
+/// demand and land visits, and reads no unlisted slot; an empty list reads
+/// only the array header, and an id outside the census refuses the walk.
+#[test]
+fn listed_provinces_read_only_their_slots() {
+    fn observed(bytes: &[u8]) -> Observed<'_> {
+        Observed {
+            bytes,
+            reads: RefCell::new(Vec::new()),
+            fault_at: None,
+            change_at: None,
+        }
+    }
+    let bytes = fixture([5, 2]);
+    let plain = observed(&bytes);
+    let (mut rows, mut handles, mut land) = (Vec::new(), Vec::new(), Vec::new());
+    let expected = walk_unit_order_growing_with_land(
+        &plain,
+        0,
+        STATE,
+        &mut rows,
+        &mut handles,
+        |province, handle| {
+            land.push((province, handle));
+            Ok(())
+        },
+    );
+    let listed = |list: &[u32]| {
+        let memory = observed(&bytes);
+        let (mut rows, mut handles, mut land) = (Vec::new(), Vec::new(), Vec::new());
+        let walk = walk_unit_order_listed(
+            &memory,
+            0,
+            STATE,
+            list,
+            &mut rows,
+            &mut handles,
+            |_| None,
+            |province, handle| {
+                land.push((province, handle));
+                Ok(())
+            },
+        );
+        handles.truncate(walk.len);
+        let reads = memory.reads.borrow().clone();
+        (walk, rows, handles, land, reads)
+    };
+    let (walk, listed_rows, listed_handles, listed_land, reads) = listed(&[1]);
+    assert_eq!(walk, expected);
+    assert_eq!(listed_rows[..1], rows[..1]);
+    assert_eq!(listed_handles, handles[..expected.len]);
+    assert_eq!(listed_land, land);
+    assert_eq!(reads, *plain.reads.borrow());
+    let (walk, _, _, land, reads) = listed(&[]);
+    assert_eq!(walk.outcome, Outcome::Rows { len: 0 });
+    assert!(land.is_empty());
+    assert_eq!(reads, [(ROOT, 16)]);
+    assert_eq!(
+        listed(&[2]).0.outcome,
+        Outcome::Unavailable {
+            reason: "province order listed province outside census"
         }
     );
 }

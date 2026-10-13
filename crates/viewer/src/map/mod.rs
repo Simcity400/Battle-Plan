@@ -31,7 +31,7 @@ pub mod counters;
 pub mod country_index;
 // borders: the demilitarised-zone bucket bank
 pub mod demilitarized;
-// counters: the one ETA source, recorded or derived
+// counters: the one movement-timing source: progress and arrival estimates
 mod directed_wars;
 pub mod division_eta;
 pub mod entity_animation;

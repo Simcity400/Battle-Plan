@@ -30,12 +30,9 @@ fn expected_row(status: usize, country: u32) -> Row {
     Row {
         country,
         country_instance: Some(0),
-        history_index: 13 + status as i32,
-        remaining_hours: 1,
         ring_gain_raw: sum(1),
         ring_consumed_raw: sum(2),
         ring_other_raw: sum(6),
-        ring_requested_raw: [sum(3), sum(4), sum(5)],
         ring_received_raw: [sum(7), sum(8), sum(9)],
         ..Row::default()
     }
@@ -92,12 +89,6 @@ fn fixture() -> Vec<u8> {
         );
         header(&mut bytes, status + CONSUMERS, entries as u64, 3, 3);
         header(&mut bytes, status + HISTORY_RING, ring as u64, 24, 24);
-        put(
-            &mut bytes,
-            status + HISTORY_INDEX,
-            &(13 + index as i32).to_le_bytes(),
-        );
-        put(&mut bytes, status + REMAINING_HOURS, &1_i32.to_le_bytes());
         for position in 0..3 {
             let row = expected_consumer(index, id, position);
             let entry = entries + position as usize * consumer::STRIDE;
@@ -197,12 +188,7 @@ fn full_read_preserves_native_values_ring_sums_alias_identity_and_dormant_sentin
         Row {
             current_raw: (1_i64 << 45) + 1,
             maximum_raw: (1_i64 << 46) + 3,
-            gain_raw: -((1_i64 << 40) + 5),
-            gain_from_states_raw: 6_440_000,
             lend_lease_gain_raw: -((1_i64 << 38) + 9),
-            lend_lease_consumption_raw: (1_i64 << 37) + 11,
-            cost_raw: (1_i64 << 42) + 7,
-            gain_per_oil_raw: 360_000,
             ..expected_row(0, 3)
         }
     );
@@ -339,7 +325,7 @@ fn ring_sums_are_checked_in_both_directions() {
         (entry::GAIN, [i64::MAX, 1, -1], i64::MAX),
         (entry::CONSUMED, [i64::MIN, -1, 1], i64::MIN),
         (
-            entry::REQUESTED + 8,
+            entry::RECEIVED + 8,
             [i64::MAX, i64::MAX, -i64::MAX],
             i64::MAX,
         ),
@@ -359,7 +345,7 @@ fn ring_sums_are_checked_in_both_directions() {
         let sum = match field {
             entry::GAIN => row.ring_gain_raw,
             entry::CONSUMED => row.ring_consumed_raw,
-            _ => row.ring_requested_raw[1],
+            _ => row.ring_received_raw[1],
         };
         assert_eq!(sum, expected, "field {field:#x}");
     }
@@ -376,6 +362,17 @@ fn ring_sums_are_checked_in_both_directions() {
     let captured = capture(&bytes, FULL);
     assert_eq!(captured.outcomes, complete(2, 6));
     assert_eq!(captured.rows[0].ring_other_raw, 0);
+    // The retired requested slots are not summed, so even a sum past i64
+    // keeps the row.
+    let mut bytes = fixture();
+    for slot in [5, 6] {
+        put(
+            &mut bytes,
+            0x7800 + slot * entry::STRIDE + entry::REQUESTED,
+            &i64::MAX.to_le_bytes(),
+        );
+    }
+    assert_eq!(capture(&bytes, FULL).outcomes, complete(2, 6));
 }
 
 #[test]
@@ -443,7 +440,6 @@ fn missing_wrong_or_partially_read_status_fails_both_tables() {
     for (end, reason) in [
         (0x7058, "fuel status quantities unreadable"),
         (0x70c0, "fuel status history ring header unreadable"),
-        (0x70d0, "fuel status history cursor unreadable"),
         (0x70e8, "fuel status country pointer unreadable"),
     ] {
         assert_eq!(

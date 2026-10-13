@@ -162,11 +162,63 @@ fn doctrine_sources(memory: &Fixture) -> Result<Vec<SourceRow>, &'static str> {
             lengths: &mut lengths,
             required: &mut required,
         },
+        metadata: None,
     };
-    visit_doctrine::<true>(memory, IMAGE, TASK, &mut |row, accumulator| {
-        capture.source(row, accumulator)
-    })?;
+    visit_doctrine::<true>(
+        memory,
+        IMAGE,
+        TASK,
+        &mut DoctrineKeys::default(),
+        &mut |row, accumulator| capture.source(row, accumulator),
+    )?;
     Ok(sources)
+}
+
+/// A capture's later ship of a task force re-emits the doctrine rows its
+/// first ship's walk emitted, in order, without reading the tree again; a
+/// walk that fails keeps nothing and fails again.
+#[test]
+fn a_task_forces_doctrine_is_walked_once_per_capture() {
+    let memory = doctrine_fixture(5);
+    let mut memo = SourceMemo::default();
+    let mut keys = DoctrineKeys::default();
+    let mut walk = |memo: &mut SourceMemo| {
+        let mut rows = Vec::new();
+        let result = doctrine_kept::<true>(
+            &memory,
+            IMAGE,
+            TASK,
+            &mut keys,
+            &mut Some(memo),
+            &mut |row, accumulator| {
+                rows.push((row, accumulator));
+                Ok(())
+            },
+        );
+        result.map(|()| rows)
+    };
+    let first = walk(&mut memo).unwrap();
+    assert_eq!(first.len(), 5);
+    let calls = memory.calls.get();
+    assert_eq!(walk(&mut memo).unwrap(), first);
+    assert_eq!(memory.calls.get(), calls, "the tree is not read again");
+
+    let mut broken = doctrine_fixture(5);
+    broken.fail = Some(NODES + 2 * 0x38 + 0x20);
+    let mut memo = SourceMemo::default();
+    let mut keys = DoctrineKeys::default();
+    for _ in 0..2 {
+        let result = doctrine_kept::<true>(
+            &broken,
+            IMAGE,
+            TASK,
+            &mut keys,
+            &mut Some(&mut memo),
+            &mut |_, _| Ok(()),
+        );
+        assert!(result.is_err());
+    }
+    assert!(memo.rows.is_empty());
 }
 
 #[test]
@@ -186,10 +238,16 @@ fn doctrine_source_visitor_sizes_country_and_mod_populations_in_operand_order() 
             memory.put(node + 0x2c, &(index as i32 + 7).to_le_bytes());
         }
         let mut sources = Vec::new();
-        visit_doctrine::<true>(&memory, IMAGE, TASK, &mut |row, accumulator| {
-            sources.push((row, accumulator));
-            Ok(())
-        })
+        visit_doctrine::<true>(
+            &memory,
+            IMAGE,
+            TASK,
+            &mut DoctrineKeys::default(),
+            &mut |row, accumulator| {
+                sources.push((row, accumulator));
+                Ok(())
+            },
+        )
         .unwrap();
         assert_eq!(sources.len(), count);
         for (index, (source, accumulator)) in sources.iter().enumerate() {
@@ -204,10 +262,16 @@ fn doctrine_source_visitor_sizes_country_and_mod_populations_in_operand_order() 
         memory.reads.borrow_mut().clear();
         sources.clear();
         assert_eq!(
-            visit_doctrine::<true>(&memory, IMAGE, TASK, &mut |row, accumulator| {
-                sources.push((row, accumulator));
-                Ok(())
-            }),
+            visit_doctrine::<true>(
+                &memory,
+                IMAGE,
+                TASK,
+                &mut DoctrineKeys::default(),
+                &mut |row, accumulator| {
+                    sources.push((row, accumulator));
+                    Ok(())
+                }
+            ),
             Err("naval field unreadable")
         );
         assert!(sources.is_empty());
@@ -257,6 +321,28 @@ fn dictionary_exceeds_65536_nodes() {
         f.put(node + 0x10, &1u32.to_le_bytes());
     }
     assert_eq!(doctrine_keys::<true>(&f, IMAGE, 1), Ok([0; 2]));
+}
+
+/// A capture walks the modifier-key dictionary once per selector, and a
+/// failed walk is not kept.
+#[test]
+fn kept_doctrine_keys_walk_the_dictionary_once_per_selector() {
+    let mut f = doctrine_fixture(1);
+    let mut keys = DoctrineKeys::default();
+    f.fail = Some(IMAGE + 0x0306_ebd8);
+    assert!(doctrine_keys_kept::<true>(&f, IMAGE, 1, &mut keys).is_err());
+    assert!(keys.is_empty());
+    f.fail = None;
+    assert_eq!(
+        doctrine_keys_kept::<true>(&f, IMAGE, 1, &mut keys),
+        doctrine_keys::<true>(&f, IMAGE, 1)
+    );
+    f.reads.borrow_mut().clear();
+    assert_eq!(
+        doctrine_keys_kept::<true>(&f, IMAGE, 1, &mut keys),
+        Ok([0; 2])
+    );
+    assert!(f.reads.borrow().is_empty());
 }
 
 #[test]
@@ -370,7 +456,10 @@ fn cold_terrain_fallback_keeps_mod_heap_names_and_named_first_faults() {
         assert_eq!(ContextRow::default().terrain_name.allocated_bytes(), 0);
         assert!(crate::msvc_string::read_text::<256>(&memory, LONG + 0x18).is_none());
         memory.reads.borrow_mut().clear();
-        assert_eq!(terrain_from_template(&memory, IMAGE, TASK), Ok(MATCHED));
+        assert_eq!(
+            terrain_from_template_with_policy::<true>(&memory, IMAGE, TASK),
+            Ok(MATCHED)
+        );
         let capture_reads = memory.reads.borrow().clone();
         memory.reads.borrow_mut().clear();
         assert_eq!(
@@ -386,7 +475,7 @@ fn cold_terrain_fallback_keeps_mod_heap_names_and_named_first_faults() {
         memory.fail = Some(failed);
         memory.reads.borrow_mut().clear();
         assert_eq!(
-            terrain_from_template(&memory, IMAGE, TASK),
+            terrain_from_template_with_policy::<true>(&memory, IMAGE, TASK),
             Err("naval terrain name invalid")
         );
         let reads = memory.reads.borrow();
@@ -399,6 +488,48 @@ fn cold_terrain_fallback_keeps_mod_heap_names_and_named_first_faults() {
             1
         );
     }
+}
+
+/// The ocean fallback is content: a capture resolves it once, and a later
+/// template without a terrain of its own reads only that template. A failed
+/// scan is not kept.
+#[test]
+fn a_capture_scans_the_terrain_database_for_the_ocean_once() {
+    const DATABASE: usize = 0x2100;
+    const TYPES: usize = 0x2800;
+    const OCEAN: usize = 0x3400;
+    let key = *b"ocean";
+    let mut memory = fixture();
+    memory.globals.push((IMAGE + 0x0296_2540, key.to_vec()));
+    memory.globals.push((
+        IMAGE + crate::cterrain_database::SINGLETON_RVA,
+        (DATABASE as u64).to_le_bytes().to_vec(),
+    ));
+    memory.q(DATABASE + 0x40, TYPES as u64);
+    memory.q(DATABASE + 0x48, (1u64 << 32) | 1);
+    memory.q(TYPES, OCEAN as u64);
+    memory.q(OCEAN, (IMAGE + crate::cterrain_type::VTABLE_RVA) as u64);
+    memory.put(OCEAN + 0x10, &[1]);
+    memory.put(OCEAN + 0x18, &key);
+    memory.q(OCEAN + 0x28, key.len() as u64);
+    memory.q(OCEAN + 0x30, 15);
+
+    memory.fail = Some(OCEAN + 0x10);
+    let mut ocean = None;
+    assert!(terrain_from_template_kept(&memory, IMAGE, TASK, &mut ocean).is_err());
+    assert_eq!(ocean, None);
+    memory.fail = None;
+    assert_eq!(
+        terrain_from_template_kept(&memory, IMAGE, TASK, &mut ocean),
+        terrain_from_template_with_policy::<true>(&memory, IMAGE, TASK)
+    );
+    assert_eq!(ocean, Some(OCEAN));
+    memory.reads.borrow_mut().clear();
+    assert_eq!(
+        terrain_from_template_kept(&memory, IMAGE, TASK, &mut ocean),
+        Ok(OCEAN)
+    );
+    assert_eq!(*memory.reads.borrow(), [(TASK + 0x130, 8)]);
 }
 
 #[test]
@@ -434,6 +565,7 @@ fn modifier_terms_and_keys_exceed_65536() {
             lengths: &mut [0; 2],
             required: &mut [0; 2],
         },
+        metadata: None,
     }
     .source(SourceRow::default(), Some(0x1800))
     .unwrap();
@@ -480,6 +612,7 @@ fn native_modifier_sources_share_owned_terms_per_accumulator() {
                 lengths: &mut lengths,
                 required: &mut required,
             },
+            metadata: None,
         };
         for index in 0..2 {
             cap.source(
@@ -507,6 +640,52 @@ fn native_modifier_sources_share_owned_terms_per_accumulator() {
         assert_eq!((memory.calls.get(), memory.copied.get()), (5, 88));
         assert_eq!(*memory.reads.borrow(), source_reads);
     }
+}
+
+/// A capture that keeps a metadata memo reads the definition table header
+/// and each key's metadata once, however many accumulators hold the key.
+#[test]
+fn a_capture_reads_each_keys_metadata_once() {
+    use crate::modifier_definition as md;
+    let mut memory = fixture();
+    // A second accumulator over the same entries.
+    memory.put(0x1810, &0x2000u64.to_le_bytes());
+    memory.put(0x1818, &3u32.to_le_bytes());
+    memory.put(0x181c, &2u32.to_le_bytes());
+    let mut sources = Vec::new();
+    let mut terms = Vec::new();
+    let mut lengths = [0; 2];
+    let mut required = [0; 2];
+    let mut metadata = TermMetadata::default();
+    let mut cap = Capture {
+        memory: &memory,
+        base: IMAGE,
+        buffers: InfluenceBuffers {
+            sources: &mut sources,
+            terms: &mut terms,
+            lengths: &mut lengths,
+            required: &mut required,
+        },
+        metadata: Some(&mut metadata),
+    };
+    for accumulator in [0x1800, 0x1810] {
+        cap.source(SourceRow::default(), Some(accumulator)).unwrap();
+    }
+    assert_eq!(lengths, [2, 4]);
+    assert_eq!(terms[2..], terms[..2]);
+    assert_eq!(terms[3].metadata_flags, 0x81234567);
+    assert_eq!(
+        *memory.reads.borrow(),
+        [
+            (0x1800, 16),
+            (IMAGE + md::TABLE_RVA, 16),
+            (0x2000, 32),
+            (0x4000 + 0x2a * md::STRIDE + md::FLAGS, 12),
+            (0x4000 + 0x2b * md::STRIDE + md::FLAGS, 12),
+            (0x1810, 16),
+            (0x2000, 32),
+        ]
+    );
 }
 
 #[test]
@@ -554,6 +733,7 @@ fn modifier_source_faults_stop_at_primary_prefix_and_leave_lengths_unpublished()
                     lengths: &mut lengths,
                     required: &mut required,
                 },
+                metadata: None,
             };
             assert_eq!(cap.source(SourceRow::default(), Some(0x1800)), Err(reason));
             assert_eq!((memory.calls.get(), memory.copied.get()), (calls, copied));
@@ -607,6 +787,7 @@ fn modifier_source_growth_keeps_checked_demand_and_native_count_bounds() {
                 lengths: &mut lengths,
                 required: &mut required,
             },
+            metadata: None,
         };
         assert_eq!(cap.source(SourceRow::default(), Some(0x1800)), Err(reason));
         assert_eq!(memory.calls.get(), calls);
@@ -629,6 +810,7 @@ fn modifier_source_growth_keeps_checked_demand_and_native_count_bounds() {
             lengths: &mut lengths,
             required: &mut required,
         },
+        metadata: None,
     };
     assert_eq!(
         cap.source(SourceRow::default(), Some(0x1800)),

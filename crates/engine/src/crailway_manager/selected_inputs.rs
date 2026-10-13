@@ -192,4 +192,30 @@ impl LevelBuffer<'_> {
         self.len = end;
         Ok(span)
     }
+
+    /// A carried info's held levels, stored as [`Self::read`] stores the
+    /// same values: the same demand, growth and refusal, without reading the
+    /// header, the definition or the values.
+    pub(super) fn append(&mut self, values: &[i32]) -> Input<LevelSpan> {
+        let count = values.len();
+        self.required = self
+            .required
+            .checked_add(count)
+            .ok_or("selected railway level demand overflow")?;
+        let end = self
+            .len
+            .checked_add(count)
+            .ok_or("selected railway level arena overflow")?;
+        if !self.values.ensure(end)? {
+            return Err("selected railway level capacity insufficient");
+        }
+        self.values[self.len..end].copy_from_slice(values);
+        let span = LevelSpan {
+            first: self.len,
+            len: count,
+            positive: values.iter().any(|&level| level > 0),
+        };
+        self.len = end;
+        Ok(span)
+    }
 }

@@ -13,7 +13,9 @@ use crate::{
     Memory, ccountry, cequipment_production_license, cequipment_variant, civ_factory_consumer,
     clicensed_production_status,
     cpdx_array::Array,
-    factory_group, read, read_slice,
+    factory_group,
+    memory::{RecordField, RecordLayout, RecordSources},
+    read, read_slice,
     walk::{Buffer, Outcome},
 };
 
@@ -201,32 +203,72 @@ pub fn policies_header(
         .ok_or("MIO policy roster unreadable or invalid")
 }
 
+/// Every country's roster names the same few content `CPolicy` objects, so
+/// each page of pointers is followed by one guarded batch of their identities
+/// rather than a guarded read per policy. Rows, validation and the first
+/// fault are those of a read per policy in roster order: a page's identities
+/// are checked in order up to the first unreadable one, then a short page.
 pub fn read_policies(
     memory: &impl Memory,
     base: usize,
     array: Array,
     output: &mut [u32],
 ) -> Result<(), &'static str> {
+    const BATCH: usize = 64;
+    const FIELDS: usize = POLICY_TOKEN + 4;
     if output.len() != array.count as usize {
         return Err("MIO policy roster arena capacity exceeded");
     }
-    crate::cpdx_array::pointers(
-        memory,
-        array,
-        "MIO policy pointer unreadable",
-        |ordinal, pointer| {
-            let fields = read::<[u8; POLICY_TOKEN + 4]>(memory, pointer)
-                .ok_or("MIO policy identity unreadable")?;
-            if base.checked_add(POLICY_VTABLE_RVA).map(|p| p as u64)
-                != Some(u64::from_le_bytes(fields[..8].try_into().unwrap()))
-            {
+    let vtable = base.checked_add(POLICY_VTABLE_RVA).map(|p| p as u64);
+    let mut pointers = [[0_u8; 8]; BATCH];
+    let mut fields = [[0_u8; FIELDS]; BATCH];
+    for first in (0..array.count).step_by(BATCH) {
+        let count = ((array.count - first) as usize).min(BATCH);
+        let addresses: [usize; BATCH] = std::array::from_fn(|index| {
+            if index < count {
+                array.element(first + index as u32, 8).unwrap_or(0)
+            } else {
+                0
+            }
+        });
+        let mut slots = pointers.iter_mut().enumerate();
+        let copied = memory
+            .copy_scattered(
+                addresses,
+                &mut std::array::from_fn(|_| {
+                    let (index, bytes) = slots.next().unwrap();
+                    &mut bytes[..if index < count { 8 } else { 0 }]
+                }),
+            )
+            .min(count);
+        let sources: [usize; BATCH] =
+            std::array::from_fn(|index| u64::from_le_bytes(pointers[index]) as usize);
+        let mut slots = fields.iter_mut().enumerate();
+        let identified = memory
+            .copy_scattered_prefetched(
+                sources,
+                &mut std::array::from_fn(|_| {
+                    let (index, bytes) = slots.next().unwrap();
+                    &mut bytes[..if index < copied { FIELDS } else { 0 }]
+                }),
+            )
+            .min(copied);
+        for index in 0..copied {
+            if index == identified {
+                return Err("MIO policy identity unreadable");
+            }
+            let identity = &fields[index];
+            if vtable != Some(u64::from_le_bytes(identity[..8].try_into().unwrap())) {
                 return Err("MIO policy vtable mismatch");
             }
-            output[ordinal as usize] =
-                u32::from_le_bytes(fields[POLICY_TOKEN..].try_into().unwrap());
-            Ok(())
-        },
-    )
+            output[first as usize + index] =
+                u32::from_le_bytes(identity[POLICY_TOKEN..].try_into().unwrap());
+        }
+        if copied < count {
+            return Err("MIO policy pointer unreadable");
+        }
+    }
+    Ok(())
 }
 
 /// One factory group as the last factory-total recalculation left it. Field
@@ -336,20 +378,35 @@ fn walk_factories_buffer(
         let mut len = 0_usize;
         let mut unread_rows = 0_u32;
         let mut found_country = false;
+        // The countries whose rows the next batch reads, in slot order.
+        let mut batch = [None::<ccountry::Country>; BATCH];
+        let mut pending = 0;
         for slot in 1..countries.count() {
-            let Some(country) = countries.at(slot)? else {
-                continue;
+            let country = match countries.at(slot) {
+                Ok(Some(country)) => country,
+                Ok(None) => continue,
+                Err(reason) => {
+                    // The serial walk read the earlier countries' statuses
+                    // first: their failure comes first.
+                    read_batch(memory, &vtables, &batch[..pending], &mut output, &mut len)?;
+                    return Err(reason);
+                }
             };
             found_country = true;
-            let Some(row) = output.get_mut(len) else {
+            if len + pending >= output.len() {
                 unread_rows = unread_rows
                     .checked_add(1)
                     .ok_or("factory unread row count overflow")?;
                 continue;
-            };
-            *row = read_factories(memory, &vtables, country)?;
-            len += 1;
+            }
+            batch[pending] = Some(country);
+            pending += 1;
+            if pending == BATCH {
+                read_batch(memory, &vtables, &batch[..pending], &mut output, &mut len)?;
+                pending = 0;
+            }
         }
+        read_batch(memory, &vtables, &batch[..pending], &mut output, &mut len)?;
         if !found_country {
             Err("country table has no readable countries")
         } else if unread_rows == 0 {
@@ -359,6 +416,108 @@ fn walk_factories_buffer(
         }
     })();
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
+}
+
+/// Countries whose status pointers, then status spans, one batch gathers.
+const BATCH: usize = 32;
+/// A country's production status pointer.
+const POINTER_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: ccountry::PRODUCTION_STATUS,
+    destination_offset: 0,
+    len: 8,
+}];
+const POINTER_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&POINTER_FIELDS, 8).expect("valid production status pointer layout");
+/// A status's identity, owner and factory span, as [`read_factories`]
+/// copies them.
+const STATUS_FIELDS: [RecordField; 3] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: COUNTRY,
+        destination_offset: 8,
+        len: 8,
+    },
+    RecordField {
+        source_offset: MILITARY_FACTORIES,
+        destination_offset: 16,
+        len: FACTORY_SPAN,
+    },
+];
+const STATUS_BYTES: usize = 16 + FACTORY_SPAN;
+const STATUS_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&STATUS_FIELDS, STATUS_BYTES).expect("valid production status layout");
+
+/// The rows of `batch` (consecutive countries the walk reads, in slot
+/// order) into `output[*len..]`: every status pointer in one guarded
+/// gather, then every status's identity, owner and factory span in another,
+/// each decoded with [`read_factories`]' checks in order. Healthy memory
+/// gives the serial walk's rows and first failure. When a gather does not
+/// complete, or a status pointer is null, the batch is read again country
+/// by country, once ([`crate::batch_fallback`]), which gives the serial
+/// walk's result for a fault that persists and never refuses more than it
+/// for one that does not.
+fn read_batch(
+    memory: &impl Memory,
+    vtables: &[usize; 6],
+    batch: &[Option<ccountry::Country>],
+    output: &mut Buffer<'_, FactoryRow>,
+    len: &mut usize,
+) -> Result<(), &'static str> {
+    let count = batch.len();
+    if count == 0 {
+        return Ok(());
+    }
+    let mut countries = [0_usize; BATCH];
+    for (pointer, country) in countries.iter_mut().zip(batch) {
+        *pointer = country.expect("batched country").pointer;
+    }
+    let mut words = [0_u8; BATCH * 8];
+    let mut statuses = [0_usize; BATCH];
+    let gathered = memory.copy_records(
+        RecordSources::Pointers(&countries[..count]),
+        &POINTER_LAYOUT,
+        &mut words[..count * 8],
+    ) == count
+        && statuses[..count]
+            .iter_mut()
+            .zip(words[..count * 8].chunks_exact(8))
+            .all(|(status, word)| {
+                *status =
+                    usize::try_from(u64::from_le_bytes(word.try_into().unwrap())).unwrap_or(0);
+                *status != 0
+            });
+    let mut records = [0_u8; BATCH * STATUS_BYTES];
+    if gathered
+        && memory.copy_records(
+            RecordSources::Pointers(&statuses[..count]),
+            &STATUS_LAYOUT,
+            &mut records[..count * STATUS_BYTES],
+        ) == count * STATUS_FIELDS.len()
+    {
+        for (country, record) in batch.iter().zip(records.chunks_exact(STATUS_BYTES)) {
+            let country = country.expect("batched country");
+            output[*len] = decode_factories(
+                vtables,
+                country,
+                record[..8].try_into().unwrap(),
+                record[8..16].try_into().unwrap(),
+                &record[16..],
+                3,
+            )?;
+            *len += 1;
+        }
+        return Ok(());
+    }
+    crate::batch_fallback::record(crate::batch_fallback::Batch::CountryFactories);
+    for country in batch {
+        output[*len] = read_factories(memory, vtables, country.expect("batched country"))?;
+        *len += 1;
+    }
+    Ok(())
 }
 
 /// `vtables` holds the status vtable, then the consumers' in [`CONSUMERS`] order.
@@ -377,7 +536,9 @@ fn read_factories(
     let mut vtable = [0; 8];
     let mut owner = [0; 8];
     let mut span = [0; FACTORY_SPAN];
-    let copied = memory.copy_scattered(
+    // The three independent spans, hinted together before the same ordered
+    // copy.
+    let copied = memory.copy_scattered_prefetched(
         [
             status,
             status.checked_add(COUNTRY).unwrap_or(0),
@@ -385,6 +546,19 @@ fn read_factories(
         ],
         &mut [&mut vtable, &mut owner, &mut span],
     );
+    decode_factories(vtables, country, vtable, owner, &span, copied)
+}
+
+/// A status's row from its `copied` leading spans (identity, owner, factory
+/// span), with [`read_factories`]' checks in their order.
+fn decode_factories(
+    vtables: &[usize; 6],
+    country: ccountry::Country,
+    vtable: [u8; 8],
+    owner: [u8; 8],
+    span: &[u8],
+    copied: usize,
+) -> Result<FactoryRow, &'static str> {
     if copied == 0 || u64::from_le_bytes(vtable) != vtables[0] as u64 {
         return Err("production status vtable mismatch");
     }
@@ -396,35 +570,35 @@ fn read_factories(
     }
     let at = |offset: usize| offset - MILITARY_FACTORIES;
     for (&(offset, _), &expected) in CONSUMERS.iter().zip(&vtables[1..]) {
-        if i64_at(&span, at(offset)) as u64 != expected as u64 {
+        if i64_at(span, at(offset)) as u64 != expected as u64 {
             return Err("civilian factory consumer vtable mismatch");
         }
     }
     let group = |start: usize| {
         let field = |offset: usize| at(start) + offset;
         FactoryGroup {
-            levels: i32_at(&span, field(factory_group::LEVELS)),
-            total_raw: i64_at(&span, field(factory_group::TOTAL)),
-            controlled_raw: i64_at(&span, field(factory_group::CONTROLLED)),
-            owned_raw: i64_at(&span, field(factory_group::OWNED)),
-            damaged_raw: i64_at(&span, field(factory_group::DAMAGED)),
-            used: i32_at(&span, field(factory_group::USED)),
-            unavailable: i32_at(&span, field(factory_group::UNAVAILABLE)),
-            from_subjects: i32_at(&span, field(factory_group::FROM_SUBJECTS)),
-            to_overlord: i32_at(&span, field(factory_group::TO_OVERLORD)),
-            from_others: i32_at(&span, field(factory_group::FROM_OTHERS)),
-            to_others: i32_at(&span, field(factory_group::TO_OTHERS)),
+            levels: i32_at(span, field(factory_group::LEVELS)),
+            total_raw: i64_at(span, field(factory_group::TOTAL)),
+            controlled_raw: i64_at(span, field(factory_group::CONTROLLED)),
+            owned_raw: i64_at(span, field(factory_group::OWNED)),
+            damaged_raw: i64_at(span, field(factory_group::DAMAGED)),
+            used: i32_at(span, field(factory_group::USED)),
+            unavailable: i32_at(span, field(factory_group::UNAVAILABLE)),
+            from_subjects: i32_at(span, field(factory_group::FROM_SUBJECTS)),
+            to_overlord: i32_at(span, field(factory_group::TO_OVERLORD)),
+            from_others: i32_at(span, field(factory_group::FROM_OTHERS)),
+            to_others: i32_at(span, field(factory_group::TO_OTHERS)),
         }
     };
     let civilian = at(CIVILIAN_FACTORIES);
-    let allocated = |consumer: usize| i32_at(&span, at(consumer) + civ_factory_consumer::ALLOCATED);
+    let allocated = |consumer: usize| i32_at(span, at(consumer) + civ_factory_consumer::ALLOCATED);
     Ok(FactoryRow {
         country: country.id,
         military: group(MILITARY_FACTORIES),
         naval: group(NAVAL_FACTORIES),
         civilian: group(CIVILIAN_FACTORIES),
-        civilian_license_exports: i32_at(&span, civilian + factory_group::LICENSE_EXPORTS),
-        civilian_trade_exports: i32_at(&span, civilian + factory_group::TRADE_EXPORTS),
+        civilian_license_exports: i32_at(span, civilian + factory_group::LICENSE_EXPORTS),
+        civilian_trade_exports: i32_at(span, civilian + factory_group::TRADE_EXPORTS),
         consumer_goods: allocated(CONSUMER_GOODS),
         special_projects: allocated(SPECIAL_PROJECTS),
         license_imports: allocated(LICENSED_PRODUCTION),
@@ -1680,14 +1854,77 @@ mod tests {
         );
     }
 }
-/// War-overview factory count, separate from cached factory-group totals.
-/// Core occurrences, including nulls and repeats, and the terminal offsite
-/// pass retain source order. No game function is called.
+/// Slots of [`WarFactoryTemplates`]; a full table only reads again.
+const WAR_FACTORY_TEMPLATE_SLOTS: usize = 1024;
+
+/// Building templates already authenticated in one quiescent war overview pass,
+/// with whether the war overview counts their buildings (the signed 32-bit sum
+/// of the four production words is positive). The game waits on the pass, so a
+/// template read again in it returns the same bytes: each is read once per pass
+/// instead of once per building. Only a template whose record was read and
+/// whose vtable matched is kept; nothing is kept across passes.
+pub struct WarFactoryTemplates {
+    keys: [usize; WAR_FACTORY_TEMPLATE_SLOTS],
+    counted: [bool; WAR_FACTORY_TEMPLATE_SLOTS],
+}
+
+impl Default for WarFactoryTemplates {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WarFactoryTemplates {
+    pub fn new() -> Self {
+        Self {
+            keys: [0; WAR_FACTORY_TEMPLATE_SLOTS],
+            counted: [false; WAR_FACTORY_TEMPLATE_SLOTS],
+        }
+    }
+
+    /// The template's slot when kept, else the empty slot it would take
+    /// (`None` when the table is full).
+    fn slot(&self, template: usize) -> Result<usize, Option<usize>> {
+        let start = ((template as u64 >> 3).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 54) as usize;
+        for step in 0..WAR_FACTORY_TEMPLATE_SLOTS {
+            let slot = (start + step) % WAR_FACTORY_TEMPLATE_SLOTS;
+            match self.keys[slot] {
+                key if key == template => return Ok(slot),
+                0 => return Err(Some(slot)),
+                _ => {}
+            }
+        }
+        Err(None)
+    }
+
+    fn get(&self, template: usize) -> Option<bool> {
+        if template == 0 {
+            return None;
+        }
+        self.slot(template).ok().map(|slot| self.counted[slot])
+    }
+
+    fn insert(&mut self, template: usize, counted: bool) {
+        if template == 0 {
+            return;
+        }
+        if let Err(Some(slot)) = self.slot(template) {
+            self.keys[slot] = template;
+            self.counted[slot] = counted;
+        }
+    }
+}
+
+/// War-overview factory counts, rather than cached factory group totals. Core
+/// occurrences, including nulls and repeats, and the terminal offsite pass stay
+/// in native order. No native functions are called. `templates` holds the
+/// pass's authenticated building templates.
 pub fn war_overview_factories(
     memory: &impl crate::Memory,
     base: usize,
     countries: &crate::ccountry::Reader<'_, impl crate::Memory>,
     country: crate::ccountry::Country,
+    templates: &mut WarFactoryTemplates,
 ) -> Result<i32, &'static str> {
     use crate::{
         cbuilding, cbuilding_status, cbuilding_template, ccountry, cpdx_array::Array, cstate, read,
@@ -1792,7 +2029,7 @@ pub fn war_overview_factories(
             {
                 return Err("war factory building record unreadable");
             }
-            let mut templates = [0; 64];
+            let mut sources = [0; 64];
             for index in 0..count {
                 let record = &records[index * 16..];
                 if u64::from_le_bytes(record[..8].try_into().unwrap())
@@ -1802,34 +2039,60 @@ pub fn war_overview_factories(
                 {
                     return Err("war factory vtable mismatch");
                 }
-                templates[index] = u64::from_le_bytes(record[8..16].try_into().unwrap()) as usize;
+                sources[index] = u64::from_le_bytes(record[8..16].try_into().unwrap()) as usize;
             }
-            let mut definitions = [0; 64 * 24];
-            if memory.copy_records(
-                RecordSources::Pointers(&templates[..count]),
-                &TEMPLATE_LAYOUT,
-                &mut definitions,
-            ) != count * 5
-            {
-                return Err("war factory template record unreadable");
+            // The page's templates this pass has not authenticated yet, once
+            // each. Every kept template was readable with its vtable, so this
+            // page fails exactly when reading all of its templates would, with
+            // the same reason.
+            let mut unread = [0; 64];
+            let mut unread_len = 0;
+            for &template in &sources[..count] {
+                if templates.get(template).is_none() && !unread[..unread_len].contains(&template) {
+                    unread[unread_len] = template;
+                    unread_len += 1;
+                }
+            }
+            let mut counted = [false; 64];
+            if unread_len != 0 {
+                let mut definitions = [0; 64 * 24];
+                if memory.copy_records(
+                    RecordSources::Pointers(&unread[..unread_len]),
+                    &TEMPLATE_LAYOUT,
+                    &mut definitions,
+                ) != unread_len * 5
+                {
+                    return Err("war factory template record unreadable");
+                }
+                for index in 0..unread_len {
+                    let record = &definitions[index * 24..(index + 1) * 24];
+                    if u64::from_le_bytes(record[..8].try_into().unwrap())
+                        != base
+                            .checked_add(cbuilding_template::VTABLE_RVA)
+                            .ok_or("war factory template vtable address overflow")?
+                            as u64
+                    {
+                        return Err("war factory vtable mismatch");
+                    }
+                    let sum = record[8..].chunks_exact(4).fold(0_i32, |sum, bytes| {
+                        sum.wrapping_add(i32::from_le_bytes(bytes.try_into().unwrap()))
+                    });
+                    counted[index] = sum > 0;
+                }
+                for (&template, &counts) in unread[..unread_len].iter().zip(&counted) {
+                    templates.insert(template, counts);
+                }
             }
             let mut selected = [0; 64];
             let mut n = 0;
-            for index in 0..count {
-                let record = &definitions[index * 24..(index + 1) * 24];
-                if u64::from_le_bytes(record[..8].try_into().unwrap())
-                    != base
-                        .checked_add(cbuilding_template::VTABLE_RVA)
-                        .ok_or("war factory template vtable address overflow")?
-                        as u64
-                {
-                    return Err("war factory vtable mismatch");
-                }
-                let sum = record[8..].chunks_exact(4).fold(0_i32, |sum, bytes| {
-                    sum.wrapping_add(i32::from_le_bytes(bytes.try_into().unwrap()))
-                });
-                if sum > 0 {
-                    selected[n] = pointers[index];
+            for (&template, &pointer) in sources[..count].iter().zip(&pointers) {
+                // A full pass table leaves this page's reads only in `counted`.
+                let counts = match unread[..unread_len].iter().position(|&t| t == template) {
+                    Some(position) => counted[position],
+                    None => templates.get(template).expect("kept template"),
+                };
+                if counts {
+                    selected[n] = pointer;
                     n += 1;
                 }
             }
@@ -1899,7 +2162,13 @@ mod war_overview_tests {
         let count = |w: &World| {
             let memory = w.memory();
             let countries = ccountry::Reader::new(&memory, 0, w.game_state()).unwrap();
-            war_overview_factories(&memory, 0, &countries, countries.resolve(1).unwrap())
+            war_overview_factories(
+                &memory,
+                0,
+                &countries,
+                countries.resolve(1).unwrap(),
+                &mut WarFactoryTemplates::new(),
+            )
         };
         // One controlled core, a null-core offsite pass and the terminal pass.
         assert_eq!(count(&w), Ok(9));
@@ -1927,5 +2196,204 @@ mod war_overview_tests {
         assert_eq!(count(&w), Ok(65_539_i32.wrapping_mul(i32::from(i16::MAX))));
         w.u64(template, 0);
         assert!(count(&w).is_err());
+    }
+
+    /// A pass reads each building template once, not once per building:
+    /// the same count comes from fewer source requests, across countries too.
+    #[test]
+    fn a_pass_reads_each_building_template_once() {
+        use crate::memory::{CountedMemory, ReadCounts};
+        let mut w = World::new(0, 2, 0x1600);
+        let counted = w.alloc(0x320);
+        let skipped = w.alloc(0x320);
+        w.u64(counted, cbuilding_template::VTABLE_RVA as u64);
+        w.u32(counted + cbuilding_template::WAR_OVERVIEW_PRODUCTION[1], 2);
+        w.u64(skipped, cbuilding_template::VTABLE_RVA as u64);
+        let vector = w.alloc(6 * 8);
+        for index in 0..6_usize {
+            let building = w.alloc(0x200);
+            w.u64(building, cbuilding::VTABLE_RVA as u64);
+            let template = if index % 3 == 2 { skipped } else { counted };
+            w.u64(building + cbuilding::TEMPLATE, template as u64);
+            w.put(
+                building + cbuilding::LEVEL,
+                &(index as i16 + 1).to_le_bytes(),
+            );
+            w.u64(vector + index * 8, building as u64);
+        }
+        for id in [1, 2] {
+            let production = w.alloc(0x300);
+            w.u64(production, VTABLE_RVA as u64);
+            w.u64(production + COUNTRY, w.object(id) as u64);
+            w.u64(
+                w.object(id) + ccountry::PRODUCTION_STATUS,
+                production as u64,
+            );
+            let offsite = w.alloc(0x80);
+            w.u64(offsite, cbuilding_status::VTABLE_RVA as u64);
+            w.array(offsite + cbuilding_status::ACTIVE_BUILDINGS, vector, 6);
+            w.u64(
+                w.object(id) + ccountry::WAR_OVERVIEW_OFFSITE,
+                offsite as u64,
+            );
+        }
+        let plain = w.memory();
+        let countries = ccountry::Reader::new(&plain, 0, w.game_state()).unwrap();
+        let memory = CountedMemory::new(w.memory());
+        let mut templates = WarFactoryTemplates::new();
+        let prior = ReadCounts::take_current();
+        let mut spans = Vec::new();
+        for id in [1, 2] {
+            let country = countries.resolve(id).unwrap();
+            // Levels 1, 2, 4 and 5 count; 3 and 6 have a zero sum.
+            let result = war_overview_factories(&memory, 0, &countries, country, &mut templates);
+            spans.push(ReadCounts::take_current().spans);
+            assert_eq!(result, Ok(12));
+        }
+        prior.add_current();
+        // The first country reads its two templates once each (five fields
+        // apiece) rather than once per building; the second reads neither.
+        assert_eq!(spans[0] - spans[1], 2 * 5, "{spans:?}");
+        // Six buildings: a vtable and template each, four levels, and the
+        // fixed production, core and offsite reads besides.
+        assert!(spans[1] < 6 * 5, "{spans:?}");
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use crate::memory::SliceMemory;
+    use std::cell::Cell;
+
+    const BASE: usize = 0x10_0000;
+    /// Four shared policies, then the roster at the end of readable memory.
+    const POLICIES: usize = 0x1000;
+    const STRIDE: usize = 0x20;
+    const ROSTER: usize = 0x2000;
+
+    /// Counts guarded calls: one per copy and one per scattered batch.
+    struct Guarded<'a> {
+        bytes: &'a [u8],
+        guards: Cell<usize>,
+    }
+
+    impl<'a> Guarded<'a> {
+        fn new(bytes: &'a [u8]) -> Self {
+            Self {
+                bytes,
+                guards: Cell::new(0),
+            }
+        }
+
+        fn slice(&self) -> SliceMemory<'a> {
+            SliceMemory {
+                base: 0,
+                bytes: self.bytes,
+            }
+        }
+    }
+
+    impl Memory for Guarded<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.guards.set(self.guards.get() + 1);
+            self.slice().copy(address, destination)
+        }
+
+        fn copy_scattered<const N: usize>(
+            &self,
+            addresses: [usize; N],
+            destinations: &mut [&mut [u8]; N],
+        ) -> usize {
+            self.guards.set(self.guards.get() + 1);
+            let memory = self.slice();
+            for (index, (address, destination)) in
+                addresses.into_iter().zip(destinations).enumerate()
+            {
+                if !destination.is_empty() && (address == 0 || !memory.copy(address, destination)) {
+                    return index;
+                }
+            }
+            N
+        }
+    }
+
+    /// A roster of `count` entries naming the four policies in turn; policy
+    /// `index` has token 500 + index.
+    fn world(count: usize) -> Vec<u8> {
+        let mut bytes = vec![0; ROSTER + count * 8];
+        for index in 0..4 {
+            let policy = POLICIES + index * STRIDE;
+            let vtable = (BASE + POLICY_VTABLE_RVA) as u64;
+            bytes[policy..policy + 8].copy_from_slice(&vtable.to_le_bytes());
+            let token = 500 + index as u32;
+            bytes[policy + POLICY_TOKEN..policy + POLICY_TOKEN + 4]
+                .copy_from_slice(&token.to_le_bytes());
+        }
+        for slot in 0..count {
+            let policy = (POLICIES + slot % 4 * STRIDE) as u64;
+            bytes[ROSTER + slot * 8..ROSTER + slot * 8 + 8].copy_from_slice(&policy.to_le_bytes());
+        }
+        bytes
+    }
+
+    /// A roster header of `count` entries at [`ROSTER`].
+    fn roster(count: u32) -> Array {
+        let mut header = [0_u8; 16];
+        header[..8].copy_from_slice(&(ROSTER as u64).to_le_bytes());
+        header[8..12].copy_from_slice(&count.to_le_bytes());
+        header[12..].copy_from_slice(&count.to_le_bytes());
+        Array::from_header(header, 8).unwrap()
+    }
+
+    fn read(bytes: &[u8], count: u32) -> Result<Vec<u32>, &'static str> {
+        let mut output = vec![0; count as usize];
+        read_policies(&Guarded::new(bytes), BASE, roster(count), &mut output).map(|()| output)
+    }
+
+    /// A page of policies costs two guarded calls, its pointers and then their
+    /// identities, where a read per policy took one more call per policy.
+    #[test]
+    fn a_page_of_policies_is_read_in_two_guarded_batches() {
+        for (count, guards) in [(20, 2), (64, 2), (130, 6)] {
+            let bytes = world(count);
+            let memory = Guarded::new(&bytes);
+            let mut output = vec![0; count];
+            assert_eq!(
+                read_policies(&memory, BASE, roster(count as u32), &mut output),
+                Ok(())
+            );
+            let expected: Vec<u32> = (0..count as u32).map(|slot| 500 + slot % 4).collect();
+            assert_eq!(output, expected);
+            assert_eq!(memory.guards.get(), guards, "{count} policies");
+        }
+    }
+
+    /// The first fault in roster order stands, as in a read per policy.
+    #[test]
+    fn the_first_fault_in_roster_order_is_reported() {
+        let foreign = |bytes: &mut [u8], policy: usize| {
+            let at = POLICIES + policy * STRIDE;
+            bytes[at..at + 8].copy_from_slice(&1_u64.to_le_bytes());
+        };
+        let null = |bytes: &mut [u8], slot: usize| bytes[ROSTER + slot * 8..][..8].fill(0);
+        // A foreign policy (slot 1) before a null entry (slot 2).
+        let mut bytes = world(8);
+        foreign(&mut bytes, 1);
+        null(&mut bytes, 2);
+        assert_eq!(read(&bytes, 8), Err("MIO policy vtable mismatch"));
+        // A null entry (slot 1) before a foreign policy (slot 2).
+        let mut bytes = world(8);
+        null(&mut bytes, 1);
+        foreign(&mut bytes, 2);
+        assert_eq!(read(&bytes, 8), Err("MIO policy identity unreadable"));
+        // A header longer than the readable roster: its readable entries all
+        // check, then the pointers fault.
+        let bytes = world(8);
+        assert_eq!(read(&bytes, 13), Err("MIO policy pointer unreadable"));
+        // A foreign policy before the unreadable pointers still comes first.
+        let mut bytes = world(8);
+        foreign(&mut bytes, 3);
+        assert_eq!(read(&bytes, 13), Err("MIO policy vtable mismatch"));
     }
 }

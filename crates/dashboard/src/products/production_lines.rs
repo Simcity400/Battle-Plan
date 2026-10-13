@@ -714,6 +714,7 @@ fn scan_holder(
                     // before published their only rows here, so they may be missing. A country
                     // that does not exist then has no lines to miss.
                     if slot_read(
+                        replay.format,
                         &decoded.metrics,
                         TableId::ProductionLineOutput,
                         decoded.hour,
@@ -721,8 +722,12 @@ fn scan_holder(
                         let read = match country {
                             Some(TaggedCountry::Absent) => true,
                             Some(TaggedCountry::Found(..)) => {
-                                slot_read(&decoded.metrics, TableId::ProductionLines, decoded.hour)
-                                    && decoded.complete::<tables::ProductionLines>().is_ok()
+                                slot_read(
+                                    replay.format,
+                                    &decoded.metrics,
+                                    TableId::ProductionLines,
+                                    decoded.hour,
+                                ) && decoded.complete::<tables::ProductionLines>().is_ok()
                                     && decoded.complete::<tables::ProductionLineOutput>().is_ok()
                             }
                             Some(TaggedCountry::Unresolved) | None => false,
@@ -739,9 +744,13 @@ fn scan_holder(
                     let lexical = decoded.complete::<tables::LexicalTokens>().ok();
                     // Variant names, shared with every equipment product (`VariantCatalogue`);
                     // each variant's latest definition row, for its icon.
-                    result.variants.observe(decoded);
-                    if slot_read(&decoded.metrics, TableId::VariantDefinitions, decoded.hour)
-                        && let Ok(rows) = decoded.complete::<tables::VariantDefinitions>()
+                    result.variants.observe(replay.format, decoded);
+                    if slot_read(
+                        replay.format,
+                        &decoded.metrics,
+                        TableId::VariantDefinitions,
+                        decoded.hour,
+                    ) && let Ok(rows) = decoded.complete::<tables::VariantDefinitions>()
                     {
                         // Icons to look up again at this read: a used variant whose definition
                         // changed (a new icon entry, creator or origin), and a pending one the
@@ -801,7 +810,12 @@ fn scan_holder(
                         continue;
                     };
                     let slot = identity.0;
-                    if !slot_read(&decoded.metrics, TableId::ProductionLines, decoded.hour) {
+                    if !slot_read(
+                        replay.format,
+                        &decoded.metrics,
+                        TableId::ProductionLines,
+                        decoded.hour,
+                    ) {
                         // Carried: the last read still holds, but only after a read of this identity.
                         if carried {
                             mark(&mut result.line_hours, hour);
@@ -879,16 +893,24 @@ fn scan_holder(
                         links,
                         decoded.complete::<tables::CountryAppearance>().ok(),
                     );
-                    let modifier_inputs =
-                        (slot_read(&decoded.metrics, TableId::CountryProductionModifiers, hour)
-                            && slot_read(&decoded.metrics, TableId::ProductionLineModifiers, hour))
-                        .then(|| {
-                            decoded
-                                .complete::<tables::CountryProductionModifiers>()
-                                .ok()
-                                .zip(decoded.complete::<tables::ProductionLineModifiers>().ok())
-                        })
-                        .flatten();
+                    let modifier_inputs = (slot_read(
+                        replay.format,
+                        &decoded.metrics,
+                        TableId::CountryProductionModifiers,
+                        hour,
+                    ) && slot_read(
+                        replay.format,
+                        &decoded.metrics,
+                        TableId::ProductionLineModifiers,
+                        hour,
+                    ))
+                    .then(|| {
+                        decoded
+                            .complete::<tables::CountryProductionModifiers>()
+                            .ok()
+                            .zip(decoded.complete::<tables::ProductionLineModifiers>().ok())
+                    })
+                    .flatten();
                     let modifier_inputs =
                         modifier_inputs.filter(|_| match replay::fixed_layout::validate_recording(
                             decoded,

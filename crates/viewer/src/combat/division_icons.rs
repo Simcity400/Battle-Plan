@@ -148,6 +148,9 @@ pub(super) enum Omitted {
     /// An exile frame (14 or 15) is undecided; its cause is reported with
     /// the divisions it covers.
     Exile(u32),
+    /// The division's fuel and capacity are not recorded, so frame 16's
+    /// threshold test is undecided.
+    Fuel,
 }
 
 impl Omitted {
@@ -177,6 +180,10 @@ impl Omitted {
                     .into()
             }
             Self::Exile(frame) => format!("the exile icon {frame} is undecided and omitted"),
+            Self::Fuel => {
+                "the division's fuel and capacity are not recorded, so the fuel icon 16, the anti-air icon 13 and the exile icons 14 and 15 after it are omitted"
+                    .into()
+            }
         }
     }
 }
@@ -217,7 +224,9 @@ pub(super) fn frames(
     if unit.commander != 0 && unit.commander != own.commander {
         out.push(12);
     }
-    let [fuel, capacity] = unit.fuel_inputs;
+    let Some([fuel, capacity]) = unit.fuel_inputs() else {
+        return (out, Some(Omitted::Fuel));
+    };
     if fuel_ratio([fuel, capacity, content.fuel_penalty_start_ratio]) < SCALE {
         out.push(16);
     }
@@ -394,7 +403,7 @@ mod tests {
             ),
             (vec![12], None)
         );
-        madison.fuel_inputs = [100_000, 1_000_000];
+        madison.fuel_inputs = [100_000, 1_000_000].map(replay::rows::Recorded::Value);
         assert_eq!(
             icons(
                 &[27, 3],

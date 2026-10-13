@@ -1,39 +1,7 @@
-//! Current numerical radar, reciprocal navy intel and weather sources.
-//! Complete original arrays are factorized by owner and region. No selected
-//! country pair, native pointer or carried sliced-intel observation is stored.
+//! Value types of the retired TransportSpottingOwners and
+//! TransportSpottingRegions tables ([`super::RESERVED_SPLIT_TABLES`]): wire
+//! tombstones that keep the tables' framing. Nothing reads or writes them.
 use super::*;
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct TransportSpottingContext {
-    pub sample_hour: i32,
-    pub owners_complete: bool,
-    pub regions_complete: bool,
-    /// Authenticated original physical country roots, unique by canonical slot.
-    /// Null physical slots and aliases add no substitute country object.
-    pub owners: Vec<TransportSpottingOwner>,
-    /// Authentic native fallback country; physical null slot zero is distinct.
-    pub reserved: Option<TransportSpottingOwner>,
-    pub regions: Vec<TransportSpottingRegion>,
-}
-value_struct!(TransportSpottingContext {
-    sample_hour: i32, owners_complete: bool, regions_complete: bool,
-    owners: Vec<TransportSpottingOwner>, reserved: Option<TransportSpottingOwner>,
-    regions: Vec<TransportSpottingRegion>,
-});
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct TransportSpottingOwner {
-    pub owner_slot: u32,
-    pub owner_raw_id: u32,
-    /// Signed target owned-state-count gate, independently observed this hour.
-    pub target_owned_states: Option<i32>,
-    pub radar: Option<TransportRadarCounts>,
-    pub navy_intel: Option<TransportNavyIntel>,
-}
-value_struct!(TransportSpottingOwner {
-    owner_slot: u32, owner_raw_id: u32, target_owned_states: Option<i32>,
-    radar: Option<TransportRadarCounts>, navy_intel: Option<TransportNavyIntel>,
-});
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TransportRadarCounts {
@@ -44,30 +12,14 @@ pub struct TransportRadarCounts {
 }
 value_struct!(TransportRadarCounts { signed_count: i32, counts: Option<Vec<i32>> });
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct TransportNavyIntel {
-    pub owner_raw_id: Option<u32>,
-    /// Native canonical resolution before its signed-positive owner gate.
-    /// Raw owner zero does not demand this field.
-    pub owner_slot: Option<u32>,
-    pub signed_count: Option<i32>,
-    /// Original positional +10 vector, raw signed64 NAVY lane at stride20.
-    /// Nonpositive count supplies an empty body without a pointer demand.
-    pub lanes: Option<Vec<i64>>,
-}
-value_struct!(TransportNavyIntel {
-    owner_raw_id: Option<u32>, owner_slot: Option<u32>, signed_count: Option<i32>,
-    lanes: Option<Vec<i64>>,
-});
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TransportSpottingRegion {
     pub region_id: u32,
     pub runtime_slot: Option<i32>,
     /// Stored signed region +24, from the same original +18 header as sample.
     pub signed_province_count: Option<i32>,
-    /// Province at `(hour - 43800000) % count`, authenticated by ID.
-    pub sampled_province: Option<u32>,
+    /// The province the air-spotting calculation samples in this region this hour.
+    pub sample: SpottingSample,
     /// None is refusal; Some(None) is native null; Some(Some(v)) is effective2A.
     pub weather_detection: Option<Option<i64>>,
     /// Independent weather/night operands from that same original selector.
@@ -75,10 +27,51 @@ pub struct TransportSpottingRegion {
 }
 value_struct!(TransportSpottingRegion {
     region_id: u32, runtime_slot: Option<i32>, signed_province_count: Option<i32>,
-    sampled_province: Option<u32>, weather_detection: Option<Option<i64>>,
+    sample: SpottingSample, weather_detection: Option<Option<i64>>,
     air_environment: Option<TransportAirEnvironment>,
 });
 
-#[cfg(test)]
-#[path = "transport_spotting_context_tests.rs"]
-mod tests;
+/// The province the air-spotting calculation sampled in a region, in the retired spotting
+/// tables' layout.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SpottingSample {
+    /// Inline packets through format 101: the captured province, its id
+    /// authenticated against the region; None is the capture's refusal.
+    Recorded(Option<u32>),
+    /// The retired split rows recorded none.
+    #[default]
+    Derived,
+}
+
+impl SpottingSample {
+    /// The captured province, if this is a recorded sample that succeeded.
+    pub fn captured(self) -> Option<u32> {
+        match self {
+            Self::Recorded(province) => province,
+            Self::Derived => None,
+        }
+    }
+}
+
+/// Only inline packets store a sample, in their format-101 layout.
+impl Value for SpottingSample {
+    const MINIMUM_ENCODED_BYTES: usize = <Option<u32> as Value>::MINIMUM_ENCODED_BYTES;
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        match self {
+            Self::Recorded(province) => Value::encoded_bytes(province),
+            Self::Derived => Err(invalid("a derived spotting sample is never stored inline")),
+        }
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(*self)
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        match self {
+            Self::Recorded(province) => province.encode_reserved(output),
+            Self::Derived => Err(invalid("a derived spotting sample is never stored inline")),
+        }
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        Option::<u32>::decode(input).map(Self::Recorded)
+    }
+}

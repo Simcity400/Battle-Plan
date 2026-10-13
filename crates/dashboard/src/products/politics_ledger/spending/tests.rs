@@ -958,7 +958,7 @@ fn same_specific_item_groups_action_variants_without_losing_event_sentences() {
 }
 
 #[test]
-fn bounded_observation_over_three_months_with_hourly_leader_experience() {
+fn bounded_observation_over_three_months_with_hourly_leader_changes() {
     let mut scan = Scanned::default();
     let mut current = frame(0, 1);
     let mut leaders: Vec<_> = (0..3000)
@@ -971,7 +971,7 @@ fn bounded_observation_over_three_months_with_hourly_leader_experience() {
     for hour in 0..90 * 24 {
         current.hour = hour;
         for leader in &mut leaders {
-            leader.experience = i64::from(hour);
+            leader.skill_required_experience = hour;
         }
         put(&mut current, TableRows::UnitLeaders(leaders.clone()));
         put(

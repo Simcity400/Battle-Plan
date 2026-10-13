@@ -3,7 +3,7 @@ use crate::format::FormatVersion;
 
 fn ordered_sources() -> ReservedLaunchSources {
     ReservedLaunchSources {
-        sample_hour: i32::MIN,
+        sample_hour: PacketHour::Host,
         naval_bases: LaunchNavalBases::Bases(vec![
             LaunchNavalBase {
                 base_province: 9,
@@ -32,7 +32,7 @@ fn reserved_launch_snapshot_keeps_order_repeats_signed_bits_and_independent_doma
     for packet in [
         None,
         Some(ReservedLaunchSources {
-            sample_hour: i32::MAX,
+            sample_hour: PacketHour::Host,
             naval_bases: LaunchNavalBases::Unavailable,
             owned_states: None,
         }),
@@ -131,7 +131,7 @@ fn reserved_launch_delta_clears_and_reintroduces_only_its_suffix_with_three_byte
     for packet in [
         None,
         Some(ReservedLaunchSources {
-            sample_hour: i32::MAX,
+            owned_states: None,
             ..ordered_sources()
         }),
         Some(ReservedLaunchSources {
@@ -262,7 +262,7 @@ fn reserved_launch_historical_snapshots_and_insert_deltas_leave_named_gap() {
 fn reserved_launch_packet_option_tags_counts_and_framing_are_strict() {
     let row = ReservedCountryNamingRow {
         launch_sources: Some(ReservedLaunchSources {
-            sample_hour: -7,
+            sample_hour: PacketHour::Host,
             naval_bases: LaunchNavalBases::Bases(Vec::new()),
             owned_states: Some(Vec::new()),
         })
@@ -277,13 +277,13 @@ fn reserved_launch_packet_option_tags_counts_and_framing_are_strict() {
     }
     let start = bytes.len() - input.remaining();
     let body = start + 4; // Opaque byte length precedes packet's Option tag.
-    for (offset, tag) in [(body, 2), (body + 5, 3), (body + 10, 2)] {
+    for (offset, tag) in [(body, 2), (body + 1, 3), (body + 6, 2)] {
         // Packet, navy (2 is native null), then states.
         let mut malformed = bytes.clone();
         malformed[offset] = tag;
         assert!(ReservedCountryNamingRow::decode_fields(0, &mut Decoder::new(&malformed)).is_err());
     }
-    for count in [body + 6, body + 11] {
+    for count in [body + 2, body + 7] {
         let mut malformed = bytes.clone();
         malformed[count..count + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(ReservedCountryNamingRow::decode_fields(0, &mut Decoder::new(&malformed)).is_err());

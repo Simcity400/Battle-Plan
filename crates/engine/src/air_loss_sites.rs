@@ -129,8 +129,11 @@ pub struct Snapshot {
     pub fields: [i64; 2],
     receiver: usize,
     history: usize,
+    window: usize,
     record: usize,
     slot: u32,
+    /// The two selected words of `record`.
+    addresses: [usize; 2],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,23 +176,37 @@ pub fn before(
         fields: [0; 2],
         receiver,
         history: 0,
+        window: 0,
         record: 0,
         slot: 0,
+        addresses: [0; 2],
     };
     snapshot.country = owner(memory, base, game, receiver)?;
     snapshot.history = history(memory, receiver, snapshot.region)?;
     if snapshot.history != 0 {
         let current = current(memory, base, snapshot.history, family_base, cause)?;
+        snapshot.window = current.window;
         snapshot.record = current.record;
         snapshot.slot = current.slot;
         snapshot.fields = current.fields;
+        snapshot.addresses = current.addresses;
     }
     Ok(snapshot)
 }
 
-/// Called immediately after the same synchronous native writer returns.
-/// An identity or current-record change refuses the event instead of assigning
-/// an unrelated record's values to the writer. This function allocates nothing.
+/// Called immediately after the same synchronous native writer returns. A
+/// current-record change refuses the event instead of assigning an unrelated
+/// record's values to the writer. This function allocates nothing.
+///
+/// With a history before the call, the writer performs clamped additions to
+/// only the two selected words of its current record. History lookup returns
+/// the existing history unchanged; region-combat lookup writes only the country
+/// air object's `+0x170` table, and the record updater writes only its
+/// region-combat data. None touches the receiver, its history table or that
+/// history. One guarded copy therefore takes the window's current slot and
+/// record again as the witness that no daily advance ran, and a second takes
+/// the two words. Each copies exactly those fields in their old order. A
+/// history the call created is authenticated in full, as `before` would.
 pub fn after(
     memory: &impl Memory,
     base: usize,
@@ -204,29 +221,276 @@ pub fn after(
         cause: before.cause,
         fields: [0; 2],
     };
-    if owner(memory, base, game, before.receiver)? != before.country {
-        return Err("air loss writer country changed during call");
-    }
-    let history = history(memory, before.receiver, before.region)?;
-    if history == 0 || (before.history != 0 && history != before.history) {
-        return Err("air loss writer history changed during call");
-    }
-    let current = current(memory, base, history, before.family_base, before.cause)?;
-    if before.history != 0 && (before.record != current.record || before.slot != current.slot) {
-        return Err("air loss writer current record changed during call");
-    }
-    change.daily_slot = current.slot;
-    for ((delta, after), before) in change
-        .fields
-        .iter_mut()
-        .zip(current.fields)
-        .zip(before.fields)
-    {
+    let (slot, fields) = if before.history != 0 {
+        // The slot and record pointer, in order, in one guarded copy of
+        // exactly those spans.
+        let mut slot = [0; 4];
+        let mut record = [0; 8];
+        const UNREADABLE: &str = "air loss writer field unreadable or address overflow";
+        let at = |offset| before.window.checked_add(offset).ok_or(UNREADABLE);
+        let addresses = [
+            at(loop_history_window::CURRENT_SLOT)?,
+            at(loop_history_window::RECORD_FIELDS)?,
+        ];
+        if memory.copy_scattered(addresses, &mut [&mut slot[..], &mut record[..]]) != 2 {
+            return Err(UNREADABLE);
+        }
+        let slot = u32::from_le_bytes(slot);
+        let record = u64::from_le_bytes(record) as usize;
+        if record != before.record || slot != before.slot {
+            return Err("air loss writer current record changed during call");
+        }
+        (slot, words(memory, before.addresses)?)
+    } else {
+        if owner(memory, base, game, before.receiver)? != before.country {
+            return Err("air loss writer country changed during call");
+        }
+        let history = history(memory, before.receiver, before.region)?;
+        if history == 0 {
+            return Err("air loss writer history changed during call");
+        }
+        let current = current(memory, base, history, before.family_base, before.cause)?;
+        (current.slot, current.fields)
+    };
+    change.daily_slot = slot;
+    for ((delta, after), before) in change.fields.iter_mut().zip(fields).zip(before.fields) {
         *delta = after
             .checked_sub(before)
             .ok_or("air loss writer delta overflow")?;
     }
     Ok(change)
+}
+
+/// One healthy writer call's operands, as the hook's serial reads take them
+/// ([`selected_family`], [`before`], [`opponent`] and the region and game
+/// roots): the same values in six gathered guarded copies plus the country
+/// resolution. Each object's fields are copied together, and fields a later
+/// object needs are read ahead of the checks the serial reads make first;
+/// every value is used only after the serial checks pass, in their order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Gathered {
+    pub region: u32,
+    pub game: usize,
+    pub hour: i32,
+    pub family: u32,
+    pub snapshot: Snapshot,
+    pub opponent: Option<u32>,
+}
+
+/// [`Gathered`] for one call: `region` is the region pointer argument,
+/// `singleton` the game root's address. `None` when any copy fails or any
+/// check the serial reads make refuses, a new history included: the caller
+/// then takes the serial reads once, which meet a persistent fault where
+/// they always did, so a fault never refuses more than they would.
+#[allow(clippy::too_many_arguments)]
+pub fn gather(
+    memory: &impl Memory,
+    base: usize,
+    singleton: usize,
+    receiver: usize,
+    wing: usize,
+    region: usize,
+    enemy: u8,
+    cause: i32,
+    tags: [usize; 2],
+) -> Option<Gathered> {
+    if enemy > 1 || region == 0 || receiver == 0 || wing == 0 {
+        return None;
+    }
+    let vtable = |rva: usize| base.checked_add(rva).map(|at| at as u64);
+    let word = |bytes: &[u8]| u64::from_le_bytes(bytes[..8].try_into().unwrap());
+    let half = |bytes: &[u8]| u32::from_le_bytes(bytes[..4].try_into().unwrap());
+
+    // The arguments' objects: region identity, game root, wing, receiver,
+    // and the opponent tag word.
+    let (mut region_vtable, mut region_id, mut game) = ([0; 8], [0; 4], [0; 8]);
+    let (mut wing_vtable, mut pool) = ([0; 8], [0; 8]);
+    let (mut receiver_vtable, mut country, mut histories) = ([0; 8], [0; 4], [0; 16]);
+    let mut tag = [0; 4];
+    let copied = memory.copy_scattered(
+        [
+            region,
+            region.checked_add(crate::cstrategic_region::ID)?,
+            singleton,
+            wing,
+            wing.checked_add(cair_wing::POOL)?,
+            receiver,
+            receiver.checked_add(cstrategic_air::COUNTRY)?,
+            receiver.checked_add(cstrategic_air::HISTORY_TABLE)?,
+            tags[usize::from(enemy == 0)],
+        ],
+        &mut [
+            &mut region_vtable,
+            &mut region_id,
+            &mut game,
+            &mut wing_vtable,
+            &mut pool,
+            &mut receiver_vtable,
+            &mut country,
+            &mut histories,
+            &mut tag,
+        ],
+    );
+    if copied != 9 || word(&region_vtable) != vtable(crate::cstrategic_region::VTABLE_RVA)? {
+        return None;
+    }
+    let region_id = half(&region_id);
+    let game = usize::try_from(word(&game))
+        .ok()
+        .filter(|&game| game != 0)?;
+    let pool = usize::try_from(word(&pool)).ok()?;
+    let histories = Array::from_header(histories, 8)?;
+    if word(&wing_vtable) != vtable(cair_wing::VTABLE_RVA)? || pool == 0 {
+        return None;
+    }
+
+    // The hour, the pool and the receiver's history slot.
+    let (mut hour, mut pool_vtable, mut definition, mut history) = ([0; 4], [0; 8], [0; 8], [0; 8]);
+    let copied = memory.copy_scattered(
+        [
+            game.checked_add(crate::cgame_state::CURRENT_HOUR)?,
+            pool,
+            pool.checked_add(cair_wing_pool::DEFINITION)?,
+            histories.element(region_id, 8)?,
+        ],
+        &mut [&mut hour, &mut pool_vtable, &mut definition, &mut history],
+    );
+    if copied != 4 || word(&pool_vtable) != vtable(cair_wing_pool::VTABLE_RVA)? {
+        return None;
+    }
+    let definition = usize::try_from(word(&definition)).ok()?;
+    let history = usize::try_from(word(&history)).ok().filter(|&h| h != 0)?;
+
+    // The definition and the history.
+    let (mut definition_vtable, mut flags) = ([0; 8], [0; 8]);
+    let (mut history_vtable, mut own, mut count, mut window) = ([0; 8], [0; 8], [0; 4], [0; 8]);
+    let copied = memory.copy_scattered(
+        [
+            definition,
+            definition.checked_add(csub_unit_definition::AIR_FLAGS)?,
+            history,
+            history.checked_add(cloop_history::SELF_REFERENCE)?,
+            history.checked_add(cloop_history::FIELD_COUNT)?,
+            history.checked_add(cloop_history::DAILY_WINDOW)?,
+        ],
+        &mut [
+            &mut definition_vtable,
+            &mut flags,
+            &mut history_vtable,
+            &mut own,
+            &mut count,
+            &mut window,
+        ],
+    );
+    if copied != 6
+        || ![
+            csub_unit_definition::VTABLE_RVA,
+            csub_unit_definition::NULL_VTABLE_RVA,
+        ]
+        .into_iter()
+        .any(|rva| vtable(rva) == Some(word(&definition_vtable)))
+    {
+        return None;
+    }
+    let family = family_base(word(&flags), enemy);
+    let indices = selected_indices(family, cause).ok()?;
+    // The serial owner: authentication, then the country's resolution.
+    if word(&receiver_vtable) != vtable(cstrategic_air::VTABLE_RVA)? {
+        return None;
+    }
+    let country = half(&country);
+    crate::ccountry::Reader::new(memory, base, game)
+        .and_then(|countries| countries.resolve(country))
+        .ok()?;
+    if word(&history_vtable) != vtable(cloop_history::VTABLE_RVA)?
+        || usize::try_from(word(&own)).ok()? != history
+        || half(&count) != FIELD_COUNT as u32
+    {
+        return None;
+    }
+    let window = usize::try_from(word(&window)).ok().filter(|&w| w != 0)?;
+
+    // The daily window.
+    let (mut window_vtable, mut records, mut capacity, mut slot) =
+        ([0; 8], [0; 16], [0; 4], [0; 4]);
+    let (mut wrapped, mut owner, mut record) = ([0; 1], [0; 8], [0; 8]);
+    let copied = memory.copy_scattered(
+        [
+            window,
+            window.checked_add(loop_history_window::RECORDS)?,
+            window.checked_add(loop_history_window::CAPACITY)?,
+            window.checked_add(loop_history_window::CURRENT_SLOT)?,
+            window.checked_add(loop_history_window::WRAPPED)?,
+            window.checked_add(loop_history_window::HISTORY)?,
+            window.checked_add(loop_history_window::RECORD_FIELDS)?,
+        ],
+        &mut [
+            &mut window_vtable,
+            &mut records,
+            &mut capacity,
+            &mut slot,
+            &mut wrapped,
+            &mut owner,
+            &mut record,
+        ],
+    );
+    let records = Array::from_header(records, 8)?;
+    let (capacity, slot) = (half(&capacity), half(&slot));
+    if copied != 7
+        || word(&window_vtable) != vtable(loop_history_window::VTABLE_RVA)?
+        || capacity != cloop_history::DAILY_WINDOW_CAPACITY
+        || records.count != capacity
+        || slot >= capacity
+        || wrapped[0] > 1
+        || usize::try_from(word(&owner)).ok()? != history
+    {
+        return None;
+    }
+    let record = usize::try_from(word(&record)).ok().filter(|&r| r != 0)?;
+
+    // The current slot's record pointer and the record.
+    let (mut current, mut record_history, mut values) = ([0; 8], [0; 8], [0; 16]);
+    let copied = memory.copy_scattered(
+        [
+            records.element(slot, 8)?,
+            record.checked_add(loop_history_record_fields::HISTORY)?,
+            record.checked_add(loop_history_record_fields::VALUES)?,
+        ],
+        &mut [&mut current, &mut record_history, &mut values],
+    );
+    let values = Array::from_header(values, 8)?;
+    if copied != 3
+        || usize::try_from(word(&current)).ok()? != record
+        || usize::try_from(word(&record_history)).ok()? != history
+        || values.count != FIELD_COUNT as u32
+    {
+        return None;
+    }
+    let addresses = indices.map(|index| values.element(index, 8));
+    let addresses = [addresses[0]?, addresses[1]?];
+    let fields = words(memory, addresses).ok()?;
+    let tag = half(&tag) as i32;
+    Some(Gathered {
+        region: region_id,
+        game,
+        hour: i32::from_le_bytes(hour),
+        family,
+        snapshot: Snapshot {
+            country,
+            region: region_id,
+            enemy,
+            cause,
+            family_base: family,
+            fields,
+            receiver,
+            history,
+            window,
+            record,
+            slot,
+            addresses,
+        },
+        opponent: (tag > 0).then_some(tag as u32),
+    })
 }
 
 /// The writer adds to family and family-plus-cause, twice for cause zero.
@@ -272,9 +536,11 @@ fn history(memory: &impl Memory, receiver: usize, region: u32) -> Result<usize, 
 }
 
 struct Current {
+    window: usize,
     record: usize,
     slot: u32,
     fields: [i64; 2],
+    addresses: [usize; 2],
 }
 
 fn current(
@@ -322,18 +588,30 @@ fn current(
         return Err("air loss writer record field count mismatch");
     }
     let indices = selected_indices(family, cause)?;
-    let mut fields = [0; 2];
-    for (value, index) in fields.iter_mut().zip(indices) {
-        let address = values
+    let mut addresses = [0; 2];
+    for (address, index) in addresses.iter_mut().zip(indices) {
+        *address = values
             .element(index, 8)
             .ok_or("air loss selected field outside record")?;
-        *value = read(memory, address).ok_or("air loss selected field unreadable")?;
     }
     Ok(Current {
+        window,
         record,
         slot,
-        fields,
+        fields: words(memory, addresses)?,
+        addresses,
     })
+}
+
+/// The two selected words, in order, in one guarded copy of exactly those
+/// spans: the first unreadable word refuses, as two reads would.
+fn words(memory: &impl Memory, addresses: [usize; 2]) -> Result<[i64; 2], &'static str> {
+    let mut words = [[0; 8]; 2];
+    let [first, second] = &mut words;
+    if memory.copy_scattered(addresses, &mut [&mut first[..], &mut second[..]]) != 2 {
+        return Err("air loss selected field unreadable");
+    }
+    Ok(words.map(i64::from_le_bytes))
 }
 
 fn authenticate(

@@ -109,14 +109,10 @@ fn complete<S: TableSchema>(view: &TableView) -> &[S::Row] {
     rows.rows::<S>().unwrap()
 }
 
+/// Every hour reads the manager: a declaration's tension reaches the next
+/// hour, where the daily slot 18 showed it up to a day late.
 #[test]
-fn daily_session_skips_native_reads_and_failures_outside_slot_18() {
-    struct NoReads;
-    impl Memory for NoReads {
-        fn copy(&self, address: usize, _: &mut [u8]) -> bool {
-            panic!("inactive session read at {address:#x}");
-        }
-    }
+fn session_is_read_every_hour() {
     let bytes = fixture();
     let memory = SliceMemory {
         base: BASE,
@@ -133,34 +129,98 @@ fn daily_session_skips_native_reads_and_failures_outside_slot_18() {
                 force_full,
             };
             captured.prepare_hour(hour, force_full);
-            if force_full || hour == 18 {
-                let report = copy_session_refresh(&memory, ctx, &mut job);
-                assert!(report.raw_ok);
-                captured.decode_session_payload(0, &job, &mut [0; N]);
-                assert_matches_direct(&captured, &direct(&memory, &capacities));
-            } else {
-                let report = copy_session_refresh(&NoReads, ctx, &mut job);
-                assert!(!report.raw_ok && job.log.spans.is_empty());
-                assert_eq!((report.copy_ticks, report.raw_bytes), ([0; N], [0; N]));
-                assert!(!job.grow_for_next());
-                assert_eq!(captured.capture(&NoReads, 0, BASE, hour, false), [0; N]);
-                captured.fail_session_capture("worker failed");
-                let mut ticks = [0; N];
-                captured.decode_session_payload(0, &job, &mut ticks);
-                assert_eq!(ticks, [0; N]);
-                assert_eq!(
-                    captured.outcomes(),
-                    [Outcome::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON
-                    }; N]
-                );
-                assert_eq!(
-                    (captured.reason_bytes.len, captured.reason_bytes.required),
-                    (0, 0)
-                );
-            }
+            let report = copy_session_refresh(&memory, ctx, &mut job);
+            assert!(report.raw_ok && !job.log.spans.is_empty(), "hour {hour}");
+            captured.decode_session_payload(0, &job, &mut [0; N]);
+            assert_matches_direct(&captured, &direct(&memory, &capacities));
         }
     }
+}
+
+/// A quiet hour copies nothing and publishes the held read; an hour after a
+/// source writer ended in `update_total` copies and decodes afresh, and the
+/// tension domain's comparison hour reads a quiet hour and compares it.
+#[test]
+fn quiet_tension_hours_publish_the_held_read_without_copying() {
+    use crate::world_input_changes::{self as changes, Domain, Held, Isolated};
+    struct NoReads;
+    impl Memory for NoReads {
+        fn copy(&self, address: usize, _: &mut [u8]) -> bool {
+            panic!("quiet session read at {address:#x}");
+        }
+    }
+    let changes: &'static Isolated = Box::leak(Box::new(Isolated::new()));
+    let held: &'static Mutex<Held<Tension>> =
+        Box::leak(Box::new(Mutex::new(Held::new(Tension::new()))));
+    let mut bytes = fixture();
+    let (capacities, mut captured) = small();
+    let mut job = SessionJob {
+        observed: Observed { changes, held },
+        ..fixed_job()
+    };
+    /// One hour's copy and decode; whether it copied nothing.
+    fn hour_at(
+        memory: &impl Memory,
+        hour: i32,
+        job: &mut SessionJob,
+        captured: &mut Captured,
+    ) -> bool {
+        crate::sampled_verify::begin_hour(hour);
+        let ctx = SessionCopyContext {
+            base: 0,
+            game_state: BASE,
+            hour,
+            force_full: false,
+        };
+        captured.prepare_hour(hour, false);
+        assert!(copy_session_refresh(memory, ctx, job).raw_ok);
+        captured.decode_session_payload(0, job, &mut [0; N]);
+        job.log.spans.is_empty()
+    }
+    // Hour 1 avoids the domain's comparison hour (its index, 2).
+    let memory = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    assert!(!hour_at(&memory, 1, &mut job, &mut captured));
+    assert_matches_direct(&captured, &direct(&memory, &capacities));
+    let expected = direct(&memory, &capacities);
+    if changes::VERIFY {
+        return;
+    }
+    assert!(hour_at(&NoReads, 3, &mut job, &mut captured));
+    assert_matches_direct(&captured, &expected);
+    // A source writer ran: the next hour copies the new total.
+    put(
+        &mut bytes,
+        MANAGER + cworld_threat::TOTAL,
+        &7_i64.to_le_bytes(),
+    );
+    changes.write(Domain::Tension);
+    let memory = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    assert!(!hour_at(&memory, 4, &mut job, &mut captured));
+    assert_matches_direct(&captured, &direct(&memory, &capacities));
+    assert!(hour_at(&NoReads, 5, &mut job, &mut captured));
+    assert_matches_direct(&captured, &direct(&memory, &capacities));
+    // The comparison hour of the burned-in rotation reads afresh; a write no
+    // hook saw poisons the domain.
+    let rotation = crate::sampled_verify::BURNED_IN_ROTATION as i32;
+    put(
+        &mut bytes,
+        MANAGER + cworld_threat::TOTAL,
+        &9_i64.to_le_bytes(),
+    );
+    let memory = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    assert!(!hour_at(&memory, rotation + 2, &mut job, &mut captured));
+    assert_matches_direct(&captured, &direct(&memory, &capacities));
+    assert!(changes.poisoned(Domain::Tension));
+    assert!(!hour_at(&memory, rotation + 3, &mut job, &mut captured));
 }
 
 #[test]
@@ -353,50 +413,17 @@ fn session_split_copy_matches_direct_walk() {
     let anchor = TableId::WorldTension;
     let mut expected = read_accounting::ZERO;
     // Manager word/header, two source pointers/52-byte heads/32-byte
-    // inline reasons, two aggregates: ten requests, 272 bytes at one anchor.
+    // inline reasons, the two-slot aggregate cache in one span: nine
+    // requests, 272 bytes at one anchor.
     expected[anchor.index()] = ReadCounts {
-        copy_calls: 10,
-        spans: 10,
+        copy_calls: 9,
+        spans: 9,
         bytes: 272,
         ..ReadCounts::ZERO
     };
+    // Every hour reads (session_is_read_every_hour) unless its tension is
+    // quiet (quiet_tension_hours_publish_the_held_read_without_copying).
     assert_eq!(counts, expected);
-    let mut job = SessionJob::default();
-    let mut refreshes = 0;
-    for hour in 0..24 {
-        if replay::cadence::is_refresh(anchor, hour) {
-            refreshes += 1;
-            continue;
-        }
-        let capture = read_accounting::Capture::new();
-        let skipped = copy_session_refresh(
-            &memory,
-            SessionCopyContext {
-                base: 0,
-                game_state: BASE,
-                hour,
-                force_full: false,
-            },
-            &mut job,
-        );
-        assert_eq!(capture.finish(), read_accounting::ZERO);
-        assert!(!skipped.raw_ok && !job.grow_for_next());
-        assert_eq!((skipped.copy_ticks, skipped.raw_bytes), ([0; N], [0; N]));
-    }
-    assert_eq!(refreshes, 1);
-    let measured = counts[anchor.index()];
-    let per_refresh = [
-        measured.copy_calls,
-        measured.scattered_calls,
-        measured.record_calls,
-        measured.plan_calls,
-        measured.spans,
-        measured.bytes,
-    ];
-    println!(
-        "daily_fixture cohort=session_split_copy_matches_direct_walk anchor={anchor:?} counters=[copy,scattered,records,plans,spans,bytes] per_refresh={per_refresh:?} before_24h={:?} after_24h={per_refresh:?} basis=unchanged_refresh_x_24_legacy_hourly_vs_1_daily",
-        per_refresh.map(|value| value * 24)
-    );
 }
 
 #[test]
@@ -727,7 +754,9 @@ fn session_live_demand_and_original_payload_growth_keep_5000_countries_and_mod_s
         assert!(report.raw_ok);
         assert!(!job.grow_for_next());
         let calls = memory.calls.get();
-        assert_eq!(calls, 2 + sources * 5 + countries + 1);
+        // The manager pointer and header, five spans per source and one for
+        // the whole aggregate cache.
+        assert_eq!(calls, 2 + sources * 5 + 1);
         assert_eq!(
             memory.headers.get(),
             1,

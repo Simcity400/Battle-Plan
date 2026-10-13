@@ -1,7 +1,7 @@
 //! Native map-counter tooltips. Missing reached inputs are refused by their line.
 
 mod ability;
-mod attrition;
+pub(crate) mod attrition;
 mod carrier_summary;
 mod children;
 pub(super) mod gui_authored;
@@ -609,8 +609,8 @@ fn next_hours(members: &[(u64, u32, u32, &Timing)]) -> Result<Option<i32>, Strin
         }
         let remaining = timing
             .next
-            .ok_or_else(|| format!("unit {id} first-edge ETA is unavailable"))?;
-        // The game ceilings each first edge.
+            .ok_or_else(|| format!("unit {id} has no next-province arrival estimate"))?;
+        // The next-province duration rounds each first edge up to whole hours.
         let hours = engine::cunit::eta_hours(remaining) as i32;
         minimum = Some(minimum.map_or(hours, |previous: i32| previous.min(hours)));
     }
@@ -735,7 +735,9 @@ impl<'a> Batch<'a> {
             input,
             self.context.nato,
             |unit, ours| match unit {
-                ArrivalUnit::Division(movement) => self.arrival.remaining(movement, ours, false),
+                ArrivalUnit::Division(movement) => {
+                    self.arrival.division_remaining(movement.division, ours)
+                }
                 ArrivalUnit::Railway(gun) => self.arrival.railway_remaining(gun, ours, false),
             },
         )
@@ -743,7 +745,7 @@ impl<'a> Batch<'a> {
 
     pub fn build_task_force(&self, input: &task_force::Hover) -> Tooltip {
         task_force::build(&self.context, input, |movement, ours| {
-            self.arrival.task_force_remaining(movement, ours, false)
+            self.arrival.task_force_remaining(movement, ours)
         })
     }
 
@@ -1253,7 +1255,7 @@ mod tests {
         frame
     }
 
-    // Formatting fixtures supply an explicit duration; production always runs the fresh query.
+    // Formatting fixtures supply an explicit duration; production reads the hour's estimate.
     fn fixture_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Tooltip {
         build_context(context, input, nato, |unit, _| match unit {
             ArrivalUnit::Division(movement) => input
@@ -2365,6 +2367,125 @@ mod tests {
                 0,
                 "{case}"
             );
+        }
+    }
+
+    /// The division arrival line words the hour's estimate: the stored route's
+    /// content distance over the recorded base speed, less the progress behind
+    /// it. A recording without that speed refuses the line by its own name.
+    #[test]
+    fn division_arrival_words_the_estimate_of_the_stored_route() {
+        use crate::map::division_eta::{self, Etas, MovementContent};
+        use installed_content::movement::{MovementMap, Neighbour, ProvinceTerrain};
+        let land = ProvinceTerrain { flags: 1, index: 1 };
+        let content = MovementContent {
+            map: MovementMap::from_parts(&[
+                (
+                    3,
+                    land,
+                    vec![Neighbour {
+                        to: 4,
+                        distance: Some(2_900_000),
+                        ..Default::default()
+                    }],
+                ),
+                (4, land, vec![]),
+            ]),
+            defines: replay::eta_derive::Defines {
+                outer_scale: 100_000,
+                ..Default::default()
+            },
+            rail: Err("unrelated railway defines".into()),
+            task_force_terrain: Err("unrelated task-force terrain".into()),
+        };
+        let loc = loc();
+        let vision = Vision::sharing(1, []);
+        let names = installed_content::division_names::Database::default();
+        let units = Err("unused".into());
+        // 2900000 over 100000 per hour is 29 hours; 400000 of progress is
+        // 4 hours behind. A slower stat block still moves at the 1 km/h floor.
+        for (base_speed, ours, expected) in [
+            (Recorded::Value(Some(100_000)), true, Ok("arrival 1d 1h\n")),
+            (
+                Recorded::Value(Some(100_000)),
+                false,
+                Ok("other arrival 1d 1h\n"),
+            ),
+            (Recorded::Value(Some(40_000)), true, Ok("arrival 1d 1h\n")),
+            // 14.5 hours less 2 ceilings to 13.
+            (Recorded::Value(Some(200_000)), true, Ok("arrival 13h\n")),
+            (
+                Recorded::NotRecorded,
+                true,
+                Err("counter arrival: DivisionMovement.base_speed is not recorded in this format"),
+            ),
+        ] {
+            let mut frame = frame(true);
+            put(
+                &mut frame,
+                TableRows::DivisionMovement(vec![DivisionMovementRow {
+                    division: 1,
+                    path_total: 1,
+                    path: vec![4],
+                    numerator: 400_000,
+                    base_speed,
+                    ..Default::default()
+                }]),
+            );
+            let etas = Etas::read(&frame, Some(&content)).unwrap();
+            let context = Context {
+                nato: false,
+                content: None,
+                dig_in_factor: Err("unused".into()),
+                loc: &loc,
+                recorded_language: &loc.language,
+                icons: &crate::combat::binding::NoIcons,
+                names: &names,
+                units: &units,
+                supply_grace: Ok(4),
+                comms_max_distance: Ok(100),
+                frame: &frame,
+                vision: &vision,
+                links: frame
+                    .complete::<tables::CountryLinks>()
+                    .map_err(|error| error.to_string()),
+            };
+            let hover = CounterHover {
+                control: crate::map::counters::CounterControl::Normal,
+                authored: None,
+                rect: [0.0; 4],
+                members: vec![1].into(),
+                timing: vec![Timing {
+                    next: None,
+                    kind: None,
+                }]
+                .into(),
+                coarse: false,
+                hidden: false,
+                railway_gun: false,
+                remaining: None,
+                ours,
+            };
+            let out = build_context(&context, &hover, false, |unit, ours| match unit {
+                ArrivalUnit::Division(movement) => {
+                    division_eta::arrival(&etas, movement.division, ours)
+                }
+                ArrivalUnit::Railway(_) => panic!("unexpected railway query"),
+            });
+            match expected {
+                Ok(line) => {
+                    assert!(out.body.starts_with(line), "{:?}", out.body);
+                    assert!(
+                        !out.refused
+                            .keys()
+                            .any(|key| key.starts_with("counter arrival:"))
+                    );
+                }
+                Err(key) => {
+                    assert!(!out.body.contains("arrival"), "{:?}", out.body);
+                    assert_eq!(out.refused.get(key).copied(), Some(1), "{:?}", out.refused);
+                }
+            }
         }
     }
 

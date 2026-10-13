@@ -433,27 +433,20 @@ pub(super) fn append(context: &Context<'_>, input: &CounterHover, out: &mut Tool
         }
         CounterControl::Supply => {
             let reached = (|| {
+                let first = *input
+                    .members
+                    .first()
+                    .ok_or("supply counter has no members")?;
                 let owner = if input.railway_gun {
                     let rows = context
                         .frame
                         .complete::<tables::RailwayGunCounterInputs>()
                         .map_err(|e| e.to_string())?;
-                    let first = input
-                        .members
-                        .first()
-                        .ok_or("supply counter has no members")?;
-                    rows.binary_search_by_key(first, |row| row.gun)
+                    rows.binary_search_by_key(&first, |row| row.gun)
                         .map(|i| rows[i].roster_owner)
                         .map_err(|_| format!("RailwayGunCounterInputs gun {first} is absent"))?
                 } else {
-                    context
-                        .division(
-                            *input
-                                .members
-                                .first()
-                                .ok_or("supply counter has no members")?,
-                        )?
-                        .roster_owner
+                    context.division(first)?.roster_owner
                 };
                 context
                     .vision

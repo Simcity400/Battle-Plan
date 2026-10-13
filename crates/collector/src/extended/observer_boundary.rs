@@ -24,21 +24,15 @@ static LOST_DRAINS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 pub(crate) struct ObserverBoundaryReport {
     pub ticks: [u64; N],
 }
+/// One worker job: the observer drains, then the completion and political
+/// lane seals. Both phases ran as separate jobs, the second dispatched and
+/// joined back to back after the country snapshot. Both seal before the
+/// hourly trampoline returns to the native update, where the lanes' writers
+/// Run  (the operation completion writer from pre-hourly update);
+/// the snapshot and `prepare_hour` between them call no native code that
+/// appends to a lane. One job seals the same events with one worker wake,
+/// behind the snapshot.
 pub(crate) struct ObserverBoundaryRequest {
-    kind: BoundaryKind,
-}
-// Callback loans remain inline; boxing a phase would allocate at the boundary.
-#[allow(clippy::large_enum_variant)]
-enum BoundaryKind {
-    Observers(ObserverRequest),
-    Lanes(LaneRequest),
-}
-struct LaneRequest {
-    operations: operation_outcomes::Captured,
-    politics: politics::Captured,
-    finished: [bool; 2],
-}
-struct ObserverRequest {
     base: usize,
     hour: i32,
     continuous: bool,
@@ -49,59 +43,53 @@ struct ObserverRequest {
     fuel: fuel_awards::Captured,
     construction: construction_ic::Captured,
     peace: peace_settlements::Captured,
-    finished: [bool; 6],
+    operations: operation_outcomes::Captured,
+    politics: politics::Captured,
+    finished: [bool; N],
 }
 impl ObserverBoundaryRequest {
     pub(crate) fn allocated_bytes(&self) -> u64 {
-        match &self.kind {
-            BoundaryKind::Observers(request) => request.allocated_bytes(),
-            BoundaryKind::Lanes(request) => {
-                (request.operations.allocated_bytes() + request.politics.allocated_bytes()) as u64
-            }
-        }
-    }
-    pub(crate) fn capture(&mut self) -> ObserverBoundaryReport {
-        match &mut self.kind {
-            BoundaryKind::Observers(request) => request.capture(),
-            BoundaryKind::Lanes(request) => {
-                let mut report = ObserverBoundaryReport::default();
-                report.ticks[6] = request.operations.capture_growing();
-                request.finished[0] = true;
-                report.ticks[7] = request.politics.capture_growing();
-                request.finished[1] = true;
-                report
-            }
-        }
-    }
-    fn fail_pending(&mut self, reason: &'static str) {
-        match &mut self.kind {
-            BoundaryKind::Observers(request) => request.fail_pending(reason),
-            BoundaryKind::Lanes(request) => {
-                if !request.finished[0] {
-                    LOST_DRAINS[6].fetch_add(1, Ordering::Relaxed);
-                    request.operations.fail(reason);
-                }
-                if !request.finished[1] {
-                    LOST_DRAINS[7].fetch_add(1, Ordering::Relaxed);
-                    request.politics.fail(reason);
-                }
-            }
-        }
-    }
-}
-impl ObserverRequest {
-    fn allocated_bytes(&self) -> u64 {
         (self.land.allocated_bytes()
             + self.feed.allocated_bytes()
             + self.lines.allocated_bytes()
             + self.fuel.allocated_bytes()
             + self.construction.allocated_bytes()
-            + self.peace.allocated_bytes()) as u64
+            + self.peace.allocated_bytes()
+            + self.operations.allocated_bytes()
+            + self.politics.allocated_bytes()) as u64
     }
-    fn capture(&mut self) -> ObserverBoundaryReport {
+    pub(crate) fn capture(&mut self) -> ObserverBoundaryReport {
         let mut report = ObserverBoundaryReport::default();
         crate::relation_changes::boundary(!self.continuous || self.recovery);
         crate::history_changes::boundary(!self.continuous || self.recovery);
+        crate::flag_changes::boundary(!self.continuous || self.recovery);
+        crate::building_changes::boundary(!self.continuous || self.recovery);
+        crate::advisor_pool_changes::boundary(!self.continuous || self.recovery);
+        crate::party_leader_changes::boundary(!self.continuous || self.recovery);
+        crate::variable_changes::boundary(!self.continuous || self.recovery);
+        crate::party_changes::boundary(!self.continuous || self.recovery);
+        crate::roster_changes::boundary(!self.continuous || self.recovery);
+        crate::political_status_changes::boundary(!self.continuous || self.recovery);
+        crate::wing_changes::boundary(!self.continuous || self.recovery);
+        crate::mission_changes::boundary(!self.continuous || self.recovery);
+        crate::rail_changes::boundary(!self.continuous || self.recovery);
+        crate::territory_changes::boundary(!self.continuous || self.recovery);
+        crate::army_stat_changes::boundary(!self.continuous || self.recovery);
+        crate::country_input_changes::boundary(!self.continuous || self.recovery);
+        crate::raid_changes::boundary(!self.continuous || self.recovery);
+        crate::naval_tree_changes::boundary(!self.continuous || self.recovery);
+        crate::unit_leader_changes::boundary(!self.continuous || self.recovery);
+        crate::census_changes::boundary(!self.continuous || self.recovery);
+        crate::unit_leader_trait_changes::boundary(!self.continuous || self.recovery);
+        crate::world_input_changes::boundary(!self.continuous || self.recovery);
+        crate::retreat_ban_changes::boundary(!self.continuous || self.recovery);
+        crate::local_subunit_changes::boundary(!self.continuous || self.recovery);
+        crate::template_changes::boundary(!self.continuous || self.recovery);
+        crate::ship_model_changes::boundary(!self.continuous || self.recovery);
+        crate::province_unit_changes::boundary(!self.continuous || self.recovery);
+        crate::air_base_carry_changes::boundary(!self.continuous || self.recovery);
+        crate::character_changes::boundary(!self.continuous || self.recovery);
+        crate::war_changes::boundary(!self.continuous || self.recovery);
         let begin = qpc();
         self.land.drain_growing(self.hour, !self.continuous);
         self.finished[0] = true;
@@ -135,13 +123,46 @@ impl ObserverRequest {
         crate::peace_settlements::install_offered();
         self.finished[5] = true;
         report.ticks[5] = elapsed(begin);
+        report.ticks[6] = self.operations.capture_growing();
+        self.finished[6] = true;
+        report.ticks[7] = self.politics.capture_growing();
+        self.finished[7] = true;
         report
     }
     fn fail_pending(&mut self, reason: &'static str) {
         if !self.finished[0] {
             crate::relation_changes::boundary(true);
             crate::history_changes::boundary(true);
+            crate::flag_changes::boundary(true);
+            crate::building_changes::boundary(true);
+            crate::advisor_pool_changes::boundary(true);
+            crate::party_leader_changes::boundary(true);
+            crate::variable_changes::boundary(true);
+            crate::party_changes::boundary(true);
+            crate::roster_changes::boundary(true);
+            crate::political_status_changes::boundary(true);
+            crate::wing_changes::boundary(true);
+            crate::mission_changes::boundary(true);
+            crate::rail_changes::boundary(true);
+            crate::territory_changes::boundary(true);
+            crate::army_stat_changes::boundary(true);
+            crate::country_input_changes::boundary(true);
+            crate::raid_changes::boundary(true);
+            crate::naval_tree_changes::boundary(true);
+            crate::unit_leader_changes::boundary(true);
+            crate::census_changes::boundary(true);
+            crate::unit_leader_trait_changes::boundary(true);
+            crate::world_input_changes::boundary(true);
+            crate::retreat_ban_changes::boundary(true);
+            crate::local_subunit_changes::boundary(true);
+            crate::template_changes::boundary(true);
+            crate::ship_model_changes::boundary(true);
+            crate::province_unit_changes::boundary(true);
+            crate::air_base_carry_changes::boundary(true);
+            crate::character_changes::boundary(true);
+            crate::war_changes::boundary(true);
         }
+        let lane_reason = lane_reason(&self.finished, reason);
         for (index, finished) in self.finished.into_iter().enumerate() {
             if !finished {
                 LOST_DRAINS[index].fetch_add(1, Ordering::Relaxed);
@@ -161,6 +182,8 @@ impl ObserverRequest {
                         crate::peace_settlements::lost_drain();
                         self.peace.fail(reason);
                     }
+                    6 => self.operations.fail(lane_reason),
+                    7 => self.politics.fail(lane_reason),
                     _ => unreachable!(),
                 }
             }
@@ -182,6 +205,17 @@ fn prepare_outputs(memory: &impl engine::Memory, base: usize) {
     );
     let _ = crate::construction_ic::presize_from_live(memory, base);
 }
+/// The reason a failed job gives its unsealed lanes. They were their own
+/// job, dispatched after the drains joined: a drain that failed stopped the
+/// pool first, which refused that job as stopped. Lanes the job reached
+/// after every drain keep its own reason.
+fn lane_reason(finished: &[bool; N], reason: &'static str) -> &'static str {
+    if finished[..6].iter().all(|&finished| finished) {
+        reason
+    } else {
+        crate::sampling::acquisition_failure_reason(crate::acquisition::Failure::Stopped)
+    }
+}
 fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
@@ -200,39 +234,28 @@ impl Captured {
         recovery: bool,
     ) -> ObserverBoundaryRequest {
         ObserverBoundaryRequest {
-            kind: BoundaryKind::Observers(ObserverRequest {
-                base,
-                hour,
-                continuous,
-                recovery,
-                land: std::mem::replace(&mut self.land_events, land_events::Captured::vacant()),
-                feed: std::mem::replace(&mut self.event_feed, event_feed::Captured::vacant()),
-                lines: std::mem::replace(&mut self.line_output, line_output::Captured::vacant()),
-                fuel: std::mem::replace(&mut self.fuel_awards, fuel_awards::Captured::vacant()),
-                construction: std::mem::replace(
-                    &mut self.construction_ic,
-                    construction_ic::Captured::vacant(),
-                ),
-                peace: std::mem::replace(
-                    &mut self.peace_settlements,
-                    peace_settlements::Captured::vacant(),
-                ),
-                finished: [false; 6],
-            }),
-        }
-    }
-    /// Seal completion/political lanes at their original later boundary,
-    /// after country-cache preparation and before country acquisition.
-    pub(crate) fn take_lane_boundary_request(&mut self) -> ObserverBoundaryRequest {
-        ObserverBoundaryRequest {
-            kind: BoundaryKind::Lanes(LaneRequest {
-                operations: std::mem::replace(
-                    &mut self.operation_outcomes,
-                    operation_outcomes::Captured::vacant(),
-                ),
-                politics: std::mem::replace(&mut self.politics, politics::Captured::vacant()),
-                finished: [false; 2],
-            }),
+            base,
+            hour,
+            continuous,
+            recovery,
+            land: std::mem::replace(&mut self.land_events, land_events::Captured::vacant()),
+            feed: std::mem::replace(&mut self.event_feed, event_feed::Captured::vacant()),
+            lines: std::mem::replace(&mut self.line_output, line_output::Captured::vacant()),
+            fuel: std::mem::replace(&mut self.fuel_awards, fuel_awards::Captured::vacant()),
+            construction: std::mem::replace(
+                &mut self.construction_ic,
+                construction_ic::Captured::vacant(),
+            ),
+            peace: std::mem::replace(
+                &mut self.peace_settlements,
+                peace_settlements::Captured::vacant(),
+            ),
+            operations: std::mem::replace(
+                &mut self.operation_outcomes,
+                operation_outcomes::Captured::vacant(),
+            ),
+            politics: std::mem::replace(&mut self.politics, politics::Captured::vacant()),
+            finished: [false; N],
         }
     }
     pub(crate) fn restore_observer_boundary_request(
@@ -244,28 +267,20 @@ impl Captured {
         if let Some(reason) = failure {
             request.fail_pending(reason);
         }
-        match request.kind {
-            BoundaryKind::Observers(request) => {
-                self.land_events = request.land;
-                self.event_feed = request.feed;
-                self.line_output = request.lines;
-                self.fuel_awards = request.fuel;
-                self.construction_ic = request.construction;
-                self.peace_settlements = request.peace;
-                self.overhead[TableId::LandEventCoverage.index()] = self.overhead
-                    [TableId::LandEventCoverage.index()]
-                .saturating_add(report.ticks[0]);
-            }
-            BoundaryKind::Lanes(request) => {
-                self.operation_outcomes = request.operations;
-                self.politics = request.politics;
-                self.overhead[TableId::OperationCompletions.index()] = self.overhead
-                    [TableId::OperationCompletions.index()]
-                .saturating_add(report.ticks[6]);
-                self.overhead[TableId::PoliticsCaptureCoverage.index()] = self.overhead
-                    [TableId::PoliticsCaptureCoverage.index()]
-                .saturating_add(report.ticks[7]);
-            }
+        self.land_events = request.land;
+        self.event_feed = request.feed;
+        self.line_output = request.lines;
+        self.fuel_awards = request.fuel;
+        self.construction_ic = request.construction;
+        self.peace_settlements = request.peace;
+        self.operation_outcomes = request.operations;
+        self.politics = request.politics;
+        for (table, ticks) in [
+            (TableId::LandEventCoverage, report.ticks[0]),
+            (TableId::OperationCompletions, report.ticks[6]),
+            (TableId::PoliticsCaptureCoverage, report.ticks[7]),
+        ] {
+            self.overhead[table.index()] = self.overhead[table.index()].saturating_add(ticks);
         }
     }
 }
@@ -387,8 +402,34 @@ mod tests {
         }
     }
 
+    /// A drain that fails refuses the lanes not yet sealed as stopped, the
+    /// reason their own later job had when the failure stopped the pool;
+    /// lanes reached after every drain keep the job's reason.
     #[test]
-    fn lane_take_restore_preserves_early_packs_and_cold_cursors_without_callback_allocation() {
+    fn lanes_after_a_failed_drain_keep_their_stopped_reason() {
+        // The reason alone: failing a pack would touch the drains' and
+        // lanes' process-wide state, which other tests hold.
+        let panicked =
+            crate::sampling::acquisition_failure_reason(crate::acquisition::Failure::Panicked);
+        let stopped =
+            crate::sampling::acquisition_failure_reason(crate::acquisition::Failure::Stopped);
+        let mut finished = [false; N];
+        for drains in 0..6 {
+            finished[..drains].fill(true);
+            assert_eq!(lane_reason(&finished, panicked), stopped, "{drains} drains");
+        }
+        finished[..6].fill(true);
+        assert_eq!(lane_reason(&finished, panicked), panicked);
+        // A lane already sealed does not change the reason of the other.
+        finished[6] = true;
+        assert_eq!(lane_reason(&finished, panicked), panicked);
+    }
+
+    /// The completion and political lanes travel with the observer drains in
+    /// one job: their packs leave and return with it, and their seal costs
+    /// are charged to their own tables.
+    #[test]
+    fn lanes_travel_with_the_observer_drains_in_one_job() {
         let mut captured = Captured::with_capacities(&super::super::Capacities::default());
         let early_bytes = captured.land_events.allocated_bytes()
             + captured.event_feed.allocated_bytes()
@@ -400,8 +441,8 @@ mod tests {
             captured.operation_outcomes.allocated_bytes() + captured.politics.allocated_bytes();
         assert_eq!(lane_bytes, 0);
         crate::allocation_failure_tests::with_allocations_denied(|| {
-            let request = captured.take_lane_boundary_request();
-            assert_eq!(request.allocated_bytes(), lane_bytes as u64);
+            let request = captured.take_observer_boundary_request(0, 41, true, false);
+            assert_eq!(request.allocated_bytes(), (early_bytes + lane_bytes) as u64);
             assert_eq!(captured.operation_outcomes.allocated_bytes(), 0);
             assert_eq!(captured.politics.allocated_bytes(), 0);
             let mut report = ObserverBoundaryReport::default();

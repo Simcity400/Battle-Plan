@@ -245,11 +245,36 @@ fn suffix_faults_preserve_every_group_prefix_and_independent_fields() {
             .iter()
             .position(|row| *row == (FORMATION + corders_group::WITHDRAWING, 1))
             .unwrap();
+        // The first read reaching a suffix field, gathered or single.
         let suffix_start = reads
             .iter()
-            .position(|row| *row == (GROUP + corders_group::HQ_DISTANCE, 4))
+            .position(|&(at, len)| {
+                at <= GROUP + corders_group::HQ_DISTANCE
+                    && GROUP + corders_group::HQ_DISTANCE < at + len
+            })
             .unwrap();
         assert!(prefix_end < suffix_start);
+        if hole.is_none() {
+            // Each group's own fields come from its two gathered records,
+            // never from single reads: the withdrawing byte and the leader
+            // pointer are record fields of their own width, read once there.
+            for field in [
+                (GROUP + corders_group::COUNTRY, 4),
+                (GROUP + corders_group::WITHDRAWING, 1),
+                (GROUP + LEADER, 8),
+                (GROUP + corders_group::HQ_DISTANCE, 4),
+                (GROUP + corders_group::BORDER_WAR, 8),
+                (GROUP + corders_group::INVASION_SOURCE_DISTANCE, 4),
+            ] {
+                let record_field =
+                    field.0 == GROUP + corders_group::WITHDRAWING || field.0 == GROUP + LEADER;
+                assert_eq!(
+                    reads.iter().filter(|&&read| read == field).count(),
+                    usize::from(record_field),
+                    "{field:x?}"
+                );
+            }
+        }
     }
 }
 
@@ -266,4 +291,55 @@ fn pending_deployment_uses_native_zero_and_minimum_branches() {
     image.i32(BASE + DEPLOY_DAYS_RVA, 0);
     image.hole = Some((BASE + REFERENCE_MANPOWER_RVA, 8));
     assert_eq!(deployment_days(&image, BASE, 500), Ok(0));
+}
+
+/// One counter pass shares each reference type's registry root and header:
+/// two groups under the same commander read each root once, and both keep
+/// the cooldown a lone group reads.
+#[test]
+fn a_counter_pass_reads_each_registry_header_once() {
+    let mut image = fixture();
+    image.u64(FORMATION + LEADER, LEADER_POINTER as u64);
+    let roots =
+        [(GROUP, GROUP_HANDLE), (FORMATION, FORMATION_HANDLE)].map(|(pointer, handle)| Root {
+            pointer,
+            handle,
+            country: 1,
+        });
+    let mut output = [corders_group::CounterInputsRow::default(); 2];
+    assert_eq!(
+        corders_group::walk_counter_inputs_in_state(
+            &image,
+            BASE,
+            STATE,
+            &roots,
+            Outcome::Rows { len: 2 },
+            &mut output
+        ),
+        Outcome::Rows { len: 2 }
+    );
+    let alone = leader_enroute_days(&image, BASE, STATE, GROUP);
+    assert_eq!(alone, Ok(14));
+    assert!(output.iter().all(|row| row.leader_enroute_days == Some(14)));
+    image.reads.borrow_mut().clear();
+    corders_group::walk_counter_inputs_in_state(
+        &image,
+        BASE,
+        STATE,
+        &roots,
+        Outcome::Rows { len: 2 },
+        &mut output,
+    );
+    let reads = image.reads.borrow();
+    for root in [
+        registry::HIGH_ROOT_RVA,
+        registry::LOW_ROOTS_RVA + 53 * 8,
+        registry::LOW_ROOTS_RVA + 52 * 8,
+    ] {
+        assert_eq!(
+            reads.iter().filter(|read| read.0 == BASE + root).count(),
+            1,
+            "{root:x}"
+        );
+    }
 }

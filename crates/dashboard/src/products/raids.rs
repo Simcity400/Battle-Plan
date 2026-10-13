@@ -475,6 +475,9 @@ struct Track {
 }
 
 struct Scan {
+    /// The recording's format, which dates its daily tables
+    /// ([`crate::metadata::slot_read`]).
+    format: replay::format::FormatVersion,
     result: ScannedRaids,
     tracks: BTreeMap<String, Track>,
     tallies: BTreeMap<Identity, (u32, u32)>,
@@ -489,6 +492,7 @@ struct Scan {
 impl Scan {
     fn new() -> Self {
         Self {
+            format: replay::format::FormatVersion::default(),
             result: ScannedRaids::default(),
             tracks: BTreeMap::new(),
             tallies: BTreeMap::new(),
@@ -537,7 +541,7 @@ impl Scan {
             }
             by_slot.insert(slot, tag.as_str());
         }
-        if !slot_read(&frame.metrics, TableId::Raids, hour) {
+        if !slot_read(self.format, &frame.metrics, TableId::Raids, hour) {
             return Ok(());
         }
         let (Ok(parents), Ok(raids)) = (
@@ -890,6 +894,7 @@ fn scan(
         selected.push(TableId::CountryAppearance);
     }
     let mut scan = Scan::new();
+    scan.format = replay.format;
     if !replay.branches.iter().any(|b| b.id == branch) {
         return Err(crate::invalid("Branch is not in this recording"));
     }

@@ -356,6 +356,9 @@ pub struct WingCumulativeRow {
 typed_codec!(WingCumulativeRow, 64, |row| row.id as u128, |key| Self { id: key as u64, accidents: Default::default(), experience: Default::default() },
  { 0 => (accidents): I32, 1 => (experience): I64 }, |_row| Ok(()));
 
+/// Retired: only the save comparison read the regional air history and
+/// damage. Kept for older recordings' framing.
+///
 /// AirRegionHistory: key country:region (64 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AirRegionHistoryRow {
@@ -375,6 +378,76 @@ pub struct AirRegionDamageRow {
 }
 typed_codec!(AirRegionDamageRow, 64, |row| (row.country as u128) << 32 | row.region as u128, |key| Self { country: (key >> 32) as u32, region: key as u32, entries: Default::default() },
  { 0 => (entries): Opaque }, |_row| Ok(()));
+
+/// One damage entry of a retained record: the cause dispatched by the record updater
+/// and its signed fixed5 amount, summed per cause by the damage-entry updater.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AirCombatDamage {
+    pub cause: u32,
+    pub amount: i64,
+}
+value_struct!(AirCombatDamage {
+    cause: u32,
+    amount: i64
+});
+
+/// One wing combat record (stride 0x98): the wing id (+0x08), the native
+/// hour the updater created it at (+0x0C), the plane high-water mark (+0x10),
+/// the ORed mission mask (+0x14), the selection (+0x18) and classification
+/// (+0x19) bytes, the copied equipment's allow-zero byte (+0x90) and the
+/// attribution raw country (+0x50), with both damage vectors in native order:
+/// `first_damage` (+0x20, causes 0, 1, 2, 6 and 7) and `second_damage`
+/// (+0x38, causes 3, 4, 5, 9 and 10). The copied equipment lists (+0x60,
+/// +0x78) are not recorded.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AirCombatRecord {
+    pub wing_id: u32,
+    pub date: i32,
+    pub planes: i32,
+    pub mission_mask: u32,
+    pub selection: u8,
+    pub classification: u8,
+    pub copied: u8,
+    pub attributed_country: u32,
+    pub first_damage: Vec<AirCombatDamage>,
+    pub second_damage: Vec<AirCombatDamage>,
+}
+value_struct!(AirCombatRecord {
+    wing_id: u32,
+    date: i32,
+    planes: i32,
+    mission_mask: u32,
+    selection: u8,
+    classification: u8,
+    copied: u8,
+    attributed_country: u32,
+    first_damage: Vec<AirCombatDamage>,
+    second_damage: Vec<AirCombatDamage>
+});
+
+/// AirRegionCombat: one regional air-combat holder of a country's `strategic air+0x170`
+/// table, key container country (raw `strategic air+0x90`) and strategic region (the
+/// table index). `owner` is the holder's raw `+0x38` owner. `own` is the `+0x08` vector
+/// (records of wings whose effective country is the owner's, selected when finding or
+/// creating a record), `foreign` the `+0x20` vector, each in native order with
+/// duplicates.
+///
+/// A row is the holder's native state at the hour it was last read, not necessarily the
+/// frame's hour: the collector reads a holder only when the record updater touched it
+/// (its records dated at or after the previous read, splicing the rest from the held row)
+/// or its sampled check comes up, and carries the row otherwise. The daily pass prunes
+/// records the row still holds; playback derives that pruning
+/// ([`crate::air_region_derive`]). Allocated holders without records have no row.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AirRegionCombatRow {
+    pub country: u32,
+    pub region: u32,
+    pub owner: u32,
+    pub own: Vec<AirCombatRecord>,
+    pub foreign: Vec<AirCombatRecord>,
+}
+typed_codec!(AirRegionCombatRow, 64, |row| (row.country as u128) << 32 | row.region as u128, |key| Self { country: (key >> 32) as u32, region: key as u32, ..Default::default() },
+ { 0 => (owner): U32, 1 => (own): Opaque, 2 => (foreign): Opaque }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct AirAcePortraitInputs {
@@ -472,25 +545,24 @@ typed_codec!(AirTheatreMemberRow, 128, |row| (row.group as u128) << 64 | row.win
 /// Wings are flattened across the container's pools in pool order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AirBaseRegistrationRow {
-    /// Full native CAirBase handle; join it to AirBases.
+    /// Full native air base handle; join it to AirBases.
     pub base: u64,
     pub slot: u32,
     /// The container's capacity word; registration grants access only while it is positive.
     pub capacity_raw: i64,
-    /// Full native CAirWing handles in native order, repeats included.
+    /// Full native air wing handles in native order, repeats included.
     pub wings: Vec<u64>,
     /// Fresh same-hour container and pool facts, including empty pools.
     pub carrier: Recorded<Option<AirBaseRegistrationCarrierInputs>>,
-    /// Stored signed-i32 wrapping plane sum for each ordered pool.
-    /// Inner None is an original leaf refusal; outer None refuses the complete
-    /// pool prefix. This separate suffix preserves the old carrier bytes.
-    pub transport_planes: Recorded<Option<Vec<Option<i32>>>>,
+    /// Retired per-pool plane sums of the selected transport carrier preview.
+    pub transport_planes: Recorded<Retired>,
 }
 typed_codec!(AirBaseRegistrationRow, 96, |row| (row.base as u128) << 32 | row.slot as u128, |key| Self { base: (key >> 32) as u64, slot: key as u32, ..Default::default() },
  { 0 => (capacity_raw): I64, 1 => (wings): U64List, 2 => (carrier): Opaque, 3 => (transport_planes): Opaque }, |_row| Ok(()));
 opaque_value!(Option<Vec<Option<i32>>>);
 opaque_value!(Vec<AirHistoryEntry>);
 opaque_value!(Vec<AirDamageEntry>);
+opaque_value!(Vec<AirCombatRecord>);
 opaque_value!(Option<AceDeath>);
 value_struct!(AirWingRaidReference {
     raw: u64,

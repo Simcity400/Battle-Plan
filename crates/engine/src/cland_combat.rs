@@ -12,7 +12,6 @@ use crate::{
 mod country_sets;
 mod demand;
 mod details;
-mod progress;
 
 pub use country_sets::{
     CountrySetError, CountrySetsRow, read_country_sets, read_country_sets_buffer,
@@ -20,10 +19,9 @@ pub use country_sets::{
 pub use demand::{DetailDemand, detail_demand};
 pub use details::{
     BorderWarInputs, CommanderLearningTrait, CommanderSource, CommanderTimedTrait, CommanderTrait,
-    Commanders, DetailArenas, DetailCounts, DetailsRow, SideDetails, Span, commander_sources,
-    read_details,
+    Commanders, DetailArenas, DetailCounts, DetailsRow, Leaders, SKILL_HOVER_KEYS, SideDetails,
+    Span, commander_sources, read_details, read_details_sharing,
 };
-pub use progress::{ProgressRow, progress_from_organisation, read_progress};
 
 /// CLandCombat primary vtable.
 pub const VTABLE_RVA: usize = 0x0299_14d8;

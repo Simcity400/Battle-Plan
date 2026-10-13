@@ -25,4 +25,37 @@ serde = "1"
 serde_json = "1"
 sha2 = "0.10"
 uuid = "1"
-windows-sys = "0.61.2"
+# Every package selection resolves windows-sys with the same features: the union the whole
+# workspace resolves, including third-party requests. Otherwise each `cargo -p` selection (each
+# crate's tests, the desktop, the gate) gets its own feature set, and replay and every crate above
+# it rebuild once per selection. Re-derive the list with `cargo tree --workspace -e features
+# -i windows-sys@0.61.2` after dependency changes; members still name the features they use.
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Environment",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Kernel",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Performance",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+] }

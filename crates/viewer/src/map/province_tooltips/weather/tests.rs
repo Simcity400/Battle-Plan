@@ -62,7 +62,7 @@ fn independent_flags_keep_native_order_and_raw_mud() {
         ..Default::default()
     };
     assert_eq!(
-        row(&loc(), &ranges(), &province, &region).unwrap(),
+        row(&loc(), &ranges(), Ok(0), &province, &region).unwrap(),
         "Weather: 1:Rain 2:Storm 3:Snow 4:Blizzard 5:Sandstorm 6:Mud (0°C)"
     );
     let custom_only = WeatherProvinceRow {
@@ -71,7 +71,7 @@ fn independent_flags_keep_native_order_and_raw_mud() {
         ..Default::default()
     };
     assert_eq!(
-        row(&loc(), &ranges(), &custom_only, &Default::default()).unwrap(),
+        row(&loc(), &ranges(), Ok(0), &custom_only, &Default::default()).unwrap(),
         "Weather: \u{11}YClear \u{11}!(0°C)"
     );
 }
@@ -82,25 +82,17 @@ fn temperature_preserves_negative_zero_and_half_open_raw_thresholds() {
         row(
             &loc(),
             &ranges(),
-            &WeatherProvinceRow {
-                temperature,
-                ..Default::default()
-            },
+            Ok(temperature),
+            &WeatherProvinceRow::default(),
             &Default::default(),
         )
         .unwrap()
     };
-    assert!(render(replay::rows::Recorded::Value(-1)).ends_with("(-0°C)"));
-    assert!(render(replay::rows::Recorded::Value(199_999)).contains("Clear"));
-    assert_eq!(
-        render(replay::rows::Recorded::Value(200_001)),
-        "Weather: T2:Hot (2°C)"
-    );
-    assert_eq!(
-        render(replay::rows::Recorded::Value(300_000)),
-        "Weather: T3: (3°C)"
-    );
-    assert!(render(replay::rows::Recorded::Value(500_000)).contains("Clear"));
+    assert!(render(-1).ends_with("(-0°C)"));
+    assert!(render(199_999).contains("Clear"));
+    assert_eq!(render(200_001), "Weather: T2:Hot (2°C)");
+    assert_eq!(render(300_000), "Weather: T3: (3°C)");
+    assert!(render(500_000).contains("Clear"));
 }
 
 #[test]
@@ -115,6 +107,7 @@ fn missing_localisation_key_keeps_native_literal_bytes() {
         row(
             &localisation,
             &ranges(),
+            Ok(0),
             &Default::default(),
             &WeatherRegionRow {
                 heavy_rain: 1,
@@ -145,6 +138,7 @@ fn native_text_argument_is_a_copy_then_appended_even_when_content_uses_it() {
         row(
             &localisation,
             &ranges(),
+            Ok(0),
             &Default::default(),
             &WeatherRegionRow {
                 heavy_rain: 1,
@@ -158,19 +152,23 @@ fn native_text_argument_is_a_copy_then_appended_even_when_content_uses_it() {
 
 #[test]
 fn compatibility_weather_fields_are_not_native_zero() {
-    let mut province = WeatherProvinceRow {
-        temperature: replay::rows::Recorded::NotRecorded,
-        ..Default::default()
-    };
+    let mut province = WeatherProvinceRow::default();
     let region = WeatherRegionRow::default();
+    // A temperature the frame cannot establish is its refusal, not zero.
     assert_eq!(
-        row(&loc(), &ranges(), &province, &region).unwrap_err(),
-        "WeatherProvinces.temperature not recorded"
+        row(
+            &loc(),
+            &ranges(),
+            Err("WeatherProvinces temperature not recorded".into()),
+            &province,
+            &region
+        )
+        .unwrap_err(),
+        "WeatherProvinces temperature not recorded"
     );
-    province.temperature = 0.into();
     province.raw_mud = replay::rows::Recorded::NotRecorded;
     assert_eq!(
-        row(&loc(), &ranges(), &province, &region).unwrap_err(),
+        row(&loc(), &ranges(), Ok(0), &province, &region).unwrap_err(),
         "WeatherProvinces.raw_mud not recorded"
     );
 }

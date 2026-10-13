@@ -10,7 +10,7 @@ use replay::{
     Hour,
     container::Replay,
     frame::{DecodedFrame, FrameDecoder},
-    rows::{CountryRow, ProductionLineOutputRow, ProductionLineRow, TableId, tables},
+    rows::{CountryRow, ProductionLineRow, TableId, tables},
 };
 
 use super::{Report, TokenNames, complete, country_tag, daily_read, invalid, required_country_tag};
@@ -72,7 +72,7 @@ pub(super) fn compare(
     complete &= report.attempt("IndustrialOrganisations", |report| {
         compare_organisations(frame, &saved.production, links, tokens, report)
     });
-    // The credits are cross-checked along the branch (`compare_line_output`).
+    // The output census is self-checked along the branch (`compare_line_output`).
     complete &= report.attempt("producer ProductionLineOutput", |report| {
         compare_line_output_countries(frame, &saved.production, links, report)
     });
@@ -339,9 +339,9 @@ fn compare_organisations(
 }
 
 mod line_output;
-pub(super) use line_output::compare_line_output;
 #[cfg(test)]
-use line_output::{CreditCheck, LINE_OUTPUT_TABLES};
+use line_output::LINE_OUTPUT_TABLES;
+pub(super) use line_output::compare_line_output;
 
 /// The production writer saves the available-variant roster under
 /// `available_equipments` and the foreign-lease roster under
@@ -1180,7 +1180,7 @@ fn compare_lines(
 }
 
 /// The recorded efficiency against the saved per-factory array, averaged with
-/// the game's arithmetic over the first min(saved active factories, recorded
+/// The game's arithmetic over the first min(saved active factories, recorded
 /// maximum factories) entries. A saved array shorter than that count is a
 /// difference: the game would have read past it.
 fn compare_efficiency(
@@ -1446,20 +1446,16 @@ fn compare_line_base(
             report.difference(format!("{label}.{name}"), captured, saved);
         }
     }
-    // Base explicitly emits speed and produced only when nonzero.
-    // Their absent literal therefore establishes raw zero, unlike an unmapped
-    // field or a serializer predicate that has not been inspected.
+    // The production writer emits speed only when nonzero. Its absent
+    // literal therefore establishes raw zero, unlike an unmapped field or a
+    // serializer predicate that has not been inspected. The line's produced
+    // progress is retired and not compared.
     for (name, captured, saved) in [
         ("cost", actual.cost_raw, expected.cost.raw),
         (
             "speed",
             actual.speed_raw,
             expected.speed.as_ref().map_or(0, |value| value.raw),
-        ),
-        (
-            "produced",
-            actual.produced_raw,
-            expected.produced.as_ref().map_or(0, |value| value.raw),
         ),
     ] {
         report.scalar_checks += 1;

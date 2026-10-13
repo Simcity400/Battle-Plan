@@ -19,7 +19,11 @@ fn selected_parsing_still_rejects_malformed_omitted_updates() {
     header.i32().unwrap();
     header.bool().unwrap();
     header.u64().unwrap();
-    for _ in 0..TABLE_COUNT {
+    // Timing entries exist only for the tables the format records.
+    for _ in TableId::ALL
+        .into_iter()
+        .filter(|&table| crate::frame::current_absence(table).is_none())
+    {
         header.u64().unwrap();
     }
     header.u64().unwrap();
@@ -763,17 +767,22 @@ fn shared_complete_rows_match_owned_wire_and_adopt_each_validated_refresh() {
             if reuse_allocation {
                 reuse_committed_rows(&mut input, &shared);
             }
-            let allocations: [_; TABLE_COUNT] = std::array::from_fn(|index| {
-                let TableInput::SharedComplete(rows) = &input.tables[index] else {
-                    panic!("fixture has complete rows")
-                };
-                Arc::clone(rows)
-            });
+            // Retired tables are absent from the source and the encoding.
+            let allocations: [_; TABLE_COUNT] =
+                std::array::from_fn(|index| match &input.tables[index] {
+                    TableInput::SharedComplete(rows) => Some(Arc::clone(rows)),
+                    _ if crate::frame::current_absence(TableId::ALL[index]).is_some() => None,
+                    _ => panic!("fixture has complete rows"),
+                });
             let expected = owned.encode(source.clone(), force).unwrap();
             let actual = shared.encode_input(input, force).unwrap();
             assert_eq!(wire(&actual), wire(&expected));
             assert_eq!(decoder.apply(&actual).unwrap(), source);
-            for (index, allocation) in allocations.iter().enumerate() {
+            for (index, allocation) in allocations
+                .iter()
+                .enumerate()
+                .filter_map(|(index, allocation)| Some((index, allocation.as_ref()?)))
+            {
                 let (baseline_hour, BaselineRows::Shared(baseline)) =
                     shared.state.tables[index].as_ref().unwrap()
                 else {
@@ -786,7 +795,7 @@ fn shared_complete_rows_match_owned_wire_and_adopt_each_validated_refresh() {
             if let Some(previous) = previous_rows.take() {
                 if Weak::ptr_eq(
                     &previous,
-                    &Arc::downgrade(&allocations[TableId::Countries.index()]),
+                    &Arc::downgrade(allocations[TableId::Countries.index()].as_ref().unwrap()),
                 ) {
                     assert!(reuse_allocation);
                     assert!(Weak::upgrade(&previous).is_some());
@@ -794,7 +803,9 @@ fn shared_complete_rows_match_owned_wire_and_adopt_each_validated_refresh() {
                     assert!(Weak::upgrade(&previous).is_none());
                 }
             }
-            previous_rows = Some(Arc::downgrade(&allocations[TableId::Countries.index()]));
+            previous_rows = Some(Arc::downgrade(
+                allocations[TableId::Countries.index()].as_ref().unwrap(),
+            ));
         }
     }
 }
@@ -803,7 +814,8 @@ fn shared_complete_rows_match_owned_wire_and_adopt_each_validated_refresh() {
 fn shared_baselines_survive_cadence_and_owned_equal_inputs_without_reallocation() {
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
-    let table = TableId::HiredAdvisors;
+    // A daily table, carried between its slot reads.
+    let table = TableId::AirAces;
     let first = shared_input(source(1, 0));
     let TableInput::SharedComplete(rows) = &first.tables[table.index()] else {
         panic!()
@@ -1328,7 +1340,16 @@ fn row_replacements_reject_bad_positions_tokens_and_later_errors_atomically() {
         patch(vec![0], TableRows::States(vec![])),
     ];
     let mut later_error = valid.clone();
-    let later = TableId::ALL.into_iter().next_back().unwrap();
+    // The last table the current format records: a retired table is never
+    // encoded, so it cannot fail the frame.
+    let later = TableId::ALL
+        .into_iter()
+        .rfind(|table| {
+            table
+                .last_change()
+                .present(crate::format::FormatVersion::CURRENT.version())
+        })
+        .unwrap();
     assert!(later.index() > TableId::Provinces.index());
     later_error.tables[later.index()] = TableView::Complete(TableRows::Clock(Vec::new())).into();
     cases.push(later_error);
@@ -1402,7 +1423,7 @@ fn row_replacements_cannot_edit_shared_or_cross_row_validated_baselines() {
         }
         // A staggered table's baseline takes no row replacements.
         let (token, _) = encoder
-            .comparison_baseline::<tables::DivisionTemplates>(1, 1, false)
+            .comparison_baseline::<tables::AirAces>(1, 1, false)
             .unwrap();
         assert!(!token.allows_row_updates());
     }
@@ -1436,7 +1457,8 @@ fn cadence_marker_carries_identical_validated_rows_without_input_clones() {
 #[test]
 fn cadence_carry_requires_complete_same_branch_non_keyframe_baseline() {
     let mut encoder = FrameEncoder::new();
-    let table = TableId::HiredAdvisors;
+    // A daily table, carried between its slot reads.
+    let table = TableId::AirAces;
     assert!(!encoder.can_carry(table, 1, 1, false));
     encoder.encode(source(1, 0), false).unwrap();
     assert!(encoder.can_carry(table, 1, 1, false));
@@ -1490,7 +1512,7 @@ fn cadence_marker_cannot_turn_a_missing_hourly_capture_into_fresh_rows() {
 }
 
 fn source(branch: BranchId, hour: Hour) -> DecodedFrame {
-    DecodedFrame {
+    crate::frame::retire_absent(DecodedFrame {
         branch,
         hour,
         metrics: Metrics {
@@ -1552,7 +1574,7 @@ fn source(branch: BranchId, hour: Hour) -> DecodedFrame {
                 TableView::Complete(TableRows::Divisions(vec![division(
                     0x1234_5678_0000_0035,
                     300_000,
-                    100_001,
+                    100_000,
                 )])),
                 TableView::Complete(TableRows::WarRelations(vec![WarRelationRow {
                     first_country: 2,
@@ -1594,7 +1616,7 @@ fn source(branch: BranchId, hour: Hour) -> DecodedFrame {
             }
             tables.map(Into::into)
         },
-    }
+    })
 }
 
 fn province(id: u32, controller: u32) -> ProvinceRow {
@@ -1609,6 +1631,10 @@ fn province(id: u32, controller: u32) -> ProvinceRow {
         port_sea: 0,
         attack: Default::default(),
         selected_areas: Default::default(),
+        fort_bunker: Default::default(),
+        controller_area: Default::default(),
+        owner_area: Default::default(),
+        area_node: Default::default(),
     }
 }
 
@@ -1747,10 +1773,10 @@ fn unchanged_advances_each_baseline_and_missing_hours_do_not_clear_it() {
         let frame = encoder.encode(expected.clone(), false).unwrap();
         match hour {
             100 => assert!(
-                frame
-                    .tables
-                    .iter()
-                    .all(|table| matches!(table, TableUpdate::Snapshot(_)))
+                TableId::ALL
+                    .into_iter()
+                    .filter(|&table| crate::frame::current_absence(table).is_none())
+                    .all(|table| matches!(frame.tables[table.index()], TableUpdate::Snapshot(_)))
             ),
             101 => assert_eq!(
                 frame.tables[TableId::Countries.index()],
@@ -2016,8 +2042,8 @@ fn division_handles_and_native_health_survive_insert_update_delete_and_dropped_h
     let mut decoder = FrameDecoder::new();
     let mut first = source(1, 10);
     *first.tables[index] = TableView::Complete(TableRows::Divisions(vec![
-        division(first_id, 300_000, 100_001),
-        division(second_id, 300_000, 100_001),
+        division(first_id, 300_000, 100_000),
+        division(second_id, 300_000, 100_000),
     ]));
     let frame = encoder.encode(first.clone(), false).unwrap();
     assert_eq!(decoder.apply(&wire(&frame)).unwrap(), first);
@@ -2025,7 +2051,7 @@ fn division_handles_and_native_health_survive_insert_update_delete_and_dropped_h
     let mut next = source(1, 11);
     *next.tables[index] = TableView::Complete(TableRows::Divisions(vec![
         division(second_id, i64::MAX, i64::MIN),
-        division(inserted_id, 9_007_199_254_740_993, -100_001),
+        division(inserted_id, 9_007_199_254_740_000, -100_000),
     ]));
     let frame = encoder.encode(next.clone(), false).unwrap();
     let TableUpdate::Delta {
@@ -2045,7 +2071,7 @@ fn division_handles_and_native_health_survive_insert_update_delete_and_dropped_h
     );
     assert_eq!(
         changed[0]
-            .apply(Some(division(second_id, 300_000, 100_001)))
+            .apply(Some(division(second_id, 300_000, 100_000)))
             .unwrap(),
         division(second_id, i64::MAX, i64::MIN)
     );
@@ -2066,7 +2092,7 @@ fn division_handles_and_native_health_survive_insert_update_delete_and_dropped_h
     let mut after_gap = source(1, 19);
     *after_gap.tables[index] = TableView::Complete(TableRows::Divisions(vec![
         division(second_id, i64::MAX, i64::MIN + 1),
-        division(inserted_id, 9_007_199_254_740_993, -100_001),
+        division(inserted_id, 9_007_199_254_740_000, -100_000),
     ]));
     let frame = encoder.encode(after_gap.clone(), false).unwrap();
     let TableUpdate::Delta {
@@ -2084,8 +2110,52 @@ fn division_handles_and_native_health_survive_insert_update_delete_and_dropped_h
         (changed[0].key, changed[0].mask),
         (u128::from(second_id), 0b100_0000)
     );
-    assert_eq!(changed[0].values, [2]); // Zigzag(+1), without rounding the native value.
+    // Zigzag(+1): sentinel words keep their exact value in display steps.
+    assert_eq!(changed[0].values, [2]);
     assert_eq!(decoder.apply(&wire(&frame)).unwrap(), after_gap);
+}
+
+#[test]
+fn division_health_is_stored_at_display_precision() {
+    // Hit points and organisation keep the tenth the game shows
+    // (crate::display): the encoder rounds owned rows toward zero, writes
+    // whole steps, and a drift below a step leaves the table unchanged.
+    let id = 0xfedc_ba98_0000_0035;
+    let index = TableId::Divisions.index();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    let mut first = source(1, 10);
+    *first.tables[index] =
+        TableView::Complete(TableRows::Divisions(vec![division(id, 129_999, 129_999)]));
+    let frame = encoder.encode(first.clone(), false).unwrap();
+    *first.tables[index] =
+        TableView::Complete(TableRows::Divisions(vec![division(id, 120_000, 120_000)]));
+    assert_eq!(decoder.apply(&wire(&frame)).unwrap(), first);
+
+    let mut drifted = source(1, 11);
+    *drifted.tables[index] =
+        TableView::Complete(TableRows::Divisions(vec![division(id, 125_000, 120_001)]));
+    let frame = encoder.encode(drifted, false).unwrap();
+    assert_eq!(frame.tables[index], TableUpdate::Unchanged { baseline: 10 });
+    decoder.apply(&wire(&frame)).unwrap();
+
+    let mut moved = source(1, 12);
+    *moved.tables[index] =
+        TableView::Complete(TableRows::Divisions(vec![division(id, 150_000, 99_999)]));
+    let frame = encoder.encode(moved, false).unwrap();
+    let TableUpdate::Delta { changed, .. } = &frame.tables[index] else {
+        panic!("health changes did not produce a delta")
+    };
+    // Three tenths up and three down: zigzag 6 and 5, a byte each.
+    assert_eq!(
+        (changed[0].mask, changed[0].values.as_slice()),
+        (0b110_0000, &[6, 5][..])
+    );
+    let decoded = decoder.apply(&wire(&frame)).unwrap();
+    assert_eq!(
+        decoded.complete::<tables::Divisions>().unwrap(),
+        [division(id, 150_000, 90_000)]
+    );
 }
 
 #[test]
@@ -2097,7 +2167,7 @@ fn division_failures_and_partial_keyframes_clear_only_their_own_baseline() {
         let mut expected = source(1, hour);
         if matches!(hour, 0 | 4) {
             *expected.tables[index] = TableView::Truncated {
-                rows: TableRows::Divisions(vec![division(0x1234_5678_0000_0035, 300_000, 100_001)]),
+                rows: TableRows::Divisions(vec![division(0x1234_5678_0000_0035, 300_000, 100_000)]),
                 missing: 17,
             };
         } else if hour == 2 {
@@ -2379,7 +2449,7 @@ fn key_difference_contexts_restart_for_changed_deleted_and_each_frame() {
     *first.tables[index] = TableView::Complete(TableRows::Divisions(
         [0, 1, u64::MAX - 1, u64::MAX]
             .into_iter()
-            .map(|key| division(key, 300_000, 100_001))
+            .map(|key| division(key, 300_000, 100_000))
             .collect(),
     ));
     let frame = encoder.encode(first.clone(), false).unwrap();
@@ -2387,9 +2457,9 @@ fn key_difference_contexts_restart_for_changed_deleted_and_each_frame() {
 
     let mut next = source(1, 1);
     *next.tables[index] = TableView::Complete(TableRows::Divisions(vec![
-        division(0, 300_001, 100_001),
-        division(2, 300_000, 100_001),
-        division(u64::MAX, 300_000, 100_002),
+        division(0, 310_000, 100_000),
+        division(2, 300_000, 100_000),
+        division(u64::MAX, 300_000, 110_000),
     ]));
     let frame = encoder.encode(next.clone(), false).unwrap();
     let mut bytes = Vec::new();
@@ -2767,7 +2837,10 @@ fn invalid_input_and_keyframes_are_rejected_without_advancing_state() {
     assert!(encoder.encode(invalid_last_source.clone(), false).is_err());
     let expected = source(1, 1);
     let valid = encoder.encode(expected.clone(), false).unwrap();
-    for table in TableId::ALL.into_iter().filter(|id| *id != TableId::Clock) {
+    for table in TableId::ALL
+        .into_iter()
+        .filter(|&id| id != TableId::Clock && crate::frame::current_absence(id).is_none())
+    {
         assert_eq!(
             valid.tables[table.index()],
             TableUpdate::Unchanged { baseline: 0 },
@@ -2967,12 +3040,129 @@ fn checked_table_clones_preserve_recorded_fields() {
             }
         }
     }
-    for view in source(1, 100).tables {
+    for (table, view) in TableId::ALL.into_iter().zip(source(1, 100).tables) {
         let TableView::Complete(rows) = &*view else {
-            unreachable!()
+            assert!(crate::frame::current_absence(table).is_some(), "{table:?}");
+            continue;
         };
         assert_eq!(rows.try_clone().unwrap(), *rows);
     }
+}
+
+/// Tables encoded beside the frame, here and on other threads, give the
+/// bytes the frame encodes itself; a segment of another frame is refused.
+#[test]
+fn table_segments_encoded_beside_the_frame_write_its_bytes() {
+    let mut whole = FrameEncoder::new();
+    let mut split = FrameEncoder::new();
+    for hour in 0..4 {
+        let mut decoded = source(1, hour);
+        if hour == 2 {
+            *decoded.tables[TableId::Clock.index()] = TableView::Unavailable {
+                reason: "fixture clock fault".into(),
+            };
+        }
+        let input: FrameInput = decoded.into();
+        let expected = whole.encode_bytes(input.clone(), hour == 3).unwrap();
+        let context = split.frame_context(1, hour, hour == 3);
+        let encoder = &split;
+        let encoded: Vec<_> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..2)
+                .map(|lane| {
+                    let input = &input;
+                    scope.spawn(move || {
+                        TableId::ALL
+                            .into_iter()
+                            .filter(|table| table.index() % 3 == lane)
+                            .map(|table| {
+                                let segment = encoder
+                                    .encode_segment(&context, table, &input.tables[table.index()])
+                                    .unwrap();
+                                (table, segment)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|worker| worker.join().unwrap())
+                .collect()
+        });
+        let mut segments = std::array::from_fn(|_| None);
+        for (table, segment) in encoded {
+            segments[table.index()] = Some(segment);
+        }
+        let mut prepared = split
+            .prepare_bytes_with(input, hour == 3, &mut segments)
+            .unwrap();
+        let actual = prepared.take_frame();
+        split.commit(prepared).unwrap();
+        assert_eq!(actual.bytes, expected.bytes, "hour {hour}");
+    }
+    let input: FrameInput = source(1, 4).into();
+    let other_hour = split.frame_context(1, 5, false);
+    let mut segments = std::array::from_fn(|_| None);
+    segments[TableId::Countries.index()] = Some(
+        split
+            .encode_segment(
+                &other_hour,
+                TableId::Countries,
+                &input.tables[TableId::Countries.index()],
+            )
+            .unwrap(),
+    );
+    assert!(
+        split
+            .prepare_bytes_with(input, false, &mut segments)
+            .is_err()
+    );
+    let stale = FrameEncoder::new().frame_context(1, 4, false);
+    let countries = FrameInput::from(source(1, 4)).tables[TableId::Countries.index()].clone();
+    assert!(
+        split
+            .encode_segment(&stale, TableId::Countries, &countries)
+            .is_err()
+    );
+}
+
+/// A commit hands back the baselines it replaced instead of freeing them,
+/// and its baselines and later bytes are those of a plain commit.
+#[test]
+fn commit_hands_back_replaced_baselines_and_unkept_inputs() {
+    let mut retiring = FrameEncoder::new();
+    let mut plain = FrameEncoder::new();
+    let countries = |tag: &[u8]| {
+        Arc::new(TableRows::Countries(vec![CountryRow {
+            id: 1,
+            canonical_slot: 1,
+            tag: tag.to_vec(),
+            ..Default::default()
+        }]))
+    };
+    let first = countries(b"AAA");
+    let replaced = Arc::downgrade(&first);
+    let mut held = Vec::new();
+    for (hour, rows) in [(0, first), (1, countries(b"BBB"))] {
+        let mut input: FrameInput = source(1, hour).into();
+        input.tables[TableId::Countries.index()] = TableInput::SharedComplete(rows);
+        let mut prepared = retiring.prepare_bytes(input.clone(), false).unwrap();
+        let bytes = prepared.take_frame().bytes;
+        held.push(retiring.commit_retiring(prepared).unwrap());
+        assert_eq!(bytes, plain.encode_bytes(input, false).unwrap().bytes);
+    }
+    // Hour 1 replaced the first rows and kept none of its equal inputs; only
+    // the handed-back list still holds the first rows.
+    let retired = held.pop().unwrap();
+    assert!(retired.len() > 1);
+    assert!(replaced.upgrade().is_some());
+    drop(retired);
+    assert!(replaced.upgrade().is_none());
+    let next: FrameInput = source(1, 2).into();
+    assert_eq!(
+        retiring.encode_bytes(next.clone(), false).unwrap().bytes,
+        plain.encode_bytes(next, false).unwrap().bytes
+    );
 }
 
 #[test]

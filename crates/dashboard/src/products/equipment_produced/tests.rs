@@ -467,7 +467,6 @@ fn produced_frame(
                         country,
                         variant,
                         units,
-                        mio_credit: units,
                         since_hour: since,
                         observed_since_creation: true,
                         ended,

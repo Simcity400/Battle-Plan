@@ -729,7 +729,6 @@ pub(crate) fn production_frame(
                         variant,
                         mio: 79,
                         units,
-                        mio_credit: units,
                         since_hour: PRODUCTION_HOUR,
                         observed_since_creation: line != 5,
                         ended,

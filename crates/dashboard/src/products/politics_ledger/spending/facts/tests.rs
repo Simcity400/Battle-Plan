@@ -77,7 +77,7 @@ fn hourly_changing_leaders_over_three_months_share_one_event_fact() {
     for hour in 0..90 * 24 {
         current.hour = hour;
         for leader in &mut leaders {
-            leader.experience = i64::from(hour);
+            leader.skill_required_experience = hour;
         }
         set(&mut current, TableRows::UnitLeaders(leaders.clone()));
         if hour % 24 == 0 {

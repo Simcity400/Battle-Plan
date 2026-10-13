@@ -173,6 +173,9 @@ impl Evaluator<'_, '_> {
                 is(matches)
             }
             "is_subject" => is(world.overlord(slot)?.is_some()),
+            // Elections are a boolean trigger in country scopes (mask 0x4).
+            // The recorded political status supplies the result.
+            "has_elections" => is(world.has_elections(slot)?),
             "is_special_project_completed" => {
                 let name = scalar
                     .and_then(|value| value.strip_prefix("sp:"))
@@ -264,9 +267,10 @@ impl Evaluator<'_, '_> {
                     }
                 })
             }
-            // The country's focus tree by its id, byte
-            // for byte; a country without one is false. Focus is daily
-            // (replay::cadence).
+            // Compare the country's focus tree (pointer +0x1370) by its id
+            // (tree +0x8), byte
+            // for byte; a country without one is false. Focus holds the
+            // game's value every hour (replay::cadence).
             "has_focus_tree" => {
                 let wanted = scalar.ok_or("has_focus_tree needs a focus tree")?;
                 let raw = world

@@ -81,6 +81,10 @@ pub struct OperativeRow {
     pub codename: Option<crate::cname_group_member::Inputs>,
     pub name_reason: Option<&'static str>,
     pub codename_reason: Option<&'static str>,
+    /// Whether the codename's group key and stored name are heap-held, as
+    /// read (`cname_group_member::codename_inputs_buffer`); a carried row
+    /// grows a growing arena for them as the fresh copy does.
+    pub codename_heap: [bool; 2],
 }
 
 /// Caller-owned storage; the walk never allocates.
@@ -374,14 +378,9 @@ fn walk_storage(
                     let reference = field(ccharacter::OPERATIVE);
                     if reference != 0 {
                         operatives.run(|table| {
+                            let object = resolver.resolve(memory, base, reference)?;
                             operative(
-                                memory,
-                                base,
-                                &mut resolver,
-                                character,
-                                reference,
-                                table,
-                                &mut names,
+                                memory, base, object, character, reference, table, &mut names,
                             )
                         });
                     }
@@ -402,6 +401,376 @@ fn walk_storage(
     }
 }
 
+/// Occupants whose map sentinels [`CensusWalk::sentinels`] gathers per call.
+pub const CENSUS_PAGE: usize = PAGE;
+/// Bytes of a role map's head node up to its nil byte.
+pub const MAP_SENTINEL: usize = SENTINEL;
+
+/// One occurrence of the roster job's admitted role census: the character's
+/// pointer and id and the bytes that job gathered, in the same stopped-world
+/// callback, at `CCharacter+0x98` (country-leader map header), `+0xB0`
+/// (advisor map header), `+0xC0` (scientist) and `+0xC8` (unit-leader
+/// reference). Each occurrence was authenticated by that job's view.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Occupant {
+    pub pointer: usize,
+    pub character: u32,
+    pub leaders: [u8; 16],
+    pub advisors: [u8; 16],
+    pub scientist: u64,
+    pub operative: u64,
+}
+
+/// Both tables over an admitted census instead of the roster. The caller
+/// visits the occurrences in roster order (historical, then dynamic); for
+/// each it either reads the country-leader and advisor rows afresh
+/// ([`Self::roles`]) or carries the rows a certified earlier read produced
+/// ([`Self::carry`]), then reads the scientist row ([`Self::scientist`]) and
+/// the operative link ([`Self::operative`]). Row order, value demand,
+/// truncation and each table's own first failure follow [`walk`]; the census
+/// replaces only its roster pages and identity gather.
+pub struct CensusWalk<'a> {
+    traits: Table<'a, TraitRow, Trait>,
+    operatives: Table<'a, OperativeRow, u32>,
+    resolver: creference_registry::HeaderResolver,
+    names: Names<'a>,
+}
+
+impl<'a> CensusWalk<'a> {
+    pub fn new(buffers: Buffers<'a>) -> Self {
+        Self::storage(Storage {
+            traits: crate::walk::Buffer::Fixed(buffers.traits),
+            trait_values: crate::walk::Buffer::Fixed(buffers.trait_values),
+            operatives: crate::walk::Buffer::Fixed(buffers.operatives),
+            definitions: crate::walk::Buffer::Fixed(buffers.definitions),
+            bytes: crate::walk::Buffer::Fixed(buffers.bytes),
+        })
+    }
+
+    pub fn growing(buffers: GrowingBuffers<'a>) -> Self {
+        Self::storage(Storage {
+            traits: crate::walk::Buffer::Growing(buffers.traits),
+            trait_values: crate::walk::Buffer::Growing(buffers.trait_values),
+            operatives: crate::walk::Buffer::Growing(buffers.operatives),
+            definitions: crate::walk::Buffer::Growing(buffers.definitions),
+            bytes: crate::walk::Buffer::Growing(buffers.bytes),
+        })
+    }
+
+    fn storage(buffers: Storage<'a>) -> Self {
+        Self {
+            traits: Table::new(buffers.traits, buffers.trait_values),
+            operatives: Table::new(buffers.operatives, buffers.definitions),
+            resolver: creference_registry::HeaderResolver::default(),
+            names: Names {
+                bytes: buffers.bytes,
+                len: 0,
+                required: 0,
+            },
+        }
+    }
+
+    /// Gathers the sentinel of each role map header in `headers` (at most
+    /// two per occupant of a [`CENSUS_PAGE`]) into `output`, [`MAP_SENTINEL`]
+    /// bytes each, in one guarded call, as [`walk`] gathers a page's. A
+    /// header that fails its check or a sentinel that does not read fails the
+    /// trait table.
+    pub fn sentinels(&mut self, memory: &impl Memory, headers: &[[u8; 16]], output: &mut [u8]) {
+        self.traits.run(|_| {
+            if headers.len() > PAGE * MAPS.len() || output.len() != headers.len() * SENTINEL {
+                return Err("character role map sentinel batch exceeds its page");
+            }
+            if headers.is_empty() {
+                return Ok(());
+            }
+            let mut heads = [0_usize; PAGE * MAPS.len()];
+            for (head, header) in heads.iter_mut().zip(headers) {
+                *head = RoleTree::header(*header)?.0;
+            }
+            let heads = &heads[..headers.len()];
+            if memory.copy_records(RecordSources::Pointers(heads), &SENTINEL_LAYOUT, output)
+                != heads.len()
+            {
+                return Err("character role map sentinel unreadable");
+            }
+            Ok(())
+        });
+    }
+
+    /// Reads one occupant's country-leader then advisor rows afresh, from its
+    /// map headers and their gathered sentinels.
+    pub fn roles(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        occupant: &Occupant,
+        sentinels: [[u8; SENTINEL]; 2],
+    ) {
+        let maps = [
+            (occupant.leaders, sentinels[0]),
+            (occupant.advisors, sentinels[1]),
+        ];
+        self.traits.run(|table| {
+            map_role_traits(
+                memory,
+                base,
+                occupant.pointer,
+                occupant.character,
+                maps,
+                table,
+            )
+        });
+    }
+
+    /// Appends rows an earlier [`Self::roles`] produced, with their values
+    /// (`values[row.start..row.start + row.len]`), exactly as a fresh read
+    /// stores them: each row reserves and counts its values.
+    pub fn carry(&mut self, rows: &[TraitRow], values: &[Trait]) {
+        self.traits.run(|table| {
+            for row in rows {
+                let source = row
+                    .start
+                    .checked_add(row.len)
+                    .and_then(|end| values.get(row.start..end))
+                    .ok_or("carried character role traits outside their arena")?;
+                if row.len == 0 {
+                    return Err("carried character role row has no traits");
+                }
+                let Some(start) = table.reserve(row.len)? else {
+                    continue;
+                };
+                table.values[start..start + row.len].copy_from_slice(source);
+                table.push(TraitRow { start, ..*row });
+            }
+            Ok(())
+        });
+    }
+
+    /// Reads the occupant's scientist row afresh.
+    pub fn scientist(&mut self, memory: &impl Memory, base: usize, occupant: &Occupant) {
+        self.traits.run(|table| {
+            scientist_traits(memory, base, occupant.scientist, occupant.character, table)
+        });
+    }
+
+    /// Reads the occupant's nonzero unit-leader reference afresh.
+    pub fn operative(&mut self, memory: &impl Memory, base: usize, occupant: &Occupant) {
+        if occupant.operative == 0 {
+            return;
+        }
+        if let Some(object) = self.resolve_operative(memory, base, occupant.operative) {
+            self.operative_resolved(memory, base, occupant, object);
+        }
+    }
+
+    /// Resolves a nonzero unit-leader reference as [`Self::operative`] does
+    /// first: the object, or `Some(None)` for none; `None` once the
+    /// operatives table failed (a resolution failure fails it).
+    pub fn resolve_operative(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        reference: u64,
+    ) -> Option<Option<usize>> {
+        let Self {
+            operatives,
+            resolver,
+            ..
+        } = self;
+        let mut resolved = None;
+        operatives.run(|_| {
+            resolved = Some(resolver.resolve(memory, base, reference)?);
+            Ok(())
+        });
+        resolved
+    }
+
+    /// [`Self::operative`] with the occupant's reference resolved to
+    /// `object` ([`Self::resolve_operative`]).
+    pub fn operative_resolved(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        occupant: &Occupant,
+        object: Option<usize>,
+    ) {
+        let Self {
+            operatives, names, ..
+        } = self;
+        operatives.run(|table| {
+            operative(
+                memory,
+                base,
+                object,
+                occupant.character,
+                occupant.operative,
+                table,
+                names,
+            )
+        });
+    }
+
+    /// Operative rows stored so far.
+    pub fn operatives_stored(&self) -> usize {
+        self.operatives.len
+    }
+
+    /// The operative row stored last: the row with its definition spans and
+    /// name and codename spans rebased onto its own definitions and `text`,
+    /// which it replaces, in the order a fresh read stores them (name, group
+    /// key, custom name). `None` when `text` cannot hold them.
+    pub fn last_operative(&self, text: &mut Vec<u8>) -> Option<(OperativeRow, &[u32])> {
+        let len = self.operatives.len;
+        let row = *self.operatives.rows.get(len.checked_sub(1)?)?;
+        let definitions = self.operatives.values.get(row.start..row.start + row.len)?;
+        let bytes = self.names.bytes.get(..self.names.len)?;
+        let spans = row.name.into_iter().chain(
+            row.codename
+                .into_iter()
+                .flat_map(|inputs| [inputs.group, inputs.custom]),
+        );
+        text.clear();
+        crate::allocation::reserve(text, spans.map(|(_, len)| len).sum()).ok()?;
+        let mut take = |(at, len): crate::cname_group_member::Span| {
+            let moved = text.len();
+            text.extend_from_slice(bytes.get(at..at + len)?);
+            Some((moved, len))
+        };
+        let name = match row.name {
+            Some(span) => Some(take(span)?),
+            None => None,
+        };
+        let codename = match row.codename {
+            Some(mut inputs) => {
+                inputs.group = take(inputs.group)?;
+                // A skipped stored name keeps its default span.
+                if crate::cname_group_member::custom_copied(&inputs) {
+                    inputs.custom = take(inputs.custom)?;
+                }
+                Some(inputs)
+            }
+            None => None,
+        };
+        Some((
+            OperativeRow {
+                start: 0,
+                name,
+                codename,
+                ..row
+            },
+            definitions,
+        ))
+    }
+
+    /// Appends a held operative row ([`Self::last_operative`], read with
+    /// neither refusal), its definitions and its name text as a fresh read
+    /// (`operative`) stores them: every name's bytes count toward demand
+    /// before the row is admitted, a name the storage cannot hold is refused
+    /// on the row (`cunit_leader::read_name_buffer`), a codename whose group
+    /// key or custom name it cannot hold is refused whole
+    /// (`cname_group_member::codename_inputs_buffer`), a growing arena grows
+    /// for an inline or heap-held codename string as the fresh copy does, a
+    /// stored name the fresh read skipped keeps its default span, and only
+    /// an admitted row commits its spans.
+    pub fn carry_operative(&mut self, row: &OperativeRow, definitions: &[u32], text: &[u8]) {
+        let Self {
+            operatives, names, ..
+        } = self;
+        operatives.run(|table| {
+            let held = |(at, len): crate::cname_group_member::Span| {
+                text.get(at..at + len)
+                    .ok_or("carried operative text out of range")
+            };
+            let mut pending = Names {
+                bytes: names.bytes.suffix(0),
+                len: names.len,
+                required: names.required,
+            };
+            let mut carried = *row;
+            if let Some(span) = row.name {
+                (carried.name, carried.name_reason) = match place(&mut pending, held(span)?) {
+                    Ok(Some(at)) => (Some((at, span.1)), None),
+                    Ok(None) => (None, Some("operative name byte capacity exceeded")),
+                    Err(reason) => (None, Some(reason)),
+                };
+            }
+            if let Some(inputs) = row.codename {
+                use crate::cname_group_member::{self as naming, Naming};
+                let codename_start = pending.len;
+                let group = held(inputs.group)?;
+                let custom = if naming::custom_copied(&inputs) {
+                    Some(held(inputs.custom)?)
+                } else {
+                    None
+                };
+                // cunit_leader::read_codename_buffer over the held bytes.
+                let mut arena = naming::NameArena {
+                    bytes: pending.bytes.suffix(0),
+                    len: pending.len,
+                    required: pending.required,
+                };
+                let placed =
+                    naming::carry_codename(&mut arena, inputs, group, custom, row.codename_heap);
+                (pending.len, pending.required) = (arena.len, arena.required);
+                (carried.codename, carried.codename_reason) = match placed {
+                    Ok(Naming::Row(inputs)) => {
+                        pending.len += inputs.custom.1;
+                        (Some(inputs), None)
+                    }
+                    Ok(Naming::DoesNotFit) => {
+                        (None, Some("operative codename byte capacity exceeded"))
+                    }
+                    Err(reason) => (None, Some(reason)),
+                };
+                if carried.codename.is_none() {
+                    pending.len = codename_start;
+                }
+            }
+            let (bytes_len, required_bytes) = (pending.len, pending.required);
+            names.required = required_bytes;
+            let Some(start) = table.reserve(definitions.len())? else {
+                return Ok(());
+            };
+            table.values[start..start + definitions.len()].copy_from_slice(definitions);
+            // Only an admitted row commits its optional name spans.
+            names.len = bytes_len;
+            table.push(OperativeRow { start, ..carried });
+            Ok(())
+        });
+    }
+
+    /// Rows and values stored so far.
+    pub fn stored(&self) -> (usize, usize) {
+        (self.traits.len, self.traits.values_len)
+    }
+
+    /// The rows stored since `from` (a [`Self::stored`] result), with the
+    /// value arena their `start`s index.
+    pub fn stored_since(&self, from: (usize, usize)) -> (&[TraitRow], &[Trait]) {
+        (
+            &self.traits.rows[from.0.min(self.traits.len)..self.traits.len],
+            &self.traits.values[..self.traits.values_len],
+        )
+    }
+
+    /// No trait row failed or went unstored so far, so every visited
+    /// occupant's rows are complete.
+    pub fn traits_complete(&self) -> bool {
+        self.traits.failure.is_none() && self.traits.unread_rows == 0
+    }
+
+    pub fn finish(self) -> Walk {
+        Walk {
+            traits: self.traits.outcome(None),
+            operatives: self.operatives.outcome(None),
+            required_trait_values: self.traits.required,
+            required_definitions: self.operatives.required,
+            bytes_len: self.names.len,
+            required_bytes: self.names.required,
+        }
+    }
+}
+
 /// A role map's 16-byte header (head, size) in a gathered record.
 fn map_header(record: &[u8], map: usize) -> [u8; 16] {
     let at = IDENTITY + map - ccharacter::LEADER_MAP_HEAD;
@@ -418,8 +787,22 @@ fn role_traits(
     base: usize,
     pointer: usize,
     character: u32,
-    [leaders, advisors]: [([u8; 16], [u8; SENTINEL]); 2],
+    maps: [([u8; 16], [u8; SENTINEL]); 2],
     field: &impl Fn(usize) -> u64,
+    table: &mut Table<'_, TraitRow, Trait>,
+) -> Result<(), &'static str> {
+    map_role_traits(memory, base, pointer, character, maps, table)?;
+    scientist_traits(memory, base, field(ccharacter::SCIENTIST), character, table)
+}
+
+/// The country-leader then advisor rows of one character, from its two role
+/// maps (`CCharacter+0x98`, `+0xB0`).
+fn map_role_traits(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    character: u32,
+    [leaders, advisors]: [([u8; 16], [u8; SENTINEL]); 2],
     table: &mut Table<'_, TraitRow, Trait>,
 ) -> Result<(), &'static str> {
     let country_leader_trait = at(base, ccountry_leader::TRAIT_VTABLE_RVA)? as u64;
@@ -479,7 +862,17 @@ fn role_traits(
             ordinal += 1;
         }
     }
-    let scientist = field(ccharacter::SCIENTIST);
+    Ok(())
+}
+
+/// The scientist row of the role at `CCharacter+0xC0`, when it is nonzero.
+fn scientist_traits(
+    memory: &impl Memory,
+    base: usize,
+    scientist: u64,
+    character: u32,
+    table: &mut Table<'_, TraitRow, Trait>,
+) -> Result<(), &'static str> {
     if scientist != 0 {
         let scientist = non_null(scientist, "scientist pointer overflow")?;
         if read::<u64>(memory, scientist) != Some(at(base, cscientist::VTABLE_RVA)? as u64) {
@@ -585,19 +978,36 @@ fn elements<V>(
     Ok(())
 }
 
+/// A carried leader name's bytes stored as a fresh read stores them
+/// (`cunit_leader::read_name_buffer`): counted toward demand, then copied at
+/// the end when the storage holds (or grows to hold) them. Their start, or
+/// `None` when they do not fit.
+fn place(names: &mut Names<'_>, bytes: &[u8]) -> Result<Option<usize>, &'static str> {
+    const OVERFLOW: &str = "unit leader name byte count overflow";
+    names.required = names.required.checked_add(bytes.len()).ok_or(OVERFLOW)?;
+    let start = names.len;
+    let end = start.checked_add(bytes.len()).ok_or(OVERFLOW)?;
+    if !names.bytes.ensure(end)? {
+        return Ok(None);
+    }
+    names.bytes[start..end].copy_from_slice(bytes);
+    names.len = end;
+    Ok(Some(start))
+}
+
 /// One nonzero `CCharacter+0xC8` and, when the registry holds its object,
 /// that unit leader's category, owner, skill level and assigned trait
 /// definitions.
 fn operative(
     memory: &impl Memory,
     base: usize,
-    resolver: &mut creference_registry::HeaderResolver,
+    object: Option<usize>,
     character: u32,
     reference: u64,
     table: &mut Table<'_, OperativeRow, u32>,
     names: &mut Names<'_>,
 ) -> Result<(), &'static str> {
-    let Some(object) = resolver.resolve(memory, base, reference)? else {
+    let Some(object) = object else {
         if let Some(start) = table.reserve(0)? {
             table.push(OperativeRow {
                 character,
@@ -609,6 +1019,7 @@ fn operative(
                 codename: None,
                 name_reason: None,
                 codename_reason: None,
+                codename_heap: [false; 2],
             });
         }
         return Ok(());
@@ -673,6 +1084,7 @@ fn operative(
     };
     let category = i32::from_le_bytes(category);
     let codename_start = pending.len;
+    let mut codename_heap = [false; 2];
     let (codename, codename_reason) = if cunit_leader::has_codename(kind) {
         match cunit_leader::read_codename_buffer(
             memory,
@@ -681,6 +1093,7 @@ fn operative(
             pending.bytes.suffix(0),
             &mut pending.len,
             &mut pending.required,
+            &mut codename_heap,
         ) {
             Ok(crate::cname_group_member::Naming::Row(row)) => (Some(row), None),
             Ok(crate::cname_group_member::Naming::DoesNotFit) => {
@@ -737,6 +1150,7 @@ fn operative(
         codename,
         name_reason,
         codename_reason,
+        codename_heap,
     });
     Ok(())
 }
@@ -1115,6 +1529,116 @@ mod tests {
         );
     }
 
+    /// The census walk over every roster occurrence: `carry` lists the
+    /// occupants whose map rows come from `held` instead of a fresh read.
+    fn census(
+        memory: &Sparse,
+        carry: &[u32],
+        held: &(Vec<TraitRow>, Vec<Trait>),
+    ) -> (Output, Vec<TraitRow>, Vec<Trait>) {
+        let occupants: Vec<Occupant> = [(A, 11), (B, 12), (C, 13)]
+            .into_iter()
+            .map(|(pointer, character)| {
+                let field = |offset: usize| read::<[u8; 16]>(memory, pointer + offset).unwrap();
+                Occupant {
+                    pointer,
+                    character,
+                    leaders: field(ccharacter::LEADER_MAP_HEAD),
+                    advisors: field(ccharacter::ADVISOR_MAP_HEAD),
+                    scientist: read(memory, pointer + ccharacter::SCIENTIST).unwrap_or(0),
+                    operative: read(memory, pointer + ccharacter::OPERATIVE).unwrap_or(0),
+                }
+            })
+            .collect();
+        let (mut traits, mut values) = (Vec::new(), Vec::new());
+        let (mut operatives, mut definitions, mut bytes) = (Vec::new(), Vec::new(), Vec::new());
+        let mut walk = CensusWalk::growing(GrowingBuffers {
+            traits: &mut traits,
+            trait_values: &mut values,
+            operatives: &mut operatives,
+            definitions: &mut definitions,
+            bytes: &mut bytes,
+        });
+        let fresh: Vec<_> = occupants
+            .iter()
+            .filter(|occupant| !carry.contains(&occupant.character))
+            .collect();
+        let headers: Vec<[u8; 16]> = fresh
+            .iter()
+            .flat_map(|occupant| [occupant.leaders, occupant.advisors])
+            .collect();
+        let mut sentinels = vec![0; headers.len() * MAP_SENTINEL];
+        walk.sentinels(memory, &headers, &mut sentinels);
+        let mut next = 0;
+        for occupant in &occupants {
+            if carry.contains(&occupant.character) {
+                let rows: Vec<_> = held
+                    .0
+                    .iter()
+                    .copied()
+                    .filter(|row| row.character == occupant.character)
+                    .collect();
+                walk.carry(&rows, &held.1);
+            } else {
+                let at = next * 2 * MAP_SENTINEL;
+                let gathered = |map: usize| {
+                    sentinels[at + map * MAP_SENTINEL..][..MAP_SENTINEL]
+                        .try_into()
+                        .unwrap()
+                };
+                walk.roles(memory, 0, occupant, [gathered(0), gathered(1)]);
+                next += 1;
+            }
+            walk.scientist(memory, 0, occupant);
+            walk.operative(memory, 0, occupant);
+        }
+        let result = walk.finish();
+        let output = Output {
+            walk: result,
+            traits: traits[..result.traits.len()]
+                .iter()
+                .map(|row| {
+                    let values = values[row.start..row.start + row.len].to_vec();
+                    (row.character, row.role, values)
+                })
+                .collect(),
+            operatives: operatives[..result.operatives.len()]
+                .iter()
+                .map(|row| {
+                    let traits = definitions[row.start..row.start + row.len].to_vec();
+                    (row.character, row.reference, row.leader, traits)
+                })
+                .collect(),
+        };
+        (output, traits, values)
+    }
+
+    #[test]
+    fn the_census_walk_reads_and_carries_exactly_what_the_roster_walk_reads() {
+        let memory = world();
+        let roster = run(&memory, 8);
+        let (fresh, rows, values) = census(&memory, &[], &(Vec::new(), Vec::new()));
+        assert_eq!(fresh.walk, roster.walk);
+        assert_eq!(fresh.traits, roster.traits);
+        assert_eq!(fresh.operatives, roster.operatives);
+        // Carried rows land at their new arena positions with the same values;
+        // the scientist row is still read afresh after them.
+        let held = (rows[..2].to_vec(), values);
+        let (carried, ..) = census(&memory, &[11], &held);
+        assert_eq!(carried.walk, roster.walk);
+        assert_eq!(carried.traits, roster.traits);
+        // A carried character reads none of its role memory: with the maps
+        // gone, only the census-supplied rows remain.
+        let mut gone = world();
+        gone.0.retain(|&address, _| {
+            !(0x4000..0x4200).contains(&address) && !(0x5000..0x5400).contains(&address)
+        });
+        let (carried, ..) = census(&gone, &[11], &held);
+        assert_eq!(carried.traits, roster.traits);
+        let (fresh, ..) = census(&gone, &[], &(Vec::new(), Vec::new()));
+        assert!(matches!(fresh.walk.traits, Outcome::Unavailable { .. }));
+    }
+
     #[test]
     fn resolved_name_and_codename_are_owned_and_dangling_references_stay_absent() {
         let mut memory = world();
@@ -1194,6 +1718,150 @@ mod tests {
             rows[0].codename_reason,
             Some("division name vtable mismatch")
         );
+    }
+
+    /// A carried operative row stores what a fresh read of its leader stores
+    /// after the same earlier row, in fixed and growing storage at every
+    /// name, row and definition capacity: its trait definitions, name and
+    /// codename spans in the fresh order (name, group key, custom name), a
+    /// skipped stored name's default span, per-name refusals, written and
+    /// committed bytes, the growing arena's length (inline or heap-held group
+    /// keys and stored names, over more than one copy chunk) and demand.
+    #[test]
+    fn a_carried_operative_stores_exactly_what_a_fresh_read_stores() {
+        use crate::cname_group_member::{FLAG_B, OVERRIDE_NAME};
+        let mut memory = world();
+        let occupant = Occupant {
+            pointer: B,
+            character: 12,
+            leaders: [0; 16],
+            advisors: [0; 16],
+            scientist: 0,
+            operative: RESOLVED,
+        };
+        let member = OPERATIVE + coperative_leader::CODENAME;
+        let (group_header, custom_header) = (member + 0x10, member + OVERRIDE_NAME);
+        // An MSVC string header holding `text` inline (`heap` none) or at
+        // `heap`, with its terminator.
+        let string = |memory: &mut Sparse, header: usize, text: &[u8], heap: Option<usize>| {
+            match heap {
+                Some(at) => {
+                    memory.put(at, text);
+                    memory.put(at + text.len(), &[0]);
+                    memory.u64(header, at as u64);
+                    memory.u64(header + 24, (text.len() as u64).max(31));
+                }
+                None => {
+                    memory.put(header, &[0; 16]);
+                    memory.put(header, text);
+                    memory.u64(header + 24, 15);
+                }
+            }
+            memory.u64(header + 16, text.len() as u64);
+        };
+        // One 256-byte copy chunk and more.
+        let long: Vec<u8> = (0..300_u32)
+            .map(|index| b'a' + (index % 26) as u8)
+            .collect();
+        let groups: [(&[u8], Option<usize>); 3] = [
+            (b"GROUP", None),
+            (b"GROUP-KEY-ON-THE-HEAP", Some(0x2_0000)),
+            (&long, Some(0x2_0000)),
+        ];
+        // Shown stored names (+0xA9 clear), inline or heap-held, empty or
+        // not, and one +0xA9 skips.
+        let customs: [(u8, &[u8], Option<usize>); 6] = [
+            (0, b"", None),
+            (0, b"Code", None),
+            (0, b"", Some(0x2_1000)),
+            (0, b"Code", Some(0x2_1000)),
+            (0, &long, Some(0x2_1000)),
+            (1, b"", None),
+        ];
+        for (group, group_heap) in groups {
+            string(&mut memory, group_header, group, group_heap);
+            for (programmatic, name, custom_heap) in customs {
+                memory.put(member + FLAG_B, &[programmatic]);
+                string(&mut memory, custom_header, name, custom_heap);
+                let (mut traits, mut values) = (Vec::new(), Vec::new());
+                let (mut operatives, mut definitions, mut bytes) =
+                    (Vec::new(), Vec::new(), Vec::new());
+                let mut held = CensusWalk::growing(GrowingBuffers {
+                    traits: &mut traits,
+                    trait_values: &mut values,
+                    operatives: &mut operatives,
+                    definitions: &mut definitions,
+                    bytes: &mut bytes,
+                });
+                held.operative(&memory, 0, &occupant);
+                let mut text = Vec::new();
+                let (row, carried_definitions) = held.last_operative(&mut text).unwrap();
+                let carried_definitions = carried_definitions.to_vec();
+                assert_eq!(carried_definitions, [3]);
+                assert_eq!(row.name_reason.or(row.codename_reason), None);
+                assert_eq!(
+                    row.codename_heap,
+                    [group_heap.is_some(), custom_heap.is_some()]
+                );
+                assert_eq!(text, [b"Alias".as_slice(), group, name].concat());
+                if programmatic == 1 {
+                    assert_eq!(row.codename.unwrap().custom, (0, 0));
+                }
+                let heap = (group_heap.is_some(), custom_heap.is_some());
+                let whole = 2 * text.len();
+                for growing in [false, true] {
+                    // Every capacity of a short text; a long one's every
+                    // seventh and its last few.
+                    for capacity in (0..=whole)
+                        .filter(|&capacity| whole < 64 || capacity % 7 == 0 || capacity + 4 > whole)
+                    {
+                        for rows in 0..=2 {
+                            for slots in 0..=2 {
+                                let store = |carry: bool| {
+                                    let mut operatives = vec![OperativeRow::default(); rows];
+                                    let mut definitions = vec![0; slots];
+                                    let mut bytes = vec![0; capacity];
+                                    let (mut traits, mut values): (Vec<TraitRow>, Vec<Trait>) =
+                                        (Vec::new(), Vec::new());
+                                    let mut walk = if growing {
+                                        CensusWalk::growing(GrowingBuffers {
+                                            traits: &mut traits,
+                                            trait_values: &mut values,
+                                            operatives: &mut operatives,
+                                            definitions: &mut definitions,
+                                            bytes: &mut bytes,
+                                        })
+                                    } else {
+                                        CensusWalk::new(Buffers {
+                                            traits: &mut traits,
+                                            trait_values: &mut values,
+                                            operatives: &mut operatives,
+                                            definitions: &mut definitions,
+                                            bytes: &mut bytes,
+                                        })
+                                    };
+                                    walk.operative(&memory, 0, &occupant);
+                                    if carry {
+                                        walk.carry_operative(&row, &carried_definitions, &text);
+                                    } else {
+                                        walk.operative(&memory, 0, &occupant);
+                                    }
+                                    (walk.finish(), operatives, definitions, bytes)
+                                };
+                                assert_eq!(
+                                    store(true),
+                                    store(false),
+                                    "heap {heap:?}, +0xA9 {programmatic}, custom {} bytes, \
+                                     growing {growing}, {capacity} bytes, {rows} rows, \
+                                     {slots} definitions",
+                                    name.len()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

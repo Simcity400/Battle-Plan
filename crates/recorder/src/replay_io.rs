@@ -973,7 +973,7 @@ fn finalize_campaign_with_publisher(
     let observe = |frame: &Frame, decoded: &DecodedFrame, sizes| {
         progress()?;
         summary
-            .observe_decoded(frame, decoded, sizes)
+            .observe_decoded(frame, decoded, sizes, FormatVersion::CURRENT)
             .map_err(std::io::Error::other)
     };
     let replay = if destination.exists() {
@@ -1378,8 +1378,13 @@ fn already_finalized_with_reader(
                     .advance(&expected_frame)
                     .map_err(|error| error.to_string())?;
                 // Size-driven keyframes change the wire representation, while
-                // every value, availability, origin and metric must stay exact.
-                if expected_decoded != decoded {
+                // every value, availability, origin and metric must stay exact,
+                // with table read times as blocks store them.
+                if expected_decoded.branch != decoded.branch
+                    || expected_decoded.hour != decoded.hour
+                    || expected_decoded.tables != decoded.tables
+                    || expected_decoded.metrics.stored() != decoded.metrics.stored()
+                {
                     return Err(conflict());
                 }
                 matched += 1;
@@ -1404,11 +1409,16 @@ fn already_finalized_with_reader(
             _ => {}
         }
     }
-    let controls = records.iter().filter_map(|record| match record {
-        Record::Control(control) => Some(control),
-        _ => None,
-    });
-    if !is_subsequence(previous.controls.iter(), controls) {
+    // Finalization keeps a retried event loss once; compare it once too.
+    let mut controls: Vec<&ControlRecord> = Vec::new();
+    for record in &records {
+        if let Record::Control(control) = record
+            && !(matches!(control, ControlRecord::EventLoss { .. }) && controls.contains(&control))
+        {
+            controls.push(control);
+        }
+    }
+    if !is_subsequence(previous.controls.iter(), controls.into_iter()) {
         return Err(conflict());
     }
     for (number, recovery) in segments {
@@ -1431,6 +1441,27 @@ fn already_finalized_with_reader(
     Ok(true)
 }
 
+/// The recording's compatibility gaps and every retired field of a table it
+/// records, each named once. A retired field's older payloads are discarded;
+/// current recordings hold none.
+pub(crate) fn compatibility_notes(replay: &Replay) -> Vec<String> {
+    let format = replay.format.version();
+    let retired = replay::rows::compatibility::RETIRED_FIELDS
+        .iter()
+        .filter(|field| field.table.last_change().present(format))
+        .map(|field| {
+            format!(
+                "{:?}.{} retired at format {}; this recording is format {format}",
+                field.table, field.name, field.retired
+            )
+        });
+    replay
+        .compatibility_gaps()
+        .into_iter()
+        .chain(retired)
+        .collect()
+}
+
 pub fn inspect(path: &Path) -> Result<()> {
     let replay = open(path)?;
     println!(
@@ -1441,7 +1472,7 @@ pub fn inspect(path: &Path) -> Result<()> {
         String::from_utf8_lossy(&replay.campaign_id),
         replay.keyframe_interval
     );
-    for reason in replay.compatibility_gaps() {
+    for reason in compatibility_notes(&replay) {
         println!("Compatibility gap: {reason}");
     }
     print_identity("header", &replay.identity);
@@ -1465,8 +1496,15 @@ pub fn inspect(path: &Path) -> Result<()> {
     }
     let mut summary = Summary::default();
     for index in &replay.index {
+        let layout = match replay
+            .block_sections(index)
+            .map_err(|error| failure(path, error))?
+        {
+            Some(sections) => format!("grouped sections={}", sections.len()),
+            None => "interleaved".into(),
+        };
         println!(
-            "block branch={} hours={}..={} offset={} compressed_bytes={} raw_bytes={}",
+            "block branch={} hours={}..={} offset={} compressed_bytes={} raw_bytes={} layout={layout}",
             index.branch,
             index.first_hour,
             index.last_hour,
@@ -1543,7 +1581,15 @@ pub fn inspect(path: &Path) -> Result<()> {
             } => {
                 println!("partial session={session} failed_hour={failed_hour:?}: {reason}")
             }
-            _ => {}
+            ControlRecord::EventLoss {
+                session,
+                branch,
+                after_hour,
+                hour,
+            } => println!(
+                "event_loss session={session} branch={branch} between_reads={after_hour}..{hour}: the collector was detached for part of this interval; every event family's record of it is incomplete"
+            ),
+            ControlRecord::ClockWitness { .. } => {}
         }
     }
     summary.print(0);
@@ -1730,12 +1776,18 @@ struct Summary {
     decoder: FrameDecoder,
     totals: Vec<u64>,
     table_times: [Vec<u64>; TABLE_COUNT],
+    /// Hours whose recording keeps which tables were read but not their times.
+    untimed_hours: u64,
     table_bytes: [u64; TABLE_COUNT],
     states: [[u64; 5]; TABLE_COUNT],
     max_pool: u64,
     max_dropped: u64,
     hours: BTreeMap<BranchId, BTreeSet<Hour>>,
     issues: [Vec<Issue>; TABLE_COUNT],
+    /// The observed recording's format. A table it does not record (one
+    /// introduced later or retired) is named by its compatibility gap, not
+    /// counted per hour as unavailable.
+    format: Option<FormatVersion>,
 }
 
 impl Default for Summary {
@@ -1744,12 +1796,14 @@ impl Default for Summary {
             decoder: FrameDecoder::default(),
             totals: Vec::new(),
             table_times: std::array::from_fn(|_| Vec::new()),
+            untimed_hours: 0,
             table_bytes: [0; TABLE_COUNT],
             states: [[0; 5]; TABLE_COUNT],
             max_pool: 0,
             max_dropped: 0,
             hours: BTreeMap::new(),
             issues: std::array::from_fn(|_| Vec::new()),
+            format: None,
         }
     }
 }
@@ -1763,7 +1817,7 @@ impl Summary {
         let sizes = frame
             .table_encoded_sizes_version(format)
             .map_err(|error| error.to_string())?;
-        self.observe_decoded(frame, &decoded, sizes)
+        self.observe_decoded(frame, &decoded, sizes, format)
     }
 
     fn observe_decoded(
@@ -1771,7 +1825,9 @@ impl Summary {
         frame: &Frame,
         decoded: &DecodedFrame,
         sizes: [usize; TABLE_COUNT],
+        format: FormatVersion,
     ) -> Result<()> {
+        self.format = Some(format);
         self.totals.push(frame.metrics.total_ns);
         self.max_pool = self.max_pool.max(frame.metrics.pool_bytes);
         self.max_dropped = self.max_dropped.max(frame.metrics.dropped_frames);
@@ -1786,10 +1842,17 @@ impl Summary {
                 frame.branch, frame.hour
             ));
         }
+        let timed = frame.metrics.table_times_recorded();
+        self.untimed_hours += u64::from(!timed);
         for table in TableId::ALL {
+            if !self.recorded(table) {
+                continue;
+            }
             let i = table.index();
             self.table_bytes[i] += sizes[i] as u64;
-            self.table_times[i].push(frame.metrics.table_ns[i]);
+            if timed {
+                self.table_times[i].push(frame.metrics.table_ns[i]);
+            }
             let state = match &frame.tables[i] {
                 TableUpdate::Snapshot(_) => 0,
                 TableUpdate::Delta { .. } => 1,
@@ -1839,6 +1902,11 @@ impl Summary {
         Ok(())
     }
 
+    fn recorded(&self, table: TableId) -> bool {
+        self.format
+            .is_none_or(|format| table.last_change().present(format.version()))
+    }
+
     fn print(&mut self, spool_bytes: u64) {
         let hours = self.totals.len();
         let [p50, p95, maximum] = percentiles(&mut self.totals);
@@ -1856,8 +1924,11 @@ impl Summary {
             "table raw_encoded_bytes bytes_per_hour read_p50_ms read_p95_ms read_max_ms snapshots deltas unchanged truncated unavailable"
         );
         for table in TableId::ALL {
+            if !self.recorded(table) {
+                continue;
+            }
             let i = table.index();
-            let [p50, p95, maximum] = percentiles(&mut self.table_times[i]);
+            let times = self.read_times(table);
             let [snapshots, deltas, unchanged, truncated, unavailable] = self.states[i];
             let per_hour = if hours == 0 {
                 0.0
@@ -1865,10 +1936,22 @@ impl Summary {
                 self.table_bytes[i] as f64 / hours as f64
             };
             println!(
-                "{table:?} {} {per_hour:.3} {p50:.3} {p95:.3} {maximum:.3} {snapshots} {deltas} {unchanged} {truncated} {unavailable}",
+                "{table:?} {} {per_hour:.3} {times} {snapshots} {deltas} {unchanged} {truncated} {unavailable}",
                 self.table_bytes[i]
             );
         }
+    }
+
+    /// A table's read p50, p95 and maximum in milliseconds over the hours
+    /// whose read times are recorded; replay blocks keep only which tables
+    /// were read, so a replay without timed hours reports them not recorded.
+    fn read_times(&mut self, table: TableId) -> String {
+        let times = &mut self.table_times[table.index()];
+        if times.is_empty() && self.untimed_hours != 0 {
+            return "not_recorded not_recorded not_recorded".into();
+        }
+        let [p50, p95, maximum] = percentiles(times);
+        format!("{p50:.3} {p95:.3} {maximum:.3}")
     }
 }
 
@@ -1936,7 +2019,8 @@ fn print_throughput<'a>(
             Some(
                 ControlRecord::Detach { session, .. }
                 | ControlRecord::GapSummary { session, .. }
-                | ControlRecord::Partial { session, .. },
+                | ControlRecord::Partial { session, .. }
+                | ControlRecord::EventLoss { session, .. },
             ) => {
                 throughput.previous.remove(session);
             }
@@ -2562,6 +2646,154 @@ mod tests {
             assert_eq!(summary.table_bytes[table.index()], 0);
         }
         assert!(summary.table_bytes[TableId::Clock.index()] > 0);
+    }
+
+    /// A current recording does not record the retired tables: inspection
+    /// names them once as compatibility gaps and counts no hour of them as
+    /// unavailable. An older recording's discarded rows remain a named table
+    /// gap, and each retired field is listed once.
+    #[test]
+    fn inspect_names_retired_inputs_without_counting_current_absences() {
+        // The selected transport preview's split tables retired with the
+        // arrival-time, attrition and nearest-base inputs.
+        let retired: Vec<TableId> = [
+            TableId::DivisionEtaInputs,
+            TableId::AttritionModifierBreakdowns,
+            TableId::ReservedNearestNavies,
+            TableId::ReservedNearestBases,
+        ]
+        .into_iter()
+        .chain(replay::rows::RESERVED_SPLIT_TABLES)
+        .collect();
+        let frame = crate::test_support::allocation_records()
+            .into_iter()
+            .find_map(|record| match record {
+                Record::Frame(frame) => Some(frame),
+                _ => None,
+            })
+            .unwrap();
+        // The frames each format decodes: an unrecorded table is a named
+        // absence, and a recorded retired table's bytes are discarded by name.
+        let decoded = |format: FormatVersion| {
+            let mut frame = frame.clone();
+            for table in TableId::ALL {
+                if let Some(reason) = format.table_refusal(table) {
+                    frame.tables[table.index()] = if table.last_change().present(format.version()) {
+                        TableUpdate::Incompatible {
+                            reason,
+                            source_format: format,
+                            recorded_bytes: 5,
+                        }
+                    } else {
+                        TableUpdate::Unavailable { reason }
+                    };
+                }
+            }
+            frame
+        };
+        let current = FormatVersion::CURRENT;
+        let mut summary = Summary::default();
+        summary.observe(&decoded(current), current).unwrap();
+        for &table in &retired {
+            assert!(!summary.recorded(table), "{table:?}");
+            assert_eq!(summary.states[table.index()], [0; 5], "{table:?}");
+            assert!(summary.issues[table.index()].is_empty(), "{table:?}");
+        }
+        assert!(
+            TableId::ALL.into_iter().all(|table| {
+                retired.contains(&table) || summary.issues[table.index()].is_empty()
+            })
+        );
+        assert_eq!(summary.states[TableId::Clock.index()][0], 1);
+
+        let older = FormatVersion::read(replay::FORMAT_VERSION - 1).unwrap();
+        let mut summary = Summary::default();
+        summary.observe(&decoded(older), older).unwrap();
+        for table in [
+            TableId::DivisionEtaInputs,
+            TableId::AttritionModifierBreakdowns,
+        ] {
+            assert!(summary.recorded(table), "{table:?}");
+            let [issue] = summary.issues[table.index()].as_slice() else {
+                panic!("{table:?}: {:?}", summary.issues[table.index()].len());
+            };
+            assert!(
+                issue.reason.contains(&format!(
+                    "{table:?} retired at format {}; this recording is format {}",
+                    replay::FORMAT_VERSION,
+                    older.version()
+                )),
+                "{}",
+                issue.reason
+            );
+        }
+        // Tables the older format never recorded are only compatibility gaps.
+        for table in replay::rows::RESERVED_SPLIT_TABLES {
+            assert!(!summary.recorded(table), "{table:?}");
+            assert!(summary.issues[table.index()].is_empty(), "{table:?}");
+        }
+
+        let recording = Replay::open(
+            Replay::from_records(
+                crate::test_support::ALLOCATION_CAMPAIGN.to_vec(),
+                &[crate::test_support::allocation_records()],
+            )
+            .unwrap()
+            .bytes()
+            .to_vec(),
+        )
+        .unwrap();
+        let notes = compatibility_notes(&recording);
+        for &table in &retired {
+            let name = format!("{table:?} retired at format {}", replay::FORMAT_VERSION);
+            assert_eq!(
+                notes.iter().filter(|note| note.starts_with(&name)).count(),
+                1,
+                "{notes:?}"
+            );
+        }
+        for field in replay::rows::compatibility::RETIRED_FIELDS {
+            let name = format!("{:?}.{} retired at format", field.table, field.name);
+            assert_eq!(
+                notes.iter().filter(|note| note.starts_with(&name)).count(),
+                1,
+                "{notes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inspect_reports_read_times_a_replay_does_not_record() {
+        let mut records = crate::test_support::allocation_records();
+        for record in &mut records {
+            if let Record::Frame(frame) = record {
+                frame.metrics.table_ns[TableId::Clock.index()] = 2_500_000;
+            }
+        }
+        let replay = Replay::from_records(
+            crate::test_support::ALLOCATION_CAMPAIGN.to_vec(),
+            std::slice::from_ref(&records),
+        )
+        .unwrap();
+        let mut from_replay = Summary::default();
+        for index in &replay.index {
+            for frame in replay.read_block(index).unwrap() {
+                assert_ne!(frame.metrics.table_ns[TableId::Clock.index()], 0);
+                from_replay.observe(&frame, replay.format).unwrap();
+            }
+        }
+        assert_eq!(
+            from_replay.read_times(TableId::Clock),
+            "not_recorded not_recorded not_recorded"
+        );
+        // Finalization summarizes spool frames, which keep nanoseconds.
+        let mut from_spool = Summary::default();
+        for record in &records {
+            if let Record::Frame(frame) = record {
+                from_spool.observe(frame, FormatVersion::CURRENT).unwrap();
+            }
+        }
+        assert_eq!(from_spool.read_times(TableId::Clock), "2.500 2.500 2.500");
     }
 
     #[test]
@@ -3974,7 +4206,11 @@ mod tests {
                             },
                         ]))
                     }
-                    _ => TableUpdate::Snapshot(TableRows::empty(TableId::ALL[index])),
+                    // A current spool holds no retired table; decoding names it.
+                    table => match FormatVersion::CURRENT.table_refusal(table) {
+                        Some(reason) => TableUpdate::Unavailable { reason },
+                        None => TableUpdate::Snapshot(TableRows::empty(table)),
+                    },
                 }),
             })
         };

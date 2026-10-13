@@ -1441,7 +1441,7 @@ struct Context<'w, 'a> {
     held: Lazy<(BTreeSet<u64>, BTreeSet<u64>)>,
     /// Our nukes of each type, and our stockpile's archetype totals.
     nukes: Lazy<[Option<&'a NukeRow>; 2]>,
-    archetypes: Lazy<BTreeMap<u32, i64>>,
+    archetypes: Lazy<BTreeMap<u32, i32>>,
     /// The best stockpiled transport plane's range.
     transport: Lazy<Option<i64>>,
     faction: Lazy<LaunchMembers>,
@@ -1764,8 +1764,11 @@ impl<'w, 'a> Context<'w, 'a> {
         Ok(have)
     }
 
-    /// Whole units of an essential equipment type in the stockpile; convoys
-    /// count the larger of the stockpile and the available convoys.
+    /// Whole units of an essential equipment type in the stockpile, as
+    /// StockpileArchetypes records them: capped at the largest amount any
+    /// raid type requires, which every comparison and printed shortfall
+    /// reads exactly. Convoys count the larger of the stockpile and the
+    /// available convoys.
     fn essential_available(&self, name: &str) -> Result<i32, String> {
         let (equipment, _) = self.assets.equipment()?;
         let kind = equipment
@@ -1776,13 +1779,13 @@ impl<'w, 'a> Context<'w, 'a> {
             .map(|archetype| &equipment.equipment[archetype])
             .ok_or_else(|| format!("essential equipment {name} has no archetype in the content"))?;
         let mask = equipment.category(kind);
-        let quantity = match self.world.token_of(&archetype.name)? {
+        let have = match self.world.token_of(&archetype.name)? {
             None => 0,
             Some(token) => lazy(&self.archetypes, || {
                 let mut out = BTreeMap::new();
                 for row in table::<tables::StockpileArchetypes>(self.world)? {
                     if row.canonical_slot == self.ours {
-                        out.entry(row.archetype).or_insert(row.quantity_raw);
+                        out.insert(row.archetype, row.units);
                     }
                 }
                 Ok(out)
@@ -1791,7 +1794,6 @@ impl<'w, 'a> Context<'w, 'a> {
             .copied()
             .unwrap_or(0),
         };
-        let have = (quantity / 100_000) as i32;
         if mask & 1 == 0 {
             return Ok(have);
         }
@@ -2250,7 +2252,7 @@ impl<'w, 'a> Context<'w, 'a> {
                 .require("ReservedCountryNaming.launch_sources")?
                 .as_ref()
                 .ok_or("ReservedCountryNaming.launch_sources refused this hour")?;
-            if packet.sample_hour != self.world.frame().hour {
+            if !packet.sample_hour.fresh_at(self.world.frame().hour) {
                 return Err(format!(
                     "ReservedCountryNaming.launch_sources sampled hour {}, expected {}",
                     packet.sample_hour,

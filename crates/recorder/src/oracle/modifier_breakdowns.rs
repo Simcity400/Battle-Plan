@@ -1,38 +1,5 @@
 use super::*;
 
-pub(super) fn reserve(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
-    let rows = complete::<tables::ReserveModifierBreakdowns>(frame)?;
-    let units: BTreeMap<_, _> = complete::<tables::Divisions>(frame)?
-        .iter()
-        .map(|r| (r.id, r))
-        .collect();
-    let mut expected = BTreeSet::new();
-    for row in complete::<tables::LandCombatDivisions>(frame)?
-        .iter()
-        .filter(|r| r.role == 2)
-    {
-        let unit = units
-            .get(&row.division)
-            .ok_or_else(|| invalid("reserve breakdown division is absent from Divisions"))?;
-        let country = if unit.expeditionary_owner as i32 > 0 {
-            unit.expeditionary_owner
-        } else {
-            unit.roster_owner
-        };
-        expected.insert((0, country as u64));
-        if row.context.leader_modifier_kind != 0 {
-            expected.insert((row.context.leader_modifier_kind, row.commander));
-        }
-    }
-    let actual: BTreeSet<_> = rows.iter().map(|r| (r.kind, r.owner)).collect();
-    if actual != expected {
-        report.difference("ReserveModifierBreakdowns sources", actual, expected);
-    }
-    report.compared("ReserveModifierBreakdowns", rows.len());
-    report.limitation("cached reserve modifier tree structure, display bytes and getter values are runtime-only; the oracle checks the combat source joins", "ReserveModifierBreakdowns");
-    Ok(())
-}
-
 pub(super) fn balance(
     frame: &DecodedFrame,
     pack: &save::governance::Pack,
@@ -70,7 +37,7 @@ pub(super) fn balance(
         }
     }
     report.compared("PowerBalanceModifierBreakdowns", rows.len());
-    report.limitation("cached balance modifier child structure and getter values are runtime-only; the save writes the ordered static modifier names", "PowerBalanceModifierBreakdowns");
+    report.limitation("the cached balance modifier trees are runtime-only: playback derives them from the ordered static modifier names the save writes, and `recorder derived` compares that derivation with native witness trees", "PowerBalanceModifierBreakdowns");
     Ok(())
 }
 
@@ -80,7 +47,7 @@ mod tests {
     use replay::{frame::Metrics, rows::*};
 
     #[test]
-    fn source_joins_and_saved_balance_order_are_checked() {
+    fn saved_balance_order_is_checked() {
         let mut frame = DecodedFrame {
             branch: 1,
             hour: 0,
@@ -89,48 +56,6 @@ mod tests {
                 TableView::Complete(TableRows::empty(TableId::ALL[i])).into()
             }),
         };
-        *frame.tables[TableId::LandCombatDivisions.index()] =
-            TableView::Complete(TableRows::LandCombatDivisions(vec![
-                LandCombatDivisionRow {
-                    division: 7,
-                    role: 2,
-                    commander: 9,
-                    context: LandDivisionContext {
-                        leader_modifier_kind: 2,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-            ]));
-        let mut report = Report::default();
-        for (expeditionary_owner, country) in [(11, 11), (0, 12), (u32::MAX, 12)] {
-            *frame.tables[TableId::Divisions.index()] =
-                TableView::Complete(TableRows::Divisions(vec![DivisionRow {
-                    id: 7,
-                    roster_owner: 12,
-                    logical_owner: 10,
-                    expeditionary_owner,
-                    ..Default::default()
-                }]));
-            *frame.tables[TableId::ReserveModifierBreakdowns.index()] =
-                TableView::Complete(TableRows::ReserveModifierBreakdowns(
-                    [(0, country), (2, 9)]
-                        .into_iter()
-                        .map(|(kind, owner)| ReserveModifierBreakdownRow {
-                            kind,
-                            owner,
-                            nodes: vec![ModifierBreakdownNode::default()],
-                        })
-                        .collect(),
-                ));
-            reserve(&frame, &mut report).unwrap();
-            assert!(report.differences.is_empty());
-        }
-        *frame.tables[TableId::ReserveModifierBreakdowns.index()] =
-            TableView::Complete(TableRows::ReserveModifierBreakdowns(Vec::new()));
-        reserve(&frame, &mut report).unwrap();
-        assert_eq!(report.differences.len(), 1);
-
         let pack = save::governance::parse(&installed_content::parser::parse(b"countries={} power_balance={power_balances={{template=x value=0 left_side=l right_side=r trending_side=r modifier=b modifier=a modifier=b}}}").unwrap().items).unwrap();
         let row = |sources| PowerBalanceModifierBreakdownRow {
             record: 0,

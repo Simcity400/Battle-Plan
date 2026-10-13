@@ -50,7 +50,7 @@ fn division_movement_style_compares_writer_truth_priority_and_local_refusals() {
         division: id,
         withdrawal: Recorded::Value(Some(255)),
         movement_priority: Recorded::Value(Some(1)),
-        // The style fixture predates the independently checked fresh ETA packet.
+        // An older recording without the retired fresh-route field.
         fresh: Recorded::NotRecorded,
         ..Default::default()
     };
@@ -88,9 +88,14 @@ fn division_movement_style_compares_writer_truth_priority_and_local_refusals() {
             "raw {raw}: {:?}",
             report.differences
         );
-        assert_eq!(
-            report.limitations["DivisionMovement.fresh not recorded"],
-            vec![format!("division movement {id}")],
+        // The retired field is never consulted, so its absence is no limitation.
+        assert!(
+            !report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("DivisionMovement.fresh")),
+            "{:?}",
+            report.limitations
         );
         if raw == i32::MIN {
             assert!(
@@ -310,7 +315,15 @@ fn division_country_ordinal_compares_the_full_saved_roster() {
         TableRows::DivisionStatus(rows.clone()),
     );
     let mut report = Report::default();
-    compare_division_status(&frame, &saved, &BTreeMap::new(), &mut report).unwrap();
+    compare_division_status(
+        &frame,
+        &saved,
+        &BTreeMap::new(),
+        &Ok(50_000),
+        &Ok(72),
+        &mut report,
+    )
+    .unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     rows[0].country_ordinal = replay::rows::Recorded::Value(Some(0));
     set(
@@ -318,14 +331,22 @@ fn division_country_ordinal_compares_the_full_saved_roster() {
         TableId::DivisionStatus,
         TableRows::DivisionStatus(rows),
     );
-    compare_division_status(&frame, &saved, &BTreeMap::new(), &mut report).unwrap();
+    compare_division_status(
+        &frame,
+        &saved,
+        &BTreeMap::new(),
+        &Ok(50_000),
+        &Ok(72),
+        &mut report,
+    )
+    .unwrap();
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("country_ordinal"));
 }
 
 #[test]
-fn division_disrupted_supply_oracle_checks_positive_presence_and_preserves_failures() {
-    use replay::rows::{DivisionStatusRow, Recorded, UnitSupplyInputs};
+fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precision() {
+    use replay::rows::{DivisionStatusRow, DivisionSupplyFooter, Recorded};
     let (mut frame, mut saved, _, _) = super::super::tests::fixture();
     let id = (1_u64 << 32) | 51;
     saved.divisions.clear();
@@ -351,25 +372,45 @@ fn division_disrupted_supply_oracle_checks_positive_presence_and_preserves_failu
         },
     );
     let value = |disruption| {
-        Recorded::Value(Some(UnitSupplyInputs {
+        Recorded::Value(Some(DivisionSupplyFooter {
             disruption,
             // Independent origin acquisition failure does not erase this scalar.
             origins: None,
             ..Default::default()
         }))
     };
-    for (supply, text, differences) in [
-        (value(9_007_199_254_740_993), Some("90071992547.40993"), 0),
-        (value(9_007_199_254_740_992), Some("90071992547.40993"), 1),
-        (value(0), None, 0),
-        (value(-100_001), None, 0),
-        (value(1), None, 1),
-        (value(0), Some("0.00001"), 1),
-        (Recorded::Value(None), None, 1),
-        (Recorded::Value(None), Some("0.00001"), 1),
-        (Recorded::NotRecorded, Some("0.00001"), 0),
+    // (display steps, recorded footer, saved disruption, differences)
+    for (stepped, supply, text, differences) in [
+        // Format 101 and earlier recorded the exact word.
+        (
+            false,
+            value(9_007_199_254_740_993),
+            Some("90071992547.40993"),
+            0,
+        ),
+        (
+            false,
+            value(9_007_199_254_740_992),
+            Some("90071992547.40993"),
+            1,
+        ),
+        (false, value(0), Some("0.00001"), 1),
+        // Current recordings hold the printed hundredth, half away from zero
+        // with a nonzero amount kept; the save's word is rounded the same way.
+        (true, value(1_000), Some("0.00001"), 0),
+        (true, value(1_000), Some("0.01499"), 0),
+        (true, value(1_000), Some("0.01500"), 1),
+        (true, value(0), Some("0.00001"), 1),
+        // The save omits nonpositive disruption only.
+        (true, value(0), None, 0),
+        (true, value(-1_000), None, 0),
+        (true, value(1_000), None, 1),
+        // A refused scalar pack differs; an older recording's absence is a
+        // named limitation.
+        (true, Recorded::Value(None), None, 1),
+        (true, Recorded::Value(None), Some("0.00001"), 1),
+        (true, Recorded::NotRecorded, Some("0.00001"), 0),
     ] {
-        let old = matches!(supply, Recorded::NotRecorded);
         saved
             .divisions
             .get_mut(&id)
@@ -381,16 +422,29 @@ fn division_disrupted_supply_oracle_checks_positive_presence_and_preserves_failu
             TableId::DivisionStatus,
             TableRows::DivisionStatus(vec![DivisionStatusRow {
                 division: id,
-                supply,
+                supply_grace_maximum: Recorded::Value(0),
+                supply_grace_remaining: Recorded::Value(0),
+                supply: supply.clone(),
                 ..Default::default()
             }]),
         );
-        let mut report = Report::default();
-        compare_division_status(&frame, &saved, &BTreeMap::new(), &mut report).unwrap();
+        let mut report = Report {
+            display_steps: stepped,
+            ..Report::default()
+        };
+        compare_division_status(
+            &frame,
+            &saved,
+            &BTreeMap::new(),
+            &Ok(50_000),
+            &Ok(72),
+            &mut report,
+        )
+        .unwrap();
         assert_eq!(
             report.differences.len(),
             differences,
-            "{:?}",
+            "{supply:?} {text:?} {:?}",
             report.differences
         );
         assert!(
@@ -399,34 +453,61 @@ fn division_disrupted_supply_oracle_checks_positive_presence_and_preserves_failu
                 .iter()
                 .all(|line| line.contains("supply.disrupted_supply"))
         );
-        if old {
+        if matches!(supply, Recorded::NotRecorded) {
             assert!(
                 report
                     .limitations
                     .contains_key("DivisionStatus.supply not recorded")
             );
         }
+        if stepped && text.is_some() && matches!(supply, Recorded::Value(Some(_))) {
+            assert!(
+                report.display_precision_lines().iter().any(|line| line
+                    == "  DivisionStatus.supply.disruption: 0.01 (fixed5, half away from zero, nonzero kept)")
+            );
+        }
     }
     // A failed appended scalar does not prevent independent prefix comparison.
-    saved.divisions.get_mut(&id).unwrap().presentation.dig_in =
-        Some(save::Decimal::parse(b"1").unwrap());
+    let presentation = &mut saved.divisions.get_mut(&id).unwrap().presentation;
+    presentation.dig_in = Some(save::Decimal::parse(b"1").unwrap());
+    presentation.disrupted_supply = None;
     set(
         &mut frame,
         TableId::DivisionStatus,
         TableRows::DivisionStatus(vec![DivisionStatusRow {
             division: id,
+            supply_grace_remaining: Recorded::NotRecorded,
             supply: Recorded::Value(None),
             ..Default::default()
         }]),
     );
     let mut report = Report::default();
-    compare_division_status(&frame, &saved, &BTreeMap::new(), &mut report).unwrap();
+    compare_division_status(
+        &frame,
+        &saved,
+        &BTreeMap::new(),
+        &Ok(50_000),
+        &Ok(72),
+        &mut report,
+    )
+    .unwrap();
     assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
     assert!(
         report
             .differences
             .iter()
             .any(|line| line.contains(".entrenchment"))
+    );
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|line| line.contains("supply.disrupted_supply"))
+    );
+    assert!(
+        report
+            .limitations
+            .contains_key("DivisionStatus.supply_grace_remaining not recorded")
     );
 }
 
@@ -755,6 +836,122 @@ fn naval_combats_compare_locations_and_missing_rows_despite_membership_exclusion
         ],
     );
     assert!(report.membership_skips.is_empty());
+}
+
+/// One saved ship with 30.00999 experience beside a recorded row holding
+/// `recorded`, compared as a recording with or without display steps.
+fn ship_experience_report(recorded: i64, display_steps: bool) -> Report {
+    let membership = membership();
+    let (mut frame, mut saved, _, _) = super::super::tests::fixture();
+    let owner = saved.countries.keys().next().unwrap().clone();
+    saved.fleets.insert(
+        11,
+        save::Fleet {
+            id: 11,
+            owner: owner.clone(),
+            home_base: Some(1),
+            name: Some(Vec::new()),
+            leader: None,
+        },
+    );
+    saved.task_forces.insert(
+        14,
+        save::TaskForce {
+            id: 14,
+            name: None,
+            fleet: 11,
+            roster_owner: owner.clone(),
+            logical_owner: owner,
+            expeditionary_owner: None,
+            province: Some(1),
+            mission: 0,
+            country_intel: Vec::new(),
+            path: Vec::new(),
+            target: None,
+            alternate_path: Vec::new(),
+            movement_progress: None,
+            retreat: false,
+            withdrawal: false,
+            exile: false,
+        },
+    );
+    saved.ships.insert(
+        15,
+        save::Ship {
+            id: 15,
+            roster_ordinal: 0,
+            task_force: 14,
+            strength: zero(),
+            organisation: zero(),
+            experience: save::Decimal::parse(b"30.00999").unwrap(),
+            sunk_convoys: 0,
+            equipment: None,
+        },
+    );
+    set(
+        &mut frame,
+        TableId::Fleets,
+        TableRows::Fleets(vec![FleetRow {
+            id: 11,
+            owner: 101,
+            home_base: 1,
+            name: Some(Vec::new()).into(),
+            leader: Some(0).into(),
+        }]),
+    );
+    set(
+        &mut frame,
+        TableId::TaskForces,
+        TableRows::TaskForces(vec![TaskForceRow {
+            id: 14,
+            fleet: 11,
+            province: 1,
+            roster_owner: 101,
+            logical_owner: 101,
+            ..Default::default()
+        }]),
+    );
+    set(
+        &mut frame,
+        TableId::Ships,
+        TableRows::Ships(vec![ShipRow {
+            id: 15,
+            task_force: 14,
+            experience: recorded,
+            ..Default::default()
+        }]),
+    );
+    let context = super::super::country_context(&frame).unwrap();
+    let mut report = Report {
+        display_steps,
+        ..Report::default()
+    };
+    compare_naval_units(&frame, &saved, &membership, &context.links, &mut report).unwrap();
+    assert_eq!(report.ships, 1);
+    report
+}
+
+/// Ships.experience is recorded at a hundredth truncated toward zero
+/// (`ShipRow::EXPERIENCE_STEP`): the save's exact value is rounded the same
+/// way, and an older recording's exact value compares exactly.
+#[test]
+fn ship_experience_compares_at_its_display_step() {
+    let report = ship_experience_report(3_000_000, true);
+    assert_differences(&report, &[]);
+    assert_eq!(
+        report.display_precision_lines()[1..],
+        ["  Ships.experience: 0.01 (fixed5, toward zero)".to_owned()]
+    );
+    assert_differences(
+        &ship_experience_report(2_990_000, true),
+        &["type=15 id=0.experience"],
+    );
+    // A recording before display steps holds the exact value.
+    assert_differences(&ship_experience_report(3_000_999, false), &[]);
+    assert_differences(
+        &ship_experience_report(3_000_000, false),
+        &["type=15 id=0.experience"],
+    );
 }
 
 fn assert_differences(report: &Report, fields: &[&str]) {

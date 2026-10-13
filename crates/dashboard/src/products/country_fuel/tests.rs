@@ -510,7 +510,7 @@ fn five_thousand_country_requests_share_one_decode_and_ownership_walk() {
                     ring_gain_raw: i64::from(slot),
                     country_instance: replay::rows::Recorded::Value(Some(9)),
                     demand: replay::rows::Recorded::Value(replay::rows::FuelDemandRead {
-                        hour,
+                        hour: replay::rows::FuelDemandHour::Stamped(hour),
                         country_instance: Some(9),
                         divisions: vec![replay::rows::FuelDemandUnit {
                             reference: u64::from(slot) << 32 | 29,
@@ -614,68 +614,66 @@ fn a_new_tag_has_the_same_absent_sample_evidence_as_a_single_country_scan() {
     );
 }
 
+/// The day of 24 applied updates through `hour`, each gaining [1, -2, 3, 0]
+/// (own gain 2), transferring [1, -3, 4, 1], consuming 1 and paying one
+/// recipient 1, whose retained name reads "before" at even hours and "after"
+/// at odd ones: two recipients of 12 receipts each.
 pub(super) fn award_row(hour: i32) -> replay::rows::CountryFuelRow {
-    use replay::rows::{
-        CountryFuelRow, FuelAwardHour, FuelAwardRecipient, FuelAwardWindow, Recorded,
+    use replay::rows::{CountryFuelRow, FuelAwardDay, FuelAwardDayRecipient, Recorded};
+    let recipient = |name: &[u8], first_hour: i32| FuelAwardDayRecipient {
+        kind: 0,
+        reference: 7 << 32 | 29,
+        owner: 37,
+        name: Some(name.to_vec()),
+        first_hour,
+        last_hour: first_hour + 22,
+        amount_raw: -12,
+        ..Default::default()
+    };
+    let (odd, even) = if hour % 2 == 0 {
+        (hour - 23, hour - 22)
+    } else {
+        (hour - 22, hour - 23)
     };
     CountryFuelRow {
         country: 11,
         country_instance: Recorded::Value(Some(9)),
         ring_gain_raw: 999,
-        awards: Recorded::Value(FuelAwardWindow {
+        award_day: Recorded::Value(FuelAwardDay {
             country_instance: 9,
             continuity_start_hour: Some(977),
+            last_hour: hour,
+            gains_raw: [24, -48, 72, 0],
+            own_gain_raw: 48,
+            own_gain_quantity_raw: 24 * engine::fuel_awards::quantity(2),
+            transfers_raw: [24, -72, 96, 24],
+            consumed_raw: -24,
+            received_raw: [-24, 0, 0],
+            recipients: vec![recipient(b"after", odd), recipient(b"before", even)],
             reason: Vec::new(),
-            hours: (hour - 23..=hour)
-                .map(|hour| FuelAwardHour {
-                    hour,
-                    gains_raw: [1, -2, 3, 0],
-                    own_gain_raw: 2,
-                    transfers_raw: [1, -3, 4, 1],
-                    consumed_raw: -1,
-                    received_raw: [-1, 0, 0],
-                    remaining_hours: 7,
-                    recipients: vec![FuelAwardRecipient {
-                        kind: 0,
-                        reference: 7 << 32 | 29,
-                        owner: 37,
-                        amount_raw: -1,
-                        name: Some(if hour % 2 == 0 {
-                            b"before".to_vec()
-                        } else {
-                            b"after".to_vec()
-                        }),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                })
-                .collect(),
         }),
         ..Default::default()
     }
 }
 
 #[test]
-fn completed_award_totals_keep_twenty_four_i64_extremes_and_per_update_conversion_exact() {
+fn completed_award_totals_keep_i64_extremes_and_the_recorded_conversion_exact() {
     let mut row = award_row(1000);
-    let replay::rows::Recorded::Value(window) = &mut row.awards else {
+    let replay::rows::Recorded::Value(recorded) = &mut row.award_day else {
         panic!()
     };
-    for entry in &mut window.hours {
-        entry.own_gain_raw = i64::MAX;
-        entry.gains_raw = [i64::MAX, i64::MIN, 0, 0];
-        entry.consumed_raw = i64::MIN;
-    }
+    recorded.own_gain_raw = i64::MAX;
+    recorded.gains_raw = [i64::MAX, i64::MIN, 0, 0];
+    recorded.consumed_raw = i64::MIN;
+    recorded.own_gain_quantity_raw = i64::MIN + 1;
     let day = reply_read(&row, 1000, None).day.unwrap();
     let totals = day.awards.unwrap();
-    assert_eq!(day.gained_raw, "221360928884514619368");
-    assert_eq!(day.burned_raw, (24_i128 * i128::from(i64::MIN)).to_string());
+    assert_eq!(day.gained_raw, i64::MAX.to_string());
+    assert_eq!(day.burned_raw, i64::MIN.to_string());
     assert_eq!(totals.gains_raw[0], day.gained_raw);
     assert_eq!(totals.gains_raw[1], day.burned_raw);
-    assert_eq!(
-        totals.own_gain_quantity_raw,
-        (24_i128 * i128::from(engine::fuel_awards::quantity(i64::MAX))).to_string()
-    );
+    // The sum of each update's conversion, which no day sum reproduces.
+    assert_eq!(totals.own_gain_quantity_raw, (i64::MIN + 1).to_string());
 }
 
 #[test]
@@ -747,11 +745,11 @@ fn applied_updates_override_prefilled_ring_and_stale_ownership_without_inventing
         super::recipients_of(&row, &AtomicBool::new(true), crate::catalogue::display_text).is_err()
     );
     let mut row = row;
-    let replay::rows::Recorded::Value(window) = &mut row.awards else {
+    let replay::rows::Recorded::Value(recorded) = &mut row.award_day else {
         panic!()
     };
-    window.hours[0].recipients[0].kind = 1;
-    window.hours[0].recipients[0].name = None;
+    recorded.recipients[0].kind = 1;
+    recorded.recipients[0].name = None;
     let recipients = super::recipients_of(
         &row,
         &AtomicBool::new(false),
@@ -776,12 +774,14 @@ fn attribution_requires_the_supplying_hour_and_native_country_identity() {
     row.country_instance = Recorded::Value(Some(10));
     assert!(super::awards_of(&row, 1000).is_err());
     row.country_instance = Recorded::Value(Some(9));
-    let Recorded::Value(window) = &mut row.awards else {
+    assert!(super::awards_of(&row, 1000).is_ok());
+    let Recorded::Value(day) = &mut row.award_day else {
         panic!()
     };
-    window.hours.remove(7);
+    // Observation began after the day's first update.
+    day.continuity_start_hour = Some(978);
     assert!(super::awards_of(&row, 1000).is_err());
-    row.awards = Recorded::NotRecorded;
+    row.award_day = Recorded::NotRecorded;
     let legacy = reply_read(&row, 1000, None);
     assert_eq!(legacy.day.unwrap().gained_raw, "999");
     assert!(legacy.awards_reason.unwrap().contains("not recorded"));

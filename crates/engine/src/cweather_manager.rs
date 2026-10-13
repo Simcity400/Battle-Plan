@@ -24,8 +24,27 @@ pub const PROVINCES_COUNT: usize = 0x1c;
 pub const REGIONS: usize = 0x40;
 /// CWeatherManager region array count, i32.
 pub const REGIONS_COUNT: usize = 0x4c;
-/// Snow ceiling, signed i64 fixed5; initialized to zero and populated by
-/// the content loader during load.
+/// Province update cursor, i32: the weather update pass visits the window from
+/// it and stores where it stopped, wrapping to zero at the province count
+/// +0x1C.
+pub const UPDATE_CURSOR: usize = 0x58;
+/// `provinces_per_update`, i32, which the content loader loads from
+/// common/weather.txt; an ordinary weather update pass visits that many slots.
+pub const PROVINCES_PER_UPDATE: usize = 0x2f0;
+/// Region update cursor, i32: the weather update pass visits the region window
+/// from it and wraps it to zero at the region count +0x4C.
+pub const REGION_CURSOR: usize = 0x5c;
+/// `regions_per_update`, i32, loaded by the content loader beside
+/// [`PROVINCES_PER_UPDATE`]; an ordinary weather update pass visits that many
+/// region slots.
+pub const REGIONS_PER_UPDATE: usize = 0x2f4;
+/// Weather random seed, u32: the hourly update adds a synchronized 31-bit
+/// random integer before the pass, and province weather calculation hashes each
+/// province id plus it.
+pub const SEED: usize = 0x308;
+/// Weather manager snow ceiling, native i64 fixed point; province and region
+/// weather calculations read all eight bytes. Construction zeroes it and only
+/// the content loader, reached from load initialization, writes it.
 pub const MAX_SNOW: usize = 0x1f8;
 /// Display-snow byte array indexed by province id and sized to the live
 /// province count. Changed weather updates the bytes, then the graphics grid
@@ -44,7 +63,13 @@ pub const DISPLAY_GRID_MUD: usize = 0x390;
 pub const DISPLAY_WORK_COUNT: usize = 0x3b4;
 /// Province day/night array, sized to the live weather province count.
 pub const PROVINCE_CLOCKS: usize = 0x370;
-/// Stored hourly-update gates for weather and day/night; reset can change them.
+/// Initial-mode byte: initialization sets it before the hourly update, whose
+/// weather update pass then visits every province and region in +0x2F8 passes;
+/// the hourly update clears it afterward.
+pub const INITIAL_MODE: usize = 0x348;
+/// Hourly-update gates: weather updating tests +0x349/+0x34A before advancing
+/// weather and day/night. The weather-simulation reset command can change
+/// +0x34A.
 pub const SUSPEND_FLAGS: usize = 0x349;
 /// CWeatherManager hourly update.
 pub const HOURLY_UPDATE_RVA: usize = 0x00f0_7550;
@@ -123,6 +148,21 @@ impl<'a, M: Memory> Reader<'a, M> {
             .ok_or("weather snow ceiling unreadable")
     }
 
+    /// The update cursor, window and seed the hourly temperature pass reads.
+    pub fn temperature_words(&self) -> Result<(i32, i32, u32), &'static str> {
+        let word = |offset: usize| {
+            self.pointer
+                .checked_add(offset)
+                .and_then(|address| read::<u32>(self.memory, address))
+                .ok_or("weather temperature pass words unreadable")
+        };
+        Ok((
+            word(UPDATE_CURSOR)? as i32,
+            word(PROVINCES_PER_UPDATE)? as i32,
+            word(SEED)?,
+        ))
+    }
+
     /// Stored simulation gates, read together without normalising their bytes.
     pub fn suspend_flags(&self) -> Result<[u8; 2], &'static str> {
         let address = self
@@ -154,22 +194,8 @@ impl<'a, M: Memory> Reader<'a, M> {
             .ok_or("weather province array unreadable or invalid")
     }
 
+    /// Select original region root once.
     pub fn regions(&self, output: &mut [sweather_per_region::Row]) -> Outcome {
-        self.regions_with_attack(
-            output,
-            0,
-            &mut [],
-            &mut crate::selected_attack::ScalarMetadata::default(),
-        )
-    }
-    /// Select original region root once; independent append acquisition.
-    pub fn regions_with_attack(
-        &self,
-        output: &mut [sweather_per_region::Row],
-        hour: i32,
-        attack: &mut [crate::selected_attack::WeatherAttack],
-        metadata: &mut crate::selected_attack::ScalarMetadata,
-    ) -> Outcome {
         let max_snow = match self.max_snow() {
             Ok(value) => value,
             Err(reason) => return Outcome::Unavailable { reason },
@@ -183,19 +209,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                 reason: "weather region array unreadable or invalid",
             };
         };
-        let outcome = if attack.is_empty() {
-            sweather_per_region::walk(self.memory, self.base, array, output)
-        } else {
-            sweather_per_region::walk_with_attack(
-                self.memory,
-                self.base,
-                array,
-                output,
-                hour,
-                attack,
-                metadata,
-            )
-        };
+        let outcome = sweather_per_region::walk(self.memory, self.base, array, output);
         for row in &mut output[..outcome.len()] {
             row.max_snow = max_snow;
         }

@@ -37,19 +37,11 @@ pub const WARTIME_ALLIES: usize = 0xb0;
 pub const SUBJECTS: usize = 0x170;
 /// Overlord country word, read as i32.
 pub const OVERLORD: usize = 0x188;
-/// CDiplomacyStatus signed i64 legitimacy /100000.
-pub const LEGITIMACY: usize = 0x1b0;
-/// CDiplomacyStatus signed i32 exile army leader count.
-pub const EXILE_ARMY_LEADERS: usize = 0x1b8;
-/// CDiplomacyStatus owning CCountry pointer.
+/// Diplomacy status's owning country pointer, stored by its constructor.
 pub const COUNTRY: usize = 0x288;
 /// CDiplomacyStatus nullable CFaction pointer.
 pub const FACTION: usize = 0x290;
-/// Raw last-surrender hour, read as i32.
-pub const LAST_SURRENDER_HOUR: usize = 0x2b8;
-/// Raw faction-join hour, read as i32.
-pub const FACTION_JOIN_HOUR: usize = 0x2d0;
-/// Capitulated byte, accepting exactly 0 or 1.
+/// CDiplomacyStatus capitulated byte, D60 accepts exactly 0 or 1; build_profile.rs:757.
 pub const CAPITULATED: usize = 0x2e0;
 /// Raw capitulation hour, read as i32.
 pub const CAPITULATED_HOUR: usize = 0x2f0;
@@ -65,10 +57,6 @@ pub struct CapitulationRow {
     pub country: u32,
     pub capitulated: u8,
     pub capitulated_hour: i32,
-    pub last_surrender_hour: i32,
-    pub faction_join_hour: i32,
-    pub legitimacy_raw: i64,
-    pub exile_army_leaders: i32,
 }
 
 /// Reads every canonical country's native diplomacy scalars. Nullable save dates
@@ -157,30 +145,16 @@ fn read_capitulation(
             .checked_add(offset)
             .ok_or("capitulation address overflow")
     };
+    // The retired last surrender (+0x2B8), faction join (+0x2D0),
+    // legitimacy (+0x1B0) and exile leader count (+0x1B8) are not read, so
+    // they never refuse the row.
     let mut backlink = [0; 8];
-    let mut legitimacy_and_leaders = [0; 12];
-    let mut surrender = [0; 4];
-    let mut faction_join = [0; 4];
     let mut capitulated = [0; 1];
     let mut capitulation = [0; 4];
     if memory.copy_scattered(
-        [
-            at(COUNTRY)?,
-            at(LEGITIMACY)?,
-            at(LAST_SURRENDER_HOUR)?,
-            at(FACTION_JOIN_HOUR)?,
-            at(CAPITULATED)?,
-            at(CAPITULATED_HOUR)?,
-        ],
-        &mut [
-            &mut backlink,
-            &mut legitimacy_and_leaders,
-            &mut surrender,
-            &mut faction_join,
-            &mut capitulated,
-            &mut capitulation,
-        ],
-    ) != 6
+        [at(COUNTRY)?, at(CAPITULATED)?, at(CAPITULATED_HOUR)?],
+        &mut [&mut backlink, &mut capitulated, &mut capitulation],
+    ) != 3
     {
         return Err("capitulation field unreadable");
     }
@@ -191,17 +165,13 @@ fn read_capitulation(
         country: country.id,
         capitulated: capitulated[0],
         capitulated_hour: i32::from_le_bytes(capitulation),
-        last_surrender_hour: i32::from_le_bytes(surrender),
-        faction_join_hour: i32::from_le_bytes(faction_join),
-        legitimacy_raw: i64::from_le_bytes(legitimacy_and_leaders[..8].try_into().unwrap()),
-        exile_army_leaders: i32::from_le_bytes(legitimacy_and_leaders[8..].try_into().unwrap()),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_date, cgame_state, memory::SliceMemory};
+    use crate::{cgame_state, memory::SliceMemory};
 
     const BASE: usize = 0x0001_4000_0000;
     const GAME: usize = 0x1000;
@@ -258,11 +228,6 @@ mod tests {
                 diplomacy + COUNTRY,
                 &(pointer as u64).to_le_bytes(),
             );
-            put(
-                &mut bytes,
-                diplomacy + LAST_SURRENDER_HOUR,
-                &cgame_date::NULL_RAW_HOUR.to_le_bytes(),
-            );
         }
         bytes
     }
@@ -282,8 +247,7 @@ mod tests {
             world.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
             world.u64(diplomacy, (BASE + VTABLE_RVA) as u64);
             world.u64(diplomacy + COUNTRY, country as u64);
-            world.u64(diplomacy + LEGITIMACY, u64::from(slot));
-            world.u32(diplomacy + EXILE_ARMY_LEADERS, slot);
+            world.u32(diplomacy + CAPITULATED_HOUR, slot);
         }
         let mut expected = vec![CapitulationRow::default(); COUNT as usize];
         let outcome = walk_capitulation(&world.memory(), BASE, world.game_state(), &mut expected);
@@ -307,23 +271,8 @@ mod tests {
         let mut bytes = fixture();
         put(
             &mut bytes,
-            FIRST_DIPLOMACY + LEGITIMACY,
-            &0x1_0000_0001_i64.to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            FIRST_DIPLOMACY + EXILE_ARMY_LEADERS,
-            &(-7_i32).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
             FIRST_DIPLOMACY + CAPITULATED_HOUR,
             &i32::MIN.to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            FIRST_DIPLOMACY + FACTION_JOIN_HOUR,
-            &i32::MAX.to_le_bytes(),
         );
         bytes[FIRST_DIPLOMACY + CAPITULATED] = 0x80;
         let mut rows = [CapitulationRow::default(); 4];
@@ -337,13 +286,35 @@ mod tests {
                 country: 3,
                 capitulated: 0x80,
                 capitulated_hour: i32::MIN,
-                last_surrender_hour: cgame_date::NULL_RAW_HOUR,
-                faction_join_hour: i32::MAX,
-                legitimacy_raw: 0x1_0000_0001,
-                exile_army_leaders: -7,
             }
         );
         assert_eq!(rows[1].country, 2);
+    }
+
+    #[test]
+    fn unreadable_retired_fields_never_refuse_the_row() {
+        // Legitimacy and the exile leader count (+0x1B0, 12 bytes), the last
+        // surrender (+0x2B8) and the faction join (+0x2D0).
+        struct Holes<'a>(SliceMemory<'a>);
+        impl Memory for Holes<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let end = address + output.len();
+                ![(0x1b0, 12), (0x2b8, 4), (0x2d0, 4)]
+                    .iter()
+                    .any(|&(offset, len)| {
+                        let start = FIRST_DIPLOMACY + offset;
+                        address < start + len && start < end
+                    })
+                    && self.0.copy(address, output)
+            }
+        }
+        let bytes = fixture();
+        let mut rows = [CapitulationRow::default(); 2];
+        assert_eq!(
+            walk_capitulation(&Holes(memory(&bytes)), BASE, GAME, &mut rows),
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(rows[0].country, 3);
     }
 
     #[test]

@@ -1,4 +1,7 @@
-//! Stored supply-footer operands shared by authenticated divisions, railway guns and task forces.
+//! Stored supply-footer operands of authenticated divisions, railway guns and
+//! task forces. Railway guns and task forces read one unit at a time
+//! ([`capture`]); divisions read the whole census in record batches
+//! ([`capture_units`]).
 //!
 //! The supply footer follows the owner's shared-vision gate and reads stored
 //! amounts from each member's supply-consumer base. The aggregate is not rebuilt
@@ -233,6 +236,355 @@ fn capture_origins(
         return Err(Failure::OriginsChanged);
     }
     Ok(count)
+}
+
+/// One unit of a batched capture ([`capture_units`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnitCapture {
+    /// The scalar pack, or why it is unreadable; its `origins_len` is the
+    /// unit's independent origin fragment.
+    pub inputs: Result<Inputs, Failure>,
+    /// The unit's first row in the shared origin arena.
+    pub origins_start: usize,
+    /// The origin header the scalar batch copied, witnessed after the payload.
+    header: [u8; 16],
+}
+
+impl Default for UnitCapture {
+    fn default() -> Self {
+        Self {
+            inputs: Err(Failure::Unreadable),
+            origins_start: 0,
+            header: [0; 16],
+        }
+    }
+}
+
+/// The origin arena a batched capture filled: its used prefix, and the rows
+/// every readable header asked for, capacity shortages included.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct OriginsUse {
+    pub len: usize,
+    pub required: usize,
+}
+
+// The scalar spans of `INPUT_SPANS` with the origin header between the
+// receipts and the state receipt, in source order: one record per unit.
+const UNIT_SPANS: [(usize, usize); 7] = [
+    (ASKED, 8),
+    (RECEIVED, 16),
+    (ORIGINS, 16),
+    (FROM_STATE, 12),
+    (DIVISION_DEMAND, 12),
+    (AIRPLANE_DEMAND, 12),
+    (SHIP_DEMAND, 16),
+];
+/// The origin header's field in [`UNIT_SPANS`]; the others are the scalars.
+const UNIT_HEADER: usize = 2;
+const UNIT_FIELDS: [crate::memory::RecordField; 7] = crate::memory::packed_fields(UNIT_SPANS);
+const UNIT_BYTES: usize = crate::memory::packed_stride(UNIT_SPANS);
+const UNIT_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&UNIT_FIELDS, UNIT_BYTES) {
+    Some(layout) => layout,
+    None => panic!("valid supply unit layout"),
+};
+const HEADER_FIELDS: [crate::memory::RecordField; 1] =
+    crate::memory::packed_fields([(ORIGINS, 16)]);
+const HEADER_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&HEADER_FIELDS, 16) {
+    Some(layout) => layout,
+    None => panic!("valid supply origin header layout"),
+};
+/// Units, origin rows or headers per gather.
+const BATCH: usize = 64;
+
+/// The scalar pack of one [`UNIT_SPANS`] record.
+fn unit_scalars(record: &[u8]) -> Inputs {
+    let i64_at = |at: usize| i64::from_le_bytes(record[at..at + 8].try_into().unwrap());
+    let i32_at = |at: usize| i32::from_le_bytes(record[at..at + 4].try_into().unwrap());
+    Inputs {
+        asked: i64_at(0),
+        received: i64_at(8),
+        air_drops: i64_at(16),
+        from_state: i64_at(40),
+        division_demand: Demand {
+            count: i32_at(48),
+            value: i64_at(52),
+        },
+        airplane_demand: Demand {
+            count: i32_at(60),
+            value: i64_at(64),
+        },
+        ship_demand: Demand {
+            count: i32_at(72),
+            value: i64_at(76),
+        },
+        disruption: i64_at(84),
+        origins_len: Ok(0),
+    }
+}
+
+/// Read the footers of `units.len()` already authenticated primary roots,
+/// `pointer(index)` each, in record batches: the scalar spans and origin
+/// header of up to 64 units per gather, then the origin rows of up to 64
+/// rows across units per gather into one shared arena, then the headers
+/// again. Each unit keeps [`capture`]'s contract: a scalar fault
+/// withholds its pack; an origin header that is unreadable, invalid, larger
+/// than the arena admits or different after its payload, or a faulting
+/// payload row, withholds only its origin rows. A fault fails only its own
+/// unit: the rest of a gather is read again. Every native row is retained in
+/// order, duplicates and nonpositive amounts included. A growing arena
+/// doubles from its original header demand; a fixed one reports the rows a
+/// shortage needs. No native count becomes a limit.
+pub fn capture_units(
+    memory: &impl Memory,
+    pointer: impl Fn(usize) -> usize,
+    units: &mut [UnitCapture],
+    origins: &mut Vec<Origin>,
+    growing: bool,
+) -> OriginsUse {
+    let mut pointers = [0usize; BATCH];
+    let mut records = [0u8; BATCH * UNIT_BYTES];
+    for (chunk_index, chunk) in units.chunks_mut(BATCH).enumerate() {
+        let first = chunk_index * BATCH;
+        for (row, slot) in pointers[..chunk.len()].iter_mut().enumerate() {
+            *slot = pointer(first + row);
+        }
+        let bytes = &mut records[..chunk.len() * UNIT_BYTES];
+        let copied = memory.copy_records(
+            RecordSources::Pointers(&pointers[..chunk.len()]),
+            &UNIT_LAYOUT,
+            bytes,
+        );
+        for (row, unit) in chunk.iter_mut().enumerate() {
+            let unit_pointer = pointers[row];
+            let record = &mut bytes[row * UNIT_BYTES..(row + 1) * UNIT_BYTES];
+            let mut valid = [false; UNIT_FIELDS.len()];
+            for (field, layout) in UNIT_FIELDS.iter().enumerate() {
+                let ordinal = row * UNIT_FIELDS.len() + field;
+                // The faulting field fails; later fields are read alone.
+                valid[field] = ordinal < copied
+                    || (ordinal > copied
+                        && unit_pointer != 0
+                        && unit_pointer
+                            .checked_add(layout.source_offset)
+                            .is_some_and(|at| {
+                                memory.copy(
+                                    at,
+                                    &mut record[layout.destination_offset
+                                        ..layout.destination_offset + layout.len],
+                                )
+                            }));
+            }
+            *unit = UnitCapture::default();
+            let scalars = valid
+                .iter()
+                .enumerate()
+                .all(|(field, valid)| *valid || field == UNIT_HEADER);
+            if scalars {
+                let mut inputs = unit_scalars(record);
+                let header = &UNIT_FIELDS[UNIT_HEADER];
+                if valid[UNIT_HEADER] {
+                    unit.header = record
+                        [header.destination_offset..header.destination_offset + header.len]
+                        .try_into()
+                        .unwrap();
+                } else {
+                    inputs.origins_len = Err(Failure::Unreadable);
+                }
+                unit.inputs = Ok(inputs);
+            }
+        }
+    }
+
+    // Admit each readable header's rows to the arena in unit order.
+    let mut used = OriginsUse::default();
+    for unit in units.iter_mut() {
+        let Ok(inputs) = &mut unit.inputs else {
+            continue;
+        };
+        if inputs.origins_len.is_err() {
+            continue;
+        }
+        let Some(array) = Array::from_header(unit.header, ORIGIN_STRIDE) else {
+            inputs.origins_len = Err(Failure::InvalidOrigins);
+            continue;
+        };
+        let count = array.count as usize;
+        used.required = used.required.saturating_add(count);
+        let Some(end) = used.len.checked_add(count) else {
+            inputs.origins_len = Err(Failure::OriginsCapacity { required: count });
+            continue;
+        };
+        if end > origins.len() {
+            if !growing {
+                inputs.origins_len = Err(Failure::OriginsCapacity { required: count });
+                continue;
+            }
+            let len = origins.len().saturating_mul(2).max(end);
+            if crate::allocation::resize_default(origins, len).is_err() {
+                inputs.origins_len = Err(Failure::Allocation);
+                continue;
+            }
+        }
+        unit.origins_start = used.len;
+        used.len = end;
+        inputs.origins_len = Ok(count);
+    }
+
+    // Origin rows of every admitted unit, a batch of rows per gather.
+    let mut batch = OriginBatch::default();
+    for index in 0..units.len() {
+        let unit = units[index];
+        let count = match unit.inputs {
+            Ok(Inputs {
+                origins_len: Ok(count),
+                ..
+            }) if count != 0 => count,
+            _ => continue,
+        };
+        let Some(array) = Array::from_header(unit.header, ORIGIN_STRIDE) else {
+            continue;
+        };
+        for element in 0..count {
+            let Some(address) = array.element(element as u32, ORIGIN_STRIDE) else {
+                if let Ok(inputs) = &mut units[index].inputs {
+                    inputs.origins_len = Err(Failure::InvalidOrigins);
+                }
+                break;
+            };
+            batch.push(address, index, unit.origins_start + element);
+            if batch.len == BATCH {
+                batch.flush(memory, units, origins);
+            }
+        }
+    }
+    batch.flush(memory, units, origins);
+
+    // The same headers again: a header that changed while its rows were read
+    // withholds them, as the single-unit reader's witness does.
+    let mut indices = [0usize; BATCH];
+    let mut len = 0;
+    for index in 0..units.len() {
+        if matches!(
+            units[index].inputs,
+            Ok(Inputs {
+                origins_len: Ok(count),
+                ..
+            }) if count != 0
+        ) {
+            indices[len] = index;
+            len += 1;
+            if len == BATCH {
+                witness_headers(memory, &pointer, &indices[..len], units);
+                len = 0;
+            }
+        }
+    }
+    witness_headers(memory, &pointer, &indices[..len], units);
+    used
+}
+
+/// Origin rows waiting for one gather: their addresses, owning units and
+/// arena slots.
+struct OriginBatch {
+    addresses: [usize; BATCH],
+    owners: [usize; BATCH],
+    slots: [usize; BATCH],
+    len: usize,
+}
+
+impl Default for OriginBatch {
+    fn default() -> Self {
+        Self {
+            addresses: [0; BATCH],
+            owners: [0; BATCH],
+            slots: [0; BATCH],
+            len: 0,
+        }
+    }
+}
+
+impl OriginBatch {
+    fn push(&mut self, address: usize, owner: usize, slot: usize) {
+        self.addresses[self.len] = address;
+        self.owners[self.len] = owner;
+        self.slots[self.len] = slot;
+        self.len += 1;
+    }
+
+    /// Gather the waiting rows. A faulting row withholds its unit's origins
+    /// and the gather resumes after it.
+    fn flush(&mut self, memory: &impl Memory, units: &mut [UnitCapture], origins: &mut [Origin]) {
+        let mut bytes = [0u8; BATCH * ORIGIN_BYTES];
+        let mut done = 0;
+        while done < self.len {
+            let rest = self.len - done;
+            let copied = memory.copy_records(
+                RecordSources::Pointers(&self.addresses[done..self.len]),
+                &ORIGIN_LAYOUT,
+                &mut bytes[..rest * ORIGIN_BYTES],
+            );
+            let rows = (copied / ORIGIN_FIELDS.len()).min(rest);
+            for row in 0..rows {
+                let record = &bytes[row * ORIGIN_BYTES..(row + 1) * ORIGIN_BYTES];
+                origins[self.slots[done + row]] = Origin {
+                    province: i32::from_le_bytes(record[16..20].try_into().unwrap()),
+                    requested: i64::from_le_bytes(record[..8].try_into().unwrap()),
+                    received: i64::from_le_bytes(record[8..16].try_into().unwrap()),
+                };
+            }
+            done += rows;
+            if done < self.len {
+                if let Ok(inputs) = &mut units[self.owners[done]].inputs {
+                    inputs.origins_len = Err(Failure::Unreadable);
+                }
+                done += 1;
+            }
+        }
+        self.len = 0;
+    }
+}
+
+/// Read the origin headers of `indices` again and withhold the origins of
+/// each unit whose header is unreadable or changed.
+fn witness_headers(
+    memory: &impl Memory,
+    pointer: &impl Fn(usize) -> usize,
+    indices: &[usize],
+    units: &mut [UnitCapture],
+) {
+    if indices.is_empty() {
+        return;
+    }
+    let mut pointers = [0usize; BATCH];
+    for (slot, &index) in pointers.iter_mut().zip(indices) {
+        *slot = pointer(index);
+    }
+    let mut headers = [0u8; BATCH * 16];
+    let copied = memory.copy_records(
+        RecordSources::Pointers(&pointers[..indices.len()]),
+        &HEADER_LAYOUT,
+        &mut headers[..indices.len() * 16],
+    );
+    for (row, &index) in indices.iter().enumerate() {
+        let header = &mut headers[row * 16..(row + 1) * 16];
+        let read = row < copied
+            || (row > copied
+                && match pointers[row].checked_add(ORIGINS) {
+                    Some(at) if pointers[row] != 0 => memory.copy(at, header),
+                    _ => false,
+                });
+        let unit = &mut units[index];
+        let failure = if !read {
+            Some(Failure::Unreadable)
+        } else if header[..] != unit.header[..] {
+            Some(Failure::OriginsChanged)
+        } else {
+            None
+        };
+        if let (Some(failure), Ok(inputs)) = (failure, &mut unit.inputs) {
+            inputs.origins_len = Err(failure);
+        }
+    }
 }
 
 /// Off-hour sizing only: the same native origin header, without scalar or

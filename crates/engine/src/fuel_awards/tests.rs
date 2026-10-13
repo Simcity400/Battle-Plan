@@ -5,10 +5,36 @@ use std::{cell::Cell, collections::BTreeMap};
 struct MemoryMap {
     spans: BTreeMap<usize, Vec<u8>>,
     reads: Cell<usize>,
+    /// Each call's (first) address and length, in order.
+    log: std::cell::RefCell<Vec<(usize, usize)>>,
 }
 impl Memory for MemoryMap {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         self.reads.set(self.reads.get() + 1);
+        self.log.borrow_mut().push((address, destination.len()));
+        self.span_copy(address, destination)
+    }
+    /// One guarded call for every span, as `LiveMemory`'s.
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.reads.set(self.reads.get() + 1);
+        self.log
+            .borrow_mut()
+            .push((addresses[0], destinations.iter().map(|d| d.len()).sum()));
+        for (copied, (address, destination)) in addresses.into_iter().zip(destinations).enumerate()
+        {
+            if !destination.is_empty() && !self.span_copy(address, destination) {
+                return copied;
+            }
+        }
+        N
+    }
+}
+impl MemoryMap {
+    fn span_copy(&self, address: usize, destination: &mut [u8]) -> bool {
         let Some((&start, bytes)) = self.spans.range(..=address).next_back() else {
             return false;
         };
@@ -21,8 +47,6 @@ impl Memory for MemoryMap {
         destination.copy_from_slice(source);
         true
     }
-}
-impl MemoryMap {
     fn span(&mut self, address: usize, len: usize) {
         self.spans.insert(address, vec![0; len]);
     }
@@ -84,6 +108,87 @@ fn fixture(count: u32) -> MemoryMap {
     }
     memory
 }
+/// The tap pair reads the status payload in one guarded copy of its exact
+/// fields and the three consumer receipts in another.
+#[test]
+fn start_and_settle_read_the_payload_and_receipts_in_one_copy_each() {
+    let mut memory = fixture(2);
+    let status = STATUS + 0x1000;
+    memory.put(status + fuel::HISTORY_INDEX, &5_i32.to_le_bytes());
+    memory.put(
+        CONSUMERS + 0x100 + crate::fuel_consumer_data::RECEIVED,
+        &3_i64.to_le_bytes(),
+    );
+    memory.reads.set(0);
+    let started = start(&memory, 0, status).unwrap();
+    // Status identity, singleton, two roster headers, owner, the owner's
+    // nine identity reads, backlink, instance and the payload.
+    assert_eq!(memory.reads.get(), 17);
+    assert_eq!(
+        (
+            started.base,
+            started.states,
+            started.cost,
+            started.pending_gain
+        ),
+        (-17, 23, -5, i64::MAX)
+    );
+    assert_eq!((started.history_index, started.remaining_hours), (5, 7));
+    memory.reads.set(0);
+    let settled = settle(&memory, 0, started, status).unwrap();
+    // Outgoing lend-lease, the consumer header, the receipts and the tank.
+    assert_eq!(memory.reads.get(), 17 + 4);
+    assert_eq!(settled.received, [3, 0, 0]);
+}
+
+/// A memory whose `holes` never read, as unbacked bytes would not.
+struct Holes<'a> {
+    inner: &'a MemoryMap,
+    holes: [std::ops::Range<usize>; 2],
+}
+impl Memory for Holes<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        let end = address + destination.len();
+        !self
+            .holes
+            .iter()
+            .any(|hole| address < hole.end && hole.start < end)
+            && self.inner.copy(address, destination)
+    }
+}
+
+/// The tap pair copies only its operand fields: bytes between them, such as
+/// status+0x58 or the gap between two consumer receipts, are never read. An
+/// unreadable operand still refuses with the operand message.
+#[test]
+fn start_and_settle_read_only_their_operand_fields() {
+    let memory = fixture(1);
+    let status = STATUS + 0x1000;
+    let consumers = CONSUMERS + 0x100;
+    let gaps = Holes {
+        inner: &memory,
+        holes: [
+            status + 0x58..status + 0x60,
+            consumers + 0x18..consumers + 0x28,
+        ],
+    };
+    let started = start(&gaps, 0, status).unwrap();
+    assert_eq!(start(&memory, 0, status), Ok(started));
+    assert_eq!(
+        settle(&gaps, 0, started, status),
+        settle(&memory, 0, started, status)
+    );
+    assert!(settle(&gaps, 0, started, status).is_ok());
+    let operand = Holes {
+        inner: &memory,
+        holes: [status + 0x70..status + 0x71, 0..0],
+    };
+    assert_eq!(
+        start(&operand, 0, status),
+        Err("fuel award operand unreadable or overflowed")
+    );
+}
+
 #[test]
 fn applied_acquisition_at_5000_countries_preserves_wrap_zero_and_loaded_pending() {
     let mut memory = fixture(5000);
@@ -214,4 +319,88 @@ fn native_quantity_conversion_preserves_signed_remainders_and_i64_extremes() {
     ] {
         assert_eq!(i128::from(quantity(raw)), i128::from(raw) * 32768 / 100000);
     }
+}
+
+/// A settle that takes its start's located country, for the same status,
+/// reads only the payload and its own fields: the status identity, owner,
+/// country tables, backlink and instance that nothing between BEGIN and END
+/// writes are BEGIN's. It settles as a fresh read does, and a changed
+/// applied operand still refuses as a fresh read does. A status other than
+/// the start's is read whole; one naming another owner reads the country
+/// tables as a fresh read does.
+#[test]
+fn a_held_settle_reads_only_the_payload_and_settles_as_a_fresh_read() {
+    let mut memory = fixture(2);
+    let status = STATUS + 0x1000;
+    memory.reads.set(0);
+    let (begun, located, taken) = start_held(&memory, 0, status, None).unwrap();
+    assert!(!taken);
+    assert_eq!(memory.reads.get(), 17);
+    assert_eq!(begun, start(&memory, 0, status).unwrap());
+    memory.put(status + 0x68, &1_i64.to_le_bytes());
+    memory.log.borrow_mut().clear();
+    let fresh = settle(&memory, 0, begun, status);
+    let every = memory.log.take();
+    memory.reads.set(0);
+    let held = settle_held(&memory, 0, begun, status, Some(&located));
+    assert_eq!(memory.reads.get(), 1 + 4);
+    assert_eq!(held, fresh.map(|settled| (settled, true)));
+    assert!(held.is_ok());
+    // The payload, then the settle's own reads.
+    assert_eq!(memory.log.take(), every[16..].to_vec());
+    // A status other than the start's is read whole and refuses as a fresh
+    // read does.
+    memory.log.borrow_mut().clear();
+    let other_status = settle_held(&memory, 0, begun, STATUS + 0x2000, Some(&located));
+    assert_eq!(
+        other_status,
+        settle(&memory, 0, begun, STATUS + 0x2000).map(|s| (s, false))
+    );
+    // Another root's located country is not taken: the status names its own
+    // owner, which is located through the country tables as a fresh read.
+    let (_, other, _) = start_held(&memory, 0, STATUS + 0x2000, None).unwrap();
+    memory.log.borrow_mut().clear();
+    assert_eq!(
+        start_held(&memory, 0, status, Some(&other)).map(|(started, _, taken)| (started, taken)),
+        start_held(&memory, 0, status, None).map(|(started, _, taken)| (started, taken))
+    );
+    let both = memory.log.take();
+    assert_eq!(both[..both.len() / 2], both[both.len() / 2..]);
+    // A changed applied operand refuses as a fresh read does.
+    memory.put(status + fuel::GAIN, &100_i64.to_le_bytes());
+    assert_eq!(
+        settle_held(&memory, 0, begun, status, Some(&located)).map(|(settled, _)| settled),
+        settle(&memory, 0, begun, status)
+    );
+    assert!(settle(&memory, 0, begun, status).is_err());
+    memory.put(status + fuel::GAIN, &(-17_i64).to_le_bytes());
+    // The identity is BEGIN's: an instance that changed after it (which no
+    // writer between BEGIN and END does) is not read again.
+    memory.put(
+        COUNTRY + 0x2000 + ccountry::ID_INSTANCE,
+        &9002_u32.to_le_bytes(),
+    );
+    assert!(settle(&memory, 0, begun, status).is_err());
+    assert_eq!(settle_held(&memory, 0, begun, status, Some(&located)), held);
+}
+
+/// A start that takes a held owner still reads the game-state singleton and
+/// both country headers before the owner, as a fresh start does: one that
+/// cannot read a header refuses with the fresh start's reason.
+#[test]
+fn a_held_start_keeps_the_country_table_controls() {
+    let memory = fixture(1);
+    let status = STATUS + 0x1000;
+    let (_, located, _) = start_held(&memory, 0, status, None).unwrap();
+    let header = STATE + cgame_state::COUNTRIES;
+    let faulted = Holes {
+        inner: &memory,
+        holes: [header..header + 16, 0..0],
+    };
+    let fresh = start_held(&faulted, 0, status, None).map(|(started, _, _)| started);
+    assert!(fresh.is_err());
+    assert_eq!(
+        start_held(&faulted, 0, status, Some(&located)).map(|(started, _, _)| started),
+        fresh
+    );
 }

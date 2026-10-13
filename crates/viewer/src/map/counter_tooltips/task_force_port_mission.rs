@@ -1,8 +1,11 @@
 //! Port-counter strike-force status.
 //!
-//! Ship operands establish combat power, score and readiness. Coarse intel uses
-//! a deterministic endpoint range. Products wrap at 64 bits before truncating
-//! division. Unit selection and client tooltip or animation caches are not inputs.
+//! Strike-force combat power comes from each ship's strike words, which are not
+//! recorded: a reached readiness arm (likelihood, ready or too strong) with a
+//! ship to weigh refuses by name. The game scores power and decides exact
+//! readiness, using the deterministic range for
+//! coarse intel. Products wrap at 64 bits before truncating division.
+//! Neither unit selection nor a client tooltip/animation cache is an input.
 
 use super::*;
 use replay::rows::{
@@ -12,13 +15,6 @@ use std::io;
 
 const SCALE: i64 = 100_000;
 const DIVISION_REFUSED: i64 = 0xffff_ffff;
-
-#[derive(Clone, Debug)]
-struct Guns {
-    /// Native indices: heavy 0, torpedo 1, light 2.
-    cooldown: [i64; 3],
-    minimum: i64,
-}
 
 #[derive(Clone, Debug)]
 struct ScoreDefines {
@@ -31,7 +27,6 @@ struct ScoreDefines {
 /// likelihood defines, and early status arms consume none of these values.
 #[derive(Clone, Debug)]
 pub(crate) struct Defines {
-    guns: Result<Guns, String>,
     score: Result<ScoreDefines, String>,
     estimate_width: [Result<i32, String>; 2],
     likelihood: [Result<i64, String>; 3],
@@ -39,25 +34,6 @@ pub(crate) struct Defines {
 
 impl Defines {
     pub(crate) fn read(d: &installed_content::defines::Defines) -> Self {
-        let guns = (|| {
-            let values = d.fixed5_array("NNavy", "BASE_GUN_COOLDOWNS")?;
-            let cooldown = values
-                .get(..3)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "NNavy.BASE_GUN_COOLDOWNS has fewer than three native slots",
-                    )
-                })?
-                .try_into()
-                .expect("three slots admitted");
-            Ok::<_, io::Error>(Guns {
-                cooldown,
-                // Apply the registry's lower bound.
-                minimum: d.fixed5("NNavy", "MIN_GUN_COOLDOWN")?.max(1_000),
-            })
-        })()
-        .map_err(|e| e.to_string());
         let score = (|| {
             let keys = [
                 "AGGRESSION_HEAVY_GUN_EFFICIENCY_ON_HEAVY_SHIPS",
@@ -82,7 +58,6 @@ impl Defines {
         })()
         .map_err(|e| e.to_string());
         Self {
-            guns,
             score,
             // Integer content values clamp to 0..100.
             estimate_width: [
@@ -128,16 +103,8 @@ fn multiply(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / SCALE
 }
 
-fn rate(cooldown: i64) -> i64 {
-    if cooldown == 0 {
-        DIVISION_REFUSED
-    } else {
-        10_000_000_000 / cooldown
-    }
-}
-
-/// Combat-power aggregate operands used by the readiness score. Unread fields
-/// do not establish a substitute for a missing reached operand.
+/// Only members read by the power scorer. The aggregate's +0/+38/+40/+48/+70/+78
+/// are never consumed by either reached readiness chain and are not recorded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Power {
     ships: i32,
@@ -424,7 +391,7 @@ fn mission<'a>(
         .ok_or(
             "TaskForceCounterInputs.port_mission: task force port mission sample is unreadable",
         )?;
-    if inputs.sample_hour != context.frame.hour {
+    if !inputs.sample_hour.fresh_at(context.frame.hour) {
         return Err(format!(
             "task force {} port mission sample is from hour {}, not {}",
             input.task_force, inputs.sample_hour, context.frame.hour
@@ -477,69 +444,17 @@ fn roster<'a>(
     Ok(result)
 }
 
-fn power(context: &Context<'_>, target: u64, d: &Defines) -> Result<Power, String> {
-    let roster = roster(context, target)?;
-    let mut power = Power::default();
-    if roster.is_empty() {
-        return Ok(power);
+/// Per-ship strike words (the cached light, heavy, piercing and
+/// torpedo attack and the fleet leader's torpedo cooldown modifier).
+const STRIKE_UNRECORDED: &str = "the ships' strike operands (light, heavy, piercing and torpedo attack and the torpedo cooldown modifier) are not recorded, so the strike-force readiness is unknown";
+
+/// Strike-force combat power: zero for an empty roster; a ship's strike words
+/// are not recorded, so a roster with ships refuses by name.
+fn power(context: &Context<'_>, target: u64) -> Result<Power, String> {
+    if roster(context, target)?.is_empty() {
+        return Ok(Power::default());
     }
-    let guns = d.guns.as_ref().map_err(Clone::clone)?;
-    for (ship, model) in roster {
-        let strike = model
-            .strike
-            .require("ShipModels.strike")?
-            .as_ref()
-            .ok_or_else(|| format!("ship {} strike inputs are unreadable", ship.id))?;
-        let counter = model.counter.as_ref().unwrap();
-        let heavy_rate = rate(guns.cooldown[0].max(guns.minimum));
-        let light_rate = rate(guns.cooldown[2].max(guns.minimum));
-        let word = |value: Option<i64>, field: &str| {
-            value.ok_or_else(|| {
-                format!(
-                    "ShipModels.strike.{field} for ship {} is unreadable",
-                    ship.id
-                )
-            })
-        };
-        let torpedo_modifier = word(
-            strike.torpedo_cooldown_modifier,
-            "torpedo_cooldown_modifier",
-        )?;
-        let torpedo_rate = rate(
-            multiply(guns.cooldown[1], torpedo_modifier.wrapping_add(SCALE)).max(guns.minimum),
-        );
-        power.ships = power.ships.wrapping_add(1);
-        if model.formation_flags & (1 << 7) != 0 {
-            power.carriers = power.carriers.wrapping_add(1);
-        } else if model.formation_flags & (1 << 8) != 0 {
-            power.capitals = power.capitals.wrapping_add(1);
-        }
-        power.light = power.light.wrapping_add(multiply(
-            light_rate,
-            word(strike.light_attack, "light_attack")?,
-        ));
-        power.heavy = power.heavy.wrapping_add(multiply(
-            heavy_rate,
-            word(strike.heavy_attack, "heavy_attack")?,
-        ));
-        power.light_piercing = power.light_piercing.wrapping_add(multiply(
-            light_rate,
-            word(strike.light_piercing, "light_piercing")?,
-        ));
-        power.torpedo = power.torpedo.wrapping_add(multiply(
-            torpedo_rate,
-            word(strike.torpedo_attack, "torpedo_attack")?,
-        ));
-        power.strength = power.strength.wrapping_add(ship.strength);
-        power.maximum_strength = power
-            .maximum_strength
-            .wrapping_add(counter.maximum_strength.max(100));
-        power.organisation = power.organisation.wrapping_add(ship.organisation);
-        power.maximum_organisation = power
-            .maximum_organisation
-            .wrapping_add(counter.maximum_organisation);
-    }
-    Ok(power)
+    Err(STRIKE_UNRECORDED.into())
 }
 
 fn avoidance(
@@ -611,8 +526,8 @@ fn status(
         .content
         .ok_or("port strike-force content is unavailable")?;
     let d = &content.counters.port_mission_defines;
-    let own_power = power(context, own.id, d)?;
-    let target_power = power(context, target, d)?;
+    let own_power = power(context, own.id)?;
+    let target_power = power(context, target)?;
     let aggression = if input.running_away != 0 {
         0
     } else {
@@ -856,7 +771,7 @@ mod tests {
     use crate::map::{test_frame, test_put};
     use replay::rows::{
         CountryLinkRow, CountryRow, NavalEngagementTarget, NavalSearcher, ShipCounterInputs,
-        ShipStrikeInputs, TableRows,
+        TableRows,
     };
 
     fn with_context(frame: &DecodedFrame, run: impl FnOnce(&Context<'_>)) {
@@ -905,7 +820,7 @@ mod tests {
 
     fn packet(entries: Vec<NavalSearcher>) -> NavalPortMissionInputs {
         NavalPortMissionInputs {
-            sample_hour: 7,
+            sample_hour: replay::rows::PacketHour::Stamped(7),
             searching: Some(entries),
             ..Default::default()
         }
@@ -1036,7 +951,7 @@ mod tests {
             assert_eq!(searcher(context, 50).unwrap(), None)
         });
         let stale = task_input(NavalPortMissionInputs {
-            sample_hour: 6,
+            sample_hour: replay::rows::PacketHour::Stamped(6),
             searching: Some(Vec::new()),
             ..Default::default()
         });
@@ -1222,7 +1137,7 @@ mod tests {
                 TableRows::TaskForceCounterInputs(vec![TaskForceCounterInputRow {
                     engagement_rule: rule,
                     ..task_input(NavalPortMissionInputs {
-                        sample_hour: 7,
+                        sample_hour: replay::rows::PacketHour::Stamped(7),
                         engagement_target: Some(target),
                         ..Default::default()
                     })
@@ -1238,7 +1153,7 @@ mod tests {
             TableRows::TaskForceCounterInputs(vec![TaskForceCounterInputRow {
                 engagement_rule: 4,
                 ..task_input(NavalPortMissionInputs {
-                    sample_hour: 7,
+                    sample_hour: replay::rows::PacketHour::Stamped(7),
                     engagement_target: Some(NavalEngagementTarget {
                         reference: 101,
                         resolves: None,
@@ -1256,145 +1171,44 @@ mod tests {
         });
     }
 
+    /// The strike words are not recorded: a roster with ships refuses the
+    /// readiness arms by name, while an empty roster's power stays zero.
     #[test]
-    fn ship_power_uses_current_strike_words_roster_order_and_native_carrier_precedence() {
+    fn ship_power_refuses_without_strike_words_and_empty_rosters_stay_zero() {
         let mut frame = test_frame(7);
         test_put(
             &mut frame,
-            TableRows::Ships(vec![
-                ShipRow {
-                    id: 10,
-                    task_force: 50,
-                    strength: 50_000,
-                    organisation: 25_000,
-                    ..Default::default()
-                },
-                ShipRow {
-                    id: 11,
-                    task_force: 50,
-                    strength: 100_000,
-                    organisation: 50_000,
-                    ..Default::default()
-                },
-            ]),
-        );
-        let strike = ShipStrikeInputs {
-            light_attack: Some(200_000),
-            heavy_attack: Some(300_000),
-            light_piercing: Some(400_000),
-            torpedo_attack: Some(500_000),
-            torpedo_cooldown_modifier: Some(0),
-        };
-        let model = |ship, ordinal, flags, maximum_organisation, strike| ShipModelRow {
-            ship,
-            formation_flags: flags,
-            counter: Some(ShipCounterInputs {
-                roster_ordinal: ordinal,
-                maximum_strength: 100_000,
-                maximum_organisation,
+            TableRows::Ships(vec![ShipRow {
+                id: 10,
+                task_force: 50,
+                strength: 50_000,
+                organisation: 25_000,
                 ..Default::default()
-            }),
-            strike: Some(strike).into(),
-            ..Default::default()
-        };
-        let first = model(10, 0, (1 << 7) | (1 << 8), 200_000, strike);
-        let second = model(
-            11,
-            1,
-            1 << 8,
-            400_000,
-            ShipStrikeInputs {
-                torpedo_cooldown_modifier: Some(SCALE),
-                ..strike
-            },
+            }]),
         );
         test_put(
             &mut frame,
-            TableRows::ShipModels(vec![first.clone(), second.clone()]),
+            TableRows::ShipModels(vec![ShipModelRow {
+                ship: 10,
+                formation_flags: 1 << 8,
+                counter: Some(ShipCounterInputs {
+                    roster_ordinal: 0,
+                    maximum_strength: 100_000,
+                    maximum_organisation: 200_000,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
         );
-        let d = Defines {
-            guns: Ok(Guns {
-                cooldown: [100_000, 200_000, 400_000],
-                minimum: 1_000,
-            }),
-            ..score_defines()
-        };
         with_context(&frame, |context| {
-            assert_eq!(
-                super::power(context, 50, &d).unwrap(),
-                Power {
-                    ships: 2,
-                    capitals: 1,
-                    carriers: 1,
-                    light: 100_000,
-                    heavy: 600_000,
-                    light_piercing: 200_000,
-                    torpedo: 375_000,
-                    strength: 150_000,
-                    maximum_strength: 200_000,
-                    organisation: 75_000,
-                    maximum_organisation: 600_000,
-                }
-            )
+            assert_eq!(super::power(context, 50), Err(STRIKE_UNRECORDED.into()));
+            // Another task force's empty roster weighs nothing.
+            assert_eq!(super::power(context, 51), Ok(Power::default()));
         });
-        for (missing, field) in [
-            (
-                ShipStrikeInputs {
-                    light_attack: None,
-                    ..strike
-                },
-                "light_attack",
-            ),
-            (
-                ShipStrikeInputs {
-                    heavy_attack: None,
-                    ..strike
-                },
-                "heavy_attack",
-            ),
-            (
-                ShipStrikeInputs {
-                    light_piercing: None,
-                    ..strike
-                },
-                "light_piercing",
-            ),
-            (
-                ShipStrikeInputs {
-                    torpedo_attack: None,
-                    ..strike
-                },
-                "torpedo_attack",
-            ),
-            (
-                ShipStrikeInputs {
-                    torpedo_cooldown_modifier: None,
-                    ..strike
-                },
-                "torpedo_cooldown_modifier",
-            ),
-        ] {
-            test_put(
-                &mut frame,
-                TableRows::ShipModels(vec![
-                    ShipModelRow {
-                        strike: Some(missing).into(),
-                        ..first.clone()
-                    },
-                    second.clone(),
-                ]),
-            );
-            with_context(&frame, |context| {
-                assert!(super::power(context, 50, &d).unwrap_err().contains(field))
-            });
-        }
         let mut empty = test_frame(7);
         test_put(&mut empty, TableRows::Ships(Vec::new()));
         with_context(&empty, |context| {
-            assert_eq!(
-                super::power(context, 50, &thresholds([Ok(0), Ok(0), Ok(0)])).unwrap(),
-                Power::default()
-            )
+            assert_eq!(super::power(context, 50), Ok(Power::default()))
         });
     }
 
@@ -1423,7 +1237,6 @@ mod tests {
 
     fn thresholds(values: [Result<i64, String>; 3]) -> Defines {
         Defines {
-            guns: Err("unreached guns".into()),
             score: Err("unreached score".into()),
             estimate_width: [Err("unreached low".into()), Err("unreached medium".into())],
             likelihood: values,
@@ -1437,7 +1250,6 @@ mod tests {
         }
         assert_eq!(fraction(1, 0).unwrap(), 4_294_967_295);
         assert_eq!(fraction(-5, 3).unwrap(), -166_666);
-        assert_eq!(rate(0), 4_294_967_295);
         // Native IMUL wraps before the signed division, rather than widening.
         assert_eq!(multiply(i64::MAX, 2), 0);
         assert!(fraction(1_i64 << 58, -1).is_err());

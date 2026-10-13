@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    ccountry::synthetic::World, cdiplomacy_status, cgame_state, cpdx_array::Array,
-    cweather_manager, modifier_definition,
+    ccountry::synthetic::World, cdiplomacy_status, cgame_state, cmodifier, cpdx_array::Array,
+    crelation_status, cweather_manager, modifier_definition,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -13,8 +13,6 @@ const MODULE: usize = 0x4000_0000;
 struct Fixture {
     world: World,
     globals: BTreeMap<usize, Vec<u8>>,
-    diplomacy: usize,
-    matrix: usize,
     regions: Vec<TransportRegion>,
 }
 
@@ -124,8 +122,6 @@ impl Fixture {
         Self {
             world,
             globals,
-            diplomacy,
-            matrix,
             regions,
         }
     }
@@ -135,25 +131,6 @@ impl Fixture {
             .unwrap()
             .resolve(1)
             .unwrap()
-    }
-
-    fn province_domain(&mut self) -> [usize; 4] {
-        let array = self.world.alloc(6 * 8);
-        self.world
-            .array(self.world.game_state() + cgame_state::PROVINCES, array, 6);
-        // The reserved zero slot is not a province, even when non-null.
-        self.world.u64(array, 1);
-        let mut provinces = [0; 4];
-        for (index, (slot, raw)) in [(1, 0), (2, 3), (3, 1), (5, 3)].into_iter().enumerate() {
-            let pointer = self.world.alloc(0x200);
-            self.world.u64(array + slot as usize * 8, pointer as u64);
-            self.world
-                .u64(pointer, (MODULE + cprovince::VTABLE_RVA) as u64);
-            self.world.u32(pointer + cprovince::ID, slot);
-            self.world.u32(pointer + cprovince::CONTROLLER, raw);
-            provinces[index] = pointer;
-        }
-        provinces
     }
 }
 
@@ -504,170 +481,11 @@ fn transport_refusal_capacity_tracks_five_thousand_live_countries() {
 }
 
 #[test]
-fn transient_river_metadata_fault_preserves_absent_key_zero_without_retry() {
-    let source = Fixture::new();
-    let memory = OneShot {
-        source: &source,
-        fault: MODULE + modifier_definition::TABLE_RVA,
-        failed: Cell::new(false),
-        reads: RefCell::new(Vec::new()),
-    };
-    let countries = ccountry::Reader::new(&memory, MODULE, source.world.game_state()).unwrap();
-    let mut packet = CountryMovementPacket::try_new(8).unwrap();
-    let mut output = [ControllerRiverSpeed::default(); 3];
-    let capture = capture_river(
-        &memory,
-        MODULE,
-        &countries,
-        source.owner(),
-        &[0, 1, 2],
-        &mut output,
-        &mut packet,
-    );
-    assert_eq!((capture.len, capture.required), (Ok(3), 3));
-    assert!(capture.first_failure.is_some());
-    assert_eq!(output.map(|row| row.modifier), [None, Some(0), None]);
-    assert_eq!(
-        memory
-            .reads
-            .borrow()
-            .iter()
-            .filter(|(address, _)| *address == memory.fault)
-            .count(),
-        1
-    );
-    packet.clear();
-    let capture = capture_river(
-        &memory,
-        MODULE,
-        &countries,
-        source.owner(),
-        &[0, 1, 2],
-        &mut output,
-        &mut packet,
-    );
-    assert_eq!(capture.first_failure, None);
-    assert_eq!(
-        output.map(|row| row.modifier),
-        [Some(100_000), Some(0), Some(0)]
-    );
-    packet.clear();
-}
-
-#[test]
-fn river_domain_preserves_real_zero_alias_identity_and_effective_values() {
-    let source = Fixture::new();
-    let memory = observed(&source, None);
-    let countries = ccountry::Reader::new(&memory, MODULE, source.world.game_state()).unwrap();
-    let owner = countries.resolve(1).unwrap();
-    memory.reads.borrow_mut().clear();
-    let mut output = [ControllerRiverSpeed::default(); 3];
-    let mut packet = CountryMovementPacket::try_new(8).unwrap();
-    let capture = capture_river(
-        &memory,
-        MODULE,
-        &countries,
-        owner,
-        &[0, 1, 2],
-        &mut output,
-        &mut packet,
-    );
-    assert_eq!(capture.len, Ok(3));
-    assert_eq!(capture.required, 3);
-    assert_eq!(capture.first_failure, None);
-    assert_eq!(
-        output,
-        [
-            ControllerRiverSpeed {
-                target_slot: 0,
-                modifier: Some(100_000)
-            },
-            ControllerRiverSpeed {
-                target_slot: 1,
-                modifier: Some(0)
-            },
-            ControllerRiverSpeed {
-                target_slot: 2,
-                modifier: Some(0)
-            },
-        ]
-    );
-    let reads = memory.reads.borrow();
-    assert_eq!(
-        reads
-            .iter()
-            .filter(|(address, _)| *address == owner.pointer + ccountry::DIPLOMACY_STATUS)
-            .count(),
-        1
-    );
-    assert_eq!(
-        reads
-            .iter()
-            .filter(|(address, _)| *address == source.diplomacy + cdiplomacy_status::RELATIONS)
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn middle_river_fault_preserves_later_entries_and_complete_demand() {
-    let source = Fixture::new();
-    let memory = observed(&source, Some(source.matrix + 8));
-    let countries = ccountry::Reader::new(&memory, MODULE, source.world.game_state()).unwrap();
-    let mut output = [ControllerRiverSpeed::default(); 3];
-    let mut packet = CountryMovementPacket::try_new(8).unwrap();
-    let capture = capture_river(
-        &memory,
-        MODULE,
-        &countries,
-        source.owner(),
-        &[0, 1, 2],
-        &mut output,
-        &mut packet,
-    );
-    assert_eq!((capture.len, capture.required), (Ok(3), 3));
-    assert!(capture.first_failure.is_some());
-    assert_eq!(output[0].modifier, Some(100_000));
-    assert_eq!(
-        output[1],
-        ControllerRiverSpeed {
-            target_slot: 1,
-            modifier: None
-        }
-    );
-    assert_eq!(output[2].modifier, Some(0));
-    assert_eq!(
-        memory
-            .reads
-            .borrow()
-            .iter()
-            .filter(|(address, _)| *address == source.matrix + 8)
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn river_root_fault_is_not_retried_and_does_not_deny_transport() {
+fn diplomacy_root_fault_does_not_deny_transport() {
     let source = Fixture::new();
     let owner = source.owner();
-    let root = owner.pointer + ccountry::DIPLOMACY_STATUS;
-    let memory = observed(&source, Some(root));
-    let countries = ccountry::Reader::new(&memory, MODULE, source.world.game_state()).unwrap();
-    let mut river = [ControllerRiverSpeed::default(); 3];
+    let memory = observed(&source, Some(owner.pointer + ccountry::DIPLOMACY_STATUS));
     let mut packet = CountryMovementPacket::try_new(8).unwrap();
-    let capture = capture_river(
-        &memory,
-        MODULE,
-        &countries,
-        owner,
-        &[0, 1, 2],
-        &mut river,
-        &mut packet,
-    );
-    assert_eq!(capture.len, Ok(3));
-    assert!(capture.first_failure.is_some());
-    assert!(river.iter().all(|row| row.modifier.is_none()));
     let mut transport = [RegionTransportSpeed::default(); 3];
     let capture = capture_transport(
         &memory,
@@ -681,15 +499,6 @@ fn river_root_fault_is_not_retried_and_does_not_deny_transport() {
     assert_eq!(capture.len, Ok(3));
     assert_eq!(capture.first_failure, None);
     assert_eq!(transport.map(|row| row.speed), [Some(200_000); 3]);
-    assert_eq!(
-        memory
-            .reads
-            .borrow()
-            .iter()
-            .filter(|(address, _)| *address == root)
-            .count(),
-        1
-    );
     packet.clear();
 }
 
@@ -729,15 +538,6 @@ fn empty_domains_are_lazy_and_zero_owner_is_an_explicit_refusal() {
     let owner = countries.resolve(1).unwrap();
     memory.reads.borrow_mut().clear();
     let mut packet = CountryMovementPacket::try_new(8).unwrap();
-    let river = capture_river(
-        &memory,
-        MODULE,
-        &countries,
-        owner,
-        &[],
-        &mut [],
-        &mut packet,
-    );
     let transport = capture_transport(
         &memory,
         MODULE,
@@ -747,18 +547,12 @@ fn empty_domains_are_lazy_and_zero_owner_is_an_explicit_refusal() {
         &mut [],
         &mut packet,
     );
-    assert_eq!(river.len, Ok(0));
     assert_eq!(transport.len, Ok(0));
     let zero = ccountry::Country {
         pointer: owner.pointer,
         canonical_slot: 0,
         id: 0,
     };
-    assert!(
-        capture_river(&memory, MODULE, &countries, zero, &[], &mut [], &mut packet)
-            .len
-            .is_err()
-    );
     assert!(
         capture_transport(
             &memory,
@@ -782,20 +576,10 @@ fn capacity_refusals_preserve_full_mod_sized_domain_without_native_reads() {
     let countries = ccountry::Reader::new(&memory, MODULE, source.world.game_state()).unwrap();
     let owner = countries.resolve(1).unwrap();
     memory.reads.borrow_mut().clear();
-    let controllers: Vec<u32> = (0..5_001).collect();
     let regions: Vec<TransportRegion> = (0..5_000)
         .map(|id| TransportRegion { id, pointer: 0 })
         .collect();
     let mut packet = CountryMovementPacket::try_new(8).unwrap();
-    let river = capture_river(
-        &memory,
-        MODULE,
-        &countries,
-        owner,
-        &controllers,
-        &mut [],
-        &mut packet,
-    );
     let transport = capture_transport(
         &memory,
         MODULE,
@@ -805,7 +589,6 @@ fn capacity_refusals_preserve_full_mod_sized_domain_without_native_reads() {
         &mut [],
         &mut packet,
     );
-    assert_eq!((river.len, river.required), (Err(RIVER_CAPACITY), 5_001));
     assert_eq!(
         (transport.len, transport.required),
         (Err(TRANSPORT_CAPACITY), 5_000)
@@ -820,21 +603,7 @@ fn duplicate_domain_keys_are_refused_before_a_native_query() {
     let countries = ccountry::Reader::new(&memory, MODULE, source.world.game_state()).unwrap();
     let owner = countries.resolve(1).unwrap();
     memory.reads.borrow_mut().clear();
-    let mut river = [ControllerRiverSpeed::default(); 2];
     let mut packet = CountryMovementPacket::try_new(8).unwrap();
-    assert!(
-        capture_river(
-            &memory,
-            MODULE,
-            &countries,
-            owner,
-            &[0, 0],
-            &mut river,
-            &mut packet
-        )
-        .len
-        .is_err()
-    );
     let repeated = [source.regions[0]; 2];
     let mut transport = [RegionTransportSpeed::default(); 2];
     assert!(
@@ -854,73 +623,48 @@ fn duplicate_domain_keys_are_refused_before_a_native_query() {
 }
 
 #[test]
-fn map_domains_resolve_aliases_preserve_live_region_zero_and_skip_nullable_slots() {
+fn region_domain_preserves_live_region_zero_and_skips_nullable_slots() {
     let mut source = Fixture::new();
-    source.province_domain();
     let state = source.world.game_state();
-    let regions = Array::read(&source, state + cgame_state::STRATEGIC_REGIONS, 8).unwrap();
+    let array = Array::read(&source, state + cgame_state::STRATEGIC_REGIONS, 8).unwrap();
     let zero = source.world.alloc(0x180);
-    source.world.u64(regions.data, zero as u64);
+    source.world.u64(array.data, zero as u64);
     source
         .world
         .u64(zero, (MODULE + cstrategic_region::VTABLE_RVA) as u64);
     source.world.u32(zero + cstrategic_region::ID, 0);
     source.world.u32(zero + cstrategic_region::RUNTIME_SLOT, 0);
-    let countries = ccountry::Reader::new(&source, MODULE, state).unwrap();
-    let mut controllers = [u32::MAX; 5];
-    let capture = capture_controller_domain(&source, MODULE, state, &countries, &mut controllers);
-    assert_eq!((capture.len, capture.required), (Ok(3), 5));
-    assert_eq!(&controllers[..3], &[0, 1, 2]);
     let mut regions = [TransportRegion::default(); 4];
     let capture = capture_region_domain(&source, MODULE, state, &mut regions);
     assert_eq!((capture.len, capture.required), (Ok(4), 4));
     assert_eq!(regions.map(|region| region.id), [0, 7, 29, 86]);
     assert_eq!(regions[0].pointer, zero);
-}
-
-#[test]
-fn failed_controller_payload_withholds_its_whole_domain_but_preserves_regions_and_bounds() {
-    let mut source = Fixture::new();
-    let provinces = source.province_domain();
-    source.world.u32(provinces[0] + cprovince::CONTROLLER, 1);
-    let state = source.world.game_state();
-    let memory = observed(&source, Some(provinces[1] + cprovince::CONTROLLER));
-    let countries = ccountry::Reader::new(&memory, MODULE, state).unwrap();
-    let mut controllers = [u32::MAX; 5];
-    let capture = capture_controller_domain(&memory, MODULE, state, &countries, &mut controllers);
-    assert!(capture.len.is_err());
-    assert_eq!(capture.required, 5);
-    assert_eq!(controllers[0], 0);
+    // A null slot is absent, not a refusal, and still counts toward the bound.
+    source.world.u64(array.data, 0);
     let mut regions = [TransportRegion::default(); 4];
-    let capture = capture_region_domain(&memory, MODULE, state, &mut regions);
+    let capture = capture_region_domain(&source, MODULE, state, &mut regions);
     assert_eq!((capture.len, capture.required), (Ok(3), 4));
     assert_eq!(
         regions[..3]
             .iter()
             .map(|region| region.id)
             .collect::<Vec<_>>(),
-        vec![7, 29, 86]
+        [7, 29, 86]
     );
 }
 
 #[test]
-fn map_domain_shortage_and_failed_hint_keep_independent_full_header_bounds() {
-    let mut source = Fixture::new();
-    source.province_domain();
+fn region_domain_shortage_and_failed_hint_keep_the_full_header_bound() {
+    let source = Fixture::new();
     let state = source.world.game_state();
     let memory = observed(&source, None);
-    let countries = ccountry::Reader::new(&memory, MODULE, state).unwrap();
-    memory.reads.borrow_mut().clear();
-    let controllers = capture_controller_domain(&memory, MODULE, state, &countries, &mut []);
     let regions = capture_region_domain(&memory, MODULE, state, &mut []);
-    assert_eq!(controllers.required, 5);
     assert_eq!(regions.required, 4);
-    assert!(controllers.len.is_err() && regions.len.is_err());
-    assert_eq!(memory.reads.borrow().len(), 2);
-    let memory = observed(&source, Some(state + cgame_state::PROVINCES));
-    let hint = domain_demand(&memory, state);
-    assert!(hint.controllers.is_err());
-    assert_eq!(hint.regions, Ok(4));
+    assert!(regions.len.is_err());
+    assert_eq!(memory.reads.borrow().len(), 1);
+    assert_eq!(region_demand(&memory, state), Ok(4));
+    let memory = observed(&source, Some(state + cgame_state::STRATEGIC_REGIONS));
+    assert!(region_demand(&memory, state).is_err());
 }
 
 #[test]

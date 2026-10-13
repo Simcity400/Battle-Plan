@@ -317,12 +317,6 @@ impl Bindings {
                 loc: &document.names.localisation,
                 commanders: &document.icons.combat.commander_tooltips,
                 windows: &document.icons.combat.native_windows,
-                land_defines: document
-                    .icons
-                    .combat
-                    .land_defines
-                    .as_ref()
-                    .map_err(String::as_str),
                 modifier_names: &document.modifier_names,
             },
             frame,

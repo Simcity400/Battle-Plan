@@ -11,7 +11,6 @@ use crate::{
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MovingOwners {
-    pub land: usize,
     pub logical: usize,
 }
 
@@ -21,7 +20,6 @@ pub struct MovingOwners {
 pub struct LiveDemand {
     pub country_slots: Result<usize, &'static str>,
     pub raw_links: Result<usize, &'static str>,
-    pub controller_bound: Result<usize, &'static str>,
     pub region_bound: Result<usize, &'static str>,
     pub movers: Result<MovingOwners, &'static str>,
 }
@@ -31,7 +29,6 @@ impl Default for LiveDemand {
         Self {
             country_slots: Err("country movement country slots not observed"),
             raw_links: Err("country movement raw links not observed"),
-            controller_bound: Err("country movement controller bound not observed"),
             region_bound: Err("country movement region bound not observed"),
             movers: Err("country movement moving owners not observed"),
         }
@@ -87,7 +84,7 @@ fn moving_owners<M: Memory>(
     if countries.arrays() != headers {
         return Err("country movement demand country headers changed");
     }
-    // One live-sized byte per canonical slot counts both owner roles. This
+    // One live-sized byte per canonical slot counts logical owners. This
     // allocation happens only in the off-thread observer, never the callback.
     // An advisory hint must not trigger the recorder's terminal OOM hook.
     let mut owners = Vec::new();
@@ -145,17 +142,7 @@ fn moving_owners<M: Memory>(
                     // contents, flags and terrain do not suppress this sizing floor.
                     array(memory, unit, cunit::ORDINARY_ROUTE_DATA, 4)?;
                     let logical = countries.resolve(owner(memory, unit, cunit::LOGICAL_OWNER)?)?;
-                    owners[logical.canonical_slot as usize] |= 2;
-                    if division {
-                        let expeditionary = owner(memory, unit, cunit::EXPEDITIONARY_OWNER)? as i32;
-                        let raw = if expeditionary > 0 {
-                            expeditionary as u32
-                        } else {
-                            roster_owner
-                        };
-                        let land = countries.resolve(raw)?;
-                        owners[land.canonical_slot as usize] |= 1;
-                    }
+                    owners[logical.canonical_slot as usize] = 1;
                     Ok(())
                 },
             )?;
@@ -165,8 +152,7 @@ fn moving_owners<M: Memory>(
         return Err("country movement demand has no authenticated countries");
     }
     Ok(MovingOwners {
-        land: owners.iter().filter(|&&flags| flags & 1 != 0).count(),
-        logical: owners.iter().filter(|&&flags| flags & 2 != 0).count(),
+        logical: owners.iter().filter(|&&flag| flag != 0).count(),
     })
 }
 
@@ -176,7 +162,7 @@ fn moving_owners<M: Memory>(
 pub fn observe_live(memory: &impl Memory, base: usize, state: usize) -> LiveDemand {
     let country_array = array(memory, state, cgame_state::COUNTRIES, 8);
     let links = array(memory, state, cgame_state::COUNTRY_LINKS, 4);
-    let domains = super::domain_demand(memory, state);
+    let region_bound = super::region_demand(memory, state);
     let movers = match (country_array, links) {
         (Ok(countries), Ok(links)) => moving_owners(memory, base, state, [countries, links]),
         (Err(reason), _) | (_, Err(reason)) => Err(reason),
@@ -184,8 +170,7 @@ pub fn observe_live(memory: &impl Memory, base: usize, state: usize) -> LiveDema
     LiveDemand {
         country_slots: country_array.map(|array| array.count as usize),
         raw_links: links.map(|array| array.count as usize),
-        controller_bound: domains.controllers,
-        region_bound: domains.regions,
+        region_bound,
         movers,
     }
 }

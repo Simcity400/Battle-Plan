@@ -5,7 +5,7 @@ use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum TemplateNameValue {
-    /// Fresh guarded bytes equal this frame's complete daily dictionary row.
+    /// Fresh guarded bytes equal this frame's complete dictionary row.
     #[default]
     SameAsDivisionTemplates,
     Changed {
@@ -93,11 +93,11 @@ impl Value for TemplateNameValue {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TemplateDisplayName {
-    pub sample_hour: i32,
+    pub sample_hour: PacketHour,
     pub value: TemplateNameValue,
 }
 value_struct!(TemplateDisplayName {
-    sample_hour: i32,
+    sample_hour: PacketHour,
     value: TemplateNameValue
 });
 opaque_value!(Option<TemplateDisplayName>);
@@ -125,7 +125,7 @@ impl DivisionTemplateIconRow {
             }
             Recorded::Value(Some(inputs)) => inputs,
         };
-        if inputs.sample_hour != hour {
+        if !inputs.sample_hour.fresh_at(hour) {
             return Err("DivisionTemplateIcons.display_name sample is not current");
         }
         match &inputs.value {

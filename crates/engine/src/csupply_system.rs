@@ -187,6 +187,13 @@ impl<'a, M: Memory> Reader<'a, M> {
         self.countries.resolve(raw)
     }
 
+    /// The canonical country at `slot`, read from the country census alone,
+    /// so a walk of selected countries skips a slot without reading or
+    /// authenticating its supply objects ([`Self::at`] reads both).
+    pub(crate) fn country(&self, slot: u32) -> Result<Option<ccountry::Country>, &'static str> {
+        self.countries.at(slot)
+    }
+
     pub(crate) fn at(&self, slot: u32) -> Result<Option<CountrySystem>, &'static str> {
         if slot == 0 {
             return Err("country supply sentinel is not a country");

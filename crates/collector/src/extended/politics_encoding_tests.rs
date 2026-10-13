@@ -79,7 +79,7 @@ fn hour_events(country: u32, hour: i32) -> Vec<Event> {
 
 #[test]
 fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss() {
-    let _guard = hooks::STAGING_TEST.lock().unwrap();
+    let _guard = hooks::staging_test();
     // Mirror the retained T2 alias ordering; these are fixture IDs, not content.
     let ids = [
         361, 362, 363, 364, 440, 441, 442, 368, 369, 370, 371, 372, 373, 374, 375, 376,

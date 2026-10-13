@@ -285,7 +285,7 @@ fn invalid_variant_bytes_refuse_names_and_fingerprints_without_dropping_identity
             }
         }
         let mut variants = VariantCatalogue::default();
-        variants.observe(&frame);
+        variants.observe(replay::format::FormatVersion::CURRENT, &frame);
         let raw = variants.current(20).unwrap();
         assert_eq!(raw.id, 20, "{field}");
         assert!(
@@ -376,7 +376,7 @@ fn a_variant_s_design_fingerprint_follows_its_name_and_modules() {
             },
         };
         let mut catalogue = VariantCatalogue::default();
-        catalogue.observe(&frame);
+        catalogue.observe(replay::format::FormatVersion::CURRENT, &frame);
         catalogue.current(20).unwrap().design.clone()
     };
     let design_a = design(b"Panzer", Some(vec![module(0, 1, 1)])).unwrap();
@@ -426,7 +426,7 @@ fn variant_designs_include_recorded_upgrades_and_missing_is_not_zero() {
     };
     let design = |rows| {
         let mut catalogue = VariantCatalogue::default();
-        catalogue.observe(&frame(hour, rows));
+        catalogue.observe(replay::format::FormatVersion::CURRENT, &frame(hour, rows));
         catalogue.current(20).unwrap().design.clone()
     };
     let level_one = design(Some(vec![upgrade(20, 0, 1, 1)])).unwrap();
@@ -459,7 +459,7 @@ fn variant_designs_include_recorded_upgrades_and_missing_is_not_zero() {
                 },
             ]));
         let mut catalogue = VariantCatalogue::default();
-        catalogue.observe(&frame);
+        catalogue.observe(replay::format::FormatVersion::CURRENT, &frame);
         catalogue.current(20).unwrap().design.clone()
     };
     assert!(modules(1).is_some());
@@ -467,8 +467,14 @@ fn variant_designs_include_recorded_upgrades_and_missing_is_not_zero() {
     assert_eq!(modules(999), None);
     // Reads at later hours retain the new levels even with unchanged naming operands.
     let mut catalogue = VariantCatalogue::default();
-    catalogue.observe(&frame(hour, Some(vec![upgrade(20, 0, 1, 1)])));
-    catalogue.observe(&frame(hour + 1, Some(vec![upgrade(20, 0, 1, 2)])));
+    catalogue.observe(
+        replay::format::FormatVersion::CURRENT,
+        &frame(hour, Some(vec![upgrade(20, 0, 1, 1)])),
+    );
+    catalogue.observe(
+        replay::format::FormatVersion::CURRENT,
+        &frame(hour + 1, Some(vec![upgrade(20, 0, 1, 2)])),
+    );
     assert_eq!(catalogue.versions[&20].len(), 2);
     assert_eq!(
         catalogue.current(20).unwrap().design.as_deref(),
@@ -502,16 +508,31 @@ fn an_hour_between_reads_whose_variant_table_is_not_complete_ends_what_is_known(
         frame
     };
     let mut catalogue = VariantCatalogue::default();
-    catalogue.observe(&named_frame(hour, Some(b"Name")));
-    catalogue.observe(&carried(hour + 1, Some(b"Name")));
+    catalogue.observe(
+        replay::format::FormatVersion::CURRENT,
+        &named_frame(hour, Some(b"Name")),
+    );
+    catalogue.observe(
+        replay::format::FormatVersion::CURRENT,
+        &carried(hour + 1, Some(b"Name")),
+    );
     assert_eq!(catalogue.current(20).unwrap().display_name, "Name");
     // The recording marked the carried table unavailable: unknown from here, and
     // still unknown once it is complete again, until the next read.
-    catalogue.observe(&carried(hour + 2, None));
+    catalogue.observe(
+        replay::format::FormatVersion::CURRENT,
+        &carried(hour + 2, None),
+    );
     assert!(catalogue.current(20).is_none());
-    catalogue.observe(&carried(hour + 3, Some(b"Name")));
+    catalogue.observe(
+        replay::format::FormatVersion::CURRENT,
+        &carried(hour + 3, Some(b"Name")),
+    );
     assert!(catalogue.current(20).is_none());
-    catalogue.observe(&named_frame(hour + 4, Some(b"Renamed")));
+    catalogue.observe(
+        replay::format::FormatVersion::CURRENT,
+        &named_frame(hour + 4, Some(b"Renamed")),
+    );
     assert_eq!(catalogue.current(20).unwrap().display_name, "Renamed");
     let versions: Vec<(i32, bool)> = catalogue.versions[&20]
         .iter()

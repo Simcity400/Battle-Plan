@@ -34,64 +34,22 @@ use bytemuck::{Pod, Zeroable};
 
 use super::camera::{Camera, MapDefines, MapSize};
 
-/// Days in the simulation date's non-leap year.
-const DAYS_PER_YEAR: i32 = 365;
-/// Fixed-point scale used by the recorded weather direction.
-const SEASON_SCALE: i64 = 100_000;
-
-/// Rotation about X in fixed-point degrees; declination has the opposite sign.
+/// Settled wind direction for a replay hour.
 ///
-/// Seasonal rotation turns at day indices 172 and 355. Each interval uses fixed-point linear
-/// interpolation with integer division before multiplication; the year-boundary interval uses its own
-/// length. Preserve constants and arithmetic order.
-fn seasonal_rotation(hour: i32) -> i64 {
-    let day = hour.div_euclid(24).rem_euclid(DAYS_PER_YEAR);
-    if (172..=355).contains(&day) {
-        -500_000 + 10 * (i64::from(day - 172) * SEASON_SCALE / 183)
-    } else {
-        let elapsed = if day < 172 { day + 10 } else { day - 355 };
-        10 * (50_000 - i64::from(elapsed) * SEASON_SCALE / 182)
-    }
-}
-
-/// Fixed-point sine uses rounded quadrant boundaries and a three-term Taylor polynomial, preserving
-/// each integer division. Cosine offsets the phase by 157080; floating-point sine does not preserve
-/// these values.
-pub(super) fn seasonal_sine(radians: i64) -> i64 {
-    let phase = radians.rem_euclid(628_319);
-    let mut x = if phase > 314_159 {
-        phase - 314_159
-    } else {
-        phase
-    };
-    if x > 157_080 {
-        x = 314_160 - x;
-    }
-    let cube = (x * x / SEASON_SCALE) * x / SEASON_SCALE;
-    let fifth = (cube * x / SEASON_SCALE) * x / SEASON_SCALE;
-    let sine = x - cube / 6 + fifth / 120;
-    if phase > 314_159 { -sine } else { sine }
-}
-
-/// Exact simulation target: three signed int64 components in units of 100000. The writer resets
-/// to (0, 0, 100000), rotates about X, and clamps sine/cosine.
-pub(super) fn seasonal_direction_raw(hour: i32) -> [i64; 3] {
-    let radians = (seasonal_rotation(hour) * SEASON_SCALE / 18_000_000) * 314_159 / SEASON_SCALE;
-    [
-        0,
-        seasonal_sine(radians).clamp(-SEASON_SCALE, SEASON_SCALE),
-        seasonal_sine(radians + 157_080).clamp(-SEASON_SCALE, SEASON_SCALE),
-    ]
-}
-
-/// Settled seasonal light direction for one replay hour.
-///
-/// Simulation targets update each hour and during initialization without save-history smoothing.
-/// Presentation blends and normalizes toward them using filtered frame time. Playback starts settled,
-/// avoiding invented load transients. Unrecorded renderer transients and held weather targets remain
-/// limitations; virtual sun position uses only the hour.
+/// The hourly weather update rebuilds the target each hour; weather
+/// initialization rebuilds it too.
+/// There is no simulation smoothing or save-history dependency. The renderer
+/// alone does `normalize(previous + (raw / 100000 - previous) * alpha)`, with
+/// `alpha = clamp(12 * filtered_frame_seconds, 0.001, 1)` each frame. We start
+/// at the settled target, so seeks do not introduce a synthetic load transient.
+/// Unrecorded renderer transients and disabled-weather stale targets remain
+/// UNVERIFIED; the exact fields and conditional error bounds are in [archived rendering notes](#)
+/// section 3.1. The virtual lighting sun uses only the hour, not this direction.
+/// The exact simulation target is [`replay::day_night::seasonal_direction`],
+/// the signed fixed5 words at `weather manager+0x350/0x358/0x360`.
 fn seasonal_direction(hour: i32) -> [f32; 3] {
-    let [x, y, z] = seasonal_direction_raw(hour).map(|v| v as f32 / SEASON_SCALE as f32);
+    let scale = replay::day_night::SCALE as f32;
+    let [x, y, z] = replay::day_night::seasonal_direction(hour).map(|v| v as f32 / scale);
     let length = (x * x + y * y + z * z).sqrt();
     [x / length, y / length, z / length]
 }

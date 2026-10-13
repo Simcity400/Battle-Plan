@@ -1,8 +1,8 @@
 use super::{
-    AirBasesJob, AirHistoryJob, AirStatsJob, AirWingJob, CHARACTER_PARTS, CapitulationJob,
-    CharactersJob, ConstructionRestJob, DivisionsJob, EconomyRestJob, FocusJob, IntelJob,
-    LexicalJob, NavalJob, PlayersJob, ProductionRestJob, ProjectsJob, RadarJob, RelationsJob,
-    RetiredPayload, SessionJob, SunkJob, SupremacyJob, WeatherJob, defer_payload,
+    AirBasesJob, AirStatsJob, AirWingJob, CHARACTER_PARTS, CapitulationJob, CharactersJob,
+    ConstructionRestJob, DivisionsJob, EconomyRestJob, IntelJob, LexicalJob, NavalJob, PlayersJob,
+    ProductionRestJob, ProjectsJob, RadarJob, RelationsJob, RetiredPayload, SessionJob, SunkJob,
+    SupremacyJob, WeatherJob, defer_payload,
 };
 use std::sync::Mutex;
 
@@ -16,7 +16,6 @@ pub(super) static CHARACTERS_JOB_POOL: Mutex<[Vec<CharactersJob>; CHARACTER_PART
 pub(super) static PROJECTS_JOB_POOL: Mutex<Vec<ProjectsJob>> = Mutex::new(Vec::new());
 pub(super) static LEXICAL_JOB_POOL: Mutex<Vec<LexicalJob>> = Mutex::new(Vec::new());
 pub(super) static DIVISIONS_JOB_POOL: Mutex<Vec<DivisionsJob>> = Mutex::new(Vec::new());
-pub(super) static FOCUS_JOB_POOL: Mutex<Vec<FocusJob>> = Mutex::new(Vec::new());
 pub(super) static AIR_WING_JOB_POOL: Mutex<Vec<AirWingJob>> = Mutex::new(Vec::new());
 pub(super) static AIR_STATS_JOB_POOL: Mutex<Vec<AirStatsJob>> = Mutex::new(Vec::new());
 pub(super) static NAVAL_JOB_POOL: Mutex<Vec<NavalJob>> = Mutex::new(Vec::new());
@@ -27,7 +26,6 @@ pub(super) static CONSTRUCTION_REST_JOB_POOL: Mutex<Vec<ConstructionRestJob>> =
     Mutex::new(Vec::new());
 pub(super) static ECONOMY_REST_JOB_POOL: Mutex<Vec<EconomyRestJob>> = Mutex::new(Vec::new());
 pub(super) static AIR_BASES_JOB_POOL: Mutex<Vec<AirBasesJob>> = Mutex::new(Vec::new());
-pub(super) static AIR_HISTORY_JOB_POOL: Mutex<Vec<AirHistoryJob>> = Mutex::new(Vec::new());
 pub(super) static SUPREMACY_JOB_POOL: Mutex<Vec<SupremacyJob>> = Mutex::new(Vec::new());
 pub(super) static SUNK_JOB_POOL: Mutex<Vec<SunkJob>> = Mutex::new(Vec::new());
 pub(super) static RADAR_JOB_POOL: Mutex<Vec<RadarJob>> = Mutex::new(Vec::new());
@@ -83,9 +81,7 @@ pub fn acquire_characters_job(part: usize) -> CharactersJob {
     {
         return job;
     }
-    let mut job = CharactersJob::default();
-    job.part = part;
-    job
+    CharactersJob::vacant(part)
 }
 
 /// Defer clearing, growth and recycling to the decode worker.
@@ -246,42 +242,7 @@ pub(super) fn release_divisions_job(mut job: DivisionsJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
-pub fn acquire_focus_job() -> FocusJob {
-    pop_job(&FOCUS_JOB_POOL)
-}
-
-/// Defer clearing, growth and recycling to the decode worker.
-pub fn recycle_focus_job(job: FocusJob) {
-    defer_payload(RetiredPayload::Focus(job));
-}
-
-pub(super) fn release_focus_job(mut job: FocusJob) {
-    if crate::allocation::failed() {
-        return;
-    }
-    if !job.is_provisioned() {
-        return;
-    }
-    if job.grow_for_next() {
-        job.grow();
-        if crate::allocation::failed() {
-            return;
-        }
-    }
-    if crate::allocation::failed() {
-        return;
-    }
-    job.clear();
-    if let Ok(mut pool) = FOCUS_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
-    }
-}
-
-/// Exclusive spool-thread sizing of idle jobs after live name demand grows.
+/// Exclusive sizing-thread growth of idle jobs after live name demand grows.
 pub(crate) fn presize_air_wing_names() {
     if let Ok(mut pool) = AIR_WING_JOB_POOL.lock() {
         for job in pool.iter_mut() {
@@ -666,46 +627,6 @@ pub(super) fn release_air_bases_job(mut job: AirBasesJob) {
 }
 
 /// Take reusable storage, or return an empty job without allocating on pool miss.
-pub fn acquire_air_history_job() -> AirHistoryJob {
-    if let Ok(mut pool) = AIR_HISTORY_JOB_POOL.try_lock()
-        && let Some(job) = pool.pop()
-    {
-        return job;
-    }
-    AirHistoryJob::default()
-}
-
-/// Defer clearing, growth and recycling to the decode worker.
-pub fn recycle_air_history_job(job: AirHistoryJob) {
-    defer_payload(RetiredPayload::AirHistory(job));
-}
-
-pub(super) fn release_air_history_job(mut job: AirHistoryJob) {
-    if crate::allocation::failed() {
-        return;
-    }
-    if !job.has_storage() && !job.grow_for_next() {
-        return;
-    }
-    if job.grow_for_next() {
-        job.grow();
-        if crate::allocation::failed() {
-            return;
-        }
-    }
-    if crate::allocation::failed() {
-        return;
-    }
-    job.clear();
-    if let Ok(mut pool) = AIR_HISTORY_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
-    }
-}
-
-/// Take reusable storage, or return an empty job without allocating on pool miss.
 pub fn acquire_supremacy_job() -> SupremacyJob {
     if let Ok(mut pool) = SUPREMACY_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -879,7 +800,7 @@ pub fn acquire_weather_job() -> WeatherJob {
     WeatherJob::default()
 }
 
-/// Spool thread: live map dimension changes must size pooled boundaries before
+/// Sizing thread: live map dimension changes must size pooled boundaries before
 /// the new branch's first hourly copy, as attachment sizing does for new jobs.
 pub(crate) fn presize_weather_jobs() {
     if let Ok(mut pool) = WEATHER_JOB_POOL.lock() {
@@ -961,7 +882,7 @@ pub(super) fn release_capitulation_job(mut job: CapitulationJob) {
     }
 }
 
-/// Spool thread: presize pooled raw-copy jobs whose country census follows the
+/// Sizing thread: presize pooled raw-copy jobs whose country census follows the
 /// registry, after a larger registry was observed (for example a save loaded
 /// after attaching at the main menu). The game thread only `try_lock`s these
 /// pools, so a concurrent callback takes a fresh job instead of waiting.

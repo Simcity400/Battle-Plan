@@ -23,9 +23,9 @@ pub(super) fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<(
         );
         return Ok(());
     };
-    if packet.sample_hour != frame.hour {
+    if !packet.sample_hour.fresh_at(frame.hour) {
         return Err(invalid(format!(
-            "{LABEL}.sample_hour {} differs from oracle hour {}",
+            "{LABEL}.sample_hour {:?} differs from oracle hour {}",
             packet.sample_hour, frame.hour,
         )));
     }

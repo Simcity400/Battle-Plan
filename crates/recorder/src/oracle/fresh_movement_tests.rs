@@ -1,9 +1,7 @@
 use super::*;
 use replay::rows::{
-    ControllerRiverSpeed, CountryCounterInputRow, CountryMovementInputs, DivisionMovementRow,
-    FreshCounterEta, FreshNormalEta, NavalPathInputs, RailCooldownRow, RailEdgeRow,
-    RailwayBuildingHealth, RailwayBuildingState, Recorded, RegionTransportSpeed, StateRow,
-    TerrainSpeed, TheatreControllerAreas,
+    DivisionMovementRow, RailCooldownRow, RailEdgeRow, RailwayBuildingHealth, RailwayBuildingState,
+    Recorded, StateRow,
 };
 
 fn set(frame: &mut DecodedFrame, rows: TableRows) {
@@ -373,8 +371,12 @@ fn railway_building_absence_requires_a_proven_unreached_gate() {
     );
 }
 
+/// The stat-block base speed is read for every division with a route and
+/// has no saved counterpart: a recorded value is counted, never compared; a
+/// refusal on a route is a difference; a division without a route is outside
+/// its demand. The retired fresh-route operands are never consulted.
 #[test]
-fn fresh_movement_profiles_admit_idle_units_without_a_legacy_eta_row() {
+fn division_base_speed_is_required_for_a_route_and_never_compared() {
     let (mut frame, mut saved, _, _) = tests::fixture();
     let id = (7_u64 << 32) | 51;
     saved.divisions.insert(
@@ -394,22 +396,7 @@ fn fresh_movement_profiles_admit_idle_units_without_a_legacy_eta_row() {
             presentation: Default::default(),
         },
     );
-    *frame.tables[TableId::DivisionEtaInputs.index()] = TableView::Unavailable {
-        reason: "legacy stored-route operands are deliberately outside this fixture".into(),
-    };
-    let fresh = FreshCounterEta {
-        sample_hour: frame.hour,
-        current_speed: Some(i64::MIN),
-        normal: Some(FreshNormalEta {
-            terrain_speed: vec![TerrainSpeed {
-                terrain: 1,
-                modifier: i64::MAX,
-            }],
-            ..Default::default()
-        }),
-        rail: None,
-    };
-    let mut run = |value, moving: bool| {
+    let mut run = |base_speed, moving: bool| {
         let mut current_save = saved.clone();
         let path = if moving { vec![2] } else { Vec::new() };
         current_save
@@ -426,329 +413,51 @@ fn fresh_movement_profiles_admit_idle_units_without_a_legacy_eta_row() {
                 path,
                 withdrawal: Some(0).into(),
                 movement_priority: Some(1).into(),
-                fresh: value,
+                fresh: Recorded::NotRecorded,
+                base_speed,
                 ..Default::default()
             }]),
         );
         let mut report = Report::default();
-        military::compare_division_movement(&frame, &current_save, &mut report)?;
-        Ok::<_, io::Error>(report)
+        military::compare_division_movement(&frame, &current_save, &mut report).unwrap();
+        report
     };
     for moving in [false, true] {
-        let report = run(Recorded::Value(Some(fresh.clone())), moving).unwrap();
-        assert!(report.differences.is_empty(), "{:?}", report.differences);
-        assert_eq!(report.compared_tables["DivisionMovement"], 1);
-        // Current profile refusal and wrong-hour attribution remain differences
-        // even when the division has no stored first edge.
-        for value in [
-            Recorded::Value(None),
-            Recorded::Value(Some(FreshCounterEta {
-                sample_hour: fresh.sample_hour - 1,
-                ..fresh.clone()
-            })),
-        ] {
-            assert_eq!(run(value, moving).unwrap().differences.len(), 1);
+        // Any raw word, including the signed extremes, is counted unchanged.
+        for speed in [i64::MIN, 0, 400_000, i64::MAX] {
+            let report = run(Recorded::Value(Some(speed)), moving);
+            assert!(report.differences.is_empty(), "{:?}", report.differences);
+            assert_eq!(report.compared_tables["DivisionMovement"], 1);
+            assert!(report.limitations.iter().any(|(reason, subjects)| {
+                reason.contains("maximum-speed field +0x290 of the stat block at +0x138")
+                    && reason.contains("the save has no counterpart")
+                    && subjects == &["DivisionMovement.base_speed: 1 rows recorded, not compared"]
+            }));
+            assert!(
+                !report
+                    .limitations
+                    .keys()
+                    .chain(&report.differences)
+                    .any(|text| text.contains("fresh")),
+                "{report:?}"
+            );
         }
-        let idle_or_failed_current = run(
-            Recorded::Value(Some(FreshCounterEta {
-                current_speed: None,
-                ..fresh.clone()
-            })),
-            moving,
-        )
-        .unwrap();
-        assert_eq!(
-            idle_or_failed_current.differences.len(),
-            usize::from(moving)
-        );
-        assert!(
-            run(
-                Recorded::Value(Some(FreshCounterEta {
-                    current_speed: Some(0),
-                    ..fresh.clone()
-                })),
-                moving
-            )
-            .unwrap()
-            .differences
-            .is_empty()
-        );
-        let historical = run(Recorded::NotRecorded, moving).unwrap();
+        let refused = run(Recorded::Value(None), moving);
+        assert_eq!(refused.differences.len(), usize::from(moving));
+        if moving {
+            assert!(refused.differences[0].contains("base_speed"));
+            assert!(refused.differences[0].contains("required stat-block speed"));
+        }
+        // An older recording has no base speed: a counted field gap, never a
+        // difference.
+        let historical = run(Recorded::NotRecorded, moving);
         assert!(historical.differences.is_empty());
         assert!(
             historical
                 .limitations
-                .keys()
-                .any(|reason| reason.contains("not recorded"))
+                .contains_key("DivisionMovement.base_speed not recorded")
         );
-        let absent_normal = run(
-            Recorded::Value(Some(FreshCounterEta {
-                normal: None,
-                ..fresh.clone()
-            })),
-            moving,
-        )
-        .unwrap();
-        assert!(absent_normal.differences.is_empty());
-        assert!(
-            absent_normal
-                .limitations
-                .keys()
-                .any(|reason| reason.contains("normal domain was not reached"))
-        );
-        for terrains in [
-            vec![
-                TerrainSpeed {
-                    terrain: 1,
-                    modifier: 0
-                };
-                2
-            ],
-            vec![TerrainSpeed {
-                terrain: 0,
-                modifier: 0,
-            }],
-        ] {
-            assert!(
-                run(
-                    Recorded::Value(Some(FreshCounterEta {
-                        normal: Some(FreshNormalEta {
-                            terrain_speed: terrains,
-                            ..Default::default()
-                        }),
-                        ..fresh.clone()
-                    })),
-                    moving
-                )
-                .is_err()
-            );
-        }
     }
-}
-
-#[test]
-fn owner_movement_domains_compare_alias_resolved_controllers_and_independent_refusals() {
-    let (mut frame, _, _, _) = tests::fixture();
-    let base = CountryMovementInputs {
-        sample_hour: frame.hour,
-        river: Some(vec![
-            ControllerRiverSpeed {
-                target_slot: 0,
-                modifier: Some(i64::MIN),
-            },
-            ControllerRiverSpeed {
-                target_slot: 7,
-                modifier: Some(i64::MAX),
-            },
-        ]),
-        transport: Some(vec![
-            RegionTransportSpeed {
-                region: 0,
-                speed: Some(i64::MAX),
-            },
-            RegionTransportSpeed {
-                region: 900,
-                speed: Some(i64::MIN),
-            },
-        ]),
-        naval: None,
-        theatre: None,
-    };
-    let mut run = |movement| {
-        set(
-            &mut frame,
-            TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
-                country: 101,
-                movement,
-                ..Default::default()
-            }]),
-        );
-        let mut report = Report::default();
-        country_rosters::compare_movement(&frame, &mut report)?;
-        Ok::<_, io::Error>(report)
-    };
-    assert!(
-        run(Recorded::Value(Some(base.clone())))
-            .unwrap()
-            .differences
-            .is_empty()
-    );
-    let mut broken = base.clone();
-    broken.river.as_mut().unwrap()[0].modifier = None;
-    broken.transport.as_mut().unwrap()[1].speed = None;
-    assert_eq!(
-        run(Recorded::Value(Some(broken)))
-            .unwrap()
-            .differences
-            .len(),
-        2
-    );
-    let mut missing = base.clone();
-    missing.river.as_mut().unwrap().pop();
-    assert_eq!(
-        run(Recorded::Value(Some(missing)))
-            .unwrap()
-            .differences
-            .len(),
-        1
-    );
-    let mut duplicate = base.clone();
-    duplicate.transport.as_mut().unwrap()[1].region = 0;
-    assert!(
-        !run(Recorded::Value(Some(duplicate)))
-            .unwrap()
-            .failed_comparisons
-            .is_empty()
-    );
-    // Undemanded owners legitimately have no lists, rather than empty domains.
-    let absent = run(Recorded::Value(Some(CountryMovementInputs {
-        sample_hour: base.sample_hour,
-        ..Default::default()
-    })))
-    .unwrap();
-    assert!(absent.differences.is_empty());
-    assert!(
-        absent
-            .limitations
-            .keys()
-            .any(|reason| reason.contains("not demanded"))
-    );
-    assert!(run(Recorded::NotRecorded).unwrap().differences.is_empty());
-    assert_eq!(run(Recorded::Value(None)).unwrap().differences.len(), 1);
-    assert_eq!(
-        run(Recorded::Value(Some(CountryMovementInputs {
-            sample_hour: base.sample_hour - 1,
-            ..base
-        })))
-        .unwrap()
-        .differences
-        .len(),
-        1
-    );
-}
-
-#[test]
-fn undemanded_or_historical_owner_domains_do_not_require_a_province_census() {
-    let (mut frame, _, _, _) = tests::fixture();
-    *frame.tables[TableId::Provinces.index()] = TableView::Unavailable {
-        reason: "province census refused".into(),
-    };
-    for movement in [
-        Recorded::Value(Some(CountryMovementInputs {
-            sample_hour: frame.hour,
-            ..Default::default()
-        })),
-        Recorded::NotRecorded,
-    ] {
-        set(
-            &mut frame,
-            TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
-                country: 101,
-                movement,
-                ..Default::default()
-            }]),
-        );
-        let mut report = Report::default();
-        country_rosters::compare_movement(&frame, &mut report).unwrap();
-        assert!(report.differences.is_empty());
-    }
-    let sample_hour = frame.hour;
-    set(
-        &mut frame,
-        TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-            forward_visibility: replay::rows::Recorded::NotRecorded,
-            country: 101,
-            movement: Recorded::Value(Some(CountryMovementInputs {
-                sample_hour,
-                river: Some(vec![]),
-                transport: Some(vec![RegionTransportSpeed {
-                    region: 0,
-                    speed: None,
-                }]),
-                ..Default::default()
-            })),
-            ..Default::default()
-        }]),
-    );
-    let mut report = Report::default();
-    country_rosters::compare_movement(&frame, &mut report).unwrap();
-    assert!(
-        report
-            .failed_comparisons
-            .values()
-            .any(|reason| reason.contains("province census refused"))
-    );
-    assert!(
-        report
-            .differences
-            .iter()
-            .any(|difference| difference.contains("transport region 0"))
-    );
-}
-
-#[test]
-fn owner_naval_lists_preserve_physical_occurrences_and_independent_failures() {
-    let (mut frame, _, _, _) = tests::fixture();
-    let packet = CountryMovementInputs {
-        sample_hour: frame.hour,
-        naval: Some(NavalPathInputs {
-            navy_slot: 7,
-            present: true,
-            foreign_navy_slots: Some(vec![0, 900, 900]),
-            supply_hubs: Some(vec![0, 2, 2]),
-        }),
-        theatre: Some(TheatreControllerAreas {
-            provinces: vec![1, 2],
-            null_controller_area: true,
-        }),
-        ..Default::default()
-    };
-    let mut run = |packet: CountryMovementInputs| {
-        set(
-            &mut frame,
-            TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
-                country: 101,
-                movement: Recorded::Value(Some(packet)),
-                ..Default::default()
-            }]),
-        );
-        let mut report = Report::default();
-        country_rosters::compare_movement(&frame, &mut report).unwrap();
-        report
-    };
-    let exact = run(packet.clone());
-    assert!(exact.differences.is_empty());
-    assert!(exact.failed_comparisons.is_empty());
-    let mut broken = packet.clone();
-    let naval = broken.naval.as_mut().unwrap();
-    naval.foreign_navy_slots = None;
-    naval.supply_hubs = None;
-    broken.theatre.as_mut().unwrap().provinces.reverse();
-    let report = run(broken);
-    assert_eq!(report.differences.len(), 2);
-    assert_eq!(report.failed_comparisons.len(), 1);
-    let mut wrong_slot = packet.clone();
-    wrong_slot.naval.as_mut().unwrap().navy_slot = 900;
-    assert_eq!(run(wrong_slot).differences.len(), 1);
-    let null = CountryMovementInputs {
-        naval: Some(NavalPathInputs {
-            navy_slot: 7,
-            present: false,
-            foreign_navy_slots: Some(vec![]),
-            supply_hubs: Some(vec![]),
-        }),
-        theatre: None,
-        ..packet
-    };
-    assert!(run(null.clone()).differences.is_empty());
-    let mut refused = null;
-    let naval = refused.naval.as_mut().unwrap();
-    naval.foreign_navy_slots = None;
-    naval.supply_hubs = None;
-    assert_eq!(run(refused).differences.len(), 2);
 }
 
 #[test]
@@ -812,7 +521,7 @@ fn fresh_idle_railway_packet_refusal_differs_from_historical_absence_and_native_
         (Recorded::NotRecorded, false, true),
         (
             Recorded::Value(Some(FreshRailwayCounterEta {
-                sample_hour: hour,
+                sample_hour: replay::rows::PacketHour::Stamped(hour),
                 maximum_speed: Some(0),
                 land_supply_factor: Some(0),
                 orders_group: Some(0),

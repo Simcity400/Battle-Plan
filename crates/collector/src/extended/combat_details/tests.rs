@@ -45,6 +45,176 @@ fn border_width_projection_preserves_signed_zero_and_ordinary_absence() {
     );
 }
 
+/// The side's CAS and commander hover inputs come from the operands the pass
+/// already copies: the prevented lanes, the skill ratio over the next level
+/// (none at an invalid one), the description token, the timed traits in
+/// order and only the learning rows strictly above the live floor.
+#[test]
+fn side_inputs_project_the_copied_cas_and_commander_operands() {
+    let mut captured = Captured::with_capacities(&Capacities {
+        details: 1,
+        detail_text: 32,
+        timed_traits: 2,
+        learning_traits: 3,
+        ..Capacities::default()
+    });
+    captured.details.outcome = Outcome::Rows { len: 1 };
+    captured.detail_text.first[..18].copy_from_slice(b"DESCtrait_atrait_b");
+    captured.detail_text.len = 18;
+    captured.timed_traits.first[..2].copy_from_slice(&[
+        cland_combat::CommanderTimedTrait {
+            token_id: 5,
+            definition_ordinal: 2,
+            remaining_days: -1,
+        },
+        cland_combat::CommanderTimedTrait {
+            token_id: 6,
+            definition_ordinal: 3,
+            remaining_days: 0,
+        },
+    ]);
+    captured.timed_traits.len = 2;
+    let learning =
+        |token_id, experience, required, token_start| cland_combat::CommanderLearningTrait {
+            token_id,
+            definition_ordinal: token_id + 10,
+            required_experience: required,
+            experience,
+            token_start,
+            token_len: 7,
+        };
+    captured.learning_traits.first[..3].copy_from_slice(&[
+        // 5% exactly is not shown; one raw unit above it is; a zero
+        // requirement shows the native 0xFFFFFFFF word.
+        learning(1, 5_000 * 400, 400, 4),
+        learning(2, 5_001 * 400, 400, 11),
+        learning(3, 1, 0, 4),
+    ]);
+    captured.learning_traits.len = 3;
+    let side = &mut captured.details.rows[0].row.sides[0];
+    side.commander = 0x1234_0000_0021;
+    side.anti_air_attack = 7_654_321;
+    side.damage = [1, 2, 3, 4, 1_234_567, 89];
+    side.commander_experience = 345_678_900;
+    side.next_skill = Some(engine::naval_commander_inputs::SkillDefinition {
+        present: 1,
+        valid: 1,
+        required_experience: 800,
+        ..Default::default()
+    });
+    side.learning_threshold = Some(5_000);
+    side.skill_modifiers = Some([-12_345, 67_891]);
+    side.commander_description_token = cland_combat::Span { start: 0, len: 4 };
+    side.timed_traits_start = 0;
+    side.timed_traits_len = 2;
+    side.learning_traits = cland_combat::Span { start: 0, len: 3 };
+    let views = captured.tables();
+    let TableView::Complete(replay::rows::TableRows::LandCombatDetails(rows)) = &views[0] else {
+        panic!("details withheld");
+    };
+    let [inputs, other] = rows[0]
+        .side_inputs
+        .require("LandCombatDetails.side_inputs")
+        .unwrap();
+    assert_eq!(inputs.anti_air_attack, 7_654_321);
+    assert_eq!(inputs.prevented_damage, [1_234_567, 89]);
+    // 3456.789 of 800 experience: 432.098625%, truncated to 432_098 raw.
+    assert_eq!(inputs.skill_progress, 432_098);
+    assert_eq!(inputs.skill_modifiers, Some([-12_345, 67_891]));
+    assert_eq!(inputs.description_token, b"DESC");
+    assert_eq!(
+        inputs
+            .timed_traits
+            .iter()
+            .map(|t| (t.token_id, t.definition_ordinal, t.remaining_days))
+            .collect::<Vec<_>>(),
+        [(5, 2, -1), (6, 3, 0)]
+    );
+    assert_eq!(
+        inputs
+            .learning_traits
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|t| (
+                t.token_id,
+                t.definition_ordinal,
+                t.progress,
+                t.token.as_slice()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (2, 12, 5_001, b"trait_b".as_slice()),
+            (3, 13, 0xffff_ffff, b"trait_a".as_slice())
+        ]
+    );
+    // A side without a selected commander read no level: no progress.
+    assert_eq!(
+        other.skill_progress,
+        replay::rows::LandCombatSideInputs::NO_PROGRESS
+    );
+    assert_eq!(other.learning_traits, Some(Vec::new()));
+    assert_eq!(other.skill_modifiers, Some([0; 2]));
+    assert!(other.description_token.is_empty());
+    // An invalid next level is the at-cap arm, not a zero ratio.
+    let side = &mut captured.details.rows[0].row.sides[0];
+    side.next_skill.as_mut().unwrap().valid = 0;
+    let views = captured.tables();
+    let TableView::Complete(replay::rows::TableRows::LandCombatDetails(rows)) = &views[0] else {
+        panic!("details withheld");
+    };
+    assert_eq!(
+        rows[0].side_inputs.require("side_inputs").unwrap()[0].skill_progress,
+        replay::rows::LandCombatSideInputs::NO_PROGRESS
+    );
+    // A refused optional read leaves only its part unknown, never a value;
+    // the row and its other parts stand.
+    let side = &mut captured.details.rows[0].row.sides[0];
+    side.next_skill = None;
+    side.learning_threshold = None;
+    side.skill_modifiers = None;
+    side.side_input_refusals = [Some("next"), Some("floor"), Some("block")];
+    let views = captured.tables();
+    let TableView::Complete(replay::rows::TableRows::LandCombatDetails(rows)) = &views[0] else {
+        panic!("details withheld");
+    };
+    let inputs = &rows[0].side_inputs.require("side_inputs").unwrap()[0];
+    assert_eq!(
+        inputs.skill_progress,
+        replay::rows::LandCombatSideInputs::UNREAD_PROGRESS
+    );
+    assert_eq!(
+        (&inputs.skill_modifiers, &inputs.learning_traits),
+        (&None, &None)
+    );
+    assert_eq!(inputs.anti_air_attack, 7_654_321);
+    assert_eq!(inputs.description_token, b"DESC");
+}
+
+#[test]
+fn experience_ratio_keeps_the_native_sentinel_and_zero_requirement_words() {
+    for (experience, required, ratio) in [
+        (0, 100, 0),
+        (-250_000, 100, -2_500),
+        (i64::MAX, 100, 0xffff_ffff),
+        (i64::MIN, 100, 0xffff_ffff),
+        (i64::MIN + 1, 100, 0xffff_ffff),
+        (
+            i64::MIN + 2,
+            100,
+            (i64::MIN + 2).wrapping_mul(100_000) / 10_000_000,
+        ),
+        (1_000, 0, 0xffff_ffff),
+        (1_000, -1, -1_000),
+    ] {
+        assert_eq!(
+            super::experience_ratio(experience, required),
+            ratio,
+            "{experience} / {required}"
+        );
+    }
+}
+
 #[test]
 fn modifier_capacity_and_division_growth_keep_independent_failures() {
     let mut image = vec![0_u8; 0x4000];
@@ -80,11 +250,10 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
     let mut test_sources = Sources::new();
     let mut images = Images::default();
     let mut scratch = Scratch::default();
-    let mut commander_bytes = [0_u8; 16];
-    let mut grown_commander_bytes = vec![0_u8; 300];
     let mut destination = Destination {
         sources: &mut test_sources,
         commanders: Default::default(),
+        leaders: &mut cland_combat::Leaders::default(),
         images: &mut images,
         scratch: &mut scratch,
         name_groups: &mut engine::cname_group_member::GroupKeys::default(),
@@ -95,13 +264,6 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
         },
         reference: false,
         details: &mut Vec::new(),
-        division_commanders: &mut Vec::new(),
-        commander_names: engine::cname_group_member::Names {
-            bytes: &mut commander_bytes,
-            len: 0,
-            required: 0,
-        },
-        commander_keys: &mut Vec::new(),
         commander_traits: &mut Vec::new(),
         detail_text: &mut Vec::new(),
         timed_traits: &mut Vec::new(),
@@ -110,9 +272,6 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
         unit_scratch: &mut Vec::new(),
         detail_used: cland_combat::DetailCounts::default(),
         detail_required: cland_combat::DetailCounts::default(),
-        commander_progress: Progress::default(),
-        commander_key_count: 0,
-        required_commander_keys: 0,
         divisions: &mut Vec::new(),
         sides: &mut sides,
         combat_sides: &mut Vec::new(),
@@ -128,11 +287,6 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
         arenas: [Progress::default(); N],
         exile_tags: &mut Vec::new(),
         exile_progress: Progress::default(),
-        reinforcement_modifiers: &mut Vec::new(),
-        supply_terms: &mut Vec::new(),
-        acclimatization: &mut Vec::new(),
-        transport_terms: &mut Vec::new(),
-        reinforcement_progress: [Progress::default(); 4],
         ticks: [0; N],
     };
     destination.progress[2] = Progress {
@@ -185,152 +339,6 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
         ));
     }
     assert_eq!(destination.progress[2].required, 2);
-
-    // A commander that did not fit the old row arena must still be read
-    // exactly once and retained; compare every guarded-read failure prefix
-    // with the native reader called directly.
-    use engine::{creference_registry as registry, cunit_leader as leader};
-    use std::cell::{Cell, RefCell};
-    struct Traced<'a> {
-        bytes: &'a [u8],
-        reads: RefCell<Vec<(usize, usize)>>,
-        fail: Cell<Option<usize>>,
-    }
-    impl Memory for Traced<'_> {
-        fn copy(&self, address: usize, out: &mut [u8]) -> bool {
-            self.reads.borrow_mut().push((address, out.len()));
-            if self.fail.get() == Some(address) {
-                return false;
-            }
-            if address == registry::HIGH_ROOT_RVA && out.len() == 8 {
-                out.copy_from_slice(&0x1000_u64.to_le_bytes());
-                return true;
-            }
-            engine::memory::SliceMemory {
-                base: 0,
-                bytes: self.bytes,
-            }
-            .copy(address, out)
-        }
-    }
-    let handle = (0xf000_0001_u64 << 32) | leader::REFERENCE_TYPE as u64;
-    let hash = handle
-        .rotate_left(32)
-        .wrapping_mul(registry::HASH_MULTIPLIER);
-    let slot = (((hash >> 32) as u32 ^ hash as u32) & 7) as usize;
-    let entry = 0x1100 + slot * 24;
-    let mut image = vec![0_u8; 0x5000];
-    for (address, value) in [
-        (0x1000 + registry::ENTRIES, 0x1100),
-        (0x1000 + registry::COUNT, 7_u64 << 32 | 1),
-        (entry + 8, handle),
-        (entry + 16, 0x2000),
-        (0x2000, engine::carmy_leader::VTABLE_RVA as u64),
-        (0x2000 + leader::TYPE, handle),
-        (0x2000 + leader::SKILL, 0x4000),
-        (0x2000 + leader::TOKEN + 16, 2),
-        (0x2000 + leader::TOKEN + 24, 15),
-        (0x4000, engine::cunit_leader_skill::VTABLE_RVA as u64),
-    ] {
-        image[address..address + 8].copy_from_slice(&value.to_le_bytes());
-    }
-    image[0x1000 + registry::OVERFLOW_DISTANCE] = 5;
-    image[0x1100 + 13 * 24 + 4] = 255;
-    image[entry + 4] = 1;
-    image[0x2000 + leader::TOKEN..0x2000 + leader::TOKEN + 2].copy_from_slice(&[b'n', 0xff]);
-    let skill = 0x4000 + engine::cunit_leader_skill::LEVEL;
-    image[skill..skill + 4].copy_from_slice(&i32::MIN.to_le_bytes());
-    let memory = Traced {
-        bytes: &image,
-        reads: RefCell::default(),
-        fail: Cell::new(None),
-    };
-    let mut direct_bytes = [0_u8; 16];
-    let mut direct = |memory: &Traced<'_>| {
-        engine::naval_commander_inputs::capture_division_commander(
-            memory,
-            0,
-            handle,
-            &mut engine::cname_group_member::Names {
-                bytes: &mut direct_bytes,
-                len: 0,
-                required: 0,
-            },
-        )
-    };
-    let expected = direct(&memory).unwrap().unwrap();
-    let complete_reads = memory.reads.take();
-    let mut keys = vec![CommanderKey::default(); 1];
-    destination.commander_keys = &mut keys;
-    destination.progress = [Progress::default(); N];
-    assert_eq!(destination.commander(&memory, 0, handle), Some(0));
-    assert_eq!(destination.division_commanders[0], expected);
-    assert_eq!(*memory.reads.borrow(), complete_reads);
-    assert_eq!(destination.commander(&memory, 0, handle), Some(0));
-    assert_eq!(*memory.reads.borrow(), complete_reads);
-    for (address, _) in complete_reads {
-        memory.fail.set(Some(address));
-        memory.reads.borrow_mut().clear();
-        let expected = direct(&memory).unwrap_err();
-        let expected_reads = memory.reads.take();
-        destination.commander_keys.fill(CommanderKey::default());
-        destination.commander_progress = Progress::default();
-        destination.commander_key_count = 0;
-        destination.commander_names.len = 0;
-        destination.division_commanders.clear();
-        destination.progress = [Progress::default(); N];
-        assert_eq!(destination.commander(&memory, 0, handle), None);
-        assert_eq!(destination.progress[1].failure, Some(expected));
-        assert_eq!(*memory.reads.borrow(), expected_reads);
-        assert!(destination.division_commanders.is_empty());
-    }
-
-    // A token longer than any fixed buffer, held on the heap: it is
-    // counted for growth once (the unfit key is memoized), its divisions
-    // are omitted without a failure, and after growth it is kept whole.
-    let token = 0x2000 + leader::TOKEN;
-    image[token..token + 8].copy_from_slice(&0x4800_u64.to_le_bytes());
-    image[token + 16..token + 24].copy_from_slice(&300_u64.to_le_bytes());
-    image[token + 24..token + 32].copy_from_slice(&300_u64.to_le_bytes());
-    image[0x4800..0x4800 + 300].fill(b'k');
-    image[0x4800 + 300] = 0;
-    let memory = Traced {
-        bytes: &image,
-        reads: RefCell::default(),
-        fail: Cell::new(None),
-    };
-    let reset = |destination: &mut Destination<'_>| {
-        destination.commander_keys.fill(CommanderKey::default());
-        destination.commander_progress = Progress::default();
-        destination.commander_key_count = 0;
-        destination.commander_names.len = 0;
-        destination.commander_names.required = 0;
-        destination.division_commanders.clear();
-        destination.progress = [Progress::default(); N];
-    };
-    reset(&mut destination);
-    for _ in 0..2 {
-        assert_eq!(destination.commander(&memory, 0, handle), None);
-        assert_eq!(destination.progress[1].failure, None);
-        assert_eq!(destination.commander_names.required, 300);
-    }
-    assert!(destination.division_commanders.is_empty());
-    destination.commander_names = engine::cname_group_member::Names {
-        bytes: &mut grown_commander_bytes,
-        len: 0,
-        required: 0,
-    };
-    reset(&mut destination);
-    assert_eq!(destination.commander(&memory, 0, handle), Some(0));
-    assert_eq!(destination.division_commanders[0].name_token, (0, 300));
-    assert_eq!(destination.commander_names.len, 300);
-    assert!(
-        destination
-            .commander_names
-            .bytes
-            .iter()
-            .all(|&byte| byte == b'k')
-    );
 }
 
 /// The viewer builds the land window's lists straight from these spans, so
@@ -354,13 +362,6 @@ fn roster_spans_project_committed_and_reserve_lists_in_arena_order() {
         division_names: 1,
         name_templates: 1,
         name_groups: 1,
-        reinforcement_modifiers: 1,
-        supply_terms: 1,
-        acclimatization: 1,
-        transport_terms: 1,
-        division_commanders: 1,
-        commander_names: 1,
-        commander_keys: 2,
         commander_traits: 2,
         detail_text: 2,
         timed_traits: 2,
@@ -421,6 +422,7 @@ fn destination(c: &mut Captured) -> Destination<'_> {
     Destination {
         sources: &mut c.sources,
         commanders: Default::default(),
+        leaders: &mut c.leaders,
         images: &mut c.images,
         scratch: &mut c.scratch,
         reference: false,
@@ -430,16 +432,6 @@ fn destination(c: &mut Captured) -> Destination<'_> {
             len: 0,
             required: 0,
         },
-        division_commanders: &mut c.division_commanders.first,
-        commander_names: engine::cname_group_member::Names {
-            bytes: &mut c.commander_names.first,
-            len: 0,
-            required: 0,
-        },
-        commander_progress: Progress::default(),
-        commander_keys: &mut c.commander_keys,
-        commander_key_count: 0,
-        required_commander_keys: 0,
         details: &mut c.details.rows,
         divisions: &mut c.divisions.rows,
         sides: &mut c.sides.rows,
@@ -462,11 +454,6 @@ fn destination(c: &mut Captured) -> Destination<'_> {
         width_progress: Progress::default(),
         exile_tags: &mut c.exile_tags.first,
         exile_progress: Progress::default(),
-        reinforcement_modifiers: &mut c.reinforcement_modifiers.first,
-        supply_terms: &mut c.supply_terms.first,
-        acclimatization: &mut c.acclimatization.first,
-        transport_terms: &mut c.transport_terms.first,
-        reinforcement_progress: [Progress::default(); 4],
         progress: [Progress::default(); N],
         arenas: [Progress::default(); N],
         ticks: [0; N],
@@ -486,7 +473,6 @@ fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
     };
     let mut captured = Captured::with_capacities(&c);
     let combat = 0x1000_0000_003e;
-    let empty = memory_less();
     let division = |exile| Acquired {
         stats: carmy_combat_inputs::Row {
             naming: Some(Default::default()),
@@ -494,7 +480,7 @@ fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
         },
         exile,
         context: Default::default(),
-        reinforcement: Default::default(),
+        reserve_speed: None,
     };
     let place = |ordinal, exile_start| Placement {
         pointer: 0,
@@ -527,7 +513,7 @@ fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
             {
                 d.exile_tags[start..start + 3].copy_from_slice(&[21, 22, 23]);
             }
-            d.admit(&empty, 0, place(ordinal as u32, start), division(exile));
+            d.admit(place(ordinal as u32, start), division(exile));
         }
         (d.progress[1], d.exile_progress)
     };
@@ -577,13 +563,42 @@ fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
     assert_eq!(rows[1].exile.as_ref().unwrap().occupiers, [22, 23]);
 }
 
-/// No native reads happen during admission of a division without a
-/// commander; any read would fail.
-fn memory_less() -> engine::memory::SliceMemory<'static> {
-    engine::memory::SliceMemory {
-        base: 0,
-        bytes: &[],
-    }
+/// The CAS hover's operands project from the side read onto the
+/// side inputs alone: the stored anti-air cache (+0x138) and the prevented
+/// lanes (+0x168/+0x170). The side details keep only their retired places.
+/// Capture rounds the prevented lanes to their display step afterwards, with
+/// every other converted table.
+#[test]
+fn cas_operands_project_onto_the_side_inputs_alone() {
+    let mut captured = Captured::with_capacities(&Capacities {
+        details: 1,
+        ..Capacities::default()
+    });
+    captured.details.outcome = Outcome::Rows { len: 1 };
+    captured.details.rows[0].row.id = 62;
+    let side = &mut captured.details.rows[0].row.sides[1];
+    side.anti_air_attack = 1_234_567;
+    side.damage = [1, 2, 3, 4, 250_000, i64::MAX];
+    let views = captured.tables();
+    let TableView::Complete(replay::rows::TableRows::LandCombatDetails(rows)) = &views[0] else {
+        panic!("details withheld");
+    };
+    let defender = &rows[0].sides[1];
+    assert_eq!(defender.damage, [1, 2]);
+    assert_eq!(defender.anti_air_attack, RetiredKept::default());
+    assert_eq!(defender.ground_damage, RetiredNested::default());
+    assert_eq!(defender.prevented_damage, RetiredKept::default());
+    let mut row = rows[0].clone();
+    replay::rows::RowCodec::round_to_display(&mut row);
+    let [attacker, defender] = row
+        .side_inputs
+        .require("LandCombatDetails.side_inputs")
+        .unwrap();
+    assert_eq!(attacker.prevented_damage, [0, 0]);
+    // `|R0` truncates; the sentinel word stays, and the anti-air is exact.
+    assert_eq!(defender.prevented_damage, [200_000, i64::MAX]);
+    assert_eq!(defender.anti_air_attack, 1_234_567);
+    assert_eq!(row.cas_inputs(1), Some((1_234_567, [200_000, i64::MAX])));
 }
 
 /// Recycling preserves the original counted demand in the next frame.
@@ -603,7 +618,10 @@ fn exile_arena_grows_off_the_pass_from_its_counted_demand() {
 }
 
 /// Exile spans index the shared tag arena; a division whose template is
-/// not exiled carries no exile operands.
+/// not exiled carries no exile operands. The stat block's
+/// initiative is published; the retired hover operands (commander inputs,
+/// reinforcement packets) publish their tombstones whatever the division
+/// holds, and a reserve's speed share is its own, composed or refused.
 #[test]
 fn naming_direction_and_exile_operands_project_onto_division_rows() {
     let c = Capacities {
@@ -622,13 +640,6 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
         division_names: 1,
         name_templates: 1,
         name_groups: 1,
-        reinforcement_modifiers: 1,
-        supply_terms: 1,
-        acclimatization: 1,
-        transport_terms: 1,
-        division_commanders: 1,
-        commander_names: 1,
-        commander_keys: 2,
         commander_traits: 2,
         detail_text: 2,
         timed_traits: 2,
@@ -645,6 +656,8 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
     let stats = carmy_combat_inputs::Row {
         direction_group: -3,
         categories: 0x4000_0000_0000_0001,
+        initiative: 2_500,
+        commander: 0x1234_0000_0021,
         naming: Some(engine::cname_group_member::Inputs {
             kind: 2,
             order: 14,
@@ -672,8 +685,9 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
     captured.divisions.rows[1] = Division {
         combat: 0x1000_0000_003e,
         ordinal: 1,
-        role: 1,
+        role: 2,
         exile: None,
+        reserve_speed: Some(Ok(35_000)),
         ..Default::default()
     };
     let [
@@ -710,77 +724,19 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
         })
     );
     assert_eq!(divisions[1].exile, None);
-}
-
-/// The reinforcement reader writes enemy transport terms straight into the
-/// arena past its admitted length and grows it on the worker; a division
-/// with thousands of enemies projects every term in native order and the
-/// grown arena feeds the next capacity.
-#[test]
-fn transport_terms_beyond_the_default_arena_project_every_enemy() {
-    let mut c = Capacities {
-        combats: 1,
-        census_participants: 1,
-        details: 1,
-        divisions: 2,
-        sides: 1,
-        combat_sides: 1,
-        country_tags: 1,
-        rosters: 1,
-        modifier_members: 1,
-        modifiers: 1,
-        width_terms: 1,
-        exile_tags: 1,
-        division_names: 1,
-        name_templates: 1,
-        name_groups: 1,
-        reinforcement_modifiers: 1,
-        supply_terms: 1,
-        acclimatization: 1,
-        transport_terms: 1,
-        division_commanders: 1,
-        commander_names: 1,
-        commander_keys: 2,
-        commander_traits: 2,
-        detail_text: 2,
-        timed_traits: 2,
-        air_counts: 2,
-        learning_traits: 2,
-    };
-    let mut captured = Captured::with_capacities(&c);
-    let enemies = 5_000;
-    let term = |index: usize| reinforcement::TransportTerm {
-        country: index as u32 + 2,
-        regional_value: index as i64 * 10,
-        own_intel: i64::MIN + index as i64,
-        enemy_intel: -(index as i64),
-    };
-    // What the reader leaves behind: the arena grown past its capacity.
-    captured
-        .transport_terms
-        .first
-        .resize(1 + enemies, reinforcement::TransportTerm::default());
-    captured.transport_terms.first[0] = term(usize::MAX >> 40);
-    for index in 0..enemies {
-        captured.transport_terms.first[1 + index] = term(index);
-    }
-    captured.transport_terms.len = 1 + enemies;
-    captured.transport_terms.required = 1 + enemies;
-    captured.divisions.outcome = Outcome::Rows { len: 2 };
-    for (ordinal, row) in captured.divisions.rows[..2].iter_mut().enumerate() {
-        row.combat = 0x1000_0000_003e;
-        row.ordinal = ordinal as u32;
-    }
-    captured.divisions.rows[0]
-        .reinforcement
-        .transport_term_count = 1;
-    captured.divisions.rows[1].reinforcement_starts[3] = 1;
-    captured.divisions.rows[1]
-        .reinforcement
-        .transport_term_count = enemies;
+    assert_eq!(divisions[0].commander, 0x1234_0000_0021);
+    assert_eq!(divisions[0].initiative, 2_500);
+    // The committed division has no share; the reserve's is published, and a
+    // refused one is known to be missing.
+    assert_eq!(divisions[0].reinforcement_speed, Recorded::Value(None));
+    assert_eq!(
+        divisions[1].reinforcement_speed,
+        Recorded::Value(Some(35_000))
+    );
+    captured.divisions.rows[1].reserve_speed = Some(Err("refused"));
     let [
         _,
-        TableView::Complete(replay::rows::TableRows::LandCombatDivisions(divisions)),
+        TableView::Complete(replay::rows::TableRows::LandCombatDivisions(refused)),
         _,
         _,
         ..,
@@ -788,29 +744,18 @@ fn transport_terms_beyond_the_default_arena_project_every_enemy() {
     else {
         panic!("complete land divisions were not projected")
     };
-    assert_eq!(divisions[0].reinforcement_transport.len(), 1);
-    let projected = &divisions[1].reinforcement_transport;
-    assert_eq!(projected.len(), enemies);
-    for (index, row) in projected.iter().enumerate() {
-        let expected = term(index);
-        assert_eq!(
-            (
-                row.country,
-                row.regional_value,
-                row.own_intel,
-                row.enemy_intel
-            ),
-            (
-                expected.country,
-                expected.regional_value,
-                expected.own_intel,
-                expected.enemy_intel
-            )
-        );
-    }
-    captured.grow(&mut c);
-    assert!(c.transport_terms > enemies);
-    assert!(captured.transport_terms.first.len() >= c.transport_terms);
+    assert_eq!(refused[1].reinforcement_speed, Recorded::Value(None));
+    assert_eq!(
+        (
+            divisions[0].commander_inputs,
+            divisions[0].reinforcement,
+            divisions[0].reinforcement_modifiers,
+            divisions[0].reinforcement_supply,
+            divisions[0].reinforcement_acclimatization,
+            divisions[0].reinforcement_transport,
+        ),
+        (Retired, Retired, Retired, Retired, Retired, Retired)
+    );
 }
 
 #[test]
@@ -831,13 +776,6 @@ fn source_failures_and_primary_arena_capacity_are_explicit() {
         division_names: 1,
         name_templates: 1,
         name_groups: 1,
-        reinforcement_modifiers: 2,
-        supply_terms: 2,
-        acclimatization: 2,
-        transport_terms: 2,
-        division_commanders: 2,
-        commander_names: 64,
-        commander_keys: 1,
         commander_traits: 1,
         detail_text: 1,
         timed_traits: 1,
@@ -850,7 +788,6 @@ fn source_failures_and_primary_arena_capacity_are_explicit() {
         bytes: &[],
     };
     captured.capture(&memory, 0, 0);
-    assert_eq!(captured.commander_keys.len(), c.census_participants);
     assert!(
         captured
             .tables()
@@ -877,10 +814,7 @@ fn source_failures_and_primary_arena_capacity_are_explicit() {
     captured.members.required = 7;
     captured.modifiers.required = 19;
     captured.width_terms.required = 9;
-    captured.division_commanders.required = 5;
-    captured.required_commander_keys = 7;
     captured.grow(&mut c);
-    assert!(c.division_commanders >= 5 && c.commander_keys >= 7);
     assert!(c.sides >= 4 && c.modifier_members >= 7 && c.modifiers >= 19 && c.width_terms >= 9);
     captured.details.outcome = Outcome::Rows { len: 1 };
     captured.divisions.outcome = Outcome::Unavailable {
@@ -949,6 +883,171 @@ fn combat_sides_project_independently_of_the_larger_tables() {
     );
 }
 
+/// Combat 7's attacker has two members, its defender none; border war 9's
+/// sides have border values and no members.
+fn modifier_capture() -> Captured {
+    let mut captured = Captured::with_capacities(&Capacities {
+        sides: 4,
+        modifier_members: 2,
+        modifiers: 3,
+        ..Capacities::default()
+    });
+    let sides = [
+        (7, 0, None, 0, 2),
+        (7, 1, None, 2, 0),
+        (9, 0, Some([1, -2, 300_000]), 2, 0),
+        (9, 1, Some([-4, 5, i64::MAX]), 2, 0),
+    ];
+    for (at, (combat, side, border_values, start, len)) in sides.into_iter().enumerate() {
+        captured.sides.rows[at] = ModifierSide {
+            combat,
+            side,
+            border_values,
+            start,
+            len,
+        };
+    }
+    for (at, (division, ordinal, start, len)) in
+        [(70, 0, 0, 2), (71, 1, 2, 1)].into_iter().enumerate()
+    {
+        captured.members.first[at] = ModifierMember {
+            division,
+            ordinal,
+            start,
+            len,
+        };
+    }
+    captured.members.len = 2;
+    captured.members.required = 2;
+    for (at, (id, value)) in [(4, 10), (4, 10), (6, 7_000)].into_iter().enumerate() {
+        captured.modifiers.first[at] = carmy_combat_inputs::Modifier {
+            id,
+            value_a: value,
+            value_b: -value,
+        };
+    }
+    captured.modifiers.len = 3;
+    captured.sides.outcome = Outcome::Rows { len: 4 };
+    captured
+}
+
+fn modifier_entry(id: u32, value: i64) -> CombatModifierValue {
+    CombatModifierValue {
+        id,
+        value_a: value,
+        value_b: -value,
+    }
+}
+
+#[test]
+fn land_combat_division_modifiers_hold_a_row_a_member_in_key_order() {
+    let mut captured = modifier_capture();
+    let tables = captured.tables();
+    let TableView::Complete(replay::rows::TableRows::LandCombatDivisionModifiers(rows)) =
+        &tables[4]
+    else {
+        panic!("member rows were not projected")
+    };
+    // A row a member, repeated ids in order; the old layout held a row a
+    // side with every member's list.
+    let expected = [
+        LandCombatDivisionModifierRow {
+            combat: 7,
+            side: 0,
+            ordinal: 0,
+            division: 70,
+            entries: vec![modifier_entry(4, 10), modifier_entry(4, 10)],
+        },
+        LandCombatDivisionModifierRow {
+            combat: 7,
+            side: 0,
+            ordinal: 1,
+            division: 71,
+            entries: vec![modifier_entry(6, 7_000)],
+        },
+    ];
+    assert_eq!(rows, &expected);
+    let TableView::Complete(replay::rows::TableRows::LandCombatModifiers(sides)) = &tables[2]
+    else {
+        panic!("side rows were not projected")
+    };
+    assert_eq!(sides.len(), 4);
+    assert!(sides.iter().all(|side| side.divisions == Retired));
+    // Unread sides' members count missing from the members' demand; the
+    // read sides' rows stay published.
+    captured.members.required = 5;
+    captured.sides.outcome = Outcome::Truncated {
+        len: 2,
+        unread_rows: 2,
+    };
+    assert_eq!(
+        captured.outcomes()[4],
+        Outcome::Truncated {
+            len: 2,
+            unread_rows: 3
+        }
+    );
+    let tables = captured.tables();
+    let TableView::Truncated {
+        rows: replay::rows::TableRows::LandCombatDivisionModifiers(truncated),
+        missing,
+    } = &tables[4]
+    else {
+        panic!("truncated sides did not publish their members' rows")
+    };
+    assert_eq!((truncated.as_slice(), *missing), (&expected[..], 3));
+    // Unread sides without members leave nothing missing.
+    captured.members.required = 2;
+    assert_eq!(captured.outcomes()[4], Outcome::Rows { len: 2 });
+    // A failed modifier read refuses both tables with its reason.
+    captured.sides.outcome = Outcome::Unavailable {
+        reason: "land modifiers source changed",
+    };
+    assert_eq!(
+        captured.outcomes()[4],
+        Outcome::Unavailable {
+            reason: "land modifiers source changed"
+        }
+    );
+    assert!(matches!(
+        captured.tables()[4],
+        TableView::Unavailable { .. }
+    ));
+}
+
+/// Border values publish with their modifier read, whatever the country
+/// sets' read: a country-set failure refuses only LandCombatSides.
+#[test]
+fn border_values_survive_an_independent_country_set_failure() {
+    let mut captured = modifier_capture();
+    captured.combat_sides.outcome = Outcome::Unavailable {
+        reason: "land combat country list node unreadable",
+    };
+    let [
+        _,
+        _,
+        TableView::Complete(replay::rows::TableRows::LandCombatModifiers(sides)),
+        TableView::Unavailable { .. },
+        TableView::Complete(replay::rows::TableRows::LandCombatDivisionModifiers(_)),
+    ] = captured.tables()
+    else {
+        panic!("the modifier tables were not projected independently")
+    };
+    // Border war 9 has no members, so only its side rows hold its values.
+    assert_eq!(
+        sides
+            .iter()
+            .map(|side| (side.combat, side.side, side.border_values))
+            .collect::<Vec<_>>(),
+        [
+            (7, 0, None),
+            (7, 1, None),
+            (9, 0, Some([1, -2, 300_000])),
+            (9, 1, Some([-4, 5, i64::MAX])),
+        ]
+    );
+}
+
 /// No detail list has a chosen bound: every arena follows the demand of
 /// the largest hour, off the game thread.
 #[test]
@@ -971,27 +1070,4 @@ fn detail_arenas_grow_from_live_demand() {
     assert!(captured.commander_traits.first.len() >= 1_000);
     assert!(captured.detail_text.first.len() >= 100_000);
     assert!(captured.timed_traits.first.len() >= 500);
-}
-
-#[test]
-fn invalid_modifier_breakdown_projection_is_unavailable() {
-    let mut captured = Captured::vacant();
-    captured
-        .breakdowns
-        .push(replay::rows::ReserveModifierBreakdownRow {
-            kind: 0,
-            owner: 9,
-            nodes: vec![engine::modifier_breakdown::Node {
-                children: 1,
-                value: 3,
-                name: b"source".to_vec(),
-            }],
-        });
-    captured.breakdown_outcome = Outcome::Rows { len: 1 };
-    assert_eq!(
-        captured.tables()[4],
-        TableView::Unavailable {
-            reason: "reserve modifier breakdown projection failed".into(),
-        },
-    );
 }

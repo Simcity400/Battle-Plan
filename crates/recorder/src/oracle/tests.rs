@@ -89,13 +89,6 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                         // or launch-source packet; its save has no admitted emission ledger.
                         country_array: Recorded::NotRecorded,
                         launch_sources: Recorded::NotRecorded,
-                        movement: replay::rows::Recorded::Value(Some(
-                            replay::rows::CountryNavalMovementInputs {
-                                sample_hour: hour,
-                                nearest_caches: Some(vec![]),
-                                reserved_theatre: None,
-                            },
-                        )),
                         ..Default::default()
                     },
                 ]));
@@ -139,6 +132,9 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                         controller: 0,
                         victory_points: 0,
                         selected_areas: Recorded::NotRecorded,
+                        controller_area: Recorded::NotRecorded,
+                        owner_area: Recorded::NotRecorded,
+                        area_node: Recorded::NotRecorded,
                         ..ProvinceRow::default()
                     },
                     ProvinceRow {
@@ -148,6 +144,9 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                         controller: 101,
                         victory_points: 0,
                         selected_areas: Recorded::NotRecorded,
+                        controller_area: Recorded::NotRecorded,
+                        owner_area: Recorded::NotRecorded,
+                        area_node: Recorded::NotRecorded,
                         ..ProvinceRow::default()
                     },
                 ])),
@@ -208,6 +207,13 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                         ..Default::default()
                     },
                 ]));
+            // A current recording decodes the tables its format no longer
+            // records as named absences, never as complete empty tables.
+            for table in TableId::ALL {
+                if let Some(reason) = replay::format::FormatVersion::CURRENT.table_refusal(table) {
+                    tables[table.index()] = TableView::Unavailable { reason };
+                }
+            }
             tables.map(Into::into)
         },
     };
@@ -465,19 +471,16 @@ fn province_names_compare_sparse_add_remove_and_exact_bytes() {
     let mut report = Report::default();
     compare_province_names(&frame, &save, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
+    // Read every hour: any other hour compares too.
     frame.hour = 2;
     let mut report = Report::default();
     compare_province_names(&frame, &save, &mut report).unwrap();
-    assert!(report.differences.is_empty());
+    assert_eq!(report.differences.len(), 1);
     assert!(
-        report
+        !report
             .limitations
             .contains_key(replay::cadence::STAGGER_LIMITATION)
     );
-    frame.metrics.table_ns[TableId::ProvinceNames.index()] = 1;
-    report.record_tables(&frame);
-    compare_province_names(&frame, &save, &mut report).unwrap();
-    assert_eq!(report.differences.len(), 1);
 }
 
 fn add_country(frame: &mut DecodedFrame, save: &mut Save, id: u32, slot: u32, tag: &[u8]) {
@@ -533,7 +536,7 @@ fn add_country(frame: &mut DecodedFrame, save: &mut Save, id: u32, slot: u32, ta
     });
 }
 
-fn division_fixture() -> (
+pub(super) fn division_fixture() -> (
     DecodedFrame,
     Save,
     save::PartialMapMembership,
@@ -573,8 +576,10 @@ fn division_fixture() -> (
             expeditionary_owner: 301,
             province: 1,
             template,
-            hit_points: 9_007_199_254_740_993,
-            organisation: 5_345_454,
+            // As a recording stores them, in tenths (replay::display); the
+            // save keeps the exact 90071992547.40993 and 53.45454.
+            hit_points: 9_007_199_254_740_000,
+            organisation: 5_340_000,
             orders_group: 0,
             reveal_skip: 0,
         }]));
@@ -588,168 +593,6 @@ fn division_row_mut(frame: &mut DecodedFrame) -> &mut DivisionRow {
         unreachable!()
     };
     &mut rows[0]
-}
-
-#[test]
-fn eta_oracle_checks_carried_route_spans_and_rejects_invalid_provenance() {
-    use replay::rows::DivisionEtaInputsRow;
-    let (mut frame, mut saved, _, _) = division_fixture();
-    let id = *saved.divisions.keys().next().unwrap();
-    saved.divisions.get_mut(&id).unwrap().presentation.path = vec![2];
-    for age in [-1, 0, 1, 4, 5] {
-        for legs in [1, 9] {
-            *frame.tables[TableId::DivisionEtaInputs.index()] =
-                TableView::Complete(TableRows::DivisionEtaInputs(vec![DivisionEtaInputsRow {
-                    division: id,
-                    sample_hour: frame.hour - age,
-                    leg_river_combined: vec![0; legs],
-                    ..Default::default()
-                }]));
-            let mut report = Report::default();
-            let result = compare_division_eta_inputs(&frame, &saved, &mut report);
-            if !(0..5).contains(&age) {
-                assert!(result.is_err());
-                continue;
-            }
-            result.unwrap();
-            // A carried row keeps its read-time route, so spans longer than
-            // the saved route expose a missed change at any age.
-            assert_eq!(report.differences.is_empty(), legs == 1);
-            assert_eq!(report.compared_tables["DivisionEtaInputs"], 1);
-            assert_eq!(report.compared_tables.len(), 1 + usize::from(age != 0));
-            assert!(report.carried.is_empty());
-        }
-    }
-}
-
-#[test]
-fn division_eta_input_oracle_counts_distinct_edges_including_all_self_routes() {
-    use replay::rows::DivisionEtaInputsRow;
-    let (mut frame, mut saved, _, _) = division_fixture();
-    let id = *saved.divisions.keys().next().unwrap();
-    for (path, branch_legs, valid) in [
-        (vec![1, 1], 0, true),
-        (vec![1, 1], 1, false),
-        (vec![1, 2, 2, 3], 2, true),
-        (vec![1, 2, 2, 3], 1, true), // A zero-speed edge can stop early.
-        (vec![1, 2, 2, 3], 0, true), // An unused branch has no vector.
-        (vec![1, 2, 2, 3], 3, false),
-        (vec![], 0, false), // Empty routes have no row.
-        // Routes are whole at any length.
-        ((2..=5_001).collect(), 5_000, true),
-        ((2..=5_001).collect(), 5_001, false),
-    ] {
-        saved.divisions.get_mut(&id).unwrap().presentation.path = path.clone();
-        *frame.tables[TableId::DivisionEtaInputs.index()] =
-            TableView::Complete(TableRows::DivisionEtaInputs(vec![DivisionEtaInputsRow {
-                division: id,
-                sample_hour: frame.hour,
-                leg_transport_speed: vec![0; branch_legs],
-                ..Default::default()
-            }]));
-        let mut report = Report::default();
-        compare_division_eta_inputs(&frame, &saved, &mut report).unwrap();
-        assert_eq!(
-            report.differences.is_empty(),
-            valid,
-            "path={} branch_legs={branch_legs}: {:?}",
-            path.len(),
-            report.differences
-        );
-    }
-}
-
-#[test]
-fn division_eta_input_oracle_checks_leg_coverage_census_and_source_gaps() {
-    use replay::rows::DivisionEtaInputsRow;
-    let (mut frame, mut saved, _, _) = division_fixture();
-    let id = *saved.divisions.keys().next().unwrap();
-    let row = DivisionEtaInputsRow {
-        division: id,
-        sample_hour: frame.hour,
-        leg_river_combined: vec![0; 300],
-        ..Default::default()
-    };
-    saved.divisions.get_mut(&id).unwrap().province = Some(301);
-    saved.divisions.get_mut(&id).unwrap().presentation.path = (1..=300).collect();
-    let put = |frame: &mut DecodedFrame, rows: Vec<DivisionEtaInputsRow>| {
-        *frame.tables[TableId::DivisionEtaInputs.index()] =
-            TableView::Complete(TableRows::DivisionEtaInputs(rows));
-    };
-    put(&mut frame, vec![row.clone()]);
-    let mut report = Report::default();
-    compare_division_eta_inputs(&frame, &saved, &mut report).unwrap();
-    assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert!(
-        report
-            .limitations
-            .keys()
-            .any(|text| text.contains("requires live comparison with the engine ETA"))
-    );
-    // A zero-speed leg stops the scan early, so a short span is not a gap.
-    put(
-        &mut frame,
-        vec![DivisionEtaInputsRow {
-            leg_river_combined: vec![0; 9],
-            ..row.clone()
-        }],
-    );
-    let mut report = Report::default();
-    compare_division_eta_inputs(&frame, &saved, &mut report).unwrap();
-    assert!(report.differences.is_empty());
-    // More legs than the route, disagreeing branch spans, a moving division
-    // with no row, and a row for an unsaved division are each one difference.
-    for rows in [
-        vec![DivisionEtaInputsRow {
-            leg_river_combined: vec![0; 301],
-            ..row.clone()
-        }],
-        vec![DivisionEtaInputsRow {
-            leg_transport_speed: vec![0; 299],
-            ..row.clone()
-        }],
-        vec![],
-        vec![
-            row.clone(),
-            DivisionEtaInputsRow {
-                division: id + 1,
-                ..row.clone()
-            },
-        ],
-    ] {
-        put(&mut frame, rows);
-        let mut report = Report::default();
-        compare_division_eta_inputs(&frame, &saved, &mut report).unwrap();
-        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-    }
-    for rows in [
-        vec![row.clone(), row.clone()],
-        vec![DivisionEtaInputsRow::default()],
-    ] {
-        put(&mut frame, rows);
-        assert!(compare_division_eta_inputs(&frame, &saved, &mut Report::default()).is_err());
-    }
-    // A standing division has no route, so no row is expected either.
-    saved
-        .divisions
-        .get_mut(&id)
-        .unwrap()
-        .presentation
-        .path
-        .clear();
-    put(&mut frame, Vec::new());
-    let mut report = Report::default();
-    compare_division_eta_inputs(&frame, &saved, &mut report).unwrap();
-    assert!(report.differences.is_empty());
-    *frame.tables[TableId::DivisionEtaInputs.index()] = TableView::Truncated {
-        rows: TableRows::DivisionEtaInputs(vec![row]),
-        missing: 1,
-    };
-    assert!(compare_division_eta_inputs(&frame, &saved, &mut Report::default()).is_err());
-    *frame.tables[TableId::DivisionEtaInputs.index()] = TableView::Unavailable {
-        reason: "ETA input source fault".into(),
-    };
-    assert!(compare_division_eta_inputs(&frame, &saved, &mut Report::default()).is_err());
 }
 
 #[test]
@@ -791,14 +634,15 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         strategic_redeployment: 255,
         withdrawal: Recorded::Value(Some(0)),
         movement_priority: Recorded::Value(Some(1)),
-        // This fixture certifies the published movement prefix only.
-        fresh: Recorded::NotRecorded,
+        base_speed: Recorded::Value(Some(400_000)),
         selected: Recorded::NotRecorded,
         ..Default::default()
     };
+    // A recording before `camouflage` compares its entries.
     let status = DivisionStatusRow {
         division: id,
         supply: replay::rows::Recorded::NotRecorded,
+        camouflage: replay::rows::Recorded::NotRecorded,
         entrenchment: 1,
         entrenchment_cap: -100,
         acclimatization_maximum: Some(save::Acclimatization::OMITTED_MAXIMUM_RAW),
@@ -821,16 +665,14 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         TableView::Complete(TableRows::DivisionStatus(vec![status.clone()]));
     let mut report = Report::default();
     compare_division_movement(&frame, &saved, &mut report).unwrap();
-    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert!(report.limitations.iter().any(|(reason, subjects)| {
-        reason.contains("fresh counter previews use current-hour DivisionMovement.fresh operands")
-            && reason
-                .contains("legacy stored-route ETA uses the retained DivisionEtaInputs companion")
-            && reason.contains("route and progress alone cannot supply")
+        reason.contains("remaining hours are estimated at playback")
+            && reason.contains("route, progress numerator and base_speed")
             && subjects
                 .iter()
-                .any(|subject| subject == "DivisionMovement ETA companion")
+                .any(|subject| subject == "DivisionMovement arrival estimates")
     }));
     assert_eq!(report.scalar_checks, 15);
     for full_path in [vec![9, 9, 8], vec![]] {
@@ -857,7 +699,7 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
             ..status.clone()
         }]));
     let mut report = Report::default();
-    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
     // A changed weight or a stated maximum of 100 differs; an unreadable
     // acclimatization is only that field's limitation.
@@ -872,7 +714,8 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         *frame.tables[TableId::DivisionStatus.index()] =
             TableView::Complete(TableRows::DivisionStatus(vec![changed]));
         let mut report = Report::default();
-        compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+        compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report)
+            .unwrap();
         assert_eq!(
             report.differences.len(),
             differences,
@@ -907,7 +750,8 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         *frame.tables[TableId::DivisionStatus.index()] =
             TableView::Complete(TableRows::DivisionStatus(vec![changed]));
         let mut report = Report::default();
-        compare_division_status(&frame, &omitted, &tokens, &mut report).unwrap();
+        compare_division_status(&frame, &omitted, &tokens, &Ok(50_000), &Ok(72), &mut report)
+            .unwrap();
         assert_eq!(
             report.differences.len(),
             differences,
@@ -930,7 +774,201 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         rows: TableRows::DivisionStatus(vec![status]),
         missing: 1,
     };
-    assert!(compare_division_status(&frame, &saved, &tokens, &mut Report::default()).is_err());
+    assert!(
+        compare_division_status(
+            &frame,
+            &saved,
+            &tokens,
+            &Ok(50_000),
+            &Ok(72),
+            &mut Report::default()
+        )
+        .is_err()
+    );
+}
+
+/// The recorded camouflage is the capture's category-selection decision; the oracle
+/// makes it again over the saved block (nonzero weights in order, the
+/// maximum unless it is 100) with the content's define.
+#[test]
+fn division_camouflage_oracle_decides_again_from_the_saved_block() {
+    let (mut frame, mut saved, _, _) = division_fixture();
+    let id = *saved.divisions.keys().next().unwrap();
+    let tokens = BTreeMap::from([
+        (7, b"cold_climate".as_slice()),
+        (8, b"hot_climate".as_slice()),
+    ]);
+    let block = |entries: &[(&str, &str)], maximum: Option<&str>| {
+        Some(save::Acclimatization {
+            entries: entries
+                .iter()
+                .map(|(name, weight)| {
+                    (
+                        name.as_bytes().to_vec(),
+                        Decimal::parse(weight.as_bytes()).unwrap(),
+                    )
+                })
+                .collect(),
+            maximum: maximum.map(|maximum| Decimal::parse(maximum.as_bytes()).unwrap()),
+        })
+    };
+    let check = |frame: &mut replay::frame::DecodedFrame,
+                 saved: &Save,
+                 camouflage: Recorded<Option<replay::rows::DivisionCamouflage>>,
+                 show_at: Result<i64, String>| {
+        *frame.tables[TableId::DivisionStatus.index()] =
+            TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
+                division: id,
+                camouflage,
+                supply: Recorded::NotRecorded,
+                ..Default::default()
+            }]));
+        let mut report = Report::default();
+        compare_division_status(frame, saved, &tokens, &show_at, &Ok(72), &mut report).unwrap();
+        report
+    };
+    let shown = |category| {
+        Recorded::Value(Some(replay::rows::DivisionCamouflage {
+            category: Some(category),
+        }))
+    };
+    let none = Recorded::Value(Some(replay::rows::DivisionCamouflage { category: None }));
+    // (saved block, recorded camouflage, differences)
+    let cases = [
+        // The first of the greatest weights wins at half the maximum of 100.
+        (
+            block(&[("cold_climate", "60"), ("hot_climate", "60")], None),
+            shown(7),
+            0,
+        ),
+        (
+            block(&[("cold_climate", "60"), ("hot_climate", "60")], None),
+            shown(8),
+            1,
+        ),
+        (
+            block(&[("cold_climate", "49.99999"), ("hot_climate", "-3")], None),
+            none,
+            0,
+        ),
+        (block(&[("cold_climate", "49.99999")], None), shown(7), 1),
+        (block(&[("cold_climate", "50")], None), shown(7), 0),
+        // A stated maximum moves the threshold.
+        (block(&[("hot_climate", "50")], Some("200")), none, 0),
+        (block(&[("hot_climate", "100")], Some("200")), shown(8), 0),
+        // An omitted block shows nothing.
+        (None, none, 0),
+        (None, shown(7), 1),
+    ];
+    let base = check(&mut frame, &saved, Recorded::Value(None), Ok(50_000)).scalar_checks;
+    for (acclimatization, camouflage, differences) in cases {
+        saved
+            .divisions
+            .get_mut(&id)
+            .unwrap()
+            .presentation
+            .acclimatization = acclimatization;
+        let report = check(&mut frame, &saved, camouflage, Ok(50_000));
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{camouflage:?} {:?}",
+            report.differences
+        );
+        assert_eq!(report.scalar_checks, base + 1, "{camouflage:?}");
+    }
+    // A refused capture, a missing define or an unknown token is only that
+    // field's limitation.
+    for (camouflage, show_at, reason) in [
+        (
+            Recorded::Value(None),
+            Ok(50_000),
+            "camouflage was unreadable at capture",
+        ),
+        (
+            shown(7),
+            Err("no defines".to_owned()),
+            "ACCLIMATIZATION_CAMO_SHOW_AT is unavailable",
+        ),
+        (
+            shown(9),
+            Ok(50_000),
+            "absent from the captured lexical dictionary",
+        ),
+    ] {
+        let report = check(&mut frame, &saved, camouflage, show_at);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.scalar_checks, base);
+        assert!(
+            report
+                .limitations
+                .iter()
+                .any(|(limitation, _)| limitation.contains(reason)),
+            "{reason}"
+        );
+    }
+}
+
+#[test]
+fn division_supply_grace_compares_at_display_precision() {
+    let (mut frame, mut saved, _, _) = division_fixture();
+    let id = *saved.divisions.keys().next().unwrap();
+    let presentation = &mut saved.divisions.get_mut(&id).unwrap().presentation;
+    presentation.max_supply = Some(Decimal::parse(b"72").unwrap());
+    presentation.army_current_supply_ratio = Some(Decimal::parse(b"36.71999").unwrap());
+    // The remaining grace is stored at the whole percent of its share over
+    // the content's SUPPLY_GRACE (72 hours: 0.72), toward zero
+    // (DivisionStatusRow::displayed_grace); the maximum stays exact.
+    *frame.tables[TableId::DivisionStatus.index()] =
+        TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
+            division: id,
+            supply_grace_maximum: Recorded::Value(7_200_000),
+            supply_grace_remaining: Recorded::Value(3_600_000),
+            supply: Recorded::NotRecorded,
+            ..Default::default()
+        }]));
+    let tokens = BTreeMap::new();
+    let check = |saved: &Save, grace: Result<i32, String>| {
+        let mut report = Report {
+            display_steps: true,
+            ..Report::default()
+        };
+        compare_division_status(&frame, saved, &tokens, &Ok(50_000), &grace, &mut report).unwrap();
+        report
+    };
+    let report = check(&saved, Ok(72));
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(
+        report.display_precision_lines()[1..],
+        ["  DivisionStatus.supply_grace_remaining: whole percent of the share over NMilitary.SUPPLY_GRACE (72 hours), toward zero".to_owned()]
+    );
+    // A save value inside the same percent agrees; the next percent, the
+    // previous one and a comparison without the define differ.
+    let at = |value: &[u8]| {
+        let mut other = saved.clone();
+        other
+            .divisions
+            .get_mut(&id)
+            .unwrap()
+            .presentation
+            .army_current_supply_ratio = Some(Decimal::parse(value).unwrap());
+        other
+    };
+    for (value, grace, differences) in [
+        (&b"36.00000"[..], Ok(72), 0),
+        (&b"36.71999"[..], Ok(72), 0),
+        (&b"36.72000"[..], Ok(72), 1),
+        (&b"35.99999"[..], Ok(72), 1),
+        (&b"36.71999"[..], Err("no defines".to_owned()), 1),
+    ] {
+        let report = check(&at(value), grace);
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{:?}",
+            report.differences
+        );
+    }
 }
 
 #[test]
@@ -951,7 +989,7 @@ fn division_supply_grace_oracle_requires_unconditional_save_fields_and_keeps_old
         TableView::Complete(TableRows::DivisionStatus(vec![row.clone()]));
     let tokens = BTreeMap::new();
     let mut report = Report::default();
-    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     for field in 0..2 {
         let mut wrong = saved.clone();
@@ -962,7 +1000,8 @@ fn division_supply_grace_oracle_requires_unconditional_save_fields_and_keeps_old
             p.army_current_supply_ratio = Some(Decimal::parse(b"-12.34566").unwrap());
         }
         let mut report = Report::default();
-        compare_division_status(&frame, &wrong, &tokens, &mut report).unwrap();
+        compare_division_status(&frame, &wrong, &tokens, &Ok(50_000), &Ok(72), &mut report)
+            .unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     }
     // Zero is also unconditionally serialized: absence cannot prove zero.
@@ -976,7 +1015,7 @@ fn division_supply_grace_oracle_requires_unconditional_save_fields_and_keeps_old
     p.max_supply = None;
     p.army_current_supply_ratio = None;
     let mut report = Report::default();
-    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report).unwrap();
     assert_eq!(report.differences.len(), 2);
     *frame.tables[TableId::DivisionStatus.index()] =
         TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
@@ -985,7 +1024,7 @@ fn division_supply_grace_oracle_requires_unconditional_save_fields_and_keeps_old
             ..row
         }]));
     let mut report = Report::default();
-    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report).unwrap();
     assert!(report.differences.is_empty());
     for field in ["supply_grace_maximum", "supply_grace_remaining"] {
         assert!(
@@ -1040,7 +1079,7 @@ fn division_status_naming_oracle_checks_generator_operands_and_absence() {
     let tokens = BTreeMap::new();
     set(&mut frame, Recorded::Value(Some(naming.clone())));
     let mut report = Report::default();
-    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     for changed in [
         replay::rows::NameOperands {
@@ -1070,7 +1109,8 @@ fn division_status_naming_oracle_checks_generator_operands_and_absence() {
     ] {
         set(&mut frame, Recorded::Value(Some(changed)));
         let mut report = Report::default();
-        compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+        compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report)
+            .unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     }
     set(&mut frame, Recorded::Value(Some(naming)));
@@ -1081,11 +1121,11 @@ fn division_status_naming_oracle_checks_generator_operands_and_absence() {
         .presentation
         .division_name = None;
     let mut report = Report::default();
-    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
     set(&mut frame, Recorded::Value(None));
     let mut report = Report::default();
-    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report).unwrap();
     assert!(report.differences.is_empty());
     assert!(
         report
@@ -1099,7 +1139,7 @@ fn division_status_naming_oracle_checks_generator_operands_and_absence() {
     );
     set(&mut frame, Recorded::NotRecorded);
     let mut report = Report::default();
-    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report).unwrap();
     assert!(report.differences.is_empty());
     assert!(
         report
@@ -1429,7 +1469,14 @@ fn table_counts_collect_all_issues_and_unproved_sources_remain_incomplete() {
     let counts = recorded_table_counts(&frame);
     let error = counts[&TableId::Stockpiles].as_ref().unwrap_err();
     assert!(error.contains("Stockpiles") && error.contains("failed native walk"));
-    assert_eq!(counts.values().filter(|count| count.is_err()).count(), 3);
+    // Retired tables are named absences, never availability issues.
+    assert_eq!(
+        counts
+            .iter()
+            .filter(|(table, count)| count.is_err() && !report::retired_table(**table))
+            .count(),
+        3
+    );
     assert!(report.differences.is_empty());
     assert!(
         report
@@ -1596,7 +1643,9 @@ fn garrison_equipment_dispatch_skips_carried_rows_and_compares_actual_refreshes(
                 equipment: Ok(&equipment),
                 leader_traits: Err("outside the garrison fixture".into()),
                 intelligence: Err("outside the garrison fixture".into()),
+                temperature: Err("outside the garrison fixture".into()),
                 sub_units: Err("outside the garrison fixture".into()),
+                essential_caps: Err("outside the garrison fixture".into()),
             },
             &mut report,
         );
@@ -1658,7 +1707,9 @@ fn failed_content_reads_preserve_independent_map_and_pack_diagnostics() {
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
             sub_units: Err("common/units: unused".into()),
+            essential_caps: Err("common/units: unused".into()),
             intelligence: Err("common/intelligence_agency_upgrades: unused".into()),
+            temperature: Err("unused".into()),
         },
         &mut report,
     );
@@ -1704,6 +1755,57 @@ fn failed_content_reads_preserve_independent_map_and_pack_diagnostics() {
             .contains("equipment definition is malformed")
     );
     assert!(report.outcome().is_err());
+}
+
+/// A current recording refuses every retired table by name. No comparison
+/// reads one, so none fails a comparison group, is counted as compared or is
+/// a table availability issue.
+#[test]
+fn retired_tables_refused_by_name_fail_no_comparison_group() {
+    let (mut frame, saved, membership, equipment) = fixture();
+    for table in replay::rows::compatibility::RETIRED_TABLES {
+        *frame.tables[table.index()] = TableView::Unavailable {
+            reason: format!(
+                "{table:?} retired at format {0}; this recording is format {0}",
+                replay::FORMAT_VERSION
+            ),
+        };
+    }
+    let mut report = compare(&frame, &saved, &membership, &equipment).unwrap();
+    compare_extended(
+        &frame,
+        &saved,
+        ExtendedContent {
+            membership: Ok(&membership),
+            base_resources: Ok(&save::construction::PartialBaseResources::default()),
+            railway_adjacency: Err("railway content is outside this fixture".into()),
+            buildings: Ok(&installed_content::buildings::Buildings::default()),
+            defines: Ok(&installed_content::defines::Defines::new().unwrap()),
+            raid_graph: Err("map/adjacencies.csv: unused".into()),
+            equipment: Err("common/units/equipment: unused".into()),
+            leader_traits: Err("common/country_leader: unused".into()),
+            sub_units: Err("common/units: unused".into()),
+            essential_caps: Err("common/units: unused".into()),
+            intelligence: Err("common/intelligence_agency_upgrades: unused".into()),
+            temperature: Err("unused".into()),
+        },
+        &mut report,
+    );
+    assert_eq!(report.unavailable_tables(), 0);
+    for table in replay::rows::compatibility::RETIRED_TABLES {
+        let name = format!("{table:?}");
+        assert!(
+            !report.compared_tables.keys().any(|key| key.contains(&name)),
+            "{name}: {:?}",
+            report.compared_tables
+        );
+        for (group, reason) in &report.failed_comparisons {
+            assert!(
+                !group.contains(&name) && !reason.contains(&name),
+                "{group}: {reason}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1760,7 +1862,9 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
             sub_units: Err("common/units: unused".into()),
+            essential_caps: Err("common/units: unused".into()),
             intelligence: Err("common/intelligence_agency_upgrades: unused".into()),
+            temperature: Err("unused".into()),
         },
         &mut report,
     );
@@ -1799,7 +1903,9 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
             sub_units: Err("common/units: unused".into()),
+            essential_caps: Err("common/units: unused".into()),
             intelligence: Err("common/intelligence_agency_upgrades: unused".into()),
+            temperature: Err("unused".into()),
         },
         &mut report,
     );
@@ -1990,7 +2096,7 @@ fn faction_names_handles_and_membership_order_are_exact() {
 }
 
 /// The template is named by the lexer dictionary, the colour compared through
-/// CColor's own write (a truncating cast of the f32 product) and the override byte.
+/// colour's own write (a truncating cast of the f32 product) and the override byte.
 #[test]
 fn faction_templates_colours_and_overrides_compare_as_the_save_writes_them() {
     let (frame, save, membership, equipment) = relations_fixture();
@@ -2209,7 +2315,9 @@ fn game_score_extended_oracle_compares_every_country_and_records_empty_wings() {
                 equipment: Err("unused".into()),
                 leader_traits: Err("unused".into()),
                 intelligence: Err("unused".into()),
+                temperature: Err("unused".into()),
                 sub_units: Err("unused".into()),
+                essential_caps: Err("unused".into()),
             },
             &mut report,
         );
@@ -2523,12 +2631,34 @@ fn invalid_incomplete_or_unresolvable_states_are_refused() {
 }
 
 #[test]
-fn division_oracle_compares_native_precision_and_three_distinct_owners() {
+fn division_oracle_compares_display_precision_and_three_distinct_owners() {
     let (frame, save, membership, equipment) = division_fixture();
     let report = compare(&frame, &save, &membership, &equipment).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.divisions, 1);
     assert_eq!(report.scalar_checks, 20);
+    // The report names each column compared at display precision.
+    assert_eq!(
+        report.display_precision_lines()[1..],
+        [
+            "  Divisions.hit_points: 0.1 (fixed5, toward zero, nonzero kept)".to_owned(),
+            "  Divisions.organisation: 0.1 (fixed5, toward zero)".to_owned(),
+        ]
+    );
+    // A recording before display steps holds exact values: the same rows
+    // now differ from the save.
+    let report = compare_core_in(
+        replay::format::FormatVersion::read(replay::display::DISPLAY_PRECISION_FORMAT - 1).unwrap(),
+        &frame,
+        SampleBoundary::EndOfHour,
+        &save,
+        Ok(&membership),
+        Ok(&equipment),
+        None,
+    )
+    .unwrap();
+    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+    assert!(report.display_precision_lines().is_empty());
     let mut changed = frame.clone();
     let row = division_row_mut(&mut changed);
     row.hit_points -= 1;
@@ -2883,75 +3013,6 @@ fn player_duplicate_user_collapse_never_certifies_every_current_player() {
             .len(),
         1
     );
-}
-
-#[test]
-fn combat_progress_joins_all_saved_units_and_keeps_the_exact_complement() {
-    let (mut frame, mut saved, _, _) = fixture();
-    let combat = (7_u64 << 32) | 62;
-    let first = (1_u64 << 32) | 51;
-    let reserve = (2_u64 << 32) | 51;
-    let defender = (3_u64 << 32) | 51;
-    for (id, organisation, province) in [(first, 1, 1), (reserve, 2, 2), (defender, 6, 2)] {
-        let mut org = Decimal::parse(b"0.00001").unwrap();
-        org.raw = organisation;
-        saved.divisions.insert(
-            id,
-            save::Division {
-                id,
-                roster_owner: b"GER".to_vec(),
-                logical_owner: b"GER".to_vec(),
-                expeditionary_owner: None,
-                province: Some(province),
-                template: None,
-                alternate_template: None,
-                separate_counter: false,
-                hit_points: Decimal::parse(b"1").unwrap(),
-                organisation: org,
-                country_intel: Vec::new(),
-                presentation: Default::default(),
-            },
-        );
-    }
-    saved.land_combats.insert(
-        combat,
-        save::LandCombat {
-            details: Default::default(),
-            id: combat,
-            province: 2,
-            day: -1,
-            duration: 1,
-            attackers: vec![first, reserve],
-            defenders: vec![defender],
-        },
-    );
-    let set = |frame: &mut DecodedFrame, fraction, complement, province| {
-        *frame.tables[TableId::LandCombatProgress.index()] =
-            TableView::Complete(TableRows::LandCombatProgress(vec![
-                replay::rows::LandCombatProgressRow {
-                    combat,
-                    attacker_progress: fraction,
-                    defender_progress: complement,
-                    direction_attacker: first,
-                    direction_province: province,
-                    attacker_manpower_loss: replay::rows::Recorded::NotRecorded,
-                    defender_manpower_loss: replay::rows::Recorded::NotRecorded,
-                    attacker_equipment_losses: replay::rows::Recorded::NotRecorded,
-                    defender_equipment_losses: replay::rows::Recorded::NotRecorded,
-                },
-            ]));
-    };
-    set(&mut frame, 33_333, 66_667, 1);
-    let mut report = Report::default();
-    compare_combat_progress(&frame, &saved, &mut report).unwrap();
-    assert!(report.differences.is_empty());
-    assert_eq!(report.scalar_checks, 3);
-    set(&mut frame, 33_333, 66_666, 2);
-    let mut report = Report::default();
-    compare_combat_progress(&frame, &saved, &mut report).unwrap();
-    assert_eq!(report.differences.len(), 2);
-    saved.divisions.remove(&reserve);
-    assert!(compare_combat_progress(&frame, &saved, &mut Report::default()).is_err());
 }
 
 #[test]
@@ -3553,7 +3614,8 @@ fn naval_fixture() -> (
             task_force: force,
             strength: 9_007_199_254_740_993,
             organisation: 7_872_001,
-            experience: 3_432_537,
+            // The save's 34.32537 at its display step, a hundredth toward zero.
+            experience: 3_432_000,
             sunk_convoys: -1,
             category: 9,
             class_id: -1,
@@ -4038,9 +4100,11 @@ fn naval_region_access_refuses_saved_nonpositive_or_duplicate_pairs_and_zero_row
     );
 }
 
-/// Each archetype total is the sum of the saved stockpile's variant
-/// amounts of that archetype; a country with a variant the recorded
-/// definitions lack is named, not derived.
+/// Each essential archetype's stock is the sum of the saved stockpile's
+/// variant amounts of that archetype, in whole units capped at its largest
+/// raid requirement; a country with a variant the recorded definitions lack
+/// is named, not derived, and a row of an archetype no raid type lists is a
+/// difference.
 #[test]
 fn stockpile_archetypes_sum_the_saved_variant_amounts() {
     let (mut frame, mut save, _, _) = relation_fixture();
@@ -4076,51 +4140,54 @@ fn stockpile_archetypes_sum_the_saved_variant_amounts() {
                 .collect(),
         ))
     };
-    let row = |canonical_slot, archetype, quantity_raw| replay::rows::StockpileArchetypeRow {
+    let row = |canonical_slot, archetype, units| replay::rows::StockpileArchetypeRow {
         canonical_slot,
         archetype,
-        quantity_raw,
+        units,
     };
+    // Archetypes 7, 8 and 9 are essential, required up to 3, 1 and 5.
+    let tokens = BTreeMap::from([
+        (7, b"bomber".as_slice()),
+        (8, b"convoy".as_slice()),
+        (9, b"tank".as_slice()),
+        (10, b"rifle".as_slice()),
+    ]);
+    let caps: BTreeMap<Vec<u8>, i32> = [
+        (b"bomber".to_vec(), 3),
+        (b"convoy".to_vec(), 1),
+        (b"tank".to_vec(), 5),
+    ]
+    .into();
     let run = |frame: &mut DecodedFrame, known: &[(u64, u32)], rows| {
         *frame.tables[TableId::VariantDefinitions.index()] = definitions(known);
         *frame.tables[TableId::StockpileArchetypes.index()] =
             TableView::Complete(TableRows::StockpileArchetypes(rows));
         let context = country_context(frame).unwrap();
         let mut report = Report::default();
-        visibility::compare_stockpile_archetypes(frame, &save, &context, &mut report).unwrap();
+        visibility::compare_stockpile_archetypes(
+            frame,
+            &save,
+            &context,
+            &tokens,
+            Ok(&caps),
+            &mut report,
+        )
+        .unwrap();
         report
     };
-    // Both countries were read at this hour (the launch family's hours).
-    let hour = frame.hour;
-    let reads = |sov: i32| {
-        TableView::Complete(TableRows::SliceReads(
-            [(8, hour), (9, sov)]
-                .map(|(owner, sample_hour)| replay::rows::SliceReadRow {
-                    table: TableId::RaidCountryInputs.index() as u32,
-                    owner,
-                    sample_hour,
-                })
-                .to_vec(),
-        ))
-    };
-    *frame.tables[TableId::SliceReads.index()] = reads(hour);
     let all = [(1, 7), (2, 7), (3, 8), (4, 7)];
-    // D01 (slot 8): archetype 7 is 3 + 1.5, archetype 8 is 2; SOV (slot 9)
-    // has 1 of archetype 7; a zero total without variants is allowed.
-    let exact = vec![
-        row(8, 7, 450_000),
-        row(8, 8, 200_000),
-        row(8, 9, 0),
-        row(9, 7, 100_000),
-    ];
+    // D01 (slot 8): archetype 7 is 3 + 1.5, capped at 3; archetype 8 is 2,
+    // capped at 1; SOV (slot 9) has 1 of archetype 7; a zero total without
+    // variants is allowed.
+    let exact = vec![row(8, 7, 3), row(8, 8, 1), row(8, 9, 0), row(9, 7, 1)];
     let report = run(&mut frame, &all, exact.clone());
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["StockpileArchetypes"], 3);
-    // A changed total, a nonzero total without variants, a missing total.
+    // An uncapped total, a nonzero total without variants, a missing total.
     let report = run(
         &mut frame,
         &all,
-        vec![row(8, 7, 450_001), row(8, 9, 1), row(9, 7, 100_000)],
+        vec![row(8, 7, 4), row(8, 9, 1), row(9, 7, 1)],
     );
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
     // Without variant 4's definition SOV is named and not compared.
@@ -4133,39 +4200,33 @@ fn stockpile_archetypes_sum_the_saved_variant_amounts() {
             .keys()
             .any(|reason| reason.contains("no VariantDefinitions row"))
     );
-    // SOV read an hour earlier: its rows are named, not compared, even
-    // wrong ones.
-    *frame.tables[TableId::SliceReads.index()] = reads(hour - 1);
-    let mut stale = exact;
-    stale[3].quantity_raw = 7;
-    let report = run(&mut frame, &all, stale);
-    assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert_eq!(report.compared_tables["StockpileArchetypes"], 2);
-    assert!(
-        report
-            .limitations
-            .keys()
-            .any(|reason| reason.contains("read before this hour"))
-    );
+    // A non-essential archetype is not recorded.
+    let mut extra = exact;
+    extra.push(row(8, 10, 2));
+    let report = run(&mut frame, &all, extra);
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    // Without the caps nothing is compared.
+    *frame.tables[TableId::VariantDefinitions.index()] = definitions(&all);
+    let context = country_context(&frame).unwrap();
+    let mut report = Report::default();
+    visibility::compare_stockpile_archetypes(
+        &frame,
+        &save,
+        &context,
+        &tokens,
+        Err("raid types unreadable".into()),
+        &mut report,
+    )
+    .unwrap();
+    assert_eq!(report.compared_tables["StockpileArchetypes"], 0);
 }
 
-/// Ace rows of owners read at the frame's hour compare their alive byte
-/// and assigned wing with the saved roster and the wings' `ace` fields;
-/// owners read earlier are named, not compared.
+/// Every country's ace rows compare their alive byte and assigned wing
+/// with the saved roster and the wings' `ace` fields, whatever SliceReads
+/// holds: the table is read every hour.
 #[test]
 fn ace_range_inputs_match_the_saved_rosters_and_wing_references() {
-    let (mut frame, mut save, _, _) = relation_fixture();
-    let hour = frame.hour;
-    // D01 is slot 8 and read now; SOV is slot 9 and read an hour ago.
-    let read = |owner, sample_hour| replay::rows::SliceReadRow {
-        table: TableId::RaidCountryInputs.index() as u32,
-        owner,
-        sample_hour,
-    };
-    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(vec![
-        read(8, hour),
-        read(9, hour - 1),
-    ]));
+    let (frame, mut save, _, _) = relation_fixture();
     let ace = |country: &[u8], id: u64, alive| save::air::Ace {
         id,
         country: country.to_vec(),
@@ -4221,26 +4282,21 @@ fn ace_range_inputs_match_the_saved_rosters_and_wing_references() {
     let exact = vec![
         row(8, assigned, wing, 1),
         row(8, dead, 0, 0),
-        // Read an hour ago: not compared, whatever it holds.
-        row(9, other, 99, 0),
+        row(9, other, 0, 1),
     ];
     let report = run(exact.clone());
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert_eq!(report.compared_tables["AceRangeInputs"], 2);
-    assert!(
-        report
-            .limitations
-            .keys()
-            .any(|reason| reason.contains("read before this hour"))
-    );
+    assert_eq!(report.compared_tables["AceRangeInputs"], 3);
+    // SOV's wrong row is compared too.
     let report = run(vec![
         row(8, assigned, 0, 1),
         row(8, dead, wing, 1),
         row(9, other, 99, 0),
     ]);
-    assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    assert_eq!(report.differences.len(), 4, "{:?}", report.differences);
+    // An unsaved ace, and both saved aces missing.
     let report = run(vec![row(8, assigned, wing, 1), row(8, 4 << 32, 0, 1)]);
-    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+    assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
 }
 
 #[test]
@@ -4885,8 +4941,7 @@ fn strategic_action_oracle_names_unsaved_operands_and_keeps_saved_differences() 
         )),
         withdrawal: Recorded::Value(Some(0)),
         movement_priority: Recorded::Value(Some(1)),
-        // This fixture certifies the published movement prefix only.
-        fresh: Recorded::NotRecorded,
+        base_speed: Recorded::Value(Some(400_000)),
         ..Default::default()
     };
     *frame.tables[TableId::DivisionMovement.index()] =

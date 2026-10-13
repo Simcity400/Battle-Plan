@@ -5,13 +5,13 @@
 //! dedicated thread.
 
 pub(crate) use crate::acquisition_countries::{
-    Report as CountriesReport, Request as CountriesRequest,
+    Report as CountriesReport, Request as CountriesRequest, TemplatesReport, TemplatesRequest,
 };
 pub(crate) use crate::acquisition_gather::{Report as GatherReport, Request as GatherRequest};
 use crate::extended::{
-    air, character_portraits, characters, construction, division_eta_inputs, division_presentation,
-    economy, fog, governance, intel, lexical, naval_history, production, projects,
-    province_unit_order, session, ship_models, supply_trains, weather,
+    air, character_portraits, characters, construction, division_presentation, economy, fog,
+    governance, intel, lexical, naval_history, production, projects, province_unit_order, session,
+    ship_models, supply_trains, weather,
 };
 use crate::{
     acquisition, acquisition_factions, acquisition_states, acquisition_wars, map_capture, sampling,
@@ -44,32 +44,46 @@ pub(crate) struct WorldPart<J, C> {
     pub context: C,
     pub payload: J,
 }
-/// Supply runs every hour; daily parts own a payload only when scheduled.
+/// The production and construction rests; each part owns a payload only in
+/// its scheduled hour. The economy rest is its own [`EconomyRequest`].
 pub(crate) struct WorldRequest {
     pub countries: Arc<engine::country_memory::Cache>,
-    pub economy: WorldPart<economy::EconomyRestJob, economy::EconomyRestCopyContext>,
     pub construction: Option<
         WorldPart<construction::ConstructionRestJob, construction::ConstructionRestCopyContext>,
     >,
     pub production:
         Option<WorldPart<production::ProductionRestJob, production::ProductionRestCopyContext>>,
-    pub focus: Option<WorldPart<governance::FocusJob, governance::FocusCopyContext>>,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct WorldReport {
-    pub economy: economy::EconomyRestCopyReport,
     pub construction: construction::ConstructionRestCopyReport,
     pub production: production::ProductionRestCopyReport,
-    pub focus: governance::FocusCopyReport,
     pub ticks: u64,
 }
+/// The economy rest (province supply every hour, the resource census and its
+/// consumers hourly, the other tables in their daily slot), its own
+/// first-burst job beside World.
+pub(crate) type EconomyRequest =
+    RawRequest<economy::EconomyRestJob, economy::EconomyRestCopyContext>;
 pub(crate) struct GovernanceRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub context: governance::CaptureContext,
     pub captured: governance::Captured,
     pub buildings: construction::Buildings,
+    /// Held StateBuildings and ProvinceBuildings rows
+    /// ([`construction::BuildingStore`]); absent reads every status afresh.
+    pub building_store: Option<Box<construction::BuildingStore>>,
+    /// Held PartyLeaders rows ([`governance::LeaderStore`]); absent reads
+    /// every country's leaders afresh.
+    pub leader_store: Option<Box<governance::LeaderStore>>,
+    /// Held PoliticalParties and ActiveIdeas rows
+    /// ([`governance::PartyStore`]); absent reads every country's parties
+    /// and ideas afresh.
+    pub party_store: Option<Box<governance::PartyStore>>,
     /// The technologies family's only fingerprint store, loaned for this hour.
     pub technology_fingerprints: Box<crate::slicing::SliceFingerprints>,
+    /// The focus family's only fingerprint store, loaned for this hour.
+    pub focus_fingerprints: Box<crate::slicing::SliceFingerprints>,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct GovernanceReport {
@@ -123,15 +137,23 @@ pub(crate) struct IntelResidualRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub context: intel::CaptureContext,
     pub captured: intel::Captured,
+    /// Held ScriptFlags rows ([`intel::FlagStore`]); absent reads every
+    /// manager afresh.
+    pub flags: Option<Box<intel::FlagStore>>,
+    /// Held ScriptVariables rows ([`intel::VariableStore`]); absent reads
+    /// every store afresh.
+    pub variables: Option<Box<intel::VariableStore>>,
 }
 /// One country-slot share of the supply node census; part 0 also walks the
-/// train inventory.
+/// train inventory and carries the hour's owner selection with the family's
+/// fingerprint store.
 pub(crate) struct SupplyTrainsRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub context: supply_trains::CaptureContext,
     pub part: usize,
     pub nodes: supply_trains::Part,
     pub trains: Option<supply_trains::Trains>,
+    pub slice: Option<supply_trains::Slice>,
 }
 /// One contiguous share of the character roster.
 pub(crate) struct CharacterPortraitsRequest {
@@ -140,17 +162,18 @@ pub(crate) struct CharacterPortraitsRequest {
     pub captured: character_portraits::Part,
     pub census: Option<Arc<engine::ccharacter_manager::PortraitCensus>>,
 }
+/// The Ordinary family's counter part, dispatched once the Countries job has
+/// restored the naming buffers its reserved visibility reads.
 pub(crate) struct OrdinaryRequest {
     pub countries: Arc<engine::country_memory::Cache>,
-    pub unit_inputs: Option<Arc<crate::division_census::UnitInputs>>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
-    pub fresh_modifier_guard: Result<(), &'static str>,
-    pub transport_admission: crate::transport_admission::Admission,
-    pub transport_modifier_guard: Result<(), &'static str>,
     pub packs: Box<crate::extended::OrdinaryPacks>,
-    pub naval_missions: crate::extended::NavalMissionLoan,
+    /// Held CountryCounterInputs rows
+    /// ([`crate::extended::country_counters::CounterStore`]); absent reads
+    /// every country afresh.
+    pub counters: Option<Box<crate::extended::country_counters::CounterStore>>,
 }
 impl OrdinaryRequest {
     pub(crate) fn allocated_bytes(&self) -> usize {
@@ -158,8 +181,27 @@ impl OrdinaryRequest {
     }
 
     pub(crate) fn fail(&mut self, reason: &'static str) -> OrdinaryReport {
-        self.packs
-            .fail(self.hour, self.naval_missions.force_full, reason);
+        self.packs.fail(reason);
+        OrdinaryReport
+    }
+}
+/// One independent part of the Ordinary family, dispatched with the first
+/// burst (`extended::OrdinaryPart`).
+pub(crate) struct OrdinaryPartRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub fresh_modifier_guard: Result<(), &'static str>,
+    pub part: crate::extended::OrdinaryPart,
+}
+impl OrdinaryPartRequest {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.part.allocated_bytes()
+    }
+
+    pub(crate) fn fail(&mut self, reason: &'static str) -> OrdinaryReport {
+        self.part.fail(reason);
         OrdinaryReport
     }
 }
@@ -169,9 +211,8 @@ pub(crate) struct SlowRequest {
     pub game_state: usize,
     pub hour: i32,
     pub force_full: bool,
-    pub directed_query_admission: crate::transport_admission::Admission,
     pub packs: Box<crate::extended::SlowPacks>,
-    /// The Slow job's stability fingerprint store, loaned for this hour.
+    /// The Slow job's advisor and local sub-unit stores, loaned for this hour.
     pub stores: crate::extended::SlowStores,
 }
 /// One part of the hour's AirCountryRelations copies
@@ -186,19 +227,21 @@ pub(crate) struct AirRelationsRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct AirRelationsReport;
 /// The registered air missions and the naval-patrol combats, whose regions
-/// open the history parts; the Late job joins the registrations it leaves.
+/// open the history parts, then the missions' joins, which the Late job
+/// keeps.
+/// It needs only the wing census, never an Ordinary part's packs; the air
+/// statistics and base verdicts are installed in its pack when it returns.
 pub(crate) struct AirMissionsRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     /// The map census the typed visitor supplied the wing identities in.
     pub parent: engine::walk::Outcome,
-    pub hour: i32,
-    pub transport_guard: Result<(), &'static str>,
-    pub transport_admission: crate::transport_admission::Admission,
-    pub transport_regions: crate::extended::transport_spotting_context::RegionLoan,
     pub pack: Box<crate::extended::air::Captured>,
     pub histories: Vec<crate::extended::air_histories::Staging>,
+    /// Held AirRegionalMissions registrations, lent by the game thread for
+    /// one walk and taken back at the join; absent reads every country.
+    pub mission_store: Option<Box<crate::extended::air::MissionStore>>,
 }
 impl AirMissionsRequest {
     /// A job the pool refused never runs: its growth could allocate on the
@@ -224,6 +267,56 @@ pub(crate) struct AirHistoriesRequest {
 pub(crate) struct AirHistoriesReport;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SlowReport;
+pub(crate) struct StabilityRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
+    pub packs: Box<crate::extended::StabilityPacks>,
+    /// The `stability` family's fingerprint store, loaned for this hour;
+    /// absent drops only the family's early reads.
+    pub store: Option<Box<crate::slicing::SliceFingerprints>>,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct StabilityReport;
+pub(crate) struct ProductionDailyRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
+    pub packs: Box<crate::extended::ProductionDailyPacks>,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ProductionDailyReport;
+/// One slot range of a split production modifier capture, beside the
+/// ProductionDaily job, which captures the first.
+pub(crate) struct ProductionModifierPartRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
+    pub part: usize,
+    pub slots: std::ops::Range<u32>,
+    pub provided: Option<Result<engine::production_modifiers::Context, &'static str>>,
+    pub captured: Box<crate::extended::production_modifiers::Part>,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ProductionModifierPartReport {
+    pub ticks: u64,
+}
+pub(crate) struct WarOverviewRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
+    pub packs: Box<crate::extended::WarOverviewPacks>,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct WarOverviewReport;
 pub(crate) struct RaidStateRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub base: usize,
@@ -272,14 +365,75 @@ pub(crate) struct LateRequest {
     /// Completed plans and execution scratch; a Late failure never fails
     /// their independently acquired prefix or order execution scalars.
     pub plans: crate::extended::plans::Captured,
-    /// The attachment's held RaidAirScores table, loaned for this hour.
-    pub air_scores: Box<engine::raid_air_scores::Held>,
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct LateReport;
-/// The army order census and its plan operands. Its optional child operands
-/// borrow the completed OOB copy from this same held pass; the Late job reads
-/// the roots this job leaves.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ScoresRailsReport;
+/// One OrdersPart job's part of this pass's census and plan walk
+/// ([`crate::orders_parts`]), returned to the census at the Orders join.
+pub(crate) struct OrdersPartRequest {
+    pub base: usize,
+    /// The part's index, where the join returns it.
+    pub index: usize,
+    pub part: Box<crate::orders_parts::Part>,
+    /// The pool refused the job: the part did not run.
+    pub rejected: bool,
+}
+impl OrdersPartRequest {
+    /// The reason this part fails the census with, as the single Orders job
+    /// would: its admission refusal, or a run that `failed` (a panic or a
+    /// cancellation); none for a part that ran.
+    pub(crate) fn failure(&self, failed: bool) -> Option<&'static str> {
+        if self.rejected {
+            Some("army order worker admission failed")
+        } else if failed {
+            Some("army order acquisition failed")
+        } else {
+            None
+        }
+    }
+}
+/// The fronts the Orders job's plans bound, read once that job joins, beside
+/// the ChildFronts job; the plans take them back after the Late join.
+pub(crate) struct FrontsRequest {
+    pub base: usize,
+    pub fronts: crate::extended::plans::Fronts,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct FrontsReport;
+/// ArmyIconInputs, right after the division sources join: the seeded census
+/// carries both icon fields, so the pass reads only alternate templates.
+pub(crate) struct ArmyIconsRequest {
+    pub base: usize,
+    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub divisions: crate::extended::Divisions,
+    pub icons: crate::extended::army_icon_inputs::Captured,
+    pub ticks: [u64; 1],
+}
+/// RaidAirScores and the shared rail tables in their own first-burst job:
+/// both walks read only the game state and the hour, the score walk
+/// resolving countries from the hour's snapshot bytes. The Late job keeps the
+/// tables they leave in the frame's packs.
+pub(crate) struct ScoresRailsRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
+    /// The air pack's held-table capacities.
+    pub score_capacity: [usize; 2],
+    pub parts: Box<crate::extended::ScoresRailsParts>,
+    /// The attachment's held RaidAirScores table, loaned for this hour.
+    pub air_scores: Box<engine::raid_air_scores::Held>,
+    /// Held rail outputs ([`naval_history::RailStore`]); absent reads every
+    /// rail info afresh.
+    pub rail_store: Option<Box<naval_history::RailStore>>,
+}
+/// The army order census and its plan operands, loaned to the Orders job
+/// right after the root census and then, with this same held pass's
+/// completed OOB copy, to the ChildFronts job, which completes the child
+/// fronts' owner operands. The Late job reads the roots and plans they leave.
 pub(crate) struct OrdersRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub base: usize,
@@ -288,13 +442,55 @@ pub(crate) struct OrdersRequest {
     pub game_state: usize,
     pub orders: crate::map_capture::Orders,
     pub plans: crate::extended::plans::Captured,
-    /// Loan of the accepted Naval copy, returned for its ordinary decode.
-    /// An absent copy never permits a native fallback for child group inputs.
+    /// Loan of the accepted Naval copy to the ChildFronts job, returned for
+    /// its ordinary decode. The Orders job never holds it. An absent copy
+    /// never permits a native fallback for child group inputs.
     pub group_source: Option<naval_history::NavalJob>,
 }
 impl OrdersRequest {
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.orders.allocated_bytes() + self.plans.allocated_bytes()
+    }
+
+    /// The OrdersStitch job: this pass's census and plan parts stitched into
+    /// the single census and plans, then every other pass over them as the
+    /// single Orders job made them; plans the next pass's split. A census a
+    /// failed or refused job failed stays failed.
+    fn stitch(&mut self, memory: &impl engine::Memory) {
+        if self.orders.failed() {
+            return;
+        }
+        let part_ticks = self.orders.stitch();
+        if self.orders.failed() {
+            if let engine::walk::Outcome::Unavailable { reason } = self.orders.rows.outcome {
+                self.plans.fail(reason);
+            }
+            return;
+        }
+        let count = self.orders.part_count();
+        if count != 0 && self.orders.plan_parts().is_none() {
+            self.fail("army order part did not run");
+            return;
+        }
+        // No parts: the census refused its failed roots, and so do the plans.
+        let parts = self.orders.plan_parts();
+        let parts = parts.as_ref().map_or(&[][..], |parts| &parts[..count]);
+        let orders = &self.orders;
+        self.plans.visit_parts(
+            memory,
+            self.base,
+            self.game_state,
+            orders.roots(),
+            orders.visits(),
+            orders.successor_lists(),
+            orders.root_outcome,
+            orders.rows.outcome,
+            &orders.rows.rows[..orders.rows.outcome.len()],
+            &orders.geometry[..orders.geometry_len],
+            parts,
+            part_ticks,
+        );
+        self.orders.plan_split();
     }
 
     pub(crate) fn fail(&mut self, reason: &'static str) -> OrdersReport {
@@ -314,6 +510,17 @@ impl Drop for OrdersRequest {
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct OrdersReport;
+/// The OrdersStitch job's report: whether its body panicked. The stitch
+/// contains its own panic, so that the pool does not stop before the
+/// stitch's join (`sampling::settle_stitch` applies the stop there).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StitchReport {
+    pub contained_panic: bool,
+}
+/// A test request base that makes the stitch body panic before it reads
+/// anything.
+#[cfg(test)]
+pub(crate) const STITCH_PANIC_BASE: usize = usize::MAX - 0x5717;
 /// The raw-gated packs, dispatched once every raw-copy verdict is in.
 pub(crate) struct GatedRequest {
     pub base: usize,
@@ -321,12 +528,22 @@ pub(crate) struct GatedRequest {
     pub hour: i32,
     pub force_full: bool,
     pub packs: Box<crate::extended::GatedPacks>,
+    /// The projects family's only fingerprint store, loaned for this hour.
+    pub project_fingerprints: Box<crate::slicing::SliceFingerprints>,
+    /// The hour's authenticated country census, which the projects family's
+    /// per-slot census reads instead of each country object.
+    pub countries: Option<Arc<engine::country_memory::Cache>>,
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct GatedReport;
 pub(crate) struct ProvinceUnitOrderRequest {
     pub context: province_unit_order::CaptureContext,
     pub captured: province_unit_order::Captured,
+    /// The hour's division census lease, when its acquisition completed;
+    /// released at the join, before the census is reused.
+    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    /// The held walk ([`crate::province_unit_changes`]), lent for the hour.
+    pub store: Option<Box<province_unit_order::ProvinceUnitStore>>,
 }
 /// Independent core-map walk moved to the pool so its pointer chase overlaps the
 /// other readers. Owns its pre-sized row buffers; the callback restores them.
@@ -354,27 +571,56 @@ pub(crate) struct PresentationRequest {
     pub context: division_presentation::CaptureContext,
     pub captured: division_presentation::Captured,
     pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
-    /// The `retreat_bans` family's owner store, loaned for the hour.
-    pub store: Option<Box<crate::slicing::SliceFingerprints>>,
+    /// The `army_stat` family's held DivisionStatus attack operands, loaned
+    /// for the hour.
+    pub army_stats: Option<Box<crate::extended::attack_stats::ArmyStatStore>>,
 }
 impl PresentationRequest {
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.captured.allocated_bytes()
     }
 
-    pub(crate) fn fail(&mut self, reason: &'static str) -> division_presentation::CaptureReport {
-        self.captured.fail_owned_capture(reason)
+    /// Lend the movement pass to its own job, which runs beside this one.
+    pub(crate) fn take_movement(&mut self) -> PresentationMovementRequest {
+        PresentationMovementRequest {
+            countries: Arc::clone(&self.countries),
+            context: self.context,
+            inputs: self.inputs.clone(),
+            pass: self.captured.take_movement(),
+        }
+    }
+
+    /// Return the movement pass and merge its ticks into this job's report.
+    /// A failed movement job fails the whole presentation, as the single job
+    /// did.
+    pub(crate) fn restore_movement(
+        &mut self,
+        movement: PresentationMovementRequest,
+        movement_report: Result<[u64; 3], Failure>,
+        report: Result<division_presentation::CaptureReport, Failure>,
+    ) -> Result<division_presentation::CaptureReport, Failure> {
+        self.captured.restore_movement(movement.pass);
+        let [movement, land, dig_in] = movement_report?;
+        report.map(|mut report| {
+            report.ticks[0] = movement;
+            report.ticks[1] += dig_in;
+            report.ticks[3] = land;
+            report
+        })
     }
 }
-/// One stable handle partition of ETA operands over the shared division
-/// census. Every range is dispatched with Presentation, so the route scan runs
-/// on several workers at once instead of one.
-pub(crate) struct EtaInputsRequest {
+/// DivisionMovement, DivisionLandInputs and the dig-in factors, beside the
+/// Presentation job.
+pub(crate) struct PresentationMovementRequest {
     pub countries: Arc<engine::country_memory::Cache>,
-    pub context: division_eta_inputs::CaptureContext,
-    pub captured: division_eta_inputs::RangeCaptured,
-    pub range: usize,
+    pub context: division_presentation::CaptureContext,
     pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub pass: division_presentation::MovementPass,
+}
+impl PresentationMovementRequest {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.pass.allocated_bytes()
+    }
 }
 pub(crate) struct IntelRequest {
     pub countries: Arc<engine::country_memory::Cache>,
@@ -393,7 +639,6 @@ pub(crate) type RelationsRequest = RawRequest<intel::RelationsJob, intel::Relati
 pub(crate) type AirWingRequest = RawRequest<air::AirWingJob, air::AirWingCopyContext>;
 pub(crate) type AirStatsRequest = RawRequest<air::AirStatsJob, air::AirStatsCopyContext>;
 pub(crate) type AirBasesRequest = RawRequest<air::AirBasesJob, air::AirBasesCopyContext>;
-pub(crate) type AirHistoryRequest = RawRequest<air::AirHistoryJob, air::AirHistoryCopyContext>;
 pub(crate) type NavalRequest = RawRequest<naval_history::NavalJob, naval_history::NavalCopyContext>;
 pub(crate) type SupremacyRequest =
     RawRequest<naval_history::SupremacyJob, naval_history::SupremacyCopyContext>;
@@ -410,6 +655,17 @@ pub(crate) type RadarRequest = RawRequest<fog::RadarJob, fog::RadarCopyContext>;
 pub(crate) type DivisionsRequest =
     RawRequest<sampling::DivisionsJob, sampling::DivisionsCopyContext>;
 
+/// One part of the hour's division inputs: the country slots `slots` of the
+/// census the DivisionInputs job walks the first part of
+/// ([`crate::division_census::Census::absorb`]).
+pub(crate) struct DivisionPartRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub slots: (u32, u32),
+    pub census: Box<crate::division_census::Census>,
+}
+
 // Jobs move preallocated payloads into fixed executor slots. Boxing here would
 // allocate on the hourly callback merely to reduce the enum's stack footprint.
 #[allow(clippy::large_enum_variant)]
@@ -419,7 +675,6 @@ pub(crate) enum Job {
     AirWing(AirWingRequest),
     AirStats(AirStatsRequest),
     AirBases(AirBasesRequest),
-    AirHistory(AirHistoryRequest),
     Naval(NavalRequest),
     Supremacy(SupremacyRequest),
     Sunk(SunkRequest),
@@ -435,20 +690,27 @@ pub(crate) enum Job {
     FinalInputs(crate::extended::FinalInputsRequest),
     OrderRoots(OrderRootsRequest),
     DivisionInputs(DivisionsRequest),
+    DivisionInputParts(DivisionPartRequest),
     Divisions(DivisionsRequest),
     World(WorldRequest),
+    Economy(EconomyRequest),
     Governance(GovernanceRequest),
     Variants(VariantsRequest),
     Research(ResearchRequest),
     Intel(IntelRequest),
     Presentation(PresentationRequest),
-    EtaInputs(EtaInputsRequest),
+    PresentationMovement(PresentationMovementRequest),
     IntelResidual(IntelResidualRequest),
     SupplyTrains(SupplyTrainsRequest),
     CharacterPortraits(CharacterPortraitsRequest),
     ProvinceUnitOrder(ProvinceUnitOrderRequest),
     Ordinary(OrdinaryRequest),
+    OrdinaryPart(OrdinaryPartRequest),
     Slow(SlowRequest),
+    Stability(StabilityRequest),
+    WarOverview(WarOverviewRequest),
+    ProductionDaily(ProductionDailyRequest),
+    ProductionModifierPart(ProductionModifierPartRequest),
     RaidState(RaidStateRequest),
     RaidLaunch(RaidLaunchRequest),
     RaidTargets(RaidTargetsRequest),
@@ -456,8 +718,21 @@ pub(crate) enum Job {
     AirMissions(AirMissionsRequest),
     AirHistories(AirHistoriesRequest),
     Late(LateRequest),
+    ScoresRails(ScoresRailsRequest),
+    ArmyIcons(ArmyIconsRequest),
+    /// The Orders job: part 0 of this pass's census and plan walk.
     Orders(OrdersRequest),
+    /// Another part of this pass's census and plan walk.
+    OrdersPart(OrdersPartRequest),
+    /// The parts stitched, and every other pass over the census.
+    OrdersStitch(OrdersRequest),
+    /// The fronts the Orders job's plans bound.
+    Fronts(FrontsRequest),
+    /// The Orders job's request with the Naval copy: the child fronts'
+    /// owner operands.
+    ChildFronts(OrdersRequest),
     Gated(GatedRequest),
+    CharacterInputs(crate::extended::CharacterInputsRequest),
     ShipModels(ShipModelsRequest),
     ShipModelDetails(ShipModelDetailsRequest),
     Provinces(ProvincesRequest),
@@ -465,6 +740,7 @@ pub(crate) enum Job {
     Countries(CountriesRequest),
     Wars(acquisition_wars::Request),
     States(acquisition_states::Request),
+    Templates(TemplatesRequest),
 }
 #[derive(Clone, Copy)]
 #[allow(clippy::large_enum_variant)]
@@ -474,7 +750,6 @@ pub(crate) enum Report {
     AirWing(air::AirWingCopyReport),
     AirStats(air::AirStatsCopyReport),
     AirBases(air::AirBasesCopyReport),
-    AirHistory(air::AirHistoryCopyReport),
     Naval(naval_history::NavalCopyReport),
     Supremacy(naval_history::SupremacyCopyReport),
     Sunk(naval_history::SunkCopyReport),
@@ -490,20 +765,28 @@ pub(crate) enum Report {
     FinalInputs(crate::extended::FinalInputsReport),
     OrderRoots(u64),
     DivisionInputs(bool),
+    DivisionInputParts(u64),
     Divisions(sampling::DivisionsCopyReport),
     World(WorldReport),
+    Economy(economy::EconomyRestCopyReport),
     Governance(GovernanceReport),
     Variants([u64; production::N]),
     Research(ResearchReport),
     Intel(fog::IntelCopyReport),
     Presentation(division_presentation::CaptureReport),
-    EtaInputs(division_eta_inputs::CaptureReport),
+    /// The DivisionMovement, DivisionLandInputs and dig-in ticks.
+    PresentationMovement([u64; 3]),
     IntelResidual(intel::CaptureReport),
     SupplyTrains(supply_trains::CaptureReport),
     CharacterPortraits(character_portraits::CaptureReport),
     ProvinceUnitOrder(province_unit_order::CaptureReport),
     Ordinary(OrdinaryReport),
+    OrdinaryPart(OrdinaryReport),
     Slow(SlowReport),
+    Stability(StabilityReport),
+    WarOverview(WarOverviewReport),
+    ProductionDaily(ProductionDailyReport),
+    ProductionModifierPart(ProductionModifierPartReport),
     RaidState(RaidStateReport),
     RaidLaunch(RaidLaunchReport),
     RaidTargets(RaidTargetsReport),
@@ -511,8 +794,16 @@ pub(crate) enum Report {
     AirMissions(AirMissionsReport),
     AirHistories(AirHistoriesReport),
     Late(LateReport),
+    ScoresRails(ScoresRailsReport),
+    ArmyIcons(ScoresRailsReport),
     Orders(OrdersReport),
+    OrdersPart(OrdersReport),
+    OrdersStitch(StitchReport),
+    Fronts(FrontsReport),
+    ChildFronts(OrdersReport),
     Gated(GatedReport),
+    /// Per-table worker ticks of the character inputs.
+    CharacterInputs([u64; crate::extended::character_inputs::N]),
     /// The census is in the request; the details report per part.
     ShipModels,
     ShipModelDetails(ship_models::CaptureReport),
@@ -521,6 +812,7 @@ pub(crate) enum Report {
     Countries(CountriesReport),
     Wars(acquisition_wars::Report),
     States(acquisition_states::Report),
+    Templates(TemplatesReport),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -534,7 +826,6 @@ pub(crate) enum Role {
     AirWing,
     AirStats,
     AirBases,
-    AirHistory,
     Naval,
     Supremacy,
     Sunk,
@@ -548,19 +839,29 @@ pub(crate) enum Role {
     MapCombats,
     ObserverBoundary,
     Divisions,
+    DivisionInputParts,
     World,
+    Economy,
     Governance,
     Variants,
     Research,
     Intel,
     Presentation,
-    EtaInputs,
     IntelResidual,
     SupplyTrains,
     CharacterPortraits,
     ProvinceUnitOrder,
     Ordinary,
+    OrdinaryCombat,
+    OrdinaryNaval,
+    OrdinaryMap,
+    OrdinaryTaskForces,
+    OrdinaryNavies,
     Slow,
+    Stability,
+    WarOverview,
+    ProductionDaily,
+    ProductionModifierParts,
     RaidState,
     RaidLaunch,
     RaidTargets,
@@ -568,7 +869,13 @@ pub(crate) enum Role {
     AirMissions,
     AirHistories,
     Late,
+    ScoresRails,
+    ArmyIcons,
     Orders,
+    OrdersPart,
+    OrdersStitch,
+    ChildFronts,
+    Fronts,
     Gated,
     ShipModels,
     ShipModelDetails,
@@ -577,6 +884,15 @@ pub(crate) enum Role {
     Countries,
     Wars,
     States,
+    Templates,
+    CharacterInputs,
+    PresentationMovement,
+    /// The division input census's first part, apart from the Divisions
+    /// core job it leads to, so their joins report apart.
+    DivisionInputs,
+    /// The orders-group root census, apart from the Orders job it leads to,
+    /// so their joins report apart.
+    OrderRoots,
 }
 
 impl Role {
@@ -596,7 +912,6 @@ impl Role {
             Self::AirWing => T::AirWings,
             Self::AirStats => T::AirStatistics,
             Self::AirBases => T::AirBases,
-            Self::AirHistory => T::AirRegionHistory,
             Self::Naval => T::OrdersGroups,
             Self::Supremacy => T::NavalSupremacy,
             Self::Sunk => T::SunkShips,
@@ -609,20 +924,30 @@ impl Role {
             Self::Radar => T::RadarCoverage,
             Self::MapCombats => T::LandCombats,
             Self::ObserverBoundary => T::LandEventCoverage,
-            Self::Divisions => T::Divisions,
-            Self::World => T::ProvinceSupply,
+            Self::Divisions | Self::DivisionInputs | Self::DivisionInputParts => T::Divisions,
+            // Every part opens its own tables' scopes; reads outside them are
+            // charged to ProvinceSupply in both jobs.
+            Self::World | Self::Economy => T::ProvinceSupply,
             Self::Governance => T::Politics,
             Self::Variants => T::VariantDefinitions,
             Self::Research => T::ResearchInputs,
             Self::Intel => T::UnitIntel,
-            Self::Presentation => T::DivisionMovement,
-            Self::EtaInputs => T::DivisionEtaInputs,
+            Self::Presentation => T::DivisionStatus,
             Self::IntelResidual => intel::TABLES[0],
             Self::SupplyTrains => supply_trains::TABLES[0],
             Self::CharacterPortraits => character_portraits::TABLES[0],
             Self::ProvinceUnitOrder => province_unit_order::TABLES[0],
-            Self::Ordinary => T::LandCombatDetails,
+            // Every Ordinary part keeps the family's anchor.
+            Self::Ordinary
+            | Self::OrdinaryCombat
+            | Self::OrdinaryNaval
+            | Self::OrdinaryMap
+            | Self::OrdinaryTaskForces
+            | Self::OrdinaryNavies => T::LandCombatDetails,
             Self::Slow => T::ProvinceNames,
+            Self::Stability => T::CountryStabilityInputs,
+            Self::WarOverview => T::WarOwnedRelations,
+            Self::ProductionDaily | Self::ProductionModifierParts => T::CountryProductionModifiers,
             Self::RaidState => T::StateResourceInputs,
             Self::RaidLaunch => T::RaidCountryInputs,
             Self::RaidTargets => T::RaidTargetStatuses,
@@ -630,7 +955,13 @@ impl Role {
             Self::AirMissions => T::AirRegionalMissions,
             Self::AirHistories => T::AirNavalPatrolHistories,
             Self::Late => T::WingEquipment,
-            Self::Orders => T::ArmyOrders,
+            Self::ScoresRails => T::RaidAirScores,
+            Self::ArmyIcons => T::ArmyIconInputs,
+            Self::Orders | Self::OrderRoots => T::ArmyOrders,
+            Self::OrdersPart => T::ArmyOrders,
+            Self::OrdersStitch => T::ArmyOrderPlans,
+            Self::ChildFronts => T::ArmyOrderPlans,
+            Self::Fronts => T::Fronts,
             Self::Gated => T::VolunteerHosts,
             Self::ShipModels => T::Ships,
             Self::ShipModelDetails => T::ShipModels,
@@ -639,77 +970,130 @@ impl Role {
             Self::Countries => T::Countries,
             Self::Wars => T::WarRelations,
             Self::States => T::States,
+            Self::Templates => T::DivisionTemplateIcons,
+            Self::CharacterInputs => T::CharacterRoleTraits,
+            Self::PresentationMovement => T::DivisionMovement,
         }
     }
 }
 
 impl Role {
     /// Claim order when workers are scarce, lower first and FIFO among equals.
-    /// World, Governance and Research come first because the block ends when
-    /// they do; the rest follow the block segment that joins them. The
-    /// ShipModels census is short and joined before the World join, so it
-    /// claims first too. Its detail parts come right after the jobs that
-    /// wait for no join, so on a small pool a worker-only family (Governance)
-    /// never queues behind them.
+    /// A job another job waits for claims first, so the dependency chains it
+    /// opens start at once: the observer boundaries, Countries (the Ordinary
+    /// counter part), the order censuses, wings, the Naval copy, child fronts
+    /// and missions (Late), the character roster (portraits, roles and
+    /// character inputs), the unit-input copy (Presentation, Divisions,
+    /// Intel), the ShipModels census (its detail parts), the raw-copy verdicts
+    /// the Gated job reads (radar, intel, registrations, projects) and the
+    /// joins before the map sample, which the Late job follows (players,
+    /// combats, the air statistics, naval supremacy and sunk ships), and the
+    /// World and Economy jobs, which the game thread joins right after the
+    /// first segment's joins (1.0/1.3 ms at 1936/1943 as one job, 0.27/0.29
+    /// ms of join wait at int_12a1f26; the economy rest, CountryResources
+    /// alone 0.62 ms at 1936, runs beside the production and construction
+    /// rests), and the Presentation status pass, the longest job that waits
+    /// for another: dispatched once the unit inputs join, it otherwise
+    /// queues behind every first-burst job of its class (0.94 ms of join
+    /// wait at 1943, int_761c274). The longest independent jobs follow, so
+    /// the workers finish together (the Provinces job among them: 2.2/2.5
+    /// ms, which as a medium job waited 0.50 ms at its join at 1936); the
+    /// medium and short jobs fill in behind them, the capitulation copy,
+    /// joined with the core jobs, before the rest of the short ones. The
+    /// first-burst jobs with the most slack (the Ordinary task-force part,
+    /// Provinces, States, Weather, Capitulation, Wars and Relations) are
+    /// queued later instead, in the slack burst behind the Naval copy, since
+    /// priority orders only queued jobs and cannot take a worker back from
+    /// one already running.
     pub(crate) fn priority(self) -> u8 {
         match self {
-            // The longest hourly jobs start first: the block ends when they do.
-            Self::World
-            | Self::Governance
-            | Self::Research
+            Self::ObserverBoundary
+            | Self::Countries
+            | Self::Orders
+            | Self::OrderRoots
+            | Self::OrdersPart
+            | Self::OrdersStitch
+            | Self::ChildFronts
+            | Self::AirWing
+            | Self::Naval
+            | Self::AirMissions
+            | Self::Late
+            | Self::Characters
+            | Self::Divisions
+            | Self::DivisionInputs
+            | Self::DivisionInputParts
             | Self::ShipModels
-            | Self::ObserverBoundary => 0,
-            Self::AirWing | Self::ShipModelDetails => 1,
-            Self::Divisions
-            | Self::Intel
-            | Self::IntelResidual
             | Self::AirBases
+            | Self::Radar
+            | Self::Projects
+            | Self::Intel
+            | Self::Players
+            | Self::MapCombats
             | Self::AirStats
-            | Self::AirHistory
             | Self::Supremacy
             | Self::Sunk
-            | Self::Radar
-            | Self::Weather
-            | Self::Capitulation
-            | Self::Projects
-            | Self::Lexical
-            | Self::Session
-            | Self::Players => 2,
-            // The roster supplies portraits and the role census.
-            Self::Characters | Self::Naval => 3,
-            // Joined with Orders, before the Late job it feeds.
-            Self::Orders
-            | Self::MapCombats
-            | Self::AirMissions
+            | Self::World
+            | Self::Economy
+            | Self::Presentation
+            // The longest first-burst job, 2.55 ms at 1943 with the war
+            // overview: at priority 1 it started behind the dependency chains
+            // about 2.8 ms into the hour and waited 0.47 ms at its join
+            // (int_761c274). The stability tables (0.89/0.45 ms at 1943/1936)
+            // and the war overview (0.76 ms at 1943) split from it claim
+            // beside it; the first burst's priority-0 jobs then exceed the
+            // fifteen workers by one, which the shortest of them frees.
+            | Self::Slow
+            | Self::Stability
+            | Self::WarOverview
+            | Self::ProductionDaily
+            | Self::ProductionModifierParts => 0,
+            Self::IntelResidual
+            | Self::Governance
+            | Self::Gated
+            | Self::CharacterInputs
+            | Self::PresentationMovement
+            | Self::Ordinary
+            | Self::OrdinaryNavies
+            | Self::OrdinaryCombat
+            // As long as Slow at 1943 (2.55 ms, 0.14 ms of join wait at
+            // priority 2, int_761c274).
+            | Self::OrdinaryNaval
             | Self::Provinces
-            | Self::States
-            | Self::Countries
+            | Self::Research
+            | Self::ShipModelDetails
+            | Self::Templates => 1,
+            Self::States
+            | Self::Capitulation
             | Self::Wars
-            | Self::Factions => 4,
-            // Role jobs borrow the roster's census and are joined after the
-            // portrait shares, before the typed fallback.
-            Self::SupplyTrains
+            | Self::OrdinaryTaskForces
+            | Self::OrdinaryMap
+            | Self::ProvinceUnitOrder
             | Self::CharacterPortraits
             | Self::CountryLeaderRoles
             | Self::AdvisorRoles
             | Self::CharacterTraits
-            | Self::ProvinceUnitOrder
+            | Self::SupplyTrains
+            // Joined only before the Late dispatch, with segments of slack.
+            | Self::ScoresRails
+            | Self::ArmyIcons
+            // Joined after the Late join, which it runs beside.
+            | Self::Fronts
+            | Self::Weather => 2,
+            Self::Factions
+            | Self::Lexical
+            | Self::Session
+            | Self::Variants
             | Self::Relations
-            | Self::Ordinary
-            | Self::Slow
-            | Self::AirRelations
             | Self::RaidState
             | Self::RaidLaunch
             | Self::RaidTargets
-            | Self::Gated
-            | Self::Variants => 5,
-            Self::Presentation | Self::EtaInputs => 6,
-            Self::Late | Self::AirHistories => 7,
+            | Self::AirRelations
+            | Self::AirHistories => 3,
         }
     }
 }
 
-pub(crate) const ROLE_COUNT: usize = 51;
+pub(crate) const ROLE_COUNT: usize = 71;
 pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -719,7 +1103,6 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::AirWing,
     Role::AirStats,
     Role::AirBases,
-    Role::AirHistory,
     Role::Naval,
     Role::Supremacy,
     Role::Sunk,
@@ -733,19 +1116,29 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::MapCombats,
     Role::ObserverBoundary,
     Role::Divisions,
+    Role::DivisionInputParts,
     Role::World,
+    Role::Economy,
     Role::Governance,
     Role::Variants,
     Role::Research,
     Role::Intel,
     Role::Presentation,
-    Role::EtaInputs,
     Role::IntelResidual,
     Role::SupplyTrains,
     Role::CharacterPortraits,
     Role::ProvinceUnitOrder,
     Role::Ordinary,
+    Role::OrdinaryCombat,
+    Role::OrdinaryNaval,
+    Role::OrdinaryMap,
+    Role::OrdinaryTaskForces,
+    Role::OrdinaryNavies,
     Role::Slow,
+    Role::Stability,
+    Role::WarOverview,
+    Role::ProductionDaily,
+    Role::ProductionModifierParts,
     Role::RaidState,
     Role::RaidLaunch,
     Role::RaidTargets,
@@ -753,7 +1146,13 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::AirMissions,
     Role::AirHistories,
     Role::Late,
+    Role::ScoresRails,
+    Role::ArmyIcons,
     Role::Orders,
+    Role::OrdersPart,
+    Role::OrdersStitch,
+    Role::ChildFronts,
+    Role::Fronts,
     Role::Gated,
     Role::ShipModels,
     Role::ShipModelDetails,
@@ -762,8 +1161,22 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Countries,
     Role::Wars,
     Role::States,
+    Role::Templates,
+    Role::CharacterInputs,
+    Role::PresentationMovement,
+    Role::DivisionInputs,
+    Role::OrderRoots,
 ];
 impl Job {
+    /// Whether this job must run on a worker: its role's rule, except a
+    /// ChildFronts pass that allocates nothing, which a joining thread may
+    /// run while it is still queued.
+    pub(crate) fn worker_only(&self) -> bool {
+        match self {
+            Self::ChildFronts(request) => request.plans.child_fronts_allocate(),
+            job => job.role().worker_only(),
+        }
+    }
     pub(crate) fn role(&self) -> Role {
         match self {
             Self::Characters(request) => [
@@ -776,7 +1189,6 @@ impl Job {
             Self::AirWing(..) => Role::AirWing,
             Self::AirStats(..) => Role::AirStats,
             Self::AirBases(..) => Role::AirBases,
-            Self::AirHistory(..) => Role::AirHistory,
             Self::Naval(..) => Role::Naval,
             Self::Supremacy(..) => Role::Supremacy,
             Self::Sunk(..) => Role::Sunk,
@@ -789,20 +1201,34 @@ impl Job {
             Self::Radar(..) => Role::Radar,
             Self::MapCombats(..) => Role::MapCombats,
             Self::ObserverBoundary(..) => Role::ObserverBoundary,
-            Self::DivisionInputs(..) | Self::Divisions(..) => Role::Divisions,
+            Self::DivisionInputs(..) => Role::DivisionInputs,
+            Self::Divisions(..) => Role::Divisions,
+            Self::DivisionInputParts(..) => Role::DivisionInputParts,
             Self::World(..) => Role::World,
+            Self::Economy(..) => Role::Economy,
             Self::Governance(..) => Role::Governance,
             Self::Variants(..) => Role::Variants,
             Self::Research(..) => Role::Research,
             Self::Intel(..) => Role::Intel,
             Self::FinalInputs(..) | Self::Presentation(..) => Role::Presentation,
-            Self::EtaInputs(..) => Role::EtaInputs,
+            Self::PresentationMovement(..) => Role::PresentationMovement,
             Self::IntelResidual(..) => Role::IntelResidual,
             Self::SupplyTrains(..) => Role::SupplyTrains,
             Self::CharacterPortraits(..) => Role::CharacterPortraits,
             Self::ProvinceUnitOrder(..) => Role::ProvinceUnitOrder,
             Self::Ordinary(..) => Role::Ordinary,
+            Self::OrdinaryPart(request) => match request.part {
+                crate::extended::OrdinaryPart::Combat(_) => Role::OrdinaryCombat,
+                crate::extended::OrdinaryPart::Naval(_) => Role::OrdinaryNaval,
+                crate::extended::OrdinaryPart::Map(_) => Role::OrdinaryMap,
+                crate::extended::OrdinaryPart::TaskForces(_) => Role::OrdinaryTaskForces,
+                crate::extended::OrdinaryPart::Navies(_) => Role::OrdinaryNavies,
+            },
             Self::Slow(..) => Role::Slow,
+            Self::Stability(..) => Role::Stability,
+            Self::WarOverview(..) => Role::WarOverview,
+            Self::ProductionDaily(..) => Role::ProductionDaily,
+            Self::ProductionModifierPart(..) => Role::ProductionModifierParts,
             Self::RaidState(..) => Role::RaidState,
             Self::RaidLaunch(..) => Role::RaidLaunch,
             Self::RaidTargets(..) => Role::RaidTargets,
@@ -810,8 +1236,16 @@ impl Job {
             Self::AirMissions(..) => Role::AirMissions,
             Self::AirHistories(..) => Role::AirHistories,
             Self::Late(..) => Role::Late,
-            Self::OrderRoots(..) | Self::Orders(..) => Role::Orders,
+            Self::ScoresRails(..) => Role::ScoresRails,
+            Self::ArmyIcons(..) => Role::ArmyIcons,
+            Self::OrderRoots(..) => Role::OrderRoots,
+            Self::Orders(..) => Role::Orders,
+            Self::OrdersPart(..) => Role::OrdersPart,
+            Self::OrdersStitch(..) => Role::OrdersStitch,
+            Self::ChildFronts(..) => Role::ChildFronts,
+            Self::Fronts(..) => Role::Fronts,
             Self::Gated(..) => Role::Gated,
+            Self::CharacterInputs(..) => Role::CharacterInputs,
             Self::ShipModels(..) => Role::ShipModels,
             Self::ShipModelDetails(..) => Role::ShipModelDetails,
             Self::Provinces(..) => Role::Provinces,
@@ -819,6 +1253,7 @@ impl Job {
             Self::Countries(..) => Role::Countries,
             Self::Wars(..) => Role::Wars,
             Self::States(..) => Role::States,
+            Self::Templates(..) => Role::Templates,
         }
     }
 }
@@ -887,6 +1322,9 @@ impl CountryCacheCalibration {
     }
 }
 
+/// The World and Economy jobs together: both add their worker time to
+/// `acquisition_ticks` and report their failures in `last_error`; the Economy
+/// job, which runs every hour, observes the country cache.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct WorldCalibration {
     pub country_cache: CountryCacheCalibration,
@@ -937,6 +1375,18 @@ fn note_completion<R>(counters: &Counters, report: &Result<R, Failure>) {
             counters.stopped.fetch_add(1, Ordering::Relaxed);
         }
         Ok(_) => {}
+    }
+}
+
+/// Contain a teardown step's panic without consulting the terminal
+/// allocation state: draining a ticket must run even after a terminal
+/// failure, which only stops new work ([`Batch`]'s drop).
+fn contain(work: impl FnOnce()) {
+    let _phase = crate::allocation::enter(crate::allocation::Phase::Acquisition);
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(work)) {
+        // A panic payload can itself panic when dropped. Preserve the
+        // callback's drainage barrier by never running that destructor.
+        std::mem::forget(payload);
     }
 }
 
@@ -995,26 +1445,15 @@ pub(crate) fn run_world(
                 &mut part.payload,
             )
         });
-    let economy = economy::copy_economy_rest_refresh_growing(
-        memory,
-        request.economy.context,
-        &mut request.economy.payload,
-    );
-    let focus = request
-        .focus
-        .as_mut()
-        .map_or_else(Default::default, |part| {
-            governance::copy_focus_refresh(memory, part.context, &mut part.payload)
-        });
     WorldReport {
-        economy,
         construction,
         production,
-        focus,
         ticks: crate::sampling::qpc().saturating_sub(started).max(0) as u64,
     }
 }
 
+/// The World job's worker time joins the family's `acquisition_ticks`; the
+/// country cache is observed once an hour, by the Economy job.
 fn run_world_shared(
     request: &mut WorldRequest,
     memory: &impl engine::Memory,
@@ -1023,16 +1462,36 @@ fn run_world_shared(
     let started = crate::sampling::qpc();
     let snapshot = Arc::clone(&request.countries);
     let cached = snapshot.view(memory);
-    let seed = cached.seed_status();
-    let entries = cached.cached_entries();
     let mut report = run_world(request, &cached, memory);
     // The callback owns preparation and retains the country lease through all jobs.
     report.ticks = crate::sampling::qpc().saturating_sub(started).max(0) as u64;
     let mut counters = calibration
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    counters.country_cache.observe(seed, entries);
     counters.acquisition_ticks = counters.acquisition_ticks.saturating_add(report.ticks);
+    report
+}
+
+/// The economy rest through the shared country cache, which it observes for
+/// the family's calibration: it runs every hour, so the cache is observed
+/// once an hour.
+fn run_economy_shared(
+    request: &mut EconomyRequest,
+    memory: &impl engine::Memory,
+    calibration: &Mutex<WorldCalibration>,
+) -> economy::EconomyRestCopyReport {
+    let started = crate::sampling::qpc();
+    let cached = request.countries.view(memory);
+    let seed = cached.seed_status();
+    let entries = cached.cached_entries();
+    let report =
+        economy::copy_economy_rest_refresh_growing(&cached, request.context, &mut request.payload);
+    let ticks = crate::sampling::qpc().saturating_sub(started).max(0) as u64;
+    let mut counters = calibration
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    counters.country_cache.observe(seed, entries);
+    counters.acquisition_ticks = counters.acquisition_ticks.saturating_add(ticks);
     report
 }
 
@@ -1077,14 +1536,13 @@ fn run_with_memory(
             request.context,
             &mut request.payload,
         )),
-        Job::AirBases(request) => Report::AirBases(air::copy_air_bases_refresh_growing(
-            memory,
-            request.context,
-            &mut request.payload,
-        )),
-        Job::AirHistory(request) => {
-            let cached = request.countries.roster_view(memory);
-            Report::AirHistory(air::copy_air_history_refresh_growing(
+        Job::AirBases(request) => {
+            // The census mirror takes the country authentication spans the
+            // hour's snapshot already holds: the same bytes, without rereading
+            // the game. Every other span, and every country observation,
+            // stays native.
+            let cached = request.countries.bytes_view(memory);
+            Report::AirBases(air::copy_air_bases_refresh_growing(
                 &cached,
                 request.context,
                 &mut request.payload,
@@ -1159,11 +1617,12 @@ fn run_with_memory(
         }
         Job::OrderRoots(request) => {
             request.orders.walk_roots_growing(memory, request.base);
-            Report::OrderRoots(
-                request
-                    .naval
-                    .capture_roots_growing(request.orders.roots(), request.orders.root_outcome),
-            )
+            let report = request
+                .naval
+                .capture_roots_growing(request.orders.roots(), request.orders.root_outcome);
+            // This pass's census and plan parts, with the roots they walk.
+            request.orders.prepare_parts();
+            Report::OrderRoots(report)
         }
         Job::DivisionInputs(request) => {
             let cached = request.countries.view(memory);
@@ -1172,6 +1631,18 @@ fn run_with_memory(
                 request.context,
                 &mut request.payload,
             ))
+        }
+        Job::DivisionInputParts(request) => {
+            let cached = request.countries.view(memory);
+            let _reads = crate::read_accounting::table(replay::rows::TableId::Divisions);
+            let begin = sampling::qpc();
+            request.census.capture_inputs_part(
+                &cached,
+                request.base,
+                request.game_state,
+                request.slots,
+            );
+            Report::DivisionInputParts(sampling::qpc().saturating_sub(begin).max(0) as u64)
         }
         Job::Divisions(request) => {
             let cached = request.countries.view(memory);
@@ -1183,6 +1654,9 @@ fn run_with_memory(
         }
 
         Job::World(request) => Report::World(run_world_shared(request, memory, &calibration.world)),
+        Job::Economy(request) => {
+            Report::Economy(run_economy_shared(request, memory, &calibration.world))
+        }
         Job::Governance(request) => {
             let cached = request.countries.roster_view(memory);
             let context = request.context;
@@ -1190,13 +1664,17 @@ fn run_with_memory(
                 &cached,
                 context,
                 &mut request.technology_fingerprints,
+                &mut request.focus_fingerprints,
+                request.leader_store.as_deref_mut(),
+                request.party_store.as_deref_mut(),
             );
-            let buildings = request.buildings.capture(
+            let buildings = request.buildings.capture_carried(
                 &cached,
                 context.base,
                 context.game_state,
                 context.hour,
                 context.force_full,
+                request.building_store.as_deref_mut(),
             );
             Report::Governance(GovernanceReport {
                 governance,
@@ -1232,18 +1710,23 @@ fn run_with_memory(
         }
         Job::IntelResidual(request) => {
             let cached = request.countries.view(memory);
-            Report::IntelResidual(request.captured.capture_residual(&cached, request.context))
+            Report::IntelResidual(request.captured.capture_residual(
+                &cached,
+                request.context,
+                request.flags.as_deref_mut(),
+                request.variables.as_deref_mut(),
+            ))
         }
         Job::SupplyTrains(request) => {
             let cached = request.countries.roster_view(memory);
-            let mut ticks = [0; supply_trains::N];
-            ticks[0] = request
-                .nodes
-                .capture(&cached, request.context, request.part);
-            if let Some(trains) = request.trains.as_mut() {
-                ticks[1] = trains.capture(&cached, request.context);
-            }
-            Report::SupplyTrains(supply_trains::CaptureReport { ticks })
+            Report::SupplyTrains(supply_trains::capture_job(
+                &cached,
+                request.context,
+                request.part,
+                &mut request.nodes,
+                request.trains.as_mut(),
+                request.slice.as_mut(),
+            ))
         }
         Job::CharacterPortraits(request) => {
             Report::CharacterPortraits(character_portraits::CaptureReport {
@@ -1256,33 +1739,37 @@ fn run_with_memory(
             })
         }
         Job::ProvinceUnitOrder(request) => {
-            Report::ProvinceUnitOrder(request.captured.capture_owned(memory, request.context))
+            Report::ProvinceUnitOrder(request.captured.capture_owned(
+                memory,
+                request.context,
+                request.inputs.as_deref(),
+                request.store.as_deref_mut(),
+            ))
         }
         Job::Ordinary(request) => {
             let cached = request.countries.roster_view(memory);
-            request.packs.capture_with_transport_admission(
+            request.packs.capture_at_carried(
                 &cached,
                 request.base,
                 request.game_state,
-                request.unit_inputs.as_deref(),
-                (request.hour, &mut request.naval_missions),
-                request.fresh_modifier_guard,
-                request
-                    .transport_admission
-                    .check(request.base, request.game_state, request.hour),
-                request.transport_modifier_guard,
+                request.hour,
+                request.counters.as_deref_mut(),
             );
             Report::Ordinary(OrdinaryReport)
         }
+        Job::OrdinaryPart(request) => {
+            let cached = request.countries.roster_view(memory);
+            request.part.capture(
+                &cached,
+                request.base,
+                request.game_state,
+                request.hour,
+                request.fresh_modifier_guard,
+            );
+            Report::OrdinaryPart(OrdinaryReport)
+        }
         Job::Slow(request) => {
             let cached = request.countries.roster_view(memory);
-            request.packs.visibility.set_directed_query_admission(
-                request.directed_query_admission.check(
-                    request.base,
-                    request.game_state,
-                    request.hour,
-                ),
-            );
             request.packs.capture(
                 &cached,
                 request.base,
@@ -1292,6 +1779,53 @@ fn run_with_memory(
                 &mut request.stores,
             );
             Report::Slow(SlowReport)
+        }
+        Job::Stability(request) => {
+            let cached = request.countries.roster_view(memory);
+            request.packs.capture(
+                &cached,
+                request.base,
+                request.game_state,
+                request.hour,
+                request.force_full,
+                request.store.as_deref_mut(),
+            );
+            Report::Stability(StabilityReport)
+        }
+        Job::ProductionModifierPart(request) => {
+            let cached = request.countries.roster_view(memory);
+            let ticks = request.captured.capture(
+                &cached,
+                request.base,
+                request.game_state,
+                request.hour,
+                request.force_full,
+                request.slots.clone(),
+                request.provided,
+            );
+            Report::ProductionModifierPart(ProductionModifierPartReport { ticks: ticks[0] })
+        }
+        Job::ProductionDaily(request) => {
+            let cached = request.countries.roster_view(memory);
+            request.packs.capture(
+                &cached,
+                request.base,
+                request.game_state,
+                request.hour,
+                request.force_full,
+            );
+            Report::ProductionDaily(ProductionDailyReport)
+        }
+        Job::WarOverview(request) => {
+            let cached = request.countries.roster_view(memory);
+            request.packs.capture(
+                &cached,
+                request.base,
+                request.game_state,
+                request.hour,
+                request.force_full,
+            );
+            Report::WarOverview(WarOverviewReport)
         }
         Job::AirRelations(request) => {
             let cached = request.countries.roster_view(memory);
@@ -1316,14 +1850,24 @@ fn run_with_memory(
                     parent: request.parent,
                     histories: &mut request.histories,
                     changes: &crate::history_changes::Observer,
-                    transport_regions: request.transport_regions.samples(request.hour),
-                    transport_guard: request.transport_guard,
-                    transport_admission: request.transport_admission.check(
-                        request.base,
-                        request.game_state,
-                        request.hour,
-                    ),
+                    carry: request
+                        .mission_store
+                        .as_deref_mut()
+                        .map(|store| air::MissionCarry {
+                            store,
+                            changes: &crate::mission_changes::Observer,
+                            check: crate::sampled_verify::current_burned_in(
+                                crate::mission_changes::VERIFY,
+                            ),
+                        }),
                 },
+            );
+            // The joins resolve each country directly, as on the game, from
+            // the hour's snapshot bytes; every other read stays native.
+            request.pack.join_missions(
+                &request.countries.bytes_view(memory),
+                request.base,
+                request.game_state,
             );
             Report::AirMissions(AirMissionsReport)
         }
@@ -1384,7 +1928,9 @@ fn run_with_memory(
                 request.hour,
                 request.force_full,
                 request.inputs.as_deref(),
-                &mut request.air_scores,
+                None,
+                None,
+                None,
             );
             let cost = request.plans.capture_unit_transports(
                 &cached,
@@ -1396,34 +1942,109 @@ fn run_with_memory(
             request.packs.ticks[replay::rows::TableId::DivisionMovement.index()] += cost;
             Report::Late(LateReport)
         }
-        Job::Orders(request) => {
-            let cached = request.countries.roster_view(memory);
-            request.orders.walk(memory, request.base);
-            request.plans.visit(
-                &cached,
-                request.base,
-                request.game_state,
-                request.orders.roots(),
-                request.orders.visits(),
-                request.orders.successor_lists(),
-                request.orders.root_outcome,
-                request.orders.rows.outcome,
-                &request.orders.rows.rows[..request.orders.rows.outcome.len()],
-                &request.orders.geometry[..request.orders.geometry_len],
-                request.group_source.as_ref(),
-            );
-            Report::Orders(OrdersReport)
-        }
-        Job::Gated(request) => {
-            request.packs.capture(
-                memory,
+        Job::ScoresRails(request) => {
+            let parts = &mut *request.parts;
+            // The score walk resolves each country directly, as on the game,
+            // from the hour's snapshot bytes: the roster would name an alias
+            // of the reserved country absent, which direct resolution reads.
+            // Strategic-air and score reads stay native.
+            parts.scores.capture(
+                &request.countries.bytes_view(memory),
                 request.base,
                 request.game_state,
                 request.hour,
                 request.force_full,
+                request.score_capacity,
+                &mut request.air_scores,
             );
+            parts.rails.capture(
+                memory,
+                request.base,
+                request.game_state,
+                request.hour,
+                request.rail_store.as_deref_mut(),
+            );
+            Report::ScoresRails(ScoresRailsReport)
+        }
+        Job::ArmyIcons(request) => {
+            request.ticks = request.icons.capture(
+                memory,
+                request.base,
+                request.divisions.sources(),
+                request
+                    .inputs
+                    .as_deref()
+                    .map(crate::division_census::UnitInputs::seeds),
+            );
+            Report::ArmyIcons(ScoresRailsReport)
+        }
+        Job::Orders(request) => {
+            request.orders.walk_first_part(memory, request.base);
+            Report::Orders(OrdersReport)
+        }
+        Job::OrdersPart(request) => {
+            request.part.run(memory, request.base);
+            Report::OrdersPart(OrdersReport)
+        }
+        Job::OrdersStitch(request) => {
+            // The stitch leaves before work the census does not gate is
+            // dispatched, so its own panic must not stop the pool now: it is
+            // contained here, reported, and applied at the stitch's join.
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                #[cfg(test)]
+                if request.base == STITCH_PANIC_BASE {
+                    panic!("synthetic stitch panic");
+                }
+                // The stitch fills the request it reads its countries from.
+                let countries = Arc::clone(&request.countries);
+                let cached = countries.roster_view(memory);
+                request.stitch(&cached);
+            }));
+            // As the runner does: a panic payload can itself panic when
+            // dropped, so its destructor never runs.
+            let contained_panic = outcome.map_err(std::mem::forget).is_err();
+            Report::OrdersStitch(StitchReport { contained_panic })
+        }
+        Job::Fronts(request) => {
+            request.fronts.capture(memory, request.base);
+            Report::Fronts(FrontsReport)
+        }
+        Job::ChildFronts(request) => {
+            let cached = request.countries.roster_view(memory);
+            request.plans.visit_child_fronts(
+                &cached,
+                request.base,
+                request.orders.roots(),
+                request.group_source.as_ref(),
+            );
+            Report::ChildFronts(OrdersReport)
+        }
+        Job::Gated(request) => {
+            // The projects family's census reads the hour's authenticated
+            // roster when the game thread prepared one.
+            match request.countries.as_deref() {
+                Some(countries) => request.packs.capture(
+                    memory,
+                    &countries.roster_view(memory),
+                    request.base,
+                    request.game_state,
+                    request.hour,
+                    request.force_full,
+                    &mut request.project_fingerprints,
+                ),
+                None => request.packs.capture(
+                    memory,
+                    memory,
+                    request.base,
+                    request.game_state,
+                    request.hour,
+                    request.force_full,
+                    &mut request.project_fingerprints,
+                ),
+            }
             Report::Gated(GatedReport)
         }
+        Job::CharacterInputs(request) => Report::CharacterInputs(request.capture(memory)),
         Job::ShipModels(request) => {
             let cached = request.countries.roster_view(memory);
             request.census.walk(
@@ -1440,12 +2061,17 @@ fn run_with_memory(
         }
         Job::Provinces(request) => {
             let (base, game_state) = (request.base, request.game_state);
-            Report::Provinces(request.run(|capture| capture.walk_growing(memory, base, game_state)))
+            Report::Provinces(
+                request.run(|capture| {
+                    crate::province_changes::walk(capture, memory, base, game_state)
+                }),
+            )
         }
         Job::Factions(request) => {
             Report::Factions(acquisition_factions::run_growing(request, memory))
         }
         Job::Countries(request) => Report::Countries(request.run(memory)),
+        Job::Templates(request) => Report::Templates(request.run(memory)),
         Job::Wars(request) => Report::Wars(request.run_growing(memory)),
         Job::States(request) => Report::States(request.run_growing(memory)),
         Job::Presentation(request) => {
@@ -1454,39 +2080,42 @@ fn run_with_memory(
             let missing = engine::walk::Outcome::Unavailable {
                 reason: "acquisition source not supplied",
             };
-            Report::Presentation(request.captured.capture_owned(
+            let sources = || production::Sources {
+                rows: inputs.map_or(&[], |inputs| inputs.seeds()),
+                outcome: inputs.map_or(missing, |inputs| inputs.outcome()),
+            };
+            let report = request.captured.capture_status_holding(
                 &cached,
                 request.context,
-                production::Sources {
-                    rows: inputs.map_or(&[], |inputs| inputs.seeds()),
-                    outcome: inputs.map_or(missing, |inputs| inputs.outcome()),
-                },
-                request.store.as_deref_mut(),
-            ))
-        }
-        Job::EtaInputs(request) => {
-            let cached = request.countries.view(memory);
-            let inputs = request.inputs.as_deref();
-            let missing = engine::walk::Outcome::Unavailable {
-                reason: "acquisition source not supplied",
-            };
-            Report::EtaInputs(request.captured.capture_owned(
-                memory,
+                sources(),
+                request.army_stats.as_deref_mut(),
+            );
+            request.captured.capture_attack(
+                &cached,
                 request.context,
+                sources(),
+                request.army_stats.as_deref_mut(),
+            );
+            Report::Presentation(report)
+        }
+        Job::PresentationMovement(request) => {
+            let cached = request.countries.roster_view(memory);
+            let inputs = request.inputs.as_deref();
+            let context = request.context;
+            Report::PresentationMovement(request.pass.capture(
+                &cached,
+                context.base,
+                context.game_state,
                 production::Sources {
                     rows: inputs.map_or(&[], |inputs| inputs.seeds()),
-                    outcome: inputs.map_or(missing, |inputs| inputs.outcome()),
+                    outcome: inputs.map_or(
+                        engine::walk::Outcome::Unavailable {
+                            reason: "acquisition source not supplied",
+                        },
+                        |inputs| inputs.outcome(),
+                    ),
                 },
-                engine::Memory::authenticated_countries(
-                    &cached,
-                    request.context.base,
-                    request.context.game_state,
-                ),
-                engine::Memory::authenticated_reserved_country_observation(
-                    &cached,
-                    request.context.base,
-                    request.context.game_state,
-                ),
+                Some(context.hour),
             ))
         }
         Job::Intel(request) => {
@@ -1527,9 +2156,21 @@ impl Role {
     /// Jobs of this role an hour can hold at once.
     const fn jobs_per_hour(self) -> usize {
         match self {
+            Self::AirWing => air::WING_PARTS,
             Self::AirRelations => crate::extended::air_relations::PARTS,
-            Self::EtaInputs => division_eta_inputs::MAX_RANGES,
             Self::AirHistories => crate::extended::air_histories::PARTS,
+            Self::ShipModelDetails => ship_models::MAX_PARTS,
+            Self::CharacterPortraits => character_portraits::PARTS,
+            Self::SupplyTrains => supply_trains::PARTS,
+            Self::DivisionInputParts => crate::division_census::MAX_PARTS - 1,
+            // The final borrowers leave before the Presentation join.
+            Self::Presentation => 2,
+            Self::ProductionModifierParts => crate::extended::production_modifiers::MAX_PARTS - 1,
+            Self::OrdersPart => crate::orders_parts::MAX_PARTS - 1,
+            // Roles whose jobs follow one another (the two observer
+            // boundaries) hold one at once. OrderRoots and Orders, and
+            // DivisionInputs and Divisions, also follow one another, but are
+            // reserved apart.
             _ => 1,
         }
     }
@@ -1576,14 +2217,17 @@ impl Pool {
     pub(crate) unsafe fn submit(
         &self,
         request: &mut Option<Job>,
+        wake: bool,
     ) -> Result<Ticket, acquisition::SubmitError> {
         let role = request.as_ref().map(Job::role);
+        let worker_only = request.as_ref().is_some_and(Job::worker_only);
         // SAFETY: the caller retains the admitted callback lease.
         let result = unsafe {
             self.executor.submit_with_priority(
                 request,
                 role.map_or(0, Role::priority),
-                role.is_some_and(Role::worker_only),
+                worker_only,
+                wake,
             )
         };
         if let Some(role) = role {
@@ -1591,24 +2235,44 @@ impl Pool {
         }
         result
     }
-    pub(crate) fn finish(&self, ticket: Ticket) -> Option<Completion<Job, Report>> {
-        let completed = self.executor.finish(ticket)?;
-        crate::read_accounting::merge(completed.table_reads);
+    /// Collect into the caller's empty `out` (see `acquisition::Pool::finish_into`).
+    pub(crate) fn finish_into(
+        &self,
+        ticket: Ticket,
+        out: &mut Option<Completion<Job, Report>>,
+    ) -> bool {
+        if !self.executor.finish_into(ticket, out) {
+            return false;
+        }
+        let completed = out.as_ref().expect("collected completion");
+        crate::read_accounting::merge(&completed.table_reads);
         let role = completed.request.role();
         note_completion(&self.calibration.roles[role as usize], &completed.report);
-        if role == Role::World
+        if matches!(role, Role::World | Role::Economy)
             && let Err(failure) = completed.report
         {
             self.calibration
                 .world
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .last_error = Some(match failure {
-                Failure::Panicked => "World acquisition job panicked",
-                Failure::Stopped => "World acquisition job stopped before reading",
+                .last_error = Some(match (role, failure) {
+                (Role::Economy, Failure::Panicked) => "Economy acquisition job panicked",
+                (Role::Economy, Failure::Stopped) => {
+                    "Economy acquisition job stopped before reading"
+                }
+                (_, Failure::Panicked) => "World acquisition job panicked",
+                (_, Failure::Stopped) => "World acquisition job stopped before reading",
             });
         }
-        Some(completed)
+        true
+    }
+    /// Retain a rejected request in a free executor slot until `unpark`.
+    pub(crate) fn park(&self, request: &mut Option<Job>) -> Option<Ticket> {
+        let worker_only = request.as_ref().is_some_and(Job::worker_only);
+        self.executor.park(request, worker_only)
+    }
+    pub(crate) fn unpark(&self, ticket: Ticket) -> Option<Job> {
+        self.executor.unpark(ticket)
     }
     /// Execute an eligible retained, rejected request on the callback with the
     /// same providers and panic boundary. Worker-only roles cannot run here.
@@ -1616,10 +2280,7 @@ impl Pool {
     /// # Safety
     /// The admitted callback lease must remain valid throughout this call.
     pub(crate) unsafe fn run_inline(&self, mut request: Job) -> Completion<Job, Report> {
-        assert!(
-            !request.role().worker_only(),
-            "acquisition requires a worker"
-        );
+        assert!(!request.worker_only(), "acquisition requires a worker");
         let role = request.role();
         let reads = crate::read_accounting::Capture::new();
         let report = catch_failure(|| {
@@ -1628,7 +2289,7 @@ impl Pool {
             run_with_memory(&mut request, &memory, &self.calibration)
         });
         let table_reads = reads.finish();
-        crate::read_accounting::merge(table_reads);
+        crate::read_accounting::merge(&table_reads);
         let counters = &self.calibration.roles[role as usize];
         counters.inline_completed.fetch_add(1, Ordering::Relaxed);
         if report.is_err() {
@@ -1638,6 +2299,7 @@ impl Pool {
             request,
             report,
             table_reads,
+            timeline: Default::default(),
             #[cfg(feature = "callback_profile")]
             profile: Default::default(),
         }
@@ -1670,6 +2332,18 @@ impl Pool {
     pub(crate) fn shutdown(&self) -> Result<(), &'static str> {
         self.executor.shutdown()
     }
+    /// See [`acquisition::Pool::stopped`].
+    pub(crate) fn stopped(&self) -> bool {
+        self.executor.stopped()
+    }
+    /// See [`acquisition::Pool::stop_for_contained_panic`]; the panic is
+    /// also counted against `role`, as the runner counts an uncontained one.
+    pub(crate) fn stop_for_contained_panic(&self, role: Role) {
+        self.calibration.roles[role as usize]
+            .panicked
+            .fetch_add(1, Ordering::Relaxed);
+        self.executor.stop_for_contained_panic();
+    }
 }
 
 /// Upper bound on simultaneously retained callback requests, not table capacity.
@@ -1685,13 +2359,50 @@ pub(crate) const MAX_JOBS: usize = {
 pub(crate) struct Batch<'a> {
     pool: &'a Pool,
     tickets: [Option<Ticket>; MAX_JOBS],
+    /// Whether each retained ticket holds a parked rejected request.
+    parked: [bool; MAX_JOBS],
+    /// Submissions queue without waking a worker until [`Self::release`].
+    held: bool,
+    /// Jobs queued since the hold began.
+    held_jobs: usize,
 }
 impl<'a> Batch<'a> {
     pub(crate) fn new(pool: &'a Pool) -> Self {
         Self {
             pool,
             tickets: [None; MAX_JOBS],
+            parked: [false; MAX_JOBS],
+            held: false,
+            held_jobs: 0,
         }
+    }
+    /// Queue the following submissions without waking workers: a burst of
+    /// independent jobs is released at once ([`Self::release`]).
+    pub(crate) fn hold(&mut self) {
+        self.held = true;
+    }
+    /// Wake the pool once for every job queued since [`Self::hold`]; returns
+    /// how many there were. Workers already running claim them sooner.
+    pub(crate) fn release(&mut self) -> usize {
+        let jobs = std::mem::take(&mut self.held_jobs);
+        self.held = false;
+        if jobs != 0 {
+            self.pool.executor.wake_workers(jobs);
+        }
+        jobs
+    }
+    /// Whether a submission now would be refused ([`Pool::stopped`]).
+    pub(crate) fn stopped(&self) -> bool {
+        self.pool.stopped()
+    }
+    /// Whether an accepted `ticket` has completed
+    /// ([`acquisition::Pool::is_complete`]).
+    pub(crate) fn is_complete(&self, ticket: Ticket) -> bool {
+        self.pool.executor.is_complete(ticket)
+    }
+    /// [`Pool::stop_for_contained_panic`].
+    pub(crate) fn stop_for_contained_panic(&self, role: Role) {
+        self.pool.stop_for_contained_panic(role);
     }
     /// # Safety
     /// The callback must own the live-read lease until this guard is
@@ -1700,7 +2411,7 @@ impl<'a> Batch<'a> {
         &mut self,
         request: &mut Option<Job>,
     ) -> Result<Ticket, SubmitError> {
-        let worker_only = request.as_ref().is_some_and(|job| job.role().worker_only());
+        let worker_only = request.as_ref().is_some_and(Job::worker_only);
         let slots = if worker_only {
             &mut self.tickets[..WORKER_ONLY_JOBS]
         } else {
@@ -1713,18 +2424,61 @@ impl<'a> Batch<'a> {
             return Err(SubmitError::Full);
         };
         // SAFETY: this guard drains every ticket before releasing its lease.
-        let ticket = unsafe { self.pool.submit(request) }?;
+        let ticket = unsafe { self.pool.submit(request, !self.held) }?;
         *slot = Some(ticket);
+        self.held_jobs += usize::from(self.held);
         Ok(ticket)
     }
-    pub(crate) fn finish(&mut self, ticket: Ticket) -> Option<Completion<Job, Report>> {
-        let index = self
-            .tickets
-            .iter()
-            .position(|candidate| *candidate == Some(ticket))?;
-        let completed = self.pool.finish(ticket);
+    /// Retain a rejected request in the pool until its join, so the callback
+    /// holds only the ticket. Parked and accepted requests share the MAX_JOBS
+    /// bound; parking prefers the request's own partition. None leaves the
+    /// request with the caller.
+    pub(crate) fn park(&mut self, request: &mut Option<Job>) -> Option<Ticket> {
+        let worker_only = request.as_ref().is_some_and(Job::worker_only);
+        let (own, other) = if worker_only {
+            (0..WORKER_ONLY_JOBS, WORKER_ONLY_JOBS..MAX_JOBS)
+        } else {
+            (WORKER_ONLY_JOBS..MAX_JOBS, 0..WORKER_ONLY_JOBS)
+        };
+        let index = own
+            .chain(other)
+            .find(|&index| self.tickets[index].is_none())?;
+        let ticket = self.pool.park(request)?;
+        self.tickets[index] = Some(ticket);
+        self.parked[index] = true;
+        Some(ticket)
+    }
+    /// Take back a parked request; other tickets return None.
+    pub(crate) fn unpark(&mut self, ticket: Ticket) -> Option<Job> {
+        let index = self.position(ticket, true)?;
         self.tickets[index] = None;
+        self.parked[index] = false;
+        self.pool.unpark(ticket)
+    }
+    #[cfg(test)]
+    pub(crate) fn finish(&mut self, ticket: Ticket) -> Option<Completion<Job, Report>> {
+        let mut completed = None;
+        self.finish_into(ticket, &mut completed);
         completed
+    }
+    /// Collect an accepted ticket into the caller's empty `out`.
+    pub(crate) fn finish_into(
+        &mut self,
+        ticket: Ticket,
+        out: &mut Option<Completion<Job, Report>>,
+    ) -> bool {
+        let Some(index) = self.position(ticket, false) else {
+            return false;
+        };
+        let collected = self.pool.finish_into(ticket, out);
+        self.tickets[index] = None;
+        collected
+    }
+    fn position(&self, ticket: Ticket, parked: bool) -> Option<usize> {
+        self.tickets
+            .iter()
+            .zip(&self.parked)
+            .position(|(candidate, &held)| held == parked && *candidate == Some(ticket))
     }
     /// # Safety
     /// Same live-read lease as submit; only a retained rejected job may run here.
@@ -1733,16 +2487,67 @@ impl<'a> Batch<'a> {
         unsafe { self.pool.run_inline(request) }
     }
 }
+/// The callback's live-read barrier on every exit: the callback returns or
+/// unwinds into the game only after this drop, which collects every
+/// retained ticket (an accepted job is joined, finished or cancelled before
+/// it starts; a parked request is taken back) and then settles the pool, so
+/// no job runs or can start afterwards. Collection is unconditional: a
+/// terminal allocation failure, before or during the drain, stops new work
+/// but never skips a join, and a panic while dropping one completion is
+/// contained so the remaining tickets still drain.
 impl Drop for Batch<'_> {
     fn drop(&mut self) {
-        for ticket in self.tickets.iter_mut().filter_map(Option::take) {
+        // A held burst must reach the workers before its tickets drain.
+        self.release();
+        let pool = self.pool;
+        for (ticket, parked) in self.tickets.iter_mut().zip(&mut self.parked) {
+            let Some(ticket) = ticket.take() else {
+                continue;
+            };
             // User job panics are caught by the executor. Recovering/dropping
             // owned results must not prevent draining any remaining ticket.
-            let _ = catch_failure(|| drop(self.pool.finish(ticket)));
+            if std::mem::take(parked) {
+                contain(|| drop_parked(pool, ticket));
+            } else {
+                contain(|| drop_collected(pool, ticket));
+            }
         }
+        // Whatever a contained panic left uncollected is cancelled or waited
+        // for here: no job of this callback outlives it.
+        pool.executor.settle();
     }
 }
 
+// Separate frames: a request and a completion never share one. Each drops
+// where it lies, at the end of its frame.
+#[inline(never)]
+fn drop_parked(pool: &Pool, ticket: Ticket) {
+    let _request = pool.unpark(ticket);
+}
+
+#[inline(never)]
+fn drop_collected(pool: &Pool, ticket: Ticket) {
+    let mut completed = None;
+    pool.finish_into(ticket, &mut completed);
+    // A stitch contains its own panic until its join settles it
+    // (`sampling::settle_stitch`). Drained without that join, it is counted
+    // and stops the pool here, unless the pool had already stopped: a
+    // stitch the stopped pool would have refused counts no panic.
+    if let Some(Completion {
+        report:
+            Ok(Report::OrdersStitch(StitchReport {
+                contained_panic: true,
+            })),
+        ..
+    }) = &completed
+        && !pool.stopped()
+    {
+        pool.stop_for_contained_panic(Role::OrdersStitch);
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod batch_drain_tests;
 #[cfg(test)]
 mod order_group_loan_tests;
 
@@ -1808,21 +2613,26 @@ mod tests {
         bytes
     }
 
+    fn economy_request() -> EconomyRequest {
+        let mut request = EconomyRequest {
+            countries: empty_country_snapshot(),
+            context: economy::EconomyRestCopyContext {
+                base: 0,
+                game_state: 0x1000,
+                resource_rows: [0; 3],
+                resource_scratch: 0,
+                resources_active: true,
+                other_active: true,
+            },
+            payload: Default::default(),
+        };
+        request.payload.log = crate::raw::RawLog::new(512, 65536);
+        request
+    }
+
     fn world_request() -> WorldRequest {
         let mut request = WorldRequest {
             countries: empty_country_snapshot(),
-            economy: WorldPart {
-                context: economy::EconomyRestCopyContext {
-                    base: 0,
-                    game_state: 0x1000,
-                    resource_rows: [0; 3],
-                    resource_scratch: 0,
-                    resources_active: true,
-                    definitions_slot: true,
-                    other_active: true,
-                },
-                payload: Default::default(),
-            },
             construction: Some(WorldPart {
                 context: construction::ConstructionRestCopyContext {
                     base: 0,
@@ -1837,13 +2647,7 @@ mod tests {
                 },
                 payload: Default::default(),
             }),
-            focus: Some(WorldPart {
-                context: governance::Captured::with_capacities(&Default::default())
-                    .focus_copy_context(0, 0x1000, true),
-                payload: governance::FocusJob::new(),
-            }),
         };
-        request.economy.payload.log = crate::raw::RawLog::new(512, 65536);
         request.construction.as_mut().unwrap().payload.log = crate::raw::RawLog::new(512, 65536);
         request.production.as_mut().unwrap().payload.log = crate::raw::RawLog::new(512, 65536);
         request
@@ -1860,7 +2664,7 @@ mod tests {
 
     #[test]
     fn every_worker_only_job_of_an_hour_has_a_reserved_slot() {
-        // Every single worker-only role and all ETA, air relation and history parts.
+        // Every single worker-only role and all air relation and history parts.
         assert_eq!(
             WORKER_ONLY_JOBS,
             ROLES
@@ -1877,6 +2681,361 @@ mod tests {
                 .filter(|role| *role != Role::Players)
                 .all(Role::worker_only)
         );
+        // The final borrowers are queued before the Presentation join.
+        assert_eq!(Role::Presentation.jobs_per_hour(), 2);
+    }
+
+    #[test]
+    fn the_stability_tables_are_their_own_job_beside_slow() {
+        // ROLES lists every role at its index, the new one included.
+        for (index, role) in ROLES.iter().enumerate() {
+            assert_eq!(*role as usize, index, "{role:?}");
+        }
+        // It claims no later than Slow, and its reads stay charged to
+        // CountryStabilityInputs.
+        assert!(Role::Stability.priority() <= Role::Slow.priority());
+        assert_eq!(
+            Role::Stability.read_anchor(),
+            TableId::CountryStabilityInputs
+        );
+        let mut captured =
+            crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
+        let countries = empty_country_snapshot();
+        let bytes = empty_memory();
+        let memory = CountedMemory::new(engine::memory::SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        });
+        let mut job = Job::Stability(captured.take_stability_request(
+            &countries,
+            0,
+            0x1000,
+            1,
+            true,
+            Some(Box::new(crate::slicing::SliceFingerprints::new())),
+        ));
+        assert_eq!(job.role(), Role::Stability);
+        let reads = Capture::new();
+        let report = run_for_test(&mut job, &memory);
+        let reads = reads.finish();
+        assert!(matches!(report, Report::Stability(StabilityReport)));
+        // Only the stability tables' accounting sees the job's reads.
+        for (index, counts) in reads.iter().enumerate() {
+            if index != TableId::CountryStabilityInputs.index() {
+                assert_eq!(*counts, ReadCounts::ZERO, "table {index}");
+            }
+        }
+        let Job::Stability(request) = job else {
+            unreachable!()
+        };
+        assert!(captured.restore_stability_request(request, true).is_some());
+    }
+
+    /// The daily production slot's walks are their own job, queued exactly
+    /// at their slot (hour 8, or a full hour): it claims no later than Slow,
+    /// and its reads stay charged to the industrial organisations' and
+    /// production modifiers' own tables.
+    #[test]
+    fn the_daily_production_tables_are_their_own_job_beside_slow() {
+        use crate::extended::{
+            ProductionDailyPacks, industrial_organisations, production_modifiers,
+        };
+        assert!(Role::ProductionDaily.priority() <= Role::Slow.priority());
+        assert_eq!(
+            Role::ProductionDaily.read_anchor(),
+            TableId::CountryProductionModifiers
+        );
+        for hour in 0..48 {
+            assert_eq!(
+                ProductionDailyPacks::due(hour, false),
+                hour % 24 == 8,
+                "hour {hour}"
+            );
+        }
+        assert!(ProductionDailyPacks::due(3, true));
+        let mut captured =
+            crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
+        let countries = empty_country_snapshot();
+        let bytes = empty_memory();
+        let memory = CountedMemory::new(engine::memory::SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        });
+        let mut job = Job::ProductionDaily(
+            captured.take_production_daily_request(&countries, 0, 0x1000, 8, false),
+        );
+        assert_eq!(job.role(), Role::ProductionDaily);
+        let reads = Capture::new();
+        let report = run_for_test(&mut job, &memory);
+        let reads = reads.finish();
+        assert!(matches!(
+            report,
+            Report::ProductionDaily(ProductionDailyReport)
+        ));
+        let own = [
+            industrial_organisations::TABLES[0],
+            production_modifiers::TABLES[0],
+        ];
+        for (index, counts) in reads.iter().enumerate() {
+            if own.iter().all(|table| table.index() != index) {
+                assert_eq!(*counts, ReadCounts::ZERO, "table {index}");
+            }
+        }
+        let Job::ProductionDaily(request) = job else {
+            unreachable!()
+        };
+        captured.restore_production_daily_request(request, true);
+    }
+
+    #[test]
+    fn the_war_overview_tables_are_their_own_job_beside_slow() {
+        // It claims no later than Slow, and its reads stay charged to
+        // WarOwnedRelations and WarNameRules, the overview's own tables.
+        assert!(Role::WarOverview.priority() <= Role::Slow.priority());
+        assert_eq!(Role::WarOverview.read_anchor(), TableId::WarOwnedRelations);
+        let mut captured =
+            crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
+        let countries = empty_country_snapshot();
+        let bytes = empty_memory();
+        let memory = CountedMemory::new(engine::memory::SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        });
+        let mut job =
+            Job::WarOverview(captured.take_war_overview_request(&countries, 0, 0x1000, 1, true));
+        assert_eq!(job.role(), Role::WarOverview);
+        let reads = Capture::new();
+        let report = run_for_test(&mut job, &memory);
+        let reads = reads.finish();
+        assert!(matches!(report, Report::WarOverview(WarOverviewReport)));
+        for (index, counts) in reads.iter().enumerate() {
+            if index != TableId::WarOwnedRelations.index() && index != TableId::WarNameRules.index()
+            {
+                assert_eq!(*counts, ReadCounts::ZERO, "table {index}");
+            }
+        }
+        let Job::WarOverview(request) = job else {
+            unreachable!()
+        };
+        captured.restore_war_overview_request(request, true);
+    }
+
+    /// Runs `job` on `memory`: its report and the reads each table made.
+    fn run_counted(
+        job: &mut Job,
+        memory: &impl engine::Memory,
+    ) -> (Report, read_accounting::TableCounts) {
+        let reads = Capture::new();
+        let report = run_for_test(job, memory);
+        (report, reads.finish())
+    }
+
+    fn snapshot_at(
+        memory: &impl engine::Memory,
+        cells: usize,
+        base: usize,
+        game_state: usize,
+    ) -> Arc<engine::country_memory::Cache> {
+        let mut storage =
+            Arc::new(engine::country_memory::Cache::try_with_capacity(cells).unwrap());
+        engine::country_memory::Cache::prepare_shared(&mut storage, memory, base, game_state)
+            .unwrap()
+    }
+
+    #[test]
+    fn the_air_bases_census_takes_the_hours_country_snapshot() {
+        use crate::extended::air::{AirBasesCopyContext, AirBasesJob, air_bases_test_kit as kit};
+        let bytes = kit::fixture();
+        // An unready snapshot (no cells) serves nothing: every census span is
+        // then read from the game, as the job read it before the loan.
+        let run = |cells| {
+            let countries = snapshot_at(&kit::memory(&bytes), cells, kit::BASE, kit::GAME_STATE);
+            let memory = CountedMemory::new(kit::memory(&bytes));
+            let mut job = Job::AirBases(RawRequest {
+                countries,
+                context: AirBasesCopyContext {
+                    base: kit::BASE,
+                    game_state: kit::GAME_STATE,
+                    hour: 0,
+                    force_full: true,
+                },
+                payload: AirBasesJob::default(),
+            });
+            let (report, reads) = run_counted(&mut job, &memory);
+            assert!(matches!(report, Report::AirBases(report) if report.raw_ok));
+            let Job::AirBases(request) = job else {
+                unreachable!()
+            };
+            (request.payload, reads[TableId::AirBases.index()])
+        };
+        let (native, native_reads) = run(0);
+        let (loaned, loaned_reads) = run(1 << 12);
+        // The same spans and bytes reach the decoder.
+        assert_eq!(loaned.log.spans, native.log.spans);
+        assert_eq!(loaned.log.bytes[..], native.log.bytes[..]);
+        assert!(
+            loaned_reads.copy_calls < native_reads.copy_calls,
+            "{loaned_reads:?} {native_reads:?}"
+        );
+    }
+
+    #[test]
+    fn the_score_walk_resolves_countries_through_the_hours_snapshot() {
+        use engine::{
+            ccountry, cgame_state, cstrategic_air, cstrategic_air_manager, cstrategic_region,
+            memory::SliceMemory, raid_air_scores::COMBAT_DELAY_RVA,
+        };
+        const MEMORY: usize = 0x1000_0000;
+        const BASE: usize = MEMORY + 0x100 - COMBAT_DELAY_RVA;
+        const GAME: usize = MEMORY + 0x1000;
+        // The combat delay define, one present region and country P in slot
+        // 1. Without an air manager the walk stops at the strategic-air
+        // roster. With `alias`, P has id zero and also fills slot 0, and the
+        // manager's slot 1 owner names raw country 1: the snapshot's roster
+        // leaves that alias of the reserved country absent, while the score
+        // walk resolves it directly through P's identity.
+        let world = |alias: bool| {
+            let mut bytes = vec![0_u8; 0x4000];
+            let mut put = |at: usize, value: u64, len: usize| {
+                bytes[at..at + len].copy_from_slice(&value.to_le_bytes()[..len]);
+            };
+            put(0x100, 4, 4);
+            for (header, data) in [
+                (cgame_state::COUNTRIES, 0x3000),
+                (cgame_state::COUNTRY_LINKS, 0x3100),
+                (cgame_state::STRATEGIC_REGIONS, 0x3400),
+            ] {
+                put(0x1000 + header, (MEMORY + data) as u64, 8);
+                put(0x1000 + header + 8, 2 << 32 | 2, 8);
+            }
+            put(0x3008, (MEMORY + 0x3200) as u64, 8);
+            put(0x3104, 1, 4);
+            put(0x3200, (BASE + ccountry::VTABLE_RVA) as u64, 8);
+            put(0x3200 + ccountry::ID, u64::from(!alias), 4);
+            put(0x3408, (MEMORY + 0x3600) as u64, 8);
+            put(0x3600, (BASE + cstrategic_region::VTABLE_RVA) as u64, 8);
+            put(0x3600 + cstrategic_region::PROVINCES_COUNT, 1, 4);
+            put(0x3600 + cstrategic_region::ID, 1_001, 4);
+            put(0x3600 + cstrategic_region::RUNTIME_SLOT, 1, 4);
+            put(0x3600 + cstrategic_region::AIR_PHASE, 1, 4);
+            if alias {
+                put(0x3000, (MEMORY + 0x3200) as u64, 8);
+                put(
+                    0x1000 + cgame_state::STRATEGIC_AIR_MANAGER,
+                    (MEMORY + 0x3800) as u64,
+                    8,
+                );
+                put(
+                    0x3800,
+                    (BASE + cstrategic_air_manager::VTABLE_RVA) as u64,
+                    8,
+                );
+                let roster = 0x3800 + cstrategic_air_manager::COUNTRY_AIR;
+                put(roster, (MEMORY + 0x3900) as u64, 8);
+                put(roster + 8, 2 << 32 | 2, 8);
+                put(0x3908, (MEMORY + 0x3a00) as u64, 8);
+                put(0x3a00, (BASE + cstrategic_air::VTABLE_RVA) as u64, 8);
+                put(0x3a00 + cstrategic_air::COUNTRY, 1, 4);
+            }
+            bytes
+        };
+        for (alias, reason) in [
+            (
+                false,
+                "strategic air manager vtable unreadable or mismatched",
+            ),
+            (true, "country id is zero"),
+        ] {
+            let bytes = world(alias);
+            let source = || SliceMemory {
+                base: MEMORY,
+                bytes: &bytes,
+            };
+            let run = |cells| {
+                let mut captured = crate::extended::Captured::with_capacities(
+                    &crate::extended::Capacities::default(),
+                );
+                captured.prepare_hour(1, true);
+                let countries = snapshot_at(&source(), cells, BASE, GAME);
+                let request = captured.take_scores_rails_request(
+                    &countries,
+                    BASE,
+                    GAME,
+                    1,
+                    true,
+                    Box::default(),
+                    None,
+                );
+                let mut job = Job::ScoresRails(request);
+                let (_, reads) = run_counted(&mut job, &CountedMemory::new(source()));
+                let Job::ScoresRails(request) = job else {
+                    unreachable!()
+                };
+                let _ = captured.restore_scores_rails_request(request, true);
+                (
+                    captured.outcomes()[TableId::RaidAirScores.index()],
+                    reads[TableId::RaidAirScores.index()],
+                )
+            };
+            // An unready snapshot serves nothing: the walk reads as on the game.
+            let (native, native_reads) = run(0);
+            let (loaned, loaned_reads) = run(1 << 12);
+            assert_eq!(native, engine::walk::Outcome::Unavailable { reason });
+            assert_eq!(loaned, native, "alias {alias}");
+            assert!(
+                loaned_reads.copy_calls < native_reads.copy_calls,
+                "{loaned_reads:?} {native_reads:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_economy_rest_is_its_own_job_beside_world() {
+        // ROLES lists every role at its index, the new one included.
+        for (index, role) in ROLES.iter().enumerate() {
+            assert_eq!(*role as usize, index, "{role:?}");
+        }
+        // It claims with World, and both keep the anchor World had.
+        assert_eq!(Role::Economy.priority(), Role::World.priority());
+        assert_eq!(Role::Economy.read_anchor(), TableId::ProvinceSupply);
+        assert_eq!(Role::World.read_anchor(), TableId::ProvinceSupply);
+        let bytes = empty_memory();
+        let memory = CountedMemory::new(engine::memory::SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        });
+        let calibration = SharedCalibration::default();
+        let mut economy = Job::Economy(economy_request());
+        assert_eq!(economy.role(), Role::Economy);
+        let reads = Capture::new();
+        let report = run_with_memory(&mut economy, &memory, &calibration);
+        let economy_reads = reads.finish();
+        assert!(matches!(report, Report::Economy(_)));
+        // Only the economy tables' accounting sees the job's reads.
+        for (index, counts) in economy_reads.iter().enumerate() {
+            if !economy::TABLES.iter().any(|table| table.index() == index) {
+                assert_eq!(*counts, ReadCounts::ZERO, "table {index}");
+            }
+        }
+        assert_ne!(economy_reads, read_accounting::ZERO);
+        // The World job reads none of them.
+        let mut world = Job::World(world_request());
+        let reads = Capture::new();
+        let report = run_with_memory(&mut world, &memory, &calibration);
+        let world_reads = reads.finish();
+        assert!(matches!(report, Report::World(_)));
+        for &table in &economy::TABLES {
+            assert_eq!(world_reads[table.index()], ReadCounts::ZERO, "{table:?}");
+        }
+        // The country cache is observed once for the hour, by the Economy
+        // job; both jobs' worker time is the family's.
+        let world_calibration = *calibration.world.lock().unwrap();
+        let cache = world_calibration.country_cache;
+        assert_eq!(
+            cache.ready + cache.capacity_fallbacks + cache.unavailable_fallbacks,
+            1
+        );
+        assert!(world_calibration.last_error.is_none());
     }
 
     #[test]
@@ -2150,58 +3309,51 @@ mod tests {
         })
         .unwrap();
         let request = world_request();
-        let pointer = request.economy.payload.log.bytes.as_ptr();
+        let pointers = [
+            request
+                .construction
+                .as_ref()
+                .unwrap()
+                .payload
+                .log
+                .bytes
+                .as_ptr(),
+            request
+                .production
+                .as_ref()
+                .unwrap()
+                .payload
+                .log
+                .bytes
+                .as_ptr(),
+        ];
         let mut pending = Some(request);
         // SAFETY: synthetic inputs and all destinations are owned until collection.
         let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
         let completed = pool.finish(ticket).unwrap();
         let report = completed.report.unwrap();
-        assert_eq!(
-            completed.request.economy.payload.log.bytes.as_ptr(),
-            pointer
-        );
-        assert_eq!(report.economy.raw_ok, expected.economy.raw_ok);
-        assert_eq!(report.economy.raw_bytes, expected.economy.raw_bytes);
-        assert_eq!(
-            completed.request.economy.payload.log.bytes,
-            direct.economy.payload.log.bytes
-        );
         macro_rules! compare {
-            ($family:ident) => {{
+            ($family:ident, $pointer:expr) => {{
+                let part = completed.request.$family.as_ref().unwrap();
+                assert_eq!(part.payload.log.bytes.as_ptr(), $pointer);
                 assert_eq!(report.$family.raw_ok, expected.$family.raw_ok);
                 assert_eq!(report.$family.raw_bytes, expected.$family.raw_bytes);
                 assert_eq!(
-                    completed
-                        .request
-                        .$family
-                        .as_ref()
-                        .unwrap()
-                        .payload
-                        .log
-                        .bytes,
+                    part.payload.log.bytes,
                     direct.$family.as_ref().unwrap().payload.log.bytes
                 );
             }};
         }
-        compare!(construction);
-        compare!(production);
-        assert_eq!(report.focus.raw_ok, expected.focus.raw_ok);
-        assert_eq!(report.focus.raw_bytes, expected.focus.raw_bytes);
+        compare!(construction, pointers[0]);
+        compare!(production, pointers[1]);
         assert_eq!(pool.calibration().uncollected, 0);
     }
 
     #[test]
-    fn absent_world_parts_preserve_only_the_economy_attempt_and_owned_storage() {
+    fn the_economy_job_matches_the_direct_copy_and_returns_its_storage() {
         for workers in [0, 1] {
             let bytes = empty_memory();
-            let make = || {
-                let mut request = world_request();
-                request.production = None;
-                request.construction = None;
-                request.focus = None;
-                request
-            };
-            let mut direct = make();
+            let mut direct = economy_request();
             let memory = CountedMemory::new(engine::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
@@ -2209,10 +3361,44 @@ mod tests {
             let reads = Capture::new();
             let expected = economy::copy_economy_rest_refresh(
                 &direct.countries.view(&memory),
-                direct.economy.context,
-                &mut direct.economy.payload,
+                direct.context,
+                &mut direct.payload,
             );
             let expected_reads = reads.finish();
+            let pool = acquisition::Pool::start(workers, 1, move |request: &mut EconomyRequest| {
+                run_economy_shared(
+                    request,
+                    &CountedMemory::new(engine::memory::SliceMemory {
+                        base: 0,
+                        bytes: &bytes,
+                    }),
+                    &Mutex::new(WorldCalibration::default()),
+                )
+            })
+            .unwrap();
+            let request = economy_request();
+            let pointer = request.payload.log.bytes.as_ptr();
+            let mut pending = Some(request);
+            // SAFETY: the runner owns its source and collection retains every output.
+            let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
+            let completed = pool.finish(ticket).unwrap();
+            let report = completed.report.unwrap();
+            assert_eq!(completed.request.payload.log.bytes.as_ptr(), pointer);
+            assert_eq!(
+                completed.request.payload.log.bytes,
+                direct.payload.log.bytes
+            );
+            assert_eq!(report.raw_ok, expected.raw_ok);
+            assert_eq!(report.raw_bytes, expected.raw_bytes);
+            assert_eq!(completed.table_reads, expected_reads);
+            assert_eq!(pool.calibration().uncollected, 0);
+        }
+    }
+
+    #[test]
+    fn absent_world_parts_read_nothing_and_keep_no_economy_attempt() {
+        for workers in [0, 1] {
+            let bytes = empty_memory();
             let pool = acquisition::Pool::start(workers, 1, move |request: &mut WorldRequest| {
                 run_world_shared(
                     request,
@@ -2224,8 +3410,9 @@ mod tests {
                 )
             })
             .unwrap();
-            let request = make();
-            let pointer = request.economy.payload.log.bytes.as_ptr();
+            let mut request = world_request();
+            request.production = None;
+            request.construction = None;
             let mut pending = Some(request);
             // SAFETY: the runner owns its source and collection retains every output.
             let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
@@ -2233,18 +3420,8 @@ mod tests {
             let report = completed.report.unwrap();
             assert!(completed.request.production.is_none());
             assert!(completed.request.construction.is_none());
-            assert!(completed.request.focus.is_none());
-            assert_eq!(
-                completed.request.economy.payload.log.bytes.as_ptr(),
-                pointer
-            );
-            assert_eq!(
-                completed.request.economy.payload.log.bytes,
-                direct.economy.payload.log.bytes
-            );
-            assert_eq!(report.economy.raw_ok, expected.raw_ok);
-            assert_eq!(report.economy.raw_bytes, expected.raw_bytes);
-            assert_eq!(completed.table_reads, expected_reads);
+            // The economy rest is the Economy job's: World reads nothing.
+            assert_eq!(completed.table_reads, read_accounting::ZERO);
             macro_rules! empty {
                 ($part:ident) => {{
                     assert!(!report.$part.raw_ok);
@@ -2254,7 +3431,6 @@ mod tests {
             }
             empty!(production);
             empty!(construction);
-            empty!(focus);
             assert!(!report.production.plan_failed);
             assert_eq!(pool.calibration().uncollected, 0);
         }
@@ -2282,9 +3458,9 @@ mod tests {
                 force_full: false,
                 base: 0,
                 game_state: 0x1000,
-                trait_rows: [0; 2],
-                trait_bytes: [0; 2],
-                active: [true; 6],
+                trait_rows: 0,
+                trait_bytes: 0,
+                active: [true; 5],
             },
             payload: Default::default(),
             roles: characters::Roles::Independent,

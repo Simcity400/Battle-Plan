@@ -750,6 +750,11 @@ unsafe extern "system-unwind" {
 }
 #[test]
 fn constructor_relocation_and_sentinel_restore_exactly() {
+    // Publishing the patch suspends every thread and changes a code page
+    // other patching tests share.
+    let _family = crate::hook::FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _observation = Observation::new();
     let site = naval_ctor_relocation_target as *const () as usize;
     let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }

@@ -373,7 +373,12 @@ pub(super) fn scan(
                     // CountryCounterInputs supplies the unfiltered owned-state roster count.
                     // A positive-to-zero transition means ceased to exist by this supplying
                     // read; the cause and exact transition hour are absent.
-                    if slot_read(&decoded.metrics, TableId::CountryCounterInputs, hour) {
+                    if slot_read(
+                        replay.format,
+                        &decoded.metrics,
+                        TableId::CountryCounterInputs,
+                        hour,
+                    ) {
                         if let Ok(rows) = decoded.complete::<tables::CountryCounterInputs>() {
                             out.observed.insert(TableId::CountryCounterInputs);
                             let countries = decoded.complete::<tables::Countries>()?;

@@ -1,5 +1,4 @@
 use super::*;
-use engine::cnational_focus;
 
 #[test]
 fn recorded_effect_inputs_project_exact_bytes_and_keep_decision_cadence() {
@@ -93,6 +92,7 @@ fn breakdown_capture_keeps_the_original_push_capacity_trace() {
             },
             0,
             STATE,
+            0,
         );
         previous.clear();
         for _ in 0..count {
@@ -104,12 +104,102 @@ fn breakdown_capture_keeps_the_original_push_capacity_trace() {
             assert_eq!(row.record, record as u32);
             assert!(row.sources.is_empty());
             for nodes in [&row.daily, &row.weekly] {
-                assert_eq!(nodes.len(), 1);
-                assert_eq!((nodes[0].children, nodes[0].value), (0, 0));
-                assert!(nodes[0].name.is_empty());
+                if BREAKDOWN_WITNESS
+                    && crate::sampled_verify::Check::hourly(0, false).covers(record as u64)
+                {
+                    assert_eq!(nodes.len(), 1);
+                    assert_eq!((nodes[0].children, nodes[0].value), (0, 0));
+                    assert!(nodes[0].name.is_empty());
+                } else {
+                    assert!(nodes.is_empty());
+                }
             }
         }
     }
+}
+
+/// Production reads each record's source roster and no cached tree:
+/// playback derives the trees ([`replay::power_balance_derive`]). A record
+/// whose +0xC8 tree cannot be read still publishes its sources, which the
+/// hourly tree walk this replaced refused.
+#[test]
+fn breakdown_capture_reads_sources_without_the_cached_trees() {
+    use engine::memory::SliceMemory;
+    const STATE: usize = 0x100;
+    const MANAGER: usize = 0x800;
+    const RECORDS: usize = 0x1000;
+    const SOURCES: usize = 0x1400;
+    const STATICS: usize = 0x2000;
+    fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
+        bytes[at..at + value.len()].copy_from_slice(value);
+    }
+    fn name(bytes: &mut [u8], at: usize, text: &[u8]) {
+        // An inline MSVC string: bytes, then size +0x10 and capacity +0x18.
+        put(bytes, at, text);
+        put(bytes, at + 0x10, &(text.len() as u64).to_le_bytes());
+        put(bytes, at + 0x18, &15_u64.to_le_bytes());
+    }
+    let mut bytes = vec![0_u8; STATICS + 0x400];
+    put(
+        &mut bytes,
+        STATE + engine::cgame_state::POWER_BALANCE_MANAGER,
+        &(MANAGER as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        MANAGER + power_balance_manager::RECORDS,
+        &(RECORDS as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        MANAGER + power_balance_manager::RECORDS + 8,
+        &((1_u64 << 32) | 1).to_le_bytes(),
+    );
+    // Two occurrences of the first source and one of the second, in order.
+    put(&mut bytes, RECORDS + 0x50, &(SOURCES as u64).to_le_bytes());
+    put(
+        &mut bytes,
+        RECORDS + 0x58,
+        &((3_u64 << 32) | 3).to_le_bytes(),
+    );
+    for (ordinal, source) in [STATICS, STATICS + 0x200, STATICS].into_iter().enumerate() {
+        put(
+            &mut bytes,
+            SOURCES + ordinal * 8,
+            &(source as u64).to_le_bytes(),
+        );
+    }
+    name(&mut bytes, STATICS + 0x1a8, b"first");
+    name(&mut bytes, STATICS + 0x200 + 0x1a8, b"second");
+    // The cached tree's children header lists a child at a null array.
+    put(
+        &mut bytes,
+        RECORDS + 0xc8 + 0x18 + 8,
+        &((1_u64 << 32) | 1).to_le_bytes(),
+    );
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    assert!(engine::modifier_breakdown::balance(&memory, 0, RECORDS).is_err());
+    let mut captured = Captured::vacant();
+    captured.balances.outcome = Outcome::Rows { len: 1 };
+    // An hour whose slice the record is not in: no witness even in a
+    // `breakdown_witness` build.
+    let hour = (0..24)
+        .find(|&hour| !crate::sampled_verify::Check::hourly(hour, false).covers(0))
+        .unwrap();
+    captured.capture_breakdowns(&memory, 0, STATE, hour);
+    assert_eq!(captured.breakdown_outcome, Outcome::Rows { len: 1 });
+    assert_eq!(
+        captured.breakdowns,
+        [rows::PowerBalanceModifierBreakdownRow {
+            record: 0,
+            sources: vec![b"first".to_vec(), b"second".to_vec(), b"first".to_vec()],
+            daily: Vec::new(),
+            weekly: Vec::new(),
+        }]
+    );
 }
 
 #[test]
@@ -291,101 +381,47 @@ fn owned_governance_vacancy_has_no_buffer_allocation() {
     assert!(captured.dictionary.is_empty());
     assert!(captured.technology_pointers.is_empty());
     assert_eq!(captured.technology_pointers.capacity(), 0);
-    assert!(!captured.focus_raw_mode);
 }
 
 #[test]
-fn owned_governance_failure_preserves_cadence_and_focus_delegation() {
+fn owned_governance_failure_preserves_cadence() {
     for force_full in [false, true] {
-        for delegated_focus in [false, true] {
-            let mut captured = Captured::vacant();
-            captured.focus_raw_mode = delegated_focus;
-            captured.definition_text.first = vec![1, 2, 3];
-            captured.definition_text.len = 3;
-            captured.definition_text.required = 7;
-            captured.modifier_values.first = vec![11, 12];
-            captured.modifier_values.len = 2;
-            captured.modifier_values.required = 4;
-            captured.dictionary_required = 9;
-            let context = CaptureContext {
-                base: 0,
-                game_state: 0,
-                hour: 1,
-                force_full,
-            };
-            let report = captured.fail_owned_capture(context, "worker stopped");
-            assert_eq!(report.ticks, [0; N]);
-            assert_eq!(captured.focus_raw_mode, delegated_focus);
-            assert_eq!(captured.definition_text.len, 0);
-            assert_eq!(captured.definition_text.required, 0);
-            assert_eq!(captured.modifier_values.len, 0);
-            assert_eq!(captured.modifier_values.required, 0);
-            assert_eq!(captured.dictionary_required, 0);
-            for (index, outcome) in captured.outcomes().into_iter().enumerate() {
-                let delegated = delegated_focus && index < 2;
-                let skipped =
-                    !replay::cadence::should_walk(TABLES[index], context.hour, force_full);
-                assert_eq!(
-                    outcome,
-                    Outcome::Unavailable {
-                        reason: if delegated {
-                            "clock unavailable"
-                        } else if skipped {
-                            replay::cadence::SKIPPED_REASON
-                        } else {
-                            "worker stopped"
-                        },
+        let mut captured = Captured::vacant();
+        captured.definition_text.first = vec![1, 2, 3];
+        captured.definition_text.len = 3;
+        captured.definition_text.required = 7;
+        captured.modifier_values.first = vec![11, 12];
+        captured.modifier_values.len = 2;
+        captured.modifier_values.required = 4;
+        captured.dictionary_required = 9;
+        let context = CaptureContext {
+            base: 0,
+            game_state: 0,
+            hour: 1,
+            force_full,
+        };
+        let report = captured.fail_owned_capture(context, "worker stopped");
+        assert_eq!(report.ticks, [0; N]);
+        assert_eq!(captured.definition_text.len, 0);
+        assert_eq!(captured.definition_text.required, 0);
+        assert_eq!(captured.modifier_values.len, 0);
+        assert_eq!(captured.modifier_values.required, 0);
+        assert_eq!(captured.dictionary_required, 0);
+        for (index, outcome) in captured.outcomes().into_iter().enumerate() {
+            let skipped = !replay::cadence::should_walk(TABLES[index], context.hour, force_full);
+            assert_eq!(
+                outcome,
+                Outcome::Unavailable {
+                    reason: if skipped {
+                        replay::cadence::SKIPPED_REASON
+                    } else {
+                        "worker stopped"
                     },
-                    "{index}",
-                );
-            }
+                },
+                "{index}",
+            );
         }
     }
-}
-
-#[test]
-fn focus_failure_preserves_other_governance_tables() {
-    let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.focus_raw_mode = true;
-    captured.focus.outcome = Outcome::Rows { len: 1 };
-    captured.completed.outcome = Outcome::Rows { len: 1 };
-    captured.technologies.outcome = Outcome::Rows { len: 1 };
-    let reason = "accepted acquisition worker stopped";
-    captured.fail_focus_capture(true, reason);
-    assert_eq!(captured.focus.outcome, Outcome::Unavailable { reason });
-    assert_eq!(captured.completed.outcome, Outcome::Unavailable { reason });
-    assert!(!captured.focus_raw_mode);
-    assert_eq!(captured.technologies.outcome, Outcome::Rows { len: 1 });
-}
-
-#[test]
-fn focus_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
-    use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
-    static LOCAL: Tracker = Tracker::new();
-    let mut job = FocusJob {
-        rows: vec![Default::default(); 2],
-        completed: vec![Default::default(); 3],
-        bytes: vec![0; 10],
-        provisioned: true,
-        ..Default::default()
-    };
-    job.capacity_charge = Charge::empty_on(&LOCAL);
-    job.update_capacity_charge();
-    let expected = |job: &FocusJob| {
-        vector_bytes(&job.rows) + vector_bytes(&job.completed) + vector_bytes(&job.bytes)
-    };
-    let initial = LOCAL.snapshot().current.payload_vectors;
-    assert_eq!(initial, expected(&job));
-    assert!(job.prepare([4, 6], 20));
-    assert!(job.grow_for_next());
-    job.grow();
-    let grown = LOCAL.snapshot().current.payload_vectors;
-    assert!(grown > initial);
-    assert_eq!(grown, expected(&job));
-    job.clear();
-    assert_eq!(LOCAL.snapshot().current.payload_vectors, grown);
-    drop(job);
-    assert_eq!(LOCAL.snapshot().current, Capacity::default());
 }
 
 #[test]
@@ -497,12 +533,11 @@ fn native_decision_source_keys_and_non_utf8_literals_survive_conversion() {
 /// Two countries share one template object; rosters hold native holes and
 /// unsorted acquisition order; ids cover heap and inline storage.
 #[cfg(test)]
-/// Shared synthetic address space for the scheduled focus copy/decode split
-/// harness: two authenticated countries with inline, absent and heap focus
-/// tokens plus one- and two-entry completed rosters.
+/// Shared synthetic address space for the governance walks: two authenticated
+/// countries with inline, absent and heap focus tokens plus one- and
+/// two-entry completed rosters.
 pub(crate) mod focus_test_kit {
-    use super::{Capacities, Captured, FocusJob};
-    use crate::extended::governance::copy_focus_refresh;
+    use super::{Capacities, Captured};
     use engine::memory::SliceMemory;
     use engine::{
         ccontinuous_national_focus, ccountry, cgame_state, cnational_focus,
@@ -515,12 +550,15 @@ pub(crate) mod focus_test_kit {
     const CTAB: usize = 0x1_1000;
     const LTAB: usize = 0x1_1200;
     const C1: usize = 0x1_2000;
-    const C2: usize = 0x1_4000;
-    const R1: usize = 0x1_6000;
-    const R2: usize = 0x1_7000;
+    /// Country 2's object.
+    pub(crate) const C2: usize = 0x1_4000;
+    /// The two countries' focus progress objects.
+    pub(crate) const R1: usize = 0x1_6000;
+    pub(crate) const R2: usize = 0x1_7000;
     const TT1: usize = 0x1_8000;
     const FC1: usize = 0x1_8200;
-    const FC2: usize = 0x1_8300;
+    /// Country 2's selected focus.
+    pub(crate) const FC2: usize = 0x1_8300;
     const CC1: usize = 0x1_8400;
     const FA: usize = 0x1_8500;
     const FB: usize = 0x1_8600;
@@ -568,6 +606,8 @@ pub(crate) mod focus_test_kit {
         fn country(&mut self, country: usize, id: u32, tree: usize, root: usize) {
             self.w64(country, (BASE + ccountry::VTABLE_RVA) as u64);
             self.w32(country + ccountry::ID, id);
+            // Each country owns a state, so its focus drifts daily.
+            self.w32(country + ccountry::OWNED_STATE_COUNT, 1);
             self.w64(country + ccountry::FOCUS_TREE, tree as u64);
             self.w64(country + ccountry::FOCUS_PROGRESS, root as u64);
         }
@@ -653,258 +693,6 @@ pub(crate) mod focus_test_kit {
         pub(crate) fn captured() -> Captured {
             Captured::with_capacities(&Capacities::default())
         }
-
-        pub(crate) fn copy_first(
-            captured: &mut Captured,
-            memory: &impl engine::Memory,
-        ) -> (super::FocusCopyReport, FocusJob) {
-            let mut job = FocusJob::new();
-            let ctx = captured.focus_copy_context(BASE, GS, true);
-            let report = copy_focus_refresh(memory, ctx, &mut job);
-            (report, job)
-        }
-
-        /// Byte-identity assertion for the decode worker tests: typed
-        /// rows, outcomes and arena bytes match exactly.
-        pub(crate) fn assert_matches_typed(decoded: &Captured, typed: &Captured) {
-            assert_eq!(decoded.focus.outcome, typed.focus.outcome);
-            assert_eq!(decoded.completed.outcome, typed.completed.outcome);
-            let focus_len = typed.focus.outcome.len();
-            assert_eq!(
-                &decoded.focus.rows[..focus_len],
-                &typed.focus.rows[..focus_len]
-            );
-            let completed_len = typed.completed.outcome.len();
-            assert_eq!(
-                &decoded.completed.rows[..completed_len],
-                &typed.completed.rows[..completed_len]
-            );
-            assert_eq!(decoded.focus_text.len, typed.focus_text.len);
-            assert_eq!(decoded.focus_text.required, typed.focus_text.required);
-            assert_eq!(
-                &decoded.focus_text.first[..decoded.focus_text.len],
-                &typed.focus_text.first[..typed.focus_text.len]
-            );
-        }
-    }
-}
-
-#[test]
-fn focus_copy_decode_is_byte_identical_from_cold_and_small_reusable_storage() {
-    use focus_test_kit::Fixture;
-    let fixture = Fixture::world();
-    let memory = fixture.memory();
-    let mut typed = Fixture::captured();
-    typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-    assert_eq!(typed.focus.outcome, Outcome::Rows { len: 2 });
-    assert_eq!(typed.completed.outcome, Outcome::Rows { len: 3 });
-    assert_eq!(typed.focus_text.len, 88);
-    assert_eq!(typed.focus_text.required, 88);
-    // Heap token bytes survive exactly, including the long payload.
-    let heap = b"completed_heap_token_longer_than_fifteen";
-    assert!(
-        typed.focus_text.first[..88]
-            .windows(heap.len())
-            .any(|window| window == heap)
-    );
-
-    let mut replayed = Fixture::captured();
-    replayed.focus_raw_mode = true;
-    let (report, first) = Fixture::copy_first(&mut replayed, &memory);
-    assert!(report.raw_ok);
-    replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-    let mut ticks = [0; 2];
-    replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
-    assert!(!replayed.focus_raw_mode);
-    assert_eq!(replayed.focus.outcome, typed.focus.outcome);
-    assert_eq!(replayed.completed.outcome, typed.completed.outcome);
-    let focus_len = typed.focus.outcome.len();
-    assert_eq!(
-        &typed.focus.rows[..focus_len],
-        &replayed.focus.rows[..focus_len]
-    );
-    let completed_len = typed.completed.outcome.len();
-    assert_eq!(
-        &typed.completed.rows[..completed_len],
-        &replayed.completed.rows[..completed_len]
-    );
-    assert_eq!(replayed.focus_text.len, typed.focus_text.len);
-    assert_eq!(replayed.focus_text.required, typed.focus_text.required);
-    assert_eq!(
-        &replayed.focus_text.first[..replayed.focus_text.len],
-        &typed.focus_text.first[..typed.focus_text.len]
-    );
-
-    // Small reusable buffers grow from this same original native demand.
-    let mut small = Capacities::default();
-    small.rows[0] = 1;
-    small.rows[1] = 1;
-    small.focus_text = 20;
-    let mut typed_small = Captured::with_capacities(&small);
-    typed_small.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-    let mut replayed_small = Captured::with_capacities(&small);
-    replayed_small.focus_raw_mode = true;
-    let (_, small_first) = Fixture::copy_first(&mut replayed_small, &memory);
-    replayed_small.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-    let mut small_ticks = [0; 2];
-    replayed_small.decode_focus_payload(focus_test_kit::BASE, &small_first, &mut small_ticks);
-    assert_eq!(replayed_small.focus.outcome, typed_small.focus.outcome);
-    assert_eq!(
-        replayed_small.completed.outcome,
-        typed_small.completed.outcome
-    );
-    assert_eq!(replayed_small.focus.outcome, Outcome::Rows { len: 2 });
-    assert_eq!(replayed_small.completed.outcome, Outcome::Rows { len: 3 });
-    assert_eq!(replayed_small.focus_text.len, 88);
-    assert_eq!(
-        replayed_small.focus_text.required,
-        typed_small.focus_text.required
-    );
-    assert_eq!(replayed_small.focus_text.len, typed_small.focus_text.len);
-}
-
-#[test]
-fn focus_storage_matrix_grows_before_publication_and_matches_direct() {
-    // Each prior reusable extent, including empty storage, produces complete
-    // first output from the original native headers. Fixed engine shortage
-    // behavior remains covered by cnational_focus_progress's fixed walk tests.
-    use focus_test_kit::Fixture;
-    let fixture = Fixture::world();
-    let memory = fixture.memory();
-    for (focus_rows, completed_rows, text) in [
-        (0, 0, 0),
-        (1, 1, 20),
-        (1, 2, 20),
-        (2, 3, 88),
-        (3, 4, 128),
-        (64, 64, 8192),
-    ] {
-        let mut caps = Capacities::default();
-        caps.rows[0] = focus_rows;
-        caps.rows[1] = completed_rows;
-        caps.focus_text = text;
-        let mut typed = Captured::with_capacities(&caps);
-        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        let mut replayed = Captured::with_capacities(&caps);
-        replayed.focus_raw_mode = true;
-        let (report, first) = Fixture::copy_first(&mut replayed, &memory);
-        assert!(
-            report.raw_ok,
-            "focus={focus_rows} completed={completed_rows}"
-        );
-        replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-        let mut ticks = [0; 2];
-        replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
-        Fixture::assert_matches_typed(&replayed, &typed);
-        assert_eq!(replayed.focus.outcome, Outcome::Rows { len: 2 });
-        assert_eq!(replayed.completed.outcome, Outcome::Rows { len: 3 });
-        assert_eq!(replayed.focus_text.len, 88);
-    }
-    // Exact-fit arm pins Rows on both tables.
-    let mut caps = Capacities::default();
-    caps.rows[0] = 2;
-    caps.rows[1] = 3;
-    caps.focus_text = 88;
-    let mut typed = Captured::with_capacities(&caps);
-    typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-    assert_eq!(typed.focus.outcome, Outcome::Rows { len: 2 });
-    assert_eq!(typed.completed.outcome, Outcome::Rows { len: 3 });
-}
-
-#[test]
-fn focus_copy_decode_matches_faults_with_identical_reasons() {
-    use focus_test_kit::Fixture;
-    // Null status root fails both tables with the same reason.
-    let mut broken = Fixture::world();
-    broken.w64(0x1_2000 + ccountry::FOCUS_PROGRESS, 0);
-    let memory = broken.memory();
-    let mut typed = Fixture::captured();
-    typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-    assert!(matches!(typed.focus.outcome, Outcome::Unavailable { .. }));
-    let mut replayed = Fixture::captured();
-    replayed.focus_raw_mode = true;
-    let (report, first) = Fixture::copy_first(&mut replayed, &memory);
-    assert!(report.raw_ok);
-    replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-    let mut ticks = [0; 2];
-    replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
-    assert_eq!(replayed.focus.outcome, typed.focus.outcome);
-    assert_eq!(replayed.completed.outcome, typed.completed.outcome);
-
-    // Vtable mismatch fails both tables together.
-    let mut broken = Fixture::world();
-    broken.w64(0x1_6000, 0);
-    let memory = broken.memory();
-    let mut typed = Fixture::captured();
-    typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-    let mut replayed = Fixture::captured();
-    replayed.focus_raw_mode = true;
-    let (_, first) = Fixture::copy_first(&mut replayed, &memory);
-    replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-    let mut ticks = [0; 2];
-    replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
-    assert_eq!(replayed.focus.outcome, typed.focus.outcome);
-    assert_eq!(replayed.completed.outcome, typed.completed.outcome);
-    assert!(matches!(
-        typed.focus.outcome,
-        Outcome::Unavailable {
-            reason: "focus status vtable mismatch"
-        }
-    ));
-
-    // A bad summary token fails only the summary; completions survive.
-    let mut broken = Fixture::world();
-    broken.w64(0x1_8200 + cnational_focus::TOKEN + 16, 99);
-    let memory = broken.memory();
-    let mut typed = Fixture::captured();
-    typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-    assert!(matches!(typed.focus.outcome, Outcome::Unavailable { .. }));
-    let mut replayed = Fixture::captured();
-    replayed.focus_raw_mode = true;
-    let (_, first) = Fixture::copy_first(&mut replayed, &memory);
-    replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-    let mut ticks = [0; 2];
-    replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
-    assert_eq!(replayed.focus.outcome, typed.focus.outcome);
-    assert_eq!(replayed.completed.outcome, typed.completed.outcome);
-    assert_eq!(typed.completed.outcome, Outcome::Rows { len: 3 });
-
-    // A null completed entry fails only the roster; the summary survives.
-    let mut broken = Fixture::world();
-    broken.w64(0x1_8800, 0);
-    let memory = broken.memory();
-    let mut typed = Fixture::captured();
-    typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-    assert_eq!(typed.focus.outcome, Outcome::Rows { len: 2 });
-    assert!(matches!(
-        typed.completed.outcome,
-        Outcome::Unavailable { .. }
-    ));
-    let mut replayed = Fixture::captured();
-    replayed.focus_raw_mode = true;
-    let (_, first) = Fixture::copy_first(&mut replayed, &memory);
-    replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-    let mut ticks = [0; 2];
-    replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
-    assert_eq!(replayed.focus.outcome, typed.focus.outcome);
-    assert_eq!(replayed.completed.outcome, typed.completed.outcome);
-}
-
-struct FocusReads<'a> {
-    memory: engine::memory::SliceMemory<'a>,
-    reads: std::cell::Cell<usize>,
-    fault: Option<usize>,
-    failed: std::cell::Cell<usize>,
-}
-
-impl Memory for FocusReads<'_> {
-    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        self.reads.set(self.reads.get() + 1);
-        if self.fault == Some(address) && self.failed.get() == 0 {
-            self.failed.set(1);
-            return false;
-        }
-        self.memory.copy(address, destination)
     }
 }
 
@@ -955,16 +743,19 @@ fn daily_governance_sources_keep_politics_and_research_siblings_independent() {
             assert_eq!(captured.parties.outcome, Outcome::Rows { len: 0 });
             // Ideas are hourly (replay::cadence).
             assert!(memory.0.ideas.get() > 0, "hour={hour}");
-            for (index, slot) in [(0, 19), (3, 11)] {
-                assert_eq!(
-                    counts[TABLES[index].index()].spans > 0,
-                    hour == slot,
-                    "table={:?} hour={hour}",
-                    TABLES[index]
-                );
+            // ResearchSlots reads on its daily slot.
+            let (index, slot) = (3, 11);
+            assert_eq!(
+                counts[TABLES[index].index()].spans > 0,
+                hour == slot,
+                "table={:?} hour={hour}",
+                TABLES[index]
+            );
+            // Technologies and focus are sliced; a new store reads every
+            // country at once.
+            for index in [0, 2] {
+                assert!(counts[TABLES[index].index()].spans > 0, "hour={hour}");
             }
-            // Technologies are sliced; a new store reads every country at once.
-            assert!(counts[TABLES[2].index()].spans > 0, "hour={hour}");
             for (index, outcome) in captured.outcomes().into_iter().enumerate() {
                 if !replay::cadence::should_walk(TABLES[index], hour, false) {
                     assert_eq!(
@@ -1047,8 +838,9 @@ fn failed_native_technology_name_does_not_request_deferred_arena_growth() {
     assert_eq!(captured.definition_text.first.capacity(), 0);
 }
 
-#[test]
-fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_order() {
+/// Countries 1 and 2 (`Fixture::world`), each with a two-technology roster
+/// reaching the same two templates.
+fn technology_fixture() -> focus_test_kit::Fixture {
     use focus_test_kit::{BASE, Fixture};
     let mut fixture = Fixture::world();
     for (owner, country) in [0x1_2000, 0x1_4000].into_iter().enumerate() {
@@ -1065,7 +857,7 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
             fixture.w32(status + ctechnology_status::TECHNOLOGIES_DATA + offset, 2);
         }
         for index in 0..2 {
-            let technology = 0x1_b000 + (owner * 2 + index) * 0x200;
+            let technology = fixture_technology(owner, index);
             let definition = index;
             let template = 0x1_c000 + definition * 0x600;
             fixture.w64(roster + index * 8, technology as u64);
@@ -1089,6 +881,41 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
         );
         fixture.w32(template + ctechnology_template::TECHNOLOGY_HANDLE, handle);
     }
+    fixture
+}
+
+/// Technology `index` of the `owner`th roster in [`technology_fixture`].
+fn fixture_technology(owner: usize, index: usize) -> usize {
+    0x1_b000 + (owner * 2 + index) * 0x200
+}
+
+/// Gives the `owner`th country of [`technology_fixture`] one authenticated
+/// research slot per technology in `assigned`, in that roster order, each
+/// with its roster position as its index.
+fn assign_slots(fixture: &mut focus_test_kit::Fixture, owner: usize, assigned: &[usize]) {
+    use focus_test_kit::BASE;
+    let status = 0x1_a000 + owner * 0x200;
+    let slots = 0x1_d000 + owner * 0x400;
+    let roster = status + ctechnology_status::RESEARCH_SLOTS_DATA;
+    fixture.w64(roster, slots as u64);
+    fixture.w32(roster + 8, assigned.len() as u32);
+    fixture.w32(roster + 12, assigned.len() as u32);
+    for (position, &technology) in assigned.iter().enumerate() {
+        let slot = slots + 0x100 + position * 0x80;
+        fixture.w64(slots + position * 8, slot as u64);
+        fixture.w64(slot, (BASE + cresearch_slot::VTABLE_RVA) as u64);
+        fixture.w32(slot + cresearch_slot::TECHNOLOGY_HANDLE, 0x8000_0001);
+        fixture.w64(slot + cresearch_slot::STATUS, status as u64);
+        fixture.w64(slot + cresearch_slot::TECHNOLOGY, technology as u64);
+        fixture.w64(slot + cresearch_slot::RESEARCH_SPEED, 100_000);
+        fixture.w32(slot + cresearch_slot::INDEX, position as u32);
+    }
+}
+
+#[test]
+fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_order() {
+    use focus_test_kit::BASE;
+    let fixture = technology_fixture();
     struct Reads<'a> {
         memory: engine::memory::SliceMemory<'a>,
         spans: std::cell::RefCell<Vec<(usize, usize)>>,
@@ -1111,13 +938,19 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
     captured.technology_selection = SliceSelection::new(true);
     captured.technology_selection.reset(0, true);
     let mut store = SliceFingerprints::new();
+    let changes = crate::country_input_changes::Domain::enabled(64);
     let result = acquire(
         &memory,
         BASE,
         0x1_0000,
         captured.buffers(),
         &enabled,
-        &mut store,
+        Slices {
+            technologies: &mut store,
+            focus: &mut SliceFingerprints::new(),
+            changes: &changes,
+        },
+        None,
     );
     assert_eq!(result.outcomes[2], Outcome::Rows { len: 4 });
     assert_eq!(result.outcomes[4], Outcome::Rows { len: 2 });
@@ -1162,6 +995,9 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
                         16
                     ))
                 .count(),
+            // The walk's read only: without the same pass's ResearchSlots
+            // rows (not enabled here) no roster is held, so the hold re-reads
+            // no identity.
             1
         );
         assert_eq!(
@@ -1181,19 +1017,45 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
         enabled: &[bool; N],
         (hour, force_full): (i32, bool),
         store: &mut SliceFingerprints,
+        changes: &crate::country_input_changes::Domain,
     ) -> (Vec<u32>, usize) {
+        crate::sampled_verify::begin_hour(hour);
         captured.technology_selection.reset(hour, force_full);
-        let result = acquire(memory, BASE, 0x1_0000, captured.buffers(), enabled, store);
+        let result = acquire(
+            memory,
+            BASE,
+            0x1_0000,
+            captured.buffers(),
+            enabled,
+            Slices {
+                technologies: store,
+                focus: &mut SliceFingerprints::new(),
+                changes,
+            },
+            None,
+        );
         let owners = captured.technologies.rows[..result.outcomes[2].len()]
             .iter()
             .map(|row| row.country)
             .collect();
         (owners, result.outcomes[4].len())
     }
+    // With the same pass's ResearchSlots rows a full hour holds both
+    // rosters, and country 1's slice carries its held roster, admitting no
+    // definition.
+    enabled[3] = true;
     let mut at = |hour, force_full, store: &mut SliceFingerprints| {
-        read(&mut captured, &memory, &enabled, (hour, force_full), store)
+        read(
+            &mut captured,
+            &memory,
+            &enabled,
+            (hour, force_full),
+            store,
+            &changes,
+        )
     };
-    assert_eq!(at(1, false, &mut store), (vec![1, 1], 2));
+    assert_eq!(at(1, true, &mut store), (vec![1, 1, 2, 2], 2));
+    assert_eq!(at(25, false, &mut store), (vec![1, 1], 0));
     assert_eq!(at(3, false, &mut store), (vec![], 0));
     // An unpublished full hour is read again at the next hour.
     assert_eq!(at(4, true, &mut store), (vec![1, 1, 2, 2], 2));
@@ -1202,7 +1064,15 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
     assert!(selection.live(1) && selection.live(2) && !selection.live(3));
     selection.invalidate(&mut store);
     let mut at = |hour, force_full, store: &mut SliceFingerprints| {
-        read(&mut captured, &memory, &enabled, (hour, force_full), store).0
+        read(
+            &mut captured,
+            &memory,
+            &enabled,
+            (hour, force_full),
+            store,
+            &changes,
+        )
+        .0
     };
     assert_eq!(at(5, false, &mut store), [1, 1, 2, 2]);
     assert!(at(6, false, &mut store).is_empty());
@@ -1211,248 +1081,551 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
     assert_eq!(at(7, false, &mut store), [1, 1, 2, 2]);
 }
 
+/// A hooked technology writer's mark reads its country within the hour,
+/// alone. Daily progress moves without a mark and the country's slice
+/// carries its held roster with its assigned technologies' progress read
+/// afresh; a level written
+/// without a mark is a missed writer: the slice whose sampled comparison
+/// covers the country reads it whole and disables reuse, and every country
+/// is read from then on.
 #[test]
-fn inactive_focus_bypasses_owned_capacity_and_decode_preflights() {
-    use focus_test_kit::{BASE, Fixture};
-    let fixture = Fixture::world();
-    let memory = FocusReads {
-        memory: fixture.memory(),
-        reads: Default::default(),
-        fault: Some(0x1_6000),
-        failed: Default::default(),
-    };
-    for hour in 0..24 {
-        if replay::cadence::should_walk(TableId::Focus, hour, false) {
-            continue;
-        }
-        let mut job = FocusJob::default();
-        let report = copy_focus_refresh(
-            &memory,
-            FocusCopyContext {
-                base: BASE,
-                game_state: 0x1_0000,
-                active: false,
-                rows: [usize::MAX; 2],
-                bytes: usize::MAX,
+fn a_marked_technology_roster_is_read_within_the_hour_and_an_unmarked_change_poisons() {
+    use crate::country_input_changes::{Domain, Table};
+    let mut fixture = technology_fixture();
+    assign_slots(&mut fixture, 0, &[fixture_technology(0, 0)]);
+    let changes = Domain::enabled(64);
+    let mut captured = Captured::vacant();
+    let mut enabled = [false; N];
+    enabled[2] = true;
+    enabled[3] = true;
+    enabled[4] = true;
+    let mut store = SliceFingerprints::new();
+    let mut at = |fixture: &focus_test_kit::Fixture, hour: i32| {
+        crate::sampled_verify::begin_hour(hour);
+        captured.technology_selection.reset(hour, false);
+        let result = acquire(
+            &fixture.memory(),
+            focus_test_kit::BASE,
+            0x1_0000,
+            captured.buffers(),
+            &enabled,
+            Slices {
+                technologies: &mut store,
+                focus: &mut SliceFingerprints::new(),
+                changes: &changes,
             },
-            &mut job,
+            None,
         );
-        assert!(report.raw_ok);
-        assert_eq!(report.copy_ticks, [0; 2]);
-        assert_eq!(memory.reads.get(), 0);
-        let mut captured = Fixture::captured();
-        captured.politics.outcome = Outcome::Rows { len: 1 };
-        let mut ticks = [0; 2];
-        captured.decode_focus_payload(BASE, &job, &mut ticks);
-        assert_eq!(ticks, [0; 2]);
-        assert_eq!(
-            captured.focus.outcome,
-            Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON
-            }
-        );
-        assert_eq!(captured.completed.outcome, captured.focus.outcome);
-        assert_eq!(captured.politics.outcome, Outcome::Rows { len: 1 });
-    }
-}
-
-#[test]
-fn focus_cold_worker_storage_preserves_native_faults_without_deferred_retry() {
-    use focus_test_kit::{BASE, Fixture};
-    let fixture = Fixture::world();
-    let memory = engine::memory::CountedMemory::new(FocusReads {
-        memory: fixture.memory(),
-        reads: Default::default(),
-        fault: Some(0x1_6000),
-        failed: Default::default(),
-    });
-    let mut captured = Fixture::captured();
-    let ctx = captured.focus_copy_context(BASE, 0x1_0000, true);
-    let mut job = FocusJob::new();
-    assert_eq!(job.capacities(), ([0; 2], 0));
-    let native = read_accounting::Capture::new();
-    let report = copy_focus_refresh(&memory, ctx, &mut job);
-    assert!(report.raw_ok);
-    assert!(native.finish()[TABLES[0].index()].spans > 0);
-    assert_eq!(memory.0.failed.get(), 1);
-    let reads = memory.0.reads.get();
-    captured.decode_focus_payload(BASE, &job, &mut [0; 2]);
-    assert_eq!(memory.0.reads.get(), reads);
-    assert_eq!(memory.0.failed.get(), 1);
-    assert!(matches!(
-        captured.focus.outcome,
-        Outcome::Unavailable { .. }
-    ));
-    assert_eq!(captured.completed.outcome, captured.focus.outcome);
-    assert!(!job.grow_for_next());
-    job.clear();
-    assert!(job.is_provisioned());
-    assert_eq!(job.outcomes, [None; 2]);
-}
-
-#[test]
-fn fixed_focus_prepare_refuses_unprovisioned_storage_before_any_source_read() {
-    use focus_test_kit::{BASE, Fixture};
-    let fixture = Fixture::world();
-    let memory = FocusReads {
-        memory: fixture.memory(),
-        reads: Default::default(),
-        fault: Some(0x1_6000),
-        failed: Default::default(),
+        let rows = captured.technologies.rows[..result.outcomes[2].len()].to_vec();
+        let mut owners: Vec<u32> = rows.iter().map(|row| row.country).collect();
+        owners.dedup();
+        (owners, rows)
     };
-    let captured = Fixture::captured();
-    let ctx = captured.focus_copy_context(BASE, 0x1_0000, true);
-    let native = read_accounting::Capture::new();
-    let mut job = FocusJob::default();
-    let prepared = job.prepare(ctx.rows, ctx.bytes);
-    if prepared {
-        copy_focus_pass(&mut job, &memory, ctx.base, ctx.game_state, &mut [0; 2]);
-    }
-    assert!(!prepared);
-    assert_eq!(native.finish(), read_accounting::ZERO);
-    assert_eq!(memory.reads.get(), 0);
-    assert_eq!(memory.failed.get(), 0);
-}
-
-#[test]
-fn focus_refresh_reads_one_pass_and_owned_decode_never_reads_live_memory() {
-    use focus_test_kit::{BASE, Fixture};
-    let fixture = Fixture::world();
-    let source = engine::memory::CountedMemory::new(FocusReads {
-        memory: fixture.memory(),
-        reads: Default::default(),
-        fault: None,
-        failed: Default::default(),
-    });
-    let reference = engine::memory::CountedMemory::new(FocusReads {
-        memory: fixture.memory(),
-        reads: Default::default(),
-        fault: None,
-        failed: Default::default(),
-    });
-    let mut captured = Fixture::captured();
-    let ctx = captured.focus_copy_context(BASE, 0x1_0000, true);
-    let mut expected = FocusJob::new();
-    assert!(expected.prepare(ctx.rows, ctx.bytes));
-    let native = read_accounting::Capture::new();
-    copy_focus_pass(&mut expected, &reference, BASE, 0x1_0000, &mut [0; 2]);
-    let expected_counts = native.finish();
-    let mut job = FocusJob::new();
-    let native = read_accounting::Capture::new();
-    let report = copy_focus_refresh(&source, ctx, &mut job);
-    assert!(report.raw_ok);
-    assert!(source.0.reads.get() > 0);
-    assert_eq!(source.0.reads.get(), reference.0.reads.get());
-    assert_eq!(read_accounting::snapshot(), expected_counts);
-    let mut anchored = read_accounting::ZERO;
-    anchored[TABLES[0].index()] = expected_counts[TABLES[0].index()];
-    assert!(anchored[TABLES[0].index()].spans > 0);
-    assert_eq!(expected_counts, anchored);
-    assert_eq!(job.outcomes, expected.outcomes);
-    assert_eq!(&job.rows[..2], &expected.rows[..2]);
-    assert_eq!(&job.completed[..3], &expected.completed[..3]);
-    assert_eq!(
-        &job.bytes[..job.bytes_len],
-        &expected.bytes[..expected.bytes_len]
+    // Nothing held yet: every country is read, outside its slice.
+    assert_eq!(at(&fixture, 5).0, [1, 2]);
+    assert!(at(&fixture, 6).0.is_empty());
+    // A level setter marks country 2: read at once, then not again.
+    changes.write(Table::Technologies, 2);
+    assert_eq!(at(&fixture, 7).0, [2]);
+    assert!(at(&fixture, 8).0.is_empty());
+    // A research writer leaves the technology rows alone.
+    changes.write(Table::Research, 1);
+    changes.write_every(Table::Research);
+    assert!(at(&fixture, 9).0.is_empty());
+    // Daily progress moves unmarked on the technology a slot researches:
+    // slice 1 carries the roster with that progress read afresh.
+    fixture.w64(
+        fixture_technology(0, 0) + ctechnology::LIVE_PROGRESS,
+        260_000,
     );
-    let reads = source.0.reads.get();
-    captured.decode_focus_payload(BASE, &job, &mut [0; 2]);
-    assert_eq!(source.0.reads.get(), reads);
-    assert_eq!(native.finish(), expected_counts);
-    assert_eq!(captured.focus.outcome, Outcome::Rows { len: 2 });
-    assert_eq!(captured.completed.outcome, Outcome::Rows { len: 3 });
-    assert_eq!(&captured.focus.rows[..2], &job.rows[..2]);
-    assert_eq!(&captured.completed.rows[..3], &job.completed[..3]);
+    let (owners, rows) = at(&fixture, 25);
+    assert_eq!(owners, [1]);
+    assert_eq!(rows[0].progress_raw, 260_000);
+    assert!(!changes.poisoned(Table::Technologies));
+    // A level changed with no mark is not read early, and slice 2 carries
+    // the held level.
+    fixture.w32(fixture_technology(1, 1) + ctechnology::LEVEL, 3);
+    assert!(at(&fixture, 27).0.is_empty());
+    let (owners, rows) = at(&fixture, 50);
+    assert_eq!(owners, [2]);
+    assert_eq!(rows[1].level, 0);
+    assert!(!changes.poisoned(Table::Technologies));
+    // The slice whose sampled comparison covers country 2 finds it.
+    assert_eq!(at(&fixture, 2 + 576).0, [2]);
+    assert!(changes.poisoned(Table::Technologies));
+    assert_eq!(at(&fixture, 3 + 576).0, [1, 2]);
 }
 
+/// One hour's focus read through the family's stores: the countries whose
+/// rows it returned, in census order.
+fn focus_hour(
+    captured: &mut Captured,
+    fixture: &focus_test_kit::Fixture,
+    hour: i32,
+    store: &mut SliceFingerprints,
+    changes: &crate::country_input_changes::Domain,
+) -> Vec<u32> {
+    let mut enabled = [false; N];
+    enabled[0] = true;
+    enabled[1] = true;
+    captured.focus_selection.reset_daily(hour, false);
+    let result = acquire(
+        &fixture.memory(),
+        focus_test_kit::BASE,
+        0x1_0000,
+        captured.buffers(),
+        &enabled,
+        Slices {
+            technologies: &mut SliceFingerprints::new(),
+            focus: store,
+            changes,
+        },
+        None,
+    );
+    assert!(matches!(result.outcomes[1], Outcome::Rows { .. }));
+    captured.focus.rows[..result.outcomes[0].len()]
+        .iter()
+        .map(|row| row.country)
+        .collect()
+}
+
+/// A country that owns no state runs no daily focus step
+/// (daily country update returns first), so the boundary does
+/// not read it; whether it owns one is checked at the boundary, which reads
+/// a country that gained or lost its last state since the previous one.
 #[test]
-fn focus_native_faults_are_terminal_and_decode_cannot_retry_sources() {
-    use focus_test_kit::{BASE, Fixture};
-    let fixture = Fixture::world();
-    for (fault, unavailable) in [
-        (0x1_0000 + engine::cgame_state::COUNTRIES, [true, true]),
-        (0x1_6000, [true, true]),
-        (0x1_6000 + cnational_focus_progress::PROGRESS, [true, false]),
-        (0x1_8800, [false, true]),
-        (0x1_8a00, [false, true]),
-    ] {
-        let memory = FocusReads {
+fn the_focus_boundary_reads_only_countries_owning_a_state() {
+    use crate::country_input_changes::Domain;
+    use focus_test_kit::C2;
+    let mut fixture = focus_test_kit::Fixture::world();
+    let changes = Domain::enabled(64);
+    let mut captured = focus_test_kit::Fixture::captured();
+    let mut store = SliceFingerprints::new();
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 5, &mut store, &changes),
+        [1, 2]
+    );
+    // Country 2 loses its last state: nothing until the boundary, which
+    // reads it once for the change, then the next boundary skips it.
+    fixture.w32(C2 + ccountry::OWNED_STATE_COUNT, 0);
+    assert!(focus_hour(&mut captured, &fixture, 6, &mut store, &changes).is_empty());
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 24, &mut store, &changes),
+        [1, 2]
+    );
+    assert!(focus_hour(&mut captured, &fixture, 25, &mut store, &changes).is_empty());
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 48, &mut store, &changes),
+        [1]
+    );
+    // It gains a state: read at the next boundary.
+    fixture.w32(C2 + ccountry::OWNED_STATE_COUNT, 3);
+    assert!(focus_hour(&mut captured, &fixture, 50, &mut store, &changes).is_empty());
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 72, &mut store, &changes),
+        [1, 2]
+    );
+}
+
+/// Focus is read for every country at the first hour after the daily tick,
+/// which advances every country's progress, and between those only for the
+/// countries a hooked focus writer marked: a selection made at hour 5 is
+/// read at the next hour, not at the next day. Daily progress compares equal
+/// at the boundary; a selection no hook saw disables reuse there.
+#[test]
+fn focus_is_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
+    use crate::country_input_changes::{Domain, Table};
+    use engine::cnational_focus_progress as progress;
+    use focus_test_kit::{FC2, R1, R2};
+    let mut fixture = focus_test_kit::Fixture::world();
+    let changes = Domain::enabled(64);
+    let mut captured = focus_test_kit::Fixture::captured();
+    let mut store = SliceFingerprints::new();
+    // Nothing held: every country, off the boundary too.
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 5, &mut store, &changes),
+        [1, 2]
+    );
+    // No rotating slice: a quiet hour reads nobody, country 1's slot too.
+    assert!(focus_hour(&mut captured, &fixture, 1, &mut store, &changes).is_empty());
+    assert!(focus_hour(&mut captured, &fixture, 6, &mut store, &changes).is_empty());
+    // A selection marks country 2: read at the next hour, alone.
+    fixture.w64(R2 + progress::PROGRESS, 4_000);
+    changes.write(Table::Focus, 2);
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 7, &mut store, &changes),
+        [2]
+    );
+    assert_eq!(captured.focus.rows[0].progress, 4_000);
+    assert!(focus_hour(&mut captured, &fixture, 8, &mut store, &changes).is_empty());
+    // The daily tick advances both countries' progress: every country is
+    // read at the boundary, and the unmarked progress compares equal.
+    fixture.w64(R1 + progress::PROGRESS, 99_000);
+    fixture.w64(R2 + progress::PROGRESS, 9_000);
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 24, &mut store, &changes),
+        [1, 2]
+    );
+    assert_eq!(captured.focus.rows[0].progress, 99_000);
+    assert!(!changes.poisoned(Table::Focus));
+    // A selection no hook marked waits for the boundary, whose comparison
+    // disables reuse; every country is read from then on.
+    fixture.w64(R1 + progress::CURRENT, FC2 as u64);
+    assert!(focus_hour(&mut captured, &fixture, 25, &mut store, &changes).is_empty());
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 48, &mut store, &changes),
+        [1, 2]
+    );
+    assert!(changes.poisoned(Table::Focus));
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 49, &mut store, &changes),
+        [1, 2]
+    );
+}
+
+/// A drifting country no writer marked is carried at its slice: of its
+/// roster only the status, roster and slot headers, its slots and their
+/// assigned technology's progress are read, and its rows equal a full read
+/// of the same memory. Before, the slice read every technology's fields and
+/// template again.
+#[test]
+fn an_unmarked_technology_slice_reads_only_progress() {
+    use crate::country_input_changes::Domain;
+    let mut fixture = technology_fixture();
+    let changes = Domain::enabled(64);
+    let mut captured = Captured::vacant();
+    let mut enabled = [false; N];
+    enabled[2] = true;
+    enabled[3] = true;
+    enabled[4] = true;
+    let mut store = SliceFingerprints::new();
+    struct Reads<'a> {
+        memory: engine::memory::SliceMemory<'a>,
+        addresses: std::cell::RefCell<Vec<usize>>,
+    }
+    impl Memory for Reads<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.addresses.borrow_mut().push(address);
+            self.memory.copy(address, destination)
+        }
+    }
+    let mut at = |fixture: &focus_test_kit::Fixture, hour: i32| {
+        crate::sampled_verify::begin_hour(hour);
+        captured.technology_selection.reset(hour, false);
+        let memory = Reads {
             memory: fixture.memory(),
-            reads: Default::default(),
-            fault: Some(fault),
-            failed: Default::default(),
+            addresses: Default::default(),
         };
-        let mut captured = Fixture::captured();
-        let (report, first) = Fixture::copy_first(&mut captured, &memory);
-        assert!(report.raw_ok);
-        assert_eq!(memory.failed.get(), 1);
-        let reads = memory.reads.get();
-        captured.focus_raw_mode = true;
-        captured.decode_focus_payload(BASE, &first, &mut [0; 2]);
-        assert_eq!(memory.reads.get(), reads);
-        assert!(!captured.focus_raw_mode);
-        for (slot, outcome) in [captured.focus.outcome, captured.completed.outcome]
-            .into_iter()
-            .enumerate()
+        let result = acquire(
+            &memory,
+            focus_test_kit::BASE,
+            0x1_0000,
+            captured.buffers(),
+            &enabled,
+            Slices {
+                technologies: &mut store,
+                focus: &mut SliceFingerprints::new(),
+                changes: &changes,
+            },
+            None,
+        );
+        let rows = captured.technologies.rows[..result.outcomes[2].len()].to_vec();
+        (rows, memory.addresses.into_inner())
+    };
+    // Country 1's one research slot is assigned its second technology.
+    assign_slots(&mut fixture, 0, &[fixture_technology(0, 1)]);
+    // The first hour reads and holds both rosters.
+    at(&fixture, 5);
+    fixture.w64(
+        fixture_technology(0, 1) + ctechnology::LIVE_PROGRESS,
+        310_000,
+    );
+    let (carried, addresses) = at(&fixture, 25);
+    // The unassigned technology and the definitions are not read at all;
+    // the assigned one only by the ResearchSlots walk and its progress.
+    let unassigned = fixture_technology(0, 0);
+    assert!(
+        addresses.iter().all(|&address| {
+            !(unassigned..unassigned + 0x200).contains(&address)
+                && (0..2).all(|template| {
+                    address != 0x1_c000 + template * 0x600 + ctechnology_template::ID
+                })
+        }),
+        "a carried slice reads no unassigned technology and no definition"
+    );
+    assert_eq!(carried.len(), 2);
+    assert_eq!(carried[1].progress_raw, 310_000);
+    // The same rows as a full read of the same memory.
+    let (full, _) = at(&fixture, 2 * 576 + 1);
+    assert_eq!(carried, full);
+}
+
+/// Memory that fails reads of `address` while `remaining` lasts, recording
+/// the progress reads in order.
+struct Faulty<'a> {
+    memory: engine::memory::SliceMemory<'a>,
+    address: usize,
+    remaining: std::cell::Cell<u32>,
+    progress: std::cell::RefCell<Vec<usize>>,
+}
+
+impl Memory for Faulty<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        if (address & 0xff) == ctechnology::LIVE_PROGRESS & 0xff
+            && (0x1_b000..0x1_b800).contains(&address)
         {
-            assert_eq!(
-                matches!(outcome, Outcome::Unavailable { .. }),
-                unavailable[slot]
-            );
+            self.progress.borrow_mut().push(address);
         }
+        if address == self.address && self.remaining.get() != 0 {
+            self.remaining.set(self.remaining.get() - 1);
+            return false;
+        }
+        self.memory.copy(address, destination)
     }
 }
 
+/// A carried roster reads its assigned technologies' progress in roster
+/// order, whatever the slots' order. A progress read that fails is the
+/// country's failure when its bounded serial fallback also fails. The
+/// relaxed read-order rule permits a gather to consume a transient fault
+/// and publish the successful serial fallback's rows.
 #[test]
-fn focus_install_rejects_short_owned_payloads_and_keeps_unaffected_table() {
-    use focus_test_kit::{BASE, Fixture};
-    let fixture = Fixture::world();
-    for changed in 0..3 {
-        let mut captured = Fixture::captured();
-        let (_, mut first) = Fixture::copy_first(&mut captured, &fixture.memory());
-        match changed {
-            0 => {
-                first.rows.truncate(first.outcomes[0].unwrap().len() - 1);
-            }
-            1 => {
-                first
-                    .completed
-                    .truncate(first.outcomes[1].unwrap().len() - 1);
-            }
-            _ => {
-                first.bytes.truncate(first.bytes_len - 1);
-            }
-        }
-        captured.decode_focus_payload(BASE, &first, &mut [0; 2]);
-        assert_eq!(
-            matches!(captured.focus.outcome, Outcome::Unavailable { .. }),
-            changed != 1
+fn a_carried_roster_reads_progress_in_roster_order_and_keeps_a_persistent_failure() {
+    use crate::country_input_changes::Domain;
+    let mut fixture = technology_fixture();
+    // Slot 0 researches the second technology, slot 1 the first.
+    assign_slots(
+        &mut fixture,
+        0,
+        &[fixture_technology(0, 1), fixture_technology(0, 0)],
+    );
+    let changes = Domain::enabled(64);
+    let mut captured = Captured::vacant();
+    let mut enabled = [false; N];
+    enabled[2] = true;
+    enabled[3] = true;
+    enabled[4] = true;
+    let mut store = SliceFingerprints::new();
+    let mut at = |fixture: &focus_test_kit::Fixture, hour: i32, address: usize, faults: u32| {
+        crate::sampled_verify::begin_hour(hour);
+        captured.technology_selection.reset(hour, false);
+        let memory = Faulty {
+            memory: fixture.memory(),
+            address,
+            remaining: std::cell::Cell::new(faults),
+            progress: Default::default(),
+        };
+        let result = acquire(
+            &memory,
+            focus_test_kit::BASE,
+            0x1_0000,
+            captured.buffers(),
+            &enabled,
+            Slices {
+                technologies: &mut store,
+                focus: &mut SliceFingerprints::new(),
+                changes: &changes,
+            },
+            None,
         );
-        assert_eq!(
-            matches!(captured.completed.outcome, Outcome::Unavailable { .. }),
-            changed != 0
-        );
-    }
+        (result.outcomes[2], memory.progress.into_inner())
+    };
+    // Held at hour 5.
+    assert!(matches!(at(&fixture, 5, 0, 0).0, Outcome::Rows { .. }));
+    let first = fixture_technology(0, 0) + ctechnology::LIVE_PROGRESS;
+    let second = fixture_technology(0, 1) + ctechnology::LIVE_PROGRESS;
+    // Slice 1 carries: the first technology's progress before the second's
+    // (the ResearchSlots walk then reads them in slot order).
+    let (outcome, progress) = at(&fixture, 25, 0, 0);
+    assert_eq!(outcome, Outcome::Rows { len: 2 });
+    assert_eq!(progress[..2], [first, second]);
+    // A transient gather fault is consumed; the one serial fallback succeeds.
+    let (outcome, progress) = at(&fixture, 49, first, 1);
+    assert_eq!(outcome, Outcome::Rows { len: 2 });
+    assert_eq!(progress[..3], [first, first, second]);
+    // The held country remains usable, but a persistent fault still fails.
+    let (outcome, _) = at(&fixture, 73, first, u32::MAX);
+    assert!(
+        matches!(outcome, Outcome::Unavailable { .. }),
+        "{outcome:?}"
+    );
 }
 
+/// A persistent fault at each operand a carried roster of country 1 reads
+/// (its status pointer and identity, roster header and assigned
+/// technology's progress) gives the carried slice exactly the
+/// ResearchTechnologies outcome a full read meets at the same fault.
 #[test]
-fn focus_pair_uses_daily_slot_nineteen() {
-    for hour in -24_i32..48 {
-        assert_eq!(
-            replay::cadence::should_walk(TableId::Focus, hour, false),
-            hour.rem_euclid(24) == 19,
-            "hour {hour}"
+fn a_carried_roster_fails_as_the_full_walk_at_each_fault() {
+    use crate::country_input_changes::Domain;
+    let mut fixture = technology_fixture();
+    assign_slots(&mut fixture, 0, &[fixture_technology(0, 1)]);
+    let status = 0x1_a000;
+    let faults = [
+        0x1_2000 + ccountry::TECHNOLOGY_STATUS,
+        status,
+        status + ctechnology_status::COUNTRY,
+        status + ctechnology_status::TECHNOLOGIES_DATA,
+        fixture_technology(0, 1) + ctechnology::LIVE_PROGRESS,
+    ];
+    let capture = |store: &mut SliceFingerprints,
+                   changes: &Domain,
+                   (hour, force_full): (i32, bool),
+                   (address, remaining): (usize, u32)| {
+        crate::sampled_verify::begin_hour(hour);
+        let mut captured = Captured::vacant();
+        let mut enabled = [false; N];
+        enabled[2] = true;
+        enabled[3] = true;
+        enabled[4] = true;
+        captured.technology_selection.reset(hour, force_full);
+        let memory = Faulty {
+            memory: fixture.memory(),
+            address,
+            remaining: std::cell::Cell::new(remaining),
+            progress: Default::default(),
+        };
+        acquire(
+            &memory,
+            focus_test_kit::BASE,
+            0x1_0000,
+            captured.buffers(),
+            &enabled,
+            Slices {
+                technologies: store,
+                focus: &mut SliceFingerprints::new(),
+                changes,
+            },
+            None,
+        )
+        .outcomes[2]
+    };
+    for address in faults {
+        let full = capture(
+            &mut SliceFingerprints::new(),
+            &Domain::enabled(64),
+            (0, true),
+            (address, u32::MAX),
         );
-        assert_eq!(
-            replay::cadence::should_walk(TableId::CompletedFocuses, hour, false),
-            hour.rem_euclid(24) == 19,
-            "hour {hour}"
+        assert!(
+            matches!(full, Outcome::Unavailable { .. }),
+            "{address:#x}: {full:?}"
         );
-        assert!(replay::cadence::should_walk(TableId::Focus, hour, true));
-        assert!(replay::cadence::should_walk(
-            TableId::CompletedFocuses,
-            hour,
-            true
+        let changes = Domain::enabled(64);
+        let mut store = SliceFingerprints::new();
+        assert!(matches!(
+            capture(&mut store, &changes, (5, false), (0, 0)),
+            Outcome::Rows { .. }
         ));
+        let carried = capture(&mut store, &changes, (25, false), (address, u32::MAX));
+        assert_eq!(carried, full, "{address:#x}");
+    }
+}
+
+/// Memory that fails the `nth` read (from one) of `address`, and every later
+/// read when `persistent` is set, counting every read of it.
+struct NthFault<'a> {
+    memory: engine::memory::SliceMemory<'a>,
+    address: usize,
+    nth: u32,
+    persistent: bool,
+    reads: std::cell::Cell<u32>,
+}
+
+impl Memory for NthFault<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        if address == self.address {
+            let read = self.reads.get() + 1;
+            self.reads.set(read);
+            if read == self.nth || (self.persistent && read > self.nth) {
+                return false;
+            }
+        }
+        self.memory.copy(address, destination)
+    }
+}
+
+/// Two research slots assigned one technology: the carried roster reads
+/// its progress once, as the full walk's roster row does, so the progress
+/// reads give the carried slice the full walk's outcomes. Under the relaxed
+/// rule, the slot gather may consume a one-shot second-read fault and publish
+/// its successful fallback; a persistent second-read fault still refuses
+/// ResearchSlots. The carried technology roster itself reads progress once.
+#[test]
+fn two_slots_on_one_technology_read_its_progress_once_in_the_carried_roster() {
+    use crate::country_input_changes::Domain;
+    let mut fixture = technology_fixture();
+    let shared = fixture_technology(0, 1);
+    assign_slots(&mut fixture, 0, &[shared, shared]);
+    let progress = shared + ctechnology::LIVE_PROGRESS;
+    let capture = |store: &mut SliceFingerprints,
+                   changes: &Domain,
+                   (hour, force_full): (i32, bool),
+                   (nth, persistent): (u32, bool)| {
+        crate::sampled_verify::begin_hour(hour);
+        let mut captured = Captured::vacant();
+        let mut enabled = [false; N];
+        enabled[2] = true;
+        enabled[3] = true;
+        enabled[4] = true;
+        captured.technology_selection.reset(hour, force_full);
+        let memory = NthFault {
+            memory: fixture.memory(),
+            address: progress,
+            nth,
+            persistent,
+            reads: std::cell::Cell::new(0),
+        };
+        let outcomes = acquire(
+            &memory,
+            focus_test_kit::BASE,
+            0x1_0000,
+            captured.buffers(),
+            &enabled,
+            Slices {
+                technologies: store,
+                focus: &mut SliceFingerprints::new(),
+                changes,
+            },
+            None,
+        )
+        .outcomes;
+        (outcomes[2..4].to_vec(), memory.reads.get())
+    };
+    for (nth, persistent) in [(0, false), (2, false), (2, true)] {
+        let (full, full_reads) = capture(
+            &mut SliceFingerprints::new(),
+            &Domain::enabled(64),
+            (0, true),
+            (nth, persistent),
+        );
+        let changes = Domain::enabled(64);
+        let mut store = SliceFingerprints::new();
+        let (held, _) = capture(&mut store, &changes, (5, false), (0, false));
+        assert!(
+            held.iter()
+                .all(|outcome| matches!(outcome, Outcome::Rows { .. }))
+        );
+        let (carried, carried_reads) =
+            capture(&mut store, &changes, (25, false), (nth, persistent));
+        assert_eq!(carried_reads, full_reads, "progress reads, fault {nth}");
+        // A slice hour publishes only its countries' technology rows, so
+        // complete ResearchTechnologies rows differ in length from the full
+        // hour's; any other outcome must be the full walk's. ResearchSlots is
+        // walked whole in both.
+        match (full[0], carried[0]) {
+            (Outcome::Rows { .. }, Outcome::Rows { .. }) => {}
+            (full, carried) => assert_eq!(carried, full, "fault {nth}"),
+        }
+        assert!(matches!(carried[0], Outcome::Rows { .. }), "{carried:?}");
+        assert_eq!(carried[1], full[1], "fault {nth}");
+        if persistent {
+            assert!(
+                matches!(carried[1], Outcome::Unavailable { .. }),
+                "{carried:?}"
+            );
+        } else {
+            assert!(matches!(carried[1], Outcome::Rows { .. }), "{carried:?}");
+        }
     }
 }

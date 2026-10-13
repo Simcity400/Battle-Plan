@@ -43,6 +43,24 @@ impl crate::Memory for Observed<'_> {
         success
     }
 
+    // The relaxed read-order rule allows speed to move to copy_records.
+    // Count both guarded APIs: one route scatter and one speed gather.
+    fn copy_records(
+        &self,
+        sources: crate::memory::RecordSources<'_>,
+        layout: &crate::memory::RecordLayout<'_>,
+        output: &mut [u8],
+    ) -> usize {
+        self.batches.set(self.batches.get() + 1);
+        struct Scalar<'a, 'b>(&'a Observed<'b>);
+        impl crate::Memory for Scalar<'_, '_> {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                self.0.copy(at, out)
+            }
+        }
+        crate::Memory::copy_records(&Scalar(self), sources, layout, output)
+    }
+
     fn copy_scattered<const N: usize>(
         &self,
         addresses: [usize; N],
@@ -317,9 +335,9 @@ fn packet_pair_failures_keep_primary_arena_prefixes_and_admission() {
     let packet = capture(&success, 1, 4);
     assert_eq!(packet.outcome().outcome, Outcome::Rows { len: 1 });
     assert_eq!(packet.paths, [1, 1, 77, 88]);
-    // One record gather; movement capture acquires records without pairing
-    // route endpoints.
-    assert_eq!(success.batches.get(), 1);
+    // One route scatter, plus the moving division's stat-block identity
+    // and base speed in one records gather (per the relaxed read-order rule).
+    assert_eq!(success.batches.get(), 2);
     let trace = success.reads.borrow().clone();
     for (address, width, expected_paths, reason) in [
         (0x16000, 8, vec![0, 0, 0, 0], "movement route unreadable"),

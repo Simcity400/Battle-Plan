@@ -455,11 +455,15 @@ fn revoke_active_observation() {
     }
 }
 pub fn lost_drain() {
+    #[cfg(test)]
+    if !tests::owns_observation() {
+        return;
+    }
     LOST.fetch_add(1, Ordering::Relaxed);
     poison();
 }
 
-/// Allocate only before enabling, or on the spool thread. Grow from live
+/// Allocate only before enabling, or on the spool's sizing thread. Grow from live
 /// country, division and saved design censuses, per native event family. These
 /// are admission allowances, not per-hour native bounds: repeat bursts can
 /// overflow and then explicitly withhold the table. Build new storage before
@@ -956,9 +960,12 @@ struct Call {
     _admission: Admission,
     unsettled: bool,
     returned: Cell<bool>,
+    // Last field: it drops after the admission and records the whole callback.
+    timing: crate::hook_timing::Span,
 }
 impl Call {
     fn enter(site: SiteId) -> Self {
+        let timing = crate::hook_timing::enter(crate::hook_timing::Family::EquipmentDestruction);
         let admission = Admission::enter();
         ACTIVE[site as usize].fetch_add(1, Ordering::SeqCst);
         CALLS[site as usize].fetch_add(1, Ordering::Relaxed);
@@ -975,12 +982,13 @@ impl Call {
             _admission: admission,
             unsettled: false,
             returned: Cell::new(false),
+            timing,
         }
     }
 }
 impl Call {
     fn run<T>(&self, original: impl FnOnce() -> T) -> T {
-        let result = original();
+        let result = self.timing.original(original);
         self.returned.set(true);
         result
     }
@@ -1214,10 +1222,21 @@ fn pool_after(
     let after = snapshot(memory, base, pool, &mut store.after, 0)?;
     let mut failure = None;
     let entries = &mut store.entries;
+    // A strike's division and wing pool changes are forwarded to the nuclear
+    // strike family ([`crate::nuclear_strikes::equipment`]).
+    let strike = matches!(site, SiteId::Land | SiteId::Air);
     native::removals(
         &mut store.before[..len],
         &mut store.after[..after],
         |variant, amount_raw| {
+            if strike {
+                crate::nuclear_strikes::equipment(
+                    site == SiteId::Air,
+                    country,
+                    variant,
+                    amount_raw,
+                );
+            }
             if let Err(reason) = append_entry(
                 entries,
                 site,
@@ -1235,7 +1254,13 @@ fn pool_after(
             }
         },
     )?;
-    failure.map_or(Ok(()), Err)
+    if let Some(reason) = failure {
+        return Err(reason);
+    }
+    if strike {
+        crate::nuclear_strikes::equipment_observed();
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1306,6 +1331,11 @@ unsafe extern "system-unwind" fn land(
     caller: usize,
 ) {
     let _call = Call::enter(SiteId::Land);
+    // Zero damage changes no pool (land damage writer scales only a
+    // nonzero amount), so only a damaging call must be observed.
+    let _strike = (b != 0)
+        .then(|| crate::nuclear_strikes::equipment_call(None))
+        .flatten();
     let original: ArmyFn =
         unsafe { std::mem::transmute(ORIGINAL[SiteId::Land as usize].load(Ordering::Acquire)) };
     let run = || _call.run(|| unsafe { original(a, b, c, d, e, f, g, h) });
@@ -1339,6 +1369,12 @@ unsafe extern "system-unwind" fn air_entry() {
 }
 unsafe extern "system-unwind" fn air(a: usize, b: usize, c: usize, caller: usize) {
     let _call = Call::enter(SiteId::Air);
+    // This site's one patch also serves the wing equipment watch: on every
+    // path, before the original, and dropped after it returns.
+    let _wing = crate::wing_changes::kill_airplanes(a);
+    let _strike = (b as u32 != 0)
+        .then(|| crate::nuclear_strikes::equipment_call(Some(a)))
+        .flatten();
     let original: unsafe extern "system-unwind" fn(usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[SiteId::Air as usize].load(Ordering::Acquire)) };
     let run = || _call.run(|| unsafe { original(a, b, c) });
@@ -2948,6 +2984,8 @@ impl Hooks {
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         self.publication_attempted |= enabled;
         if !enabled {
+            crate::wing_changes::observe_kills(false);
+            crate::nuclear_strikes::forwarder(replay::rows::NuclearStrikePart::Equipment, false);
             ENABLED.store(false, Ordering::SeqCst);
             SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
             let original = set_sites_enabled(&mut self.original, false);
@@ -2960,6 +2998,12 @@ impl Hooks {
         if !set_sites_enabled(&mut self.original, enabled)? {
             return Ok(false);
         }
+        // The aircraft loss writer detour is live exactly when its site installed.
+        crate::wing_changes::observe_kills(
+            self.original
+                .iter()
+                .any(|(id, _)| *id == native::SiteId::Air),
+        );
         let original_count = native::SITES
             .iter()
             .filter(|site| !site.id.is_supplemental())
@@ -2967,6 +3011,11 @@ impl Hooks {
         ENABLED.store(
             enabled && self.original.len() == original_count,
             Ordering::SeqCst,
+        );
+        // The land and air sites forward a strike's pool changes.
+        crate::nuclear_strikes::forwarder(
+            replay::rows::NuclearStrikePart::Equipment,
+            ENABLED.load(Ordering::SeqCst),
         );
         let supplemental_enabled =
             ENABLED.load(Ordering::SeqCst) && SUPPLEMENTAL_UNHOOKED.get().is_none();

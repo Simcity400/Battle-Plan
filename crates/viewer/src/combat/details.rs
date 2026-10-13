@@ -396,30 +396,36 @@ fn entry(
     name_widget.hidden = name.is_none();
     name_widget.text = name.map(|name| entry_name(name, row.side, committed, flag));
     if committed {
-        // Base stats precede the side bonus and cached stats.
-        let attack = bonus.map(|bonus| {
-            mul(
-                mul(row.scales[2], row.scales[0]),
-                bonus.wrapping_add(100_000),
-            )
-        });
-        let defence = mul(row.scales[3], row.scales[1]);
+        // Division combat inputs, then side bonus and cached stats.
+        // A row holding neither its numbers nor an older packet shows no
+        // stat box.
+        let (scales, stats) = (row.scales(), row.stat_values());
+        let attack = bonus
+            .zip(scales)
+            .map(|(bonus, scales)| mul(mul(scales[2], scales[0]), bonus.wrapping_add(100_000)));
+        let defence = scales.map(|scales| mul(scales[3], scales[1]));
         for (key, raw) in [
             (
                 "soft_attack",
-                attack.map(|attack| mul(attack, row.stat_values[3])),
+                attack
+                    .zip(stats)
+                    .map(|(attack, stats)| mul(attack, stats[3])),
             ),
             (
                 "hard_attack",
-                attack.map(|attack| mul(attack, row.stat_values[4])),
+                attack
+                    .zip(stats)
+                    .map(|(attack, stats)| mul(attack, stats[4])),
             ),
             (
                 "defense",
-                Some(mul(defence, row.stat_values[usize::from(row.side == 0)])),
+                defence
+                    .zip(stats)
+                    .map(|(defence, stats)| mul(defence, stats[usize::from(row.side == 0)])),
             ),
         ] {
             if let Some(raw) = raw {
-                // the game sets each stat box through fixed-point formatting
+                // The game sets each stat box through fixed-point formatting
                 // at precision 0, so the whole part is
                 // truncated rather than rounded.
                 text(
@@ -462,7 +468,7 @@ type ModifierHover = (
     Option<Result<String, String>>,
 );
 
-/// the game ignores the hovered child and dispatches by the global modifier
+/// The game ignores the hovered child and dispatches by the global modifier
 /// strip's frame. Static descriptions come from the localisation; border
 /// conflict factors are the side's recorded simulation operands.
 fn global_modifier_tooltip(
@@ -507,7 +513,7 @@ fn global_modifier_tooltip(
                 Ok(entry) => entry,
                 Err(reason) => return (Err(reason), None),
             };
-            // the game wraps the entry in the control byte 0x11 and a colour
+            // The game wraps the entry in the control byte 0x11 and a colour
             // with string appends, outside the localiser's buffer.
             let colour = if value < 100_000 { 'R' } else { 'H' };
             let coloured = format!("\u{11}{colour}{entry}\u{11}!");
@@ -634,8 +640,23 @@ fn several_directions(
     Some(false)
 }
 
-/// Whether the combat is a border war, which selects its window title and
-/// combatant class. Only a border war records border values on its modifier
+/// One combat's LandCombatDivisionModifiers rows by side and division. A
+/// division a side lists twice keeps its first row, as the side's member list
+/// was searched before.
+pub(super) fn division_modifiers(
+    rows: &[replay::rows::LandCombatDivisionModifierRow],
+    id: u64,
+) -> BTreeMap<(u8, u64), &replay::rows::LandCombatDivisionModifierRow> {
+    let mut members = BTreeMap::new();
+    for row in rows.iter().filter(|row| row.combat == id) {
+        members.entry((row.side, row.division)).or_insert(row);
+    }
+    members
+}
+
+/// Whether the combat is a border-war combat, whose type token 0x39A5
+/// selects both the window title and the combatant
+/// class above. Only a border war records border values on its modifier
 /// rows, so without any row for the combat the class stays undecided.
 pub(super) fn border_war(rows: &[replay::rows::LandCombatModifierRow], id: u64) -> Option<bool> {
     rows.iter()
@@ -663,6 +684,9 @@ fn land(
         .map(|r| ((r.side, r.division), r))
         .collect();
     let modifiers = rows::<tables::LandCombatModifiers>(frame)?;
+    let members = rows::<tables::LandCombatDivisionModifiers>(frame)?;
+    let member_gap = absence(&members);
+    let members = division_modifiers(members.rows(), id);
     let marker = rows::<tables::LandCombatSides>(frame)?;
     let marker = marker.rows().iter().find(|row| row.combat == id);
     let features = rows::<tables::SimulationFeatures>(frame)?;
@@ -808,8 +832,7 @@ fn land(
                     out.warnings.push(format!("LandCombatDivisions: missing combat {id} side {side} division {unit}; entry values remain unknown."));
                 }
                 if committed
-                    && let Some(modifier) =
-                        modifier.and_then(|m| m.divisions.iter().find(|m| m.division == *unit))
+                    && let Some(modifier) = members.get(&(side as u8, *unit))
                     && let Some(row) = divisions.get(&(side as u8, *unit))
                 {
                     let opponents: Option<Vec<_>> = detail.map_or(Some(Vec::new()), |detail| {
@@ -859,14 +882,9 @@ fn land(
                         frames.into_iter(),
                     );
                 } else if committed && divisions.contains_key(&(side as u8, *unit)) {
-                    out.refuse(match modifier {
-                        None => format!(
-                            "Land combat {id} side {side} division modifier icons are omitted: no LandCombatModifiers row records the side."
-                        ),
-                        Some(_) => format!(
-                            "Land combat {id} division {unit}: its side's LandCombatModifiers row does not list it; its modifier icons are omitted."
-                        ),
-                    });
+                    out.refuse(format!(
+                        "Land combat {id} division {unit}: no LandCombatDivisionModifiers row records it ({member_gap}); its modifier icons are omitted."
+                    ));
                 }
                 out.entries[target].push((*unit, widgets));
             }
@@ -935,7 +953,7 @@ fn land(
                 });
                 out.bind(&format!("{prefix}_leader_skill"), TEXT, skill);
             } else {
-                // the game writes an empty skill beside UNIT_LEADER_NO_LEADER
+                // The game writes an empty skill beside UNIT_LEADER_NO_LEADER
                 // and sets the sprite it names on the portrait button.
                 out.bind(&format!("{prefix}_leader_skill"), TEXT, Ok(String::new()));
                 let name = "GFX_no_combat_leader";
@@ -1372,7 +1390,7 @@ fn naval_disengage_state(
     });
     let enabled = detail.sides.each_ref().map(|side| side.retreating == 0);
     match (attacker, defender) {
-        // the game chooses the attacker first if both primary lists match.
+        // The game chooses the attacker first if both primary lists match.
         (Ok(true), _) => Ok(Some(enabled[0])),
         (Ok(false), Ok(true)) => Ok(Some(enabled[1])),
         // An unknown attacker cannot change visibility when the defender
@@ -1399,7 +1417,7 @@ fn bind_naval_disengage(out: &mut Bindings, id: u64, state: Result<Option<bool>,
     }
 }
 
-/// the game selects the defender skin when the viewing
+/// The game selects the defender skin when the viewing
 /// country is in the defender primary list. Raw links resolve to canonical
 /// slots before comparison (`tactics::viewing_side`).
 fn naval_progress_skin(

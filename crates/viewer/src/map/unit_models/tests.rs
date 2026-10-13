@@ -330,14 +330,14 @@ fn division(id: u64, province: u32, template: u64) -> replay::rows::DivisionRow 
     }
 }
 
-fn status(division: u64, maximum: Option<i64>) -> replay::rows::DivisionStatusRow {
+/// A division whose recorded camouflage is the `cold` category (token 1),
+/// or whose camouflage was unreadable this hour.
+fn status(division: u64, readable: bool) -> replay::rows::DivisionStatusRow {
     replay::rows::DivisionStatusRow {
         division,
-        acclimatization_maximum: maximum,
-        acclimatization: vec![replay::rows::DivisionAcclimatization {
-            category: 1,
-            weight: 90,
-        }],
+        camouflage: replay::rows::Recorded::Value(
+            readable.then_some(replay::rows::DivisionCamouflage { category: Some(1) }),
+        ),
         ..Default::default()
     }
 }
@@ -436,11 +436,11 @@ fn hour_frame(
 }
 
 /// Three stacks: a designer model on snow, a division with no recorded
-/// template, and one whose acclimatization is unreadable.
+/// template, and one whose camouflage is unreadable.
 fn prepare_frame() -> DecodedFrame {
     hour_frame(
         vec![division(1, 9, 50), division(2, 8, 51), division(3, 7, 50)],
-        vec![status(1, Some(100)), status(3, None)],
+        vec![status(1, true), status(3, false)],
         9,
     )
 }
@@ -546,10 +546,7 @@ fn an_hour_selects_the_designer_model_and_its_snow_camouflage_per_stack() {
     assert_eq!(
         report.selection_errors,
         BTreeMap::from([
-            (
-                "division acclimatization is unavailable this hour".to_owned(),
-                1
-            ),
+            ("division camouflage is unavailable this hour".to_owned(), 1),
             (
                 "registered entity GER_custom_entity_snow did not bake".to_owned(),
                 1
@@ -607,7 +604,7 @@ fn hour_builder_selection_cost() {
         .map(|index| division(u64::from(index) + 1, index % PROVINCES + 1, 50))
         .collect();
     let statuses = (1..=2 * u64::from(PROVINCES))
-        .map(|id| status(id, Some(100)))
+        .map(|id| status(id, true))
         .collect();
     let frame = hour_frame(divisions, statuses, PROVINCES);
     let assets = camouflaged_assets();
@@ -641,9 +638,7 @@ fn unit_scale_model_selection() {
                 row
             })
             .collect();
-        let statuses = (1..=u64::from(count))
-            .map(|id| status(id, Some(100)))
-            .collect();
+        let statuses = (1..=u64::from(count)).map(|id| status(id, true)).collect();
         let mut frame = hour_frame(divisions, statuses, provinces);
         *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
             (1..=1_500)

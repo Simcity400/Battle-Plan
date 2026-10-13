@@ -16,13 +16,15 @@ pub struct DivisionCensusRow {
 typed_codec!(DivisionCensusRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
  { 0 => (grouped): U32, 1 => (ungrouped): U32 }, |_row| Ok(()));
 
-/// Hourly simulation node. Identity is (Countries.id, native node index).
-/// Parent is a province in the same companion, not an array index. Route
-/// provinces retain native order and duplicates; reverse land portions only
-/// in presentation. from==0 denotes native's missing-route/naval fallback.
-/// Format 28 adds a row for every other vertex on a node's parent chain
-/// (index `VERTEX | province`, kind/flag/supply zero), so the chain never
-/// leaves the country's rows.
+/// Simulation node, read once a game day at its country's owner slice with the country's
+/// TrainInventory row; SliceReads holds the read hour. Identity is (Countries.id, native
+/// node index). Parent is a province in the same companion, not an array index. Route
+/// provinces retain native order and duplicates; reverse land portions only in
+/// presentation. from==0 denotes native's missing-route/naval fallback. Format 28 adds a
+/// row for every other vertex on a node's parent chain (index `VERTEX | province`,
+/// kind/flag/supply zero), so the chain never leaves the country's rows. A node, parent
+/// or vertex province can be an id the game's province getter resolves as null (zero,
+/// outside the census or an empty slot), recorded as stored.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SupplyNodeRow {
     pub country: u32,
@@ -51,7 +53,7 @@ typed_codec!(SupplyNodeRow, 64, |row| (row.country as u128) << 32 | row.index as
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TrainAllocation {
-    /// Full CEquipmentVariant reference, joining VariantDefinitions.id.
+    /// Full equipment variant reference, joining VariantDefinitions.id.
     pub variant: u64,
     /// Signed native integer; neither fixed-point nor clamped to zero.
     pub count: i32,
@@ -230,7 +232,8 @@ impl crate::value::Value for SparseBytes {
     }
 }
 
-/// Hourly country supply operands, including empty inventories/censuses.
+/// Country supply operands, including empty inventories/censuses, read once a
+/// game day at the country's owner slice with its SupplyNodes rows.
 /// Allocation order and duplicate/null references survive. The access array
 /// is shared by the country's SupplyNodes; index via CountryLinks canonical
 /// slot. `controller_access` records the companion's byte array with its
@@ -427,7 +430,7 @@ typed_codec!(FrontRow, 64, |row| row.front as u128, |key| Self { front: key as u
 /// faction member. All fields are stored.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FactionTheatreRow {
-    /// Full native CFaction reference, as in Factions.
+    /// Full native faction reference, as in Factions.
     pub faction: u64,
     /// Native index in the theatre array.
     pub ordinal: u32,
@@ -444,19 +447,7 @@ pub struct FactionTheatreRow {
 typed_codec!(FactionTheatreRow, 96, |row| (row.faction as u128) << 32 | row.ordinal as u128,
  |key| Self { faction: (key >> 32) as u64, ordinal: key as u32, ..Default::default() },
  { 0 => (icon): Bytes, 1 => (regions): U32List, 2 => (country_count): U32, 3 => (hidden_for): U32List }, |_row| Ok(()));
-/// Hourly ETA operands, keyed by the full Divisions handle, emitted only for a
-/// division with a nonempty route. Every value is already composed the way the
-/// engine composes it, so a replayer reproduces the native ETA bit for bit
-/// without reading memory: the per-division speed graph collapses to the five
-/// prepared terms, and everything that varies per route leg is a parallel
-/// vector in route order. `leg_river_combined`, `leg_transport_speed` and
-/// `leg_rail_speed` are empty when no leg uses that branch; otherwise they are
-/// leg-aligned and zero on legs that do not. The vectors cover the legs the
-/// native walk evaluates, so they end at the first zero-speed leg, not at the
-/// end of the route.
-/// One terrain the route touches: its one-based native index (`CTerrainType
-/// +0x88`, an i32 the content's category count bounds, not a byte) and the
-/// composed sub-unit plus leader modifier.
+/// One terrain a retired [`DivisionEtaInputsRow`] route touched.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TerrainSpeed {
     pub terrain: i32,
@@ -467,10 +458,9 @@ value_struct!(TerrainSpeed {
     modifier: i64
 });
 
-/// A complete moving-division table is published every hour, including carried
-/// rows. Consumers call valid_at before deriving. A seek needs no earlier
-/// witness state. The owner-approved five-hour operand cadence is an exception
-/// inside this hourly table.
+/// Retired per-division speed graph and route-leg operands
+/// (`RETIRED_INPUTS_FORMAT`). The row keeps its field framing so older
+/// recordings discard the table by name; no current writer emits it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DivisionEtaInputsRow {
     pub division: u64,
@@ -516,14 +506,6 @@ typed_codec!(DivisionEtaInputsRow, 64, |row| row.division as u128,
  }
  Ok(())
 });
-
-impl DivisionEtaInputsRow {
-    /// Approved operand age; the game's counter TTL starts at five hours and
-    /// decays hourly. This is not cache-history parity.
-    pub fn valid_at(&self, hour: i32) -> bool {
-        (0..5).contains(&(i64::from(hour) - i64::from(self.sample_hour)))
-    }
-}
 
 /// Shared native operand/status types; replay owns their compact wire encoding.
 pub use engine::carmy::{StrategicAction, StrategicActionFailure, StrategicRedeploymentInputs};
@@ -590,84 +572,6 @@ impl crate::value::Value for StrategicAction {
 }
 opaque_value!(StrategicAction);
 
-/// Hourly, keyed by the full Divisions handle; native scalar widths are preserved.
-/// Same-hour raw native transport operands for every authenticated class0/13
-/// unit, including idle, unassigned and transferred units. Each failed sibling
-/// stays absent independently; an absent transfer is explicit native null.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct UnitTransportInputs {
-    pub sample_hour: i32,
-    pub weight: Option<i64>,
-    pub transfer: Option<UnitTransferInputs>,
-    /// Only army transport reads the actual template's grouped-member predicate.
-    pub coastal_template: Option<bool>,
-}
-value_struct!(UnitTransportInputs {
-    sample_hour: i32, weight: Option<i64>, transfer: Option<UnitTransferInputs>,
-    coastal_template: Option<bool>
-});
-opaque_value!(Option<UnitTransportInputs>);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnitTransferInputs {
-    Absent,
-    Present {
-        transfer: u64,
-        status: Option<i32>,
-        source: Option<u32>,
-    },
-}
-impl crate::value::Value for UnitTransferInputs {
-    const MINIMUM_ENCODED_BYTES: usize = 1;
-
-    fn encoded_bytes(&self) -> io::Result<usize> {
-        use crate::value::Value;
-        Ok(match self {
-            Self::Absent => 1,
-            Self::Present {
-                transfer,
-                status,
-                source,
-            } => {
-                1 + Value::encoded_bytes(transfer)?
-                    + Value::encoded_bytes(status)?
-                    + Value::encoded_bytes(source)?
-            }
-        })
-    }
-    fn try_clone(&self) -> io::Result<Self> {
-        Ok(*self)
-    }
-    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
-        use crate::value::Value;
-        match self {
-            Self::Absent => output.push(0),
-            Self::Present {
-                transfer,
-                status,
-                source,
-            } => {
-                output.push(1);
-                Value::encode_reserved(transfer, output)?;
-                Value::encode_reserved(status, output)?;
-                Value::encode_reserved(source, output)?;
-            }
-        }
-        Ok(())
-    }
-    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
-        match input.u8()? {
-            0 => Ok(Self::Absent),
-            1 => Ok(Self::Present {
-                transfer: crate::value::Value::decode(input)?,
-                status: crate::value::Value::decode(input)?,
-                source: crate::value::Value::decode(input)?,
-            }),
-            _ => Err(invalid("unit transport transfer discriminant invalid")),
-        }
-    }
-}
-
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DivisionMovementRow {
     pub division: u64,
@@ -701,21 +605,29 @@ pub struct DivisionMovementRow {
     /// fields preserve partial availability. No unit selection or derived
     /// demand/capacity/readiness is stored.
     pub order_transport: Recorded<Option<DivisionOrderTransportInputs>>,
-    /// Current-hour domains for a freshly searched counter route, independent
-    /// of the legacy stored-route operands and their carried sample hour.
-    /// None is a counted acquisition refusal; older formats use NotRecorded.
-    pub fresh: Recorded<Option<FreshCounterEta>>,
-    /// Complete ordered unit combat references from this callback hour.
-    /// Repeats and runtime-minted full handles are retained. None is an
-    /// independent acquisition refusal; historical absence is NotRecorded.
-    /// Entry count equals combat_count; no selection or derived query is stored.
+    /// Retired current-hour speed graph of the fresh counter route.
+    pub fresh: Recorded<Retired>,
+    /// Complete ordered unit+1A8/+1B4 references from this callback hour. Repeats and
+    /// runtime-minted full handles are retained. None is an independent acquisition
+    /// refusal; historical absence is NotRecorded. Entry count equals combat_count; no
+    /// selection or derived query is stored.
     pub combat_references: Recorded<Option<UnitCombatReferences>>,
-    pub selected: Recorded<Option<SelectedUnitInputs>>,
-    pub transport: Recorded<Option<UnitTransportInputs>>,
+    /// Retired selected-route commander, retreat and exile operands.
+    pub selected: Recorded<Retired>,
+    /// Retired selected transport weight, transfer and template operands.
+    pub transport: Recorded<Retired>,
+    /// Raw signed fixed5 maximum speed of the division's stat block
+    /// (`[division+0x138]+0x290`, a `stat block`), read for a division with a nonempty
+    /// route. Movement-speed calculation starts from this value, scales it by the edge
+    /// modifier, organisation and fuel, floors it at 1 km/h and multiplies by the
+    /// movement scale; the hourly step (vslot 0xD8) adds that product to `numerator`, and
+    /// no field caches it. Playback estimates arrival from this speed alone. None is
+    /// outside demand or a counted guarded refusal; older formats use NotRecorded.
+    pub base_speed: Recorded<Option<i64>>,
 }
 typed_codec!(DivisionMovementRow, 64, |row| row.division as u128,
  |key| Self { division: key as u64, ..Default::default() },
- { 0 => (source): U32, 1 => (target): U32, 2 => (numerator): I64, 3 => (retreat): U8, 4 => (strategic_redeployment): U8, 5 => (naval_transfer): U8, 6 => (combat_count): U32, 7 => (path_total): U32, 8 => (path): U32List, 9 => (alternate_total): U32, 10 => (alternate_path): U32List, 11 => (combat_role): U8, 12 => (combat_province): U32, 13 => (map_entity): U8, 14 => (strategic_action): Opaque, 15 => (withdrawal): Opaque, 16 => (movement_priority): OptionalI32, 17 => (order_transport): Opaque, 18 => (fresh): Opaque, 19 => (combat_references): Opaque, 20 => (selected): Opaque, 21 => (transport): Opaque }, |row| {
+ { 0 => (source): U32, 1 => (target): U32, 2 => (numerator): I64, 3 => (retreat): U8, 4 => (strategic_redeployment): U8, 5 => (naval_transfer): U8, 6 => (combat_count): U32, 7 => (path_total): U32, 8 => (path): U32List, 9 => (alternate_total): U32, 10 => (alternate_path): U32List, 11 => (combat_role): U8, 12 => (combat_province): U32, 13 => (map_entity): U8, 14 => (strategic_action): Opaque, 15 => (withdrawal): Opaque, 16 => (movement_priority): OptionalI32, 17 => (order_transport): Opaque, 18 => (fresh): Opaque, 19 => (combat_references): Opaque, 20 => (selected): Opaque, 21 => (transport): Opaque, 22 => (base_speed): OptionalI64 }, |row| {
  check_unit_combat_references(&row.combat_references, row.combat_count)?;
  let reached = (row.path_total as i32) > 0 && row.target == 0
      && row.retreat == 0 && row.strategic_redeployment != 0;
@@ -755,6 +667,8 @@ value_struct!(ParadropTransportModifiers { country_term: i64, commander_term: Op
 #[path = "movement/order_execution_tests.rs"]
 mod order_execution_tests;
 
+/// A supply footer demand pair: the native signed count, exact, and its
+/// amount at the footer's display step ([`UnitSupplyInputs::STEP`]).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct UnitSupplyDemand {
     pub count: i32,
@@ -762,11 +676,13 @@ pub struct UnitSupplyDemand {
 }
 value_struct!(UnitSupplyDemand {
     count: i32,
-    value: i64
+    value @ UnitSupplyInputs::STEP: i64
 });
 
-/// Every native distributed-supply row, in original order. Nonpositive values
-/// and duplicate provinces affect totals and must survive recording.
+/// Every native distributed-supply row, in original order: the province
+/// exact, both amounts at the footer's display step
+/// ([`UnitSupplyInputs::STEP`]). Nonpositive amounts and duplicate provinces
+/// affect totals and survive.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct UnitSupplyOrigin {
     pub province: i32,
@@ -775,13 +691,34 @@ pub struct UnitSupplyOrigin {
 }
 value_struct!(UnitSupplyOrigin {
     province: i32,
-    requested: i64,
-    received: i64
+    requested @ UnitSupplyInputs::STEP: i64,
+    received @ UnitSupplyInputs::STEP: i64
 });
 
-/// Stored supply-consumer operands for aggregation and its footer. The
-/// disruption operand is overwritten by the last aggregate member. These
-/// amounts cannot be recovered from the stored supply ratio or hub table.
+/// Stored supply-consumer operands of aggregation and footer formatting
+/// for a task force or railway gun, at the precision the footer shows them
+/// ([`crate::display`]). Every unit counter's supply child reaches the same
+/// footer through its tooltip builder and supply aggregation, as port mission
+/// items do. The footer passes every printed amount through the two-decimal
+/// formatter, which rounds
+/// the fixed5 word half away from zero to 0.01 (1000 raw) before
+/// localisation: the needed and received supply, the three demand values,
+/// the state, supply-node, per-hub and air-drop receipts and the disruption,
+/// every installed mod the same. Each amount is stored rounded that way, so a
+/// single unit's footer prints the game's text. The footer tests `0 <` on the
+/// state and air-drop receipts, the demands, the disruption and the hub
+/// receipts before it prints a line, so a nonzero amount below half a step
+/// keeps one step with its sign (it then shows 0.01 where the game shows
+/// 0.00).
+///
+/// The footer sums its members before rounding; by owner decision 2026-10-11 a footer
+/// over several units sums the stored amounts and can differ from the game in its last
+/// digit at boundaries, and so can the received and flow-reduction percentages, a hub
+/// list's order between hubs whose receipts round equal, the hub cut-off (`< 0.05`) for a
+/// sum from 0.045 up to 0.05, and the flow-reduction line when the requested and received
+/// totals round equal. The disruption operand is overwritten by the last native aggregate
+/// member. These amounts cannot be recovered from the stored supply ratio or hub table.
+/// Format 101 and earlier recorded them exact and decode them unscaled.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct UnitSupplyInputs {
     pub asked: i64,
@@ -796,154 +733,361 @@ pub struct UnitSupplyInputs {
     /// scalar footer lines remain available; Some(empty) records zero origins.
     pub origins: Option<Vec<UnitSupplyOrigin>>,
 }
-value_struct!(UnitSupplyInputs { asked: i64, received: i64, from_state: i64,
-    air_drops: i64, disruption: i64, division_demand: UnitSupplyDemand,
-    airplane_demand: UnitSupplyDemand, ship_demand: UnitSupplyDemand,
-    origins: Option<Vec<UnitSupplyOrigin>> });
+impl UnitSupplyInputs {
+    /// Every footer amount: 0.01, half away from zero, nonzero kept by the two-decimal
+    /// formatter.
+    pub const STEP: crate::display::Step =
+        crate::display::Step::fixed5(1_000, crate::display::Rounding::HalfAwayFromZeroNonzero);
+}
+value_struct!(UnitSupplyInputs {
+    asked @ Self::STEP: i64,
+    received @ Self::STEP: i64,
+    from_state @ Self::STEP: i64,
+    air_drops @ Self::STEP: i64,
+    disruption @ Self::STEP: i64,
+    division_demand: UnitSupplyDemand,
+    airplane_demand: UnitSupplyDemand,
+    ship_demand: UnitSupplyDemand,
+    origins: Option<Vec<UnitSupplyOrigin>>
+});
 opaque_value!(Option<UnitSupplyInputs>);
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct AttritionBorder {
-    pub state: Option<u32>,
-    pub country: Option<u32>,
-    pub factor: Option<i64>,
-}
-value_struct!(AttritionBorder { state: Option<u32>, country: Option<u32>, factor: Option<i64> });
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct AttritionSupply {
-    pub penalty: Option<i64>,
-    pub attrition_factor: Option<i64>,
-}
-value_struct!(AttritionSupply { penalty: Option<i64>, attrition_factor: Option<i64> });
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct AttritionThermal {
-    pub base: i64,
-    pub country_factor: Option<i64>,
-    pub leader_factor: Option<Option<i64>>,
-}
-value_struct!(AttritionThermal { base: i64, country_factor: Option<i64>, leader_factor: Option<Option<i64>> });
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct AttritionWeather {
-    pub acclimatization: Option<i64>,
-    pub attrition: Option<i64>,
-    pub heat: Option<Option<AttritionThermal>>,
-    pub winter: Option<Option<AttritionThermal>>,
-}
-value_struct!(AttritionWeather { acclimatization: Option<i64>, attrition: Option<i64>,
-    heat: Option<Option<AttritionThermal>>, winter: Option<Option<AttritionThermal>> });
-
+/// A division's supply footer: the [`UnitSupplyInputs`] amounts, with the
+/// same widths and display steps, its received amounts stored as shortfalls
+/// ([`StoredFooter`]). DivisionStatus.supply was a provisional tombstone,
+/// whose empty payload reads as not recorded (`opaque_value!(T, restored)`).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct AttritionTerrain {
-    /// Terrain localisation key, resolved in the viewer's language. A failed
-    /// key copy does not erase independent numeric terms.
-    pub name: Option<Vec<u8>>,
-    pub attrition: Option<i64>,
-    pub equipment: Option<i64>,
+pub struct DivisionSupplyFooter {
+    pub asked: i64,
+    pub received: i64,
+    pub from_state: i64,
+    pub air_drops: i64,
+    /// Overwritten, not summed, by each member of the native aggregate.
+    pub disruption: i64,
+    pub division_demand: UnitSupplyDemand,
+    pub airplane_demand: UnitSupplyDemand,
+    pub ship_demand: UnitSupplyDemand,
+    /// None is a counted node-fragment read/capacity failure. The independent
+    /// scalar footer lines remain available; Some(empty) records zero origins.
+    pub origins: Option<Vec<UnitSupplyOrigin>>,
 }
-value_struct!(AttritionTerrain { name: Option<Vec<u8>>, attrition: Option<i64>, equipment: Option<i64> });
+impl DivisionSupplyFooter {
+    pub const STEP: crate::display::Step = UnitSupplyInputs::STEP;
+}
 
-/// Runtime accumulator identity joins the narrow hourly breakdown table. Native
-/// formatter depth and scaling are per-use, independent of tree deduplication.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct AttritionModifierSource {
-    pub accumulator: u64,
-    pub key: u32,
-    pub depth: i32,
-    pub scale: i64,
+/// A footer demand pair as [`DivisionSupplyFooter`] stores it: the count
+/// exact, the amount in whole display steps.
+struct StoredDemand {
+    count: i32,
+    units: i64,
 }
-value_struct!(AttritionModifierSource {
-    accumulator: u64,
-    key: u32,
-    depth: i32,
-    scale: i64
+value_struct!(StoredDemand {
+    count: i32,
+    units: i64
 });
 
-/// Fresh attrition operands, distinct from the earlier counter cache.
-/// None is a counted independent read failure; Some(None) is a skipped
-/// optional branch. Source/label failures never participate in numeric totals.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct ArmyAttritionInputs {
-    pub province: Option<Option<u32>>,
-    pub upkeep: Option<i64>,
-    pub terrain: Option<Option<AttritionTerrain>>,
-    pub state: Option<Option<i64>>,
-    pub supply: Option<AttritionSupply>,
-    pub country_upkeep_modifier: Option<i64>,
-    pub moving_state: Option<Option<i64>>,
-    pub weather: Option<Option<AttritionWeather>>,
-    pub training: Option<bool>,
-    pub training_attrition: Option<Option<i64>>,
-    pub border: Option<Option<AttritionBorder>>,
-    pub country_attrition_modifier: Option<i64>,
-    pub sources: [Option<Option<AttritionModifierSource>>; engine::carmy_attrition::SOURCE_COUNT],
+/// A distributed-supply row as [`DivisionSupplyFooter`] stores it: the
+/// requested amount in whole display steps, then the received word, the
+/// steps it fell short of the request by where [`StoredOrigins`] marks
+/// shortfalls and the received steps themselves where it does not.
+struct StoredOrigin {
+    province: i32,
+    requested: i64,
+    received: i64,
 }
-value_struct!(ArmyAttritionInputs { province: Option<Option<u32>>, upkeep: Option<i64>,
-    terrain: Option<Option<AttritionTerrain>>, state: Option<Option<i64>>,
-    supply: Option<AttritionSupply>, country_upkeep_modifier: Option<i64>,
-    moving_state: Option<Option<i64>>, weather: Option<Option<AttritionWeather>>,
-    training: Option<bool>, training_attrition: Option<Option<i64>>,
-    border: Option<Option<AttritionBorder>>, country_attrition_modifier: Option<i64>,
-    sources: [Option<Option<AttritionModifierSource>>; engine::carmy_attrition::SOURCE_COUNT] });
-opaque_value!(ArmyAttritionInputs);
+value_struct!(StoredOrigin {
+    province: i32,
+    requested: i64,
+    received: i64
+});
 
-impl ArmyAttritionInputs {
-    /// Playback uses the engine's same ordered wrapping fixed5 arithmetic.
-    pub fn evaluate(&self, border_ratio: Option<i64>) -> Result<i64, &'static str> {
-        let missing = "recorded attrition numeric operand unavailable";
-        engine::carmy_attrition::Inputs {
-            province: self.province.ok_or(missing),
-            upkeep: self.upkeep.ok_or(missing),
-            terrain: self.terrain.as_ref().ok_or(missing).map(|value| {
-                value
-                    .as_ref()
-                    .map(|value| engine::carmy_attrition::Terrain {
-                        name: Ok(0),
-                        attrition: value.attrition.ok_or(missing),
-                        equipment: value.equipment.ok_or(missing),
-                    })
-            }),
-            state: self.state.ok_or(missing),
-            supply: self
-                .supply
-                .ok_or(missing)
-                .map(|supply| engine::carmy_attrition::Supply {
-                    penalty: supply.penalty.ok_or(missing),
-                    attrition_factor: supply.attrition_factor.ok_or(missing),
-                }),
-            country_upkeep_modifier: self.country_upkeep_modifier.ok_or(missing),
-            moving_state: self.moving_state.ok_or(missing),
-            weather: self.weather.ok_or(missing).map(|weather| {
-                weather.map(|weather| {
-                    let thermal = |value: Option<Option<AttritionThermal>>| {
-                        value.ok_or(missing).map(|value| {
-                            value.map(|value| engine::carmy_attrition::Thermal {
-                                base: value.base,
-                                country_factor: value.country_factor.ok_or(missing),
-                                leader_factor: value.leader_factor.ok_or(missing),
-                            })
-                        })
-                    };
-                    engine::carmy_attrition::Weather {
-                        acclimatization: weather.acclimatization.ok_or(missing),
-                        attrition: weather.attrition.ok_or(missing),
-                        heat: thermal(weather.heat),
-                        winter: thermal(weather.winter),
-                    }
-                })
-            }),
-            training: self.training.ok_or(missing),
-            training_attrition: self.training_attrition.ok_or(missing),
-            border: self.border.ok_or(missing).map(|border| {
-                border.map(|border| engine::carmy_attrition::Border {
-                    state: border.state.ok_or(missing),
-                    country: border.country.ok_or(missing),
-                    factor: border.factor.ok_or(missing),
-                })
-            }),
-            country_attrition_modifier: self.country_attrition_modifier.ok_or(missing),
-            sources: [Ok(None); engine::carmy_attrition::SOURCE_COUNT],
+/// The footer's distributed-supply rows, and whether the footer's received
+/// words are shortfalls. The [`UnitSupplyInputs`] layout tags the list `0`
+/// (absent) or `1` (present); a footer storing shortfalls tags it `2` or `3`.
+/// From [`crate::rows::compatibility::SUPPLY_SHORTFALL_FORMAT`] the reader
+/// tells format-102 captures written before the shortfalls, which hold the
+/// received steps, from current ones and decodes both exactly. A reader older
+/// than the shortfalls refuses tags `2` and `3` as invalid option tags.
+struct StoredOrigins {
+    origins: Option<Vec<StoredOrigin>>,
+    shortfalls: bool,
+}
+
+impl StoredOrigins {
+    const SHORTFALLS: u8 = 2;
+}
+
+impl Value for StoredOrigins {
+    const MINIMUM_ENCODED_BYTES: usize = 1;
+
+    // The tag keeps its width.
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        Value::encoded_bytes(&self.origins)
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            origins: Value::try_clone(&self.origins)?,
+            shortfalls: self.shortfalls,
+        })
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        let marker = if self.shortfalls { Self::SHORTFALLS } else { 0 };
+        match &self.origins {
+            None => output.push(marker),
+            Some(origins) => {
+                output.push(marker | 1);
+                origins.encode_reserved(output)?;
+            }
         }
-        .evaluate(border_ratio)
+        Ok(())
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        let tag = input.u8()?;
+        if tag > (Self::SHORTFALLS | 1) {
+            return Err(invalid("invalid supply origins tag"));
+        }
+        Ok(Self {
+            origins: if tag & 1 == 1 {
+                Some(Value::decode(input)?)
+            } else {
+                None
+            },
+            shortfalls: tag & Self::SHORTFALLS != 0,
+        })
+    }
+}
+
+/// [`DivisionSupplyFooter`]'s wire layout from
+/// [`crate::rows::compatibility::SUPPLY_SHORTFALL_FORMAT`]: the
+/// [`UnitSupplyInputs`] layout, every amount in whole display steps. Current
+/// writers store the received amount as the steps it fell short of the asked
+/// amount by, and each origin's as the steps it fell short of its request by
+/// (wrapping, so every pair of amounts is stored exactly), and say so in the
+/// origins' tag ([`StoredOrigins`]). Supply aggregation sums the consumers'
+/// asked and received amounts together and the footer prints both; a
+/// division supplied in full receives what it asks for, so its stored
+/// shortfall stays zero while its demand drifts.
+struct StoredFooter {
+    asked: i64,
+    received: i64,
+    from_state: i64,
+    air_drops: i64,
+    disruption: i64,
+    division_demand: StoredDemand,
+    airplane_demand: StoredDemand,
+    ship_demand: StoredDemand,
+    origins: StoredOrigins,
+}
+value_struct!(StoredFooter {
+    asked: i64,
+    received: i64,
+    from_state: i64,
+    air_drops: i64,
+    disruption: i64,
+    division_demand: StoredDemand,
+    airplane_demand: StoredDemand,
+    ship_demand: StoredDemand,
+    origins: StoredOrigins
+});
+
+impl StoredDemand {
+    fn new(demand: &UnitSupplyDemand) -> Self {
+        Self {
+            count: demand.count,
+            units: DivisionSupplyFooter::STEP.units(demand.value),
+        }
+    }
+    fn demand(&self) -> io::Result<UnitSupplyDemand> {
+        Ok(UnitSupplyDemand {
+            count: self.count,
+            value: DivisionSupplyFooter::STEP.value(self.units)?,
+        })
+    }
+}
+
+impl DivisionSupplyFooter {
+    /// Write this footer in the [`StoredFooter`] layout, received words as
+    /// shortfalls, without building it.
+    fn encode_shortfalls(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        let units = |value| Self::STEP.units(value);
+        let asked = units(self.asked);
+        for word in [
+            asked,
+            asked.wrapping_sub(units(self.received)),
+            units(self.from_state),
+            units(self.air_drops),
+            units(self.disruption),
+        ] {
+            word.encode_reserved(output)?;
+        }
+        for demand in [
+            &self.division_demand,
+            &self.airplane_demand,
+            &self.ship_demand,
+        ] {
+            StoredDemand::new(demand).encode_reserved(output)?;
+        }
+        let Some(origins) = &self.origins else {
+            output.push(StoredOrigins::SHORTFALLS);
+            return Ok(());
+        };
+        output.push(StoredOrigins::SHORTFALLS | 1);
+        let count = u32::try_from(origins.len())
+            .map_err(|_| invalid("nested collection count exceeds u32"))?;
+        count.encode_reserved(output)?;
+        for origin in origins {
+            let requested = units(origin.requested);
+            StoredOrigin {
+                province: origin.province,
+                requested,
+                received: requested.wrapping_sub(units(origin.received)),
+            }
+            .encode_reserved(output)?;
+        }
+        Ok(())
+    }
+
+    /// The footer a [`StoredFooter`] holds, every amount at its step: a
+    /// received word is a shortfall where the origins' tag says so
+    /// ([`Self::encode_shortfalls`] inverted), and the received steps where it does not.
+    fn from_stored(stored: StoredFooter) -> io::Result<Self> {
+        let value = |units| Self::STEP.value(units);
+        let shortfalls = stored.origins.shortfalls;
+        let received = |from: i64, word: i64| {
+            value(if shortfalls {
+                from.wrapping_sub(word)
+            } else {
+                word
+            })
+        };
+        let origins = match stored.origins.origins {
+            Some(origins) => {
+                let mut restored = allocation::vec(origins.len())?;
+                for origin in origins {
+                    restored.push(UnitSupplyOrigin {
+                        province: origin.province,
+                        requested: value(origin.requested)?,
+                        received: received(origin.requested, origin.received)?,
+                    });
+                }
+                Some(restored)
+            }
+            None => None,
+        };
+        Ok(Self {
+            asked: value(stored.asked)?,
+            received: received(stored.asked, stored.received)?,
+            from_state: value(stored.from_state)?,
+            air_drops: value(stored.air_drops)?,
+            disruption: value(stored.disruption)?,
+            division_demand: stored.division_demand.demand()?,
+            airplane_demand: stored.airplane_demand.demand()?,
+            ship_demand: stored.ship_demand.demand()?,
+            origins,
+        })
+    }
+
+    /// The test-only historical writer stands in for format 101, which
+    /// stored the [`UnitSupplyInputs`] layout.
+    fn historical(&self) -> io::Result<Option<UnitSupplyInputs>> {
+        if historical_stamp().is_none() {
+            return Ok(None);
+        }
+        Value::try_clone(self).map(|footer| Some(footer.into()))
+    }
+}
+
+const _: () = assert!(
+    crate::display::stepped_format(crate::rows::compatibility::SUPPLY_SHORTFALL_FORMAT),
+    "the shortfall layout stores whole display steps"
+);
+
+impl Value for DivisionSupplyFooter {
+    const MINIMUM_ENCODED_BYTES: usize = <UnitSupplyInputs as Value>::MINIMUM_ENCODED_BYTES;
+    const HAS_STEPS: bool = true;
+    #[cfg(test)]
+    const STRUCT_FIELDS: usize = <UnitSupplyInputs as Value>::STRUCT_FIELDS;
+
+    fn round_display(&mut self) {
+        let mut inputs = UnitSupplyInputs::from(std::mem::take(self));
+        inputs.round_display();
+        *self = inputs.into();
+    }
+    // Every layout has the UnitSupplyInputs widths.
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        let scalars = [
+            self.asked,
+            self.received,
+            self.from_state,
+            self.air_drops,
+            self.disruption,
+        ];
+        let size = <i64 as Value>::encoded_many_bytes(&scalars)?;
+        let size = [
+            &self.division_demand,
+            &self.airplane_demand,
+            &self.ship_demand,
+        ]
+        .into_iter()
+        .try_fold(size, |size, demand| {
+            allocation::add(size, Value::encoded_bytes(demand)?)
+        })?;
+        allocation::add(size, Value::encoded_bytes(&self.origins)?)
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            origins: Value::try_clone(&self.origins)?,
+            division_demand: self.division_demand.clone(),
+            airplane_demand: self.airplane_demand.clone(),
+            ship_demand: self.ship_demand.clone(),
+            ..*self
+        })
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        match self.historical()? {
+            Some(inputs) => inputs.encode_reserved(output),
+            None => self.encode_shortfalls(output),
+        }
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        if input.format >= crate::rows::compatibility::SUPPLY_SHORTFALL_FORMAT {
+            Self::from_stored(StoredFooter::decode(input)?)
+        } else {
+            UnitSupplyInputs::decode(input).map(Self::from)
+        }
+    }
+}
+opaque_value!(Option<DivisionSupplyFooter>, restored);
+
+impl From<UnitSupplyInputs> for DivisionSupplyFooter {
+    fn from(inputs: UnitSupplyInputs) -> Self {
+        Self {
+            asked: inputs.asked,
+            received: inputs.received,
+            from_state: inputs.from_state,
+            air_drops: inputs.air_drops,
+            disruption: inputs.disruption,
+            division_demand: inputs.division_demand,
+            airplane_demand: inputs.airplane_demand,
+            ship_demand: inputs.ship_demand,
+            origins: inputs.origins,
+        }
+    }
+}
+
+impl From<DivisionSupplyFooter> for UnitSupplyInputs {
+    fn from(footer: DivisionSupplyFooter) -> Self {
+        Self {
+            asked: footer.asked,
+            received: footer.received,
+            from_state: footer.from_state,
+            air_drops: footer.air_drops,
+            disruption: footer.disruption,
+            division_demand: footer.division_demand,
+            airplane_demand: footer.airplane_demand,
+            ship_demand: footer.ship_demand,
+            origins: footer.origins,
+        }
     }
 }
 
@@ -958,7 +1102,9 @@ pub struct DivisionStatusRow {
     pub supply_ratio: i64,
     pub attrition_value: i64,
     pub attrition_threshold: i64,
-    pub attrition: u8,
+    /// Retired glyph byte: stored attrition exceeds its threshold, which playback
+    /// computes from this row ([`DivisionStatusRow::has_attrition`]).
+    pub attrition: RetiredU8,
     pub exercising: u8,
     /// Whether an order of the unit's group or its parent holds it; false for
     /// an ungrouped unit.
@@ -972,12 +1118,13 @@ pub struct DivisionStatusRow {
     /// template change, deploy and unit creation; the entity suffix is its
     /// sign-extended low byte.
     pub model_number: i32,
-    /// `NAcclimatization::CData` maximum, raw; `None` when this division's
-    /// acclimatization could not be read this hour, and then the entries are
-    /// empty. The rest of the row stands.
+    /// `acclimatization data` maximum, raw, as recordings without [`Self::camouflage`]
+    /// captured it: `None` when this division's acclimatization could not be read that
+    /// hour, and then the entries are empty. Current writers store `None` and no entries.
     pub acclimatization_maximum: Option<i64>,
-    /// Every acclimatization entry in native order, repeats kept. The
-    /// camouflage winner is the viewer's to pick.
+    /// Every acclimatization entry in native order, repeats kept, as
+    /// recordings without [`Self::camouflage`] captured it; their consumers
+    /// pick the camouflage winner from it.
     pub acclimatization: Vec<DivisionAcclimatization>,
     /// Raid army-reach inputs, one bit each (the `MOVE_*` constants). The
     /// commander's retreat bans are [`DivisionRetreatBanRow`]'s, read daily.
@@ -990,8 +1137,9 @@ pub struct DivisionStatusRow {
     /// Member-name generator inputs. None on guarded failure or arena shortage
     /// (counted by capture); older formats use NotRecorded.
     pub naming: Recorded<Option<NameOperands>>,
-    /// Stored fixed5 grace operands. Older formats use NotRecorded; zero is
-    /// a recorded value.
+    /// Division +0x600/+0x610 fixed5 supply grace. Older formats use NotRecorded; zero is
+    /// a recorded value. With `supply_ratio` (division+0x40), the division's only record
+    /// of these supply operands: DivisionLandInputs no longer copies them.
     pub supply_grace_maximum: Recorded<i64>,
     pub supply_grace_remaining: Recorded<i64>,
     /// Stored division roster position. None is a counted capture refusal;
@@ -1001,33 +1149,109 @@ pub struct DivisionStatusRow {
     /// None is outside that demand or a counted field-local capture failure;
     /// older formats use NotRecorded.
     pub invalid_orders_reason: Recorded<Option<i32>>,
-    /// Native low-supply footer amounts. None is a counted scalar-pack failure;
-    /// older recordings use NotRecorded without affecting the status prefix.
-    pub supply: Recorded<Option<UnitSupplyInputs>>,
-    pub attrition_inputs: Recorded<ArmyAttritionInputs>,
-    /// Fresh entrenchment factor: ONE plus the selected commander's
-    /// combat_entrenchment modifier, with wrapping addition. None is an
-    /// independent read refusal; this is not a derived duration.
+    /// The supply child's per-source footer, recorded for every division at display
+    /// precision ([`DivisionSupplyFooter`]). None is a counted scalar-pack failure.
+    /// Formats before 99 use NotRecorded, as do format-102 recordings written while the
+    /// field was a provisional tombstone, whose empty payload decodes as not recorded.
+    pub supply: Recorded<Option<DivisionSupplyFooter>>,
+    /// Retired fresh attrition operands of the per-modifier breakdown; the
+    /// counter keeps `attrition_value`, `attrition_threshold` and `attrition`.
+    pub attrition_inputs: Recorded<Retired>,
+    /// Fresh commander entrenchment factor: ONE plus the selected commander's
+    /// combat_entrenchment modifier, with wrapping addition. None is an independent read
+    /// refusal; this is not a derived duration.
     pub dig_in_factor: Recorded<Option<i64>>,
     /// Exact cached name, including empty bytes. None is a counted isolated
     /// read/capacity refusal; older formats use NotRecorded.
     pub name: Recorded<Option<Vec<u8>>>,
-    /// Current accepted-pass cached attack operands, with independent leaf refusals.
-    pub attack: Recorded<DivisionAttackInputs>,
+    /// The selected-attack operands recordings through format 101 captured every hour
+    /// ([`DivisionAttackInputs`], each per-terrain value the sum of the stat-block and
+    /// terrain adjuster attacks). Current writers leave it empty ([`Witnessed`]) except
+    /// for the divisions the collector's off-by-default `attack_witness` diagnostic
+    /// samples, read fresh at the row's hour.
+    pub attack: Recorded<Witnessed<DivisionAttackInputs>>,
+    /// The category selected from the division's acclimatization to camouflage its land
+    /// model. None is this hour's read refusal; the rest of the row stands. Older formats
+    /// use NotRecorded and keep [`Self::acclimatization`] and its maximum instead.
+    pub camouflage: Recorded<Option<DivisionCamouflage>>,
+    /// The stat block's attack operands ([`DivisionAttackStats`]). The collector carries
+    /// a division's value while no hooked writer (the active-stat refresh) touched it
+    /// since the read it came from, so every hour holds what the stat block holds. None
+    /// is a read refusal; older formats use NotRecorded.
+    pub attack_stats: Recorded<Option<DivisionAttackStats>>,
+    /// The fresh acclimatization factor for division `+0x4B8`, which scales the region
+    /// weather term of the attack list. None is a read refusal; older formats use
+    /// NotRecorded.
+    pub weather_factor: Recorded<Option<i64>>,
 }
+// Display steps ([`crate::display`]). Entrenchment and its cap (the spade glyph's `> 0`
+// and `<` tests), the attrition value and threshold (the attrition glyph's comparison),
+// supply_grace_maximum (the `< 1` gate), and strength_factor, dig_in_factor and
+// border_combat_stats, which only feed derived products, stay exact.
 impl DivisionStatusRow {
-    /// A nonzero exile byte substitutes for province move access and allows
-    /// crossing controller areas within one state owner.
+    /// `maximum_hit_points` and `maximum_organisation` at the game's display precision
+    /// ([`crate::display`]): the maximum-strength and maximum-organisation lines print
+    /// one highlighted decimal, the combat window's organisation maximum uses one
+    /// decimal, and the counter hover uses whole units in a fixed colour. Every installed
+    /// mod uses the same finest precision: one decimal, truncated by the fixed5
+    /// formatter. The getters keep them at least 100 raw, so a nonzero maximum below a
+    /// tenth keeps one tenth and the `maximum > 0` tests (`binding.rs`, the advance
+    /// warning) read the same. By owner decision 2026-10-11 the strength and organisation
+    /// ratios drawn from them can differ from the game in their last digit at boundaries.
+    pub const MAXIMUM_STEP: crate::display::Step =
+        crate::display::Step::fixed5(10_000, crate::display::Rounding::TowardZeroNonzero);
+    /// `supply_ratio` (`division+0x40`) at the game's display precision: the counter
+    /// hover and supply descriptions print the effective value as a whole percentage (in
+    /// a fixed colour for the hover), every installed mod the same: 0.01 truncated by the
+    /// fixed5 formatter. Truncation commutes with the effective value's `max` against the
+    /// grace share, and every supply crate threshold and LOW_SUPPLY gate in vanilla and
+    /// the installed mods is a multiple of 0.01, so the frames and the low-supply gate
+    /// are unchanged; a mod threshold off that grid could flip at its boundary.
+    pub const SUPPLY_RATIO_STEP: crate::display::Step =
+        crate::display::Step::fixed5(1_000, crate::display::Rounding::TowardZero);
+    /// The wire step of `supply_grace_remaining`: 0.01 hour, which every
+    /// value [`Self::displayed_grace`] stores is a multiple of.
+    pub const SUPPLY_GRACE_STEP: crate::display::Step =
+        crate::display::Step::fixed5(1_000, crate::display::Rounding::TowardZero);
+
+    /// `supply_grace_remaining` (`division+0x610`, fixed5) as capture stores it. The game
+    /// shows it only as a fixed5 share of `G`, the live `NMilitary.SUPPLY_GRACE` hours,
+    /// scaling both operands before division, at whole percent, truncated: on its own as
+    /// stored supply in a fixed colour, and as the larger of it and the received ratio in
+    /// the unit supply text, low-supply gate, counter supply icon and availability.
+    /// Truncating toward zero to a multiple of `1000 G` keeps that percent for every
+    /// whole positive `G`, and a share on the percent grid keeps every comparison with
+    /// the received ratio (a multiple of 0.01) and with a threshold on that grid. The
+    /// hourly update moves the value by at most 0.15 when it regains and by 0.75 times
+    /// the missing supply share when it spends (vanilla), so it changes the percent only
+    /// every few hours. An unknown or nonpositive `G`, a negative value and one whose
+    /// share product would wrap keep [`Self::SUPPLY_GRACE_STEP`]; a sentinel word stays
+    /// exact.
+    pub fn displayed_grace(remaining: i64, grace: Option<i32>) -> i64 {
+        match grace {
+            Some(hours) if hours > 0 && (0..=i64::MAX / 100_000).contains(&remaining) => {
+                remaining - remaining % (i64::from(hours) * 1_000)
+            }
+            _ => Self::SUPPLY_GRACE_STEP.round(remaining),
+        }
+    }
+
+    /// Division `+0x2AE` is nonzero: the exile byte lets edge admission bypass province
+    /// move access, allowing a move across controller areas within one state owner.
     pub const MOVE_EXILED: u8 = 1;
     /// The cached `can_exfiltrate_from_coast` operand, passed to the path request.
     pub const MOVE_CAN_EXFILTRATE_FROM_COAST: u8 = 2;
+
+    /// The attrition glyph test: the division's stored attrition (`division+0x438`)
+    /// exceeds the threshold the row records, a signed fixed-point comparison of the same
+    /// read.
+    pub fn has_attrition(&self) -> bool {
+        self.attrition_threshold < self.attrition_value
+    }
 }
 typed_codec!(DivisionStatusRow, 64, |row| row.division as u128,
  |key| Self { division: key as u64, ..Default::default() },
- { 0 => (maximum_hit_points): I64, 1 => (maximum_organisation): I64, 2 => (entrenchment): I64, 3 => (entrenchment_cap): I64, 4 => (supply_ratio): I64, 5 => (attrition_value): I64, 6 => (attrition_threshold): I64, 7 => (attrition): U8, 8 => (exercising): U8, 9 => (has_order): U8, 10 => (invalid_orders): U8, 11 => (strength_factor): I64, 12 => (model_number): I32, 13 => (acclimatization_maximum): OptionalI64, 14 => (acclimatization): Opaque, 15 => (move_flags): U8, 16 => (border_combat_stats): Opaque, 17 => (naming): Opaque, 18 => (supply_grace_maximum): I64, 19 => (supply_grace_remaining): I64, 20 => (country_ordinal): OptionalU32, 21 => (invalid_orders_reason): OptionalI32, 22 => (supply): Opaque, 23 => (attrition_inputs): Opaque, 24 => (dig_in_factor): OptionalI64, 25 => (name): Opaque, 26 => (attack): Opaque }, |row| {
-    if let Recorded::Value(packet) = &row.attack { packet.check()?; }
-    Ok(())
-});
+ { 0 => (maximum_hit_points): I64 @ Self::MAXIMUM_STEP, 1 => (maximum_organisation): I64 @ Self::MAXIMUM_STEP, 2 => (entrenchment): I64, 3 => (entrenchment_cap): I64, 4 => (supply_ratio): I64 @ Self::SUPPLY_RATIO_STEP, 5 => (attrition_value): I64, 6 => (attrition_threshold): I64, 7 => (attrition): U8, 8 => (exercising): U8, 9 => (has_order): U8, 10 => (invalid_orders): U8, 11 => (strength_factor): I64, 12 => (model_number): I32, 13 => (acclimatization_maximum): OptionalI64, 14 => (acclimatization): Opaque, 15 => (move_flags): U8, 16 => (border_combat_stats): Opaque, 17 => (naming): Opaque, 18 => (supply_grace_maximum): I64, 19 => (supply_grace_remaining): I64 @ Self::SUPPLY_GRACE_STEP, 20 => (country_ordinal): OptionalU32, 21 => (invalid_orders_reason): OptionalI32, 22 => (supply): Opaque, 23 => (attrition_inputs): Opaque, 24 => (dig_in_factor): OptionalI64, 25 => (name): Opaque, 26 => (attack): Opaque, 27 => (camouflage): Opaque, 28 => (attack_stats): Opaque, 29 => (weather_factor): OptionalI64 }, |_row| Ok(()));
 
 /// DivisionRetreatBans: key division (64 bits). A division whose commander
 /// bans retreat: bits of the leader modifier block selected for it,
@@ -1036,16 +1260,11 @@ typed_codec!(DivisionStatusRow, 64, |row| row.division as u128,
 /// side of one of its combats (LandCombats defenders/attackers), which
 /// the reader checks at its own hour.
 ///
-/// Sliced, daily (family `retreat_bans`, owner: the canonical slot of the
-/// division's roster owner): each owner's divisions are re-read in its daily
-/// 1/24 slice, with no hook or change fingerprint (owner rule: no harsher
-/// than the game, which re-checks raid offers in a rolling sweep); an owner
-/// new to the census, or whose read was not published, is read at the next
-/// hour. `SliceReads` holds each owner's read hour, rows or none; a division
-/// created after its owner's read has no row until the next one. A division
-/// whose roster owner cannot be resolved could belong to any read owner, so
-/// that hour's read returns no rows and is truncated: every earlier ban
-/// stands, and the owners are read again at the next hour.
+/// Hourly: every division each hour, with each commander's two blocks read
+/// again only after a writer of them ran (the collector's
+/// retreat_ban_changes). A division whose roster owner cannot be resolved
+/// makes the hour's read return no rows, truncated. Before format 102 the
+/// table held each owner's daily read, and those recordings refuse it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DivisionRetreatBanRow {
     pub division: u64,
@@ -1074,6 +1293,27 @@ value_struct!(DivisionAcclimatization {
     category: u32,
     weight: i64
 });
+
+/// The acclimatization category used to camouflage a division's land model. Division
+/// `+0x4B8` holds the acclimatization data; selection takes the entry with the first
+/// strictly greatest weight above zero, and keeps its category when that category is not
+/// null and the weight reaches the maximum (+0x38) times the live
+/// `NGraphics.ACCLIMATIZATION_CAMO_SHOW_AT`, a wrapping signed product truncated toward
+/// zero by 100,000. The capture applies exactly that test, so a division's camouflage
+/// changes only when the winner or its crossing of the threshold does. The province and
+/// state conditions that follow (`forbid_camo_when`, `change_camo_when`) depend on where
+/// the model stands and stay with the consumer.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DivisionCamouflage {
+    /// The category's lexer token; None when no category reaches the
+    /// threshold, the weights are all zero or negative, or the winning
+    /// category pointer is null.
+    pub category: Option<u32>,
+}
+value_struct!(DivisionCamouflage {
+    category: Option<u32>
+});
+opaque_value!(Option<DivisionCamouflage>);
 
 /// Daily template dictionary: names and the native `unit_type` category, not a
 /// proved sprite frame. What a template edit changes for the counter and the
@@ -1107,16 +1347,18 @@ value_struct!(TemplateSubunit {
     count: i32
 });
 
-/// Hourly companion of LandCombats, keyed by its full native handle. Fixed
-/// progress values have denominator 100,000; the defender value is the engine's
-/// complemented attacker fraction, not a second independently rounded ratio.
+/// Hourly companion of LandCombats, keyed by its full native handle: each
+/// side's loss counters.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatProgressRow {
     pub combat: u64,
-    pub attacker_progress: i64,
-    pub defender_progress: i64,
-    pub direction_attacker: u64,
-    pub direction_province: u32,
+    /// Retired: playback computes both sides' progress from the ordered LandCombats
+    /// rosters and their Divisions organisation, and the marker's direction from the
+    /// first attacker with a map entity.
+    pub attacker_progress: RetiredI64,
+    pub defender_progress: RetiredI64,
+    pub direction_attacker: RetiredU64,
+    pub direction_province: RetiredU32,
     /// Exact signed native loss counters, dated by this table's hourly read.
     pub attacker_manpower_loss: Recorded<i32>,
     pub defender_manpower_loss: Recorded<i32>,
@@ -1279,13 +1521,12 @@ typed_codec!(LandTheatreMemberRow, 128, |row| (row.theater_group as u128) << 64 
 /// InvasionPreparations: key owner_group:instance (96 bits), as ArmyOrders.
 /// Hourly.
 ///
-/// Stored required-preparation operands for each naval invasion order
-/// (type 3), and its accumulated preparation (`progress`). The game
-/// computes required hours on demand and stores none; the viewer computes
-/// `hours = trunc(A * B / 1e10) * 24` with
-/// `A = 100000 + country_term + relation_term.unwrap_or(0) + leader_term
-/// (only when leader_applies) + relation_bonus.unwrap_or(0)` and
-/// `B = NAVAL_INVASION_PREPARE_DAYS * 100000 + days_term`, the define from content.
+/// Stored required-preparation operands for each naval invasion order (type 3), and its
+/// accumulated preparation (`progress`). The game computes required hours on demand and
+/// stores none; the viewer computes the fixed5 product of two terms, truncated to whole
+/// days and multiplied by 24. The first is one plus `country_term`, present relation
+/// terms and `leader_term` only when `leader_applies`. The second is the content define
+/// `NAVAL_INVASION_PREPARE_DAYS` scaled to fixed5 plus `days_term`.
 ///
 /// `C` is the owning group's resolved country. `target` (`T`) is the
 /// controller of the state of the order's first path province, zero without
@@ -1300,18 +1541,13 @@ typed_codec!(LandTheatreMemberRow, 128, |row| (row.theater_group as u128) << 64 
 /// root order, computed from the group's then its parent's primary orders'
 /// assigned members, is this order.
 ///
-/// The row also holds the sea route's path-cost operands for the unit used
-/// to search the invasion route: `unit_owner` is that unit's raw owner
-/// (zero without a unit); the `zero_*` bytes are its owner's slot-0 war
-/// presence, retired-war byte (zero without a war), and co-belligerent
-/// byte. `co_belligerents` holds ascending target slots whose stored byte
-/// is nonzero (only 0 or 1 is written). The game serializes none of them.
+/// `unit_owner` is the raw `unit+0x1E0` of the unit used by the naval-invasion route
+/// search (zero without a unit); the sea route's path-cost operands for that owner are
+/// the slot-0 relation bytes and co-belligerents of its CountryCounterInputs row, so the
+/// retired `zero_*` and `co_belligerents` fields record nothing.
 ///
 /// The save writes only progress among the preparation operands, which the
-/// oracle compares. In a complete row, a slot absent from co_belligerents has a
-/// zero byte; unavailable never means zero. Unit selection and candidate-set
-/// evidence live in engine::invasion_preparations; the path-cost operands have
-/// no save comparator.
+/// oracle compares. Unit selection lives in engine::invasion_preparations.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct InvasionPreparationRow {
     pub owner_group: u64,
@@ -1325,10 +1561,10 @@ pub struct InvasionPreparationRow {
     pub leader_applies: u8,
     pub days_term: i64,
     pub unit_owner: u32,
-    pub zero_war_present: u8,
-    pub zero_war_retired: u8,
-    pub zero_co_belligerent: u8,
-    pub co_belligerents: Vec<u32>,
+    pub zero_war_present: RetiredU8,
+    pub zero_war_retired: RetiredU8,
+    pub zero_co_belligerent: RetiredU8,
+    pub co_belligerents: RetiredU32List,
 }
 typed_codec!(InvasionPreparationRow, 96, |row| (row.owner_group as u128) << 32 | row.instance as u128, |key| Self { owner_group: (key >> 32) as u64, instance: key as u32, ..Default::default() },
  { 0 => (progress): I64, 1 => (target): U32, 2 => (country_term): I64, 3 => (relation_term): OptionalI64, 4 => (relation_bonus): OptionalI64, 5 => (leader_term): OptionalI64, 6 => (leader_applies): U8, 7 => (days_term): I64, 8 => (unit_owner): U32, 9 => (zero_war_present): U8, 10 => (zero_war_retired): U8, 11 => (zero_co_belligerent): U8, 12 => (co_belligerents): U32List }, |_row| Ok(()));
@@ -1369,12 +1605,12 @@ typed_codec!(VolunteerHostRow, 64, |row| (row.country as u128) << 32 | row.posit
 
 /// TheatreAreas: key theatre:ordinal (96 bits), 2 payload mask bits.
 ///
-/// One CControllerArea listed by a volunteer CTheatre at `+0x18`. `representative`
-/// is the province behind the area's `+0x28`, which is the only member the save
-/// writer emits; `provinces` is the area's whole `+0x30` membership.
+/// One controller area listed by a volunteer theatre at `+0x18`. `representative` is the
+/// province behind the area's `+0x28`, which is the only member the save writer emits;
+/// `provinces` is the area's whole `+0x30` membership.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TheatreAreaRow {
-    /// Full native CTheatre handle; join it to LandTheatres.
+    /// Full native theatre handle; join it to LandTheatres.
     pub theatre: u64,
     pub ordinal: u32,
     /// Representative province id; absent when the native pointer is null.
@@ -1387,13 +1623,13 @@ typed_codec!(TheatreAreaRow, 96, |row| (row.theatre as u128) << 32 | row.ordinal
 
 /// StationedUnits: key theatre:ordinal (96 bits), 1 payload mask bit.
 ///
-/// One position of a volunteer CTheatre's `+0x68` stationed-unit vector.
+/// One position of a volunteer theatre's `+0x68` stationed-unit vector.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StationedUnitRow {
-    /// Full native CTheatre handle; join it to LandTheatres.
+    /// Full native theatre handle; join it to LandTheatres.
     pub theatre: u64,
     pub ordinal: u32,
-    /// Full native CUnit handle; join it to Divisions or TaskForces.
+    /// Full native unit handle; join it to Divisions or TaskForces.
     pub unit: u64,
 }
 typed_codec!(StationedUnitRow, 96, |row| (row.theatre as u128) << 32 | row.ordinal as u128, |key| Self { theatre: (key >> 32) as u64, ordinal: key as u32, unit: Default::default() },
@@ -1401,9 +1637,9 @@ typed_codec!(StationedUnitRow, 96, |row| (row.theatre as u128) << 32 | row.ordin
 
 /// OrdersGroups: key handle (64 bits), 8 payload mask bits.
 ///
-/// One row per authenticated type-53 COrdersGroup, army and army group alike.
-/// Every reference field is the pointee's full native handle; zero preserves
-/// the engine's own null pointer and is never an invented identity.
+/// One row per authenticated type-53 orders group, army and army group alike. Every
+/// reference field is the pointee's full native handle; zero preserves the engine's own
+/// null pointer and is never an invented identity.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OrdersGroupRow {
     pub handle: u64,
@@ -1418,11 +1654,11 @@ pub struct OrdersGroupRow {
     /// by is_army_group. None means absent, not position zero.
     pub theatre_ordinal: Option<u32>,
     pub theater_group: u64,
-    /// Parent CArmyGroup handle, zero when this group has no parent.
+    /// Parent army group handle, zero when this group has no parent.
     pub parent: u64,
-    /// CUnitLeader handle, zero when no leader is assigned.
+    /// Unit leader handle, zero when no leader is assigned.
     pub leader: u64,
-    /// CUnit handle of the HQ-providing unit, zero when absent.
+    /// Unit handle of the HQ-providing unit, zero when absent.
     pub hq_provider: u64,
     /// Stored orders-group name bytes; None is a counted capture refusal.
     pub name: Recorded<Option<Vec<u8>>>,
@@ -1438,7 +1674,7 @@ typed_codec!(OrdersGroupRow, 64, |row| row.handle as u128, |key| Self { handle: 
 pub struct OrdersGroupMemberRow {
     pub group: u64,
     pub ordinal: u32,
-    /// Full CUnit handle of the assigned division.
+    /// Full unit handle of the assigned division.
     pub unit: u64,
 }
 typed_codec!(OrdersGroupMemberRow, 96, |row| (row.group as u128) << 32 | row.ordinal as u128, |key| Self { group: (key >> 32) as u64, ordinal: key as u32, unit: Default::default() },
@@ -1449,7 +1685,7 @@ typed_codec!(OrdersGroupMemberRow, 96, |row| (row.group as u128) << 32 | row.ord
 pub struct ArmyGroupMemberRow {
     pub group: u64,
     pub ordinal: u32,
-    /// Full child COrdersGroup handle.
+    /// Full child orders group handle.
     pub child: u64,
 }
 typed_codec!(ArmyGroupMemberRow, 96, |row| (row.group as u128) << 32 | row.ordinal as u128, |key| Self { group: (key >> 32) as u64, ordinal: key as u32, child: Default::default() },
@@ -1460,7 +1696,3 @@ opaque_value!(Vec<TrainAllocation>);
 opaque_value!(SparseBytes);
 opaque_value!(Vec<DivisionAcclimatization>);
 opaque_value!(Vec<TemplateSubunit>);
-
-#[cfg(test)]
-#[path = "unit_transport_inputs_tests.rs"]
-mod unit_transport_inputs_tests;

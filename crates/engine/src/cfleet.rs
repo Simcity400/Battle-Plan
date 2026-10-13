@@ -104,6 +104,11 @@ impl<'a, R: Default> Output<'a, R> {
         Ok(true)
     }
 
+    /// Whether a later row may still be emitted: no failure, and room or growth.
+    fn may_take(&self) -> bool {
+        self.error.is_none() && (self.rows.is_growing() || self.len < self.rows.len())
+    }
+
     fn push(&mut self, row: Result<R, &'static str>) {
         match row {
             Ok(row) => {
@@ -197,6 +202,7 @@ pub fn walk_timed_with(
         now,
         visit,
         None,
+        true,
     )
 }
 
@@ -225,12 +231,187 @@ pub fn walk_timed_with_names(
         now,
         visit,
         Some(names),
+        true,
     )
 }
 
-/// Worker storage follows each original fleet/task/ship observation.
-/// Task-force traversal has no chosen population ceiling and growth does not
-/// repeat acquisition.
+/// Ships of a roster page the serial census hints ahead of the one it reads.
+const SHIP_HINTS: usize = 8;
+
+/// Ships (and ship-table failures) the census reads in one guarded batch.
+const SHIP_RUN: usize = 64;
+
+/// A fleet's census fields, gathered in one guarded call per fleet and served
+/// to the census's reads of it: vtable, handle, owner, leader, task-force
+/// roster, home base and name. A field the gather could not copy is read
+/// alone, as the per-field walk reads it.
+const FLEET_FIELDS: [(usize, usize); 7] = [
+    (0, 8),
+    (HANDLE, 8),
+    (OWNER, 8),
+    (LEADER, 8),
+    (TASK_FORCES, 16),
+    (HOME_BASE, 8),
+    (NAME, crate::msvc_string::STRIDE),
+];
+
+/// A task force's census fields, gathered the same way: its identity
+/// (vtables, handle, fleet), its TaskForces row (combat references, owners,
+/// location, ordinary route count, mission) and its ship roster.
+const TASK_CENSUS_FIELDS: [(usize, usize); 10] = [
+    (0, 8),
+    (ctask_force::SECONDARY_BASE, 8),
+    (crate::cunit::HANDLE, 8),
+    (crate::cunit::COMBAT_REFERENCE_COUNT, 4),
+    (crate::cunit::ROSTER_OWNER, 12),
+    (crate::cunit::LOCATION, 8),
+    (crate::cunit::ORDINARY_ROUTE_COUNT, 4),
+    (ctask_force::FLEET, 8),
+    (ctask_force::SHIPS, 16),
+    (ctask_force::MISSION, 4),
+];
+
+/// One census occurrence on the Ships table, in census order: a ship to read
+/// and emit, or a failure that stops the table there.
+#[derive(Clone, Copy)]
+enum Pending {
+    Ship {
+        ship: usize,
+        task: usize,
+        task_id: u64,
+        ordinal: u32,
+    },
+    Failure(&'static str),
+}
+
+/// The census's pending Ships occurrences, across task forces, fleets and
+/// countries. The ships' census fields are read in one guarded
+/// `copy_records` per run (its sixteen-row hints overlap their misses); the
+/// rows are then checked and emitted, and the failures applied, in census
+/// order, so a healthy census emits what the per-ship walk emits. A run whose
+/// copy stops early reads its remaining ships once more one at a time
+/// ([`cship::read_row`]), which gives the per-ship walk's failure for a
+/// lasting fault; a fault that clears may let a ship through that the
+/// per-ship walk refused, never the reverse.
+struct ShipRun {
+    pending: [Pending; SHIP_RUN],
+    len: usize,
+    pointers: [usize; SHIP_RUN],
+    records: [u8; SHIP_RUN * cship::ROW_STRIDE],
+}
+
+impl ShipRun {
+    fn new() -> Self {
+        Self {
+            pending: [Pending::Failure(""); SHIP_RUN],
+            len: 0,
+            pointers: [0; SHIP_RUN],
+            records: [0; SHIP_RUN * cship::ROW_STRIDE],
+        }
+    }
+
+    /// Queue `entry`, reading the run first when it is full.
+    fn push(
+        &mut self,
+        entry: Pending,
+        memory: &impl Memory,
+        base: usize,
+        ships: &mut Output<'_, cship::Row>,
+        visit: &mut impl FnMut(usize, &cship::Row),
+    ) {
+        if self.len == SHIP_RUN {
+            self.flush(memory, base, ships, visit);
+        }
+        self.pending[self.len] = entry;
+        self.len += 1;
+    }
+
+    /// Read the run's ships in one guarded copy, then emit them and apply its
+    /// failures in census order.
+    fn flush(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        ships: &mut Output<'_, cship::Row>,
+        visit: &mut impl FnMut(usize, &cship::Row),
+    ) {
+        let mut count = 0;
+        for entry in &self.pending[..self.len] {
+            if let Pending::Ship { ship, .. } = *entry {
+                self.pointers[count] = ship;
+                count += 1;
+            }
+        }
+        // Nothing is read for a table that can take no row.
+        let complete = if count != 0 && ships.may_take() {
+            memory.copy_records(
+                crate::memory::RecordSources::Pointers(&self.pointers[..count]),
+                &cship::ROW_LAYOUT,
+                &mut self.records[..count * cship::ROW_STRIDE],
+            ) / cship::ROW_FIELDS.len()
+        } else {
+            0
+        };
+        let expected = base
+            .checked_add(cship::VTABLE_RVA)
+            .map(|vtable| vtable as u64);
+        let mut index = 0;
+        let mut fell_back = false;
+        for entry in &self.pending[..self.len] {
+            match *entry {
+                Pending::Failure(reason) => {
+                    ships.error.get_or_insert(reason);
+                }
+                Pending::Ship {
+                    ship,
+                    task,
+                    task_id,
+                    ordinal,
+                } => {
+                    let at = index;
+                    index += 1;
+                    match ships.needs_row() {
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        Err(reason) => {
+                            ships.error.get_or_insert(reason);
+                            continue;
+                        }
+                    }
+                    let row = match expected {
+                        Some(expected) if at < complete => cship::decode_row(
+                            &self.records[at * cship::ROW_STRIDE..(at + 1) * cship::ROW_STRIDE],
+                            expected,
+                            task,
+                            task_id,
+                        ),
+                        // The batch stopped before this ship: read it alone.
+                        _ => {
+                            fell_back = true;
+                            cship::read_row(memory, base, ship, task, task_id)
+                        }
+                    }
+                    .map(|mut row| {
+                        row.roster_ordinal = ordinal;
+                        row
+                    });
+                    if let Ok(row) = &row {
+                        visit(ship, row);
+                    }
+                    ships.push(row);
+                }
+            }
+        }
+        if fell_back {
+            crate::batch_fallback::record(crate::batch_fallback::Batch::ShipRuns);
+        }
+        self.len = 0;
+    }
+}
+
+/// Worker-only storage follows each original fleet/task/ship observation. Fleet
+/// serialization traverses TASK_FORCES through +B8/+C4; no chosen population
+/// ceiling and no second native capture is needed after growth.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_timed_growing_with_names(
     memory: &impl Memory,
@@ -253,6 +434,7 @@ pub fn walk_timed_growing_with_names(
         now,
         visit,
         Some(names),
+        true,
     )
 }
 
@@ -267,6 +449,7 @@ fn walk_named(
     mut now: impl FnMut(usize) -> u64,
     mut visit: impl FnMut(usize, &cship::Row),
     mut names: Option<&mut Vec<u8>>,
+    batched: bool,
 ) -> TimedCapture {
     let mut names_used = 0;
     let invalid_reference = if names.is_some() {
@@ -277,6 +460,14 @@ fn walk_named(
     };
     let start = now(0);
     let mut read_ticks = [0_u64; 3];
+    // The census reads the selected fleet's and task force's fields from one
+    // gather each (batched walks only); ships are read in runs from `source`.
+    let source = memory;
+    let fleet_view = cship::SwitchedObject::new(source, FLEET_FIELDS);
+    let view = cship::SwitchedObject::new(&fleet_view, TASK_CENSUS_FIELDS);
+    let memory = &view;
+    let mut ship_output = Output::from_buffer(ships);
+    let mut run = ShipRun::new();
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let provinces = game_state
@@ -292,7 +483,6 @@ fn walk_named(
         };
         let mut fleet_output = Output::from_buffer(fleets);
         let mut task_output = Output::from_buffer(task_forces);
-        let mut ship_output = Output::from_buffer(ships);
         let mut found_country = false;
         let expected_fleet_vtable = base
             .checked_add(VTABLE_RVA)
@@ -309,6 +499,12 @@ fn walk_named(
                 .ok_or("fleet roster unreadable or invalid")?;
             for index in 0..fleet_roster.count {
                 let fleet = pointer(memory, fleet_roster, index)?;
+                if batched {
+                    fleet_view.select(fleet);
+                    if !fleet_view.complete() {
+                        crate::batch_fallback::record(crate::batch_fallback::Batch::FleetGathers);
+                    }
+                }
                 if read::<u64>(memory, fleet) != Some(expected_fleet_vtable as u64) {
                     return Err("fleet vtable mismatch");
                 }
@@ -363,6 +559,14 @@ fn walk_named(
                     let task_start = now(1);
                     let task_result = (|| {
                         let task = pointer(memory, tasks, task_index)?;
+                        if batched {
+                            view.select(task);
+                            if !view.complete() {
+                                crate::batch_fallback::record(
+                                    crate::batch_fallback::Batch::TaskForceGathers,
+                                );
+                            }
+                        }
                         let task_id = task_reader.identity(task, fleet)?;
                         if task_output.needs_row()? {
                             task_output.push(task_reader.row(
@@ -379,7 +583,22 @@ fn walk_named(
                         Ok(task) => task,
                         Err(reason) => {
                             task_output.error.get_or_insert(reason);
-                            ship_output.error.get_or_insert(reason);
+                            if batched {
+                                // The Ships table stops here, after the
+                                // ships queued before this task force.
+                                let ship_start = now(2);
+                                run.push(
+                                    Pending::Failure(reason),
+                                    source,
+                                    base,
+                                    &mut ship_output,
+                                    &mut visit,
+                                );
+                                read_ticks[2] =
+                                    read_ticks[2].saturating_add(now(0).saturating_sub(ship_start));
+                            } else {
+                                ship_output.error.get_or_insert(reason);
+                            }
                             continue;
                         }
                     };
@@ -389,44 +608,107 @@ fn walk_named(
                             .checked_add(ctask_force::SHIPS)
                             .and_then(|p| Array::read(memory, p, 8))
                             .ok_or("ship roster unreadable or invalid")?;
-                        for ship_index in 0..ship_roster.count {
-                            let ship = pointer(memory, ship_roster, ship_index)?;
-                            if ship_output.needs_row()? {
-                                let row = cship::read_row(memory, base, ship, task, task_id).map(
-                                    |mut row| {
-                                        row.roster_ordinal = ship_index;
-                                        row
-                                    },
-                                );
-                                if let Ok(row) = &row {
-                                    visit(ship, row);
+                        // The roster's pointers a page per guarded call; each
+                        // ship is read in roster order after its page, with
+                        // cache hints (no reads) for the ships SHIP_HINTS
+                        // ahead of it in the page, so their misses overlap.
+                        crate::cpdx_array::pointer_pages(
+                            memory,
+                            ship_roster,
+                            ROSTER_POINTER,
+                            |first, page| {
+                                if batched {
+                                    // Each ship joins the run in roster
+                                    // order, hinted now and read with it.
+                                    for (index, &ship) in page.iter().enumerate() {
+                                        if ship == 0 {
+                                            return Err(ROSTER_POINTER);
+                                        }
+                                        cship::prefetch_row(ship);
+                                        run.push(
+                                            Pending::Ship {
+                                                ship,
+                                                task,
+                                                task_id,
+                                                ordinal: first + index as u32,
+                                            },
+                                            source,
+                                            base,
+                                            &mut ship_output,
+                                            &mut visit,
+                                        );
+                                    }
+                                    return Ok(());
                                 }
-                                ship_output.push(row);
-                            }
-                        }
-                        Ok::<_, &'static str>(())
+                                for &ship in page.iter().take(SHIP_HINTS) {
+                                    cship::prefetch_row(ship);
+                                }
+                                for (index, &ship) in page.iter().enumerate() {
+                                    if let Some(&ahead) = page.get(index + SHIP_HINTS) {
+                                        cship::prefetch_row(ahead);
+                                    }
+                                    if ship == 0 {
+                                        return Err(ROSTER_POINTER);
+                                    }
+                                    if ship_output.needs_row()? {
+                                        let ship_index = first + index as u32;
+                                        let row = cship::read_row(
+                                            memory, base, ship, task, task_id,
+                                        )
+                                        .map(|mut row| {
+                                            row.roster_ordinal = ship_index;
+                                            row
+                                        });
+                                        if let Ok(row) = &row {
+                                            visit(ship, row);
+                                        }
+                                        ship_output.push(row);
+                                    }
+                                }
+                                Ok(())
+                            },
+                        )
                     })();
-                    read_ticks[2] = read_ticks[2].saturating_add(now(0).saturating_sub(ship_start));
                     if let Err(reason) = ship_result {
-                        ship_output.error.get_or_insert(reason);
+                        if batched {
+                            run.push(
+                                Pending::Failure(reason),
+                                source,
+                                base,
+                                &mut ship_output,
+                                &mut visit,
+                            );
+                        } else {
+                            ship_output.error.get_or_insert(reason);
+                        }
                     }
+                    read_ticks[2] = read_ticks[2].saturating_add(now(0).saturating_sub(ship_start));
                 }
             }
         }
         if !found_country {
             return Err("country table has no readable countries");
         }
-        Ok(Capture {
-            fleets: fleet_output.finish(),
-            task_forces: task_output.finish(),
-            ships: ship_output.finish(),
-        })
+        Ok((fleet_output.finish(), task_output.finish()))
     })();
-    let capture = result.unwrap_or_else(|reason| Capture {
-        fleets: Outcome::Unavailable { reason },
-        task_forces: Outcome::Unavailable { reason },
-        ships: Outcome::Unavailable { reason },
-    });
+    // The ships still queued, including those queued before a failure that
+    // ended the walk, are read, emitted and visited (seeding their consumers)
+    // as the per-ship walk did before it reached that failure.
+    let ship_start = now(2);
+    run.flush(source, base, &mut ship_output, &mut visit);
+    read_ticks[2] = read_ticks[2].saturating_add(now(0).saturating_sub(ship_start));
+    let capture = match result {
+        Ok((fleets, task_forces)) => Capture {
+            fleets,
+            task_forces,
+            ships: ship_output.finish(),
+        },
+        Err(reason) => Capture {
+            fleets: Outcome::Unavailable { reason },
+            task_forces: Outcome::Unavailable { reason },
+            ships: Outcome::Unavailable { reason },
+        },
+    };
     read_ticks[0] = now(0)
         .saturating_sub(start)
         .saturating_sub(read_ticks[1])
@@ -440,13 +722,15 @@ fn walk_named(
     }
 }
 
+const ROSTER_POINTER: &str = "naval roster pointer unreadable or null";
+
 fn pointer(memory: &impl Memory, array: Array, index: u32) -> Result<usize, &'static str> {
     array
         .element(index, 8)
         .and_then(|p| read::<u64>(memory, p))
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
-        .ok_or("naval roster pointer unreadable or null")
+        .ok_or(ROSTER_POINTER)
 }
 
 pub(crate) fn province(
@@ -647,56 +931,74 @@ fn visit_task_forces_inner<M: Memory>(
                     handle: fleet_handle,
                     tasks,
                 })?;
-                crate::cpdx_array::pointers(
+                let mut visit_task = |index: u32, task: usize| {
+                    if task == 0 {
+                        return Err("task force pointer unreadable or null");
+                    }
+                    // Preserve the named overflow error before copy_records reports a short prefix.
+                    task.checked_add(if body_fields {
+                        ctask_force::MISSION
+                    } else {
+                        ctask_force::FLEET
+                    })
+                    .ok_or("task force address overflow")?;
+                    let mut bytes = [0; 36];
+                    let copied = memory.copy_records(
+                        RecordSources::Pointers(&[task]),
+                        &task_layout,
+                        &mut bytes,
+                    );
+                    let value = |at| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+                    if copied < 2 || value(0) != primary || value(8) != secondary {
+                        return Err("task force vtable mismatch");
+                    }
+                    if copied < 3 {
+                        return Err("task force handle unreadable");
+                    }
+                    let id = value(16);
+                    if id == 0 {
+                        return Err("non-null task force has null handle");
+                    }
+                    if copied < 4 || value(24) != fleet as u64 {
+                        return Err("task force parent differs from fleet roster");
+                    }
+                    if body_fields && copied < 5 {
+                        return Err("task force mission unreadable");
+                    }
+                    visit(Visit::TaskForce(
+                        TaskForceVisit {
+                            country,
+                            task,
+                            id,
+                            fleet,
+                            fleet_handle,
+                            leader,
+                            kind: u32::from_le_bytes(bytes[32..36].try_into().unwrap()),
+                        },
+                        index,
+                    ))
+                };
+                crate::cpdx_array::pointer_pages(
                     memory,
                     tasks,
                     "task force pointer unreadable or null",
-                    |index, task| {
-                        if task == 0 {
-                            return Err("task force pointer unreadable or null");
+                    |first, page| {
+                        for (offset, &task) in page.iter().enumerate() {
+                            // Cache hints (no reads) for the next task force's
+                            // identity and, in the counter walk, the fields its
+                            // readers gather (`ctask_force::TASK_FIELDS`), while
+                            // this one is read.
+                            if let Some(&next) = page.get(offset + 1) {
+                                crate::prefetch::fields(next, task_layout.fields());
+                                if body_fields {
+                                    for (at, len) in ctask_force::TASK_FIELDS {
+                                        crate::prefetch::span(next.wrapping_add(at), len);
+                                    }
+                                }
+                            }
+                            visit_task(first + offset as u32, task)?;
                         }
-                        // Preserve the named overflow error before copy_records reports a short prefix.
-                        task.checked_add(if body_fields {
-                            ctask_force::MISSION
-                        } else {
-                            ctask_force::FLEET
-                        })
-                        .ok_or("task force address overflow")?;
-                        let mut bytes = [0; 36];
-                        let copied = memory.copy_records(
-                            RecordSources::Pointers(&[task]),
-                            &task_layout,
-                            &mut bytes,
-                        );
-                        let value = |at| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
-                        if copied < 2 || value(0) != primary || value(8) != secondary {
-                            return Err("task force vtable mismatch");
-                        }
-                        if copied < 3 {
-                            return Err("task force handle unreadable");
-                        }
-                        let id = value(16);
-                        if id == 0 {
-                            return Err("non-null task force has null handle");
-                        }
-                        if copied < 4 || value(24) != fleet as u64 {
-                            return Err("task force parent differs from fleet roster");
-                        }
-                        if body_fields && copied < 5 {
-                            return Err("task force mission unreadable");
-                        }
-                        visit(Visit::TaskForce(
-                            TaskForceVisit {
-                                country,
-                                task,
-                                id,
-                                fleet,
-                                fleet_handle,
-                                leader,
-                                kind: u32::from_le_bytes(bytes[32..36].try_into().unwrap()),
-                            },
-                            index,
-                        ))
+                        Ok(())
                     },
                 )
             },

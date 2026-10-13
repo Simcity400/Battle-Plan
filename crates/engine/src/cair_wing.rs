@@ -5,7 +5,9 @@
 use crate::{
     Memory, air_mission, cair_wing_pool, ccountry, cgame_state, corders_group,
     cpdx_array::Array,
-    creference_registry, cstrategic_air, cstrategic_air_manager, cstrategic_region, read,
+    creference_registry, cstrategic_air, cstrategic_air_manager, cstrategic_region,
+    memory::{RecordField, RecordLayout, RecordSources, packed_fields, packed_stride},
+    msvc_string, read,
     walk::{Buffer, Outcome},
 };
 
@@ -23,13 +25,18 @@ pub const TYPE: u32 = 69;
 pub const REFERENCE_TYPE: usize = 0x18;
 /// Instance id, u32.
 pub const ID: usize = 0x1c;
-/// CAirWing CAirWingPool* at primary+38; translated from body+28 and independently used by fuel walkers.
+/// CAirWing CAirWingPool* at primary+38; translated from body+28 and
+/// independently used by fuel walkers.
 pub const POOL: usize = 0x38;
 /// Air-group paired-u32 handle.
 pub const GROUP_HANDLE: usize = 0x40;
 /// Plane count, i32.
 pub const PLANE_COUNT: usize = 0x7c;
-/// Cumulative signed i32 accident count, incremented after aircraft removal.
+/// Air-wing signed i32 acquired manpower at primary+80: aircraft destruction
+/// subtracts the lost crews and clamps at zero.
+pub const ACQUIRED_MANPOWER: usize = 0x80;
+/// CAirWing cumulative signed i32 accident count at primary+84; The accident
+/// update increments this word after aircraft removal.
 pub const AIR_ACCIDENTS: usize = 0x84;
 /// Embedded mission object, with layout in air_mission.
 pub const MISSION: usize = 0x90;
@@ -98,7 +105,19 @@ pub struct ScoreLeaf {
 pub struct GameScoreWalk {
     pub shared: SharedWalk,
     pub score: Outcome,
+    /// The walk stopped before the end of its owner slots: a mandatory
+    /// fault, or every projection failed. The serial walk stops there too,
+    /// so no later part of a census split by owner range belongs to it.
+    pub ended: bool,
+    /// This walk's record gathers that did not complete and pointer runs
+    /// that did not read, after which the serial reads ran ([`ROW_BATCH`]).
+    /// Each is also counted for status where it starts
+    /// ([`crate::batch_fallback`]), whichever walk wrapper ran it.
+    pub row_fallbacks: u32,
 }
+
+/// Every owner slot: the serial walk, one part covering the whole census.
+pub const EVERY_OWNER: std::ops::Range<u32> = 0..u32::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissionStatError {
@@ -254,10 +273,16 @@ impl NameFailure {
 }
 
 impl NameArena<'_> {
-    pub fn capture(&mut self, memory: &impl Memory, pointer: usize) -> Option<(usize, usize)> {
+    pub fn capture(
+        &mut self,
+        memory: &impl Memory,
+        pointer: usize,
+        header: Option<[u8; msvc_string::STRIDE]>,
+    ) -> Option<(usize, usize)> {
         match capture_name(
             memory,
             pointer,
+            header,
             Buffer::Fixed(self.bytes),
             &mut self.used,
             &mut self.required,
@@ -276,23 +301,39 @@ impl NameArena<'_> {
 pub fn capture_name_growing(
     memory: &impl Memory,
     pointer: usize,
+    header: Option<[u8; msvc_string::STRIDE]>,
     bytes: &mut Vec<u8>,
     used: &mut usize,
     required: &mut usize,
 ) -> Result<(usize, usize), NameFailure> {
-    capture_name(memory, pointer, Buffer::Growing(bytes), used, required)
+    capture_name(
+        memory,
+        pointer,
+        header,
+        Buffer::Growing(bytes),
+        used,
+        required,
+    )
 }
 
+/// `header` is the census's gathered copy of the 32-byte header
+/// ([`Admitted::name_header`]), the bytes the whole-header read would take;
+/// without it the header is read here.
 fn capture_name(
     memory: &impl Memory,
     pointer: usize,
+    header: Option<[u8; msvc_string::STRIDE]>,
     mut bytes: Buffer<'_, u8>,
     used: &mut usize,
     required: &mut usize,
 ) -> Result<(usize, usize), NameFailure> {
+    use crate::raid_tooltip_operands::StoredString;
     let at = pointer.checked_add(NAME).ok_or(NameFailure::Overflow)?;
-    let name = crate::raid_tooltip_operands::StoredString::read(memory, at)
-        .map_err(NameFailure::Native)?;
+    let name = match header {
+        Some(header) => StoredString::from_whole_header(memory, at, header),
+        None => StoredString::read_whole(memory, at),
+    }
+    .map_err(NameFailure::Native)?;
     *required = required
         .checked_add(name.len)
         .ok_or(NameFailure::Overflow)?;
@@ -316,14 +357,20 @@ pub fn name_demand(memory: &impl Memory, base: usize, state: usize) -> Result<us
         &mut [],
         &mut [],
         usize::MAX,
-        |pointer, _, _, _| {
+        |pointer, _, _, admitted| {
             if let Ok(bytes) = required {
                 required = (|| {
+                    use crate::raid_tooltip_operands::{NameReadError, StoredString};
                     let at = pointer
                         .checked_add(NAME)
                         .ok_or("air wing name address overflow")?;
-                    let name = crate::raid_tooltip_operands::StoredString::read(memory, at)
-                        .map_err(crate::raid_tooltip_operands::NameReadError::reason)?;
+                    // The header gathered with the row holds the fields the
+                    // field reads would take.
+                    let name = match admitted.name_header {
+                        Some(header) => StoredString::from_whole_header(memory, at, header),
+                        None => StoredString::read(memory, at),
+                    }
+                    .map_err(NameReadError::reason)?;
                     bytes
                         .checked_add(name.len)
                         .ok_or("air wing name arena demand overflow")
@@ -361,6 +408,10 @@ pub struct Admitted {
     pub map: bool,
     pub sources: bool,
     pub naval: bool,
+    /// The stored name's header, when the census gathered it with the row;
+    /// [`NameArena::capture`] and [`capture_name_growing`] take it instead
+    /// of reading it.
+    pub name_header: Option<[u8; msvc_string::STRIDE]>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -486,6 +537,7 @@ pub fn walk_with(
         memory,
         base,
         game_state,
+        EVERY_OWNER,
         Buffer::Fixed(output),
         None,
         None,
@@ -522,6 +574,7 @@ pub fn walk_shared(
         memory,
         base,
         game_state,
+        EVERY_OWNER,
         Buffer::Fixed(output),
         Some(Buffer::Fixed(sources)),
         Some(naval_limit),
@@ -545,11 +598,12 @@ pub fn walk_with_names(
         memory,
         base,
         state,
+        EVERY_OWNER,
         Buffer::Fixed(output),
         None,
         None,
-        |pointer, pool, row, _| {
-            row.name = names.capture(memory, pointer);
+        |pointer, pool, row, admitted| {
+            row.name = names.capture(memory, pointer, admitted.name_header);
             visit(pointer, pool, row);
         },
         |_, _| {},
@@ -601,12 +655,13 @@ pub fn walk_shared_names_with_operands(
         memory,
         base,
         state,
+        EVERY_OWNER,
         Buffer::Fixed(output),
         Some(Buffer::Fixed(sources)),
         Some(naval_limit),
         |pointer, pool, row, admitted| {
             if admitted.map {
-                row.name = names.capture(memory, pointer);
+                row.name = names.capture(memory, pointer, admitted.name_header);
             }
             visit(pointer, pool, row, admitted);
         },
@@ -635,12 +690,13 @@ pub fn walk_game_score_with_owners(
         memory,
         base,
         game_state,
+        EVERY_OWNER,
         Buffer::Fixed(output),
         None,
         None,
-        |pointer, pool, row, _| {
+        |pointer, pool, row, admitted| {
             if let Some(names) = &mut names {
-                row.name = names.capture(memory, pointer);
+                row.name = names.capture(memory, pointer, admitted.name_header);
             }
             visit(pointer, pool, row);
         },
@@ -668,6 +724,7 @@ pub fn walk_shared_game_score_with_owners(
         memory,
         base,
         game_state,
+        EVERY_OWNER,
         Buffer::Fixed(output),
         Buffer::Fixed(sources),
         naval_limit,
@@ -681,11 +738,18 @@ pub fn walk_shared_game_score_with_owners(
 
 /// Allocating worker projections grow from each original pool header while
 /// fixed projections preserve the existing callback refusal semantics.
+///
+/// `slots` are the owner (country) slots walked after the shared manager and
+/// roster headers, which every part reads. Parts over consecutive slot ranges,
+/// joined in slot order up to and including the first that [`GameScoreWalk::ended`],
+/// are the serial walk when every projection grows: each admits every wing
+/// until it fails, so no part's admissions depend on an earlier part's rows.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_shared_game_score_buffers_with_owners(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    slots: std::ops::Range<u32>,
     output: Buffer<'_, Row>,
     sources: Buffer<'_, Source>,
     naval_limit: usize,
@@ -699,6 +763,7 @@ pub fn walk_shared_game_score_buffers_with_owners(
         memory,
         base,
         game_state,
+        slots,
         output,
         Some(sources),
         Some(naval_limit),
@@ -706,7 +771,7 @@ pub fn walk_shared_game_score_buffers_with_owners(
             if admitted.map
                 && let Some(names) = &mut names
             {
-                row.name = names.capture(memory, pointer);
+                row.name = names.capture(memory, pointer, admitted.name_header);
             }
             visit(pointer, pool, row, admitted);
         },
@@ -730,11 +795,12 @@ pub fn walk_with_names_and_transport(
         memory,
         base,
         state,
+        EVERY_OWNER,
         Buffer::Fixed(output),
         None,
         None,
-        |pointer, pool, row, _| {
-            row.name = names.capture(memory, pointer);
+        |pointer, pool, row, admitted| {
+            row.name = names.capture(memory, pointer, admitted.name_header);
             transport.capture(memory, pointer, pool, row);
             visit(pointer, pool, row);
         },
@@ -792,11 +858,116 @@ impl Projection {
     }
 }
 
+/// Wings whose census rows and stored-name headers one record gather reads.
+pub const ROW_BATCH: usize = 64;
+/// Census steps queued between replays: up to [`ROW_BATCH`] wings and the
+/// owner and pool steps among them.
+const STEP_BATCH: usize = 4 * ROW_BATCH;
+
+/// A wing's census-row spans in [`Reader::row`]'s order, then the 32-byte
+/// stored-name header [`capture_name`] reads (`NAME`).
+const ROW_SPANS: [(usize, usize); 15] = [
+    (0, 8),
+    (SECONDARY, 16),
+    (POOL, 8),
+    (PLANE_COUNT, 4),
+    (BASE_OVERRIDE, 8),
+    (MISSION + air_mission::ENABLED_MASK, 4),
+    (MISSION + air_mission::REGION, 8),
+    (MISSION + air_mission::ACTIVE, 1),
+    (ELIGIBILITY_VETO, 1),
+    (ELIGIBILITY_COUNTER, 8),
+    (COUNTRY_OVERRIDE, 4),
+    (BASE_RANGE, 8),
+    (ACE_REFERENCE, 8),
+    (ATTACHED_ORDERS_GROUP, 8),
+    (NAME, msvc_string::STRIDE),
+];
+const ROW_FIELDS: [RecordField; 15] = packed_fields(ROW_SPANS);
+const ROW_STRIDE: usize = packed_stride(ROW_SPANS);
+const ROW_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&ROW_FIELDS, ROW_STRIDE) {
+    Some(layout) => layout,
+    None => panic!("air wing row layout"),
+};
+
+#[cfg(test)]
+thread_local! {
+    /// The tests' per-object reference: the census as it stood before its
+    /// rows were gathered ([`serial_reference`]).
+    static SERIAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// One step of the census in its serial order, queued by the roster walk
+/// and replayed by [`walk_projected`]: an owner witness, a pool's storage
+/// demand and base, or a wing.
+#[derive(Clone, Copy)]
+enum Step {
+    Owner {
+        slot: u32,
+        entry: Option<usize>,
+    },
+    Pool {
+        wings: u32,
+        air_base: Result<u64, &'static str>,
+    },
+    Wing {
+        wing: usize,
+        pool: usize,
+        owner: u32,
+        ordinal: u32,
+        air_base: u64,
+    },
+}
+
+struct Queue {
+    steps: [Step; STEP_BATCH],
+    len: usize,
+    wings: usize,
+}
+
+impl Queue {
+    /// Queues `step`; true when the queue must be replayed before another.
+    fn push(&mut self, step: Step) -> bool {
+        self.steps[self.len] = step;
+        self.len += 1;
+        self.wings += usize::from(matches!(step, Step::Wing { .. }));
+        self.len == STEP_BATCH || self.wings == ROW_BATCH
+    }
+
+    fn take(&mut self) -> usize {
+        let len = self.len;
+        self.len = 0;
+        self.wings = 0;
+        len
+    }
+}
+
+/// The census in two halves, reading what the serial walk read.
+///
+/// The roster half reads the manager, owners, pools and each pool's wing
+/// pointers exactly as the serial walk did, a run of pointers in one copy,
+/// and queues the census's steps. The replay half then visits the queued
+/// steps in their serial order, so storage growth, owner witnesses, wing
+/// admission and every visitor run as before; the first wing that needs its
+/// row gathers the rows and stored-name headers of every queued wing from it
+/// on in one record copy ([`ROW_BATCH`] a copy). Rows and headers are read
+/// ahead of the earlier wings' visitors, and roster reads ahead of earlier
+/// replays; a value is used only where the serial walk read it.
+///
+/// A failed gather keeps the rows it completed; the wing it failed at and
+/// the later queued wings read their rows serially, as does a pointer run
+/// that does not read; each such fallback is counted
+/// ([`crate::batch_fallback`], [`GameScoreWalk::row_fallbacks`]). So a
+/// persistent fault refuses what the serial walk refused, at the same wing,
+/// and a one-shot fault met by a gather refuses nothing the serial walk
+/// would not have. A roster fault or full projections end the census where
+/// the serial walk ended it.
 #[allow(clippy::too_many_arguments)]
 fn walk_projected(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    slots: std::ops::Range<u32>,
     mut output: Buffer<'_, Row>,
     mut sources: Option<Buffer<'_, Source>>,
     naval_limit: Option<usize>,
@@ -806,152 +977,171 @@ fn walk_projected(
     mut score_visit: impl FnMut(usize, &ScoreLeaf),
 ) -> GameScoreWalk {
     let growing_sources = matches!(&sources, Some(Buffer::Growing(_)));
+    let scored = score_limit.is_some();
     let mut map = Projection::new(output.len());
     let mut source = sources.as_ref().map(|rows| Projection::new(rows.len()));
     let mut naval = naval_limit.map(Projection::new);
     let mut score = score_limit.map(Projection::new);
-    let result = (|| {
-        let reader = Reader { memory, base };
-        let countries = ccountry::Reader::new(memory, base, game_state)?;
-        let manager = reader.pointer(game_state, cgame_state::STRATEGIC_AIR_MANAGER)?;
-        // A null country-air manager means known zero for score. Preserve the
-        // independent AirWings refusal.
-        if manager == 0 {
-            for slot in 0..countries.count() {
-                owner_visit(slot, None);
-            }
-            return Err("strategic air manager absent");
-        }
-        // The published air-manager complete object uses its own primary vtable,
-        // separately from the embedded base subobject.
-        let vtable =
-            read::<u64>(memory, manager).ok_or("strategic air manager vtable unreadable")?;
-        let expected = base
-            .checked_add(cstrategic_air_manager::VTABLE_RVA)
-            .ok_or("module address overflow")?;
-        if vtable != expected as u64 {
-            return Err("strategic air manager vtable mismatch");
-        }
-        let owners = reader.array(manager, cstrategic_air_manager::COUNTRY_AIR)?;
-        if owners.count == 0 {
-            for slot in 0..countries.count() {
-                owner_visit(slot, None);
-            }
-            return Err("strategic air manager has no country slots");
-        }
-        for slot in 0..owners.count {
-            let owner_pointer = reader.element(owners, slot)?;
-            if owner_pointer == 0 {
-                owner_visit(slot, None);
-                continue;
-            }
-            reader.vtable(
-                owner_pointer,
-                cstrategic_air::VTABLE_RVA,
-                "strategic air country vtable mismatch",
-            )?;
-            let owner = reader.field::<u32>(owner_pointer, cstrategic_air::COUNTRY)?;
-            let owner_slot = if slot == 0 && score.is_some() {
-                let country =
-                    crate::game_score_inputs::read_slot_zero(memory, base, countries.arrays()[0])?
-                        .ok_or("strategic air slot zero owner has no catalogue object")?;
-                if country.id != owner {
-                    return Err("strategic air slot zero owner differs from catalogue object");
+    #[cfg(test)]
+    if SERIAL.get() {
+        return serial_reference::walk_projected(
+            memory,
+            base,
+            game_state,
+            slots,
+            output,
+            sources,
+            naval_limit,
+            visit,
+            owner_visit,
+            score_limit,
+            score_visit,
+        );
+    }
+    let fallbacks = std::cell::Cell::new(0_u32);
+    let fallback = || {
+        crate::batch_fallback::record(crate::batch_fallback::Batch::AirWingCensus);
+        fallbacks.set(fallbacks.get().saturating_add(1));
+    };
+    let reader = Reader {
+        memory,
+        base,
+        regions: RegionMemo::new(),
+    };
+    let mut queue = Queue {
+        steps: [Step::Owner {
+            slot: 0,
+            entry: None,
+        }; STEP_BATCH],
+        len: 0,
+        wings: 0,
+    };
+    let result = {
+        // Replays queued steps in order; true when every projection failed.
+        let mut replay = |steps: &[Step]| -> Result<bool, &'static str> {
+            let mut pointers = [0_usize; ROW_BATCH];
+            let mut wings = 0;
+            for step in steps {
+                if let Step::Wing { wing, .. } = *step {
+                    pointers[wings] = wing;
+                    wings += 1;
                 }
-                country.canonical_slot
-            } else {
-                countries.resolve(owner)?.canonical_slot
-            };
-            if owner_slot != slot {
-                return Err("strategic air owner differs from canonical country slot");
             }
-            owner_visit(slot, Some(owner_pointer));
-            let pools = reader.array(owner_pointer, cstrategic_air::POOLS)?;
-            let mut pool_ordinal = 0_u32;
-            for pool_index in 0..pools.count {
-                let pool = reader.element(pools, pool_index)?;
-                reader.vtable(
-                    pool,
-                    cair_wing_pool::VTABLE_RVA,
-                    "air wing pool vtable mismatch",
-                )?;
-                if reader.pointer(pool, cair_wing_pool::OWNER)? != owner_pointer {
-                    return Err("air wing pool owner differs from roster");
-                }
-                let wings = reader.array(pool, cair_wing_pool::WINGS)?;
-                // The acquired pool header selects the complete wing range. Workers
-                // grow storage before any leaf read; fixed callback projections retain
-                // their independent limits.
-                let required = map
-                    .len
-                    .checked_add(wings.count as usize)
-                    .ok_or("air wing roster demand overflow")?;
-                output.ensure(required)?;
-                map.capacity = output.len();
-                if let (Some(source), Some(sources)) = (&mut source, &mut sources) {
-                    let required = source
-                        .len
-                        .checked_add(wings.count as usize)
-                        .ok_or("air wing source demand overflow")?;
-                    sources.ensure(required)?;
-                    source.capacity = sources.len();
-                }
-                if growing_sources && let Some(naval) = &mut naval {
-                    naval.capacity = naval
-                        .len
-                        .checked_add(wings.count as usize)
-                        .ok_or("air wing naval source demand overflow")?;
-                }
-                let air_base = match reader.field::<u64>(pool, cair_wing_pool::AIR_BASE_REFERENCE) {
-                    Ok(value) => value,
-                    Err(reason) => {
-                        map.fail(reason);
-                        if let Some(source) = &mut source {
-                            source.fail(reason);
-                        }
-                        if let Some(naval) = &mut naval {
-                            naval.fail(reason);
-                        }
-                        if score.is_none() {
-                            return Err(reason);
-                        }
-                        0
+            let mut records = [0_u8; ROW_BATCH * ROW_STRIDE];
+            // The gathered rows: queued wings `first..first + rows`.
+            let mut gathered: Option<(usize, usize)> = None;
+            let mut index = 0;
+            for step in steps {
+                let (wing, pool, owner, ordinal, air_base) = match *step {
+                    Step::Owner { slot, entry } => {
+                        owner_visit(slot, entry);
+                        continue;
                     }
+                    Step::Pool {
+                        wings: count,
+                        air_base,
+                    } => {
+                        // The wing roster walk snapshots pool+0x28/+0x34 as its
+                        // entire wing range. Worker storage follows that
+                        // acquired range before any leaf; fixed callback
+                        // projections retain their independent limits.
+                        let required = map
+                            .len
+                            .checked_add(count as usize)
+                            .ok_or("air wing roster demand overflow")?;
+                        output.ensure(required)?;
+                        map.capacity = output.len();
+                        if let (Some(source), Some(sources)) = (&mut source, &mut sources) {
+                            let required = source
+                                .len
+                                .checked_add(count as usize)
+                                .ok_or("air wing source demand overflow")?;
+                            sources.ensure(required)?;
+                            source.capacity = sources.len();
+                        }
+                        if growing_sources && let Some(naval) = &mut naval {
+                            naval.capacity = naval
+                                .len
+                                .checked_add(count as usize)
+                                .ok_or("air wing naval source demand overflow")?;
+                        }
+                        if let Err(reason) = air_base {
+                            map.fail(reason);
+                            if let Some(source) = &mut source {
+                                source.fail(reason);
+                            }
+                            if let Some(naval) = &mut naval {
+                                naval.fail(reason);
+                            }
+                            if score.is_none() {
+                                return Err(reason);
+                            }
+                        }
+                        continue;
+                    }
+                    Step::Wing {
+                        wing,
+                        pool,
+                        owner,
+                        ordinal,
+                        air_base,
+                    } => (wing, pool, owner, ordinal, air_base),
                 };
-                for wing_index in 0..wings.count {
-                    let wing = reader.element(wings, wing_index)?;
-                    if wing == 0 {
-                        return Err("air wing roster contains null wing");
-                    }
-                    let ordinal = pool_ordinal;
-                    pool_ordinal = pool_ordinal
-                        .checked_add(1)
-                        .ok_or("air wing pool ordinal overflow")?;
-                    let map_needs = map.needs_row();
-                    let source_needs = source.as_ref().is_some_and(Projection::needs_row);
-                    let naval_needs = naval.as_ref().is_some_and(Projection::needs_row);
-                    let score_needs = score.as_ref().is_some_and(Projection::needs_row);
-                    if !map_needs {
-                        map.omit();
-                    }
-                    if let Some(source) = &mut source
-                        && !source_needs
-                    {
-                        source.omit();
-                    }
-                    if let Some(naval) = &mut naval
-                        && !naval_needs
-                    {
-                        naval.omit();
-                    }
-                    if let Some(score) = &mut score
-                        && !score_needs
-                    {
-                        score.omit();
-                    }
-                    let details = map_needs || source_needs || naval_needs;
-                    if details || score_needs {
-                        match reader.row(wing, pool, owner, ordinal, air_base, details, |leaf| {
+                let queued = index;
+                index += 1;
+                let map_needs = map.needs_row();
+                let source_needs = source.as_ref().is_some_and(Projection::needs_row);
+                let naval_needs = naval.as_ref().is_some_and(Projection::needs_row);
+                let score_needs = score.as_ref().is_some_and(Projection::needs_row);
+                if !map_needs {
+                    map.omit();
+                }
+                if let Some(source) = &mut source
+                    && !source_needs
+                {
+                    source.omit();
+                }
+                if let Some(naval) = &mut naval
+                    && !naval_needs
+                {
+                    naval.omit();
+                }
+                if let Some(score) = &mut score
+                    && !score_needs
+                {
+                    score.omit();
+                }
+                let details = map_needs || source_needs || naval_needs;
+                if details || score_needs {
+                    let (first, rows) = *gathered.get_or_insert_with(|| {
+                        let wanted = wings - queued;
+                        let completed = memory.copy_records(
+                            RecordSources::Pointers(&pointers[queued..wings]),
+                            &ROW_LAYOUT,
+                            &mut records[..wanted * ROW_STRIDE],
+                        );
+                        let rows = completed / ROW_FIELDS.len();
+                        if rows < wanted {
+                            fallback();
+                        }
+                        (queued, rows)
+                    });
+                    let fields = if queued - first < rows {
+                        let at = (queued - first) * ROW_STRIDE;
+                        RowFields::gathered(&records[at..at + ROW_STRIDE])
+                    } else {
+                        hint_wing(memory, wing);
+                        reader.row_fields(wing, details)
+                    };
+                    match reader.row(
+                        &fields,
+                        wing,
+                        pool,
+                        owner,
+                        ordinal,
+                        air_base,
+                        details,
+                        |leaf| {
                             if let Some(score) = score.as_mut().filter(|_| score_needs) {
                                 match leaf {
                                     Ok(leaf) => {
@@ -961,70 +1151,232 @@ fn walk_projected(
                                     Err(reason) => score.fail(reason),
                                 }
                             }
-                        }) {
-                            Ok(Some(mut row)) => {
-                                visit(
-                                    wing,
-                                    pool,
-                                    &mut row,
-                                    Admitted {
-                                        map: map_needs,
-                                        sources: source_needs,
-                                        naval: naval_needs,
-                                    },
-                                );
-                                if map_needs {
-                                    output[map.len] = row;
-                                    map.len += 1;
-                                }
-                                if let Some(source) = source.as_mut().filter(|_| source_needs) {
-                                    if let Some(destination) = sources
-                                        .as_deref_mut()
-                                        .and_then(|rows| rows.get_mut(source.len))
-                                    {
-                                        *destination = Source {
-                                            pointer: wing,
-                                            pool,
-                                            row,
-                                        };
-                                        source.len += 1;
-                                    } else {
-                                        source.fail("air wing source projection storage missing");
-                                    }
-                                }
-                                if let Some(naval) = naval.as_mut().filter(|_| naval_needs) {
-                                    naval.len += 1;
+                        },
+                    ) {
+                        Ok(Some(mut row)) => {
+                            visit(
+                                wing,
+                                pool,
+                                &mut row,
+                                Admitted {
+                                    map: map_needs,
+                                    sources: source_needs,
+                                    naval: naval_needs,
+                                    name_header: fields.name,
+                                },
+                            );
+                            if map_needs {
+                                output[map.len] = row;
+                                map.len += 1;
+                            }
+                            if let Some(source) = source.as_mut().filter(|_| source_needs) {
+                                if let Some(destination) = sources
+                                    .as_deref_mut()
+                                    .and_then(|rows| rows.get_mut(source.len))
+                                {
+                                    *destination = Source {
+                                        pointer: wing,
+                                        pool,
+                                        row,
+                                    };
+                                    source.len += 1;
+                                } else {
+                                    source.fail("air wing source projection storage missing");
                                 }
                             }
-                            Ok(None) => {}
-                            Err(reason) => {
-                                if map_needs {
-                                    map.fail(reason);
-                                }
-                                if let Some(source) = source.as_mut().filter(|_| source_needs) {
-                                    source.fail(reason);
-                                }
-                                if let Some(naval) = naval.as_mut().filter(|_| naval_needs) {
-                                    naval.fail(reason);
-                                }
+                            if let Some(naval) = naval.as_mut().filter(|_| naval_needs) {
+                                naval.len += 1;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(reason) => {
+                            if map_needs {
+                                map.fail(reason);
+                            }
+                            if let Some(source) = source.as_mut().filter(|_| source_needs) {
+                                source.fail(reason);
+                            }
+                            if let Some(naval) = naval.as_mut().filter(|_| naval_needs) {
+                                naval.fail(reason);
                             }
                         }
                     }
-                    if map.failure.is_some()
-                        && source
-                            .as_ref()
-                            .is_none_or(|source| source.failure.is_some())
-                        && naval.as_ref().is_none_or(|naval| naval.failure.is_some())
-                        && score.as_ref().is_none_or(|score| score.failure.is_some())
-                    {
-                        return Ok(());
+                }
+                if map.failure.is_some()
+                    && source
+                        .as_ref()
+                        .is_none_or(|source| source.failure.is_some())
+                    && naval.as_ref().is_none_or(|naval| naval.failure.is_some())
+                    && score.as_ref().is_none_or(|score| score.failure.is_some())
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        };
+        let roster = (|| -> Result<bool, &'static str> {
+            // Queues a step; a full queue is replayed, which may end the census.
+            macro_rules! queue {
+                ($step:expr) => {
+                    if queue.push($step) {
+                        let len = queue.take();
+                        if replay(&queue.steps[..len])? {
+                            return Ok(true);
+                        }
+                    }
+                };
+            }
+            let countries = ccountry::Reader::new(memory, base, game_state)?;
+            let manager = reader.pointer(game_state, cgame_state::STRATEGIC_AIR_MANAGER)?;
+            // Country lookup returns null for a null manager. Preserve
+            // AirWings' own refusal while witnessing score's independent zero.
+            // The part that starts the census witnesses every slot, as the
+            // serial walk does; the refusal ends it, so no later part joins.
+            if manager == 0 {
+                if slots.start == 0 {
+                    for slot in 0..countries.count() {
+                        queue!(Step::Owner { slot, entry: None });
+                    }
+                }
+                return Err("strategic air manager absent");
+            }
+            // Game initialization publishes the complete strategic-air manager
+            // at game+690. Its primary vtable is distinct from its +8 base.
+            let vtable =
+                read::<u64>(memory, manager).ok_or("strategic air manager vtable unreadable")?;
+            let expected = base
+                .checked_add(cstrategic_air_manager::VTABLE_RVA)
+                .ok_or("module address overflow")?;
+            if vtable != expected as u64 {
+                return Err("strategic air manager vtable mismatch");
+            }
+            let owners = reader.array(manager, cstrategic_air_manager::COUNTRY_AIR)?;
+            if owners.count == 0 {
+                if slots.start == 0 {
+                    for slot in 0..countries.count() {
+                        queue!(Step::Owner { slot, entry: None });
+                    }
+                }
+                return Err("strategic air manager has no country slots");
+            }
+            for slot in slots.start..slots.end.min(owners.count) {
+                let owner_pointer = reader.element(owners, slot)?;
+                if owner_pointer == 0 {
+                    queue!(Step::Owner { slot, entry: None });
+                    continue;
+                }
+                reader.vtable(
+                    owner_pointer,
+                    cstrategic_air::VTABLE_RVA,
+                    "strategic air country vtable mismatch",
+                )?;
+                let owner = reader.field::<u32>(owner_pointer, cstrategic_air::COUNTRY)?;
+                let owner_slot = if slot == 0 && scored {
+                    let country = crate::game_score_inputs::read_slot_zero(
+                        memory,
+                        base,
+                        countries.arrays()[0],
+                    )?
+                    .ok_or("strategic air slot zero owner has no catalogue object")?;
+                    if country.id != owner {
+                        return Err("strategic air slot zero owner differs from catalogue object");
+                    }
+                    country.canonical_slot
+                } else {
+                    countries.resolve(owner)?.canonical_slot
+                };
+                if owner_slot != slot {
+                    return Err("strategic air owner differs from canonical country slot");
+                }
+                queue!(Step::Owner {
+                    slot,
+                    entry: Some(owner_pointer),
+                });
+                let pools = reader.array(owner_pointer, cstrategic_air::POOLS)?;
+                let mut pool_ordinal = 0_u32;
+                for pool_index in 0..pools.count {
+                    let pool = reader.element(pools, pool_index)?;
+                    reader.vtable(
+                        pool,
+                        cair_wing_pool::VTABLE_RVA,
+                        "air wing pool vtable mismatch",
+                    )?;
+                    if reader.pointer(pool, cair_wing_pool::OWNER)? != owner_pointer {
+                        return Err("air wing pool owner differs from roster");
+                    }
+                    let wings = reader.array(pool, cair_wing_pool::WINGS)?;
+                    let air_base = reader.field::<u64>(pool, cair_wing_pool::AIR_BASE_REFERENCE);
+                    queue!(Step::Pool {
+                        wings: wings.count,
+                        air_base,
+                    });
+                    if air_base.is_err() && !scored {
+                        // The replay refuses the census at this pool.
+                        return Ok(false);
+                    }
+                    let air_base = air_base.unwrap_or(0);
+                    // The pool's wing pointers, a run in one copy.
+                    memory.prefetch(wings.data, (wings.count as usize).saturating_mul(8));
+                    let mut next = 0_u32;
+                    while next < wings.count {
+                        let run = (wings.count - next).min(ROW_BATCH as u32);
+                        let mut words = [0_u8; ROW_BATCH * 8];
+                        let words = &mut words[..run as usize * 8];
+                        let copied = wings
+                            .element(next, 8)
+                            .is_some_and(|at| memory.copy(at, words));
+                        if !copied {
+                            fallback();
+                        }
+                        for offset in 0..run {
+                            let wing = if copied {
+                                let at = offset as usize * 8;
+                                usize::try_from(u64::from_le_bytes(
+                                    words[at..at + 8].try_into().unwrap(),
+                                ))
+                                .map_err(
+                                    |_| "air wing roster pointer unreadable or address overflow",
+                                )?
+                            } else {
+                                reader.element(wings, next + offset)?
+                            };
+                            if wing == 0 {
+                                return Err("air wing roster contains null wing");
+                            }
+                            let ordinal = pool_ordinal;
+                            pool_ordinal = pool_ordinal
+                                .checked_add(1)
+                                .ok_or("air wing pool ordinal overflow")?;
+                            queue!(Step::Wing {
+                                wing,
+                                pool,
+                                owner,
+                                ordinal,
+                                air_base,
+                            });
+                        }
+                        next += run;
                     }
                 }
             }
+            Ok(false)
+        })();
+        // The steps queued before the roster finished or refused replay
+        // first: a replay refusal or the end of the census comes before the
+        // roster's own refusal, as in the serial walk.
+        match roster {
+            Ok(true) => Ok(true),
+            roster => {
+                let len = queue.take();
+                match replay(&queue.steps[..len]) {
+                    Ok(true) => Ok(true),
+                    Ok(false) => roster,
+                    Err(reason) => Err(reason),
+                }
+            }
         }
-        Ok(())
-    })();
-    if let Err(reason) = result {
+    };
+    let ended = result.unwrap_or_else(|reason| {
         map.fail(reason);
         if let Some(source) = &mut source {
             source.fail(reason);
@@ -1035,7 +1387,8 @@ fn walk_projected(
         if let Some(score) = &mut score {
             score.fail(reason);
         }
-    }
+        true
+    });
     GameScoreWalk {
         shared: SharedWalk {
             map: map.outcome(),
@@ -1043,12 +1396,118 @@ fn walk_projected(
             naval: naval.map_or(Outcome::Rows { len: 0 }, |naval| naval.outcome()),
         },
         score: score.map_or(Outcome::Rows { len: 0 }, |score| score.outcome()),
+        ended,
+        row_fallbacks: fallbacks.get(),
+    }
+}
+
+/// Hints the lines of one wing that its census row and stored name read:
+/// identity, pool, planes, eligibility and the embedded mission through its
+/// region (`+0x00..+0xC8`), the ace reference, the base range, and the name,
+/// attached group and country override (`+0x998..+0x9C8`). Issued right
+/// after the wing's pointer is read, so its misses overlap rather than
+/// serialise in the guarded scatter that follows. A hint reads nothing and
+/// cannot fault ([`crate::prefetch`]): every read keeps its place and order.
+fn hint_wing(memory: &impl Memory, wing: usize) {
+    for (offset, len) in [
+        (0, MISSION + air_mission::REGION + 8),
+        (ACE_REFERENCE, 8),
+        (BASE_RANGE, 8),
+        (NAME, COUNTRY_OVERRIDE + 4 - NAME),
+    ] {
+        memory.prefetch(wing.wrapping_add(offset), len);
+    }
+}
+
+/// One wing's census-row fields: one guarded scatter's ([`Reader::row_fields`])
+/// with its completed prefix, or a completed gathered record's, which also
+/// holds the stored-name header.
+#[derive(Default)]
+struct RowFields {
+    completed: usize,
+    primary: [u8; 8],
+    secondary_and_handle: [u8; 16],
+    pool: [u8; 8],
+    planes: [u8; 4],
+    base_override: [u8; 8],
+    mask: [u8; 4],
+    region: [u8; 8],
+    active: [u8; 1],
+    veto: [u8; 1],
+    // ELIGIBILITY_COUNTER and ELIGIBILITY_LIMIT, adjacent: one span.
+    eligibility: [u8; 8],
+    country_override: [u8; 4],
+    base_range: [u8; 8],
+    ace: [u8; 8],
+    group: [u8; 8],
+    name: Option<[u8; msvc_string::STRIDE]>,
+}
+
+impl RowFields {
+    /// A gathered [`ROW_LAYOUT`] record, every field read.
+    fn gathered(record: &[u8]) -> Self {
+        fn take<const N: usize>(record: &[u8], field: usize) -> [u8; N] {
+            let at = ROW_FIELDS[field].destination_offset;
+            record[at..at + N].try_into().unwrap()
+        }
+        Self {
+            completed: ROW_FIELDS.len() - 1,
+            primary: take(record, 0),
+            secondary_and_handle: take(record, 1),
+            pool: take(record, 2),
+            planes: take(record, 3),
+            base_override: take(record, 4),
+            mask: take(record, 5),
+            region: take(record, 6),
+            active: take(record, 7),
+            veto: take(record, 8),
+            eligibility: take(record, 9),
+            country_override: take(record, 10),
+            base_range: take(record, 11),
+            ace: take(record, 12),
+            group: take(record, 13),
+            name: Some(take(record, 14)),
+        }
     }
 }
 
 struct Reader<'a, M> {
     memory: &'a M,
     base: usize,
+    regions: RegionMemo,
+}
+
+/// Strategic regions this pass authenticated, by address. A region's two
+/// vtables and its id are read once a pass rather than once for every wing
+/// whose mission names it: the pass reads the hour's world while the game
+/// thread is parked at the hourly boundary, so a region read again in it
+/// reads the same bytes. Only successes are held; a slot another region
+/// took is read again, so the memo never changes a row or a failure.
+struct RegionMemo {
+    cells: [std::cell::Cell<(usize, u32)>; RegionMemo::CELLS],
+}
+
+impl RegionMemo {
+    const CELLS: usize = 512;
+
+    fn new() -> Self {
+        Self {
+            cells: std::array::from_fn(|_| std::cell::Cell::new((0, 0))),
+        }
+    }
+
+    fn cell(&self, region: usize) -> &std::cell::Cell<(usize, u32)> {
+        &self.cells[((region >> 4) ^ (region >> 13)) % Self::CELLS]
+    }
+
+    fn get(&self, region: usize) -> Option<u32> {
+        let (held, id) = self.cell(region).get();
+        (held == region && region != 0).then_some(id)
+    }
+
+    fn set(&self, region: usize, id: u32) {
+        self.cell(region).set((region, id));
+    }
 }
 
 impl<M: Memory> Reader<'_, M> {
@@ -1095,35 +1554,12 @@ impl<M: Memory> Reader<'_, M> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn row(
-        &self,
-        pointer: usize,
-        pool: usize,
-        owner: u32,
-        pool_ordinal: u32,
-        air_base: u64,
-        details: bool,
-        mut score_visit: impl FnMut(Result<ScoreLeaf, &'static str>),
-    ) -> Result<Option<Row>, &'static str> {
-        let mut primary = [0; 8];
-        let mut secondary_and_handle = [0; 16];
-        let mut pool_bytes = [0; 8];
-        let mut override_bytes = [0; 8];
-        let mut planes = [0; 4];
-        let mut mask = [0; 4];
-        let mut region = [0; 8];
-        let mut active = [0; 1];
-        let mut veto = [0; 1];
-        let mut counter = [0; 4];
-        let mut limit = [0; 4];
-        let mut country_override = [0; 4];
-        let mut base_range = [0; 8];
-        let mut ace = [0; 8];
-        let mut group = [0; 8];
-        // Exact fields only: one guarded scatter, without copying intervening
-        // bytes. Authentication precedes following the mission-region pointer.
-        let completed = self.memory.copy_scattered(
+    /// The row's exact fields in one guarded scatter, without copying
+    /// intervening bytes; without `details` only the leaf's four.
+    fn row_fields(&self, pointer: usize, details: bool) -> RowFields {
+        let mut fields = RowFields::default();
+        let detail = |len: usize| if details { len } else { 0 };
+        fields.completed = self.memory.copy_scattered(
             [
                 0,
                 SECONDARY,
@@ -1135,7 +1571,6 @@ impl<M: Memory> Reader<'_, M> {
                 MISSION + air_mission::ACTIVE,
                 ELIGIBILITY_VETO,
                 ELIGIBILITY_COUNTER,
-                ELIGIBILITY_LIMIT,
                 COUNTRY_OVERRIDE,
                 BASE_RANGE,
                 ACE_REFERENCE,
@@ -1143,23 +1578,56 @@ impl<M: Memory> Reader<'_, M> {
             ]
             .map(|offset| pointer.checked_add(offset).unwrap_or(0)),
             &mut [
-                &mut primary,
-                &mut secondary_and_handle,
-                &mut pool_bytes,
-                &mut planes,
-                &mut override_bytes[..if details { 8 } else { 0 }],
-                &mut mask[..if details { 4 } else { 0 }],
-                &mut region[..if details { 8 } else { 0 }],
-                &mut active[..usize::from(details)],
-                &mut veto[..usize::from(details)],
-                &mut counter[..if details { 4 } else { 0 }],
-                &mut limit[..if details { 4 } else { 0 }],
-                &mut country_override[..if details { 4 } else { 0 }],
-                &mut base_range[..if details { 8 } else { 0 }],
-                &mut ace[..if details { 8 } else { 0 }],
-                &mut group[..if details { 8 } else { 0 }],
+                &mut fields.primary,
+                &mut fields.secondary_and_handle,
+                &mut fields.pool,
+                &mut fields.planes,
+                &mut fields.base_override[..detail(8)],
+                &mut fields.mask[..detail(4)],
+                &mut fields.region[..detail(8)],
+                &mut fields.active[..detail(1)],
+                &mut fields.veto[..detail(1)],
+                &mut fields.eligibility[..detail(8)],
+                &mut fields.country_override[..detail(4)],
+                &mut fields.base_range[..detail(8)],
+                &mut fields.ace[..detail(8)],
+                &mut fields.group[..detail(8)],
             ],
         );
+        fields
+    }
+
+    /// Authentication precedes following the mission-region pointer.
+    #[allow(clippy::too_many_arguments)]
+    fn row(
+        &self,
+        fields: &RowFields,
+        pointer: usize,
+        pool: usize,
+        owner: u32,
+        pool_ordinal: u32,
+        air_base: u64,
+        details: bool,
+        mut score_visit: impl FnMut(Result<ScoreLeaf, &'static str>),
+    ) -> Result<Option<Row>, &'static str> {
+        let RowFields {
+            completed,
+            primary,
+            secondary_and_handle,
+            pool: pool_bytes,
+            planes,
+            base_override: override_bytes,
+            mask,
+            region,
+            active,
+            veto,
+            eligibility,
+            country_override,
+            base_range,
+            ace,
+            group,
+            name: _,
+        } = *fields;
         let leaf = (|| {
             let expected_primary = self
                 .base
@@ -1202,13 +1670,15 @@ impl<M: Memory> Reader<'_, M> {
         if !details {
             return Ok(None);
         }
-        if completed != 15 {
+        if completed != ROW_FIELDS.len() - 1 {
             return Err("air wing row field unreadable or address overflow");
         }
         let region = usize::try_from(u64::from_le_bytes(region))
             .map_err(|_| "air wing region address overflow")?;
         let mission_region = if region == 0 {
             None
+        } else if let Some(id) = self.regions.get(region) {
+            Some(id)
         } else {
             self.vtable(
                 region,
@@ -1222,7 +1692,9 @@ impl<M: Memory> Reader<'_, M> {
                 cstrategic_region::SECONDARY_VTABLE_RVA,
                 "air wing mission region secondary vtable mismatch",
             )?;
-            Some(self.field::<u32>(region, cstrategic_region::ID)?)
+            let id = self.field::<u32>(region, cstrategic_region::ID)?;
+            self.regions.set(region, id);
+            Some(id)
         };
         let mission_mask = u32::from_le_bytes(mask);
         // Only the tactical scan reads the group, and a group that does not
@@ -1255,8 +1727,8 @@ impl<M: Memory> Reader<'_, M> {
             ace: u64::from_le_bytes(ace),
             mission_active: active[0],
             eligibility_veto: veto[0],
-            eligibility_counter: i32::from_le_bytes(counter),
-            eligibility_limit: i32::from_le_bytes(limit),
+            eligibility_counter: i32::from_le_bytes(eligibility[..4].try_into().unwrap()),
+            eligibility_limit: i32::from_le_bytes(eligibility[4..].try_into().unwrap()),
             attached_orders_group,
             name: None,
             pool_subunit: None,
@@ -1295,5 +1767,7 @@ pub fn strategic_bombing_stat(memory: &impl Memory, wing: usize) -> Result<i64, 
     read(memory, at).ok_or("strategic bombing selected stat unreadable")
 }
 
+#[cfg(test)]
+mod serial_reference;
 #[cfg(test)]
 mod tests;

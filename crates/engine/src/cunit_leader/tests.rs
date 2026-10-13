@@ -327,7 +327,10 @@ fn trait_batches_keep_exact_read_ranges_and_reduce_guard_entries() {
             .iter()
             .map(|span| span.1)
             .sum::<usize>(),
-        81 + 4 + 8 + 1 + 1 + 4 // + exile country +0xED4
+        // 81 before the retired experience (+0xE68, eight bytes of the state
+        // scatter) stopped being read; the guard count is unchanged, since it
+        // shared the state scatter's one call.
+        81 - 8 + 4 + 8 + 1 + 1 + 4 // + exile country +0xED4
     );
 }
 
@@ -426,10 +429,7 @@ fn native_widths_and_four_class_layouts_remain_distinct() {
             (row.reference_type, row.id, row.character_id),
             (4713, 0x8000_0001, 0xf000_0001)
         );
-        assert_eq!(
-            (row.kind, row.category, row.experience),
-            (kind, -2, -9_000_000_123)
-        );
+        assert_eq!((row.kind, row.category), (kind, -2));
         assert_eq!(
             (
                 row.skill_status,

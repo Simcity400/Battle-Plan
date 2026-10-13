@@ -102,6 +102,15 @@ fn inflate_file<'a>(
     })
 }
 
+/// Grouped blocks store each section compressed alone already, at level 19
+/// where that is smaller; only interleaved blocks are recompressed.
+fn is_grouped_block(file: &mut File, block: &BlockIndex) -> io::Result<bool> {
+    file.seek(SeekFrom::Start(block.offset))?;
+    let mut magic = [0; 4];
+    file.read_exact(&mut magic)?;
+    Ok(grouped::is_grouped(&magic))
+}
+
 fn finish_block(mut input: Inflated<BlockStream<'_>>, block: &BlockIndex) -> io::Result<()> {
     if input.read != block.raw_length || input.stream.read(&mut [0])? != 0 {
         return Err(invalid("block raw length mismatch"));
@@ -288,6 +297,13 @@ pub fn compact_with(
         outcome: CompactionOutcome::AlreadySmall,
         revision: before.clone(),
     };
+    let mut grouped_blocks = 0;
+    for block in &original.metadata.index {
+        grouped_blocks += usize::from(is_grouped_block(&mut input_file, block)?);
+    }
+    if grouped_blocks == original.metadata.index.len() {
+        return Ok(result);
+    }
     let (temporary, mut output) = Temporary::create(&path)?;
     checkpoint(
         CompactionStage::Started {

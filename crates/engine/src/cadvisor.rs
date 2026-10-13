@@ -18,8 +18,10 @@ pub const TRAITS: usize = 0xc8;
 pub const MODIFIER_ENTRIES: usize = 0x1b0;
 pub const MODIFIER_CAPACITY_REASON: &str = "advisor modifier cache exceeds admitted capacity";
 
-/// Header of the stored modifier entries; values are read fresh each hour,
-/// independently of any mutation-certified role-definition reuse.
+/// Header of the stored modifier entries. The collector reads them, and the
+/// tooltip keys below, independently of the advisor-map certified
+/// definitions; a role is carried between hours only under its character's
+/// role-writer certificate ([`crate::character_role_mutations`]).
 pub fn modifier_entries(
     memory: &impl crate::Memory,
     pointer: usize,
@@ -92,8 +94,8 @@ pub fn definitions_demand(
     Ok(demand)
 }
 
-/// Live role and accumulator headers only. Rebuilds update the array; the
-/// next hourly capture acquires its entries independently.
+/// Live role and accumulator headers only. The role rebuild writes the +0x1B0
+/// array.
 pub fn modifier_demand(
     memory: &impl crate::Memory,
     base: usize,
@@ -152,8 +154,10 @@ pub fn modifier_demand(
     Ok(demand)
 }
 
-/// Cached tooltip string set: bucket header, occupied byte and key string.
-/// Keys retain exact bytes in occupied-slot order, independently of tokens.
+/// Advisor cached tooltip string set: the +0x1B0 accumulator's string set
+/// (+0x68). The rebuild finds or inserts entries with header +8, stride 0x28,
+/// occupied byte +4 and MSVC string +8. Keys are exact bytes in occupied-slot
+/// order, not tokens.
 pub const TOOLTIP_KEYS: usize = 0x218;
 pub const TOOLTIP_CAPACITY_REASON: &str = "advisor tooltip keys exceed admitted capacity";
 

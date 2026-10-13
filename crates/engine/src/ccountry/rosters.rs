@@ -10,6 +10,11 @@ use crate::{
 /// references. No hourly refresh is performed.
 pub const NEIGHBORS: usize = 0x1088;
 
+/// The MIO policy roster's refusal for a null `CCountry+0xF68`
+/// (`policies_header`): the native state of a country without production
+/// status, not a read fault.
+pub const POLICY_STATUS_NULL: &str = "MIO policy production status is null";
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct EffectRosterDemand {
     pub neighbors: usize,
@@ -93,7 +98,7 @@ impl EffectRosters<'_> {
         fits: bool,
     ) -> Result<RosterSpan, &'static str> {
         let Some(source) = cproduction_status::policies_header(memory, base, country)? else {
-            return Err("MIO policy production status is null");
+            return Err(POLICY_STATUS_NULL);
         };
         add(&mut self.required.policies, source.count)?;
         let count = source.count as usize;
@@ -317,23 +322,125 @@ impl CounterRosters<'_> {
                 start: self.leader_len,
                 count: source.count as usize,
             };
-            cpdx_array::pointers(
+            // Each page's leaders in one guarded batch; a null slot is zero.
+            cpdx_array::pointer_pages(
                 memory,
                 source,
                 "country leader roster pointer unreadable",
-                |_, pointer| {
-                    let handle = if pointer == 0 {
-                        0
-                    } else {
-                        cunit_leader::handle(memory, base, pointer)?
-                    };
-                    self.leaders[self.leader_len] = handle;
-                    self.leader_len += 1;
+                |_, page| {
+                    let start = self.leader_len;
+                    cunit_leader::handles(
+                        memory,
+                        base,
+                        page,
+                        &mut self.leaders[start..start + page.len()],
+                    )?;
+                    self.leader_len += page.len();
                     Ok(())
                 },
             )?;
         }
         Ok((state_spans, leader_spans))
+    }
+}
+
+/// One country's roster entries from an earlier complete read, in its row's
+/// span order: what a caller carrying the country
+/// ([`super::walk_counter_inputs_carried_growing`]) places in this read's
+/// arenas instead of reading them.
+#[derive(Clone, Copy, Debug)]
+pub struct CarriedRosters<'a> {
+    pub states: [&'a [u32]; 3],
+    pub leaders: [&'a [u64]; 2],
+    pub neighbors: &'a [u32],
+    /// `None`: the country had no production status ([`POLICY_STATUS_NULL`]).
+    pub policies: Option<&'a [u32]>,
+}
+
+/// Where [`CarriedRosters::append`] placed the entries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CarriedSpans {
+    pub states: [RosterSpan; 3],
+    pub leaders: [RosterSpan; 2],
+    pub neighbors: RosterSpan,
+    pub policies: Option<RosterSpan>,
+}
+
+/// Room for `count` entries at `len`; the new length.
+fn room<T: Default>(buffer: &mut Buffer<'_, T>, len: usize, count: usize) -> Option<usize> {
+    let end = len.checked_add(count)?;
+    (buffer.ensure(end).ok()? && end <= buffer.len()).then_some(end)
+}
+
+fn place<T: Copy>(buffer: &mut Buffer<'_, T>, len: &mut usize, entries: &[T]) -> RosterSpan {
+    let span = RosterSpan {
+        start: *len,
+        count: entries.len(),
+    };
+    buffer[span.start..span.start + span.count].copy_from_slice(entries);
+    *len += span.count;
+    span
+}
+
+impl CarriedRosters<'_> {
+    /// Appends the entries at the arenas' current lengths and raises each
+    /// demand by their counts, as a fresh read of the same complete rosters
+    /// would (its spans follow the same order). `None`, with no length or
+    /// demand moved, when an arena cannot hold them; the caller then reads
+    /// the country.
+    pub fn append(
+        &self,
+        rosters: &mut CounterRosters<'_>,
+        effects: &mut EffectRosters<'_>,
+    ) -> Option<CarriedSpans> {
+        let states = self
+            .states
+            .iter()
+            .map(|entries| entries.len())
+            .sum::<usize>();
+        let leaders = self
+            .leaders
+            .iter()
+            .map(|entries| entries.len())
+            .sum::<usize>();
+        let policies = self.policies.map_or(0, <[u32]>::len);
+        room(&mut rosters.states, rosters.state_len, states)?;
+        room(&mut rosters.leaders, rosters.leader_len, leaders)?;
+        room(
+            &mut effects.neighbors,
+            effects.neighbor_len,
+            self.neighbors.len(),
+        )?;
+        room(&mut effects.policies, effects.policy_len, policies)?;
+        let demand = RosterDemand {
+            states: rosters.required.states.checked_add(states)?,
+            leaders: rosters.required.leaders.checked_add(leaders)?,
+        };
+        let effect_demand = EffectRosterDemand {
+            neighbors: effects
+                .required
+                .neighbors
+                .checked_add(self.neighbors.len())?,
+            policies: effects.required.policies.checked_add(policies)?,
+        };
+        rosters.required = demand;
+        effects.required = effect_demand;
+        let mut spans = CarriedSpans::default();
+        for (span, entries) in spans.states.iter_mut().zip(self.states) {
+            *span = place(&mut rosters.states, &mut rosters.state_len, entries);
+        }
+        for (span, entries) in spans.leaders.iter_mut().zip(self.leaders) {
+            *span = place(&mut rosters.leaders, &mut rosters.leader_len, entries);
+        }
+        spans.neighbors = place(
+            &mut effects.neighbors,
+            &mut effects.neighbor_len,
+            self.neighbors,
+        );
+        spans.policies = self
+            .policies
+            .map(|entries| place(&mut effects.policies, &mut effects.policy_len, entries));
+        Some(spans)
     }
 }
 

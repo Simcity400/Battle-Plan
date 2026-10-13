@@ -366,7 +366,14 @@ fn null_and_unresolved_links_are_distinct_and_unknown_references_never_understat
         .map(|link| (link.id, link.canonical_slot as usize))
         .collect();
     let mut totals = Vec::new();
-    super::totals(&decoded, Some(&areas(4)), &slots, 2, &mut totals);
+    super::totals(
+        replay::format::FormatVersion::CURRENT,
+        &decoded,
+        Some(&areas(4)),
+        &slots,
+        2,
+        &mut totals,
+    );
     assert_eq!(totals[0][1], Some(2));
     assert_eq!(totals[1][1], Some(1));
     assert_eq!(totals[0][5], None);
@@ -810,7 +817,14 @@ fn dense_totals_count_aliases_once_and_keep_unresolved_slot_identities_unknown()
     let decoded = frame(100, 2, 4);
     let slots = HashMap::from([(100_000, 3), (100_001, 3), (999_999, 3)]);
     let mut sums = Vec::new();
-    totals(&decoded, Some(&areas(4)), &slots, 4, &mut sums);
+    totals(
+        replay::format::FormatVersion::CURRENT,
+        &decoded,
+        Some(&areas(4)),
+        &slots,
+        4,
+        &mut sums,
+    );
     assert_eq!(
         sums[3],
         [
@@ -1557,7 +1571,12 @@ fn territory_totals_cache_tracks_measured_fields_lineage_and_unavailable_reads()
     decoded.metrics = Metrics::default();
     decoded.hour += 1;
     assert!(
-        slot_read(&decoded.metrics, TableId::Provinces, decoded.hour),
+        slot_read(
+            replay::format::FormatVersion::CURRENT,
+            &decoded.metrics,
+            TableId::Provinces,
+            decoded.hour
+        ),
         "hourly reads stay fresh without a timer"
     );
     decoded.tables[TableId::Provinces.index()] = TableView::Unavailable {

@@ -1,15 +1,22 @@
 //! Owned States census and its callback-scoped StateFlags visitor.
 //! Flags and active border trees use this worker's authenticated census;
 //! assembly later consumes their already acquired timing and owned rows.
+//! A [`StateStore`] carries the rows no hooked writer marked
+//! ([`crate::territory_changes`]).
 
 use crate::{acquisition_gather, extended::state_flags, sampling};
 use engine::{Memory, crailway_manager::fresh_inputs, cstate, walk::Outcome};
+
+mod state_store;
+pub(crate) use state_store::StateStore;
 
 pub(crate) struct Request {
     pub census: acquisition_gather::Request<Vec<cstate::Row>>,
     pub names: Names,
     pub visitor: state_flags::Captured,
     pub inputs: Inputs,
+    /// The held rows, lent by the callback; absent reads every state.
+    pub store: Option<Box<StateStore>>,
 }
 
 /// Numeric supplement only; the existing visitor owns all callback pointers.
@@ -73,6 +80,19 @@ impl Inputs {
         visitor: &state_flags::Captured,
         growing: bool,
     ) {
+        self.acquire_carried(memory, base, visitor, growing, |_| None);
+    }
+
+    /// [`Self::acquire`] where `carried` supplies, by source index, the
+    /// fraction of a state the caller proves current.
+    fn acquire_carried(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        visitor: &state_flags::Captured,
+        growing: bool,
+        carried: impl FnMut(usize) -> Option<Result<i64, &'static str>>,
+    ) {
         let (sources, source, required) = visitor.completed_sources();
         self.required = self.required.max(required);
         if let Outcome::Unavailable { reason } = source {
@@ -84,7 +104,8 @@ impl Inputs {
             self.fail("state fraction buffer allocation failed");
             return;
         }
-        let outcome = fresh_inputs::state_fractions(memory, base, sources, &mut self.rows);
+        let outcome =
+            fresh_inputs::state_fractions_carried(memory, base, sources, &mut self.rows, carried);
         self.outcome = match outcome {
             Outcome::Unavailable { .. } => outcome,
             _ => {
@@ -243,10 +264,31 @@ impl Request {
             names,
             visitor,
             inputs,
+            store,
         } = self;
         let (base, game_state) = (census.base, census.game_state);
         let begin = sampling::qpc();
+        if let Some(store) = store.as_deref_mut() {
+            store.begin(memory, base, game_state);
+        }
         let report = census.run(|rows| {
+            if let Some(store) = store.as_deref_mut()
+                && let Some((outcome, walk)) = store.carry(
+                    memory,
+                    base,
+                    game_state,
+                    growing,
+                    rows,
+                    &mut names.bytes,
+                    visitor,
+                    inputs,
+                )
+            {
+                names.len = walk.bytes_len;
+                names.required = walk.required_bytes;
+                store.finish(false, outcome.len());
+                return walk.outcome;
+            }
             let outcome = if growing {
                 cstate::walk_with_growing(memory, base, game_state, rows, |source| {
                     visitor.visit_growing(source)
@@ -268,6 +310,10 @@ impl Request {
             names.len = walk.bytes_len;
             names.required = walk.required_bytes;
             inputs.acquire(memory, base, visitor, growing);
+            if let Some(store) = store.as_deref_mut() {
+                store.hold(rows, &names.bytes, walk, visitor, inputs);
+                store.finish(true, walk.outcome.len());
+            }
             walk.outcome
         });
         let ticks = sampling::qpc() - begin;
@@ -387,25 +433,50 @@ pub(crate) mod tests {
         ]
     }
 
+    /// The rest of the shared infrastructure operands a held capture
+    /// compares every hour ([`cstate::globals`]): the definition's type,
+    /// fallback maximum and ordinal, the template array and the fallback
+    /// define. None changes a fresh read of the fixture.
+    fn carry_globals() -> [(usize, [u8; 16]); 5] {
+        [
+            (DEFINITION + 0x8, [0x2f; 16]),
+            (DEFINITION + 0x2b8, [0; 16]),
+            (DEFINITION + 0x2e0, [3; 16]),
+            (DATABASE + 0x40, [0; 16]),
+            (0x0331_b5b4, [0; 16]),
+        ]
+    }
+
     /// The movement pass chases module globals at RVAs far above any dense
     /// census fixture, so this overlays them on the fixture memory a test
     /// already uses. Wrapped by tracing memories, so its reads are observed.
     pub(crate) struct Movement<M>(pub(crate) M);
 
+    fn overlay(at: usize, bytes: &[u8], address: usize, destination: &mut [u8]) -> bool {
+        let Some(start) = address.checked_sub(at) else {
+            return false;
+        };
+        let Some(end) = start
+            .checked_add(destination.len())
+            .filter(|end| *end <= bytes.len())
+        else {
+            return false;
+        };
+        destination.copy_from_slice(&bytes[start..end]);
+        true
+    }
+
     impl<M: Memory> Memory for Movement<M> {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
             for (at, bytes) in movement_globals() {
-                let Some(start) = address.checked_sub(at) else {
-                    continue;
-                };
-                let Some(end) = start
-                    .checked_add(destination.len())
-                    .filter(|end| *end <= bytes.len())
-                else {
-                    continue;
-                };
-                destination.copy_from_slice(&bytes[start..end]);
-                return true;
+                if overlay(at, &bytes, address, destination) {
+                    return true;
+                }
+            }
+            for (at, bytes) in carry_globals() {
+                if overlay(at, &bytes, address, destination) {
+                    return true;
+                }
             }
             self.0.copy(address, destination)
         }
@@ -427,6 +498,7 @@ pub(crate) mod tests {
             },
             visitor: state_flags::Captured::with_capacities(&flags),
             inputs: Inputs::default(),
+            store: None,
         }
     }
 
@@ -762,4 +834,6 @@ pub(crate) mod tests {
         assert_eq!(work.reasons, [("states worker panicked", 1)]);
         assert_eq!(work.required, 4097);
     }
+
+    mod carry;
 }

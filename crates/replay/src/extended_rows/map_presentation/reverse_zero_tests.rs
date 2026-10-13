@@ -1,12 +1,12 @@
 use super::*;
 use crate::FORMAT_VERSION;
 use crate::format::FormatVersion;
-use crate::rows::compatibility::EFFECT_INPUTS_FORMAT;
+use crate::rows::compatibility::{EFFECT_INPUTS_FORMAT, POLITICAL_FORMAT};
 use crate::value::{EncodeValue, Value};
 
 fn reverse_inputs() -> ReservedReverseVisibilityInputs {
     ReservedReverseVisibilityInputs {
-        sample_hour: i32::MIN,
+        sample_hour: PacketHour::Host,
         cells: vec![
             Some(ReverseZeroVisibilityInputs::default()),
             None,
@@ -87,10 +87,10 @@ fn reserved_row() -> ReservedCountryNamingRow {
         country_array: Some(vec![0, 9, 0, 9]).into(),
         owned_state_count: Some(i32::MIN).into(),
         faction: Some(u64::MAX).into(),
-        movement: Some(CountryNavalMovementInputs::default()).into(),
+        movement: Retired.into(),
         land_theatre_count: Some(0).into(),
         launch_sources: Some(ReservedLaunchSources {
-            sample_hour: -7,
+            sample_hour: PacketHour::Host,
             naval_bases: LaunchNavalBases::Bases(Vec::new()),
             owned_states: None,
         })
@@ -151,15 +151,15 @@ fn reserved_reverse_snapshot_preserves_certification_null_skips_and_native_bits(
     for reverse in [
         None,
         Some(ReservedReverseVisibilityInputs {
-            sample_hour: i32::MAX,
+            sample_hour: PacketHour::Host,
             cells: Vec::new(),
         }),
         Some(ReservedReverseVisibilityInputs {
-            sample_hour: -1,
+            sample_hour: PacketHour::Host,
             cells: vec![None],
         }),
         Some(ReservedReverseVisibilityInputs {
-            sample_hour: 0,
+            sample_hour: PacketHour::Host,
             cells: vec![Some(ReverseZeroVisibilityInputs::default())],
         }),
         Some(reverse_inputs()),
@@ -265,14 +265,12 @@ fn reserved_reverse_delta_changes_only_reached_suffix_and_preserves_other_packet
 }
 
 #[test]
-fn reserved_reverse_hour_only_change_emits_complete_opaque_payload() {
+fn reserved_reverse_cell_change_emits_complete_opaque_payload() {
     let before = reserved_row();
+    let mut changed = reverse_inputs();
+    changed.cells[1] = Some(ReverseZeroVisibilityInputs::default());
     let after = ReservedCountryNamingRow {
-        reverse_visibility: Some(ReservedReverseVisibilityInputs {
-            sample_hour: i32::MAX,
-            ..reverse_inputs()
-        })
-        .into(),
+        reverse_visibility: Some(changed).into(),
         ..before.clone()
     };
     let delta = delta_round_trip(&before, &after, 1 << 18);
@@ -319,7 +317,7 @@ fn reserved_reverse_hour_only_change_emits_complete_opaque_payload() {
 }
 
 #[test]
-fn reserved_reverse_hour_only_payload_grows_with_every_identical_matrix_cell() {
+fn reserved_reverse_identical_matrix_is_unchanged_and_a_change_carries_no_hour() {
     let cell = Some(ReverseZeroVisibilityInputs {
         target: Some(u32::MAX),
         war: Some([1, u8::MAX]),
@@ -333,23 +331,27 @@ fn reserved_reverse_hour_only_payload_grows_with_every_identical_matrix_cell() {
     for count in [1, 2, 513] {
         let before = ReservedCountryNamingRow {
             reverse_visibility: Some(ReservedReverseVisibilityInputs {
-                sample_hour: 3,
+                sample_hour: PacketHour::Host,
                 cells: vec![cell; count],
             })
             .into(),
             ..reserved_row()
         };
+        // Equal acquisitions at consecutive hours are one unchanged row.
+        assert!(before.clone().delta(Some(&before)).unwrap().is_none());
+        let mut cells = vec![cell; count];
+        cells[count - 1] = None;
         let after = ReservedCountryNamingRow {
             reverse_visibility: Some(ReservedReverseVisibilityInputs {
-                sample_hour: 4,
-                cells: vec![cell; count],
+                sample_hour: PacketHour::Host,
+                cells,
             })
             .into(),
             ..before.clone()
         };
         let delta = delta_round_trip(&before, &after, 1 << 18);
-        // Opaque length, packet presence, hour and count precede every cell.
-        assert_eq!(delta.values.len(), 4 + 1 + 4 + 4 + count * cell_bytes);
+        // Opaque length, packet presence and count precede every cell.
+        assert_eq!(delta.values.len(), 4 + 1 + 4 + (count - 1) * cell_bytes + 1);
         let mut input = Decoder::new(&delta.values);
         let changed = Kind::Opaque.decode_change(&mut input).unwrap();
         input.finish().unwrap();
@@ -358,8 +360,9 @@ fn reserved_reverse_hour_only_payload_grows_with_every_identical_matrix_cell() {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(value.sample_hour, 4);
-        assert_eq!(value.cells, vec![cell; count]);
+        assert_eq!(value.sample_hour, PacketHour::Host);
+        assert_eq!(value.cells[..count - 1], vec![cell; count - 1]);
+        assert_eq!(value.cells[count - 1], None);
     }
 }
 
@@ -374,7 +377,7 @@ fn reserved_reverse_historical_prefix_keeps_named_gaps_and_original_mask_width()
             .find(|field| field.name == name)
             .unwrap();
         assert_eq!(field.index, index);
-        assert_eq!(field.introduced, FORMAT_VERSION);
+        assert_eq!(field.introduced, POLITICAL_FORMAT);
     }
     let format = FormatVersion::read(EFFECT_INPUTS_FORMAT).unwrap();
     let fields = format.fields(table);
@@ -490,7 +493,7 @@ fn rejected_reverse(bytes: &[u8]) -> bool {
 #[test]
 fn reserved_reverse_codec_rejects_bad_option_tags_counts_and_opaque_framing() {
     let packet = Some(ReservedReverseVisibilityInputs {
-        sample_hour: -7,
+        sample_hour: PacketHour::Host,
         cells: vec![Some(ReverseZeroVisibilityInputs {
             target: Some(u32::MAX),
             war: Some([1, u8::MAX]),
@@ -503,15 +506,15 @@ fn reserved_reverse_codec_rejects_bad_option_tags_counts_and_opaque_framing() {
     });
     let mut bytes = Vec::new();
     Value::encode(&packet, &mut bytes).unwrap();
-    assert_eq!(bytes.len(), 37);
+    assert_eq!(bytes.len(), 33);
     assert!(!rejected_reverse(&bytes));
-    for tag in [0, 9, 10, 15, 18, 19, 24, 25, 30, 35] {
+    for tag in [0, 5, 6, 11, 14, 15, 20, 21, 26, 31] {
         let mut malformed = bytes.clone();
         malformed[tag] = 2;
         assert!(rejected_reverse(&malformed), "option tag at {tag}");
     }
     let mut malformed = bytes.clone();
-    malformed[5..9].copy_from_slice(&u32::MAX.to_le_bytes());
+    malformed[1..5].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(rejected_reverse(&malformed));
     for length in 0..bytes.len() {
         assert!(rejected_reverse(&bytes[..length]), "truncated at {length}");
@@ -532,7 +535,7 @@ fn reserved_reverse_codec_rejects_bad_option_tags_counts_and_opaque_framing() {
     }
     let start = bytes.len() - input.remaining();
     let body = start + 4;
-    for tag in [0, 9, 10, 15, 18, 19, 24, 25, 30, 35] {
+    for tag in [0, 5, 6, 11, 14, 15, 20, 21, 26, 31] {
         let mut malformed = bytes.clone();
         malformed[body + tag] = 2;
         assert!(ReservedCountryNamingRow::decode_fields(0, &mut Decoder::new(&malformed)).is_err());

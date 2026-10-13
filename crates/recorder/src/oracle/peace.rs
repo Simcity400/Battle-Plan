@@ -246,8 +246,16 @@ pub fn compare_recorded_settlements(
         .iter()
         .find(|b| b.id == frame.branch)
         .map(|b| b.first_hour);
+    let event_losses: Vec<_> = replay.event_losses(frame.branch).collect();
+    let crossed = std::cell::Cell::new(None);
     let preceding = |hour| -> io::Result<Option<Box<DecodedFrame>>> {
         if first_hour.is_none_or(|first| hour < first) {
+            return Ok(None);
+        }
+        // A recorded event loss after this read: its finalizations may have
+        // gone unobserved, as before the branch's first read.
+        if let Some(&loss) = event_losses.iter().find(|&&(after, _)| after == hour) {
+            crossed.set(Some(loss));
             return Ok(None);
         }
         match replay.seek(frame.branch, hour)? {
@@ -261,7 +269,14 @@ pub fn compare_recorded_settlements(
             )),
         }
     };
-    compare_settlements_after(frame, preceding, save, report)
+    compare_settlements_after(frame, preceding, save, report)?;
+    if let Some((after, lost)) = crossed.get() {
+        report.limitation(
+            "a recorded event loss (the recorder was detached) lies between these reads; conferences resident before it and finalized across it have no certified finalizer capture",
+            format!("PeaceSettlements between the reads of hours {after} and {lost}"),
+        );
+    }
+    Ok(())
 }
 
 fn drain_busy(frame: &DecodedFrame) -> bool {

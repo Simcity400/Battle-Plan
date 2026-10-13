@@ -837,6 +837,8 @@ fn walk_cached_buffer(
         if wanted[0] != used[0] {
             score_failure.get_or_insert("war score reachability owned rows truncated");
         }
+        // Building templates authenticated so far in this pass.
+        let mut templates = crate::cproduction_status::WarFactoryTemplates::new();
         for row in &mut scores[..used[2]] {
             if score_failure.is_some() {
                 break;
@@ -857,7 +859,11 @@ fn walk_cached_buffer(
                 row.divisions =
                     array(memory, country.pointer, ccountry::DIVISIONS, 8)?.count as i32;
                 row.factories = crate::cproduction_status::war_overview_factories(
-                    memory, base, &countries, country,
+                    memory,
+                    base,
+                    &countries,
+                    country,
+                    &mut templates,
                 )?;
                 row.view_subject =
                     cached_subject(memory, base, &countries, view.unwrap(), country)? as u8;

@@ -515,7 +515,7 @@ impl VariantCatalogue {
     ];
 
     /// One decoded frame, in hour order.
-    pub fn observe(&mut self, frame: &DecodedFrame) {
+    pub fn observe(&mut self, format: replay::format::FormatVersion, frame: &DecodedFrame) {
         let hour = frame.hour;
         // After a gap, what was known ends at the first hour not recorded.
         if let Some(last) = self.last_hour
@@ -524,7 +524,12 @@ impl VariantCatalogue {
             self.forget(last.saturating_add(1));
         }
         self.last_hour = Some(hour);
-        if !slot_read(&frame.metrics, TableId::VariantDefinitions, frame.hour) {
+        if !slot_read(
+            format,
+            &frame.metrics,
+            TableId::VariantDefinitions,
+            frame.hour,
+        ) {
             // Carried only while the table stays complete.
             if frame.complete::<tables::VariantDefinitions>().is_err() {
                 self.forget(hour);

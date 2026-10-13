@@ -20,13 +20,7 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) ->
         report.difference(LABEL, "unavailable", "required current-hour launch packet");
         return Ok(());
     };
-    eq(
-        report,
-        &format!("{LABEL}.sample_hour"),
-        packet.sample_hour,
-        frame.hour,
-    );
-    if packet.sample_hour != frame.hour {
+    if !report.packet_fresh(LABEL, packet.sample_hour, frame.hour) {
         return Ok(());
     }
     match &packet.naval_bases {

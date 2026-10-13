@@ -445,6 +445,9 @@ impl Episode {
 }
 #[derive(Default)]
 struct Census {
+    /// The recording's format, which dates its daily tables
+    /// ([`crate::metadata::slot_read`]).
+    format: replay::format::FormatVersion,
     episodes: Vec<Episode>,
     open: HashMap<u64, usize>,
     links: LinkTags,
@@ -489,7 +492,7 @@ impl Census {
     }
     fn observe(&mut self, frame: &DecodedFrame) -> io::Result<()> {
         let hour = frame.hour;
-        self.variants.observe(frame);
+        self.variants.observe(self.format, frame);
         let labels = self.links.update(frame).is_ok();
         let previous = self.observed.last().map(|(_, last)| *last);
         let adjacent = previous.and_then(|last| last.checked_add(1)) == Some(hour);
@@ -500,7 +503,7 @@ impl Census {
                     .unwrap_or(hour),
             );
         }
-        if !slot_read(&frame.metrics, TableId::LandCombats, hour) {
+        if !slot_read(self.format, &frame.metrics, TableId::LandCombats, hour) {
             self.gap(hour);
             self.observe_results(frame, labels);
             return Ok(());
@@ -525,7 +528,7 @@ impl Census {
         } else {
             self.observed.push((hour, hour));
         }
-        let sides = slot_read(&frame.metrics, TableId::LandCombatSides, hour)
+        let sides = slot_read(self.format, &frame.metrics, TableId::LandCombatSides, hour)
             .then(|| frame.complete::<tables::LandCombatSides>().ok())
             .flatten();
         let side_index: HashMap<u64, _> = sides
@@ -929,6 +932,7 @@ fn scan(
     catalogue: Option<Arc<crate::catalogue::Catalogue>>,
 ) -> io::Result<Census> {
     let mut census = Census {
+        format: replay.format,
         catalogue,
         ..Census::default()
     };
@@ -990,15 +994,23 @@ fn recording_available(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> 
                         break;
                     }
                     // A complete empty read also proves that this recording has the battle census.
-                    if slot_read(&decoded.metrics, TableId::LandCombats, decoded.hour)
-                        && decoded.complete::<tables::LandCombats>().is_ok()
+                    if slot_read(
+                        replay.format,
+                        &decoded.metrics,
+                        TableId::LandCombats,
+                        decoded.hour,
+                    ) && decoded.complete::<tables::LandCombats>().is_ok()
                     {
                         return Ok(true);
                     }
-                    if slot_read(&decoded.metrics, TableId::LandCombatResults, decoded.hour)
-                        && decoded
-                            .complete::<tables::LandCombatResults>()
-                            .is_ok_and(|rows| !rows.is_empty())
+                    if slot_read(
+                        replay.format,
+                        &decoded.metrics,
+                        TableId::LandCombatResults,
+                        decoded.hour,
+                    ) && decoded
+                        .complete::<tables::LandCombatResults>()
+                        .is_ok_and(|rows| !rows.is_empty())
                         && decoded
                             .complete::<tables::LandEventCoverage>()
                             .is_ok_and(|rows| {

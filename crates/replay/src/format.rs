@@ -35,6 +35,13 @@ pub fn is_layout_refusal(error: &io::Error) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FormatVersion(u16);
 
+/// The format this build writes, for state built before a recording is known.
+impl Default for FormatVersion {
+    fn default() -> Self {
+        Self::CURRENT
+    }
+}
+
 impl FormatVersion {
     pub const CURRENT: Self = Self(FORMAT_VERSION);
 
@@ -158,7 +165,6 @@ mod tests {
             TableId::Characters,
             TableId::OperativeMemberships,
             TableId::CountryAppearance,
-            TableId::AttritionModifierBreakdowns,
         ] {
             assert!(previous.table_refusal(table).is_none(), "{table:?}");
         }
@@ -181,14 +187,39 @@ mod tests {
 
     #[test]
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
-        assert_eq!(FORMAT_VERSION, 101);
+        assert_eq!(FORMAT_VERSION, 102);
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
                 assert!(FormatVersion::read(version).is_err());
                 continue;
             }
             let format = FormatVersion::read(version).unwrap();
-            let mut expected = Vec::new();
+            // Retired tables are refused by name in every recording.
+            let mut expected = crate::rows::compatibility::RETIRED_TABLES.to_vec();
+            if version <= 101 {
+                expected.extend([
+                    TableId::NavalModifierTrees,
+                    TableId::NavalModifierTreeSamples,
+                ]);
+            }
+            if version < crate::rows::compatibility::AIR_REGION_COMBAT_FORMAT {
+                expected.push(TableId::AirRegionCombat);
+            }
+            if version < crate::rows::compatibility::NUCLEAR_STRIKES_FORMAT {
+                expected.push(TableId::NuclearStrikes);
+            }
+            if version < crate::rows::compatibility::LAND_MODIFIER_ROWS_FORMAT {
+                expected.push(TableId::LandCombatDivisionModifiers);
+            }
+            if version < crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT {
+                expected.push(TableId::FuelDemandParts);
+            }
+            if version < crate::rows::compatibility::RETREAT_BANS_FORMAT {
+                expected.push(TableId::DivisionRetreatBans);
+            }
+            if version < crate::rows::compatibility::ESSENTIAL_STOCK_FORMAT {
+                expected.push(TableId::StockpileArchetypes);
+            }
             if version <= 100 {
                 expected.extend([
                     TableId::ResearchTechnologies,
@@ -235,11 +266,11 @@ mod tests {
                     TableId::DecisionRandomItems,
                     TableId::CapturedOperativeReferences,
                     TableId::ReservedCountryNaming,
-                    TableId::AttritionModifierBreakdowns,
                 ]);
             }
             if version <= 97 {
-                expected.extend([TableId::AvailableAdvisors, TableId::OwnedWargoals]);
+                // OwnedWargoals is already refused as retired.
+                expected.push(TableId::AvailableAdvisors);
             }
             if version <= 93 {
                 expected.push(TableId::RaidTooltipOperands);
@@ -267,7 +298,7 @@ mod tests {
 
     #[test]
     fn format101_preserves_published_air_and_oracle_prefixes() {
-        for version in PROVEN_FROM..FORMAT_VERSION {
+        for version in PROVEN_FROM..crate::rows::compatibility::POLITICAL_FORMAT {
             if version == RETIRED_FORMAT {
                 continue;
             }
@@ -333,11 +364,7 @@ mod tests {
             crate::rows::compatibility::GAME_SCORE_FORMAT - 1,
         ] {
             let previous = FormatVersion::read(version).unwrap();
-            assert!(
-                previous
-                    .table_refusal(TableId::NavalModifierBreakdowns)
-                    .is_none()
-            );
+            assert!(previous.table_refusal(TableId::NavalCombatShips).is_none());
             for table in [
                 TableId::CountryGameScoreInputs,
                 TableId::AirWingGameScoreStats,

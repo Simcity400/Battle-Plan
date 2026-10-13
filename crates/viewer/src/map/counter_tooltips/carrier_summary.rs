@@ -1040,7 +1040,7 @@ mod tests {
                     slot: 1,
                     capacity_raw: 1,
                     wings: vec![101],
-                    transport_planes: Recorded::Value(Some(vec![Some(0), Some(1)])),
+                    transport_planes: Default::default(),
                     carrier: Recorded::Value(Some(AirBaseRegistrationCarrierInputs {
                         country: 1001,
                         fuel_demand_raw: Some(100_000),
@@ -1069,7 +1069,7 @@ mod tests {
                     slot: 2,
                     capacity_raw: 1,
                     wings: vec![102],
-                    transport_planes: Recorded::Value(Some(vec![Some(3)])),
+                    transport_planes: Default::default(),
                     carrier: Recorded::Value(Some(AirBaseRegistrationCarrierInputs {
                         country: 2002,
                         pools: Some(vec![CarrierAirPool {

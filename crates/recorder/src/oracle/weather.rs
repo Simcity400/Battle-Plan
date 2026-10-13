@@ -4,13 +4,21 @@
 use std::{collections::BTreeMap, io};
 
 use installed_content::save::{Decimal, Save};
-use replay::{frame::DecodedFrame, rows::tables};
+use replay::{
+    frame::DecodedFrame,
+    rows::{ClockState, TemperatureRecord, tables},
+};
 
 use super::{Report, complete, invalid};
 
-pub(super) fn compare(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Result<()> {
+pub(super) fn compare(
+    frame: &DecodedFrame,
+    saved: &Save,
+    temperature: Result<&replay::temperature::Content, String>,
+    report: &mut Report,
+) -> io::Result<()> {
     let provinces = report.attempt("WeatherProvinces", |report| {
-        compare_provinces(frame, saved, report)
+        compare_provinces(frame, saved, temperature, report)
     });
     let regions = report.attempt("WeatherRegions", |report| {
         compare_regions(frame, saved, report)
@@ -32,22 +40,55 @@ pub(super) fn compare(frame: &DecodedFrame, saved: &Save, report: &mut Report) -
     }
 }
 
-fn compare_provinces(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Result<()> {
+fn compare_provinces(
+    frame: &DecodedFrame,
+    saved: &Save,
+    temperature: Result<&replay::temperature::Content, String>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let rows = complete::<tables::WeatherProvinces>(frame)?;
+    // Every record's temperature at the frame's hour: recorded hourly before format 102,
+    // derived since from the frame's anchor and pass (`recorder derived` checks each hour's
+    // derivation against the read checksum).
+    let unrecorded = rows
+        .iter()
+        .all(|row| matches!(row.temperature.record(), Ok(TemperatureRecord::NotRecorded)));
+    let temperatures = replay::temperature::Memo::default()
+        .states(
+            frame.branch,
+            frame.hour,
+            rows,
+            temperature
+                .as_ref()
+                .map(|content| *content)
+                .map_err(String::as_str),
+        )
+        .map(|states| {
+            states
+                .iter()
+                .map(|state| state.temperature)
+                .collect::<Vec<_>>()
+        });
+    if let (false, Err(reason)) = (unrecorded, &temperatures) {
+        report.limitation(
+            &format!("WeatherProvinces.temperature refused: {reason}"),
+            "WeatherProvinces.temperature: not compared",
+        );
+    }
     let mut provinces = BTreeMap::new();
-    for row in complete::<tables::WeatherProvinces>(frame)? {
+    for row in rows {
         if provinces.insert(row.id, row).is_some() {
             return Err(invalid("duplicate native weather province id"));
         }
-        report.recorded(
-            &row.local_hour,
-            "WeatherProvinces.local_hour",
-            format!("weather province {}.local_hour", row.id),
-        );
-        report.recorded(
-            &row.night_factor,
-            "WeatherProvinces.night_factor",
-            format!("weather province {}.night_factor", row.id),
-        );
+        // Updated clocks are the hour's derivation and held ones the
+        // record's words; neither has a save counterpart.
+        if matches!(row.clock.state(row.id), Ok(ClockState::NotRecorded)) {
+            report.recorded(
+                &replay::rows::Recorded::<()>::NotRecorded,
+                "WeatherProvinces.clock",
+                format!("weather province {}.clock", row.id),
+            );
+        }
         if row.id == 0
             && report
                 .recorded(
@@ -89,11 +130,19 @@ fn compare_provinces(frame: &DecodedFrame, saved: &Save, report: &mut Report) ->
             sparse_scalar(report, &label, "snow", actual.snow, expected.snow.as_ref());
             // The game always emits temperature, even
             // when zero. Absence is malformed/missing evidence, not zero.
-            if let Some(&temperature) = report.recorded(
-                &actual.temperature,
-                "WeatherProvinces.temperature",
-                format!("{label}.temperature"),
-            ) {
+            let recorded = match &temperatures {
+                _ if unrecorded => Some(replay::rows::Recorded::NotRecorded),
+                Ok(values) => values.get(actual.id as usize).copied().map(Into::into),
+                // Refused once above; nothing to compare.
+                Err(_) => None,
+            };
+            if let Some(&temperature) = recorded.as_ref().and_then(|recorded| {
+                report.recorded(
+                    recorded,
+                    "WeatherProvinces.temperature",
+                    format!("{label}.temperature"),
+                )
+            }) {
                 report.scalar_checks += 1;
                 if expected.temperature.as_ref().map(|value| value.raw) != Some(temperature) {
                     report.difference(
@@ -127,8 +176,8 @@ fn compare_provinces(frame: &DecodedFrame, saved: &Save, report: &mut Report) ->
         "WeatherProvinces.display_snow, display_mud: census only",
     );
     report.limitation(
-        "the weather manager writer omits the stored day/night array; these simulation values require a matched native read witness",
-        "WeatherProvinces.local_hour, night_factor: census only",
+        "the weather manager writer omits the stored day/night array; held clocks require a matched native read witness, and updated clocks are the hour's derivation from content (`recorder derived` compares it with recorded clocks)",
+        "WeatherProvinces.clock: census only",
     );
     report.limitation(
         "the manager serializer omits the graphics grid, refresh interval and refresh identity; retained boundary and local fade require matched native graphics witnesses",

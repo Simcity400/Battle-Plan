@@ -3,9 +3,19 @@
 
 use engine::allocation::{copy_vec, owned_vec, reserve, reserve_exact};
 pub(crate) mod advisors;
+mod carry;
+#[cfg(test)]
+mod carry_tests;
 pub(crate) mod census;
 #[cfg(test)]
 mod census_tests;
+mod leader_carry;
+mod leaders;
+#[cfg(test)]
+mod leaders_tests;
+mod quiet;
+#[cfg(test)]
+mod quiet_bench;
 
 use crate::{
     read_accounting,
@@ -17,29 +27,27 @@ use engine::{
     Memory, active_ability_record, cadvisor, carmy_leader, ccharacter, ccharacter_manager,
     ccharacter_template, ccountry, ccountry_leader, cgame_state, character_advisor_node,
     character_leader_node, cnavy_leader, coperative_leader, cpdx_array::Array, cunit_leader,
-    cunit_leader_skill, cunit_leader_trait, msvc_string, msvc_tree_node, read,
-    unit_leader_trait_experience_entry, walk::Outcome,
+    cunit_leader_skill, cunit_leader_trait, msvc_string, msvc_tree_node, read, walk::Outcome,
 };
 use replay::{
     BranchId,
     frame::{TableInput, TableView},
     rows::{
         ActiveAbilityRow, AdvisorRoleRow, CharacterRow, CountryLeaderRoleRow, TableId, TableRows,
-        TableSchema, UnitLeaderRow, UnitLeaderTraitExperienceRow, UnitLeaderTraitRow, tables,
+        TableSchema, UnitLeaderRow, UnitLeaderTraitRow, tables,
     },
 };
 
 use std::mem::size_of;
 use std::sync::{Arc, Weak};
 
-pub const N: usize = 6;
+pub const N: usize = 5;
 pub const TABLES: [TableId; N] = [
     TableId::Characters,
     TableId::CountryLeaderRoles,
     TableId::AdvisorRoles,
     TableId::UnitLeaders,
     TableId::UnitLeaderTraits,
-    TableId::UnitLeaderTraitExperience,
 ];
 
 /// The first table in each group carries its full QPC cost.
@@ -49,7 +57,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("character roster and unit leaders", 0, &[0, 3]),
     ("country leader roles", 1, &[1]),
     ("advisor roles", 2, &[2]),
-    ("unit leader traits and experience", 4, &[4, 5]),
+    ("unit leader traits", 4, &[4]),
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -138,28 +146,53 @@ struct LeaderRow {
 }
 
 pub struct Captured {
-    active: [bool; 6],
+    active: [bool; N],
     characters: Buffer<ccharacter::Row>,
     leaders: Buffer<ccountry_leader::Row>,
     advisors: Buffer<cadvisor::Row>,
     units: Buffer<LeaderRow>,
     traits: Buffer<cunit_leader::TraitRow>,
-    trait_experience: Buffer<cunit_leader::TraitExperienceRow>,
     /// Tables acquired by independent raw jobs, including terminal failures.
     /// The typed walk handles only the remaining tables; the decode worker
     /// merges successful parts before publication. Preserved across reset
     /// and cleared per part after decode.
-    pub(crate) raw_active: [bool; 6],
+    pub(crate) raw_active: [bool; N],
     fallback_jobs: [Option<Box<CharactersJob>>; PARTS],
+    /// The key of the latest decode's Characters rows when it came from a
+    /// quiet roster hour ([`quiet::rows_key`]).
+    quiet_rows: Option<quiet::RowsKey>,
+    /// What the Characters and UnitLeaders buffers hold since their latest
+    /// publication ([`Held`]).
+    held: Held,
+}
+
+/// The quiet roster hour tables a frame's buffers hold, so a later quiet
+/// hour with the same key publishes them without rewriting. Buffers are
+/// written only by a walk (`install_family`) or a republication, and each
+/// clears the key of what it wrote. `reset` and growth, which only appends
+/// default rows after the held ones (`grow_vec`), keep their contents.
+#[derive(Clone, Copy, Debug, Default)]
+struct Held {
+    /// The quiet roster hour key of the Characters rows ([`quiet::RowsKey`]).
+    characters: Option<quiet::RowsKey>,
+    /// The leader carry's table key of the UnitLeaders rows
+    /// ([`leader_carry::LeaderCarry::table_key`]), with their result.
+    units: Option<((u64, u64), ReadResult)>,
+    /// The trait carry's table key of the UnitLeaderTraits rows, with their
+    /// result.
+    traits: Option<((u64, u64), ReadResult)>,
+    /// The advisor cache's content version of the AdvisorRoles rows
+    /// ([`advisors::Cache::decode`]), with their result.
+    advisors: Option<(u64, ReadResult)>,
 }
 
 /// Disjoint table owners. Part zero supplies the current portrait census;
 /// role and trait acquisition can run concurrently on the same stopped world.
-pub(crate) const PART_MASKS: [[bool; 6]; 4] = [
-    [true, false, false, true, false, false],
-    [false, true, false, false, false, false],
-    [false, false, true, false, false, false],
-    [false, false, false, false, true, true],
+pub(crate) const PART_MASKS: [[bool; N]; 4] = [
+    [true, false, false, true, false],
+    [false, true, false, false, false],
+    [false, false, true, false, false],
+    [false, false, false, false, true],
 ];
 pub(crate) const PARTS: usize = PART_MASKS.len();
 
@@ -243,7 +276,7 @@ pub(crate) fn acquisition_diagnostics() -> impl serde::Serialize {
     })
 }
 
-fn anchor(active: [bool; 6]) -> usize {
+fn anchor(active: [bool; N]) -> usize {
     active.iter().position(|&value| value).unwrap_or(0)
 }
 
@@ -273,25 +306,16 @@ impl Captured {
         Ok(())
     }
 
-    pub(crate) fn character_activity(&self) -> [bool; 6] {
+    pub(crate) fn character_activity(&self) -> [bool; N] {
         self.active
     }
 
-    pub(crate) fn set_character_activity(&mut self, active: [bool; 6]) {
+    pub(crate) fn set_character_activity(&mut self, active: [bool; N]) {
         self.active = active;
         self.fail_character_tables(active.map(|value| !value), replay::cadence::SKIPPED_REASON);
     }
-    pub(crate) fn trait_capture_capacities(&self) -> ([usize; 2], [usize; 2]) {
-        (
-            [
-                self.traits.rows.rows.len(),
-                self.trait_experience.rows.rows.len(),
-            ],
-            [
-                self.traits.bytes.first.len(),
-                self.trait_experience.bytes.first.len(),
-            ],
-        )
+    pub(crate) fn trait_capture_capacities(&self) -> (usize, usize) {
+        (self.traits.rows.rows.len(), self.traits.bytes.first.len())
     }
 
     fn family(&mut self) -> Family<'_> {
@@ -301,7 +325,6 @@ impl Captured {
             advisors: self.advisors.batch(),
             units: self.units.batch(),
             traits: self.traits.batch(),
-            experience: self.trait_experience.batch(),
         }
     }
 
@@ -312,10 +335,11 @@ impl Captured {
             advisors: Buffer::new(capacities, 2),
             units: Buffer::new(capacities, 3),
             traits: Buffer::new(capacities, 4),
-            trait_experience: Buffer::new(capacities, 5),
-            raw_active: [false; 6],
-            active: [false; 6],
+            raw_active: [false; N],
+            active: [false; N],
             fallback_jobs: std::array::from_fn(|_| None),
+            quiet_rows: None,
+            held: Held::default(),
         }
     }
 
@@ -333,7 +357,6 @@ impl Captured {
         self.advisors.reset();
         self.units.reset();
         self.traits.reset();
-        self.trait_experience.reset();
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -342,21 +365,11 @@ impl Captured {
             + self.advisors.allocated_bytes()
             + self.units.allocated_bytes()
             + self.traits.allocated_bytes()
-            + self.trait_experience.allocated_bytes()
     }
 
     pub fn grow(&mut self, capacities: &mut Capacities) {
-        for (index, row_len, byte_len) in [
-            (4, self.traits.rows.outcome.len(), self.traits.bytes.len),
-            (
-                5,
-                self.trait_experience.rows.outcome.len(),
-                self.trait_experience.bytes.len,
-            ),
-        ] {
-            capacities.rows[index] = capacities.rows[index].max(row_len);
-            capacities.bytes[index] = capacities.bytes[index].max(byte_len);
-        }
+        capacities.rows[4] = capacities.rows[4].max(self.traits.rows.outcome.len());
+        capacities.bytes[4] = capacities.bytes[4].max(self.traits.bytes.len);
         self.characters.grow(capacities, 0);
         self.leaders.grow(capacities, 1);
         capacities.rows[2] = capacities.rows[2].max(self.advisors.rows.outcome.len());
@@ -364,7 +377,6 @@ impl Captured {
         self.advisors.grow(capacities, 2);
         self.units.grow(capacities, 3);
         self.traits.grow(capacities, 4);
-        self.trait_experience.grow(capacities, 5);
     }
 
     fn begin_capture(&mut self, hour: i32, force_full: bool) -> [bool; N] {
@@ -390,8 +402,7 @@ impl Captured {
             leaders = 1,
             advisors = 2,
             units = 3,
-            traits = 4,
-            trait_experience = 5
+            traits = 4
         );
         std::array::from_fn(|index| family_active[index] && !self.raw_active[index])
     }
@@ -481,7 +492,6 @@ impl Captured {
             self.advisors.rows.outcome,
             self.units.rows.outcome,
             self.traits.rows.outcome,
-            self.trait_experience.rows.outcome,
         ]
     }
 
@@ -661,18 +671,6 @@ impl Captured {
                 leader_row,
             )),
             traits,
-            wrap(view::<tables::UnitLeaderTraitExperience, _>(
-                &self.trait_experience,
-                |row, bytes| valid(bytes, row.trait_row.token_start, row.trait_row.token_len),
-                |row, bytes| UnitLeaderTraitExperienceRow {
-                    leader_reference: leader_reference(row.trait_row.leader_id),
-                    ordinal: row.trait_row.ordinal,
-                    token_id: row.trait_row.token_id,
-                    definition_ordinal: row.trait_row.definition_ordinal,
-                    token: owned(bytes, row.trait_row.token_start, row.trait_row.token_len),
-                    experience: row.experience,
-                },
-            )),
         ]
     }
 }
@@ -1039,11 +1037,10 @@ struct Family<'a> {
     advisors: Batch<'a, cadvisor::Row>,
     units: Batch<'a, LeaderRow>,
     traits: Batch<'a, cunit_leader::TraitRow>,
-    experience: Batch<'a, cunit_leader::TraitExperienceRow>,
 }
 
 impl Family<'_> {
-    fn select(mut self, active: [bool; 6]) -> Self {
+    fn select(mut self, active: [bool; N]) -> Self {
         macro_rules! select {
             ($($field:ident = $index:literal),+ $(,)?) => {$(
                 if !active[$index] {
@@ -1056,8 +1053,7 @@ impl Family<'_> {
             leaders = 1,
             advisors = 2,
             units = 3,
-            traits = 4,
-            experience = 5
+            traits = 4
         );
         self
     }
@@ -1070,7 +1066,6 @@ impl Family<'_> {
             || self.advisors.active()
             || self.units.active()
             || self.traits.active()
-            || self.experience.active()
     }
 
     /// Domains a character view must copy: names, leader map, unit, advisors.
@@ -1078,7 +1073,7 @@ impl Family<'_> {
         [
             self.characters.active(),
             self.leaders.active(),
-            self.units.active() || self.traits.active() || self.experience.active(),
+            self.units.active() || self.traits.active(),
             self.advisors.active(),
         ]
     }
@@ -1089,17 +1084,15 @@ impl Family<'_> {
         self.advisors.fail(reason);
         self.units.fail(reason);
         self.traits.fail(reason);
-        self.experience.fail(reason);
     }
 
-    fn results(&self) -> [ReadResult; 6] {
+    fn results(&self) -> [ReadResult; N] {
         [
             self.characters.result(),
             self.leaders.result(),
             self.advisors.result(),
             self.units.result(),
             self.traits.result(),
-            self.experience.result(),
         ]
     }
 
@@ -1110,6 +1103,7 @@ impl Family<'_> {
     /// Every table's rows for one roster occurrence. `templates` holds the
     /// template identities the decoding job's copy relied on; the live walk
     /// has none and reads every template.
+    #[allow(clippy::too_many_arguments)]
     fn visit<M: Memory>(
         &mut self,
         memory: &M,
@@ -1117,14 +1111,32 @@ impl Family<'_> {
         view: ccharacter::View<'_, M>,
         owned_traits: Option<&TraitCapture>,
         templates: Option<&TemplateCache>,
-        trait_cursors: &mut [usize; 2],
+        carried: Carried<'_>,
+        trait_cursor: &mut usize,
     ) {
         let (character_pointer, character_id) = view.reference();
         match view.entry() {
             Ok(character) => {
                 self.characters.append(
-                    |rows, bytes| {
-                        ccharacter::walk_entry(
+                    |rows, bytes| match carried
+                        .characters
+                        .and_then(|carry| carry.carried_row(character.pointer, character.id))
+                    {
+                        // The held row with this hour's identity, country and
+                        // roster position.
+                        Some((held, text)) => leader_carry::held_rows(
+                            &[ccharacter::Row {
+                                id: character.id,
+                                country: character.country,
+                                roster: character.roster,
+                                ordinal: character.ordinal,
+                                ..held
+                            }],
+                            text,
+                            rows,
+                            bytes,
+                        ),
+                        None => ccharacter::walk_entry(
                             &view,
                             base,
                             character,
@@ -1134,7 +1146,7 @@ impl Family<'_> {
                             rows,
                             bytes,
                         )
-                        .into()
+                        .into(),
                     },
                     |row, offset| {
                         relocate(&mut row.name_start, offset)
@@ -1166,13 +1178,8 @@ impl Family<'_> {
                 self.advisors.fail(reason);
             }
         }
-        let Family {
-            units,
-            traits,
-            experience,
-            ..
-        } = self;
-        if !units.active() && !traits.active() && !experience.active() {
+        let Family { units, traits, .. } = self;
+        if !units.active() && !traits.active() {
             return;
         }
         let pointer = character_pointer
@@ -1182,7 +1189,6 @@ impl Family<'_> {
         let Some(pointer) = pointer else {
             units.fail("character unit leader pointer unreadable");
             traits.fail("character unit leader pointer unreadable");
-            experience.fail("character unit leader pointer unreadable");
             return;
         };
         if pointer == 0 {
@@ -1190,7 +1196,10 @@ impl Family<'_> {
         }
         let previous_len = units.len;
         units.append(
-            |rows, bytes| read_unit(memory, base, pointer, character_id, rows, bytes),
+            |rows, bytes| match carried.units.and_then(|carry| carry.carried_rows(pointer)) {
+                Some((held, text)) => leader_carry::held_rows(held, text, rows, bytes),
+                None => read_unit(memory, base, pointer, character_id, rows, bytes),
+            },
             |row, offset| {
                 relocate(&mut row.text_a_start, offset)
                     && relocate(&mut row.text_b_start, offset)
@@ -1199,10 +1208,17 @@ impl Family<'_> {
                     })
             },
         );
+        if let Some((held, text)) = carried.traits.and_then(|carry| carry.carried_rows(pointer)) {
+            traits.append(
+                |rows, bytes| leader_carry::held_rows(held, text, rows, bytes),
+                |row, offset| relocate(&mut row.token_start, offset),
+            );
+            return;
+        }
         // Reuse the authenticated scalar header on the normal path. The
-        // trait vectors retain independent availability when scalar capacity
+        // trait vector retains independent availability when scalar capacity
         // or a skill/text fault requires reading only the parent's identity.
-        let identity = if traits.active() || experience.active() {
+        let identity = if traits.active() {
             Some(if units.len > previous_len {
                 Ok(units.rows[previous_len].native.id)
             } else {
@@ -1216,65 +1232,53 @@ impl Family<'_> {
                 traits.append(
                     |rows, bytes| {
                         if let Some(owned) = owned_traits {
-                            owned.project(
-                                0,
-                                &mut trait_cursors[0],
-                                pointer,
-                                id,
-                                rows,
-                                bytes,
-                                |row, _| row,
-                            )
+                            owned.project(trait_cursor, pointer, id, rows, bytes)
                         } else {
                             cunit_leader::walk_traits(memory, base, pointer, id, rows, bytes).into()
                         }
                     },
                     |row, offset| relocate(&mut row.token_start, offset),
                 );
-                experience.append(
-                    |rows, bytes| {
-                        if let Some(owned) = owned_traits {
-                            owned.project(
-                                1,
-                                &mut trait_cursors[1],
-                                pointer,
-                                id,
-                                rows,
-                                bytes,
-                                |trait_row, experience| cunit_leader::TraitExperienceRow {
-                                    trait_row,
-                                    experience,
-                                },
-                            )
-                        } else {
-                            cunit_leader::walk_trait_experience(
-                                memory, base, pointer, id, rows, bytes,
-                            )
-                            .into()
-                        }
-                    },
-                    |row, offset| relocate(&mut row.trait_row.token_start, offset),
-                );
             }
-            Some(Err(reason)) => {
-                traits.fail(reason);
-                experience.fail(reason);
-            }
+            Some(Err(reason)) => traits.fail(reason),
             None => {}
         }
     }
 }
 
+#[cfg(test)]
 fn walk_family<M: Memory>(
+    memory: &M,
+    base: usize,
+    game_state: usize,
+    family: Family<'_>,
+    owned_traits: Option<&TraitCapture>,
+    templates: Option<&TemplateCache>,
+) -> [ReadResult; N] {
+    walk_family_carrying(
+        memory,
+        base,
+        game_state,
+        family,
+        owned_traits,
+        templates,
+        None,
+    )
+}
+
+/// `walk_family`, with Characters rows of `carry`'s carried characters
+/// supplied from their held reads.
+fn walk_family_carrying<M: Memory>(
     memory: &M,
     base: usize,
     game_state: usize,
     mut family: Family<'_>,
     owned_traits: Option<&TraitCapture>,
     templates: Option<&TemplateCache>,
-) -> [ReadResult; 6] {
+    carry: Option<&carry::Carry>,
+) -> [ReadResult; N] {
     let required = family.required();
-    let mut trait_cursors = [0; 2];
+    let mut trait_cursor = 0;
     let result = (|| {
         if !required.into_iter().any(|active| active) {
             return Ok(());
@@ -1301,7 +1305,11 @@ fn walk_family<M: Memory>(
                 view,
                 owned_traits,
                 templates,
-                &mut trait_cursors,
+                Carried {
+                    characters: carry,
+                    ..Carried::default()
+                },
+                &mut trait_cursor,
             );
         }
         Ok::<_, &'static str>(())
@@ -1316,24 +1324,38 @@ fn walk_family<M: Memory>(
 /// `walk_family` over the occurrences a census-loaned acquisition visited.
 /// Each view holds the same authenticated fields `View::read` would copy;
 /// omitted occurrences produce no rows and read nothing in the typed walk.
+/// The census holds no character names: Characters rows come only from the
+/// carry, on a quiet roster hour ([`quiet`]), which carries every one.
 fn walk_census<M: Memory>(
     memory: &M,
     base: usize,
     mut family: Family<'_>,
     owned_traits: Option<&TraitCapture>,
-    visited: &[census::Occurrence],
+    visited: impl IntoIterator<Item = census::Occurrence>,
     historical: usize,
-) -> [ReadResult; 6] {
+    carried: Carried<'_>,
+) -> [ReadResult; N] {
     let required = family.required();
-    debug_assert!(!required[0], "the role census holds no character names");
-    let mut trait_cursors = [0; 2];
+    debug_assert!(
+        !required[0] || carried.characters.is_some(),
+        "the role census holds no character names"
+    );
+    let mut trait_cursor = 0;
     for occurrence in visited {
         if !family.alive() {
             break;
         }
         let identity = occurrence.identity(historical);
         match ccharacter::View::acquired(memory, base, identity, occurrence.fields(required)) {
-            Ok(view) => family.visit(memory, base, view, owned_traits, None, &mut trait_cursors),
+            Ok(view) => family.visit(
+                memory,
+                base,
+                view,
+                owned_traits,
+                None,
+                carried,
+                &mut trait_cursor,
+            ),
             Err(reason) => {
                 family.fail(reason);
                 break;
@@ -1342,6 +1364,45 @@ fn walk_census<M: Memory>(
     }
     family.finish_advisor_tooltips(memory);
     family.results()
+}
+
+/// A traits job's decode: whether every leader it read afresh projects the
+/// rows it holds, so its buffers' table is this hour's.
+fn fresh_traits_unchanged(job: &CharactersJob) -> bool {
+    let carry = &job.trait_carry;
+    let mut vectors = job.traits.vectors.iter().enumerate();
+    let mut rows = Vec::new();
+    let mut bytes = Vec::new();
+    for at in 0..carry.visit_count() {
+        let Some((pointer, _)) = carry.fresh_visit(at) else {
+            continue;
+        };
+        let Some((mut cursor, vector)) = vectors.next() else {
+            return false;
+        };
+        let Outcome::Rows { len } = vector.outcome else {
+            return false;
+        };
+        rows.resize(len, cunit_leader::TraitRow::default());
+        bytes.resize(vector.bytes_len, 0);
+        let projected =
+            job.traits
+                .project(&mut cursor, pointer, vector.leader, &mut rows, &mut bytes);
+        if projected.outcome != (Outcome::Rows { len })
+            || !carry.held_equals(at, &rows, &bytes[..projected.bytes_len])
+        {
+            return false;
+        }
+    }
+    vectors.next().is_none()
+}
+
+/// The rows a walk takes from held reads rather than memory.
+#[derive(Clone, Copy, Default)]
+struct Carried<'a> {
+    characters: Option<&'a carry::Carry>,
+    units: Option<&'a leader_carry::UnitCarry>,
+    traits: Option<&'a leader_carry::TraitCarry>,
 }
 
 fn unit_identity(
@@ -1647,7 +1708,7 @@ fn leader_row(row: &LeaderRow, bytes: &[u8]) -> UnitLeaderRow {
         character_type: native.character_type,
         character_id: native.character_id,
         category: native.category,
-        experience: native.experience,
+        experience: replay::rows::RetiredI64::default(),
         kind: native.kind,
         skill_status: native.skill_status,
         skill_valid: native.skill_valid,
@@ -1690,13 +1751,13 @@ pub(super) fn ability_row(row: &active_ability_record::Row, bytes: &[u8]) -> Act
 }
 
 // ===========================================================================
-// Raw-copy split for hourly Characters/UnitLeaders and scheduled roles,
-// traits and trait experience. ActiveAbilities is its own hourly pool pack
+// Raw-copy split for hourly Characters/UnitLeaders and scheduled roles and
+// traits. ActiveAbilities is its own hourly pool pack
 // (`super::active_abilities`).
 //
 // The game thread copies raw bytes only: the manager census, the per-entry
 // view spans, heap string payloads by header length, role-map nodes with
-// batched gathers, and unit/trait/experience nesting. Trait definitions are
+// batched gathers, and unit/trait nesting. Trait definitions are
 // owned once per successful current-pass observation.
 // The FIFO decode worker replays `walk_family` against the
 // recorded spans and projects owned trait occurrences into the typed arenas.
@@ -1714,20 +1775,19 @@ pub(super) fn ability_row(row: &active_ability_record::Row, bytes: &[u8]) -> Act
 // - shared view bytes are parsed from the current copy only.
 // ===========================================================================
 
-/// Fault-attribution bits, one per family table in `TABLES[0..6]` order.
+/// Fault-attribution bits, one per family table in `TABLES` order.
 const MASK_CHARACTERS: u32 = 0x01;
 const MASK_LEADERS: u32 = 0x02;
 const MASK_ADVISORS: u32 = 0x04;
 const MASK_UNITS: u32 = 0x08;
 const MASK_TRAITS: u32 = 0x10;
-const MASK_EXPERIENCE: u32 = 0x20;
-const MASK_ALL: u32 = 0x3f;
+const MASK_ALL: u32 = 0x1f;
 const MASK_COUNTRY: u32 = MASK_CHARACTERS | MASK_LEADERS | MASK_ADVISORS;
-const MASK_UNIT_LINK: u32 = MASK_UNITS | MASK_TRAITS | MASK_EXPERIENCE;
-/// Identity-fallback spans feed only the trait vectors: the units outcome is
+const MASK_UNIT_LINK: u32 = MASK_UNITS | MASK_TRAITS;
+/// Identity-fallback spans feed only the trait vector: the units outcome is
 /// already decided when the typed fallback runs. The overlapping identity
 /// span itself already attributes units through `MASK_UNIT_LINK`.
-const MASK_TRAIT_FALLBACK: u32 = MASK_TRAITS | MASK_EXPERIENCE;
+const MASK_TRAIT_FALLBACK: u32 = MASK_TRAITS;
 
 /// View span offsets, lengths and fault masks in `View::read` order:
 /// identity, country, name token id and template pointer, name/token headers,
@@ -1835,6 +1895,13 @@ pub(crate) fn copy_characters(
     }
     let started = qpc();
     let wall_started = std::time::Instant::now();
+    // The roster domain's token, before any registration or read of the
+    // roster job's pass ([`quiet`]).
+    let roster_token = if job.part == 0 {
+        job.roster.token()
+    } else {
+        None
+    };
     let loaned = match roles {
         Roles::Borrow(census) => census.admitted(ctx.base, ctx.game_state),
         _ => None,
@@ -1853,13 +1920,52 @@ pub(crate) fn copy_characters(
     } else if job.advisor_dynamic.is_some() {
         // The feature-gated section reader keeps its independent roster walk.
         copy_advisor_sections(memory, ctx, job);
+    } else if let Some(census) =
+        loaned.filter(|_| job.leader_cache.is_some() && ctx.active == PART_MASKS[1])
+    {
+        // CountryLeaderRoles from the census, carrying certified characters.
+        let _reads = read_accounting::table(TableId::CountryLeaderRoles);
+        job.clear();
+        job.active = ctx.active;
+        job.game_state = ctx.game_state;
+        job.census_capture = true;
+        job.census_historical = census.historical;
+        let cache = job.leader_cache.as_mut().unwrap();
+        cache.capture(
+            memory,
+            ctx.base,
+            ctx.game_state,
+            census,
+            &crate::character_changes::Observer,
+            crate::sampled_verify::current_burned_in(crate::character_changes::VERIFY),
+        );
+        job.leader_charge.set(crate::raw_memory::Capacity {
+            auxiliary_vectors: cache.allocated_bytes(),
+            ..Default::default()
+        });
+        job.leader_cached = true;
     } else if let Some(census) = loaned.filter(|_| census_part(ctx.active)) {
         copy_census(memory, ctx, job, census);
+    } else if job.part == 0 && ctx.active == PART_MASKS[0] {
+        // The roster job's hourly pass, quiet while the roster stands still.
+        quiet::capture(
+            memory,
+            ctx,
+            job,
+            matches!(roles, Roles::Gather),
+            roster_token,
+        );
     } else {
         copy_pass(memory, ctx, job, None);
         if matches!(roles, Roles::Gather) {
             gather_role_census(memory, ctx, job);
         }
+    }
+    if !job.leader_cached
+        && let Some(cache) = job.leader_cache.as_mut()
+    {
+        // A pass without the census leaves nothing certified.
+        cache.forget();
     }
     let total_ns = wall_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
     use std::sync::atomic::Ordering::Relaxed;
@@ -1882,11 +1988,9 @@ pub(crate) fn copy_characters(
             *bytes += job.advisor_roots.raw_bytes[index] + dynamic.log.raw_bytes[index];
         }
     }
-    for table in 0..2 {
-        raw_bytes[table + 4] += job.traits.raw_bytes[table];
-    }
+    raw_bytes[4] += job.traits.raw_bytes;
     let plan_failed = job.requires_no_retry();
-    let mut copy_ticks = [0; 6];
+    let mut copy_ticks = [0; N];
     copy_ticks[anchor(ctx.active)] = elapsed(started);
     CharactersCopyReport {
         raw_ok: !job.overflowed() && !plan_failed,
@@ -1897,7 +2001,19 @@ pub(crate) fn copy_characters(
 }
 
 impl Captured {
-    fn install_family(&mut self, active: [bool; 6], results: [ReadResult; 6]) {
+    fn install_family(&mut self, active: [bool; N], results: [ReadResult; N]) {
+        if active[0] {
+            self.held.characters = None;
+        }
+        if active[2] {
+            self.held.advisors = None;
+        }
+        if active[3] {
+            self.held.units = None;
+        }
+        if active[4] {
+            self.held.traits = None;
+        }
         if active[0] {
             self.characters.primary(results[0]);
         }
@@ -1914,9 +2030,6 @@ impl Captured {
         if active[4] {
             self.traits.primary(results[4]);
         }
-        if active[5] {
-            self.trait_experience.primary(results[5]);
-        }
     }
 
     /// Failure is local to the tables owned by this acquisition job.
@@ -1925,7 +2038,7 @@ impl Captured {
         self.fail_character_tables(active, reason);
     }
 
-    pub(crate) fn fail_character_tables(&mut self, active: [bool; 6], reason: &'static str) {
+    pub(crate) fn fail_character_tables(&mut self, active: [bool; N], reason: &'static str) {
         macro_rules! fail {
             ($($field:ident = $index:literal),+ $(,)?) => {$(
                 if active[$index] {
@@ -1941,8 +2054,7 @@ impl Captured {
             leaders = 1,
             advisors = 2,
             units = 3,
-            traits = 4,
-            trait_experience = 5
+            traits = 4
         );
     }
     fn reserve_advisors(&mut self, demand: AdvisorDemand) -> Result<(), &'static str> {
@@ -1967,7 +2079,7 @@ impl Captured {
     /// Complete a failed persistent-character job after its typed walks were
     /// gated.
     #[cfg(test)]
-    pub(crate) fn fail_characters_capture(&mut self, active: [bool; 6], reason: &'static str) {
+    pub(crate) fn fail_characters_capture(&mut self, active: [bool; N], reason: &'static str) {
         self.active = active;
         macro_rules! fail {
             ($($field:ident = $index:literal),+ $(,)?) => {$(
@@ -1985,17 +2097,86 @@ impl Captured {
             leaders = 1,
             advisors = 2,
             units = 3,
-            traits = 4,
-            trait_experience = 5
+            traits = 4
         );
-        self.raw_active = [false; 6];
+        self.raw_active = [false; N];
     }
 
     /// Decode worker, after `decode_characters_payload`: the job keeps the
     /// template identities of the Characters rows it produced for its next
     /// copy (`TemplateCache`). A job that did not read Characters keeps its own.
-    pub(crate) fn remember_templates(&self, job: &mut CharactersJob) {
+    /// It also holds a quiet hour's UnitLeaders rows ([`leader_carry`]),
+    /// and names them for this frame's buffers.
+    pub(crate) fn remember_templates(&mut self, job: &mut CharactersJob) {
+        job.unit_carry.rebuild(
+            self.units.rows.outcome,
+            &self.units.rows.rows,
+            self.units
+                .bytes
+                .first
+                .get(..self.units.bytes.len)
+                .unwrap_or(&[]),
+            // One row per fresh leader.
+            |rest| rest.first().map(|row| (1, row.native.id)),
+        );
+        if job.active[4] {
+            self.held.traits = job
+                .trait_carry
+                .table_key(job.census_generation)
+                .filter(|_| matches!(self.traits.rows.outcome, Outcome::Rows { .. }))
+                .map(|key| {
+                    (
+                        key,
+                        ReadResult {
+                            outcome: self.traits.rows.outcome,
+                            bytes_len: self.traits.bytes.len,
+                            required_bytes: self.traits.bytes.required,
+                        },
+                    )
+                });
+        }
+        if job.active[3] {
+            self.held.units = job
+                .unit_carry
+                .table_key(quiet::census_generation(job))
+                .filter(|_| matches!(self.units.rows.outcome, Outcome::Rows { .. }))
+                .map(|key| {
+                    (
+                        key,
+                        ReadResult {
+                            outcome: self.units.rows.outcome,
+                            bytes_len: self.units.bytes.len,
+                            required_bytes: self.units.bytes.required,
+                        },
+                    )
+                });
+        }
+        let mut vectors = job.traits.vectors.iter();
+        job.trait_carry.rebuild(
+            self.traits.rows.outcome,
+            &self.traits.rows.rows,
+            self.traits
+                .bytes
+                .first
+                .get(..self.traits.bytes.len)
+                .unwrap_or(&[]),
+            // Each fresh leader's acquired vector, in visit order.
+            |_| {
+                vectors.next().and_then(|vector| match vector.outcome {
+                    Outcome::Rows { len } => Some((len, vector.leader)),
+                    _ => None,
+                })
+            },
+        );
+        let carried = |job: &CharactersJob| crate::raw_memory::Capacity {
+            auxiliary_vectors: job.carry.allocated_bytes()
+                + job.published.allocated_bytes()
+                + job.unit_carry.allocated_bytes()
+                + job.trait_carry.allocated_bytes(),
+            ..Default::default()
+        };
         if !job.active[0] || job.advisor_cache.is_some() || job.advisor_dynamic.is_some() {
+            job.carry_charge.set(carried(job));
             return;
         }
         let bytes = self
@@ -2004,15 +2185,39 @@ impl Captured {
             .first
             .get(..self.characters.bytes.len)
             .unwrap_or(&[]);
-        job.templates.rebuild(
-            self.characters.rows.outcome,
-            &self.characters.rows.rows,
-            bytes,
-        );
+        // Rows a quiet decode published again from the job's held copy are
+        // the rows its templates were last rebuilt from.
+        if !job.published.matches(self.quiet_rows) {
+            job.templates.rebuild(
+                self.characters.rows.outcome,
+                &self.characters.rows.rows,
+                bytes,
+            );
+            match self.quiet_rows {
+                Some(key) => job.published.hold(
+                    key,
+                    ReadResult {
+                        outcome: self.characters.rows.outcome,
+                        bytes_len: self.characters.bytes.len,
+                        required_bytes: self.characters.bytes.required,
+                    },
+                    &self.characters.rows.rows,
+                    bytes,
+                ),
+                None => job.published.forget(),
+            }
+        }
         job.template_charge.set(crate::raw_memory::Capacity {
             auxiliary_vectors: job.templates.allocated_bytes(),
             ..Default::default()
         });
+        job.carry.rebuild(
+            self.characters.rows.outcome,
+            &self.characters.rows.rows,
+            bytes,
+            self.quiet_rows.is_some(),
+        );
+        job.carry_charge.set(carried(job));
     }
 
     /// Decode-worker interpretation of a raw refresh payload into the pooled
@@ -2023,7 +2228,7 @@ impl Captured {
         &mut self,
         base: usize,
         job: &CharactersJob,
-        decode_ticks: &mut [u64; 6],
+        decode_ticks: &mut [u64; N],
     ) {
         self.active = std::array::from_fn(|index| {
             self.active[index] || self.raw_active[index] || job.active[index]
@@ -2032,6 +2237,7 @@ impl Captured {
             self.active.map(|value| !value),
             replay::cadence::SKIPPED_REASON,
         );
+        self.quiet_rows = None;
         if !job.active.iter().any(|&active| active) {
             return;
         }
@@ -2040,6 +2246,14 @@ impl Captured {
             cache.decode(self);
             self.raw_active[2] = false;
             decode_ticks[2] += elapsed(started);
+            return;
+        }
+        if job.leader_cached
+            && let Some(cache) = &job.leader_cache
+        {
+            cache.decode(self);
+            self.raw_active[1] = false;
+            decode_ticks[1] += elapsed(started);
             return;
         }
         if let Some(dynamic) = &job.advisor_dynamic {
@@ -2099,6 +2313,8 @@ impl Captured {
             }
             let result = advisors.result();
             self.advisors.primary(result);
+            // The section walk rewrote the AdvisorRoles buffers.
+            self.held.advisors = None;
             advisors::record_modifiers(&self.advisors.rows.rows[..result.outcome.len()]);
             self.raw_active[2] = false;
             decode_ticks[2] += elapsed(started);
@@ -2109,34 +2325,19 @@ impl Captured {
         } else {
             None
         };
-        let trait_failures = if job.traits.growing {
-            let demand = job.traits.demand();
-            fn reserve<R: Default>(
-                rows: &mut Vec<R>,
-                bytes: &mut Vec<u8>,
-                demand: Result<(usize, usize), &'static str>,
-            ) -> Result<(), &'static str> {
-                let (row_count, byte_count) = demand?;
-                engine::walk::Buffer::Growing(rows).ensure(row_count)?;
-                engine::walk::Buffer::Growing(bytes).ensure(byte_count)?;
-                Ok(())
-            }
-            [
-                reserve(
-                    &mut self.traits.rows.rows,
-                    &mut self.traits.bytes.first,
-                    demand[0],
-                )
-                .err(),
-                reserve(
-                    &mut self.trait_experience.rows.rows,
-                    &mut self.trait_experience.bytes.first,
-                    demand[1],
-                )
-                .err(),
-            ]
+        let trait_failure = if job.traits.growing {
+            (|| {
+                let (row_count, byte_count) = job.traits.demand()?;
+                let (carried_rows, carried_bytes) = job.trait_carry.carried_demand();
+                let (row_count, byte_count) =
+                    (row_count + carried_rows, byte_count + carried_bytes);
+                engine::walk::Buffer::Growing(&mut self.traits.rows.rows).ensure(row_count)?;
+                engine::walk::Buffer::Growing(&mut self.traits.bytes.first).ensure(byte_count)?;
+                Ok::<_, &'static str>(())
+            })()
+            .err()
         } else {
-            [None; 2]
+            None
         };
         // The worker counted each acquired roster/name/template occurrence;
         // decode reserves those original observations before the fixed Batch.
@@ -2151,6 +2352,12 @@ impl Captured {
             engine::walk::Buffer::Growing(&mut buffer.bytes.first).ensure(demand.bytes)?;
             Ok(())
         }
+        // A quiet hour whose rows the job already published takes a copy of
+        // them; only the other tables are decoded.
+        let quiet_rows = quiet::rows_key(base, job);
+        let republish = job.published.matches(quiet_rows);
+        let decoded: [bool; N] =
+            std::array::from_fn(|index| job.active[index] && !(republish && index == 0));
         let payload_failures = if job.capture_growing {
             [
                 reserve_payload(&mut self.characters, job.character_demand).err(),
@@ -2167,8 +2374,37 @@ impl Captured {
             None
         };
         let recorded = crate::raw::Recorded::build(&job.log);
-        let mut family = self.family().select(job.active);
-        if let Some(reason) = payload_failures[0] {
+        // A quiet hour that decodes only UnitLeaders, whose buffers hold the
+        // table its held leaders make and whose fresh reads all equal their
+        // held rows, publishes the buffers as they are.
+        let held_units = self
+            .held
+            .units
+            .filter(|_| {
+                job.roster.quiet
+                    && job.unit_carry.certified()
+                    && decoded == [false, false, false, true, false]
+            })
+            .filter(|&(key, _)| {
+                job.unit_carry.table_key(quiet::census_generation(job)) == Some(key)
+            })
+            .filter(|_| quiet::fresh_leaders_unchanged(&recorded, base, job))
+            .map(|(_, result)| result);
+        // Likewise a traits job whose buffers hold its held leaders' table and
+        // whose fresh vectors all equal their held rows.
+        let held_traits = self
+            .held
+            .traits
+            .filter(|_| {
+                job.census_capture
+                    && job.trait_carry.certified()
+                    && decoded == [false, false, false, false, true]
+            })
+            .filter(|&(key, _)| job.trait_carry.table_key(job.census_generation) == Some(key))
+            .filter(|_| fresh_traits_unchanged(job))
+            .map(|(_, result)| result);
+        let mut family = self.family().select(decoded);
+        if let Some(reason) = payload_failures[0].filter(|_| decoded[0]) {
             family.characters.fail(reason);
         }
         if let Some(reason) = payload_failures[1] {
@@ -2177,35 +2413,64 @@ impl Captured {
         if let Some(reason) = leader_failure {
             family.leaders.fail(reason);
         }
-        if let Some(reason) = trait_failures[0] {
+        if let Some(reason) = trait_failure {
             family.traits.fail(reason);
-        }
-        if let Some(reason) = trait_failures[1] {
-            family.experience.fail(reason);
         }
         if let Some(reason) = advisor_failure {
             family.advisors.fail(reason);
         }
-        let results = if job.census_capture {
+        let results = if let Some(units) = held_units {
+            let mut results = family.results();
+            results[3] = units;
+            results
+        } else if let Some(traits) = held_traits {
+            let mut results = family.results();
+            results[4] = traits;
+            results
+        } else if job.roster.quiet {
+            quiet::walk(&recorded, base, family, job)
+        } else if job.census_capture {
             walk_census(
                 &recorded,
                 base,
                 family,
                 Some(&job.traits),
-                &job.census_visited,
+                job.census_visited.iter().copied(),
                 job.census_historical,
+                Carried {
+                    traits: Some(&job.trait_carry),
+                    ..Carried::default()
+                },
             )
         } else {
-            walk_family(
+            walk_family_carrying(
                 &recorded,
                 base,
                 job.game_state,
                 family,
                 Some(&job.traits),
                 Some(&job.templates),
+                job.carry.active.then_some(&job.carry),
             )
         };
-        self.install_family(job.active, results);
+        self.install_family(decoded, results);
+        if republish {
+            // A frame that published these rows last still holds them.
+            let result = if self.held.characters == quiet_rows {
+                job.published.result()
+            } else {
+                job.published.copy_into(
+                    &mut self.characters.rows.rows,
+                    &mut self.characters.bytes.first,
+                )
+            };
+            self.characters.primary(result);
+        }
+        self.quiet_rows =
+            quiet_rows.filter(|_| matches!(self.characters.rows.outcome, Outcome::Rows { .. }));
+        if job.active[0] {
+            self.held.characters = self.quiet_rows;
+        }
         decode_ticks[anchor(job.active)] += elapsed(started);
         for (raw, active) in self.raw_active.iter_mut().zip(job.active) {
             if active {

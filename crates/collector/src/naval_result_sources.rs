@@ -226,7 +226,7 @@ pub fn lost_drain() {
     poison();
 }
 
-/// Attach/spool only. Population and observed demand determine storage; there
+/// Attach/sizing thread only. Population and observed demand determine storage; there
 /// is no country/event cap. A burst that outruns growth refuses observation.
 pub fn prepare(memory: &impl Memory, base: usize) {
     collect_retired();
@@ -500,10 +500,11 @@ unsafe extern "system" fn constructor_entry() {
     core::arch::naked_asm!("mov rdx, [rsp]", "jmp {body}", body = sym constructor);
 }
 unsafe extern "system-unwind" fn constructor(pointer: usize, caller: usize) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::NavalResultSources);
     let call = Call::enter(2);
     let original: unsafe extern "system-unwind" fn(usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[2].load(Ordering::Acquire)) };
-    let run = || unsafe { original(pointer) };
+    let run = || timing.original(|| unsafe { original(pointer) });
     let base = BASE.load(Ordering::Relaxed);
     let kind = caller
         .checked_sub(base)
@@ -561,10 +562,11 @@ unsafe extern "system-unwind" fn merge(result: usize, combat: usize) -> usize {
     unsafe { result_call(1, result, combat) }
 }
 unsafe fn result_call(site: usize, result: usize, combat: usize) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::NavalResultSources);
     let call = Call::enter(site);
     let original: unsafe extern "system-unwind" fn(usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[site].load(Ordering::Acquire)) };
-    let run = || unsafe { original(result, combat) };
+    let run = || timing.original(|| unsafe { original(result, combat) });
     attempt(&EVENT_ATTEMPTS, &EVENT_DEMAND);
     if !observing() {
         return call.returned(run());

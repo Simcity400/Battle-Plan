@@ -20,8 +20,27 @@ pub const OWNER: usize = 0x10;
 /// regions outside the mission's narrower accessible list.
 pub const REGION_MISSIONS: usize = 0x68;
 pub const REGION_MISSIONS_STRIDE: usize = 0x18;
-/// Region-indexed i64 array.
+/// Strategic navy mission pointer array holding, once each, every mission filed
+/// in any region ledger ([`REGION_MISSIONS`]). Construction builds it empty
+/// (+0x110, count +0x11C). Registration, reached from mission refresh and the
+/// mission's registration virtual, appends a mission to its region's ledger and
+/// then to this set when absent. Unregistration, reached from refresh, mission
+/// destruction and teardown, removes it from every region ledger and then from
+/// this set. Reset, reached from dynamic reuse and game reset, zeroes every
+/// ledger count and this count together. An empty set therefore leaves every
+/// region ledger empty.
+pub const REGISTERED_MISSIONS: usize = 0x110;
+/// Strategic navy i64 array, constructed at +C8 and indexed by region id.
 pub const REGIONAL_OPERANDS: usize = 0xc8;
+
+/// The number of missions `navy` has registered in any region ledger
+/// ([`REGISTERED_MISSIONS`]).
+pub fn registered_missions(memory: &impl Memory, navy: usize) -> Result<u32, &'static str> {
+    navy.checked_add(REGISTERED_MISSIONS)
+        .and_then(|at| Array::read(memory, at, 8))
+        .map(|missions| missions.count)
+        .ok_or("navy registered missions unreadable or invalid")
+}
 
 fn with_identity<M: Memory, T>(
     memory: &M,

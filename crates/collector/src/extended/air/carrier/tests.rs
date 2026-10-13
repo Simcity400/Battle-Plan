@@ -128,7 +128,6 @@ fn outputs() -> (Bases, Registrations) {
     ]);
     bases.install(lengths(), CarrierDemand::default());
     registrations.install(lengths(), CarrierDemand::default());
-    registrations.admit_transport_planes(Ok(()));
     bases.index_rows();
     registrations.index_rows();
     (bases, registrations)
@@ -193,12 +192,6 @@ fn conversion_retains_dense_repeats_empty_text_and_independent_signed_facts() {
         (None, Some(0))
     );
     assert!(registrations.equal(&source(), &packet));
-    let planes = registrations.planes(&source());
-    assert_eq!(
-        planes,
-        rows::Recorded::Value(Some(vec![Some(-6), Some(0), None]))
-    );
-    assert!(registrations.planes_equal(&source(), &planes));
 }
 
 #[test]
@@ -220,54 +213,7 @@ fn malformed_pool_partition_withholds_only_pool_detail() {
             (8, None, Some(-9))
         );
         assert_eq!(row.pools, None, "case {case}");
-        assert_eq!(
-            registrations.planes(&source()),
-            rows::Recorded::Value(None),
-            "case {case}"
-        );
     }
-}
-
-#[test]
-fn plane_leaf_change_refusal_and_reset_cannot_restore_an_old_sum() {
-    let (_, mut registrations) = outputs();
-    let old = registrations.planes(&source());
-    assert!(!registrations.planes_equal(&source(), &rows::Recorded::NotRecorded));
-    registrations.pools[0].planes_raw = Some(0);
-    assert!(!registrations.planes_equal(&source(), &old));
-    let zero = registrations.planes(&source());
-    registrations.pools[0].planes_raw = None;
-    assert!(!registrations.planes_equal(&source(), &zero));
-    assert_eq!(
-        registrations.planes(&source()),
-        rows::Recorded::Value(Some(vec![None, Some(0), None]))
-    );
-    registrations.reset();
-    assert_eq!(registrations.planes(&source()), rows::Recorded::Value(None));
-    assert!(!registrations.planes_equal(&source(), &old));
-}
-
-#[test]
-fn denied_transport_admission_withholds_only_plane_suffix_and_memo_retains_verdict() {
-    let (mut bases, mut registrations) = outputs();
-    let original = registrations.packet(&source());
-    let admitted = registrations.planes(&source());
-    registrations.admit_transport_planes(Err("transport callback fixture denied"));
-    assert_eq!(registrations.packet(&source()), original);
-    assert_eq!(registrations.planes(&source()), rows::Recorded::Value(None));
-    assert!(!registrations.planes_equal(&source(), &admitted));
-    let mut memo = Memo::default();
-    assert!(memo.save(
-        &bases,
-        &registrations,
-        &RawLog::new(1, 1),
-        CarrierDemand::default()
-    ));
-    registrations.admit_transport_planes(Ok(()));
-    assert_eq!(registrations.planes(&source()), admitted);
-    memo.restore(&mut bases, &mut registrations);
-    assert_eq!(registrations.packet(&source()), original);
-    assert_eq!(registrations.planes(&source()), rows::Recorded::Value(None));
 }
 
 #[test]
@@ -289,7 +235,6 @@ fn duplicate_outer_keys_refuse_without_reordering_inner_payloads() {
     registrations.index_rows();
     assert_eq!(bases.packet(17), rows::Recorded::Value(None));
     assert_eq!(registrations.packet(&source()), rows::Recorded::Value(None));
-    assert_eq!(registrations.planes(&source()), rows::Recorded::Value(None));
     assert_eq!(bases.countries[0].country, 8);
     assert_eq!(registrations.pools[1].wings_len, 0);
 }
@@ -694,12 +639,11 @@ fn coherent_carrier_fixture() -> Vec<u8> {
 
 fn coherent_carrier_parts() -> (super::super::Captured, crate::extended::fog::Captured) {
     let mut air = super::super::Captured::with_capacities(&super::super::Capacities {
-        rows: [0, 8, 0, 0, 0, 8, 0, 4096, 1024, 64, 0],
+        rows: [0, 8, 0, 8, 0, 4096, 1024, 64, 0],
         ace_names: 32,
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
-        transport: [0; 5],
     });
     let mut fog =
         crate::extended::fog::Captured::with_capacities(&crate::extended::fog::Capacities {
@@ -795,6 +739,8 @@ fn coherent_carrier_scale_fixture(countries: usize) -> Vec<u8> {
 
 #[test]
 fn pooled_live_presizing_admits_first_carrier_packets_at_1500_and_5000_countries() {
+    // Sizes from the process-wide country hints; hold them at a fresh attachment's values.
+    let _hint = crate::country_scale::hint_guard();
     use super::super::air_bases_test_kit as kit;
     for countries in [1_500, 5_000] {
         let bytes = coherent_carrier_scale_fixture(countries);
@@ -941,7 +887,6 @@ fn assert_counted_seed_refusal(kind: usize, reason: &'static str) {
             force_full: true,
             base: kit::BASE,
             game_state: kit::GAME_STATE,
-            transport_admission: Default::default(),
         },
         &mut job,
     );
@@ -1065,7 +1010,7 @@ fn attach_hint_captures_dense_country_and_name_packets_without_a_warmup() {
 }
 
 #[test]
-fn native_carrier_packets_and_memo_follow_optional_only_current_scalar_changes() {
+fn native_carrier_packets_and_memo_follow_current_fuel_word_changes() {
     use super::super::air_bases_test_kit as kit;
     let mut bytes = coherent_carrier_fixture();
     let mut job = super::super::AirBasesJob::fixture();
@@ -1172,8 +1117,10 @@ fn native_carrier_packets_and_memo_follow_optional_only_current_scalar_changes()
         )
     );
 
-    // Only two CURRENT optional words change. All mandatory selector, identity,
-    // capacity and membership inputs remain identical to the accepted capture.
+    // Only the two fuel words change. They ride in the original pass's own
+    // container span, so its spans stay those of the accepted capture while
+    // its bytes change and the memo decodes afresh; the observer reads
+    // neither word, so its own log is unchanged.
     kit::put64(
         &mut bytes,
         COHERENT_CONTAINER_A + engine::ccountry_air_container::FUEL_DEMAND_RAW,
@@ -1186,15 +1133,15 @@ fn native_carrier_packets_and_memo_follow_optional_only_current_scalar_changes()
     );
     coherent_carrier_stage(&mut job, &bytes);
     assert_eq!(job.log.spans, mandatory_spans);
-    assert_eq!(job.log.bytes.as_ref(), mandatory_bytes.as_slice());
+    assert_ne!(job.log.bytes.as_ref(), mandatory_bytes.as_slice());
     assert_eq!(job.log.has_bulk, mandatory_bulk);
     assert!(
-        memo.input_equal(&job.log),
-        "the original invocation stayed byte-identical"
+        !memo.input_equal(&job.log),
+        "the fuel words ride in the original container span"
     );
     assert!(
-        !memo.carrier.input_equal(&job.carrier.log.borrow()),
-        "current optional inputs changed"
+        memo.carrier.input_equal(&job.carrier.log.borrow()),
+        "the observer reads no fuel word"
     );
     air.bases_raw_mode = true;
     fog.registrations_raw_mode = true;
@@ -1266,7 +1213,6 @@ fn coherent_carrier_refresh(
             game_state: kit::GAME_STATE,
             hour,
             force_full,
-            transport_admission: Default::default(),
         },
         job,
     );
@@ -1275,108 +1221,6 @@ fn coherent_carrier_refresh(
     assert!(job.carrier.seed.is_ok());
     assert!(!job.carrier.log.borrow().overflowed);
     assert_eq!(job.carrier.log.borrow().fault, [false; 2]);
-}
-
-#[test]
-fn air_bases_transport_admission_survives_worker_move_and_rejects_decode_hour_mismatch() {
-    use super::super::air_bases_test_kit as kit;
-    let hour = 201;
-    let context = {
-        let clock = engine::cgame_state::Clock {
-            game_state: kit::GAME_STATE as u64,
-            hour,
-            tick_busy: 0,
-            play_time: 0,
-            play_session_started_at: 7,
-            seed: 0,
-            campaign_id: engine::capture_text::Owned::default(),
-            speed: 0,
-        };
-        let _scope = crate::transport_admission::Scope::enter_fixture(
-            kit::BASE,
-            kit::GAME_STATE,
-            Some(clock),
-        );
-        super::super::AirBasesCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            hour,
-            force_full: false,
-            transport_admission: crate::transport_admission::current(
-                kit::BASE,
-                kit::GAME_STATE,
-                hour,
-            ),
-        }
-    };
-    // The callback scope has retired and this worker has no callback TLS.
-    // Both mirror and decode use only the original copied numerical verdict.
-    let job = std::thread::spawn(move || {
-        let bytes = coherent_carrier_fixture();
-        let mut job = super::super::AirBasesJob::fixture();
-        super::super::copy_air_bases_refresh(
-            &CoherentCarrierMemory::new(&bytes),
-            context,
-            &mut job,
-        );
-        job.grow();
-        super::super::copy_air_bases_refresh(
-            &CoherentCarrierMemory::new(&bytes),
-            context,
-            &mut job,
-        );
-        job
-    })
-    .join()
-    .unwrap();
-    let (mut air, mut fog) = coherent_carrier_parts();
-    let mut memo = super::super::AirBasesMemo::default();
-    let first = memo.decode(
-        &mut air,
-        &mut fog,
-        &job,
-        super::super::AirBasesMemoContext {
-            owner: 17,
-            base: kit::BASE,
-            seq: 1,
-            hour,
-            force_full: false,
-        },
-        &mut [0; 3],
-    );
-    assert!(first.installed && !first.hit);
-    let snapshot = fog.registrations_snapshot();
-    let source = *snapshot
-        .rows
-        .iter()
-        .find(|source| source.base == COHERENT_HOST_HANDLE && source.slot == 1)
-        .unwrap();
-    let original = fog.carrier.packet(&source);
-    assert_eq!(
-        fog.carrier.planes(&source),
-        rows::Recorded::Value(Some(vec![Some(0)]))
-    );
-    air.bases_raw_mode = true;
-    fog.registrations_raw_mode = true;
-    let refused = memo.decode(
-        &mut air,
-        &mut fog,
-        &job,
-        super::super::AirBasesMemoContext {
-            owner: 17,
-            base: kit::BASE,
-            seq: 2,
-            hour: hour + 1,
-            force_full: false,
-        },
-        &mut [0; 3],
-    );
-    assert!(
-        !refused.hit,
-        "identical logs must not restore an admitted plane suffix at a different hour"
-    );
-    assert_eq!(fog.carrier.packet(&source), original);
-    assert_eq!(fog.carrier.planes(&source), rows::Recorded::Value(None));
 }
 
 fn coherent_assert_complete_carrier_packets(
@@ -1450,6 +1294,8 @@ fn coherent_assert_complete_carrier_packets(
 
 #[test]
 fn two_queued_carrier_slots_recover_after_real_retirement_at_the_same_paused_hour() {
+    // Sizes from the process-wide country hints; hold them at a fresh attachment's values.
+    let _hint = crate::country_scale::hint_guard();
     use super::super::air_bases_test_kit as kit;
     const HOUR: i32 = 201;
     let bytes = coherent_carrier_fixture();

@@ -1,5 +1,6 @@
-//! The map's weather effect entities and native thermal tooltip intervals
-//! from `common/weather.txt`, through the recorded content stack.
+//! The map's weather effect entities, native thermal tooltip intervals and the
+//! hourly temperature pass's settings ([`temperature`]) from `common/weather.txt`,
+//! through the recorded content stack.
 
 use std::{collections::BTreeMap, io};
 
@@ -10,6 +11,8 @@ use crate::{
     parser::native::{self, Shape},
     particles::{Catalog, Particle},
 };
+
+pub mod temperature;
 
 const PATH: &str = "common/weather.txt";
 

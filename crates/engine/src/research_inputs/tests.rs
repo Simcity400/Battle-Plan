@@ -394,7 +394,7 @@ fn growing_research_names_and_applied_bonus_populations_have_no_inline_limit() {
 
 #[test]
 fn idle_and_unbonused_slots_skip_bonus_roster_and_catalogue() {
-    for (active, expected_calls) in [(false, 5), (true, 8)] {
+    for (active, expected_calls) in [(false, 5), (true, 7)] {
         let b = fixture(active, false);
         let m = MemoryTrace::new(&b);
         let mut rows = [Row::default()];
@@ -423,7 +423,7 @@ fn applied_ids_join_exact_names_and_raw_values() {
         capture(&m, &mut rows, &mut bonuses),
         (Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 })
     );
-    assert_eq!(m.calls.get(), 14);
+    assert_eq!(m.calls.get(), 13);
     assert_eq!(bonuses[0].value.id, -7);
     assert_eq!(bonuses[0].value.name.as_bytes(), b"bonus_radio");
     assert_eq!(bonuses[0].value.speed_bonus_raw, 100_000);
@@ -456,7 +456,7 @@ fn native_slot_indices_survive_permutation_and_shared_bonuses_are_read_once() {
         [0, 1]
     );
     assert_eq!(bonuses.iter().map(|r| r.index).collect::<Vec<_>>(), [0, 1]);
-    assert_eq!(m.calls.get(), 19);
+    assert_eq!(m.calls.get(), 14);
     for address in [
         STATUS + ctechnology_status::LIMITED_BONUSES,
         BONUS + bonus::NAME,
@@ -646,74 +646,148 @@ fn bonus_rosters_follow_native_population_and_stop_after_resolution() {
 }
 
 #[test]
-fn fingerprint_ignores_daily_progress_and_follows_assignment_writers() {
-    let fingerprint = |bytes: &[u8]| fingerprint_country(&MemoryTrace::new(bytes), 0, COUNTRY);
-    let base = fixture(true, true);
-    let reference = fingerprint(&base).unwrap();
-    assert_eq!(fingerprint(&base).unwrap(), reference);
-    // Daily-only writers: progress and banked idle days.
-    for (at, value) in [
-        (TECH + ctechnology::LIVE_PROGRESS, 900_000_i64),
-        (SLOT + cresearch_slot::BANKED_DAYS, 300_000_i64),
-    ] {
-        let mut changed = base.clone();
-        put(&mut changed, at, value.to_le_bytes());
-        assert_eq!(
-            fingerprint(&changed).unwrap(),
-            reference,
-            "daily field at {at:#x}"
+fn governance_batch_research_inputs_serial_census_and_5000_country_equality() {
+    use crate::governance_batch::test_kit::{Trace, World};
+    let world = World::new(5_000);
+    let serial_memory = Trace::new(&world, "ResearchInputs/ResearchAppliedBonuses serial");
+    let memory = Trace::new(&world, "ResearchInputs/ResearchAppliedBonuses batch");
+    let context = Context::read(&world, 0);
+    for id in 1..=5_000 {
+        let mut before = vec![Row::default(); 3];
+        let mut after = vec![Row::default(); 3];
+        let mut old_bonuses = vec![BonusRow::default(); 2];
+        let mut new_bonuses = vec![BonusRow::default(); 2];
+        let old = super::serial::walk_country_buffer(
+            &serial_memory,
+            0,
+            World::country(id),
+            id,
+            context,
+            crate::walk::Buffer::Fixed(&mut before),
+            crate::walk::Buffer::Fixed(&mut old_bonuses),
         );
-    }
-    // Any-hour writers: assignment, speed, applied days, level, classifier,
-    // applied bonuses and the slot roster.
-    for (at, bytes) in [
-        (
-            SLOT + cresearch_slot::TECHNOLOGY_HANDLE,
-            8_u32.to_le_bytes().to_vec(),
-        ),
-        (
-            SLOT + cresearch_slot::RESEARCH_SPEED,
-            170_000_i64.to_le_bytes().to_vec(),
-        ),
-        (
-            SLOT + cresearch_slot::APPLIED_DAYS,
-            100_000_i64.to_le_bytes().to_vec(),
-        ),
-        (TECH + ctechnology::LEVEL, 1_i32.to_le_bytes().to_vec()),
-        (
-            TECH + ctechnology::CLASSIFIER,
-            ctechnology::CLASSIFIER_COMPLETED.to_le_bytes().to_vec(),
-        ),
-        (
-            TECH + ctechnology::APPLIED_SPEED_BONUS,
-            50_000_i64.to_le_bytes().to_vec(),
-        ),
-        (
-            TECH + ctechnology::APPLIED_BONUS_IDS + 8,
-            0_u32.to_le_bytes().to_vec(),
-        ),
-        (
-            STATUS + ctechnology_status::RESEARCH_SLOTS_DATA + 8,
-            2_u32.to_le_bytes().to_vec(),
-        ),
-    ] {
-        let mut changed = base.clone();
-        changed[at..at + bytes.len()].copy_from_slice(&bytes);
-        assert_ne!(
-            fingerprint(&changed).unwrap(),
-            reference,
-            "any-hour field at {at:#x}"
+        let new = walk_country(
+            &memory,
+            0,
+            World::country(id),
+            id,
+            context,
+            &mut after,
+            &mut new_bonuses,
         );
+        assert_eq!(old, (Outcome::Rows { len: 3 }, Outcome::Rows { len: 2 }));
+        assert_eq!(new, old);
+        assert_eq!(after, before);
+        assert_eq!(new_bonuses, old_bonuses);
+        assert_eq!((serial_memory.count(), memory.count()), (20, 14));
+        assert!(memory.fallbacks.witnesses().is_empty());
+        serial_memory.clear();
+        memory.clear();
     }
-    // Cancelling the assignment changes it too; idle slots still fingerprint.
-    let idle = fixture(false, false);
-    assert_ne!(fingerprint(&idle).unwrap(), reference);
-    // No readable status is an error, never an equal fingerprint.
-    let mut broken = base.clone();
-    put(
-        &mut broken,
-        COUNTRY + crate::ccountry::TECHNOLOGY_STATUS,
-        0_u64.to_le_bytes(),
+    println!(
+        "ResearchInputs + ResearchAppliedBonuses: 20 -> 14 guarded calls/country; 5000 countries"
     );
-    assert!(fingerprint(&broken).is_err());
+}
+
+#[test]
+fn governance_batch_research_inputs_persistent_and_one_shot_every_serial_operand() {
+    use crate::governance_batch::test_kit::{
+        SLOT, SLOTS, TECH, TEMPLATE, Trace, World, addresses, never_harsher,
+    };
+    let world = World::new(1);
+    let context = Context::read(&world, 0);
+    let capture = |memory: &Trace<'_, World>, serial: bool| {
+        let mut rows = vec![Row::default(); 3];
+        let mut bonuses = vec![BonusRow::default(); 2];
+        let outcome = if serial {
+            super::serial::walk_country_buffer(
+                memory,
+                0,
+                World::country(1),
+                1,
+                context,
+                crate::walk::Buffer::Fixed(&mut rows),
+                crate::walk::Buffer::Fixed(&mut bonuses),
+            )
+        } else {
+            walk_country(
+                memory,
+                0,
+                World::country(1),
+                1,
+                context,
+                &mut rows,
+                &mut bonuses,
+            )
+        };
+        rows.truncate(outcome.0.len());
+        bonuses.truncate(outcome.1.len());
+        (outcome, rows, bonuses)
+    };
+    let country = World::country(1);
+    // The inputs-only applied-bonus span also belongs to the technology gather.
+    for (offset, reader) in [
+        (SLOTS, "slot_pointers"),
+        (SLOT + crate::cresearch_slot::STATUS, "slots"),
+        (
+            TECH + crate::ctechnology::LIVE_PROGRESS,
+            "assigned_technologies",
+        ),
+        (
+            TECH + crate::ctechnology::APPLIED_SPEED_BONUS,
+            "assigned_technologies",
+        ),
+        (
+            TEMPLATE + crate::ctechnology_template::DATABASE_INDEX,
+            "assigned_templates",
+        ),
+    ] {
+        for once in [false, true] {
+            let before = Trace::fault(&world, "ResearchInputs serial", country + offset, once);
+            let after = Trace::fault(&world, "ResearchInputs batch", country + offset, once);
+            let old = capture(&before, true);
+            let new = capture(&after, false);
+            if once {
+                never_harsher(old.0.0, new.0.0);
+                never_harsher(old.0.1, new.0.1);
+            } else {
+                assert_eq!(new, old);
+            }
+            assert_eq!(
+                &*after.fallbacks.witnesses(),
+                &[reader],
+                "{reader}, once={once}"
+            );
+        }
+    }
+    let census = Trace::new(&world, "ResearchInputs serial census");
+    capture(&census, true);
+    for address in addresses(&census) {
+        let before = Trace::fault(&world, "ResearchInputs serial", address, false);
+        let after = Trace::fault(&world, "ResearchInputs batch", address, false);
+        assert_eq!(
+            capture(&after, false),
+            capture(&before, true),
+            "persistent {address:#x}"
+        );
+        let fallbacks = after.fallbacks.witnesses();
+        for reader in [
+            "slot_pointers",
+            "slots",
+            "assigned_technologies",
+            "assigned_templates",
+        ] {
+            assert!(
+                fallbacks.iter().filter(|&&r| r == reader).count() <= 1,
+                "unbounded fallback {reader}"
+            );
+        }
+        drop(fallbacks);
+        let before = Trace::fault(&world, "ResearchInputs serial one-shot", address, true);
+        let after = Trace::fault(&world, "ResearchInputs batch one-shot", address, true);
+        let old = capture(&before, true).0;
+        let new = capture(&after, false).0;
+        never_harsher(old.0, new.0);
+        never_harsher(old.1, new.1);
+    }
 }

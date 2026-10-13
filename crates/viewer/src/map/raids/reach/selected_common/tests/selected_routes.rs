@@ -1,7 +1,6 @@
 use super::*;
 use replay::rows::{
-    CountryWarRow, DivisionMovementRow, LexicalTokenRow, ModifierDefinitionRow, OrderedEnemyInputs,
-    ProvinceAreaInputs, ProvinceRow, SelectedAreaNode, SelectedUnitInputs,
+    ControllerAreaNode, CountryWarRow, DivisionStatusRow, OrderedEnemyInputs, ProvinceRow,
 };
 
 fn apply<T>(frame: &DecodedFrame, query: impl FnOnce(&Moves<'_, '_>) -> T) -> T {
@@ -12,221 +11,6 @@ fn apply<T>(frame: &DecodedFrame, query: impl FnOnce(&Moves<'_, '_>) -> T) -> T 
     let common = CommonCells::new(frame);
     query(&Moves::for_common(&world, &assets, &cells, &common).unwrap())
 }
-fn area(hour: i32, controller: u32, owner: Option<u32>) -> Recorded<Option<ProvinceAreaInputs>> {
-    Some(ProvinceAreaInputs {
-        sample_hour: hour,
-        controller,
-        owner,
-        node: None,
-    })
-    .into()
-}
-#[test]
-fn selected_area_identities_are_independent_current_and_never_controller_inference() {
-    let mut frame = strait_frame();
-    put::<tables::Provinces>(
-        &mut frame,
-        vec![
-            ProvinceRow {
-                id: 1,
-                controller: 30,
-                selected_areas: area(12, 1, Some(1)),
-                ..Default::default()
-            },
-            ProvinceRow {
-                id: 2,
-                controller: 30,
-                selected_areas: area(12, 2, Some(1)),
-                ..Default::default()
-            },
-            ProvinceRow {
-                id: 3,
-                controller: 40,
-                selected_areas: area(12, 1, Some(3)),
-                ..Default::default()
-            },
-        ],
-    );
-    apply(&frame, |moves| {
-        assert_eq!(moves.controller_area_equal(1, 2), Ok(false));
-        assert_eq!(moves.owner_area_equal(1, 2), Ok(true));
-        assert_eq!(moves.controller_area_equal(1, 3), Ok(true));
-        assert_eq!(moves.owner_area_equal(1, 3), Ok(false));
-    });
-    for field in [
-        Recorded::NotRecorded,
-        Recorded::Value(None),
-        area(11, 1, Some(1)),
-    ] {
-        let mut rows = frame.complete::<tables::Provinces>().unwrap().to_vec();
-        rows[0].selected_areas = field;
-        put::<tables::Provinces>(&mut frame, rows);
-        assert!(apply(&frame, |moves| moves.controller_area_equal(1, 3)).is_err());
-    }
-}
-#[test]
-fn selected_army_route_actual_zero_war_uses_the_current_borrowed_owner() {
-    use replay::rows::{
-        ReservedCountryNamingRow, ReservedReverseVisibilityInputs, ReverseZeroVisibilityInputs,
-    };
-    let mut frame = strait_frame();
-    let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
-    links.insert(
-        0,
-        CountryLinkRow {
-            id: 12,
-            canonical_slot: 0,
-        },
-    );
-    put::<tables::CountryLinks>(&mut frame, links);
-    put::<tables::Provinces>(
-        &mut frame,
-        vec![
-            ProvinceRow {
-                id: 1,
-                controller: 40,
-                owner: 40,
-                selected_areas: area(12, 1, Some(1)),
-                ..Default::default()
-            },
-            ProvinceRow {
-                id: 2,
-                controller: 30,
-                owner: 30,
-                selected_areas: area(12, 2, Some(1)),
-                ..Default::default()
-            },
-        ],
-    );
-    // A successful original-location early return must not demand access,
-    // factions, subjects, raw exile or the search graph. The war cell is independent.
-    for table in [
-        TableId::RelationLinks,
-        TableId::FactionMembers,
-        TableId::Subjects,
-        TableId::DivisionMovement,
-    ] {
-        *frame.tables[table.index()] = TableView::Unavailable {
-            reason: "active war must leave later operands unreached".into(),
-        };
-    }
-    let mut assets = assets();
-    assets.geometry.land.extend([1, 2]);
-    assets.moves = Ok(installed_content::unit_path::MoveGraph::new(
-        &installed_content::province_graph::ProvinceGraph::default(),
-        &assets.geometry,
-    ));
-    let query = |frame: &DecodedFrame, raw| {
-        let world = World::read(frame, assets.facts());
-        let cells = Cells::default();
-        let common = CommonCells::new(frame);
-        let moves = Moves::for_common(&world, &assets, &cells, &common).unwrap();
-        let army = Army {
-            location: 1,
-            ..Default::default()
-        };
-        let unit = CommonUnit {
-            class: CommonClass::Army,
-            handle: FORCE,
-            logical_owner_raw: raw,
-            combat_count: 0,
-            army: &army,
-        };
-        installed_content::unit_path::Mover {
-            graph: assets.moves.as_ref().unwrap(),
-            world: &moves,
-        }
-        .selected_army_path(&unit, 2)
-    };
-    for (hour, war, reason) in [
-        (12, Some([1, 0]), None),
-        (11, Some([1, 0]), Some("sample hour mismatch")),
-        (12, None, Some("war capture refused")),
-    ] {
-        put::<tables::ReservedCountryNaming>(
-            &mut frame,
-            vec![ReservedCountryNamingRow {
-                reverse_visibility: Some(ReservedReverseVisibilityInputs {
-                    sample_hour: hour,
-                    cells: vec![
-                        None,
-                        None,
-                        Some(ReverseZeroVisibilityInputs {
-                            war,
-                            ..Default::default()
-                        }),
-                    ],
-                })
-                .into(),
-                ..Default::default()
-            }],
-        );
-        for raw in [0, 12] {
-            match reason {
-                None => assert_eq!(query(&frame, raw), Ok(true)),
-                Some(reason) => assert!(query(&frame, raw).unwrap_err().contains(reason)),
-            }
-        }
-    }
-}
-
-#[test]
-fn selected_graph_keeps_repeats_and_field_local_refusals_and_authenticates_dictionary_root() {
-    let mut frame = strait_frame();
-    let packet = ProvinceAreaInputs {
-        sample_hour: 12,
-        controller: 1,
-        owner: None,
-        node: Some(SelectedAreaNode {
-            first_land: Some(3),
-            nonsea_index: Some(7),
-            nonsea_count: Some(2),
-            land_count: Some(-1),
-            neighbours: Some(vec![2, 2, 3]),
-        }),
-    };
-    put::<tables::Provinces>(
-        &mut frame,
-        vec![ProvinceRow {
-            id: 1,
-            selected_areas: Some(packet.clone()).into(),
-            ..Default::default()
-        }],
-    );
-    apply(&frame, |moves| {
-        let node = moves.area_node(1).unwrap();
-        assert_eq!(node.neighbors, Ok(vec![2, 2, 3]));
-        assert_eq!(node.land_count, Ok(-1));
-        assert_eq!(moves.area_nonsea_count(1), Ok(10));
-        assert!(moves.owner_area_equal(1, 1).is_err());
-    });
-    let mut refused = packet.clone();
-    refused.node.as_mut().unwrap().neighbours = None;
-    put::<tables::Provinces>(
-        &mut frame,
-        vec![ProvinceRow {
-            id: 1,
-            selected_areas: Some(refused).into(),
-            ..Default::default()
-        }],
-    );
-    apply(&frame, |moves| {
-        let node = moves.area_node(1).unwrap();
-        assert!(node.neighbors.is_err());
-        assert_eq!(node.land_count, Ok(-1));
-    });
-    let mut wrong = packet;
-    wrong.controller = 2;
-    put::<tables::Provinces>(
-        &mut frame,
-        vec![ProvinceRow {
-            id: 1,
-            selected_areas: Some(wrong).into(),
-            ..Default::default()
-        }],
-    );
-    assert!(apply(&frame, |moves| moves.area_node(1)).is_err());
-}
 fn unit<'a>(army: &'a Army, class: CommonClass) -> CommonUnit<'a> {
     CommonUnit {
         class,
@@ -236,110 +20,124 @@ fn unit<'a>(army: &'a Army, class: CommonClass) -> CommonUnit<'a> {
         army,
     }
 }
-fn selected(frame: &mut DecodedFrame, value: Recorded<Option<SelectedUnitInputs>>) {
-    put::<tables::DivisionMovement>(
-        frame,
-        vec![DivisionMovementRow {
-            division: FORCE,
-            selected: value,
+/// A province with its controller and owner area labels; the label province
+/// of a controller area holds its node.
+fn province(id: u32, controller: u32, owner: u32, node: Option<ControllerAreaNode>) -> ProvinceRow {
+    ProvinceRow {
+        id,
+        controller: 30,
+        owner: 20,
+        controller_area: Recorded::Value(Some(controller)),
+        owner_area: Recorded::Value(Some(owner)),
+        area_node: Recorded::Value(node),
+        ..Default::default()
+    }
+}
+/// Area 1 holds provinces 1 and 2, area 3 holds 3; sea province 4 has none.
+fn areas() -> Vec<ProvinceRow> {
+    vec![
+        province(
+            1,
+            1,
+            1,
+            Some(ControllerAreaNode {
+                first_land: Some(2),
+                neighbours: Some(vec![3, 3]),
+            }),
+        ),
+        province(2, 1, 1, None),
+        province(
+            3,
+            3,
+            3,
+            Some(ControllerAreaNode {
+                first_land: Some(3),
+                neighbours: None,
+            }),
+        ),
+        province(4, 0, 0, None),
+    ]
+}
+#[test]
+fn selected_areas_read_the_recorded_labels_and_the_node_on_the_label_province() {
+    let mut frame = strait_frame();
+    put::<tables::Provinces>(&mut frame, areas());
+    apply(&frame, |moves| {
+        assert_eq!(moves.controller_area_equal(1, 2), Ok(true));
+        assert_eq!(moves.controller_area_equal(2, 3), Ok(false));
+        // Two null areas compare equal, as their null pointers do.
+        assert_eq!(moves.controller_area_equal(4, 4), Ok(true));
+        assert_eq!(moves.owner_area_equal(1, 2), Ok(true));
+        assert_eq!(moves.owner_area_equal(1, 3), Ok(false));
+        assert_eq!(moves.controller_area(2), Ok(1));
+        assert_eq!(moves.controller_area(4), Ok(0));
+        let node = moves.area_node(1).unwrap();
+        assert_eq!(node.first_land_province, Ok(2));
+        // map+238 comes from the content; +3C counts the members.
+        assert_eq!(node.nonsea_index, Ok(2));
+        assert_eq!(node.land_count, Ok(2));
+        assert_eq!(node.neighbors, Ok(vec![3, 3]));
+        assert_eq!(moves.area_nonsea_count(1), Ok(10));
+        let node = moves.area_node(3).unwrap();
+        assert_eq!(node.land_count, Ok(1));
+        assert!(node.neighbors.is_err());
+        // Only a label province holds its area's node.
+        assert!(moves.area_node(2).is_err());
+        assert!(moves.area_node(0).is_err());
+    });
+    // A refused label and an older recording without labels refuse by name.
+    for field in [Recorded::Value(None), Recorded::NotRecorded] {
+        let mut rows = areas();
+        rows[1].controller_area = field;
+        put::<tables::Provinces>(&mut frame, rows);
+        apply(&frame, |moves| {
+            assert!(moves.controller_area_equal(1, 2).is_err());
+            assert!(moves.area_node(1).unwrap().land_count.is_err());
+        });
+    }
+}
+#[test]
+fn a_selected_army_reads_exile_from_its_status_and_retreat_bans_from_the_hour() {
+    use replay::rows::{DivisionRetreatBanRow, DivisionRow};
+    let mut frame = strait_frame();
+    put::<tables::Divisions>(
+        &mut frame,
+        vec![DivisionRow {
+            id: FORCE,
+            roster_owner: 30,
+            logical_owner: 20,
+            province: 1,
             ..Default::default()
         }],
     );
-}
-fn retreat_definitions(frame: &mut DecodedFrame) {
-    engine::executable_tables::initialize_for_tests()
-        .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
-    let keys = replay::fixed_layout::RETREAT_BANS.keys;
-    put::<tables::ModifierDefinitions>(
-        frame,
-        keys.iter()
-            .map(|&index| ModifierDefinitionRow {
-                index,
-                token: index,
-                ..Default::default()
-            })
-            .collect(),
-    );
-    put::<tables::LexicalTokens>(
-        frame,
-        keys.iter()
-            .map(|&index| LexicalTokenRow {
-                token: index,
-                literal: engine::modifier_keys::all()
-                    .find(|key| key.index == index)
-                    .unwrap()
-                    .name
-                    .as_bytes()
-                    .to_vec(),
-            })
-            .collect(),
-    );
-}
-#[test]
-fn selected_retreat_uses_independent_current_values_and_known_null_commander() {
-    let mut frame = strait_frame();
-    let army = Army::default();
-    selected(
+    put::<tables::DivisionStatus>(
         &mut frame,
-        Some(SelectedUnitInputs {
-            sample_hour: 12,
-            exiled: Some(255),
-            commander: Some(false),
-            retreat: [None; 2],
-        })
-        .into(),
-    );
-    apply(&frame, |moves| {
-        assert_eq!(
-            moves.unit_retreat_ban(&unit(&army, CommonClass::Army), false),
-            Ok(false)
-        );
-        assert_eq!(
-            moves.unit_exiled_raw(&unit(&army, CommonClass::Army)),
-            Ok(255)
-        );
-    });
-    retreat_definitions(&mut frame);
-    selected(
-        &mut frame,
-        Some(SelectedUnitInputs {
-            sample_hour: 12,
-            exiled: Some(1),
-            commander: Some(true),
-            retreat: [Some(1), None],
-        })
-        .into(),
-    );
-    apply(&frame, |moves| {
-        assert_eq!(
-            moves.unit_retreat_ban(&unit(&army, CommonClass::Army), false),
-            Ok(true)
-        );
-        assert!(
-            moves
-                .unit_retreat_ban(&unit(&army, CommonClass::Army), true)
-                .is_err()
-        );
-    });
-    for value in [
-        Recorded::NotRecorded,
-        Recorded::Value(None),
-        Some(SelectedUnitInputs {
-            sample_hour: 11,
-            commander: Some(false),
+        vec![DivisionStatusRow {
+            division: FORCE,
+            move_flags: DivisionStatusRow::MOVE_EXILED,
             ..Default::default()
-        })
-        .into(),
-    ] {
-        selected(&mut frame, value);
-        assert!(
-            apply(&frame, |moves| moves
-                .unit_retreat_ban(&unit(&army, CommonClass::Army), false))
-            .is_err()
-        );
-    }
-    // Class 13 returns zero before reading an army/daily packet or layout.
-    *frame.tables[TableId::DivisionMovement.index()] = TableView::Unavailable {
+        }],
+    );
+    put::<tables::DivisionRetreatBans>(
+        &mut frame,
+        vec![DivisionRetreatBanRow {
+            division: FORCE,
+            owner: 2,
+            bans: DivisionRetreatBanRow::ATTACKING,
+        }],
+    );
+    // The bans are the hour's: no owner read hour is consulted, so an
+    // empty SliceReads still answers.
+    put::<tables::SliceReads>(&mut frame, Vec::new());
+    let army = Army::default();
+    apply(&frame, |moves| {
+        let selected = unit(&army, CommonClass::Army);
+        assert_eq!(moves.unit_exiled_raw(&selected), Ok(1));
+        assert_eq!(moves.unit_retreat_ban(&selected, true), Ok(true));
+        assert_eq!(moves.unit_retreat_ban(&selected, false), Ok(false));
+    });
+    // Class13 vf8 ReturnZero is known before any Army operand.
+    *frame.tables[TableId::DivisionRetreatBans.index()] = TableView::Unavailable {
         reason: "must remain unreached".into(),
     };
     assert_eq!(
@@ -349,37 +147,103 @@ fn selected_retreat_uses_independent_current_values_and_known_null_commander() {
     );
 }
 #[test]
-fn selected_retreat_layout_mismatch_masks_values_but_preserves_null_context() {
+fn the_move_fallback_names_a_target_without_a_naval_base_and_refuses_past_it() {
+    use replay::rows::NavalBaseRow;
     let mut frame = strait_frame();
-    let army = Army::default();
-    retreat_definitions(&mut frame);
-    let mut tokens = frame.complete::<tables::LexicalTokens>().unwrap().to_vec();
-    tokens[0].literal = b"wrong".to_vec();
-    put::<tables::LexicalTokens>(&mut frame, tokens);
-    for (commander, success) in [(true, false), (false, true)] {
-        selected(
-            &mut frame,
-            Some(SelectedUnitInputs {
-                sample_hour: 12,
-                commander: Some(commander),
-                retreat: [Some(1); 2],
-                ..Default::default()
-            })
-            .into(),
-        );
+    put::<tables::NavalBases>(
+        &mut frame,
+        vec![NavalBaseRow {
+            province: 3,
+            ..Default::default()
+        }],
+    );
+    let loc = [("TRANSPORT_NO_NAVAL_BASE".into(), "No naval base".into())]
+        .into_iter()
+        .collect();
+    let keys = BTreeMap::new();
+    let content = CommonText {
+        frame: &frame,
+        loc: &loc,
+        recorded_language: "english",
+        state_keys: &keys,
+    };
+    let army = Army {
+        location: 1,
+        ..Default::default()
+    };
+    apply(&frame, |moves| {
+        let selected = unit(&army, CommonClass::Army);
+        let mut text = String::new();
         assert_eq!(
-            apply(&frame, |moves| moves
-                .unit_retreat_ban(&unit(&army, CommonClass::Army), false))
-            .is_ok(),
-            success
+            moves.selected_transport(&selected, 2, &mut text, &content),
+            Ok(false)
         );
+        assert_eq!(text, "No naval base");
+        // A target with a base reaches the source's land and base tests,
+        // which need the content graph, then the retired admission.
+        let mut text = String::new();
+        assert!(
+            moves
+                .selected_transport(&selected, 3, &mut text, &content)
+                .is_err()
+        );
+        assert!(text.is_empty());
+    });
+}
+#[test]
+fn selected_army_route_takes_the_owner_area_early_accept_before_later_operands() {
+    let mut frame = strait_frame();
+    put::<tables::Provinces>(&mut frame, areas());
+    // The owner-area gate accepts at equal owner areas with target access: no faction,
+    // subject, exile, retreat or area graph operand is demanded.
+    for table in [
+        TableId::RelationLinks,
+        TableId::FactionMembers,
+        TableId::Subjects,
+        TableId::DivisionMovement,
+        TableId::DivisionStatus,
+        TableId::ReservedCountryNaming,
+    ] {
+        *frame.tables[table.index()] = TableView::Unavailable {
+            reason: "later operands must remain unreached".into(),
+        };
     }
+    let mut assets = assets();
+    assets.geometry.land.extend([1, 2, 3]);
+    assets.moves = Ok(installed_content::unit_path::MoveGraph::new(
+        &installed_content::province_graph::ProvinceGraph::default(),
+        &assets.geometry,
+    ));
+    let world = World::read(&frame, assets.facts());
+    let cells = Cells::default();
+    let common = CommonCells::new(&frame);
+    let moves = Moves::for_common(&world, &assets, &cells, &common).unwrap();
+    let army = Army {
+        location: 1,
+        ..Default::default()
+    };
+    let mover = installed_content::unit_path::Mover {
+        graph: assets.moves.as_ref().unwrap(),
+        world: &moves,
+    };
+    assert_eq!(
+        mover.selected_army_path(&unit(&army, CommonClass::Army), 2),
+        Ok(true)
+    );
+    // Different owner areas go on to the army's exile byte, which its
+    // DivisionStatus row holds.
+    assert!(
+        mover
+            .selected_army_path(&unit(&army, CommonClass::Army), 3)
+            .unwrap_err()
+            .contains("later operands must remain unreached")
+    );
 }
 #[test]
 fn selected_enemy_occurrences_keep_order_zero_and_repeats_and_refuse_carried_or_legacy_sets() {
     let mut frame = strait_frame();
     let packet = OrderedEnemyInputs {
-        sample_hour: 12,
+        sample_hour: replay::rows::PacketHour::Stamped(12),
         entries: vec![40, 0, 40, 99],
     };
     put::<tables::CountryWars>(
@@ -400,7 +264,7 @@ fn selected_enemy_occurrences_keep_order_zero_and_repeats_and_refuse_carried_or_
         Recorded::NotRecorded,
         Recorded::Value(None),
         Some(OrderedEnemyInputs {
-            sample_hour: 11,
+            sample_hour: replay::rows::PacketHour::Stamped(11),
             ..packet.clone()
         })
         .into(),
@@ -426,7 +290,7 @@ fn railway_country_access_uses_direct_veto_exile_law_and_zero_cell_military_poin
     rows.push(CountryCounterInputRow {
         country: 99,
         directed_wars: Some(DirectedWars {
-            sample_hour: 12,
+            sample_hour: replay::rows::PacketHour::Stamped(12),
             receiver_raw_id: 99,
             receiver_slot: 1,
             matrix_count: 4,
@@ -484,7 +348,7 @@ fn railway_country_access_uses_direct_veto_exile_law_and_zero_cell_military_poin
         &mut frame,
         vec![ReservedCountryNamingRow {
             reverse_visibility: Some(ReservedReverseVisibilityInputs {
-                sample_hour: 12,
+                sample_hour: replay::rows::PacketHour::Stamped(12),
                 cells: vec![
                     None,
                     None,

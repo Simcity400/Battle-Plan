@@ -847,10 +847,10 @@ pub fn scan_branch(
             TableId::Campaign | TableId::PeaceConferences | TableId::LexicalTokens
         )
     }) {
-        if replay::cadence::cadence(table) != replay::cadence::Cadence::Hourly {
+        let cadence = replay::cadence::cadence_in(table, replay.format);
+        if cadence != replay::cadence::Cadence::Hourly {
             return Err(crate::invalid(format!(
-                "Peace deals does not support the {:?} cadence of {table:?}",
-                replay::cadence::cadence(table)
+                "Peace deals does not support the {cadence:?} cadence of {table:?}"
             )));
         }
     }
@@ -949,7 +949,12 @@ pub fn scan_branch(
                     let had_open = !open.is_empty();
                     let had_active = has_active;
                     let roster_read = hour == first
-                        || slot_read(&decoded.metrics, TableId::PeaceConferences, hour);
+                        || slot_read(
+                            replay.format,
+                            &decoded.metrics,
+                            TableId::PeaceConferences,
+                            hour,
+                        );
                     let roster = decoded.complete::<tables::PeaceConferences>();
                     let roster_complete = roster.is_ok();
                     if roster_read && let Ok(rows) = roster {

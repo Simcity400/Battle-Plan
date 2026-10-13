@@ -73,6 +73,7 @@ impl TrendScan {
 
     pub(super) fn collaboration(
         &mut self,
+        format: replay::format::FormatVersion,
         frame: &DecodedFrame,
         hour: i32,
         identities: &HashMap<u32, u32>,
@@ -81,7 +82,7 @@ impl TrendScan {
         if !has_rows(frame, TableId::CountryCollaboration) {
             self.dirty |= !self.collaboration.is_empty();
             self.collaboration.clear();
-        } else if slot_read(&frame.metrics, TableId::CountryCollaboration, hour) {
+        } else if slot_read(format, &frame.metrics, TableId::CountryCollaboration, hour) {
             self.dirty = true;
             self.collaboration.clear();
             let identity = |raw| {
@@ -396,8 +397,14 @@ mod tests {
         scan.begin(100, countries.clone(), &links, garrisons.iter(), true);
         scan.state(&resistance, &state, &countries.identities, &links);
         scan.finish_read();
-        scan.collaboration(&frame, 100, &countries.identities, &links)
-            .unwrap();
+        scan.collaboration(
+            replay::format::FormatVersion::CURRENT,
+            &frame,
+            100,
+            &countries.identities,
+            &links,
+        )
+        .unwrap();
         scan.project(100, &countries.names, true);
         scan.project(101, &countries.names, false);
         assert!(!scan.dirty);
@@ -413,8 +420,14 @@ mod tests {
         {
             rows[0].progress = 23456;
         }
-        scan.collaboration(&frame, 102, &countries.identities, &links)
-            .unwrap();
+        scan.collaboration(
+            replay::format::FormatVersion::CURRENT,
+            &frame,
+            102,
+            &countries.identities,
+            &links,
+        )
+        .unwrap();
         assert!(scan.dirty);
         scan.project(102, &countries.names, false);
         scan.project(103, &countries.names, false);

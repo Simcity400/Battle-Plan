@@ -1,9 +1,17 @@
-//! The character-scope trigger inputs the character role jobs do not read,
-//! from one hourly pass over the character roster: every country-leader,
-//! advisor and scientist role's traits (CharacterRoleTraits) and each
-//! nonzero unit-leader reference with its object's operands
-//! (CharacterOperatives). Their writers (effects, commands and operative
-//! recruitment) run at any hour; see [`engine::character_inputs`].
+//! The character-scope trigger inputs the character role jobs do not read:
+//! every country-leader, advisor and scientist role's traits
+//! (CharacterRoleTraits) and each nonzero unit-leader reference with its
+//! object's operands (CharacterOperatives). Their writers (effects, commands
+//! and operative recruitment) run at any hour; see
+//! [`engine::character_inputs`].
+//!
+//! Every hour the Gated job walks the roster job's admitted role census
+//! ([`super::characters::census`]) instead of the roster
+//! ([`Captured::capture_census`]); [`RoleStore`] carries each character's
+//! country-leader and advisor rows while no hooked writer touched them
+//! ([`crate::character_changes`]), and on a quiet hour carries them all
+//! without a lookup. Without an admitted census the pack walks the roster
+//! itself and the store forgets its rows.
 use crate::{
     sampling::qpc,
     spooling::{table, unavailable},
@@ -20,6 +28,9 @@ use replay::{
     frame::TableView,
     rows::{CharacterOperativeRow, CharacterRoleTraitRow, Recorded, TableId, tables},
 };
+
+mod role_store;
+pub(crate) use role_store::RoleStore;
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::CharacterRoleTraits, TableId::CharacterOperatives];
@@ -118,6 +129,19 @@ pub struct Captured {
     operatives: CaptureRows<native::OperativeRow>,
     definitions: Arena<u32>,
     bytes: Arena<u8>,
+    /// The role store content whose CharacterRoleTraits table these buffers
+    /// hold since their latest census walk, with its result. A walk or a
+    /// failure clears it; `reset` and growth, which only appends default rows
+    /// after the held ones, keep the contents.
+    held: Option<(u64, HeldTraits)>,
+}
+
+/// A held CharacterRoleTraits table's outcome and trait arena.
+#[derive(Clone, Copy, Debug)]
+struct HeldTraits {
+    outcome: Outcome,
+    values_len: usize,
+    values_required: usize,
 }
 
 /// Optional name failures keep the preexisting row and are counted off-thread.
@@ -176,7 +200,22 @@ impl Captured {
             operatives: CaptureRows::new(capacity.operatives),
             definitions: Arena::new(capacity.definitions),
             bytes: Arena::new(capacity.bytes),
+            held: None,
         }
+    }
+
+    fn held_traits(&self) -> HeldTraits {
+        HeldTraits {
+            outcome: self.traits.outcome,
+            values_len: self.values.len,
+            values_required: self.values.required,
+        }
+    }
+
+    fn restore_traits(&mut self, held: HeldTraits) {
+        self.traits.outcome = held.outcome;
+        self.values.len = held.values_len;
+        self.values.required = held.values_required;
     }
     pub fn reset(&mut self) {
         self.traits.reset();
@@ -186,6 +225,7 @@ impl Captured {
         self.bytes.reset();
     }
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.held = None;
         self.traits
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
         self.operatives
@@ -228,6 +268,119 @@ impl Captured {
         self.capture_mode(memory, base, game_state, hour, force_full, false)
     }
 
+    /// The hour's walk over the roster job's admitted role census, carrying
+    /// each certified character's country-leader and advisor rows from
+    /// `store`. Without a census the roster is walked and `store` forgets.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_census(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        census: Option<super::characters::census::Admitted<'_>>,
+        store: Option<&mut RoleStore>,
+    ) -> [u64; N] {
+        self.capture_census_with(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            census,
+            store,
+            &crate::character_changes::Observer,
+            &role_store::LeaderObserver,
+            crate::sampled_verify::Check::burned_in(hour, crate::character_changes::VERIFY),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_census_with(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        census: Option<super::characters::census::Admitted<'_>>,
+        store: Option<&mut RoleStore>,
+        changes: &dyn crate::character_changes::Changes,
+        leaders: &dyn role_store::LeaderChanges,
+        check: crate::sampled_verify::Check,
+    ) -> [u64; N] {
+        let Some(census) = census else {
+            if let Some(store) = store {
+                store.forget();
+            }
+            return self.capture(memory, base, game_state, hour, force_full);
+        };
+        self.reset();
+        let Some(walked) = self.walked(hour, force_full) else {
+            return [0; N];
+        };
+        let _reads = crate::read_accounting::table(TABLES[0]);
+        let started = qpc();
+        let mut walk = native::CensusWalk::growing(native::GrowingBuffers {
+            traits: &mut self.traits.rows,
+            trait_values: &mut self.values.first,
+            operatives: &mut self.operatives.rows,
+            definitions: &mut self.definitions.first,
+            bytes: &mut self.bytes.first,
+        });
+        let held = self.held.map(|(content, _)| content);
+        let mut store = store;
+        if let Some(store) = store.as_deref_mut() {
+            store.begin_operatives();
+        }
+        let visited = role_store::visit(
+            memory,
+            base,
+            game_state,
+            census,
+            &mut walk,
+            store.as_deref_mut().map(|store| role_store::RoleReuse {
+                store,
+                changes,
+                check,
+                held,
+                leaders,
+            }),
+        );
+        let walk = walk.finish();
+        if let Some(store) = store.as_deref_mut() {
+            store.finish_operatives(matches!(walk.operatives, Outcome::Rows { .. }));
+        }
+        let traits = self.held.map(|(_, traits)| traits);
+        self.install(walked, walk);
+        match (visited, traits) {
+            // The frame's buffers hold this hour's CharacterRoleTraits.
+            (role_store::Visited::Held, Some(traits)) if walked[0] => self.restore_traits(traits),
+            _ => {
+                self.held = store
+                    .map(|store| store.content())
+                    .filter(|&content| content != 0 && walked[0])
+                    .filter(|_| matches!(self.traits.outcome, Outcome::Rows { .. }))
+                    .map(|content| (content, self.held_traits()));
+            }
+        }
+        [qpc().saturating_sub(started).max(0) as u64, 0]
+    }
+
+    /// Which tables this hour walks; `None` marks both skipped.
+    fn walked(&mut self, hour: i32, force_full: bool) -> Option<[bool; N]> {
+        let walked = TABLES.map(|table| should_walk(table, hour, force_full));
+        if !walked.iter().any(|&walked| walked) {
+            self.traits.outcome = Outcome::Unavailable {
+                reason: SKIPPED_REASON,
+            };
+            self.operatives.outcome = self.traits.outcome;
+            return None;
+        }
+        Some(walked)
+    }
+
     fn capture_mode(
         &mut self,
         memory: &impl Memory,
@@ -237,15 +390,11 @@ impl Captured {
         force_full: bool,
         growing: bool,
     ) -> [u64; N] {
+        self.held = None;
         self.reset();
-        let walked = TABLES.map(|table| should_walk(table, hour, force_full));
-        if !walked.iter().any(|&walked| walked) {
-            self.traits.outcome = Outcome::Unavailable {
-                reason: SKIPPED_REASON,
-            };
-            self.operatives.outcome = self.traits.outcome;
+        let Some(walked) = self.walked(hour, force_full) else {
             return [0; N];
-        }
+        };
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
         let walk = if growing {
@@ -275,6 +424,11 @@ impl Captured {
                 },
             )
         };
+        self.install(walked, walk);
+        [qpc().saturating_sub(started).max(0) as u64, 0]
+    }
+
+    fn install(&mut self, walked: [bool; N], walk: native::Walk) {
         let skipped = Outcome::Unavailable {
             reason: SKIPPED_REASON,
         };
@@ -290,7 +444,6 @@ impl Captured {
         self.definitions.len = spans_end(&self.operatives.rows[..walk.operatives.len()], |row| {
             (row.start, row.len)
         });
-        [qpc().saturating_sub(started).max(0) as u64, 0]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [self.traits.outcome, self.operatives.outcome]
@@ -458,6 +611,10 @@ fn spans_end<R>(rows: &[R], span: impl Fn(&R) -> (usize, usize)) -> usize {
 #[cfg(test)]
 #[path = "character_inputs_scale_tests.rs"]
 mod scale_tests;
+
+#[cfg(test)]
+#[path = "character_inputs/role_store_tests.rs"]
+mod role_store_tests;
 
 #[cfg(test)]
 mod tests {

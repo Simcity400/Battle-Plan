@@ -66,8 +66,9 @@ pub(super) fn collect(
     complete(census.outcome, census.outcome.len())?;
     orders.truncate(census.outcome.len());
     geometry.truncate(census.geometry_len);
-    let (mut plans, mut assigned, mut links, mut names, mut plan_order) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut plans, mut assigned, mut links, mut names) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut plan_order = order::PlanOrder::default();
     let mut hosts = AssignedSources::default();
     hosts.enable_worker_growth();
     let report = order::walk_plans_ordered_with_sources(
@@ -142,6 +143,8 @@ pub(super) fn collect(
         rows: &orders,
         source: census.outcome,
         geometry: &geometry,
+        plan_rows: plan_order.rows(),
+        census: successors.census(),
     };
     prepared.capture_orders(
         memory,

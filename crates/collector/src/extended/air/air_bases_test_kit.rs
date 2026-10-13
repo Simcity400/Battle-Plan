@@ -11,7 +11,7 @@ pub(crate) const MANAGER: usize = 0x30000;
 pub(crate) const SVEC: usize = 0x31000;
 const HVEC: usize = 0x32000;
 pub(crate) const B0: usize = 0x40000;
-const B1: usize = 0x41000;
+pub(crate) const B1: usize = 0x41000;
 const H0: usize = 0x42000;
 pub(crate) const S0: usize = 0x50000;
 const S1: usize = 0x50100;
@@ -25,7 +25,7 @@ const WVEC: usize = 0x62400;
 pub(crate) const W0: usize = 0x63000;
 pub(crate) const W1: usize = 0x63100;
 const CVEC1: usize = 0x64000;
-const CONT2: usize = 0x65000;
+pub(crate) const CONT2: usize = 0x65000;
 const POOLVEC1: usize = 0x65400;
 const ACES0: usize = 0x70000;
 pub(crate) const A0: usize = 0x71000;
@@ -422,7 +422,6 @@ pub(super) fn collect_typed(
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
-        transport: [0; 5],
     };
     let mut captured = Captured::with_capacities(&capacities);
     let walked = cair_base::walk(memory, BASE, GAME_STATE, &mut captured.bases.rows);
@@ -465,7 +464,6 @@ pub(super) fn collect_split(
         force_full: true,
         base: BASE,
         game_state: GAME_STATE,
-        transport_admission: Default::default(),
     };
     let capacities = Capacities {
         rows: air_rows,
@@ -473,7 +471,6 @@ pub(super) fn collect_split(
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
-        transport: [0; 5],
     };
     let mut air = Captured::with_capacities(&capacities);
     let mut fog =
@@ -532,9 +529,7 @@ pub(crate) fn direct_with(
 ) -> Split {
     collect_typed(
         memory,
-        [
-            8192, bases, 4096, 8192, 16384, aces, 2048, 4096, 1024, 64, 0,
-        ],
+        [8192, bases, 4096, aces, 2048, 4096, 1024, 64, 0],
         names,
         bases.max(2),
         wings,
@@ -550,9 +545,7 @@ pub(crate) fn split_with(
 ) -> (Split, AirBasesCopyReport, AirBasesJob) {
     collect_split(
         memory,
-        [
-            8192, bases, 4096, 8192, 16384, aces, 2048, 4096, 1024, 64, 0,
-        ],
+        [8192, bases, 4096, aces, 2048, 4096, 1024, 64, 0],
         names,
         bases.max(2),
         wings,

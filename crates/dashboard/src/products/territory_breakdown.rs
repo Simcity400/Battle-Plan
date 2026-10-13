@@ -225,6 +225,9 @@ impl Regions {
 type Key = (Option<String>, Option<u32>, Option<String>);
 #[derive(Default)]
 struct Scan {
+    /// The recording's format, which dates its daily tables
+    /// ([`crate::metadata::slot_read`]).
+    format: replay::format::FormatVersion,
     /// One series per key, in key order once the scan ends.
     series: Vec<TerritoryRegionSeries>,
     tags: BTreeSet<String>,
@@ -479,7 +482,7 @@ fn observe(
         }
         Some(builder.lineage.replace(lineage))
     };
-    let (states, provinces) = territory::fresh_tables(frame);
+    let (states, provinces) = territory::fresh_tables(scan.format, frame);
     let available = [
         states.is_some(),
         provinces.is_some(),
@@ -606,7 +609,10 @@ fn scan(
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<Scan> {
-    let mut result = Scan::default();
+    let mut result = Scan {
+        format: source.replay_ref().format,
+        ..Scan::default()
+    };
     let mut builder = Builder::default();
     // Territory totals read the same tables, so one walk of the branch serves both.
     territory::walk_branch(source, branch, areas, context, cancelled, |frame| {

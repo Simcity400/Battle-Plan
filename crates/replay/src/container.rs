@@ -13,7 +13,7 @@ use crate::{
     branches::{BranchReason, BranchStart, BranchTracker, Gap},
     codec::{Decoder, invalid, invalid_static, put_bytes, put_string},
     format::FormatVersion,
-    frame::{DecodedFrame, Frame, FrameDecoder, TABLE_COUNT, TableView},
+    frame::{DecodedFrame, Frame, FrameDecoder, Metrics, TABLE_COUNT, TableView},
     identity::{Identity, SessionStart, Verification},
     rows::{TableId, TableRows},
     spool::{ControlRecord, Record, Recovery, SegmentState},
@@ -31,6 +31,8 @@ pub use compaction::{
 // A decoder allocation bound, not a campaign-size or frame-count limit.
 // V1E branch 6 held 720 valid frames (~5.95 GB raw) between keyframes;
 // writers must close smaller independently decodable blocks before this bound.
+// A grouped block keeps each table's plain updates, its plain frame headers
+// and its stored sections within it; an interleaved block its plain frames.
 pub const MAX_BLOCK_RAW_BYTES: usize = 1 << 30;
 
 type FrameObserver<'a> =
@@ -118,6 +120,9 @@ pub struct Replay {
     pub damaged_parts: usize,
     pub damaged_range: Option<(Hour, Hour)>,
     pub index: Vec<BlockIndex>,
+    /// Each index entry's position among the file's entries, which opening
+    /// may withhold; grouped keyframe anchors count the file's blocks.
+    ordinals: Vec<usize>,
     /// Per block: every check of a whole read has passed, so a later read may stop
     /// partway through it.
     verified: Vec<AtomicBool>,
@@ -192,6 +197,10 @@ impl CampaignHistory {
     }
 }
 
+/// The interleaved block layout older recordings use: one zstd frame of a
+/// frame count and length-prefixed plain frames. Writers emit grouped blocks;
+/// tests build interleaved ones to check the reading path.
+#[cfg(test)]
 struct RawBlock {
     branch: BranchId,
     first_hour: Hour,
@@ -200,6 +209,7 @@ struct RawBlock {
     count: u32,
 }
 
+#[cfg(test)]
 impl RawBlock {
     fn new(frame: &Frame) -> Self {
         Self {
@@ -229,7 +239,6 @@ impl RawBlock {
         self.last_hour = frame.hour;
         Ok(())
     }
-    #[cfg(test)]
     fn push(&mut self, frame: &Frame) -> io::Result<[usize; TABLE_COUNT]> {
         let mut payload = Vec::new();
         let sizes = frame.encode_with_sizes(&mut payload)?;
@@ -275,6 +284,22 @@ impl Replay {
 
     pub fn is_partial(&self) -> bool {
         self.partial().is_some()
+    }
+
+    /// The recorded event losses on `branch`, as the reads each lies between
+    /// (`ControlRecord::EventLoss`): `(after_hour, hour)`.
+    pub fn event_losses(&self, branch: BranchId) -> impl Iterator<Item = (Hour, Hour)> + '_ {
+        self.controls
+            .iter()
+            .filter_map(move |control| match *control {
+                ControlRecord::EventLoss {
+                    branch: lost,
+                    after_hour,
+                    hour,
+                    ..
+                } if lost == branch => Some((after_hour, hour)),
+                _ => None,
+            })
     }
 
     /// Opening withheld records or found structural/checksum damage.
@@ -841,6 +866,7 @@ impl Replay {
             warnings.push("trailing bytes in replay trailer".into());
         }
         let mut damaged_range = None;
+        let mut ordinals = Vec::new();
         let control_check = validate_partial_controls(&controls).and_then(|()| {
             if controls.iter().any(|control| {
                 !sessions
@@ -867,6 +893,7 @@ impl Replay {
             &mut gaps,
             &controls,
             &mut index,
+            &mut ordinals,
             header_end,
             trailer_start,
             keyframe_interval,
@@ -897,6 +924,7 @@ impl Replay {
             damaged_range,
             verified,
             index,
+            ordinals,
             header_end,
             trailer_start,
             partial_control,
@@ -1081,6 +1109,12 @@ impl Replay {
         index: &BlockIndex,
         parallel: Option<&Parallel<'_>>,
     ) -> io::Result<Vec<Frame>> {
+        if let Some(block) = self.grouped_block(index)? {
+            let frames =
+                check_block_frames(index, grouped::read(self, index, block, None, parallel)?)?;
+            self.mark_verified(index);
+            return Ok(frames);
+        }
         let mut inflated = self.inflate(index)?;
         let mut raw = engine::allocation::vec(to_usize(index.raw_length)?)?;
         inflated
@@ -1142,8 +1176,25 @@ impl Replay {
         &self,
         index: &BlockIndex,
         selected: Option<&[TableId]>,
-        visit: impl FnMut(Frame) -> io::Result<bool>,
+        mut visit: impl FnMut(Frame) -> io::Result<bool>,
     ) -> io::Result<()> {
+        if let Some(block) = self.grouped_block(index)? {
+            let frames =
+                check_block_frames(index, grouped::read(self, index, block, selected, None)?)?;
+            for frame in frames {
+                if !visit(frame)? {
+                    break;
+                }
+            }
+            // A grouped read inflates only the selected tables' sections; as for
+            // an interleaved block, a first read checks all of it, here every
+            // section's checksum, even after `visit` stops.
+            if selected.is_some() && !self.is_verified(index) {
+                grouped::verify(block, index)?;
+            }
+            self.mark_verified(index);
+            return Ok(());
+        }
         let mut raw = Inflated {
             stream: self.inflate(index)?,
             read: 0,
@@ -1258,6 +1309,166 @@ impl Replay {
         Ok(CheckedInflation(decompressor.take(index.raw_length + 1)))
     }
 
+    fn mark_verified(&self, index: &BlockIndex) {
+        if let Some(position) = self.block_position(index) {
+            self.verified[position].store(true, Ordering::Release);
+        }
+    }
+
+    /// A grouped block's stored bytes; `None` for an interleaved block.
+    fn grouped_block(&self, index: &BlockIndex) -> io::Result<Option<&[u8]>> {
+        if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
+            return Err(invalid("block exceeds raw size limit"));
+        }
+        let block = self.block_bytes(index)?;
+        Ok(grouped::is_grouped(block).then_some(block))
+    }
+
+    /// A block's stored bytes.
+    fn block_bytes(&self, index: &BlockIndex) -> io::Result<&[u8]> {
+        let start = to_usize(index.offset)?;
+        let end = to_usize(
+            index
+                .offset
+                .checked_add(index.length)
+                .ok_or_else(|| invalid("block offset overflow"))?,
+        )?;
+        self.bytes
+            .get(start..end)
+            .ok_or_else(|| invalid("block outside replay"))
+    }
+
+    /// The compressed sections of a grouped block; `None` for an interleaved
+    /// block, whose single zstd frame has no sections.
+    pub fn block_sections(&self, index: &BlockIndex) -> io::Result<Option<Vec<SectionSize>>> {
+        let block = self.block_bytes(index)?;
+        if !grouped::is_grouped(block) {
+            return Ok(None);
+        }
+        grouped::sections(block, index).map(Some)
+    }
+
+    /// The table sections of a grouped block split into their columns, each
+    /// also compressed alone; `None` for an interleaved block.
+    pub fn block_columns(&self, index: &BlockIndex) -> io::Result<Option<Vec<ColumnSizes>>> {
+        let block = self.block_bytes(index)?;
+        if !grouped::is_grouped(block) {
+            return Ok(None);
+        }
+        grouped::section_columns(block, index).map(Some)
+    }
+
+    /// Every section of a grouped block with its plain bytes compressed again
+    /// at each of `levels` (zstd, windows within what readers accept);
+    /// `None` for an interleaved block.
+    pub fn block_levels(
+        &self,
+        index: &BlockIndex,
+        levels: &[i32],
+    ) -> io::Result<Option<Vec<SectionLevels>>> {
+        let block = self.block_bytes(index)?;
+        if !grouped::is_grouped(block) {
+            return Ok(None);
+        }
+        grouped::section_levels(block, index, levels).map(Some)
+    }
+
+    /// This recording's frames written again by the current block writer, in
+    /// memory, keeping its sessions, branches, gaps, controls and recovery
+    /// notes. Size attribution compares layouts with it; the frames, their
+    /// format and their meaning are unchanged, so only current-format
+    /// recordings can be written again.
+    pub fn reencoded(
+        &self,
+        mut observe: impl FnMut(&Frame, &DecodedFrame, [usize; TABLE_COUNT]) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        if self.format != FormatVersion::CURRENT {
+            return Err(invalid(format!(
+                "only format {FORMAT_VERSION} frames can be written again; this recording is format {}",
+                self.format.version()
+            )));
+        }
+        // One segment per session with frames: its start, then each branch's
+        // start and frames in block order. The frames are metadata here and
+        // are read back from this recording block by block; the trailer is
+        // copied, so controls and gaps need no place among the frames.
+        let mut segments: Vec<Vec<Record>> = Vec::new();
+        let mut session = None;
+        let mut branch = None;
+        for block in &self.index {
+            let start = self
+                .branches
+                .iter()
+                .find(|start| start.id == block.branch)
+                .ok_or_else(|| invalid("block refers to an unknown branch"))?;
+            if session != Some(start.session) {
+                let started = self
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == start.session)
+                    .ok_or_else(|| invalid("branch refers to an unknown session"))?;
+                segments.push(vec![Record::SessionStart(started.clone())]);
+                session = Some(start.session);
+                branch = None;
+            }
+            let records = segments.last_mut().unwrap();
+            if branch != Some(block.branch) {
+                records.push(Record::BranchStart(start.clone()));
+                branch = Some(block.branch);
+            }
+            for frame in self.read_block_selected(block, &[])? {
+                records.push(Record::Frame(Frame {
+                    branch: frame.branch,
+                    hour: frame.hour,
+                    keyframe: frame.keyframe,
+                    metrics: Metrics::default(),
+                    tables: std::array::from_fn(|_| crate::frame::TableUpdate::Unavailable {
+                        reason: "re-encoding metadata only".into(),
+                    }),
+                }));
+            }
+        }
+        if segments.is_empty() {
+            return Self::open(self.bytes.clone());
+        }
+        // Frames in block order, one block in memory.
+        let mut blocks = self.index.iter();
+        let mut frames: std::vec::IntoIter<Frame> = Vec::new().into_iter();
+        let mut read = |_: usize, wanted: &Frame| -> io::Result<Frame> {
+            loop {
+                if let Some(frame) = frames.next() {
+                    if (frame.branch, frame.hour) != (wanted.branch, wanted.hour) {
+                        return Err(invalid("re-encoded frames left recorded order"));
+                    }
+                    return Ok(frame);
+                }
+                let block = blocks
+                    .next()
+                    .ok_or_else(|| invalid("re-encoded frames outran the recording"))?;
+                frames = self.read_block(block)?.into_iter();
+            }
+        };
+        let slices: Vec<&[Record]> = segments.iter().map(Vec::as_slice).collect();
+        let mut replay = Self::from_record_slices(
+            self.campaign_id.clone(),
+            &slices,
+            &mut observe,
+            Some(&mut read),
+            MAX_BLOCK_RAW_BYTES,
+        )?;
+        replay.bytes.truncate(replay.trailer_start);
+        finish_file(
+            &mut replay.bytes,
+            &self.sessions,
+            &self.branches,
+            &self.gaps,
+            &self.controls,
+            &self.recovery_notes,
+            &replay.index,
+        )?;
+        Self::open(replay.bytes)
+    }
+
     /// Validated block extents have increasing offsets even across skipped bytes.
     fn block_position(&self, index: &BlockIndex) -> Option<usize> {
         self.index
@@ -1266,7 +1477,6 @@ impl Replay {
             .filter(|&position| self.index[position] == *index)
     }
 
-    #[cfg(test)]
     fn is_verified(&self, index: &BlockIndex) -> bool {
         self.block_position(index)
             .is_some_and(|position| self.verified[position].load(Ordering::Acquire))
@@ -1388,6 +1598,29 @@ pub(crate) fn replace_file(source: &Path, destination: &Path) -> io::Result<()> 
         std::fs::File::open(parent)?.sync_all()?;
     }
     Ok(())
+}
+
+/// Every block's frames: one branch, a leading keyframe, increasing hours
+/// spanning its index range.
+fn check_block_frames(index: &BlockIndex, frames: Vec<Frame>) -> io::Result<Vec<Frame>> {
+    let mut last = None;
+    for (position, frame) in frames.iter().enumerate() {
+        if frame.branch != index.branch
+            || frame.keyframe != (position == 0)
+            || last.is_some_and(|hour| frame.hour <= hour)
+        {
+            return Err(invalid(
+                "block frame branch, keyframe, or hour ordering mismatch",
+            ));
+        }
+        last = Some(frame.hour);
+    }
+    if frames.first().map(|frame| frame.hour) != Some(index.first_hour)
+        || last != Some(index.last_hour)
+    {
+        return Err(invalid("block index hour range mismatch"));
+    }
+    Ok(frames)
 }
 
 fn expect_magic(decoder: &mut Decoder<'_>, expected: &[u8; 4]) -> io::Result<()> {
@@ -1555,8 +1788,45 @@ fn ordered_records(segments: &[(u32, Recovery)]) -> io::Result<Vec<&[Record]>> {
         .collect())
 }
 
+/// The sessions, branches, gaps, controls and new blocks of `segments`. The
+/// blocks are written on this thread in recorded order and packed on
+/// [`pack::workers`] threads, this one included ([`pack::blocks`]).
 #[allow(clippy::too_many_arguments)]
 fn collect(
+    segments: &[&[Record]],
+    identity: &Identity,
+    campaign_id: &[u8],
+    existing: Option<&Replay>,
+    interval: u32,
+    observe: &mut FrameObserver<'_>,
+    read_frame: Option<&mut FrameReader<'_>>,
+    block_limit: usize,
+) -> io::Result<Pending> {
+    let (mut pending, blocks) = pack::blocks(
+        pack::workers(),
+        |block: grouped::BlockWriter, cores: &pack::Cores| block.compress(cores),
+        |packer| {
+            write_blocks(
+                packer,
+                segments,
+                identity,
+                campaign_id,
+                existing,
+                interval,
+                observe,
+                read_frame,
+                block_limit,
+            )
+        },
+    )?;
+    pending.blocks = blocks;
+    Ok(pending)
+}
+
+/// [`collect`]'s records in order, each finished block handed to `packer`.
+#[allow(clippy::too_many_arguments)]
+fn write_blocks(
+    packer: &mut pack::Packer<'_, grouped::BlockWriter, CompressedBlock>,
     segments: &[&[Record]],
     identity: &Identity,
     campaign_id: &[u8],
@@ -1589,7 +1859,12 @@ fn collect(
         controls: Vec::new(),
         blocks: Vec::new(),
     };
-    let mut block: Option<RawBlock> = None;
+    let mut block: Option<grouped::BlockWriter> = None;
+    // Appended blocks anchor to the file's earlier keyframes too.
+    let mut anchors = match existing {
+        Some(replay) => grouped::Anchors::seed(replay)?,
+        None => grouped::Anchors::default(),
+    };
     for (position, segment) in segments.iter().enumerate() {
         if segment.is_empty() {
             continue;
@@ -1621,7 +1896,7 @@ fn collect(
                         pending.sessions.push(session.clone());
                     }
                     if let Some(previous) = block.take() {
-                        pending.blocks.push(previous.compress()?);
+                        packer.submit(previous.written())?;
                     }
                     current_session = Some(session.id);
                     current_branch = None;
@@ -1644,7 +1919,7 @@ fn collect(
                         pending.branches.push(branch.clone());
                     }
                     if let Some(previous) = block.take() {
-                        pending.blocks.push(previous.compress()?);
+                        packer.submit(previous.written())?;
                     }
                     current_session = Some(branch.session);
                     current_branch = Some(branch.id);
@@ -1683,9 +1958,9 @@ fn collect(
                     }
                     if frame.keyframe {
                         if let Some(previous) = block.take() {
-                            pending.blocks.push(previous.compress()?);
+                            packer.submit(previous.written())?;
                         }
-                        block = Some(RawBlock::new(frame));
+                        block = Some(grouped::BlockWriter::new(frame));
                     }
                     let current = block
                         .as_mut()
@@ -1699,8 +1974,8 @@ fn collect(
                     let mut payload = Vec::new();
                     let mut sizes = frame.encode_with_sizes(&mut payload)?;
                     let promoted;
-                    let emitted = if !current.fits(payload.len(), block_limit) {
-                        if current.count == 0 {
+                    let emitted = if !current.fits(payload.len(), &sizes, block_limit) {
+                        if current.frames == 0 {
                             return Err(invalid(
                                 "single replay frame exceeds raw block size limit",
                             ));
@@ -1711,23 +1986,26 @@ fn collect(
                         promoted = block_keyframe(decoded)?;
                         payload.clear();
                         sizes = promoted.encode_with_sizes(&mut payload)?;
-                        let next = RawBlock::new(&promoted);
-                        if !next.fits(payload.len(), block_limit) {
+                        let next = grouped::BlockWriter::new(&promoted);
+                        if !next.fits(payload.len(), &sizes, block_limit) {
                             return Err(invalid(
                                 "single replay keyframe exceeds raw block size limit",
                             ));
                         }
-                        pending
-                            .blocks
-                            .push(block.replace(next).unwrap().compress()?);
+                        packer.submit(block.replace(next).unwrap().written())?;
                         &promoted
                     } else {
                         frame
                     };
-                    block
-                        .as_mut()
-                        .unwrap()
-                        .push_payload(emitted, &payload, block_limit)?;
+                    block.as_mut().unwrap().push(
+                        emitted,
+                        decoded,
+                        &payload,
+                        &sizes,
+                        &mut anchors,
+                        block_limit,
+                        packer.cores(),
+                    )?;
                     observe(emitted, decoded, sizes)?;
                     last_hours.insert(frame.branch, frame.hour);
                     needs_keyframe = false;
@@ -1743,12 +2021,18 @@ fn collect(
                     if current_session != Some(control.session()) {
                         return Err(invalid("control has no matching session context"));
                     }
-                    pending.controls.push(control.clone());
+                    // A writer retries an event loss whose segment failed after
+                    // writing it; the same loss is kept once.
+                    if !(matches!(control, ControlRecord::EventLoss { .. })
+                        && pending.controls.contains(control))
+                    {
+                        pending.controls.push(control.clone());
+                    }
                 }
             }
         }
         if let Some(previous) = block.take() {
-            pending.blocks.push(previous.compress()?);
+            packer.submit(previous.written())?;
         }
     }
     // A complete CRC-valid record can survive a failed flush. Preserve its frame
@@ -1789,6 +2073,7 @@ fn validate_metadata(
     gaps: &mut Vec<Gap>,
     controls: &[ControlRecord],
     index: &mut Vec<BlockIndex>,
+    ordinals: &mut Vec<usize>,
     header_end: usize,
     trailer_start: usize,
     interval: u32,
@@ -1833,6 +2118,17 @@ fn validate_metadata(
     for control in controls {
         if !session_ids.contains(&control.session()) {
             return Err(invalid("replay control refers to an unknown session"));
+        }
+        if let ControlRecord::EventLoss {
+            session, branch, ..
+        } = control
+        {
+            if branch_ids.get(branch) != Some(session) {
+                return Err(invalid("event loss refers to another session's branch"));
+            }
+            if controls.iter().filter(|other| *other == control).count() > 1 {
+                return Err(invalid("event loss is recorded twice"));
+            }
         }
     }
     validate_partial_controls(controls)?;
@@ -1914,6 +2210,8 @@ fn validate_metadata(
         if kept != position {
             index[kept] = block.clone();
         }
+        engine::allocation::reserve(ordinals, 1)?;
+        ordinals.push(position);
         kept += 1;
     }
     index.truncate(kept);
@@ -2126,6 +2424,16 @@ fn parallel_map<T: Sync, R: Send>(
         Ok(out)
     })
 }
+
+mod grouped;
+mod pack;
+mod patch;
+pub use grouped::{ColumnSize, ColumnSizes, STORED_LEVEL, Section, SectionLevels, SectionSize};
+#[cfg(test)]
+pub(crate) use {
+    grouped::{Layout, WRITTEN_LAYOUT},
+    pack::WORKERS as PACK_WORKERS,
+};
 
 #[cfg(test)]
 mod tests;

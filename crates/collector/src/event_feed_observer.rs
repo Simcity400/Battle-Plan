@@ -1,5 +1,6 @@
 //! Native Event feed CALL observers, with hourly owned copies and output receipts.
 
+pub(crate) use crate::event_feed_history::Fact;
 use crate::{
     event_feed_history::{DetachLosses, Snapshot, Store, Ticket},
     hook::{Hook, TapSafety},
@@ -159,6 +160,7 @@ unsafe fn before(frame: &mut Frame) -> Result<bool, &'static str> {
                     rdx: frame.rdx,
                     rdi: frame.rdi,
                 },
+                crate::war_provenance::inside(),
             ),
             1 => store.annex_before(
                 &memory,
@@ -169,6 +171,7 @@ unsafe fn before(frame: &mut Frame) -> Result<bool, &'static str> {
                     r8: frame.r8,
                     r9: frame.r9 as u64,
                 },
+                crate::war_provenance::inside(),
             ),
             _ => Err(store.reject("Event feed CALL owner differs")),
         };
@@ -180,6 +183,67 @@ unsafe fn before(frame: &mut Frame) -> Result<bool, &'static str> {
         frame.terminal = 1;
         Ok(true)
     })?
+}
+
+/// Record an event a provenance hook proved ([`crate::war_provenance`]):
+/// `observe` reads it from the current world, `Ok(None)` when the operation
+/// changed nothing. Refused, counted and named like a CALL observation when
+/// the world is not observed, an operand does not read or storage is full.
+pub(crate) fn record(
+    observe: impl FnOnce(
+        &native::provenance::World<'_, engine::memory::LiveMemory>,
+        &engine::memory::LiveMemory,
+        usize,
+    ) -> Result<Option<Fact>, &'static str>,
+) {
+    let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
+        return;
+    };
+    let _ = owner.access(|store| {
+        let Some(generation) = observed(owner, store) else {
+            return;
+        };
+        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let fact = native::provenance::World::new(&memory, owner.base).and_then(|world| {
+            let hour = world.hour()?;
+            Ok(observe(&world, &memory, owner.base)?.map(|fact| (hour, fact)))
+        });
+        // A refusal is counted and named by the store.
+        match fact {
+            Ok(Some((hour, fact))) => {
+                let _ = store.known(generation, hour, fact);
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                store.reject(reason);
+            }
+        }
+        DEMAND.fetch_max(store.capacity_demand(), Ordering::Relaxed);
+    });
+}
+
+/// Refuse a provenance event whose operands did not read.
+pub(crate) fn refuse(reason: &'static str) {
+    if let Some(owner) = unsafe { SHARED.load(Ordering::SeqCst).as_ref() } {
+        let _ = owner.access(|store| store.reject(reason));
+    }
+}
+
+/// The observed world's generation, or `None` after refusing, as a CALL
+/// observation does.
+fn observed(owner: &Owner, store: &mut Store) -> Option<u64> {
+    if FAULT.load(Ordering::SeqCst) != 0 {
+        store.reject("Event feed native flight unavailable");
+        return None;
+    }
+    match crate::world_lifetime::token() {
+        Some(generation) if owner.armed.load(Ordering::SeqCst) => Some(generation),
+        _ => {
+            store.invalidate("Event feed world observation unavailable");
+            store.reject("Event feed world observation unavailable");
+            None
+        }
+    }
 }
 
 /// C++ invokes only on this exact original's normal return. It never repeats
@@ -228,10 +292,12 @@ unsafe fn returned(frame: &mut Frame) -> Result<(), &'static str> {
 // C++/ASM own these stack frames. No game pointer is dereferenced directly.
 #[unsafe(no_mangle)]
 unsafe extern "system-unwind" fn hoi4_event_before(frame: *mut Frame) -> u32 {
+    let _timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeed);
     u32::from(unsafe { before(&mut *frame) }.unwrap_or(false))
 }
 #[unsafe(no_mangle)]
 unsafe extern "system-unwind" fn hoi4_event_returned(frame: *mut Frame) {
+    let _timing = crate::hook_timing::enter_return(crate::hook_timing::Family::EventFeed);
     let _ = unsafe { returned(&mut *frame) };
 }
 #[unsafe(no_mangle)]
@@ -258,7 +324,8 @@ unsafe extern "system-unwind" {
 }
 
 struct Held {
-    hooks: [Hook; 2],
+    /// The two CALL hooks, then the provenance entry detours.
+    hooks: Vec<Hook>,
     owner: Arc<Owner>,
     restored: bool,
 }
@@ -301,10 +368,11 @@ impl Hooks {
             }
             .map_err(|_| "Event feed CALL construction failed")
         };
-        let hooks = [
+        let mut hooks = vec![
             make(native::WAR, event_war_entry as *const () as usize)?,
             make(native::ANNEX, event_annex_entry as *const () as usize)?,
         ];
+        hooks.extend(unsafe { crate::war_provenance::hooks(memory, base) }?);
         if FLIGHT.load(Ordering::SeqCst) != 0
             || FAULT.load(Ordering::SeqCst) != 0
             || !SHARED.load(Ordering::SeqCst).is_null()
@@ -405,8 +473,52 @@ fn take_receipts(store: &mut Store) {
     }
 }
 
+/// Native flights of the CALL hooks (bit 63 retains the owner) and the
+/// provenance entry detours in flight.
 pub(crate) fn active() -> usize {
-    FLIGHT.load(Ordering::SeqCst)
+    FLIGHT.load(Ordering::SeqCst) + crate::war_provenance::active()
+}
+
+/// A family whose patch forwards provenance to the event feed. While one is
+/// not enabled its events or causes go unobserved, so no interval is
+/// complete.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Forwarder {
+    /// [`crate::politics_changes`]: the diplomatic dispatch and civil war
+    /// start that declarations happen in.
+    Politics,
+    /// [`crate::territory_changes`]: set owner, every state
+    /// transfer.
+    Territory,
+}
+
+static FORWARDERS: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
+
+pub(crate) fn forwarder(forwarder: Forwarder, enabled: bool) {
+    FORWARDERS[forwarder as usize].store(enabled, Ordering::SeqCst);
+}
+
+/// An observed interval's coverage: complete only when the capture is and
+/// every forwarder is enabled.
+fn coverage(partial: bool) -> replay::event_feed_rows::EventFeedCoverage {
+    use replay::event_feed_rows::EventFeedCoverage;
+    if partial
+        || !FORWARDERS
+            .iter()
+            .all(|enabled| enabled.load(Ordering::SeqCst))
+    {
+        EventFeedCoverage::Partial
+    } else {
+        EventFeedCoverage::Complete
+    }
+}
+
+/// Live war relations the latest Wars walk counted, for sizing: one
+/// conference can end every one of them in an hour.
+static WARS: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn note_wars(count: usize) {
+    WARS.store(count, Ordering::Relaxed);
 }
 
 pub(crate) fn lost_drain() {
@@ -416,7 +528,6 @@ pub(crate) fn lost_drain() {
 }
 
 pub(crate) fn capture_growing(output: &mut Snapshot, hour: i32, partial: bool) {
-    use replay::event_feed_rows::EventFeedCoverage;
     let generation = crate::world_lifetime::generation();
     let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
         output.refuse(generation, hour, "Event feed hooks unavailable");
@@ -444,11 +555,7 @@ pub(crate) fn capture_growing(output: &mut Snapshot, hour: i32, partial: bool) {
             let boundary = crate::event_feed_history::OwnerBoundary {
                 generation,
                 read_hour: hour,
-                coverage: if partial {
-                    EventFeedCoverage::Partial
-                } else {
-                    EventFeedCoverage::Complete
-                },
+                coverage: coverage(partial),
                 failure,
             };
             let result = store.snapshot_growing(output, boundary);
@@ -495,8 +602,12 @@ fn presize_storage(slots: usize) {
     let mut capacity = CAPACITY.load(Ordering::Acquire);
     crate::table_capture::grow_capacity(
         &mut capacity,
+        // Two war links per country, and one hour's state owner changes and
+        // ended war relations at most every state and war at once.
         slots
             .saturating_mul(2)
+            .saturating_add(crate::territory_changes::state_slots())
+            .saturating_add(WARS.load(Ordering::Relaxed))
             .max(1024)
             .max(DEMAND.load(Ordering::Relaxed)),
     );
@@ -523,6 +634,7 @@ pub(crate) fn status() -> impl serde::Serialize {
         "enabled": unsafe { SHARED.load(Ordering::SeqCst).as_ref() }.is_some_and(|owner| owner.armed.load(Ordering::SeqCst)),
         "unhooked": crate::world_lifetime::unavailable_reason(),
         "native_flights": active(), "faults": FAULT.load(Ordering::SeqCst),
+        "provenance": crate::war_provenance::status(),
     })
 }
 
@@ -536,14 +648,16 @@ mod tests {
     #[test]
     fn escaped_native_flight_retains_the_event_feed_owner_without_a_ticket() {
         extern "system" fn original() {}
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let code = crate::hook::TestCode::new();
         let target = original as *const () as usize;
         let (first, first_bytes) = code.stub(0, target);
         let (second, second_bytes) = code.stub(64, target);
         let held = Held {
             hooks: unsafe {
-                [
+                vec![
                     Hook::new(first, target, first_bytes).unwrap(),
                     Hook::new(second, target, second_bytes).unwrap(),
                 ]
@@ -556,6 +670,26 @@ mod tests {
             Err("Event feed owner has unsettled native ownership")
         );
         assert_eq!(held.detach_losses(0), Ok(DetachLosses::default()));
+    }
+
+    /// An interval is complete only while both provenance forwarders are
+    /// enabled: without them its state transfers or declaration causes went
+    /// unobserved.
+    #[test]
+    fn a_disabled_forwarder_leaves_the_interval_partial() {
+        use replay::event_feed_rows::EventFeedCoverage;
+        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+        forwarder(Forwarder::Politics, true);
+        forwarder(Forwarder::Territory, true);
+        assert_eq!(coverage(false), EventFeedCoverage::Complete);
+        assert_eq!(coverage(true), EventFeedCoverage::Partial);
+        for disabled in [Forwarder::Politics, Forwarder::Territory] {
+            forwarder(disabled, false);
+            assert_eq!(coverage(false), EventFeedCoverage::Partial);
+            forwarder(disabled, true);
+        }
+        forwarder(Forwarder::Politics, false);
+        forwarder(Forwarder::Territory, false);
     }
 
     #[test]

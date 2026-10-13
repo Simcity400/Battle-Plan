@@ -1,5 +1,8 @@
 //! Bounded advisor-map notifications. Only authenticated exact map addresses
 //! are watched; generic tree helpers also operate on unrelated template maps.
+//! This family also owns the character role-row writer sites
+//! ([`engine::character_role_mutations`]) and forwards every advisor-family
+//! call to [`crate::character_changes`], which shares these patches.
 use crate::{
     extended::characters::advisors::{Changes, Counts},
     hook::Hook,
@@ -18,8 +21,14 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static POISONED: AtomicBool = AtomicBool::new(false);
 pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: [AtomicUsize; 11] = [const { AtomicUsize::new(0) }; 11];
+const ROLE_SITES: usize = engine::character_role_mutations::MUTATIONS.len();
+static ROLE_ORIGINAL: [AtomicUsize; ROLE_SITES] = [const { AtomicUsize::new(0) }; ROLE_SITES];
+/// Whether every character role-row site was installed.
+static ROLES_INSTALLED: AtomicBool = AtomicBool::new(false);
 static EVENTS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
 static COUNTS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+static SAMPLED: crate::sampled_verify::Sampled =
+    crate::sampled_verify::Sampled::burned_in(&["held advisor rows differ from a fresh read"]);
 static NOTIFICATION_TICKS: AtomicU64 = AtomicU64::new(0);
 
 struct Slot {
@@ -97,6 +106,27 @@ fn role_map(role: usize) -> usize {
 struct Mutation {
     revision: Option<&'static AtomicU64>,
     ticks: u64,
+    /// The same call as seen by the character role domain; dropped after
+    /// this family's own return bookkeeping.
+    _character: Option<crate::watch_registry::Notification<'static>>,
+    /// The same call as seen by the role census domain.
+    _census: Option<crate::watch_registry::Notification<'static>>,
+}
+
+/// The role census writers among [`MUTATIONS`] ([`crate::census_changes`]):
+/// the advisor map's inserts and range erase, the merge, the parser and the
+/// destructor.
+fn census_site(site: usize) -> Option<crate::census_changes::Site> {
+    use crate::census_changes::Site;
+    match MUTATIONS[site].name {
+        "insert_map" => Some(Site::AdvisorMapInsert),
+        "insert_map_value" => Some(Site::AdvisorMapMove),
+        "erase_map" => Some(Site::AdvisorMapErase),
+        "merge_character" => Some(Site::Merge),
+        "read_character" => Some(Site::Parse),
+        "destroy_character" => Some(Site::Destroy),
+        _ => None,
+    }
 }
 impl Mutation {
     fn enter(address: impl FnOnce() -> usize, site: usize) -> Self {
@@ -105,14 +135,20 @@ impl Mutation {
         // another module while retaining a return address into this DLL.
         let begin = crate::sampling::qpc();
         increment(&REVISION);
-        let revision = watch(&WATCH, address(), false);
+        let address = address();
+        let character = cfg!(feature = "character_changes")
+            .then(|| crate::character_changes::advisor_map(address));
+        let revision = watch(&WATCH, address, false);
         if let Some(revision) = revision {
             increment(revision);
         }
         EVENTS[site].fetch_add(1, Ordering::Relaxed);
+        let census = census_site(site).and_then(crate::census_changes::forwarded);
         Self {
             revision,
             ticks: crate::sampling::qpc().saturating_sub(begin).max(0) as u64,
+            _character: character,
+            _census: census,
         }
     }
 }
@@ -148,12 +184,16 @@ impl Changes for Observer {
         let revision = watch(&WATCH, map, true)?.load(Ordering::SeqCst);
         (ACTIVE.load(Ordering::SeqCst) == 0).then_some((epoch, revision))
     }
-    fn verify(&self) -> bool {
-        cfg!(feature = "advisor_verify")
+    fn check(&self) -> crate::sampled_verify::Check {
+        crate::sampled_verify::current_burned_in(cfg!(feature = "advisor_verify"))
     }
 }
 
+/// `counts.verified` held characters were read afresh and compared,
+/// `counts.mismatches` of them differing; a mismatch disables reuse for the
+/// attachment.
 pub fn record(counts: Counts) {
+    SAMPLED.record(counts.verified, counts.mismatches, 0);
     for (target, value) in COUNTS.iter().zip([
         counts.reused,
         counts.read,
@@ -178,10 +218,13 @@ pub fn status() -> impl serde::Serialize {
             .map(|(site, count)| (site.name, count)),
     );
     crate::status::status!({ "configured": cfg!(feature = "advisor_changes"), "verify": cfg!(feature = "advisor_verify"),
-        "poisoned": POISONED.load(Ordering::SeqCst), "reused_characters": counts[0], "read_characters": counts[1],
-        "reused_roles": counts[2], "verified_characters": counts[3], "mismatches": counts[4], "planned_sections": counts[5], "events": events,
+        "poisoned": POISONED.load(Ordering::SeqCst),
+        "sampled_verified": SAMPLED.verified(), "sampled_mismatches": SAMPLED.mismatches(),
+        "last_mismatch": SAMPLED.last_mismatch(), "slice": SAMPLED.slice(),
+        "reused_characters": counts[0], "read_characters": counts[1],
+        "reused_roles": counts[2], "planned_sections": counts[5], "events": events,
         "notification_ticks": NOTIFICATION_TICKS.load(Ordering::Relaxed),
-        "scope": "QPC notification bookkeeping ticks including guarded owner lookup, excluding native bodies; capture wall includes all cache work; verify reads every proposed hit" })
+        "scope": "QPC notification bookkeeping ticks including guarded owner lookup, excluding native bodies; capture wall includes all cache work; before each section's capture the held characters of the hour's slice (one in rotation_hours by character id) are read afresh and compared (sampled_*), and a mismatch disables reuse; verify mode reads every proposed hit" })
 }
 
 pub struct Hooks {
@@ -213,22 +256,76 @@ impl Hooks {
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
+            // The role sites complete this family's character coverage. A
+            // differing sentinel leaves them all uninstalled; the character
+            // domain then stays disabled and every hour reads afresh.
+            let roles = engine::character_role_mutations::MUTATIONS;
+            if cfg!(feature = "character_changes")
+                && roles.iter().all(|site| {
+                    engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                })
+            {
+                let callbacks: [usize; ROLE_SITES] = [
+                    country_leader_modifiers as *const () as usize,
+                    country_leader_destroy as *const () as usize,
+                    country_leader_map_insert as *const () as usize,
+                    country_leader_create as *const () as usize,
+                    advisor_modifiers as *const () as usize,
+                    country_leader_ideology as *const () as usize,
+                    character_name as *const () as usize,
+                    character_repair as *const () as usize,
+                ];
+                for (index, site) in roles.iter().enumerate() {
+                    let hook =
+                        unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                            .map_err(|_| "native hook construction failed")?;
+                    ROLE_ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
+                    hooks.push(hook);
+                }
+                ROLES_INSTALLED.store(true, Ordering::SeqCst);
+            }
         }
         Ok(Self { hooks })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
+            crate::character_changes::set_enabled(false);
+            crate::roster_changes::set_repair_forward(false);
+            crate::country_input_changes::forwarder(
+                crate::country_input_changes::Forwarder::Roles,
+                false,
+            );
+            crate::census_changes::forwarder(crate::census_changes::Forwarder::Advisors, false);
         }
-        for hook in &mut self.hooks {
-            if !hook
-                .set_enabled(enabled)
-                .map_err(|_| "native hook state change failed")?
-            {
-                return Ok(false);
-            }
+        // One census and suspension for the whole family, shared with the
+        // other families in a runtime round (`hook::shared`): a thread at any
+        // of its sites, or in a tap, holds every site back until the next
+        // attempt.
+        if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
+            .map_err(|_| "native hook state change failed")?
+        {
+            return Ok(false);
         }
         ENABLED.store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
+        crate::character_changes::set_enabled(
+            enabled && !self.hooks.is_empty() && ROLES_INSTALLED.load(Ordering::SeqCst),
+        );
+        // The roster family observes repair_containers through this patch.
+        crate::roster_changes::set_repair_forward(
+            enabled && !self.hooks.is_empty() && ROLES_INSTALLED.load(Ordering::SeqCst),
+        );
+        // The stability inputs observe the leader and advisor roles here.
+        crate::country_input_changes::forwarder(
+            crate::country_input_changes::Forwarder::Roles,
+            enabled && !self.hooks.is_empty() && ROLES_INSTALLED.load(Ordering::SeqCst),
+        );
+        // The role census observes the advisor sites and the country-leader
+        // map insert here.
+        crate::census_changes::forwarder(
+            crate::census_changes::Forwarder::Advisors,
+            enabled && !self.hooks.is_empty() && ROLES_INSTALLED.load(Ordering::SeqCst),
+        );
         Ok(true)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
@@ -236,15 +333,26 @@ impl Hooks {
     }
 }
 
-// The callbacks preserve every argument and return, and never call readers/getters
+impl Drop for Hooks {
+    fn drop(&mut self) {
+        // SAFETY: like each Hook's relay, the character watch tables are
+        // dropped only once the hooks were never enabled, or were removed and
+        // drained after the last capture.
+        unsafe { crate::character_changes::release() };
+    }
+}
+
+// Signatures checked against pinned decompiles and native call sites. The
+// callbacks preserve every argument and return, and never call readers/getters
 // in the game. Role-owner lookup is guarded metadata, not an engine call.
 macro_rules! callback {
     ($name:ident, $site:expr, ($($arg:ident:$ty:ty),*) -> $ret:ty, $map:expr) => {
         unsafe extern "system" fn $name($($arg:$ty),*) -> $ret {
+            let timing = crate::hook_timing::enter(crate::hook_timing::Family::AdvisorChanges);
             let _mutation = Mutation::enter(|| $map, $site);
             let original: unsafe extern "system" fn($($ty),*) -> $ret =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
-            unsafe { original($($arg),*) }
+            timing.original(|| unsafe { original($($arg),*) })
         }
     };
 }
@@ -259,6 +367,67 @@ callback!(clear_map, 7, (this:usize, allocator:usize, node:usize) -> (), this);
 callback!(merge_character, 8, (this:usize, source:usize, country:usize) -> (), character_map(this));
 callback!(read_character, 9, (this:usize, reader:usize, token:i32) -> (), character_map(this));
 callback!(destroy_character, 10, (this:usize) -> (), character_map(this));
+
+// Role-row writers ([`engine::character_role_mutations`]): integer and
+// pointer arguments only (the asm prologues use at most RCX..R9), and void
+// returns pass RAX through unchanged. Each names its character as the audit
+// there establishes; a role whose parent does not read revokes every
+// certificate. The character domain's notification covers the original in
+// flight.
+macro_rules! role_callback {
+    ($name:ident, $site:expr, ($($arg:ident:$ty:ty),*), $character:expr) => {
+        unsafe extern "system" fn $name($($arg:$ty),*) -> usize {
+            let timing = crate::hook_timing::enter(crate::hook_timing::Family::AdvisorChanges);
+            let character = $character;
+            let _notification = crate::character_changes::notify(character, $site);
+            let _inputs = crate::country_input_changes::forwarded_role($site, character);
+            let _census = ($site == roles::COUNTRY_LEADER_MAP_INSERT)
+                .then(|| crate::census_changes::forwarded(crate::census_changes::Site::LeaderMapInsert))
+                .flatten();
+            let original: unsafe extern "system" fn($($ty),*) -> usize =
+                unsafe { std::mem::transmute(ROLE_ORIGINAL[$site].load(Ordering::Acquire)) };
+            timing.original(|| unsafe { original($($arg),*) })
+        }
+    };
+}
+use engine::character_role_mutations as roles;
+// Country leader modifiers (leader).
+role_callback!(country_leader_modifiers, roles::COUNTRY_LEADER_MODIFIERS, (leader: usize),
+    crate::character_changes::role_character(leader, engine::ccountry_leader::CHARACTER));
+// Country leader destroy (leader): +0x8 still names the character on entry.
+role_callback!(country_leader_destroy, roles::COUNTRY_LEADER_DESTROY, (leader: usize),
+    crate::character_changes::role_character(leader, engine::ccountry_leader::CHARACTER));
+// Leader-map try_emplace (map = character + 0x98, result, key, value).
+role_callback!(country_leader_map_insert, roles::COUNTRY_LEADER_MAP_INSERT,
+    (map: usize, result: usize, key: usize, value: usize),
+    Some(map.saturating_sub(engine::ccharacter::LEADER_MAP_HEAD)));
+// Role builder (out, character, definition).
+role_callback!(country_leader_create, roles::COUNTRY_LEADER_CREATE,
+    (out: usize, character: usize, definition: usize), Some(character));
+// Advisor modifier rebuild (advisor).
+role_callback!(advisor_modifiers, roles::ADVISOR_MODIFIERS, (advisor: usize),
+    crate::character_changes::role_character(advisor, engine::cadvisor::CHARACTER));
+// Name setter (character, name): +0x48, +0x28 and the unit leader name.
+role_callback!(character_name, roles::CHARACTER_NAME, (character: usize, name: usize),
+    Some(character));
+// Repair containers  (character) rebuilds +0x28 and may
+// give the character a new id (`RegisterIdentity`), which the roster family
+// observes through this patch.
+unsafe extern "system" fn character_repair(character: usize) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::AdvisorChanges);
+    let _roster = crate::roster_changes::character_repaired();
+    let _notification = crate::character_changes::notify(Some(character), roles::CHARACTER_REPAIR);
+    let _inputs =
+        crate::country_input_changes::forwarded_role(roles::CHARACTER_REPAIR, Some(character));
+    let original: unsafe extern "system" fn(usize) -> usize = unsafe {
+        std::mem::transmute(ROLE_ORIGINAL[roles::CHARACTER_REPAIR].load(Ordering::Acquire))
+    };
+    timing.original(|| unsafe { original(character) })
+}
+// Set_country_leader_ideology (effect, scope): the leader it writes is
+// resolved inside the effect, so every certificate is revoked.
+role_callback!(country_leader_ideology, roles::COUNTRY_LEADER_IDEOLOGY,
+    (effect: usize, scope: usize), None);
 
 #[cfg(test)]
 mod tests {

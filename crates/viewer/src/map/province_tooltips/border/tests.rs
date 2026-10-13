@@ -38,13 +38,15 @@ fn fixture() -> (super::super::Content, DecodedFrame, BTreeMap<u32, u32>) {
         impassable: Default::default(),
         neighbors: Ok([(1, vec![2, 3, 4])].into_iter().collect()),
         temperature: Err("unused".into()),
-        clock: Err("unused".into()),
+        pass: Err("unused".into()),
+        derived: Default::default(),
         units: Err("unused".into()),
         border: Ok(Defines {
             org: 100_000,
             strength: 50_000,
             victory: 80_000,
         }),
+        air_log_timeout: Err("unused".into()),
     };
     let links = [(11, 1), (111, 1), (22, 2), (222, 2), (33, 3), (44, 4)]
         .into_iter()
@@ -252,21 +254,6 @@ fn native_sum_uses_raw_hp_skill_and_doctrine_on_whole_aggregates() {
 }
 
 #[test]
-fn numeric_getter_returns_enemy_share_and_reuses_the_tooltip_power_graph() {
-    let (content, frame, links) = fixture();
-    assert_eq!(content.border_ratio(&frame, 11, 1, &links).unwrap(), 79_747);
-    assert_eq!(
-        content.border_ratio(&frame, 111, 1, &links).unwrap(),
-        79_747
-    );
-    assert!(
-        render(&content, &frame, &links)
-            .unwrap()
-            .contains("Share 0.20253")
-    );
-}
-
-#[test]
 fn enemy_fraction_preserves_native_empty_and_overflow_branches() {
     assert_eq!(enemy_ratio([0, 0]), 50_000);
     assert_eq!(enemy_ratio([-2, 1]), 50_000);
@@ -275,17 +262,6 @@ fn enemy_fraction_preserves_native_empty_and_overflow_branches() {
         enemy_ratio([i64::MIN, i64::MIN + 1]),
         100_000_i64 - 0xffff_ffff
     );
-}
-
-#[test]
-fn inactive_numeric_getter_does_not_demand_the_power_graph() {
-    let (content, mut frame, links) = fixture();
-    frame.tables[TableId::Divisions.index()] = TableView::Unavailable {
-        reason: "not selected".into(),
-    }
-    .into();
-    assert_eq!(content.border_ratio(&frame, 33, 4, &links).unwrap(), 0);
-    assert!(content.border_ratio(&frame, 11, 1, &links).is_err());
 }
 
 #[test]

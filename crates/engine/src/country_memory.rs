@@ -101,6 +101,19 @@ impl Cache {
         }
     }
 
+    /// Serve the snapshot's exact country bytes while every country
+    /// observation keeps the source's path: the roster and reserved root are
+    /// the source's, so a reader resolves each country as on the source.
+    /// The roster names an excluded alias of the reserved country as absent
+    /// ([`ccountry::AuthenticatedRoster`]); a reader that resolves such a
+    /// slot directly must keep reading its identity.
+    pub fn bytes_view<'a, M: Memory>(&'a self, source: &'a M) -> CountryMemory<'a, M, true, false> {
+        CountryMemory {
+            source,
+            cache: self,
+        }
+    }
+
     /// Allocate off the game thread. Zero disables storage; other capacities
     /// round up to a power of two for bounded, division-free lookup.
     pub fn try_with_capacity(cells: usize) -> std::io::Result<Self> {
@@ -464,12 +477,14 @@ impl<M: Memory> Memory for RecordingMemory<'_, M> {
 }
 
 /// A single preparation's read-only view, borrowed within the hourly barrier.
-pub struct CountryMemory<'a, M, const CACHED_BYTES: bool = true> {
+pub struct CountryMemory<'a, M, const CACHED_BYTES: bool = true, const ROSTER: bool = true> {
     source: &'a M,
     cache: &'a Cache,
 }
 
-impl<M: Memory, const CACHED_BYTES: bool> CountryMemory<'_, M, CACHED_BYTES> {
+impl<M: Memory, const CACHED_BYTES: bool, const ROSTER: bool>
+    CountryMemory<'_, M, CACHED_BYTES, ROSTER>
+{
     pub fn seed_status(&self) -> SeedStatus {
         self.cache.status
     }
@@ -483,7 +498,9 @@ impl<M: Memory, const CACHED_BYTES: bool> CountryMemory<'_, M, CACHED_BYTES> {
     }
 }
 
-impl<M: Memory, const CACHED_BYTES: bool> Memory for CountryMemory<'_, M, CACHED_BYTES> {
+impl<M: Memory, const CACHED_BYTES: bool, const ROSTER: bool> Memory
+    for CountryMemory<'_, M, CACHED_BYTES, ROSTER>
+{
     fn authenticated_reserved_country(
         &self,
         base: usize,
@@ -498,6 +515,11 @@ impl<M: Memory, const CACHED_BYTES: bool> Memory for CountryMemory<'_, M, CACHED
         base: usize,
         game_state: usize,
     ) -> Option<ccountry::ReservedCountryObservation> {
+        if !ROSTER {
+            return self
+                .source
+                .authenticated_reserved_country_observation(base, game_state);
+        }
         (base == self.cache.roster_base && game_state == self.cache.roster_game_state)
             .then_some(self.cache.reserved)
             .flatten()
@@ -517,6 +539,9 @@ impl<M: Memory, const CACHED_BYTES: bool> Memory for CountryMemory<'_, M, CACHED
         base: usize,
         game_state: usize,
     ) -> Option<ccountry::AuthenticatedRoster<'_>> {
+        if !ROSTER {
+            return self.source.authenticated_countries(base, game_state);
+        }
         (self.cache.status == SeedStatus::Ready
             && self.cache.roster_len != 0
             && base == self.cache.roster_base

@@ -37,8 +37,8 @@ fn launch_world() -> TestMemory {
     memory
 }
 
-fn words(shared: &Shared) -> Option<Vec<(i32, u32)>> {
-    match shared
+fn words(launch: &Launch) -> Option<Vec<(i32, u32)>> {
+    match launch
         .projection_launch(Some(vec![9, 3, 9]))
         .unwrap()
         .unwrap()
@@ -54,98 +54,74 @@ fn words(shared: &Shared) -> Option<Vec<(i32, u32)>> {
     }
 }
 
+fn launch_capacity() -> (Capacities, LaunchCapacities) {
+    let (capacity, mut launch_capacity) = capacity();
+    launch_capacity.launch_bases = 3;
+    (capacity, launch_capacity)
+}
+
 #[test]
-fn no_moving_owners_or_failed_owner_arenas_cannot_suppress_launch_zero() {
-    for scenario in 0..3 {
-        let memory = launch_world();
-        let (mut capacity, mut shared_capacity) = capacity();
-        shared_capacity.launch_bases = 3;
-        if scenario == 2 {
-            capacity = Capacities::default();
+fn unreadable_countries_short_physical_arenas_or_area_faults_cannot_suppress_launch_zero() {
+    // Launch has no movement-owner input: no country table, physical arena
+    // or province-domain observation is its prerequisite.
+    for scenario in 0..4 {
+        let mut memory = launch_world();
+        let (mut capacity, launch_capacity) = launch_capacity();
+        match scenario {
+            1 => {
+                for table in [cgame_state::COUNTRIES, cgame_state::COUNTRY_LINKS] {
+                    pointer(&mut memory.bytes, STATE + table, usize::MAX);
+                }
+            }
+            2 => capacity = Capacities::default(),
+            3 => memory.fault = Some(PROVINCES[0]),
+            _ => {}
         }
         let mut captured = Captured::new(capacity);
-        let mut shared = Shared::new(shared_capacity);
-        let owners = if scenario == 0 {
-            vec![]
-        } else {
-            vec![Ok(owner(&memory))]
-        };
-        captured.capture(
-            &memory,
-            0,
-            STATE,
-            Some(71),
-            OwnerCensus {
-                owners,
-                failure: (scenario == 1).then_some("test owner census refusal"),
-            },
-            &mut shared,
-        );
-        assert_eq!(words(&shared), Some(vec![(-1, 999), (0, 999), (-1, 999)]));
+        let mut launch = Launch::new(launch_capacity);
+        pass(&mut captured, &mut launch, &memory, Some(71));
+        assert_eq!(words(&launch), Some(vec![(-1, 999), (0, 999), (-1, 999)]));
         assert_eq!(
-            shared
+            launch
                 .projection_launch(Some(vec![9, 3, 9]))
                 .unwrap()
                 .unwrap()
                 .owned_states,
             Some(vec![9, 3, 9])
         );
-        assert_eq!(
-            memory
-                .calls
-                .borrow()
-                .iter()
-                .filter(|&&(at, _)| at == 0xa100)
-                .count(),
-            1
-        );
+        assert_eq!(launch.launch_sample_hour(), Some(71));
+        assert_eq!(memory.count(0xa100), 1);
     }
 }
 
 #[test]
-fn launch_fault_is_independent_of_held_movement_headers_and_theatre_truth() {
+fn launch_fault_is_independent_of_the_physical_pass() {
     let mut memory = launch_world();
     memory.fault = Some(ZERO_NAVY + LAUNCH_HEADER);
-    let (capacity, mut shared_capacity) = capacity();
-    shared_capacity.launch_bases = 3;
+    let (capacity, launch_capacity) = launch_capacity();
     let mut captured = Captured::new(capacity);
-    let mut shared = Shared::new(shared_capacity);
-    captured.capture(
-        &memory,
-        0,
-        STATE,
-        Some(71),
-        OwnerCensus {
-            owners: [Ok(owner(&memory))],
-            failure: None,
-        },
-        &mut shared,
-    );
-    assert!(words(&shared).is_none());
-    let movement = shared.projection().unwrap().unwrap();
-    assert!(
-        movement
-            .nearest_caches
-            .unwrap()
-            .iter()
-            .all(|row| row.nearest_bases.is_some())
-    );
-    assert_eq!(movement.reserved_theatre.unwrap().provinces, vec![3]);
-    assert!(captured.for_country(1).unwrap().0.is_some());
+    let mut launch = Launch::new(launch_capacity);
+    let mut reader = captured.begin(&memory, 0, STATE, Some(71), &mut launch);
+    assert!(words(&launch).is_none());
+    // The same slot-zero control still lends its ledgers; other slots are
+    // untouched by the launch refusal.
     assert_eq!(
-        memory
-            .calls
-            .borrow()
-            .iter()
-            .filter(|&&(at, _)| at == 0xa100)
-            .count(),
-        1,
-        "foreign movement reuses the already failed launch observation"
+        captured.borrow_navy(0).unwrap().ledger_navy(),
+        Ok(ZERO_NAVY)
     );
+    assert_eq!(captured.borrow_navy(1).unwrap().ledger_navy(), Ok(NAVY));
+    captured.finish();
+    reader.clear();
+    assert_eq!(
+        memory.count(0xa100),
+        1,
+        "every borrower reuses the already failed launch observation"
+    );
+    assert_eq!(memory.count(ZERO_NAVY + LAUNCH_HEADER), 1);
 }
 
 #[test]
-fn shared_identity_failure_cannot_retry_when_slot_zero_is_later_foreign() {
+fn slot_zero_identity_failure_is_not_retried_for_launch_or_borrowers() {
     struct FailOnce<'a> {
         memory: &'a TestMemory,
         failed: Cell<bool>,
@@ -164,161 +140,99 @@ fn shared_identity_failure_cannot_retry_when_slot_zero_is_later_foreign() {
         memory: &memory,
         failed: Cell::new(false),
     };
-    let (capacity, mut shared_capacity) = capacity();
-    shared_capacity.launch_bases = 3;
+    let (capacity, launch_capacity) = launch_capacity();
     let mut captured = Captured::new(capacity);
-    let mut shared = Shared::new(shared_capacity);
-    captured.capture(
-        &failing,
-        0,
-        STATE,
-        Some(71),
-        OwnerCensus {
-            owners: [Ok(owner(&memory))],
-            failure: None,
-        },
-        &mut shared,
-    );
-    assert!(words(&shared).is_none());
+    let mut launch = Launch::new(launch_capacity);
+    let mut reader = captured.begin(&failing, 0, STATE, Some(71), &mut launch);
+    assert!(words(&launch).is_none());
+    let reason = captured.borrow_navy(0).err().expect("slot zero refused");
+    captured.finish();
+    reader.clear();
     assert_eq!(
-        memory
-            .calls
-            .borrow()
-            .iter()
-            .filter(|&&(at, _)| at == ZERO_NAVY)
-            .count(),
+        memory.count(ZERO_NAVY),
         1,
         "a second identity read would recover and hide the first refusal"
     );
-    assert_eq!(
-        memory
-            .calls
-            .borrow()
-            .iter()
-            .filter(|&&(at, _)| at == 0xa100)
-            .count(),
-        1
-    );
-    assert!(
-        shared
-            .projection()
-            .unwrap()
-            .unwrap()
-            .nearest_caches
-            .is_none()
-    );
+    assert_eq!(memory.count(0xa100), 1);
     assert!(
         captured.navies.first[..captured.navies.len]
             .iter()
-            .any(|row| row.slot == 0 && row.identity_reason.is_some())
+            .any(|row| row.slot == 0 && row.identity_reason == Some(reason))
     );
+    let mut work = Work::default();
+    work.observe(&captured, &launch).unwrap();
+    assert_eq!(work.launch_refused, 1);
+    // Named once for the physical slot and once for the launch provider.
+    assert_eq!(work.refusals, [(reason, 2)]);
 }
 
 #[test]
-fn short_movement_rows_still_transfer_the_fixed_slot_zero_attempt_once() {
+fn short_physical_arena_still_transfers_the_fixed_slot_zero_attempt_once() {
     let memory = launch_world();
-    let (mut capacity, mut shared_capacity) = capacity();
-    // Own slot1 fits and exposes its foreign list, but slot0's movement row does not.
+    let (mut capacity, launch_capacity) = launch_capacity();
+    // The original physical arena starts below the manager's four slots.
     capacity.navies = 1;
-    shared_capacity.launch_bases = 3;
     let mut captured = Captured::new(capacity);
-    let mut shared = Shared::new(shared_capacity);
-    captured.capture(
-        &memory,
-        0,
-        STATE,
-        Some(71),
-        OwnerCensus {
-            owners: [Ok(owner(&memory))],
-            failure: None,
-        },
-        &mut shared,
-    );
-    assert_eq!(words(&shared), Some(vec![(-1, 999), (0, 999), (-1, 999)]));
-    assert_eq!(
-        memory
-            .calls
-            .borrow()
-            .iter()
-            .filter(|&&(at, _)| at == 0xa100)
-            .count(),
-        1
-    );
-    assert_eq!(shared.launch_bases.required, 3);
+    let mut launch = Launch::new(launch_capacity);
+    pass(&mut captured, &mut launch, &memory, Some(71));
+    assert_eq!(words(&launch), Some(vec![(-1, 999), (0, 999), (-1, 999)]));
+    assert_eq!(memory.count(0xa100), 1);
+    assert_eq!(launch.launch_bases.required, 3);
+    assert_eq!(captured.required().navies, 4);
     assert!(captured.navies.first.iter().all(|row| row.inputs.is_none()));
 }
 
 #[test]
 fn fixed_launch_capacity_grows_both_arenas_without_body_reads_or_hot_growth() {
-    fn capture_fixed(memory: &TestMemory, shared: &mut Shared, hour: i32) {
+    fn capture_fixed(memory: &TestMemory, launch: &mut Launch, hour: i32) {
         let reader = native::Reader::new(memory, 0, STATE);
         let mut observed = reader.observe_navy(0).unwrap();
         let captured = observed.capture_launch(
             memory,
             0,
-            &mut shared.launch_scratch.first,
-            &mut shared.launch_bases.first,
+            &mut launch.launch_scratch.first,
+            &mut launch.launch_bases.first,
         );
-        shared.sample_hour = Some(hour);
-        shared.launch_bases.required = captured.required;
-        shared.launch_scratch.required = captured.required;
-        shared.launch_result = captured.provider;
-        shared.launch_bases.len = match captured.provider {
+        launch.sample_hour = Some(hour);
+        launch.launch_bases.required = captured.required;
+        launch.launch_scratch.required = captured.required;
+        launch.launch_result = captured.provider;
+        launch.launch_bases.len = match captured.provider {
             Ok(ccountry::launch_sources::NavalProvider::Bases(len)) => len,
             _ => 0,
         };
     }
     let memory = launch_world();
-    let (_, mut shared_capacity) = capacity();
-    let mut shared = Shared::new(shared_capacity);
-    capture_fixed(&memory, &mut shared, 71);
-    assert!(words(&shared).is_none());
-    assert_eq!(shared.required().launch_bases, 3);
-    assert!(
-        !memory
-            .calls
-            .borrow()
-            .iter()
-            .any(|&(at, _)| at == LAUNCH_POINTERS || at == 0x17080)
-    );
-    shared.grow(&mut shared_capacity);
-    assert!(shared.launch_bases.first.len() >= 3 && shared.launch_scratch.first.len() >= 3);
-    let allocated = shared.allocated_bytes();
+    let (_, mut launch_capacity) = capacity();
+    let mut launch = Launch::new(launch_capacity);
+    capture_fixed(&memory, &mut launch, 71);
+    assert!(words(&launch).is_none());
+    assert_eq!(launch.required().launch_bases, 3);
+    assert!(!memory.touched(LAUNCH_POINTERS, LAUNCH_POINTERS + 3 * 8));
+    assert!(!memory.touched(0x17080, 0x17080 + 8));
+    launch.grow(&mut launch_capacity);
+    assert!(launch.launch_bases.first.len() >= 3 && launch.launch_scratch.first.len() >= 3);
+    let allocated = launch.allocated_bytes();
     memory.calls.borrow_mut().clear();
-    capture_fixed(&memory, &mut shared, 72);
-    assert_eq!(shared.allocated_bytes(), allocated);
-    assert_eq!(words(&shared), Some(vec![(-1, 999), (0, 999), (-1, 999)]));
-    shared.reset();
-    assert!(shared.projection_launch(None).unwrap().is_none());
+    capture_fixed(&memory, &mut launch, 72);
+    assert_eq!(launch.allocated_bytes(), allocated);
+    assert_eq!(words(&launch), Some(vec![(-1, 999), (0, 999), (-1, 999)]));
+    launch.reset();
+    assert!(launch.projection_launch(None).unwrap().is_none());
 }
 
 #[test]
 fn worker_launch_grows_empty_arenas_before_first_publication() {
     let memory = launch_world();
     let mut captured = Captured::new(Capacities::default());
-    let mut shared = Shared::new(SharedCapacities::default());
-    assert_eq!(shared.allocated_bytes(), 0);
-    captured.capture(
-        &memory,
-        0,
-        STATE,
-        Some(71),
-        OwnerCensus {
-            owners: [],
-            failure: None,
-        },
-        &mut shared,
-    );
-    assert_eq!(words(&shared), Some(vec![(-1, 999), (0, 999), (-1, 999)]));
-    assert_eq!(shared.required().launch_bases, 3);
-    assert!(shared.launch_bases.first.len() >= 3 && shared.launch_scratch.first.len() >= 3);
+    let mut launch = Launch::new(LaunchCapacities::default());
+    assert_eq!(launch.allocated_bytes(), 0);
+    pass(&mut captured, &mut launch, &memory, Some(71));
+    assert_eq!(words(&launch), Some(vec![(-1, 999), (0, 999), (-1, 999)]));
+    assert_eq!(launch.required().launch_bases, 3);
+    assert!(launch.launch_bases.first.len() >= 3 && launch.launch_scratch.first.len() >= 3);
     assert_eq!(
-        memory
-            .calls
-            .borrow()
-            .iter()
-            .filter(|&&(at, _)| at == ZERO_NAVY + LAUNCH_HEADER)
-            .count(),
+        memory.count(ZERO_NAVY + LAUNCH_HEADER),
         1,
         "growth uses the original launch header"
     );
@@ -329,10 +243,9 @@ fn native_null_projection_is_fresh_and_distinct_from_lists_and_read_faults() {
     use replay::rows::LaunchNavalBases;
 
     let mut memory = launch_world();
-    let (capacity, mut shared_capacity) = capacity();
-    shared_capacity.launch_bases = 3;
+    let (capacity, launch_capacity) = launch_capacity();
     let mut captured = Captured::new(capacity);
-    let mut shared = Shared::new(shared_capacity);
+    let mut launch = Launch::new(launch_capacity);
     let mut work = Work::default();
     for hour in 71..=74 {
         if hour == 72 {
@@ -345,22 +258,12 @@ fn native_null_projection_is_fresh_and_distinct_from_lists_and_read_faults() {
             header(&mut memory.bytes, ZERO_NAVY + LAUNCH_HEADER, 0, 0);
         }
         memory.calls.borrow_mut().clear();
-        captured.capture(
-            &memory,
-            0,
-            STATE,
-            Some(hour),
-            OwnerCensus {
-                owners: [],
-                failure: None,
-            },
-            &mut shared,
-        );
-        let packet = shared
+        pass(&mut captured, &mut launch, &memory, Some(hour));
+        let packet = launch
             .projection_launch(Some(vec![9, 3, 9]))
             .unwrap()
             .unwrap();
-        assert_eq!(packet.sample_hour, hour);
+        assert_eq!(packet.sample_hour, replay::rows::PacketHour::Host);
         assert_eq!(packet.owned_states, Some(vec![9, 3, 9]));
         match hour {
             71 => assert!(
@@ -368,34 +271,26 @@ fn native_null_projection_is_fresh_and_distinct_from_lists_and_read_faults() {
             ),
             72 => {
                 assert_eq!(packet.naval_bases, LaunchNavalBases::NativeNull);
-                assert_eq!(shared.required().launch_bases, 0);
-                assert_eq!(shared.launch_bases.len, 0);
-                assert!(
-                    !memory
-                        .calls
-                        .borrow()
-                        .iter()
-                        .any(|&(at, _)| at == ZERO_NAVY + LAUNCH_HEADER)
-                );
+                assert_eq!(launch.required().launch_bases, 0);
+                assert_eq!(launch.launch_bases.len, 0);
+                assert_eq!(memory.count(ZERO_NAVY + LAUNCH_HEADER), 0);
             }
             73 => assert_eq!(packet.naval_bases, LaunchNavalBases::Unavailable),
             74 => assert_eq!(packet.naval_bases, LaunchNavalBases::Bases(vec![])),
             _ => unreachable!(),
         }
-        assert_eq!(
-            memory
-                .calls
-                .borrow()
-                .iter()
-                .filter(|&&(at, _)| at == 0xa100)
-                .count(),
-            1
-        );
-        work.observe(&captured, &shared).unwrap();
+        assert_eq!(memory.count(0xa100), 1);
+        work.observe(&captured, &launch).unwrap();
     }
     assert_eq!(work.launch_available, 3);
     assert_eq!(work.launch_native_null, 1);
     assert_eq!(work.launch_refused, 1);
-    shared.reset();
-    assert!(shared.projection_launch(None).unwrap().is_none());
+    let status = serde_json::to_value(work.status()).unwrap();
+    assert_eq!(status["sampled_hours"], 4);
+    assert_eq!(status["reserved_launch_naval_available_hours"], 3);
+    assert_eq!(status["reserved_launch_naval_native_null_hours"], 1);
+    assert_eq!(status["reserved_launch_naval_refused_hours"], 1);
+    assert_eq!(status["reserved_launch_naval_bases_required"], 3);
+    launch.reset();
+    assert!(launch.projection_launch(None).unwrap().is_none());
 }

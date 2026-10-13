@@ -1,12 +1,16 @@
 //! Division supply-icon states, counted at their hourly reads.
 //!
-//! Low supply is false for naval transfers, otherwise effective supply is below
-//! NMilitary.LOW_SUPPLY. Its signed i64 operands are the received fixed5 fraction
-//! and maximum/remaining grace in fixed5 hours. Maximum grace starts as
-//! SUPPLY_GRACE integer hours * 100000. We read stored values, never recreate
-//! their update or make them fresher. DivisionLandInputs copies these exact
-//! operands and naval-transfer presence from the authenticated DivisionSeed
-//! (engine::carmy), keyed by full u64 handle, hourly in cadence.rs.
+//! Low supply is false for naval transfer (the pointer at +2F8), otherwise
+//! effective supply < NMilitary.LOW_SUPPLY. Stored signed qwords hold the
+//! received fixed5 fraction (+40), maximum (+600) and remaining (+610) grace.
+//! Maximum grace starts with SUPPLY_GRACE (integer hours) * 100000; the hourly
+//! division update passes remaining grace (+610) and its companion (+608) to
+//! the grace updater. We read stored values, never recreate
+//! their update or make them fresher. DivisionStatus records these exact
+//! signed i64 operands (supply_ratio, supply_grace_maximum/remaining) and
+//! DivisionLandInputs the naval-transfer presence, both from the same hour's
+//! authenticated DivisionSeed (engine::carmy), keyed by full u64 handle,
+//! hourly in cadence.rs.
 //!
 //! The icon substitutes fixed5 one when supply is not low; otherwise it uses the
 //! received fraction. Strict < VERY_LOW selects frame 3, then strict < LOW selects
@@ -25,9 +29,10 @@
 //!
 //! Owner: positive signed expeditionary_owner, else roster_owner, through
 //! CountryLinks, matching DivisionCensus and Army size. Expeditionary transfer
-//! preserves the sender before changing the host roster. No player/AI filtering.
-//! Incomplete Divisions or country links, unresolved owners, or any owned
-//! division without this hour's land inputs breaks the country's whole stack.
+//! preserves the sender before changing the division's host roster.
+//! No player/AI filtering. Incomplete Divisions or
+//! country links, unresolved owners, or any owned division without this hour's
+//! status supply operands or land inputs breaks the country's whole stack.
 //! Zero divisions is an exact zero denominator, not a 100% share.
 //! metadata::slot_read dates every operand; equal consecutive reads compress
 //! into runs without crossing gaps.
@@ -54,7 +59,7 @@ use crate::{
 use replay::{
     container::Replay,
     frame::{DecodedFrame, FrameDecoder, ViewIdentity},
-    rows::{DivisionLandInputsRow, DivisionRow, TableId, tables},
+    rows::{DivisionLandInputsRow, DivisionRow, DivisionStatusRow, Recorded, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -107,6 +112,34 @@ pub struct SupplyHealthReply {
     pub warnings: Vec<String>,
 }
 
+/// One division's supply-icon operands for an hour: DivisionStatus's received
+/// fraction and grace, and DivisionLandInputs's naval-transfer presence.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Supply {
+    received: i64,
+    maximum_grace: i64,
+    remaining_grace: i64,
+    naval_transfer: bool,
+}
+
+impl Supply {
+    /// None when either table lacks the division or the grace was not
+    /// recorded; such a division cannot be classified.
+    fn of(status: &DivisionStatusRow, land: &DivisionLandInputsRow) -> Option<Self> {
+        let (Recorded::Value(maximum_grace), Recorded::Value(remaining_grace)) =
+            (status.supply_grace_maximum, status.supply_grace_remaining)
+        else {
+            return None;
+        };
+        Some(Self {
+            received: status.supply_ratio,
+            maximum_grace,
+            remaining_grace,
+            naval_transfer: land.naval_transfer,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Defines {
     grace: i32,
@@ -156,7 +189,7 @@ impl Defines {
         })
     }
 
-    fn effective(self, row: &DivisionLandInputsRow) -> i64 {
+    fn effective(self, row: &Supply) -> i64 {
         if row.maximum_grace <= 0 {
             return 0;
         }
@@ -168,17 +201,17 @@ impl Defines {
         } else {
             row.remaining_grace.wrapping_mul(100_000) / divisor
         };
-        row.received_supply.max(grace).clamp(0, 100_000)
+        row.received.max(grace).clamp(0, 100_000)
     }
 
-    fn has_low(self, row: &DivisionLandInputsRow) -> bool {
+    fn has_low(self, row: &Supply) -> bool {
         !row.naval_transfer && self.effective(row) < self.low
     }
 
     /// Native icon frame; zero means hidden. Keep all four native arms.
-    fn frame(self, row: &DivisionLandInputsRow) -> usize {
+    fn frame(self, row: &Supply) -> usize {
         let low = self.has_low(row);
-        let received = if low { row.received_supply } else { 100_000 };
+        let received = if low { row.received } else { 100_000 };
         if received < self.very_low_icon {
             3
         } else if received < self.low_icon {
@@ -204,6 +237,9 @@ struct Seen {
 }
 
 struct Scan {
+    /// The recording's format, which dates its daily tables
+    /// ([`crate::metadata::slot_read`]).
+    format: replay::format::FormatVersion,
     series: Vec<SupplyHealthSeries>,
     selected: HashMap<String, usize>,
     seen: Vec<Seen>,
@@ -211,7 +247,7 @@ struct Scan {
     owners: HashMap<u32, Option<usize>>,
     countries_from: Option<[ViewIdentity; 2]>,
     country_keys: Vec<(u32, u32, Vec<u8>)>,
-    counts_from: Option<[ViewIdentity; 2]>,
+    counts_from: Option<[ViewIdentity; 3]>,
     roster_from: Option<ViewIdentity>,
     roster_keys: Vec<(u64, u32)>,
     members: Vec<(u64, usize)>,
@@ -237,6 +273,7 @@ impl Scan {
         }
         let len = series.len();
         Self {
+            format: replay::format::FormatVersion::default(),
             series,
             selected,
             seen: (0..len).map(|_| Seen::default()).collect(),
@@ -316,13 +353,25 @@ impl Scan {
         for (state, identity) in self.seen.iter_mut().zip(&self.identities) {
             state.open &= state.identity.step(*identity, hour);
         }
-        let ids = [TableId::Divisions, TableId::DivisionLandInputs];
-        let read = ids.iter().all(|id| slot_read(&frame.metrics, *id, hour));
+        let ids = [
+            TableId::Divisions,
+            TableId::DivisionLandInputs,
+            TableId::DivisionStatus,
+        ];
+        let read = ids
+            .iter()
+            .all(|id| slot_read(self.format, &frame.metrics, *id, hour));
         let divisions = frame.complete::<tables::Divisions>();
         let land = recorded_rows::<tables::DivisionLandInputs>(frame);
+        let status = recorded_rows::<tables::DivisionStatus>(frame);
         let land_present = land_present(frame);
         self.available |= land_present;
-        let valid = countries.is_ok() && divisions.is_ok() && land.is_ok() && land_present && read;
+        let valid = countries.is_ok()
+            && divisions.is_ok()
+            && land.is_ok()
+            && status.is_ok()
+            && land_present
+            && read;
         let same = matches!(countries, Ok(false))
             && self.counts_from.as_ref().is_some_and(|previous| {
                 ids.iter()
@@ -367,13 +416,19 @@ impl Scan {
                 self.counts.fill(None);
             } else {
                 let land = land?;
+                let status = status?;
                 for &(handle, index) in &self.members {
                     let row = land
                         .binary_search_by_key(&handle, |row| row.division)
                         .ok()
-                        .map(|i| &land[i]);
+                        .zip(
+                            status
+                                .binary_search_by_key(&handle, |row| row.division)
+                                .ok(),
+                        )
+                        .and_then(|(l, s)| Supply::of(&status[s], &land[l]));
                     if let (Some(counts), Some(row)) = (&mut self.counts[index], row) {
-                        let bucket = match defines.frame(row) {
+                        let bucket = match defines.frame(&row) {
                             3 => 0,
                             1 | 2 => 1,
                             _ => 2,
@@ -435,8 +490,10 @@ fn scan(
         TableId::CountryLinks,
         TableId::Divisions,
         TableId::DivisionLandInputs,
+        TableId::DivisionStatus,
     ];
     let mut scan = Scan::new(tags);
+    scan.format = replay.format;
     crate::blocks::scan_blocks(
         replay,
         replay.index.iter().filter(|block| block.branch == branch),

@@ -1418,7 +1418,7 @@ fn read_railways(
 /// Scans one branch for every construction project.
 pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<ScannedLog> {
     scan_with_reads(replay, branch, cancelled, |frame, table| {
-        slot_read(&frame.metrics, table, frame.hour)
+        slot_read(replay.format, &frame.metrics, table, frame.hour)
     })
 }
 

@@ -703,9 +703,14 @@ pub(super) fn scan_with_decode(
                     let complete = decoded.complete::<tables::VariantDefinitions>().is_ok();
                     let check_names = !continuous
                         || complete != definitions_complete
-                        || slot_read(&decoded.metrics, TableId::VariantDefinitions, hour);
+                        || slot_read(
+                            replay.format,
+                            &decoded.metrics,
+                            TableId::VariantDefinitions,
+                            hour,
+                        );
                     definitions_complete = complete;
-                    variants.observe(decoded);
+                    variants.observe(replay.format, decoded);
                     let names_changed = if check_names {
                         let current: BTreeMap<_, _> = variants
                             .versions
@@ -737,6 +742,7 @@ pub(super) fn scan_with_decode(
                             .is_some_and(|(last_hour, previous)| {
                                 last_hour.checked_add(1) == Some(hour)
                                     && !slot_read(
+                                        replay.format,
                                         &decoded.metrics,
                                         TableId::VariantDefinitions,
                                         hour,

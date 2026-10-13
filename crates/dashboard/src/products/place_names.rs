@@ -16,9 +16,10 @@
 //! empty primary names try the state, and state-less provinces stay unnamed.
 //! A known primary name needs no state-name lookup. Unresolved names remain null;
 //! the caller shows Unnamed province and keeps the id only in its tooltip.
-//! Provinces, States, Countries, CountryLinks and CountryAppearance are hourly;
-//! ProvinceNames keeps its recorded daily read (cadence.rs), including carried
-//! overrides. IDs and raw owner links are 32-bit; names retain byte strings.
+//! Provinces, States, Countries, CountryLinks, CountryAppearance and
+//! ProvinceNames are hourly (older recordings read ProvinceNames daily and
+//! carry it between reads). IDs and raw owner links are 32-bit; names retain
+//! byte strings.
 
 use super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, recorded_rows};
 use crate::{

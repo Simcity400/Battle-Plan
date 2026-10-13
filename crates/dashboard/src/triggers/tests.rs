@@ -319,6 +319,43 @@ fn faction_leader_scope_and_boolean_trigger_share_the_first_member() {
 }
 
 #[test]
+fn has_elections_reads_the_recorded_test_and_refuses_older_recordings_by_name() {
+    use replay::rows::PoliticsRow;
+    let mut frame = frame(
+        &[(100, 1, "GER", 1, "", ""), (200, 2, "SOV", 1, "", "")],
+        &[],
+    );
+    let politics = |first: Recorded<bool>| {
+        TableView::Complete(TableRows::Politics(vec![
+            PoliticsRow {
+                country: 100,
+                has_elections: first,
+                ..Default::default()
+            },
+            PoliticsRow {
+                country: 200,
+                has_elections: Recorded::Value(false),
+                ..Default::default()
+            },
+        ]))
+    };
+    *frame.tables[TableId::Politics.index()] = politics(Recorded::Value(true));
+    for (slot, yes, no) in [(1, Eval::True, Eval::False), (2, Eval::False, Eval::True)] {
+        assert_eq!(check(&frame, "", slot, "has_elections = yes"), yes);
+        assert_eq!(check(&frame, "", slot, "has_elections = no"), no);
+    }
+    // A recording older than the value holds none for the trigger to test.
+    *frame.tables[TableId::Politics.index()] = politics(Recorded::NotRecorded);
+    assert!(
+        check(&frame, "", 1, "has_elections = yes")
+            .decided()
+            .unwrap_err()
+            .contains("Politics.has_elections not recorded")
+    );
+    assert_eq!(check(&frame, "", 2, "has_elections = no"), Eval::True);
+}
+
+#[test]
 fn ruling_leader_traits_use_role_key_and_definition_identity() {
     engine::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

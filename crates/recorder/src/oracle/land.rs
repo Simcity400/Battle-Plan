@@ -26,8 +26,6 @@ struct History {
 #[derive(Default)]
 struct Division {
     manpower: Vec<(Vec<u8>, i32)>,
-    maximum: i64,
-    remaining: i64,
 }
 #[derive(Default)]
 pub(super) struct Saved {
@@ -74,7 +72,7 @@ fn handle(v: &Value) -> io::Result<u64> {
     let kind: u32 = number(required(i, b"type")?)?;
     Ok(u64::from(id) << 32 | u64::from(kind))
 }
-/// CUnit and CArmy both serialize this identity at division depth (the second
+/// Unit and division writers both serialize this identity at division depth (the second
 /// copy follows seed). Keep the first, authenticate every later copy.
 fn division_handle(items: &[Item]) -> io::Result<u64> {
     let mut copies = items.iter().filter(|i| i.key.as_deref() == Some(b"id"));
@@ -215,15 +213,9 @@ fn read_division_countries<'a>(
             {
                 let i = block(&army.value)?;
                 let id = division_handle(i)?;
-                let mut division = Division {
-                    maximum: Decimal::parse(scalar(required(i, b"max_supply")?)?)?.raw,
-                    // The army writer emits the current supply ratio,
-                    // including zero, independently of the optional fuel field.
-                    // Fuel is a different operand.
-                    remaining: Decimal::parse(scalar(required(i, b"army_current_supply_ratio")?)?)?
-                        .raw,
-                    ..Default::default()
-                };
+                // The division's saved grace compares with DivisionStatus
+                // (military oracle); DivisionLandInputs no longer copies it.
+                let mut division = Division::default();
                 let manpower = block(required(i, b"army_manpower")?)?;
                 let values = block(required(manpower, b"army_manpower_value")?)?;
                 for v in values.iter().filter(|i| i.key.as_deref() == Some(b"value")) {
@@ -395,18 +387,6 @@ pub(super) fn compare_divisions(
             &manpower,
             &saved_manpower,
         );
-        equal(
-            report,
-            format!("division {} maximum grace", row.division),
-            row.maximum_grace,
-            expected.maximum,
-        );
-        equal(
-            report,
-            format!("division {} remaining grace", row.division),
-            row.remaining_grace,
-            expected.remaining,
-        );
     }
     equal(
         report,
@@ -416,7 +396,7 @@ pub(super) fn compare_divisions(
     );
     report.compared("DivisionLandInputs", rows.len());
     report.limitation("the manpower writer omits nonpositive contributors; their values and positions cannot be certified","DivisionLandInputs.manpower");
-    report.limitation("The unit and supply-consumer writers do not serialize received supply or naval-transfer membership; those hourly operands are unverified","DivisionLandInputs.received_supply/naval_transfer");
+    report.limitation("The unit writer does not serialize naval-transfer membership; that hourly operand is unverified","DivisionLandInputs.naval_transfer");
     Ok(())
 }
 
@@ -607,7 +587,7 @@ mod tests {
                 .err()
                 .unwrap()
                 .to_string()
-                .contains("missing land save field max_supply")
+                .contains("missing land save field army_manpower")
         );
         assert_eq!(
             super::read(&doc.items, Comparison::Losses)
@@ -769,7 +749,6 @@ mod tests {
         assert_eq!(saved.history.len(), 2);
         assert_eq!(*multiset(saved.history).values().next().unwrap(), 2);
         let division = &saved.divisions[&(9 << 32 | 4713)];
-        assert_eq!(division.remaining, 123456);
         assert_eq!(
             division.manpower,
             [(b"AAA".to_vec(), 12), (b"BBB".to_vec(), 19)]
@@ -777,27 +756,18 @@ mod tests {
         assert!(read(b"countries={AAA={units={division={id={id=9 type=4713}}}}}").is_err());
     }
     #[test]
-    fn zero_remaining_grace_is_required_by_the_native_writer() {
+    fn land_divisions_leave_the_saved_grace_to_division_status() {
+        // DivisionLandInputs no longer copies the grace DivisionStatus
+        // records, so its save join neither needs nor reads the two fields.
         let division = br#"combat={} countries={ opaque={ units={ division={
-            id={id=9 type=4713} max_supply=2.00000 army_current_supply_ratio=0.00000
-            army_manpower={army_manpower_value={}}
+            id={id=9 type=4713} army_manpower={army_manpower_value={}}
         } } } }"#;
         let saved = read(division).unwrap();
-        assert_eq!(saved.divisions[&(9 << 32 | 4713)].remaining, 0);
         assert!(saved.divisions[&(9 << 32 | 4713)].manpower.is_empty());
-        let malformed = String::from_utf8(division.to_vec()).unwrap().replace(
-            "army_current_supply_ratio=0.00000",
-            "army_current_supply_ratio=bad",
-        );
-        assert!(read(malformed.as_bytes()).is_err());
-        let missing_maximum = String::from_utf8(division.to_vec())
+        let malformed = String::from_utf8(division.to_vec())
             .unwrap()
-            .replace("max_supply=2.00000", "");
-        assert!(read(missing_maximum.as_bytes()).is_err());
-        let missing_remaining = String::from_utf8(division.to_vec())
-            .unwrap()
-            .replace("army_current_supply_ratio=0.00000", "");
-        assert!(read(missing_remaining.as_bytes()).is_err());
+            .replace("army_manpower={", "max_supply=bad army_manpower={");
+        assert!(read(malformed.as_bytes()).is_ok());
     }
     #[test]
     fn history_is_two_way_duplicate_sensitive_and_excludes_unknown_hours() {
@@ -863,10 +833,6 @@ mod tests {
             .unwrap()
             .replace("seed=91 id={id=37", "seed=91 id={id=38");
         assert!(read(unequal.as_bytes()).is_err());
-        let duplicate_supply = String::from_utf8(bytes.to_vec())
-            .unwrap()
-            .replace("max_supply=7", "max_supply=7 max_supply=7");
-        assert!(read(duplicate_supply.as_bytes()).is_err());
     }
     #[test]
     #[ignore = "requires BATTLE_PLAN_LAND_SAVE and BATTLE_PLAN_LAND_EXPECTATIONS"]
@@ -904,14 +870,6 @@ mod tests {
             })
             .collect();
         assert_eq!(division.manpower, manpower);
-        assert_eq!(
-            division.maximum,
-            expected["maximum"].as_i64().expect("maximum")
-        );
-        assert_eq!(
-            division.remaining,
-            expected["remaining"].as_i64().expect("remaining")
-        );
         assert_eq!(
             saved.history.len(),
             usize::try_from(expected["history_count"].as_u64().expect("history_count"))
@@ -984,7 +942,7 @@ mod tests {
         );
     }
     #[test]
-    fn division_projection_keeps_positive_order_and_reports_grace_difference() {
+    fn division_projection_keeps_positive_order_and_reports_manpower_difference() {
         let (mut frame, _, _, _) = super::super::tests::fixture();
         let id = 9 << 32 | 4713;
         let row = replay::rows::DivisionLandInputsRow {
@@ -1003,8 +961,6 @@ mod tests {
                     amount: 9,
                 },
             ],
-            maximum_grace: 100_000,
-            remaining_grace: 12345,
             ..Default::default()
         };
         *frame.tables[TableId::DivisionLandInputs.index()] =
@@ -1014,8 +970,6 @@ mod tests {
                 id,
                 Division {
                     manpower: vec![(b"GER".to_vec(), 2), (b"GER".to_vec(), 9)],
-                    maximum: 100_000,
-                    remaining: 12345,
                 },
             )]),
             ..Default::default()
@@ -1026,12 +980,11 @@ mod tests {
         assert!(!report.limitations.is_empty());
         let mut changed = row;
         changed.manpower.reverse();
-        changed.remaining_grace += 1;
         *frame.tables[TableId::DivisionLandInputs.index()] =
             TableView::Complete(TableRows::DivisionLandInputs(vec![changed]));
         let mut report = Report::default();
         compare_divisions(&frame, &saved, &mut report).unwrap();
-        assert_eq!(report.differences.len(), 2);
+        assert_eq!(report.differences.len(), 1);
         *frame.tables[TableId::DivisionLandInputs.index()] = TableView::Unavailable {
             reason: "native read failed".into(),
         };
@@ -1063,7 +1016,6 @@ mod tests {
                         (b"old-opaque-tag".to_vec(), 7),
                         (b"null-opaque-tag".to_vec(), 9),
                     ],
-                    ..Default::default()
                 },
             )]),
             ..Default::default()

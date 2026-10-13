@@ -1414,10 +1414,8 @@ fn transport_links(memory: &impl Memory, rows: &mut [LinkRow]) -> LinkWalk {
             countries: &mut countries,
         },
         &mut Resolver::default(),
-        None,
         73,
     )
-    .0
 }
 
 fn transport_subject_fixture() -> Vec<u8> {
@@ -1553,9 +1551,14 @@ fn transport_subject_merge_keeps_original_link_faults_and_failed_suffix_is_not_r
         RELATION[1] as u64,
     );
     let mut rows = [LinkRow::default(); 8];
-    let trace = ReverseTrace::new(&bytes, Some(status(0, 2) + SUBJECT_RELATION));
+    // A subject pointer that stays unreadable refuses the shared suffix
+    // once, and the military access row keeps that refusal.
+    let persistent = StarlessFault {
+        memory: memory(&bytes),
+        at: status(0, 2) + SUBJECT_RELATION,
+    };
     assert_eq!(
-        transport_links(&trace, &mut rows).links,
+        transport_links(&persistent, &mut rows).links,
         Outcome::Rows { len: 5 }
     );
     assert_eq!(rows[1].links, LINK_MILITARY_ACCESS);
@@ -1563,14 +1566,47 @@ fn transport_subject_merge_keeps_original_link_faults_and_failed_suffix_is_not_r
         rows[1].transport_subject,
         Some(Err("transport subject pointer unreadable"))
     );
-    assert_eq!(trace.reads(status(0, 2) + SUBJECT_RELATION), 1);
+    // A one-shot fault meets the candidates' gather, which the walk reads
+    // again candidate by candidate: the suffix is read once more and
+    // nothing is refused.
+    let trace = ReverseTrace::new(&bytes, Some(status(0, 2) + SUBJECT_RELATION));
+    assert_eq!(
+        transport_links(&trace, &mut rows).links,
+        Outcome::Rows { len: 5 }
+    );
+    assert_eq!(rows[1].links, LINK_MILITARY_ACCESS);
+    assert!(rows[1].transport_subject.unwrap().is_ok());
+    assert_eq!(trace.reads(status(0, 2) + SUBJECT_RELATION), 2);
+    // A one-shot fault of the status's link fields meets the candidates'
+    // gather, which the walk reads again candidate by candidate: nothing is
+    // refused. One that persists refuses the pass as the serial walk does.
     let trace = ReverseTrace::new(&bytes, Some(status(0, 2) + AIR_BASE_ACCESS));
     assert_eq!(
         transport_links(&trace, &mut rows).links,
+        Outcome::Rows { len: 5 }
+    );
+    let persistent = StarlessFault {
+        memory: memory(&bytes),
+        at: status(0, 2) + AIR_BASE_ACCESS,
+    };
+    assert_eq!(
+        transport_links(&persistent, &mut rows).links,
         Outcome::Unavailable {
             reason: "relation status link fields unreadable"
         }
     );
+}
+
+/// The fixture failing every read that covers `at`.
+struct StarlessFault<'a> {
+    memory: SliceMemory<'a>,
+    at: usize,
+}
+impl Memory for StarlessFault<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        !(address <= self.at && self.at - address < output.len())
+            && self.memory.copy(address, output)
+    }
 }
 
 fn links_vector(bytes: &mut [u8], at: usize, data: usize, values: &[u32]) {
@@ -3992,953 +4028,7 @@ fn forward_packet_failed_status_controls_refuse_without_reacquiring_root_or_head
     }
 }
 
-// Private direct-war observer fixtures.
-fn directed_fixture() -> Vec<u8> {
-    let mut bytes = fixture();
-    relation(
-        &mut bytes,
-        RELATION[0],
-        cwar_relation::VTABLE_RVA,
-        cwar_relation::TYPE,
-        1,
-        3,
-    );
-    own(&mut bytes, 0, &[RELATION[0]]);
-    p64(&mut bytes, status(0, 3) + WAR_RELATION, RELATION[1] as u64);
-    bytes
-}
-fn directed_capture(
-    memory: &impl Memory,
-    owners: &mut [DirectedWarOwner],
-    cells: &mut [DirectedWarObservation],
-) -> (LinkWalk, DirectedWarWalk) {
-    links_observed(
-        memory,
-        BASE,
-        GS,
-        &mut [LinkRow::default(); 8],
-        WarOutput {
-            rows: &mut [WarRow::default(); 8],
-            countries: &mut [0; 8],
-        },
-        &mut Resolver::default(),
-        Some(DirectedWarOutput { owners, cells }),
-    )
-}
-#[test]
-fn directed_candidate_precedes_old_type_skip_and_keeps_direction() {
-    let bytes = directed_fixture();
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 8];
-    let (old, walk) = directed_capture(
-        &SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        &mut owners,
-        &mut cells,
-    );
-    assert_eq!(old.links, Outcome::Rows { len: 0 });
-    assert_eq!(
-        (walk.owners_len, walk.cells_len, walk.observed_cells),
-        (3, 1, 1)
-    );
-    assert_eq!(
-        cells[0],
-        DirectedWarObservation {
-            target_slot: 3,
-            active: Some(true),
-            reason: None
-        }
-    );
-    assert_eq!(
-        (
-            owners[0].country,
-            owners[0].canonical_slot,
-            owners[0].matrix_count
-        ),
-        (1, 1, 4)
-    );
-    assert_eq!((owners[1].cells_len, owners[2].cells_len), (0, 0));
-}
-#[test]
-fn directed_sparse_matrix_extent_above_u16_preserves_the_original_read_trace() {
-    let mut bytes = directed_fixture();
-    let memory = ReverseTrace::new(&bytes, None);
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 8];
-    let (_, original) = directed_capture(&memory, &mut owners, &mut cells);
-    let original_calls = memory.calls.borrow().clone();
-    let original_cell = cells[0];
-    assert_eq!(original.observed_cells, 1);
-    let header = DIPLOMACY[0] + cdiplomacy_status::RELATIONS;
-    p32(&mut bytes, header + 8, 65_537);
-    p32(&mut bytes, header + 12, 65_537);
-    // Only the selected native cells exist in this fixture. A matrix scan
-    // would fault and change the trace instead of observing the sparse row.
-    let memory = ReverseTrace::new(&bytes, None);
-    let (_, observed) = directed_capture(&memory, &mut owners, &mut cells);
-    assert_eq!(observed.pass_reason, None);
-    assert_eq!(observed.observed_cells, 1);
-    assert_eq!(owners[0].reason, None);
-    assert_eq!(owners[0].matrix_count, 65_537);
-    assert_eq!(cells[0], original_cell);
-    assert_eq!(*memory.calls.borrow(), original_calls);
-}
-
-#[test]
-fn directed_retired_candidate_does_not_substitute_pointed_retired_state() {
-    let mut bytes = directed_fixture();
-    bytes[RELATION[0] + crelation::RETIRED] = 0x80;
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 8];
-    let (_, walk) = directed_capture(
-        &SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        &mut owners,
-        &mut cells,
-    );
-    assert_eq!(walk.pass_reason, None);
-    assert_eq!(cells[0].active, Some(true));
-    bytes[RELATION[1] + crelation::RETIRED] = 2;
-    directed_capture(
-        &SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        &mut owners,
-        &mut cells,
-    );
-    assert_eq!(cells[0].active, Some(false));
-}
-#[test]
-fn directed_null_slot_is_exact_false_for_observed_candidate() {
-    let mut bytes = directed_fixture();
-    p64(&mut bytes, status(0, 3) + WAR_RELATION, 0);
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 8];
-    let (_, walk) = directed_capture(
-        &SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        &mut owners,
-        &mut cells,
-    );
-    assert_eq!(walk.observed_cells, 1);
-    assert_eq!(cells[0].active, Some(false));
-}
-#[test]
-fn directed_preserves_native_repeated_candidate_occurrences() {
-    let mut bytes = directed_fixture();
-    own(&mut bytes, 0, &[RELATION[0], RELATION[0]]);
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 8];
-    let (_, walk) = directed_capture(
-        &SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        &mut owners,
-        &mut cells,
-    );
-    assert_eq!(
-        (walk.cells_len, walk.required_cells, owners[0].cells_len),
-        (2, 2, 2)
-    );
-    assert_eq!(cells[0], cells[1]);
-}
-#[test]
-fn directed_cell_capacity_withholds_owner_and_retains_live_header_pressure() {
-    let mut bytes = directed_fixture();
-    own(&mut bytes, 0, &[RELATION[0], RELATION[0]]);
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 1];
-    let (old, walk) = directed_capture(
-        &SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        &mut owners,
-        &mut cells,
-    );
-    assert_eq!(old.links, Outcome::Rows { len: 0 });
-    assert_eq!(walk.required_cells, 2);
-    assert_eq!(walk.faults[7], 1);
-    assert_eq!(
-        owners[0].reason,
-        Some("directed war cell arena capacity exceeded")
-    );
-    assert_eq!(owners[1].reason, None);
-}
-#[test]
-fn directed_owner_capacity_does_not_hide_later_prepared_demand() {
-    let bytes = directed_fixture();
-    let mut cells = [DirectedWarObservation::default(); 8];
-    let (_, walk) = directed_capture(
-        &SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        &mut [],
-        &mut cells,
-    );
-    assert_eq!(
-        (walk.required_owners, walk.required_cells, walk.owners_len),
-        (3, 1, 0)
-    );
-    assert_eq!(walk.faults[7], 3);
-}
-#[test]
-fn directed_bad_candidate_and_status_authentication_are_independent_faults() {
-    let mut bytes = directed_fixture();
-    p64(&mut bytes, RELATION[0], 7);
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 8];
-    let (old, walk) = directed_capture(
-        &SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        &mut owners,
-        &mut cells,
-    );
-    assert_eq!(old.links, Outcome::Rows { len: 0 });
-    assert_eq!(walk.faults[3], 1);
-    assert!(owners[0].reason.is_some());
-    p64(&mut bytes, RELATION[0], cwar_relation::VTABLE_RVA as u64);
-    p64(
-        &mut bytes,
-        status(0, 3) + DIPLOMACY_STATUS,
-        DIPLOMACY[1] as u64,
-    );
-    let (old, walk) = directed_capture(
-        &SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        &mut owners,
-        &mut cells,
-    );
-    assert_eq!(old.links, Outcome::Rows { len: 0 });
-    assert_eq!(walk.faults[5], 1);
-    assert_eq!(owners[0].reason, None);
-    assert_eq!(cells[0].active, None);
-}
-#[test]
-fn directed_unbound_candidate_endpoint_refuses_owner_without_fabricated_target() {
-    let mut bytes = directed_fixture();
-    p32(&mut bytes, RELATION[0] + crelation::SECOND_COUNTRY, 99);
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 8];
-    let (old, walk) = directed_capture(
-        &SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        &mut owners,
-        &mut cells,
-    );
-    assert_eq!(old.links, Outcome::Rows { len: 0 });
-    assert_eq!(walk.cells_len, 0);
-    assert_eq!(walk.faults[4], 1);
-    assert!(owners[0].reason.is_some());
-}
-#[test]
-fn directed_optional_pointed_read_fault_does_not_poison_old_relation_tables() {
-    struct Deny<'a> {
-        memory: SliceMemory<'a>,
-        at: usize,
-    }
-    impl Memory for Deny<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address <= self.at
-                && address
-                    .checked_add(output.len())
-                    .is_none_or(|end| self.at < end)
-            {
-                return false;
-            }
-            self.memory.copy(address, output)
-        }
-    }
-    let bytes = directed_fixture();
-    let memory = Deny {
-        memory: SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        at: RELATION[1] + crelation::RETIRED,
-    };
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 8];
-    let (old, walk) = directed_capture(&memory, &mut owners, &mut cells);
-    assert_eq!(old.links, Outcome::Rows { len: 0 });
-    assert_eq!(old.wars, Outcome::Rows { len: 0 });
-    assert_eq!(walk.faults[6], 1);
-    assert_eq!(cells[0].active, None);
-    assert_eq!(owners[0].reason, None);
-    assert_eq!(owners[1].reason, None);
-}
-#[test]
-fn directed_pass_discovery_failure_preserves_pressure_but_never_certifies_packets() {
-    let mut bytes = directed_fixture();
-    p64(&mut bytes, DIPLOMACY[1], 7);
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 8];
-    let (old, walk) = directed_capture(
-        &SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        &mut owners,
-        &mut cells,
-    );
-    assert!(matches!(old.links, Outcome::Unavailable { .. }));
-    assert!(walk.pass_reason.is_some());
-    assert_eq!(walk.required_cells, 1);
-    assert_eq!(walk.faults[0], 1);
-}
-
-#[test]
-fn directed_disabled_wrapper_preserves_original_lazy_matrix_reads() {
-    struct Deny<'a> {
-        memory: SliceMemory<'a>,
-        at: usize,
-    }
-    impl Memory for Deny<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address <= self.at
-                && address
-                    .checked_add(output.len())
-                    .is_none_or(|end| self.at < end)
-            {
-                return false;
-            }
-            self.memory.copy(address, output)
-        }
-    }
-    let bytes = directed_fixture();
-    let memory = Deny {
-        memory: SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        at: DIPLOMACY[0] + cdiplomacy_status::RELATIONS,
-    };
-    let old = links(
-        &memory,
-        BASE,
-        GS,
-        &mut [LinkRow::default(); 8],
-        WarOutput {
-            rows: &mut [WarRow::default(); 8],
-            countries: &mut [0; 8],
-        },
-        &mut Resolver::default(),
-    );
-    assert_eq!(old.links, Outcome::Rows { len: 0 });
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 8];
-    let (observed, walk) = directed_capture(&memory, &mut owners, &mut cells);
-    assert_eq!(observed, old);
-    assert_eq!(walk.faults[2], 1);
-    assert!(owners[0].reason.is_some());
-}
-
 mod selected_enemies;
-
-fn query_demand(
-    bytes: &mut [u8],
-    owner: usize,
-    raw: u32,
-    slot: u32,
-) -> crate::directed_war_queries::Demand {
-    p32(bytes, 0x20000, raw);
-    p32(bytes, 0x20004, slot);
-    crate::directed_war_queries::read_demand(
-        &memory(bytes),
-        BASE,
-        GS,
-        crate::directed_war_queries::Frame {
-            receiver: COUNTRIES[owner],
-            target: 0x20000,
-            status: status(owner, slot as usize),
-        },
-    )
-    .unwrap()
-}
-
-fn demanded_capture(
-    memory: &impl Memory,
-    owners: &mut [DirectedWarOwner],
-    cells: &mut [DirectedWarObservation],
-    demands: &[crate::directed_war_queries::Demand],
-) -> (LinkWalk, DirectedWarWalk) {
-    links_observed_transport_demands(
-        memory,
-        BASE,
-        GS,
-        &mut [LinkRow::default(); 8],
-        WarOutput {
-            rows: &mut [WarRow::default(); 8],
-            countries: &mut [0; 8],
-        },
-        &mut Resolver::default(),
-        Some(DirectedWarOutput { owners, cells }),
-        123,
-        demands,
-    )
-}
-
-#[test]
-fn directed_query_captures_identity_without_war_pointer_or_retired_reads() {
-    let mut bytes = directed_fixture();
-    let expected = query_demand(&mut bytes, 0, 2, 2);
-    let trace = ReverseTrace::new(&bytes, Some(status(0, 2) + WAR_RELATION));
-    assert_eq!(
-        crate::directed_war_queries::read_demand(
-            &trace,
-            BASE,
-            GS,
-            crate::directed_war_queries::Frame {
-                receiver: COUNTRIES[0],
-                target: 0x20000,
-                status: status(0, 2),
-            }
-        ),
-        Ok(expected)
-    );
-    assert_eq!(trace.reads(status(0, 2) + WAR_RELATION), 0);
-    assert_eq!(trace.reads(RELATION[1] + crelation::RETIRED), 0);
-    for raw in [0, u32::MAX] {
-        p32(&mut bytes, COUNTRIES[0] + ccountry::ID, raw);
-        assert_eq!(
-            crate::directed_war_queries::read_demand(
-                &memory(&bytes),
-                BASE,
-                GS,
-                crate::directed_war_queries::Frame {
-                    receiver: COUNTRIES[0],
-                    target: 0x20000,
-                    status: status(0, 2),
-                }
-            ),
-            Err(crate::directed_war_queries::UNSUPPORTED_RECEIVER)
-        );
-    }
-}
-
-#[test]
-fn directed_query_authenticates_alias_target_reserved_target_and_first_failure() {
-    let mut bytes = reverse_fixture();
-    let alias = query_demand(&mut bytes, 0, 4, 2);
-    assert_eq!((alias.target_raw, alias.target_slot), (4, 2));
-    let zero = query_demand(&mut bytes, 0, 0, 0);
-    assert_eq!((zero.target_raw, zero.target_slot), (0, 0));
-    let frame = crate::directed_war_queries::Frame {
-        receiver: COUNTRIES[0],
-        target: 0x20000,
-        status: status(0, 0),
-    };
-    p32(&mut bytes, 0x20004, u32::MAX);
-    let trace = ReverseTrace::new(&bytes, None);
-    assert_eq!(
-        crate::directed_war_queries::read_demand(&trace, BASE, GS, frame),
-        Err("directed war query target canonical slot is negative")
-    );
-    assert_eq!(trace.reads(status(0, 0)), 0);
-    p32(&mut bytes, 0x20004, 0);
-    p32(&mut bytes, 0x20000, 6);
-    links_vector(
-        &mut bytes,
-        GS + cgame_state::COUNTRY_LINKS,
-        0x3100,
-        &[0, 1, 2, 3, 2, 3, 0],
-    );
-    let alias_zero =
-        crate::directed_war_queries::read_demand(&memory(&bytes), BASE, GS, frame).unwrap();
-    assert_eq!((alias_zero.target_raw, alias_zero.target_slot), (6, 0));
-    p32(&mut bytes, 0x20000, 0);
-    p64(&mut bytes, matrix_data(0), status(0, 1) as u64);
-    let trace = ReverseTrace::new(&bytes, None);
-    assert_eq!(
-        crate::directed_war_queries::read_demand(&trace, BASE, GS, frame),
-        Err("directed war query status differs from selected matrix cell")
-    );
-    assert_eq!(trace.reads(status(0, 0)), 0);
-}
-
-#[test]
-fn directed_demand_adds_missing_peaceful_cell_and_reads_current_predicate() {
-    let mut bytes = fixture();
-    let demand = query_demand(&mut bytes, 0, 2, 2);
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 8];
-    for (war, retired, expected) in [
-        (0, 0, false),
-        (RELATION[1] as u64, 0, true),
-        (RELATION[1] as u64, 0x7f, false),
-    ] {
-        p64(&mut bytes, status(0, 2) + WAR_RELATION, war);
-        bytes[RELATION[1] + crelation::RETIRED] = retired;
-        let (_, walk) = demanded_capture(&memory(&bytes), &mut owners, &mut cells, &[demand]);
-        assert_eq!(
-            (walk.cells_len, walk.required_cells, walk.required_demands),
-            (1, 1, 1)
-        );
-        assert_eq!(walk.refused_demands, 0);
-        assert_eq!(cells[0].target_slot, 2);
-        assert_eq!(cells[0].active, Some(expected));
-        assert_eq!(owners[0].cells_len, 1);
-    }
-}
-
-#[test]
-fn directed_demand_preserves_positive_alias_to_reserved_target() {
-    let mut bytes = reverse_fixture();
-    links_vector(
-        &mut bytes,
-        GS + cgame_state::COUNTRY_LINKS,
-        0x3100,
-        &[0, 1, 2, 3, 2, 3, 0],
-    );
-    let demand = query_demand(&mut bytes, 0, 6, 0);
-    p32(&mut bytes, status(0, 0) + TARGET_COUNTRY, 6);
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 8];
-    let (_, walk) = demanded_capture(&memory(&bytes), &mut owners, &mut cells, &[demand]);
-    assert_eq!(walk.refused_demands, 0);
-    let cell = cells[..walk.cells_len]
-        .iter()
-        .find(|cell| cell.target_slot == 0)
-        .unwrap();
-    assert_eq!(cell.active, Some(false));
-}
-
-#[test]
-fn directed_demand_identity_refusals_preserve_original_sparse_cells() {
-    let mut bytes = directed_fixture();
-    let demand = query_demand(&mut bytes, 0, 2, 2);
-    let invalid = [
-        crate::directed_war_queries::Demand {
-            receiver: COUNTRIES[1],
-            ..demand
-        },
-        crate::directed_war_queries::Demand {
-            receiver_instance: 1,
-            ..demand
-        },
-        crate::directed_war_queries::Demand {
-            diplomacy: DIPLOMACY[1],
-            ..demand
-        },
-        crate::directed_war_queries::Demand {
-            target_raw: 3,
-            ..demand
-        },
-        crate::directed_war_queries::Demand {
-            status: status(0, 3),
-            ..demand
-        },
-    ];
-    for invalid in invalid {
-        let mut owners = [DirectedWarOwner::default(); 8];
-        let mut cells = [DirectedWarObservation::default(); 8];
-        let (old, walk) = demanded_capture(&memory(&bytes), &mut owners, &mut cells, &[invalid]);
-        assert!(matches!(old.links, Outcome::Rows { .. }));
-        assert_eq!(walk.pass_reason, None);
-        assert_eq!(owners[0].reason, None);
-        assert_eq!(cells[0].active, Some(true));
-        assert_eq!(cells[1].target_slot, 2);
-        assert_eq!(cells[1].active, None);
-        assert_eq!(walk.refused_demands, 1);
-        assert_eq!(walk.faults[8], 1);
-        assert!(walk.demand_reason.is_some());
-    }
-}
-
-#[test]
-fn directed_duplicate_demand_cannot_retry_a_sparse_predicate_failure() {
-    struct Once<'a> {
-        source: SliceMemory<'a>,
-        attempts: std::cell::Cell<u32>,
-    }
-    impl Memory for Once<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == RELATION[1] + crelation::RETIRED {
-                let attempt = self.attempts.get();
-                self.attempts.set(attempt + 1);
-                if attempt == 0 {
-                    return false;
-                }
-            }
-            self.source.copy(address, output)
-        }
-    }
-    let mut bytes = directed_fixture();
-    let demand = query_demand(&mut bytes, 0, 3, 3);
-    let source = Once {
-        source: memory(&bytes),
-        attempts: Default::default(),
-    };
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 8];
-    let (_, walk) = demanded_capture(&source, &mut owners, &mut cells, &[demand, demand]);
-    assert_eq!(source.attempts.get(), 1);
-    assert_eq!(walk.cells_len, 1);
-    assert_eq!(cells[0].active, None);
-    assert_eq!(walk.faults[6], 1);
-    // A conflicting demand still gets its independent refusal; it cannot
-    // replace the first sparse observation with a new value or failure.
-    let bad = crate::directed_war_queries::Demand {
-        status: status(0, 2),
-        ..demand
-    };
-    let (_, walk) = demanded_capture(&memory(&bytes), &mut owners, &mut cells, &[bad]);
-    assert_eq!(walk.cells_len, 1);
-    assert_eq!(cells[0].active, Some(true));
-    assert_eq!(walk.refused_demands, 1);
-}
-
-#[test]
-fn directed_full_native_slot_demands_preserve_freshness_and_first_faults() {
-    struct Once<'a> {
-        source: &'a Sparse,
-        refuse_first: bool,
-        attempts: std::cell::Cell<u32>,
-    }
-    impl Memory for Once<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == RELATION[1] + crelation::RETIRED {
-                let attempt = self.attempts.get();
-                self.attempts.set(attempt + 1);
-                if self.refuse_first && attempt == 0 {
-                    return false;
-                }
-            }
-            self.source.copy(address, output)
-        }
-    }
-    for target in [65_536, i32::MAX as u32 - 1] {
-        let extent = target + 1;
-        let mut bytes = directed_fixture();
-        for (header, data) in [
-            (GS + cgame_state::COUNTRIES, 0x100_0000),
-            (GS + cgame_state::COUNTRY_LINKS, 0x200_0000),
-            (DIPLOMACY[0] + cdiplomacy_status::RELATIONS, 0x300_0000),
-        ] {
-            p64(&mut bytes, header, data);
-            p32(&mut bytes, header + 8, extent);
-            p32(&mut bytes, header + 12, extent);
-        }
-        p32(&mut bytes, 0x20000, 3);
-        p32(&mut bytes, 0x20004, target);
-        let mut world = Sparse::default();
-        let source_len = bytes.len();
-        world.0.insert(0, bytes);
-        // Only authenticated country/link slots and the reached matrix cell
-        // exist, even at the native signed limit. A dense sweep would fail.
-        for (slot, pointer) in [(1, COUNTRIES[0]), (target, COUNTRIES[2])] {
-            world.0.insert(
-                0x100_0000 + slot as usize * 8,
-                (pointer as u64).to_le_bytes().to_vec(),
-            );
-        }
-        for (raw, slot) in [(1, 1), (3, target), (target, target)] {
-            world
-                .0
-                .insert(0x200_0000 + raw as usize * 4, slot.to_le_bytes().to_vec());
-        }
-        world.0.insert(
-            0x300_0000 + target as usize * 8,
-            (status(0, 3) as u64).to_le_bytes().to_vec(),
-        );
-        let demand = crate::directed_war_queries::read_demand(
-            &world,
-            BASE,
-            GS,
-            crate::directed_war_queries::Frame {
-                receiver: COUNTRIES[0],
-                target: 0x20000,
-                status: status(0, 3),
-            },
-        )
-        .unwrap();
-        assert_eq!(demand.target_slot, target);
-        for candidate in [false, true] {
-            for (war, refuse_first, expected) in [
-                (0, false, Some(false)),
-                (RELATION[1] as u64, false, Some(true)),
-                (RELATION[1] as u64, true, None),
-            ] {
-                // Values change after demand observation; only the boundary
-                // supplies the recorded predicate.
-                world.p64(0, source_len, status(0, 3) + WAR_RELATION, war);
-                let memory = Once {
-                    source: &world,
-                    refuse_first,
-                    attempts: Default::default(),
-                };
-                let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
-                let mut owners = [DirectedWarOwner::default(); 1];
-                let mut cells = [DirectedWarObservation::default(); 3];
-                let demands = [demand, demand];
-                let mut observer = directed_war::Observer::new(
-                    Some(
-                        DirectedWarOutput {
-                            owners: &mut owners,
-                            cells: &mut cells,
-                        }
-                        .into(),
-                    ),
-                    &demands,
-                );
-                let matrix = observer.begin(&memory, country(0), DIPLOMACY[0], candidate as u32);
-                let mut resolver = Resolver::default();
-                if candidate {
-                    observer.candidate(
-                        &memory,
-                        BASE,
-                        &countries,
-                        &mut resolver,
-                        country(0),
-                        DIPLOMACY[0],
-                        matrix,
-                        RELATION[0],
-                        1,
-                        3,
-                    );
-                }
-                observer.demands(
-                    &memory,
-                    BASE,
-                    &countries,
-                    &mut resolver,
-                    country(0),
-                    DIPLOMACY[0],
-                    matrix,
-                );
-                observer.finish(None);
-                let walk = observer.walk;
-                assert_eq!(
-                    (walk.cells_len, walk.required_cells),
-                    (1, 2 + candidate as usize)
-                );
-                assert_eq!(walk.faults[6], u64::from(refuse_first));
-                assert_eq!(walk.refused_demands, u64::from(refuse_first && !candidate));
-                assert_eq!(memory.attempts.get(), u32::from(war != 0));
-                assert_eq!(owners[0].matrix_count, extent);
-                assert_eq!(owners[0].reason, None);
-                assert_eq!((cells[0].target_slot, cells[0].active), (target, expected));
-            }
-        }
-    }
-}
-
-#[test]
-fn directed_demand_capacity_order_and_missing_receiver_refuse_only_suffix() {
-    let mut bytes = directed_fixture();
-    let first = query_demand(&mut bytes, 0, 2, 2);
-    let second = query_demand(&mut bytes, 1, 3, 3);
-    let mut owners = [DirectedWarOwner::default(); 8];
-    let mut cells = [DirectedWarObservation::default(); 1];
-    let (_, walk) = demanded_capture(&memory(&bytes), &mut owners, &mut cells, &[first]);
-    assert_eq!((walk.cells_len, walk.required_cells), (1, 2));
-    assert_eq!(cells[0].active, Some(true));
-    assert_eq!(owners[0].reason, None);
-    assert_eq!(
-        walk.demand_reason,
-        Some("directed war demanded cell arena capacity exceeded")
-    );
-    let (_, walk) = demanded_capture(&memory(&bytes), &mut owners, &mut cells, &[second, first]);
-    assert_eq!(walk.refused_demands, 2);
-    assert_eq!(
-        walk.demand_reason,
-        Some("directed war query demand is not sorted by receiver")
-    );
-    assert_eq!(walk.pass_reason, None);
-    assert_eq!(cells[0].active, Some(true));
-    let missing = crate::directed_war_queries::Demand {
-        receiver_raw: 99,
-        ..first
-    };
-    let (_, walk) = demanded_capture(&memory(&bytes), &mut owners, &mut cells, &[missing]);
-    assert_eq!(walk.refused_demands, 1);
-    assert_eq!(
-        walk.demand_reason,
-        Some("directed war query receiver absent from authenticated pass")
-    );
-    assert_eq!(walk.pass_reason, None);
-    assert_eq!(cells[0].active, Some(true));
-}
-
-#[test]
-fn directed_query_demand_scales_to_five_thousand_countries_without_matrix_enumeration() {
-    for count in [1_500, 5_000] {
-        let slots = count + 1;
-        let country = |slot: usize| 0x100_0000 + slot * 0x2000;
-        let diplomacy = |slot: usize| 0x1000_0000 + slot * 0x1000;
-        let matrix = |slot: usize| 0x2000_0000 + slot * 0x2_0000;
-        let status = |slot: usize| 0x1_0000_0000 + slot * 0x1000;
-        let mut world = Sparse::default();
-        let mut table = vec![u64::MAX];
-        table.extend((1..slots).map(|slot| country(slot) as u64));
-        world.array(GS, 0x1000, cgame_state::COUNTRIES, 0x2000, &table);
-        world.p64(GS, 0x1000, cgame_state::COUNTRY_LINKS, 0x40_0000);
-        world.p32(GS, 0x1000, cgame_state::COUNTRY_LINKS + 8, slots as u32);
-        world.p32(GS, 0x1000, cgame_state::COUNTRY_LINKS + 12, slots as u32);
-        world.0.insert(
-            0x40_0000,
-            (0..slots as u32).flat_map(u32::to_le_bytes).collect(),
-        );
-        let mut demands = Vec::new();
-        for slot in 1..slots {
-            let target = slot % count + 1;
-            world.p64(
-                country(slot),
-                ccountry::CIVIL_WAR_LINK + 4,
-                0,
-                ccountry::VTABLE_RVA as u64,
-            );
-            world.p32(
-                country(slot),
-                ccountry::CIVIL_WAR_LINK + 4,
-                ccountry::ID,
-                slot as u32,
-            );
-            world.p32(
-                country(slot),
-                ccountry::CIVIL_WAR_LINK + 4,
-                ccountry::ID_INSTANCE,
-                slot as u32,
-            );
-            world.p64(
-                country(slot),
-                ccountry::CIVIL_WAR_LINK + 4,
-                ccountry::DIPLOMACY_STATUS,
-                diplomacy(slot) as u64,
-            );
-            world.p64(
-                diplomacy(slot),
-                cdiplomacy_status::COUNTRY + 8,
-                0,
-                cdiplomacy_status::VTABLE_RVA as u64,
-            );
-            world.p64(
-                diplomacy(slot),
-                cdiplomacy_status::COUNTRY + 8,
-                cdiplomacy_status::COUNTRY,
-                country(slot) as u64,
-            );
-            world.p64(
-                diplomacy(slot),
-                cdiplomacy_status::COUNTRY + 8,
-                cdiplomacy_status::RELATIONS,
-                matrix(slot) as u64,
-            );
-            world.p32(
-                diplomacy(slot),
-                cdiplomacy_status::COUNTRY + 8,
-                cdiplomacy_status::RELATIONS + 8,
-                slots as u32,
-            );
-            world.p32(
-                diplomacy(slot),
-                cdiplomacy_status::COUNTRY + 8,
-                cdiplomacy_status::RELATIONS + 12,
-                slots as u32,
-            );
-            // Only the demanded entry exists. Any matrix enumeration fails.
-            world.0.insert(
-                matrix(slot) + target * 8,
-                (status(slot) as u64).to_le_bytes().to_vec(),
-            );
-            world.p64(status(slot), WAR_RELATION + 8, 0, VTABLE_RVA as u64);
-            world.p64(
-                status(slot),
-                WAR_RELATION + 8,
-                DIPLOMACY_STATUS,
-                diplomacy(slot) as u64,
-            );
-            world.p32(
-                status(slot),
-                WAR_RELATION + 8,
-                TARGET_COUNTRY,
-                target as u32,
-            );
-            demands.push(crate::directed_war_queries::Demand {
-                receiver: country(slot),
-                receiver_raw: slot as u32,
-                receiver_instance: slot as u32,
-                diplomacy: diplomacy(slot),
-                status: status(slot),
-                target_raw: target as u32,
-                target_slot: target as u32,
-            });
-        }
-        let mut owners = vec![DirectedWarOwner::default(); count];
-        let mut cells = vec![DirectedWarObservation::default(); count];
-        let (old, walk) = links_observed_transport_demands(
-            &world,
-            BASE,
-            GS,
-            &mut vec![LinkRow::default(); count],
-            WarOutput {
-                rows: &mut vec![WarRow::default(); count],
-                countries: &mut [],
-            },
-            &mut Resolver::with_capacity(slots),
-            Some(DirectedWarOutput {
-                owners: &mut owners,
-                cells: &mut cells,
-            }),
-            123,
-            &demands,
-        );
-        assert_eq!(old.links, Outcome::Rows { len: count });
-        assert_eq!(
-            (walk.owners_len, walk.cells_len, walk.required_cells),
-            (count, count, count)
-        );
-        assert_eq!(walk.refused_demands, 0);
-        assert_eq!(walk.pass_reason, None);
-        assert!(
-            owners
-                .iter()
-                .all(|owner| owner.cells_len == 1 && owner.reason.is_none())
-        );
-        assert!(cells.iter().all(|cell| cell.active == Some(false)));
-        let mut growing_owners = vec![DirectedWarOwner::default(); 1];
-        let mut growing_cells = Vec::new();
-        let mut links = Vec::new();
-        let mut wars = Vec::new();
-        let mut enemies = Vec::new();
-        let (grown, grown_walk) = links_observed_transport_demands_growing(
-            &world,
-            BASE,
-            GS,
-            &mut links,
-            WarBuffers {
-                rows: Buffer::Growing(&mut wars),
-                countries: Buffer::Growing(&mut enemies),
-            },
-            &mut Resolver::default(),
-            Some(DirectedWarBuffers {
-                owners: Buffer::Growing(&mut growing_owners),
-                cells: Buffer::Growing(&mut growing_cells),
-            }),
-            123,
-            &demands,
-        );
-        assert_eq!(grown, old);
-        assert_eq!(grown_walk, walk);
-        assert_eq!(&growing_owners[..count], owners);
-        assert_eq!(&growing_cells[..count], cells);
-    }
-}
 
 #[test]
 fn growing_relation_rows_complete_the_original_walk_at_five_thousand_countries() {
@@ -5102,4 +4192,320 @@ fn signed_country_slots_above_u16_reach_links_tuples_and_co_belligerents() {
         Ok((1, 1))
     );
     assert_eq!(co[0], HIGH_SLOT as u32);
+}
+
+/// Forwards every read and logs the addresses of each guarded call.
+struct CallLog<'a> {
+    memory: SliceMemory<'a>,
+    calls: std::cell::RefCell<Vec<Vec<usize>>>,
+}
+
+impl Memory for CallLog<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.calls.borrow_mut().push(vec![address]);
+        self.memory.copy(address, destination)
+    }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.calls.borrow_mut().push(
+            addresses
+                .iter()
+                .zip(destinations.iter())
+                .filter(|(_, destination)| !destination.is_empty())
+                .map(|(address, _)| *address)
+                .collect(),
+        );
+        for (index, (address, destination)) in addresses.into_iter().zip(destinations).enumerate() {
+            if !destination.is_empty() && (address == 0 || !self.memory.copy(address, destination))
+            {
+                return index;
+            }
+        }
+        N
+    }
+}
+
+/// A candidate's status identity, target and +310 byte sit on four lines of
+/// one object; they are copied in one guarded call, where the separate reads
+/// took four.
+#[test]
+fn a_co_candidates_status_fields_are_copied_in_one_guarded_call() {
+    let bytes = co_inputs_fixture();
+    let memory = CallLog {
+        memory: memory(&bytes),
+        calls: Default::default(),
+    };
+    let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
+    let mut slots = [99_u32; 4];
+    let inputs = co_belligerent_inputs(&memory, BASE, &countries, country(0), &mut slots);
+    assert_eq!(inputs.targets, Ok(3));
+    assert_eq!(slots, [0, 2, 3, 99]);
+    for target in [2, 3] {
+        let object = status(0, target)..status(0, target) + CO_BELLIGERENT + 1;
+        let calls = memory
+            .calls
+            .borrow()
+            .iter()
+            .filter(|call| call.iter().any(|at| object.contains(at)))
+            .count();
+        assert_eq!(calls, 1, "status of slot {target}");
+    }
+}
+
+/// The fixture's reads and hints, in order: `(true, address)` for a hint.
+struct Hints<'a> {
+    memory: SliceMemory<'a>,
+    log: std::cell::RefCell<Vec<(bool, usize)>>,
+}
+impl Memory for Hints<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.log.borrow_mut().push((false, address));
+        self.memory.copy(address, output)
+    }
+    fn prefetch(&self, address: usize, _len: usize) {
+        self.log.borrow_mut().push((true, address));
+    }
+}
+
+/// Each owner's enemy vector header and first owned-relation pointers are
+/// hinted with its batch, before the owner's pass reads them; the walk's
+/// reads and rows are those of an unhinted walk.
+#[test]
+fn owners_enemy_headers_and_owned_pointers_are_hinted_before_their_reads() {
+    let bytes = transport_subject_fixture();
+    let hints = Hints {
+        memory: memory(&bytes),
+        log: Default::default(),
+    };
+    let mut rows = [LinkRow::default(); 8];
+    let walk = transport_links(&hints, &mut rows);
+    let mut plain = [LinkRow::default(); 8];
+    assert_eq!(walk, transport_links(&memory(&bytes), &mut plain));
+    assert_eq!(rows, plain);
+    let log = hints.log.into_inner();
+    let first = |hint: bool, address: usize| log.iter().position(|&entry| entry == (hint, address));
+    for diplomacy in DIPLOMACY {
+        let enemies = diplomacy + cdiplomacy_status::ENEMY_COUNTRIES;
+        assert!(first(true, enemies).unwrap() < first(false, enemies).unwrap());
+    }
+    for owner in 0..2 {
+        let owned = 0x3400 + owner * 0x40;
+        assert!(first(true, owned).unwrap() < first(false, owned).unwrap());
+    }
+}
+
+/// [`ReverseTrace`]'s reads and one-shot fault, with the hints counted.
+struct HintedTrace<'a> {
+    trace: ReverseTrace<'a>,
+    hints: std::cell::Cell<usize>,
+}
+impl Memory for HintedTrace<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.trace.copy(address, output)
+    }
+    fn prefetch(&self, _address: usize, _len: usize) {
+        self.hints.set(self.hints.get() + 1);
+    }
+}
+
+/// The batch hints change no read: the hinted walk makes exactly the reads,
+/// in order and with their lengths, of the same walk over a memory that
+/// ignores hints, and meets a one-shot fault of an owned-relation vector or
+/// an enemy vector header at the same read with the same rows and outcome.
+#[test]
+fn relation_hints_leave_every_read_and_a_one_shot_fault_unchanged() {
+    let bytes = transport_subject_fixture();
+    for fault in [
+        None,
+        Some(0x3440),
+        Some(DIPLOMACY[1] + cdiplomacy_status::ENEMY_COUNTRIES),
+    ] {
+        let hinted = HintedTrace {
+            trace: ReverseTrace::new(&bytes, fault),
+            hints: std::cell::Cell::new(0),
+        };
+        let plain = ReverseTrace::new(&bytes, fault);
+        let (mut rows, mut plain_rows) = ([LinkRow::default(); 8], [LinkRow::default(); 8]);
+        assert_eq!(
+            transport_links(&hinted, &mut rows),
+            transport_links(&plain, &mut plain_rows),
+            "{fault:x?}"
+        );
+        assert_eq!(rows, plain_rows);
+        assert_eq!(*hinted.trace.calls.borrow(), *plain.calls.borrow());
+        assert!(hinted.hints.get() >= 5);
+        if let Some(at) = fault {
+            assert!(hinted.trace.reads(at) >= 1);
+        }
+    }
+}
+
+/// `memory` with every candidate cell gather refused (the only gather of
+/// eight-byte records): the walk reads each candidate itself, as the serial
+/// walk does.
+struct SerialCandidates<'a, M>(&'a M);
+impl<M: Memory> Memory for SerialCandidates<'_, M> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.0.copy(address, output)
+    }
+    fn copy_records(
+        &self,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        if destination.len() == sources.len() * 8 {
+            return 0;
+        }
+        self.0.copy_records(sources, layout, destination)
+    }
+}
+
+/// [`star`] failing every read covering an address in `persistent`, and the
+/// first covering each in `once`.
+struct StarFaults<'a> {
+    world: &'a Sparse,
+    persistent: Vec<usize>,
+    once: std::cell::RefCell<Vec<usize>>,
+}
+impl Memory for StarFaults<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        let covers = |at: usize| address <= at && at - address < output.len();
+        if self.persistent.iter().any(|&at| covers(at)) {
+            return false;
+        }
+        let mut once = self.once.borrow_mut();
+        if let Some(index) = once.iter().position(|&at| covers(at)) {
+            once.remove(index);
+            return false;
+        }
+        drop(once);
+        self.world.copy(address, output)
+    }
+}
+
+fn star_links(memory: &impl Memory, partners: usize) -> (Outcome, Vec<LinkRow>) {
+    let mut resolver = Resolver::with_capacity(partners + 2);
+    let mut rows = vec![LinkRow::default(); partners * 2];
+    let outcome = links(
+        memory,
+        BASE,
+        GS,
+        &mut rows,
+        WarOutput {
+            rows: &mut [],
+            countries: &mut [],
+        },
+        &mut resolver,
+    )
+    .links;
+    (outcome, rows)
+}
+
+/// [`star_links`] through the transport pass, which also reads each
+/// candidate's subject pointer and every owner's ordered enemies.
+fn star_transport(
+    memory: &impl Memory,
+    partners: usize,
+) -> (LinkWalk, Vec<LinkRow>, Vec<WarRow>, Vec<u32>) {
+    let mut resolver = Resolver::with_capacity(partners + 2);
+    let mut rows = vec![LinkRow::default(); partners * 4];
+    let mut wars = vec![WarRow::default(); partners + 2];
+    let mut countries = vec![0_u32; 16];
+    let walk = links_observed_transport(
+        memory,
+        BASE,
+        GS,
+        &mut rows,
+        WarOutput {
+            rows: &mut wars,
+            countries: &mut countries,
+        },
+        &mut resolver,
+        73,
+    );
+    (walk, rows, wars, countries)
+}
+
+/// The hub's matrix cell toward `target` and its status toward it in [`star`].
+fn star_cell(target: usize) -> usize {
+    0x2000_0000 + 0x1_0000 + target * 8
+}
+fn star_status(target: usize) -> usize {
+    0x8000_0000 + (target * 2 + 1) * 0x1000
+}
+
+/// The gathered candidates give the serial walk's rows and outcome on
+/// healthy memory, up to a hub with 5,000 partners.
+#[test]
+fn gathered_relation_candidates_equal_the_serial_walk_at_five_thousand_partners() {
+    for partners in [1_500, 5_000] {
+        let world = star(partners);
+        let serial = serially(|| star_links(&world, partners));
+        let gathered = star_links(&world, partners);
+        assert_eq!(gathered.0, Outcome::Rows { len: partners * 2 });
+        assert_eq!(gathered, serial, "{partners}");
+        let gathered = star_transport(&world, partners);
+        assert!(matches!(gathered.0.links, Outcome::Rows { .. }));
+        assert_eq!(
+            gathered,
+            serially(|| star_transport(&world, partners)),
+            "{partners}"
+        );
+        // A refused gather is read again candidate by candidate, once, and
+        // gives the same rows.
+        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::RelationLinks);
+        assert_eq!(star_links(&SerialCandidates(&world), partners), serial);
+        assert!(crate::batch_fallback::count(crate::batch_fallback::Batch::RelationLinks) > before);
+    }
+}
+
+/// A fault that persists gives the serial walk's outcome: a candidate's
+/// matrix cell or its status.
+#[test]
+fn a_persistent_candidate_fault_gives_the_serial_result() {
+    let partners = 200;
+    let world = star(partners);
+    for at in [star_cell(57), star_status(57)] {
+        let faults = || StarFaults {
+            world: &world,
+            persistent: vec![at],
+            once: Default::default(),
+        };
+        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::RelationLinks);
+        let gathered = star_links(&faults(), partners);
+        // The batch met the fault and was read again candidate by candidate.
+        assert!(
+            crate::batch_fallback::count(crate::batch_fallback::Batch::RelationLinks) > before,
+            "{at:#x}"
+        );
+        assert!(matches!(gathered.0, Outcome::Unavailable { .. }), "{at:#x}");
+        assert_eq!(
+            gathered,
+            serially(|| star_links(&faults(), partners)),
+            "{at:#x}"
+        );
+    }
+}
+
+/// A one-shot fault of a candidate's cell or status refuses no more than
+/// the serial walk: the failed gather is read again candidate by candidate,
+/// once, and every row is published.
+#[test]
+fn a_one_shot_candidate_fault_refuses_no_more_than_the_serial_walk() {
+    let partners = 200;
+    let world = star(partners);
+    let healthy = star_links(&world, partners);
+    for at in [star_cell(57), star_status(57)] {
+        let faults = StarFaults {
+            world: &world,
+            persistent: Vec::new(),
+            once: std::cell::RefCell::new(vec![at]),
+        };
+        assert_eq!(star_links(&faults, partners), healthy, "{at:#x}");
+    }
 }

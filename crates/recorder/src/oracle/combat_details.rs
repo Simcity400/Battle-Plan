@@ -5,6 +5,9 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::LandCombatDetails, |r| land(frame, save, r));
     report.attempt_table(TableId::LandCombatDivisions, |r| divisions(frame, save, r));
     report.attempt_table(TableId::LandCombatModifiers, |r| modifiers(frame, save, r));
+    report.attempt_table(TableId::LandCombatDivisionModifiers, |r| {
+        division_modifiers(frame, save, r)
+    });
     report.attempt_table(TableId::LandCombatSides, |r| sides(frame, save, r));
     report.attempt_table(TableId::NavalCombatDetails, |r| naval(frame, save, r));
     report.attempt_table(TableId::NavalCombatShips, |r| ships(frame, save, r));
@@ -14,72 +17,75 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::NavalCombatAirBaseWingHandles, |r| {
         air_base_wings(frame, r)
     });
-    report.attempt_table(TableId::NavalModifierBreakdowns, |r| {
-        naval_modifier_breakdowns(frame, r)
-    });
+    report.attempt_table(TableId::NavalModifierTrees, |r| naval_trees(frame, r));
 }
 
-/// The game describes these runtime ordered child trees on demand. The save
-/// keeps neither their display labels nor the resulting tree; check the live
-/// combat/member join and key integrity, then state the save limitation.
-fn naval_modifier_breakdowns(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
-    let rows = frame.complete::<tables::NavalModifierBreakdowns>()?;
-    let combats: BTreeSet<_> = frame
-        .complete::<tables::NavalCombatDetails>()?
-        .iter()
-        .map(|row| row.combat)
-        .collect();
-    let ships: BTreeMap<_, _> = frame
-        .complete::<tables::NavalCombatShips>()?
-        .iter()
-        .map(|row| ((row.combat, row.side, row.battle_slot), row))
-        .collect();
-    let mut seen_orders = BTreeSet::new();
-    let mut uses = 0;
-    for row in rows {
-        for usage in &row.uses {
-            uses += 1;
-            if !seen_orders.insert(usage.order) {
-                r.difference("NavalModifierBreakdowns source order", "repeated", "unique");
-            }
-            if !combats.contains(&usage.combat) {
-                r.difference(
-                    format!("NavalModifierBreakdowns {} combat", usage.combat),
-                    "absent",
-                    "present",
-                );
-            }
-            if usage.battle_slot != u32::MAX {
-                match ships.get(&(usage.combat, usage.side, usage.battle_slot)) {
-                    // Escape roots need state 8; the operation's
-                    // carrier-air roots can join any member state.
-                    Some(ship)
-                        if matches!(row.key, 0x5b | 0x59 | 0x5c | 0x5d) && ship.state != 8 =>
-                    {
-                        r.difference(
-                            format!(
-                                "NavalModifierBreakdowns {} slot {}",
-                                usage.combat, usage.battle_slot
-                            ),
-                            "non-escaping ship",
-                            "escaping ship",
-                        )
-                    }
-                    Some(_) => {}
-                    None => r.difference(
-                        format!(
-                            "NavalModifierBreakdowns {} slot {}",
-                            usage.combat, usage.battle_slot
-                        ),
-                        "absent",
-                        "present",
-                    ),
+/// `NavalModifierTrees` holds only sources this hour's live combats reach:
+/// each live side's modifier sources and the recorded sources (scopes
+/// 0-15) of each escaping live ship and each carrier member a linked air
+/// group names. The trees themselves are runtime caches no save serializes;
+/// `recorder derived` checks them against the naval_tree_oracle samples.
+fn naval_trees(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
+    use replay::naval_trees::{self, SideSource};
+    let rows = frame.complete::<tables::NavalModifierTrees>()?;
+    let details = frame.complete::<tables::NavalCombatDetails>()?;
+    let ships = frame.complete::<tables::NavalCombatShips>()?;
+    let mut reached = BTreeSet::new();
+    for detail in details {
+        for side in 0..2 {
+            for source in SideSource::ALL {
+                if let Some(owner) = naval_trees::side_source(
+                    detail.combat,
+                    &detail.sides[side],
+                    &detail.sides[1 - side],
+                    source,
+                ) {
+                    reached.insert(owner.key());
                 }
             }
         }
     }
-    r.compared("NavalModifierBreakdowns", uses);
-    r.limitation("The text save does not serialize transient ordered modifier child identities, contributions or recording-client display labels. Combat and escaping-member joins plus codec tree structure are checked; native hover values require a matched live comparison.", "NavalModifierBreakdowns");
+    for ship in ships.iter().filter(|ship| ship.live_ship != 0) {
+        let carrier = details
+            .iter()
+            .filter(|detail| detail.combat == ship.combat)
+            .filter_map(|detail| detail.sides.get(usize::from(ship.side)))
+            .flat_map(|side| &side.planes)
+            .any(|plane| {
+                plane.source == 0
+                    && plane.group_index != u32::MAX
+                    && plane.variant != 0
+                    && plane.carrier_state & 4 == 0
+                    && plane.carrier_member_present != 0
+                    && plane.carrier_slot >= 0
+                    && plane.carrier_slot as u32 == ship.battle_slot
+            });
+        if ship.state != 8 && !carrier {
+            continue;
+        }
+        for source in &ship.weapon_context.sources {
+            if let Some(owner) = naval_trees::ship_source(ship.ship, &ship.weapon_context, source) {
+                reached.insert(owner.key());
+            }
+        }
+    }
+    for row in rows {
+        if !reached.contains(&row.key()) {
+            r.difference(
+                format!(
+                    "NavalModifierTrees kind {} owner {:#x} sub {} reached by a live combat",
+                    row.kind, row.owner, row.sub
+                ),
+                false,
+                true,
+            );
+        }
+    }
+    r.limitation(
+        "runtime modifier trees and their stored labels are not serialized in saves; recorder derived compares them with naval_tree_oracle samples",
+        "NavalModifierTrees",
+    );
+    r.compared("NavalModifierTrees", rows.len());
     Ok(())
 }
 
@@ -418,8 +424,8 @@ fn formation(
     }
 }
 
-/// Land and naval commanders' timed traits against `traits_to_remove`
-/// (0x3969), which the unit-leader writer writes in vector order as each trait's token and
+/// Naval commanders' timed traits (+0xDE0) against `traits_to_remove`
+/// (0x3969), which the timed-trait writer writes in vector order as each trait's +8 token and
 /// signed remaining days, omitting an empty vector. The saved leader's
 /// presence is `commander_values`' comparison.
 fn timed_traits(
@@ -467,6 +473,60 @@ fn timed_traits(
     }
 }
 
+/// A land side's hover inputs against its saved combatant: the stored
+/// anti-air (`anti_air_attack`) and the prevented lanes (`str/org` prevented
+/// damage), which the serializer writes only when strictly
+/// positive, the lanes at their display step; and the commander's timed traits in vector
+/// order. The skill progress, offence and defence, description token and
+/// shown learning rows have no saved counterpart (a limitation in `land`).
+fn land_side_inputs(
+    r: &mut Report,
+    label: &str,
+    actual: &replay::rows::LandCombatSideDetails,
+    inputs: &replay::rows::LandCombatSideInputs,
+    saved: &save::combat_details::LandSide,
+    save: &Save,
+    tokens: &TokenNames<'_>,
+) {
+    positive_decimal(
+        r,
+        &format!("{label} anti_air_attack"),
+        inputs.anti_air_attack,
+        saved.anti_air.as_ref(),
+    );
+    for (lane, value) in [4, 5].into_iter().zip(inputs.prevented_damage) {
+        let field = format!(
+            "{label} {}",
+            String::from_utf8_lossy(save::combat_details::LAND_DAMAGE_KEYS[lane])
+        );
+        match saved.damage[lane].as_ref() {
+            Some(saved) => {
+                let expected = r.displayed(
+                    "LandCombatDetails.side_inputs.prevented_damage",
+                    replay::rows::LandCombatSideInputs::PREVENTED_STEP,
+                    saved.raw,
+                );
+                equal(r, field, value, expected);
+            }
+            None => equal(
+                r,
+                format!("{field} positive-field presence"),
+                value > 0,
+                false,
+            ),
+        }
+    }
+    timed_traits(
+        r,
+        &format!("{label} commander"),
+        actual.commander,
+        actual.commander_category,
+        &inputs.timed_traits,
+        save,
+        tokens,
+    );
+}
+
 fn timed_trait_tokens<'a>(frame: &'a DecodedFrame, r: &mut Report, needed: bool) -> TokenNames<'a> {
     match needed.then(|| lexical_tokens(frame, r)) {
         None => TokenNames::new(),
@@ -485,9 +545,10 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatDetails>()?;
     let formations = formations(save)?;
     // Only timed traits need the dictionary; its absence limits them alone.
-    let timed = rows
-        .iter()
-        .any(|row| row.sides.iter().any(|side| !side.timed_traits.is_empty()));
+    let timed = rows.iter().any(|row| {
+        matches!(&row.side_inputs, replay::rows::Recorded::Value(sides)
+            if sides.iter().any(|side| !side.timed_traits.is_empty()))
+    });
     let tokens = timed_trait_tokens(frame, r, timed);
     let mut seen = BTreeSet::new();
     for row in rows {
@@ -576,6 +637,11 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
             (row.stored_terrain_valid != 0).then_some(terrain),
             saved.details.terrain.as_deref(),
         );
+        let side_inputs = r.recorded(
+            &row.side_inputs,
+            "LandCombatDetails.side_inputs",
+            format!("{label} side inputs"),
+        );
         for (index, (actual, side)) in row.sides.iter().zip(&saved.details.sides).enumerate() {
             let label = format!("{label}:{index}");
             commander_values(
@@ -585,21 +651,17 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                     reference: actual.commander,
                     category: Some(actual.commander_category),
                     skill: actual.commander_skill,
-                    experience: Some(actual.commander_experience),
+                    // The side records the commander's skill progress, the
+                    // ratio its hover prints, not the raw experience.
+                    experience: None,
                     name_token: Some(&actual.commander_name_token),
                     traits: &actual.traits,
                 },
                 save,
             )?;
-            timed_traits(
-                r,
-                &format!("{label} commander"),
-                actual.commander,
-                actual.commander_category,
-                &actual.timed_traits,
-                save,
-                &tokens,
-            );
+            if let Some(inputs) = side_inputs.map(|sides| &sides[index]) {
+                land_side_inputs(r, &label, actual, inputs, side, save, &tokens);
+            }
             equal(
                 r,
                 format!("{label} committed"),
@@ -625,12 +687,6 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 side.tactic,
             );
             formation(r, &label, actual, &formations);
-            positive_decimal(
-                r,
-                &format!("{label} anti_air_attack"),
-                actual.anti_air_attack,
-                side.anti_air.as_ref(),
-            );
             match side.air_kills {
                 Some(value) => equal(
                     r,
@@ -645,12 +701,19 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                     false,
                 ),
             }
-            for (lane, key) in save::combat_details::LAND_DAMAGE_KEYS.iter().enumerate() {
+            // The recorded air strength and organisation lanes; the ground
+            // lanes are retired, and the prevented lanes are the side
+            // inputs'.
+            for ((key, &actual), saved) in save::combat_details::LAND_DAMAGE_KEYS
+                .iter()
+                .zip(&actual.damage)
+                .zip(&side.damage)
+            {
                 positive_decimal(
                     r,
                     &format!("{label} {}", String::from_utf8_lossy(key)),
-                    actual.damage[lane],
-                    side.damage[lane].as_ref(),
+                    actual,
+                    saved.as_ref(),
                 );
             }
             equal(
@@ -660,13 +723,23 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 side.organisation_loss_count,
             );
             if actual.organisation_loss_count >= 24 {
+                // The row records the samples' qword sum, the one figure
+                // The loss calculation takes from them; the save holds all 24.
                 equal(
                     r,
-                    format!("{label} org_loss_summary"),
-                    Some(actual.organisation_loss.to_vec()),
-                    side.organisation_loss
-                        .as_ref()
-                        .map(|values| values.iter().map(|value| value.raw).collect()),
+                    format!("{label} org_loss_summary samples"),
+                    Some(24),
+                    side.organisation_loss.as_ref().map(Vec::len),
+                );
+                equal(
+                    r,
+                    format!("{label} org_loss_summary sum"),
+                    Some(actual.organisation_loss_sum),
+                    side.organisation_loss.as_ref().map(|values| {
+                        values
+                            .iter()
+                            .fold(0_i64, |sum, value| sum.wrapping_add(value.raw))
+                    }),
                 );
             }
         }
@@ -675,7 +748,7 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
         r.difference(format!("LandCombatDetails {id}"), "absent", "present");
     }
     r.compared("LandCombatDetails", rows.len());
-    r.limitation("Hourly samples cannot reproduce every tick or battles beginning and ending between samples. Ordered committed/reserve handles, air counts, positive damage/anti-air/kill fields, valid tactic ids, commander name tokens, ordered timed traits (tokens and signed days) and formation references, and mature organisation-loss rings are compared; the saved loss-ring index has no recorded counterpart (no window or tooltip reads it). A positive-only omitted scalar proves only nonpositive, not its exact raw value. Before 24 organisation-loss observations the window does not consume the ring and the recording leaves its values unsampled; only the count is compared. Saved terrain is compared to its separately captured stored terrain cache, never to the independent province-derived window terrain. Phase, width/bonus inputs, tactic definition metadata, commander runtime modifiers/traits and other presentation caches are not validated by these save matches", "LandCombatDetails");
+    r.limitation("Hourly samples cannot reproduce every tick or battles beginning and ending between samples. Ordered committed/reserve handles, air counts, positive air damage, anti-air, prevented damage (at its display step) and kill fields, valid tactic ids, commander name tokens, ordered timed traits (tokens and signed days) and formation references, and mature organisation-loss rings are compared; the saved loss-ring index has no recorded counterpart (no window or tooltip reads it). A positive-only omitted scalar proves only nonpositive, not its exact raw value. Before 24 organisation-loss observations the window does not consume the ring and the recording leaves its values unsampled; only the count is compared. Saved terrain is compared to its separately captured stored terrain cache, never to the independent province-derived window terrain. Phase, width/bonus inputs, tactic definition metadata, commander runtime modifiers/traits and other presentation caches are not validated by these save matches. The side hover inputs' skill progress (the save keeps the residual experience but not the next level's requirement), offence and defence (keys 0x5F/0x60 of a runtime leader block), description token and learning rows above the live LEADER_TRAITS_XP_SHOW have no saved counterpart and are not compared", "LandCombatDetails");
     Ok(())
 }
 
@@ -705,21 +778,6 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
             Some(row.division),
             members.get(row.ordinal as usize).copied(),
         );
-        if let Some(commander) = &row.commander_inputs {
-            commander_values(
-                r,
-                &format!("{label} commander"),
-                CommanderSaveView {
-                    reference: row.commander,
-                    category: None,
-                    skill: commander.skill,
-                    experience: None,
-                    name_token: Some(&commander.name_token),
-                    traits: &commander.traits,
-                },
-                save,
-            )?;
-        }
         let side = &saved.details.sides[row.side as usize];
         let role = if side.committed.contains(&row.division) {
             1
@@ -732,6 +790,29 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
             return Err(invalid("saved division is both committed and reserve"));
         }
         equal(r, format!("{label} role"), row.role, role);
+        // The collector composes a reserve speed share for every
+        // reserve and no other division, so the share is present exactly
+        // where the save lists the division among its side's reserves; its
+        // value is a live input the save does not hold.
+        if let Some(share) = r.recorded(
+            &row.reinforcement_speed,
+            "LandCombatDivisions.reinforcement_speed",
+            format!("{label} reserve speed share"),
+        ) {
+            if share.is_none() && role == 2 {
+                r.limitation(
+                    "A reserve's speed share was refused at capture (an operand unreadable or a movement-speed form the port does not follow; collector status land_reserve_speed), so its reinforcement chance is unknown",
+                    label.clone(),
+                );
+            } else {
+                equal(
+                    r,
+                    format!("{label} reserve speed share presence"),
+                    share.is_some(),
+                    role == 2,
+                );
+            }
+        }
         let Some(unit) = save.divisions.get(&row.division) else {
             r.difference(label, "division present", "division absent");
             continue;
@@ -764,7 +845,7 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
         }
     }
     r.compared("LandCombatDivisions", rows.len());
-    r.limitation("Only participant order/full handles, province, template, committed/reserve role, division commander name tokens and the naming operands are compared; hit points, organisation and entrenchment are the Divisions and DivisionStatus oracle's. The naming type, order word, ordered and programmatic flags and a player's custom name are compared against the saved division_name block, and the selected group key against the saved division_names_group of the member's template; a programmatic override is compared where the game shows it (a type-zero member whose group is null) and is otherwise generated text the game does not show, never recorded. Direction latch words, exile operands and the stat block's equipment category mask (`categories`) are live combat inputs with no text-save counterpart (the per-unit stat block is rebuilt, not saved) and are never compared here; their viewer replay is verified by render parity instead. Current combat stat block, raw maximum caches, attack/defense composition operands, initiative/reconnaissance and commander selection are not established by those matches. Current division names and combat commander names/skills/traits are hourly inputs; remaining template/icon dictionary joins retain their existing cadence. This table is an hourly input sample, not a per-attack damage event stream", "LandCombatDivisions");
+    r.limitation("Only participant order/full handles, province, template, committed/reserve role, the reserve speed share's presence on exactly the saved reserves and the naming operands are compared; the share's value (composed from live movement-speed operands and SLOWEST_SPEED) and the stat block's initiative have no save counterpart; hit points, organisation and entrenchment are the Divisions and DivisionStatus oracle's. The naming type, order word, ordered and programmatic flags and a player's custom name are compared against the saved division_name block, and the selected group key against the saved division_names_group of the member's template; a programmatic override is compared where the game shows it (a type-zero member whose group is null) and is otherwise generated text the game does not show, never recorded. Direction latch words, exile operands and the stat block's equipment category mask (`categories`) are live combat inputs with no text-save counterpart (the per-unit stat block is rebuilt, not saved) and are never compared here; their viewer replay is verified by render parity instead. Current combat stat block, raw maximum caches, attack/defense composition operands, initiative/reconnaissance and commander selection are not established by those matches. Current division names are hourly inputs; remaining template/icon dictionary joins retain their existing cadence. This table is an hourly input sample, not a per-attack damage event stream", "LandCombatDivisions");
     Ok(())
 }
 
@@ -843,7 +924,7 @@ pub(super) fn naming<'a>(
     // Template selection and fake-intel template selection
     // bind the member to the fake-intel template when set, else
     // the standard one; the save writes those as the two template ids, and
-    // the game writes a template's division_names_group only for a set
+    // The game writes a template's division_names_group only for a set
     // group. `None` when the template has no saved entry.
     let group = match unit.alternate_template.or(unit.template) {
         None => Some(None),
@@ -900,31 +981,8 @@ fn modifiers(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
         if row.side > 1 || !seen.insert((row.combat, row.side)) {
             return Err(invalid("invalid land modifier side identity"));
         }
-        let saved = save
-            .land_combats
-            .get(&row.combat)
-            .ok_or_else(|| invalid("land modifiers combat absent from save"))?;
-        let members = if row.side == 0 {
-            &saved.attackers
-        } else {
-            &saved.defenders
-        };
-        equal(
-            r,
-            format!("LandCombatModifiers {}:{} census", row.combat, row.side),
-            row.divisions.len(),
-            members.len(),
-        );
-        for entry in &row.divisions {
-            equal(
-                r,
-                format!(
-                    "LandCombatModifiers {}:{}:{} member",
-                    row.combat, row.side, entry.ordinal
-                ),
-                Some(entry.division),
-                members.get(entry.ordinal as usize).copied(),
-            );
+        if !save.land_combats.contains_key(&row.combat) {
+            return Err(invalid("land modifiers combat absent from save"));
         }
     }
     for combat in save.land_combats.keys() {
@@ -939,7 +997,47 @@ fn modifiers(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
         }
     }
     r.compared("LandCombatModifiers", rows.len());
-    r.limitation("Native ordered modifier id/A/B entries are runtime presentation inputs with no compared text-save counterpart. Ordinary side icons have static explanations, not numeric percentage fields; no invented percentage is recorded. Battle-history modifier durations are a different data structure and are not substitutes for active modifier values", "LandCombatModifiers");
+    r.limitation("Border modifier, dig-in and terrain factors are runtime presentation inputs with no compared text-save counterpart", "LandCombatModifiers");
+    Ok(())
+}
+
+fn division_modifiers(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
+    let rows = frame.complete::<tables::LandCombatDivisionModifiers>()?;
+    // Rows by combat and side; each saved member has one.
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let saved = save
+            .land_combats
+            .get(&row.combat)
+            .ok_or_else(|| invalid("land division modifiers combat absent from save"))?;
+        let members = if row.side == 0 {
+            &saved.attackers
+        } else {
+            &saved.defenders
+        };
+        *counts.entry((row.combat, row.side)).or_insert(0_usize) += 1;
+        equal(
+            r,
+            format!(
+                "LandCombatDivisionModifiers {}:{}:{} member",
+                row.combat, row.side, row.ordinal
+            ),
+            Some(row.division),
+            members.get(row.ordinal as usize).copied(),
+        );
+    }
+    for (combat, saved) in &save.land_combats {
+        for (side, members) in [(0_u8, &saved.attackers), (1, &saved.defenders)] {
+            equal(
+                r,
+                format!("LandCombatDivisionModifiers {combat}:{side} census"),
+                counts.get(&(*combat, side)).copied().unwrap_or(0),
+                members.len(),
+            );
+        }
+    }
+    r.compared("LandCombatDivisionModifiers", rows.len());
+    r.limitation("Native ordered modifier id/A/B entries are runtime presentation inputs with no compared text-save counterpart. Ordinary side icons have static explanations, not numeric percentage fields; no invented percentage is recorded. Battle-history modifier durations are a different data structure and are not substitutes for active modifier values", "LandCombatDivisionModifiers");
     Ok(())
 }
 
@@ -1332,11 +1430,18 @@ fn ships(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
             row.detection_state,
             detail.detection_state.unwrap_or(-1),
         );
+        // Stored at its display step (replay::display); the save's exact
+        // value is rounded the same way.
+        let escape = r.displayed(
+            "NavalCombatShips.escape_progress",
+            replay::rows::NavalCombatShipRow::ESCAPE_STEP,
+            detail.escape_progress.as_ref().map_or(0, |v| v.raw),
+        );
         equal(
             r,
             format!("{label} escape_progress"),
             row.escape_progress,
-            detail.escape_progress.as_ref().map_or(0, |v| v.raw),
+            escape,
         );
         equal(
             r,
@@ -1477,11 +1582,16 @@ fn ships(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 row.strength,
                 unit.strength.raw,
             );
+            let organisation = r.displayed(
+                "NavalCombatShips.organisation",
+                replay::rows::NavalCombatShipRow::ORGANISATION_STEP,
+                unit.organisation.raw,
+            );
             equal(
                 r,
                 format!("NavalCombatShips {key:?} organisation"),
                 row.organisation,
-                unit.organisation.raw,
+                organisation,
             );
         }
     }

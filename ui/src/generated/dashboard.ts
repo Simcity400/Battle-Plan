@@ -41,8 +41,16 @@ parentId: string | null, parentHour: number | null, sampleBoundary: string,
 /**
  * Reported capture losses, not a claim that recovered frames are absent.
  */
-gaps: Array<RecordingGap>, };
+gaps: Array<RecordingGap>,
+/**
+ * Recorded event losses: intervals between two reads whose recorded
+ * events are incomplete because the recorder was detached for part of
+ * them. They are not gaps; a lost frame at either read is its own gap.
+ * Absent when the branch has none.
+ */
+eventLosses?: Array<RecordingEventLoss>, };
 export type RecordingGap = { firstHour: number, lastHour: number, reason: string, };
+export type RecordingEventLoss = { afterHour: number, hour: number, reason: string, };
 export type CountryMetadata = {
 /**
  * Canonical country slot, resolved through that hour's CountryLinks.
@@ -2603,7 +2611,7 @@ export type EventFeedParams = { branchId: string,
  */
 firstHour: number | null, lastHour: number | null, };
 export type EventFeedCategory = "warsPeace" | "diplomacy" | "politics" | "milestones";
-export type EventFeedKind = "warStarted" | "warDeclared" | "warJoined" | "civilWarWarTransferred" | "annexed" | "peace" | "capitulated" | "ceasedToExist" | "factionJoined" | "factionLeft" | "becameSubject" | "guaranteeGranted" | "rulingPartyChanged" | "lawChanged" | "advisorHired" | "focusCompleted" | "projectFinished" | "nukesIncreased";
+export type EventFeedKind = "warStarted" | "warDeclared" | "warJoined" | "civilWarWarTransferred" | "annexed" | "warEnded" | "released" | "stateTransferred" | "peaceConferenceStarted" | "peace" | "capitulated" | "ceasedToExist" | "factionJoined" | "factionLeft" | "becameSubject" | "guaranteeGranted" | "rulingPartyChanged" | "lawChanged" | "advisorHired" | "focusCompleted" | "projectFinished" | "nukesIncreased" | "nuclearStrike";
 export type EventFeedRow = { id: string, hour: number,
 /**
  * The read supplying this fact; Live must not expose it before this hour.
@@ -2617,7 +2625,67 @@ nameHour: number, exact: boolean, category: EventFeedCategory, kind: EventFeedKi
  * Native action roles, actor then target. Null retains an unidentified role;
  * tags contains only the exact occurrence-hour identities proved here.
  */
-participants?: [string | null, string | null], item: number | null, amount: number | null, };
+participants?: [string | null, string | null], item: number | null, amount: number | null,
+/**
+ * A native event's recorded cause; absent when the recording holds none.
+ */
+cause?: EventFeedCause,
+/**
+ * A nuclear strike's target and outcome; participants are its launcher
+ * and the owner of the struck state.
+ */
+strike?: EventFeedStrike, };
+export type EventFeedCause = {
+/**
+ * The native operation the event happened in.
+ */
+how: string | null,
+/**
+ * The operation that one ran inside.
+ */
+within: string | null,
+/**
+ * The peace conference starting or applying, as its PeaceConferences
+ * reference in decimal.
+ */
+conference: string | null,
+/**
+ * A state whose owner changed.
+ */
+state: number | null,
+/**
+ * A join's ally, the exact occurrence-hour identity.
+ */
+ally: string | null,
+/**
+ * A join's hostility reason.
+ */
+reason: string | null,
+/**
+ * The native operands that change what the event means.
+ */
+notes: Array<string>, };
+export type EventFeedStrike = { province: number,
+/**
+ * Null for a province without a state.
+ */
+state: number | null,
+/**
+ * Healthy building levels destroyed, in whole levels.
+ */
+buildingLevels: number | null,
+/**
+ * The state owner's war support change, in percentage points.
+ */
+warSupport: number | null,
+/**
+ * Units the strike's damage calls reached.
+ */
+units: number | null, manpowerLost: number | null,
+/**
+ * Net equipment destroyed in division and air wing pools.
+ */
+equipmentLost: number | null, notRecorded: Array<string>, };
 export type EventFeedItem = { token: string | null, name: string | null, icon: string | null, description: string | null,
 /**
  * The same content effects the Ideas widget supplies to its shared tooltip.

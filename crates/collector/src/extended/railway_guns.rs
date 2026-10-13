@@ -29,18 +29,10 @@ static ETA_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 static WITHDRAWAL_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static FRESH_REFUSALS: [std::sync::atomic::AtomicU64; 4] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 4];
-static TRANSPORT_REFUSALS: [std::sync::atomic::AtomicU64; 3] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 3];
 
 pub(crate) fn movement_arrow_data() -> impl serde::Serialize {
     crate::status::status!({
         "withdrawal_refused": WITHDRAWAL_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
-        "transport_refusals": crate::status::map([
-            "selected transport railway current-hour packet unavailable",
-            "selected transport railway stat weight unreadable",
-            "selected transport transfer source unreadable",
-        ].into_iter().zip(TRANSPORT_REFUSALS.iter()).map(|(reason, count)|
-            (reason, count.load(std::sync::atomic::Ordering::Relaxed))).filter(|(_, count)| *count != 0)),
         "scope": "cumulative field-local railway-gun movement-arrow scalar refusals; established counter inputs remain available",
     })
 }
@@ -301,27 +293,6 @@ impl Captured {
         self.supply_origins.len = tooltip.supply_origins_len;
         self.supply_origins.required = tooltip.required_supply_origins;
         self.rows.outcome = walk.outcome;
-        if hour.is_some() {
-            let mut refused = [0u64; 3];
-            for row in &self.rows.rows[..walk.outcome.len()] {
-                let Some(packet) = &row.transport else {
-                    refused[0] += 1;
-                    continue;
-                };
-                refused[1] += u64::from(packet.weight.is_err());
-                if let Ok(engine::selected_transport_units::Transfer::Present {
-                    status: Ok(0),
-                    source,
-                    ..
-                }) = packet.transfer
-                {
-                    refused[2] += u64::from(source.is_err());
-                }
-            }
-            for (count, value) in TRANSPORT_REFUSALS.iter().zip(refused) {
-                count.fetch_add(value, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
         WITHDRAWAL_REFUSALS.fetch_add(
             self.rows.rows[..walk.outcome.len()]
                 .iter()
@@ -356,15 +327,6 @@ impl Captured {
 
     pub fn outcomes(&self) -> [Outcome; N] {
         [self.rows.outcome]
-    }
-
-    pub(crate) fn movement_sources(
-        &self,
-    ) -> super::production::Sources<'_, railway_gun_counter_inputs::Row> {
-        super::production::Sources {
-            rows: &self.rows.rows,
-            outcome: self.rows.outcome,
-        }
     }
 
     fn supply_origins(
@@ -417,11 +379,9 @@ impl Captured {
             self.rows.outcome,
             &self.rows.rows,
             |r| RailwayGunCounterInputRow {
-                transport: Recorded::Value(
-                    r.transport
-                        .as_ref()
-                        .map(super::selected_transport_inputs::project),
-                ),
+                // The selected transport preview's operands retired.
+                transport: Recorded::Value(replay::rows::Retired),
+                // Packets store no hour; only this capture's reads are published.
                 combat_references: Recorded::Value(super::unit_combat_references::project(
                     self.sample_hour,
                     r.combat_references.and_then(|(start, len)| {
@@ -470,12 +430,16 @@ impl Captured {
                     self.supply_origins(r),
                 )),
                 withdrawal: Recorded::Value(r.withdrawal),
-                fresh: Recorded::Value(r.fresh.map(|inputs| FreshRailwayCounterEta {
-                    sample_hour: inputs.sample_hour,
-                    maximum_speed: inputs.maximum_speed,
-                    land_supply_factor: inputs.land_supply_factor,
-                    orders_group: inputs.orders_group,
-                })),
+                fresh: Recorded::Value(
+                    r.fresh
+                        .filter(|inputs| Some(inputs.sample_hour) == self.sample_hour)
+                        .map(|inputs| FreshRailwayCounterEta {
+                            sample_hour: replay::rows::PacketHour::Host,
+                            maximum_speed: inputs.maximum_speed,
+                            land_supply_factor: inputs.land_supply_factor,
+                            orders_group: inputs.orders_group,
+                        }),
+                ),
             },
         )]
     }
@@ -700,6 +664,14 @@ mod tests {
             None,
         ] {
             capture.rows.rows[0].fresh = fresh;
+            // Operands read for another capture hour are refused.
+            capture.sample_hour = Some(0);
+            let [TableView::Complete(TableRows::RailwayGunCounterInputs(stale))] = capture.tables()
+            else {
+                panic!("fresh refusal cannot withhold counter prefix");
+            };
+            assert_eq!(stale[0].fresh, Recorded::Value(None));
+            capture.sample_hour = fresh.map(|input| input.sample_hour);
             let [TableView::Complete(TableRows::RailwayGunCounterInputs(rows))] = capture.tables()
             else {
                 panic!("fresh refusal cannot withhold counter prefix");
@@ -707,7 +679,7 @@ mod tests {
             assert_eq!(
                 rows[0].fresh,
                 Recorded::Value(fresh.map(|input| FreshRailwayCounterEta {
-                    sample_hour: input.sample_hour,
+                    sample_hour: replay::rows::PacketHour::Host,
                     maximum_speed: input.maximum_speed,
                     land_supply_factor: input.land_supply_factor,
                     orders_group: input.orders_group,
@@ -761,8 +733,8 @@ mod tests {
                 current_speed: 4,
             });
             row.supply = Some(Inputs {
-                asked: -12,
-                received: 34,
+                asked: -12_345,
+                received: 34_500,
                 disruption: -56,
                 origins_len,
                 ..Default::default()
@@ -776,9 +748,11 @@ mod tests {
             let Recorded::Value(Some(supply)) = &rows[0].supply else {
                 panic!("scalar supply values");
             };
+            // At the footer's display step, half away from zero; a nonzero
+            // amount below half a step keeps one step (UnitSupplyInputs::STEP).
             assert_eq!(
                 (supply.asked, supply.received, supply.disruption),
-                (-12, 34, -56)
+                (-12_000, 35_000, -1_000)
             );
             assert_eq!(supply.origins.as_ref().map(Vec::len), origins_len.ok());
             if let Some(origins) = &supply.origins {
@@ -788,7 +762,7 @@ mod tests {
                         origins[1].requested,
                         origins[1].received
                     ),
-                    (13, -123, 0)
+                    (13, -1_000, 0)
                 );
             }
             assert_eq!(rows[0].name, Recorded::Value(Some(b"gun".to_vec())));
@@ -841,7 +815,10 @@ mod combat_reference_projection_tests {
         let Recorded::Value(Some(references)) = &before[0].combat_references else {
             panic!("complete owned suffix unavailable");
         };
-        assert_eq!((references.sample_hour, references.entries.len()), (31, 2));
+        assert_eq!(
+            (references.sample_hour, references.entries.len()),
+            (replay::rows::PacketHour::Host, 2)
+        );
         assert_eq!(references.entries[0], references.entries[1]);
         capture.combat_references.len = 1;
         let [TableView::Complete(TableRows::RailwayGunCounterInputs(refused))] = capture.tables()

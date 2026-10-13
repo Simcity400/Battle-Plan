@@ -17,3 +17,7 @@ pub const ORDERS_GROUP_ASSIGNEE_VTABLE_RVA: usize = 0x0293_bcd8;
 /// CRailwayGun current strength, fixed5; the native strength getter divides
 /// it by the per-gun rebuilt CSubUnitDefinition maximum.
 pub const CURRENT_STRENGTH: usize = 0x3f0;
+/// Railway gun current manpower, the signed low dword of primary +0x3F8:
+/// immediate damage caps casualties at this value and subtracts them; refill
+/// withdraws country manpower into it.
+pub const MANPOWER: usize = 0x3f8;

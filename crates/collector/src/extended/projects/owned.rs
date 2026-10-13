@@ -1,56 +1,30 @@
 use super::*;
 
 // ===========================================================================
-// Scheduled raw-copy split (ProjectPrograms, Projects, ProjectHistory,
-// ProjectBreakthroughs; independent tables use separate typed acquisition).
+// Scheduled raw-copy split (ProjectPrograms, ProjectBreakthroughs; the sliced
+// Projects and ProjectHistory and the independent tables use typed
+// acquisition).
 //
 // The acquisition worker copies raw bytes: one shared country census and
-// status read per country, program pointers/rows/strings, project pool
-// records with their state machines and history entries, and breakthrough
+// status read per country, program pointers/rows/strings and breakthrough
 // tree nodes. The single FIFO decode worker replays the existing typed walks
 // against the recorded spans (`crate::raw::Recorded`), so typed rows,
 // ordinals, skips, truncation counts and failure reasons are identical by
 // construction (see `crate::raw` for the mirror rules).
 //
-// The three typed walks each run their own census and status reads; the
+// The two typed walks each run their own census and status reads; the
 // replay serves every repeat of a staged key with its bytes, so the mirror
 // stages each key once, including a slot's link, canonical pointer and status
-// that the walks read again. Pool records, state machines and tree nodes are
-// gathered in batches; a batch stages each field as its own span and stops at
-// its first failure, which the replay then reaches at the same field.
+// that the walks read again. Tree nodes are gathered in batches; a batch
+// stages each field as its own span and stops at its first failure, which the
+// replay then reaches at the same field.
 // ===========================================================================
 
-/// Fault-attribution bits, one per project table in `TABLES[0..4]` order.
+/// Fault-attribution bits, one per raw-copied table in [`RAW`] order.
 pub(super) const M_PROGRAMS: u32 = 0x01;
-const M_PROJECTS: u32 = 0x02;
-const M_HISTORY: u32 = 0x04;
-const M_BREAKTHROUGH: u32 = 0x08;
-const M_ALL: u32 = 0x0f;
-const M_PROJECT_TABLES: u32 = M_PROJECTS | M_HISTORY;
+const M_BREAKTHROUGH: u32 = 0x02;
+const M_ALL: u32 = 0x03;
 
-/// Project identity header length (`HISTORY_COUNT + 4`); the engine keeps
-/// this private, so the mirror derives it from the public count constant.
-const PROJECT_HEADER_LEN: usize = nproject_cproject::HISTORY_COUNT + 4;
-/// Project lifecycle flag length (`RECORD_SIZE - HEADER_LEN`).
-const PROJECT_FLAG_LEN: usize = 2;
-/// Pool records per gather. The walk's own batch sets error precedence; this
-/// one only bounds a guarded call, and stages a superset of each walk batch.
-const PROJECT_CHUNK: usize = 64;
-const POOL_FIELDS: [RecordField; 2] = [
-    RecordField {
-        source_offset: 0,
-        destination_offset: 0,
-        len: PROJECT_HEADER_LEN,
-    },
-    RecordField {
-        source_offset: nproject_cproject::STARTED,
-        destination_offset: PROJECT_HEADER_LEN,
-        len: PROJECT_FLAG_LEN,
-    },
-];
-const POOL_LAYOUT: RecordLayout<'static> =
-    RecordLayout::new(&POOL_FIELDS, PROJECT_HEADER_LEN + PROJECT_FLAG_LEN)
-        .expect("valid record layout");
 /// Breakthrough node left, parent and right links.
 const NODE_LINKS: usize = nproject_breakthrough_node::RIGHT + 8;
 /// Staged breakthrough nodes one tree walk remembers.
@@ -60,7 +34,7 @@ const TREE_NODES: usize = 64;
 /// prefix while growing logs and census scratch from native headers.
 #[derive(Debug)]
 pub(crate) struct ProjectsJob {
-    pub log: RawLog<4>,
+    pub log: RawLog<2>,
     pub game_state: usize,
     pub active: bool,
     pub(super) census: Vec<CensusEntry>,
@@ -171,8 +145,8 @@ pub(crate) struct ProjectsCopyReport {
     /// False when staging overflowed. The accepted acquisition cannot be
     /// replayed and must fail without a second live walk.
     pub raw_ok: bool,
-    pub copy_ticks: [u64; 4],
-    pub raw_bytes: [u64; 4],
+    pub copy_ticks: [u64; RAW.len()],
+    pub raw_bytes: [u64; RAW.len()],
 }
 
 /// Acquisition-job parameters supplied at the sampling boundary.
@@ -183,11 +157,11 @@ pub(crate) struct ProjectsCopyContext {
     pub active: bool,
 }
 
-fn pool_u32(log: &RawLog<4>, start: usize) -> u32 {
+fn pool_u32(log: &RawLog<2>, start: usize) -> u32 {
     u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
 }
 
-fn pool_u64(log: &RawLog<4>, start: usize) -> u64 {
+fn pool_u64(log: &RawLog<2>, start: usize) -> u64 {
     u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
 }
 
@@ -195,295 +169,13 @@ fn pool_u64(log: &RawLog<4>, start: usize) -> u64 {
 /// nothing because the typed walk fails locally without reads; every other
 /// failure is logged with the affected-table mask.
 pub(super) fn span(
-    log: &mut RawLog<4>,
+    log: &mut RawLog<2>,
     memory: &impl Memory,
     addr: Option<usize>,
     len: usize,
     mask: u32,
 ) -> Option<usize> {
     log.take(memory, addr?, len, mask)
-}
-
-/// Staged spans of one validated pool record.
-#[derive(Clone, Copy, Default)]
-struct PoolRecord {
-    header: usize,
-    machine: usize,
-}
-
-/// Mirror of `walk_tables`' read set for every country: pool header, pool
-/// records and flags, state machines, their current phases and history
-/// entries. Pooled capacities are ignored (a superset is staged); validation,
-/// precedence and error scope are local parses, so any failure aborts the
-/// walk exactly like the typed error.
-fn copy_project_tables(
-    log: &mut RawLog<4>,
-    memory: &impl Memory,
-    base: usize,
-    shared: ProjectCensus<'_>,
-    statuses: &[usize],
-) {
-    let Some(expected) = base
-        .checked_add(nproject_cproject::VTABLE_RVA)
-        .map(|expected| expected as u64)
-    else {
-        return;
-    };
-    let Some(pool_vtable) = base.checked_add(nproject_cproject_pool::VTABLE_RVA) else {
-        return;
-    };
-    let mut machines_dead = false;
-    let mut hist_dead = false;
-    for (country, &status) in shared
-        .census
-        .iter()
-        .filter(|entry| entry.canonical == entry.slot)
-        .zip(statuses)
-    {
-        let Some(pool_start) = span(
-            log,
-            memory,
-            status.checked_add(nproject_cprogram_status::PROJECT_POOL),
-            8,
-            M_PROJECT_TABLES,
-        ) else {
-            return;
-        };
-        let Some(pool) = usize::try_from(pool_u64(log, pool_start))
-            .ok()
-            .filter(|&pool| pool != 0)
-        else {
-            return;
-        };
-        // The walk reads the vtable, then the array header.
-        let Some(array_address) = pool.checked_add(nproject_cproject_pool::PROJECTS) else {
-            return;
-        };
-        let Some((starts, 2)) = log.take_scattered(
-            memory,
-            [pool, array_address],
-            [8, 16],
-            [M_PROJECT_TABLES; 2],
-        ) else {
-            return;
-        };
-        if pool_u64(log, starts[0]) != pool_vtable as u64 {
-            return;
-        }
-        let mut raw = [0u8; 16];
-        raw.copy_from_slice(&log.bytes[starts[1]..starts[1] + 16]);
-        let Some(pool_array) = Array::from_header(raw, nproject_cproject::POOL_STRIDE) else {
-            return;
-        };
-        let mut authenticated_owner = country.id;
-        let mut index = 0u32;
-        while index < pool_array.count {
-            let rows = ((pool_array.count - index) as usize).min(PROJECT_CHUNK);
-            // `from_header` proved every record address in range.
-            let first = pool_array.data + index as usize * nproject_cproject::POOL_STRIDE;
-            let Some((start, completed)) = log.take_records(
-                memory,
-                RecordSources::Strided {
-                    base: first,
-                    stride: nproject_cproject::POOL_STRIDE,
-                    count: rows,
-                },
-                &POOL_LAYOUT,
-                M_PROJECTS,
-            ) else {
-                return;
-            };
-            // A failed header ends the walk; a failed flag word ends only
-            // project rows, and the walk goes on after that record.
-            let header_failed = completed < rows * 2 && completed.is_multiple_of(2);
-            let headers = completed.div_ceil(2);
-            let mut records = [PoolRecord::default(); PROJECT_CHUNK];
-            let mut valid = 0;
-            let mut invalid = false;
-            for (ordinal, record) in records.iter_mut().enumerate().take(headers) {
-                let header = start + ordinal * POOL_LAYOUT.stride();
-                if pool_u64(log, header) != expected
-                    || pool_u32(log, header + nproject_cproject::TYPE)
-                        != nproject_cproject::REFERENCE_TYPE
-                    || pool_u32(log, header + nproject_cproject::ID) == 0
-                {
-                    invalid = true;
-                    break;
-                }
-                let owner = pool_u32(log, header + nproject_cproject::OWNER);
-                if owner != authenticated_owner {
-                    match copy_resolve(log, memory, shared, owner, M_PROJECT_TABLES) {
-                        Some(pointer) if pointer == country.pointer => {
-                            authenticated_owner = owner;
-                        }
-                        _ => {
-                            invalid = true;
-                            break;
-                        }
-                    }
-                }
-                let Ok(machine) =
-                    usize::try_from(pool_u64(log, header + nproject_cproject::STATE_MACHINE))
-                else {
-                    invalid = true;
-                    break;
-                };
-                *record = PoolRecord { header, machine };
-                valid += 1;
-            }
-            if log.overflowed {
-                return;
-            }
-            if !machines_dead {
-                machines_dead = !copy_machines(log, memory, &records[..valid]);
-                if log.overflowed {
-                    return;
-                }
-            }
-            for record in &records[..valid] {
-                if hist_dead {
-                    break;
-                }
-                copy_project_history(log, memory, base, record.header, &mut hist_dead);
-                if log.overflowed {
-                    return;
-                }
-            }
-            if header_failed || invalid || headers == 0 {
-                return;
-            }
-            index += headers as u32;
-        }
-    }
-}
-
-/// Mirror of one batch's state-machine gathers: the recorded words of every
-/// machine, then each one's current phase. False once a gather faults; the
-/// walk then reads no further machine.
-fn copy_machines(log: &mut RawLog<4>, memory: &impl Memory, records: &[PoolRecord]) -> bool {
-    if records.is_empty() {
-        return true;
-    }
-    let mut pointers = [0usize; PROJECT_CHUNK];
-    // Machines are scattered heap objects: hint every line first, so the
-    // gather's misses overlap instead of arriving one machine at a time.
-    for (pointer, record) in pointers.iter_mut().zip(records) {
-        *pointer = record.machine;
-        engine::prefetch::fields(record.machine, &machine::FIELDS);
-    }
-    let rows = records.len();
-    let Some((start, completed)) = log.take_records(
-        memory,
-        RecordSources::Pointers(&pointers[..rows]),
-        &machine::LAYOUT,
-        M_PROJECTS,
-    ) else {
-        return false;
-    };
-    let copied = completed / machine::FIELDS.len();
-    let mut phases = [0usize; PROJECT_CHUNK];
-    for (ordinal, phase) in phases.iter_mut().enumerate().take(copied) {
-        let at = start + ordinal * machine::FIELDS_SIZE;
-        *phase = machine::phase_source(
-            pointers[ordinal],
-            log.bytes[at..at + machine::FIELDS_SIZE].try_into().unwrap(),
-        );
-        engine::prefetch::fields(*phase, &machine::PHASE_FIELDS);
-    }
-    let Some((_, phased)) = log.take_records(
-        memory,
-        RecordSources::Pointers(&phases[..copied]),
-        &machine::PHASE_LAYOUT,
-        M_PROJECTS,
-    ) else {
-        return false;
-    };
-    copied == rows && phased == rows
-}
-
-/// Mirror of one record's history read set: array header plus every entry's
-/// row and context fields in one gather, then present optional payloads. Sets
-/// `hist_dead` on the first typed abort point; later history is skipped
-/// exactly like the filtered walk.
-fn copy_project_history(
-    log: &mut RawLog<4>,
-    memory: &impl Memory,
-    base: usize,
-    header: usize,
-    hist_dead: &mut bool,
-) {
-    let data = match usize::try_from(pool_u64(log, header + nproject_cproject::HISTORY)) {
-        Ok(data) => data,
-        Err(_) => {
-            *hist_dead = true;
-            return;
-        }
-    };
-    let capacity = pool_u32(log, header + nproject_cproject::HISTORY_CAPACITY);
-    let count = pool_u32(log, header + nproject_cproject::HISTORY_COUNT);
-    if capacity > i32::MAX as u32
-        || count > capacity
-        || (count != 0 && data == 0)
-        || (count as usize)
-            .checked_mul(nproject_sproject_history::STRIDE)
-            .and_then(|len| data.checked_add(len))
-            .is_none()
-    {
-        *hist_dead = true;
-        return;
-    }
-    let (Some(expected), Some(context_expected)) = (
-        base.checked_add(nproject_sproject_history::VTABLE_RVA),
-        base.checked_add(nproject_sproject_context::VTABLE_RVA),
-    ) else {
-        *hist_dead = true;
-        return;
-    };
-    for ordinal in 0..count as usize {
-        // The array check above keeps every entry field in range.
-        let entry = data + ordinal * nproject_sproject_history::STRIDE;
-        let context = entry + nproject_sproject_history::CONTEXT;
-        // Row vtable, handles and date, then the context's vtable, fixed
-        // words and presence bytes: the walk's read order.
-        let Some((starts, completed)) = log.take_scattered(
-            memory,
-            [
-                entry,
-                entry + nproject_sproject_history::PROTOTYPE_REWARD_HANDLE,
-                entry + nproject_sproject_history::DATE,
-                context,
-                context + nproject_sproject_context::PROVINCE,
-                context + nproject_sproject_context::COUNTRY_PRESENT,
-                context + nproject_sproject_context::SCIENTIST_PRESENT,
-                context + nproject_sproject_context::STATE_PRESENT,
-            ],
-            [8, 8, 4, 8, 16, 1, 1, 1],
-            [M_HISTORY; 8],
-        ) else {
-            *hist_dead = true;
-            return;
-        };
-        if completed < 1
-            || pool_u64(log, starts[0]) != expected as u64
-            || completed < 4
-            || pool_u64(log, starts[3]) != context_expected as u64
-            || completed < 8
-        {
-            *hist_dead = true;
-            return;
-        }
-        for (present, offset) in [
-            (starts[5], nproject_sproject_context::COUNTRY_REFERENCE),
-            (starts[6], nproject_sproject_context::SCIENTIST_REFERENCE),
-            (starts[7], nproject_sproject_context::STATE_REFERENCE),
-        ] {
-            if log.bytes[present] != 0 && log.take(memory, context + offset, 4, M_HISTORY).is_none()
-            {
-                *hist_dead = true;
-                return;
-            }
-        }
-    }
 }
 
 /// Parsed breakthrough tree links for the traversal mirror.
@@ -495,7 +187,7 @@ struct BreakthroughLinks {
     nil: bool,
 }
 
-fn parse_links(log: &RawLog<4>, pointers: usize, nil: usize) -> Option<BreakthroughLinks> {
+fn parse_links(log: &RawLog<2>, pointers: usize, nil: usize) -> Option<BreakthroughLinks> {
     if log.bytes[nil] > 1 {
         return None;
     }
@@ -510,7 +202,7 @@ fn parse_links(log: &RawLog<4>, pointers: usize, nil: usize) -> Option<Breakthro
 
 /// Mirror of `Links::read` for the tree sentinel: links and nil byte.
 fn copy_breakthrough_links(
-    log: &mut RawLog<4>,
+    log: &mut RawLog<2>,
     memory: &impl Memory,
     address: usize,
 ) -> Option<BreakthroughLinks> {
@@ -545,7 +237,7 @@ impl TreeNodes {
     /// when the node is current. Returns the links and the payload's span.
     fn read(
         &mut self,
-        log: &mut RawLog<4>,
+        log: &mut RawLog<2>,
         memory: &impl Memory,
         address: usize,
     ) -> Option<(BreakthroughLinks, Option<usize>)> {
@@ -612,7 +304,7 @@ impl BreakthroughChain {
 /// Mirror of `successor`: the identical link-following sequence with local
 /// cycle detection. Any failure aborts the breakthroughs walk.
 fn copy_breakthrough_successor(
-    log: &mut RawLog<4>,
+    log: &mut RawLog<2>,
     memory: &impl Memory,
     nodes: &mut TreeNodes,
     header: usize,
@@ -665,7 +357,7 @@ fn copy_breakthrough_successor(
 /// root and the in-order node/payload sequence. Capacity truncation is
 /// ignored (a superset is staged); order and coherence checks are local.
 fn copy_breakthrough_tree(
-    log: &mut RawLog<4>,
+    log: &mut RawLog<2>,
     memory: &impl Memory,
     base: usize,
     status: usize,
@@ -745,7 +437,7 @@ fn copy_breakthrough_tree(
 }
 
 /// Mirror of `walk`'s read set for breakthroughs across the shared census.
-fn copy_breakthroughs(log: &mut RawLog<4>, memory: &impl Memory, base: usize, statuses: &[usize]) {
+fn copy_breakthroughs(log: &mut RawLog<2>, memory: &impl Memory, base: usize, statuses: &[usize]) {
     for &status in statuses {
         if !copy_breakthrough_tree(log, memory, base, status) || log.overflowed {
             return;
@@ -815,10 +507,6 @@ fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut Pro
     if job.log.overflowed {
         return;
     }
-    copy_project_tables(&mut job.log, memory, base, shared, &job.statuses);
-    if job.log.overflowed {
-        return;
-    }
     copy_breakthroughs(&mut job.log, memory, base, &job.statuses);
 }
 
@@ -826,7 +514,7 @@ fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut Pro
 /// the first slot not read (the country count when every slot was read); a
 /// failed slot keeps the census before it, where every walk stops.
 fn copy_census(
-    log: &mut RawLog<4>,
+    log: &mut RawLog<2>,
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -881,7 +569,7 @@ fn copy_census(
 /// slot already staged is not staged again. `None` ends the census; an inner
 /// `None` is a null slot, skipped without further reads.
 fn copy_slot(
-    log: &mut RawLog<4>,
+    log: &mut RawLog<2>,
     memory: &impl Memory,
     vtable: u64,
     countries: &Array,
@@ -947,7 +635,7 @@ fn copy_slot(
 
 /// Acquire one refresh into an owned job.
 /// The caller applies the costs after acquisition has completed.
-/// The caller schedules this only for the four daily project tables.
+/// The caller schedules this only for the two daily project tables.
 pub(crate) fn copy_projects_refresh(
     memory: &impl Memory,
     ctx: ProjectsCopyContext,
@@ -971,14 +659,15 @@ pub(crate) fn copy_projects_refresh(
     }
     ProjectsCopyReport {
         raw_ok: !job.log.overflowed,
-        copy_ticks: [elapsed(started), 0, 0, 0],
+        copy_ticks: [elapsed(started), 0],
         raw_bytes: job.log.raw_bytes,
     }
 }
 
 impl Captured {
     /// Mark an accepted acquisition failure without retrying live memory.
-    /// Only the four project tables are affected; independent tables retain their results.
+    /// Only the two raw-copied project tables are affected; the others retain
+    /// their results.
     pub(crate) fn fail_projects_capture(&mut self, active: bool, reason: &'static str) {
         let reason = if active {
             reason
@@ -986,8 +675,6 @@ impl Captured {
             replay::cadence::SKIPPED_REASON
         };
         self.programs.outcome = Outcome::Unavailable { reason };
-        self.projects.outcome = Outcome::Unavailable { reason };
-        self.history.outcome = Outcome::Unavailable { reason };
         self.breakthroughs.outcome = Outcome::Unavailable { reason };
         self.names.reset();
         self.required_candidates = 0;
@@ -1003,7 +690,7 @@ impl Captured {
         &mut self,
         base: usize,
         job: &ProjectsJob,
-        decode_ticks: &mut [u64; 4],
+        decode_ticks: &mut [u64; RAW.len()],
     ) {
         if !job.active {
             self.fail_projects_capture(false, replay::cadence::SKIPPED_REASON);
@@ -1023,15 +710,6 @@ impl Captured {
         self.names.len = first.bytes_len;
         self.names.required = first.required_bytes;
         self.required_candidates = first.required_candidates;
-        let (projects, histories) = nproject_cproject::walk_with_history_buffer(
-            &recorded,
-            base,
-            job.game_state,
-            engine::walk::Buffer::for_worker(&mut self.projects.rows, job.worker_growth),
-            engine::walk::Buffer::for_worker(&mut self.history.rows, job.worker_growth),
-        );
-        self.projects.outcome = bounded(projects, self.projects.rows.len());
-        self.history.outcome = bounded(histories, self.history.rows.len());
         self.breakthroughs.outcome = bounded(
             nproject_cbreakthrough_progress::walk_buffer(
                 &recorded,
@@ -1051,7 +729,7 @@ impl Captured {
 /// the typed callers also turn into a walk error). Either way the replay
 /// derives the identical reason from the same recorded span.
 fn copy_link(
-    log: &mut RawLog<4>,
+    log: &mut RawLog<2>,
     memory: &impl Memory,
     links: &Array,
     countries: u32,
@@ -1086,7 +764,7 @@ impl ProjectCensus<'_> {
 /// A slot a failed census never reached is staged here, as the walk reads it
 /// before reaching that slot itself. Local checks match the walk exactly.
 fn copy_resolve(
-    log: &mut RawLog<4>,
+    log: &mut RawLog<2>,
     memory: &impl Memory,
     census: ProjectCensus<'_>,
     raw: u32,
@@ -1120,7 +798,7 @@ fn copy_resolve(
 /// resolution, staged once for all three walks. `None` aborts them exactly
 /// like the typed error.
 fn copy_status(
-    log: &mut RawLog<4>,
+    log: &mut RawLog<2>,
     memory: &impl Memory,
     base: usize,
     census: ProjectCensus<'_>,
@@ -1157,7 +835,7 @@ fn copy_status(
 /// active-project handle, building terminator and payload, owner link.
 /// String parses are local; any failure aborts the programs walk.
 pub(super) fn copy_program_row(
-    log: &mut RawLog<4>,
+    log: &mut RawLog<2>,
     memory: &impl Memory,
     base: usize,
     census: ProjectCensus<'_>,
@@ -1282,7 +960,7 @@ pub(super) fn copy_program_row(
 /// spans: the replay censuses everything before decoding the first row. An
 /// incomplete census or status list ends the walk before its rows.
 fn copy_programs(
-    log: &mut RawLog<4>,
+    log: &mut RawLog<2>,
     memory: &impl Memory,
     base: usize,
     shared: ProjectCensus<'_>,

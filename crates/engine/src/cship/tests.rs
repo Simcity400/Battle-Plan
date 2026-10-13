@@ -1202,7 +1202,7 @@ fn model_hull_changed_token_pointer_and_capture_reacquire_complete_definition() 
         Err("ship model equipment definition identity mismatch")
     );
     assert_eq!(trace.reads.borrow().len(), 25);
-    assert_eq!(memo.hull.as_ref().unwrap().token, 11_u32.to_le_bytes());
+    assert_eq!(memo.hull.as_ref().unwrap().key.2, 11_u32.to_le_bytes());
     for (definition, reset, text) in [
         (DEFINITIONS[0], false, b'B'),
         (DEFINITIONS[1], false, b'C'),
@@ -1238,6 +1238,47 @@ fn model_hull_changed_token_pointer_and_capture_reacquire_complete_definition() 
             (census.calls(), census.spans(), census.bytes()),
             (17, 26, 309)
         );
+    }
+}
+
+#[test]
+fn worker_model_memo_reuses_every_completed_hull_definition_of_the_capture() {
+    // Ships of one task force alternate hull definitions: A, B, then A again.
+    let mut bytes = full_model_fixture();
+    let first = BASE + DEFINITIONS[0]..BASE + DEFINITIONS[1];
+    for growing in [false, true] {
+        let mut memo = ModelMemo::default();
+        if growing {
+            memo.enable_worker_growth();
+        }
+        for (second, sprite) in [(false, b'A'), (true, b'B')] {
+            word(&mut bytes, BANK + 24, if second { 6 } else { 1 });
+            let source = SliceMemory {
+                base: BASE,
+                bytes: &bytes,
+            };
+            let row = traced_model_memo(&source, &mut memo).unwrap();
+            assert_eq!(row.hull_sprite.as_bytes(), &[sprite]);
+        }
+        word(&mut bytes, BANK + 24, 1);
+        let source = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let trace = Trace::new(&source);
+        let row = traced_model_memo(&trace, &mut memo).unwrap();
+        assert_eq!(row, traced_model(&source).unwrap());
+        let definition_reads = trace
+            .reads
+            .borrow()
+            .iter()
+            .filter(|(address, _)| first.contains(address))
+            .count();
+        // The fixed reader rereads the identity and sprite; a worker reuses
+        // the capture's earlier complete observation of that definition.
+        assert_eq!(definition_reads, if growing { 0 } else { 2 });
+        memo.reset();
+        assert!(!memo.growing && memo.hull.is_none() && memo.hulls.is_empty());
     }
 }
 
@@ -1887,4 +1928,150 @@ fn worker_model_text_keeps_mod_sized_sprites_and_original_hull_memo() {
             assert_eq!(row.hull_sprite.as_bytes(), vec![b'X'; length]);
         }
     }
+}
+
+/// The model reader through gathered ship, task-force, pool-entry and
+/// variant fields ([`ShipFields`]) returns the direct reader's row, and for a
+/// fault at the first or last byte of any read either makes its exact
+/// failure, never reading a failed span again; it needs 10 guarded calls for
+/// the direct reader's 17. A later ship of the capture with the same
+/// variants gathers only itself and its pool entries for them.
+#[test]
+fn gathered_model_reads_equal_the_direct_reader_at_every_fault() {
+    use super::gathered::FaultAt;
+    use crate::read_census::ReadCensus;
+    fn through_fields(memory: &impl Memory) -> Result<ModelRow, &'static str> {
+        let mut fields = ShipFields::new(0);
+        fields.visit(memory, BASE);
+        traced_model(&fields.memory(memory))
+    }
+    let bytes = full_model_fixture();
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let direct = FaultAt::new(&source, None);
+    let healthy = traced_model(&direct);
+    assert!(healthy.is_ok());
+    let gathered = FaultAt::new(&source, None);
+    assert_eq!(through_fields(&gathered), healthy);
+    let mut edges = direct.edges();
+    edges.extend(gathered.edges());
+    edges.sort_unstable();
+    edges.dedup();
+    for fault in edges {
+        let direct = FaultAt::new(&source, Some(fault));
+        let gathered = FaultAt::new(&source, Some(fault));
+        assert_eq!(
+            through_fields(&gathered),
+            traced_model(&direct),
+            "fault at {fault:#x}"
+        );
+        assert!(!gathered.retried(), "fault at {fault:#x}");
+    }
+    let direct = ReadCensus::new(&source);
+    assert_eq!(traced_model(&direct), healthy);
+    let gathered = ReadCensus::new(&source);
+    assert_eq!(through_fields(&gathered), healthy);
+    assert_eq!((direct.calls(), gathered.calls()), (17, 10));
+    let census = ReadCensus::new(&source);
+    let mut fields = ShipFields::new(0);
+    fields.visit(&census, BASE);
+    census.reset();
+    fields.visit(&census, BASE);
+    assert_eq!(census.calls(), 2, "the ship and its pool entries");
+    assert_eq!(traced_model(&fields.memory(&census)), healthy);
+}
+
+/// A held ship serves its own objects without reading them: the row is the
+/// fresh read's, and only its task force and variants are gathered. A read
+/// of a changed field differs from the held one; an unchanged read does not.
+#[test]
+fn held_ships_serve_their_own_objects_without_reading_them() {
+    use crate::read_census::ReadCensus;
+    let bytes = full_model_fixture();
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let mut fields = ShipFields::new(0);
+    fields.visit(&source, BASE);
+    let healthy = traced_model(&fields.memory(&source));
+    assert!(healthy.is_ok());
+    let held = fields.held();
+    let census = ReadCensus::new(&source);
+    let mut fields = ShipFields::new(0);
+    fields.visit_held(&census, &held);
+    assert_eq!(census.calls(), 3, "the task force and the two variants");
+    assert_eq!(traced_model(&fields.memory(&census)), healthy);
+    assert_eq!(held.task_force(), BASE + PARENT);
+    let mut again = ShipFields::new(0);
+    again.visit(&source, BASE);
+    assert!(again.held().same(&held));
+    let mut changed = bytes.clone();
+    dword(&mut changed, MODEL_NUMBER, 7);
+    let mut fresh = ShipFields::new(0);
+    fresh.visit(
+        &SliceMemory {
+            base: BASE,
+            bytes: &changed,
+        },
+        BASE,
+    );
+    assert!(!fresh.held().same(&held));
+}
+
+/// A heap fallback sprite is gathered with the pool entries, terminator
+/// included: the row and every fault's failure are the direct reader's,
+/// never reading a failed span again, and the reader's terminator and
+/// payload reads cost no call.
+#[test]
+fn gathered_heap_sprites_equal_the_direct_reader_at_every_fault() {
+    use super::gathered::FaultAt;
+    use crate::read_census::ReadCensus;
+    fn through_fields(memory: &impl Memory) -> Result<ModelRow, &'static str> {
+        let mut fields = ShipFields::new(0);
+        fields.visit(memory, BASE);
+        traced_model(&fields.memory(memory))
+    }
+    let mut bytes = full_model_fixture();
+    let text = b"a_heap_fallback_sprite_name";
+    word(&mut bytes, FALLBACK_SPRITE, (BASE + HEAP) as u64);
+    word(&mut bytes, FALLBACK_SPRITE + 16, text.len() as u64);
+    word(&mut bytes, FALLBACK_SPRITE + 24, 31);
+    bytes[HEAP..HEAP + text.len()].copy_from_slice(text);
+    bytes[HEAP + text.len()] = 0;
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let direct = FaultAt::new(&source, None);
+    let healthy = traced_model(&direct);
+    assert_eq!(
+        healthy
+            .as_ref()
+            .map(|row| row.fallback_sprite.as_bytes().to_vec()),
+        Ok(text.to_vec())
+    );
+    let gathered = FaultAt::new(&source, None);
+    assert_eq!(through_fields(&gathered), healthy);
+    let mut edges = direct.edges();
+    edges.extend(gathered.edges());
+    edges.sort_unstable();
+    edges.dedup();
+    for fault in edges {
+        let direct = FaultAt::new(&source, Some(fault));
+        let gathered = FaultAt::new(&source, Some(fault));
+        assert_eq!(
+            through_fields(&gathered),
+            traced_model(&direct),
+            "fault at {fault:#x}"
+        );
+        assert!(!gathered.retried(), "fault at {fault:#x}");
+    }
+    let direct = ReadCensus::new(&source);
+    assert_eq!(traced_model(&direct), healthy);
+    let gathered = ReadCensus::new(&source);
+    assert_eq!(through_fields(&gathered), healthy);
+    assert_eq!((direct.calls(), gathered.calls()), (19, 10));
 }

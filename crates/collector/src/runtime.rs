@@ -5,6 +5,7 @@ use crate::{
     history::PreparedCampaigns,
     hook::{Hook, Threads},
     sampling::{self, ACTIVE, SHARED, Shared},
+    spool_phases::Phase,
     spooling::{Distribution, Processor},
 };
 use engine::{
@@ -28,7 +29,7 @@ use std::{
     path::{Path, PathBuf},
     ptr,
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -168,6 +169,13 @@ fn module_path(module: HMODULE) -> Result<PathBuf, &'static str> {
     }
     Ok(PathBuf::from(OsString::from_wide(&buffer[..len])))
 }
+/// A failed installation's message, naming the family, kept for the
+/// attachment: status and the terminal error borrow it until unload. Built
+/// once, on the runtime thread, only when installation fails.
+fn installation_message(message: String) -> &'static str {
+    Box::leak(message.into_boxed_str())
+}
+
 pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
     let _bootstrap = crate::allocation::enter(crate::allocation::Phase::Bootstrap);
     crate::allocation::install_hooks();
@@ -535,6 +543,9 @@ fn run(
     prepared_session: u64,
     prepared_process_start: u64,
 ) -> Result<(), &'static str> {
+    // Calibrate hook timing over the whole attachment, before any hook exists.
+    crate::hook_timing::start();
+    crate::thread_cpu::register(crate::thread_cpu::Role::Runtime);
     let dll_path = module_path(module)?;
     let config: Config = serde_json::from_slice(
         &fs::read(dll_path.with_file_name("collector.json"))
@@ -619,6 +630,8 @@ fn run(
         &crate::status::status!({"state":"starting", "session":session.id, "hours":0}),
     )
     .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
+    let progress = crate::progress::Progress::open(&config.output_dir);
+    progress.step("attach_started", None);
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     let memory = unsafe { LiveMemory::new() };
     let rva = cgame_state::HOURLY_UPDATE_RVA;
@@ -629,6 +642,7 @@ fn run(
     // The recorder uses this same exclusive handle before every finalization.
     // It protects both existing histories and campaigns with no replay yet.
     let output_lock = reserve_output(&config, &detach)?;
+    progress.step("output_reserved", None);
     let history = PreparedCampaigns::load(&config.replay_dir, &session, |campaign| {
         if config.cancel_file.exists() || detach.signaled() {
             return Err(io::Error::from(io::ErrorKind::Interrupted));
@@ -645,12 +659,14 @@ fn run(
     crate::politics_changes::restore_epoch(history.politics_epoch())?;
     crate::operation_outcomes::restore_sequence(history.completion_sequence())?;
     crate::naval_result_sources::restore_sequence(history.naval_result_sequence())?;
+    progress.step("history_loaded", None);
     let event_feed_sequence = history.event_feed_sequence();
     let event_feed_generation = history.event_feed_generation().unwrap_or(1).max(1);
     let event_feed_counts = history.event_feed_counts();
-    let [air_loss_sequence, bombing_sequence] = history.air_event_sequences();
+    let [air_loss_sequence, bombing_sequence, nuclear_sequence] = history.event_ledger_sequences();
     crate::air_losses::restore_sequence(air_loss_sequence)?;
     crate::building_bombing::restore_sequence(bombing_sequence)?;
+    crate::nuclear_strikes::restore_sequence(nuclear_sequence)?;
     let mut processor = Processor::new(&config.output_dir, history, session.clone())
         .map_err(|error| error_reason(error, "collector bootstrap preparation failed"))?;
     let mut hook = unsafe { Hook::new(base + rva, sampling::tick as *const () as usize, sentinel) }
@@ -659,6 +675,36 @@ fn run(
     let mut advisor_hooks = unsafe { crate::advisor_changes::Hooks::new(&memory, base) }?;
     let mut relation_hooks = unsafe { crate::relation_changes::Hooks::new(&memory, base) }?;
     let mut history_hooks = unsafe { crate::history_changes::Hooks::new(&memory, base) }?;
+    let mut flag_hooks = unsafe { crate::flag_changes::Hooks::new(&memory, base) }?;
+    let mut building_hooks = unsafe { crate::building_changes::Hooks::new(&memory, base) }?;
+    let mut advisor_pool_hooks = unsafe { crate::advisor_pool_changes::Hooks::new(&memory, base) }?;
+    let mut party_leader_hooks = unsafe { crate::party_leader_changes::Hooks::new(&memory, base) }?;
+    let mut variable_hooks = unsafe { crate::variable_changes::Hooks::new(&memory, base) }?;
+    let mut party_hooks = unsafe { crate::party_changes::Hooks::new(&memory, base) }?;
+    let mut wing_hooks = unsafe { crate::wing_changes::Hooks::new(&memory, base) }?;
+    let mut roster_hooks = unsafe { crate::roster_changes::Hooks::new(&memory, base) }?;
+    let mut political_status_hooks =
+        unsafe { crate::political_status_changes::Hooks::new(&memory, base) }?;
+    let mut mission_hooks = unsafe { crate::mission_changes::Hooks::new(&memory, base) }?;
+    let mut rail_hooks = unsafe { crate::rail_changes::Hooks::new(&memory, base) }?;
+    let mut territory_hooks = unsafe { crate::territory_changes::Hooks::new(&memory, base) }?;
+    let mut army_stat_hooks = unsafe { crate::army_stat_changes::Hooks::new(&memory, base) }?;
+    let mut country_input_hooks =
+        unsafe { crate::country_input_changes::Hooks::new(&memory, base) }?;
+    let mut raid_hooks = unsafe { crate::raid_changes::Hooks::new(&memory, base) }?;
+    let mut naval_tree_hooks = unsafe { crate::naval_tree_changes::Hooks::new(&memory, base) }?;
+    let mut unit_leader_hooks = unsafe { crate::unit_leader_changes::Hooks::new(&memory, base) }?;
+    let mut census_hooks = unsafe { crate::census_changes::Hooks::new(&memory, base) }?;
+    let mut world_input_hooks = unsafe { crate::world_input_changes::Hooks::new(&memory, base) }?;
+    let mut air_record_hooks = unsafe { crate::air_record_changes::Hooks::new(&memory, base) }?;
+    let mut local_subunit_hooks =
+        unsafe { crate::local_subunit_changes::Hooks::new(&memory, base) }?;
+    let mut template_hooks = unsafe { crate::template_changes::Hooks::new(&memory, base) }?;
+    let mut ship_model_hooks = unsafe { crate::ship_model_changes::Hooks::new(&memory, base) }?;
+    let mut province_unit_hooks =
+        unsafe { crate::province_unit_changes::Hooks::new(&memory, base) }?;
+    let mut air_base_carry_hooks =
+        unsafe { crate::air_base_carry_changes::Hooks::new(&memory, base) }?;
     // A family whose sentinels differ is left uninstalled; it reads as before.
     let mut opinion_hooks = unsafe { crate::opinion_changes::Hooks::new(&memory, base) }?;
     let mut destruction_hooks = unsafe { crate::equipment_destruction::Hooks::new(&memory, base) };
@@ -666,6 +712,7 @@ fn run(
     let mut experience_hooks = unsafe { crate::experience_gains::Hooks::new(&memory, base) };
     let mut air_loss_hooks = unsafe { crate::air_losses::Hooks::new(&memory, base) };
     let mut bombing_hooks = unsafe { crate::building_bombing::Hooks::new(&memory, base) };
+    let mut nuclear_hooks = unsafe { crate::nuclear_strikes::Hooks::new(&memory, base) };
     let events = crate::country_scale::observe_production_output(&memory, base).unwrap_or(0);
     let mut line_hooks = unsafe { crate::line_output::Hooks::new(&memory, base, events) };
     let mut world_hooks =
@@ -681,6 +728,7 @@ fn run(
         unsafe { crate::operation_outcomes::Hooks::new(&memory, base, config.operation_outcomes) };
     let mut politics_hooks =
         unsafe { crate::politics_changes::Hooks::new(&memory, base, config.politics_capture) };
+    progress.step("hooks_prepared", None);
     // Size every country-proportional buffer from the live registry before
     // the hook exists. At the main menu the registry may still be empty; the
     // spool thread then raises capacities as soon as a save fills it.
@@ -698,8 +746,6 @@ fn run(
             slots,
         )
     }?;
-    let mut directed_query_hooks =
-        unsafe { crate::directed_war_queries::Hooks::new(&memory, base, slots) }?;
     crate::politics_changes::resize(
         crate::country_scale::observe_politics_demand(&memory, base, slots).unwrap_or(slots),
         processor
@@ -707,6 +753,7 @@ fn run(
             .unwrap_or(0),
     );
     crate::relation_changes::presize(slots);
+    crate::world_input_changes::presize(slots);
     crate::history_changes::presize(slots, strategic_regions(&memory, base));
     let mut sizing = crate::country_scale::Sizing::for_slots(slots);
     match crate::country_scale::source_demand::Demand::observe(&memory, base) {
@@ -742,11 +789,6 @@ fn run(
             .map_err(|error| error_reason(error, "game score sizing status allocation failed"))?;
     }
     let _ = sizing.extended.combat_progress.presize(&memory, base);
-    if let Some(count) = processor.observe_input_demand(
-        crate::country_scale::observe_ship_strike_metadata(&memory, base),
-    ) {
-        sizing.extended.ship_models.raise_for_strike_metadata(count);
-    }
     crate::equipment_destruction::prepare(&memory, base, slots);
     crate::experience_gains::prepare(slots);
     sizing.extended.equipment_destruction = crate::equipment_destruction::capacity();
@@ -755,8 +797,10 @@ fn run(
     sizing.extended.naval_result_sources = crate::naval_result_sources::capacity();
     crate::air_losses::prepare(&memory, base, slots);
     crate::building_bombing::prepare(&memory, base, slots);
+    crate::nuclear_strikes::presize(crate::building_bombing::buildings().saturating_add(slots));
     sizing.extended.air_losses.events = crate::air_losses::capacity();
     sizing.extended.building_bombing = crate::building_bombing::capacity();
+    sizing.extended.nuclear_strikes = crate::nuclear_strikes::capacity();
     sizing.content = engine::cdlc_manager::observe_counts(&memory, base);
     if let Some(rows) = processor
         .observe_input_demand(crate::country_scale::observe_country_intel(&memory, base))
@@ -786,60 +830,41 @@ fn run(
         crate::country_scale::note_railway_gun_names(demand);
         sizing.extended.railway_guns.raise_for_names(demand);
     }
-    let mut fresh_eta_map = crate::country_scale::FreshEtaMapCache::default();
-    let mut naval_foreign_scratch = 0;
     if let Some(demand) = processor
-        .observe_input_demand(crate::country_scale::observe_fresh_eta(
-            &memory,
-            base,
-            &mut fresh_eta_map,
-            &mut naval_foreign_scratch,
-        ))
+        .observe_input_demand(crate::country_scale::observe_map(&memory, base))
         .flatten()
     {
         for reason in demand.map_refusals() {
             processor.observe_input_demand_error(reason);
         }
-        if let Some(reason) = demand.naval.refusal() {
+        if let Some(reason) = demand.navies.refusal() {
             processor.observe_input_demand_error(reason);
         }
         if let Ok(carrier) = demand.carrier {
             crate::country_scale::note_carrier_demand(carrier);
         }
-        sizing
-            .raise_for_fresh_map(&demand)
-            .map_err(|error| error_reason(error, "fresh ETA map sizing failed"))?;
-        let _ = processor.observe_input_demand(
-            sizing
-                .extended
-                .country_counters
-                .raise_for_movement(demand.movement),
-        );
+        sizing.raise_for_map(&demand);
         sizing
             .extended
             .country_counters
-            .raise_for_naval_movement(demand.naval.capacities);
-        sizing
-            .extended
-            .country_appearance
-            .raise_for_naval_movement(demand.naval.shared);
+            .raise_for_physical_navies(demand.navies.capacities);
         sizing
             .extended
             .naval_counters
-            .raise_for_names(demand.naval.name_rows, demand.naval.name_bytes);
+            .raise_for_names(demand.navies.name_rows, demand.navies.name_bytes);
         sizing
             .extended
             .naval_counters
-            .raise_for_supply_origins(demand.naval.supply_origins);
+            .raise_for_supply_origins(demand.navies.supply_origins);
         let _ = processor.observe_input_demand(
             sizing
                 .extended
                 .naval_counters
-                .raise_for_port(demand.naval.port),
+                .raise_for_port(demand.navies.port),
         );
     }
     if let Some(demand) = processor
-        .observe_input_demand(crate::country_scale::observe_attrition_inputs(
+        .observe_input_demand(crate::country_scale::observe_presentation_census(
             &memory, base,
         ))
         .flatten()
@@ -850,7 +875,7 @@ fn run(
         sizing
             .extended
             .division_presentation
-            .raise_for_attrition(demand);
+            .raise_for_census(demand);
     }
     if let Some(demand) = processor
         .observe_input_demand(crate::country_scale::observe_raid_arenas(&memory, base))
@@ -903,6 +928,7 @@ fn run(
         sizing.extended.economy.demand.raise(demand);
     }
     sizing.extended.operation_outcomes.prepare();
+    progress.step("inputs_sized", None);
     let combat_hints = CombatHints::observe(&memory, base);
     for reason in combat_hints.failures.into_iter().flatten() {
         processor.observe_input_demand_error(reason);
@@ -925,15 +951,40 @@ fn run(
     ranges.extend(advisor_hooks.executable_ranges());
     ranges.extend(relation_hooks.executable_ranges());
     ranges.extend(history_hooks.executable_ranges());
+    ranges.extend(flag_hooks.executable_ranges());
+    ranges.extend(building_hooks.executable_ranges());
+    ranges.extend(advisor_pool_hooks.executable_ranges());
+    ranges.extend(party_leader_hooks.executable_ranges());
+    ranges.extend(variable_hooks.executable_ranges());
+    ranges.extend(party_hooks.executable_ranges());
+    ranges.extend(wing_hooks.executable_ranges());
+    ranges.extend(roster_hooks.executable_ranges());
+    ranges.extend(political_status_hooks.executable_ranges());
+    ranges.extend(mission_hooks.executable_ranges());
+    ranges.extend(rail_hooks.executable_ranges());
+    ranges.extend(territory_hooks.executable_ranges());
+    ranges.extend(army_stat_hooks.executable_ranges());
+    ranges.extend(country_input_hooks.executable_ranges());
+    ranges.extend(raid_hooks.executable_ranges());
+    ranges.extend(naval_tree_hooks.executable_ranges());
+    ranges.extend(unit_leader_hooks.executable_ranges());
+    ranges.extend(census_hooks.executable_ranges());
+    ranges.extend(world_input_hooks.executable_ranges());
+    ranges.extend(air_record_hooks.executable_ranges());
+    ranges.extend(local_subunit_hooks.executable_ranges());
+    ranges.extend(template_hooks.executable_ranges());
+    ranges.extend(ship_model_hooks.executable_ranges());
+    ranges.extend(province_unit_hooks.executable_ranges());
+    ranges.extend(air_base_carry_hooks.executable_ranges());
     ranges.extend(opinion_hooks.executable_ranges());
     ranges.extend(destruction_hooks.executable_ranges());
     ranges.extend(naval_result_hooks.executable_ranges());
     ranges.extend(experience_hooks.executable_ranges());
     ranges.extend(air_loss_hooks.executable_ranges());
     ranges.extend(bombing_hooks.executable_ranges());
+    ranges.extend(nuclear_hooks.executable_ranges());
     ranges.extend(line_hooks.executable_ranges());
     ranges.extend(event_feed_hooks.executable_ranges());
-    ranges.extend(directed_query_hooks.executable_ranges());
     ranges.extend(world_hooks.executable_ranges());
     ranges.extend(peace_hooks.executable_ranges());
     ranges.extend(land_hooks.executable_ranges());
@@ -950,10 +1001,9 @@ fn run(
         .prepare_clock_capture(&memory)
         .map_err(|_| "clock preparation allocation failed")?;
     let shared = Arc::new(shared);
+    progress.step("shared_started", None);
     let mut spool_state = SpoolState {
         sizing,
-        fresh_eta_map,
-        naval_foreign_scratch,
         applied_combat_hints: [CombatHintState::default(); sampling::BUFFERS],
     };
     grow_combat_hints(
@@ -982,6 +1032,26 @@ fn run(
     }
     let acquisition = shared.acquisition.get().expect("initialized before hook");
     let mut owned_workers = acquisition.thread_ids();
+    // The conversion helpers are collector workers for every quiescence check
+    // and join with the processor when the spool thread returns. Without them
+    // the spool thread converts every table itself, with identical output.
+    for role in [
+        crate::thread_cpu::Role::SpoolHelper,
+        crate::thread_cpu::Role::SecondSpoolHelper,
+    ] {
+        if let Ok(helper) = crate::spool_helper::SpoolHelper::start() {
+            owned_workers.push(helper.thread_id());
+            crate::thread_cpu::register_id(role, helper.thread_id());
+            processor.set_helper(helper);
+        }
+    }
+    // The sizing thread is a collector worker too; the spool thread owns it
+    // and joins it before returning. Without it the spool thread sizes.
+    let sizing = SizingThread::start(Arc::clone(&shared), spool_state);
+    if let Some(id) = sizing.thread_id() {
+        owned_workers.push(id);
+        crate::thread_cpu::register_id(crate::thread_cpu::Role::SpoolSizing, id);
+    }
     let spool_id = Arc::new(AtomicU32::new(0));
     let spool_thread_id = Arc::clone(&spool_id);
     let spool_shared = Arc::clone(&shared);
@@ -996,15 +1066,17 @@ fn run(
     let session_id = session.id;
     let spool = std::thread::Builder::new()
         .name("hoi4-spool".into())
+        .stack_size(BACKGROUND_STACK_BYTES)
         .spawn(move || {
             spool_thread_id.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
+            crate::thread_cpu::register(crate::thread_cpu::Role::Spool);
             spool_loop(
                 &spool_shared,
                 &config,
                 session,
                 processor,
                 &spool_status,
-                spool_state,
+                sizing,
                 spool_writer,
                 &spool_teardown_status,
             )
@@ -1015,23 +1087,22 @@ fn run(
         std::thread::yield_now();
     }
     owned_workers.extend([spool_id.load(Ordering::Acquire), decode::worker_id()]);
+    progress.step("workers_started", None);
     if crate::allocation::failed() {
         installation_error = Some("collector allocation failed before hooks");
     }
     SHARED.store(Arc::as_ptr(&shared).cast_mut(), Ordering::Release);
     let deadline = Instant::now() + Duration::from_secs(15);
+    // The family each attempt reached: the one that failed, or that was
+    // still not ready when the deadline expired.
+    let stage = crate::progress::Stage::new(&progress, "world_lifetime");
     while installation_error.is_none() && !crate::allocation::failed() {
+        stage.set("world_lifetime");
         match world_hooks
             .set_enabled(true)
             .and_then(|ready| {
                 if ready {
-                    directed_query_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
+                    stage.set("fuel_awards");
                     fuel_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -1039,6 +1110,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("advisor_changes");
                     advisor_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -1046,6 +1118,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("portrait_changes");
                     portrait_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -1053,6 +1126,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("relation_changes");
                     relation_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -1060,6 +1134,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("history_changes");
                     history_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -1067,6 +1142,207 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("flag_changes");
+                    flag_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("building_changes");
+                    building_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("advisor_pool_changes");
+                    advisor_pool_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("party_leader_changes");
+                    party_leader_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("variable_changes");
+                    variable_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("party_changes");
+                    party_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("wing_changes");
+                    wing_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("roster_changes");
+                    roster_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("political_status_changes");
+                    political_status_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("mission_changes");
+                    mission_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("rail_changes");
+                    rail_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("territory_changes");
+                    territory_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("army_stat_changes");
+                    army_stat_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("country_input_changes");
+                    country_input_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("raid_changes");
+                    raid_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("naval_tree_changes");
+                    naval_tree_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("unit_leader_changes");
+                    unit_leader_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("census_changes");
+                    census_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("world_input_changes");
+                    world_input_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("local_subunit_changes");
+                    local_subunit_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("province_unit_changes");
+                    province_unit_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("air_record_changes");
+                    air_record_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("template_changes");
+                    template_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("ship_model_changes");
+                    ship_model_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("air_base_carry_changes");
+                    air_base_carry_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("opinion_changes");
                     opinion_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -1074,6 +1350,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("line_output");
                     line_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -1081,6 +1358,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("peace_settlements");
                     peace_hooks
                         .set_enabled(true)
                         .map_err(|_| "peace hook installation failed")
@@ -1090,6 +1368,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("land_events");
                     land_hooks
                         .set_enabled(true)
                         .map_err(|_| "land event hook installation failed")
@@ -1099,6 +1378,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("construction_ic");
                     construction_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -1106,6 +1386,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("logistics_balance");
                     logistics_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -1113,6 +1394,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("combat_log_prune");
                     prune_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -1120,6 +1402,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("equipment_destruction");
                     destruction_hooks
                         .set_enabled(true)
                         .map_err(|_| "equipment destruction hook installation failed")
@@ -1129,8 +1412,10 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("event_feed_observer");
                     event_feed_hooks.set_enabled(true).and_then(|ready| {
                         if ready {
+                            stage.set("experience_gains");
                             experience_hooks.set_enabled(true)
                         } else {
                             Ok(false)
@@ -1142,6 +1427,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("operation_outcomes");
                     operation_hooks
                         .set_enabled(true)
                         .map_err(|_| "operation outcome hook installation failed")
@@ -1151,6 +1437,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("politics_changes");
                     politics_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -1158,6 +1445,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("naval_result_sources");
                     naval_result_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -1165,6 +1453,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("air_losses");
                     air_loss_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -1172,6 +1461,7 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("building_bombing");
                     bombing_hooks.set_enabled(true)
                 } else {
                     Ok(false)
@@ -1179,6 +1469,15 @@ fn run(
             })
             .and_then(|ready| {
                 if ready {
+                    stage.set("nuclear_strikes");
+                    nuclear_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    stage.set("hourly");
                     hook.set_enabled(true)
                         .map_err(|_| "hourly hook installation failed")
                 } else {
@@ -1187,15 +1486,29 @@ fn run(
             }) {
             Ok(true) => break,
             Ok(false) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
-            error => {
-                let _ = error;
-                installation_error = Some("hook installation failed");
+            // Recorded in status and, as the terminal error, in
+            // collector.error.txt, which the recorder prints to stderr.
+            Ok(false) => {
+                installation_error = Some(installation_message(format!(
+                    "{} hooks were still not ready when the 15 s installation deadline expired",
+                    stage.get()
+                )));
+                break;
+            }
+            Err(reason) => {
+                installation_error = Some(installation_message(format!(
+                    "{} hook installation failed: {reason}",
+                    stage.get()
+                )));
                 break;
             }
         }
     }
     if installation_error.is_none() && !crate::allocation::failed() {
+        progress.step("ready", None);
         ready.set();
+    } else {
+        progress.step("installation_refused", None);
     }
     while installation_error.is_none()
         && !detach.signaled()
@@ -1214,6 +1527,7 @@ fn run(
     shared.cancel_buffer_wait.store(true, Ordering::Release);
     let decode_stopped_early = installation_error.is_none() && decode::worker_finished();
     let detach_started = Instant::now();
+    progress.step("detach_requested", None);
     let mut event_feed_detach = None;
     // Retain every callback, worker and frame owner on refusal. Keep an earlier
     // terminal fault separate from the new stop diagnostic.
@@ -1242,9 +1556,9 @@ fn run(
                 }
                 std::mem::forget((
                     $workers, hook, portrait_hooks, advisor_hooks, relation_hooks,
-                    history_hooks, opinion_hooks, destruction_hooks, naval_result_hooks,
-                    air_loss_hooks, bombing_hooks, line_hooks, land_hooks, prune_hooks,
-                    construction_hooks, experience_hooks, event_feed_hooks, directed_query_hooks, world_hooks,
+                    history_hooks, flag_hooks, building_hooks, advisor_pool_hooks, party_leader_hooks, variable_hooks, party_hooks, wing_hooks, roster_hooks, political_status_hooks, mission_hooks, rail_hooks, territory_hooks, army_stat_hooks, country_input_hooks, raid_hooks, naval_tree_hooks, air_record_hooks, world_input_hooks, opinion_hooks, destruction_hooks, naval_result_hooks, local_subunit_hooks, template_hooks, ship_model_hooks, province_unit_hooks, air_base_carry_hooks, unit_leader_hooks, census_hooks,
+                    air_loss_hooks, bombing_hooks, nuclear_hooks, line_hooks, land_hooks, prune_hooks,
+                    construction_hooks, experience_hooks, event_feed_hooks, world_hooks,
                     fuel_hooks, operation_hooks, politics_hooks, logistics_hooks,
                     peace_hooks, shared, output_lock, _payload_pools,
                 ));
@@ -1266,6 +1580,10 @@ fn run(
         },
         || std::thread::sleep(Duration::from_millis(100)),
     );
+    progress.step(
+        "hourly_restored",
+        Some(u64::from(restored[RestoreFamily::Hourly as usize])),
+    );
     if !restored[RestoreFamily::Hourly as usize] {
         shared.recording.store(false, Ordering::Release);
     }
@@ -1273,12 +1591,14 @@ fn run(
     // observers, proves that no callback can submit another acquisition job.
     HOURLY_ADMISSION.close();
     if let Err(reason) = wait_acquisitions(&HOURLY_ADMISSION, detach_started) {
+        progress.step("acquisitions_refused", None);
         retain_detach!(
             reason,
             installation_error.or(Some(reason)),
             (spool, status_writer)
         );
     }
+    progress.step("acquisitions_quiet", None);
     // Keep mutation observation intact until the last acquisition has finished.
     // Every round visits all unfinished families even if an earlier one refuses.
     // A damaged enabled patch still prevents unloading its relay and this DLL.
@@ -1286,42 +1606,84 @@ fn run(
     let restore_result = loop {
         // Keep invalidation published while any older native invocation can
         // still reach an observer post reader, even after its site was restored.
+        let mut toggle = |family| match family {
+            RestoreFamily::Hourly => hook
+                .set_enabled(false)
+                .map_err(|_| "hourly hook restoration failed"),
+            RestoreFamily::EquipmentDestruction => destruction_hooks
+                .set_enabled(false)
+                .map_err(|_| "equipment destruction hook restoration failed"),
+            RestoreFamily::Land => land_hooks
+                .set_enabled(false)
+                .map_err(|_| "land event hook restoration failed"),
+            RestoreFamily::Portrait => portrait_hooks.set_enabled(false),
+            RestoreFamily::Opinion => opinion_hooks.set_enabled(false),
+            RestoreFamily::Construction => construction_hooks.set_enabled(false),
+            RestoreFamily::LineOutput => line_hooks.set_enabled(false),
+            RestoreFamily::CombatLogPrune => prune_hooks.set_enabled(false),
+            RestoreFamily::Advisor => advisor_hooks.set_enabled(false),
+            RestoreFamily::Relation => relation_hooks.set_enabled(false),
+            RestoreFamily::History => history_hooks.set_enabled(false),
+            RestoreFamily::Flags => flag_hooks.set_enabled(false),
+            RestoreFamily::Buildings => building_hooks.set_enabled(false),
+            RestoreFamily::AdvisorPools => advisor_pool_hooks.set_enabled(false),
+            RestoreFamily::PartyLeaders => party_leader_hooks.set_enabled(false),
+            RestoreFamily::Variables => variable_hooks.set_enabled(false),
+            RestoreFamily::Parties => party_hooks.set_enabled(false),
+            RestoreFamily::Wings => wing_hooks.set_enabled(false),
+            RestoreFamily::Roster => roster_hooks.set_enabled(false),
+            RestoreFamily::PoliticalStatus => political_status_hooks.set_enabled(false),
+            RestoreFamily::Missions => mission_hooks.set_enabled(false),
+            RestoreFamily::Rails => rail_hooks.set_enabled(false),
+            RestoreFamily::Territory => territory_hooks.set_enabled(false),
+            RestoreFamily::ArmyStats => army_stat_hooks.set_enabled(false),
+            RestoreFamily::CountryInputs => country_input_hooks.set_enabled(false),
+            RestoreFamily::Raid => raid_hooks.set_enabled(false),
+            RestoreFamily::NavalTrees => naval_tree_hooks.set_enabled(false),
+            RestoreFamily::UnitLeaders => unit_leader_hooks.set_enabled(false),
+            RestoreFamily::Census => census_hooks.set_enabled(false),
+            RestoreFamily::WorldInputs => world_input_hooks.set_enabled(false),
+            RestoreFamily::AirRecords => air_record_hooks.set_enabled(false),
+            RestoreFamily::LocalSubunits => local_subunit_hooks.set_enabled(false),
+            RestoreFamily::Templates => template_hooks.set_enabled(false),
+            RestoreFamily::ShipModels => ship_model_hooks.set_enabled(false),
+            RestoreFamily::ProvinceUnits => province_unit_hooks.set_enabled(false),
+            RestoreFamily::AirBaseCarry => air_base_carry_hooks.set_enabled(false),
+            RestoreFamily::Experience => experience_hooks.set_enabled(false),
+            RestoreFamily::EventFeed => event_feed_hooks.set_enabled(false),
+            RestoreFamily::Fuel => fuel_hooks.set_enabled(false),
+            RestoreFamily::OperationOutcomes => operation_hooks
+                .set_enabled(false)
+                .map_err(|_| "operation outcome hook restoration failed"),
+            RestoreFamily::Politics => politics_hooks.set_enabled(false),
+            RestoreFamily::Logistics => logistics_hooks.set_enabled(false),
+            RestoreFamily::Peace => peace_hooks
+                .set_enabled(false)
+                .map_err(|_| "peace hook restoration failed"),
+            RestoreFamily::NavalResultSources => naval_result_hooks.set_enabled(false),
+            RestoreFamily::AirLosses => air_loss_hooks.set_enabled(false),
+            RestoreFamily::BuildingBombing => bombing_hooks.set_enabled(false),
+            RestoreFamily::NuclearStrikes => nuclear_hooks.set_enabled(false),
+            RestoreFamily::WorldLifetime => world_hooks.set_enabled(false),
+        };
+        // Every unrestored family that takes part publishes under one census
+        // and suspension (`hook::shared`); `restore_round` then applies and
+        // logs each family's outcome, and publishes the others on their own.
+        let mut restore_round_shared = crate::hook::shared::Round::collect();
+        if let Some(round) = restore_round_shared.as_mut() {
+            for family in RestoreFamily::ALL {
+                if family.shared() && !restored[family as usize] {
+                    let _ = toggle(family);
+                }
+            }
+            let published = round.publish();
+            progress.step(
+                format_args!("restore_shared {} families", published.families),
+                Some(ticks_to_micros(published.ticks, frequency)),
+            );
+        }
         let restore = |family| {
-            let result = match family {
-                RestoreFamily::Hourly => hook
-                    .set_enabled(false)
-                    .map_err(|_| "hourly hook restoration failed"),
-                RestoreFamily::EquipmentDestruction => destruction_hooks
-                    .set_enabled(false)
-                    .map_err(|_| "equipment destruction hook restoration failed"),
-                RestoreFamily::Land => land_hooks
-                    .set_enabled(false)
-                    .map_err(|_| "land event hook restoration failed"),
-                RestoreFamily::Portrait => portrait_hooks.set_enabled(false),
-                RestoreFamily::Opinion => opinion_hooks.set_enabled(false),
-                RestoreFamily::Construction => construction_hooks.set_enabled(false),
-                RestoreFamily::LineOutput => line_hooks.set_enabled(false),
-                RestoreFamily::CombatLogPrune => prune_hooks.set_enabled(false),
-                RestoreFamily::Advisor => advisor_hooks.set_enabled(false),
-                RestoreFamily::Relation => relation_hooks.set_enabled(false),
-                RestoreFamily::History => history_hooks.set_enabled(false),
-                RestoreFamily::Experience => experience_hooks.set_enabled(false),
-                RestoreFamily::EventFeed => event_feed_hooks.set_enabled(false),
-                RestoreFamily::DirectedQueries => directed_query_hooks.set_enabled(false),
-                RestoreFamily::Fuel => fuel_hooks.set_enabled(false),
-                RestoreFamily::OperationOutcomes => operation_hooks
-                    .set_enabled(false)
-                    .map_err(|_| "operation outcome hook restoration failed"),
-                RestoreFamily::Politics => politics_hooks.set_enabled(false),
-                RestoreFamily::Logistics => logistics_hooks.set_enabled(false),
-                RestoreFamily::Peace => peace_hooks
-                    .set_enabled(false)
-                    .map_err(|_| "peace hook restoration failed"),
-                RestoreFamily::NavalResultSources => naval_result_hooks.set_enabled(false),
-                RestoreFamily::AirLosses => air_loss_hooks.set_enabled(false),
-                RestoreFamily::BuildingBombing => bombing_hooks.set_enabled(false),
-                RestoreFamily::WorldLifetime => world_hooks.set_enabled(false),
-            };
+            let result = toggle(family);
             let result = if result == Ok(false) && detach_started.elapsed() >= DETACH_BUDGET {
                 Err(mutation_detach_refusal(
                     detach_started.elapsed(),
@@ -1330,6 +1692,21 @@ fn run(
             } else {
                 result
             };
+            // Its count: the microseconds of its own checks and writes in the
+            // shared suspension, when it took part (taken, so no other family
+            // reads it).
+            progress.step(
+                format_args!(
+                    "restore {family:?} {}",
+                    match result {
+                        Ok(true) => "done",
+                        Ok(false) => "busy",
+                        Err(_) => "refused",
+                    }
+                ),
+                crate::hook::shared::take_reported_ticks()
+                    .map(|ticks| ticks_to_micros(ticks, frequency)),
+            );
             if let Err(error) = result {
                 first_restore_error.get_or_insert(error);
             }
@@ -1341,6 +1718,7 @@ fn run(
             observers_active,
             restore,
         );
+        drop(restore_round_shared);
         match result {
             Ok(true) => break Ok(()),
             Ok(false) => {
@@ -1358,6 +1736,14 @@ fn run(
             Err(error) => break Err(first_restore_error.unwrap_or(error)),
         }
     };
+    progress.step(
+        if restore_result.is_ok() {
+            "restored"
+        } else {
+            "restoration_refused"
+        },
+        None,
+    );
     let _ = teardown_status.set(TeardownStatus {
         restoration_error: restore_result.err(),
         installation_error,
@@ -1381,12 +1767,14 @@ fn run(
             detach_started,
         )
     {
+        progress.step("observers_refused", None);
         retain_detach!(
             reason,
             installation_error.or(Some(reason)),
             (spool, status_writer)
         );
     }
+    progress.step("observers_quiet", None);
     // Normal restoration also waits for callbacks and originals before release;
     // the pinned path retains their state after acquisition admission closes.
     shared.recording.store(false, Ordering::Release);
@@ -1396,19 +1784,41 @@ fn run(
     if let Err(reason) = acquisition.shutdown() {
         // Pool::shutdown reports an acquisition that escaped its runner guard.
         // A caller-owned Running marker can remain after the workers joined.
+        progress.step("acquisition_refused", None);
         retain_detach!(
             reason,
             installation_error.or(Some(reason)),
             (spool, status_writer)
         );
     }
+    progress.step("acquisition_joined", None);
     // Decode drain first: pending refreshes decode in FIFO hour order into
     // their pooled frames and hand off to the spool ready queue; the existing
     // spool drain below then consumes them in order. Undrainable items use the
     // existing LossBatch gap path with no new reason strings.
-    let decode_outcome = decode::detach_drain();
+    // One step a second while queued refreshes decode.
+    let mut logged = Instant::now();
+    let decode_outcome = decode::detach_drain(|count| {
+        if logged.elapsed() >= Duration::from_secs(1) {
+            logged = Instant::now();
+            progress.step("decode_draining", Some(count));
+        }
+    });
+    progress.step("decode_drained", None);
     // Acquisition producers have stopped; the spool can take their final loss batch.
     shared.stop_spool.store(true, Ordering::Release);
+    shared.wake_spool();
+    // Each change of the ready queue's length is progress for the recorder.
+    let mut pending = usize::MAX;
+    while !spool.is_finished() {
+        let ready = shared.ready.len();
+        if ready != pending {
+            pending = ready;
+            progress.step("spool_draining", Some(ready as u64));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    progress.step("spool_finished", None);
     let spool_outcome = spool
         .join()
         .map_err(|_| "spool thread failed")
@@ -1439,8 +1849,10 @@ fn run(
             detach_started,
         )
     {
+        progress.step("release_refused", None);
         retain_detach!(reason, spool_result.as_ref().err().copied(), ());
     }
+    progress.step("release_quiet", None);
     if hooks.restored {
         // Spool/status readers joined and every family passed the final quiet check.
         experience_hooks.release_after_quiet();
@@ -1468,18 +1880,43 @@ fn run(
             advisor_hooks,
             relation_hooks,
             history_hooks,
+            flag_hooks,
+            building_hooks,
+            advisor_pool_hooks,
+            party_leader_hooks,
+            variable_hooks,
+            party_hooks,
+            wing_hooks,
+            roster_hooks,
+            political_status_hooks,
+            mission_hooks,
+            rail_hooks,
+            territory_hooks,
+            army_stat_hooks,
+            country_input_hooks,
+            raid_hooks,
+            naval_tree_hooks,
+            unit_leader_hooks,
+            census_hooks,
+            world_input_hooks,
+            air_record_hooks,
+            local_subunit_hooks,
+            template_hooks,
+            ship_model_hooks,
+            province_unit_hooks,
+            air_base_carry_hooks,
             opinion_hooks,
             destruction_hooks,
             naval_result_hooks,
             air_loss_hooks,
             bombing_hooks,
+            nuclear_hooks,
             line_hooks,
             land_hooks,
             prune_hooks,
             construction_hooks,
             experience_hooks,
             event_feed_hooks,
-            directed_query_hooks,
             world_hooks,
             fuel_hooks,
             operation_hooks,
@@ -1491,6 +1928,7 @@ fn run(
         ),
         || {},
     );
+    progress.step("released", None);
     let drain_complete = spool_result.is_ok();
     if let Some(error) = installation_error {
         add_terminal_error(&mut spool_result, error);
@@ -1527,6 +1965,9 @@ fn run(
             add_terminal_error(&mut spool_result, "terminal status write failed");
         }
     }
+    progress.step("done", None);
+    // Closed before done, so the recorder may remove the session directory.
+    drop(progress);
     signal_done(output_lock, &done);
     spool_result
 }
@@ -1563,6 +2004,31 @@ enum RestoreFamily {
     Advisor,
     Relation,
     History,
+    Flags,
+    Buildings,
+    AdvisorPools,
+    PartyLeaders,
+    Variables,
+    Parties,
+    Wings,
+    Roster,
+    PoliticalStatus,
+    Missions,
+    Rails,
+    Territory,
+    ArmyStats,
+    CountryInputs,
+    Raid,
+    NavalTrees,
+    UnitLeaders,
+    Census,
+    WorldInputs,
+    AirRecords,
+    LocalSubunits,
+    Templates,
+    ShipModels,
+    ProvinceUnits,
+    AirBaseCarry,
     Experience,
     Fuel,
     OperationOutcomes,
@@ -1572,8 +2038,8 @@ enum RestoreFamily {
     NavalResultSources,
     AirLosses,
     BuildingBombing,
+    NuclearStrikes,
     EventFeed,
-    DirectedQueries,
     WorldLifetime,
 }
 
@@ -1614,7 +2080,8 @@ impl RestoreFamily {
                 "combat log prune callbacks did not quiesce; collector retained",
             ),
             Self::Advisor => (
-                crate::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0,
+                crate::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0
+                    || crate::character_changes::active() != 0,
                 "advisor callbacks did not quiesce; collector retained",
             ),
             Self::Relation => (
@@ -1625,8 +2092,111 @@ impl RestoreFamily {
                 crate::history_changes::active() != 0,
                 "history callbacks did not quiesce; collector retained",
             ),
+            Self::Flags => (
+                crate::flag_changes::active() != 0,
+                "script flag callbacks did not quiesce; collector retained",
+            ),
+            Self::Buildings => (
+                crate::building_changes::active() != 0,
+                "building status callbacks did not quiesce; collector retained",
+            ),
+            Self::AdvisorPools => (
+                crate::advisor_pool_changes::active() != 0,
+                "advisor pool callbacks did not quiesce; collector retained",
+            ),
+            Self::PartyLeaders => (
+                crate::party_leader_changes::active() != 0,
+                "party leader callbacks did not quiesce; collector retained",
+            ),
+            Self::Variables => (
+                crate::variable_changes::active() != 0,
+                "script variable callbacks did not quiesce; collector retained",
+            ),
+            Self::Parties => (
+                crate::party_changes::active() != 0,
+                "political party callbacks did not quiesce; collector retained",
+            ),
+            Self::Wings => (
+                crate::wing_changes::active() != 0,
+                "air wing equipment callbacks did not quiesce; collector retained",
+            ),
+            Self::Roster => (
+                crate::roster_changes::active() != 0,
+                "character roster callbacks did not quiesce; collector retained",
+            ),
+            Self::PoliticalStatus => (
+                crate::political_status_changes::active() != 0,
+                "political status callbacks did not quiesce; collector retained",
+            ),
+            Self::Missions => (
+                crate::mission_changes::active() != 0,
+                "registered air mission callbacks did not quiesce; collector retained",
+            ),
+            Self::Rails => (
+                crate::rail_changes::active() != 0,
+                "rail info callbacks did not quiesce; collector retained",
+            ),
+            Self::Territory => (
+                crate::territory_changes::active() != 0,
+                "state and province callbacks did not quiesce; collector retained",
+            ),
+            Self::ArmyStats => (
+                crate::army_stat_changes::active() != 0,
+                "division stat block callbacks did not quiesce; collector retained",
+            ),
+            Self::CountryInputs => (
+                crate::country_input_changes::active() != 0,
+                "stability and research input callbacks did not quiesce; collector retained",
+            ),
+            Self::Raid => (
+                crate::raid_changes::active() != 0,
+                "raid state input callbacks did not quiesce; collector retained",
+            ),
+            Self::NavalTrees => (
+                crate::naval_tree_changes::active()
+                    + crate::retreat_ban_changes::active()
+                    + crate::unit_leader_trait_changes::active()
+                    != 0,
+                "naval modifier tree callbacks did not quiesce; collector retained",
+            ),
+            Self::UnitLeaders => (
+                crate::unit_leader_changes::active() != 0,
+                "unit leader callbacks did not quiesce; collector retained",
+            ),
+            Self::Census => (
+                crate::census_changes::active() != 0,
+                "role census callbacks did not quiesce; collector retained",
+            ),
+            Self::WorldInputs => (
+                crate::world_input_changes::active() != 0,
+                "province name, region access and world tension callbacks did not quiesce; collector retained",
+            ),
+            Self::AirRecords => (
+                crate::air_record_changes::active() != 0,
+                "air combat record callbacks did not quiesce; collector retained",
+            ),
+            Self::LocalSubunits => (
+                crate::local_subunit_changes::active() != 0,
+                "local sub-unit clone callbacks did not quiesce; collector retained",
+            ),
+            Self::Templates => (
+                crate::template_changes::active() != 0,
+                "division template name-key callbacks did not quiesce; collector retained",
+            ),
+            Self::ShipModels => (
+                crate::ship_model_changes::active() != 0,
+                "ship model input callbacks did not quiesce; collector retained",
+            ),
+            Self::ProvinceUnits => (
+                crate::province_unit_changes::active() != 0,
+                "province occupant list callbacks did not quiesce; collector retained",
+            ),
+            Self::AirBaseCarry => (
+                crate::air_base_carry_changes::active() != 0,
+                "air base registration callbacks did not quiesce; collector retained",
+            ),
             Self::Experience => (
-                crate::experience_gains::ACTIVE.load(Ordering::SeqCst) != 0,
+                crate::experience_gains::active() != 0,
                 "experience callbacks did not quiesce; collector retained",
             ),
             Self::Fuel => (
@@ -1661,13 +2231,13 @@ impl RestoreFamily {
                 crate::building_bombing::active() != 0,
                 "building bombing callbacks did not quiesce; collector retained",
             ),
+            Self::NuclearStrikes => (
+                crate::nuclear_strikes::active() != 0,
+                "nuclear strike callbacks did not quiesce; collector retained",
+            ),
             Self::EventFeed => (
                 crate::event_feed_observer::active() != 0,
                 "Event feed callbacks did not quiesce; collector retained",
-            ),
-            Self::DirectedQueries => (
-                crate::directed_war_queries::ACTIVE.load(Ordering::SeqCst) != 0,
-                "directed war query callbacks did not quiesce; collector retained",
             ),
             Self::WorldLifetime => (
                 crate::world_lifetime::ACTIVE.load(Ordering::SeqCst) != 0,
@@ -1676,7 +2246,50 @@ impl RestoreFamily {
         }
     }
 
-    const ALL: [Self; 23] = [
+    /// The families whose hooks publish through `hook::shared` rounds
+    /// (`Hook::set_family_enabled_shared`): every plain family publication.
+    /// The others (taps with unwind retention, split and multi-step
+    /// publications, the hourly hook and the world lifetime family) publish
+    /// on their own.
+    const fn shared(self) -> bool {
+        matches!(
+            self,
+            Self::Portrait
+                | Self::Opinion
+                | Self::Advisor
+                | Self::Relation
+                | Self::History
+                | Self::Flags
+                | Self::Buildings
+                | Self::AdvisorPools
+                | Self::PartyLeaders
+                | Self::Variables
+                | Self::Parties
+                | Self::Wings
+                | Self::Roster
+                | Self::PoliticalStatus
+                | Self::Missions
+                | Self::Rails
+                | Self::Territory
+                | Self::ArmyStats
+                | Self::CountryInputs
+                | Self::Raid
+                | Self::NavalTrees
+                | Self::UnitLeaders
+                | Self::Census
+                | Self::WorldInputs
+                | Self::AirRecords
+                | Self::LocalSubunits
+                | Self::Templates
+                | Self::ShipModels
+                | Self::ProvinceUnits
+                | Self::AirBaseCarry
+                | Self::AirLosses
+                | Self::NuclearStrikes
+        )
+    }
+
+    const ALL: [Self; 48] = [
         Self::Hourly,
         Self::EquipmentDestruction,
         Self::Land,
@@ -1688,6 +2301,31 @@ impl RestoreFamily {
         Self::Advisor,
         Self::Relation,
         Self::History,
+        Self::Flags,
+        Self::Buildings,
+        Self::AdvisorPools,
+        Self::PartyLeaders,
+        Self::Variables,
+        Self::Parties,
+        Self::Wings,
+        Self::Roster,
+        Self::PoliticalStatus,
+        Self::Missions,
+        Self::Rails,
+        Self::Territory,
+        Self::ArmyStats,
+        Self::CountryInputs,
+        Self::Raid,
+        Self::NavalTrees,
+        Self::UnitLeaders,
+        Self::Census,
+        Self::WorldInputs,
+        Self::AirRecords,
+        Self::LocalSubunits,
+        Self::Templates,
+        Self::ShipModels,
+        Self::ProvinceUnits,
+        Self::AirBaseCarry,
         Self::Experience,
         Self::Fuel,
         Self::OperationOutcomes,
@@ -1697,8 +2335,8 @@ impl RestoreFamily {
         Self::NavalResultSources,
         Self::AirLosses,
         Self::BuildingBombing,
+        Self::NuclearStrikes,
         Self::EventFeed,
-        Self::DirectedQueries,
         Self::WorldLifetime,
     ];
 }
@@ -1800,6 +2438,12 @@ fn restore_round(
         Some(error) => Err(error),
         None => Ok(restored.iter().all(|complete| *complete)),
     }
+}
+
+/// QPC ticks as microseconds, for progress steps.
+fn ticks_to_micros(ticks: i64, frequency: i64) -> u64 {
+    u64::try_from(i128::from(ticks.max(0)) * 1_000_000 / i128::from(frequency.max(1)))
+        .unwrap_or(u64::MAX)
 }
 
 fn signal_done(output_lock: File, done: &Event) {
@@ -1961,16 +2605,51 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
     use crate::status::{DebugValue, map, sequence, status};
     let base = status!({
         "decode_work": decode::calibration_json(),
+        "hook_timing": crate::hook_timing::status(),
         "portrait_changes": crate::portrait_changes::status(),
         "advisor_changes": crate::advisor_changes::status(),
         "relation_changes": crate::relation_changes::status(),
         "history_changes": crate::history_changes::status(),
+        "flag_changes": crate::flag_changes::status(),
+        "building_changes": crate::building_changes::status(),
+        "advisor_pool_changes": crate::advisor_pool_changes::status(),
+        "party_leader_changes": crate::party_leader_changes::status(),
+        "variable_changes": crate::variable_changes::status(),
+        "party_changes": crate::party_changes::status(),
+        "wing_changes": crate::wing_changes::status(),
+        "roster_changes": crate::roster_changes::status(),
+        "political_status_changes": crate::political_status_changes::status(),
+        "war_changes": crate::war_changes::status(),
+        "mission_changes": crate::mission_changes::status(),
+        "navy_ledger_changes": crate::navy_ledger_changes::status(),
+        "air_base_changes": crate::air_base_changes::status(),
+        "air_record_changes": crate::air_record_changes::status(),
+        "rail_changes": crate::rail_changes::status(),
+        "territory_changes": crate::territory_changes::status(),
+        "army_stat_changes": crate::army_stat_changes::status(),
+        "country_input_changes": crate::country_input_changes::status(),
+        "stability_batches": crate::extended::country_stability::status(),
+        "raid_changes": crate::raid_changes::status(),
+        "naval_tree_changes": crate::naval_tree_changes::status(),
+        "raid_intel_changes": crate::extended::raid_intel_carry::status(),
+        "unit_leader_changes": crate::unit_leader_changes::status(),
+        "census_changes": crate::census_changes::status(),
+        "unit_leader_trait_changes": crate::unit_leader_trait_changes::status(),
+        "world_input_changes": crate::world_input_changes::status(),
+        "retreat_ban_changes": crate::retreat_ban_changes::status(),
+        "local_subunit_changes": crate::local_subunit_changes::status(),
+        "province_unit_changes": crate::province_unit_changes::status(),
+        "template_changes": crate::template_changes::status(),
+        "ship_model_changes": crate::ship_model_changes::status(),
+        "air_base_carry_changes": crate::air_base_carry_changes::status(),
+        "area_changes": crate::area_changes::status(),
+        "province_changes": crate::province_changes::status(),
+        "character_changes": crate::character_changes::status(),
         "opinion_changes": crate::opinion_changes::status(),
         "equipment_destruction": crate::equipment_destruction::status(),
         "naval_result_sources": crate::naval_result_sources::status(),
         "experience_gains": crate::experience_gains::status(),
         "event_feed": crate::event_feed_observer::status(),
-        "directed_war_queries": crate::directed_war_queries::status(),
         "world_lifetime": crate::world_lifetime::status(),
         "operation_outcomes": crate::operation_outcomes::status(),
         "operative_capture": crate::extended::intel::operative_capture_diagnostics(),
@@ -1978,6 +2657,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "country_scale_demand": crate::country_scale::demand_diagnostics(),
         "air_losses": crate::air_losses::status(),
         "building_bombing": crate::building_bombing::status(),
+        "nuclear_strikes": crate::nuclear_strikes::status(),
         "line_output": crate::line_output::status(),
         "fuel_awards": crate::fuel_awards::status(),
         "politics_capture": crate::politics_changes::status(),
@@ -1986,11 +2666,16 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "combat_log_prune": crate::combat_log_prune::status(),
         "construction_ic": crate::construction_ic::status(),
         "logistics_balance": crate::logistics_balance::status(),
+        "batch_fallbacks": map(engine::batch_fallback::counts()),
         "replay_format": replay::FORMAT_VERSION,
         "sample_boundary": sampling::SAMPLE_BOUNDARY.name(),
     });
     #[cfg(feature = "callback_profile")]
-    let base = base.join(status!({"callback_profile": crate::callback_profile::status()}));
+    let base = base.join(status!({
+        "callback_profile": crate::callback_profile::status(),
+        "fuel_award_tags": crate::fuel_awards::tag_profile(),
+        "fuel_award_tags_scope": "diagnostic: every fuel tap callback since attach by tap (BEGIN, END, the five land receipts, naval, air, reset) as [calls, ns], TSC-timed inside the callback, so the tap bridge and relay lie outside",
+    }));
     #[cfg(feature = "advisor_profile")]
     let base = base.join(
         status!({"advisor_profile": crate::extended::characters::advisors::profile::status()}),
@@ -2000,14 +2685,12 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
             let guard = shared.template_models.lock();
             guard.map(|stats| *stats).unwrap_or_default()
         };
-        let eta = &shared.eta_inputs;
         let load = |slot: &std::sync::atomic::AtomicU64| slot.load(Ordering::Relaxed);
-        let eta_hours = load(&eta.hours);
-        let eta_mean = |value: u64| value.checked_div(eta_hours).unwrap_or(0);
         status!({
             "game_score_enabled": shared.game_score_enabled,
             "fixed_layout": crate::fixed_layout::status(shared.fixed_layout.get()),
             "naval_result_details": crate::extended::naval_result_details::status(),
+            "land_reserve_speed": crate::extended::combat_details::status(),
             "native_tick_work": {
                 "elapsed_ns": shared.native_tick_ns.load(Ordering::Relaxed),
                 "calls": shared.native_tick_calls.load(Ordering::Relaxed),
@@ -2023,30 +2706,23 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 "scope": "cumulative DivisionTemplateIcons rows since attach whose 3D-model inputs could not be read: that row's model fields are empty and its counter fields stand; the viewer draws no model for its divisions. missed_hours counts hours not folded because this status write held the counters",
             },
             "background_priority": background_priority_status(),
+            "collector_thread_cpu": crate::thread_cpu::status(
+                shared
+                    .acquisition
+                    .get()
+                    .map(|acquisition| acquisition.calibration().executor.thread_ids)
+                    .unwrap_or_default()
+                    .ids(),
+            ),
             "refresh_requests_accepted": REFRESH_ACCEPTED.load(Ordering::Relaxed),
-            "eta_inputs": {
-            "hours": eta_hours,
-            "walks": load(&eta.walks),
-            "divisions": load(&eta.divisions),
-            "legs": load(&eta.legs),
-            "graph_ns": load(&eta.graph_ns),
-            "scan_ns": load(&eta.scan_ns),
-            "other_ns": load(&eta.other_ns),
-            "graph_mean_ns": eta_mean(load(&eta.graph_ns)),
-            "scan_mean_ns": eta_mean(load(&eta.scan_ns)),
-            "other_mean_ns": eta_mean(load(&eta.other_ns)),
-            "divisions_mean": eta_mean(load(&eta.divisions)),
-            "legs_mean": eta_mean(load(&eta.legs)),
-            "geometry_hits": load(&eta.geometry_hits),
-            "geometry_misses": load(&eta.geometry_misses),
-            "static_hits": load(&eta.static_hits),
-            "static_misses": load(&eta.static_misses),
-            "static_cleared": load(&eta.static_cleared),
-            "state_modifier_requests": load(&eta.state_modifier_requests),
-            "state_modifier_hits": load(&eta.state_modifier_hits),
-            "air_defense_requests": load(&eta.air_defense_requests),
-            "air_defense_hits": load(&eta.air_defense_hits),
-            "scope": "cumulative DivisionEtaInputs acquisition since attach, one observation per sampled hour. graph = the per-division composed speed graph, scan = the per-leg route scan, other = the route copy and the prepared speed tail; they sum to the acquisition wall inside its owning worker, not to game-thread block. geometry hits/misses count province/adjacency lookups answered from the pass memo versus read from memory; static hits/misses are the session map memo (distance, crossing, flags, terrain), and static_cleared counts hours that dropped it after a reload or a new census",
+            "presentation_phases": {
+                "hours": load(&shared.presentation.hours),
+                "phase_ns": crate::status::map(
+                    crate::extended::division_presentation::PHASE_NAMES
+                        .into_iter()
+                        .zip(shared.presentation.phase_ns.each_ref().map(load))
+                ),
+                "scope": "cumulative Presentation worker wall since attach inside the DivisionStatus acquisition span, split by pass; overlaps other jobs and the game-thread block and is not added to it",
             },
         })
     });
@@ -2062,6 +2738,20 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 .zip(join_wait).filter(|(_, wait)| *wait > 0)
                 .map(move |(role, wait)| (DebugValue(role), phase_mean(wait))));
             let segments = shared.phase_segments.each_ref().map(|segment| phase_mean(segment.load(Ordering::Relaxed)));
+            let role_timeline = map(crate::acquisition_jobs::ROLES.into_iter()
+                .zip(shared.role_timeline.each_ref())
+                .map(|(role, timeline)| (role, timeline.means(), timeline.slow_joins()))
+                .filter(|(_, (jobs, _), _)| *jobs > 0)
+                .map(move |(role, (jobs, means), slow)| {
+                    let ns = means.map(|ticks| shared.ns(i64::try_from(ticks).unwrap_or(i64::MAX)));
+                    (DebugValue(role), status!({
+                        "jobs": jobs,
+                        "queued_ns": ns[0], "body_begin_ns": ns[1], "body_end_ns": ns[2],
+                        "join_begin_ns": ns[3], "join_end_ns": ns[4],
+                        "joins_waiting_over_250us": slow[0], "joins_waiting_over_1ms": slow[1],
+                        "joins_waiting_over_4ms": slow[2],
+                    }))
+                }));
             status!({ "acquisition_work": {
                 "collect_wait_ns": block_ns,
                 "calls": block_calls,
@@ -2080,20 +2770,25 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                     "segments_mean_ns": sequence(segments.into_iter()),
                     "segments_scope": sampling::SEGMENTS_SCOPE,
                     "join_wait_by_role_mean_ns": join_wait_by_role,
+                    "role_timeline": role_timeline,
+                    "role_timeline_scope": "per pool role, its collected jobs (jobs, cumulative) and the mean offset in ns from their acquisition body's entry of when each was queued (a held first-burst job is queued at its submission: its release only wakes idle workers, and a worker already running may claim it before), when a pool participant began and ended its body (over the jobs that ran on one), and when the game thread began and ended its join. A join that begins after the body ended waits only on collection; one that begins before it waits on the unfinished body. joins_waiting_over_250us, _1ms and _4ms count the role's joins whose wait reached each threshold, so a mean wait from a few long hours shows apart from a steady one",
                     "residual_mean_ns": phase_mean(shared.phase_residual_ns.load(Ordering::Relaxed)),
                 },
                 "block_phases_scope": "disjoint game-thread wall means summing to the recorded acquisition body: setup = reusable-frame wait, frame reset and country authentication; parallel = shared input acquisition, request dispatch, result installation and sequential job joins; residual = completion bookkeeping before decode enqueue. parallel_inline_walk is a subset of parallel outside joins, measured over the collection span; parallel_join counts sequential completion spans and may include execution of the exact awaited job. Their sum leaves dispatch and other work outside that span. Worker durations overlap this game-thread wall and must not be added. Reusable-frame wait is separately reported but already included in setup, collect_wait_ns and callback_work",
+                "game_thread": game_thread_status(shared, phase_calls),
                 "panics": shared.acquisition_panics.load(Ordering::Relaxed),
                 "workers": calibration,
                 "dispatch_ns": shared.acquisition_dispatch_ns.load(Ordering::Relaxed),
                 "join_wait_ns": shared.acquisition_wait_ns.load(Ordering::Relaxed),
                 "join_scope": "sequential game-thread completion spans including bookkeeping and possible exact-target caller execution when the awaited request is still queued; no unrelated queued job is executed by a join",
+                "join_costs": join_costs_status(shared, phase_calls),
+                "join_costs_scope": "per pool role, over its collected jobs that a participant ran and published (published): those already published when their join began (ready_at_join); per acquired hour, the collector's first wait for the pool's queue mutex in each join (finish_lock_ns_per_hour), the stall from the later of join begin and publication to collection (collect_stall_ns_per_hour: the queue mutex, the wake and rescheduling, none of it job work) and the worker's wait from its body's end to publication (publish_wait_ns_per_hour); and the joins whose stall reached 0.25 and 1 ms (stalls_over_250us, stalls_over_1ms). A role's join wait less its collect stall is the time its join waited on the unfinished body",
                 "table_costs_overlap": true,
                 "country_snapshot_scope": "one immutable country authentication snapshot shared with acquisition workers; production-rest acquires fresh country inputs for its discovery builder and validates its current read plan; payload counted once in pool_bytes; preparation charged once to Countries; worker calibration reports the borrowed snapshot status",
                 "world_country_cache": world.country_cache,
                 "world_acquisition_ns": shared.ns(i64::try_from(world.acquisition_ticks).unwrap_or(i64::MAX)),
                 "world_last_error": world.last_error,
-                "world_cost_scope": "hourly owned World job on any acquisition participant; includes staging attempts; shared country preparation charged once to Countries; typed fallback table costs exclude discarded staging attempts; overlaps other jobs and acquisition work; panicked/stopped worker cost is unavailable",
+                "world_cost_scope": "hourly owned World (production and construction rests) and Economy (economy rest) jobs together on any acquisition participant: world_acquisition_ns sums both, world_country_cache is observed once an hour by the Economy job, world_last_error names the job; includes staging attempts; shared country preparation charged once to Countries; typed fallback table costs exclude discarded staging attempts; overlaps other jobs and acquisition work; panicked/stopped worker cost is unavailable",
             } })
         }));
     DecodeStatus {
@@ -2101,6 +2796,68 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         shared: shared_status,
         acquisition,
     }
+}
+
+/// Each pool role's collection costs after its jobs finished
+/// ([`sampling::JoinCosts`]), per acquired hour; roles with no published job
+/// are left out.
+fn join_costs_status(shared: &sampling::Shared, hours: u64) -> impl serde::Serialize + '_ {
+    use crate::status::{DebugValue, map, status};
+    let per_hour = move |ticks: u64| {
+        shared
+            .ns(i64::try_from(ticks).unwrap_or(i64::MAX))
+            .checked_div(hours)
+            .unwrap_or(0)
+    };
+    map(crate::acquisition_jobs::ROLES
+        .into_iter()
+        .zip(shared.join_costs.each_ref())
+        .map(|(role, costs)| (role, costs.totals()))
+        .filter(|(_, (published, ..))| *published > 0)
+        .map(move |(role, (published, ready, ticks, stalls))| {
+            (
+                DebugValue(role),
+                status!({
+                    "published": published,
+                    "ready_at_join": ready,
+                    "finish_lock_ns_per_hour": per_hour(ticks[0]),
+                    "collect_stall_ns_per_hour": per_hour(ticks[1]),
+                    "publish_wait_ns_per_hour": per_hour(ticks[2]),
+                    "stalls_over_250us": stalls[0],
+                    "stalls_over_1ms": stalls[1],
+                }),
+            )
+        }))
+}
+
+/// The game thread's own work per acquired hour, by kind (QPC wall means over
+/// `hours`): what the parked hour costs besides waiting for workers.
+fn game_thread_status(shared: &sampling::Shared, hours: u64) -> impl serde::Serialize + '_ {
+    let load = |value: &AtomicU64| value.load(Ordering::Relaxed);
+    let phases = &shared.game_thread;
+    let mean = move |ns: u64| ns.checked_div(hours).unwrap_or(0);
+    let per_hour = move |count: u64| {
+        if hours == 0 {
+            0.0
+        } else {
+            count as f64 / hours as f64
+        }
+    };
+    crate::status::status!({
+        "hours": hours,
+        "frame_reset_mean_ns": mean(load(&phases.frame_reset_ns)),
+        "observer_boundaries_mean_ns": mean(load(&phases.boundaries_ns)),
+        "country_snapshot_mean_ns": mean(load(&phases.country_snapshot_ns)),
+        "dispatch_mean_ns": mean(load(&shared.acquisition_dispatch_ns)),
+        "dispatched_jobs_per_hour": per_hour(load(&phases.dispatched_jobs)),
+        "release_mean_ns": mean(load(&phases.release_ns)),
+        "releases_per_hour": per_hour(load(&phases.releases)),
+        "released_jobs_per_hour": per_hour(load(&phases.released_jobs)),
+        "join_wait_mean_ns": mean(load(&shared.acquisition_wait_ns)),
+        "map_sample_mean_ns": mean(load(&phases.map_sample_ns)),
+        "table_assembly_mean_ns": mean(load(&phases.table_assembly_ns)),
+        "scope": "game-thread QPC wall per acquired hour: frame reset (reused frame verdicts and decode slot), both observer boundary jobs, the country snapshot, job submission (dispatch, the jobs submitted and the wakes releasing held bursts), join waits for workers (including caller execution of a still-queued awaited job), the map sample's typed walk and table assembly after the joins. The rest of block_phases (installs and request building) is what these leave of setup and parallel; worker time overlaps and is not here",
+    })
 }
 
 #[cfg(test)]
@@ -2165,11 +2922,29 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
         2
     );
     assert!(status["worker"]["cpu_ns_per_recorded_hour"].is_null());
+    assert_eq!(
+        status["decode"]["raid_intel_changes"]["configured"],
+        cfg!(feature = "raid_intel_changes")
+    );
+    // Every hook family is published; thread CPU includes the started worker.
+    let families = status["decode"]["hook_timing"]["families"].as_object();
+    assert_eq!(
+        families.map(serde_json::Map::len),
+        Some(crate::hook_timing::FAMILY_COUNT)
+    );
+    let threads = status["decode"]["collector_thread_cpu"]["threads"].as_array();
+    assert!(threads.is_some_and(|threads| {
+        threads
+            .iter()
+            .any(|thread| thread["role"] == "acquisition" && thread["available"] == true)
+    }));
     drop(value);
     let absent = with_allocations_denied(|| decode_status_from(None));
     let absent = serde_json::to_value(absent).unwrap();
     assert!(absent.get("fixed_layout").is_none());
     assert!(absent.get("acquisition_work").is_none());
+    assert!(absent.get("collector_thread_cpu").is_none());
+    assert!(absent["hook_timing"]["families"]["hourly"].is_object());
     shared
         .acquisition
         .get()
@@ -2252,6 +3027,7 @@ fn wait_quiet(
     }
     crate::air_losses::mark_stranded();
     crate::building_bombing::mark_stranded();
+    crate::nuclear_strikes::mark_stranded();
     loop {
         if let Some(reason) =
             observer_detach_refusal(started.elapsed(), |family| family.observer_state().0)
@@ -2419,7 +3195,7 @@ mod detach_tests {
             &mut errors,
             || !callbacks.quiet(),
             |family| match family {
-                RestoreFamily::DirectedQueries => {
+                RestoreFamily::EventFeed => {
                     drop(native_return.take());
                     elapsed.set(DETACH_BUDGET);
                     Ok(true)
@@ -2551,11 +3327,9 @@ struct RegistryWatch {
     air_wing_names: usize,
     last_railway_gun_names: Option<Instant>,
     railway_gun_names: engine::railway_gun_counter_inputs::NameDemand,
-    last_fresh_eta: Option<Instant>,
-    fresh_eta_map: crate::country_scale::FreshEtaMapCache,
-    naval_foreign_scratch: usize,
-    last_attrition_inputs: Option<Instant>,
-    attrition_inputs: engine::attrition_modifier_breakdown::Demand,
+    last_map: Option<Instant>,
+    last_presentation_census: Option<Instant>,
+    presentation_census: engine::carmy::PresentationDemand,
     last_raids: Option<Instant>,
     raids: crate::country_scale::RaidArenas,
     last_characters: Option<Instant>,
@@ -2570,8 +3344,6 @@ struct RegistryWatch {
     last_logistics: Option<Instant>,
     last_game_score: Option<Instant>,
     last_combat_hints: Option<Instant>,
-    last_ship_strike_metadata: Option<Instant>,
-    ship_strike_metadata: usize,
 }
 
 impl RegistryWatch {
@@ -2579,28 +3351,6 @@ impl RegistryWatch {
     /// The intel total walks every country's table header, so it is sampled
     /// less often than the three registry headers.
     const INTEL_INTERVAL: Duration = Duration::from_secs(1);
-
-    /// Definitions can grow independently of the country registry. Failed
-    /// header hints leave the old storage floor and are reported by the spool.
-    fn poll_ship_strike_metadata(
-        &mut self,
-        memory: &impl engine::Memory,
-        base: usize,
-    ) -> Result<Option<usize>, &'static str> {
-        if self
-            .last_ship_strike_metadata
-            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
-        {
-            return Ok(None);
-        }
-        self.last_ship_strike_metadata = Some(Instant::now());
-        let count = crate::country_scale::observe_ship_strike_metadata(memory, base)?;
-        if count <= self.ship_strike_metadata {
-            return Ok(None);
-        }
-        self.ship_strike_metadata = count;
-        Ok(Some(count))
-    }
 
     fn poll_reserved_visibility(
         &mut self,
@@ -2807,49 +3557,45 @@ impl RegistryWatch {
             }))
     }
 
-    /// Moving-owner counts and the terrain roster can change independently of
-    /// the country census. Failed hint components are retried independently;
-    /// the applied capture capacities retain every earlier readable floor.
-    fn poll_fresh_eta(
+    /// Moving-owner counts, map headers and the physical navy pass can change
+    /// independently of the country census. Failed hint components are retried
+    /// independently; the applied capture capacities retain every earlier
+    /// readable floor.
+    fn poll_map(
         &mut self,
         memory: &impl engine::Memory,
         base: usize,
-    ) -> Result<Option<crate::country_scale::FreshEtaDemand>, &'static str> {
+    ) -> Result<Option<crate::country_scale::MapDemand>, &'static str> {
         if self
-            .last_fresh_eta
+            .last_map
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
         {
             return Ok(None);
         }
-        self.last_fresh_eta = Some(Instant::now());
-        crate::country_scale::observe_fresh_eta(
-            memory,
-            base,
-            &mut self.fresh_eta_map,
-            &mut self.naval_foreign_scratch,
-        )
+        self.last_map = Some(Instant::now());
+        crate::country_scale::observe_map(memory, base)
     }
 
-    fn poll_attrition_inputs(
+    fn poll_presentation_census(
         &mut self,
         memory: &impl engine::Memory,
         base: usize,
-    ) -> Result<Option<engine::attrition_modifier_breakdown::Demand>, &'static str> {
+    ) -> Result<Option<engine::carmy::PresentationDemand>, &'static str> {
         if self
-            .last_attrition_inputs
+            .last_presentation_census
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
         {
             return Ok(None);
         }
-        self.last_attrition_inputs = Some(Instant::now());
-        let Some(demand) = crate::country_scale::observe_attrition_inputs(memory, base)? else {
+        self.last_presentation_census = Some(Instant::now());
+        let Some(demand) = crate::country_scale::observe_presentation_census(memory, base)? else {
             return Ok(None);
         };
-        let raised = self.attrition_inputs.max(demand);
-        if raised == self.attrition_inputs && demand.failure.is_none() {
+        let raised = self.presentation_census.max(demand);
+        if raised == self.presentation_census && demand.failure.is_none() {
             return Ok(None);
         }
-        self.attrition_inputs = raised;
+        self.presentation_census = raised;
         Ok(Some(raised))
     }
 
@@ -2981,7 +3727,7 @@ fn strategic_regions(memory: &impl engine::Memory, base: usize) -> usize {
 
 struct CombatHints {
     land: Option<engine::cland_combat::DetailDemand>,
-    naval: Option<engine::naval_ship_modifier_breakdown::Demand>,
+    naval: Option<engine::naval_combat_demand::Demand>,
     failures: [Option<&'static str>; 2],
 }
 
@@ -2993,15 +3739,13 @@ struct CombatHintState {
 
 struct SpoolState {
     sizing: crate::country_scale::Sizing,
-    fresh_eta_map: crate::country_scale::FreshEtaMapCache,
-    naval_foreign_scratch: usize,
     applied_combat_hints: [CombatHintState; sampling::BUFFERS],
 }
 
 impl CombatHints {
     fn observe(memory: &impl engine::Memory, base: usize) -> Self {
         let land = crate::country_scale::observe_land_details(memory, base);
-        let naval = crate::country_scale::observe_naval_breakdowns(memory, base);
+        let naval = crate::country_scale::observe_naval_details(memory, base);
         Self {
             failures: [land.as_ref().err().copied(), naval.as_ref().err().copied()],
             land: land.ok().flatten(),
@@ -3024,7 +3768,7 @@ impl CombatHints {
         }
         if let Some(demand) = self.naval {
             let mut capacity = applied.naval.unwrap_or(capacities.naval_details);
-            capacity.raise_for_live_breakdowns(demand);
+            capacity.raise_for_live_details(demand);
             if applied.naval != Some(capacity) {
                 pending.naval = Some(capacity);
             }
@@ -3232,7 +3976,7 @@ fn spool_loop(
     mut session: SessionStart,
     mut processor: Processor,
     status_path: &Path,
-    state: SpoolState,
+    sizing: SizingThread,
     // Status and content files are written on the loader's writer thread:
     // this thread only hands snapshots over and never waits on status I/O,
     // nor joins that thread (#94).
@@ -3240,18 +3984,7 @@ fn spool_loop(
     teardown_status: &OnceLock<TeardownStatus>,
 ) -> Result<SpoolOutcome, &'static str> {
     let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
-    let sizing = state.sizing;
-    let mut applied_combat_hints = state.applied_combat_hints;
-    let mut capacities = sizing.core;
-    let mut map_capacities = sizing.map;
-    let mut extended_capacities = sizing.extended;
     let live = unsafe { LiveMemory::new() };
-    let mut registry = RegistryWatch {
-        fresh_eta_map: state.fresh_eta_map,
-        naval_foreign_scratch: state.naval_foreign_scratch,
-        ..Default::default()
-    };
-    let mut fuel_demand_at = Instant::now();
     let mut last_warning = None;
     let mut drain_result = Ok(());
     let mut startup_unknown = 0_u64;
@@ -3259,19 +3992,26 @@ fn spool_loop(
     let mut reported = Instant::now() - Duration::from_secs(1);
     let mut priority = OwnPriority::new();
     let mut refresh_requests = RefreshRequests::default();
+    // Wake-ups replace polling: decode publication, a parked clock
+    // preparation and the stop request unpark this thread.
+    let _ = shared.spool_waker.set(std::thread::current());
+    let phases = &crate::spool_phases::SPOOL;
     loop {
         if crate::allocation::failed() {
             return Err("collector allocation failed");
         }
+        let span = phases.span(Phase::Observers);
         shared
             .prepare_clock_capture(&live)
             .map_err(|_| "clock preparation allocation failed")?;
+        span.finish();
         priority.follow(shared.buffers_backlogged());
         while let Some(index) = shared.ready.pop() {
             if crate::allocation::failed() {
                 return Err("collector allocation failed");
             }
             priority.follow(shared.buffers_backlogged());
+            let span = phases.span(Phase::Receive);
             let service_started = sampling::qpc();
             work.queue_peak_observed = work.queue_peak_observed.max(shared.ready.len() + 1);
             let elapsed =
@@ -3384,9 +4124,11 @@ fn spool_loop(
                     last_warning = Some(error_reason(error, "collector spool I/O failed"));
                 }
             }
+            span.finish();
             // Conversion owns every value needed by encoding and diagnostics.
             // Return the capture storage before potentially slow output, except
             // when a retry must be published before that storage can be reused.
+            processor.set_backlogged(shared.buffers_backlogged());
             let pending_write = match processor.prepare_frame(frame) {
                 Ok(prepared) if prepared.allows_early_recycle() => Some(prepared),
                 Ok(prepared) => {
@@ -3400,6 +4142,7 @@ fn spool_loop(
                         crate::land_events::fail("land prepared spool write failed");
                         crate::air_losses::lost_drain();
                         crate::building_bombing::lost_drain();
+                        crate::nuclear_strikes::lost_drain();
                         last_warning = Some(error_reason(error, "collector spool I/O failed"));
                     }
                     None
@@ -3417,10 +4160,12 @@ fn spool_loop(
                     crate::land_events::fail("land frame conversion failed");
                     crate::air_losses::lost_drain();
                     crate::building_bombing::lost_drain();
+                    crate::nuclear_strikes::lost_drain();
                     last_warning = Some(error_reason(error, "collector spool I/O failed"));
                     None
                 }
             };
+            let span = phases.span(Phase::Recycle);
             if crate::allocation::failed() {
                 return Err("collector allocation failed");
             }
@@ -3433,19 +4178,20 @@ fn spool_loop(
                     .forget_families
                     .fetch_or(unpublished, Ordering::Release);
             }
-            let previous_capacities = capacities;
             if pending_write.is_none() {
                 crate::allocation::attempted_hour(None);
             }
-            let previous_map_capacities = map_capacities;
-            let previous_extended_capacities = extended_capacities;
-            let _ = extended_capacities
+            let mut capacities = lock(&sizing.sizing.capacities);
+            let previous_capacities = *capacities;
+            let _ = capacities
+                .extended
                 .combat_progress
                 .presize(&live, shared.base);
-            frame.grow(&mut capacities);
-            frame.map.grow(&mut map_capacities);
-            extended_capacities.raise_for_states(capacities[3]);
-            frame.extended.grow(&mut extended_capacities);
+            frame.grow(&mut capacities.core);
+            frame.map.grow(&mut capacities.map);
+            let states = capacities.core[3];
+            capacities.extended.raise_for_states(states);
+            frame.extended.grow(&mut capacities.extended);
             let after_bytes = frame.allocated_bytes() + shared.country_intel.allocated_bytes();
             if after_bytes >= before_bytes {
                 shared
@@ -3456,25 +4202,19 @@ fn spool_loop(
                     .pool_bytes
                     .fetch_sub((before_bytes - after_bytes) as u64, Ordering::Relaxed);
             }
-            if previous_capacities != capacities
-                || previous_map_capacities != map_capacities
-                || previous_extended_capacities != extended_capacities
-            {
+            if previous_capacities != *capacities {
                 // Grow every idle buffer under its queue-index lease so old
                 // capacities do not repeat the same truncation on later hours.
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
+                capacities.grow_idle(shared);
             }
+            drop(capacities);
             if let SeedStatus::Capacity { required_cells } = frame.country_cache_status {
                 shared.offer_country_cache(required_cells);
             }
             shared.recycle_frame_prepared(index);
             work.buffer_service
                 .record_ticks(sampling::qpc() - service_started, shared.frequency);
+            span.finish();
             // No reference to the recycled frame survives this point. Complete
             // this write before preparing another frame or flushing: comparison
             // tokens belong to the current encoder baseline.
@@ -3490,554 +4230,17 @@ fn spool_loop(
                 crate::land_events::fail("land recycled spool write failed");
                 crate::air_losses::lost_drain();
                 crate::building_bombing::lost_drain();
+                crate::nuclear_strikes::lost_drain();
                 last_warning = Some(error_reason(error, "collector spool I/O failed"));
             }
+            sizing.retire(processor.take_retired());
         }
         crate::allocation::attempted_hour(None);
         if crate::allocation::failed() {
             return Err("collector allocation failed");
         }
-        if let Some(logistics_rows) = registry
-            .poll_logistics(&live, shared.base)
-            .map_err(|e| error_reason(e, "logistics balance staging allocation failed"))?
-        {
-            let before_logistics = extended_capacities.logistics;
-            extended_capacities.logistics.raise(logistics_rows);
-            if extended_capacities.logistics != before_logistics {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        crate::relation_changes::collect();
-        crate::history_changes::collect();
-        crate::politics_changes::prepare();
-        crate::air_losses::presize(0);
-        crate::building_bombing::presize(0);
-        crate::land_events::prepare();
-        let event_capacities_changed = crate::air_losses::capacity()
-            > extended_capacities.air_losses.events
-            || crate::building_bombing::capacity() > extended_capacities.building_bombing
-            || crate::land_events::capacity() > extended_capacities.land_events.words;
-        extended_capacities.air_losses.events = extended_capacities
-            .air_losses
-            .events
-            .max(crate::air_losses::capacity());
-        extended_capacities.building_bombing = extended_capacities
-            .building_bombing
-            .max(crate::building_bombing::capacity());
-        extended_capacities.land_events.words = extended_capacities
-            .land_events
-            .words
-            .max(crate::land_events::capacity());
-        if event_capacities_changed {
-            grow_idle_frames(
-                shared,
-                &mut capacities,
-                &mut map_capacities,
-                &mut extended_capacities,
-            );
-        }
-        extended_capacities.operation_outcomes.prepare();
-        crate::experience_gains::prepare(registry.slots);
-        crate::line_output::collect();
-        crate::construction_ic::collect();
-        crate::fuel_awards::collect();
-        if fuel_demand_at.elapsed() >= RegistryWatch::INTEL_INTERVAL {
-            fuel_demand_at = Instant::now();
-            if let Some(entries) =
-                crate::country_scale::observe_politics_demand(&live, shared.base, registry.slots)
-            {
-                crate::politics_changes::resize(entries, 0);
-            }
-            crate::fuel_awards::presize(&live, shared.base);
-            match crate::country_scale::observe_fuel_unit_demand(&live, shared.base) {
-                Ok(Some(demand)) => {
-                    let before = extended_capacities.economy.demand;
-                    extended_capacities.economy.demand.raise(demand);
-                    if extended_capacities.economy.demand != before {
-                        grow_idle_frames(
-                            shared,
-                            &mut capacities,
-                            &mut map_capacities,
-                            &mut extended_capacities,
-                        );
-                    }
-                }
-                Ok(None) => {}
-                Err(reason) => {
-                    processor.observe_input_demand_error(reason);
-                }
-            }
-        }
-        let (entries, names) = crate::fuel_awards::capacities();
-        if entries > extended_capacities.fuel_awards.entries
-            || names > extended_capacities.fuel_awards.names
-        {
-            extended_capacities.fuel_awards.entries =
-                entries.max(extended_capacities.fuel_awards.entries);
-            extended_capacities.fuel_awards.names =
-                names.max(extended_capacities.fuel_awards.names);
-            grow_idle_frames(
-                shared,
-                &mut capacities,
-                &mut map_capacities,
-                &mut extended_capacities,
-            );
-        }
-        crate::peace_settlements::collect();
-        if reported.elapsed() >= Duration::from_secs(1) {
-            let peace_capacity = crate::peace_settlements::capacity_for_world(&live, shared.base);
-            if !extended_capacities
-                .peace_settlements
-                .contains(peace_capacity)
-                || !extended_capacities.peace_bids.contains(peace_capacity)
-            {
-                extended_capacities.peace_settlements =
-                    extended_capacities.peace_settlements.merge(peace_capacity);
-                extended_capacities.peace_bids =
-                    extended_capacities.peace_bids.merge(peace_capacity);
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        crate::peace_settlements::presize(extended_capacities.peace_settlements);
-        crate::event_feed_observer::presize(crate::country_scale::census_rows(0));
-        crate::directed_war_queries::prepare(crate::country_scale::census_rows(0));
-        crate::naval_result_sources::prepare(&live, shared.base);
-        let naval_result_capacity = crate::naval_result_sources::capacity();
-        if naval_result_capacity > extended_capacities.naval_result_sources {
-            extended_capacities.naval_result_sources = naval_result_capacity;
-            grow_idle_frames(
-                shared,
-                &mut capacities,
-                &mut map_capacities,
-                &mut extended_capacities,
-            );
-        }
-        if let Some(lines) = registry.poll_lines(&live, shared.base) {
-            crate::line_output::presize(lines);
-            if lines > extended_capacities.line_output.entries {
-                extended_capacities.line_output.entries = lines;
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        // A save load rebuilds the country registry before its first hourly
-        // tick; presize every buffer while the game is still loading. Sizing
-        // only grows, so a larger region roster alone repeats it harmlessly.
-        if let Ok(bytes) = crate::extended::weather::observe_display_capacity(&live, shared.base)
-            && bytes > extended_capacities.weather.display_bytes
-        {
-            extended_capacities.weather.display_bytes = bytes;
-            decode::presize_weather_jobs();
-            grow_idle_frames(
-                shared,
-                &mut capacities,
-                &mut map_capacities,
-                &mut extended_capacities,
-            );
-        }
-        if let Some((slots, regions)) = registry.poll(&live, shared.base) {
-            crate::country_scale::note_slots(slots);
-            crate::operation_outcomes::resize(slots.max(1));
-            // This census is RegistryWatch-throttled, including while idle.
-            crate::politics_changes::resize(
-                crate::country_scale::observe_politics_demand(&live, shared.base, slots)
-                    .unwrap_or(slots),
-                processor
-                    .observe_input_demand(engine::politics_sites::lexical_key_demand(
-                        &live,
-                        shared.base,
-                    ))
-                    .unwrap_or(0),
-            );
-            crate::relation_changes::presize(slots);
-            crate::history_changes::presize(slots, regions);
-            decode::presize_country_pools();
-            let mut raised = crate::country_scale::Sizing {
-                core: capacities,
-                map: map_capacities,
-                extended: extended_capacities,
-                country_cells: 0,
-                content: engine::cdlc_manager::Counts::default(),
-            };
-            raised.raise_for_slots(slots);
-            raised.extended.raise_for_regions(regions);
-            shared.offer_country_cache(raised.country_cells);
-            if raised.core != capacities
-                || raised.map != map_capacities
-                || raised.extended != extended_capacities
-            {
-                capacities = raised.core;
-                map_capacities = raised.map;
-                extended_capacities = raised.extended;
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if let Some(demand) = processor
-            .observe_input_demand(registry.poll_ship_strike_metadata(&live, shared.base))
-            .flatten()
-        {
-            let count = demand;
-            let before = extended_capacities;
-            extended_capacities
-                .ship_models
-                .raise_for_strike_metadata(count);
-            if extended_capacities != before {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if reported.elapsed() >= RegistryWatch::INTEL_INTERVAL {
-            if let Err(reason) = crate::construction_ic::presize_from_live(&live, shared.base) {
-                processor.observe_input_demand_error(reason);
-            }
-            crate::air_losses::prepare(&live, shared.base, registry.slots);
-            crate::building_bombing::prepare(&live, shared.base, registry.slots);
-            let before = extended_capacities;
-            extended_capacities.air_losses.events = extended_capacities
-                .air_losses
-                .events
-                .max(crate::air_losses::capacity());
-            extended_capacities.building_bombing = extended_capacities
-                .building_bombing
-                .max(crate::building_bombing::capacity());
-            let before_map = map_capacities;
-            let before_core = capacities;
-            match crate::country_scale::source_demand::Demand::observe(&live, shared.base) {
-                Ok(Some(demand)) => demand.apply_parts(&mut capacities, &mut extended_capacities),
-                Ok(None) => {}
-                Err(reason) => processor.observe_input_demand_error(reason),
-            }
-            if let Err(reason) = crate::country_scale::presize_table_inputs(
-                &live,
-                shared.base,
-                &mut map_capacities,
-                &mut extended_capacities,
-            ) {
-                processor.observe_input_demand_error(reason);
-            }
-            if let Err(reason) = extended_capacities.presize_live_inputs(&live, shared.base) {
-                processor.observe_input_demand_error(reason);
-            }
-            if extended_capacities != before
-                || map_capacities != before_map
-                || capacities != before_core
-            {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        // The live pool census sizes storage only; observe it on the existing
-        // one-second status cadence rather than every two-millisecond idle pass.
-        if reported.elapsed() >= Duration::from_secs(1) {
-            crate::equipment_destruction::prepare(&live, shared.base, registry.slots);
-            let destruction_capacity = crate::equipment_destruction::capacity();
-            if destruction_capacity > extended_capacities.equipment_destruction {
-                extended_capacities.equipment_destruction = destruction_capacity;
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if let Some(rows) = processor
-            .observe_input_demand(registry.poll_intel(&live, shared.base))
-            .flatten()
-        {
-            let before = extended_capacities;
-            extended_capacities.raise_for_country_intel(rows);
-            if extended_capacities != before {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if let Some(demand) = processor
-            .observe_input_demand(registry.poll_ace_names(&live, shared.base))
-            .flatten()
-        {
-            let before = extended_capacities;
-            extended_capacities.air.raise_for_names(demand);
-            if extended_capacities != before {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if let Some(demand) = processor
-            .observe_input_demand(registry.poll_air_wing_names(&live, shared.base))
-            .flatten()
-        {
-            let bytes = demand;
-            crate::country_scale::note_air_wing_name_bytes(bytes);
-            decode::presize_air_wing_names();
-            let before = map_capacities;
-            map_capacities.raise_for_air_wing_names(bytes);
-            if map_capacities != before {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if let Some(demand) = processor
-            .observe_input_demand(registry.poll_railway_gun_names(&live, shared.base))
-            .flatten()
-        {
-            crate::country_scale::note_railway_gun_names(demand);
-            let before = extended_capacities;
-            extended_capacities.railway_guns.raise_for_names(demand);
-            if extended_capacities != before {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if let Some(demand) = processor
-            .observe_input_demand(registry.poll_fresh_eta(&live, shared.base))
-            .flatten()
-        {
-            if let Ok(carrier) = demand.carrier
-                && crate::country_scale::note_carrier_demand(carrier)
-            {
-                decode::presize_country_pools();
-            }
-            for reason in demand.map_refusals() {
-                processor.observe_input_demand_error(reason);
-            }
-            let mut raised = crate::country_scale::Sizing {
-                core: capacities,
-                map: map_capacities,
-                extended: extended_capacities,
-                country_cells: 0,
-                content: engine::cdlc_manager::Counts::default(),
-            };
-            raised
-                .raise_for_fresh_map(&demand)
-                .map_err(|error| error_reason(error, "fresh ETA map sizing failed"))?;
-            if let Err(reason) = raised
-                .extended
-                .country_counters
-                .raise_for_movement(demand.movement)
-            {
-                processor.observe_input_demand_error(reason);
-            }
-            raised
-                .extended
-                .country_counters
-                .raise_for_naval_movement(demand.naval.capacities);
-            raised
-                .extended
-                .country_appearance
-                .raise_for_naval_movement(demand.naval.shared);
-            raised
-                .extended
-                .naval_counters
-                .raise_for_names(demand.naval.name_rows, demand.naval.name_bytes);
-            raised
-                .extended
-                .naval_counters
-                .raise_for_supply_origins(demand.naval.supply_origins);
-            if let Err(reason) = raised
-                .extended
-                .naval_counters
-                .raise_for_port(demand.naval.port)
-            {
-                processor.observe_input_demand_error(reason);
-            }
-            if let Some(reason) = demand.naval.refusal() {
-                processor.observe_input_demand_error(reason);
-            }
-            if raised.core != capacities || raised.extended != extended_capacities {
-                capacities = raised.core;
-                extended_capacities = raised.extended;
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if let Some(demand) = processor
-            .observe_input_demand(registry.poll_attrition_inputs(&live, shared.base))
-            .flatten()
-        {
-            if let Some(reason) = demand.failure {
-                processor.observe_input_demand_error(reason);
-            }
-            let before = extended_capacities;
-            extended_capacities
-                .division_presentation
-                .raise_for_attrition(demand);
-            if extended_capacities != before {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if extended_capacities.game_score.enabled
-            && let Some(observed) = registry.poll_game_score(&live, shared.base)
-        {
-            let observed = observed
-                .map_err(|error| error_reason(error, "game score sizing allocation failed"))?;
-            processor
-                .observe_game_score_sizing(&observed)
-                .map_err(|error| {
-                    error_reason(error, "game score sizing status allocation failed")
-                })?;
-            let before = extended_capacities;
-            if extended_capacities.game_score.raise(observed.demand) {
-                decode::presize_country_pools();
-            }
-            if extended_capacities != before {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if let Some(demand) = processor
-            .observe_input_demand(registry.poll_raids(&live, shared.base))
-            .flatten()
-        {
-            for reason in demand.failures.into_iter().flatten() {
-                processor.observe_input_demand_error(reason);
-            }
-            let before = extended_capacities;
-            extended_capacities.raise_for_raid_arenas(demand);
-            if extended_capacities != before {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if let Some(demand) = processor
-            .observe_input_demand(registry.poll_characters(&live, shared.base))
-            .flatten()
-        {
-            let before = extended_capacities;
-            extended_capacities.raise_for_characters(demand);
-            if extended_capacities != before {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if let Some(demand) = processor
-            .observe_input_demand(registry.poll_saved_targets(&live, shared.base))
-            .flatten()
-        {
-            let before = extended_capacities;
-            extended_capacities.saved_event_targets.raise(demand);
-            if extended_capacities != before {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if let Some(demand) = processor
-            .observe_input_demand(registry.poll_politics(&live, shared.base))
-            .flatten()
-        {
-            for reason in demand.failures() {
-                processor.observe_input_demand_error(reason);
-            }
-            let before = extended_capacities;
-            extended_capacities
-                .country_counters
-                .raise_for_pride_names(demand.pride_name_bytes);
-            extended_capacities.raise_for_politics(demand);
-            extended_capacities.operation_outcomes.prepare();
-            if extended_capacities != before {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if let Some(demand) = processor
-            .observe_input_demand(registry.poll_reserved_visibility(&live, shared.base))
-            .flatten()
-        {
-            let slots = demand;
-            let before = extended_capacities;
-            extended_capacities.raise_reserved_visibility(slots);
-            if extended_capacities != before {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
-            }
-        }
-        if let Some(hints) = registry.poll_combat_hints(&live, shared.base) {
-            for reason in hints.failures.into_iter().flatten() {
-                processor.observe_input_demand_error(reason);
-            }
-            grow_combat_hints(
-                shared,
-                &extended_capacities,
-                &hints,
-                &mut applied_combat_hints,
-            );
-        }
+        sizing.spool_pass(shared, &mut processor)?;
+        let span = phases.span(Phase::Flush);
         if crate::allocation::failed() {
             return Err("collector allocation failed");
         }
@@ -4052,14 +4255,17 @@ fn spool_loop(
             crate::land_events::fail("land final spool flush failed");
             crate::air_losses::lost_drain();
             crate::building_bombing::lost_drain();
+            crate::nuclear_strikes::lost_drain();
             last_warning = Some(error_reason(error, "collector spool I/O failed"));
         }
         let flush_ns = shared.ns(sampling::qpc() - flush_started);
         work.idle_flush_calls += 1;
         work.idle_flush_ns = work.idle_flush_ns.saturating_add(flush_ns);
         work.idle_flush_max_ns = work.idle_flush_max_ns.max(flush_ns);
+        span.finish();
         if reported.elapsed() >= Duration::from_secs(1) || shared.stop_spool.load(Ordering::Acquire)
         {
+            let _span = phases.span(Phase::Status);
             crate::allocation::attempted_hour(None);
             let _status_phase = crate::allocation::enter(crate::allocation::Phase::Status);
             if let Err(error) = refresh_requests.poll(&config.output_dir, shared) {
@@ -4172,9 +4378,679 @@ fn spool_loop(
                     .map_err(|e| error_reason(e, "terminal directory allocation failed"))?,
             });
         }
-        std::thread::sleep(Duration::from_millis(2));
+        if shared.ready.is_empty() {
+            let _span = phases.span(Phase::Wait);
+            std::thread::park_timeout(SPOOL_IDLE_WAIT);
+        }
     }
 }
+
+/// Capture-buffer capacities. The spool thread raises them as it returns a
+/// buffer that ran short, and the sizing thread from live demand; whoever
+/// raises them grows every idle buffer while holding the lock.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct BufferCapacities {
+    core: [usize; 12],
+    map: crate::map_capture::MapCapacities,
+    extended: crate::extended::Capacities,
+}
+
+impl BufferCapacities {
+    fn grow_idle(&mut self, shared: &Shared) {
+        grow_idle_frames(shared, &mut self.core, &mut self.map, &mut self.extended);
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// What one sizing pass keeps between passes.
+struct SizingState {
+    registry: RegistryWatch,
+    applied_combat_hints: [CombatHintState; sampling::BUFFERS],
+    fuel_demand_at: Instant,
+    /// The last pass that ran the once-a-second sizing reads.
+    second: Instant,
+}
+
+/// Sizing observations the spool thread records in its status.
+#[derive(Default)]
+struct PendingSizing {
+    errors: u64,
+    last_error: Option<&'static str>,
+    game_score: Vec<engine::game_score_inputs::ArenaSizing>,
+}
+
+/// State the spool thread shares with its sizing thread.
+struct SizingShared {
+    capacities: Mutex<BufferCapacities>,
+    stop: AtomicBool,
+    /// A terminal sizing failure, which ends the spool thread.
+    failure: OnceLock<&'static str>,
+    pending: Mutex<PendingSizing>,
+    /// The spool thread's allocation context between hours, which a terminal
+    /// allocation failure on the sizing thread records.
+    context: Mutex<crate::allocation::Context>,
+    /// Held by the sizing thread, or by the spool thread when the sizing
+    /// thread could not start.
+    state: Mutex<Option<SizingState>>,
+    /// What encoder commits handed back, freed by the sizing thread.
+    retired: Mutex<Vec<replay::frame::Retired>>,
+}
+
+impl SizingShared {
+    fn new(capacities: BufferCapacities, state: Option<SizingState>) -> Self {
+        Self {
+            capacities: Mutex::new(capacities),
+            stop: AtomicBool::new(false),
+            failure: OnceLock::new(),
+            pending: Mutex::new(PendingSizing::default()),
+            context: Mutex::new(crate::allocation::Context::default()),
+            state: Mutex::new(state),
+            retired: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn error(&self, reason: &'static str) {
+        let mut pending = lock(&self.pending);
+        pending.errors = pending.errors.saturating_add(1);
+        pending.last_error = Some(reason);
+    }
+
+    fn demand<T>(&self, result: Result<T, &'static str>) -> Option<T> {
+        result.map_err(|reason| self.error(reason)).ok()
+    }
+
+    /// Raise the capacities under their lock; grow every idle buffer when
+    /// the step raised any.
+    fn raise<R>(&self, shared: &Shared, step: impl FnOnce(&mut BufferCapacities) -> R) -> R {
+        let mut capacities = lock(&self.capacities);
+        let before = *capacities;
+        let result = step(&mut capacities);
+        if *capacities != before {
+            capacities.grow_idle(shared);
+        }
+        result
+    }
+}
+
+/// The spool's sizing thread: live sizing reads, the capture-buffer growth
+/// they request and between-tick observer preparation, in passes beside the
+/// spool thread. Dropping it stops and joins the thread.
+struct SizingThread {
+    sizing: Arc<SizingShared>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl SizingThread {
+    /// Start the thread with the attach-time capacities and sizing caches.
+    /// Without a thread the spool thread runs each pass itself.
+    fn start(shared: Arc<Shared>, state: SpoolState) -> Self {
+        let sizing = Arc::new(SizingShared::new(
+            BufferCapacities {
+                core: state.sizing.core,
+                map: state.sizing.map,
+                extended: state.sizing.extended,
+            },
+            Some(SizingState {
+                registry: RegistryWatch::default(),
+                applied_combat_hints: state.applied_combat_hints,
+                fuel_demand_at: Instant::now(),
+                second: Instant::now() - Duration::from_secs(1),
+            }),
+        ));
+        let worker = Arc::clone(&sizing);
+        let thread = std::thread::Builder::new()
+            .name("hoi4-spool-sizing".into())
+            .stack_size(BACKGROUND_STACK_BYTES)
+            .spawn(move || {
+                crate::thread_cpu::register(crate::thread_cpu::Role::SpoolSizing);
+                sizing_loop(&shared, &worker);
+            })
+            .ok();
+        Self { sizing, thread }
+    }
+
+    fn thread_id(&self) -> Option<u32> {
+        use std::os::windows::io::AsRawHandle;
+        let thread = self.thread.as_ref()?;
+        // SAFETY: the handle stays open while the JoinHandle lives.
+        let id = unsafe {
+            windows_sys::Win32::System::Threading::GetThreadId(thread.as_raw_handle() as _)
+        };
+        (id != 0).then_some(id)
+    }
+
+    /// Called by the spool thread once per pass: record what the sizing
+    /// thread observed, hand it the current allocation context and run the
+    /// pass here when the thread could not start.
+    fn spool_pass(&self, shared: &Shared, processor: &mut Processor) -> Result<(), &'static str> {
+        let span = crate::spool_phases::SPOOL.span(Phase::Sizing);
+        if let Some(&failure) = self.sizing.failure.get() {
+            return Err(failure);
+        }
+        let pending = std::mem::take(&mut *lock(&self.sizing.pending));
+        if let Some(reason) = pending.last_error {
+            processor.observe_input_demand_errors(pending.errors, reason);
+        }
+        for observed in &pending.game_score {
+            processor
+                .observe_game_score_sizing(observed)
+                .map_err(|error| {
+                    error_reason(error, "game score sizing status allocation failed")
+                })?;
+        }
+        *lock(&self.sizing.context) = crate::allocation::context();
+        span.finish();
+        match &self.thread {
+            Some(thread) => thread.thread().unpark(),
+            None => {
+                if let Some(state) = lock(&self.sizing.state).as_mut() {
+                    sizing_pass(shared, &self.sizing, state, &crate::spool_phases::SPOOL)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl SizingThread {
+    /// Free what a commit handed back on the sizing thread, or here without
+    /// one, so the spool thread goes on to its next hour.
+    fn retire(&self, retired: Vec<replay::frame::Retired>) {
+        if retired.is_empty() {
+            return;
+        }
+        let Some(thread) = &self.thread else {
+            let _span = crate::spool_phases::SPOOL.span(Phase::Retire);
+            drop(retired);
+            return;
+        };
+        let mut held = lock(&self.sizing.retired);
+        if held.is_empty() {
+            *held = retired;
+        } else if engine::allocation::reserve(&mut held, retired.len()).is_ok() {
+            held.extend(retired);
+        } else {
+            drop(held);
+            let _span = crate::spool_phases::SPOOL.span(Phase::Retire);
+            drop(retired);
+            return;
+        }
+        drop(held);
+        thread.thread().unpark();
+    }
+}
+
+impl Drop for SizingThread {
+    fn drop(&mut self) {
+        self.sizing.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
+    }
+}
+
+fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
+    let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
+    let Some(mut state) = lock(&sizing.state).take() else {
+        return;
+    };
+    let phases = &crate::spool_phases::SIZING;
+    let mut priority = OwnPriority::new();
+    while !sizing.stop.load(Ordering::Acquire) && !crate::allocation::failed() {
+        priority.follow(shared.buffers_backlogged());
+        let retired = std::mem::take(&mut *lock(&sizing.retired));
+        if !retired.is_empty() {
+            let _span = phases.span(Phase::Retire);
+            drop(retired);
+        }
+        crate::allocation::set_context(*lock(&sizing.context));
+        if let Err(failure) = sizing_pass(shared, sizing, &mut state, phases) {
+            let _ = sizing.failure.set(failure);
+            shared.wake_spool();
+            return;
+        }
+        let _span = phases.span(Phase::Wait);
+        std::thread::park_timeout(SPOOL_IDLE_WAIT);
+    }
+}
+
+/// One pass of live sizing reads and between-tick observer preparation:
+/// each step that raises capacities grows the idle capture buffers.
+fn sizing_pass(
+    shared: &Shared,
+    sizing: &SizingShared,
+    state: &mut SizingState,
+    phases: &'static crate::spool_phases::Totals,
+) -> Result<(), &'static str> {
+    let live = unsafe { LiveMemory::new() };
+    let base = shared.base;
+    let registry = &mut state.registry;
+    let once_a_second = state.second.elapsed() >= Duration::from_secs(1);
+    let span = phases.span(Phase::Sizing);
+    if let Some(logistics_rows) = registry
+        .poll_logistics(&live, base)
+        .map_err(|e| error_reason(e, "logistics balance staging allocation failed"))?
+    {
+        sizing.raise(shared, |capacities| {
+            capacities.extended.logistics.raise(logistics_rows)
+        });
+    }
+    let span = span.switch(Phase::Observers);
+    crate::relation_changes::collect();
+    crate::world_input_changes::collect();
+    crate::history_changes::collect();
+    crate::flag_changes::presize();
+    crate::flag_changes::collect();
+    crate::building_changes::presize();
+    crate::building_changes::collect();
+    crate::advisor_pool_changes::presize();
+    crate::advisor_pool_changes::collect();
+    crate::party_leader_changes::presize();
+    crate::party_leader_changes::collect();
+    crate::variable_changes::presize();
+    crate::variable_changes::collect();
+    crate::party_changes::presize();
+    crate::party_changes::collect();
+    crate::wing_changes::presize();
+    crate::wing_changes::collect();
+    crate::mission_changes::presize();
+    crate::mission_changes::collect();
+    crate::rail_changes::presize();
+    crate::rail_changes::collect();
+    crate::territory_changes::presize();
+    crate::territory_changes::collect();
+    crate::army_stat_changes::presize();
+    crate::army_stat_changes::collect();
+    crate::country_input_changes::presize();
+    crate::country_input_changes::collect();
+    crate::raid_changes::presize();
+    crate::raid_changes::collect();
+    crate::naval_tree_changes::presize();
+    crate::naval_tree_changes::collect();
+    crate::unit_leader_changes::presize();
+    crate::unit_leader_changes::collect();
+    crate::opinion_changes::collect();
+    crate::retreat_ban_changes::presize();
+    crate::retreat_ban_changes::collect();
+    crate::unit_leader_trait_changes::presize();
+    crate::unit_leader_trait_changes::collect();
+    crate::local_subunit_changes::presize();
+    crate::local_subunit_changes::collect();
+    crate::province_unit_changes::presize();
+    crate::province_unit_changes::collect();
+    crate::template_changes::presize();
+    crate::template_changes::collect();
+    crate::ship_model_changes::presize();
+    crate::ship_model_changes::collect();
+    crate::air_base_carry_changes::presize();
+    crate::air_base_carry_changes::collect();
+    crate::character_changes::presize(crate::extended::characters::census::initial_len());
+    crate::character_changes::collect();
+    crate::politics_changes::prepare();
+    crate::air_losses::presize(0);
+    crate::building_bombing::presize(0);
+    crate::nuclear_strikes::presize(0);
+    crate::land_events::prepare();
+    sizing.raise(shared, |capacities| {
+        let extended = &mut capacities.extended;
+        extended.air_losses.events = extended
+            .air_losses
+            .events
+            .max(crate::air_losses::capacity());
+        extended.building_bombing = extended
+            .building_bombing
+            .max(crate::building_bombing::capacity());
+        extended.nuclear_strikes = extended
+            .nuclear_strikes
+            .max(crate::nuclear_strikes::capacity());
+        extended.land_events.words = extended
+            .land_events
+            .words
+            .max(crate::land_events::capacity());
+        extended.operation_outcomes.prepare();
+    });
+    crate::experience_gains::prepare(registry.slots);
+    crate::line_output::collect();
+    crate::construction_ic::collect();
+    crate::fuel_awards::collect();
+    let span = span.switch(Phase::Sizing);
+    if state.fuel_demand_at.elapsed() >= RegistryWatch::INTEL_INTERVAL {
+        state.fuel_demand_at = Instant::now();
+        if let Some(entries) =
+            crate::country_scale::observe_politics_demand(&live, base, registry.slots)
+        {
+            crate::politics_changes::resize(entries, 0);
+        }
+        crate::fuel_awards::presize(&live, base);
+        match crate::country_scale::observe_fuel_unit_demand(&live, base) {
+            Ok(Some(demand)) => sizing.raise(shared, |capacities| {
+                capacities.extended.economy.demand.raise(demand)
+            }),
+            Ok(None) => {}
+            Err(reason) => sizing.error(reason),
+        }
+    }
+    let (entries, names) = crate::fuel_awards::capacities();
+    sizing.raise(shared, |capacities| {
+        let awards = &mut capacities.extended.fuel_awards;
+        awards.entries = awards.entries.max(entries);
+        awards.names = awards.names.max(names);
+    });
+    let span = span.switch(Phase::Observers);
+    crate::peace_settlements::collect();
+    let span = span.switch(Phase::Sizing);
+    if once_a_second {
+        let peace = crate::peace_settlements::capacity_for_world(&live, base);
+        sizing.raise(shared, |capacities| {
+            let extended = &mut capacities.extended;
+            if !extended.peace_settlements.contains(peace) || !extended.peace_bids.contains(peace) {
+                extended.peace_settlements = extended.peace_settlements.merge(peace);
+                extended.peace_bids = extended.peace_bids.merge(peace);
+            }
+        });
+    }
+    let span = span.switch(Phase::Observers);
+    let peace = lock(&sizing.capacities).extended.peace_settlements;
+    crate::peace_settlements::presize(peace);
+    crate::event_feed_observer::presize(crate::country_scale::census_rows(0));
+    let span = span.switch(Phase::Sizing);
+    crate::naval_result_sources::prepare(&live, base);
+    let naval_result_capacity = crate::naval_result_sources::capacity();
+    sizing.raise(shared, |capacities| {
+        let sources = &mut capacities.extended.naval_result_sources;
+        *sources = (*sources).max(naval_result_capacity);
+    });
+    if let Some(lines) = registry.poll_lines(&live, base) {
+        crate::line_output::presize(lines);
+        sizing.raise(shared, |capacities| {
+            let entries = &mut capacities.extended.line_output.entries;
+            *entries = (*entries).max(lines);
+        });
+    }
+    // A save load rebuilds the country registry before its first hourly
+    // tick; presize every buffer while the game is still loading. Sizing
+    // only grows, so a larger region roster alone repeats it harmlessly.
+    if let Ok(bytes) = crate::extended::weather::observe_display_capacity(&live, base) {
+        sizing.raise(shared, |capacities| {
+            let display = &mut capacities.extended.weather.display_bytes;
+            if bytes > *display {
+                *display = bytes;
+                decode::presize_weather_jobs();
+            }
+        });
+    }
+    if let Some((slots, regions)) = registry.poll(&live, base) {
+        crate::country_scale::note_slots(slots);
+        crate::operation_outcomes::resize(slots.max(1));
+        // This census is RegistryWatch-throttled, including while idle.
+        crate::politics_changes::resize(
+            crate::country_scale::observe_politics_demand(&live, base, slots).unwrap_or(slots),
+            sizing
+                .demand(engine::politics_sites::lexical_key_demand(&live, base))
+                .unwrap_or(0),
+        );
+        crate::relation_changes::presize(slots);
+        crate::world_input_changes::presize(slots);
+        crate::history_changes::presize(slots, regions);
+        decode::presize_country_pools();
+        sizing.raise(shared, |capacities| {
+            let mut raised = crate::country_scale::Sizing {
+                core: capacities.core,
+                map: capacities.map,
+                extended: capacities.extended,
+                country_cells: 0,
+                content: engine::cdlc_manager::Counts::default(),
+            };
+            raised.raise_for_slots(slots);
+            raised.extended.raise_for_regions(regions);
+            shared.offer_country_cache(raised.country_cells);
+            capacities.core = raised.core;
+            capacities.map = raised.map;
+            capacities.extended = raised.extended;
+        });
+    }
+    if once_a_second {
+        if let Err(reason) = crate::construction_ic::presize_from_live(&live, base) {
+            sizing.error(reason);
+        }
+        crate::air_losses::prepare(&live, base, registry.slots);
+        crate::building_bombing::prepare(&live, base, registry.slots);
+        crate::nuclear_strikes::presize(
+            crate::building_bombing::buildings().saturating_add(registry.slots),
+        );
+        let source = crate::country_scale::source_demand::Demand::observe(&live, base);
+        // The table and live input hints read live demand while raising, so
+        // a buffer return on the spool thread waits for them.
+        let failures = sizing.raise(shared, |capacities| {
+            let mut failures = [None; 3];
+            let extended = &mut capacities.extended;
+            extended.air_losses.events = extended
+                .air_losses
+                .events
+                .max(crate::air_losses::capacity());
+            extended.building_bombing = extended
+                .building_bombing
+                .max(crate::building_bombing::capacity());
+            extended.nuclear_strikes = extended
+                .nuclear_strikes
+                .max(crate::nuclear_strikes::capacity());
+            match source {
+                Ok(Some(demand)) => {
+                    demand.apply_parts(&mut capacities.core, &mut capacities.extended)
+                }
+                Ok(None) => {}
+                Err(reason) => failures[0] = Some(reason),
+            }
+            if let Err(reason) = crate::country_scale::presize_table_inputs(
+                &live,
+                base,
+                &mut capacities.map,
+                &mut capacities.extended,
+            ) {
+                failures[1] = Some(reason);
+            }
+            if let Err(reason) = capacities.extended.presize_live_inputs(&live, base) {
+                failures[2] = Some(reason);
+            }
+            failures
+        });
+        for reason in failures.into_iter().flatten() {
+            sizing.error(reason);
+        }
+        // The live pool census sizes storage only; observe it once a second
+        // rather than every idle pass.
+        crate::equipment_destruction::prepare(&live, base, registry.slots);
+        let destruction_capacity = crate::equipment_destruction::capacity();
+        sizing.raise(shared, |capacities| {
+            let destruction = &mut capacities.extended.equipment_destruction;
+            *destruction = (*destruction).max(destruction_capacity);
+        });
+    }
+    if let Some(rows) = sizing.demand(registry.poll_intel(&live, base)).flatten() {
+        sizing.raise(shared, |capacities| {
+            capacities.extended.raise_for_country_intel(rows)
+        });
+    }
+    if let Some(demand) = sizing
+        .demand(registry.poll_ace_names(&live, base))
+        .flatten()
+    {
+        sizing.raise(shared, |capacities| {
+            capacities.extended.air.raise_for_names(demand)
+        });
+    }
+    if let Some(bytes) = sizing
+        .demand(registry.poll_air_wing_names(&live, base))
+        .flatten()
+    {
+        crate::country_scale::note_air_wing_name_bytes(bytes);
+        decode::presize_air_wing_names();
+        sizing.raise(shared, |capacities| {
+            capacities.map.raise_for_air_wing_names(bytes)
+        });
+    }
+    if let Some(demand) = sizing
+        .demand(registry.poll_railway_gun_names(&live, base))
+        .flatten()
+    {
+        crate::country_scale::note_railway_gun_names(demand);
+        sizing.raise(shared, |capacities| {
+            capacities.extended.railway_guns.raise_for_names(demand)
+        });
+    }
+    if let Some(demand) = sizing.demand(registry.poll_map(&live, base)).flatten() {
+        if let Ok(carrier) = demand.carrier
+            && crate::country_scale::note_carrier_demand(carrier)
+        {
+            decode::presize_country_pools();
+        }
+        for reason in demand.map_refusals() {
+            sizing.error(reason);
+        }
+        sizing.raise(shared, |capacities| {
+            let mut raised = crate::country_scale::Sizing {
+                core: capacities.core,
+                map: capacities.map,
+                extended: capacities.extended,
+                country_cells: 0,
+                content: engine::cdlc_manager::Counts::default(),
+            };
+            raised.raise_for_map(&demand);
+            raised
+                .extended
+                .country_counters
+                .raise_for_physical_navies(demand.navies.capacities);
+            raised
+                .extended
+                .naval_counters
+                .raise_for_names(demand.navies.name_rows, demand.navies.name_bytes);
+            raised
+                .extended
+                .naval_counters
+                .raise_for_supply_origins(demand.navies.supply_origins);
+            if let Err(reason) = raised
+                .extended
+                .naval_counters
+                .raise_for_port(demand.navies.port)
+            {
+                sizing.error(reason);
+            }
+            if let Some(reason) = demand.navies.refusal() {
+                sizing.error(reason);
+            }
+            // The map hint raises the core and extended capacities.
+            capacities.core = raised.core;
+            capacities.extended = raised.extended;
+            Ok(())
+        })?;
+    }
+    if let Some(demand) = sizing
+        .demand(registry.poll_presentation_census(&live, base))
+        .flatten()
+    {
+        if let Some(reason) = demand.failure {
+            sizing.error(reason);
+        }
+        sizing.raise(shared, |capacities| {
+            capacities
+                .extended
+                .division_presentation
+                .raise_for_census(demand)
+        });
+    }
+    let game_score = lock(&sizing.capacities).extended.game_score.enabled;
+    if game_score && let Some(observed) = registry.poll_game_score(&live, base) {
+        let observed =
+            observed.map_err(|error| error_reason(error, "game score sizing allocation failed"))?;
+        let demand = observed.demand;
+        {
+            let mut pending = lock(&sizing.pending);
+            engine::allocation::reserve(&mut pending.game_score, 1).map_err(|error| {
+                error_reason(error, "game score sizing status allocation failed")
+            })?;
+            pending.game_score.push(observed);
+        }
+        sizing.raise(shared, |capacities| {
+            if capacities.extended.game_score.raise(demand) {
+                decode::presize_country_pools();
+            }
+        });
+    }
+    if let Some(demand) = sizing.demand(registry.poll_raids(&live, base)).flatten() {
+        for reason in demand.failures.into_iter().flatten() {
+            sizing.error(reason);
+        }
+        sizing.raise(shared, |capacities| {
+            capacities.extended.raise_for_raid_arenas(demand)
+        });
+    }
+    if let Some(demand) = sizing
+        .demand(registry.poll_characters(&live, base))
+        .flatten()
+    {
+        sizing.raise(shared, |capacities| {
+            capacities.extended.raise_for_characters(demand)
+        });
+    }
+    if let Some(demand) = sizing
+        .demand(registry.poll_saved_targets(&live, base))
+        .flatten()
+    {
+        sizing.raise(shared, |capacities| {
+            capacities.extended.saved_event_targets.raise(demand)
+        });
+    }
+    if let Some(demand) = sizing.demand(registry.poll_politics(&live, base)).flatten() {
+        for reason in demand.failures() {
+            sizing.error(reason);
+        }
+        sizing.raise(shared, |capacities| {
+            capacities
+                .extended
+                .country_counters
+                .raise_for_pride_names(demand.pride_name_bytes);
+            capacities.extended.raise_for_politics(demand);
+            capacities.extended.operation_outcomes.prepare();
+        });
+    }
+    if let Some(slots) = sizing
+        .demand(registry.poll_reserved_visibility(&live, base))
+        .flatten()
+    {
+        sizing.raise(shared, |capacities| {
+            capacities.extended.raise_reserved_visibility(slots)
+        });
+    }
+    if let Some(hints) = registry.poll_combat_hints(&live, base) {
+        for reason in hints.failures.into_iter().flatten() {
+            sizing.error(reason);
+        }
+        let capacities = lock(&sizing.capacities);
+        grow_combat_hints(
+            shared,
+            &capacities.extended,
+            &hints,
+            &mut state.applied_combat_hints,
+        );
+    }
+    span.finish();
+    if once_a_second {
+        state.second = Instant::now();
+    }
+    Ok(())
+}
+
+/// The spool loop's longest idle wait. Ready buffers, parked clock
+/// preparations and the stop request end it at once; the bound keeps the
+/// pass that checks durability within this latency while no hour arrives;
+/// the sizing thread waits as long between its passes.
+const SPOOL_IDLE_WAIT: Duration = Duration::from_millis(10);
 
 /// `recorder refresh` asks for one full-refresh hour: every scheduled table,
 /// including daily, static and sliced ones, is read at the next hourly sample.
@@ -4223,6 +5099,14 @@ static PRIORITY_LOWERED: AtomicU64 = AtomicU64::new(0);
 static PRIORITY_RAISED: AtomicU64 = AtomicU64::new(0);
 static PRIORITY_FAILURES: AtomicU64 = AtomicU64::new(0);
 
+/// Reserved stack of each collector thread that decodes, converts, compares or
+/// encodes whole frames and tables: decode, spool, its conversion helpers and
+/// its sizing thread. std's 2 MiB default leaves little room beside the
+/// several-hundred-KiB frames optimised builds give whole-frame code on these
+/// threads, and an overflow ends the game process. Windows commits only the
+/// pages a thread touches, so the reservation costs address space, not memory.
+pub(crate) const BACKGROUND_STACK_BYTES: usize = 16 * 1024 * 1024;
+
 /// Priority of one collector-owned background thread (decode, spool). It runs
 /// below normal so a woken game thread and the hour's acquisition workers find
 /// a CPU first, except while the capture buffers are backlogged: then the game
@@ -4242,12 +5126,21 @@ impl OwnPriority {
     /// Call between work items with the current backlog verdict.
     pub(crate) fn follow(&mut self, backlogged: bool) {
         use windows_sys::Win32::System::Threading::{
-            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
-            THREAD_PRIORITY_NORMAL,
+            GetCurrentThread, SetThreadPriority, SetThreadPriorityBoost,
+            THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL,
         };
         let below_normal = !backlogged;
         if self.below_normal == Some(below_normal) {
             return;
+        }
+        if self.below_normal.is_none() {
+            // No dynamic boost: a wake-up never lifts this thread above its
+            // base priority, so even the backlog's normal priority only shares
+            // CPUs with game threads and never preempts them.
+            // SAFETY: the pseudo-handle names only the calling thread.
+            if unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) } == 0 {
+                PRIORITY_FAILURES.fetch_add(1, Ordering::Relaxed);
+            }
         }
         let priority = if below_normal {
             THREAD_PRIORITY_BELOW_NORMAL
@@ -4273,7 +5166,7 @@ fn background_priority_status() -> impl serde::Serialize {
         "lowered": PRIORITY_LOWERED.load(Ordering::Relaxed),
         "raised_for_backlog": PRIORITY_RAISED.load(Ordering::Relaxed),
         "failures": PRIORITY_FAILURES.load(Ordering::Relaxed),
-        "scope": "cumulative priority changes of the decode and spool threads: below normal while idle or keeping up, normal while every reusable capture buffer but at most one is in flight (the game thread may then be waiting for them); failures keep the previous priority",
+        "scope": "cumulative priority changes of the decode, spool and spool helper threads: below normal while idle or keeping up, normal while every reusable capture buffer but at most one is in flight (the game thread may then be waiting for them); dynamic wake-up boosts are disabled, so none runs above that base priority; failures keep the previous priority",
     })
 }
 
@@ -4283,6 +5176,87 @@ mod equipment_destruction_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sizing_fixture() -> (Shared, SizingThread) {
+        let sizing = crate::country_scale::Sizing::for_slots(0);
+        let shared = Shared::with_sizing(0, 0, 1, &sizing).unwrap();
+        let capacities = BufferCapacities {
+            core: sizing.core,
+            map: sizing.map,
+            extended: sizing.extended,
+        };
+        // No thread and no pass state: the spool's share of each pass only.
+        let thread = SizingThread {
+            sizing: Arc::new(SizingShared::new(capacities, None)),
+            thread: None,
+        };
+        (shared, thread)
+    }
+
+    #[test]
+    fn the_spool_records_sizing_observations_once_and_ends_on_a_sizing_failure() {
+        let directory =
+            std::env::temp_dir().join(format!("hoi4-sizing-handoff-{}", std::process::id()));
+        let mut processor = crate::spooling::spool_failure_fixture(&directory).unwrap();
+        let (shared, sizing) = sizing_fixture();
+        sizing.sizing.error("first sizing refusal");
+        sizing.sizing.error("second sizing refusal");
+        lock(&sizing.sizing.pending)
+            .game_score
+            .push(engine::game_score_inputs::ArenaSizing::default());
+        let context = crate::allocation::Context {
+            failed_hour: Some(7),
+            ..Default::default()
+        };
+        crate::allocation::set_context(context);
+        sizing.spool_pass(&shared, &mut processor).unwrap();
+        // A terminal allocation failure on the sizing thread names the
+        // spool thread's latest campaign context.
+        assert_eq!(lock(&sizing.sizing.context).failed_hour, Some(7));
+        crate::allocation::set_context(Default::default());
+        for pass in 0..2 {
+            if pass != 0 {
+                sizing.spool_pass(&shared, &mut processor).unwrap();
+            }
+            let status = serde_json::to_value(processor.status().unwrap()).unwrap();
+            assert_eq!(status["input_demand_errors"], 2);
+            assert_eq!(status["input_demand_last_error"], "second sizing refusal");
+            assert_eq!(status["game_score"]["sizing_observations"], 1);
+        }
+        let _ = sizing.sizing.failure.set("synthetic sizing failure");
+        assert_eq!(
+            sizing.spool_pass(&shared, &mut processor).err(),
+            Some("synthetic sizing failure")
+        );
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn spool_and_sizing_raises_of_the_buffer_capacities_both_survive() {
+        let (shared, sizing) = sizing_fixture();
+        let sizing = &sizing.sizing;
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for rows in 1..=64 {
+                    sizing.raise(&shared, |capacities| {
+                        let sources = &mut capacities.extended.naval_result_sources;
+                        *sources = (*sources).max(rows);
+                    });
+                }
+            });
+            for rows in 1..=64 {
+                sizing.raise(&shared, |capacities| {
+                    let destruction = &mut capacities.extended.equipment_destruction;
+                    *destruction = (*destruction).max(rows);
+                });
+            }
+        });
+        let capacities = *lock(&sizing.capacities);
+        assert!(capacities.extended.naval_result_sources >= 64);
+        assert!(capacities.extended.equipment_destruction >= 64);
+        // Every idle buffer was returned after growing.
+        assert_eq!(shared.free.len(), sampling::BUFFERS);
+    }
 
     #[test]
     fn game_score_attachment_config_defaults_enabled_and_accepts_off_switch() {
@@ -4592,8 +5566,8 @@ mod tests {
     }
 
     #[test]
-    fn naval_breakdown_watch_presizes_growth_without_country_registry_changes() {
-        use crate::extended::naval_details::fixtures::{BODIES, Fixture, IMAGE, STATE, STRIDE};
+    fn naval_detail_watch_presizes_growth_without_country_registry_changes() {
+        use crate::extended::naval_details::fixtures::{Fixture, IMAGE, STATE};
 
         let mut memory = Fixture::new(2);
         let roster = STATE + cgame_state::COMBATS + 8;
@@ -4604,7 +5578,7 @@ mod tests {
             .and_then(|hints| hints.naval)
             .unwrap();
         assert_eq!(initial.rows, 1);
-        assert!(initial.requests > 0 && initial.nodes > 0 && initial.text > 0);
+        assert!(initial.ships > 0);
         memory.array(roster, 0x4000, 2);
         assert!(watch.poll_combat_hints(&memory, IMAGE).is_none());
         watch.last_combat_hints = None;
@@ -4613,25 +5587,7 @@ mod tests {
             .and_then(|hints| hints.naval)
             .unwrap();
         assert_eq!(raised.rows, 2);
-        assert!(raised.requests > initial.requests);
-        // The native source topology grows while combat and country counts stay put.
-        let ship = BODIES + STRIDE + 0xc000;
-        let root = ship + 0x750;
-        let children = memory.allocate(8 + 0xc0);
-        memory.array(root + 0x18, children, 1);
-        memory.u64(children, (children + 8 - 0x10) as u64);
-        memory.inline(children + 8 + 0x48, b"late source");
-        let entries = memory.allocate(16);
-        memory.array(children + 8, entries, 1);
-        memory.u32(entries, 0x5b);
-        memory.u64(entries + 8, 7000);
-        watch.last_combat_hints = None;
-        let tree_growth = watch
-            .poll_combat_hints(&memory, IMAGE)
-            .and_then(|hints| hints.naval)
-            .unwrap();
-        assert!(tree_growth.nodes > raised.nodes);
-        assert!(tree_growth.text > raised.text);
+        assert!(raised.ships > initial.ships);
         memory.array(roster, 0x4000, 1);
         watch.last_combat_hints = None;
         assert_eq!(
@@ -4665,8 +5621,8 @@ mod tests {
                 rows: usize::MAX,
                 ..Default::default()
             }),
-            naval: Some(engine::naval_ship_modifier_breakdown::Demand {
-                requests: usize::MAX,
+            naval: Some(engine::naval_combat_demand::Demand {
+                rows: usize::MAX,
                 ..Default::default()
             }),
             failures: [None; 2],
@@ -4693,8 +5649,8 @@ mod tests {
                 rows: 600,
                 ..Default::default()
             }),
-            naval: Some(engine::naval_ship_modifier_breakdown::Demand {
-                requests: 1,
+            naval: Some(engine::naval_combat_demand::Demand {
+                rows: 1,
                 ..Default::default()
             }),
             failures: [None; 2],
@@ -4719,8 +5675,8 @@ mod tests {
                 rows: 600,
                 ..Default::default()
             }),
-            naval: Some(engine::naval_ship_modifier_breakdown::Demand {
-                requests: 1,
+            naval: Some(engine::naval_combat_demand::Demand {
+                rows: 1,
                 ..Default::default()
             }),
             failures: [None; 2],
@@ -4735,7 +5691,7 @@ mod tests {
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         assert!(applied == grown);
         hints.land.as_mut().unwrap().rows = 100;
-        hints.naval.as_mut().unwrap().requests = 0;
+        hints.naval.as_mut().unwrap().rows = 0;
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         assert!(applied == grown);
 
@@ -4743,7 +5699,7 @@ mod tests {
         let held = shared.free.pop().unwrap();
         let previous = applied[held];
         hints.land.as_mut().unwrap().rows = 1200;
-        hints.naval.as_mut().unwrap().requests = 257;
+        hints.naval.as_mut().unwrap().rows = 257;
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         assert!(applied[held] == previous);
         let grown = applied;
@@ -5030,19 +5986,19 @@ mod tests {
         let mut watch = RegistryWatch::default();
         assert!(
             processor
-                .observe_input_demand(watch.poll_attrition_inputs(&memory, 0))
+                .observe_input_demand(watch.poll_presentation_census(&memory, 0))
                 .flatten()
                 .is_none()
         );
         assert_eq!(memory.roster_reads.get(), 3);
         assert_eq!(
-            watch.attrition_inputs,
-            engine::attrition_modifier_breakdown::Demand::default(),
+            watch.presentation_census,
+            engine::carmy::PresentationDemand::default(),
         );
         // Throttling is not another failure observation.
         assert!(
             processor
-                .observe_input_demand(watch.poll_attrition_inputs(&memory, 0))
+                .observe_input_demand(watch.poll_presentation_census(&memory, 0))
                 .flatten()
                 .is_none()
         );
@@ -5073,7 +6029,7 @@ mod tests {
         assert_eq!(status["input_demand_errors"], 1);
         assert_eq!(
             status["input_demand_last_error"],
-            "attrition demand selecting header changed",
+            "division presentation demand selecting header changed",
         );
         assert_eq!(status["write_errors"], 0);
         assert_eq!(status["drain_complete"], true);

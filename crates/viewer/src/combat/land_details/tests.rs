@@ -75,16 +75,18 @@ fn early_score_uses_opposing_committed_damage_and_all_current_organisation() {
             combat: 9,
             side: 0,
             division: 1,
-            stat_values: [10_000_000, 5_000_000, 0, 10_000_000, 0],
-            scales: [100_000; 4],
+            stat_values: [10_000_000, 5_000_000, 0, 10_000_000, 0]
+                .map(replay::rows::Recorded::Value),
+            scales: [100_000; 4].map(replay::rows::Recorded::Value),
             ..Default::default()
         },
         LandCombatDivisionRow {
             combat: 9,
             side: 1,
             division: 2,
-            stat_values: [10_000_000, 5_000_000, 0, 10_000_000, 0],
-            scales: [100_000; 4],
+            stat_values: [10_000_000, 5_000_000, 0, 10_000_000, 0]
+                .map(replay::rows::Recorded::Value),
+            scales: [100_000; 4].map(replay::rows::Recorded::Value),
             ..Default::default()
         },
         LandCombatDivisionRow {
@@ -195,8 +197,8 @@ fn a_missing_status_row_blocks_only_early_firing_damage() {
         combat: 9,
         side,
         division,
-        stat_values: [10_000_000, 5_000_000, 0, 10_000_000, 0],
-        scales: [100_000; 4],
+        stat_values: [10_000_000, 5_000_000, 0, 10_000_000, 0].map(replay::rows::Recorded::Value),
+        scales: [100_000; 4].map(replay::rows::Recorded::Value),
         ..Default::default()
     };
     let divisions = [member(0, 1), member(1, 2), member(0, 3)];
@@ -239,7 +241,7 @@ fn a_missing_status_row_blocks_only_early_firing_damage() {
     let mut late = detail.clone();
     for side in &mut late.sides {
         side.organisation_loss_count = 24;
-        side.organisation_loss = [100_000; 24];
+        side.organisation_loss_sum = 24 * 100_000;
     }
     assert_eq!(scores(&late, &conditions), Ok([6_000_000, 6_000_000]));
     // Without its Divisions row a participant has no organisation.
@@ -351,21 +353,20 @@ fn survival_uses_full_roster_and_rejects_early_or_missing_rows() {
     );
     for side in &mut detail.sides {
         side.organisation_loss_count = 24;
-        side.organisation_loss = [100_000; 24];
+        side.organisation_loss_sum = 24 * 100_000;
     }
     assert_eq!(scores(&detail, &[1]), Ok([3_000_000, 6_000_000]));
     assert_eq!(scores(&detail, &[1, 3]), Err(ScoreGap::Division(3)));
-    detail.sides[0].organisation_loss = [0; 24];
+    detail.sides[0].organisation_loss_sum = 0;
     assert_eq!(scores(&detail, &[1]), Ok([3_000_000_000, 6_000_000]));
     // Sums and products wrap as qwords do, and a sum at the
     // fixed-point range edge scores 0xFFFFFFFF instead of failing.
-    detail.sides[0].organisation_loss = [0; 24];
-    detail.sides[0].organisation_loss[0] = i64::MAX;
+    detail.sides[0].organisation_loss_sum = i64::MAX;
     assert_eq!(
         scores(&detail, &[1]).map(|v| v[0]),
         Ok(300_000_000_000 / 0xFFFF_FFFF)
     );
-    detail.sides[0].organisation_loss[0] = i64::MAX / 50_000;
+    detail.sides[0].organisation_loss_sum = i64::MAX / 50_000;
     let wrapped = (i64::MAX / 50_000).wrapping_mul(100_000) / 2_400_000;
     assert_eq!(
         scores(&detail, &[1]).map(|v| v[0]),
@@ -381,7 +382,7 @@ fn survival_keeps_native_wrapping_sums_products_and_special_values() {
     };
     for side in &mut detail.sides {
         side.organisation_loss_count = 24;
-        side.organisation_loss = [100_000; 24];
+        side.organisation_loss_sum = 24 * 100_000;
     }
     let divisions = [1, 2].map(|division| LandCombatDivisionRow {
         combat: 9,
@@ -426,15 +427,20 @@ fn survival_keeps_native_wrapping_sums_products_and_special_values() {
     organisation[0] = i64::MAX;
     assert_eq!(score(&detail, organisation, &[1, 2]), Some(4_294_967_295));
     organisation[0] = 100_000;
-    detail.sides[0].organisation_loss = [0; 24];
-    detail.sides[0].organisation_loss[0] = i64::MAX;
+    detail.sides[0].organisation_loss_sum = i64::MAX;
     assert_eq!(score(&detail, organisation, &[1]), Some(2));
-    detail.sides[0].organisation_loss[1] = 1;
+    // One more sample wraps the sum to i64::MIN, another special value.
+    detail.sides[0].organisation_loss_sum = replay::rows::LandCombatSideDetails::loss_sum(&{
+        let mut samples = [0; 24];
+        samples[0] = i64::MAX;
+        samples[1] = 1;
+        samples
+    });
+    assert_eq!(detail.sides[0].organisation_loss_sum, i64::MIN);
     assert_eq!(score(&detail, organisation, &[1]), Some(2));
     // A non-special loss sum can overflow its product: the resulting
     // nonpositive average gets native's minimum denominator of 100.
-    detail.sides[0].organisation_loss[0] = i64::MAX - 1;
-    detail.sides[0].organisation_loss[1] = 0;
+    detail.sides[0].organisation_loss_sum = i64::MAX - 1;
     assert_eq!(score(&detail, organisation, &[1]), Some(100_000_000));
     assert_eq!(comparison_ratio(i64::MAX / 2, 100), -1_000);
     assert_eq!(comparison_ratio(i64::MAX, 100), 4_294_967_295);

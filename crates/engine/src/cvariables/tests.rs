@@ -744,3 +744,158 @@ fn bench_script_variable_scopes() {
         );
     }
 }
+
+/// Records each guarded call's first address and refuses spans covering
+/// `denied`.
+struct Calls<'a> {
+    bytes: &'a [u8],
+    denied: Option<usize>,
+    calls: std::cell::RefCell<Vec<usize>>,
+}
+
+impl Calls<'_> {
+    fn new(bytes: &[u8], denied: Option<usize>) -> Calls<'_> {
+        Calls {
+            bytes,
+            denied,
+            calls: std::cell::RefCell::default(),
+        }
+    }
+
+    fn span(&self, address: usize, output: &mut [u8]) -> bool {
+        !self
+            .denied
+            .is_some_and(|at| (address..address + output.len()).contains(&at))
+            && SliceMemory {
+                base: BASE,
+                bytes: self.bytes,
+            }
+            .copy(address, output)
+    }
+
+    fn within(&self, start: usize, len: usize) -> usize {
+        self.calls
+            .borrow()
+            .iter()
+            .filter(|address| (BASE + start..BASE + start + len).contains(address))
+            .count()
+    }
+}
+
+impl Memory for Calls<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.calls.borrow_mut().push(address);
+        self.span(address, output)
+    }
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.calls.borrow_mut().push(addresses[0]);
+        for (index, (address, output)) in addresses
+            .into_iter()
+            .zip(destinations.iter_mut())
+            .enumerate()
+        {
+            if !output.is_empty() && !self.span(address, output) {
+                return index;
+            }
+        }
+        N
+    }
+}
+
+#[test]
+fn scope_words_and_character_identity_share_one_read_with_sequential_verdicts() {
+    let bytes = scope_fixture();
+    let walk = |denied| {
+        let memory = Calls::new(&bytes, denied);
+        let mut scopes = [ScopeRow::default(); 5];
+        let mut entries = [Row::default(); 4];
+        let mut names = [0; 6];
+        let captured = walk_scopes(
+            &memory,
+            BASE,
+            BASE + 0x1000,
+            &mut scopes,
+            &mut entries,
+            &mut names,
+        );
+        (captured.outcome, scopes, memory)
+    };
+    let (outcome, _, memory) = walk(None);
+    assert_eq!(outcome, Outcome::Rows { len: 5 });
+    // Character 45's empty store: identity, vtable, header and seed in one
+    // read. Character 44 adds its end sentinel and one node block.
+    assert_eq!(memory.within(0x9000, 0x1000), 1);
+    assert_eq!(memory.within(0x8000, 0x1000), 3);
+    // A pointed-to store: its words in one read, then sentinel and block.
+    assert_eq!(memory.within(0xb000, 0x1000), 3);
+    let character = 0x9000 + ccharacter::VARIABLES;
+    for (denied, reason) in [
+        (0x9000, "character identity unreadable"),
+        (character, "variables vtable mismatch"),
+        (character + STORAGE, "variables header unreadable"),
+        (0xb000 + STORAGE + 16, "variables header unreadable"),
+    ] {
+        assert_eq!(walk(Some(BASE + denied)).0, Outcome::Unavailable { reason });
+    }
+    // An unreadable seed stays unknown without hiding the scope's entries.
+    for (container, scope) in [(character, 4), (0xb000, 1)] {
+        let (outcome, scopes, _) = walk(Some(BASE + container + SEED));
+        assert_eq!(outcome, Outcome::Rows { len: 5 });
+        assert_eq!(scopes[scope].seed, None);
+        assert_eq!(scopes.iter().filter(|row| row.seed.is_none()).count(), 1);
+    }
+}
+
+#[test]
+fn heap_key_terminator_and_payload_share_one_read_with_sequential_verdicts() {
+    let mut bytes = fixture(2);
+    node(&mut bytes, 0, 0, b"good", 7);
+    node(&mut bytes, 1, 1, b"long_variable_key_bytes", 8);
+    let heap = 0x900;
+    let len = b"long_variable_key_bytes".len();
+    fn walk_traced<'a>(
+        bytes: &'a [u8],
+        denied: Option<usize>,
+        names: &mut [u8],
+    ) -> (NameWalk, Calls<'a>) {
+        let memory = Calls::new(bytes, denied);
+        let mut output = [Row::default(); 2];
+        let captured = walk(&memory, BASE, CONTAINER, &mut output, names);
+        (captured, memory)
+    }
+    let walk = walk_traced;
+    let mut names = [0; 64];
+    let (captured, memory) = walk(&bytes, None, &mut names);
+    assert_eq!(captured.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(&names[4..4 + len], b"long_variable_key_bytes");
+    assert_eq!(memory.within(heap, 0x100), 1);
+    for (denied, reason) in [
+        (heap + len, "variable name terminator invalid or unreadable"),
+        (heap, "variable name bytes unreadable"),
+    ] {
+        let (captured, _) = walk(&bytes, Some(BASE + denied), &mut names);
+        assert_eq!(captured.outcome, Outcome::Unavailable { reason });
+    }
+    // A row that does not fit reads only the terminator's verdict.
+    let (captured, memory) = walk(&bytes, Some(BASE + heap), &mut names[..10]);
+    assert_eq!(
+        captured.outcome,
+        Outcome::Truncated {
+            len: 1,
+            unread_rows: 1
+        }
+    );
+    assert_eq!(memory.within(heap, 0x100), 1);
+    bytes[heap + len] = 1;
+    let (captured, _) = walk(&bytes, None, &mut names);
+    assert_eq!(
+        captured.outcome,
+        Outcome::Unavailable {
+            reason: "variable name terminator invalid or unreadable"
+        }
+    );
+}

@@ -104,6 +104,19 @@ pub(super) fn capture(
     base: usize,
     status: usize,
     target: u32,
+    canonical: impl FnMut(u32) -> Result<u32, &'static str>,
+) -> Result<ZeroSubjectInputs, &'static str> {
+    capture_with(memory, base, status, None, target, canonical)
+}
+
+/// [`capture`], taking the status's subject pointer from `held` when the
+/// candidates' gather already read it (the relaxed read order).
+pub(super) fn capture_with(
+    memory: &impl Memory,
+    base: usize,
+    status: usize,
+    held: Option<u64>,
+    target: u32,
     mut canonical: impl FnMut(u32) -> Result<u32, &'static str>,
 ) -> Result<ZeroSubjectInputs, &'static str> {
     let at = |pointer: usize, offset: usize| {
@@ -111,8 +124,11 @@ pub(super) fn capture(
             .checked_add(offset)
             .ok_or("transport subject address overflow")
     };
-    let pointer = read::<u64>(memory, at(status, SUBJECT_RELATION)?)
-        .ok_or("transport subject pointer unreadable")?;
+    let pointer = match held {
+        Some(pointer) => pointer,
+        None => read::<u64>(memory, at(status, SUBJECT_RELATION)?)
+            .ok_or("transport subject pointer unreadable")?,
+    };
     if pointer == 0 {
         return Ok(ZeroSubjectInputs::default());
     }

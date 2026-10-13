@@ -51,6 +51,43 @@ pub struct Walk {
     pub provinces: Outcome,
 }
 
+/// One authenticated status as the walk staged it: its address, scope, the
+/// gathered identity (flags, id, country) and building, index and active
+/// vector headers, and its building count. A held read of the same status
+/// and bytes, which no hooked writer touched since, has the same rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Location {
+    pub province: bool,
+    pub status: usize,
+    pub header: [u8; HEADER_BYTES],
+    pub buildings: usize,
+}
+
+/// The bytes of [`Location::header`]: identity 12, three vector headers 16.
+pub const HEADER_BYTES: usize = 60;
+
+/// A caller's held rows per status ([`walk_carried`]).
+pub trait Carry {
+    /// Registers an authenticated location before any of its buildings are
+    /// read, returning a plan token and whether its held rows may be carried
+    /// (then exactly `location.buildings` rows).
+    fn plan(&mut self, location: &Location) -> (usize, bool);
+    /// Writes a carryable plan's held rows.
+    fn carry(&mut self, token: usize, output: &mut [cbuilding::Row]);
+    /// A planned location's rows, read afresh and whole.
+    fn read(&mut self, token: usize, rows: &[cbuilding::Row]);
+}
+
+/// No held rows: every location is read.
+pub struct Fresh;
+impl Carry for Fresh {
+    fn plan(&mut self, _: &Location) -> (usize, bool) {
+        (0, false)
+    }
+    fn carry(&mut self, _: usize, _: &mut [cbuilding::Row]) {}
+    fn read(&mut self, _: usize, _: &[cbuilding::Row]) {}
+}
+
 /// State and province tables remain independently available. Province state
 /// membership is authenticated by pointer and id; sea provinces retain state 0.
 /// Destinations grow with acquired building rows; callers must permit allocation.
@@ -61,6 +98,21 @@ pub fn walk(
     states: &mut Vec<cbuilding::Row>,
     provinces: &mut Vec<cbuilding::Row>,
 ) -> Walk {
+    walk_carried(memory, base, game_state, states, provinces, &mut Fresh)
+}
+
+/// [`walk`] with `carry` supplying the rows of statuses whose held read it
+/// proves current: every location's identity and status headers are still
+/// gathered and authenticated in slot order, and a carried location's
+/// buildings are not read.
+pub fn walk_carried(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    states: &mut Vec<cbuilding::Row>,
+    provinces: &mut Vec<cbuilding::Row>,
+    carry: &mut impl Carry,
+) -> Walk {
     // Share only this invocation's root. A consistency walk reacquires it, and
     // a province-root failure cannot invalidate the independently read states.
     let state_root = game_state
@@ -68,8 +120,8 @@ pub fn walk(
         .and_then(|p| Array::read(memory, p, 8))
         .ok_or("building state array unreadable or invalid");
     Walk {
-        states: walk_locations(memory, base, game_state, state_root, false, states),
-        provinces: walk_locations(memory, base, game_state, state_root, true, provinces),
+        states: walk_locations(memory, base, game_state, state_root, false, states, carry),
+        provinces: walk_locations(memory, base, game_state, state_root, true, provinces, carry),
     }
 }
 
@@ -80,6 +132,7 @@ fn walk_locations(
     state_root: Result<Array, &'static str>,
     province_scope: bool,
     output: &mut Vec<cbuilding::Row>,
+    carry: &mut impl Carry,
 ) -> Outcome {
     let result = (|| {
         let states = state_root?;
@@ -183,6 +236,7 @@ fn walk_locations(
             // earlier locations' building reads and their reasons ahead of its
             // own, exactly as the interleaved per-location read did.
             let mut staged = [cbuilding::LocationBuildings::EMPTY; BATCH];
+            let mut tokens = [0_usize; BATCH];
             let mut staged_len = 0;
             let mut identity_failure = None;
             for (slot, (&location, &pointer)) in ids.iter().zip(pointers).enumerate() {
@@ -273,8 +327,27 @@ fn walk_locations(
                 })();
                 match identified {
                     Ok(authenticated) => {
-                        staged[staged_len] = authenticated;
-                        staged_len += 1;
+                        let mut header = [0; HEADER_BYTES];
+                        header.copy_from_slice(&record[28..88]);
+                        let (token, carried) = carry.plan(&Location {
+                            province: province_scope,
+                            status: authenticated.status,
+                            header,
+                            buildings: authenticated.len,
+                        });
+                        if carried {
+                            let end = authenticated.start + authenticated.len;
+                            if end > output.len() {
+                                crate::allocation::reserve(output, end - output.len())
+                                    .map_err(|_| "building row allocation failed")?;
+                                output.resize(end, cbuilding::Row::default());
+                            }
+                            carry.carry(token, &mut output[authenticated.start..end]);
+                        } else {
+                            staged[staged_len] = authenticated;
+                            tokens[staged_len] = token;
+                            staged_len += 1;
+                        }
                         len += authenticated.len;
                     }
                     Err(reason) => {
@@ -284,6 +357,12 @@ fn walk_locations(
                 }
             }
             cbuilding::read_rows(memory, base, &staged[..staged_len], output)?;
+            for (location, &token) in staged[..staged_len].iter().zip(&tokens) {
+                carry.read(
+                    token,
+                    &output[location.start..location.start + location.len],
+                );
+            }
             match identity_failure {
                 Some(reason) => Err(reason),
                 None => Ok(()),
@@ -292,6 +371,176 @@ fn walk_locations(
         Ok(Outcome::Rows { len })
     })();
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
+}
+
+/// The 16-byte headers of the state table (`CGameState+0x2C8`) and the province
+/// table (`+0x2B0`), in that order, gathered in one guarded round; `None` when
+/// either does not read. Outside a load or reset only nudge mode writes them
+/// ([`crate::building_mutations`]: game-state construction, destruction and
+/// reset, province initialization and nudge entry).
+pub fn roots(memory: &impl Memory, game_state: usize) -> Option<[[u8; 16]; 2]> {
+    let mut states = [0_u8; 16];
+    let mut provinces = [0_u8; 16];
+    let copied = memory.copy_scattered(
+        [
+            game_state.checked_add(cgame_state::STATES)?,
+            game_state.checked_add(cgame_state::PROVINCES)?,
+        ],
+        &mut [&mut states, &mut provinces],
+    );
+    (copied == 2).then_some([states, provinces])
+}
+
+/// What [`reread`] gathers from a held status: its vtable, then the identity
+/// and the building, index and active vector headers in [`Location::header`]
+/// order.
+const HELD_FIELDS: [RecordField; 5] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: FLAGS,
+        destination_offset: 8,
+        len: 12,
+    },
+    RecordField {
+        source_offset: BUILDINGS,
+        destination_offset: 20,
+        len: 16,
+    },
+    RecordField {
+        source_offset: BUILDING_INDICES,
+        destination_offset: 36,
+        len: 16,
+    },
+    RecordField {
+        source_offset: ACTIVE_BUILDINGS,
+        destination_offset: 52,
+        len: 16,
+    },
+];
+const HELD_BYTES: usize = 8 + HEADER_BYTES;
+const HELD_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&HELD_FIELDS, HELD_BYTES).expect("valid record layout");
+
+/// Held statuses read afresh, for a sampled comparison with rows a caller
+/// carries without walking the locations: each status's vtable, identity and
+/// building, index and active vector headers must still be those of its held
+/// [`Location`], and its rows are then read exactly as [`walk_carried`] reads
+/// a location's buildings, in `held` order, into `output` from index 0.
+/// Returns the number of rows read. The first status that no longer matches
+/// its held read, or whose buildings do not read, fails the call: a caller
+/// cannot certify its other held rows from it.
+pub fn reread(
+    memory: &impl Memory,
+    base: usize,
+    held: &[Location],
+    output: &mut Vec<cbuilding::Row>,
+) -> Result<usize, &'static str> {
+    read_held(memory, base, held, None, output)
+}
+
+/// Held statuses a hooked writer touched since their held read, read afresh
+/// without walking their locations. Each status's vtable and identity (flags,
+/// location id, country), which only its constructor writes
+/// ([`crate::building_mutations`]), must still be those of its held
+/// [`Location`]; its vector headers and building count are taken as they now
+/// read into `fresh` (in `held` order, as [`walk_carried`] would plan them),
+/// and its rows are read exactly as that walk reads a location's buildings,
+/// into `output` from index 0. Returns the number of rows read; the first
+/// status that does not read fails the call.
+pub fn refresh(
+    memory: &impl Memory,
+    base: usize,
+    held: &[Location],
+    fresh: &mut [Location],
+    output: &mut Vec<cbuilding::Row>,
+) -> Result<usize, &'static str> {
+    debug_assert_eq!(held.len(), fresh.len());
+    read_held(memory, base, held, Some(fresh), output)
+}
+
+/// [`reread`], or [`refresh`] when `fresh` takes the headers as they read.
+fn read_held(
+    memory: &impl Memory,
+    base: usize,
+    held: &[Location],
+    mut fresh: Option<&mut [Location]>,
+    output: &mut Vec<cbuilding::Row>,
+) -> Result<usize, &'static str> {
+    let expected = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("module address overflow")? as u64;
+    let mut len = 0_usize;
+    for (first, batch) in (0..).step_by(BATCH).zip(held.chunks(BATCH)) {
+        let mut statuses = [0_usize; BATCH];
+        for (slot, location) in statuses.iter_mut().zip(batch) {
+            *slot = location.status;
+        }
+        let mut records = [0_u8; BATCH * HELD_BYTES];
+        let copied = memory.copy_records(
+            RecordSources::Pointers(&statuses[..batch.len()]),
+            &HELD_LAYOUT,
+            &mut records[..batch.len() * HELD_BYTES],
+        );
+        let mut staged = [cbuilding::LocationBuildings::EMPTY; BATCH];
+        for (slot, location) in batch.iter().enumerate() {
+            let record = &records[slot * HELD_BYTES..(slot + 1) * HELD_BYTES];
+            let completed = copied
+                .saturating_sub(slot * HELD_FIELDS.len())
+                .min(HELD_FIELDS.len());
+            if completed == 0 || u64::from_le_bytes(record[..8].try_into().unwrap()) != expected {
+                return Err("held building status vtable unreadable or changed");
+            }
+            let header: [u8; HEADER_BYTES] = record[8..].try_into().unwrap();
+            let unchanged = match fresh {
+                Some(_) => header[..12] == location.header[..12],
+                None => header == location.header,
+            };
+            if completed != HELD_FIELDS.len() || !unchanged {
+                return Err("held building status differs from its held read");
+            }
+            let identity = Identity::from_fields(header[..12].try_into().unwrap());
+            let buildings = Array::from_header(header[12..28].try_into().unwrap(), 8)
+                .filter(|buildings| {
+                    fresh.is_some() || buildings.count as usize == location.buildings
+                })
+                .ok_or("held building pointer vector invalid")?;
+            let indices = Array::from_header(header[28..44].try_into().unwrap(), 4)
+                .ok_or("held building index vector invalid")?;
+            let active = Array::from_header(header[44..60].try_into().unwrap(), 8)
+                .ok_or("held active building vector invalid")?;
+            let count = buildings.count as usize;
+            if let Some(fresh) = fresh.as_deref_mut() {
+                fresh[first + slot] = Location {
+                    header,
+                    buildings: count,
+                    ..*location
+                };
+            }
+            staged[slot] = cbuilding::LocationBuildings {
+                buildings,
+                status: location.status,
+                indices,
+                active,
+                seed: cbuilding::Row {
+                    location: identity.location,
+                    status_flags: identity.flags,
+                    country: identity.country,
+                    ..cbuilding::Row::default()
+                },
+                start: len,
+                len: count,
+            };
+            len = len
+                .checked_add(count)
+                .ok_or("building row count overflow")?;
+        }
+        cbuilding::read_rows(memory, base, &staged[..batch.len()], output)?;
+    }
+    Ok(len)
 }
 
 /// Locations gathered per guarded round in the province and building batches.

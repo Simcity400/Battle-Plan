@@ -140,28 +140,122 @@ fn auth(memory: &impl Memory, base: usize, pointer: usize, rva: usize) -> Result
     }
     Ok(())
 }
+/// The `(offset, width)` fields of `object`, in order, in one guarded copy
+/// of exactly those spans: the first unreadable field refuses with the
+/// message `value` gives, as reading them one by one would.
+fn fields<const N: usize>(
+    memory: &impl Memory,
+    object: usize,
+    spans: [(usize, usize); N],
+) -> Result<[[u8; 8]; N], &'static str> {
+    const UNREADABLE: &str = "fuel award operand unreadable or overflowed";
+    let mut addresses = [0; N];
+    for (address, (offset, _)) in addresses.iter_mut().zip(spans) {
+        *address = object.checked_add(offset).ok_or(UNREADABLE)?;
+    }
+    let mut values = [[0; 8]; N];
+    let mut widths = spans.into_iter().map(|(_, width)| width);
+    let mut destinations = values
+        .each_mut()
+        .map(|value| &mut value[..widths.next().unwrap_or(0)]);
+    if memory.copy_scattered(addresses, &mut destinations) != N {
+        return Err(UNREADABLE);
+    }
+    Ok(values)
+}
+/// Where [`start`] found a fuel status's country: the owner it authenticated
+/// through the country tables, and that country. A later read of the same
+/// root in the same world and hour may take it ([`start_held`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Located {
+    pub owner: usize,
+    pub country: ccountry::Country,
+}
+
 pub fn start(memory: &impl Memory, base: usize, status: usize) -> Result<Started, &'static str> {
+    Ok(start_held(memory, base, status, None)?.0)
+}
+
+/// [`start`], taking `held` (this status's owner, located by the same
+/// fuel-update invocation's BEGIN) when the status still names that owner: then
+/// the owner is not authenticated through the country tables again (its id,
+/// link, slot and identity reads). From BEGIN to END the fuel update and its
+/// callees (resource and lend-lease helpers, unit consumption through the
+/// cached consumption getter, allocation with its request builders, and receipt
+/// writers) write fuel operands, unit fuel and temporary arrays only: no
+/// country object, id, link or slot, and no reference registration. Every other
+/// read is made in its native order, the backlink and instance included, so the
+/// reads are a fresh read's with only that chain left out. Also returns whether
+/// `held` was taken.
+pub fn start_held(
+    memory: &impl Memory,
+    base: usize,
+    status: usize,
+    held: Option<&Located>,
+) -> Result<(Started, Located, bool), &'static str> {
     auth(memory, base, status, fuel::VTABLE_RVA)?;
     let game_state = value::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let owner = value::<u64>(memory, status, fuel::COUNTRY)? as usize;
-    let country = countries.of_pointer(owner)?;
+    let (country, taken) = match held {
+        Some(held) if held.owner == owner => (held.country, true),
+        _ => (countries.of_pointer(owner)?, false),
+    };
     if value::<u64>(memory, owner, ccountry::FUEL_STATUS)? != status as u64 {
         return Err("fuel award owner backlink mismatch");
     }
+    let country_instance = value(memory, owner, ccountry::ID_INSTANCE)?;
+    let started = payload(memory, status, country.id, country_instance)?;
+    Ok((started, Located { owner, country }, taken))
+}
+/// The status payload [`start_held`] reads after the identity chain, in one
+/// guarded copy of its exact fields, as the [`Started`] of `country` and its
+/// `country_instance`.
+fn payload(
+    memory: &impl Memory,
+    status: usize,
+    country: u32,
+    country_instance: u32,
+) -> Result<Started, &'static str> {
+    let [
+        pending_gain,
+        pending_consumed,
+        pending_other,
+        gain,
+        states,
+        cost,
+        lend_lease_in,
+        history_index,
+        remaining_hours,
+    ] = fields(
+        memory,
+        status,
+        [
+            (0x68, 8),
+            (0x70, 8),
+            (0x90, 8),
+            (fuel::GAIN, 8),
+            (fuel::GAIN_FROM_STATES, 8),
+            (fuel::COST, 8),
+            (fuel::LEND_LEASE_GAIN, 8),
+            (fuel::HISTORY_INDEX, 4),
+            (fuel::REMAINING_HOURS, 4),
+        ],
+    )?;
+    let half = |bytes: [u8; 8]| i32::from_le_bytes(bytes[..4].try_into().unwrap());
     Ok(Started {
         status,
-        country: country.id,
-        country_instance: value(memory, owner, ccountry::ID_INSTANCE)?,
-        pending_gain: value(memory, status, 0x68)?,
-        pending_consumed: value(memory, status, 0x70)?,
-        pending_other: value(memory, status, 0x90)?,
-        base: value(memory, status, fuel::GAIN)?,
-        states: value(memory, status, fuel::GAIN_FROM_STATES)?,
-        cost: value(memory, status, fuel::COST)?,
-        lend_lease_in: value(memory, status, fuel::LEND_LEASE_GAIN)?,
-        history_index: value(memory, status, fuel::HISTORY_INDEX)?,
-        remaining_hours: value(memory, status, fuel::REMAINING_HOURS)?,
+        country,
+        country_instance,
+        pending_gain: i64::from_le_bytes(pending_gain),
+        pending_consumed: i64::from_le_bytes(pending_consumed),
+        pending_other: i64::from_le_bytes(pending_other),
+        base: i64::from_le_bytes(gain),
+        states: i64::from_le_bytes(states),
+        cost: i64::from_le_bytes(cost),
+        lend_lease_in: i64::from_le_bytes(lend_lease_in),
+        history_index: half(history_index),
+        remaining_hours: half(remaining_hours),
     })
 }
 pub fn settle(
@@ -170,7 +264,41 @@ pub fn settle(
     begun: Started,
     status: usize,
 ) -> Result<Settled, &'static str> {
-    let now = start(memory, base, status)?;
+    Ok(settle_held(memory, base, begun, status, None)?.0)
+}
+
+/// [`settle`], reading the status again through [`start_held`]; also returns
+/// whether it took `held`. With `held` (located by this status's own BEGIN in
+/// the same invocation) and the same status, only the payload is read again.
+/// Between BEGIN and END nothing writes a country object (see [`start_held`]),
+/// and no fuel-update store writes the status's identity words: the initial
+/// update writes only operand fields +0x8, +0x30, +0x38, +0x60, +0x68, +0x70,
+/// +0x90 and the +0x48 ring through RSI before its tail jump; its continuation
+/// writes +0x70..+0xA0 through RBX up to END. Allocation writes the status's
+/// +0x8 through R13, and the receipt writer passed the status writes only
+/// through RDX, R10, R11 and the army. Its vtable, owner, the owner's backlink
+/// and instance therefore read as BEGIN read them. The controls BEGIN's start
+/// passed (the game-state singleton and both country headers, whose objects
+/// that range neither frees nor replaces) pass again: omitted reads could only
+/// repeat BEGIN's values and outcomes. This holds for a fuel-update invocation
+/// that runs from BEGIN to END without exceptional dispatch.
+pub fn settle_held(
+    memory: &impl Memory,
+    base: usize,
+    begun: Started,
+    status: usize,
+    held: Option<&Located>,
+) -> Result<(Settled, bool), &'static str> {
+    let (now, taken) = match held {
+        Some(_) if status == begun.status => (
+            payload(memory, status, begun.country, begun.country_instance)?,
+            true,
+        ),
+        _ => {
+            let (now, _, taken) = start_held(memory, base, status, held)?;
+            (now, taken)
+        }
+    };
     if now.status != begun.status
         || now.country != begun.country
         || now.country_instance != begun.country_instance
@@ -204,17 +332,16 @@ pub fn settle(
     )
     .filter(|a| a.count == fuel::MAX_CONSUMERS)
     .ok_or("fuel award consumers unreadable or invalid")?;
-    let mut received = [0; 3];
-    for (index, out) in received.iter_mut().enumerate() {
-        *out = value(
-            memory,
-            consumers
-                .element(index as u32, crate::fuel_consumer_data::STRIDE)
-                .ok_or("fuel award consumer address overflow")?,
-            crate::fuel_consumer_data::RECEIVED,
-        )?;
-    }
-    Ok(Settled {
+    // The three consumers' RECEIVED words, within the validated array.
+    let receipt = |index: usize| {
+        (
+            index * crate::fuel_consumer_data::STRIDE + crate::fuel_consumer_data::RECEIVED,
+            8,
+        )
+    };
+    let received = fields(memory, consumers.data, [receipt(0), receipt(1), receipt(2)])?
+        .map(i64::from_le_bytes);
+    let settled = Settled {
         gains: [begun.base, begun.states, oil, cost_gain],
         own_gain,
         transfers: [
@@ -226,7 +353,8 @@ pub fn settle(
         consumed: now.pending_consumed.wrapping_sub(begun.pending_consumed),
         received,
         current: value(memory, status, fuel::CURRENT)?,
-    })
+    };
+    Ok((settled, taken))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -239,28 +367,55 @@ pub struct Recipient {
     /// Air host reference, zero for a state base. Never guess a wing receipt.
     pub host: u64,
 }
+/// The reference registry headers one fuel-update invocation's unit
+/// recipients resolve through: a header read successfully is taken again by
+/// the later recipients of the same invocation, whose bucket probes are
+/// still read. Nothing in that invocation registers a reference
+/// ([`start_held`]). [`Self::default`] starts afresh.
+#[derive(Default)]
+pub struct Registry(creference_registry::HeaderResolver);
+
 pub fn unit(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
     kind: u32,
 ) -> Result<Recipient, &'static str> {
+    Ok(unit_with(memory, base, pointer, kind, &mut Registry::default())?.0)
+}
+
+/// [`unit`], resolving through `registry`; also returns whether it took a
+/// header `registry` held.
+pub fn unit_with(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    kind: u32,
+    registry: &mut Registry,
+) -> Result<(Recipient, bool), &'static str> {
     let class = match kind {
         0 => 0,
         2 => 1,
         _ => return Err("fuel recipient kind unsupported"),
     };
-    let mut registry = creference_registry::HeaderResolver::default();
-    let (reference, actual_class) = cunit::counter_identity(memory, base, pointer, &mut registry)?;
+    let mut taken = false;
+    let (reference, actual_class) =
+        cunit::counter_identity_with(memory, base, pointer, |handle| {
+            taken = registry.0.holds(base, handle);
+            registry.0.resolve(memory, base, handle)
+        })?;
     if actual_class != class {
         return Err("fuel recipient unit class mismatch");
     }
-    Ok(Recipient {
-        kind,
-        reference,
-        owner: value(memory, pointer, cunit::ROSTER_OWNER)?,
-        host: 0,
-    })
+    Ok((
+        Recipient {
+            kind,
+            reference,
+            owner: value(memory, pointer, cunit::ROSTER_OWNER)?,
+            host: 0,
+        },
+        taken,
+    ))
 }
 pub fn air(
     memory: &impl Memory,
@@ -269,6 +424,23 @@ pub fn air(
     container: usize,
     consuming: u32,
 ) -> Result<Recipient, &'static str> {
+    Ok(air_held(memory, base, pointer, container, consuming, None)?.0)
+}
+
+/// [`air`], taking `held` (the consuming country its fuel update
+/// invocation's BEGIN located, [`start_held`]) as the country the consuming
+/// id and, when it is the same id, the container's owner resolve to: those
+/// two resolutions are not read again. Every other read is made in its
+/// native order. Also returns whether `held` was taken.
+pub fn air_held(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    container: usize,
+    consuming: u32,
+    held: Option<&ccountry::Country>,
+) -> Result<(Recipient, bool), &'static str> {
+    let held = held.filter(|country| country.id == consuming);
     auth(memory, base, pointer, cair_base::VTABLE_RVA)?;
     auth(memory, base, container, ccountry_air_container::VTABLE_RVA)?;
     let reference = value::<u64>(memory, pointer, cair_base::HANDLE)?;
@@ -280,8 +452,15 @@ pub fn air(
     let game_state = value::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let owner = value::<u32>(memory, container, ccountry_air_container::COUNTRY)?;
-    let country = countries.resolve(consuming)?;
-    if countries.resolve(owner)?.pointer != country.pointer {
+    let country = match held {
+        Some(country) => *country,
+        None => countries.resolve(consuming)?,
+    };
+    let owner_pointer = match held {
+        Some(country) if owner == consuming => country.pointer,
+        _ => countries.resolve(owner)?.pointer,
+    };
+    if owner_pointer != country.pointer {
         return Err("fuel air recipient consumes another country");
     }
     let containers = Array::read(
@@ -299,12 +478,15 @@ pub fn air(
     {
         return Err("fuel air container backlink mismatch");
     }
-    Ok(Recipient {
-        kind: 1,
-        reference,
-        owner,
-        host: value(memory, pointer, cair_base::HOST_REFERENCE)?,
-    })
+    Ok((
+        Recipient {
+            kind: 1,
+            reference,
+            owner,
+            host: value(memory, pointer, cair_base::HOST_REFERENCE)?,
+        },
+        held.is_some(),
+    ))
 }
 
 /// Off-hour log sizing from live request rosters, including duplicates.

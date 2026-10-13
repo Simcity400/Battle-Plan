@@ -127,7 +127,11 @@ pub(crate) fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> repl
                 }
                 table => TableRows::empty(table),
             };
-            TableUpdate::Snapshot(rows)
+            // A current spool holds no retired table; decoding names it.
+            match replay::format::FormatVersion::CURRENT.table_refusal(rows.table()) {
+                Some(reason) => TableUpdate::Unavailable { reason },
+                None => TableUpdate::Snapshot(rows),
+            }
         }),
     }
 }

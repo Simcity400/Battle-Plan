@@ -29,7 +29,8 @@ fn scientist_pack() -> characters_saved::Pack {
 fn scientist_frame() -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 1,
-        hour: replay::cadence::refresh_slot(TableId::Projects).unwrap() as i32,
+        // Every project table is current at the programs' daily slot.
+        hour: replay::cadence::refresh_slot(TableId::ProjectPrograms).unwrap() as i32,
         tables: std::array::from_fn(|index| {
             TableView::Complete(TableRows::empty(TableId::ALL[index]))
         })
@@ -305,8 +306,8 @@ fn an_unresolved_roster_country_reference_fails_the_group_instead_of_comparing()
 fn raid_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     let mut frame = DecodedFrame {
         branch: 1,
-        // The project family's refresh hour.
-        hour: replay::cadence::refresh_slot(TableId::Projects).unwrap() as i32,
+        // Every project table is current at the programs' daily slot.
+        hour: replay::cadence::refresh_slot(TableId::ProjectPrograms).unwrap() as i32,
         tables: std::array::from_fn(|index| {
             TableView::Complete(TableRows::empty(TableId::ALL[index]))
         })
@@ -1751,12 +1752,14 @@ fn staggered_off_hours_skips_projects_and_prints_refresh_hour() {
         &mut report,
     );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert!(
-        report
-            .limitations
-            .keys()
-            .any(|reason| reason.contains(replay::cadence::STAGGER_LIMITATION)),
-        "{:?}",
-        report.limitations.keys()
-    );
+    // Only the daily programs and breakthroughs are stale off their slot;
+    // Projects and ProjectHistory are read every hour.
+    let (_, stale) = report
+        .limitations
+        .iter()
+        .find(|(reason, _)| reason.contains(replay::cadence::STAGGER_LIMITATION))
+        .unwrap_or_else(|| panic!("{:?}", report.limitations.keys()));
+    assert_eq!(stale.len(), 2, "{stale:?}");
+    assert!(stale[0].starts_with("ProjectPrograms "), "{stale:?}");
+    assert!(stale[1].starts_with("ProjectBreakthroughs "), "{stale:?}");
 }

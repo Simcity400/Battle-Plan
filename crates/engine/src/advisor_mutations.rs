@@ -15,10 +15,13 @@ pub struct MutationSite {
     pub sentinel: [u8; 16],
 }
 
+const CONSTRUCT_RVA: usize = 0x1288d70;
+const DESTROY_RVA: usize = 0x1288ff0;
+
 pub const MUTATIONS: [MutationSite; 11] = [
     MutationSite {
         name: "construct",
-        rva: 0x1288d70,
+        rva: CONSTRUCT_RVA,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41,
             0x56, 0x41,
@@ -26,7 +29,7 @@ pub const MUTATIONS: [MutationSite; 11] = [
     },
     MutationSite {
         name: "destroy",
-        rva: 0x1288ff0,
+        rva: DESTROY_RVA,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0x5f,
             0x7e, 0x70,

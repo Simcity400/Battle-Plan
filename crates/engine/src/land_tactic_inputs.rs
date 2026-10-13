@@ -149,6 +149,29 @@ pub fn capture_context(
     members: &cland_combat::Members<'_>,
     selections: &mut cland_combat::Commanders,
 ) -> ContextCapture {
+    capture_context_sharing(
+        memory,
+        base,
+        game,
+        source,
+        members,
+        selections,
+        &mut cland_combat::Leaders::default(),
+    )
+}
+
+/// [`capture_context`] sharing each general's parent search and preferred
+/// tactics with the pass's other combats through `leaders`: both depend on
+/// the general alone.
+pub fn capture_context_sharing(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    source: cland_combat::Source,
+    members: &cland_combat::Members<'_>,
+    selections: &mut cland_combat::Commanders,
+    leaders: &mut cland_combat::Leaders,
+) -> ContextCapture {
     let mut row = ContextRow::default();
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game)?;
@@ -184,16 +207,21 @@ pub fn capture_context(
                 }
             }
             let leader = commanders[index].pointer;
-            let parent = parent_commander(memory, base, &countries, leader)?;
+            let parent = cland_combat::Leaders::shared(&mut leaders.parents, leader, || {
+                parent_commander(memory, base, &countries, leader)
+            })?;
             for (position, leader) in [leader, parent].into_iter().enumerate() {
                 if leader == 0 {
                     continue;
                 }
-                row.preferred_tactic_ids[index][position + 1] = identity(
-                    memory,
-                    base,
-                    pointer(memory, leader, LEADER_PREFERRED_TACTIC)?,
-                )?;
+                row.preferred_tactic_ids[index][position + 1] =
+                    cland_combat::Leaders::shared(&mut leaders.preferred, leader, || {
+                        identity(
+                            memory,
+                            base,
+                            pointer(memory, leader, LEADER_PREFERRED_TACTIC)?,
+                        )
+                    })?;
             }
         }
         Ok(())

@@ -218,6 +218,30 @@ pub(crate) fn gather_records(
     }
 }
 
+/// One guarded gather, retaining only complete records before its first
+/// incomplete one. The caller decodes in serial order and reads the incomplete
+/// record and the rest of this batch by its original per-object path, once.
+/// No partial bytes or speculative suffix can supply a published value.
+pub(crate) fn gather_records_once(
+    memory: &impl Memory,
+    pointers: &[usize],
+    layout: &RecordLayout<'_>,
+    bytes: &mut [u8],
+    complete: &mut [bool],
+    batch: crate::batch_fallback::Batch,
+) {
+    complete[..pointers.len()].fill(false);
+    if pointers.is_empty() {
+        return;
+    }
+    let copied = memory.copy_records(RecordSources::Pointers(pointers), layout, bytes);
+    let done = (copied / layout.field_count().max(1)).min(pointers.len());
+    complete[..done].fill(true);
+    if done != pointers.len() {
+        crate::batch_fallback::record(batch);
+    }
+}
+
 /// One object's fields from [`gather_records`], or nothing when its record
 /// did not complete. Readers take a value from here first and otherwise make
 /// their original per-field read, so rows and failures are those of the

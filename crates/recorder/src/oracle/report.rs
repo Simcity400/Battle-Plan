@@ -7,6 +7,7 @@ use installed_content::save::Decimal;
 use replay::{
     BranchId, Hour,
     container::Replay,
+    display::Step,
     frame::{DecodedFrame, TableView},
     identity::SampleBoundary,
     rows::{TableId, TableRows},
@@ -116,6 +117,13 @@ pub(super) fn last_read_hours(
     Ok(last)
 }
 
+/// Whether the current format no longer records `table`: a retired table.
+/// No comparison reads it, so its named refusal, in a current or an older
+/// recording, is listed but is no table availability issue.
+pub(super) fn retired_table(table: TableId) -> bool {
+    !table.last_change().present(replay::FORMAT_VERSION)
+}
+
 pub(super) fn recorded_table_counts(
     frame: &DecodedFrame,
 ) -> BTreeMap<TableId, Result<usize, String>> {
@@ -199,6 +207,14 @@ pub(super) struct Report {
     pub(super) boundary_verdict: Option<String>,
     /// The compared session's sample boundary, printed with the witness.
     pub(super) sample_boundary: Option<SampleBoundary>,
+    /// The recording stores its stepped columns at the game's display
+    /// precision ([`replay::display`]); an older recording holds them exact.
+    pub(super) display_steps: bool,
+    /// Each column compared at display precision, with that precision.
+    pub(super) display_compared: BTreeMap<String, String>,
+    /// The recording's format, which decides where it holds what (a fuel
+    /// demand pack's lists, say).
+    pub(super) format: replay::format::FormatVersion,
 }
 
 impl Report {
@@ -348,7 +364,11 @@ impl Report {
     pub(super) fn unavailable_tables(&self) -> usize {
         self.recorded_tables
             .iter()
-            .filter(|(table, rows)| rows.is_err() && !self.deferred_tables.contains_key(*table))
+            .filter(|(table, rows)| {
+                rows.is_err()
+                    && !retired_table(**table)
+                    && !self.deferred_tables.contains_key(*table)
+            })
             .count()
     }
 
@@ -455,6 +475,23 @@ impl Report {
     /// `record_tables` saw it.
     pub(super) fn full_refresh(&self) -> bool {
         self.forced_full
+    }
+
+    /// Whether a packet was read at the oracle hour. Current packets were
+    /// read with their hourly host row; a historical stamp naming another hour
+    /// is a `{label}.sample_hour` difference and the packet is not compared.
+    pub(super) fn packet_fresh(
+        &mut self,
+        label: &str,
+        sample_hour: replay::rows::PacketHour,
+        hour: i32,
+    ) -> bool {
+        self.scalar_checks += 1;
+        if sample_hour.fresh_at(hour) {
+            return true;
+        }
+        self.difference(format!("{label}.sample_hour"), sample_hour, hour);
+        false
     }
 
     pub(super) fn compared(&mut self, table: &str, rows: usize) {
@@ -603,6 +640,93 @@ impl Report {
         }
     }
 
+    /// The saved exact value of `column` as the recording stores it: rounded
+    /// to the column's display step when the recording keeps that column at
+    /// display precision, which the report then names.
+    pub(super) fn displayed(&mut self, column: &str, step: Step, saved: i64) -> i64 {
+        if !self.display_steps {
+            return saved;
+        }
+        if !self.display_compared.contains_key(column) {
+            self.display_compared
+                .insert(column.to_owned(), step.describe());
+        }
+        step.round(saved)
+    }
+
+    /// [`Self::scalar`] for a column stored at a display step: the save's
+    /// exact value is rounded with the same step before comparing.
+    pub(super) fn scalar_displayed(
+        &mut self,
+        tag: &str,
+        field: &str,
+        captured: Option<i64>,
+        saved: Option<&Decimal>,
+        column: &str,
+        step: Step,
+    ) {
+        self.scalar_displayed_by(
+            tag,
+            field,
+            captured,
+            saved,
+            column,
+            &step.describe(),
+            |raw| step.round(raw),
+        );
+    }
+
+    /// [`Self::scalar_displayed`] for a column whose precision is no fixed
+    /// step: `round` stores the save's exact value as the recording does, and
+    /// `precision` names it in the report.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn scalar_displayed_by(
+        &mut self,
+        tag: &str,
+        field: &str,
+        captured: Option<i64>,
+        saved: Option<&Decimal>,
+        column: &str,
+        precision: &str,
+        round: impl FnOnce(i64) -> i64,
+    ) {
+        match (captured, saved) {
+            (Some(captured), Some(saved)) => {
+                self.scalar_checks += 1;
+                let expected = if self.display_steps {
+                    if !self.display_compared.contains_key(column) {
+                        self.display_compared
+                            .insert(column.to_owned(), precision.to_owned());
+                    }
+                    round(saved.raw)
+                } else {
+                    saved.raw
+                };
+                if captured != expected {
+                    self.difference(format!("{tag}.{field}"), captured, expected);
+                }
+            }
+            _ => self.scalar(tag, field, captured, saved),
+        }
+    }
+
+    /// The columns compared at display precision and their precision.
+    pub(super) fn display_precision_lines(&self) -> Vec<String> {
+        if self.display_compared.is_empty() {
+            return Vec::new();
+        }
+        let mut lines = vec![format!(
+            "Compared at display precision ({} columns; the save's exact value is rounded with the recorded step):",
+            self.display_compared.len()
+        )];
+        lines.extend(
+            self.display_compared
+                .iter()
+                .map(|(column, precision)| format!("  {column}: {precision}")),
+        );
+        lines
+    }
+
     pub(super) fn scalar(
         &mut self,
         tag: &str,
@@ -666,7 +790,7 @@ impl Report {
     pub(super) fn format_line(format: replay::format::FormatVersion) -> String {
         let tables = TableId::ALL
             .into_iter()
-            .filter(|table| table.last_change().present(format.version()))
+            .filter(|&table| table.last_change().present(format.version()) && !retired_table(table))
             .count();
         format!(
             "Replay format {}: comparison checks {} table types",
@@ -713,6 +837,9 @@ impl Report {
         for (table, rows) in &self.compared_tables {
             println!("Compared {table}: {rows}");
         }
+        for line in self.display_precision_lines() {
+            println!("{line}");
+        }
         if !self.recorded_tables.is_empty() {
             println!(
                 "Recorded table coverage (row counts alone do not establish save comparison):"
@@ -720,6 +847,9 @@ impl Report {
             for (table, rows) in &self.recorded_tables {
                 match rows {
                     Ok(rows) => println!("  {table:?}: {rows} rows"),
+                    Err(reason) if retired_table(*table) => {
+                        println!("  {table:?}: retired, not compared ({reason})")
+                    }
                     Err(reason) => match self.deferred_tables.get(table) {
                         Some(deferred) => {
                             println!("  {table:?}: publication deferred ({deferred})")

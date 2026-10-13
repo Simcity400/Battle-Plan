@@ -1,8 +1,10 @@
 //! One country's fuel over a branch, for the Fuel widget: the tank's level and
 //! capacity at each read, and the fuel gained and burned in the day before it.
-//! Applied-award suffixes supersede ring sums when 24 authenticated updates
-//! match the supplying read and country identity. Older prefixes retain the
-//! ring/ownership fallback below; unknown suffixes never infer source splits.
+//! The applied-award day (`CountryFuel.award_day`, the collector's sums of 24
+//! authenticated updates) supersedes ring sums when it matches the supplying
+//! read and country identity. Recordings before it, whose update-by-update
+//! windows are retired, and unknown days retain the ring/ownership fallback
+//! below; they never infer source splits.
 //!
 //! Every value is a recorded `CountryFuel` field, kept exact: the level and
 //! capacity (`current_raw`, `maximum_raw`) are quantities in /32768 units, and
@@ -77,7 +79,7 @@ use replay::{
     cadence,
     container::Replay,
     frame::FrameDecoder,
-    rows::{CountryFuelRow, TableId, tables},
+    rows::{CountryFuelRow, FuelAwardDay, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -191,18 +193,21 @@ impl From<&AwardSums> for FuelAwardTotals {
     }
 }
 
-fn awards_of(row: &CountryFuelRow, hour: i32) -> Result<AwardSums, String> {
-    let replay::rows::Recorded::Value(window) = &row.awards else {
+/// The supplying read's summed day of applied updates
+/// (`CountryFuel.award_day`): complete, of this read's country identity,
+/// observed since before its first update and ending at the read's hour.
+fn award_day(row: &CountryFuelRow, hour: i32) -> Result<&FuelAwardDay, String> {
+    let replay::rows::Recorded::Value(day) = &row.award_day else {
         return Err("Applied fuel source and recipient history not recorded".into());
     };
-    if !window.reason.is_empty() {
-        return Err(String::from_utf8_lossy(&window.reason).into_owned());
+    if !day.reason.is_empty() {
+        return Err(String::from_utf8_lossy(&day.reason).into_owned());
     }
-    if !matches!(row.country_instance,replay::rows::Recorded::Value(Some(value)) if value == window.country_instance)
+    if !matches!(row.country_instance,replay::rows::Recorded::Value(Some(value)) if value == day.country_instance)
     {
         return Err("Applied fuel window belongs to another or unrecorded country identity".into());
     }
-    if !window.continuity_start_hour.is_some_and(|start| {
+    if !day.continuity_start_hour.is_some_and(|start| {
         hour.checked_sub(DAY_HOURS - 1)
             .is_some_and(|first| start <= first)
     }) {
@@ -210,78 +215,51 @@ fn awards_of(row: &CountryFuelRow, hour: i32) -> Result<AwardSums, String> {
             "Applied fuel observation continuity boundary missing or later than this window".into(),
         );
     }
-    if window.hours.len() != DAY_HOURS as usize
-        || !window.hours.iter().enumerate().all(|(index, entry)| {
-            Some(entry.hour) == hour.checked_sub(DAY_HOURS - 1 - index as i32)
-        })
-    {
+    if day.last_hour != hour {
         return Err("Applied fuel window does not match this supplying read".into());
     }
-    let mut gains = [0_i128; 4];
-    let mut transfers = [0_i128; 4];
-    let mut received = [0_i128; 3];
-    let mut own = 0_i128;
-    let mut own_quantity = 0_i128;
-    let mut consumed = 0_i128;
-    for entry in &window.hours {
-        for (sum, raw) in gains.iter_mut().zip(entry.gains_raw) {
-            *sum += i128::from(raw);
-        }
-        for (sum, raw) in transfers.iter_mut().zip(entry.transfers_raw) {
-            *sum += i128::from(raw);
-        }
-        for (sum, raw) in received.iter_mut().zip(entry.received_raw) {
-            *sum += i128::from(raw);
-        }
-        own += i128::from(entry.own_gain_raw);
-        consumed += i128::from(entry.consumed_raw);
-        own_quantity += i128::from(engine::fuel_awards::quantity(entry.own_gain_raw));
-    }
+    Ok(day)
+}
+
+fn awards_of(row: &CountryFuelRow, hour: i32) -> Result<AwardSums, String> {
+    let day = award_day(row, hour)?;
     Ok(AwardSums {
-        gains,
-        own_gain: own,
-        own_gain_quantity: own_quantity,
-        transfers,
-        consumed,
-        received,
+        gains: day.gains_raw.map(i128::from),
+        own_gain: i128::from(day.own_gain_raw),
+        own_gain_quantity: i128::from(day.own_gain_quantity_raw),
+        transfers: day.transfers_raw.map(i128::from),
+        consumed: i128::from(day.consumed_raw),
+        received: day.received_raw.map(i128::from),
     })
 }
 
+/// The read's recipients, in the order of their identity operands. Each
+/// recorded recipient already gathers the day's receipts of identical native
+/// identity, owner, host and retained name operands, so changed retained text
+/// is a separate row, with no generated-name backfill.
 fn recipients_of(
     row: &CountryFuelRow,
     cancelled: &AtomicBool,
     mut format_name: impl FnMut(&[u8]) -> Result<String, String>,
 ) -> io::Result<Vec<FuelAwardPart>> {
-    let replay::rows::Recorded::Value(window) = &row.awards else {
+    let replay::rows::Recorded::Value(day) = &row.award_day else {
         return Err(crate::invalid("Fuel awards not recorded"));
     };
-    // Aggregate only identical native identity/owner/name operands. Changed
-    // retained text gets a separate row, with no generated-name backfill.
-    let mut groups = BTreeMap::new();
-    for hour in &window.hours {
-        for part in &hour.recipients {
-            crate::metadata::check_cancel(cancelled)?;
-            if part.kind > 2 {
-                return Err(crate::invalid("Fuel recipient kind unsupported"));
-            }
-            let key = (
-                part.kind,
-                part.reference,
-                part.owner,
-                part.host,
-                part.name.as_deref(),
-                part.name_reason.as_slice(),
-            );
-            let entry = groups.entry(key).or_insert((hour.hour, hour.hour, 0_i128));
-            entry.1 = hour.hour;
-            entry.2 = entry
-                .2
-                .checked_add(i128::from(part.amount_raw))
-                .ok_or_else(|| crate::invalid("Fuel recipient total exceeds exact range"))?;
+    let mut rows = engine::allocation::vec(day.recipients.len())?;
+    for part in &day.recipients {
+        crate::metadata::check_cancel(cancelled)?;
+        if part.kind > 2 {
+            return Err(crate::invalid("Fuel recipient kind unsupported"));
         }
-    }
-    let mut rows = engine::allocation::vec(groups.len())?;
-    for ((kind, reference, owner, host, name, why), (first_hour, last_hour, amount)) in groups {
+        let (kind, reference, owner, host, name, why) = (
+            part.kind,
+            part.reference,
+            part.owner,
+            part.host,
+            part.name.as_deref(),
+            part.name_reason.as_slice(),
+        );
+        let (first_hour, last_hour, amount) = (part.first_hour, part.last_hour, part.amount_raw);
         let parsed = name.map(&mut format_name).transpose();
         let (recorded_name, name_reason) = match parsed {
             Ok(name) => (
@@ -766,8 +744,8 @@ fn read_of(
             replay::rows::Recorded::Value(value) => value,
             _ => None,
         },
-        continuity_start_hour: match &row.awards {
-            replay::rows::Recorded::Value(window) => window.continuity_start_hour,
+        continuity_start_hour: match &row.award_day {
+            replay::rows::Recorded::Value(day) => day.continuity_start_hour,
             _ => None,
         },
         first_hour: hour,
@@ -821,6 +799,7 @@ fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Resu
         TableId::CountryLinks,
         TableId::States,
         TableId::CountryFuel,
+        TableId::FuelDemandParts,
     ];
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Fuel request cancelled");
     let mut result = ScannedBranch::default();
@@ -909,11 +888,21 @@ fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Resu
                         }
                     }
                     let fuel = decoded.complete::<tables::CountryFuel>().ok();
-                    let read = slot_read(&decoded.metrics, TableId::CountryFuel, hour);
+                    let read =
+                        slot_read(replay.format, &decoded.metrics, TableId::CountryFuel, hour);
+                    // A read's packs with their lists, which later formats record apart.
+                    let assembled = match fuel {
+                        Some(rows) if read => Some(replay::rows::with_demand_parts(
+                            rows,
+                            &decoded.tables[TableId::FuelDemandParts.index()],
+                            replay.format,
+                        )?),
+                        _ => None,
+                    };
                     let mut by_slot = BTreeMap::new();
                     if read
                         && let Some((_, links)) = tables
-                        && let Some(rows) = fuel
+                        && let Some(rows) = &assembled
                     {
                         for row in rows {
                             if let Some(slot) = link_slot(links, row.country) {
@@ -972,8 +961,8 @@ fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Resu
                             replay::rows::Recorded::Value(value) => value,
                             _ => None,
                         };
-                        let continuity = match &row.awards {
-                            replay::rows::Recorded::Value(window) => window.continuity_start_hour,
+                        let continuity = match &row.award_day {
+                            replay::rows::Recorded::Value(day) => day.continuity_start_hour,
                             _ => None,
                         };
                         if country.instance != instance {
@@ -1028,7 +1017,7 @@ fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Resu
                     .insert(tag.clone());
             }
         }
-        keep_days(&mut country.result.reads);
+        keep_days(replay.format, &mut country.result.reads);
         result.countries.insert(tag, Arc::new(country.result));
     }
     Ok(result)
@@ -1054,8 +1043,9 @@ pub fn scan(
 /// table's daily slot come first, then the others, each in hour order; a day is
 /// kept when its read is at least [`DAY_HOURS`] from every read kept before it,
 /// which every slot read is. Days already left out never hold another back.
-fn keep_days(reads: &mut [RawRead]) {
-    let in_slot = |read: &RawRead| cadence::is_refresh(TableId::CountryFuel, read.first_hour);
+fn keep_days(format: replay::format::FormatVersion, reads: &mut [RawRead]) {
+    let slot = cadence::cadence_in(TableId::CountryFuel, format);
+    let in_slot = |read: &RawRead| slot.is_refresh(read.first_hour);
     let mut kept = BTreeSet::new();
     let (slot, other): (Vec<_>, Vec<_>) = reads
         .iter_mut()

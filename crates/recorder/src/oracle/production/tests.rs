@@ -6,14 +6,15 @@ use replay::{
     rows::{
         ArmyUpgradeDeliveryRow, ArmyUpgradeGroupRow, ArmyUpgradeProducedRow, ArmyUpgradeRequestRow,
         CountryRow, IndustrialOrganisationHistoryRow, IndustrialOrganisationRow, LexicalTokenRow,
-        Recorded, TableId, TableRows, VariantDefinitionRow, VariantModuleRow, VariantStatsRow,
-        VariantUpgradeRow,
+        ProductionLineOutputRow, Recorded, TableId, TableRows, VariantDefinitionRow,
+        VariantModuleRow, VariantStatsRow, VariantUpgradeRow,
     },
 };
 
-/// A frame of the line output cross-check: whether it read the lines'
-/// slot, its ProductionLineOutput rows and its history slots.
-fn credit_frame(
+/// A frame of the line output self-check: whether it read the lines'
+/// slot, its ProductionLineOutput rows `(line, variant, organisation, units)`
+/// with their census lines, and its history slots.
+fn output_frame(
     hour: i32,
     read: bool,
     rows: &[(u64, u64, u64, i64)],
@@ -34,18 +35,15 @@ fn credit_frame(
     *frame.tables[TableId::ProductionLineOutput.index()] =
         TableView::Complete(TableRows::ProductionLineOutput(
             rows.iter()
-                .map(
-                    |&(line, variant, mio, mio_credit)| ProductionLineOutputRow {
-                        line,
-                        variant,
-                        mio,
-                        units: mio_credit,
-                        mio_credit,
-                        since_hour: 100,
-                        exact: true,
-                        ..Default::default()
-                    },
-                )
+                .map(|&(line, variant, mio, units)| ProductionLineOutputRow {
+                    line,
+                    variant,
+                    mio,
+                    units,
+                    since_hour: 100,
+                    exact: true,
+                    ..Default::default()
+                })
                 .collect(),
         ));
     *frame.tables[TableId::ProductionLines.index()] =
@@ -75,66 +73,8 @@ fn credit_frame(
     frame
 }
 
-/// The history's change since R equals the lines' credit change, counting
-/// a line that ended between the two reads with its last publication;
-/// carried hours are not publications; a mismatch is a difference and an
-/// organisation no read recorded is a limitation.
-#[test]
-fn line_output_credits_match_the_organisation_history_change() {
-    const ORG: u64 = (5 << 32) | 79;
-    const LOST: u64 = (6 << 32) | 79;
-    const TANK: u64 = (9 << 32) | 70;
-    let run = |final_units: i32, extra: &[(u64, u64, u64, i64)]| {
-        let mut check = CreditCheck::new(100);
-        let frames = [
-            credit_frame(
-                100,
-                true,
-                &[(1, TANK, ORG, 0), (2, TANK, ORG, 0)],
-                &[(ORG, TANK, 10)],
-            ),
-            // Carried: not a publication, whatever its view holds.
-            credit_frame(101, false, &[(1, TANK, ORG, 99)], &[(ORG, TANK, 99)]),
-            // Line 2 ended after crediting 2.
-            credit_frame(124, true, &[(1, TANK, ORG, 3), (2, TANK, ORG, 2)], &[]),
-            credit_frame(
-                148,
-                true,
-                &[&[(1, TANK, ORG, 5)][..], extra].concat(),
-                &[(ORG, TANK, final_units)],
-            ),
-        ];
-        for frame in &frames {
-            check.observe(frame).unwrap();
-        }
-        let mut report = Report::default();
-        check.finish(148, &mut report).unwrap();
-        report
-    };
-    let report = run(17, &[]);
-    assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert_eq!(report.compared_tables["ProductionLineOutput"], 1);
-    let report = run(18, &[]);
-    assert_eq!(report.differences.len(), 1);
-    assert!(
-        report.differences[0].starts_with(&format!(
-            "organisation {ORG}.history {TANK} units credited since hour 100: replay 7, save 8"
-        )),
-        "{:?}",
-        report.differences
-    );
-    let report = run(17, &[(3, TANK, LOST, 4)]);
-    assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert!(
-        report
-            .limitations
-            .keys()
-            .any(|reason| reason.contains("no read recorded"))
-    );
-}
-
 /// One branch of `frames` as a replay, for the checks that walk it.
-fn credit_replay(frames: Vec<DecodedFrame>) -> Replay {
+fn output_replay(frames: Vec<DecodedFrame>) -> Replay {
     use replay::{
         branches::{BranchReason, BranchStart, Parentage},
         frame::FrameEncoder,
@@ -200,56 +140,58 @@ fn credit_replay(frames: Vec<DecodedFrame>) -> Replay {
 }
 
 /// With the table empty at the compared hour, because the branch's last
-/// line ended and its final rows were dropped at the next publication,
-/// the earlier publications are still checked against the history.
+/// line ended and its final rows were dropped at the next publication, the
+/// earlier publications are still self-checked against their census.
 #[test]
-fn line_output_credits_are_checked_after_the_last_line_ended() {
+fn line_output_census_is_checked_after_the_last_line_ended() {
     const ORG: u64 = (5 << 32) | 79;
     const TANK: u64 = (9 << 32) | 70;
-    let run = |final_units: i32| {
-        let mut ended = credit_frame(124, true, &[(2, TANK, ORG, 0)], &[(ORG, TANK, 10)]);
+    let run = |census_keeps_line: bool| {
+        let mut ended = output_frame(124, true, &[(2, TANK, ORG, 0)], &[(ORG, TANK, 10)]);
         let TableView::Complete(TableRows::ProductionLineOutput(output)) =
             &mut *ended.tables[TableId::ProductionLineOutput.index()]
         else {
             unreachable!()
         };
         output[0].ended = true;
-        *ended.tables[TableId::ProductionLines.index()] =
-            TableView::Complete(TableRows::ProductionLines(Vec::new()));
+        if !census_keeps_line {
+            *ended.tables[TableId::ProductionLines.index()] =
+                TableView::Complete(TableRows::ProductionLines(Vec::new()));
+        }
         let frames = vec![
-            credit_frame(100, true, &[(2, TANK, ORG, 0)], &[(ORG, TANK, 10)]),
-            // Line 2's final publication: it ended having credited none.
+            output_frame(100, true, &[(2, TANK, ORG, 0)], &[(ORG, TANK, 10)]),
+            // Line 2's final publication: it ended.
             ended,
-            credit_frame(148, true, &[], &[(ORG, TANK, final_units)]),
+            output_frame(148, true, &[], &[(ORG, TANK, 10)]),
         ];
         let compared = frames[2].clone();
-        let replay = credit_replay(frames);
+        let replay = output_replay(frames);
         let mut report = Report::default();
         compare_line_output(&replay, &compared, &mut report).unwrap();
         report
     };
-    let report = run(10);
+    let report = run(false);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert_eq!(report.compared_tables["ProductionLineOutput"], 1);
-    // The ended line reported no credit while its organisation's history
-    // rose by one.
-    let report = run(11);
+    assert_eq!(
+        report.compared_tables["ProductionLineOutput census self-check"],
+        1
+    );
+    // The ended line's row left a census that still holds the line.
+    let report = run(true);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(
-        report.differences[0].starts_with(&format!(
-            "organisation {ORG}.history {TANK} units credited since hour 100: replay 0, save 1"
-        )),
+        report.differences[0].starts_with("ProductionLineOutput 2 at hour 124"),
         "{:?}",
         report.differences
     );
     // A branch that never published a row has nothing to check.
     let frames = vec![
-        credit_frame(100, true, &[], &[(ORG, TANK, 10)]),
-        credit_frame(124, true, &[], &[(ORG, TANK, 10)]),
+        output_frame(100, true, &[], &[(ORG, TANK, 10)]),
+        output_frame(124, true, &[], &[(ORG, TANK, 10)]),
     ];
     let compared = frames[1].clone();
     let mut report = Report::default();
-    compare_line_output(&credit_replay(frames), &compared, &mut report).unwrap();
+    compare_line_output(&output_replay(frames), &compared, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert!(
         report
@@ -257,41 +199,6 @@ fn line_output_credits_are_checked_after_the_last_line_ended() {
             .keys()
             .any(|reason| reason.contains("no production line output was published"))
     );
-}
-
-#[test]
-fn line_output_credits_use_the_native_wrapping_counter() {
-    for credited in [
-        2_147_483_647_i64,
-        2_147_483_648,
-        4_294_967_296,
-        4_294_967_301,
-        -2_147_483_649,
-    ] {
-        let final_units = 100_i32.wrapping_add(credited as i32);
-        for mismatch in [0, 1] {
-            let mut check = CreditCheck::new(100);
-            // Nonzero baseline credits must be subtracted before wrapping.
-            check
-                .observe(&credit_frame(100, true, &[(1, 2, 3, 7)], &[(3, 2, 100)]))
-                .unwrap();
-            check
-                .observe(&credit_frame(
-                    124,
-                    true,
-                    &[(1, 2, 3, credited + 7)],
-                    &[(3, 2, final_units.wrapping_add(mismatch))],
-                ))
-                .unwrap();
-            let mut report = Report::default();
-            check.finish(124, &mut report).unwrap();
-            assert_eq!(
-                report.differences.len(),
-                mismatch as usize,
-                "credits {credited}"
-            );
-        }
-    }
 }
 
 #[test]
@@ -329,7 +236,7 @@ fn line_output_country_uses_saved_producer_and_resolved_raw_reference() {
         ..Default::default()
     };
     let run = |rows| {
-        let mut frame = credit_frame(124, true, &[], &[]);
+        let mut frame = output_frame(124, true, &[], &[]);
         *frame.tables[TableId::ProductionLineOutput.index()] =
             TableView::Complete(TableRows::ProductionLineOutput(rows));
         let mut report = Report::default();
@@ -1360,10 +1267,12 @@ fn absent_policy_and_broken_native_order_are_explicit_errors() {
 #[test]
 fn base_line_compares_omitted_zero_and_signed_fixed5_without_narrowing() {
     let doc = parser::parse(
-        b"id={id=4294967295 type=56} cost=92233720368547.75807 priority=-1 amount=-2147483648",
+        b"id={id=4294967295 type=56} cost=92233720368547.75807 priority=-1 amount=-2147483648 produced=0.00001",
     )
     .unwrap();
     let expected = production::parse_line_base(&doc.items).unwrap();
+    // The saved produced progress has no recorded counterpart: it is retired.
+    assert!(expected.produced.is_some());
     let mut actual = ProductionLineRow {
         handle: 0xffff_ffff_0000_0038,
         cost_raw: i64::MAX,
@@ -1374,13 +1283,12 @@ fn base_line_compares_omitted_zero_and_signed_fixed5_without_narrowing() {
     let mut report = Report::default();
     compare_line_base(&actual, &expected, "line", &mut report);
     assert!(report.differences.is_empty());
-    assert_eq!(report.scalar_checks, 3);
+    assert_eq!(report.scalar_checks, 2);
     actual.speed_raw = -1;
-    actual.produced_raw = 1;
     actual.cost_raw -= 1;
     actual.active_factories = -1;
     compare_line_base(&actual, &expected, "line", &mut report);
-    assert_eq!(report.differences.len(), 4);
+    assert_eq!(report.differences.len(), 3);
 }
 
 #[test]
@@ -1461,7 +1369,7 @@ fn modifier_oracle_compares_every_saved_factory_occurrence_and_keeps_runtime_ope
         ..Default::default()
     };
     let check = |rows| {
-        let mut frame = credit_frame(124, true, &[], &[]);
+        let mut frame = output_frame(124, true, &[], &[]);
         *frame.tables[TableId::ProductionLineModifiers.index()] =
             TableView::Complete(TableRows::ProductionLineModifiers(rows));
         let mut report = Report::default();
@@ -1771,7 +1679,7 @@ fn variant_version_oracle_matches_raw_byte_zero_omission_and_old_absence() {
             "equipments={{synthetic={{id={{id=1 type=70}} creator=SYN origin=SYN {saved_version}}}}}"
         );
         let saved = production::parse(&parser::parse(source.as_bytes()).unwrap().items).unwrap();
-        let mut frame = credit_frame(22, false, &[], &[]);
+        let mut frame = output_frame(22, false, &[], &[]);
         *frame.tables[TableId::VariantDefinitions.index()] =
             TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
                 id: variant,

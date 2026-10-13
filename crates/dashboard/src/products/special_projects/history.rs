@@ -221,6 +221,9 @@ pub(super) struct Span {
 }
 #[derive(Clone, Default)]
 pub(super) struct BranchScan {
+    /// The recording's format, which dates its daily tables
+    /// ([`crate::metadata::slot_read`]).
+    pub(crate) format: replay::format::FormatVersion,
     pub campaign_start: Option<i32>,
     pub spans: Vec<Span>,
     blocks: usize,
@@ -252,7 +255,7 @@ impl BranchScan {
                 Some(actor_tables.map(|table| frame.tables[table.index()].identity()));
         }
         let actors = Arc::clone(self.actors.as_ref().expect("actor index observed"));
-        let read = slot_read(&frame.metrics, TableId::Projects, frame.hour);
+        let read = slot_read(self.format, &frame.metrics, TableId::Projects, frame.hour);
         let recorded = TABLES.map(|table| &frame.tables[table.index()]);
         if let Some(span) = self.spans.last_mut()
             && span.last_hour.checked_add(1) == Some(frame.hour)
@@ -284,6 +287,7 @@ impl BranchScan {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<usize> {
+        self.format = replay.format;
         self.campaign_start = replay
             .index
             .iter()

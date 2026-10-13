@@ -175,6 +175,11 @@ impl Captured {
             })
     }
 
+    /// The hour this matrix was attempted for; its packet stores none.
+    pub(crate) fn sample_hour(&self) -> Option<i32> {
+        self.sample_hour
+    }
+
     pub(crate) fn projection(
         &self,
     ) -> std::io::Result<Option<replay::rows::ReservedReverseVisibilityInputs>> {
@@ -188,7 +193,7 @@ impl Captured {
             .filter(|cells| cells.len() == self.cells.required)
             .ok_or_else(|| std::io::Error::other("reserved reverse visibility arena invalid"))?;
         Ok(Some(replay::rows::ReservedReverseVisibilityInputs {
-            sample_hour: self.sample_hour.expect("admitted above"),
+            sample_hour: replay::rows::PacketHour::Host,
             cells: engine::allocation::collect_vec(cells.iter().map(|cell| {
                 cell.value
                     .map(|value| replay::rows::ReverseZeroVisibilityInputs {

@@ -22,6 +22,21 @@
 //! ([`SliceSelection::finish_census`]) the merge drops the held rows of owners
 //! the census did not see ([`SliceSelection::live`]), so a vanished or
 //! re-aliased owner's rows leave at the next hour, not at its next slice.
+//!
+//! A family whose values change for every owner in the game's daily tick and
+//! otherwise only through hooked writers (the focus family) reads every owner
+//! at the first hour after that tick instead of a rotating slice, and the
+//! owners its writers marked at the other hours
+//! ([`SliceSelection::reset_daily`]).
+//!
+//! A family whose every recorded field has hooked native writers (the raid
+//! state inputs, [`crate::raid_changes`]) also reads, each hour, every owner a
+//! writer marked since the previous hour ([`SliceSelection::mark`]). Its
+//! take's epoch must be the one the store's previous hour was read under
+//! ([`SliceSelection::certify`]); otherwise an owner outside this hour's read
+//! may have changed unseen, and every owner is read. Each owner read and not
+//! marked is compared with its previous read ([`SliceSelection::compare`]):
+//! a difference is a write no hook saw.
 
 use replay::rows::TableId;
 use std::collections::HashMap;
@@ -51,14 +66,20 @@ pub(crate) const RAID_STATE: usize = 3;
 pub(crate) const RAID_BUILDINGS: usize = 4;
 pub(crate) const RELATIONS: usize = 5;
 pub(crate) const STABILITY: usize = 6;
-pub(crate) const RETREAT_BANS: usize = 7;
-pub(crate) const AIR_RELATIONS: usize = 8;
-pub(crate) const AIR_HISTORIES: usize = 9;
-pub(crate) const NAVAL_MISSIONS: usize = 10;
-pub(crate) const COMBAT_LOG: usize = 11;
+pub(crate) const AIR_RELATIONS: usize = 7;
+pub(crate) const AIR_HISTORIES: usize = 8;
+pub(crate) const NAVAL_MISSIONS: usize = 9;
+pub(crate) const COMBAT_LOG: usize = 10;
+pub(crate) const SUPPLY_TRAINS: usize = 11;
+pub(crate) const AVAILABLE_ADVISORS: usize = 12;
+pub(crate) const FOCUS: usize = 13;
+pub(crate) const PROJECTS: usize = 14;
 
 /// Every sliced family. Index with the family constants above.
-pub(crate) const FAMILIES: [SliceFamily; 12] = [
+pub(crate) const FAMILIES: [SliceFamily; 15] = [
+    // Research inputs, applied bonuses and modifiers, read in their own job
+    // as stability is: hooked writers mark the countries to read within the
+    // hour (`country_input_changes`); the slice refreshes daily progress.
     SliceFamily {
         name: "research",
         owner: OwnerKind::Country,
@@ -68,9 +89,11 @@ pub(crate) const FAMILIES: [SliceFamily; 12] = [
             TableId::ResearchModifiers,
         ],
     },
-    // Technology rosters change daily for every country, so the family has
-    // no change fingerprint: a constant one reads new owners and unpublished
-    // reads at the next hour. TechnologyDefinitions is its keyed table.
+    // Technology rosters, read in the Governance job: hooked writers mark the
+    // countries to read within the hour (`country_input_changes`), a constant
+    // print reads new owners and unpublished reads at the next hour, and the
+    // slice refreshes daily progress. TechnologyDefinitions is its keyed
+    // table.
     SliceFamily {
         name: "technologies",
         owner: OwnerKind::Country,
@@ -79,19 +102,17 @@ pub(crate) const FAMILIES: [SliceFamily; 12] = [
             TableId::TechnologyDefinitions,
         ],
     },
-    // The raid input families are read daily with a constant fingerprint,
-    // as relations are: no hook or change fingerprint makes them exact within
-    // the hour (owner rule: no harsher than the game's rolling re-check).
+    // RaidAirSites, read daily with a constant fingerprint and every country
+    // a hooked site list writer marked (crate::raid_changes), so it equals
+    // the game's at every hour.
     SliceFamily {
         name: "raid_launch",
         owner: OwnerKind::CanonicalSlot,
-        tables: &[
-            TableId::RaidCountryInputs,
-            TableId::StockpileArchetypes,
-            TableId::RaidAirSites,
-            TableId::AceRangeInputs,
-        ],
+        tables: &[TableId::RaidAirSites],
     },
+    // The raid state inputs and the building-resource overrides also read,
+    // each hour, every owner a hooked writer marked (crate::raid_changes),
+    // so they equal the game's at every hour (owner decision 2026-10-11).
     SliceFamily {
         name: "raid_state",
         owner: OwnerKind::State,
@@ -116,8 +137,9 @@ pub(crate) const FAMILIES: [SliceFamily; 12] = [
         owner: OwnerKind::Country,
         tables: &[TableId::RelationOpinions, TableId::RelationTuples],
     },
-    // Stability inputs and tree lines, read in the Slow job; the fingerprint
-    // is `engine::country_stability::fingerprint_country`.
+    // Stability inputs and tree lines, read in the Stability job with a constant
+    // print: the hooked writers mark the countries to read within the hour
+    // (`country_input_changes`), and the slice refreshes the daily drift.
     SliceFamily {
         name: "stability",
         owner: OwnerKind::Country,
@@ -125,13 +147,6 @@ pub(crate) const FAMILIES: [SliceFamily; 12] = [
             TableId::CountryStabilityInputs,
             TableId::CountryStabilityLines,
         ],
-    },
-    // Commanders' retreat bans, read with a constant print by the roster
-    // owner's canonical slot in the Presentation job.
-    SliceFamily {
-        name: "retreat_bans",
-        owner: OwnerKind::CanonicalSlot,
-        tables: &[TableId::DivisionRetreatBans],
     },
     // AirCountryRelations, held by its decode step and certified by the
     // native-writer hooks (`relation_changes`); the family's store is not
@@ -166,7 +181,81 @@ pub(crate) const FAMILIES: [SliceFamily; 12] = [
         owner: OwnerKind::Country,
         tables: &[TableId::CombatLogEquipment],
     },
+    // The decorative supply trains (owner decision 2026-10-11): each
+    // country's supply companion, its nodes with their parent-chain vertices
+    // and its train inventory, read in the SupplyTrains job with a constant
+    // print, so a new country or an unpublished read is read at the next hour.
+    SliceFamily {
+        name: "supply_trains",
+        owner: OwnerKind::Country,
+        tables: &[TableId::SupplyNodes, TableId::TrainInventory],
+    },
+    // Each country's available-advisor pool, read in the Slow job with a
+    // constant print (owner decision 2026-10-11: panel-only, daily).
+    SliceFamily {
+        name: "available_advisors",
+        owner: OwnerKind::Country,
+        tables: &[TableId::AvailableAdvisors],
+    },
+    // Each country's focus state and completed roster, read in the
+    // Governance job: every country at the first hour after the daily tick,
+    // which advances every country's focus progress, and in between the
+    // countries a hooked focus writer marked (`country_input_changes`).
+    SliceFamily {
+        name: "focus",
+        owner: OwnerKind::Country,
+        tables: &[TableId::Focus, TableId::CompletedFocuses],
+    },
+    // Each country's special projects and their histories, read in the Gated
+    // job like focus: every country after the daily tick, which advances
+    // every project, and in between the countries a hooked project writer
+    // marked. A row's owner is the project's stored owner tag, which can be
+    // any raw id linking to its country, so the family selects and keeps
+    // every raw id of a read country ([`crate::extended::projects`]).
+    SliceFamily {
+        name: "projects",
+        owner: OwnerKind::Country,
+        tables: &[TableId::Projects, TableId::ProjectHistory],
+    },
 ];
+
+/// Scans the country census into `selection` at `hour` for a family read
+/// once a day per native country id with a constant print: a new country, or
+/// one whose last read was not published, joins the read at once. Without a
+/// store every country is read, and so is every country of an hour whose
+/// census could not be read whole.
+pub(crate) fn scan_countries(
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    hour: i32,
+    force_full: bool,
+    selection: &mut SliceSelection,
+    fingerprints: Option<&mut SliceFingerprints>,
+) {
+    selection.reset(hour, force_full || fingerprints.is_none());
+    let Some(store) = fingerprints else {
+        return;
+    };
+    let started = crate::sampling::qpc();
+    let census = match engine::ccountry::Reader::new(memory, base, game_state) {
+        Err(_) => false,
+        Ok(countries) => {
+            let mut complete = true;
+            for slot in 1..countries.count() {
+                match countries.at(slot) {
+                    Ok(Some(country)) => selection.scan(store, country.id, Some(0)),
+                    Ok(None) => {}
+                    Err(_) => complete = false,
+                }
+            }
+            complete
+        }
+    };
+    store.finish_scan();
+    selection.finish_pass(store, census);
+    selection.scan_ticks = crate::sampling::qpc().saturating_sub(started).max(0) as u64;
+}
 
 /// The family that reads `table`, if it is sliced.
 pub(crate) fn family_of(table: TableId) -> Option<usize> {
@@ -177,9 +266,15 @@ pub(crate) fn family_of(table: TableId) -> Option<usize> {
 
 /// Worker/spool insertion sizes from an original observed owner occurrence,
 /// retaining ascending output without allocating an owner's entire ID domain.
+/// A census visits owners in ascending order, so each lands at the end.
 fn insert_owner(owners: &mut Vec<u32>, owner: u32) -> bool {
-    let Err(index) = owners.binary_search(&owner) else {
-        return true;
+    let index = match owners.last() {
+        Some(&last) if last < owner => owners.len(),
+        None => 0,
+        Some(_) => match owners.binary_search(&owner) {
+            Ok(_) => return true,
+            Err(index) => index,
+        },
     };
     if engine::allocation::reserve_push_batch(owners, 1).is_err() {
         return false;
@@ -193,6 +288,15 @@ fn insert_owner(owners: &mut Vec<u32>, owner: u32) -> bool {
 pub(crate) struct SliceSelection {
     pub(crate) hour: i32,
     pub(crate) force_full: bool,
+    /// The family reads every owner at the daily boundary and no rotating
+    /// slice ([`Self::reset_daily`]).
+    daily: bool,
+    /// A daily family's hour is its daily boundary.
+    boundary: bool,
+    /// Owners the scan found without drift this hour, ascending
+    /// ([`Self::scan_drifting`]): neither the slice nor the daily boundary
+    /// reads them, only a mark, a changed print or a full hour.
+    settled: Vec<u32>,
     /// Owners read before their slice because their fingerprint changed.
     early: Vec<u32>,
     pub(crate) early_count: u32,
@@ -205,6 +309,9 @@ pub(crate) struct SliceSelection {
     /// only those it read.
     walked: Vec<u32>,
     tracked: bool,
+    /// Owners this hour's take of the family's hook marks named, ascending.
+    marked: Vec<u32>,
+    pub(crate) marked_count: u32,
     /// Owners whose fingerprint was compared this hour.
     pub(crate) scanned: u32,
     /// Owners whose bookkeeping allocation could not complete.
@@ -219,12 +326,17 @@ impl SliceSelection {
         Self {
             hour: 0,
             force_full: true,
+            daily: false,
+            boundary: false,
+            settled: Vec::new(),
             early: Vec::new(),
             early_count: 0,
             seen: Vec::new(),
             census: false,
             walked: Vec::new(),
             tracked: false,
+            marked: Vec::new(),
+            marked_count: 0,
             scanned: 0,
             out_of_range: 0,
             scan_ticks: 0,
@@ -235,15 +347,74 @@ impl SliceSelection {
     pub(crate) fn reset(&mut self, hour: i32, force_full: bool) {
         self.hour = hour;
         self.force_full = force_full;
+        self.daily = false;
+        self.boundary = false;
+        self.settled.clear();
         self.early.clear();
         self.early_count = 0;
         self.seen.clear();
         self.walked.clear();
         self.census = false;
         self.tracked = false;
+        self.marked.clear();
+        self.marked_count = 0;
         self.scanned = 0;
         self.out_of_range = 0;
         self.scan_ticks = 0;
+    }
+
+    /// Start an hour's read of a family with no rotating slice: every owner
+    /// at the daily boundary, the first hour after daily update
+    /// (daily game update, inside the hourly update entered at hour 23), and on a
+    /// full hour; otherwise only the owners selected or marked.
+    pub(crate) fn reset_daily(&mut self, hour: i32, force_full: bool) {
+        self.reset(hour, force_full);
+        self.daily = true;
+        self.boundary = hour.rem_euclid(replay::cadence::STAGGER_PERIOD) == 0;
+    }
+
+    /// [`Self::scan_drifting`] reading `drifts` only when it decides
+    /// something: for an owner this hour's slice or daily boundary covers, a
+    /// full hour, or an owner the store does not hold a current print for.
+    /// Any other owner is only seen, keeping its held print: its rows
+    /// change only through a mark until its slice, whose check reads it if
+    /// it drifts now or its drift changed since its last check.
+    pub(crate) fn scan_lazily(
+        &mut self,
+        fingerprints: &mut SliceFingerprints,
+        owner: u32,
+        drifts: impl FnOnce() -> bool,
+    ) {
+        if self.force_full || self.in_slice(owner, false) || !fingerprints.holds(owner) {
+            let drifts = drifts();
+            self.scan_drifting(fingerprints, owner, Some(u64::from(drifts)), drifts);
+            return;
+        }
+        self.scanned += 1;
+        if !insert_owner(&mut self.seen, owner) {
+            self.out_of_range += 1;
+            self.force_full = true;
+        }
+    }
+
+    /// [`Self::scan`] for a family whose rows drift only for some owners: an
+    /// owner without drift (`drifts` false) is settled, read only when a
+    /// writer marks it, its print changes or the hour is full. The caller
+    /// folds `drifts` into `fingerprint`, so an owner that starts or stops
+    /// drifting is read at that hour.
+    pub(crate) fn scan_drifting(
+        &mut self,
+        fingerprints: &mut SliceFingerprints,
+        owner: u32,
+        fingerprint: Option<u64>,
+        drifts: bool,
+    ) {
+        if !drifts && !insert_owner(&mut self.settled, owner) {
+            self.out_of_range += 1;
+            self.force_full = true;
+            return;
+        }
+        self.scan(fingerprints, owner, fingerprint);
     }
 
     /// Compare one owner's fingerprint (None: unreadable) with the store and
@@ -267,6 +438,27 @@ impl SliceSelection {
                 self.out_of_range += 1;
                 self.force_full = true;
             }
+        }
+    }
+
+    /// [`Self::scan`] for a family whose fingerprint is a certificate of
+    /// every recorded field (the naval mission inputs): an owner whose
+    /// certificate changed is marked ([`Self::mark`]), so that
+    /// [`Self::compare`] compares only owners whose certificate held.
+    pub(crate) fn scan_marking(
+        &mut self,
+        fingerprints: &mut SliceFingerprints,
+        owner: u32,
+        fingerprint: Option<u64>,
+    ) {
+        self.scanned += 1;
+        if !insert_owner(&mut self.seen, owner) {
+            self.out_of_range += 1;
+            self.force_full = true;
+            return;
+        }
+        if fingerprints.observe(owner, fingerprint) {
+            self.mark(owner);
         }
     }
 
@@ -315,8 +507,103 @@ impl SliceSelection {
 
     /// Whether this hour's read covers `owner`.
     pub(crate) fn contains(&self, owner: u32) -> bool {
-        replay::cadence::slice_active(owner, self.hour, self.force_full)
+        self.force_full
+            || (self.in_slice(owner, false) && self.settled.binary_search(&owner).is_err())
             || self.early.binary_search(&owner).is_ok()
+    }
+
+    /// Whether `owner` is in this hour's slice (for a daily family, every
+    /// owner at its boundary and none off it).
+    fn in_slice(&self, owner: u32, force_full: bool) -> bool {
+        force_full
+            || if self.daily {
+                self.boundary
+            } else {
+                replay::cadence::slice_active(owner, self.hour, false)
+            }
+    }
+
+    /// A hooked native writer touched `owner` since the previous take: it
+    /// joins this hour's read and is not compared with its previous read.
+    /// Storage grows on the same worker before publication.
+    pub(crate) fn mark(&mut self, owner: u32) {
+        let new = self.marked.binary_search(&owner).is_err();
+        if !insert_owner(&mut self.marked, owner) {
+            self.out_of_range += 1;
+            self.force_full = true;
+            return;
+        }
+        if new {
+            self.marked_count += 1;
+        }
+        self.select(owner);
+    }
+
+    /// End this hour's take of the family's hook marks; `epoch` is the
+    /// take's, `None` when it certified nothing. Unless it is the epoch under
+    /// which the store's previous hour was read, an owner outside this
+    /// hour's read may have changed unseen: every owner is read, and the
+    /// contents held under the other epoch compare with nothing. `every`
+    /// (the family's verify mode) reads every owner too. The store then holds
+    /// `epoch`, so the next hour's take can certify this hour's read.
+    pub(crate) fn certify(
+        &mut self,
+        store: &mut SliceFingerprints,
+        epoch: Option<u64>,
+        every: bool,
+    ) {
+        let held = epoch.is_some() && epoch == store.marks;
+        if !held {
+            store.content.clear();
+            self.force_full = true;
+        }
+        if every {
+            self.force_full = true;
+        }
+        store.marks = epoch;
+    }
+
+    /// The marked owners outside this hour's slice: read only for a mark.
+    pub(crate) fn marked_early(&self) -> u32 {
+        self.marked
+            .iter()
+            .filter(|&&owner| !self.in_slice(owner, false))
+            .count() as u32
+    }
+
+    /// Compare each owner this hour read with its previous read and hold its
+    /// content. `hashes` holds every read owner's content hash, ascending, for
+    /// a complete read; `None`, an incomplete one, holds nothing, so its
+    /// owners compare with nothing until read again. A marked owner's held
+    /// content is dropped whether or not this hour read it (a walker may
+    /// skip a selected owner, as the overrides skip a country that controls
+    /// nothing). Returns the unmarked owners compared and how many differed:
+    /// a difference is a write no hooked writer marked.
+    pub(crate) fn compare(
+        &self,
+        store: &mut SliceFingerprints,
+        hashes: Option<&[(u32, u64)]>,
+    ) -> (u64, u64) {
+        let Some(hashes) = hashes else {
+            store.content.clear();
+            return (0, 0);
+        };
+        for owner in &self.marked {
+            store.content.remove(owner);
+        }
+        if engine::allocation::reserve_map(&mut store.content, hashes.len()).is_err() {
+            store.content.clear();
+            return (0, 0);
+        }
+        let (mut verified, mut mismatches) = (0, 0);
+        for &(owner, hash) in hashes {
+            if let Some(&held) = store.content.get(&owner) {
+                verified += 1;
+                mismatches += u64::from(held != hash);
+            }
+            store.content.insert(owner, hash);
+        }
+        (verified, mismatches)
     }
 
     /// This hour's walker reports the owners it read (`mark_read`); only
@@ -352,11 +639,17 @@ impl SliceSelection {
         for &owner in &self.early {
             fingerprints.invalidate(owner);
         }
-        fingerprints.stale_slices |= if self.force_full {
+        fingerprints.stale_slices |= if self.force_full || (self.daily && self.boundary) {
             u32::MAX
+        } else if self.daily {
+            0
         } else {
             1 << self.hour.rem_euclid(replay::cadence::STAGGER_PERIOD)
         };
+        // A change-driven family's take this hour spent marks of owners it
+        // may not have read: the next hour certifies nothing and reads every
+        // owner ([`select_changed`]).
+        fingerprints.held.epoch = None;
     }
 
     /// A selection as a family would record it.
@@ -388,6 +681,17 @@ pub(crate) struct SliceFingerprints {
     /// Slots (bit per slice) whose last read was not published; every owner
     /// of such a slice counts as a change at the next scan.
     stale_slices: u32,
+    /// A change-driven family's certificates ([`Held`]).
+    pub(crate) held: Held,
+    /// The hook marks' epoch the family's latest hour was read under
+    /// ([`SliceSelection::certify`]); `None` before a certified take.
+    marks: Option<u64>,
+    /// Each owner's content hash at its latest complete read under `marks`
+    /// ([`SliceSelection::compare`]).
+    content: HashMap<u32, u64>,
+    /// The research and technology rows of each owner's last complete read
+    /// that a certified slice carries ([`crate::extended::governance::drift`]).
+    pub(crate) drift: crate::extended::governance::drift::Store,
 }
 struct Fingerprint {
     value: Option<u64>,
@@ -400,6 +704,10 @@ impl SliceFingerprints {
         Self {
             values: HashMap::new(),
             stale_slices: 0,
+            held: Held::default(),
+            marks: None,
+            content: HashMap::new(),
+            drift: Default::default(),
         }
     }
 
@@ -408,12 +716,25 @@ impl SliceFingerprints {
     pub(crate) fn forget(&mut self) {
         self.values.clear();
         self.stale_slices = 0;
+        self.held = Held::default();
+        self.marks = None;
+        self.content.clear();
+        self.drift.clear();
     }
 
     /// Forget every owner a complete census did not see.
     fn keep_only(&mut self, seen: &[u32]) {
         self.values
             .retain(|owner, _| seen.binary_search(owner).is_ok());
+        self.held
+            .digests
+            .retain(|owner, _| seen.binary_search(owner).is_ok());
+        self.held
+            .groups
+            .retain(|owner, _| seen.binary_search(owner).is_ok());
+        self.content
+            .retain(|owner, _| seen.binary_search(owner).is_ok());
+        self.drift.retain(seen);
     }
 
     /// Make `owner` a change at its next scan.
@@ -429,21 +750,30 @@ impl SliceFingerprints {
     /// every hour until its fingerprint reads again, and that read publishes
     /// its exact rows or its failure.
     fn observe(&mut self, owner: u32, value: Option<u64>) -> bool {
-        let previous = self.values.get(&owner);
-        let changed = previous.is_none_or(|previous| previous.stale || previous.value != value)
-            || value.is_none()
-            || self.stale_slices & (1 << replay::cadence::slice_of(owner)) != 0;
-        if previous.is_none() && engine::allocation::reserve_map(&mut self.values, 1).is_err() {
-            return true;
+        let stale_slice = self.stale_slices & (1 << replay::cadence::slice_of(owner)) != 0;
+        let next = Fingerprint {
+            value,
+            stale: value.is_none(),
+        };
+        if let Some(previous) = self.values.get_mut(&owner) {
+            let changed = previous.stale || previous.value != value || value.is_none();
+            *previous = next;
+            return changed || stale_slice;
         }
-        self.values.insert(
-            owner,
-            Fingerprint {
-                value,
-                stale: value.is_none(),
-            },
-        );
-        changed
+        if engine::allocation::reserve_map(&mut self.values, 1).is_ok() {
+            self.values.insert(owner, next);
+        }
+        true
+    }
+
+    /// Whether `owner`'s print is held and current: known, not invalidated,
+    /// readable, and its slice not stale.
+    fn holds(&self, owner: u32) -> bool {
+        self.stale_slices & (1 << replay::cadence::slice_of(owner)) == 0
+            && self
+                .values
+                .get(&owner)
+                .is_some_and(|print| !print.stale && print.value.is_some())
     }
 
     /// End an hour's scan: whole-slice invalidations have reached every owner.
@@ -452,9 +782,219 @@ impl SliceFingerprints {
     }
 }
 
+/// A change-driven sliced family's certificates
+/// ([`crate::country_input_changes`]). Its hooked writers mark the owners they
+/// change, and the hour reads those beside its slice. An owner no writer
+/// marked keeps the rows of its last read only while the hour's take returns
+/// the epoch held here (every write since the last take was marked) and the
+/// per-read globals every row carries hash as held; otherwise the hour reads
+/// every owner. Each full read of an owner no writer marked is also a
+/// comparison: a digest of its writer-certified rows must equal the one its
+/// last read held, or a writer was missed. (A family that carries an owner's
+/// daily drift from its held rows, [`crate::extended::governance::drift`],
+/// reads in full only the owners its sampled check covers.)
+#[derive(Default)]
+pub(crate) struct Held {
+    /// The dirty-set epoch the latest take returned.
+    epoch: Option<u64>,
+    /// The hash of the globals the latest read's rows carry.
+    context: Option<u64>,
+    /// Per owner, the digest of the writer-certified rows of its last read.
+    digests: HashMap<u32, u64>,
+    /// Per owner, the digest of each field group of its last read, for a
+    /// family that names the group a difference is in ([`Changed::read_groups`]).
+    groups: HashMap<u32, [u64; GROUPS]>,
+}
+
+/// The most field groups a family digests separately ([`Changed::read_groups`]).
+pub(crate) const GROUPS: usize = 40;
+
+/// FNV-1a over the fields of one owner's read that its hooked writers
+/// certify ([`Changed::read`]); stable within a process, never persisted.
+pub(crate) struct Digest(u64);
+
+impl Digest {
+    pub(crate) fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    pub(crate) fn bytes(&mut self, bytes: &[u8]) -> &mut Self {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+        self
+    }
+
+    pub(crate) fn u64(&mut self, value: u64) -> &mut Self {
+        self.bytes(&value.to_le_bytes())
+    }
+
+    pub(crate) fn i64(&mut self, value: i64) -> &mut Self {
+        self.bytes(&value.to_le_bytes())
+    }
+
+    /// A length-prefixed byte string, so adjacent strings cannot alias.
+    pub(crate) fn text(&mut self, text: &[u8]) -> &mut Self {
+        self.u64(text.len() as u64).bytes(text)
+    }
+
+    pub(crate) fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// One hour's change-driven selection ([`select_changed`]).
+#[derive(Default)]
+pub(crate) struct Changed {
+    /// The owners the take marked, ascending.
+    marked: Vec<u32>,
+    /// The take certified every unmarked owner's held rows.
+    pub(crate) certified: bool,
+    /// Reads compared with a held digest, and those that differed.
+    pub(crate) verified: u64,
+    pub(crate) mismatches: u64,
+}
+
+impl Changed {
+    /// Start an hour: nothing marked or certified.
+    pub(crate) fn reset(&mut self) {
+        self.marked.clear();
+        self.certified = false;
+        self.verified = 0;
+        self.mismatches = 0;
+    }
+
+    pub(crate) fn marked(&self) -> usize {
+        self.marked.len()
+    }
+
+    /// Whether `owner`'s held rows certify it this hour: the take certified
+    /// every write and named no write of it.
+    pub(crate) fn carries(&self, owner: u32) -> bool {
+        self.certified && self.marked.binary_search(&owner).is_err()
+    }
+
+    /// A worker read `owner` with `digest` of its writer-certified rows:
+    /// compares it with the held digest when no writer marked the owner in
+    /// a certified hour, then holds it. True when they differ: a writer the
+    /// family does not observe changed the owner.
+    pub(crate) fn read(&mut self, store: &mut SliceFingerprints, owner: u32, digest: u64) -> bool {
+        let compared = self.certified && self.marked.binary_search(&owner).is_err();
+        let held = store.held.digests.get(&owner).copied();
+        let differs = compared && held.is_some_and(|held| held != digest);
+        if compared && held.is_some() {
+            self.verified += 1;
+            self.mismatches += u64::from(differs);
+        }
+        if held.is_some() || engine::allocation::reserve_map(&mut store.held.digests, 1).is_ok() {
+            store.held.digests.insert(owner, digest);
+        }
+        differs
+    }
+
+    /// [`Self::read`] over one digest per field group (unused groups zero):
+    /// the owner's digest is that of its groups. When the read differs, also
+    /// the first group that differs from the held read, `None` when its
+    /// groups were not held.
+    pub(crate) fn read_groups(
+        &mut self,
+        store: &mut SliceFingerprints,
+        owner: u32,
+        groups: &[u64; GROUPS],
+    ) -> Option<Option<usize>> {
+        let mut digest = Digest::new();
+        for &group in groups {
+            digest.u64(group);
+        }
+        let differs = self.read(store, owner, digest.finish());
+        let held = store.held.groups.get(&owner);
+        let first = held.and_then(|held| held.iter().zip(groups).position(|(a, b)| a != b));
+        if held.is_some() || engine::allocation::reserve_map(&mut store.held.groups, 1).is_ok() {
+            store.held.groups.insert(owner, *groups);
+        }
+        differs.then_some(first)
+    }
+
+    /// A worker's read of `owner` did not complete: hold no digest, so its
+    /// next read is held without a comparison.
+    pub(crate) fn unread(&mut self, store: &mut SliceFingerprints, owner: u32) {
+        store.held.digests.remove(&owner);
+        store.held.groups.remove(&owner);
+        store.drift.forget(owner);
+    }
+}
+
+/// After the hour's census scan ([`SliceSelection::scan`]), the family's
+/// hourly take of its marks: selects each marked owner, and reads every
+/// owner unless `take` returned the epoch the store holds and `context`
+/// (the hash of the globals every row carries) equals the held one. `every`
+/// (the family's `*_verify` feature) reads every owner while still
+/// comparing each unmarked one.
+pub(crate) fn select_changed(
+    selection: &mut SliceSelection,
+    store: &mut SliceFingerprints,
+    changed: &mut Changed,
+    take: impl FnOnce(&mut dyn FnMut(usize)) -> Option<u64>,
+    context: u64,
+    every: bool,
+) {
+    changed.reset();
+    let marked = &mut changed.marked;
+    let mut overflow = false;
+    let epoch = take(&mut |id| match u32::try_from(id) {
+        Ok(id) => {
+            if engine::allocation::reserve_push_batch(marked, 1).is_ok() {
+                marked.push(id);
+            } else {
+                overflow = true;
+            }
+        }
+        Err(_) => overflow = true,
+    });
+    marked.sort_unstable();
+    marked.dedup();
+    for index in 0..changed.marked.len() {
+        let owner = changed.marked[index];
+        selection.select(owner);
+    }
+    changed.certified = !overflow
+        && epoch.is_some()
+        && epoch == store.held.epoch
+        && store.held.context == Some(context);
+    if !changed.certified || every {
+        selection.force_full = true;
+    }
+    store.held.epoch = if overflow { None } else { epoch };
+    store.held.context = Some(context);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A certificate family marks each owner whose certificate changed, so
+    /// that only owners whose certificate held are compared with their
+    /// previous read, and a held certificate over changed rows is a mismatch.
+    #[test]
+    fn certificate_scans_compare_only_owners_whose_certificate_held() {
+        let mut store = SliceFingerprints::new();
+        let hour = |store: &mut SliceFingerprints, prints: [u64; 3], hashes: [u64; 3]| {
+            let mut selection = SliceSelection::new(true);
+            selection.reset(0, true);
+            for (owner, print) in (1..).zip(prints) {
+                selection.scan_marking(store, owner, Some(print));
+            }
+            selection.finish_census(store);
+            let hashes: Vec<(u32, u64)> = (1..).zip(hashes).collect();
+            selection.compare(store, Some(&hashes))
+        };
+        // First sight: every owner is new, nothing is compared.
+        assert_eq!(hour(&mut store, [1, 1, 1], [10, 20, 30]), (0, 0));
+        // Owner 2's certificate moved with its rows; the others held.
+        assert_eq!(hour(&mut store, [1, 2, 1], [10, 21, 30]), (2, 0));
+        // Owner 3's rows changed under a held certificate: a missed write.
+        assert_eq!(hour(&mut store, [1, 2, 1], [10, 21, 31]), (3, 1));
+    }
 
     #[test]
     fn selections_and_fingerprints_start_empty_without_callback_allocation() {
@@ -747,6 +1287,111 @@ mod tests {
         assert_eq!(FAMILIES[NAVAL_MISSIONS].owner, OwnerKind::Country);
         assert_eq!(FAMILIES[COMBAT_LOG].name, "combat_log");
         assert_eq!(FAMILIES[COMBAT_LOG].owner, OwnerKind::Country);
+        assert_eq!(FAMILIES[SUPPLY_TRAINS].name, "supply_trains");
+        assert_eq!(FAMILIES[SUPPLY_TRAINS].owner, OwnerKind::Country);
+        assert_eq!(FAMILIES[AVAILABLE_ADVISORS].name, "available_advisors");
+        assert_eq!(FAMILIES[AVAILABLE_ADVISORS].owner, OwnerKind::Country);
+    }
+
+    /// A hook-marked owner joins the hour's read outside its slice. Only a
+    /// take in the epoch the store's previous hour was read under keeps the
+    /// slice: a refused take, another epoch, a forgotten store and verify
+    /// mode read every owner.
+    #[test]
+    fn marked_owners_join_the_read_and_an_uncertified_take_reads_everyone() {
+        let mut store = SliceFingerprints::new();
+        let mut selection = SliceSelection::new(true);
+        let census = |selection: &mut SliceSelection, store: &mut SliceFingerprints| {
+            for owner in [1, 2, 3, 30] {
+                selection.scan(store, owner, Some(0));
+            }
+            store.finish_scan();
+            selection.finish_census(store);
+        };
+        // The first take certifies no earlier read.
+        selection.reset(0, false);
+        census(&mut selection, &mut store);
+        selection.certify(&mut store, Some(7), false);
+        assert!(selection.force_full);
+        // The same epoch: hour 2's slice and the marked owner 3, nobody else.
+        selection.reset(2, false);
+        census(&mut selection, &mut store);
+        selection.mark(3);
+        selection.mark(3);
+        selection.mark(2);
+        selection.certify(&mut store, Some(7), false);
+        assert!(!selection.force_full);
+        assert!(selection.contains(2) && selection.contains(3));
+        assert!(!selection.contains(1) && !selection.contains(30));
+        assert_eq!((selection.marked_count, selection.marked_early()), (2, 1));
+        assert_eq!(selection.read_owners().collect::<Vec<_>>(), [2, 3]);
+        // A refused take, then another epoch.
+        for epoch in [None, Some(8)] {
+            selection.reset(4, false);
+            census(&mut selection, &mut store);
+            selection.certify(&mut store, epoch, false);
+            assert!(selection.force_full && selection.contains(1), "{epoch:?}");
+        }
+        selection.reset(5, false);
+        census(&mut selection, &mut store);
+        selection.certify(&mut store, Some(8), false);
+        assert!(!selection.force_full);
+        // Verify mode reads everyone, in the held epoch too.
+        selection.reset(6, false);
+        census(&mut selection, &mut store);
+        selection.certify(&mut store, Some(8), true);
+        assert!(selection.force_full);
+        // A forgotten store holds no epoch.
+        store.forget();
+        selection.reset(7, false);
+        census(&mut selection, &mut store);
+        selection.certify(&mut store, Some(8), false);
+        assert!(selection.force_full);
+    }
+
+    /// Each unmarked owner a complete read covers is compared with its
+    /// previous read in the same epoch; a marked owner's change was seen.
+    #[test]
+    fn unmarked_owners_are_compared_with_their_previous_read() {
+        let mut store = SliceFingerprints::new();
+        let mut selection = SliceSelection::new(true);
+        selection.reset(0, false);
+        selection.certify(&mut store, Some(1), false);
+        let first = [(1, 10), (2, 20), (3, 30)];
+        assert_eq!(selection.compare(&mut store, Some(&first)), (0, 0));
+        // Owner 2 was marked; owner 3 changed without a mark.
+        selection.reset(1, false);
+        selection.mark(2);
+        selection.certify(&mut store, Some(1), false);
+        let second = [(1, 10), (2, 21), (3, 31)];
+        assert_eq!(selection.compare(&mut store, Some(&second)), (2, 1));
+        // A marked owner the walker skipped compares with nothing later.
+        selection.reset(2, false);
+        selection.mark(1);
+        selection.certify(&mut store, Some(1), false);
+        assert_eq!(selection.compare(&mut store, Some(&[(3, 31)])), (1, 0));
+        selection.reset(3, false);
+        selection.certify(&mut store, Some(1), false);
+        assert_eq!(
+            selection.compare(&mut store, Some(&[(1, 99), (3, 31)])),
+            (1, 0)
+        );
+        // An incomplete read holds nothing.
+        selection.reset(2, false);
+        selection.certify(&mut store, Some(1), false);
+        assert_eq!(selection.compare(&mut store, None), (0, 0));
+        assert_eq!(selection.compare(&mut store, Some(&[(1, 10)])), (0, 0));
+        assert_eq!(selection.compare(&mut store, Some(&[(1, 11)])), (1, 1));
+        // Contents held under another epoch compare with nothing.
+        selection.reset(3, false);
+        selection.certify(&mut store, Some(2), false);
+        assert_eq!(selection.compare(&mut store, Some(&[(1, 12)])), (0, 0));
+        // A complete census forgets the contents of owners it did not see.
+        selection.reset(4, false);
+        selection.scan(&mut store, 2, Some(0));
+        store.finish_scan();
+        selection.finish_census(&mut store);
+        assert!(store.content.is_empty());
     }
 
     #[test]
@@ -764,5 +1409,320 @@ mod tests {
         assert!(!selection.contains(7));
         assert!(selection.select(u32::MAX));
         assert_eq!(selection.out_of_range, 0);
+    }
+
+    /// One change-driven hour over `owners`: the census scan, then the take
+    /// of `marks` returning `epoch`.
+    #[allow(clippy::too_many_arguments)]
+    fn changed_hour(
+        store: &mut SliceFingerprints,
+        changed: &mut Changed,
+        hour: i32,
+        owners: &[u32],
+        marks: &[usize],
+        epoch: Option<u64>,
+        context: u64,
+        every: bool,
+    ) -> SliceSelection {
+        let mut selection = SliceSelection::new(true);
+        selection.reset(hour, false);
+        for &owner in owners {
+            selection.scan(store, owner, Some(0));
+        }
+        store.finish_scan();
+        selection.finish_pass(store, true);
+        select_changed(
+            &mut selection,
+            store,
+            changed,
+            |visit| {
+                for &mark in marks {
+                    visit(mark);
+                }
+                epoch
+            },
+            context,
+            every,
+        );
+        selection
+    }
+
+    /// A marked owner is read within the hour; an unmarked one waits for its
+    /// slice only while the take returns the held epoch and the globals hash
+    /// as held. Anything else reads every owner.
+    #[test]
+    fn marked_owners_join_the_hour_and_an_uncertified_take_reads_everyone() {
+        let owners = [1, 2, 3, 29];
+        let mut store = SliceFingerprints::new();
+        let mut changed = Changed::default();
+        // First hour: nothing is held, so everyone is read.
+        let first = changed_hour(&mut store, &mut changed, 5, &owners, &[], Some(7), 1, false);
+        assert!(first.force_full && !changed.certified);
+        // Same epoch and globals: only the slice (5, 29) and the marked 2.
+        let next = changed_hour(
+            &mut store,
+            &mut changed,
+            5,
+            &owners,
+            &[2],
+            Some(7),
+            1,
+            false,
+        );
+        assert!(changed.certified && !next.force_full);
+        assert_eq!(changed.marked(), 1);
+        assert!(next.contains(2) && next.contains(29) && !next.contains(1) && !next.contains(3));
+        // A quiet hour reads the slice alone.
+        let quiet = changed_hour(&mut store, &mut changed, 6, &owners, &[], Some(7), 1, false);
+        assert!(!quiet.force_full && (1..=3).all(|owner| !quiet.contains(owner)));
+        // A moved epoch, a refused take or changed globals read everyone.
+        for (epoch, context) in [(Some(8), 1), (None, 1), (Some(7), 2)] {
+            let mut store = SliceFingerprints::new();
+            changed_hour(&mut store, &mut changed, 5, &owners, &[], Some(7), 1, false);
+            let hour = changed_hour(
+                &mut store,
+                &mut changed,
+                6,
+                &owners,
+                &[],
+                epoch,
+                context,
+                false,
+            );
+            assert!(hour.force_full && !changed.certified, "{epoch:?} {context}");
+        }
+        // A forgotten store holds nothing: the next hour reads everyone.
+        store.forget();
+        let forgotten = changed_hour(&mut store, &mut changed, 6, &owners, &[], Some(7), 1, false);
+        assert!(forgotten.force_full);
+        // Verify mode reads everyone, still certified for comparisons.
+        let every = changed_hour(&mut store, &mut changed, 7, &owners, &[], Some(7), 1, true);
+        assert!(every.force_full && changed.certified);
+    }
+
+    /// An hour whose read was not published spent marks of owners it may not
+    /// have read: the next hour certifies nothing and reads every owner,
+    /// then settles.
+    #[test]
+    fn an_unpublished_hour_reads_every_owner_next() {
+        let owners = [1, 2, 3];
+        let mut store = SliceFingerprints::new();
+        let mut changed = Changed::default();
+        changed_hour(&mut store, &mut changed, 5, &owners, &[], Some(7), 1, false);
+        let marked = changed_hour(
+            &mut store,
+            &mut changed,
+            6,
+            &owners,
+            &[2],
+            Some(7),
+            1,
+            false,
+        );
+        assert!(changed.certified && marked.contains(2));
+        marked.invalidate(&mut store);
+        let next = changed_hour(&mut store, &mut changed, 7, &owners, &[], Some(7), 1, false);
+        assert!(next.force_full && !changed.certified);
+        let settled = changed_hour(&mut store, &mut changed, 8, &owners, &[], Some(7), 1, false);
+        assert!(!settled.force_full && changed.certified);
+    }
+
+    /// Each read of an unmarked owner in a certified hour compares the
+    /// digest of its writer-certified rows with the one its last read held;
+    /// a marked owner, an uncertified hour or a first read only holds it.
+    #[test]
+    fn unmarked_reads_compare_their_digest_with_the_held_one() {
+        let owners = [1, 2];
+        let mut store = SliceFingerprints::new();
+        let mut changed = Changed::default();
+        changed_hour(&mut store, &mut changed, 0, &owners, &[], Some(3), 9, false);
+        // Uncertified: held, never compared.
+        assert!(!changed.read(&mut store, 1, 100));
+        assert!(!changed.read(&mut store, 2, 200));
+        assert_eq!(changed.verified, 0);
+        changed_hour(&mut store, &mut changed, 1, &owners, &[2], Some(3), 9, true);
+        // Owner 1 is unmarked: equal digests verify, a different one is a
+        // missed writer. Owner 2 is marked: its new digest is just held.
+        assert!(!changed.read(&mut store, 1, 100));
+        assert!(!changed.read(&mut store, 2, 201));
+        assert_eq!((changed.verified, changed.mismatches), (1, 0));
+        changed_hour(&mut store, &mut changed, 2, &owners, &[], Some(3), 9, true);
+        assert!(changed.read(&mut store, 1, 101));
+        assert!(!changed.read(&mut store, 2, 201));
+        assert_eq!((changed.verified, changed.mismatches), (2, 1));
+        // An owner a complete census no longer sees loses its digest.
+        changed_hour(&mut store, &mut changed, 3, &[2], &[], Some(3), 9, true);
+        assert!(!store.held.digests.contains_key(&1));
+    }
+
+    /// A read over field groups names the first group that differs from the
+    /// held read when the comparison fails, and none when it passes or the
+    /// owner was marked.
+    #[test]
+    fn grouped_reads_name_the_first_differing_group() {
+        let owners = [1, 2];
+        let mut store = SliceFingerprints::new();
+        let mut changed = Changed::default();
+        let mut groups = [0_u64; GROUPS];
+        groups[..3].copy_from_slice(&[10, 20, 30]);
+        changed_hour(&mut store, &mut changed, 0, &owners, &[], Some(3), 9, false);
+        assert_eq!(changed.read_groups(&mut store, 1, &groups), None);
+        assert_eq!(changed.read_groups(&mut store, 2, &groups), None);
+        changed_hour(&mut store, &mut changed, 1, &owners, &[2], Some(3), 9, true);
+        assert_eq!(changed.read_groups(&mut store, 1, &groups), None);
+        let mut moved = groups;
+        moved[1] = 21;
+        moved[2] = 31;
+        // Marked: held without a comparison.
+        assert_eq!(changed.read_groups(&mut store, 2, &moved), None);
+        changed_hour(&mut store, &mut changed, 2, &owners, &[], Some(3), 9, true);
+        assert_eq!(changed.read_groups(&mut store, 1, &moved), Some(Some(1)));
+        assert_eq!(changed.read_groups(&mut store, 2, &moved), None);
+        // This hour's comparisons: both owners, owner 1 differing.
+        assert_eq!((changed.verified, changed.mismatches), (2, 1));
+        // An unread owner holds no groups.
+        changed.unread(&mut store, 1);
+        assert!(!store.held.groups.contains_key(&1));
+    }
+
+    /// A daily family reads every owner at the first hour after the daily
+    /// tick and on a full hour, and otherwise only the owners selected for
+    /// it: no rotating slice. An unpublished off-boundary hour re-reads only
+    /// its selected owners.
+    #[test]
+    fn a_daily_family_reads_everyone_at_the_boundary_and_only_selections_between() {
+        let mut selection = SliceSelection::new(false);
+        for hour in [0, 24, -24] {
+            selection.reset_daily(hour, false);
+            assert!(!selection.force_full && selection.contains(5), "{hour}");
+        }
+        selection.reset_daily(5, true);
+        assert!(selection.contains(7));
+        // The boundary hour's census makes owners 5 and 29 known.
+        let mut store = SliceFingerprints::new();
+        selection.reset_daily(0, false);
+        selection.scan(&mut store, 5, Some(0));
+        selection.scan(&mut store, 29, Some(0));
+        store.finish_scan();
+        selection.reset_daily(5, false);
+        selection.scan(&mut store, 5, Some(0));
+        selection.scan(&mut store, 29, Some(0));
+        store.finish_scan();
+        assert!(!selection.contains(5) && !selection.contains(29));
+        assert!(selection.select(29));
+        assert!(selection.contains(29) && !selection.contains(5));
+        selection.mark(7);
+        assert_eq!(selection.marked_early(), 1);
+        selection.invalidate(&mut store);
+        let mut next = SliceSelection::new(false);
+        next.reset_daily(6, false);
+        next.scan(&mut store, 5, Some(0));
+        next.scan(&mut store, 29, Some(0));
+        assert!(next.contains(29) && !next.contains(5));
+        // A rotating family's reset clears the daily mode.
+        next.reset(5, false);
+        assert!(next.contains(5));
+    }
+
+    /// An owner without drift is in neither the slice nor the daily
+    /// boundary: over a quiet day the rotating family reads each drifting
+    /// owner once and no settled one, the daily family reads only the
+    /// drifting owners at its boundary. A change of drift, a mark or a full
+    /// hour still reads a settled owner. 446 owners, one in seven drifting,
+    /// as about a sixth of 1936's census owns a state.
+    #[test]
+    fn settled_owners_are_read_only_for_a_change() {
+        let owners: Vec<u32> = (1..=446).collect();
+        let drifts = |owner: u32| owner.is_multiple_of(7);
+        let drifting = owners.iter().filter(|&&owner| drifts(owner)).count();
+        let mut store = SliceFingerprints::new();
+        let mut selection = SliceSelection::new(false);
+        let hour_reads = |selection: &mut SliceSelection, store: &mut SliceFingerprints| {
+            for &owner in &owners {
+                let drift = drifts(owner);
+                selection.scan_drifting(store, owner, Some(u64::from(drift)), drift);
+            }
+            store.finish_scan();
+            selection.finish_census(store);
+            owners
+                .iter()
+                .filter(|&&owner| selection.contains(owner))
+                .count()
+        };
+        // The first hour sees every owner new.
+        selection.reset(0, false);
+        assert_eq!(hour_reads(&mut selection, &mut store), owners.len());
+        let mut day = 0;
+        for hour in 1..=24 {
+            selection.reset(hour, false);
+            day += hour_reads(&mut selection, &mut store);
+            assert!(
+                owners
+                    .iter()
+                    .all(|&owner| drifts(owner) || !selection.contains(owner))
+            );
+        }
+        assert_eq!(day, drifting);
+        let mut daily = SliceSelection::new(false);
+        daily.reset_daily(48, false);
+        assert_eq!(hour_reads(&mut daily, &mut store), drifting);
+        daily.reset_daily(49, false);
+        assert_eq!(hour_reads(&mut daily, &mut store), 0);
+        // Owner 1 starts drifting: read at once, then with the drifting.
+        daily.reset_daily(50, false);
+        daily.scan_drifting(&mut store, 1, Some(1), true);
+        assert!(daily.contains(1));
+        // A mark or a full hour reads a settled owner.
+        daily.reset_daily(51, false);
+        daily.scan_drifting(&mut store, 2, Some(0), false);
+        assert!(!daily.contains(2));
+        daily.mark(2);
+        assert!(daily.contains(2));
+        daily.reset_daily(52, true);
+        daily.scan_drifting(&mut store, 3, Some(0), false);
+        assert!(daily.contains(3));
+    }
+
+    /// A lazy scan reads an owner's drift only at its slice, its family's
+    /// daily boundary, a full hour or without a current held print: over a
+    /// quiet day each owner's drift is read once.
+    #[test]
+    fn drift_is_read_only_when_it_decides_a_read() {
+        let owners: Vec<u32> = (1..=446).collect();
+        let mut store = SliceFingerprints::new();
+        let mut selection = SliceSelection::new(false);
+        let checks = std::cell::Cell::new(0);
+        let hour = |selection: &mut SliceSelection, store: &mut SliceFingerprints| {
+            for &owner in &owners {
+                selection.scan_lazily(store, owner, || {
+                    checks.set(checks.get() + 1);
+                    owner.is_multiple_of(7)
+                });
+            }
+            store.finish_scan();
+            selection.finish_census(store);
+        };
+        // The first hour holds no print: every owner is checked.
+        selection.reset(0, false);
+        hour(&mut selection, &mut store);
+        assert_eq!(checks.replace(0), owners.len());
+        for at in 1..=24 {
+            selection.reset(at, false);
+            hour(&mut selection, &mut store);
+        }
+        assert_eq!(checks.replace(0), owners.len());
+        let mut daily = SliceSelection::new(false);
+        daily.reset_daily(25, false);
+        hour(&mut daily, &mut store);
+        assert_eq!(checks.replace(0), 0);
+        daily.reset_daily(48, false);
+        hour(&mut daily, &mut store);
+        assert_eq!(checks.replace(0), owners.len());
+        // An invalidated owner is checked at once.
+        store.invalidate(5);
+        daily.reset_daily(49, false);
+        hour(&mut daily, &mut store);
+        assert_eq!(checks.replace(0), 1);
+        assert!(daily.contains(5));
     }
 }

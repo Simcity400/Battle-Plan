@@ -10,9 +10,9 @@ use super::projects_test_kit as kit;
 use super::*;
 use engine::{
     ccountry, msvc_string, nproject_breakthrough_node as node, nproject_cprogram_status as status,
-    nproject_cproject_state_machine as machine, nproject_cprototype_project_state as prototype,
-    nproject_csimple_project_state as simple, nproject_sproject_context as context,
-    nproject_sproject_history as history,
+    nproject_cproject_pool, nproject_cproject_state_machine as machine,
+    nproject_cprototype_project_state as prototype, nproject_csimple_project_state as simple,
+    nproject_sproject_context as context, nproject_sproject_history as history,
 };
 
 const GAME: usize = 0x400;
@@ -528,7 +528,7 @@ fn copy(
         job.grow();
     }
     let mut captured = Captured::with_capacities(capacities);
-    captured.decode_projects_payload(kit::BASE, &job, &mut [0; 4]);
+    captured.decode_projects_payload(kit::BASE, &job, &mut [0; RAW.len()]);
     (captured, job)
 }
 
@@ -570,6 +570,8 @@ fn direct(memory: &impl Memory, game_state: usize, capacities: &Capacities) -> C
 
 /// FNV-1a over the published values of the four tables. Only the rows'
 /// field values and outcomes enter it, never addresses of the space.
+/// Projects and ProjectHistory come from the direct walks (the raw copy
+/// carries only ProjectPrograms and ProjectBreakthroughs).
 fn digest(captured: &Captured) -> u64 {
     fn rows<R: std::fmt::Debug>(text: &mut String, rows: &CaptureRows<R>) {
         use std::fmt::Write;
@@ -669,9 +671,7 @@ fn live_project_demand_and_owned_decode_growth_keep_mod_sized_pools() {
     tiny.program_candidates = 0;
     tiny.program_names = 0;
     let mut captured = Captured::with_capacities(&tiny);
-    captured.decode_projects_payload(kit::BASE, &job, &mut [0; 4]);
-    assert_eq!(captured.projects.outcome, Outcome::Rows { len: projects });
-    assert_eq!(captured.history.outcome, Outcome::Rows { len: histories });
+    captured.decode_projects_payload(kit::BASE, &job, &mut [0; RAW.len()]);
     let expected = direct(&memory, space.game_state, &capacities(5000));
     kit::assert_matches_direct(&captured, &expected);
     assert!(
@@ -697,7 +697,7 @@ fn live_project_demand_and_owned_decode_growth_keep_mod_sized_pools() {
         )
         .raw_ok
     );
-    captured.decode_projects_payload(kit::BASE, &job, &mut [0; 4]);
+    captured.decode_projects_payload(kit::BASE, &job, &mut [0; RAW.len()]);
     kit::assert_matches_direct(
         &captured,
         &direct(&later_memory, later.game_state, &capacities(5000)),
@@ -718,6 +718,16 @@ fn cold_typed_project_fallback_keeps_five_thousand_countries_and_later_pool_grow
         assert!(!captured.raw_mode);
         captured.capture(&memory, kit::BASE, source.game_state, 0, true);
         kit::assert_matches_direct(&captured, &expected);
+        // The sliced family reads every country at a full hour.
+        assert_eq!(captured.projects.outcome, expected.projects.outcome);
+        assert_eq!(captured.history.outcome, expected.history.outcome);
+        let len = expected.projects.outcome.len();
+        assert_eq!(
+            &captured.projects.rows[..len],
+            &expected.projects.rows[..len]
+        );
+        let len = expected.history.outcome.len();
+        assert_eq!(&captured.history.rows[..len], &expected.history.rows[..len]);
         for outcome in [
             captured.programs.outcome,
             captured.projects.outcome,

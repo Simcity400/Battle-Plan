@@ -16,8 +16,8 @@ use replay::{
     frame::{DecodedFrame, TableView, ViewIdentity},
     rows::{
         ArmyOrderPlanRow, ArmyOrderRow, CharacterRow, CountryAppearanceRow, CountryCounterInputRow,
-        CountryLinkRow, CountryRow, InvasionPreparationRow, ProvinceRow, ScriptVariablesRow,
-        StateRow, TableSchema, UnitLeaderRow, tables,
+        CountryLinkRow, CountryRow, InvasionPreparationRow, ProvinceRow, Recorded,
+        ScriptVariablesRow, StateRow, TableSchema, UnitLeaderRow, tables,
     },
 };
 
@@ -232,6 +232,7 @@ pub struct World<'a> {
     projects: Index<Linked<BTreeSet<(u32, u32)>>>,
     political_parties: Index<PoliticalParties<'a>>,
     politics_ruling: Index<Linked<BTreeMap<u32, Option<u32>>>>,
+    politics_elections: Index<Linked<BTreeMap<u32, Recorded<bool>>>>,
     /// With each modifier name a row of an unlinked country holds, and
     /// that country.
     country_modifiers: Index<(Modifiers<'a>, BTreeMap<&'a [u8], u32>)>,
@@ -587,6 +588,7 @@ impl<'a> World<'a> {
             projects: OnceLock::new(),
             political_parties: OnceLock::new(),
             politics_ruling: OnceLock::new(),
+            politics_elections: OnceLock::new(),
             country_modifiers: OnceLock::new(),
             state_modifiers: OnceLock::new(),
             state_members: OnceLock::new(),
@@ -1066,6 +1068,28 @@ impl<'a> World<'a> {
             return Err("PoliticalParties lacks ruling ideology".into());
         }
         Ok((id, parties.ids[&id]))
+    }
+
+    /// The elections trigger tests the
+    /// country's political status (`Politics.has_elections`).
+    pub(super) fn has_elections(&self, slot: u32) -> Result<bool, String> {
+        let (elections, unresolved) = get(&self.politics_elections, || {
+            let mut out = BTreeMap::new();
+            let mut unresolved = None;
+            for row in table::<tables::Politics>(self.frame)? {
+                match self.slot(row.country) {
+                    Some(slot) => {
+                        out.insert(slot, row.has_elections);
+                    }
+                    None => unresolved = Some(self.unlinked("Politics", row.country)),
+                }
+            }
+            Ok((out, unresolved))
+        })?;
+        linked(elections.get(&slot).copied(), unresolved)?
+            .ok_or_else(|| format!("Politics lacks country slot {slot}"))?
+            .require("Politics.has_elections")
+            .copied()
     }
 
     /// A script flag's value, or `None` when it is not set.
@@ -2258,9 +2282,10 @@ impl<'a> World<'a> {
             .ok_or_else(|| format!("country slot {slot} has no CountryAppearance row"))
     }
 
-    /// One of the state's cores
-    /// is the operand, by raw id or canonical
-    /// slot. `StateCores` is sliced daily.
+    /// The core-owner trigger tests one of the state's cores
+    /// (vector +0xB0, count +0xBC), by raw id or canonical
+    /// slot. `StateCores` equals the game's at every hour (its writers are
+    /// hooked; unmarked states are read once a day).
     pub(super) fn is_core_of(&self, state: u32, country: Option<u32>) -> Result<Eval, String> {
         let cores = get(&self.cores, || {
             Ok(table::<tables::StateCores>(self.frame)?

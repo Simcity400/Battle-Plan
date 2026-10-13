@@ -10,7 +10,7 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
         r.compared("RailwayGunCounterInputs", validate(frame)?);
         compare_saved(frame, save, r)?;
         r.limitation(
-            "The save omits naval transfer, the CUnit combat vector (its count, the first combat's side and province, and the attacking byte), the assignee pointer, the stat definition and its maximum strength, the received-supply ratio and the railway building level at the gun; retreat is not compared by this oracle; its combat list is the gun's own reference array, compared by its stored count; compare the rest against paused memory at the sampled hour",
+            "The save omits naval transfer, the unit combat vector (its count, the first combat's side and province, and the attacking byte), the assignee pointer, the stat definition and its maximum strength, the received-supply ratio and the railway building level at the gun; retreat is not compared by this oracle; its combat list is the gun's own reference array, compared by its stored count; compare the rest against paused memory at the sampled hour",
             "RailwayGunCounterInputs live-only operands",
         );
         Ok(())
@@ -34,13 +34,7 @@ fn compare_fresh(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
             );
             continue;
         };
-        check(
-            report,
-            &format!("{label}.sample_hour"),
-            packet.sample_hour,
-            frame.hour,
-        );
-        if packet.sample_hour != frame.hour {
+        if !report.packet_fresh(&label, packet.sample_hour, frame.hour) {
             continue;
         }
         if row.naval_transfer == 0 {
@@ -63,7 +57,7 @@ fn compare_fresh(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
             report.difference(
                 format!("{label}.orders_group"),
                 "unavailable",
-                "required genuine CUnit group identity",
+                "required genuine unit group identity",
             );
         }
         report.limitation("fresh variant maximum speed and composed land-supply factor are runtime getters, independently of saved equipment or strength; the unit parent group is distinct from the railway assignee and has no proved text-save join in this comparison", &label);
@@ -231,7 +225,7 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
                 saved.expeditionary_owner.as_deref(),
             ),
         ] {
-            // The CUnit writer drops signed-nonpositive expeditionary tags; only
+            // The unit writer drops signed-nonpositive expeditionary tags; only
             // an exact raw zero is proved by omission.
             if field == "expeditionary_owner" && (raw as i32) < 0 {
                 report.limitation(
@@ -656,7 +650,7 @@ mod tests {
         use replay::rows::{FreshRailwayCounterEta, Recorded};
         let mut frame = fixture();
         let packet = FreshRailwayCounterEta {
-            sample_hour: frame.hour,
+            sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
             maximum_speed: Some(i64::MIN),
             land_supply_factor: Some(i64::MAX),
             orders_group: Some(0),
@@ -721,7 +715,9 @@ mod tests {
         assert_eq!(
             run(RailwayGunCounterInputRow {
                 fresh: Recorded::Value(Some(FreshRailwayCounterEta {
-                    sample_hour: packet.sample_hour - 1,
+                    sample_hour: replay::rows::PacketHour::Stamped(
+                        packet.sample_hour.stamp().unwrap() - 1
+                    ),
                     ..packet
                 })),
                 ..row.clone()
@@ -739,7 +735,7 @@ mod tests {
             .len(),
             1
         );
-        // The genuine CUnit group and fresh profile are captured even while idle.
+        // The genuine unit group and fresh profile are captured even while idle.
         let idle_refusal = run(RailwayGunCounterInputRow {
             ordinary_path: vec![],
             fresh: Recorded::Value(None),
@@ -807,7 +803,7 @@ mod tests {
     }
 
     /// W2: a spawned gun supporting two combats saves both in its reference
-    /// array while its CUnit combat vector stays empty.
+    /// array while its unit combat vector stays empty.
     #[test]
     fn saved_combats_are_the_reference_entries_not_the_unit_combat_vector() {
         let (_, mut save, _, _) = super::super::tests::fixture();

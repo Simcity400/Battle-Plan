@@ -2,10 +2,10 @@
 //! acquisition worker from their original observations; projection is deferred.
 use crate::{
     sampling::qpc,
-    spooling::{table, table_iter, unavailable},
+    spooling::table,
     table_capture::{Arena, CaptureRows, grow_capacity},
 };
-use engine::allocation::{collect_vec, copy_vec, filled, owned_vec, reserve, resize_default};
+use engine::allocation::{collect_vec, copy_vec, filled, owned_vec, resize_default};
 use engine::naval_air_efficiency_inputs;
 use engine::{
     Memory, cfex_air, cfex_damage_entry, cfex_member, cnaval_combat, naval_combat_air_base_wings,
@@ -15,77 +15,74 @@ use replay::{
     frame::TableView,
     rows::{self, TableId, tables},
 };
-pub const N: usize = 4;
+#[cfg(test)]
+thread_local! {
+    /// Benchmarks: read every weapon term's metadata, as without the memo.
+    pub(super) static TERM_MEMO_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Benchmarks: walk every ship's doctrine and search its leader classes,
+    /// as without the source memo.
+    pub(super) static SOURCE_MEMO_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Where NavalCombatShips' time goes: members read and their total time,
+/// and the live ships' weapon contexts within it.
+pub(crate) fn member_phase_data() -> impl serde::Serialize {
+    use std::sync::atomic::Ordering::Relaxed;
+    let phases = &engine::cfex_member::MEMBER_PHASES;
+    let mut frequency = 0;
+    // SAFETY: an out pointer to a live local.
+    let known = unsafe {
+        windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
+    } != 0;
+    let ns = |ticks: u64| {
+        (known && frequency > 0)
+            .then(|| (u128::from(ticks) * 1_000_000_000 / frequency as u128) as u64)
+    };
+    crate::status::status!({
+        "members": phases[0].load(Relaxed),
+        "members_ns": ns(phases[3].load(Relaxed)),
+        "weapon_contexts": phases[1].load(Relaxed),
+        "weapon_contexts_ns": ns(phases[2].load(Relaxed)),
+        "scope": "cumulative since attach: naval combat member detail reads and their time, and the live ships' weapon contexts (weapon modifier sources) within it",
+    })
+}
+
+/// The capture's task-force doctrine and leader source memo.
+fn source_memo() -> Option<engine::naval_ship_modifier_inputs::SourceMemo> {
+    #[cfg(test)]
+    if SOURCE_MEMO_OFF.get() {
+        return None;
+    }
+    Some(Default::default())
+}
+
+/// The capture's weapon-term metadata memo.
+fn term_metadata() -> engine::naval_ship_modifier_inputs::TermMetadata {
+    #[cfg(test)]
+    if TERM_MEMO_OFF.get() {
+        return engine::naval_ship_modifier_inputs::TermMetadata::unkept();
+    }
+    Default::default()
+}
+
+pub const N: usize = 5;
 pub const TABLES: [TableId; N] = [
     TableId::NavalCombatDetails,
     TableId::NavalCombatShips,
     TableId::NavalCombatAirBaseWingHandles,
-    TableId::NavalModifierBreakdowns,
+    TableId::NavalModifierTrees,
+    TableId::NavalModifierTreeSamples,
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("shared naval combat registry census", 0, &[0, 1]),
     ("dense combat air base wing occurrences", 2, &[2]),
-    ("live naval hover modifier child trees", 3, &[3]),
+    ("live naval hover source trees", 3, &[3, 4]),
 ];
 
-/// Copy-only pressure witness; status aggregation runs on the spool worker.
-#[derive(Clone, Copy)]
-pub(crate) struct BreakdownStatus {
-    pub(crate) outcome: Outcome,
-    required: [usize; 5],
-    capacity: [usize; 5],
-}
-
-#[derive(Default)]
-pub(crate) struct BreakdownWork {
-    hours: u64,
-    available_hours: u64,
-    refusals: Vec<(&'static str, u64)>,
-    latest: Option<BreakdownStatus>,
-}
-
-impl BreakdownWork {
-    pub(crate) fn observe(&mut self, status: BreakdownStatus) -> std::io::Result<()> {
-        self.hours = self.hours.saturating_add(1);
-        if let Outcome::Unavailable { reason } = status.outcome {
-            let index = match self
-                .refusals
-                .binary_search_by_key(&reason, |(reason, _)| *reason)
-            {
-                Ok(index) => index,
-                Err(index) => {
-                    reserve(&mut self.refusals, 1)?;
-                    self.refusals.insert(index, (reason, 0));
-                    index
-                }
-            };
-            let count = &mut self.refusals[index].1;
-            *count = count.saturating_add(1);
-        } else if matches!(status.outcome, Outcome::Rows { .. }) {
-            self.available_hours = self.available_hours.saturating_add(1);
-        }
-        self.latest = Some(status);
-        Ok(())
-    }
-
-    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
-        crate::status::status!({
-            "hours": self.hours,
-            "available_hours": self.available_hours,
-            "refused_hours": self.refusals.iter().fold(0_u64, |sum, (_, count)| sum.saturating_add(*count)),
-            "refusals": crate::status::map(self.refusals.iter().map(|&(reason, count)| (reason, count))),
-            "latest_arenas": crate::status::map(self.latest.iter().flat_map(|latest| {
-                ["requests", "roots", "nodes", "text_bytes", "depth"]
-                    .into_iter()
-                    .enumerate()
-                    .map(move |(index, name)| (name, crate::status::status!({
-                        "required": latest.required[index],
-                        "capacity": latest.capacity[index],
-                    })))
-            })),
-        })
-    }
-}
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     details: usize,
@@ -110,19 +107,11 @@ pub struct Capacities {
     damage_sources: usize,
     wing_types: usize,
     plane_wings: usize,
-    breakdown_requests: usize,
-    breakdown_roots: usize,
-    breakdown_nodes: usize,
-    breakdown_text: usize,
-    breakdown_depth: usize,
 }
 impl Capacities {
-    /// Live combat/header demand before attach and on the spool thread.
+    /// Live combat/header demand before attach and on the spool's sizing thread.
     /// Full capture still supplies growth after a change between observations.
-    pub(crate) fn raise_for_live_breakdowns(
-        &mut self,
-        demand: engine::naval_ship_modifier_breakdown::Demand,
-    ) {
+    pub(crate) fn raise_for_live_details(&mut self, demand: engine::naval_combat_demand::Demand) {
         for (capacity, required) in [
             (&mut self.details, demand.rows),
             (&mut self.ships, demand.ships),
@@ -149,11 +138,6 @@ impl Capacities {
             (&mut self.plane_wings, demand.plane_wings),
             (&mut self.plane_air, demand.plane_air_hits),
             (&mut self.plane_hits, demand.plane_naval_hits),
-            (&mut self.breakdown_requests, demand.requests),
-            (&mut self.breakdown_roots, demand.roots),
-            (&mut self.breakdown_nodes, demand.nodes),
-            (&mut self.breakdown_text, demand.text),
-            (&mut self.breakdown_depth, demand.depth),
         ] {
             grow_capacity(capacity, required);
         }
@@ -185,15 +169,11 @@ pub struct Captured {
     damage_sources: Arena<(u32, i64)>,
     wing_types: Arena<u32>,
     plane_wings: Arena<u64>,
-    breakdown_requests: Arena<engine::naval_ship_modifier_breakdown::Request>,
-    breakdown_roots: Arena<engine::naval_ship_modifier_breakdown::Root>,
-    breakdown_nodes: Arena<engine::naval_ship_modifier_breakdown::RawNode>,
-    breakdown_text: Arena<u8>,
-    breakdown_depth: Arena<engine::naval_ship_modifier_breakdown::Frame>,
-    breakdown_outcome: Outcome,
     /// Side country tags; grown by the worker at admission, retained on recycle.
     summary_countries: Vec<u32>,
     summary_countries_len: usize,
+    /// The hover source trees the hour's combats reach.
+    trees: super::naval_trees::Trees,
 }
 impl Captured {
     pub(crate) fn try_grow_hint(&mut self, c: &Capacities) -> Result<(), &'static str> {
@@ -220,11 +200,6 @@ impl Captured {
             self.plane_wings.first => c.plane_wings,
             self.plane_air.first => c.plane_air,
             self.plane_hits.first => c.plane_hits,
-            self.breakdown_requests.first => c.breakdown_requests,
-            self.breakdown_roots.first => c.breakdown_roots,
-            self.breakdown_nodes.first => c.breakdown_nodes,
-            self.breakdown_text.first => c.breakdown_text,
-            self.breakdown_depth.first => c.breakdown_depth,
         }
     }
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -261,14 +236,9 @@ impl Captured {
             damage_sources: Arena::new(c.damage_sources),
             wing_types: Arena::new(c.wing_types),
             plane_wings: Arena::new(c.plane_wings),
-            breakdown_requests: Arena::new(c.breakdown_requests),
-            breakdown_roots: Arena::new(c.breakdown_roots),
-            breakdown_nodes: Arena::new(c.breakdown_nodes),
-            breakdown_text: Arena::new(c.breakdown_text),
-            breakdown_depth: Arena::new(c.breakdown_depth),
-            breakdown_outcome: Outcome::Rows { len: 0 },
             summary_countries: owned_vec(filled(c.summary_countries, 0)),
             summary_countries_len: 0,
+            trees: super::naval_trees::Trees::default(),
         }
     }
     pub fn reset(&mut self) {
@@ -293,14 +263,9 @@ impl Captured {
         self.damage_sources.reset();
         self.wing_types.reset();
         self.plane_wings.reset();
-        self.breakdown_requests.reset();
-        self.breakdown_roots.reset();
-        self.breakdown_nodes.reset();
-        self.breakdown_text.reset();
-        self.breakdown_depth.reset();
-        self.breakdown_outcome = Outcome::Rows { len: 0 };
         self.summary_countries_len = 0;
         self.required_groups = 0;
+        self.trees.reset();
     }
     pub fn allocated_bytes(&self) -> usize {
         self.details.allocated_bytes()
@@ -343,13 +308,9 @@ impl Captured {
             + self.damage_sources.allocated_bytes()
             + self.wing_types.allocated_bytes()
             + self.plane_wings.allocated_bytes()
-            + self.breakdown_requests.allocated_bytes()
-            + self.breakdown_roots.allocated_bytes()
-            + self.breakdown_nodes.allocated_bytes()
-            + self.breakdown_text.allocated_bytes()
-            + self.breakdown_depth.allocated_bytes()
             + self.groups.capacity() * size_of::<usize>()
             + self.summary_countries.capacity() * size_of::<u32>()
+            + self.trees.allocated_bytes()
     }
     pub fn grow(&mut self, c: &mut Capacities) {
         // Carry observed rows and arena lengths to the other pooled frames.
@@ -394,11 +355,6 @@ impl Captured {
             (&mut c.damage_sources, self.damage_sources.len),
             (&mut c.wing_types, self.wing_types.len),
             (&mut c.plane_wings, self.plane_wings.len),
-            (&mut c.breakdown_requests, self.breakdown_requests.len),
-            (&mut c.breakdown_roots, self.breakdown_roots.len),
-            (&mut c.breakdown_nodes, self.breakdown_nodes.len),
-            (&mut c.breakdown_text, self.breakdown_text.len),
-            (&mut c.breakdown_depth, self.breakdown_depth.len),
         ] {
             *capacity = (*capacity).max(observed);
         }
@@ -444,11 +400,6 @@ impl Captured {
         self.damage_sources.grow(&mut c.damage_sources);
         self.wing_types.grow(&mut c.wing_types);
         self.plane_wings.grow(&mut c.plane_wings);
-        self.breakdown_requests.grow(&mut c.breakdown_requests);
-        self.breakdown_roots.grow(&mut c.breakdown_roots);
-        self.breakdown_nodes.grow(&mut c.breakdown_nodes);
-        self.breakdown_text.grow(&mut c.breakdown_text);
-        self.breakdown_depth.grow(&mut c.breakdown_depth);
     }
 
     /// Select only bases used by native naval-combat calculations in this
@@ -556,6 +507,9 @@ impl Captured {
             weapon_terms: &mut self.weapon_terms.first,
             weapon_lengths: [0; 2],
             weapon_required: [0; 2],
+            doctrine_keys: Default::default(),
+            term_metadata: term_metadata(),
+            source_memo: source_memo(),
         };
         let first = cnaval_combat::walk_details_timed(
             memory,
@@ -623,59 +577,26 @@ impl Captured {
             }
             Err(reason) => Outcome::Unavailable { reason },
         };
-        let mut ticks = [first.read_ticks[0], first.read_ticks[1], 0];
+        let mut ticks = [first.read_ticks[0], first.read_ticks[1], 0, 0, 0];
         ticks[2] = qpc().saturating_sub(dense_started).max(0) as u64;
-        let breakdown_started = qpc();
+        let trees_started = qpc();
         read_phase.select(TABLES[3]);
-        let mut breakdown = engine::naval_ship_modifier_breakdown::Buffers {
-            requests: engine::walk::Buffer::Growing(&mut self.breakdown_requests.first),
-            request_len: 0,
-            request_required: 0,
-            roots: engine::walk::Buffer::Growing(&mut self.breakdown_roots.first),
-            root_len: 0,
-            root_required: 0,
-            nodes: engine::walk::Buffer::Growing(&mut self.breakdown_nodes.first),
-            node_len: 0,
-            node_required: 0,
-            text: engine::walk::Buffer::Growing(&mut self.breakdown_text.first),
-            text_len: 0,
-            text_required: 0,
-            stack: engine::walk::Buffer::Growing(&mut self.breakdown_depth.first),
-            stack_required: 0,
-        };
-        self.breakdown_outcome = match (self.details.outcome, self.ships.outcome) {
-            (Outcome::Rows { len: details_len }, Outcome::Rows { len: ships_len }) => {
-                match engine::naval_ship_modifier_breakdown::capture(
-                    memory,
-                    base,
-                    state,
-                    &self.details.rows[..details_len],
-                    &self.ships.rows[..ships_len],
-                    &self.planes.first[..self.planes.len],
-                    &self.weapon_sources.first[..self.weapon_sources.len],
-                    &mut breakdown,
-                ) {
-                    Ok(()) => Outcome::Rows {
-                        len: breakdown.root_len,
-                    },
-                    Err(reason) => Outcome::Unavailable { reason },
-                }
-            }
-            _ => Outcome::Unavailable {
-                reason: "naval modifier breakdown live source incomplete",
-            },
-        };
-        self.breakdown_requests.len = breakdown.request_len;
-        self.breakdown_requests.required = breakdown.request_required;
-        self.breakdown_roots.len = breakdown.root_len;
-        self.breakdown_roots.required = breakdown.root_required;
-        self.breakdown_nodes.len = breakdown.node_len;
-        self.breakdown_nodes.required = breakdown.node_required;
-        self.breakdown_text.len = breakdown.text_len;
-        self.breakdown_text.required = breakdown.text_required;
-        self.breakdown_depth.required = breakdown.stack_required;
-        let mut ticks = [ticks[0], ticks[1], ticks[2], 0];
-        ticks[3] = qpc().saturating_sub(breakdown_started).max(0) as u64;
+        let combats = matches!(self.details.outcome, Outcome::Rows { .. })
+            .then(|| self.details.rows.get(..self.details.outcome.len()))
+            .flatten();
+        let members = matches!(self.ships.outcome, Outcome::Rows { .. })
+            .then(|| self.ships.rows.get(..self.ships.outcome.len()))
+            .flatten();
+        self.trees.capture(
+            memory,
+            base,
+            state,
+            combats,
+            members,
+            &self.planes.first[..self.planes.len],
+            &self.weapon_sources.first[..self.weapon_sources.len],
+        );
+        ticks[3] = qpc().saturating_sub(trees_started).max(0) as u64;
         let total = qpc().saturating_sub(capture_started).max(0) as u64;
         ticks[0] = ticks[0].saturating_add(total.saturating_sub(ticks.iter().sum::<u64>()));
         ticks
@@ -685,30 +606,13 @@ impl Captured {
             self.details.outcome,
             self.ships.outcome,
             self.dense_bases.outcome,
-            self.breakdown_outcome,
+            self.trees.outcome(),
+            self.trees.samples_outcome(),
         ]
-    }
-    pub(crate) fn breakdown_status(&self) -> BreakdownStatus {
-        BreakdownStatus {
-            outcome: self.breakdown_outcome,
-            required: [
-                self.breakdown_requests.required,
-                self.breakdown_roots.required,
-                self.breakdown_nodes.required,
-                self.breakdown_text.required,
-                self.breakdown_depth.required,
-            ],
-            capacity: [
-                self.breakdown_requests.first.len(),
-                self.breakdown_roots.first.len(),
-                self.breakdown_nodes.first.len(),
-                self.breakdown_text.first.len(),
-                self.breakdown_depth.first.len(),
-            ],
-        }
     }
     pub fn tables(&self) -> [TableView; N] {
         let out = self.outcomes();
+        let [trees, samples] = self.trees.tables();
         [
             table::<tables::NavalCombatDetails, _>(out[0], &self.details.rows, |r| {
                 rows::NavalCombatDetailsRow {
@@ -849,89 +753,9 @@ impl Captured {
                     ))),
                 },
             ),
-            self.breakdown_table(),
+            trees,
+            samples,
         ]
-    }
-    fn breakdown_table(&self) -> TableView {
-        if let Outcome::Unavailable { reason } = self.breakdown_outcome {
-            return unavailable(reason);
-        }
-        match self.project_breakdowns() {
-            Ok(projected) => table_iter::<tables::NavalModifierBreakdowns, _>(
-                Outcome::Rows {
-                    len: projected.len(),
-                },
-                projected.into_iter(),
-                std::convert::identity,
-            ),
-            Err(reason) => unavailable(reason),
-        }
-    }
-    /// Source joins, zero-subtree pruning, string copies and row assembly run
-    /// on the spool thread, after the hourly game block has returned.
-    fn project_breakdowns(&self) -> Result<Vec<rows::NavalModifierBreakdownRow>, &'static str> {
-        use engine::naval_ship_modifier_breakdown::KEYS;
-        let roots = &self.breakdown_roots.first[..self.breakdown_roots.len];
-        let requests = &self.breakdown_requests.first[..self.breakdown_requests.len];
-        let nodes = &self.breakdown_nodes.first[..self.breakdown_nodes.len];
-        let names = &self.breakdown_text.first[..self.breakdown_text.len];
-        let mut result = Vec::new();
-        reserve(&mut result, requests.len()).map_err(|_| "collector allocation failed")?;
-        let mut at = 0;
-        for root in roots {
-            let raw = range(nodes, root.nodes);
-            if raw.is_empty() {
-                return Err("naval modifier root has no nodes");
-            }
-            while at < requests.len() && requests[at].accumulator == root.accumulator {
-                let key = requests[at].key;
-                let key_index = KEYS
-                    .binary_search(&key)
-                    .map_err(|_| "naval modifier request key unsupported")?;
-                let first = at;
-                while at < requests.len()
-                    && requests[at].accumulator == root.accumulator
-                    && requests[at].key == key
-                {
-                    at += 1;
-                }
-                let mut cursor = 0;
-                let mut projected = Vec::new();
-                reserve(&mut projected, raw.len().saturating_add(1))
-                    .map_err(|_| "collector allocation failed")?;
-                copy_visible_subtree(raw, names, &mut cursor, key_index, true, &mut projected)?;
-                if cursor != raw.len() {
-                    return Err("naval modifier tree has extra nodes");
-                }
-                // A childless projected interior root must stay interior for
-                // the formatting gate, while the convoy escape sum still reads
-                // its native value.
-                if raw[0].children != 0 && projected[0].children == 0 {
-                    projected[0].children = 1;
-                    projected.push(rows::ModifierBreakdownNode::default());
-                }
-                result.push(rows::NavalModifierBreakdownRow {
-                    accumulator: root.accumulator as u64,
-                    key,
-                    uses: collect_vec(requests[first..at].iter().map(|request| {
-                        rows::NavalModifierUse {
-                            combat: request.usage.combat,
-                            side: request.usage.side,
-                            battle_slot: request.usage.battle_slot,
-                            source_scope: request.usage.source_scope,
-                            source_index: request.usage.source_index,
-                            order: request.usage.order,
-                        }
-                    }))
-                    .map_err(|_| "collector allocation failed")?,
-                    nodes: projected,
-                });
-            }
-        }
-        if at != requests.len() {
-            return Err("naval modifier request has no captured root");
-        }
-        Ok(result)
     }
     fn ship(&self, r: &cfex_member::DetailsRow) -> rows::NavalCombatShipRow {
         rows::NavalCombatShipRow {
@@ -1123,46 +947,6 @@ pub(super) fn commander_skill(
 fn range<T>(items: &[T], span: [usize; 2]) -> &[T] {
     &items[span[0]..span[0] + span[1]]
 }
-fn copy_visible_subtree(
-    raw: &[engine::naval_ship_modifier_breakdown::RawNode],
-    names: &[u8],
-    cursor: &mut usize,
-    key: usize,
-    root: bool,
-    output: &mut Vec<rows::ModifierBreakdownNode>,
-) -> Result<bool, &'static str> {
-    let node = raw
-        .get(*cursor)
-        .ok_or("naval modifier preorder is incomplete")?;
-    *cursor += 1;
-    let start = output.len();
-    output.push(rows::ModifierBreakdownNode::default());
-    let mut kept_children = 0_u32;
-    for _ in 0..node.children {
-        if copy_visible_subtree(raw, names, cursor, key, false, output)? {
-            kept_children += 1;
-        }
-    }
-    if !root && (node.children != 0 || node.values[key] == 0) && kept_children == 0 {
-        output.truncate(start);
-        return Ok(false);
-    }
-    let end = node.name[0]
-        .checked_add(node.name[1])
-        .ok_or("naval modifier display span overflow")?;
-    output[start] = rows::ModifierBreakdownNode {
-        children: kept_children,
-        value: node.values[key],
-        name: copy_vec(
-            names
-                .get(node.name[0]..end)
-                .ok_or("naval modifier display span invalid")?,
-        )
-        .map_err(|_| "collector allocation failed")?,
-    };
-    Ok(true)
-}
-
 pub(super) fn air_hit(v: &naval_combat_air_hit::Row) -> rows::NavalCombatAirHit {
     rows::NavalCombatAirHit {
         variant: v.variant,
@@ -1185,76 +969,6 @@ pub(super) fn naval_hit(v: &naval_combat_hit::Row) -> rows::NavalCombatHit {
 mod tests {
     use super::*;
 
-    #[test]
-    fn shared_root_projection_prunes_zero_branches_and_keeps_combat_uses() {
-        use engine::naval_ship_modifier_breakdown::{RawNode, Request, Root, Use};
-        let mut captured = Captured::with_capacities(&Capacities {
-            breakdown_requests: 2,
-            breakdown_roots: 1,
-            breakdown_nodes: 3,
-            breakdown_text: 8,
-            ..Capacities::default()
-        });
-        captured.breakdown_roots.first[0] = Root {
-            accumulator: 0x1230,
-            nodes: [0, 3],
-        };
-        captured.breakdown_roots.len = 1;
-        captured.breakdown_nodes.first[..3].copy_from_slice(&[
-            RawNode {
-                children: 2,
-                ..Default::default()
-            },
-            RawNode {
-                children: 0,
-                name: [0, 4],
-                ..Default::default()
-            },
-            RawNode {
-                children: 0,
-                name: [4, 4],
-                values: [0, 0, 0, 0, 0, 0, 900, 0, 0],
-            },
-        ]);
-        captured.breakdown_nodes.len = 3;
-        captured.breakdown_text.first[..8].copy_from_slice(b"zerokept");
-        captured.breakdown_text.len = 8;
-        for (index, combat) in [11, 22].into_iter().enumerate() {
-            captured.breakdown_requests.first[index] = Request {
-                accumulator: 0x1230,
-                key: 0x1b2,
-                usage: Use {
-                    combat,
-                    side: 0,
-                    battle_slot: u32::MAX,
-                    order: index as u32,
-                    ..Default::default()
-                },
-            };
-        }
-        captured.breakdown_requests.len = 2;
-        let rows = captured.project_breakdowns().unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            rows[0]
-                .uses
-                .iter()
-                .map(|usage| usage.combat)
-                .collect::<Vec<_>>(),
-            [11, 22]
-        );
-        assert_eq!(rows[0].nodes.len(), 2);
-        assert_eq!(rows[0].nodes[0].children, 1);
-        assert_eq!(rows[0].nodes[1].name, b"kept");
-        assert_eq!(rows[0].nodes[1].value, 900);
-        captured.breakdown_nodes.first[0].values[6] = 123;
-        captured.breakdown_nodes.first[2].values[6] = 0;
-        let rows = captured.project_breakdowns().unwrap();
-        assert_eq!(rows[0].nodes.len(), 2);
-        assert_eq!(rows[0].nodes[0].children, 1);
-        assert_eq!(rows[0].nodes[0].value, 123);
-        assert_eq!(rows[0].nodes[1].value, 0);
-    }
     #[test]
     fn dense_base_selection_uses_only_active_forward_planes_and_live_carrier_ships() {
         let mut c = Captured::with_capacities(&Capacities {
@@ -1525,10 +1239,6 @@ mod tests {
             damage_sources: 1,
             wing_types: 2,
             plane_wings: WINGS,
-            breakdown_requests: 1,
-            breakdown_roots: 1,
-            breakdown_nodes: 1,
-            breakdown_text: 13,
             ..Capacities::default()
         });
         c.details.outcome = Outcome::Rows { len: 1 };
@@ -1579,38 +1289,12 @@ mod tests {
         c.weapon_terms.first[0].raw = -456;
         c.air.first[0].variant = 222;
         c.hits.first[0].target_slot = 34;
-        c.breakdown_outcome = Outcome::Rows { len: 1 };
-        c.breakdown_requests.first[0] = engine::naval_ship_modifier_breakdown::Request {
-            accumulator: 0x1230,
-            key: 0x5b,
-            usage: engine::naval_ship_modifier_breakdown::Use {
-                combat: 42,
-                side: 0,
-                battle_slot: 5,
-                source_scope: 3,
-                source_index: 0,
-                order: 0,
-            },
-        };
-        c.breakdown_requests.len = 1;
-        c.breakdown_roots.first[0] = engine::naval_ship_modifier_breakdown::Root {
-            accumulator: 0x1230,
-            nodes: [0, 1],
-        };
-        c.breakdown_roots.len = 1;
-        c.breakdown_nodes.first[0] = engine::naval_ship_modifier_breakdown::RawNode {
-            children: 0,
-            name: [0, 13],
-            values: [0, 0, 0, 750, 0, 0, 0, 0, 0],
-        };
-        c.breakdown_nodes.len = 1;
-        c.breakdown_text.first[..13].copy_from_slice(b"stored source");
-        c.breakdown_text.len = 13;
         let [
             TableView::Complete(rows::TableRows::NavalCombatDetails(details)),
             TableView::Complete(rows::TableRows::NavalCombatShips(ships)),
             _,
-            TableView::Complete(rows::TableRows::NavalModifierBreakdowns(breakdowns)),
+            _,
+            _,
         ] = c.tables()
         else {
             panic!("complete naval operand rows were not projected")
@@ -1640,7 +1324,6 @@ mod tests {
         assert_eq!(ships[0].weapon_context.sources[0].terms[0].raw, -456);
         assert_eq!(ships[0].escape_speed_base, 19_000);
         assert_eq!(ships[0].weapon_context.sources[0].movement, -123);
-        assert_eq!(breakdowns[0].nodes[0].name, b"stored source".to_vec());
     }
 }
 

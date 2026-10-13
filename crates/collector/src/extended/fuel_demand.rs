@@ -295,7 +295,7 @@ impl Captured {
             .or(self.group_owner_reason);
         for country in &self.countries[..self.lengths[0]] {
             let mut pack = rows::FuelDemandRead {
-                hour: self.hour.unwrap_or_default(),
+                hour: pack_hour(self.hour),
                 country_instance: country.instance,
                 reason: reason(self.reason)?,
                 army_reason: reason(country.army_reason)?,
@@ -559,19 +559,52 @@ fn select_group(
     Ok(())
 }
 
-pub fn attach(table: &mut replay::frame::TableInput, captured: &Captured) -> io::Result<()> {
+/// A pack's hour: read with its CountryFuel row, in this capture, or an
+/// explicit placeholder when the capture had no hour.
+fn pack_hour(hour: Option<i32>) -> rows::FuelDemandHour {
+    match hour {
+        Some(_) => rows::FuelDemandHour::Host,
+        None => rows::FuelDemandHour::Stamped(0),
+    }
+}
+
+/// The parts' verdict when CountryFuel's read is truncated: its unread
+/// countries' parts are unknown and uncounted, so its packs stay whole.
+const TRUNCATED_PARTS: &str =
+    "fuel demand parts are not split from a truncated CountryFuel read, whose packs stay whole";
+
+/// Attach each CountryFuel row's demand pack and return FuelDemandParts.
+/// From a complete read each pack's header is attached and its list
+/// elements are parts, a row each ([`rows::FuelDemandRead::split`]); a pack
+/// whose elements a key cannot hold stays whole. A truncated read's packs
+/// stay whole and its parts are unavailable, as are an unavailable read's,
+/// for its reason.
+pub fn attach(
+    table: &mut replay::frame::TableInput,
+    captured: &Captured,
+) -> io::Result<replay::frame::TableView> {
     use replay::{
         frame::{TableInput, TableView},
         rows::TableRows,
     };
-    let rows = match table {
-        TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(rows)))
-        | TableInput::Sampled(TableView::Truncated {
+    let (rows, complete) = match table {
+        TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(rows))) => (rows, true),
+        TableInput::Sampled(TableView::Truncated {
             rows: TableRows::CountryFuel(rows),
             ..
-        }) => rows,
-        _ => return Ok(()),
+        }) => (rows, false),
+        TableInput::Sampled(TableView::Unavailable { reason }) => {
+            return Ok(TableView::Unavailable {
+                reason: reason.clone(),
+            });
+        }
+        _ => {
+            return Ok(TableView::Unavailable {
+                reason: "fuel demand parts follow a CountryFuel read".into(),
+            });
+        }
     };
+    let mut parts = Vec::new();
     let (mut owned, decode_reason) = match captured.owned() {
         Ok(rows) => (rows, None),
         Err(error) if error.kind() == io::ErrorKind::OutOfMemory => return Err(error),
@@ -592,23 +625,37 @@ pub fn attach(table: &mut replay::frame::TableInput, captured: &Captured) -> io:
                 "fuel current demand country instance differs from supplying row",
             ))?;
         }
-        row.demand = Recorded::Value(
-            pack.unwrap_or(rows::FuelDemandRead {
-                hour: captured.hour.unwrap_or_default(),
-                country_instance: match &row.country_instance {
-                    Recorded::Value(value) => *value,
-                    _ => None,
-                },
-                reason: reason(
-                    decode_reason
-                        .or(captured.reason)
-                        .or(Some("fuel current demand country was not captured")),
-                )?,
-                ..Default::default()
-            }),
-        );
+        let pack = pack.unwrap_or(rows::FuelDemandRead {
+            hour: pack_hour(captured.hour),
+            country_instance: match &row.country_instance {
+                Recorded::Value(value) => *value,
+                _ => None,
+            },
+            reason: reason(
+                decode_reason
+                    .or(captured.reason)
+                    .or(Some("fuel current demand country was not captured")),
+            )?,
+            ..Default::default()
+        });
+        if !(complete && pack.splittable()) {
+            row.demand = Recorded::Value(pack);
+            continue;
+        }
+        let (header, mut owned_parts) = pack.split(row.country)?;
+        engine::allocation::reserve(&mut parts, owned_parts.len())?;
+        parts.append(&mut owned_parts);
+        row.demand = Recorded::Value(header);
     }
-    Ok(())
+    if !complete {
+        return Ok(TableView::Unavailable {
+            reason: TRUNCATED_PARTS.into(),
+        });
+    }
+    // Each country's parts are in key order, whose highest bits are the
+    // country, and CountryFuel holds a row a country.
+    parts.sort_unstable_by_key(replay::rows::RowCodec::key);
+    Ok(TableView::Complete(TableRows::FuelDemandParts(parts)))
 }
 
 #[cfg(test)]

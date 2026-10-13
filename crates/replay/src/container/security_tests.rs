@@ -166,7 +166,12 @@ fn partial_reader_checks_actual_stream_length_before_trailer_allocation() {
 
 #[test]
 fn cancelled_or_exhausted_visitors_keep_their_error_without_draining() {
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
+    let grouped = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
+    // A grouped block's directory refuses the wrong raw length before any
+    // frame is visited, so the streamed interleaved block is the case here.
+    let replay = interleaved_copy(&grouped);
+    // Copying read the grouped block whole, which verified it; reopen it.
+    let grouped = Replay::open(grouped.bytes().to_vec()).unwrap();
     let mut index = replay.index.clone();
     index[0].raw_length += 1;
     let hostile = Replay::open(rebuild(
@@ -181,6 +186,13 @@ fn cancelled_or_exhausted_visitors_keep_their_error_without_draining() {
             .unwrap_err();
         assert_eq!(error.kind(), kind);
         assert!(!hostile.is_verified(&hostile.index[0]));
+        let error = grouped
+            .visit_block(&grouped.index[0], Some(&[TableId::Clock]), |_| {
+                Err(io::Error::from(kind))
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), kind);
+        assert!(!grouped.is_verified(&grouped.index[0]));
     }
 }
 

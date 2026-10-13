@@ -2,7 +2,6 @@
 use crate::{
     event_ledger::{Event, EventLedger},
     hook::Hook,
-    sampling::qpc,
 };
 type Clock = engine::cgame_state::Clock<u64>;
 use engine::{Memory, air_loss_sites as native};
@@ -41,11 +40,21 @@ static UNHOOKED: OnceLock<&'static str> = OnceLock::new();
 #[cfg(test)]
 static TAPPED_TAGS: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
 static WINGS: AtomicUsize = AtomicUsize::new(0);
-static FREQUENCY: AtomicU64 = AtomicU64::new(1);
-static WRITER_TICKS: AtomicU64 = AtomicU64::new(0);
-static INTERVAL_TICKS: AtomicU64 = AtomicU64::new(0);
-static LAST_HOUR_TICKS: AtomicU64 = AtomicU64::new(0);
-static MAX_HOUR_TICKS: AtomicU64 = AtomicU64::new(0);
+/// Calls [`air_loss_dispatch`] passed straight to the native writer: those
+/// the writer makes no write for, with nothing observed or counted in Rust.
+static FAST_ZERO_WRITES: AtomicU64 = AtomicU64::new(0);
+/// Calls whose gathered operands were withheld ([`native::gather`]), so the
+/// serial reads ran once: a fault, a refusal, or a history the call creates.
+static SERIAL_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static FORCE_SERIAL: AtomicBool = AtomicBool::new(false);
+fn gather_admitted() -> bool {
+    #[cfg(test)]
+    if FORCE_SERIAL.load(Ordering::SeqCst) {
+        return false;
+    }
+    true
+}
 pub fn active() -> usize {
     LEDGER.active.load(Ordering::SeqCst)
 }
@@ -86,16 +95,6 @@ pub fn lost_output(events: usize) {
     }
     LEDGER.lost_output(events);
 }
-fn writer_cost(start: i64) {
-    let ticks = qpc().saturating_sub(start).max(0) as u64;
-    WRITER_TICKS.fetch_add(ticks, Ordering::Relaxed);
-    INTERVAL_TICKS.fetch_add(ticks, Ordering::Relaxed);
-}
-fn ns(ticks: u64) -> u64 {
-    ((u128::from(ticks) * 1_000_000_000) / u128::from(FREQUENCY.load(Ordering::Relaxed)))
-        .min(u128::from(u64::MAX)) as u64
-}
-
 pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {
@@ -132,9 +131,6 @@ pub fn boundary(clock: Option<Clock>) {
     if !tests::owns_observation() {
         return;
     }
-    let ticks = INTERVAL_TICKS.swap(0, Ordering::Relaxed);
-    LAST_HOUR_TICKS.store(ticks, Ordering::Relaxed);
-    MAX_HOUR_TICKS.fetch_max(ticks, Ordering::Relaxed);
     LEDGER.boundary(clock);
 }
 #[cfg(test)]
@@ -204,7 +200,26 @@ core::arch::global_asm!(
     arg5 = const FRAME_BYTES + 0x28, arg6 = const FRAME_BYTES + 0x30,
     arg7 = const FRAME_BYTES + 0x38, pre = sym pre, post = sym post,
 );
+// The hooked CALLs' target: a leaf that changes no register the writer reads
+// and no stack slot, so it needs no unwind metadata. Air loss bookkeeping
+// Writes nothing when its region  (fifth argument) is null, or for a credited
+// Loss  (fourth argument's low byte 1) of cause 3 (seventh). Both gates skip
+// the regional block and history write, through the epilogue. `pre` records
+// nothing for exactly those calls
+// Either  (a zero write), so they go straight to the writer: it returns to
+// the native caller, and no collector frame is on the stack while it runs.
+// Every other call enters `air_loss_entry` with the same registers and stack.
+core::arch::global_asm!(
+    ".text", ".globl air_loss_dispatch", "air_loss_dispatch:",
+    "cmp qword ptr [rsp + 0x28], 0", "je 2f",
+    "cmp r9b, 1", "jne 3f",
+    "cmp dword ptr [rsp + 0x38], 3", "jne 3f",
+    "2:", "lock inc qword ptr [rip + {fast}]", "jmp qword ptr [rip + {original}]",
+    "3:", "jmp {entry}",
+    fast = sym FAST_ZERO_WRITES, original = sym ORIGINAL, entry = sym air_loss_entry,
+);
 unsafe extern "system" {
+    fn air_loss_dispatch();
     fn air_loss_entry();
     #[cfg(test)]
     fn air_loss_original_return();
@@ -221,7 +236,7 @@ unsafe extern "system" fn pre(
     _selection: usize,
     cause: usize,
 ) -> usize {
-    let started = qpc();
+    let _timing = crate::hook_timing::enter(crate::hook_timing::Family::AirLosses);
     LEDGER.enter();
     let tags = unsafe { (*context).tags };
     #[cfg(test)]
@@ -248,6 +263,39 @@ unsafe extern "system" fn pre(
                 if crate::world_lifetime::invalidating() {
                     return Err("air loss native world awaits hourly boundary");
                 }
+                // The same operands in six gathered copies and the country
+                // resolution; withheld, the serial reads below run once and
+                // refuse exactly where they always did.
+                let gathered = base
+                    .checked_add(engine::cgame_state::SINGLETON_RVA)
+                    .filter(|_| gather_admitted())
+                    .and_then(|singleton| {
+                        native::gather(
+                            &memory,
+                            base,
+                            singleton,
+                            receiver,
+                            wing,
+                            region,
+                            enemy as u8,
+                            cause as i32,
+                            tags,
+                        )
+                    });
+                if let Some(gathered) = gathered {
+                    let claimed = LEDGER.claim((receiver, gathered.region as usize))?;
+                    token = Some(claimed);
+                    return Ok(Observation {
+                        generation,
+                        snapshot: gathered.snapshot,
+                        game: gathered.game,
+                        hour: gathered.hour,
+                        token: claimed,
+                        count: count as i32,
+                        opponent: gathered.opponent,
+                    });
+                }
+                SERIAL_FALLBACKS.fetch_add(1, Ordering::Relaxed);
                 let region_id = engine::cstrategic_region::id(&memory, base, region)?
                     .ok_or("air loss region unexpectedly null")?;
                 let claimed = LEDGER.claim((receiver, region_id as usize))?;
@@ -300,11 +348,10 @@ unsafe extern "system" fn pre(
     } else {
         LEDGER.zero_writes.fetch_add(1, Ordering::Relaxed);
     }
-    writer_cost(started);
     original
 }
 unsafe extern "system" fn post(context: *mut CallContext) {
-    let started = qpc();
+    let _timing = crate::hook_timing::enter_return(crate::hook_timing::Family::AirLosses);
     let context = unsafe { context.read() };
     if let Some(observation) = context.observation {
         let result = (|| {
@@ -348,7 +395,6 @@ unsafe extern "system" fn post(context: *mut CallContext) {
             LEDGER.refuse(reason);
         }
     }
-    writer_cost(started);
     LEDGER.leave();
 }
 fn validate_delta(change: &native::Change, family: u32, count: i32) -> Result<i64, &'static str> {
@@ -372,14 +418,6 @@ impl Hooks {
     /// continuation frames and unwind metadata remain untouched.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, Ordering::Relaxed);
-        let mut frequency = 0;
-        if unsafe {
-            windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
-        } != 0
-            && frequency > 0
-        {
-            FREQUENCY.store(frequency as u64, Ordering::Relaxed);
-        }
         ORIGINAL.store(base + native::WRITER_RVA, Ordering::Release);
         let install = || -> Result<Vec<Hook>, &'static str> {
             for site in native::SITES {
@@ -392,7 +430,7 @@ impl Hooks {
                 let hook = unsafe {
                     Hook::new_call(
                         base + site.rva,
-                        air_loss_entry as *const () as usize,
+                        air_loss_dispatch as *const () as usize,
                         site.sentinel,
                     )
                 }
@@ -416,13 +454,14 @@ impl Hooks {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
         }
-        for hook in &mut self.hooks {
-            if !hook
-                .set_enabled(enabled)
-                .map_err(|_| "air loss hook state change failed")?
-            {
-                return Ok(false);
-            }
+        // One census and suspension for the whole family, shared with the
+        // other families in a runtime round (`hook::shared`): a thread at any
+        // of its sites, or in a tap, holds every site back until the next
+        // attempt.
+        if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
+            .map_err(|_| "air loss hook state change failed")?
+        {
+            return Ok(false);
         }
         ENABLED.store(
             enabled && self.hooks.len() == native::SITES.len(),
@@ -439,20 +478,22 @@ pub fn status() -> impl serde::Serialize {
         "installed": INSTALLED.load(Ordering::Acquire), "enabled": ENABLED.load(Ordering::SeqCst),
         "active": active(), "stranded": LEDGER.stranded.load(Ordering::SeqCst), "unhooked": UNHOOKED.get(),
         "branch_unavailable": LEDGER.poisoned.load(Ordering::SeqCst),
-        "calls": LEDGER.calls.load(Ordering::Relaxed), "events": LEDGER.events.load(Ordering::Relaxed),
-        "zero_writes": LEDGER.zero_writes.load(Ordering::Relaxed),
+        // The counters wrap as their atomics do; so do their sums.
+        "calls": LEDGER.calls.load(Ordering::Relaxed).wrapping_add(FAST_ZERO_WRITES.load(Ordering::Relaxed)),
+        "events": LEDGER.events.load(Ordering::Relaxed),
+        "zero_writes": LEDGER.zero_writes.load(Ordering::Relaxed).wrapping_add(FAST_ZERO_WRITES.load(Ordering::Relaxed)),
+        "fast_zero_writes": FAST_ZERO_WRITES.load(Ordering::Relaxed),
         "overflow": LEDGER.overflow.load(Ordering::Relaxed), "refusals": LEDGER.refusals.load(Ordering::Relaxed),
         "lost_events": LEDGER.lost_events.load(Ordering::Relaxed), "lost_events_unknown": LEDGER.lost_events_unknown.load(Ordering::Relaxed),
         "lost_drains": LEDGER.lost_drains.load(Ordering::Relaxed), "overlaps": LEDGER.overlaps.load(Ordering::Relaxed),
         "drains": LEDGER.drains.load(Ordering::Relaxed), "handed_over": LEDGER.handed_over.load(Ordering::Relaxed),
         "event_capacity": LEDGER.capacity.load(Ordering::Acquire), "event_required": capacity(), "pending_claim_capacity": 1,
         "prepare_failures": LEDGER.prepare_failures.load(Ordering::Relaxed), "wing_count": WINGS.load(Ordering::Acquire),
+        "serial_fallbacks": SERIAL_FALLBACKS.load(Ordering::Relaxed),
         "prepare_last_refusal": LEDGER.prepare_last_refusal(),
         "partial_intervals": LEDGER.partial_intervals.load(Ordering::Relaxed), "partial_events": LEDGER.partial_events.load(Ordering::Relaxed),
         "hourly_peak_events": LEDGER.hourly_peak_events.load(Ordering::Relaxed), "hourly_peak_capacity": LEDGER.hourly_peak_capacity.load(Ordering::Relaxed),
-        "writer_ns": ns(WRITER_TICKS.load(Ordering::Relaxed)), "last_hour_writer_ns": ns(LAST_HOUR_TICKS.load(Ordering::Relaxed)),
-        "max_hour_writer_ns": ns(MAX_HOUR_TICKS.load(Ordering::Relaxed)),
-        "scope": "since attach; observer time excludes native work; first/recovery partial intervals withheld"
+        "scope": "since attach; first/recovery partial intervals withheld; calls and zero_writes include fast_zero_writes, the calls the writer makes no write for, which go straight to it without entering the observer, so hook_timing.families.air_losses counts and times only the other calls"
     })
 }
 #[cfg(test)]

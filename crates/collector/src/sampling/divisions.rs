@@ -14,6 +14,12 @@ pub(crate) struct DivisionsJob {
     pub(super) overflowed: bool,
     pub(super) capacity_charge: crate::raw_memory::Charge,
     pub(super) source_packet: Vec<engine::cequipment_variant_pool::DivisionSource>,
+    /// The country slots this hour's inputs walk, when parts walk the rest
+    /// ([`crate::division_census::Census::capture_inputs_part`]); every slot
+    /// otherwise.
+    pub(crate) slots: Option<(u32, u32)>,
+    /// The joined census's storage to reserve after walking the first part.
+    pub(crate) join_capacity: crate::division_census::JoinCapacity,
 }
 impl DivisionsJob {
     pub(crate) fn new_worker() -> Self {
@@ -159,7 +165,12 @@ fn copy_divisions_inputs_pass(
         job.details.mark_skipped();
     }
     let started = qpc();
-    if growing {
+    if let (true, Some(slots)) = (growing, job.slots) {
+        job.census
+            .capture_inputs_part(memory, context.base, context.game_state, slots);
+        // Off the game thread: room for the parts the callback joins.
+        job.census.reserve_join(job.join_capacity);
+    } else if growing {
         job.census
             .capture_inputs_growing(memory, context.base, context.game_state);
     } else {

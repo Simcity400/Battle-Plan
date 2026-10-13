@@ -22,7 +22,8 @@ pub struct ProductionLineRow {
     pub requested_factories: i32,
     pub cost_raw: i64,
     pub speed_raw: i64,
-    pub produced_raw: i64,
+    /// Retired: only the save comparison and its self-check read it.
+    pub produced_raw: RetiredI64,
     pub priority: i32,
     pub amount: i32,
     pub max_factories: i32,
@@ -33,18 +34,17 @@ typed_codec!(ProductionLineRow, 64, |row| row.handle as u128, |key| Self { handl
 
 /// IndustrialOrganisations: key organisation (64 bits), 6 payload mask bits.
 ///
-/// One military-industrial organisation (COrganisation), keyed by its full
-/// CID (type 79 low, id high), the reference `ProductionLines.mio` holds.
-/// `country` is the raw reference of the country whose production status holds
-/// it and `ordinal` its position there. `owner` is the tag link the
-/// organisation was constructed with, the tag its name and icon rules prefix.
-/// `token` is the script key, spelled by `LexicalTokens`. `name` is the
-/// name-key override and `icon` the sprite name, both empty when unset.
-/// Display localises the override, or the script key when empty, preferring
-/// `<owner tag>_<that key>` when localisation has it; the text may use scripted
-/// localisation in the organisation's scope. The icon uses the stored sprite, or
-/// `GFX_<script key>` (a tag-prefixed candidate first), or `GFX_idea_unknown`.
-/// Read with `IndustrialOrganisationHistory` in the lines' daily slot.
+/// One military-industrial organisation, keyed by its full CID (type 79 low, id high),
+/// the reference `ProductionLines.mio` holds. `country` is the raw reference of the
+/// country whose production status holds it and `ordinal` its position there. `owner` is
+/// the tag link the organisation was constructed with, the tag its name and icon rules
+/// prefix. `token` is the script key, spelled by `LexicalTokens`. `name` is the name-key
+/// override and `icon` the sprite name, both empty when unset. Display localises the
+/// override, or the script key when empty, preferring `<owner tag>_<that key>` when
+/// localisation has it; the text may use scripted localisation in the organisation's
+/// scope. The icon uses the stored sprite, or `GFX_<script key>` (a tag-prefixed
+/// candidate first), or `GFX_idea_unknown`. Read with `IndustrialOrganisationHistory` in
+/// the lines' daily slot.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct IndustrialOrganisationRow {
     pub organisation: u64,
@@ -120,7 +120,8 @@ pub struct ProductionLineOutputRow {
     pub variant: u64,
     pub mio: u64,
     pub units: i64,
-    pub mio_credit: i64,
+    /// Retired: only the save comparison's self-checks read it.
+    pub mio_credit: RetiredI64,
     pub since_hour: i32,
     pub observed_since_creation: bool,
     pub ended: bool,
@@ -129,7 +130,8 @@ pub struct ProductionLineOutputRow {
     /// absence is NotRecorded; None is a current classification/total refusal.
     /// Delivery/MIO exactness is independent of these spending operands.
     pub spent_raw: Recorded<Option<i64>>,
-    pub instant_raw: Recorded<Option<i64>>,
+    /// Retired: only the save comparison's self-checks read it.
+    pub instant_raw: Recorded<RetiredOptionalI64>,
 }
 typed_codec!(ProductionLineOutputRow, 96, |row| (row.line as u128) << 32 | row.ordinal as u128, |key| Self { line: (key >> 32) as u64, ordinal: key as u32, ..Default::default() },
  { 0 => (country): U32, 1 => (variant): U64, 2 => (mio): U64, 3 => (units): I64, 4 => (mio_credit): I64, 5 => (since_hour): I32, 6 => (observed_since_creation): Bool, 7 => (ended): Bool, 8 => (exact): Bool, 9 => (spent_raw): OptionalI64, 10 => (instant_raw): OptionalI64 }, |_row| Ok(()));
@@ -323,13 +325,12 @@ typed_codec!(CombatLogStateRow, 0, |_row| 0, |_key| Self { viewing_country_raw: 
 /// LendLeaseEquipment: key giver:exchange:kind:variant (104 bits), 2 payload
 /// mask bits. Daily.
 ///
-/// One variant of one lend-lease exchange (CLendLeaseExchange, the giver's
-/// CCountryResources outgoing list): `kind` 0 is what it has delivered
-/// (`total_delivered`), 1 what was sunk on the way (`equipment_sunk`); both
-/// fixed5 and only ever growing while the exchange lives. `giver` is the
-/// giver's raw country reference, `exchange` the exchange's reference id,
-/// `receiver` the receiver's raw country reference. The game deletes the
-/// exchange when the lend-lease ends, taking its totals with it, so its rows
+/// One variant of one lend-lease exchange (lend-lease exchange, the giver's country
+/// resources outgoing list): `kind` 0 is what it has delivered (`total_delivered`), 1
+/// what was sunk on the way (`equipment_sunk`); both fixed5 and only ever growing while
+/// the exchange lives. `giver` is the giver's raw country reference, `exchange` the
+/// exchange's reference id, `receiver` the receiver's raw country reference. The game
+/// deletes the exchange when the lend-lease ends, taking its totals with it, so its rows
 /// leave the table then; changes after its last read are not recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LendLeaseEquipmentRow {
@@ -480,7 +481,7 @@ pub struct AvailableEquipmentVariantRow {
     pub country: u32,
     pub roster_kind: u8,
     pub ordinal: u32,
-    /// Full CEquipmentVariant reference, joining `VariantDefinitions.id`.
+    /// Full equipment variant reference, joining `VariantDefinitions.id`.
     pub variant: u64,
 }
 typed_codec!(AvailableEquipmentVariantRow, 66, |row| (row.country as u128) << 34 | (row.roster_kind as u128) << 32 | row.ordinal as u128,
@@ -571,6 +572,9 @@ pub struct ArmyUpgradeProducedRow {
 typed_codec!(ArmyUpgradeProducedRow, 128, |row| (row.army as u128) << 64 | (row.delivery_ordinal as u128) << 32 | row.ordinal as u128, |key| Self { army: (key >> 64) as u64, delivery_ordinal: (key >> 32) as u32, ordinal: key as u32, country: Default::default(), equipment: Default::default(), amount_raw: Default::default() },
  { 0 => (country): U32, 1 => (equipment): U64, 2 => (amount_raw): I64 }, |_row| Ok(()));
 
+/// One applied fuel receipt, as the collector observes each update: the
+/// per-update form it keeps for a country's last 24 updates and the
+/// recordings before [`FuelAwardDay`] stored.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FuelAwardRecipient {
     pub kind: u32,
@@ -610,6 +614,8 @@ value_struct!(FuelAwardHour { hour: i32, gains_raw: [i64; 4], own_gain_raw: i64,
     recipients: Vec<FuelAwardRecipient>, history_index: i32, remaining_hours: i32,
     pending_raw: [i64; 3], current_raw: i64 });
 
+/// The 24 applied updates before a supplying read, update by update, as
+/// recordings before [`FuelAwardDay`] stored them (`CountryFuel.awards`).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FuelAwardWindow {
     pub country_instance: u32,
@@ -624,52 +630,119 @@ pub struct FuelAwardWindow {
 value_struct!(FuelAwardWindow { country_instance: u32, continuity_start_hour: Option<i32>, hours: Vec<FuelAwardHour>, reason: Vec<u8> });
 opaque_value!(FuelAwardWindow);
 
+/// One recipient's receipts over a [`FuelAwardDay`]: every receipt of the
+/// day with the same native identity, owner, host and retained name and
+/// name reason (each a separate recipient), what the Fuel widget's receipt
+/// list and its history show.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FuelAwardDayRecipient {
+    pub kind: u32,
+    pub reference: u64,
+    pub owner: u32,
+    pub host: u64,
+    /// Pure native unit getter's retained text at the write, in game language.
+    /// No air-wing name is guessed for a country/base container receipt.
+    pub name: Option<Vec<u8>>,
+    pub name_reason: Vec<u8>,
+    /// The first and last update hours that paid it.
+    pub first_hour: i32,
+    pub last_hour: i32,
+    /// Fixed5 sum of its receipts.
+    pub amount_raw: i64,
+}
+value_struct!(FuelAwardDayRecipient { kind: u32, reference: u64, owner: u32, host: u64,
+    name: Option<Vec<u8>>, name_reason: Vec<u8>, first_hour: i32, last_hour: i32,
+    amount_raw: i64 });
+
+/// The 24 applied fuel updates before a supplying read, summed as the Fuel
+/// widget shows them: its day's sources, transfers, consumption and receipts
+/// by consumer, the sum of each update's own gain converted to a quantity
+/// (`engine::fuel_awards::quantity`, which no day sum can reproduce) and its
+/// recipients. The collector sums the updates it observed; an update's
+/// amounts and recipients, and the hourly source witness only the fresh-save
+/// oracle compared, are not recorded.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FuelAwardDay {
+    pub country_instance: u32,
+    /// First authenticated update after an observed reset or continuity gap.
+    /// Recorder evidence, not a native monotonic country identity.
+    pub continuity_start_hour: Option<i32>,
+    /// The day's last update, the supplying read's own: the day is the
+    /// updates `last_hour - 23 ..= last_hour`.
+    pub last_hour: i32,
+    /// Fixed5: base, state-source, oil and negative-cost gain.
+    pub gains_raw: [i64; 4],
+    pub own_gain_raw: i64,
+    /// Quantity (/32768) units, each update's own gain converted.
+    pub own_gain_quantity_raw: i64,
+    /// Q15: incoming LL, outgoing LL, positive-cost debit and total other.
+    pub transfers_raw: [i64; 4],
+    pub consumed_raw: i64,
+    /// Fixed5, by consumer kind.
+    pub received_raw: [i64; 3],
+    /// In order of kind, reference, owner, host, name and name reason.
+    pub recipients: Vec<FuelAwardDayRecipient>,
+    /// Empty only when all 24 native updates before this read are known and
+    /// every sum fits its native i64; otherwise the sums and recipients are
+    /// empty. A local refusal preserves the CountryFuel prefix and other
+    /// countries.
+    pub reason: Vec<u8>,
+}
+value_struct!(FuelAwardDay { country_instance: u32, continuity_start_hour: Option<i32>,
+    last_hour: i32, gains_raw: [i64; 4], own_gain_raw: i64, own_gain_quantity_raw: i64,
+    transfers_raw: [i64; 4], consumed_raw: i64, received_raw: [i64; 3],
+    recipients: Vec<FuelAwardDayRecipient>, reason: Vec<u8> });
+opaque_value!(FuelAwardDay);
+
 /// CountryFuel: key country (32 bits), appended applied-award evidence.
 ///
-/// One country's CCountryFuelStatus scalars in their native representation:
-/// the quantities (current, maximum and the lend-lease terms) are i64 /32768;
-/// gains, cost and gain per oil are fixed5 (x100000). `history_index` is the
-/// next history ring slot the game writes; `remaining_hours` counts down to
-/// that write.
+/// One country's fuel-status scalars in their native representation: the quantities
+/// (current, maximum and lend-lease gain) are i64 /32768.
 ///
 /// The `ring_` fields are exact sums of the raw values of the game's 24 fuel
-/// history ring slots: gain, requested and received in fixed5, consumed and
-/// other in /32768 units, requested and received per consumer index. The game
+/// history ring slots: gain and received in fixed5, consumed and other in
+/// /32768 units, received per consumer index. The game
 /// normally writes one slot per hourly fuel update. A loaded non-default
 /// countdown or prefilled ring does not prove 24 actual awards. The appended
-/// `awards` suffix retains 24 consecutive observed updates at this read,
-/// including their completed pending witness and stored recipient names.
-/// Unknown intervals preserve the prefix and carry a reason, never zero.
-/// `CountryFuelConsumers` comes from the same read of each fuel status.
+/// `award_day` suffix sums 24 consecutive observed updates at this read and
+/// keeps each recipient's receipts and stored name ([`FuelAwardDay`]); the
+/// retired `awards` held the updates one by one. Unknown intervals preserve
+/// the prefix and carry a reason, never zero. `CountryFuelConsumers` comes
+/// from the same read of each fuel status.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CountryFuelRow {
     pub country: u32,
     pub current_raw: i64,
     pub maximum_raw: i64,
-    pub gain_raw: i64,
-    pub cost_raw: i64,
-    pub gain_from_states_raw: i64,
+    /// Retired fields 2-4, 6-9 and 13-15: only the save comparison read them.
+    pub gain_raw: RetiredI64,
+    pub cost_raw: RetiredI64,
+    pub gain_from_states_raw: RetiredI64,
     pub lend_lease_gain_raw: i64,
-    pub lend_lease_consumption_raw: i64,
-    pub gain_per_oil_raw: i64,
-    pub history_index: i32,
-    pub remaining_hours: i32,
+    pub lend_lease_consumption_raw: RetiredI64,
+    pub gain_per_oil_raw: RetiredI64,
+    pub history_index: RetiredI32,
+    pub remaining_hours: RetiredI32,
     pub ring_gain_raw: i64,
     pub ring_consumed_raw: i64,
     pub ring_other_raw: i64,
-    pub ring_requested_0_raw: i64,
-    pub ring_requested_1_raw: i64,
-    pub ring_requested_2_raw: i64,
+    pub ring_requested_0_raw: RetiredI64,
+    pub ring_requested_1_raw: RetiredI64,
+    pub ring_requested_2_raw: RetiredI64,
     pub ring_received_0_raw: i64,
     pub ring_received_1_raw: i64,
     pub ring_received_2_raw: i64,
     pub country_instance: Recorded<Option<u32>>,
-    pub awards: Recorded<FuelAwardWindow>,
+    /// Retired update-by-update window ([`FuelAwardWindow`]); `award_day`
+    /// holds what the Fuel widget shows of it.
+    pub awards: Recorded<Retired>,
     /// Current required-use rate operands, with their own supplying hour.
     pub demand: Recorded<FuelDemandRead>,
+    /// The day's applied updates before this read, summed.
+    pub award_day: Recorded<FuelAwardDay>,
 }
 typed_codec!(CountryFuelRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
- { 0 => (current_raw): I64, 1 => (maximum_raw): I64, 2 => (gain_raw): I64, 3 => (cost_raw): I64, 4 => (gain_from_states_raw): I64, 5 => (lend_lease_gain_raw): I64, 6 => (lend_lease_consumption_raw): I64, 7 => (gain_per_oil_raw): I64, 8 => (history_index): I32, 9 => (remaining_hours): I32, 10 => (ring_gain_raw): I64, 11 => (ring_consumed_raw): I64, 12 => (ring_other_raw): I64, 13 => (ring_requested_0_raw): I64, 14 => (ring_requested_1_raw): I64, 15 => (ring_requested_2_raw): I64, 16 => (ring_received_0_raw): I64, 17 => (ring_received_1_raw): I64, 18 => (ring_received_2_raw): I64, 19 => (country_instance): OptionalU32, 20 => (awards): Opaque, 21 => (demand): Opaque }, |_row| Ok(()));
+ { 0 => (current_raw): I64, 1 => (maximum_raw): I64, 2 => (gain_raw): I64, 3 => (cost_raw): I64, 4 => (gain_from_states_raw): I64, 5 => (lend_lease_gain_raw): I64, 6 => (lend_lease_consumption_raw): I64, 7 => (gain_per_oil_raw): I64, 8 => (history_index): I32, 9 => (remaining_hours): I32, 10 => (ring_gain_raw): I64, 11 => (ring_consumed_raw): I64, 12 => (ring_other_raw): I64, 13 => (ring_requested_0_raw): I64, 14 => (ring_requested_1_raw): I64, 15 => (ring_requested_2_raw): I64, 16 => (ring_received_0_raw): I64, 17 => (ring_received_1_raw): I64, 18 => (ring_received_2_raw): I64, 19 => (country_instance): OptionalU32, 20 => (awards): Opaque, 21 => (demand): Opaque, 22 => (award_day): Opaque }, |_row| Ok(()));
 
 /// CountryFuelConsumers: key country:index (64 bits), 3 payload mask bits.
 ///
@@ -928,16 +1001,17 @@ typed_codec!(RailwayConstructionRow, 64, |row| row.id as u128, |key| Self { id: 
 /// `StateResources`, `StateBaseResources`, `StateBuildings`,
 /// `CountryBuildingResources` and content.
 ///
-/// Sliced, daily: `StateResourceInputs`, `StateResources` and
-/// `StateDynamicModifiers` are re-read per state (its native ID) in a
-/// daily 1/24 slice, with no change fingerprint (owner rule: no harsher
-/// than the game, which re-checks raid offers in a rolling sweep): an
-/// owner new to the census, or whose read was not published, is read at
-/// the next hour. A value is the one at its owner's read hour and can lag
-/// up to a day.
-/// Every read state has a row here, so this table is the family's hour
-/// source: its owners' read hours are the ones in `SliceReads`
-/// (`replay::sliced::read_hour`).
+/// Sliced (family `raid_state`, owner: the state's native ID, with `StateResources`,
+/// `StateDynamicModifiers` and `StateCores`): each hour reads a daily 1/24 slice of
+/// states, an owner new to the census, the owners of a read that was not published and
+/// every state a hooked native writer touched since the previous hour (the collector's
+/// `raid_changes`); an hour whose marks are not certified reads every state. So every
+/// value equals the game's at every hour (owner decision 2026-10-11: the game's offer
+/// cache re-checks every offer at least hourly), except `supply_route`, which the supply
+/// update rewrites every hour and no writer names: it is the value at the state's read
+/// hour, up to a day old. Every read state has a row here, so this table is the family's
+/// hour source: its owners' read hours are the ones in `SliceReads`
+/// (`replay::sliced::read_hour`); an unread owner's rows are current.
 ///
 /// A controlled state that bears no resources has neither
 /// `infrastructure_level` nor `supply_route` (nor `origin`) read, and no icon can depend on any of them. For each resource
@@ -961,7 +1035,7 @@ pub struct StateResourceInputRow {
     pub gate: u8,
     /// Effective state modifier 0x223, fixed5.
     pub global_factor: i64,
-    /// The controller has a `CResourceOrigin` for the state; without one the
+    /// The controller has a `resource origin` for the state; without one the
     /// infrastructure and supply factors are one.
     pub origin: u8,
     /// The infrastructure building's `+0x40` level, damage included; read
@@ -984,8 +1058,8 @@ typed_codec!(StateResourceInputRow, 32, |row| row.state as u128,
 /// rest are effective state modifiers keyed by the resource definition's
 /// additive, factor and global-factor keys. All fixed5.
 ///
-/// Sliced, daily, with `StateResourceInputs`: every value is the one at
-/// the state's read hour.
+/// Sliced, with `StateResourceInputs`: every value equals the game's at
+/// every hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StateResourceRow {
     pub state: u32,
@@ -1007,14 +1081,13 @@ typed_codec!(StateResourceRow, 64, |row| (row.state as u128) << 32 | row.resourc
 /// the first matching element's amount is added to each grant, keeping
 /// positive sums only.
 ///
-/// Sliced, daily: re-read per country (its native ID) in a
-/// daily 1/24 slice, with no change fingerprint (owner rule: no harsher
-/// than the game, which re-checks raid offers in a rolling sweep): an
-/// owner new to the census, or whose read was not published, is read at
-/// the next hour. A value is the one at its owner's read hour and can lag
-/// up to a day.
-/// Only controllers are walked; `SliceReads` holds the read hour of each
-/// country read, rows or none.
+/// Sliced (family `raid_country_buildings`, owner: the country's native
+/// ID): each hour reads a daily 1/24 slice of countries, an owner new to
+/// the census, the owners of a read that was not published, every country
+/// whose overrides a hooked writer touched since the previous hour and the
+/// controller of every state the `raid_state` family reads, so the rows
+/// equal the game's at every hour. Only controllers are walked;
+/// `SliceReads` holds the read hour of each country read, rows or none.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CountryBuildingResourceRow {
     pub country: u32,
@@ -1030,17 +1103,21 @@ pub struct CountryBuildingResourceRow {
 typed_codec!(CountryBuildingResourceRow, 64, |row| (row.country as u128) << 32 | row.ordinal as u128,
  |key| Self { country: (key >> 32) as u32, ordinal: key as u32, ..Default::default() },
  { 0 => (entry): U32, 1 => (building): U32, 2 => (count): U32, 3 => (resource): U32, 4 => (amount): I64 }, |_row| Ok(()));
-/// StockpileArchetypes: key canonical slot:archetype token. Each stored
-/// archetype total of a country stockpile pool's first array.
-/// Sliced, daily, with `RaidCountryInputs`: the totals at the country's read hour.
+/// StockpileArchetypes: key canonical slot:archetype token. The stock of each archetype a
+/// raid type lists as essential equipment, in a country's stockpile pool (`production
+/// status+0x200`, first array), which the raid equipment-requirement check compares with
+/// each amount: archetype quantity in whole units, capped at the largest amount any raid
+/// type requires of the archetype, so the raid offer's verdict and printed shortfall stay
+/// exact and the value changes only while the country is short. An essential archetype
+/// without a row has no stock. Hourly, every country.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StockpileArchetypeRow {
     pub canonical_slot: u32,
     pub archetype: u32,
-    pub quantity_raw: i64,
+    pub units: i32,
 }
 typed_codec!(StockpileArchetypeRow, 64, |row| (row.canonical_slot as u128) << 32 | row.archetype as u128, |key| Self { canonical_slot: (key >> 32) as u32, archetype: key as u32, ..Default::default() },
- { 0 => (quantity_raw): I64 }, |_row| Ok(()));
+ { 0 => (units): I32 }, |_row| Ok(()));
 
 /// ProductionLicenses: key country:ordinal (64 bits), 1 payload mask bit.
 /// The licensor and origin are the licensed variant's own creator/origin links,
@@ -1087,7 +1164,7 @@ pub struct DeploymentConveyorRow {
     pub amount: i32,
     pub location: u32,
     pub priority: u32,
-    /// Raw CPdxLexer token; zero is retained and never resolved to text here.
+    /// Raw lexer token; zero is retained and never resolved to text here.
     pub role_token: u32,
     /// Raw engine byte, retained without boolean normalization.
     pub closed: u8,
@@ -1099,8 +1176,8 @@ pub struct DeploymentConveyorRow {
 typed_codec!(DeploymentConveyorRow, 64, |row| row.handle as u128, |key| Self { handle: key as u64, country: Default::default(), ordinal: Default::default(), template: Default::default(), amount: Default::default(), location: Default::default(), priority: Default::default(), role_token: Default::default(), closed: Default::default(), name: Default::default(), exile_country: Default::default() },
  { 0 => (country): U32, 1 => (ordinal): U32, 2 => (template): U64, 3 => (amount): I32, 4 => (location): U32, 5 => (priority): U32, 6 => (role_token): U32, 7 => (closed): U8, 8 => (name): Bytes, 9 => (exile_country): OptionalU32 }, |_row| Ok(()));
 
-/// DeploymentLines: key native line handle (64 bits), 16 payload mask bits.
-/// Each line owns exactly one CMilitaryDeployment, whose scalars are merged here.
+/// DeploymentLines: key native line handle (64 bits), 16 payload mask bits. Each line
+/// owns exactly one military deployment, whose scalars are merged here.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DeploymentLineRow {
     pub handle: u64,
@@ -1119,7 +1196,7 @@ pub struct DeploymentLineRow {
     /// Native count of the pool's allocation array; the engine cannot write the
     /// saved equipment wrapper while it is zero.
     pub equipment_allocations: i32,
-    /// CEquipmentDistributable priority; the save omits the default of one.
+    /// equipment distribution priority; the save omits the default of one.
     pub distributable_priority: i32,
     /// Raw `_bIsSet` byte of the optional halting reason.
     pub halting_reason_present: u8,

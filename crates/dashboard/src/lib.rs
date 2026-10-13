@@ -55,6 +55,7 @@ pub fn typescript_contract() -> String {
         DamagedRecording::decl(),
         BranchMetadata::decl(),
         RecordingGap::decl(),
+        RecordingEventLoss::decl(),
         CountryMetadata::decl(),
         Artwork::decl(),
         LandOwners::decl(),

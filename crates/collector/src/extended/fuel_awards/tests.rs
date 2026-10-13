@@ -118,28 +118,41 @@ fn same_pointer_and_zero_instance_reset_withdraws_only_its_old_window() {
         cursor = captured.drained.unwrap().unwrap().0.cursor;
         windows.assemble(1, hour, &captured, &mut tables).unwrap();
         if hour == 25 {
-            let Recorded::Value(reset) = &rows(&tables)[0].awards else {
+            let Recorded::Value(reset) = &rows(&tables)[0].award_day else {
                 panic!()
             };
             assert!(!reset.reason.is_empty());
-            assert_eq!(reset.hours.len(), 1);
+            // A refused day keeps no partial sums or receipts.
+            assert!(reset.recipients.is_empty() && reset.own_gain_raw == 0);
             assert_eq!(reset.continuity_start_hour, Some(25));
         }
     }
-    let Recorded::Value(reset) = &rows(&tables)[0].awards else {
+    let Recorded::Value(reset) = &rows(&tables)[0].award_day else {
         panic!()
     };
-    let Recorded::Value(peer) = &rows(&tables)[1].awards else {
+    let Recorded::Value(peer) = &rows(&tables)[1].award_day else {
         panic!()
     };
     assert!(reset.reason.is_empty());
-    assert_eq!(reset.hours.len(), 24);
-    assert_eq!(reset.hours[0].hour, 25);
+    // The 24 updates of hours 25 to 48, each paying the same recipient.
+    assert_eq!(reset.last_hour, 48);
+    assert_eq!(
+        (
+            reset.recipients[0].first_hour,
+            reset.recipients[0].last_hour
+        ),
+        (25, 48)
+    );
     assert_eq!(reset.continuity_start_hour, Some(25));
     assert_eq!(peer.continuity_start_hour, Some(1));
     assert!(peer.reason.is_empty());
-    assert_eq!(peer.hours.len(), 24);
+    assert_eq!(peer.own_gain_raw, 24 * 3);
     assert_eq!(rows(&tables)[0].current_raw, 1);
+    assert!(
+        rows(&tables)
+            .iter()
+            .all(|row| row.awards == Recorded::Value(replay::rows::Retired))
+    );
 }
 
 #[test]
@@ -174,17 +187,17 @@ fn repeated_roots_in_one_sample_cannot_certify_two_continuity_segments() {
         cursor = captured.drained.unwrap().unwrap().0.cursor;
         windows.assemble(1, hour, &captured, &mut tables).unwrap();
         if hour == 25 {
-            let Recorded::Value(first) = &rows(&tables)[0].awards else {
+            let Recorded::Value(first) = &rows(&tables)[0].award_day else {
                 panic!()
             };
             assert!(first.continuity_start_hour.is_none());
             assert!(!first.reason.is_empty());
         }
     }
-    let Recorded::Value(first) = &rows(&tables)[0].awards else {
+    let Recorded::Value(first) = &rows(&tables)[0].award_day else {
         panic!()
     };
-    let Recorded::Value(peer) = &rows(&tables)[1].awards else {
+    let Recorded::Value(peer) = &rows(&tables)[1].award_day else {
         panic!()
     };
     assert!(first.reason.is_empty());
@@ -242,7 +255,7 @@ fn continuity_start_is_scoped_by_actual_branch_and_fresh_reattach_observation() 
                 .assemble(previous, hour, &captured, &mut tables)
                 .unwrap();
         }
-        let Recorded::Value(window) = &rows(&tables)[0].awards else {
+        let Recorded::Value(window) = &rows(&tables)[0].award_day else {
             panic!()
         };
         assert!(window.reason.is_empty());
@@ -278,7 +291,7 @@ fn continuity_start_is_scoped_by_actual_branch_and_fresh_reattach_observation() 
             .assemble(previous, hour, &captured, &mut tables)
             .unwrap();
     }
-    let Recorded::Value(window) = &rows(&tables)[0].awards else {
+    let Recorded::Value(window) = &rows(&tables)[0].award_day else {
         panic!()
     };
     assert!(window.reason.is_empty());
@@ -311,29 +324,63 @@ fn writer_window_at_5000_keeps_corrections_names_owner_and_local_refusals() {
     }
     let rows = rows(&tables);
     for row in rows {
-        let Recorded::Value(window) = &row.awards else {
+        let Recorded::Value(day) = &row.award_day else {
             panic!()
         };
         assert_eq!(row.current_raw, row.country as i64);
         if row.country == 7 {
-            assert!(!window.reason.is_empty());
+            assert!(!day.reason.is_empty());
             continue;
         }
-        assert!(window.reason.is_empty());
-        assert_eq!(window.hours.len(), 24);
-        assert_eq!(window.hours[0].pending_raw[0], 94);
-        let part = &window.hours[0].recipients[0];
+        assert!(day.reason.is_empty());
+        // 24 updates of gains [2, -3, 4, 0] and own gain 3.
+        assert_eq!(day.last_hour, 24);
+        assert_eq!(day.gains_raw, [48, -72, 96, 0]);
+        assert_eq!(day.own_gain_raw, 72);
+        assert_eq!(
+            day.own_gain_quantity_raw,
+            24 * engine::fuel_awards::quantity(3)
+        );
+        assert_eq!(day.recipients.len(), 1);
+        let part = &day.recipients[0];
         assert_eq!(part.name.as_deref(), Some(&b"retained"[..]));
         assert_eq!(part.owner, row.country + 100);
+        assert_eq!((part.first_hour, part.last_hour), (1, 24));
         assert_eq!(
             part.amount_raw,
             if row.country == 1 {
                 0
             } else {
-                -(row.country as i64)
+                -24 * row.country as i64
             }
         );
+        assert_eq!(day.received_raw, [part.amount_raw, 0, 0]);
     }
+}
+
+#[test]
+fn a_day_whose_sums_leave_their_native_width_is_refused_by_name() {
+    let mut windows = Windows::default();
+    let mut tables = input(1);
+    let mut cursor = 0;
+    windows
+        .assemble(1, 0, &capture(0, Vec::new()), &mut tables)
+        .unwrap();
+    let before = super::day_sum_refusals();
+    for hour in 1..=24 {
+        let mut events = entries(hour, 1);
+        events[1].settled.own_gain = i64::MAX;
+        let captured = capture(cursor, events);
+        cursor = captured.drained.unwrap().unwrap().0.cursor;
+        windows.assemble(1, hour, &captured, &mut tables).unwrap();
+    }
+    let Recorded::Value(day) = &rows(&tables)[0].award_day else {
+        panic!()
+    };
+    assert!(String::from_utf8_lossy(&day.reason).contains("exceeds its native i64"));
+    assert!(day.recipients.is_empty() && day.own_gain_raw == 0);
+    assert_eq!(day.continuity_start_hour, Some(1));
+    assert!(super::day_sum_refusals() > before);
 }
 #[test]
 fn missing_interval_writer_epoch_and_country_replacement_do_not_fabricate_zero() {
@@ -353,10 +400,10 @@ fn missing_interval_writer_epoch_and_country_replacement_do_not_fabricate_zero()
     let captured = capture(cursor, changed);
     cursor += 4;
     windows.assemble(1, 25, &captured, &mut tables).unwrap();
-    let Recorded::Value(first) = &rows(&tables)[0].awards else {
+    let Recorded::Value(first) = &rows(&tables)[0].award_day else {
         panic!()
     };
-    let Recorded::Value(second) = &rows(&tables)[1].awards else {
+    let Recorded::Value(second) = &rows(&tables)[1].award_day else {
         panic!()
     };
     assert!(!first.reason.is_empty());
@@ -367,7 +414,7 @@ fn missing_interval_writer_epoch_and_country_replacement_do_not_fabricate_zero()
     assert!(
         rows(&tables)
             .iter()
-            .all(|r| matches!(&r.awards,Recorded::Value(w) if !w.reason.is_empty()))
+            .all(|r| matches!(&r.award_day,Recorded::Value(w) if !w.reason.is_empty()))
     );
     let mut restarted = capture(cursor, entries(28, 2));
     restarted
@@ -382,6 +429,6 @@ fn missing_interval_writer_epoch_and_country_replacement_do_not_fabricate_zero()
     assert!(
         rows(&tables)
             .iter()
-            .all(|r| matches!(&r.awards,Recorded::Value(w) if w.hours.is_empty()))
+            .all(|r| matches!(&r.award_day,Recorded::Value(w) if w.recipients.is_empty() && !w.reason.is_empty()))
     );
 }

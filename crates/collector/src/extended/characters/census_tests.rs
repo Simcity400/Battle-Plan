@@ -11,8 +11,8 @@ use std::cell::Cell;
 pub(super) const MODULE: usize = 0x7ff6_0000_0000;
 pub(super) const GAME_STATE: usize = 0x1_0000_0000;
 const MANAGER: usize = 0x1_0001_0000;
-const HISTORICAL: usize = 0x2_0000_0000;
-const DYNAMIC: usize = 0x3_0000_0000;
+pub(super) const HISTORICAL: usize = 0x2_0000_0000;
+pub(super) const DYNAMIC: usize = 0x3_0000_0000;
 const CHARACTER: usize = 0x4_0000_0000;
 const LEADER_HEAD: usize = 0x5_0000_0000;
 const LEADER_NODE: usize = 0x6_0000_0000;
@@ -20,13 +20,13 @@ const LEADER_ROLE: usize = 0x7_0000_0000;
 const ADVISOR_HEAD: usize = 0x8_0000_0000;
 const ADVISOR_NODE: usize = 0x9_0000_0000;
 const ADVISOR_ROLE: usize = 0xa_0000_0000;
-const UNIT: usize = 0xb_0000_0000;
-const TRAITS: usize = 0xc_0000_0000;
+pub(super) const UNIT: usize = 0xb_0000_0000;
+pub(super) const TRAITS: usize = 0xc_0000_0000;
 const EXPERIENCE: usize = 0xd_0000_0000;
-const DEFINITION: usize = 0xe_0000_0000;
+pub(super) const DEFINITION: usize = 0xe_0000_0000;
 
 /// `(region, stride)` of each procedural object family.
-const STRIDES: [(usize, usize); 11] = [
+pub(super) const STRIDES: [(usize, usize); 11] = [
     (CHARACTER, 0x100),
     (LEADER_HEAD, 0x40),
     (LEADER_NODE, 0x40),
@@ -96,6 +96,10 @@ impl World {
 
     pub fn leader_head(index: usize) -> usize {
         LEADER_HEAD + index * 0x40
+    }
+
+    pub fn leader_role(index: usize) -> usize {
+        LEADER_ROLE + index * 0x200
     }
 
     pub fn advisor_head(index: usize) -> usize {
@@ -557,35 +561,35 @@ impl advisors::Changes for Quiet {
     fn revision(&self, _map: usize) -> Option<(u64, u64)> {
         Some((0, 0))
     }
-    fn verify(&self) -> bool {
-        false
+    fn check(&self) -> crate::sampled_verify::Check {
+        crate::sampled_verify::Check::Nothing
     }
 }
 
 /// Pooled capacities that hold a 5,000-country roster without truncation.
 pub(super) fn capacities() -> Capacities {
     Capacities {
-        rows: [1 << 18, 1 << 16, 1 << 13, 1 << 16, 1 << 17, 1 << 18],
-        bytes: [1 << 23, 0, 1 << 20, 1 << 21, 1 << 20, 1 << 21],
+        rows: [1 << 18, 1 << 16, 1 << 13, 1 << 16, 1 << 17],
+        bytes: [1 << 23, 0, 1 << 20, 1 << 21, 1 << 20],
     }
 }
 
-pub(super) fn context(active: [bool; 6]) -> CharactersCopyContext {
+pub(super) fn context(active: [bool; 5]) -> CharactersCopyContext {
     let capacities = capacities();
     CharactersCopyContext {
         force_full: false,
         base: MODULE,
         game_state: GAME_STATE,
         active,
-        trait_rows: [capacities.rows[4], capacities.rows[5]],
-        trait_bytes: [capacities.bytes[4], capacities.bytes[5]],
+        trait_rows: capacities.rows[4],
+        trait_bytes: capacities.bytes[4],
     }
 }
 
 /// Grow a job until its staging holds the whole capture, as recycling does.
 fn settle(
     memory: &impl Memory,
-    active: [bool; 6],
+    active: [bool; 5],
     job: &mut CharactersJob,
     roles: Roles<&census::RoleCensus>,
 ) {
@@ -604,12 +608,20 @@ fn settle(
     panic!("character staging did not settle");
 }
 
-fn best_of_five(
+/// Best time of `CHARACTERS_TIMING_REPEATS` runs (default 1). Every run
+/// starts from the same prepared state, so the guarded-call count the tests
+/// assert is the same on each; only a printed time needs several runs.
+fn best_time(
     mut run: impl FnMut() -> (usize, std::time::Duration),
 ) -> (usize, std::time::Duration) {
+    let repeats = std::env::var("CHARACTERS_TIMING_REPEATS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1)
+        .max(1);
     let mut best = std::time::Duration::MAX;
     let mut calls = 0;
-    for _ in 0..5 {
+    for _ in 0..repeats {
         let (count, elapsed) = run();
         calls = count;
         best = best.min(elapsed);
@@ -619,12 +631,12 @@ fn best_of_five(
 
 fn decode(job: &CharactersJob) -> Captured {
     let mut captured = Captured::with_capacities(&capacities());
-    captured.decode_characters_payload(MODULE, job, &mut [0; 6]);
+    captured.decode_characters_payload(MODULE, job, &mut [0; 5]);
     captured
 }
 
 /// The typed walk of one part's tables against live memory.
-fn typed(memory: &impl Memory, part: usize) -> Captured {
+pub(super) fn typed(memory: &impl Memory, part: usize) -> Captured {
     let mut captured = Captured::with_capacities(&capacities());
     let results = walk_family(
         memory,
@@ -643,7 +655,7 @@ fn typed(memory: &impl Memory, part: usize) -> Captured {
 }
 
 /// The roster job's payload after a role-hour pass.
-fn roster(memory: &impl Memory) -> CharactersJob {
+pub(super) fn roster(memory: &impl Memory) -> CharactersJob {
     let mut job = CharactersJob::new_part(0);
     settle(memory, PART_MASKS[0], &mut job, Roles::Gather);
     let report = copy_characters(memory, context(PART_MASKS[0]), &mut job, Roles::Gather);
@@ -674,7 +686,7 @@ fn assert_part(memory: &impl Memory, part: usize, loan: Option<&census::RoleCens
 }
 
 /// Decoded tables of one payload, checked against the fixture's role counts.
-fn check(world: &World, captured: &Captured, active: [bool; 6]) {
+fn check(world: &World, captured: &Captured, active: [bool; 5]) {
     let outcomes = captured.outcomes();
     let n = world.characters;
     let expected = [
@@ -688,14 +700,12 @@ fn check(world: &World, captured: &Captured, active: [bool; 6]) {
             assert_eq!(outcomes[table], Outcome::Rows { len }, "table {table}");
         }
     }
-    for table in [4, 5] {
-        if active[table] {
-            assert!(
-                matches!(outcomes[table], Outcome::Rows { len } if len > 0),
-                "table {table}: {:?}",
-                outcomes[table]
-            );
-        }
+    if active[4] {
+        assert!(
+            matches!(outcomes[4], Outcome::Rows { len } if len > 0),
+            "traits: {:?}",
+            outcomes[4]
+        );
     }
 }
 
@@ -732,8 +742,8 @@ impl advisors::Changes for Unwatched {
     fn revision(&self, _map: usize) -> Option<(u64, u64)> {
         None
     }
-    fn verify(&self) -> bool {
-        false
+    fn check(&self) -> crate::sampled_verify::Check {
+        crate::sampled_verify::Check::Nothing
     }
 }
 
@@ -758,9 +768,10 @@ fn worker_growth_acquires_current_ideology_for_every_authenticated_role() {
     characters_test_kit::assert_matches_direct(&captured, &typed(&memory, 1));
 }
 
-/// Prints guarded calls and the best of five capture times per character
-/// part, independently and with the census loan; run with `--release
-/// --nocapture` to measure. Each loaned result equals the independent one.
+/// Prints guarded calls and the best capture time per character part,
+/// independently and with the census loan; to measure, set
+/// `CHARACTERS_TIMING_REPEATS=5` and run with `--release --nocapture`. Each
+/// loaned result equals the independent one.
 #[test]
 fn role_capture_cost_scales_with_roles_not_roster() {
     for countries in [440, 1_500, 5_000] {
@@ -787,7 +798,7 @@ fn role_capture_cost_scales_with_roles_not_roster() {
                 job.log.invalidate_read_plan();
                 job.prepare_read_plans();
             }
-            best_of_five(|| {
+            best_time(|| {
                 memory.reset();
                 let begin = std::time::Instant::now();
                 let report = copy_characters(&memory, context(active), &mut job, roles);
@@ -857,7 +868,7 @@ fn role_capture_cost_scales_with_roles_not_roster() {
         for (variant, source) in [("roster", None), ("census", admitted)] {
             let mut cache = advisor_cache(&world, source);
             let mut measure = |observer: &dyn advisors::Changes| {
-                best_of_five(|| {
+                best_time(|| {
                     memory.reset();
                     let begin = std::time::Instant::now();
                     cache.capture_growing(&memory, ctx, observer, source);
@@ -1091,6 +1102,9 @@ fn exhausted_census_storage_falls_back_and_grows_to_the_whole_demand() {
     let loan = owner.role_census().unwrap();
     for part in [1, 3] {
         let mut job = CharactersJob::new_part(part);
+        // The leader cache reads no visit list; this covers the raw census
+        // acquisition it replaces, which stays the path without the cache.
+        job.leader_cache = None;
         settle(&world, PART_MASKS[part], &mut job, Roles::Borrow(&loan));
         job.census_visited = Vec::with_capacity(3);
         let report = copy_characters(
@@ -1177,14 +1191,117 @@ fn census_advisor_cache_keeps_reuse_verification_and_fresh_countries() {
         fn revision(&self, _map: usize) -> Option<(u64, u64)> {
             Some((0, 0))
         }
-        fn verify(&self) -> bool {
-            true
+        fn check(&self) -> crate::sampled_verify::Check {
+            crate::sampled_verify::Check::Every
         }
     }
     cache.prepare();
     cache.capture_growing(&world, ctx, &Verify, loan.admitted(MODULE, GAME_STATE));
     assert!(cache.counts.verified > 0);
     assert_eq!(cache.counts.mismatches, 0);
+    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
+}
+
+/// The advisor family's domain with a revision that moves when a writer runs.
+pub(super) struct Advisors {
+    pub revision: Cell<u64>,
+    pub check: crate::sampled_verify::Check,
+}
+
+impl advisors::Changes for Advisors {
+    fn quiet(&self) -> Option<(u64, u64)> {
+        Some((0, self.revision.get()))
+    }
+    fn revision(&self, _map: usize) -> Option<(u64, u64)> {
+        Some((0, 0))
+    }
+    fn check(&self) -> crate::sampled_verify::Check {
+        self.check
+    }
+}
+
+/// A quiet hour of the advisor job carries every definition, modifier cache
+/// and tooltip key without a read, apart from its sampled slice; a writer of
+/// either family, a changed census or a load reads again.
+#[test]
+fn quiet_advisor_hours_read_nothing_but_their_slice() {
+    use crate::character_changes::Counting as Lookups;
+    use crate::sampled_verify::Check;
+    static DOMAIN: Lookups = Lookups::new();
+    let mut world = small();
+    DOMAIN.watches.enable(world.characters);
+    let ctx = context(PART_MASKS[2]);
+    let fresh = |world: &World| typed(world, 2);
+    let mut observer = Advisors {
+        revision: Cell::new(0),
+        check: Check::Nothing,
+    };
+    let demand = cadvisor::modifier_demand(&world, MODULE, GAME_STATE).unwrap();
+    let mut cache = advisors::Cache::with_modifier_demand(demand);
+    cache.observe_roles(&DOMAIN, Some(Check::Nothing));
+    let owner = roster(&world);
+    let loan = owner.role_census().unwrap();
+    cache.capture_growing(&world, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
+    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
+    assert!(DOMAIN.lookups() > 0);
+    cache.prepare();
+    // Nothing ran: no read, no lookup, the same tables.
+    let counting = Counting::new(&world);
+    cache.capture_growing(&counting, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
+    assert_eq!(counting.calls.get(), 0, "a quiet hour reads nothing");
+    assert_eq!(DOMAIN.lookups(), 0, "a quiet hour looks up no character");
+    assert_eq!(cache.counts.planned, 0);
+    assert!(cache.counts.reused > 0);
+    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
+    // A sampled quiet hour reads only its slice.
+    observer.check = Check::Slice { hour: 7 };
+    cache.observe_roles(&DOMAIN, Some(Check::Slice { hour: 7 }));
+    let counting = Counting::new(&world);
+    cache.capture_growing(&counting, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
+    assert!(counting.calls.get() > 0);
+    assert!(cache.counts.verified > 0);
+    assert_eq!((DOMAIN.lookups(), cache.counts.mismatches), (0, 0));
+    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
+    observer.check = Check::Nothing;
+    cache.observe_roles(&DOMAIN, Some(Check::Nothing));
+    // An advisor-family writer: the definitions are certified again.
+    observer.revision.set(1);
+    let counting = Counting::new(&world);
+    cache.capture_growing(&counting, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
+    assert!(counting.calls.get() > 0);
+    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
+    cache.prepare();
+    let counting = Counting::new(&world);
+    cache.capture_growing(&counting, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
+    assert_eq!(counting.calls.get(), 0);
+    // A character-domain writer: every role's certificate is looked up.
+    drop(DOMAIN.watches.notify(Some(World::character(5)), 0));
+    DOMAIN.lookups();
+    cache.capture_growing(&world, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
+    assert!(DOMAIN.lookups() > 0);
+    cache.prepare();
+    let counting = Counting::new(&world);
+    cache.capture_growing(&counting, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
+    assert_eq!((counting.calls.get(), DOMAIN.lookups()), (0, 0));
+    // A changed census (a country) certifies every section again.
+    drop(loan);
+    world.patch(
+        World::character(3) + ccharacter::COUNTRY,
+        &99_u32.to_le_bytes(),
+    );
+    let owner = roster(&world);
+    let loan = owner.role_census().unwrap();
+    let counting = Counting::new(&world);
+    cache.capture_growing(&counting, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
+    assert!(counting.calls.get() > 0);
+    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
+    cache.prepare();
+    // A load, gap or recovery reads every role afresh.
+    DOMAIN.watches.boundary(true);
+    DOMAIN.lookups();
+    let counting = Counting::new(&world);
+    cache.capture_growing(&counting, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
+    assert!(counting.calls.get() > 0 && DOMAIN.lookups() > 0);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
 }
 
@@ -1206,4 +1323,77 @@ fn visit_lists_follow_the_live_census_length() {
     // Growth reserves at least the recorded demand.
     job.grow();
     assert!(job.census_visited.capacity() >= 109);
+}
+
+/// A frame whose buffers hold the advisor cache's table publishes it again
+/// without rewriting it while the cache carried the table whole (a planted
+/// marker survives); a capture that reads afresh rewrites it.
+#[test]
+fn a_frame_publishes_its_held_advisor_table_without_rewriting_it() {
+    use crate::character_changes::Counting as Lookups;
+    use crate::sampled_verify::Check;
+    static DOMAIN: Lookups = Lookups::new();
+    let world = small();
+    DOMAIN.watches.enable(world.characters);
+    let ctx = context(PART_MASKS[2]);
+    let observer = Advisors {
+        revision: Cell::new(0),
+        check: Check::Nothing,
+    };
+    let demand = cadvisor::modifier_demand(&world, MODULE, GAME_STATE).unwrap();
+    let mut cache = advisors::Cache::with_modifier_demand(demand);
+    cache.observe_roles(&DOMAIN, Some(Check::Nothing));
+    let owner = roster(&world);
+    let loan = owner.role_census().unwrap();
+    let mut frame = Captured::with_capacities(&capacities());
+    let hour = |cache: &mut advisors::Cache, frame: &mut Captured| {
+        cache.capture_growing(&world, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
+        cache.prepare();
+        frame.grow(&mut capacities());
+        frame.reset();
+        frame.fail_character_tables(
+            PART_MASKS[2].map(|active| !active),
+            replay::cadence::SKIPPED_REASON,
+        );
+        cache.decode(frame);
+        frame.tables()[2].clone()
+    };
+    let fresh = typed(&world, 2).tables()[2].clone();
+    for _ in 0..2 {
+        assert_eq!(hour(&mut cache, &mut frame), fresh);
+    }
+    const MARK: u32 = 0x5eed;
+    frame.advisors.rows.rows[0].character = MARK;
+    hour(&mut cache, &mut frame);
+    assert_eq!(cache.counts.planned, 0);
+    assert_eq!(
+        frame.advisors.rows.rows[0].character, MARK,
+        "rows republished in place"
+    );
+    // An advisor-family writer: the capture reads and the frame is rewritten.
+    observer.revision.set(1);
+    assert_eq!(hour(&mut cache, &mut frame), fresh);
+}
+
+/// A census's slice is the occurrences whose character id the check covers,
+/// whether listed by key bucket or filtered.
+#[test]
+fn a_census_slice_lists_exactly_the_covered_occurrences() {
+    use crate::sampled_verify::Check;
+    let world = World::new(2_000);
+    let owner = roster(&world);
+    let loan = owner.role_census().unwrap();
+    let census = loan.admitted(MODULE, GAME_STATE).unwrap();
+    let checks = [Check::Nothing, Check::Every]
+        .into_iter()
+        .chain((0..30).map(|hour| Check::Slice { hour }))
+        .chain([0, 7, 575, 600].map(|hour| Check::BurnedIn { hour }));
+    for check in checks {
+        let mut covered: Vec<usize> = census.covered(check).collect();
+        covered.sort_unstable();
+        let filtered: Vec<usize> = (0..census.len())
+            .filter(|&index| check.covers(u64::from(census.occurrence(index).id())))
+            .collect();
+        assert_eq!(covered, filtered, "{check:?}");
+    }
 }

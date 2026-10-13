@@ -491,3 +491,75 @@ fn annex_missing_scope_role_or_wrong_native_frame_is_not_complete_empty() {
         Err("event feed operand unreadable")
     );
 }
+
+mod provenance_sites {
+    use super::*;
+    use crate::{cstate, peace_conference};
+    use provenance::{ENTRIES, STATE_OWNER_CALLERS, World, route, state_owner};
+
+    const CONFERENCE: usize = 0x90000;
+    const PROVINCE_STATE: usize = 0x91000;
+
+    #[test]
+    fn entry_sentinels_require_every_byte_and_callers_name_their_returns() {
+        for entry in ENTRIES {
+            let mut image = Image::new();
+            image.bytes(BASE + entry.rva, &entry.sentinel);
+            assert_eq!(
+                provenance::verify(&image, BASE, entry),
+                Ok(BASE + entry.rva)
+            );
+            image.bytes(BASE + entry.rva + 15, &[entry.sentinel[15] ^ 1]);
+            assert_eq!(
+                provenance::verify(&image, BASE, entry),
+                Err("event feed entry sentinel unreadable or differs")
+            );
+            for caller in entry.callers {
+                assert_eq!(route(entry.callers, caller.return_rva), Some(caller.route));
+                // The CALL instruction itself is not a return address.
+                assert_eq!(route(entry.callers, caller.return_rva - 5), None);
+            }
+        }
+        assert_eq!(route(&STATE_OWNER_CALLERS, 0x006c_8232), Some("StateAnnex"));
+    }
+
+    #[test]
+    fn world_readers_authenticate_objects_and_keep_references_and_instances() {
+        let mut image = Image::new();
+        let world = World::new(&image, BASE).unwrap();
+        assert_eq!(world.hour(), Ok(60828400));
+        assert_eq!(world.country_object(ACTOR).unwrap().instance, 0xbbbb);
+        // Slot 3 aliases the target: its object is canonical for reference 2 only.
+        assert_eq!(world.country(3).unwrap().id, 2);
+        assert_eq!(world.diplomacy_owner(0x31000).unwrap().reference, 2);
+        assert_eq!(
+            world
+                .war_endpoints(CANDIDATE)
+                .unwrap()
+                .map(|country| country.id),
+            [1, 2]
+        );
+        // A conference names its winner (+0x38) and loser (+0x34).
+        image.q(CONFERENCE, BASE + peace_conference::VTABLE_RVA);
+        image.q(CONFERENCE + peace_conference::REFERENCE, 0x7_0000_0031);
+        image.d(CONFERENCE + provenance::MAIN_LOSER, 2);
+        image.d(CONFERENCE + provenance::MAIN_WINNER, 1);
+        let world = World::new(&image, BASE).unwrap();
+        let (reference, [winner, loser]) = world.conference(CONFERENCE).unwrap();
+        assert_eq!((reference, winner.id, loser.id), (0x7_0000_0031, 1, 2));
+        image.q(CONFERENCE + peace_conference::REFERENCE, 0);
+        let world = World::new(&image, BASE).unwrap();
+        assert_eq!(
+            world.conference(CONFERENCE).err(),
+            Some("event feed conference reference is null")
+        );
+        // Other objects fail their vtables.
+        assert!(world.war_endpoints(CONFERENCE).is_err());
+        assert!(world.country_object(CANDIDATE).is_err());
+        image.q(PROVINCE_STATE, BASE + cstate::VTABLE_RVA);
+        image.d(PROVINCE_STATE + cstate::ID, 64);
+        image.d(PROVINCE_STATE + cstate::OWNER, 2);
+        assert_eq!(state_owner(&image, BASE, PROVINCE_STATE), Ok((64, 2)));
+        assert!(state_owner(&image, BASE, CONFERENCE).is_err());
+    }
+}

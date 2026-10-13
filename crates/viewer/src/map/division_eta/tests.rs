@@ -2,16 +2,14 @@ use super::*;
 use installed_content::movement::{Neighbour, ProvinceTerrain};
 use replay::{
     frame::{Metrics, TableView},
-    rows::{
-        DivisionEtaInputsRow, DivisionMovementRow, DivisionRow, ProvinceRow, StateRow, TableId,
-        TableRows, WeatherProvinceRow, WeatherRegionRow,
-    },
+    rows::{DivisionMovementRow, DivisionRow, Recorded, TableRows},
 };
 
 const DIVISION: u64 = 7;
-/// A normal-speed fixture whose expected pair is arithmetic.
+/// A base speed whose expected pair is arithmetic at movement scale 1.0.
 const SPEED: i64 = 700_000;
 const LAND: ProvinceTerrain = ProvinceTerrain { flags: 1, index: 1 };
+const UNRECORDED: &str = "DivisionMovement.base_speed is not recorded in this format";
 
 fn content(map: MovementMap) -> MovementContent {
     MovementContent {
@@ -24,7 +22,6 @@ fn content(map: MovementMap) -> MovementContent {
             speed: [0; 4],
             maximum_level: 0,
         }),
-        naval: Err("unrelated naval defines are unavailable".into()),
         task_force_terrain: Err("unrelated task-force terrain is unavailable".into()),
     }
 }
@@ -43,84 +40,62 @@ fn two_leg_map() -> MovementMap {
     ])
 }
 
+/// Every table unavailable: an estimate reads no weather, state, province or
+/// speed-graph row.
 fn frame() -> DecodedFrame {
     DecodedFrame {
         branch: 1,
         hour: 60_832_632,
         tables: std::array::from_fn(|_| TableView::Unavailable {
-            reason: "not needed for the ETA source".into(),
+            reason: "not needed for the estimate".into(),
         })
         .map(Into::into),
         metrics: Metrics::default(),
     }
 }
 
-fn put(frame: &mut DecodedFrame, id: TableId, rows: TableRows) {
+fn put(frame: &mut DecodedFrame, rows: TableRows) {
+    let id = rows.table();
     *frame.tables[id.index()] = TableView::Complete(rows);
 }
 
-fn inputs(division: u64) -> DivisionEtaInputsRow {
-    DivisionEtaInputsRow {
-        division,
-        sample_hour: frame().hour,
-        speed_modifier: 100_000,
-        speed_base: SPEED,
-        current_speed: SPEED,
-        terrain_speed: vec![replay::rows::TerrainSpeed {
-            terrain: 1,
-            modifier: 0,
-        }],
+fn moving(base_speed: Recorded<Option<i64>>) -> DivisionMovementRow {
+    DivisionMovementRow {
+        division: DIVISION,
+        path: vec![2, 3],
+        path_total: 2,
+        numerator: 175_000,
+        base_speed,
         ..Default::default()
     }
 }
 
+/// One division at province 1 on the two-leg route 2, 3 with `base_speed`.
+fn hour(base_speed: Recorded<Option<i64>>) -> DecodedFrame {
+    let mut frame = frame();
+    put(
+        &mut frame,
+        TableRows::Divisions(vec![DivisionRow {
+            id: DIVISION,
+            province: 1,
+            ..Default::default()
+        }]),
+    );
+    put(
+        &mut frame,
+        TableRows::DivisionMovement(vec![moving(base_speed)]),
+    );
+    frame
+}
+
 /// A busy hour: `provinces` land provinces with no authored neighbours, so
 /// every hop takes the native 100000 fallback, and `divisions` movers each
-/// on a `legs`-hop route with complete normal-speed operands.
+/// on a `legs`-hop route at the same base speed.
 fn busy_hour(provinces: u32, divisions: u64, legs: usize) -> (DecodedFrame, MovementMap) {
-    let mut frame = derivable();
+    let mut frame = frame();
     let hop = |division: u64, leg: usize| (division as u32 * 7 + leg as u32) % provinces + 1;
-    let ids = 1..=provinces;
     put(
         &mut frame,
-        TableId::WeatherProvinces,
-        TableRows::WeatherProvinces(
-            ids.clone()
-                .map(|id| WeatherProvinceRow {
-                    id,
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    put(
-        &mut frame,
-        TableId::Provinces,
-        TableRows::Provinces(
-            ids.clone()
-                .map(|id| ProvinceRow {
-                    id,
-                    state: id % 900 + 1,
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    put(
-        &mut frame,
-        TableId::States,
-        TableRows::States(
-            (1..=901)
-                .map(|id| StateRow {
-                    id,
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    put(
-        &mut frame,
-        TableId::Divisions,
         TableRows::Divisions(
             (0..divisions)
                 .map(|id| DivisionRow {
@@ -133,105 +108,31 @@ fn busy_hour(provinces: u32, divisions: u64, legs: usize) -> (DecodedFrame, Move
     );
     put(
         &mut frame,
-        TableId::DivisionMovement,
         TableRows::DivisionMovement(
             (0..divisions)
                 .map(|id| DivisionMovementRow {
                     division: id,
                     path: (1..=legs).map(|leg| hop(id, leg)).collect(),
                     path_total: legs as u32,
+                    base_speed: Some(SPEED).into(),
                     ..Default::default()
                 })
                 .collect(),
         ),
     );
-    put(
-        &mut frame,
-        TableId::DivisionEtaInputs,
-        TableRows::DivisionEtaInputs((0..divisions).map(inputs).collect()),
+    let map = MovementMap::from_parts(
+        &(1..=provinces)
+            .map(|id| (id, LAND, Vec::new()))
+            .collect::<Vec<_>>(),
     );
-    let map = MovementMap::from_parts(&ids.map(|id| (id, LAND, Vec::new())).collect::<Vec<_>>());
     (frame, map)
 }
 
-/// One division at province 1 on the two-leg route 2, 3, all land, no snow,
-/// no fort and no infrastructure, taking the normal-speed branch.
-fn derivable() -> DecodedFrame {
-    let mut frame = frame();
-    put(
-        &mut frame,
-        TableId::WeatherRegions,
-        TableRows::WeatherRegions(vec![WeatherRegionRow {
-            max_snow: 20_000,
-            ..Default::default()
-        }]),
-    );
-    put(
-        &mut frame,
-        TableId::WeatherProvinces,
-        TableRows::WeatherProvinces(
-            (1..=3)
-                .map(|id| WeatherProvinceRow {
-                    id,
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    put(
-        &mut frame,
-        TableId::Provinces,
-        TableRows::Provinces(
-            (1..=3)
-                .map(|id| ProvinceRow {
-                    id,
-                    state: 1,
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    put(
-        &mut frame,
-        TableId::States,
-        TableRows::States(vec![StateRow {
-            id: 1,
-            ..Default::default()
-        }]),
-    );
-    put(
-        &mut frame,
-        TableId::Divisions,
-        TableRows::Divisions(vec![DivisionRow {
-            id: DIVISION,
-            province: 1,
-            ..Default::default()
-        }]),
-    );
-    put(
-        &mut frame,
-        TableId::DivisionMovement,
-        TableRows::DivisionMovement(vec![DivisionMovementRow {
-            division: DIVISION,
-            path: vec![2, 3],
-            path_total: 2,
-            numerator: 175_000,
-            ..Default::default()
-        }]),
-    );
-    put(
-        &mut frame,
-        TableId::DivisionEtaInputs,
-        TableRows::DivisionEtaInputs(vec![inputs(DIVISION)]),
-    );
-    frame
-}
-
 #[test]
-fn an_hour_without_inputs_has_no_eta_and_no_refusal() {
+fn an_hour_without_movement_has_no_estimate_and_no_refusal() {
     let map = content(two_leg_map());
     let etas = Etas::read(&frame(), Some(&map)).unwrap();
-    assert_eq!(etas.report(), Report::default());
+    assert_eq!(etas.report(), &Report::default());
     assert_eq!(etas.get(DIVISION), None);
     assert_eq!(etas.report().line(), None);
     let skipped = Report {
@@ -245,160 +146,98 @@ fn an_hour_without_inputs_has_no_eta_and_no_refusal() {
     );
 }
 
+/// The estimate is the remaining route distance over the estimated speed,
+/// read from the route, the location, content geometry and the base speed
+/// alone: this hour holds no weather, state, province or speed-graph rows.
 #[test]
-fn latest_operand_rows_survive_seek_but_future_and_expired_rows_are_refused() {
+fn an_estimate_is_the_remaining_route_distance_over_the_estimated_speed() {
     let map = content(two_leg_map());
-    for age in [-1, 0, 1, 4, 5] {
-        let mut frame = derivable();
-        let mut row = inputs(DIVISION);
-        row.sample_hour = frame.hour - age;
-        put(
-            &mut frame,
-            TableId::DivisionEtaInputs,
-            TableRows::DivisionEtaInputs(vec![row]),
-        );
-        let etas = Etas::read(&frame, Some(&map)).unwrap();
-        assert_eq!(etas.get(DIVISION).is_some(), (0..5).contains(&age));
-        assert_eq!(etas.report().refused, usize::from(!(0..5).contains(&age)));
-    }
-}
-
-#[test]
-fn an_hour_derives_progress_and_both_remaining_durations() {
-    // 350000 and 700000 distance over speed 700000: half an hour and one
-    // hour, less the 175000 numerator already moved (a quarter hour).
-    let map = content(two_leg_map());
-    let etas = Etas::read(&derivable(), Some(&map)).unwrap();
-    assert_eq!(etas.get(DIVISION), Some((25_000, 125_000)));
-    // Progress divides the numerator by the first edge's content distance.
-    assert_eq!(etas.progress(DIVISION), Ok(50_000));
-    assert_eq!(
-        etas.report(),
-        Report {
-            derived: 1,
-            ..Report::default()
-        }
-    );
-}
-
-#[test]
-fn operand_indices_bound_storage_by_rows_and_preserve_sparse_keys() {
-    let dense = indexed(&[(0, 3), (2, 7)], |&row| row);
-    assert!(matches!(&dense, OperandIndex::Dense(values) if values.len() == 3));
-    assert_eq!(dense.get(0), Some(3));
-    assert_eq!(dense.get(1), None);
-    let sparse = indexed(&[(1, 3), (u32::MAX, 7)], |&row| row);
-    assert!(matches!(&sparse, OperandIndex::Sparse(values) if values.len() == 2));
-    assert_eq!(sparse.get(1), Some(3));
-    assert_eq!(sparse.get(u32::MAX), Some(7));
-    assert_eq!(sparse.get(u32::MAX - 1), None);
-}
-
-#[test]
-fn permanent_snow_and_infrastructure_enter_the_normal_edge() {
-    let mut frame = derivable();
-    put(
-        &mut frame,
-        TableId::States,
-        TableRows::States(vec![StateRow {
-            id: 1,
-            movement_infrastructure: 50_000,
-            ..Default::default()
-        }]),
-    );
-    put(
-        &mut frame,
-        TableId::DivisionMovement,
-        TableRows::DivisionMovement(vec![DivisionMovementRow {
-            division: DIVISION,
-            path: vec![2],
-            path_total: 1,
-            ..Default::default()
-        }]),
-    );
-    put(
-        &mut frame,
-        TableId::DivisionEtaInputs,
-        TableRows::DivisionEtaInputs(vec![DivisionEtaInputsRow {
-            speed_base: 400_000,
-            current_speed: 400_000,
-            snow_penalty: -100_000,
-            ..inputs(DIVISION)
-        }]),
-    );
-    // (1 - 1 snow + 0.5 infrastructure) * 400000 = 200000 speed over the
-    // 350000 edge: the destination's permanent snow alone makes it snowy.
-    put(
-        &mut frame,
-        TableId::WeatherProvinces,
-        TableRows::WeatherProvinces(
-            (1..=3)
-                .map(|id| WeatherProvinceRow {
-                    id,
-                    permanent_snow: i64::from(id == 2),
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    let map = content(two_leg_map());
-    let etas = Etas::read(&frame, Some(&map)).unwrap();
-    assert_eq!(etas.get(DIVISION), Some((175_000, 175_000)));
-    assert_eq!(etas.report().refused, 0);
-}
-
-#[test]
-fn a_missing_operand_refuses_the_row_instead_of_deriving_without_it() {
-    let map = content(two_leg_map());
-    // The snow census and its ceiling are part of the edge speed, so
-    // losing either refuses the ETA; first-edge progress needs no weather
-    // and stands.
-    for table in [TableId::WeatherProvinces, TableId::WeatherRegions] {
-        let mut frame = derivable();
-        *frame.tables[table.index()] = TableView::Unavailable {
-            reason: "dropped for the test".into(),
-        };
-        let etas = Etas::read(&frame, Some(&map)).unwrap();
-        assert_eq!(etas.get(DIVISION), None);
+    for (base, speed) in [(SPEED, SPEED), (350_000, 350_000), (1, 100_000)] {
+        assert_eq!(eta_derive::estimated_speed(base, &map.defines), speed);
+        let etas = Etas::read(&hour(Some(base).into()), Some(&map)).unwrap();
+        // Legs 350000 and 700000, less the 175000 numerator already moved.
+        let leg = |distance: i64| distance * 100_000 / speed;
+        let progress = leg(175_000);
+        let next = leg(350_000) - progress;
+        let destination = leg(350_000) + leg(700_000) - progress;
+        assert_eq!(etas.get(DIVISION), Some((next, destination)), "{base}");
+        assert_eq!(etas.estimate(DIVISION), Ok((next, destination)));
+        // Progress divides the numerator by the first edge's content distance.
         assert_eq!(etas.progress(DIVISION), Ok(50_000));
-        assert_eq!((etas.report().derived, etas.report().refused), (0, 1));
+        assert_eq!(
+            etas.report(),
+            &Report {
+                estimated: 1,
+                ..Report::default()
+            }
+        );
     }
+    let etas = Etas::read(&hour(Some(SPEED).into()), Some(&map)).unwrap();
+    assert_eq!(etas.get(DIVISION), Some((25_000, 125_000)));
+    assert_eq!(super::arrival(&etas, DIVISION, true), Ok(125_000));
+    assert_eq!(super::arrival(&etas, DIVISION, false), Ok(25_000));
+}
 
-    // Without the ETA row there is neither progress nor a claimed zero.
-    let mut frame = derivable();
-    *frame.tables[TableId::DivisionEtaInputs.index()] = TableView::Unavailable {
-        reason: "dropped for the test".into(),
-    };
+/// A recording older than the base speed keeps progress and refuses only
+/// the estimate, by the replay estimate's own name.
+#[test]
+fn older_recordings_refuse_estimates_by_name_but_keep_progress() {
+    let map = content(two_leg_map());
+    for (base_speed, reason) in [
+        (Recorded::NotRecorded, UNRECORDED),
+        (
+            Recorded::Value(None),
+            "the division's base speed was refused",
+        ),
+    ] {
+        let etas = Etas::read(&hour(base_speed), Some(&map)).unwrap();
+        assert_eq!(etas.get(DIVISION), None);
+        assert_eq!(etas.estimate(DIVISION), Err(reason));
+        assert_eq!(super::arrival(&etas, DIVISION, true), Err(reason.into()));
+        assert_eq!(etas.progress(DIVISION), Ok(50_000));
+        let report = etas.report();
+        assert_eq!((report.estimated, report.refused_total()), (0, 1));
+        assert_eq!(report.refused.get(reason).copied(), Some(1));
+        assert_eq!(report.progress_refused, 0);
+        assert!(
+            report
+                .line()
+                .is_some_and(|line| line.contains(&format!("1 estimates refused (1 {reason})")))
+        );
+    }
+}
+
+#[test]
+fn missing_location_content_or_geometry_refuse_by_name() {
+    // No census row: neither progress nor estimate.
+    let map = content(two_leg_map());
+    let mut frame = hour(Some(SPEED).into());
+    put(&mut frame, TableRows::Divisions(vec![]));
     let etas = Etas::read(&frame, Some(&map)).unwrap();
-    assert_eq!(
-        etas.progress(DIVISION),
-        Err("it has no DivisionEtaInputs row valid this hour")
-    );
+    assert_eq!(etas.estimate(DIVISION), Err(NO_LOCATION));
+    assert_eq!(etas.progress(DIVISION), Err(NO_LOCATION));
     assert_eq!(etas.report().progress_refused, 1);
 
-    // A province absent from the content map cannot silently become the
+    // A province absent from the content map is missing geometry, never the
     // null terrain or an ordinary land province.
     let partial = content(MovementMap::from_parts(&[(1, LAND, Vec::new())]));
-    let etas = Etas::read(&derivable(), Some(&partial)).unwrap();
-    assert_eq!(etas.get(DIVISION), None);
+    let etas = Etas::read(&hour(Some(SPEED).into()), Some(&partial)).unwrap();
+    assert_eq!(
+        etas.estimate(DIVISION),
+        Err("route edge 1->2 has no content geometry")
+    );
     assert_eq!(
         etas.progress(DIVISION),
-        Err("eta_derive::movement_progress refuses its recorded route with the content map")
+        Err("eta_derive::division_progress refuses its recorded route with the content map")
     );
 
     // Content that failed to load refuses every moving division, but a
     // division without a route still stands at progress zero.
-    let mut frame = derivable();
+    let mut frame = hour(Some(SPEED).into());
     put(
         &mut frame,
-        TableId::DivisionMovement,
         TableRows::DivisionMovement(vec![
-            DivisionMovementRow {
-                division: DIVISION,
-                path: vec![2],
-                path_total: 1,
-                ..Default::default()
-            },
+            moving(Some(SPEED).into()),
             DivisionMovementRow {
                 division: DIVISION + 1,
                 ..Default::default()
@@ -406,14 +245,15 @@ fn a_missing_operand_refuses_the_row_instead_of_deriving_without_it() {
         ]),
     );
     let etas = Etas::read(&frame, None).unwrap();
-    assert_eq!(etas.get(DIVISION), None);
-    assert_eq!(
-        etas.progress(DIVISION),
-        Err("the content's movement map (terrain and movement defines) failed to load")
-    );
+    assert_eq!(etas.estimate(DIVISION), Err(NO_CONTENT));
+    assert_eq!(etas.progress(DIVISION), Err(NO_CONTENT));
     assert_eq!(etas.progress(DIVISION + 1), Ok(0));
+    assert_eq!(etas.estimate(DIVISION + 1), Err(NO_ROUTE));
     assert_eq!(
-        (etas.report().refused, etas.report().progress_refused),
+        (
+            etas.report().refused_total(),
+            etas.report().progress_refused
+        ),
         (1, 1)
     );
 }
@@ -452,12 +292,12 @@ fn the_cache_holds_the_hours_in_flight_and_evicts_the_oldest() {
 /// Exercise a large synthetic hour without tying correctness to the speed
 /// or load of the machine running the test.
 #[test]
-fn a_busy_hour_derives_every_route() {
+fn a_busy_hour_estimates_every_route() {
     let (frame, map) = busy_hour(13_000, 1_000, 30);
     let map = content(map);
     let etas = Etas::read(&frame, Some(&map)).unwrap();
-    assert_eq!(etas.report().derived, 1_000);
-    assert_eq!(etas.report().refused, 0);
+    assert_eq!(etas.report().estimated, 1_000);
+    assert_eq!(etas.report().refused_total(), 0);
     assert_eq!(etas.report().progress_refused, 0);
     // Thirty known non-neighbour hops at the native 100000 distance, each
     // truncated to 14285 at speed 700000.

@@ -10,7 +10,7 @@ fn icon(value: TemplateNameValue) -> DivisionTemplateIconRow {
     DivisionTemplateIconRow {
         template: (7000_u64 << 32) | 52,
         display_name: Recorded::Value(Some(TemplateDisplayName {
-            sample_hour: 77,
+            sample_hour: PacketHour::Host,
             value,
         })),
         formation_division_count: Recorded::Value(Some(-7)),
@@ -100,8 +100,21 @@ fn fresh_same_frame_certificate_has_no_guessed_daily_origin() {
             .literal,
         b"Dictionary"
     );
+    // A host packet was read with its hourly icon row; only a historical
+    // stamp names another hour.
+    assert!(row.display_name_inputs(78, Some(&dictionary)).is_ok());
+    let mut historical = row.clone();
+    if let Recorded::Value(Some(packet)) = &mut historical.display_name {
+        packet.sample_hour = PacketHour::Stamped(77);
+    }
     assert!(
-        row.display_name_inputs(78, Some(&dictionary))
+        historical
+            .display_name_inputs(77, Some(&dictionary))
+            .is_ok()
+    );
+    assert!(
+        historical
+            .display_name_inputs(78, Some(&dictionary))
             .unwrap_err()
             .contains("not current")
     );

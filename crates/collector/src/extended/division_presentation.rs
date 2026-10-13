@@ -1,12 +1,12 @@
 //! Hourly division companions. Reuses the existing authenticated source census;
 //! movement and counter reads retain separate costs and outcomes. The
-//! commanders' retreat bans (DivisionRetreatBans) are the sliced
-//! `retreat_bans` family, read daily per roster owner with a constant print.
+//! commanders' retreat bans (DivisionRetreatBans) are read for every division
+//! each hour, carrying each commander's bans while no forwarded writer
+//! touched it ([`crate::retreat_ban_changes`]).
 use super::production::Sources;
 use crate::{
     projection::{Projection, project_table, scalar_table},
     sampling::qpc,
-    slicing::{SliceFingerprints, SliceSelection},
     spooling::unavailable,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
@@ -18,60 +18,58 @@ use engine::{
 use replay::{
     frame::TableInput,
     rows::{
-        DivisionAcclimatization, DivisionMovementRow, DivisionRetreatBanRow, DivisionStatusRow,
-        NameOperands, Recorded, TableId, tables,
+        DivisionCamouflage, DivisionMovementRow, DivisionRetreatBanRow, DivisionStatusRow,
+        NameOperands, Recorded, Retired, TableId, Witnessed, tables,
     },
 };
 
-pub const N: usize = 5;
-/// DivisionRetreatBans' index in [`TABLES`] and the outcomes.
-pub const BANS: usize = 2;
+pub const N: usize = 4;
+/// The passes inside the DivisionStatus acquisition span.
+pub(crate) const PHASES: usize = 3;
+pub(crate) const PHASE_NAMES: [&str; PHASES] = ["status", "dig_in", "naming"];
 pub const TABLES: [TableId; N] = [
     TableId::DivisionMovement,
     TableId::DivisionStatus,
     TableId::DivisionRetreatBans,
-    TableId::AttritionModifierBreakdowns,
     TableId::DivisionLandInputs,
 ];
 // Both depend on the shared division census; the combined source read group in
 // extended::read_groups includes their individually measured costs.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-static SELECTED_RETREAT_REFUSALS: [std::sync::atomic::AtomicU64; 2] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
 static WITHDRAWAL_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static MOVEMENT_PRIORITY_REFUSALS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+static BASE_SPEED_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn movement_arrow_data() -> impl serde::Serialize {
     crate::status::status!({
-        "selected_defending_retreat_refused": SELECTED_RETREAT_REFUSALS[0].load(std::sync::atomic::Ordering::Relaxed),
-        "selected_attacking_retreat_refused": SELECTED_RETREAT_REFUSALS[1].load(std::sync::atomic::Ordering::Relaxed),
         "withdrawal_refused": WITHDRAWAL_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
         "movement_priority_refused": MOVEMENT_PRIORITY_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
-        "scope": "cumulative field-local movement-arrow scalar refusals; established division movement remains available",
+        "base_speed_refused": BASE_SPEED_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
+        "scope": "cumulative field-local division movement scalar refusals (arrow style and the base speed of divisions with a route); established division movement remains available",
     })
 }
 
 // One scalar projection for the unchanged-row comparison and the owned row.
+// Stepped fields are rounded to their display steps (replay::display), as the
+// baseline holds them.
 macro_rules! status_fields {
     ($row:ident, $apply:ident, [$($args:expr),* $(,)?] $(,)?) => {
         $apply!([$($args),*], {
             division: $row.division,
-            maximum_hit_points: $row.maximum_hit_points,
-            maximum_organisation: $row.maximum_organisation,
+            maximum_hit_points: DivisionStatusRow::MAXIMUM_STEP.round($row.maximum_hit_points),
+            maximum_organisation: DivisionStatusRow::MAXIMUM_STEP.round($row.maximum_organisation),
             entrenchment: $row.entrenchment,
             entrenchment_cap: $row.entrenchment_cap,
-            supply_ratio: $row.supply_ratio,
+            supply_ratio: DivisionStatusRow::SUPPLY_RATIO_STEP.round($row.supply_ratio),
             attrition_value: $row.attrition_value,
             attrition_threshold: $row.attrition_threshold,
-            attrition: $row.attrition,
             exercising: $row.exercising,
             has_order: $row.has_order,
             invalid_orders: $row.invalid_orders,
             strength_factor: $row.strength_factor,
             model_number: $row.model_number,
-            acclimatization_maximum: $row.acclimatization_maximum,
             move_flags: $row.move_flags,
         })
     };
@@ -84,23 +82,40 @@ macro_rules! compare_status_fields {
 }
 
 macro_rules! project_status_fields {
-    ([$row:expr, $acclimatization:expr, $naming:expr, $supply:expr, $attrition:expr, $dig_in:expr, $name:expr, $attack:expr], {$($field:ident: $value:expr),* $(,)?}) => {
+    ([$row:expr, $supply_grace:expr, $naming:expr, $supply:expr, $dig_in:expr, $name:expr, $attack_stats:expr, $witness:expr], {$($field:ident: $value:expr),* $(,)?}) => {
         DivisionStatusRow {
             $($field: $value,)*
-            acclimatization: $acclimatization,
+            acclimatization_maximum: None,
+            acclimatization: Vec::new(),
+            camouflage: Recorded::Value(camouflage($row.camouflage)),
             border_combat_stats: Recorded::Value($row.border_combat_stats),
             supply_grace_maximum: Recorded::Value($row.supply_grace_maximum),
-            supply_grace_remaining: Recorded::Value($row.supply_grace_remaining),
+            supply_grace_remaining: Recorded::Value(DivisionStatusRow::displayed_grace(
+                $row.supply_grace_remaining,
+                $supply_grace,
+            )),
             naming: Recorded::Value($naming),
             country_ordinal: Recorded::Value($row.country_ordinal),
             invalid_orders_reason: Recorded::Value($row.invalid_orders_reason),
+            // Playback computes the glyph byte from the value and threshold.
+            attrition: replay::rows::RetiredU8::default(),
             supply: Recorded::Value($supply),
-            attrition_inputs: Recorded::Value($attrition),
+            attrition_inputs: Recorded::Value(Retired),
             dig_in_factor: Recorded::Value($dig_in),
             name: Recorded::Value($name),
-            attack: Recorded::Value($attack),
+            attack: Recorded::Value(Witnessed($witness)),
+            attack_stats: Recorded::Value($attack_stats),
+            weather_factor: Recorded::Value($row.weather_factor),
         }
     };
+}
+
+/// The recorded form of what the camouflage category selector takes from the division; a refused
+/// read stays None.
+fn camouflage(camouflage: Option<carmy::Camouflage>) -> Option<DivisionCamouflage> {
+    camouflage.map(|camouflage| DivisionCamouflage {
+        category: camouflage.category,
+    })
 }
 
 #[derive(Clone, Copy, Default)]
@@ -120,8 +135,7 @@ pub(crate) struct CounterWork {
     hq_captured: u64,
     hq_refused: u64,
     pub(super) supply: super::supply_inputs::Work,
-    attrition: super::attrition_inputs::Work,
-    transport: super::selected_transport_inputs::Work,
+    dig_in: super::dig_in::Work,
 }
 
 impl CounterWork {
@@ -146,8 +160,7 @@ impl CounterWork {
                 "refusal": "orders group HQ distance unreadable",
             },
             "supply": self.supply.status(),
-            "attrition": self.attrition.status(),
-            "transport": self.transport.status(),
+            "dig_in_factor": self.dig_in.status(),
         })
     }
 }
@@ -241,7 +254,6 @@ pub(crate) struct CaptureContext {
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
-    pub force_full: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -263,11 +275,9 @@ pub struct Capacities {
     /// Shared DivisionStatus membership storage prepared for pooled packets.
     /// Worker acquisition retains larger original demand in the same pass.
     membership: MembershipCapacity,
-    attrition: super::attrition_inputs::Capacities,
+    /// Ordered supply-footer origin rows across the census (DivisionStatus).
     supply_origins: usize,
     combat_references: usize,
-    attack: super::attack_inputs::UnitCapacities,
-    transport: engine::selected_transport_units::Capacity,
 }
 impl Default for Capacities {
     fn default() -> Self {
@@ -284,11 +294,8 @@ impl Default for Capacities {
                 neighbour_entries: 0,
             },
             membership: MembershipCapacity::default(),
-            attrition: super::attrition_inputs::Capacities::default(),
             supply_origins: 0,
             combat_references: 0,
-            attack: Default::default(),
-            transport: Default::default(),
         }
     }
 }
@@ -365,21 +372,15 @@ impl Capacities {
         failure.map_or(Ok(()), Err)
     }
 
-    pub(super) fn raise_attack_domain(&mut self, provinces: usize) {
-        self.attack.0.terrains = self.attack.0.terrains.max(provinces);
+    /// Every province definition bounds the movement route geometry.
+    pub(super) fn raise_for_provinces(&mut self, provinces: usize) {
         self.geometry.provinces = self.geometry.provinces.max(provinces);
     }
 
-    pub(crate) fn raise_for_attrition(
-        &mut self,
-        demand: engine::attrition_modifier_breakdown::Demand,
-    ) {
-        self.attrition.raise(demand);
+    pub(crate) fn raise_for_census(&mut self, demand: carmy::PresentationDemand) {
         grow_capacity(&mut self.status, demand.rows);
         grow_capacity(&mut self.supply_origins, demand.supply_origins);
         grow_capacity(&mut self.cached_name_bytes, demand.cached_name_text);
-        grow_capacity(&mut self.transport.rows, demand.rows);
-        grow_capacity(&mut self.transport.members, demand.transport_members);
     }
 }
 fn status_packet(c: &Capacities) -> carmy::StatusPacket {
@@ -387,7 +388,6 @@ fn status_packet(c: &Capacities) -> carmy::StatusPacket {
         units: c.status,
         supply_origins: c.supply_origins,
         manpower: 0,
-        acclimatization: 0,
         acclimatization_categories: 0,
         thresholds: 0,
         modifiers: engine::modifier_accumulator::SnapshotCapacity {
@@ -399,14 +399,126 @@ fn status_packet(c: &Capacities) -> carmy::StatusPacket {
     .unwrap_or_else(|_| carmy::StatusPacket::vacant())
 }
 
+/// The census rows a pass may read: a count past the rows refuses them all.
+fn source_outcome(sources: &Sources<'_, DivisionSeed>) -> Outcome {
+    if sources.outcome.len() <= sources.rows.len() {
+        sources.outcome
+    } else {
+        Outcome::Unavailable {
+            reason: "division presentation source count invalid",
+        }
+    }
+}
+
+/// DivisionMovement, DivisionLandInputs and DivisionStatus's dig-in factors:
+/// the passes' storage, lent to their own job ([`Captured::take_movement`])
+/// beside the status pass. They share only the census with it and read the
+/// same parked state; the dig-in pass reads every census division and is cut
+/// to the status pass's rows when the storage returns.
+pub(crate) struct MovementPass {
+    land: super::division_land::Captured,
+    land_ticks: u64,
+    movement: CaptureRows<carmy::MovementRow>,
+    paths: Arena<u32>,
+    movement_packet: carmy::MovementPacket,
+    geometry: cprovince::GeometryPacket,
+    dig_in: super::dig_in::Captured,
+    dig_in_ticks: u64,
+}
+
+impl MovementPass {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.land.allocated_bytes()
+            + self.movement.allocated_bytes()
+            + self.paths.allocated_bytes()
+            + self.movement_packet.allocated_bytes()
+            + self.geometry.allocated_bytes()
+            + self.dig_in.allocated_bytes()
+    }
+
+    /// The land inputs, the movement inputs and the dig-in factors of every
+    /// census division: the DivisionMovement, DivisionLandInputs and dig-in
+    /// ticks. Only the test fixture omits the worker's sample hour and uses
+    /// fixed storage.
+    pub(crate) fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        sources: Sources<'_, DivisionSeed>,
+        hour: Option<i32>,
+    ) -> [u64; 3] {
+        self.land.reset();
+        self.land_ticks = 0;
+        self.movement.reset();
+        self.paths.reset();
+        self.dig_in.reset();
+        self.dig_in_ticks = 0;
+        let outcome = source_outcome(&sources);
+        let rows = &sources.rows[..outcome.len()];
+        if hour.is_some() {
+            self.movement_packet.enable_growth();
+            self.geometry.enable_growth();
+            if !grow_vec(&mut self.movement.rows, rows.len()) {
+                let reason = "presentation row allocation failed";
+                self.movement.outcome = Outcome::Unavailable { reason };
+                self.paths.len = 0;
+                self.land.fail(reason);
+                return [0; 3];
+            }
+        }
+        self.land_ticks = self.land.capture(memory, base, rows, outcome);
+        let _movement_reads = crate::read_accounting::table(TableId::DivisionMovement);
+        let start = qpc();
+        // A failed geometry root stays the movement rows' own refusal.
+        let _ = self.geometry.begin(memory, base, state);
+        let movement = carmy::capture_movement_inputs_with_combat_references(
+            memory,
+            base,
+            state,
+            rows,
+            outcome,
+            self.movement.rows.len(),
+            self.paths.first.len(),
+            &mut self.geometry,
+            &mut self.movement_packet,
+            hour,
+        );
+        for reason in self.movement_packet.combat_reference_failures() {
+            super::unit_combat_references::observe_failure(reason);
+        }
+        super::unit_combat_references::demand(
+            false,
+            self.movement_packet.combat_references_required(),
+            self.movement_packet.combat_references_capacity(),
+        );
+        self.movement.outcome = movement.outcome;
+        let (withdrawal, priority) = self.movement_packet.movement_style_refusals();
+        WITHDRAWAL_REFUSALS.fetch_add(withdrawal as u64, std::sync::atomic::Ordering::Relaxed);
+        MOVEMENT_PRIORITY_REFUSALS.fetch_add(priority as u64, std::sync::atomic::Ordering::Relaxed);
+        BASE_SPEED_REFUSALS.fetch_add(
+            self.movement_packet.base_speed_refusals() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.paths.len = movement.paths_len;
+        self.paths.required = movement.required_paths;
+        let movement_ticks = qpc().saturating_sub(start).max(0) as u64;
+        drop(_movement_reads);
+        let _status_reads = crate::read_accounting::table(TableId::DivisionStatus);
+        let start = qpc();
+        self.dig_in
+            .capture(memory, base, rows, Outcome::Rows { len: rows.len() });
+        self.dig_in_ticks = qpc().saturating_sub(start).max(0) as u64;
+        [movement_ticks, self.land_ticks, self.dig_in_ticks]
+    }
+}
+
 pub struct Captured {
     land: super::division_land::Captured,
     land_ticks: u64,
     movement: CaptureRows<carmy::MovementRow>,
     status: CaptureRows<carmy::StatusRow>,
     bans: CaptureRows<carmy::RetreatBanRow>,
-    /// The roster owners whose DivisionRetreatBans rows this hour replaced.
-    bans_selection: SliceSelection,
     paths: Arena<u32>,
     naming: Arena<NamingRead>,
     names: Arena<u8>,
@@ -417,18 +529,22 @@ pub struct Captured {
     /// both Presentation and Late have joined. Never reads native memory.
     order_transport: engine::order_execution::UnitPacket,
     geometry: cprovince::GeometryPacket,
-    geometry_hour: Option<i32>,
-    geometry_result: Result<(), &'static str>,
     status_packet: carmy::StatusPacket,
-    attrition: super::attrition_inputs::Captured,
-    attrition_ticks: u64,
-    pub(super) attack: super::attack_inputs::Units,
-    attack_capacity: super::attack_inputs::UnitCapacities,
-    transport: engine::selected_transport_units::Packet,
+    dig_in: super::dig_in::Captured,
+    /// DivisionStatus.attack_stats and the attack witness
+    /// ([`super::attack_stats`]), captured after the status pass.
+    attack: super::attack_stats::Captured,
+    /// The DivisionStatus span split by pass: status and naming, in that
+    /// order. Diagnostics only.
+    phase_ticks: [u64; PHASES],
     membership: MembershipCapacity,
     source_capacity: usize,
     source_required: usize,
     decode_pending: bool,
+    /// The live `NMilitary.SUPPLY_GRACE` hours this pass read, which
+    /// DivisionStatus.supply_grace_remaining is stored against
+    /// ([`DivisionStatusRow::displayed_grace`]); None when unreadable.
+    supply_grace: Option<i32>,
 }
 
 impl Captured {
@@ -459,7 +575,6 @@ impl Captured {
             movement: CaptureRows::new(0),
             status: CaptureRows::new(0),
             bans: CaptureRows::new(0),
-            bans_selection: SliceSelection::new(false),
             paths: Arena::new(0),
             naming: Arena::new(0),
             names: Arena::new(0),
@@ -468,26 +583,19 @@ impl Captured {
             movement_packet: carmy::MovementPacket::vacant(),
             order_transport: engine::order_execution::UnitPacket::vacant(),
             geometry: cprovince::GeometryPacket::vacant(),
-            geometry_hour: None,
-            geometry_result: Err("presentation geometry not attempted"),
             status_packet: carmy::StatusPacket::vacant(),
-            attrition: super::attrition_inputs::Captured::new(Default::default()),
-            attrition_ticks: 0,
-            attack: super::attack_inputs::Units::vacant(),
-            attack_capacity: super::attack_inputs::UnitCapacities(
-                engine::selected_attack::UnitCapacity::default(),
-            ),
-            transport: engine::selected_transport_units::Packet::vacant(),
+            dig_in: super::dig_in::Captured::new(0),
+            attack: Default::default(),
+            phase_ticks: [0; PHASES],
             membership: MembershipCapacity::default(),
             source_capacity: 0,
             source_required: 0,
             decode_pending: false,
+            supply_grace: None,
         }
     }
 
     pub fn with_capacities(c: &Capacities) -> Self {
-        let mut attrition = super::attrition_inputs::Captured::new(c.attrition);
-        attrition.reserve_rows(c.status);
         let mut movement_packet = carmy::MovementPacket::try_new(c.movement, c.paths)
             .unwrap_or_else(|_| carmy::MovementPacket::vacant());
         // The checked allocator still signals terminal failure. Keep the
@@ -499,7 +607,6 @@ impl Captured {
             movement: CaptureRows::new(c.movement),
             status: CaptureRows::new(c.status),
             bans: CaptureRows::new(c.bans),
-            bans_selection: SliceSelection::new(true),
             paths: Arena::new(c.paths),
             naming: Arena::new(c.status),
             names: Arena::new(c.name_bytes),
@@ -515,19 +622,14 @@ impl Captured {
             geometry: cprovince::GeometryPacket::try_with_capacities(c.geometry)
                 .unwrap_or_default(),
             status_packet: status_packet(c),
-            attrition,
-            attrition_ticks: 0,
-            geometry_hour: None,
-            geometry_result: Err("presentation geometry not attempted"),
-            attack: super::attack_inputs::Units::new(c.attack),
-            attack_capacity: c.attack,
-            transport: engine::selected_transport_units::Packet::try_new(c.transport)
-                .map_err(crate::allocation::io)
-                .unwrap_or_else(|_| engine::selected_transport_units::Packet::vacant()),
+            dig_in: super::dig_in::Captured::new(c.status),
+            attack: Default::default(),
+            phase_ticks: [0; PHASES],
             membership: c.membership,
             source_capacity: c.movement.max(c.status),
             source_required: 0,
             decode_pending: false,
+            supply_grace: None,
         }
     }
 
@@ -535,18 +637,22 @@ impl Captured {
         self.land.reset();
         self.land_ticks = 0;
         self.movement.reset();
+        self.paths.reset();
+        self.dig_in.reset();
+        self.reset_status();
+    }
+
+    /// Everything but the movement pass's storage, which its own job resets
+    /// ([`MovementPass::capture`]).
+    fn reset_status(&mut self) {
+        self.supply_grace = None;
         self.status.reset();
         self.bans.reset();
-        self.paths.reset();
         self.naming.reset();
         self.names.reset();
         self.cached_names.reset();
-        self.attrition.reset();
         self.attack.reset();
-        self.transport.clear();
-        self.geometry_hour = None;
-        self.geometry_result = Err("presentation geometry not attempted");
-        self.attrition_ticks = 0;
+        self.phase_ticks = [0; PHASES];
         self.order_transport.reset();
         // Engine acquisition resets each owned packet in its measured scope.
         self.decode_pending = false;
@@ -566,25 +672,15 @@ impl Captured {
             + self.order_transport.allocated_bytes()
             + self.geometry.allocated_bytes()
             + self.status_packet.allocated_bytes()
-            + self.attrition.allocated_bytes()
+            + self.dig_in.allocated_bytes()
             + self.attack.allocated_bytes()
-            + self.transport.allocated_bytes()
     }
 
     pub fn grow(&mut self, c: &mut Capacities) {
         self.movement.grow(&mut c.movement);
         self.status.grow(&mut c.status);
         self.bans.grow(&mut c.bans);
-        self.attrition.grow(&mut c.attrition);
-        self.attack.grow(&mut c.attack);
-        self.attack_capacity = c.attack;
-        let required = self.transport.required();
-        grow_capacity(&mut c.transport.rows, required.rows);
-        grow_capacity(&mut c.transport.members, required.members);
-        let _ = self
-            .transport
-            .reserve(c.transport)
-            .map_err(crate::allocation::io);
+        self.dig_in.grow(&mut c.status);
         grow_capacity(
             &mut c.supply_origins,
             self.status_packet.required_capacities().supply_origins,
@@ -636,17 +732,49 @@ impl Captured {
             .status_packet
             .grow(self.source_capacity, self.membership);
         grow_vec(&mut self.naming.first, self.source_capacity);
-        self.attrition.reserve_rows(self.source_capacity);
-        self.attack
-            .reserve_sources(self.source_capacity, &mut self.attack_capacity);
-        let capacity = engine::selected_transport_units::Capacity {
-            rows: self.source_capacity,
-            members: self.transport.required().members,
-        };
-        let _ = self
-            .transport
-            .reserve(capacity)
-            .map_err(crate::allocation::io);
+        self.dig_in.reserve_rows(self.source_capacity);
+    }
+
+    /// Lend the movement pass's storage to its own job; the status pass
+    /// runs beside it on this capture. Allocation-free placeholders stand in.
+    pub(crate) fn take_movement(&mut self) -> MovementPass {
+        MovementPass {
+            land: std::mem::replace(&mut self.land, super::division_land::Captured::new(0)),
+            land_ticks: std::mem::take(&mut self.land_ticks),
+            movement: std::mem::replace(&mut self.movement, CaptureRows::new(0)),
+            paths: std::mem::replace(&mut self.paths, Arena::new(0)),
+            movement_packet: std::mem::replace(
+                &mut self.movement_packet,
+                carmy::MovementPacket::vacant(),
+            ),
+            geometry: std::mem::replace(&mut self.geometry, cprovince::GeometryPacket::vacant()),
+            dig_in: std::mem::replace(&mut self.dig_in, super::dig_in::Captured::new(0)),
+            dig_in_ticks: 0,
+        }
+    }
+
+    /// Return the lent storage once both passes have run: the dig-in rows
+    /// are cut to the status pass's.
+    pub(crate) fn restore_movement(&mut self, pass: MovementPass) {
+        let MovementPass {
+            land,
+            land_ticks,
+            movement,
+            paths,
+            movement_packet,
+            geometry,
+            dig_in,
+            dig_in_ticks,
+        } = pass;
+        self.land = land;
+        self.land_ticks = land_ticks;
+        self.movement = movement;
+        self.paths = paths;
+        self.movement_packet = movement_packet;
+        self.geometry = geometry;
+        self.dig_in = dig_in;
+        self.dig_in.settle(self.status.outcome);
+        self.phase_ticks[1] = dig_in_ticks;
     }
 
     /// The previous sparse output becomes the execution owner's reusable spare.
@@ -709,7 +837,6 @@ impl Captured {
     }
 
     pub(crate) fn observe_counter_inputs(&self, work: &mut CounterWork) -> std::io::Result<()> {
-        work.transport.observe(&self.transport)?;
         for row in &self.status.rows[..self.status.outcome.len()] {
             work.supply.observe(row.supply, row.supply_failure);
             if row.invalid_orders != 0 {
@@ -720,45 +847,136 @@ impl Captured {
                 }
             }
         }
-        work.attrition.observe(&self.attrition)
+        work.dig_in.observe(&self.dig_in)
     }
 
-    /// Keep each army's language-neutral generator operands and
-    /// independently copy its exact retained name cache after that pass.
-    /// Order, binding, rename, template, load and statistics changes can all
-    /// refresh the cache. Inputs therefore read hourly.
+    /// [`Self::capture_naming_holding`] without the `army_stat` store: every
+    /// member is read.
+    #[cfg(test)]
     fn capture_naming(&mut self, memory: &impl Memory, base: usize, seeds: &[DivisionSeed]) {
+        self.capture_naming_holding(
+            memory,
+            base,
+            seeds,
+            None,
+            &crate::army_stat_changes::Observer,
+        );
+    }
+
+    /// The division's +0x340 member pointer leads to the naming generator.
+    /// Keep its language-neutral operands and, independently, the exact
+    /// +0x60 cached name. Ordering, binding and rename writers refresh the
+    /// member, as do template, load and pre-hourly active-stat updates.
+    /// Inputs therefore read hourly.
+    /// One copy of the member span serves both the generator operands and the
+    /// cache header; the two arenas keep their refusals independent, and a
+    /// span that cannot be copied leaves the cache to its own reads.
+    ///
+    /// With the `army_stat` store, a member no hooked writer touched since the
+    /// Held read  (`engine::army_stat_mutations`: `cached-name refresh`, and the
+    /// country-wide refresh, which moves the marks' epoch) is not read: its
+    /// held span and cache text stand in for the reads, and the inputs are
+    /// derived from the span as from a read (the template's group and a heap
+    /// override are still read). The hour's take ([`super::attack_stats`])
+    /// precedes the member's reads, and a member not carried is registered
+    /// before them.
+    /// The sampled slice reads its carryable members afresh and compares them
+    /// with the held ones; a difference poisons the family.
+    fn capture_naming_holding(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        seeds: &[DivisionSeed],
+        mut store: Option<&mut super::attack_stats::ArmyStatStore>,
+        changes: &dyn crate::army_stat_changes::Changes,
+    ) {
         self.naming.reset();
         self.names.reset();
         self.name_groups.reset();
+        self.cached_names.reset();
+        if let Some(store) = store.as_deref_mut() {
+            store.begin_names();
+        }
         self.naming.required = seeds.len();
         if !grow_vec(&mut self.naming.first, seeds.len()) {
             return;
         }
-        for (seed, row) in seeds.iter().zip(&mut self.naming.first) {
+        let check = crate::sampled_verify::current_burned_in(crate::army_stat_changes::VERIFY);
+        let mut batch = cname_group_member::MemberBatch::default();
+        for (index, (seed, row)) in seeds.iter().zip(&mut self.naming.first).enumerate() {
+            if index.is_multiple_of(64) {
+                let mut pointers = [0_usize; 64];
+                let end = (index + 64).min(seeds.len());
+                for (slot, pending) in seeds[index..end].iter().enumerate() {
+                    let Some(pointer) = pending.name_member.filter(|&at| at != 0) else {
+                        continue;
+                    };
+                    let carried = match store.as_deref_mut() {
+                        Some(store)
+                            if self.attack.carryable && !check.covers(pending.division >> 32) =>
+                        {
+                            store
+                                .held_name(index + slot, pending.division)
+                                .is_some_and(|held| {
+                                    held.member == pointer && !self.attack.touched(pointer)
+                                })
+                        }
+                        _ => false,
+                    };
+                    if !carried {
+                        pointers[slot] = pointer;
+                    }
+                }
+                batch.capture(memory, &pointers[..end - index]);
+            }
             *row = NamingRead {
                 division: seed.division,
                 country_ordinal: seed.country_ordinal,
                 ..NamingRead::default()
             };
-            let result = seed
+            let pointer = seed
                 .name_member
                 .ok_or("division name member pointer unreadable")
                 .and_then(|pointer| {
                     if pointer == 0 {
                         Err("division name member pointer null")
                     } else {
-                        cname_group_member::inputs_growing(
-                            memory,
-                            base,
-                            pointer,
-                            &mut self.name_groups,
-                            &mut self.names.first,
-                            &mut self.names.len,
-                            &mut self.names.required,
-                        )
+                        Ok(pointer)
                     }
                 });
+            // The hour's take ([`super::attack_stats::Captured::certify`])
+            // certifies a held member registered in the held capture's epoch
+            // and untouched since; any other member is registered before its
+            // read.
+            let held = match (pointer, store.as_deref_mut()) {
+                (Ok(pointer), Some(store)) if self.attack.carryable => store
+                    .held_name(index, seed.division)
+                    .filter(|held| held.member == pointer && !self.attack.touched(pointer)),
+                _ => None,
+            };
+            let sampled = check.covers(seed.division >> 32);
+            let carried = held.filter(|_| !sampled);
+            let registered = match (held, pointer, store.is_some()) {
+                (Some(_), _, _) => true,
+                (None, Ok(pointer), true) => changes.register(pointer),
+                _ => false,
+            };
+            let member = pointer.map(|pointer| match carried {
+                Some(held) => (pointer, Ok(held.span)),
+                None => (pointer, batch.member(memory, index % 64, pointer)),
+            });
+            let result = member.and_then(|(pointer, span)| {
+                cname_group_member::inputs_growing(
+                    memory,
+                    base,
+                    pointer,
+                    &span?,
+                    &mut self.name_groups,
+                    &mut self.names.first,
+                    &mut self.names.len,
+                    &mut self.names.required,
+                )
+            });
             match result {
                 Ok(cname_group_member::Naming::Row(inputs)) => {
                     self.names.len += inputs.custom.1;
@@ -771,26 +989,36 @@ impl Captured {
                 }
                 Err(reason) => row.failure = Some(reason),
             }
-            self.naming.len += 1;
-        }
-        // Every established generator input finishes before the optional
-        // retained name cache. Its separate bytes arena keeps refusals independent.
-        self.cached_names.reset();
-        for (seed, row) in seeds.iter().zip(&mut self.naming.first[..self.naming.len]) {
-            let result = seed
-                .name_member
-                .ok_or("division cached name member pointer unreadable")
-                .and_then(|pointer| {
-                    cname_group_member::cached_name_growing(
-                        memory,
-                        base,
-                        pointer,
-                        &mut self.cached_names.first,
-                        &mut self.cached_names.len,
-                        &mut self.cached_names.required,
-                    )
-                });
-            match result {
+            let cached = match (member, carried, store.as_deref()) {
+                (_, Some(held), Some(store)) => cname_group_member::held_cached_name_growing(
+                    store.held_name_text(&held),
+                    &mut self.cached_names.first,
+                    self.cached_names.len,
+                    &mut self.cached_names.required,
+                ),
+                (Ok((_, Ok(span))), _, _) => cname_group_member::cached_name_from_member_growing(
+                    memory,
+                    base,
+                    &span,
+                    &mut self.cached_names.first,
+                    &mut self.cached_names.len,
+                    &mut self.cached_names.required,
+                ),
+                _ => seed
+                    .name_member
+                    .ok_or("division cached name member pointer unreadable")
+                    .and_then(|pointer| {
+                        cname_group_member::cached_name_growing(
+                            memory,
+                            base,
+                            pointer,
+                            &mut self.cached_names.first,
+                            &mut self.cached_names.len,
+                            &mut self.cached_names.required,
+                        )
+                    }),
+            };
+            match cached {
                 Ok(Some(span)) => {
                     row.cached_name = Some(span);
                     self.cached_names.len += span.1;
@@ -800,106 +1028,212 @@ impl Captured {
                 }
                 Err(reason) => row.cached_failure = Some(reason),
             }
+            let text = row
+                .cached_name
+                .map(|(start, len)| &self.cached_names.first[start..start + len]);
+            if let (Some(held), Some(store), Ok((_, Ok(span))), Some(text)) =
+                (held, store.as_deref(), member, text)
+                && carried.is_none()
+            {
+                let counts = &mut self.attack.status_counts;
+                counts.verified += 1;
+                if !cname_group_member::same_recorded_fields(&held.span, &span)
+                    || store.held_name_text(&held) != text
+                {
+                    counts.mismatches += 1;
+                    changes.mismatch();
+                }
+            }
+            if carried.is_some() {
+                self.attack.status_counts.names_reused += 1;
+            }
+            if let (Some(store), true, Ok((pointer, Ok(span))), Some(text)) =
+                (store.as_deref_mut(), registered, member, text)
+            {
+                store.keep_name(seed.division, pointer, &span, text);
+            }
+            self.naming.len += 1;
         }
     }
 
-    /// Acquire on the reserved worker using the immutable source lease.
-    /// Membership storage may grow at the original demanded root or chunk.
+    /// [`Self::capture_owned_observed`] without an `army_stat` store.
+    #[cfg(test)]
     pub(crate) fn capture_owned(
         &mut self,
         memory: &impl Memory,
         context: CaptureContext,
         sources: Sources<'_, DivisionSeed>,
-        store: Option<&mut SliceFingerprints>,
+    ) -> CaptureReport {
+        self.capture_owned_observed(
+            memory,
+            context,
+            sources,
+            None,
+            &crate::army_stat_changes::Observer,
+        )
+    }
+
+    /// Both sides on this thread, the movement pass lent and returned as
+    /// the Presentation and PresentationMovement jobs run them.
+    #[cfg(test)]
+    pub(super) fn capture_owned_observed(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        sources: Sources<'_, DivisionSeed>,
+        army_stats: Option<&mut super::attack_stats::ArmyStatStore>,
+        changes: &dyn crate::army_stat_changes::Changes,
     ) -> CaptureReport {
         let (rows, outcome) = (sources.rows, sources.outcome);
-        let ticks = self.capture_at(
+        let mut pass = self.take_movement();
+        let mut report =
+            self.capture_status_observed(memory, context, sources, army_stats, changes);
+        let [movement, land, dig_in] = pass.capture(
+            memory,
+            context.base,
+            context.game_state,
+            Sources { rows, outcome },
+            Some(context.hour),
+        );
+        self.restore_movement(pass);
+        report.ticks[0] = movement;
+        report.ticks[1] += dig_in;
+        report.ticks[3] = land;
+        report
+    }
+
+    /// The status side on the reserved worker, using the immutable source
+    /// lease: DivisionStatus and DivisionRetreatBans. The movement pass runs
+    /// in its own job beside it ([`MovementPass`]). Membership storage may
+    /// grow at the original demanded root or chunk. `army_stats` is the
+    /// store the attack pass will take: it certifies every division before
+    /// the status pass reads a stat block, and carries the maxima and name
+    /// member of each division it holds ([`super::attack_stats`],
+    /// [`Self::capture_naming`]).
+    pub(crate) fn capture_status_holding(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        sources: Sources<'_, DivisionSeed>,
+        army_stats: Option<&mut super::attack_stats::ArmyStatStore>,
+    ) -> CaptureReport {
+        self.capture_status_observed(
+            memory,
+            context,
+            sources,
+            army_stats,
+            &crate::army_stat_changes::Observer,
+        )
+    }
+
+    /// [`Self::capture_status_holding`] observed through `changes`. The
+    /// movement and land ticks are the movement pass's.
+    pub(super) fn capture_status_observed(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        sources: Sources<'_, DivisionSeed>,
+        army_stats: Option<&mut super::attack_stats::ArmyStatStore>,
+        changes: &dyn crate::army_stat_changes::Changes,
+    ) -> CaptureReport {
+        let (rows, outcome) = (sources.rows, sources.outcome);
+        let status = self.capture_status_at(
             memory,
             context.base,
             context.game_state,
             sources,
             Some(context.hour),
+            army_stats,
+            changes,
         );
-        let bans = self.capture_bans(memory, context, Sources { rows, outcome }, store);
+        let bans = self.capture_bans(
+            memory,
+            context,
+            Sources { rows, outcome },
+            &crate::retreat_ban_changes::Observer,
+        );
         CaptureReport {
-            ticks: [
-                ticks[0],
-                ticks[1],
-                bans,
-                self.attrition_ticks,
-                self.land_ticks,
-            ],
+            ticks: [0, status, bans, 0],
         }
     }
 
-    /// Start a frame's bans selection at its hour; the capture resets it again.
-    pub(crate) fn reset_selection(&mut self, hour: i32, force_full: bool) {
-        self.bans_selection.reset(hour, force_full);
+    /// DivisionStatus.attack_stats after [`Self::capture_status_holding`]
+    /// with the same store: every division of the same census, carried
+    /// through `store` where certified ([`super::attack_stats`]), each held
+    /// with the status pass's maxima. It reads only stat blocks and, in a
+    /// witnessing hour, the terrain database.
+    pub(crate) fn capture_attack(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        sources: Sources<'_, DivisionSeed>,
+        store: Option<&mut super::attack_stats::ArmyStatStore>,
+    ) {
+        self.capture_attack_observed(
+            memory,
+            context,
+            sources,
+            store,
+            &crate::army_stat_changes::Observer,
+        );
     }
 
-    /// The roster owners whose DivisionRetreatBans rows this frame replaced.
-    pub(crate) fn bans_selection(&self) -> &SliceSelection {
-        &self.bans_selection
+    /// [`Self::capture_attack`] observed through `changes`.
+    pub(super) fn capture_attack_observed(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        sources: Sources<'_, DivisionSeed>,
+        store: Option<&mut super::attack_stats::ArmyStatStore>,
+        changes: &dyn crate::army_stat_changes::Changes,
+    ) {
+        let _reads = crate::read_accounting::table(TableId::DivisionStatus);
+        let status = &self.status_packet;
+        self.attack.capture(
+            memory,
+            context.base,
+            context.hour,
+            sources.rows,
+            sources.outcome,
+            store,
+            |index| status.unit_maxima(index),
+            changes,
+        );
     }
 
-    #[cfg(test)]
-    pub(crate) fn test_set_bans_outcome(&mut self, outcome: Outcome) {
-        self.bans.outcome = outcome;
-    }
-
-    /// DivisionRetreatBans for this hour's owner slice: the census scanned
-    /// into `store` with a constant print (a new owner, or the owner of an
-    /// unpublished read, joins the read), then every division of a read
-    /// owner. Without a store every owner is read.
+    /// DivisionRetreatBans for every division of the census: each group's
+    /// commander is read unless the store carries its bans
+    /// ([`crate::retreat_ban_changes`]). The store is held only after a
+    /// complete read.
     fn capture_bans(
         &mut self,
         memory: &impl Memory,
         context: CaptureContext,
         sources: Sources<'_, DivisionSeed>,
-        store: Option<&mut SliceFingerprints>,
+        changes: &dyn crate::retreat_ban_changes::Changes,
     ) -> u64 {
+        use crate::retreat_ban_changes as changes_family;
         let _reads = crate::read_accounting::table(TableId::DivisionRetreatBans);
         let start = qpc();
-        self.bans_selection
-            .reset(context.hour, context.force_full || store.is_none());
         if !grow_vec(&mut self.bans.rows, sources.outcome.len()) {
             self.bans.fail(Outcome::Unavailable {
                 reason: "retreat ban row allocation failed",
             });
+            changes_family::failed();
             return 0;
         }
-        let reader = ccountry::Reader::new(memory, context.base, context.game_state);
-        if let Some(store) = store {
-            let scan = qpc();
-            let census = match &reader {
-                Err(_) => false,
-                Ok(countries) => {
-                    let mut complete = true;
-                    for slot in 1..countries.count() {
-                        match countries.at(slot) {
-                            Ok(Some(_)) => self.bans_selection.scan(store, slot, Some(0)),
-                            Ok(None) => {}
-                            Err(_) => complete = false,
-                        }
-                    }
-                    complete
-                }
-            };
-            store.finish_scan();
-            self.bans_selection.finish_pass(store, census);
-            self.bans_selection.scan_ticks = qpc().saturating_sub(scan).max(0) as u64;
-        }
-        self.bans.outcome = match &reader {
+        let mut store = changes_family::take_store();
+        let mut leaders = changes_family::Leaders::new(
+            &mut store,
+            changes,
+            crate::sampled_verify::current_burned_in(changes_family::VERIFY),
+        );
+        self.bans.outcome = match ccountry::Reader::new(memory, context.base, context.game_state) {
             Err(reason) => Outcome::Unavailable { reason },
             Ok(countries) => {
-                let selection = &self.bans_selection;
                 // An unlinked id has no owner; a link fault is unresolved,
                 // which withholds the read's rows (`retreat_bans`).
-                let owner = |raw: u32| {
-                    Ok(countries
-                        .link(raw)?
-                        .filter(|&slot| selection.contains(slot)))
-                };
+                let owner = |raw: u32| countries.link(raw);
                 let outcome = if sources.outcome.len() <= sources.rows.len() {
                     sources.outcome
                 } else {
@@ -914,9 +1248,17 @@ impl Captured {
                     outcome,
                     &owner,
                     &mut self.bans.rows,
+                    &mut |leader| leaders.held(leader),
                 )
             }
         };
+        if matches!(self.bans.outcome, Outcome::Rows { .. }) {
+            let counts = leaders.finish(self.status_packet.commander_bans());
+            changes_family::record(&counts);
+            changes_family::return_store(store);
+        } else {
+            changes_family::failed();
+        }
         qpc().saturating_sub(start).max(0) as u64
     }
 
@@ -929,10 +1271,8 @@ impl Captured {
         self.naming.len = 0;
         self.names.len = 0;
         self.cached_names.len = 0;
-        self.attrition.fail(reason);
-        self.attack.fail(reason);
+        self.dig_in.reset();
         self.land.fail(reason);
-        self.transport.fail(reason);
         self.decode_pending = false;
         CaptureReport::default()
     }
@@ -945,177 +1285,91 @@ impl Captured {
         state: usize,
         sources: Sources<'_, DivisionSeed>,
     ) -> [u64; 2] {
-        self.capture_at(memory, base, state, sources, None)
+        let (rows, outcome) = (sources.rows, sources.outcome);
+        let mut pass = self.take_movement();
+        let status = self.capture_status_at(
+            memory,
+            base,
+            state,
+            sources,
+            None,
+            None,
+            &crate::army_stat_changes::Observer,
+        );
+        let [movement, _, dig_in] =
+            pass.capture(memory, base, state, Sources { rows, outcome }, None);
+        self.restore_movement(pass);
+        [movement, status + dig_in]
     }
 
-    fn capture_at(
+    /// The status and naming passes: the DivisionStatus span but the dig-in
+    /// pass, which runs in the movement pass's job.
+    #[allow(clippy::too_many_arguments)] // The pass's sources, store and observer.
+    fn capture_status_at(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
         sources: Sources<'_, DivisionSeed>,
         hour: Option<i32>,
-    ) -> [u64; 2] {
-        self.reset();
-        let outcome = if sources.outcome.len() <= sources.rows.len() {
-            sources.outcome
-        } else {
-            Outcome::Unavailable {
-                reason: "division presentation source count invalid",
-            }
-        };
+        mut army_stats: Option<&mut super::attack_stats::ArmyStatStore>,
+        changes: &dyn crate::army_stat_changes::Changes,
+    ) -> u64 {
+        self.reset_status();
+        let outcome = source_outcome(&sources);
         let rows = &sources.rows[..outcome.len()];
+        self.supply_grace = engine::read::<i32>(
+            memory,
+            base.wrapping_add(engine::carmy_attrition::SUPPLY_GRACE_RVA),
+        );
         // Only the test fixture omits the worker's sample hour and uses fixed storage.
         if hour.is_some() {
-            self.movement_packet.enable_growth();
             self.status_packet.enable_growth();
-            self.geometry.enable_growth();
-            self.transport.enable_growth();
-            if !grow_vec(&mut self.movement.rows, rows.len())
-                || !grow_vec(&mut self.status.rows, rows.len())
-            {
+            if !grow_vec(&mut self.status.rows, rows.len()) {
                 self.fail_owned_capture("presentation row allocation failed");
-                return [0; 2];
+                return 0;
             }
         }
         self.source_required = self.source_required.max(rows.len());
-        self.land_ticks = self.land.capture(memory, base, rows, outcome);
-        let movement_reads = crate::read_accounting::table(TableId::DivisionMovement);
+        let _status_reads = crate::read_accounting::table(TableId::DivisionStatus);
         let start = qpc();
-        self.geometry_hour = hour;
-        self.geometry_result = Err("presentation geometry acquisition interrupted");
-        self.geometry_result = self.geometry.begin(memory, base, state);
-        let movement = carmy::capture_movement_inputs_with_combat_references(
+        self.attack
+            .certify(rows, outcome, army_stats.as_deref_mut(), changes);
+        self.status.outcome = self.status_packet.capture_holding(
             memory,
             base,
             state,
             rows,
             outcome,
-            self.movement.rows.len(),
-            self.paths.first.len(),
-            &mut self.geometry,
-            &mut self.movement_packet,
-            hour,
+            self.status.rows.len(),
+            &self.attack.held_maxima,
         );
-        for reason in self.movement_packet.combat_reference_failures() {
-            super::unit_combat_references::observe_failure(reason);
-        }
-        super::unit_combat_references::demand(
-            false,
-            self.movement_packet.combat_references_required(),
-            self.movement_packet.combat_references_capacity(),
+        let status = &self.status_packet;
+        self.attack
+            .verify_maxima(|index| status.unit_maxima(index), changes);
+        let named = qpc();
+        self.capture_naming_holding(
+            memory,
+            base,
+            &rows[..self.status.outcome.len()],
+            army_stats,
+            changes,
         );
-        for row in self.movement_packet.units_for_selected() {
-            for (index, value) in row.selected_retreat.iter().enumerate() {
-                if row.combat_count as i32 > 0 && value.is_none() {
-                    SELECTED_RETREAT_REFUSALS[index]
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-            }
-        }
-        self.movement.outcome = movement.outcome;
-        let (withdrawal, priority) = self.movement_packet.movement_style_refusals();
-        WITHDRAWAL_REFUSALS.fetch_add(withdrawal as u64, std::sync::atomic::Ordering::Relaxed);
-        MOVEMENT_PRIORITY_REFUSALS.fetch_add(priority as u64, std::sync::atomic::Ordering::Relaxed);
-        self.paths.len = movement.paths_len;
-        self.paths.required = movement.required_paths;
-        let movement_ticks = qpc().saturating_sub(start).max(0) as u64;
-        drop(movement_reads);
-        let _status_reads = crate::read_accounting::table(TableId::DivisionStatus);
-        let start = qpc();
-        self.status.outcome =
-            self.status_packet
-                .capture(memory, base, state, rows, outcome, self.status.rows.len());
-        self.capture_naming(memory, base, &rows[..self.status.outcome.len()]);
-        if let Some(hour) = hour {
-            self.attack
-                .capture(memory, base, hour, rows, outcome, &mut self.geometry);
-            self.transport
-                .capture(memory, base, hour, rows, outcome, &self.attack.packet);
-        } else {
-            self.attack.fail("selected attack sample hour unavailable");
-            self.transport
-                .fail("selected transport sample hour unavailable");
-        }
-        let status_ticks = qpc().saturating_sub(start).max(0) as u64;
+        let finished = qpc();
+        // The dig-in phase is the movement pass job's ([`Self::restore_movement`]).
+        self.phase_ticks = [
+            named.saturating_sub(start).max(0) as u64,
+            0,
+            finished.saturating_sub(named).max(0) as u64,
+        ];
         drop(_status_reads);
-        let _attrition_reads = crate::read_accounting::table(TableId::AttritionModifierBreakdowns);
-        let start = qpc();
-        self.attrition.capture(
-            memory,
-            base,
-            state,
-            rows,
-            self.status.outcome,
-            &self.status_packet,
-            Some(&self.attack.packet),
-        );
-        self.attrition_ticks = qpc().saturating_sub(start).max(0) as u64;
         self.decode_pending = true;
-        [movement_ticks, status_ticks]
+        finished.saturating_sub(start).max(0) as u64
     }
 
-    /// Every restore path stamps the actual request epoch. A stopped or
-    /// panicked request never lends stale geometry to independent groups.
-    pub(super) fn stamp_attack_epoch(&mut self, hour: i32, failed: bool) {
-        self.attack.stamp_hour(hour);
-        if failed {
-            self.geometry_hour = Some(hour);
-            self.geometry_result =
-                Err("presentation acquisition failed; current geometry unavailable");
-            self.attack.packet.refuse_domain_at(
-                hour,
-                "presentation acquisition failed; current geometry unavailable",
-            );
-        }
-    }
-
-    pub(super) fn fail_attack_epoch(&mut self, hour: i32, reason: &'static str) {
-        self.attack.stamp_hour(hour);
-        self.geometry_hour = Some(hour);
-        self.geometry_result = Err(reason);
-        self.attack.packet.refuse_domain_at(hour, reason);
-        self.attack.fail(reason);
-    }
-
-    pub(super) fn capture_group_attack(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        hour: i32,
-        groups: &mut super::group_counters::Captured,
-    ) {
-        self.attack.stamp_hour(hour);
-        let current = if self.geometry_hour == Some(hour) {
-            self.geometry_result
-        } else {
-            Err("current presentation geometry not supplied")
-        };
-        groups.capture_attack(
-            memory,
-            base,
-            hour,
-            &mut self.attack,
-            &mut self.geometry,
-            current,
-        );
-    }
-
-    /// Called only after original transport/native borrowers have joined.
-    pub(super) fn retire_attack_native(&mut self) {
-        self.attack.packet.finish_native();
-        self.geometry.retire_attack_terrain();
-    }
-
-    fn unit_transport(&self, division: u64) -> Option<replay::rows::UnitTransportInputs> {
-        if !matches!(self.transport.outcome(), Outcome::Rows { .. }) {
-            return None;
-        }
-        let rows = self.transport.rows();
-        rows.binary_search_by_key(&division, |row| row.unit)
-            .ok()
-            .and_then(|index| rows.get(index))
-            .map(super::selected_transport_inputs::project)
+    /// This hour's DivisionStatus span by pass, in [`PHASE_NAMES`] order.
+    pub(crate) fn phase_ticks(&self) -> [u64; PHASES] {
+        self.phase_ticks
     }
 
     /// Pure decode-worker projection from the current owned packets.
@@ -1191,53 +1445,28 @@ impl Captured {
         qpc().saturating_sub(start).max(0) as u64
     }
 
-    pub(crate) fn guard_selected_retreat(&mut self, layout: Option<&crate::fixed_layout::Layout>) {
-        let admitted = layout.is_some_and(|layout| {
-            layout.as_ref().is_ok_and(|report| {
-                let family = replay::fixed_layout::RETREAT_BANS;
-                report.failure(family.keys, family.tokens).is_none()
-            })
-        });
-        if admitted {
-            return;
-        }
-        for (index, count) in self
-            .movement_packet
-            .refuse_selected_retreat()
-            .into_iter()
-            .enumerate()
-        {
-            SELECTED_RETREAT_REFUSALS[index].fetch_add(count, std::sync::atomic::Ordering::Relaxed);
-        }
-        for row in &mut self.movement.rows {
-            if row.selected_commander == Some(true) {
-                row.selected_retreat = [None; 2];
-            }
-        }
-    }
-
     pub fn outcomes(&self) -> [Outcome; N] {
         [
             self.movement.outcome,
             self.status.outcome,
             self.bans.outcome,
-            self.attrition.outcome(),
             self.land.outcome(),
         ]
     }
 
+    /// `frame_hour` is the frame's hour; packets read for another hour are
+    /// refused. Tests without a frame pass None.
     pub(crate) fn table_inputs(
         &self,
         mut projection: Option<&mut Projection<'_>>,
-        eta: Option<(&super::division_eta_inputs::Captured, i32)>,
+        frame_hour: Option<i32>,
     ) -> [TableInput; N] {
         if self.decode_pending {
             return std::array::from_fn(|_| {
                 unavailable("division presentation projection pending").into()
             });
         }
-        let [movement, mut status, bans, _, _] = self.outcomes();
-        let breakdowns = self.attrition.table();
+        let [movement, mut status, bans, _] = self.outcomes();
         let bans = scalar_table::<tables::DivisionRetreatBans, _>(
             projection.as_deref_mut(),
             bans,
@@ -1249,7 +1478,12 @@ impl Captured {
                 bans: r.bans,
             },
         );
-        let acclimatization = |r: &carmy::StatusRow| self.status_packet.acclimatization(r);
+        // Packets store no hour: only those read for this frame's hour are
+        // published; a packet from another request is its refusal.
+        let request = self
+            .movement_packet
+            .combat_references_hour()
+            .filter(|sample| frame_hour.is_none_or(|hour| *sample == hour));
         let names = &self.names.first[..self.names.len];
         let name_span = |(start, len): cname_group_member::Span| {
             start.checked_add(len).and_then(|end| names.get(start..end))
@@ -1265,16 +1499,6 @@ impl Captured {
                 .get(..self.cached_names.len)?
                 .get(start..start.checked_add(len)?)
         };
-        if self
-            .status
-            .rows
-            .get(..status.len())
-            .is_none_or(|rows| rows.iter().any(|r| acclimatization(r).is_none()))
-        {
-            status = Outcome::Unavailable {
-                reason: "division acclimatization spans invalid",
-            };
-        }
         if self.status.rows.get(..status.len()).is_none_or(|rows| {
             rows.iter().any(|r| {
                 r.naming
@@ -1291,7 +1515,6 @@ impl Captured {
             &self.status.rows,
             |r| u128::from(r.division),
             |r, previous| {
-                let acclimatization = acclimatization(r).unwrap();
                 let (Ok(border), Ok(maximum), Ok(remaining), Ok(naming)) = (
                     previous
                         .border_combat_stats
@@ -1307,22 +1530,21 @@ impl Captured {
                     return false;
                 };
                 status_fields!(r, compare_status_fields, [previous])
-                    && self.attack.matches(r.division, &previous.attack)
-                    && Recorded::Value(r.country_ordinal) == previous.country_ordinal
-                    && Recorded::Value(r.invalid_orders_reason) == previous.invalid_orders_reason
-                    && super::supply_inputs::matches(
+                    && previous.attack == Recorded::Value(Witnessed(None))
+                    && self.attack.witness(r.division, r.weather_factor).is_none()
+                    && self.attack.same(r.division, &previous.attack_stats)
+                    && Recorded::Value(r.weather_factor) == previous.weather_factor
+                    && previous.attrition_inputs == Recorded::Value(Retired)
+                    && super::supply_inputs::matches_division(
                         r.supply,
                         self.status_packet.supply_origins(r),
                         &previous.supply,
                     )
-                    && self.attrition.matches(
-                        r.division,
-                        self.status_index(r.division),
-                        &previous.attrition_inputs,
-                    )
+                    && Recorded::Value(r.country_ordinal) == previous.country_ordinal
+                    && Recorded::Value(r.invalid_orders_reason) == previous.invalid_orders_reason
                     && Recorded::Value(
-                        self.attrition
-                            .dig_in_factor(r.division, self.status_index(r.division)),
+                        self.dig_in
+                            .factor(r.division, self.status_index(r.division)),
                     ) == previous.dig_in_factor
                     && match &previous.name {
                         Recorded::Value(name) => cached_name(r) == name.as_deref(),
@@ -1330,12 +1552,13 @@ impl Captured {
                     }
                     && r.border_combat_stats == *border
                     && r.supply_grace_maximum == *maximum
-                    && r.supply_grace_remaining == *remaining
-                    && acclimatization.len() == previous.acclimatization.len()
-                    && acclimatization
-                        .iter()
-                        .zip(&previous.acclimatization)
-                        .all(|(a, b)| a.category == b.category && a.weight == b.weight)
+                    && DivisionStatusRow::displayed_grace(
+                        r.supply_grace_remaining,
+                        self.supply_grace,
+                    ) == *remaining
+                    && Recorded::Value(camouflage(r.camouflage)) == previous.camouflage
+                    && previous.acclimatization_maximum.is_none()
+                    && previous.acclimatization.is_empty()
                     && match (r.naming, naming) {
                         (None, None) => true,
                         (Some(n), Some(previous)) => {
@@ -1355,14 +1578,7 @@ impl Captured {
                     project_status_fields,
                     [
                         r,
-                        owned_vec(engine::allocation::collect_vec(
-                            acclimatization(r).unwrap_or_default().iter().map(|entry| {
-                                DivisionAcclimatization {
-                                    category: entry.category,
-                                    weight: entry.weight,
-                                }
-                            }),
-                        )),
+                        self.supply_grace,
                         r.naming.map(|n| NameOperands {
                             kind: n.kind,
                             order: n.order,
@@ -1371,16 +1587,15 @@ impl Captured {
                             custom: owned_vec(copy_vec(name_span(n.custom).unwrap())),
                             group: owned_vec(copy_vec(name_span(n.group).unwrap())),
                         }),
-                        super::supply_inputs::project(
+                        super::supply_inputs::project_division(
                             r.supply,
-                            self.status_packet.supply_origins(r)
+                            self.status_packet.supply_origins(r),
                         ),
-                        self.attrition
-                            .project(r.division, self.status_index(r.division)),
-                        self.attrition
-                            .dig_in_factor(r.division, self.status_index(r.division)),
+                        self.dig_in
+                            .factor(r.division, self.status_index(r.division)),
                         cached_name(r).map(|name| owned_vec(copy_vec(name))),
-                        self.attack.division(r.division),
+                        self.attack.stats(r.division),
+                        self.attack.witness(r.division, r.weather_factor),
                     ],
                 )
             },
@@ -1390,7 +1605,6 @@ impl Captured {
                 unavailable("movement arena invalid").into(),
                 status,
                 bans,
-                breakdowns.into(),
                 self.land.table().into(),
             ];
         };
@@ -1406,7 +1620,6 @@ impl Captured {
                 unavailable("movement path spans invalid").into(),
                 status,
                 bans,
-                breakdowns.into(),
                 self.land.table().into(),
             ];
         }
@@ -1417,19 +1630,16 @@ impl Captured {
                 &self.movement.rows,
                 |r| u128::from(r.division),
                 |r, previous| {
-                    selected_unit(self.movement_packet.combat_references_hour(), r)
-                        == previous.selected
+                    previous.selected == Recorded::Value(Retired)
                         && r.division == previous.division
                         && super::unit_combat_references::matches(
-                            self.movement_packet.combat_references_hour(),
+                            request,
                             self.movement_packet.combat_references(r),
                             r.combat_count,
                             &previous.combat_references,
                         )
-                        && match eta.and_then(|(eta, hour)| eta.fresh_profile(r.division, hour)) {
-                            Some(profile) => profile.matches(&previous.fresh),
-                            None => previous.fresh == Recorded::Value(None),
-                        }
+                        && previous.fresh == Recorded::Value(Retired)
+                        && Recorded::Value(r.base_speed) == previous.base_speed
                         && r.source == previous.source
                         && r.target == previous.target
                         && r.numerator == previous.numerator
@@ -1441,7 +1651,7 @@ impl Captured {
                         && Recorded::Value(r.movement_priority) == previous.movement_priority
                         && Recorded::Value(self.order_transport(r.division))
                             == previous.order_transport
-                        && Recorded::Value(self.unit_transport(r.division)) == previous.transport
+                        && previous.transport == Recorded::Value(Retired)
                         && r.naval_transfer == previous.naval_transfer
                         && r.combat_count == previous.combat_count
                         && r.path_total == previous.path_total
@@ -1454,16 +1664,14 @@ impl Captured {
                             == previous.alternate_path.as_slice()
                 },
                 |r| DivisionMovementRow {
-                    selected: selected_unit(self.movement_packet.combat_references_hour(), r),
+                    selected: Recorded::Value(Retired),
                     combat_references: Recorded::Value(super::unit_combat_references::project(
-                        self.movement_packet.combat_references_hour(),
+                        request,
                         self.movement_packet.combat_references(r),
                         r.combat_count,
                     )),
                     division: r.division,
-                    fresh: eta
-                        .and_then(|(eta, hour)| eta.fresh_profile(r.division, hour))
-                        .map_or(Recorded::Value(None), |profile| profile.project()),
+                    fresh: Recorded::Value(Retired),
                     source: r.source,
                     target: r.target,
                     numerator: r.numerator,
@@ -1473,7 +1681,7 @@ impl Captured {
                     withdrawal: Recorded::Value(r.withdrawal),
                     movement_priority: Recorded::Value(r.movement_priority),
                     order_transport: Recorded::Value(self.order_transport(r.division)),
-                    transport: Recorded::Value(self.unit_transport(r.division)),
+                    transport: Recorded::Value(Retired),
                     naval_transfer: r.naval_transfer,
                     combat_count: r.combat_count,
                     path_total: r.path_total,
@@ -1485,11 +1693,11 @@ impl Captured {
                     alternate_path: owned_vec(copy_vec(
                         span(r.alternate_start, r.alternate_len).unwrap(),
                     )),
+                    base_speed: Recorded::Value(r.base_speed),
                 },
             ),
             status,
             bans,
-            breakdowns.into(),
             self.land.table().into(),
         ]
     }
@@ -1512,6 +1720,8 @@ mod tests {
     use super::*;
     use crate::unit_scale_tests::fixture as scale_fixture;
     use replay::{frame::TableView, rows::TableRows};
+
+    mod read_ahead;
 
     fn member(base: usize, name: &[u8], order: i32) -> [u8; cname_group_member::INPUT_SPAN] {
         assert!(name.len() < 16);
@@ -1679,10 +1889,8 @@ mod tests {
                 base: world.base,
                 game_state: world.state,
                 hour: 0,
-                force_full: true,
             },
             sources(),
-            None,
         );
         assert_eq!(captured.cached_names.required, 3);
         assert!(captured.naming.first[0].inputs.is_none());
@@ -1728,21 +1936,14 @@ mod tests {
                 base: world.base,
                 game_state: world.state,
                 hour: 0,
-                force_full: true,
             },
             sources(),
-            None,
         );
         captured.decode_inputs();
-        let mut scratch = crate::projection::ProjectionScratch::default();
-        let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
-        let [
-            _,
-            TableInput::ComparedChanges { indices, rows, .. },
-            _,
-            _,
-            _,
-        ] = captured.table_inputs(Some(&mut projection), None)
+        let scratch = crate::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
+        let [_, TableInput::ComparedChanges { indices, rows, .. }, _, _] =
+            captured.table_inputs(Some(&mut projection), None)
         else {
             panic!("a changed retained cache defeats baseline reuse");
         };
@@ -1751,6 +1952,176 @@ mod tests {
             panic!("status row changes");
         };
         assert_eq!(rows[0].name, Recorded::Value(Some(vec![b'R', 0, b'C'])));
+    }
+
+    /// One copy of each member span serves the generator operands and the
+    /// cached-name lookup cache, and a heap cache that fits is one copy of its bytes and
+    /// terminator.
+    #[test]
+    fn naming_copies_each_member_span_once_for_both_passes() {
+        struct Reads<'a, M>(&'a M, std::cell::RefCell<Vec<(usize, usize)>>);
+        impl<M: Memory> Memory for Reads<'_, M> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                self.1.borrow_mut().push((address, destination.len()));
+                self.0.copy(address, destination)
+            }
+        }
+        let mut world = scale_fixture::build(scale_fixture::Shape {
+            countries: 2,
+            divisions: 3,
+            wings: 1,
+            planes: 1,
+            ships: 0,
+        });
+        let _registry = template_registry(&mut world);
+        let mut members = division_name_members(&mut world);
+        let text = b"Heap cached division name";
+        let heap = [&text[..], &[0_u8][..]].concat();
+        let cache = cname_group_member::CACHED_NAME;
+        members[0][cache..cache + 8].copy_from_slice(&(heap.as_ptr() as u64).to_le_bytes());
+        members[0][cache + 16..cache + 24].copy_from_slice(&(text.len() as u64).to_le_bytes());
+        members[0][cache + 24..cache + 32].copy_from_slice(&(text.len() as u64).to_le_bytes());
+        let live = world.live();
+        let memory = Reads(&live, Default::default());
+        let seeds: Vec<_> = world
+            .armies
+            .iter()
+            .enumerate()
+            .map(|(index, &army)| DivisionSeed {
+                pointer: army,
+                division: index as u64 + 1,
+                name_member: Some(members[index].as_ptr() as usize),
+                ..Default::default()
+            })
+            .collect();
+        let mut captured = Captured::with_capacities(&Capacities {
+            status: seeds.len(),
+            name_groups: world.shape.countries,
+            cached_name_bytes: 64,
+            ..Capacities::default()
+        });
+        captured.capture_naming(&memory, world.base, &seeds);
+        let reads = memory.1.borrow();
+        for member in &members {
+            let at = member.as_ptr() as usize;
+            assert_eq!(reads.iter().filter(|read| read.0 == at).count(), 1);
+            assert!(!reads.iter().any(|read| read.0 == at + cache));
+        }
+        let heap_reads: Vec<_> = reads
+            .iter()
+            .filter(|read| {
+                (heap.as_ptr() as usize..heap.as_ptr() as usize + heap.len()).contains(&read.0)
+            })
+            .collect();
+        assert_eq!(heap_reads, [&(heap.as_ptr() as usize, heap.len())]);
+        let (start, len) = captured.naming.first[0].cached_name.unwrap();
+        assert_eq!(&captured.cached_names.first[start..start + len], text);
+        assert!(
+            captured
+                .naming
+                .first
+                .iter()
+                .take(3)
+                .all(|row| row.inputs.is_some())
+        );
+    }
+
+    /// A held name member no hooked writer touched stands in for its reads,
+    /// giving the rows a read gives; under `army_stat_verify` every one is
+    /// read and compared instead. A member a writer touched is read again.
+    #[test]
+    fn naming_carries_an_untouched_member_and_rereads_a_touched_one() {
+        use crate::army_stat_changes::{VERIFY, Watches};
+        struct Reads<'a, M>(&'a M, std::cell::RefCell<Vec<usize>>);
+        impl<M: Memory> Memory for Reads<'_, M> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                self.1.borrow_mut().push(address);
+                self.0.copy(address, destination)
+            }
+        }
+        let mut world = scale_fixture::build(scale_fixture::Shape {
+            countries: 2,
+            divisions: 3,
+            wings: 1,
+            planes: 1,
+            ships: 0,
+        });
+        let _registry = template_registry(&mut world);
+        let mut members = division_name_members(&mut world);
+        let text = b"Heap cached division name";
+        let heap = [&text[..], &[0_u8][..]].concat();
+        let cache = cname_group_member::CACHED_NAME;
+        members[0][cache..cache + 8].copy_from_slice(&(heap.as_ptr() as u64).to_le_bytes());
+        members[0][cache + 16..cache + 24].copy_from_slice(&(text.len() as u64).to_le_bytes());
+        members[0][cache + 24..cache + 32].copy_from_slice(&(text.len() as u64).to_le_bytes());
+        let live = world.live();
+        let seeds: Vec<_> = world
+            .armies
+            .iter()
+            .enumerate()
+            .map(|(index, &army)| DivisionSeed {
+                pointer: army,
+                division: (index as u64 + 1) << 32,
+                name_member: Some(members[index].as_ptr() as usize),
+                ..Default::default()
+            })
+            .collect();
+        let watches = Watches::enabled(16);
+        let mut store = super::super::attack_stats::ArmyStatStore::new();
+        let mut captured = Captured::with_capacities(&Capacities {
+            status: seeds.len(),
+            name_groups: world.shape.countries,
+            cached_name_bytes: 64,
+            ..Capacities::default()
+        });
+        let mut hour = |store: &mut super::super::attack_stats::ArmyStatStore| {
+            let memory = Reads(&live, Default::default());
+            let outcome = Outcome::Rows { len: seeds.len() };
+            captured
+                .attack
+                .certify(&seeds, outcome, Some(&mut *store), &watches);
+            captured.capture_naming_holding(&memory, world.base, &seeds, Some(store), &watches);
+            store.hold(captured.attack.epoch());
+            let rows: Vec<_> = captured.naming.first[..captured.naming.len]
+                .iter()
+                .map(|row| {
+                    (
+                        row.inputs,
+                        row.cached_name
+                            .map(|(at, len)| captured.cached_names.first[at..at + len].to_vec()),
+                    )
+                })
+                .collect();
+            let read: Vec<bool> = members
+                .iter()
+                .map(|member| memory.1.borrow().contains(&(member.as_ptr() as usize)))
+                .collect();
+            (rows, read, captured.attack.status_counts)
+        };
+        let (first, read, counts) = hour(&mut store);
+        assert_eq!(read, [true; 3]);
+        assert_eq!(counts.names_reused, 0);
+        assert_eq!(first[0].1.as_deref(), Some(&text[..]));
+        let (second, read, counts) = hour(&mut store);
+        assert_eq!(second, first);
+        if VERIFY {
+            assert_eq!(read, [true; 3]);
+            assert_eq!((counts.verified, counts.mismatches), (3, 0));
+        } else {
+            assert_eq!(read, [false; 3]);
+            assert_eq!(counts.names_reused, 3);
+        }
+        drop(watches.notify(members[0].as_ptr() as usize, 1));
+        let (third, read, counts) = hour(&mut store);
+        assert_eq!(third, first);
+        assert!(read[0]);
+        if VERIFY {
+            assert_eq!((counts.verified, counts.mismatches), (2, 0));
+        } else {
+            assert_eq!(read, [true, false, false]);
+            assert_eq!(counts.names_reused, 2);
+        }
+        assert!(!watches.poisoned());
     }
 
     #[test]
@@ -1801,13 +2172,11 @@ mod tests {
                 base: world.base,
                 game_state: world.state,
                 hour: 0,
-                force_full: true,
             },
             Sources {
                 rows: &seeds,
                 outcome: Outcome::Rows { len: seeds.len() },
             },
-            None,
         );
         assert_eq!(&capture.names.first[..capture.names.len], b"GROUP");
         assert!(
@@ -1888,13 +2257,11 @@ mod tests {
                 base: world.base,
                 game_state: world.state,
                 hour: 0,
-                force_full: true,
             },
             Sources {
                 rows: &seeds,
                 outcome: Outcome::Rows { len: seeds.len() },
             },
-            None,
         );
         capture.decode_inputs();
         let TableView::Complete(TableRows::DivisionStatus(rows)) = capture.tables()[1].clone()
@@ -2360,8 +2727,8 @@ mod tests {
                 false,
             )
             .unwrap();
-        let mut scratch = crate::projection::ProjectionScratch::default();
-        let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
+        let scratch = crate::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
         assert!(matches!(
             captured.table_inputs(Some(&mut projection), None)[1],
             TableInput::ComparedEqual(_)
@@ -2388,13 +2755,8 @@ mod tests {
             }),
         ] {
             captured.status.rows[0].naming = changed;
-            let [
-                _,
-                TableInput::ComparedChanges { indices, rows, .. },
-                _,
-                _,
-                _,
-            ] = captured.table_inputs(Some(&mut projection), None)
+            let [_, TableInput::ComparedChanges { indices, rows, .. }, _, _] =
+                captured.table_inputs(Some(&mut projection), None)
             else {
                 panic!("every naming operand must defeat reuse");
             };
@@ -2458,15 +2820,15 @@ mod tests {
                 false,
             )
             .unwrap();
-        let mut scratch = crate::projection::ProjectionScratch::default();
-        let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
+        let scratch = crate::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
         assert!(matches!(
             captured.table_inputs(Some(&mut projection), None)[1],
             TableInput::ComparedEqual(_)
         ));
         for reason in [None, Some(0), Some(i32::MAX)] {
             captured.status.rows[0].invalid_orders_reason = reason;
-            let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
+            let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
             assert!(!matches!(
                 captured.table_inputs(Some(&mut projection), None)[1],
                 TableInput::ComparedEqual(_)
@@ -2494,6 +2856,193 @@ mod tests {
         captured.status.rows[0].invalid_orders_reason = None;
         captured.observe_counter_inputs(&mut work).unwrap();
         assert_eq!((work.captured, work.refused), (3, 1));
+    }
+
+    /// The row records what the camouflage category selector takes from the division, never the
+    /// weights, and only a different decision or refusal changes it.
+    #[test]
+    fn camouflage_projects_the_decision_and_changes_only_with_it() {
+        let mut captured = Captured::with_capacities(&Capacities {
+            status: 1,
+            ..Capacities::default()
+        });
+        let decided = |category| {
+            Some(carmy::Camouflage {
+                category: Some(category),
+            })
+        };
+        captured.status.rows[0] = carmy::StatusRow {
+            division: 7,
+            camouflage: decided(20_006),
+            ..Default::default()
+        };
+        captured.status.outcome = Outcome::Rows { len: 1 };
+        let rows = |captured: &Captured| {
+            let TableView::Complete(TableRows::DivisionStatus(rows)) = captured.tables()[1].clone()
+            else {
+                panic!("camouflage does not withhold status");
+            };
+            rows
+        };
+        let row = &rows(&captured)[0];
+        assert_eq!(
+            row.camouflage,
+            Recorded::Value(Some(DivisionCamouflage {
+                category: Some(20_006)
+            }))
+        );
+        assert_eq!(
+            (row.acclimatization_maximum, row.acclimatization.len()),
+            (None, 0)
+        );
+        let mut baseline = std::array::from_fn(|_| unavailable("outside camouflage fixture"));
+        baseline[TableId::DivisionStatus.index()] = captured.tables()[1].clone();
+        let mut encoder = replay::frame::FrameEncoder::new();
+        encoder
+            .encode(
+                replay::frame::DecodedFrame {
+                    branch: 1,
+                    hour: 0,
+                    tables: baseline.map(Into::into),
+                    metrics: Default::default(),
+                },
+                false,
+            )
+            .unwrap();
+        let scratch = crate::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
+        assert!(matches!(
+            captured.table_inputs(Some(&mut projection), None)[1],
+            TableInput::ComparedEqual(_)
+        ));
+        for (camouflage, recorded) in [
+            (decided(36_465), Some(Some(36_465))),
+            (Some(carmy::Camouflage { category: None }), Some(None)),
+            (None, None),
+        ] {
+            captured.status.rows[0].camouflage = camouflage;
+            let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
+            assert!(!matches!(
+                captured.table_inputs(Some(&mut projection), None)[1],
+                TableInput::ComparedEqual(_)
+            ));
+            assert_eq!(
+                rows(&captured)[0].camouflage,
+                Recorded::Value(recorded.map(|category| DivisionCamouflage { category }))
+            );
+        }
+    }
+
+    /// The Presentation job's DivisionStatus passes (status, dig-in,
+    /// naming) and the attack pass, for a quiet hour carried through the
+    /// army_stat store and for an hour that reads every division. Build
+    /// without `army_stat_verify`, which reads every carryable division.
+    #[test]
+    #[ignore = "release benchmark: DivisionStatus with and without the army_stat carry"]
+    fn presentation_carry_scale_bench() {
+        use super::super::attack_stats::ArmyStatStore;
+        use crate::army_stat_changes::{VERIFY, Watches};
+        if cfg!(debug_assertions) || VERIFY {
+            panic!("run the carry benchmark in release, without army_stat_verify");
+        }
+        crate::sampled_verify::begin_hour(1);
+        for divisions in [5_000, 30_000] {
+            let shape = scale_fixture::Shape {
+                countries: 1_500,
+                divisions,
+                wings: 1,
+                planes: 1,
+                ships: 0,
+            };
+            let mut world = scale_fixture::build(shape);
+            let _registry = template_registry(&mut world);
+            let _members = division_name_members(&mut world);
+            let memory = world.live();
+            let mut census = crate::division_census::Census::new();
+            loop {
+                census.clear();
+                census.capture(&memory, world.base, world.state, divisions);
+                if !census.overflowed {
+                    break;
+                }
+                census.grow();
+            }
+            let inputs = census.unit_inputs().unwrap();
+            let context = CaptureContext {
+                base: world.base,
+                game_state: world.state,
+                hour: 1,
+            };
+            let mut capture = Captured::with_capacities(&Capacities {
+                status: divisions,
+                name_groups: shape.countries,
+                ..Capacities::default()
+            });
+            capture.reserve_sources(divisions);
+            let watches = Watches::enabled(2 * divisions);
+            let mut store = ArmyStatStore::new();
+            let sources = || Sources {
+                rows: inputs.seeds(),
+                outcome: inputs.outcome(),
+            };
+            // Per hour: [status, dig-in, naming, attack] in milliseconds, and
+            // the published tables.
+            let mut hour = |store: Option<&mut ArmyStatStore>| {
+                let mut store = store;
+                capture.capture_owned_observed(
+                    &memory,
+                    context,
+                    sources(),
+                    store.as_deref_mut(),
+                    &watches,
+                );
+                assert_eq!(capture.status.outcome, Outcome::Rows { len: divisions });
+                assert_eq!(capture.naming.len, divisions);
+                let begin = std::time::Instant::now();
+                capture.capture_attack_observed(&memory, context, sources(), store, &watches);
+                let attack = begin.elapsed().as_secs_f64() * 1e3;
+                let mut frequency = 0;
+                // SAFETY: writes the frequency into a local.
+                unsafe {
+                    windows_sys::Win32::System::Performance::QueryPerformanceFrequency(
+                        &mut frequency,
+                    )
+                };
+                let [status, dig_in, naming] = capture
+                    .phase_ticks()
+                    .map(|ticks| ticks as f64 * 1e3 / frequency as f64);
+                capture.decode_inputs();
+                ([status, dig_in, naming, attack], capture.tables())
+            };
+            let mut tables = Vec::new();
+            for (form, carried) in [("read_every_division", false), ("quiet_carried", true)] {
+                let mut samples = Vec::new();
+                let mut published = None;
+                for _ in 0..25 {
+                    let (sample, hour_tables) = hour(carried.then_some(&mut store));
+                    samples.push(sample);
+                    published = Some(hour_tables);
+                }
+                // A carried hour publishes what a read hour does.
+                tables.push(published.unwrap());
+                // The first hours fill the store.
+                samples.drain(..3);
+                let median = |part: usize| {
+                    let mut values: Vec<f64> = samples.iter().map(|hour| hour[part]).collect();
+                    values.sort_by(f64::total_cmp);
+                    values[values.len() / 2]
+                };
+                println!(
+                    "PRESENTATION_CARRY divisions={divisions} form={form} status_ms={:.3} dig_in_ms={:.3} naming_ms={:.3} attack_ms={:.3}",
+                    median(0),
+                    median(1),
+                    median(2),
+                    median(3)
+                );
+            }
+            assert_eq!(tables[0], tables[1]);
+            assert!(!watches.poisoned());
+        }
     }
 
     #[test]
@@ -2663,7 +3212,6 @@ mod tests {
             base: 0,
             game_state: 0x1000,
             hour: 0,
-            force_full: true,
         };
         let sources = || Sources {
             rows: &seeds,
@@ -2681,16 +3229,13 @@ mod tests {
                 name_bytes: 0,
                 name_groups: 0,
                 cached_name_bytes: 0,
-                attrition: Default::default(),
-                supply_origins: 0,
                 geometry: cprovince::GeometryCapacities {
                     provinces: 1,
                     neighbour_entries: 0,
                 },
                 membership: carmy::StatusCapacities::new(1).membership,
+                supply_origins: 0,
                 combat_references: 0,
-                attack: Default::default(),
-                transport: Default::default(),
             });
             capture.reserve_sources(1);
             capture.capture_owned(
@@ -2700,7 +3245,6 @@ mod tests {
                 },
                 context,
                 sources(),
-                None,
             );
             let memory = PanicAt {
                 memory: engine::memory::SliceMemory {
@@ -2711,7 +3255,7 @@ mod tests {
             };
             assert!(
                 catch_unwind(AssertUnwindSafe(|| {
-                    capture.capture_owned(&memory, context, sources(), None);
+                    capture.capture_owned(&memory, context, sources());
                 }))
                 .is_err()
             );
@@ -2742,6 +3286,275 @@ mod tests {
         }
     }
 
+    const PRESENTED: usize = 48;
+
+    /// The scale fixture's world with template names and name members and
+    /// its census of [`PRESENTED`] divisions, whose status and naming rows
+    /// are all read.
+    struct Populated {
+        world: scale_fixture::World,
+        _registry: (Box<[u8; 32]>, Vec<u8>, Box<[u8; 40]>),
+        _members: Vec<[u8; cname_group_member::INPUT_SPAN]>,
+        census: crate::division_census::Census,
+    }
+
+    impl Populated {
+        const SHAPE: scale_fixture::Shape = scale_fixture::Shape {
+            countries: 4,
+            divisions: PRESENTED,
+            wings: 1,
+            planes: 1,
+            ships: 0,
+        };
+
+        fn new() -> Self {
+            let mut world = scale_fixture::build(Self::SHAPE);
+            let registry = template_registry(&mut world);
+            let members = division_name_members(&mut world);
+            let mut census = crate::division_census::Census::new();
+            loop {
+                census.clear();
+                census.capture(&world.live(), world.base, world.state, PRESENTED);
+                if !census.overflowed {
+                    break;
+                }
+                census.grow();
+            }
+            assert_eq!(
+                census.unit_inputs().unwrap().outcome(),
+                Outcome::Rows { len: PRESENTED }
+            );
+            Self {
+                world,
+                _registry: registry,
+                _members: members,
+                census,
+            }
+        }
+
+        fn context(&self) -> CaptureContext {
+            CaptureContext {
+                base: self.world.base,
+                game_state: self.world.state,
+                hour: 1,
+            }
+        }
+
+        fn capture(&self) -> Captured {
+            let mut capture = Captured::with_capacities(&Capacities {
+                status: PRESENTED,
+                name_groups: Self::SHAPE.countries,
+                ..Capacities::default()
+            });
+            capture.reserve_sources(PRESENTED);
+            capture
+        }
+    }
+
+    /// The movement pass and the status side read nothing of each other:
+    /// run side by side on two threads, each through its own memory handle
+    /// as their two jobs run, then the attack pass as the Presentation job
+    /// runs it, they publish what the single pass publishes.
+    #[test]
+    fn presentation_movement_pass_runs_beside_the_status_side() {
+        let populated = Populated::new();
+        let world = &populated.world;
+        let inputs = populated.census.unit_inputs().unwrap();
+        let context = populated.context();
+        let sources = || Sources {
+            rows: inputs.seeds(),
+            outcome: inputs.outcome(),
+        };
+        let memory = world.live();
+        let mut whole = populated.capture();
+        whole.capture_owned(&memory, context, sources());
+        whole.capture_attack(&memory, context, sources(), None);
+        whole.decode_inputs();
+        assert_eq!(whole.status.outcome, Outcome::Rows { len: PRESENTED });
+        assert_eq!(whole.naming.len, PRESENTED);
+
+        let mut split = populated.capture();
+        let bytes = split.allocated_bytes();
+        let mut pass = split.take_movement();
+        assert_eq!(split.allocated_bytes() + pass.allocated_bytes(), bytes);
+        let movement = std::thread::scope(|scope| {
+            let movement = scope.spawn(|| {
+                pass.capture(
+                    &world.live(),
+                    context.base,
+                    context.game_state,
+                    sources(),
+                    Some(context.hour),
+                )
+            });
+            split.capture_status_holding(&memory, context, sources(), None);
+            split.capture_attack(&memory, context, sources(), None);
+            movement.join().unwrap()
+        });
+        split.restore_movement(pass);
+        split.decode_inputs();
+        assert_eq!(split.outcomes(), whole.outcomes());
+        assert_eq!(split.tables(), whole.tables());
+        assert_eq!(split.naming.len, PRESENTED);
+        assert_eq!(movement[1], split.land_ticks);
+        assert_eq!(split.phase_ticks()[1], movement[2]);
+    }
+
+    /// A rejected or failed job on either side publishes none of the four
+    /// tables, though the other side read every division: the merged report
+    /// fails, and restoring the request refuses them all once both loans
+    /// are home. A rejected job completes Stopped, as a stopped pool's does.
+    #[test]
+    fn a_failed_presentation_job_publishes_no_presentation_table() {
+        use crate::acquisition::Failure;
+        let populated = Populated::new();
+        let inputs = std::sync::Arc::clone(populated.census.unit_inputs().unwrap());
+        let sources = || Sources {
+            rows: inputs.seeds(),
+            outcome: inputs.outcome(),
+        };
+        let memory = populated.world.live();
+        let countries =
+            std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+        for (status_failure, movement_failure) in [
+            (Some(Failure::Stopped), None),
+            (None, Some(Failure::Panicked)),
+            (None, Some(Failure::Stopped)),
+            (Some(Failure::Stopped), Some(Failure::Stopped)),
+        ] {
+            let mut captured =
+                super::super::Captured::with_capacities(&super::super::Capacities::default());
+            captured.division_presentation = populated.capture();
+            captured.install_unit_inputs(Some(std::sync::Arc::clone(&inputs)));
+            let context = populated.context();
+            let mut request = captured.take_presentation_request(
+                &countries,
+                context.base,
+                context.game_state,
+                context.hour,
+                None,
+            );
+            let mut movement = request.take_movement();
+            let ticks = movement.pass.capture(
+                &memory,
+                context.base,
+                context.game_state,
+                sources(),
+                Some(context.hour),
+            );
+            let status = request
+                .captured
+                .capture_status_holding(&memory, context, sources(), None);
+            assert_eq!(
+                movement.pass.movement.outcome,
+                Outcome::Rows { len: PRESENTED }
+            );
+            assert_eq!(
+                request.captured.status.outcome,
+                Outcome::Rows { len: PRESENTED }
+            );
+            let report = request.restore_movement(
+                movement,
+                movement_failure.map_or(Ok(ticks), Err),
+                status_failure.map_or(Ok(status), Err),
+            );
+            assert!(report.is_err());
+            captured.restore_presentation_request(request, report);
+            assert_eq!(captured.acquire_presentation().ticks, [0; N]);
+            captured.decode_division_presentation_inputs();
+            for (id, view) in TABLES
+                .into_iter()
+                .zip(captured.division_presentation.tables())
+            {
+                assert!(
+                    matches!(view, TableView::Unavailable { .. }),
+                    "{id:?} published after {status_failure:?} {movement_failure:?}"
+                );
+            }
+        }
+    }
+
+    /// A failed status side or a failed movement job refuses the whole
+    /// presentation once both loans are home, as the single job's failure
+    /// did; with both complete the movement job's ticks join the report.
+    #[test]
+    fn either_failed_presentation_job_fails_the_merged_report() {
+        use crate::acquisition::Failure;
+        let (seed, bytes) = presentation_fixture();
+        let seeds = [seed];
+        let memory = engine::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let context = CaptureContext {
+            base: 0,
+            game_state: 0x1000,
+            hour: 0,
+        };
+        let sources = || Sources {
+            rows: &seeds,
+            outcome: Outcome::Rows { len: 1 },
+        };
+        for (status_failure, movement_failure) in [
+            (None, None),
+            (Some(Failure::Stopped), None),
+            (Some(Failure::Panicked), None),
+            (None, Some(Failure::Panicked)),
+            (None, Some(Failure::Stopped)),
+        ] {
+            let mut captured = Captured::with_capacities(&Capacities {
+                movement: 1,
+                status: 1,
+                bans: 1,
+                geometry: cprovince::GeometryCapacities {
+                    provinces: 1,
+                    neighbour_entries: 0,
+                },
+                membership: carmy::StatusCapacities::new(1).membership,
+                ..Capacities::default()
+            });
+            captured.reserve_sources(1);
+            let mut request = crate::acquisition_jobs::PresentationRequest {
+                countries: std::sync::Arc::new(
+                    engine::country_memory::Cache::try_with_capacity(0).unwrap(),
+                ),
+                context,
+                captured,
+                inputs: None,
+                army_stats: None,
+            };
+            let mut movement = request.take_movement();
+            let ticks = movement.pass.capture(
+                &memory,
+                context.base,
+                context.game_state,
+                sources(),
+                Some(context.hour),
+            );
+            assert_eq!(movement.pass.movement.outcome, Outcome::Rows { len: 1 });
+            let status = request
+                .captured
+                .capture_status_holding(&memory, context, sources(), None);
+            let report = request.restore_movement(
+                movement,
+                movement_failure.map_or(Ok(ticks), Err),
+                status_failure.map_or(Ok(status), Err),
+            );
+            // Both loans are home before the outcome is settled.
+            assert_eq!(request.captured.outcomes()[0], Outcome::Rows { len: 1 });
+            match status_failure.or(movement_failure) {
+                None => {
+                    let report = report.unwrap();
+                    assert_eq!(report.ticks[0], ticks[0]);
+                    assert_eq!(report.ticks[1], status.ticks[1] + ticks[2]);
+                    assert_eq!(report.ticks[2], status.ticks[2]);
+                    assert_eq!(report.ticks[3], ticks[1]);
+                }
+                failure => assert_eq!(report.err(), failure),
+            }
+        }
+    }
+
     #[test]
     fn presentation_projects_the_primary_packet_once_after_acquisition() {
         let capacity = Capacities {
@@ -2752,16 +3565,13 @@ mod tests {
             name_bytes: 0,
             name_groups: 0,
             cached_name_bytes: 0,
-            attrition: Default::default(),
-            supply_origins: 0,
             geometry: cprovince::GeometryCapacities {
                 provinces: 1,
                 neighbour_entries: 0,
             },
             membership: carmy::StatusCapacities::new(0).membership,
+            supply_origins: 0,
             combat_references: 0,
-            attack: Default::default(),
-            transport: Default::default(),
         };
         let mut capture = Captured::with_capacities(&capacity);
         capture.reserve_sources(1);
@@ -2835,13 +3645,11 @@ mod tests {
                     base: 0,
                     game_state: 0x1000,
                     hour: count as i32,
-                    force_full: true,
                 },
                 Sources {
                     rows: &[seed],
                     outcome: Outcome::Rows { len: 1 },
                 },
-                None,
             );
             assert_eq!(capture.movement.outcome, Outcome::Rows { len: 1 });
             bytes.fill(0xff);
@@ -2902,12 +3710,16 @@ mod tests {
             strength_factor: 57_038,
             supply_grace_maximum: i64::MAX,
             supply_grace_remaining: i64::MIN,
+            supply: Some(engine::cunit_supply_inputs::Inputs {
+                asked: 123_456,
+                disruption: 4,
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let [
             TableView::Complete(TableRows::DivisionMovement(m)),
             TableView::Complete(TableRows::DivisionStatus(s)),
-            _,
             _,
             land,
         ] = capture.tables()
@@ -2935,6 +3747,16 @@ mod tests {
         );
         assert_eq!(s[0].supply_grace_maximum, Recorded::Value(i64::MAX));
         assert_eq!(s[0].supply_grace_remaining, Recorded::Value(i64::MIN));
+        // Every division records its supply footer at display precision.
+        assert_eq!(
+            s[0].supply,
+            Recorded::Value(Some(replay::rows::DivisionSupplyFooter {
+                asked: 123_000,
+                disruption: 1_000,
+                origins: Some(Vec::new()),
+                ..Default::default()
+            }))
+        );
         assert_eq!(s[0].naming, Recorded::Value(None));
         assert!(matches!(land, TableView::Unavailable { .. }));
         let mut baseline = std::array::from_fn(|_| unavailable("outside presentation fixture"));
@@ -2953,10 +3775,10 @@ mod tests {
                 false,
             )
             .unwrap();
-        let mut scratch = crate::projection::ProjectionScratch::default();
-        let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
+        let scratch = crate::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
         // The fixture has no country census, so the bans table is unavailable.
-        let [movement, status, bans, _, _] = capture.table_inputs(Some(&mut projection), None);
+        let [movement, status, bans, _] = capture.table_inputs(Some(&mut projection), None);
         assert!(
             [movement, status]
                 .iter()
@@ -2966,6 +3788,17 @@ mod tests {
             bans,
             TableInput::Sampled(TableView::Unavailable { .. })
         ));
+        // A footer that drifted inside every printed hundredth reuses the
+        // baseline; a printed change publishes the row.
+        for (asked, equal) in [(123_499, true), (123_500, false), (123_456, true)] {
+            capture.status.rows[0].supply.as_mut().unwrap().asked = asked;
+            let [_, status, _, _] = capture.table_inputs(Some(&mut projection), None);
+            assert_eq!(
+                matches!(status, TableInput::ComparedEqual(_)),
+                equal,
+                "{asked}"
+            );
+        }
         assert_eq!(
             m[0].strategic_action,
             replay::rows::Recorded::Value(carmy::StrategicAction::Available(
@@ -2980,7 +3813,7 @@ mod tests {
                 country_modifier: i64::MAX,
                 ..Default::default()
             });
-        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection), None);
+        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection), None);
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("current modifier-only change must publish movement");
         };
@@ -2989,7 +3822,7 @@ mod tests {
         assert!(matches!(status, TableInput::ComparedEqual(_)));
         capture.movement.rows[0].strategic_action =
             carmy::StrategicAction::Withheld(carmy::StrategicActionFailure::CountryModifier);
-        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection), None);
+        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection), None);
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("a refused query must publish the movement row");
         };
@@ -3004,7 +3837,7 @@ mod tests {
         // A path-only mutation and an independently changing status must both
         // defeat reuse, without changing their keys or arena spans.
         capture.paths.first[3] ^= 1;
-        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection), None);
+        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection), None);
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("changed movement must replace its freshly compared row");
         };
@@ -3013,7 +3846,7 @@ mod tests {
         assert!(matches!(status, TableInput::ComparedEqual(_)));
         capture.paths.first[3] ^= 1;
         capture.status.rows[0].has_order = 1;
-        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection), None);
+        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection), None);
         assert!(matches!(movement, TableInput::ComparedEqual(_)));
         let TableInput::ComparedChanges { indices, rows, .. } = status else {
             panic!("changed status must replace its freshly compared row");
@@ -3022,7 +3855,7 @@ mod tests {
         assert_eq!(TableView::Complete(rows), capture.tables()[1]);
         capture.status.rows[0].has_order = 0;
         capture.movement.rows[0].alternate_start = usize::MAX;
-        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection), None);
+        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection), None);
         assert!(matches!(
             movement,
             TableInput::Sampled(TableView::Unavailable { .. })
@@ -3030,6 +3863,16 @@ mod tests {
         assert!(matches!(status, TableInput::ComparedEqual(_)));
         assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
         assert!(matches!(capture.tables()[1], TableView::Complete(_)));
+        // Remaining grace is stored at the whole percent of the live
+        // define's share, or at 0.01 hour when the define was unreadable.
+        capture.status.rows[0].supply_grace_remaining = 3_659_999;
+        for (grace, stored) in [(Some(72), 3_600_000), (None, 3_659_000)] {
+            capture.supply_grace = grace;
+            let TableView::Complete(TableRows::DivisionStatus(rows)) = &capture.tables()[1] else {
+                panic!("complete status");
+            };
+            assert_eq!(rows[0].supply_grace_remaining, Recorded::Value(stored));
+        }
     }
 
     #[test]
@@ -3106,12 +3949,6 @@ mod tests {
                     commander_term: None,
                 }),
             }));
-        rows[0].transport = Recorded::Value(Some(replay::rows::UnitTransportInputs {
-            sample_hour: 0,
-            weight: Some(i64::MIN),
-            transfer: Some(replay::rows::UnitTransferInputs::Absent),
-            coastal_template: Some(false),
-        }));
         let mut baseline = std::array::from_fn(|_| unavailable("outside movement fixture"));
         baseline[TableId::DivisionMovement.index()] =
             TableView::Complete(TableRows::DivisionMovement(rows));
@@ -3127,9 +3964,9 @@ mod tests {
                 false,
             )
             .unwrap();
-        let mut scratch = crate::projection::ProjectionScratch::default();
-        let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
-        let [movement, _, _, _, _] = capture.table_inputs(Some(&mut projection), None);
+        let scratch = crate::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
+        let [movement, _, _, _] = capture.table_inputs(Some(&mut projection), None);
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("an unavailable current suffix cannot reuse the prior row");
         };
@@ -3138,7 +3975,10 @@ mod tests {
             unreachable!();
         };
         assert_eq!(rows[0].order_transport, Recorded::Value(None));
-        assert_eq!(rows[0].transport, Recorded::Value(None));
+        // The retired selected transport and selection operands store their
+        // tombstones.
+        assert_eq!(rows[0].transport, Recorded::Value(Retired));
+        assert_eq!(rows[0].selected, Recorded::Value(Retired));
         assert_eq!(
             (
                 rows[0].division,
@@ -3150,11 +3990,12 @@ mod tests {
         );
     }
 
+    /// The base speed is published with its row and joins the unchanged-row
+    /// comparison; the retired fresh ETA field is the empty marker.
     #[test]
-    fn movement_fresh_join_changes_only_the_current_profile_and_expires_at_frame_hour() {
-        use replay::rows::RowCodec;
+    fn movement_projection_records_base_speed_and_retires_fresh_eta() {
         let mut capture = Captured::with_capacities(&Capacities {
-            movement: 1,
+            movement: 2,
             status: 0,
             bans: 0,
             paths: 0,
@@ -3163,130 +4004,30 @@ mod tests {
         capture.movement.rows[0] = carmy::MovementRow {
             division: 7,
             source: 17,
-            target: 17,
-            numerator: i64::MIN,
+            target: 23,
+            base_speed: Some(-4_000_000),
             ..Default::default()
         };
-        capture.movement.outcome = Outcome::Rows { len: 1 };
-        let old = super::super::division_eta_inputs::fresh_transfer_profile_fixture(11, true);
-        let current = super::super::division_eta_inputs::fresh_transfer_profile_fixture(12, true);
-        let [
-            TableInput::Sampled(TableView::Complete(TableRows::DivisionMovement(previous))),
-            _,
-            _,
-            _,
-            _,
-        ] = capture.table_inputs(None, Some((&old, 11)))
-        else {
-            panic!("stationary movement prefix unavailable");
-        };
-        let mut baseline = std::array::from_fn(|_| unavailable("outside fresh movement fixture"));
-        baseline[TableId::DivisionMovement.index()] =
-            TableView::Complete(TableRows::DivisionMovement(previous.clone()));
-        let mut encoder = replay::frame::FrameEncoder::new();
-        encoder
-            .encode(
-                replay::frame::DecodedFrame {
-                    branch: 1,
-                    hour: 11,
-                    tables: baseline.map(Into::into),
-                    metrics: replay::frame::Metrics::default(),
-                },
-                false,
-            )
-            .unwrap();
-        let mut scratch = crate::projection::ProjectionScratch::default();
-        let mut projection = Projection::new(&encoder, 1, 12, false, &mut scratch);
-        let [movement, _, _, _, _] =
-            capture.table_inputs(Some(&mut projection), Some((&current, 12)));
-        let TableInput::ComparedChanges {
-            indices,
-            rows: TableRows::DivisionMovement(rows),
-            ..
-        } = movement
-        else {
-            panic!("fresh sample hour change was lost in prefix equality");
-        };
-        assert_eq!(indices, [0]);
-        assert_eq!(rows.len(), 1);
-        let delta = rows[0].delta(Some(&previous[0])).unwrap().unwrap();
-        assert_eq!(delta.mask, 1 << 18);
-        assert_eq!(
-            (
-                rows[0].division,
-                rows[0].source,
-                rows[0].target,
-                rows[0].numerator
-            ),
-            (7, 17, 17, i64::MIN)
-        );
-        let Recorded::Value(Some(profile)) = &rows[0].fresh else {
-            panic!("idle profile missing");
-        };
-        assert_eq!(profile.sample_hour, 12);
-        assert_eq!(profile.current_speed, None);
-
-        let [
-            TableInput::Sampled(TableView::Complete(TableRows::DivisionMovement(expired))),
-            _,
-            _,
-            _,
-            _,
-        ] = capture.table_inputs(None, Some((&current, 13)))
-        else {
-            panic!("expired profile erased the genuine movement prefix");
-        };
-        assert_eq!(expired[0].fresh, Recorded::Value(None));
-        assert_eq!(
-            expired[0],
-            DivisionMovementRow {
-                fresh: Recorded::Value(None),
-                ..rows[0].clone()
-            }
-        );
-        let mut failed = current;
-        failed.fail_missing();
-        let [
-            TableInput::Sampled(TableView::Complete(TableRows::DivisionMovement(refused))),
-            _,
-            _,
-            _,
-            _,
-        ] = capture.table_inputs(None, Some((&failed, 12)))
-        else {
-            panic!("failed range erased the genuine movement prefix");
-        };
-        assert_eq!(refused, expired);
-    }
-
-    #[test]
-    fn unavailable_profile_cannot_reuse_a_previous_movement_suffix() {
-        let mut capture = Captured::with_capacities(&Capacities {
-            movement: 1,
-            status: 0,
-            bans: 0,
-            paths: 0,
-            ..Capacities::default()
-        });
-        capture.movement.rows[0] = carmy::MovementRow {
-            division: 7,
+        capture.movement.rows[1] = carmy::MovementRow {
+            division: 9,
             source: 17,
             target: 17,
             ..Default::default()
         };
-        capture.movement.outcome = Outcome::Rows { len: 1 };
-        let current = super::super::division_eta_inputs::fresh_transfer_profile_fixture(12, true);
+        capture.movement.outcome = Outcome::Rows { len: 2 };
         let [
             TableInput::Sampled(TableView::Complete(TableRows::DivisionMovement(rows))),
             _,
             _,
             _,
-            _,
-        ] = capture.table_inputs(None, Some((&current, 12)))
+        ] = capture.table_inputs(None, Some(12))
         else {
-            panic!("idle profile unavailable");
+            panic!("movement rows unavailable");
         };
-        let mut baseline = std::array::from_fn(|_| unavailable("outside fresh movement fixture"));
+        assert_eq!(rows[0].base_speed, Recorded::Value(Some(-4_000_000)));
+        assert_eq!(rows[1].base_speed, Recorded::Value(None));
+        assert!(rows.iter().all(|row| row.fresh == Recorded::Value(Retired)));
+        let mut baseline = std::array::from_fn(|_| unavailable("outside movement fixture"));
         baseline[TableId::DivisionMovement.index()] =
             TableView::Complete(TableRows::DivisionMovement(rows));
         let mut encoder = replay::frame::FrameEncoder::new();
@@ -3301,20 +4042,26 @@ mod tests {
                 false,
             )
             .unwrap();
-        let mut scratch = crate::projection::ProjectionScratch::default();
-        let mut projection = Projection::new(&encoder, 1, 13, false, &mut scratch);
-        let [movement, _, _, _, _] =
-            capture.table_inputs(Some(&mut projection), Some((&current, 13)));
+        let scratch = crate::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 13, false, &scratch);
+        let [movement, _, _, _] = capture.table_inputs(Some(&mut projection), Some(13));
+        assert!(
+            matches!(movement, TableInput::ComparedEqual(_)),
+            "an equal base speed reuses the unchanged rows"
+        );
+        capture.movement.rows[0].base_speed = Some(-3_000_000);
+        let mut projection = Projection::new(&encoder, 1, 13, false, &scratch);
+        let [movement, _, _, _] = capture.table_inputs(Some(&mut projection), Some(13));
         let TableInput::ComparedChanges {
             indices,
             rows: TableRows::DivisionMovement(rows),
             ..
         } = movement
         else {
-            panic!("historical profile cannot be compared equal in a later frame");
+            panic!("a changed base speed is a changed row");
         };
         assert_eq!(indices, [0]);
-        assert_eq!(rows[0].fresh, Recorded::Value(None));
+        assert_eq!(rows[0].base_speed, Recorded::Value(Some(-3_000_000)));
     }
 }
 
@@ -3371,68 +4118,4 @@ mod combat_reference_capacity_tests {
             "the optional arena failure must not replace the legacy packet with vacant"
         );
     }
-
-    #[test]
-    fn selected_unit_projection_keeps_raw_exile_and_independent_key_refusal() {
-        let row = carmy::MovementRow {
-            selected_exiled: Some(0xfe),
-            selected_commander: Some(true),
-            selected_retreat: [None, Some(i64::MIN)],
-            ..Default::default()
-        };
-        assert_eq!(
-            selected_unit(Some(47), &row),
-            Recorded::Value(Some(replay::rows::SelectedUnitInputs {
-                sample_hour: 47,
-                exiled: Some(0xfe),
-                commander: Some(true),
-                retreat: [None, Some(i64::MIN)],
-            }))
-        );
-        assert_eq!(selected_unit(None, &row), Recorded::Value(None));
-    }
-
-    #[test]
-    fn selected_retreat_layout_refusal_preserves_native_null_commander_and_other_operands() {
-        let mut captured = Captured::with_capacities(&Capacities {
-            movement: 3,
-            ..Capacities::default()
-        });
-        for (index, commander) in [Some(true), Some(false), None].into_iter().enumerate() {
-            captured.movement.rows[index] = carmy::MovementRow {
-                division: (index + 1) as u64,
-                source: 17,
-                selected_exiled: Some(0xfe),
-                selected_commander: commander,
-                selected_retreat: if commander == Some(true) {
-                    [Some(i64::MIN), Some(i64::MAX)]
-                } else {
-                    [Some(0), Some(0)]
-                },
-                ..Default::default()
-            };
-        }
-        let previous = captured.movement.rows[..3].to_vec();
-        captured.guard_selected_retreat(None);
-        assert_eq!(
-            captured.movement.rows[0],
-            carmy::MovementRow {
-                selected_retreat: [None, None],
-                ..previous[0]
-            }
-        );
-        assert_eq!(captured.movement.rows[1..3], previous[1..3]);
-    }
-}
-
-fn selected_unit(
-    hour: Option<i32>,
-    row: &carmy::MovementRow,
-) -> Recorded<Option<replay::rows::SelectedUnitInputs>> {
-    Recorded::Value(hour.map(|sample_hour| replay::rows::SelectedUnitInputs {
-        sample_hour,
-        exiled: row.selected_exiled,
-        commander: row.selected_commander,
-        retreat: row.selected_retreat,
-    }))
 }

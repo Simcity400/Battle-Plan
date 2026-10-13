@@ -347,7 +347,8 @@ impl<M: Memory> Reader<'_, M> {
             .iter()
             .find(|r| r.address as u64 == u64_at(RESOURCE))
             .ok_or("trade resource descriptor absent from database")?;
-        ccountry_resources::resources(self.memory, self.base, &self.countries, importer_country)?;
+        // The importer is the country walked (checked above), whose
+        // resources this pass authenticated before reading its routes.
         Ok((
             Row {
                 id: u64_at(REFERENCE),
@@ -550,6 +551,87 @@ mod tests {
                 }
             );
         }
+    }
+
+    /// Each pass authenticates the importer's resources once, at its own
+    /// routes, not again for every trade; every trade still authenticates
+    /// its exporter's.
+    #[test]
+    fn a_pass_authenticates_each_importer_once() {
+        struct Reads<'a> {
+            memory: &'a Fixture,
+            counts: RefCell<std::collections::BTreeMap<usize, usize>>,
+        }
+        impl Memory for Reads<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                *self.counts.borrow_mut().entry(address).or_default() += 1;
+                self.memory.copy(address, destination)
+            }
+        }
+        let fixture = high_degree_fixture();
+        let resources = fixture.descriptors();
+        let memory = Reads {
+            memory: &fixture,
+            counts: RefCell::new(Default::default()),
+        };
+        let mut rows = [Row::default(); COUNT];
+        let mut scratch = [Membership::default(); COUNT];
+        assert_eq!(
+            walk(&memory, 0, 0x1000, &resources, &mut rows, &mut scratch),
+            Outcome::Rows { len: COUNT }
+        );
+        // Every row keeps its exporter, importer and handle.
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(
+                (row.id, row.exporter, row.importer),
+                (((index as u64 + 1) << 32) | 0x33, 7, 2)
+            );
+        }
+        let counts = memory.counts.borrow();
+        // The exporter (0x6000, raw 7): its own census entry, then each of
+        // its 64 trades (owner read and backlink check).
+        assert_eq!(counts[&(0x6000 + ccountry_resources::OWNER)], 1 + 2 * 64);
+        // The importer (0x7000): its census entry alone.
+        assert_eq!(counts[&0x7000], 1);
+    }
+
+    /// An exporter's resources replaced at the same address between two of
+    /// its trades in one pass is authenticated afresh at the second: here the
+    /// replacement names the importer, whose own resources are elsewhere.
+    #[test]
+    fn an_exporter_replaced_between_two_trades_is_authenticated_afresh() {
+        struct Replaced<'a> {
+            memory: &'a Fixture,
+            replaced: std::cell::Cell<bool>,
+        }
+        impl Memory for Replaced<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                // Reading the second trade object replaces the exporter's.
+                if address == OBJECTS + 0x100 {
+                    self.replaced.set(true);
+                }
+                if self.replaced.get() && address == 0x6000 + ccountry_resources::OWNER {
+                    destination.copy_from_slice(&2_u32.to_le_bytes());
+                    return destination.len() == 4;
+                }
+                self.memory.copy(address, destination)
+            }
+        }
+        let fixture = high_degree_fixture();
+        let resources = fixture.descriptors();
+        let memory = Replaced {
+            memory: &fixture,
+            replaced: std::cell::Cell::new(false),
+        };
+        let mut rows = [Row::default(); COUNT];
+        let mut scratch = [Membership::default(); COUNT];
+        assert_eq!(
+            walk(&memory, 0, 0x1000, &resources, &mut rows, &mut scratch),
+            Outcome::Unavailable {
+                reason: "trade exporter resources backlink mismatch"
+            }
+        );
+        assert!(memory.replaced.get());
     }
 
     #[test]

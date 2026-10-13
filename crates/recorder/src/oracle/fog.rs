@@ -370,7 +370,6 @@ fn record_carrier(
 ) -> io::Result<()> {
     report.compared("AirBases.carrier", 0);
     report.compared("AirBaseRegistrations.carrier", 0);
-    report.compared("AirBaseRegistrations.transport_planes", 0);
     report.limitation(
         "carrier recording self-check only: dense/indexed registration joins, raw name availability, fuel availability and ordered wing partitions; zero fresh-save or native comparisons",
         "AirBases.carrier, AirBaseRegistrations.carrier",
@@ -382,10 +381,6 @@ fn record_carrier(
     report.limitation(
         "carrier pool order, empty pools and signed grouping keys are not certified by the save here; member sub-unit index joins below are recording self-checks. military::air_transport separately compares saved wing-pool identity through recorded content; it supplies no invented save join for empty carrier pools",
         "AirBaseRegistrations.carrier.pools",
-    );
-    report.limitation(
-        "original carrier pool plane sums have a recording self-check against captured wing planes only when every member is present; the unsaved registration order and fading members require a matched native witness. The separate air-wing save oracle compares serialized wing planes, not this registration sum",
-        "AirBaseRegistrations.transport_planes",
     );
     let bases = complete::<tables::AirBases>(frame)?;
     let registrations = complete::<tables::AirBaseRegistrations>(frame)?;
@@ -504,61 +499,6 @@ fn record_carrier(
                 Ok(())
             });
         }
-        checks_complete &= report.attempt(&format!("{label}.transport_planes"), |report| {
-            let Some(planes) = report.recorded(
-                &registration.transport_planes, "AirBaseRegistrations.transport_planes", &label,
-            ) else { return Ok(()); };
-            let planes = carrier_input(planes, "transport_planes", report)?;
-            let pools = packet.pools.as_ref()
-                .ok_or_else(|| invalid("carrier complete ordered pool prefix refused for plane self-check"))?;
-            if planes.len() != pools.len() {
-                return Err(invalid("carrier plane sums do not cover every ordered pool"));
-            }
-            let mut plane_checks = true;
-            for (ordinal, (pool, planes)) in pools.iter().zip(planes).enumerate() {
-                plane_checks &= report.attempt(&format!("{label}.transport_planes[{ordinal}]"), |report| {
-                    let planes = *carrier_input(planes, "pool_planes_input", report)?;
-                    let end = pool.wing_start.checked_add(pool.wing_count)
-                        .ok_or_else(|| invalid("carrier plane self-check wing range overflow"))?;
-                    let members = registration.wings.get(pool.wing_start as usize..end as usize)
-                        .ok_or_else(|| invalid("carrier plane self-check wing range outside prefix"))?;
-                    if members.is_empty() {
-                        if planes != 0 { return Err(invalid("empty original carrier pool has nonzero planes")); }
-                        report.compared("CarrierAir.empty_pool_planes (recording self-check)", 1);
-                        return Ok(());
-                    }
-                    let wings = wings.get_or_insert_with(|| {
-                        complete::<tables::AirWings>(frame).and_then(|rows| {
-                            let mut wings = BTreeMap::new();
-                            for row in rows {
-                                if row.id == 0 || wings.insert(row.id, row).is_some() {
-                                    return Err(invalid("null or duplicate AirWings handle in carrier plane join"));
-                                }
-                            }
-                            Ok(wings)
-                        })
-                    });
-                    let wings = wings.as_ref().map_err(|error| invalid(error.to_string()))?;
-                    let mut sum = 0_i32;
-                    for id in members {
-                        let Some(wing) = wings.get(id) else {
-                            report.limitation(
-                                "original carrier member is absent from AirWings; this captured sum requires a native witness",
-                                format!("{label} pool {ordinal} wing {id}"),
-                            );
-                            return Ok(());
-                        };
-                        sum = sum.wrapping_add(wing.planes);
-                    }
-                    if sum != planes {
-                        return Err(invalid("original carrier plane sum differs from captured ordered wing planes"));
-                    }
-                    report.compared("CarrierAir.pool_planes (recording self-check)", 1);
-                    Ok(())
-                });
-            }
-            if plane_checks { Ok(()) } else { Err(invalid("carrier plane self-check incomplete")) }
-        });
         checks_complete &= report.attempt(&format!("{label}.pools"), |report| {
             let pools = carrier_input(&packet.pools, "pools", report)?;
             let mut pool_checks = true;
@@ -872,7 +812,7 @@ states={} provinces={}"#,
                 slot: 1,
                 capacity_raw: 0,
                 wings: vec![CARRIER_WING, CARRIER_WING],
-                transport_planes: Recorded::Value(Some(vec![Some(0), Some(6), Some(0)])),
+                transport_planes: Default::default(),
                 carrier: Recorded::Value(Some(AirBaseRegistrationCarrierInputs {
                     country: 12,
                     fuel_demand_raw: Some(i64::MIN),
@@ -963,13 +903,15 @@ states={} provinces={}"#,
         assert_eq!(carrier_count(&report, "host_name"), 1);
         assert_eq!(carrier_count(&report, "current_fuel_raw"), 3);
         assert_eq!(carrier_count(&report, "maximum_fuel_raw"), 3);
-        assert_eq!(carrier_count(&report, "empty_pool_planes"), 2);
-        assert_eq!(carrier_count(&report, "pool_planes"), 1);
+        // The retired selected-transport plane sums are never checked.
+        assert_eq!(carrier_count(&report, "empty_pool_planes"), 0);
+        assert_eq!(carrier_count(&report, "pool_planes"), 0);
         assert_eq!(report.compared_tables["AirBases.carrier"], 0);
         assert_eq!(report.compared_tables["AirBaseRegistrations.carrier"], 0);
-        assert_eq!(
-            report.compared_tables["AirBaseRegistrations.transport_planes"],
-            0
+        assert!(
+            !report
+                .compared_tables
+                .contains_key("AirBaseRegistrations.transport_planes")
         );
         for reason in [
             "zero fresh-save or native comparisons",
@@ -984,55 +926,6 @@ states={} provinces={}"#,
                 "{reason}"
             );
         }
-    }
-
-    #[test]
-    fn carrier_plane_suffix_refuses_missing_prefix_leaf_and_incorrect_empty_or_wrapping_sums() {
-        let (country, _) = links();
-        let links = BTreeMap::from([(12, &country)]);
-        for value in [
-            Recorded::Value(None),
-            Recorded::Value(Some(vec![Some(0), Some(6)])),
-            Recorded::Value(Some(vec![Some(0), None, Some(0)])),
-            Recorded::Value(Some(vec![Some(1), Some(6), Some(0)])),
-            Recorded::Value(Some(vec![Some(0), Some(3), Some(0)])),
-        ] {
-            let mut frame = carrier_frame();
-            carrier_registration(&mut frame).transport_planes = value;
-            let mut report = Report::default();
-            assert!(record_carrier(&frame, &links, &mut report).is_err());
-            assert!(
-                report
-                    .failed_comparisons
-                    .keys()
-                    .any(|key| key.contains("transport_planes"))
-            );
-            assert_eq!(carrier_count(&report, "current_fuel_raw"), 3);
-            assert_eq!(carrier_count(&report, "member_identity"), 2);
-        }
-        let mut historical = carrier_frame();
-        carrier_registration(&mut historical).transport_planes = Recorded::NotRecorded;
-        let mut report = Report::default();
-        record_carrier(&historical, &links, &mut report).unwrap();
-        assert!(
-            report
-                .limitations
-                .contains_key("AirBaseRegistrations.transport_planes not recorded")
-        );
-        assert_eq!(carrier_count(&report, "pool_planes"), 0);
-
-        let mut wrapping = carrier_frame();
-        let TableView::Complete(TableRows::AirWings(rows)) =
-            &mut *wrapping.tables[TableId::AirWings.index()]
-        else {
-            unreachable!()
-        };
-        rows[0].planes = i32::MAX;
-        carrier_registration(&mut wrapping).transport_planes =
-            Recorded::Value(Some(vec![Some(0), Some(-2), Some(0)]));
-        let mut report = Report::default();
-        record_carrier(&wrapping, &links, &mut report).unwrap();
-        assert_eq!(carrier_count(&report, "pool_planes"), 1);
     }
 
     #[test]

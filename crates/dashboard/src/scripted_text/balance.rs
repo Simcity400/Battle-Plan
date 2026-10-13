@@ -321,6 +321,59 @@ impl<'a> ScriptedText<'a> {
         Ok(text)
     }
 
+    /// The record's cached `+0xC8` trees for keys 0x98 and 0x99, derived
+    /// from its recorded static-modifier sources and the content stack's
+    /// static modifiers ([`replay::power_balance_derive`]); a source the
+    /// content cannot resolve refuses both by name.
+    fn balance_trees(
+        &self,
+        sources: &[Vec<u8>],
+    ) -> Result<[Vec<replay::rows::ModifierBreakdownNode>; 2], String> {
+        let registry = replay::modifier_registry::Registry::from_frame(self.frame)?;
+        let effects = self.content.effects()?;
+        let statics = effects
+            .view(None)
+            .static_modifiers
+            .ok_or("static modifiers are unavailable")?;
+        let mut blocks = Vec::with_capacity(sources.len());
+        for source in sources {
+            // The game compares the name's bytes; the native string ends at
+            // its first NUL.
+            let key = std::str::from_utf8(installed_content::parser::c_string(source)).map_err(|_| {
+                format!(
+                    "static modifier {} is not UTF-8",
+                    String::from_utf8_lossy(source)
+                )
+            })?;
+            blocks.push(statics.get(&self.content.layers.layers, key)?.1);
+        }
+        let inputs: Vec<_> = sources
+            .iter()
+            .zip(&blocks)
+            .map(|(source, block)| replay::power_balance_derive::Source {
+                name: source,
+                auxiliary: !block.tooltip_table().is_empty() || !block.children.is_empty(),
+                values: block
+                    .values
+                    .iter()
+                    .map(|value| (value.name.as_str(), value.value))
+                    .collect(),
+            })
+            .collect();
+        Ok([
+            replay::power_balance_derive::tree(
+                engine::modifier_keys::POWER_BALANCE_DAILY,
+                &inputs,
+                &registry,
+            )?,
+            replay::power_balance_derive::tree(
+                engine::modifier_keys::POWER_BALANCE_WEEKLY,
+                &inputs,
+                &registry,
+            )?,
+        ])
+    }
+
     pub(super) fn balance(
         &self,
         slot: u32,
@@ -412,7 +465,7 @@ impl<'a> ScriptedText<'a> {
                 .find(|r| r.record == record.ordinal)
                 .ok_or_else(|| {
                     format!(
-                        "{name}: balance record {} has no modifier breakdown",
+                        "{name}: balance record {} has no modifier sources",
                         record.ordinal
                     )
                 })?;
@@ -420,10 +473,13 @@ impl<'a> ScriptedText<'a> {
                 .frame
                 .complete::<tables::ModifierDefinitions>()
                 .map_err(|e| format!("{name}: {e}"))?;
+            let trees = self
+                .balance_trees(&sources.sources)
+                .map_err(|e| format!("{name}: {e}"))?;
             let mut output = String::new();
             for (key, nodes) in [
-                (engine::modifier_keys::POWER_BALANCE_DAILY, &sources.daily),
-                (engine::modifier_keys::POWER_BALANCE_WEEKLY, &sources.weekly),
+                (engine::modifier_keys::POWER_BALANCE_DAILY, &trees[0]),
+                (engine::modifier_keys::POWER_BALANCE_WEEKLY, &trees[1]),
             ] {
                 let definition = definitions
                     .iter()

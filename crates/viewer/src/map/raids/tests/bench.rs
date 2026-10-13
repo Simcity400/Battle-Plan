@@ -566,7 +566,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             .map(|slot| StockpileArchetypeRow {
                 canonical_slot: slot,
                 archetype: TRANSPORT_PLANE,
-                quantity_raw: 100 * 100_000,
+                units: 100,
             })
             .collect(),
     );

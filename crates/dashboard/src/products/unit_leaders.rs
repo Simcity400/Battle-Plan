@@ -1100,8 +1100,12 @@ fn scan(
                     };
                     validate_campaign(decoded, replay)?;
                     let hour = decoded.hour;
-                    if slot_read(&decoded.metrics, TableId::LandCombatResults, hour)
-                        && let Ok(results) = decoded.complete::<tables::LandCombatResults>()
+                    if slot_read(
+                        replay.format,
+                        &decoded.metrics,
+                        TableId::LandCombatResults,
+                        hour,
+                    ) && let Ok(results) = decoded.complete::<tables::LandCombatResults>()
                     {
                         results_recorded = true;
                         for result in results {
@@ -1117,8 +1121,12 @@ fn scan(
                             }
                         }
                     }
-                    if slot_read(&decoded.metrics, TableId::NavalResultSources, hour)
-                        && let Ok(sources) = decoded.complete::<tables::NavalResultSources>()
+                    if slot_read(
+                        replay.format,
+                        &decoded.metrics,
+                        TableId::NavalResultSources,
+                        hour,
+                    ) && let Ok(sources) = decoded.complete::<tables::NavalResultSources>()
                     {
                         results_recorded = true;
                         for source in sources {
@@ -1183,34 +1191,60 @@ fn scan(
                     let land = decoded
                         .complete::<tables::LandCombatDetails>()
                         .ok()
-                        .filter(|_| slot_read(&decoded.metrics, TableId::LandCombatDetails, hour));
+                        .filter(|_| {
+                            slot_read(
+                                replay.format,
+                                &decoded.metrics,
+                                TableId::LandCombatDetails,
+                                hour,
+                            )
+                        });
                     let navy = decoded
                         .complete::<tables::NavalCombatDetails>()
                         .ok()
-                        .filter(|_| slot_read(&decoded.metrics, TableId::NavalCombatDetails, hour));
+                        .filter(|_| {
+                            slot_read(
+                                replay.format,
+                                &decoded.metrics,
+                                TableId::NavalCombatDetails,
+                                hour,
+                            )
+                        });
                     for (i, known) in [land.is_some(), navy.is_some()].into_iter().enumerate() {
                         if !known {
                             missing_battles[i] = Some(hour);
                         }
                     }
                     let land_commands = career
-                        && slot_read(&decoded.metrics, TableId::OrdersGroups, hour)
+                        && slot_read(replay.format, &decoded.metrics, TableId::OrdersGroups, hour)
                         && decoded.complete::<tables::OrdersGroups>().is_ok();
                     let fleet_rows = career
                         .then(|| decoded.complete::<tables::Fleets>().ok())
                         .flatten()
-                        .filter(|_| slot_read(&decoded.metrics, TableId::Fleets, hour));
+                        .filter(|_| {
+                            slot_read(replay.format, &decoded.metrics, TableId::Fleets, hour)
+                        });
                     let fleet_commands = fleet_rows.filter(|rows| {
                         rows.iter()
                             .all(|row| !matches!(row.leader, Recorded::NotRecorded))
                     });
                     let mut naval_commands = fleet_commands.is_some()
                         || career
-                            && slot_read(&decoded.metrics, TableId::NavalMissionTaskForces, hour)
-                            && slot_read(&decoded.metrics, TableId::TaskForces, hour)
+                            && slot_read(
+                                replay.format,
+                                &decoded.metrics,
+                                TableId::NavalMissionTaskForces,
+                                hour,
+                            )
+                            && slot_read(
+                                replay.format,
+                                &decoded.metrics,
+                                TableId::TaskForces,
+                                hour,
+                            )
                             && decoded.complete::<tables::NavalMissionTaskForces>().is_ok()
                             && decoded.complete::<tables::TaskForces>().is_ok();
-                    if !slot_read(&decoded.metrics, TableId::UnitLeaders, hour) {
+                    if !slot_read(replay.format, &decoded.metrics, TableId::UnitLeaders, hour) {
                         observe(
                             &mut reply.observed,
                             hour,
@@ -1267,7 +1301,14 @@ fn scan(
                     let traits = decoded
                         .complete::<tables::UnitLeaderTraits>()
                         .ok()
-                        .filter(|_| slot_read(&decoded.metrics, TableId::UnitLeaderTraits, hour));
+                        .filter(|_| {
+                            slot_read(
+                                replay.format,
+                                &decoded.metrics,
+                                TableId::UnitLeaderTraits,
+                                hour,
+                            )
+                        });
                     let mut trait_cursor = 0;
                     let mut complete = true;
                     let now_traits = &decoded.tables[TableId::UnitLeaderTraits.index()];
@@ -1809,6 +1850,7 @@ fn scan(
                                     .ok()
                                     .filter(|_| {
                                         slot_read(
+                                            replay.format,
                                             &decoded.metrics,
                                             TableId::LandCombatResults,
                                             hour,

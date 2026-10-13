@@ -31,6 +31,58 @@ pub struct Walk {
     pub required_handles: usize,
 }
 
+/// The fronts a plan census binds: its plans' valid front handles, sorted,
+/// in the caller's `handles[..count]`. The first phase of [`walk`]; it reads
+/// no memory, so it runs with the plans while [`walk_bound`] reads the
+/// fronts elsewhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bound {
+    /// The handle count, or the refusal [`walk`] reports before any read.
+    pub result: Result<usize, &'static str>,
+    /// The plan count, which sizes the front rows; zero before it is known.
+    pub plans: usize,
+}
+
+impl Bound {
+    /// No plan census: what [`walk`] reports for a refused one.
+    pub const fn refused(reason: &'static str) -> Self {
+        Self {
+            result: Err(reason),
+            plans: 0,
+        }
+    }
+}
+
+/// [`Bound`] for `plans`, the complete plan census `source` describes.
+/// Storage grows on the acquisition worker. Its refusals are [`walk`]'s
+/// first ones, in the same order.
+pub fn bound(plans: &[corder_instance::PlanRow], source: Outcome, handles: &mut Vec<u64>) -> Bound {
+    let Outcome::Rows { len } = source else {
+        return Bound::refused("fronts require a complete army order plan census");
+    };
+    if len > plans.len() {
+        return Bound::refused("front handle scratch capacity exhausted");
+    }
+    if let Err(reason) = grow_payload(handles, len, "front handle allocation failed") {
+        return Bound {
+            result: Err(reason),
+            plans: len,
+        };
+    }
+    let mut count = 0;
+    for plan in &plans[..len] {
+        if plan.front_valid != 0 {
+            handles[count] = plan.front;
+            count += 1;
+        }
+    }
+    handles[..count].sort_unstable();
+    Bound {
+        result: Ok(count),
+        plans: len,
+    }
+}
+
 /// Records every section of each distinct front bound by the complete order census.
 /// A failed order census cannot silently turn this into a partial front census.
 /// Storage grows on the acquisition worker from owned plans and admitted
@@ -46,35 +98,39 @@ pub fn walk(
     sections: &mut Vec<cfront_section::Row>,
     pairs: &mut Vec<u32>,
 ) -> Walk {
+    let bound = bound(plans, source, handles);
+    walk_bound(memory, base, bound, handles, output, sections, pairs)
+}
+
+/// The second phase of [`walk`]: the fronts [`bound`] left in `handles`,
+/// read with their sections and pairs. Rows, refusals and their order are
+/// [`walk`]'s.
+pub fn walk_bound(
+    memory: &impl Memory,
+    base: usize,
+    bound: Bound,
+    handles: &[u64],
+    output: &mut Vec<Row>,
+    sections: &mut Vec<cfront_section::Row>,
+    pairs: &mut Vec<u32>,
+) -> Walk {
     let mut report = Walk {
         outcome: Outcome::Rows { len: 0 },
         sections: 0,
         pairs: 0,
         required_sections: 0,
         required_pairs: 0,
-        required_handles: 0,
+        required_handles: bound.plans,
     };
     let result = (|| {
-        let Outcome::Rows { len } = source else {
-            return Err("fronts require a complete army order plan census");
-        };
-        if len > plans.len() {
-            return Err("front handle scratch capacity exhausted");
-        }
-        report.required_handles = len;
-        grow_payload(handles, len, "front handle allocation failed")?;
-        grow_payload(output, len, "front row allocation failed")?;
-        let mut count = 0;
-        for plan in &plans[..len] {
-            if plan.front_valid != 0 {
-                handles[count] = plan.front;
-                count += 1;
-            }
-        }
-        handles[..count].sort_unstable();
+        let count = bound.result?;
+        let handles = handles
+            .get(..count)
+            .ok_or("front handle scratch capacity exhausted")?;
+        grow_payload(output, bound.plans, "front row allocation failed")?;
         let mut stored = 0;
         let mut previous = None;
-        for &handle in &handles[..count] {
+        for &handle in handles {
             if previous == Some(handle) {
                 continue;
             }
@@ -360,8 +416,53 @@ mod tests {
         assert_eq!(r.outcome, Outcome::Rows { len: 1 });
         assert_eq!(r.required_handles, 2);
     }
-    /// Orders can retain stale bindings after their fronts are destroyed.
-    /// Such bindings omit their rows without hiding live fronts.
+    /// Binding reads nothing, and reading the bound fronts after it gives
+    /// the single walk's rows, sections, pairs, demand and refusals, in its
+    /// order: the Orders job binds, the Fronts job reads.
+    #[test]
+    fn binding_reads_nothing_and_the_bound_walk_is_the_single_walk() {
+        let m = image();
+        let plans = [corder_instance::PlanRow {
+            front: HANDLE,
+            front_valid: 1,
+            ..Default::default()
+        }; 2];
+        for (source, len) in [
+            (Outcome::Rows { len: 2 }, 2),
+            (Outcome::Rows { len: 3 }, 2),
+            (Outcome::Unavailable { reason: "census" }, 2),
+            (Outcome::Rows { len: 2 }, 0),
+        ] {
+            let single = {
+                let (mut rows, mut sections, mut pairs) = (Vec::new(), Vec::new(), Vec::new());
+                let walk = walk(
+                    &m,
+                    0,
+                    &plans[..len],
+                    source,
+                    &mut Vec::new(),
+                    &mut rows,
+                    &mut sections,
+                    &mut pairs,
+                );
+                (format!("{walk:?}"), rows, sections, pairs)
+            };
+            m.1.borrow_mut().clear();
+            let mut handles = Vec::new();
+            let bound = bound(&plans[..len], source, &mut handles);
+            assert!(m.1.borrow().is_empty(), "binding read memory");
+            let (mut rows, mut sections, mut pairs) = (Vec::new(), Vec::new(), Vec::new());
+            let walk = walk_bound(&m, 0, bound, &handles, &mut rows, &mut sections, &mut pairs);
+            assert_eq!(
+                (format!("{walk:?}"), rows, sections, pairs),
+                single,
+                "{source:?}"
+            );
+        }
+    }
+    /// Format-23 live session: 30 isolated hours failed with "bound front missing
+    /// from registry" while two orders still bound their destroyed fronts; both
+    /// orders were gone the next hour.
     #[test]
     fn stale_binding_to_a_destroyed_front_has_no_row_without_hiding_live_fronts() {
         let m = image();

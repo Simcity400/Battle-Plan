@@ -18,222 +18,11 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt("ReservedCountryNaming saved original tag", |r| {
         reserved_original_tag(frame, save, r)
     });
-    report.attempt("ReservedCountryNaming movement", |r| {
-        reserved_movement(frame, r)
-    });
     report.attempt("ReservedCountryNaming launch sources", |r| {
         reserved_launch::compare(frame, save, r)
     });
     report.attempt_table(TableId::ArmyIconInputs, |r| armies(frame, save, r));
     report.attempt_table(TableId::ShipModels, |r| ships(frame, save, r));
-}
-
-/// Own navy selection uses canonical owner slots; foreign values remain raw
-/// physical manager slots. Both complete task-force tables must agree before
-/// absence certifies no demand; a genuinely empty census needs no province join.
-/// The fresh owner loan also serves stationary task forces' range/port inputs
-/// and has no route/target gate in capture.
-pub(super) fn navy_owner_slots(frame: &DecodedFrame) -> io::Result<BTreeSet<u32>> {
-    let motions = frame.complete::<tables::TaskForceMapMotion>()?;
-    let mut forces = BTreeMap::new();
-    for row in frame.complete::<tables::TaskForces>()? {
-        if row.id == 0 || forces.insert(row.id, row).is_some() {
-            return Err(invalid(
-                "naval movement demand has a null or duplicate task-force identity",
-            ));
-        }
-    }
-    let mut identities = BTreeSet::new();
-    let mut references = BTreeSet::new();
-    for row in motions {
-        if row.task_force == 0 || !identities.insert(row.task_force) {
-            return Err(invalid(
-                "naval movement demand has a null or duplicate motion identity",
-            ));
-        }
-        references.extend(row.path.iter().copied().filter(|&id| id != 0));
-        if row.target != 0 {
-            references.insert(row.target);
-        }
-    }
-    if identities != forces.keys().copied().collect() {
-        return Err(invalid(
-            "naval movement demand task-force and motion censuses disagree",
-        ));
-    }
-    if !references.is_empty() {
-        let provinces: BTreeSet<_> = frame
-            .complete::<tables::Provinces>()?
-            .iter()
-            .map(|row| row.id)
-            .collect();
-        if references.iter().any(|id| !provinces.contains(id)) {
-            return Err(invalid(
-                "naval movement demand names an unknown route/target province",
-            ));
-        }
-    }
-    if identities.is_empty() {
-        return Ok(BTreeSet::new());
-    }
-    let mut links = BTreeMap::new();
-    for row in frame.complete::<tables::CountryLinks>()? {
-        if links.insert(row.id, row.canonical_slot).is_some() {
-            return Err(invalid("naval movement demand has duplicate country links"));
-        }
-    }
-    identities
-        .into_iter()
-        .map(|id| {
-            let force = forces
-                .get(&id)
-                .ok_or_else(|| invalid("naval movement demand has no task-force row"))?;
-            let slot = links
-                .get(&force.roster_owner)
-                .copied()
-                .filter(|&slot| slot != 0)
-                .ok_or_else(|| {
-                    invalid("naval movement demand has no positive roster-owner link")
-                })?;
-            Ok(slot)
-        })
-        .collect()
-}
-
-fn reserved_movement(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
-    let rows = frame.complete::<tables::ReservedCountryNaming>()?;
-    if rows.len() != 1 {
-        return Err(invalid(
-            "ReservedCountryNaming movement requires one reserved row",
-        ));
-    }
-    let label = "ReservedCountryNaming.movement";
-    let Some(packet) = report.recorded(&rows[0].movement, label, label) else {
-        return Ok(());
-    };
-    let Some(packet) = packet else {
-        report.difference(
-            label,
-            "unavailable",
-            "required current-hour shared movement packet",
-        );
-        return Ok(());
-    };
-    eq(
-        report,
-        &format!("{label}.sample_hour"),
-        packet.sample_hour,
-        frame.hour,
-    );
-    if packet.sample_hour != frame.hour {
-        return Ok(());
-    }
-    match &packet.nearest_caches {
-        None => report.difference(
-            format!("{label}.nearest_caches"),
-            "unavailable",
-            "required physical cache domain",
-        ),
-        Some(caches) => {
-            report.attempt(&format!("{label}.nearest_caches"), |report| {
-                if caches.windows(2).any(|pair| pair[0].slot >= pair[1].slot) {
-                    return Err(invalid(
-                        "physical nearest-cache slots are not unique and increasing",
-                    ));
-                }
-                for cache in caches {
-                    match &cache.nearest_bases {
-                        None => report.difference(
-                            format!("{label}.nearest slot {}", cache.slot),
-                            "unavailable",
-                            "required native cache vector",
-                        ),
-                        Some(bases) if !cache.present && !bases.is_empty() => report.difference(
-                            format!("{label}.nearest slot {}", cache.slot),
-                            bases,
-                            "empty for observed null navy",
-                        ),
-                        Some(_) => {}
-                    }
-                }
-                let mut expected = navy_owner_slots(frame)?;
-                if !expected.is_empty() {
-                    let owners = frame.complete::<tables::CountryCounterInputs>()?;
-                    let links: BTreeMap<_, _> = frame
-                        .complete::<tables::CountryLinks>()?
-                        .iter()
-                        .map(|row| (row.id, row.canonical_slot))
-                        .collect();
-                    let own_slots = expected.clone();
-                    for slot in own_slots {
-                        let mut navies = owners
-                            .iter()
-                            .filter(|owner| links.get(&owner.country) == Some(&slot))
-                            .filter_map(|owner| match &owner.movement {
-                                replay::rows::Recorded::Value(Some(packet))
-                                    if packet.sample_hour == frame.hour =>
-                                {
-                                    packet.naval.as_ref()
-                                }
-                                _ => None,
-                            });
-                        let naval = navies.next().ok_or_else(|| {
-                            invalid(
-                                "physical nearest-cache closure has no current owner navy packet",
-                            )
-                        })?;
-                        if navies.next().is_some() {
-                            return Err(invalid(
-                                "physical nearest-cache closure has duplicate owner navy packets",
-                            ));
-                        }
-                        if naval.navy_slot != slot {
-                            return Err(invalid(
-                                "physical nearest-cache owner slot disagrees with its country link",
-                            ));
-                        }
-                        let foreign = naval.foreign_navy_slots.as_ref().ok_or_else(|| {
-                            invalid("physical nearest-cache foreign dependency domain unavailable")
-                        })?;
-                        expected.extend(foreign.iter().copied());
-                    }
-                }
-                let actual: BTreeSet<_> = caches.iter().map(|cache| cache.slot).collect();
-                eq(
-                    report,
-                    &format!("{label}.nearest physical domain"),
-                    actual,
-                    expected,
-                );
-                Ok(())
-            });
-        }
-    }
-    match &packet.reserved_theatre {
-        Some(theatre) => {
-            report.attempt(&format!("{label}.reserved_theatre"), |report| {
-                super::country_rosters::compare_theatre_areas(
-                    frame,
-                    theatre,
-                    &format!("{label}.reserved_theatre"),
-                    report,
-                )
-            });
-        }
-        None => {
-            report.attempt(&format!("{label}.reserved_theatre demand"), |report| {
-                if navy_owner_slots(frame)?.is_empty() {
-                    report.limitation("complete task-force motion proves no admitted roster-owner demand, so reserved theatre membership was not reached", format!("{label}.reserved_theatre"));
-                } else {
-                    report.difference(format!("{label}.reserved_theatre"), "unavailable", "required demanded controller-area membership");
-                }
-                Ok(())
-            });
-        }
-    }
-    report.compared(label, 1);
-    report.limitation("stored nearest-base entries are a runtime physical-navy cache, preserving null pointers separately from authenticated base province zero and retained array occurrences; saved bases, diplomacy and current territory do not certify this cache's exact contents or refresh state", format!("{label}.nearest runtime contents"));
-    Ok(())
 }
 
 fn reserved_naming(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
@@ -439,10 +228,6 @@ fn reserved_original_tag(frame: &DecodedFrame, save: &Save, report: &mut Report)
 #[cfg(test)]
 #[path = "map_inputs/reserved_original_tag_tests.rs"]
 mod reserved_original_tag_tests;
-
-#[cfg(test)]
-#[path = "map_inputs/movement_tests.rs"]
-mod movement_tests;
 
 #[cfg(test)]
 mod original_tag_tests {
@@ -1002,37 +787,6 @@ fn ships(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<(
 
 fn ship_tooltip_suffixes(row: &replay::rows::ShipModelRow, save: &Save, r: &mut Report) {
     let label = format!("ShipModels {}", row.ship);
-    let strike_label = format!("{label}.strike");
-    if let Some(strike) = r.recorded(&row.strike, "ShipModels.strike", &strike_label) {
-        match strike {
-            None => r.difference(
-                &strike_label,
-                "capture refused",
-                "native weapon cache packet",
-            ),
-            Some(strike) => {
-                for (name, value) in [
-                    ("light_attack", strike.light_attack),
-                    ("heavy_attack", strike.heavy_attack),
-                    ("light_piercing", strike.light_piercing),
-                    ("torpedo_attack", strike.torpedo_attack),
-                    (
-                        "torpedo_cooldown_modifier",
-                        strike.torpedo_cooldown_modifier,
-                    ),
-                ] {
-                    if value.is_none() {
-                        r.difference(
-                            format!("{strike_label}.{name}"),
-                            "capture refused",
-                            "native scalar",
-                        );
-                    }
-                }
-                r.limitation("the ship save writer does not write the four cached weapon bases or the effective fleet-leader torpedo cooldown modifier; all five require an independent matched native/cache-writer witness, still pending", &strike_label);
-            }
-        }
-    }
     let hull_label = format!("{label}.hull_variant");
     let Some(hull) = r.recorded(&row.hull_variant, "ShipModels.hull_variant", &hull_label) else {
         return;
@@ -1133,7 +887,7 @@ mod tests {
 
     #[test]
     fn ship_tooltip_suffixes_use_current_saved_variant_and_keep_runtime_caches_explicit() {
-        use replay::rows::{HullVariantInputs, ShipStrikeInputs};
+        use replay::rows::HullVariantInputs;
         let (_, mut saved, _, _) = super::super::tests::fixture();
         let doc = installed_content::parser::parse(
             br#"equipments={type={id={id=3 type=70}
@@ -1143,13 +897,6 @@ mod tests {
         )
         .unwrap();
         saved.production = save::production::parse(&doc.items).unwrap();
-        let strike = ShipStrikeInputs {
-            light_attack: Some(i64::MIN),
-            heavy_attack: Some(0),
-            light_piercing: Some(i64::MAX),
-            torpedo_attack: Some(-1),
-            torpedo_cooldown_modifier: Some(0),
-        };
         let hull = HullVariantInputs {
             definition_index: Some(-1),
             module_count: Some(9),
@@ -1161,7 +908,6 @@ mod tests {
         let mut row = ShipModelRow {
             ship: 9,
             variant: (3 << 32) | 70,
-            strike: Recorded::Value(Some(strike)),
             hull_variant: Recorded::Value(Some(hull)),
             ..Default::default()
         };
@@ -1195,10 +941,6 @@ mod tests {
         let mut report = Report::default();
         ship_tooltip_suffixes(&row, &saved, &mut report);
         assert!(report.differences.is_empty());
-        row.strike = Recorded::Value(Some(ShipStrikeInputs {
-            light_attack: None,
-            ..strike
-        }));
         row.hull_variant = Recorded::Value(Some(HullVariantInputs {
             version: None,
             ..hull
@@ -1209,23 +951,12 @@ mod tests {
             report
                 .differences
                 .iter()
-                .any(|difference| difference.contains("light_attack"))
-        );
-        assert!(
-            report
-                .differences
-                .iter()
                 .any(|difference| difference.contains("hull_variant.version"))
         );
-        row.strike = Recorded::NotRecorded;
         row.hull_variant = Recorded::NotRecorded;
         let mut old = Report::default();
         ship_tooltip_suffixes(&row, &saved, &mut old);
         assert!(old.differences.is_empty());
-        assert!(
-            old.limitations
-                .contains_key("ShipModels.strike not recorded")
-        );
         assert!(
             old.limitations
                 .contains_key("ShipModels.hull_variant not recorded")
@@ -1330,7 +1061,6 @@ mod tests {
                 variant: (3_u64 << 32) | 70,
                 counter: Some(Default::default()),
                 // This fixture compares the original map fields and saved pool.
-                strike: Recorded::NotRecorded,
                 hull_variant: Recorded::NotRecorded,
                 ..Default::default()
             }]));
@@ -1344,11 +1074,21 @@ mod tests {
             "{:?}",
             report.failed_comparisons
         );
-        assert_eq!(report.compared_tables.len(), 5);
+        // The retired shared movement packet is no longer compared.
+        assert_eq!(
+            report.compared_tables.len(),
+            4,
+            "{:?}",
+            report.compared_tables
+        );
+        assert!(
+            !report
+                .compared_tables
+                .contains_key("ReservedCountryNaming.movement")
+        );
         for field in [
             "ReservedCountryNaming.launch_sources",
             "ReservedCountryNaming.country_array",
-            "ShipModels.strike",
             "ShipModels.hull_variant",
         ] {
             assert_eq!(

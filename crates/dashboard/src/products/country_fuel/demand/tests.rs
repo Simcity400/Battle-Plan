@@ -6,7 +6,7 @@ use replay::rows::{FuelDemandFleet, FuelDemandGroup, Recorded, TableId, TableRow
 
 fn pack(hour: i32) -> FuelDemandRead {
     FuelDemandRead {
-        hour,
+        hour: replay::rows::FuelDemandHour::Stamped(hour),
         country_instance: Some(9),
         divisions: vec![FuelDemandUnit {
             reference: 7 << 32 | 29,
@@ -282,7 +282,7 @@ fn actual_products_use_supplying_names_topology_and_windows_without_receipt_cont
             if hour >= 196 {
                 row.country_instance = Recorded::Value(Some(10));
             }
-            if let Recorded::Value(awards) = &mut row.awards {
+            if let Recorded::Value(awards) = &mut row.award_day {
                 awards.continuity_start_hour = Some(if hour < 124 { 77 } else { 101 });
             }
             *frame.tables[TableId::CountryFuel.index()] =

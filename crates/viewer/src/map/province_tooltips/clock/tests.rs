@@ -1,130 +1,117 @@
 use super::*;
+use replay::rows::DayNightClock;
 
-fn defines() -> Defines {
-    Defines {
-        gmt_offset: 8,
-        poles: [0, 100_000],
-        feather: 20_000,
+fn row(id: u32, clock: DayNightClock) -> WeatherProvinceRow {
+    WeatherProvinceRow {
+        id,
+        clock,
+        ..Default::default()
+    }
+}
+
+fn clock(local_hour: i32, night_factor: i64) -> Clock {
+    Clock {
+        local_hour,
+        night_factor,
     }
 }
 
 #[test]
-fn native_fixed_hour_quantization_and_night_frames_are_preserved() {
-    let start = 43_800_000 + 172 * 24;
-    let cases = [
-        (0, 1, 100_000, 2),
-        (6, 7, 50_000, 2),
-        (12, 13, 0, 1),
-        (18, 19, 50_000, 2),
-        (23, 23, 100_000, 2),
-    ];
-    for (utc, local, night, frame) in cases {
-        let clock = derive(start + utc, [8, 20], [80, 40], &defines(), Some([0, 0])).unwrap();
-        assert_eq!(
-            clock,
-            LocalClock {
-                hour: local,
-                night,
-                icon_frame: frame
-            }
-        );
-    }
-}
-
-#[test]
-fn longitude_is_native_centroid_fixed_arithmetic() {
-    let start = 43_800_000 + 172 * 24;
-    let west = derive(start, [7, 20], [80, 40], &defines(), Some([0, 0])).unwrap();
-    let east = derive(start, [9, 20], [80, 40], &defines(), Some([0, 0])).unwrap();
-    assert_eq!(west.hour, 24);
-    assert_eq!(east.hour, 1);
-    assert_eq!(normalize([3, 4, 0]), [60_000, 80_000, 0]);
-}
-
-#[test]
-fn suspension_or_missing_flags_withhold_both_outputs_by_name() {
-    for flags in [None, Some([1, 0]), Some([0, 1])] {
-        let error = derive(43_800_000, [8, 20], [80, 40], &defines(), flags).unwrap_err();
-        assert!(error.starts_with("Province local clock/night refused:"));
-        assert!(error.contains("suspend") || error.contains("suspension flags unavailable"));
-    }
-}
-
-#[test]
-fn stored_pair_does_not_consult_current_hour_flags_or_content() {
+fn held_clocks_do_not_consult_the_hour_gates_or_content() {
     // Newly allocated native rows start with hour zero and night at one.
     for (hour, night, frame) in [(0, 100_000, 2), (24, 49_999, 1), (7, 50_000, 2)] {
-        let province = WeatherProvinceRow {
-            local_hour: hour.into(),
-            night_factor: night.into(),
-            ..Default::default()
-        };
-        // The historical calculation is deliberately unavailable: a stored
-        // pair must not consult simulation flags, current hour or content.
-        let clock = resolve(&province, || panic!("stored clock used derivation")).unwrap();
-        assert_eq!(
-            clock,
-            LocalClock {
-                hour,
-                night,
-                icon_frame: frame
-            }
-        );
+        for province in [
+            row(5, DayNightClock::held(clock(hour, night))),
+            // Format 101 recorded every row's clock.
+            row(5, DayNightClock::historical(clock(hour, night))),
+            // Slot 0 is never updated; it always holds its clock.
+            row(0, DayNightClock::held(clock(hour, night))),
+        ] {
+            let resolved = resolve(
+                &province,
+                |_| panic!("held clock used derivation"),
+                || panic!("held clock consulted the gates"),
+            )
+            .unwrap();
+            assert_eq!(
+                resolved,
+                LocalClock {
+                    hour,
+                    night,
+                    icon_frame: frame
+                }
+            );
+        }
     }
 }
 
 #[test]
-fn old_recordings_use_derivation_and_keep_suspension_refusals() {
-    let province = WeatherProvinceRow {
-        local_hour: Recorded::NotRecorded,
-        night_factor: Recorded::NotRecorded,
-        ..Default::default()
-    };
-    let historical = || {
-        derive(
-            43_800_000 + 172 * 24,
-            [8, 20],
-            [80, 40],
-            &defines(),
-            Some([0, 0]),
+fn updated_clocks_are_derived_for_the_row_without_consulting_the_gates() {
+    let province = row(5, DayNightClock::UPDATED);
+    let resolved = resolve(
+        &province,
+        |id| {
+            assert_eq!(id, 5);
+            Ok(clock(13, 0))
+        },
+        || panic!("an updated clock needs no gates"),
+    )
+    .unwrap();
+    assert_eq!(
+        resolved,
+        LocalClock {
+            hour: 13,
+            night: 0,
+            icon_frame: 1
+        }
+    );
+    // A derivation that cannot run is refused by name, never zero.
+    assert_eq!(
+        resolve(&province, |_| Err("defines unread".into()), || Ok(None)).unwrap_err(),
+        "defines unread"
+    );
+}
+
+#[test]
+fn old_recordings_derive_only_when_the_gates_prove_the_update() {
+    let province = row(5, DayNightClock::NOT_RECORDED);
+    assert_eq!(
+        resolve(&province, |_| Ok(clock(1, 100_000)), || Ok(Some([0, 0]))),
+        Ok(LocalClock {
+            hour: 1,
+            night: 100_000,
+            icon_frame: 2
+        })
+    );
+    for gates in [None, Some([1, 0]), Some([0, 1])] {
+        let error = resolve(
+            &province,
+            |_| panic!("suspended manager used derivation"),
+            || Ok(gates),
         )
-    };
-    assert_eq!(resolve(&province, historical), historical());
-    assert!(
-        resolve(&province, || derive(
-            43_800_000,
-            [8, 20],
-            [80, 40],
-            &defines(),
-            Some([1, 0])
-        ))
-        .unwrap_err()
-        .contains("suspended")
-    );
-    assert!(
-        resolve(&province, || Err("simulation features absent".into()))
-            .unwrap_err()
-            .contains("simulation features absent")
-    );
-}
-
-#[test]
-fn partial_recorded_pair_is_not_replaced_by_current_hour() {
-    for (local_hour, night_factor) in [
-        (Recorded::Value(0), Recorded::NotRecorded),
-        (Recorded::NotRecorded, Recorded::Value(0)),
-    ] {
-        let province = WeatherProvinceRow {
-            local_hour,
-            night_factor,
-            ..Default::default()
-        };
-        assert!(
-            resolve(&province, || panic!("partial pair used derivation"))
-                .unwrap_err()
-                .contains("incomplete recorded pair")
-        );
+        .unwrap_err();
+        assert!(error.starts_with("Province local clock/night refused:"));
+        assert!(error.contains("suspended") || error.contains("suspension flags unavailable"));
     }
+    assert!(
+        resolve(
+            &province,
+            |_| unreachable!(),
+            || Err("simulation features absent".into())
+        )
+        .unwrap_err()
+        .contains("simulation features absent")
+    );
+    // Slot 0 is never updated, whatever the gates say.
+    assert!(
+        resolve(
+            &row(0, DayNightClock::NOT_RECORDED),
+            |_| panic!("slot 0 used derivation"),
+            || Ok(Some([0, 0]))
+        )
+        .unwrap_err()
+        .contains("slot 0")
+    );
 }
 
 #[test]
@@ -136,7 +123,7 @@ fn held_night_uses_native_signed_rounding_without_clamping() {
         (50_000, 2),
         (150_000, 3),
     ] {
-        assert_eq!(stored(0, night).icon_frame, frame);
+        assert_eq!(LocalClock::from(clock(0, night)).icon_frame, frame);
     }
 }
 
@@ -153,8 +140,18 @@ fn content_defines_keep_native_conversions() {
     "#,
     )
     .unwrap();
-    let loaded = Defines::load(&raw).unwrap();
-    assert_eq!(loaded.gmt_offset, 8);
-    assert_eq!(loaded.poles, [0, 100_000]);
-    assert_eq!(loaded.feather, 20_000);
+    let loaded = replay::day_night::Defines::read(
+        |group, name| raw.int32(group, name),
+        |group, name| raw.fixed5(group, name),
+    )
+    .unwrap();
+    assert_eq!(
+        loaded,
+        replay::day_night::Defines {
+            gmt_offset: 8,
+            south_pole_offset: 0,
+            north_pole_offset: 100_000,
+            day_night_feather: 20_000,
+        }
+    );
 }

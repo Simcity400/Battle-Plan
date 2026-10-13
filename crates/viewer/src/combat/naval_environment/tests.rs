@@ -1,66 +1,6 @@
 use super::*;
 
 #[test]
-fn ship_child_breakdown_uses_doctrine_weight_and_critical_count() {
-    use replay::rows::NavalShipModifierTerm;
-    let context = NavalShipWeaponContext {
-        sources: vec![
-            NavalShipModifierSource {
-                scope: 0,
-                terms: vec![NavalShipModifierTerm {
-                    key: 7,
-                    raw: 10_000,
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-            NavalShipModifierSource {
-                scope: 4,
-                index: 2,
-                weights: [3, 4],
-                dynamic_keys: [7, 0],
-                ..Default::default()
-            },
-            NavalShipModifierSource {
-                scope: 11,
-                index: 5,
-                weights: [2, 0],
-                ..Default::default()
-            },
-            NavalShipModifierSource {
-                scope: 12,
-                index: 0,
-                terms: vec![NavalShipModifierTerm {
-                    key: 9,
-                    raw: 4_000,
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-            NavalShipModifierSource {
-                scope: 12,
-                index: 1,
-                terms: vec![NavalShipModifierTerm {
-                    key: 9,
-                    raw: 8_000,
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
-    };
-    // Breakdown labels use the doctrine's 82.5% weight and two critical
-    // occurrences as 200%.
-    assert_eq!(breakdown_scale(&context, 4, 2), Some(82_500));
-    assert_eq!(breakdown_scale(&context, 11, 5), Some(200_000));
-    assert_eq!(breakdown_scale(&context, 6, 0), Some(100_000));
-    assert_eq!(breakdown_scale(&context, 4, 9), None);
-    assert_eq!(breakdown_visible(&context, 9, 12, 0), Some(false));
-    assert_eq!(breakdown_visible(&context, 9, 12, 1), Some(true));
-}
-
-#[test]
 fn night_picture_uses_viewer_pause_at_max_recorded_speed() {
     assert!(night_picture(3, false));
     assert!(!night_picture(4, false));

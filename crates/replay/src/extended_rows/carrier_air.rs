@@ -1,8 +1,8 @@
 use super::*;
 
-/// One occurrence in CAirBase's dense registered-container vector. Preserve
-/// native order and repeated raw references; slot is authenticated against the
-/// corresponding country-indexed registration, never inferred from raw id.
+/// One occurrence in an air base's dense registered-container vector. Preserve native
+/// order and repeated raw references; slot is authenticated against the corresponding
+/// country-indexed registration, never inferred from raw id.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AirBaseCountryOccurrence {
     pub country: u32,
@@ -18,9 +18,9 @@ value_struct!(AirBaseCountryOccurrence {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AirBaseCarrierInputs {
     pub registered_countries: Option<Vec<AirBaseCountryOccurrence>>,
-    /// Exact retained CShip name bytes bound to this row's full host reference.
-    /// Native null/stale host is Some(empty); acquisition failure is None.
-    /// Display applies the recorded-language and UTF-8 guards.
+    /// Exact retained ship name bytes bound to this row's full host reference. Native
+    /// null/stale host is Some(empty); acquisition failure is None. Display applies the
+    /// recorded-language and UTF-8 guards.
     pub host_name: Option<Vec<u8>>,
 }
 value_struct!(AirBaseCarrierInputs {

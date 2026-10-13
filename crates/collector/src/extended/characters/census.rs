@@ -1,5 +1,6 @@
 //! Role fields of the roster job's admitted census, loaned to the role jobs
-//! of the same stopped-world callback so they need not walk the roster again.
+//! and the character-input consumer of the same stopped-world callback so
+//! they need not walk the roster again.
 
 use engine::allocation::{default_vec, owned_vec, reserve_exact, vec};
 use engine::{
@@ -9,15 +10,18 @@ use engine::{
 };
 
 /// One occurrence: character id, then the exact bytes at `COUNTRY` and at
-/// `LEADER_MAP_HEAD..ADVISOR_MAP_SIZE + 8`, which hold the leader map header,
-/// the unit leader pointer and the advisor map header in that order.
-pub(crate) const ROW: usize = 48;
-const ROLE_SPAN: usize = ccharacter::ADVISOR_MAP_SIZE + 8 - ccharacter::LEADER_MAP_HEAD;
+/// `LEADER_MAP_HEAD..OPERATIVE + 8`, which hold the leader map header, the
+/// unit leader pointer, the advisor map header, the scientist pointer and the
+/// unit-leader reference in that order.
+pub(crate) const ROW: usize = 64;
+const ROLE_SPAN: usize = ccharacter::OPERATIVE + 8 - ccharacter::LEADER_MAP_HEAD;
 const _: () = assert!(
     ccharacter::LEADER_MAP_SIZE == ccharacter::LEADER_MAP_HEAD + 8
         && ccharacter::UNIT_LEADER == ccharacter::LEADER_MAP_HEAD + 16
         && ccharacter::ADVISOR_MAP_HEAD == ccharacter::LEADER_MAP_HEAD + 24
-        && ROLE_SPAN == 40
+        && ccharacter::SCIENTIST == ccharacter::LEADER_MAP_HEAD + 40
+        && ccharacter::OPERATIVE == ccharacter::LEADER_MAP_HEAD + 48
+        && ROLE_SPAN == 56
         && 8 + ROLE_SPAN == ROW
 );
 const FIELDS: [RecordField; 2] = [
@@ -48,6 +52,112 @@ pub(crate) struct RoleCensus {
     scope: (usize, usize),
     complete: bool,
     required: usize,
+    /// The admitted content's [`Generation`]; zero for none.
+    generation: u64,
+    /// The admitted rows' indices by `id % BURNED_IN_ROTATION`, and each
+    /// bucket's start, when storage allowed: a slice of either rotation
+    /// covers whole buckets ([`Admitted::covered`]).
+    by_key: Vec<u32>,
+    starts: [u32; BUCKETS + 1],
+    indexed: bool,
+}
+
+/// Buckets of the admitted rows' keys.
+const BUCKETS: usize = crate::sampled_verify::BURNED_IN_ROTATION as usize;
+
+/// Names the content of an admitted census: two censuses share a nonzero
+/// generation only when their scope, historical length, occurrence pointers
+/// and every gathered byte are equal. The roster job compares each admitted
+/// census with the latest one ([`History`]) and keeps its generation when
+/// they are byte-for-byte equal, so a role job whose last complete capture
+/// used generation `g` knows, without reading or comparing anything, that
+/// this hour's occurrences, identities, countries and role headers are the
+/// ones it read then. Any difference, a held loan, or storage that cannot
+/// grow takes a generation no earlier census had.
+static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The latest admitted census's content and generation.
+#[derive(Debug, Default)]
+struct History {
+    scope: (usize, usize),
+    historical: usize,
+    pointers: Vec<usize>,
+    rows: Vec<u8>,
+    /// Zero when the content is not held.
+    generation: u64,
+}
+
+impl History {
+    /// The generation of an admitted census with this content, keeping the
+    /// held one when equal. Worker only: holding new content may allocate,
+    /// advisorily; a failure holds nothing.
+    fn generation(
+        &mut self,
+        scope: (usize, usize),
+        historical: usize,
+        pointers: &[usize],
+        rows: &[u8],
+    ) -> u64 {
+        if self.generation != 0
+            && self.scope == scope
+            && self.historical == historical
+            && self.pointers == pointers
+            && self.rows == rows
+        {
+            return self.generation;
+        }
+        let generation = fresh_generation();
+        self.generation = 0;
+        self.pointers.clear();
+        self.rows.clear();
+        let held = engine::allocation::advisory(|| {
+            reserve_exact(&mut self.pointers, pointers.len())?;
+            reserve_exact(&mut self.rows, rows.len())
+        });
+        if held.is_ok() {
+            self.pointers.extend_from_slice(pointers);
+            self.rows.extend_from_slice(rows);
+            self.scope = scope;
+            self.historical = historical;
+            self.generation = generation;
+        }
+        generation
+    }
+}
+
+fn fresh_generation() -> u64 {
+    NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Only the roster job, one per hour, takes it; a contended lock takes a
+/// fresh generation instead of waiting.
+#[cfg(not(test))]
+fn generation_of(scope: (usize, usize), historical: usize, pointers: &[usize], rows: &[u8]) -> u64 {
+    static HISTORY: std::sync::Mutex<History> = std::sync::Mutex::new(History {
+        scope: (0, 0),
+        historical: 0,
+        pointers: Vec::new(),
+        rows: Vec::new(),
+        generation: 0,
+    });
+    match HISTORY.try_lock() {
+        Ok(mut history) => history.generation(scope, historical, pointers, rows),
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned
+            .into_inner()
+            .generation(scope, historical, pointers, rows),
+        Err(std::sync::TryLockError::WouldBlock) => fresh_generation(),
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: each test thread's own latest census.
+    static HISTORY: std::cell::RefCell<History> = std::cell::RefCell::default();
+}
+
+#[cfg(test)]
+fn generation_of(scope: (usize, usize), historical: usize, pointers: &[usize], rows: &[u8]) -> u64 {
+    HISTORY.with_borrow_mut(|history| history.generation(scope, historical, pointers, rows))
 }
 
 /// The occurrence count of the most recent role census the roster job
@@ -60,7 +170,7 @@ pub(super) fn remember_roster(count: usize) {
     LIVE_HINT.fetch_max(count, std::sync::atomic::Ordering::Relaxed);
 }
 
-pub(super) fn initial_len() -> usize {
+pub(crate) fn initial_len() -> usize {
     live_len().max(LIVE_HINT.load(std::sync::atomic::Ordering::Relaxed))
 }
 
@@ -85,11 +195,17 @@ impl RoleCensus {
             scope: (0, 0),
             complete: false,
             required: 0,
+            generation: 0,
+            by_key: owned_vec(vec(capacity)),
+            starts: [0; BUCKETS + 1],
+            indexed: false,
         }
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.pointers.capacity() * size_of::<usize>() + self.rows.capacity()
+        self.pointers.capacity() * size_of::<usize>()
+            + self.rows.capacity()
+            + self.by_key.capacity() * size_of::<u32>()
     }
 
     pub fn needs_growth(&self) -> bool {
@@ -109,6 +225,10 @@ impl RoleCensus {
             if reserve_exact(&mut self.pointers, additional).is_err() {
                 return;
             }
+            let additional = self.required - self.by_key.len();
+            if reserve_exact(&mut self.by_key, additional).is_err() {
+                return;
+            }
             let Some(bytes) = self.required.checked_mul(ROW) else {
                 let _ = reserve_exact(&mut self.rows, usize::MAX);
                 return;
@@ -124,7 +244,7 @@ impl RoleCensus {
     /// Gather every occurrence's fields in one guarded call. `census` must be
     /// complete and freshly certified for `scope` in this callback; the
     /// census is admitted only when every field of every occurrence copied.
-    pub(super) fn acquire_with_growth(
+    pub(crate) fn acquire_with_growth(
         &mut self,
         memory: &impl Memory,
         scope: (usize, usize),
@@ -134,6 +254,8 @@ impl RoleCensus {
     ) -> bool {
         self.scope = scope;
         self.complete = false;
+        self.generation = 0;
+        self.indexed = false;
         self.required = census.len();
         LIVE_LEN.store(census.len(), std::sync::atomic::Ordering::Relaxed);
         self.historical = historical;
@@ -151,7 +273,64 @@ impl RoleCensus {
         }
         let completed = memory.copy_records(RecordSources::Pointers(&self.pointers), &LAYOUT, rows);
         self.complete = completed == census.len() * FIELDS.len();
+        if self.complete {
+            self.generation = generation_of(scope, historical, &self.pointers, rows);
+            self.indexed = self.index(growing);
+        }
         self.complete
+    }
+
+    /// Buckets the admitted rows by key, unless storage cannot hold them
+    /// (only a growing worker allocates).
+    fn index(&mut self, growing: bool) -> bool {
+        let len = self.pointers.len();
+        let additional = len.saturating_sub(self.by_key.len());
+        if self.by_key.capacity() < len
+            && (!growing || reserve_exact(&mut self.by_key, additional).is_err())
+        {
+            return false;
+        }
+        self.by_key.clear();
+        self.by_key.resize(len, 0);
+        let rows = &self.rows[..len * ROW];
+        let key = |row: &[u8]| u32::from_le_bytes(row[..4].try_into().unwrap()) as usize % BUCKETS;
+        self.starts.fill(0);
+        for row in rows.chunks_exact(ROW) {
+            self.starts[key(row) + 1] += 1;
+        }
+        for bucket in 0..BUCKETS {
+            self.starts[bucket + 1] += self.starts[bucket];
+        }
+        let mut next = self.starts;
+        for (index, row) in rows.chunks_exact(ROW).enumerate() {
+            let at = &mut next[key(row)];
+            self.by_key[*at as usize] = index as u32;
+            *at += 1;
+        }
+        true
+    }
+
+    /// Whether this admitted census was gathered in `scope` from exactly
+    /// `census`'s occurrences, ids and historical length.
+    fn holds(&self, scope: (usize, usize), census: &[PortraitIdentity], historical: usize) -> bool {
+        self.complete
+            && self.scope == scope
+            && self.historical == historical
+            && self.pointers.len() == census.len()
+            && self
+                .pointers
+                .iter()
+                .zip(self.rows.chunks_exact(ROW))
+                .zip(census)
+                .all(|((&pointer, row), identity)| {
+                    pointer == identity.pointer && row[..4] == identity.character.to_le_bytes()
+                })
+    }
+
+    /// The admitted content's generation, which names its scope too; zero
+    /// for none.
+    pub fn generation(&self) -> u64 {
+        if self.complete { self.generation } else { 0 }
     }
 
     /// Occurrences in roster order, only for the scope they were acquired in.
@@ -160,6 +339,8 @@ impl RoleCensus {
             pointers: &self.pointers,
             rows: &self.rows[..self.pointers.len() * ROW],
             historical: self.historical,
+            generation: self.generation,
+            index: self.indexed.then_some((&self.by_key[..], &self.starts)),
         })
     }
 }
@@ -169,6 +350,34 @@ pub(crate) struct Admitted<'a> {
     pointers: &'a [usize],
     rows: &'a [u8],
     pub historical: usize,
+    /// Equal nonzero generations name byte-identical censuses ([`History`]).
+    pub generation: u64,
+    index: Option<(&'a [u32], &'a [u32; BUCKETS + 1])>,
+}
+
+impl<'a> Admitted<'a> {
+    /// The indices of the occurrences whose character id `check` covers: the
+    /// covered buckets' rows (`covers` depends only on a key's bucket, as
+    /// both rotations divide it), or every row filtered without an index.
+    pub fn covered(self, check: crate::sampled_verify::Check) -> impl Iterator<Item = usize> + 'a {
+        let indexed = self.index.map(move |(by_key, starts)| {
+            (0..BUCKETS)
+                .filter(move |&bucket| check.covers(bucket as u64))
+                .flat_map(move |bucket| {
+                    by_key[starts[bucket] as usize..starts[bucket + 1] as usize]
+                        .iter()
+                        .map(|&index| index as usize)
+                })
+        });
+        let filtered = self.index.is_none().then(|| {
+            (0..self.len())
+                .filter(move |&index| check.covers(u64::from(self.occurrence(index).id())))
+        });
+        indexed
+            .into_iter()
+            .flatten()
+            .chain(filtered.into_iter().flatten())
+    }
 }
 
 impl Admitted<'_> {
@@ -212,6 +421,26 @@ impl Occurrence {
 
     pub fn advisors(&self) -> [u8; 16] {
         self.row[32..48].try_into().unwrap()
+    }
+
+    pub fn scientist(&self) -> u64 {
+        u64::from_le_bytes(self.row[48..56].try_into().unwrap())
+    }
+
+    pub fn operative(&self) -> u64 {
+        u64::from_le_bytes(self.row[56..64].try_into().unwrap())
+    }
+
+    /// The role fields the character-input walk reads from.
+    pub fn occupant(&self) -> engine::character_inputs::Occupant {
+        engine::character_inputs::Occupant {
+            pointer: self.pointer,
+            character: self.id(),
+            leaders: self.leaders(),
+            advisors: self.advisors(),
+            scientist: self.scientist(),
+            operative: self.operative(),
+        }
     }
 
     /// The fields `View::read` would copy for the given required domains
@@ -289,4 +518,168 @@ pub(crate) fn gather_sentinels(
         &SENTINEL_LAYOUT,
         &mut output[..heads.len() * SENTINEL],
     )
+}
+
+/// The roster job's role census held between gathers
+/// ([`crate::census_changes`]). A census is kept, without gathering it, when
+/// the census domain's token equals the one taken before the gather that
+/// admitted it and the hour's occurrences, ids, scope and historical length
+/// are the ones it was gathered from: no observed writer of a gathered field
+/// ran since. The hour's slice of its rows (by character id, every row in
+/// verify mode) is still gathered and compared; a difference poisons the
+/// domain and the hour gathers the whole census.
+pub(crate) struct CensusCarry {
+    changes: &'static dyn crate::census_changes::Changes,
+    /// Tests: the slice; production follows the hour.
+    check: Option<crate::sampled_verify::Check>,
+    /// Taken before the gather that admitted the held census.
+    token: Option<(u64, u64)>,
+    /// The portrait census stamp that gather read its occurrences from.
+    stamp: Option<u64>,
+    /// The slice's rows, occurrences and fresh rows.
+    slice: Vec<u32>,
+    pointers: Vec<usize>,
+    rows: Vec<u8>,
+}
+
+impl std::fmt::Debug for CensusCarry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CensusCarry")
+            .field("token", &self.token)
+            .finish()
+    }
+}
+
+impl Default for CensusCarry {
+    fn default() -> Self {
+        Self::with(&crate::census_changes::Observer, None)
+    }
+}
+
+impl CensusCarry {
+    pub(crate) fn with(
+        changes: &'static dyn crate::census_changes::Changes,
+        check: Option<crate::sampled_verify::Check>,
+    ) -> Self {
+        Self {
+            changes,
+            check,
+            token: None,
+            stamp: None,
+            slice: Vec::new(),
+            pointers: Vec::new(),
+            rows: Vec::new(),
+        }
+    }
+
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.slice.capacity() * size_of::<u32>()
+            + self.pointers.capacity() * size_of::<usize>()
+            + self.rows.capacity()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_check(&mut self, check: crate::sampled_verify::Check) {
+        self.check = Some(check);
+    }
+
+    /// The roster job's gather of `census`, the rows of the portrait census
+    /// with `stamp`, into `roles`. Returns whether `roles` is admitted for
+    /// the hour, and how.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn acquire(
+        &mut self,
+        memory: &impl Memory,
+        roles: &mut RoleCensus,
+        scope: (usize, usize),
+        census: &[PortraitIdentity],
+        stamp: u64,
+        historical: usize,
+        growing: bool,
+    ) -> (bool, crate::census_changes::Counts) {
+        let mut counts = crate::census_changes::Counts::default();
+        let token = self.changes.quiet();
+        // The rows it was gathered from need no comparison.
+        let same_occurrences = || {
+            if self.stamp == Some(stamp) {
+                roles.complete && roles.scope == scope && roles.historical == historical
+            } else {
+                roles.holds(scope, census, historical)
+            }
+        };
+        if token.is_some()
+            && token == self.token
+            && same_occurrences()
+            && self.compare(memory, roles, &mut counts)
+        {
+            counts.carried = true;
+            return (true, counts);
+        }
+        counts.gathered = true;
+        let admitted = roles.acquire_with_growth(memory, scope, census, historical, growing);
+        self.token = token.filter(|_| admitted);
+        self.stamp = admitted.then_some(stamp);
+        (admitted, counts)
+    }
+
+    /// Gathers the slice's rows afresh and compares them with the held ones.
+    /// False at a difference, which poisons the domain, or when the slice
+    /// cannot be gathered.
+    fn compare(
+        &mut self,
+        memory: &impl Memory,
+        roles: &RoleCensus,
+        counts: &mut crate::census_changes::Counts,
+    ) -> bool {
+        let check = self.check.unwrap_or_else(|| {
+            crate::sampled_verify::current_burned_in(crate::census_changes::VERIFY)
+        });
+        let Some(held) = roles.admitted(roles.scope.0, roles.scope.1) else {
+            return false;
+        };
+        self.slice.clear();
+        let covered = held.covered(check).count();
+        if engine::allocation::advisory(|| engine::allocation::reserve(&mut self.slice, covered))
+            .is_err()
+        {
+            return false;
+        }
+        self.slice
+            .extend(held.covered(check).map(|index| index as u32));
+        let len = self.slice.len();
+        self.pointers.clear();
+        let stored = engine::allocation::advisory(|| {
+            engine::allocation::reserve(&mut self.pointers, len)?;
+            engine::allocation::resize_default(&mut self.rows, len * ROW)
+        });
+        if stored.is_err() {
+            return false;
+        }
+        self.pointers.extend(
+            self.slice
+                .iter()
+                .map(|&index| roles.pointers[index as usize]),
+        );
+        let fresh = &mut self.rows[..len * ROW];
+        if memory.copy_records(RecordSources::Pointers(&self.pointers), &LAYOUT, fresh)
+            != len * FIELDS.len()
+        {
+            return false;
+        }
+        counts.compared = len as u64;
+        counts.mismatches = self
+            .slice
+            .iter()
+            .zip(fresh.chunks_exact(ROW))
+            .filter(|&(&index, fresh)| {
+                roles.rows[index as usize * ROW + 4..][..ROW - 4] != fresh[4..]
+            })
+            .count() as u64;
+        if counts.mismatches != 0 {
+            self.changes.mismatch();
+            self.token = None;
+        }
+        counts.mismatches == 0
+    }
 }

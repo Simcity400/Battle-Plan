@@ -126,6 +126,9 @@ struct Track {
 }
 #[derive(Default)]
 pub struct Scan {
+    /// The recording's format, which dates its daily tables
+    /// ([`crate::metadata::slot_read`]).
+    pub(crate) format: replay::format::FormatVersion,
     world_totals: Vec<TerritoryRun>,
     overflowed: usize,
     ambiguous_slots: usize,
@@ -235,8 +238,11 @@ fn keep<R, T: Copy + PartialEq>(
 
 /// This hour's complete States and Provinces when freshly read; a failed or
 /// unrecorded read supplies none.
-pub(crate) fn fresh_tables(frame: &DecodedFrame) -> (Option<&[StateRow]>, Option<&[ProvinceRow]>) {
-    let fresh = |table| slot_read(&frame.metrics, table, frame.hour);
+pub(crate) fn fresh_tables(
+    format: replay::format::FormatVersion,
+    frame: &DecodedFrame,
+) -> (Option<&[StateRow]>, Option<&[ProvinceRow]>) {
+    let fresh = |table| slot_read(format, &frame.metrics, table, frame.hour);
     (
         fresh(TableId::States)
             .then(|| frame.complete::<tables::States>().ok())
@@ -269,13 +275,14 @@ pub(crate) fn province_values(
 }
 
 fn totals(
+    format: replay::format::FormatVersion,
     frame: &DecodedFrame,
     areas: Option<&ProvinceAreas>,
     raw_slots: &HashMap<u32, usize>,
     slot_count: usize,
     result: &mut Vec<[Option<i64>; 8]>,
 ) -> Totals {
-    let (states, provinces) = fresh_tables(frame);
+    let (states, provinces) = fresh_tables(format, frame);
     let mut available = [
         states.is_some(),
         provinces.is_some(),
@@ -459,7 +466,7 @@ fn observe(
             frame.hour,
         );
     }
-    let (states, provinces) = fresh_tables(frame);
+    let (states, provinces) = fresh_tables(scan.format, frame);
     let same_reads = builder.reads.update(states, provinces);
     let totals = if let Some(totals) = builder.totals.filter(|_| same && same_reads) {
         builder.current.clone_from(&builder.previous);
@@ -470,6 +477,7 @@ fn observe(
             builder.aggregations += 1;
         }
         let totals = totals(
+            scan.format,
             frame,
             areas,
             &index.raw_slots,
@@ -648,7 +656,10 @@ fn scan_with(
     cancelled: &AtomicBool,
     mut also: impl FnMut(&DecodedFrame) -> io::Result<()>,
 ) -> io::Result<Scan> {
-    let mut result = Scan::default();
+    let mut result = Scan {
+        format: replay.format,
+        ..Scan::default()
+    };
     let mut builder = Builder::default();
     let failed = walk(replay, branch, cancelled, |frame| {
         also(frame)?;

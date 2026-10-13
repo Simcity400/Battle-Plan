@@ -3,6 +3,14 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 #[test]
+fn economy_rest_names_follow_its_tables() {
+    assert_eq!(
+        ECONOMY_REST_NAMES.map(str::to_owned),
+        ECONOMY_REST.map(|table| format!("{table:?}"))
+    );
+}
+
+#[test]
 fn terminal_failure_releases_a_decode_handoff_waiting_on_a_full_queue() {
     let ready = crossbeam_queue::ArrayQueue::new(1);
     ready.push(7).unwrap();
@@ -80,7 +88,6 @@ fn retirement_capacity_covers_every_character_part_and_owned_frame() {
         recycle_projects_job(ProjectsJob::default());
         recycle_lexical_job(LexicalJob::default());
         recycle_divisions_job(DivisionsJob::default());
-        recycle_focus_job(FocusJob::default());
         recycle_air_wing_job(AirWingJob::default());
         recycle_air_stats_job(AirStatsJob::default());
         recycle_naval_job(NavalJob::default());
@@ -90,7 +97,6 @@ fn retirement_capacity_covers_every_character_part_and_owned_frame() {
         recycle_construction_rest_job(ConstructionRestJob::default());
         recycle_economy_rest_job(EconomyRestJob::default());
         recycle_air_bases_job(AirBasesJob::default());
-        recycle_air_history_job(AirHistoryJob::default());
         recycle_supremacy_job(SupremacyJob::default());
         recycle_sunk_job(SunkJob::default());
         recycle_radar_job(RadarJob::default());
@@ -150,10 +156,6 @@ fn exhausted_or_contended_payload_pools_decline_without_allocating() {
         assert!(!job.initialized());
         assert_eq!(job.census.allocated_bytes(), 0);
     });
-    check(&FOCUS_JOB_POOL, acquire_focus_job, |job| {
-        assert!(!job.is_provisioned());
-        assert_eq!(job.capacities(), ([0; 2], 0));
-    });
     check(&AIR_WING_JOB_POOL, acquire_air_wing_job, |job| {
         assert!(!job.has_storage());
     });
@@ -179,7 +181,6 @@ fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publica
     PROJECTS_JOB_POOL.lock().unwrap().clear();
     LEXICAL_JOB_POOL.lock().unwrap().clear();
     DIVISIONS_JOB_POOL.lock().unwrap().clear();
-    FOCUS_JOB_POOL.lock().unwrap().clear();
     AIR_WING_JOB_POOL.lock().unwrap().clear();
     AIR_STATS_JOB_POOL.lock().unwrap().clear();
     NAVAL_JOB_POOL.lock().unwrap().clear();
@@ -189,7 +190,6 @@ fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publica
     CONSTRUCTION_REST_JOB_POOL.lock().unwrap().clear();
     ECONOMY_REST_JOB_POOL.lock().unwrap().clear();
     AIR_BASES_JOB_POOL.lock().unwrap().clear();
-    AIR_HISTORY_JOB_POOL.lock().unwrap().clear();
     SUPREMACY_JOB_POOL.lock().unwrap().clear();
     SUNK_JOB_POOL.lock().unwrap().clear();
     RADAR_JOB_POOL.lock().unwrap().clear();
@@ -220,7 +220,6 @@ fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publica
         projects_payload: Some(ProjectsJob::default()),
         lexical_payload: Some(LexicalJob::default()),
         divisions_payload: Some(DivisionsJob::default()),
-        focus_payload: Some(FocusJob::default()),
         air_wing_payload: Some(AirWingJob::default()),
         air_stats_payload: Some(air),
         naval_payload: Some(NavalJob::default()),
@@ -230,7 +229,6 @@ fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publica
         construction_rest_payload: Some(ConstructionRestJob::default()),
         economy_rest_payload: Some(EconomyRestJob::default()),
         air_bases_payload: Some(AirBasesJob::default()),
-        air_history_payload: Some(AirHistoryJob::default()),
         supremacy_payload: Some(SupremacyJob::default()),
         sunk_payload: Some(SunkJob::default()),
         radar_payload: Some(RadarJob::default()),
@@ -241,7 +239,7 @@ fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publica
     };
     // A callback can retire a refusal after an idle drain and then enqueue
     // this frame. Its retirement must be consumed before the lease returns.
-    recycle_focus_job(FocusJob::default());
+    recycle_lexical_job(LexicalJob::default());
     let retirement = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
     assert_eq!(retirement.len(), 1);
     assert_eq!(shared.ready.pop(), None);
@@ -255,7 +253,6 @@ fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publica
         ("projects", PROJECTS_JOB_POOL.lock().unwrap().len()),
         ("lexical", LEXICAL_JOB_POOL.lock().unwrap().len()),
         ("divisions", DIVISIONS_JOB_POOL.lock().unwrap().len()),
-        ("focus", FOCUS_JOB_POOL.lock().unwrap().len()),
         ("air wings", AIR_WING_JOB_POOL.lock().unwrap().len()),
         ("naval", NAVAL_JOB_POOL.lock().unwrap().len()),
         ("players", PLAYERS_JOB_POOL.lock().unwrap().len()),
@@ -267,7 +264,6 @@ fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publica
         ),
         ("economy", ECONOMY_REST_JOB_POOL.lock().unwrap().len()),
         ("air bases", AIR_BASES_JOB_POOL.lock().unwrap().len()),
-        ("air history", AIR_HISTORY_JOB_POOL.lock().unwrap().len()),
         ("supremacy", SUPREMACY_JOB_POOL.lock().unwrap().len()),
         ("sunk ships", SUNK_JOB_POOL.lock().unwrap().len()),
         ("radar", RADAR_JOB_POOL.lock().unwrap().len()),
@@ -316,12 +312,10 @@ fn fifo_absent_daily_payloads_preserve_skipped_outcomes_and_idle_pools() {
     let daily_pool_lengths = || {
         [
             PROJECTS_JOB_POOL.lock().unwrap().len(),
-            FOCUS_JOB_POOL.lock().unwrap().len(),
             AIR_STATS_JOB_POOL.lock().unwrap().len(),
             SESSION_JOB_POOL.lock().unwrap().len(),
             PRODUCTION_REST_JOB_POOL.lock().unwrap().len(),
             CONSTRUCTION_REST_JOB_POOL.lock().unwrap().len(),
-            AIR_HISTORY_JOB_POOL.lock().unwrap().len(),
             SUPREMACY_JOB_POOL.lock().unwrap().len(),
             SUNK_JOB_POOL.lock().unwrap().len(),
             RADAR_JOB_POOL.lock().unwrap().len(),
@@ -335,11 +329,6 @@ fn fifo_absent_daily_payloads_preserve_skipped_outcomes_and_idle_pools() {
         .extended
         .air_stats_pilot()
         .fail_air_stats_capture(replay::cadence::SKIPPED_REASON);
-    frame
-        .extended
-        .focus_pilot()
-        .fail_focus_capture(false, replay::cadence::SKIPPED_REASON);
-    let focus_before = frame.extended.focus_pilot().outcomes();
     let air_before = frame.extended.air_stats_pilot().outcomes();
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
     assert!(retired.is_empty());
@@ -360,7 +349,6 @@ fn fifo_absent_daily_payloads_preserve_skipped_outcomes_and_idle_pools() {
         assert!(retired.is_empty());
         assert_eq!(daily_pool_lengths(), idle_pools);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-        assert_eq!(frame.extended.focus_pilot().outcomes(), focus_before);
         assert_eq!(frame.extended.air_stats_pilot().outcomes(), air_before);
     }
     assert_eq!(calibration().refresh_jobs, 0);
@@ -376,7 +364,6 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
         [
             PRODUCTION_REST_JOB_POOL.lock().unwrap().len(),
             CONSTRUCTION_REST_JOB_POOL.lock().unwrap().len(),
-            FOCUS_JOB_POOL.lock().unwrap().len(),
             ECONOMY_REST_JOB_POOL.lock().unwrap().len(),
         ]
     };
@@ -386,70 +373,59 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
     let shared = Shared::new(0, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     for (hour, force_full, parts, economy) in [
-        // CountryResources is hourly; its census and the exchanges
-        // publish in their daily slot.
-        (0, false, [false, false, false], [true, false, false]),
-        (3, false, [false, true, false], [true, false, false]),
-        (8, false, [true, false, false], [true, false, false]),
-        (19, false, [false, false, true], [true, false, false]),
-        (-5, false, [false, false, true], [true, false, false]),
-        (27, false, [false, true, false], [true, false, false]),
-        (32, false, [true, false, false], [true, false, false]),
-        (10, false, [false, false, false], [true, true, false]),
-        (17, false, [false, false, false], [true, false, true]),
-        (0, true, [true, true, true], [true, true, true]),
+        // CountryResources, its census and the exchanges are hourly; the
+        // other economy tables publish in their daily slot.
+        (0, false, [false, false], [true, false]),
+        (3, false, [false, true], [true, false]),
+        (8, false, [true, false], [true, false]),
+        (19, false, [false, false], [true, false]),
+        (-5, false, [false, false], [true, false]),
+        (27, false, [false, true], [true, false]),
+        (32, false, [true, false], [true, false]),
+        (10, false, [false, false], [true, false]),
+        (17, false, [false, false], [true, true]),
+        (0, true, [true, true], [true, true]),
     ] {
         assert!(retired.is_empty());
         let reads = read_accounting::Capture::new();
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-        let focus = frame
-            .extended
-            .focus_pilot()
-            .focus_copy_context(0, 0, parts[2]);
-        let request = sampling::acquire_world_request(
+        let request = sampling::acquire_world_request(&countries, 0, 0, hour, force_full);
+        assert_eq!(
+            [request.production.is_some(), request.construction.is_some(),],
+            parts,
+            "hour {hour}, force_full {force_full}"
+        );
+        // The economy rest is its own job, every hour.
+        let economy_request = sampling::acquire_economy_request(
             &countries,
             0,
             0,
-            focus,
             frame.extended.economy_rest_pilot(),
             hour,
             force_full,
         );
         assert_eq!(
             [
-                request.production.is_some(),
-                request.construction.is_some(),
-                request.focus.is_some(),
-            ],
-            parts,
-            "hour {hour}, force_full {force_full}"
-        );
-        assert_eq!(
-            [
-                request.economy.context.resources_active,
-                request.economy.context.definitions_slot,
-                request.economy.context.other_active,
+                economy_request.context.resources_active,
+                economy_request.context.other_active,
             ],
             economy
         );
-        let owned = [parts[0], parts[1], parts[2], true];
-        let after_acquire: [usize; 4] =
+        let owned = [parts[0], parts[1], true];
+        let after_acquire: [usize; 3] =
             std::array::from_fn(|slot| idle[slot].saturating_sub(usize::from(owned[slot])));
         assert_eq!(pool_lengths(), after_acquire);
         assert!(retired.is_empty(), "absent parts must not retire a payload");
-        assert_eq!(Arc::strong_count(&countries), 2);
+        assert_eq!(Arc::strong_count(&countries), 3);
         if let Some(part) = request.production {
             recycle_production_rest_job(part.payload);
         }
         if let Some(part) = request.construction {
             recycle_construction_rest_job(part.payload);
         }
-        if let Some(part) = request.focus {
-            assert!(part.context.active);
-            recycle_focus_job(part.payload);
-        }
-        recycle_economy_rest_job(request.economy.payload);
+        recycle_economy_rest_job(economy_request.payload);
         drop(request.countries);
+        drop(economy_request.countries);
         assert_eq!(Arc::strong_count(&countries), 1);
         assert_eq!(pool_lengths(), after_acquire);
         assert_eq!(
@@ -476,6 +452,151 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
 }
 
 #[test]
+fn the_economy_rest_is_its_own_job_and_each_failure_refuses_only_its_tables() {
+    use crate::extended::{economy, production};
+    use engine::walk::Outcome;
+
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset_calibration_for_test();
+    let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(16).unwrap());
+    let reason = "acquisition worker panicked";
+    let world_tables = || PRODUCTION_REST.into_iter().chain(CONSTRUCTION_REST);
+    for (world_failed, economy_failed) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        assert!(retired.is_empty());
+        let mut captured =
+            crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
+        // A full hour: both World parts and every economy table are scheduled.
+        let world = sampling::acquire_world_request(&countries, 0, 0, 0, true);
+        let economy_request = sampling::acquire_economy_request(
+            &countries,
+            0,
+            0,
+            captured.economy_rest_pilot(),
+            0,
+            true,
+        );
+        let before = captured.outcomes();
+        // Every raw copy completed; only the jobs themselves fail.
+        let mut world_report = crate::acquisition_jobs::WorldReport {
+            production: production::ProductionRestCopyReport {
+                raw_ok: true,
+                copy_ticks: [7; 8],
+                ..Default::default()
+            },
+            construction: crate::extended::construction::ConstructionRestCopyReport {
+                raw_ok: true,
+                copy_ticks: [7; 10],
+                ..Default::default()
+            },
+            ticks: 0,
+        };
+        let mut economy_report = economy::EconomyRestCopyReport {
+            raw_ok: true,
+            copy_ticks: [9; economy::N],
+            ..Default::default()
+        };
+        let world_failure = world_failed.then_some(reason);
+        let economy_failure = economy_failed.then_some(reason);
+        let (mut production_payload, mut construction_payload, mut economy_payload) =
+            (None, None, None);
+        // The hour sets the construction verdict when it builds the World
+        // request, before the Gated packs leave holding the construction
+        // pack, so the World join installs only production's.
+        captured.construction_rest_pilot().rest_raw_mode = world.construction.is_some();
+        let active = sampling::settle_world(
+            &mut captured,
+            world,
+            &mut world_report,
+            world_failure,
+            &mut production_payload,
+            &mut construction_payload,
+        );
+        sampling::settle_economy(
+            captured.economy_rest_pilot(),
+            economy_request,
+            &mut economy_report,
+            economy_failure,
+            &mut economy_payload,
+        );
+        assert_eq!(active, (true, true));
+        // Each job's payloads go to decode or are recycled, never both.
+        assert_eq!(production_payload.is_some(), !world_failed);
+        assert_eq!(construction_payload.is_some(), !world_failed);
+        assert_eq!(economy_payload.is_some(), !economy_failed);
+        assert_eq!(
+            retired.len(),
+            2 * usize::from(world_failed) + usize::from(economy_failed)
+        );
+        assert_eq!(world_report.production.raw_ok, !world_failed);
+        assert_eq!(world_report.construction.raw_ok, !world_failed);
+        assert_eq!(economy_report.raw_ok, !economy_failed);
+        let mut ticks = [0; replay::frame::TABLE_COUNT];
+        sampling::refuse_world_rest(
+            &mut captured,
+            active,
+            &world_report,
+            world_failure,
+            &mut ticks,
+        );
+        sampling::refuse_economy_rest(
+            captured.economy_rest_pilot(),
+            &economy_report,
+            economy_failure,
+            &mut ticks,
+        );
+        let outcomes = captured.outcomes();
+        let refused = Outcome::Unavailable { reason };
+        for table in world_tables() {
+            let index = table.index();
+            if world_failed {
+                assert_eq!(outcomes[index], refused, "{table:?}");
+                assert_eq!(ticks[index], 7, "{table:?}");
+            } else {
+                assert_eq!(outcomes[index], before[index], "{table:?}");
+                assert_eq!(ticks[index], 0, "{table:?}");
+            }
+        }
+        for table in ECONOMY_REST {
+            let index = table.index();
+            if economy_failed {
+                assert_eq!(outcomes[index], refused, "{table:?}");
+                assert_eq!(ticks[index], 9, "{table:?}");
+            } else {
+                assert_eq!(outcomes[index], before[index], "{table:?}");
+                assert_eq!(ticks[index], 0, "{table:?}");
+            }
+        }
+        // A refused family returns to its typed path; the other stays raw.
+        assert_eq!(
+            captured.production_rest_pilot().rest_raw_mode,
+            !world_failed
+        );
+        assert_eq!(
+            captured.construction_rest_pilot().rest_raw_mode,
+            !world_failed
+        );
+        assert_eq!(captured.economy_rest_pilot().rest_raw_mode, !economy_failed);
+        // Return every payload the decode slot kept, then drain the recycling.
+        if let Some(job) = production_payload {
+            recycle_production_rest_job(job);
+        }
+        if let Some(job) = construction_payload {
+            recycle_construction_rest_job(job);
+        }
+        if let Some(job) = economy_payload {
+            recycle_economy_rest_job(job);
+        }
+        assert_eq!(retired.len(), 3);
+        reclaim_payloads();
+        assert_eq!(Arc::strong_count(&countries), 1);
+    }
+    assert!(retired.is_empty());
+}
+
+#[test]
 fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
     use engine::walk::Outcome;
 
@@ -484,7 +605,7 @@ fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
     let shared = Shared::new(0, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let characters = [true, false, false, true, false, false];
+    let characters = [true, false, false, true, false];
     let relations = [false, true];
     frame
         .extended
@@ -505,7 +626,6 @@ fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
     job.air_wing_refresh = true;
     job.air_bases_refresh = true;
     job.naval_refresh = true;
-    job.focus_refresh = true;
     process_owned_job(&shared, job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.ready.pop(), None);
@@ -529,7 +649,12 @@ fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
     );
     let air = frame.extended.air_bases_pilot().outcomes();
     assert_eq!(
-        [air[0], air[1], air[2], air[5]],
+        [
+            air[0],
+            air[1],
+            air[2],
+            air[air_slot(replay::rows::TableId::AirAces)]
+        ],
         [missing, missing, skipped, skipped]
     );
     assert_eq!(frame.extended.radar_pilot().outcomes()[5], missing);
@@ -538,7 +663,6 @@ fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
     assert_eq!(naval[4], missing);
     assert_eq!(naval[5..10], [skipped; 5]);
     assert_eq!(naval[14..17], [missing; 3]);
-    assert_eq!(frame.extended.focus_pilot().outcomes()[..2], [missing; 2]);
     assert_eq!(calibration().refresh_jobs, 0);
 }
 
@@ -672,7 +796,6 @@ fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
             projects_refresh: false,
             lexical_refresh: false,
             divisions_refresh: false,
-            focus_refresh: false,
             air_wing_refresh: false,
             air_stats_refresh: false,
             naval_refresh: false,
@@ -682,7 +805,6 @@ fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
             construction_rest_refresh: false,
             economy_rest_refresh: false,
             air_bases_refresh: false,
-            air_history_refresh: false,
             supremacy_refresh: false,
             sunk_refresh: false,
             radar_refresh: false,
@@ -696,7 +818,6 @@ fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
             projects_payload: None,
             lexical_payload: None,
             divisions_payload: None,
-            focus_payload: None,
             air_wing_payload: None,
             air_stats_payload: None,
             naval_payload: None,
@@ -706,7 +827,6 @@ fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
             construction_rest_payload: None,
             economy_rest_payload: None,
             air_bases_payload: None,
-            air_history_payload: None,
             supremacy_payload: None,
             sunk_payload: None,
             radar_payload: None,
@@ -745,7 +865,6 @@ fn queue_full_returns_the_job_for_the_existing_gap_path() {
             projects_refresh: false,
             lexical_refresh: false,
             divisions_refresh: false,
-            focus_refresh: false,
             air_wing_refresh: false,
             air_stats_refresh: false,
             naval_refresh: false,
@@ -755,7 +874,6 @@ fn queue_full_returns_the_job_for_the_existing_gap_path() {
             construction_rest_refresh: false,
             economy_rest_refresh: false,
             air_bases_refresh: false,
-            air_history_refresh: false,
             supremacy_refresh: false,
             sunk_refresh: false,
             radar_refresh: false,
@@ -769,7 +887,6 @@ fn queue_full_returns_the_job_for_the_existing_gap_path() {
             projects_payload: None,
             lexical_payload: None,
             divisions_payload: None,
-            focus_payload: None,
             air_wing_payload: None,
             air_stats_payload: None,
             naval_payload: None,
@@ -779,7 +896,6 @@ fn queue_full_returns_the_job_for_the_existing_gap_path() {
             construction_rest_payload: None,
             economy_rest_payload: None,
             air_bases_payload: None,
-            air_history_payload: None,
             supremacy_payload: None,
             sunk_payload: None,
             radar_payload: None,
@@ -799,7 +915,6 @@ fn queue_full_returns_the_job_for_the_existing_gap_path() {
         projects_refresh: false,
         lexical_refresh: false,
         divisions_refresh: false,
-        focus_refresh: false,
         air_wing_refresh: false,
         air_stats_refresh: false,
         naval_refresh: false,
@@ -809,7 +924,6 @@ fn queue_full_returns_the_job_for_the_existing_gap_path() {
         construction_rest_refresh: false,
         economy_rest_refresh: false,
         air_bases_refresh: false,
-        air_history_refresh: false,
         supremacy_refresh: false,
         sunk_refresh: false,
         radar_refresh: false,
@@ -823,7 +937,6 @@ fn queue_full_returns_the_job_for_the_existing_gap_path() {
         projects_payload: None,
         lexical_payload: None,
         divisions_payload: None,
-        focus_payload: None,
         air_wing_payload: None,
         air_stats_payload: None,
         naval_payload: None,
@@ -833,7 +946,6 @@ fn queue_full_returns_the_job_for_the_existing_gap_path() {
         construction_rest_payload: None,
         economy_rest_payload: None,
         air_bases_payload: None,
-        air_history_payload: None,
         supremacy_payload: None,
         sunk_payload: None,
         radar_payload: None,
@@ -869,7 +981,6 @@ fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
         projects_refresh: false,
         lexical_refresh: false,
         divisions_refresh: false,
-        focus_refresh: false,
         air_wing_refresh: false,
         air_stats_refresh: false,
         naval_refresh: false,
@@ -879,7 +990,6 @@ fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
         construction_rest_refresh: false,
         economy_rest_refresh: false,
         air_bases_refresh: false,
-        air_history_refresh: false,
         supremacy_refresh: false,
         sunk_refresh: false,
         radar_refresh: false,
@@ -893,7 +1003,6 @@ fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
         projects_payload: None,
         lexical_payload: None,
         divisions_payload: None,
-        focus_payload: None,
         air_wing_payload: None,
         air_stats_payload: None,
         naval_payload: None,
@@ -903,7 +1012,6 @@ fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
         construction_rest_payload: None,
         economy_rest_payload: None,
         air_bases_payload: None,
-        air_history_payload: None,
         supremacy_payload: None,
         sunk_payload: None,
         radar_payload: None,
@@ -986,8 +1094,8 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
     let index = shared.free.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let capacities = crate::extended::characters::Capacities {
-        rows: [4096; 6],
-        bytes: [131_072; 6],
+        rows: [4096; 5],
+        bytes: [131_072; 5],
     };
     let direct = characters_test_kit::direct(&memory, &capacities);
     let mut initial = capacities;
@@ -1002,7 +1110,7 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
         force_full: false,
         base: characters_test_kit::BASE,
         game_state: characters_test_kit::GAME_STATE,
-        active: [true; 6],
+        active: [true; 5],
         trait_rows,
         trait_bytes,
     };
@@ -1014,7 +1122,7 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
         crate::extended::characters::Roles::Independent,
     );
     assert!(report.raw_ok);
-    frame.extended.characters_pilot().raw_active = [true; 6];
+    frame.extended.characters_pilot().raw_active = [true; 5];
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         index,
@@ -1025,7 +1133,6 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
         projects_refresh: false,
         lexical_refresh: false,
         divisions_refresh: false,
-        focus_refresh: false,
         air_wing_refresh: false,
         air_stats_refresh: false,
         naval_refresh: false,
@@ -1035,7 +1142,6 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
         construction_rest_refresh: false,
         economy_rest_refresh: false,
         air_bases_refresh: false,
-        air_history_refresh: false,
         supremacy_refresh: false,
         sunk_refresh: false,
         radar_refresh: false,
@@ -1049,7 +1155,6 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
         projects_payload: None,
         lexical_payload: None,
         divisions_payload: None,
-        focus_payload: None,
         air_wing_payload: None,
         air_stats_payload: None,
         naval_payload: None,
@@ -1059,7 +1164,6 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
         construction_rest_payload: None,
         economy_rest_payload: None,
         air_bases_payload: None,
-        air_history_payload: None,
         supremacy_payload: None,
         sunk_payload: None,
         radar_payload: None,
@@ -1098,8 +1202,8 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     let capacities = characters::Capacities {
-        rows: [4096; 6],
-        bytes: [131_072; 6],
+        rows: [4096; 5],
+        bytes: [131_072; 5],
     };
     for (missing, missing_mask) in CHARACTER_MASKS.into_iter().enumerate() {
         let bytes = kit::mapped_fixture();
@@ -1110,8 +1214,8 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let captured = frame.extended.characters_pilot();
         *captured = characters::Captured::with_capacities(&capacities);
-        captured.set_character_activity([true; 6]);
-        captured.raw_active = [true; 6];
+        captured.set_character_activity([true; 5]);
+        captured.raw_active = [true; 5];
         captured.capture(&memory, kit::BASE, kit::GAME_STATE, 0, false);
         let (trait_rows, trait_bytes) = captured.trait_capture_capacities();
         let mut job = bare_job(index, next_seq(), 0, 37);
@@ -1145,7 +1249,7 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
         assert_eq!(shared.ready.pop(), None);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         kit::assert_matches_direct(frame.extended.characters_pilot(), &expected);
-        assert_eq!(frame.extended.characters_pilot().raw_active, [false; 6]);
+        assert_eq!(frame.extended.characters_pilot().raw_active, [false; 5]);
     }
 }
 
@@ -1162,8 +1266,8 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     let capacities = characters::Capacities {
-        rows: [4096; 6],
-        bytes: [131_072; 6],
+        rows: [4096; 5],
+        bytes: [131_072; 5],
     };
     for (hour, force_full) in [(0, false), (21, false), (7, true)] {
         let active = CHARACTERS.map(|table| replay::cadence::should_walk(table, hour, force_full));
@@ -1193,7 +1297,7 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
                 assert_eq!(report.raw_bytes[slot], 0);
             }
         }
-        frame.extended.characters_pilot().raw_active = [true; 6];
+        frame.extended.characters_pilot().raw_active = [true; 5];
         let mut job = bare_job(index, next_seq(), 23, 39);
         job.force_full = !force_full;
         job.characters_refresh = [true, false, false, false];
@@ -1260,7 +1364,6 @@ fn worker_decodes_a_projects_refresh_payload_into_the_same_typed_rows() {
         projects_refresh: true,
         lexical_refresh: false,
         divisions_refresh: false,
-        focus_refresh: false,
         air_wing_refresh: false,
         air_stats_refresh: false,
         naval_refresh: false,
@@ -1270,7 +1373,6 @@ fn worker_decodes_a_projects_refresh_payload_into_the_same_typed_rows() {
         construction_rest_refresh: false,
         economy_rest_refresh: false,
         air_bases_refresh: false,
-        air_history_refresh: false,
         supremacy_refresh: false,
         sunk_refresh: false,
         radar_refresh: false,
@@ -1284,7 +1386,6 @@ fn worker_decodes_a_projects_refresh_payload_into_the_same_typed_rows() {
         projects_payload: Some(first),
         lexical_payload: None,
         divisions_payload: None,
-        focus_payload: None,
         air_wing_payload: None,
         air_stats_payload: None,
         naval_payload: None,
@@ -1294,7 +1395,6 @@ fn worker_decodes_a_projects_refresh_payload_into_the_same_typed_rows() {
         construction_rest_payload: None,
         economy_rest_payload: None,
         air_bases_payload: None,
-        air_history_payload: None,
         supremacy_payload: None,
         sunk_payload: None,
         radar_payload: None,
@@ -1343,7 +1443,6 @@ fn worker_decodes_a_lexical_refresh_payload_into_the_same_typed_rows() {
         projects_refresh: false,
         lexical_refresh: true,
         divisions_refresh: false,
-        focus_refresh: false,
         air_wing_refresh: false,
         air_stats_refresh: false,
         naval_refresh: false,
@@ -1353,7 +1452,6 @@ fn worker_decodes_a_lexical_refresh_payload_into_the_same_typed_rows() {
         construction_rest_refresh: false,
         economy_rest_refresh: false,
         air_bases_refresh: false,
-        air_history_refresh: false,
         supremacy_refresh: false,
         sunk_refresh: false,
         radar_refresh: false,
@@ -1367,7 +1465,6 @@ fn worker_decodes_a_lexical_refresh_payload_into_the_same_typed_rows() {
         projects_payload: None,
         lexical_payload: Some(first),
         divisions_payload: None,
-        focus_payload: None,
         air_wing_payload: None,
         air_stats_payload: None,
         naval_payload: None,
@@ -1377,7 +1474,6 @@ fn worker_decodes_a_lexical_refresh_payload_into_the_same_typed_rows() {
         construction_rest_payload: None,
         economy_rest_payload: None,
         air_bases_payload: None,
-        air_history_payload: None,
         supremacy_payload: None,
         sunk_payload: None,
         radar_payload: None,
@@ -1420,7 +1516,6 @@ fn worker_preserves_already_typed_wars_rows() {
         projects_refresh: false,
         lexical_refresh: false,
         divisions_refresh: false,
-        focus_refresh: false,
         air_wing_refresh: false,
         air_stats_refresh: false,
         naval_refresh: false,
@@ -1430,7 +1525,6 @@ fn worker_preserves_already_typed_wars_rows() {
         construction_rest_refresh: false,
         economy_rest_refresh: false,
         air_bases_refresh: false,
-        air_history_refresh: false,
         supremacy_refresh: false,
         sunk_refresh: false,
         radar_refresh: false,
@@ -1444,7 +1538,6 @@ fn worker_preserves_already_typed_wars_rows() {
         projects_payload: None,
         lexical_payload: None,
         divisions_payload: None,
-        focus_payload: None,
         air_wing_payload: None,
         air_stats_payload: None,
         naval_payload: None,
@@ -1454,7 +1547,6 @@ fn worker_preserves_already_typed_wars_rows() {
         construction_rest_payload: None,
         economy_rest_payload: None,
         air_bases_payload: None,
-        air_history_payload: None,
         supremacy_payload: None,
         sunk_payload: None,
         radar_payload: None,
@@ -1506,7 +1598,6 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
         projects_refresh: false,
         lexical_refresh: false,
         divisions_refresh: true,
-        focus_refresh: false,
         air_wing_refresh: false,
         air_stats_refresh: false,
         naval_refresh: false,
@@ -1516,7 +1607,6 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
         construction_rest_refresh: false,
         economy_rest_refresh: false,
         air_bases_refresh: false,
-        air_history_refresh: false,
         supremacy_refresh: false,
         sunk_refresh: false,
         radar_refresh: false,
@@ -1530,7 +1620,6 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
         projects_payload: None,
         lexical_payload: None,
         divisions_payload: Some(first),
-        focus_payload: None,
         air_wing_payload: None,
         air_stats_payload: None,
         naval_payload: None,
@@ -1540,7 +1629,6 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
         construction_rest_payload: None,
         economy_rest_payload: None,
         air_bases_payload: None,
-        air_history_payload: None,
         supremacy_payload: None,
         sunk_payload: None,
         radar_payload: None,
@@ -1986,7 +2074,7 @@ fn cold_worker_payload_grows_from_native_headers_before_publication_and_reuses_s
         let bytes = kit::mod_fixture(count);
         let memory = kit::memory(&bytes);
         let mut capacities = Capacities::default();
-        capacities.rows[6] = count;
+        capacities.rows[air_slot(replay::rows::TableId::AirStatistics)] = count;
         let direct = kit::direct(&memory, &capacities);
         assert_eq!(direct.outcome, Outcome::Rows { len: count });
         let report =
@@ -2030,7 +2118,6 @@ fn queue_high_water_tracks_the_deepest_observed_fifo_occupancy() {
             projects_refresh: false,
             lexical_refresh: false,
             divisions_refresh: false,
-            focus_refresh: false,
             air_wing_refresh: false,
             air_stats_refresh: false,
             naval_refresh: false,
@@ -2040,7 +2127,6 @@ fn queue_high_water_tracks_the_deepest_observed_fifo_occupancy() {
             construction_rest_refresh: false,
             economy_rest_refresh: false,
             air_bases_refresh: false,
-            air_history_refresh: false,
             supremacy_refresh: false,
             sunk_refresh: false,
             radar_refresh: false,
@@ -2054,7 +2140,6 @@ fn queue_high_water_tracks_the_deepest_observed_fifo_occupancy() {
             projects_payload: None,
             lexical_payload: None,
             divisions_payload: None,
-            focus_payload: None,
             air_wing_payload: None,
             air_stats_payload: None,
             naval_payload: None,
@@ -2064,7 +2149,6 @@ fn queue_high_water_tracks_the_deepest_observed_fifo_occupancy() {
             construction_rest_payload: None,
             economy_rest_payload: None,
             air_bases_payload: None,
-            air_history_payload: None,
             supremacy_payload: None,
             sunk_payload: None,
             radar_payload: None,
@@ -2079,88 +2163,6 @@ fn queue_high_water_tracks_the_deepest_observed_fifo_occupancy() {
     assert_eq!(snapshot.json()["queue_high_water"], 3);
     assert_eq!(snapshot.json()["queue_capacity"], BUFFERS);
     while shared.decode_queue.pop().is_some() {}
-}
-
-#[test]
-fn worker_decodes_a_focus_payload_into_the_same_typed_rows() {
-    use crate::extended::governance::focus_test_kit;
-    let _guard = TEST_LOCK.lock().unwrap();
-    reset_calibration_for_test();
-    let fixture = focus_test_kit::Fixture::world();
-    let memory = fixture.memory();
-    let shared = Shared::new(focus_test_kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
-    let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let mut typed = focus_test_kit::Fixture::captured();
-    typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, 0, true);
-    frame.extended.focus_pilot().focus_raw_mode = true;
-    let (report, first) =
-        focus_test_kit::Fixture::copy_first(frame.extended.focus_pilot(), &memory);
-    assert!(report.raw_ok);
-    shared.completed[index].store(0, Ordering::Relaxed);
-    let mut job = DecodeJob {
-        index,
-        seq: next_seq(),
-        hour: 7,
-        relations_refresh: false,
-        characters_refresh: [false; CHARACTER_PARTS],
-        projects_refresh: false,
-        lexical_refresh: false,
-        divisions_refresh: false,
-        focus_refresh: true,
-        air_wing_refresh: false,
-        air_stats_refresh: false,
-        naval_refresh: false,
-        players_refresh: false,
-        session_refresh: false,
-        production_rest_refresh: false,
-        construction_rest_refresh: false,
-        economy_rest_refresh: false,
-        air_bases_refresh: false,
-        air_history_refresh: false,
-        supremacy_refresh: false,
-        sunk_refresh: false,
-        radar_refresh: false,
-        intel_refresh: false,
-        weather_refresh: false,
-        capitulation_refresh: false,
-        force_full: false,
-        game_elapsed: 23,
-        relations_payload: None,
-        characters_payload: [const { None }; CHARACTER_PARTS],
-        projects_payload: None,
-        lexical_payload: None,
-        divisions_payload: None,
-        focus_payload: Some(first),
-        air_wing_payload: None,
-        air_stats_payload: None,
-        naval_payload: None,
-        players_payload: None,
-        session_payload: None,
-        production_rest_payload: None,
-        construction_rest_payload: None,
-        economy_rest_payload: None,
-        air_bases_payload: None,
-        air_history_payload: None,
-        supremacy_payload: None,
-        sunk_payload: None,
-        radar_payload: None,
-        intel_payload: None,
-        weather_payload: None,
-        capitulation_payload: None,
-    };
-    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 23);
-    let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let pilot = frame.extended.focus_pilot();
-    assert!(!pilot.focus_raw_mode);
-    focus_test_kit::Fixture::assert_matches_typed(pilot, &typed);
-    let snapshot = calibration();
-    assert_eq!(snapshot.focus_copy_ns, [0, 0]);
-    assert!(snapshot.refresh_jobs >= 1);
-    assert_eq!(snapshot.json()["focus_tables"][0], "Focus");
-    assert_eq!(snapshot.json()["focus_tables"][1], "CompletedFocuses");
 }
 
 #[test]
@@ -2195,7 +2197,6 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
         projects_refresh: false,
         lexical_refresh: false,
         divisions_refresh: false,
-        focus_refresh: false,
         naval_refresh: false,
         players_refresh: false,
         session_refresh: false,
@@ -2203,7 +2204,6 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
         construction_rest_refresh: false,
         economy_rest_refresh: false,
         air_bases_refresh: false,
-        air_history_refresh: false,
         supremacy_refresh: false,
         sunk_refresh: false,
         radar_refresh: false,
@@ -2219,7 +2219,6 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
         projects_payload: None,
         lexical_payload: None,
         divisions_payload: None,
-        focus_payload: None,
         naval_payload: None,
         players_payload: None,
         session_payload: None,
@@ -2227,7 +2226,6 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
         construction_rest_payload: None,
         economy_rest_payload: None,
         air_bases_payload: None,
-        air_history_payload: None,
         supremacy_payload: None,
         sunk_payload: None,
         radar_payload: None,
@@ -2258,7 +2256,7 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
     let shared = Shared::new(stats_test_kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     let mut capacities = crate::extended::air::Capacities::default();
-    capacities.rows[6] = 2;
+    capacities.rows[air_slot(replay::rows::TableId::AirStatistics)] = 2;
     let direct = stats_test_kit::direct(&memory, &capacities);
     let ctx = AirStatsCopyContext {
         base: stats_test_kit::BASE,
@@ -2279,7 +2277,6 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
         projects_refresh: false,
         lexical_refresh: false,
         divisions_refresh: false,
-        focus_refresh: false,
         air_wing_refresh: false,
         air_stats_refresh: true,
         naval_refresh: false,
@@ -2289,7 +2286,6 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
         construction_rest_refresh: false,
         economy_rest_refresh: false,
         air_bases_refresh: false,
-        air_history_refresh: false,
         supremacy_refresh: false,
         sunk_refresh: false,
         radar_refresh: false,
@@ -2303,7 +2299,6 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
         projects_payload: None,
         lexical_payload: None,
         divisions_payload: None,
-        focus_payload: None,
         air_wing_payload: None,
         air_stats_payload: Some(first),
         naval_payload: None,
@@ -2313,7 +2308,6 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
         construction_rest_payload: None,
         economy_rest_payload: None,
         air_bases_payload: None,
-        air_history_payload: None,
         supremacy_payload: None,
         sunk_payload: None,
         radar_payload: None,
@@ -2379,7 +2373,6 @@ fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
         projects_refresh: false,
         lexical_refresh: false,
         divisions_refresh: false,
-        focus_refresh: false,
         air_wing_refresh: false,
         air_stats_refresh: false,
         naval_refresh: true,
@@ -2389,7 +2382,6 @@ fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
         construction_rest_refresh: false,
         economy_rest_refresh: false,
         air_bases_refresh: false,
-        air_history_refresh: false,
         supremacy_refresh: false,
         sunk_refresh: false,
         radar_refresh: false,
@@ -2403,7 +2395,6 @@ fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
         projects_payload: None,
         lexical_payload: None,
         divisions_payload: None,
-        focus_payload: None,
         air_wing_payload: None,
         air_stats_payload: None,
         naval_payload: Some(first),
@@ -2413,7 +2404,6 @@ fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
         construction_rest_payload: None,
         economy_rest_payload: None,
         air_bases_payload: None,
-        air_history_payload: None,
         supremacy_payload: None,
         sunk_payload: None,
         radar_payload: None,
@@ -2484,21 +2474,6 @@ fn retained_air_naval_payload_caps_fit_the_force_full_hour_live_set() {
 }
 
 #[test]
-fn focus_calibration_counters_are_monotonic_and_additive_per_table() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    reset_calibration_for_test();
-    add_focus_copy_ns(0, 11);
-    add_focus_copy_ns(0, 4);
-    add_focus_copy_ns(1, 0);
-    add_focus_raw_bytes(1, 100);
-    let snapshot = calibration();
-    assert_eq!(snapshot.focus_copy_ns, [15, 0]);
-    assert_eq!(snapshot.focus_raw_bytes, [0, 100]);
-    assert_eq!(snapshot.json()["focus_copy_ns"][0], 15);
-    assert_eq!(snapshot.json()["focus_tables"][0], "Focus");
-}
-
-#[test]
 fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
     use crate::extended::production::{ProductionRestCopyContext, production_rest_test_kit as kit};
     let _guard = TEST_LOCK.lock().unwrap();
@@ -2531,7 +2506,6 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
         projects_refresh: false,
         lexical_refresh: false,
         divisions_refresh: false,
-        focus_refresh: false,
         air_wing_refresh: false,
         air_stats_refresh: false,
         naval_refresh: false,
@@ -2541,7 +2515,6 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
         construction_rest_refresh: false,
         economy_rest_refresh: false,
         air_bases_refresh: false,
-        air_history_refresh: false,
         supremacy_refresh: false,
         sunk_refresh: false,
         radar_refresh: false,
@@ -2555,7 +2528,6 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
         projects_payload: None,
         lexical_payload: None,
         divisions_payload: None,
-        focus_payload: None,
         air_wing_payload: None,
         air_stats_payload: None,
         naval_payload: None,
@@ -2565,7 +2537,6 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
         construction_rest_payload: None,
         economy_rest_payload: None,
         air_bases_payload: None,
-        air_history_payload: None,
         supremacy_payload: None,
         sunk_payload: None,
         radar_payload: None,
@@ -2632,7 +2603,6 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
         projects_refresh: false,
         lexical_refresh: false,
         divisions_refresh: false,
-        focus_refresh: false,
         air_wing_refresh: false,
         air_stats_refresh: false,
         naval_refresh: false,
@@ -2642,7 +2612,6 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
         construction_rest_refresh: true,
         economy_rest_refresh: false,
         air_bases_refresh: false,
-        air_history_refresh: false,
         supremacy_refresh: false,
         sunk_refresh: false,
         radar_refresh: false,
@@ -2656,7 +2625,6 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
         projects_payload: None,
         lexical_payload: None,
         divisions_payload: None,
-        focus_payload: None,
         air_wing_payload: None,
         air_stats_payload: None,
         naval_payload: None,
@@ -2666,7 +2634,6 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
         construction_rest_payload: Some(first),
         economy_rest_payload: None,
         air_bases_payload: None,
-        air_history_payload: None,
         supremacy_payload: None,
         sunk_payload: None,
         radar_payload: None,
@@ -2778,7 +2745,6 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
         projects_refresh: false,
         lexical_refresh: false,
         divisions_refresh: false,
-        focus_refresh: false,
         air_wing_refresh: true,
         air_stats_refresh: false,
         naval_refresh: true,
@@ -2788,7 +2754,6 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
         construction_rest_refresh: false,
         economy_rest_refresh: false,
         air_bases_refresh: false,
-        air_history_refresh: false,
         supremacy_refresh: false,
         sunk_refresh: false,
         radar_refresh: false,
@@ -2802,7 +2767,6 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
         projects_payload: None,
         lexical_payload: None,
         divisions_payload: None,
-        focus_payload: None,
         air_wing_payload: Some(air_job),
         air_stats_payload: None,
         naval_payload: Some(naval_job),
@@ -2812,7 +2776,6 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
         construction_rest_payload: None,
         economy_rest_payload: None,
         air_bases_payload: None,
-        air_history_payload: None,
         supremacy_payload: None,
         sunk_payload: None,
         radar_payload: None,
@@ -2882,7 +2845,6 @@ fn bare_job(index: usize, seq: u64, hour: i32, game_elapsed: i64) -> DecodeJob {
         projects_refresh: false,
         lexical_refresh: false,
         divisions_refresh: false,
-        focus_refresh: false,
         air_wing_refresh: false,
         air_stats_refresh: false,
         naval_refresh: false,
@@ -2892,7 +2854,6 @@ fn bare_job(index: usize, seq: u64, hour: i32, game_elapsed: i64) -> DecodeJob {
         construction_rest_refresh: false,
         economy_rest_refresh: false,
         air_bases_refresh: false,
-        air_history_refresh: false,
         supremacy_refresh: false,
         sunk_refresh: false,
         radar_refresh: false,
@@ -2906,7 +2867,6 @@ fn bare_job(index: usize, seq: u64, hour: i32, game_elapsed: i64) -> DecodeJob {
         projects_payload: None,
         lexical_payload: None,
         divisions_payload: None,
-        focus_payload: None,
         air_wing_payload: None,
         air_stats_payload: None,
         naval_payload: None,
@@ -2916,7 +2876,6 @@ fn bare_job(index: usize, seq: u64, hour: i32, game_elapsed: i64) -> DecodeJob {
         construction_rest_payload: None,
         economy_rest_payload: None,
         air_bases_payload: None,
-        air_history_payload: None,
         supremacy_payload: None,
         sunk_payload: None,
         radar_payload: None,
@@ -2934,7 +2893,7 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
     reset_calibration_for_test();
     let mut bytes = kit::fixture();
     let mut capacities = Capacities::default();
-    capacities.rows[6] = 2;
+    capacities.rows[air_slot(replay::rows::TableId::AirStatistics)] = 2;
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     let mut bases_memo = AirBasesMemo::default();
@@ -2963,7 +2922,6 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
             assert!(report.raw_ok);
             captured.stats_raw_mode = true;
             captured.bases_raw_mode = true;
-            captured.history_raw_mode = true;
             // The pack reset must preserve the staged-payload reservation.
             captured.capture(
                 &memory,
@@ -2971,7 +2929,7 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
                 kit::GAME_STATE,
                 hour,
                 false,
-                &mut Default::default(),
+                Some(&mut Default::default()),
             );
             job.air_stats_payload = Some(payload);
         } else if !job.air_stats_refresh {
@@ -2984,7 +2942,7 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
         let captured = frame.extended.air_stats_pilot();
         if step == 2 || step == 5 {
             assert_eq!(
-                captured.outcomes()[6],
+                captured.outcomes()[air_slot(replay::rows::TableId::AirStatistics)],
                 Outcome::Unavailable {
                     reason: if step == 2 {
                         replay::cadence::SKIPPED_REASON
@@ -3015,7 +2973,7 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
     let reference = kit::direct(&kit::memory(&bytes));
     let mut capacities = Capacities::default();
     capacities.rows[1] = reference.bases_outcome.len();
-    capacities.rows[5] = reference.aces_outcome.len();
+    capacities.rows[air_slot(replay::rows::TableId::AirAces)] = reference.aces_outcome.len();
     capacities.ace_names = reference.ace_names.len();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     *frame.extended.air_bases_pilot() = Captured::with_capacities(&capacities);
@@ -3033,7 +2991,6 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
                 game_state: kit::GAME_STATE,
                 hour: if (9..=10).contains(&step) { 21 } else { 0 },
                 force_full: false,
-                transport_admission: Default::default(),
             };
             let report = crate::extended::air::copy_air_bases_refresh_growing(
                 &kit::memory(&bytes),
@@ -3063,7 +3020,8 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         if !(9..=10).contains(&step) {
             assert_eq!(
-                frame.extended.air_bases_pilot().outcomes()[5],
+                frame.extended.air_bases_pilot().outcomes()
+                    [air_slot(replay::rows::TableId::AirAces)],
                 Outcome::Unavailable {
                     reason: replay::cadence::SKIPPED_REASON,
                 }
@@ -3101,7 +3059,6 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
         game_state: kit::GAME_STATE,
         hour: 0,
         force_full: true,
-        transport_admission: Default::default(),
     };
     let mut first = acquire_air_bases_job();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -3121,14 +3078,17 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
     let air = frame.extended.air_bases_pilot().tables();
     let fog = frame.extended.radar_pilot().tables();
     assert!(matches!(air[1], TableView::Complete(_)));
-    assert!(matches!(air[5], TableView::Complete(_)));
+    assert!(matches!(
+        air[air_slot(replay::rows::TableId::AirAces)],
+        TableView::Complete(_)
+    ));
     assert!(matches!(fog[5], TableView::Complete(_)));
     assert_eq!(
         frame.extended.air_bases_pilot().outcomes()[1],
         direct.bases_outcome
     );
     assert_eq!(
-        frame.extended.air_bases_pilot().outcomes()[5],
+        frame.extended.air_bases_pilot().outcomes()[air_slot(replay::rows::TableId::AirAces)],
         direct.aces_outcome
     );
     assert!(!frame.extended.air_bases_pilot().bases_raw_mode);
@@ -3141,58 +3101,6 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
     );
     assert_eq!(snapshot.json()["air_bases_tables"][2], "AirAces");
     recycle_air_bases_job(job.air_bases_payload.unwrap());
-}
-
-#[test]
-fn worker_decodes_a_shared_history_payload_into_the_same_typed_rows() {
-    use crate::extended::air::air_history_test_kit as kit;
-    use replay::frame::TableView;
-    let _guard = TEST_LOCK.lock().unwrap();
-    reset_calibration_for_test();
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let direct = kit::direct(&memory);
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
-    shared.completed[index].store(0, Ordering::Relaxed);
-    let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let [history_limit, damage_limit] = frame.extended.air_history_pilot().air_history_limits();
-    let ctx = crate::extended::air::AirHistoryCopyContext {
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-        hour: 0,
-        force_full: true,
-        history_limit,
-        damage_limit,
-    };
-    let mut first = acquire_air_history_job();
-    let report = crate::extended::air::copy_air_history_refresh_growing(&memory, ctx, &mut first);
-    assert!(report.raw_ok);
-    frame.extended.air_history_pilot().history_raw_mode = true;
-    let mut job = bare_job(index, next_seq(), 7, 43);
-    job.air_history_refresh = true;
-    job.air_history_payload = Some(first);
-    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 43);
-    let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let air = frame.extended.air_history_pilot().tables();
-    assert!(matches!(air[3], TableView::Complete(_)));
-    assert!(matches!(air[4], TableView::Complete(_)));
-    assert_eq!(
-        frame.extended.air_history_pilot().outcomes()[3],
-        direct.history_outcome
-    );
-    assert_eq!(
-        frame.extended.air_history_pilot().outcomes()[4],
-        direct.damage_outcome
-    );
-    assert!(!frame.extended.air_history_pilot().history_raw_mode);
-    let snapshot = calibration();
-    assert!(snapshot.refresh_jobs >= 1);
-    assert_eq!(snapshot.json()["air_history_tables"][0], "AirRegionHistory");
-    assert_eq!(snapshot.json()["air_history_tables"][1], "AirRegionDamage");
-    recycle_air_history_job(job.air_history_payload.unwrap());
 }
 
 #[test]
@@ -3380,7 +3288,6 @@ fn new_family_calibration_counters_are_monotonic_and_additive_per_table() {
     add_sunk_copy_ns(0, 4);
     add_radar_copy_ns(0, 6);
     add_intel_copy_ns(0, 8);
-    add_air_history_copy_ns(1, 2);
     let snapshot = calibration();
     assert_eq!(snapshot.air_bases_copy_ns, [11, 0, 7]);
     assert_eq!(snapshot.air_bases_raw_bytes, [0, 100, 0]);
@@ -3388,11 +3295,9 @@ fn new_family_calibration_counters_are_monotonic_and_additive_per_table() {
     assert_eq!(snapshot.sunk_copy_ns, [4]);
     assert_eq!(snapshot.radar_copy_ns, [6]);
     assert_eq!(snapshot.intel_copy_ns, [8]);
-    assert_eq!(snapshot.air_history_copy_ns, [0, 2]);
     let json = snapshot.json();
     assert_eq!(json["air_bases_copy_ns"][0], 11);
     assert_eq!(json["air_bases_tables"][1], "AirBaseRegistrations");
-    assert_eq!(json["air_history_tables"][1], "AirRegionDamage");
     assert_eq!(json["supremacy_tables"][0], "NavalSupremacy");
     assert_eq!(json["sunk_tables"][0], "SunkShips");
     assert_eq!(json["radar_tables"][0], "RadarCoverage");
@@ -3463,4 +3368,52 @@ pub(crate) fn retire_and_reacquire_two_carrier_jobs_for_test(
     assert_eq!(first.log.spans.as_ptr(), identities[0]);
     assert_eq!(second.log.spans.as_ptr(), identities[1]);
     [first, second]
+}
+
+/// The hourly body fills its job where the worker reads it: a reservation
+/// publishes in place, and an unpublished one returns its slot vacant.
+#[test]
+fn a_reserved_job_publishes_in_place_and_an_unpublished_one_returns_vacant() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset_calibration_for_test();
+    let shared = Shared::new(0, 0, 1);
+    let queue = &shared.decode_queue;
+    let mut reserved = queue.reserve().expect("free decode slot");
+    reserved.job().players_payload = Some(PlayersJob::new());
+    reserved.job().seq = 5;
+    drop(reserved);
+    let mut every: Vec<_> = (0..BUFFERS)
+        .map(|_| queue.reserve().expect("free decode slot"))
+        .collect();
+    assert!(queue.reserve().is_none());
+    assert!(
+        every
+            .iter_mut()
+            .all(|reserved| reserved.job().players_payload.is_none())
+    );
+    drop(every);
+    let jobs = JOBS.load(Ordering::Relaxed);
+    let mut reserved = queue.reserve().expect("free decode slot");
+    let job = reserved.job();
+    job.index = 1;
+    job.seq = 9;
+    job.hour = 4;
+    job.players_payload = Some(PlayersJob::new());
+    assert!(enqueue_reserved(&shared, reserved));
+    assert_eq!(JOBS.load(Ordering::Relaxed), jobs + 1);
+    assert_eq!(queue.len(), 1);
+    let job = queue.pop().expect("published job");
+    assert_eq!((job.index, job.seq, job.hour), (1, 9, 4));
+    assert!(job.players_payload.is_some());
+    assert!(queue.is_empty());
+    let every: Vec<_> = (0..BUFFERS).filter_map(|_| queue.reserve()).collect();
+    assert_eq!(every.len(), BUFFERS);
+}
+
+/// The air pack's slot of `table`, so fixtures follow the pack's order.
+fn air_slot(table: replay::rows::TableId) -> usize {
+    crate::extended::air::TABLES
+        .iter()
+        .position(|&candidate| candidate == table)
+        .expect("an air pack table")
 }

@@ -453,3 +453,365 @@ fn owned_group_source_faults_never_retry_healthy_live_operands() {
         );
     }
 }
+
+/// Three type-2 orders of one army group: two stored entries, an empty array
+/// and one entry. The single walk places the empty span between them.
+fn three_orders() -> (Image, [Visit; 3], [Row; 3], [PlanRow; 3]) {
+    let mut image = fixture(3, 2);
+    image.entry(0, 0, 1);
+    image.entry(1, 2, 3);
+    image.array(ORDER + 0x1000 + DATA, 0, 0);
+    image.array(ORDER + 0x2000 + DATA, ENTRIES + 2 * STRIDE, 1);
+    image.entry(2, 7, 9);
+    let visits = std::array::from_fn(|index| Visit {
+        pointer: ORDER + index * 0x1000,
+        owner: 0,
+        instance: 4 + index as u32,
+        ..Default::default()
+    });
+    let orders = std::array::from_fn(|index| Row {
+        owner_group: HANDLE,
+        instance: 4 + index as u32,
+        order_type: TYPE_LINE,
+        path_len: 1,
+        ..Default::default()
+    });
+    let plans = std::array::from_fn(|index| PlanRow {
+        owner_group: HANDLE,
+        instance: 4 + index as u32,
+        front_valid: 1,
+        ..Default::default()
+    });
+    (image, visits, orders, plans)
+}
+
+#[test]
+fn the_area_phase_reads_no_owner_operand_and_the_group_phase_completes_the_single_walk() {
+    let roots = [corders_group::Root {
+        pointer: GROUP,
+        handle: HANDLE,
+        country: 1,
+    }];
+    let (single_image, visits, orders, mut single_plans) = three_orders();
+    let mut single_sections = Vec::new();
+    let single = walk(
+        &single_image,
+        BASE,
+        STATE,
+        &roots,
+        &visits,
+        &orders,
+        &[1],
+        Outcome::Rows { len: 3 },
+        &mut single_plans,
+        &mut single_sections,
+        &mut Scratch::default(),
+        Some(&single_image),
+    );
+    assert_eq!(single.sections, 3);
+    assert_eq!(
+        single_plans.map(|plan| plan.child_fronts.unwrap().sections),
+        [Some((0, 2)), Some((2, 0)), Some((2, 1))]
+    );
+
+    let (live, _, _, mut plans) = three_orders();
+    let (source, _, _, _) = three_orders();
+    let mut scratch = Scratch::default();
+    let areas = walk_areas(
+        &live,
+        BASE,
+        STATE,
+        &roots,
+        &visits,
+        &orders,
+        &[1],
+        Outcome::Rows { len: 3 },
+        &mut plans,
+        &[],
+        &[],
+        &mut scratch,
+    );
+    // The area phase leaves every owner operand and stored entry unread.
+    assert_eq!(areas.sections, 0);
+    assert!(scratch.needs_group_source());
+    assert!(source.reads.borrow().is_empty());
+    assert!(!live.reads.borrow().iter().any(|&(at, len)| {
+        (at < ENTRIES + 3 * STRIDE && at + len > ENTRIES) || (GROUP..GROUP + 0x300).contains(&at)
+    }));
+    assert!(
+        plans
+            .iter()
+            .all(|plan| plan.child_fronts.unwrap().group_child_count.is_none())
+    );
+    let mut sections = Vec::new();
+    let groups = walk_groups(
+        &live,
+        BASE,
+        &roots,
+        &mut plans,
+        &mut sections,
+        &mut scratch,
+        Some(&source),
+        areas,
+    );
+    assert_eq!(groups, single);
+    assert_eq!(plans, single_plans);
+    assert_eq!(sections, single_sections);
+    // The owner's operands came from the source, once.
+    assert!(!live.reads.borrow().iter().any(|&(at, _)| {
+        at == GROUP + corders_group::IS_ARMY_GROUP || at == GROUP + carmy_group::MEMBER_DATA
+    }));
+    assert_eq!(
+        source
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&(at, len)| at == GROUP + carmy_group::MEMBER_DATA && len == 16)
+            .count(),
+        1
+    );
+    // A consumed group phase leaves nothing for another.
+    assert!(!scratch.needs_group_source());
+    let again = walk_groups(
+        &live,
+        BASE,
+        &roots,
+        &mut plans,
+        &mut Vec::new(),
+        &mut scratch,
+        Some(&source),
+        Walk::default(),
+    );
+    assert_eq!(again, Walk::default());
+}
+
+/// Each census order's plan and census row come from the plan walk's
+/// placement when they hold its key: a correct, stale, short or absent
+/// placement gives the same plans, failures and sections.
+#[test]
+fn any_placement_gives_the_searched_walk() {
+    let roots = [corders_group::Root {
+        pointer: GROUP,
+        handle: HANDLE,
+        country: 1,
+    }];
+    let (image, mut visits, orders, _) = three_orders();
+    // Census order is pointer-hashed: here the reverse of key order.
+    visits.reverse();
+    let run = |placement: &[u32]| {
+        let (_, _, _, mut plans) = three_orders();
+        let mut scratch = Scratch::default();
+        let areas = walk_areas(
+            &image,
+            BASE,
+            STATE,
+            &roots,
+            &visits,
+            &orders,
+            &[1],
+            Outcome::Rows { len: 3 },
+            &mut plans,
+            placement,
+            &[],
+            &mut scratch,
+        );
+        let mut sections = Vec::new();
+        let report = walk_groups(
+            &image,
+            BASE,
+            &roots,
+            &mut plans,
+            &mut sections,
+            &mut scratch,
+            Some(&image),
+            areas,
+        );
+        (areas, report, plans, sections)
+    };
+    let searched = run(&[]);
+    assert_eq!(searched.0.area_failures, 0);
+    assert!(searched.2.iter().all(|plan| plan.child_fronts.is_some()));
+    for placement in [&[2, 1, 0][..], &[0, 1, 2], &[1], &[9, 9, 9]] {
+        assert_eq!(run(placement), searched, "{placement:?}");
+    }
+}
+
+/// Two orders share a controller area whose identity faults on its first
+/// touch only. The first order in census order meets the fault and keeps no
+/// child-front operands; the next records them: the census table, which
+/// holds the second order first, decides nothing.
+#[test]
+fn a_shared_one_shot_area_fault_is_met_by_the_first_order_in_census_order() {
+    struct OneShot<'a> {
+        image: &'a Image,
+        spent: std::cell::Cell<bool>,
+    }
+    impl Memory for OneShot<'_> {
+        fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+            if at <= AREA && AREA < at + output.len() && !self.spent.replace(true) {
+                return false;
+            }
+            self.image.copy(at, output)
+        }
+    }
+    let roots = [corders_group::Root {
+        pointer: GROUP,
+        handle: HANDLE,
+        country: 1,
+    }];
+    let (image, visits, orders, plans) = three_orders();
+    let memory = OneShot {
+        image: &image,
+        spent: Default::default(),
+    };
+    // The table holds the second order first; the census entered the first
+    // order first.
+    let table = [visits[1], visits[0]];
+    let mut plans = [plans[0], plans[1]];
+    let areas = walk_areas(
+        &memory,
+        BASE,
+        STATE,
+        &roots,
+        &table,
+        &orders[..2],
+        &[1],
+        Outcome::Rows { len: 2 },
+        &mut plans,
+        &[],
+        &[1, 0],
+        &mut Scratch::default(),
+    );
+    assert_eq!(areas.area_failures, 1);
+    assert_eq!(plans[0].child_fronts, None);
+    assert_eq!(
+        plans[1]
+            .child_fronts
+            .map(|inputs| inputs.area_province_count),
+        Some(3)
+    );
+}
+
+#[test]
+fn a_refused_area_phase_leaves_no_earlier_pass_for_the_group_phase() {
+    let roots = [corders_group::Root {
+        pointer: GROUP,
+        handle: HANDLE,
+        country: 1,
+    }];
+    let (image, visits, orders, mut plans) = three_orders();
+    let mut scratch = Scratch::default();
+    walk_areas(
+        &image,
+        BASE,
+        STATE,
+        &roots,
+        &visits,
+        &orders,
+        &[1],
+        Outcome::Rows { len: 3 },
+        &mut plans,
+        &[],
+        &[],
+        &mut scratch,
+    );
+    assert!(scratch.needs_group_source());
+    let refused = walk_areas(
+        &image,
+        BASE,
+        STATE,
+        &roots,
+        &visits,
+        &orders,
+        &[1],
+        Outcome::Unavailable { reason: "census" },
+        &mut plans,
+        &[],
+        &[],
+        &mut scratch,
+    );
+    assert_eq!(refused.area_failures, 3);
+    assert!(!scratch.needs_group_source());
+    let mut sections = Vec::new();
+    let report = walk_groups(
+        &image,
+        BASE,
+        &roots,
+        &mut plans,
+        &mut sections,
+        &mut scratch,
+        Some(&image),
+        refused,
+    );
+    assert_eq!(report, refused);
+    assert!(sections.is_empty());
+    assert!(plans.iter().all(|plan| plan.child_fronts.is_none()));
+}
+
+/// Without a nonempty child array the group phase demands no army-group
+/// operand: it reads no OOB source, builds no group index and grows no
+/// section arena, so its job may run on the joining thread. A nonempty one
+/// demands the source.
+#[test]
+fn an_empty_child_array_demands_no_group_source_and_grows_nothing() {
+    for (count, demanded) in [(0, false), (17, true)] {
+        let image = fixture(3, count);
+        let roots = [corders_group::Root {
+            pointer: GROUP,
+            handle: HANDLE,
+            country: 1,
+        }];
+        let visits = [Visit {
+            pointer: ORDER,
+            owner: 0,
+            instance: 4,
+            ..Default::default()
+        }];
+        let orders = [Row {
+            owner_group: HANDLE,
+            instance: 4,
+            order_type: TYPE_LINE,
+            path_len: 1,
+            ..Default::default()
+        }];
+        let mut plans = [PlanRow {
+            owner_group: HANDLE,
+            instance: 4,
+            front_valid: 1,
+            ..Default::default()
+        }];
+        let mut scratch = Scratch::default();
+        let areas = walk_areas(
+            &image,
+            BASE,
+            STATE,
+            &roots,
+            &visits,
+            &orders,
+            &[1],
+            Outcome::Rows { len: 1 },
+            &mut plans,
+            &[],
+            &[],
+            &mut scratch,
+        );
+        assert_eq!(scratch.needs_group_source(), demanded, "{count}");
+        if !demanded {
+            let before = scratch.allocated_bytes();
+            let mut sections = Vec::new();
+            walk_groups(
+                &image,
+                BASE,
+                &roots,
+                &mut plans,
+                &mut sections,
+                &mut scratch,
+                None::<&Image>,
+                areas,
+            );
+            assert_eq!(sections.capacity(), 0);
+            assert_eq!(scratch.allocated_bytes(), before);
+            assert_eq!(plans[0].child_fronts.unwrap().sections, Some((0, 0)));
+        }
+    }
+}

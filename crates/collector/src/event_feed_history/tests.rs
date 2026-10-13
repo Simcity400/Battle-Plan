@@ -54,7 +54,11 @@ fn ready(capacity: usize) -> Store {
 
 fn acquire(store: &mut Store, hour: i32, actor: u32) -> Ticket {
     store
-        .acquire(7, operands(hour, actor), Proof::Annex)
+        .acquire(
+            7,
+            |sequence| event(sequence, 7, operands(hour, actor), Default::default()),
+            Some(Proof::Annex),
+        )
         .unwrap()
 }
 
@@ -174,7 +178,13 @@ fn pressure_refuses_coverage_but_keeps_known_fact_and_requires_partial_recovery(
         settle(&mut store, other);
     }
     assert_eq!(
-        store.acquire(7, operands(1, 3), Proof::Annex).err(),
+        store
+            .acquire(
+                7,
+                |sequence| event(sequence, 7, operands(1, 3), Default::default()),
+                Some(Proof::Annex)
+            )
+            .err(),
         Some("Event feed callback storage needs growth")
     );
     assert_eq!(store.entries.capacity(), capacity);
@@ -220,7 +230,8 @@ fn missing_owner_observation_never_reads_native_identity_or_certifies_empty() {
                     rbp: 0,
                     r8: 0,
                     r9: 0
-                }
+                },
+                Default::default()
             )
             .err(),
         Some("Event feed world observation unavailable")
@@ -249,7 +260,13 @@ fn sequence_seed_and_cumulative_accounting_survive_a_genuine_generation_change()
     let changed = pack(&mut store, boundary(8, 6));
     assert_eq!(changed.row().coverage, EventFeedCoverage::Partial);
     store.acknowledged(changed.publication());
-    let second = store.acquire(8, operands(6, 4), Proof::Annex).unwrap();
+    let second = store
+        .acquire(
+            8,
+            |sequence| event(sequence, 8, operands(6, 4), Default::default()),
+            Some(Proof::Annex),
+        )
+        .unwrap();
     unsafe { store.normal_returned(second, 8, &NoReads, 0).unwrap() };
     let packed = pack(&mut store, boundary(8, 6));
     assert_eq!(packed.row().coverage, EventFeedCoverage::Complete);
@@ -262,7 +279,13 @@ fn count_and_sequence_exhaustion_are_unavailable_without_wrap() {
     let mut store = ready(1);
     store.counts.acquired = u64::MAX;
     assert_eq!(
-        store.acquire(7, operands(1, 3), Proof::Annex).err(),
+        store
+            .acquire(
+                7,
+                |sequence| event(sequence, 7, operands(1, 3), Default::default()),
+                Some(Proof::Annex)
+            )
+            .err(),
         Some("Event feed acquired count exhausted")
     );
     let packed = pack(&mut store, boundary(7, 2));
@@ -274,7 +297,13 @@ fn count_and_sequence_exhaustion_are_unavailable_without_wrap() {
     let mut store = ready(1);
     store.next_sequence = u64::MAX;
     assert_eq!(
-        store.acquire(7, operands(1, 3), Proof::Annex).err(),
+        store
+            .acquire(
+                7,
+                |sequence| event(sequence, 7, operands(1, 3), Default::default()),
+                Some(Proof::Annex)
+            )
+            .err(),
         Some("Event feed sequence exhausted")
     );
     assert_eq!(store.next_sequence, u64::MAX);
@@ -327,7 +356,7 @@ fn pending_war_is_never_a_fact_before_same_invocation_normal_postproof() {
     let image = WarImage::new();
     let mut store = ready(1);
     let ticket = store
-        .war_before(&image, BASE, 7, WarImage::frame())
+        .war_before(&image, BASE, 7, WarImage::frame(), Default::default())
         .unwrap();
     let prepared = pack(&mut store, boundary(7, 9));
     assert!(prepared.row().events.is_empty());
@@ -392,7 +421,7 @@ fn invalidated_normal_return_settles_without_reading_the_old_war_proof() {
     let image = WarImage::new();
     let mut store = ready(1);
     let ticket = store
-        .war_before(&image, BASE, 7, WarImage::frame())
+        .war_before(&image, BASE, 7, WarImage::frame(), Default::default())
         .unwrap();
     store.invalidate("native reset reached");
     store.world_returned(ticket).unwrap();
@@ -448,7 +477,8 @@ fn reattachment_restores_counts_without_guessing_unsettled_history() {
                     rbp: 0,
                     r8: 0,
                     r9: 0
-                }
+                },
+                Default::default()
             )
             .is_err()
     );
@@ -791,7 +821,7 @@ fn guarded_war_acquisition_owns_opaque_proof_and_needs_fresh_reciprocal_return()
     let mut image = WarImage::new();
     let mut store = ready(1);
     let ticket = store
-        .war_before(&image, BASE, 7, WarImage::frame())
+        .war_before(&image, BASE, 7, WarImage::frame(), Default::default())
         .unwrap();
     assert!(matches!(
         store.entry(&ticket).unwrap().proof.as_ref(),
@@ -820,7 +850,7 @@ fn guarded_war_failed_postproof_consumes_once_without_recording_a_fact() {
         let mut image = WarImage::new();
         let mut store = ready(1);
         let ticket = store
-            .war_before(&image, BASE, 7, WarImage::frame())
+            .war_before(&image, BASE, 7, WarImage::frame(), Default::default())
             .unwrap();
         if invalidate_identity {
             image.attach();
@@ -846,4 +876,70 @@ fn guarded_war_failed_postproof_consumes_once_without_recording_a_fact() {
         assert_eq!(recovery.row().coverage, EventFeedCoverage::Partial);
         assert_eq!(recovery.row().counts.unwrap().settled, 1);
     }
+}
+
+fn fact(source: EventFeedSource, actor: u32) -> Fact {
+    let operands = operands(5, actor);
+    Fact {
+        source,
+        actor: operands.actor,
+        target: operands.target,
+        cause: EventFeedCause {
+            route: replay::event_feed_rows::EventFeedRoute::StateAnnex,
+            within: replay::event_feed_rows::EventFeedRoute::AnnexEffect,
+            state: Some(64),
+            ..Default::default()
+        },
+    }
+}
+
+#[test]
+fn proved_provenance_events_are_settled_facts_with_their_cause() {
+    let mut store = ready(4);
+    let ticket = acquire(&mut store, 5, 3);
+    store
+        .known(7, 5, fact(EventFeedSource::StateTransfer, 4))
+        .unwrap();
+    store
+        .known(7, 5, fact(EventFeedSource::WarEnded, 5))
+        .unwrap();
+    // The pending annex stays outstanding; the two known events settled.
+    assert_eq!(store.outstanding(), 1);
+    let packed = pack(&mut store, boundary(7, 5));
+    let row = packed.row();
+    row.validate().unwrap();
+    assert_eq!(
+        row.counts.map(|counts| (counts.acquired, counts.settled)),
+        Some((3, 2))
+    );
+    let sources: Vec<_> = row.events.iter().map(|event| event.source).collect();
+    assert_eq!(
+        sources,
+        [
+            EventFeedSource::Annex,
+            EventFeedSource::StateTransfer,
+            EventFeedSource::WarEnded
+        ]
+    );
+    let Recorded::Value(cause) = row.events[1].cause else {
+        panic!("a provenance event records its cause");
+    };
+    assert_eq!(cause.state, Some(64));
+    assert_eq!(row.events[1].actor.id, 4);
+    store.acknowledged(packed.publication());
+    settle(&mut store, ticket);
+    // Storage is the callback's: a full store refuses by name.
+    store
+        .known(7, 5, fact(EventFeedSource::Release, 6))
+        .unwrap();
+    assert_eq!(
+        store.known(7, 5, fact(EventFeedSource::Release, 7)).err(),
+        Some("Event feed callback storage needs growth")
+    );
+    // An unobserved world refuses too.
+    store.invalidate("world replaced");
+    assert_eq!(
+        store.known(7, 5, fact(EventFeedSource::Release, 8)).err(),
+        Some("Event feed world observation unavailable")
+    );
 }

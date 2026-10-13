@@ -372,35 +372,12 @@ fn strategic_action_roster_alias_selects_canonical_state_override() {
 }
 
 #[test]
-fn strategic_action_eta_maps_the_shared_reader_and_same_failure() {
+fn strategic_action_friendly_state_fault_maps_to_its_own_failure() {
     let mut image = fixture();
-    let roots = MovementOwnerInputs {
-        roster: 1,
-        owner_raw: 2,
-        owner: ccountry::Reader::new(&image, 0, GAME)
-            .unwrap()
-            .resolve(2)
-            .unwrap(),
-        actual_state: STATE,
-        strategic: 1,
-    };
-    let inputs = read_action(&image).unwrap().unwrap();
-    let rail = movement_rail_inputs(&image, 0, GAME, roots, None).unwrap();
-    assert_eq!(
-        (rail.country, rail.state, rail.friendly_state),
-        (
-            inputs.country_modifier,
-            inputs.state_modifier,
-            inputs.friendly_state_modifier
-        )
-    );
+    assert!(read_action(&image).unwrap().is_some());
     image.fault = Some(VALUES + 24..VALUES + 32);
     assert_eq!(
         read_action(&image),
         Err(StrategicActionFailure::FriendlyStateModifier)
-    );
-    assert_eq!(
-        movement_rail_inputs(&image, 0, GAME, roots, None).err(),
-        Some(StrategicActionFailure::FriendlyStateModifier.reason())
     );
 }

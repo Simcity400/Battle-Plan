@@ -1735,7 +1735,12 @@ impl ScanFrames {
             self.scan.gap();
             return;
         }
-        let read = slot_read(&decoded.metrics, TableId::WarRelations, decoded.hour);
+        let read = slot_read(
+            replay.format,
+            &decoded.metrics,
+            TableId::WarRelations,
+            decoded.hour,
+        );
         self.scan
             .begin_hour(decoded.hour, &self.live, changed, read);
         if read {
@@ -1762,7 +1767,7 @@ fn scan_frames(
     cancelled: &AtomicBool,
 ) -> io::Result<(Scan, pairs::PairHistory)> {
     let mut pairs = pairs::PairHistory::default();
-    check_cadence(cadence::cadence(TableId::WarRelations))?;
+    check_cadence(cadence::cadence_in(TableId::WarRelations, replay.format))?;
     let mut builder = ScanFrames::new(replay, branch);
     crate::blocks::scan_blocks(
         replay,

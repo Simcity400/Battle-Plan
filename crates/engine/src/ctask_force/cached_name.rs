@@ -9,7 +9,7 @@ use crate::{
     cunit, msvc_string, read,
 };
 
-const NAME: usize = 0x258;
+pub(super) const NAME: usize = 0x258;
 const ERRORS: StringErrors = [
     "task-force cached name header invalid",
     "task-force cached name pointer unreadable or null",

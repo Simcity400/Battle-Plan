@@ -20,7 +20,7 @@ fn install(frame: &mut DecodedFrame, cells: Vec<Option<ReverseZeroVisibilityInpu
         vec![ReservedCountryNamingRow {
             faction: Recorded::Value(Some(0)),
             reverse_visibility: Recorded::Value(Some(ReservedReverseVisibilityInputs {
-                sample_hour,
+                sample_hour: replay::rows::PacketHour::Stamped(sample_hour),
                 cells,
             })),
             ..Default::default()
@@ -318,10 +318,11 @@ fn reverse_zero_cell_refusals_do_not_become_false_or_mirror_positive_relations()
         Err("ReservedCountryNaming.reverse_visibility not recorded")
     );
     install(&mut frame, vec![None, cell(101)]);
+    let stale = replay::rows::PacketHour::Stamped(frame.hour + 1);
     let Recorded::Value(Some(packet)) = &mut reserved_mut(&mut frame).reverse_visibility else {
         panic!()
     };
-    packet.sample_hour += 1;
+    packet.sample_hour = stale;
     assert_eq!(
         reverse_zero_shared(&frame, &links, 1),
         Err("ReservedCountryNaming.reverse_visibility sample hour mismatch")

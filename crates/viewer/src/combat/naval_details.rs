@@ -172,7 +172,7 @@ fn air_icon_widget(name: Option<String>, side: u8) -> Widget {
         // The left side uses frame 2 and the right uses frame 1.
         // Bound GUI frames are one based.
         frame: Some(if side == 0 { 2 } else { 1 }),
-        // the game sets this dynamic hover after constructing the row.
+        // The game sets this dynamic hover after constructing the row.
         hover_owned: true,
         ..Widget::default()
     }
@@ -223,6 +223,68 @@ fn push_air_entry(
     *height += size[1] + 3.0;
 }
 
+/// The carrier section appends the linked member's 0x24 (and, for a fighter
+/// pool, 0x1B6) source trees, each followed by its box-2/3
+/// screening line, only when that member is present and the sortie
+/// efficiency differs from ONE. Source formatting takes the ship's sources
+/// when the member's ship is live and its side's sources otherwise
+/// ([`super::naval_trees::Sources`]).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the plane, its side, the joins, the trees and the text resources are separate operands"
+)]
+fn sortie_member_breakdown(
+    plane: &NavalCombatPlane,
+    sortie_efficiency: i64,
+    detail: &replay::rows::NavalCombatDetailsRow,
+    side_index: u8,
+    joins: &super::naval_air_groups::CarrierJoins<'_>,
+    trees: &super::naval_trees::Sources<'_>,
+    content: &super::naval_air_groups::Content,
+    icons: &dyn super::binding::TextIcons,
+    loc: &installed_content::localisation::Localisation,
+) -> Result<String, String> {
+    let mut text = String::new();
+    if plane.carrier_member_present == 0 || sortie_efficiency == 100_000 {
+        return Ok(text);
+    }
+    let member = joins
+        .carrier_member(side_index, plane)
+        .ok_or("linked carrier member is unavailable")?;
+    let side = detail
+        .sides
+        .get(usize::from(side_index))
+        .ok_or("carrier side is unavailable")?;
+    let opposing = &detail.sides[1 - usize::from(side_index)];
+    for (lane, key) in [(0, 0x24), (1, 0x1b6)] {
+        if lane == 1 && plane.efficiency.pool_type_flags & 0x1_0000_0400 == 0 {
+            continue;
+        }
+        if member.live_ship != 0 {
+            trees.ship(member, key, "  ", &mut text, icons, loc)?;
+        } else {
+            trees.side(
+                detail.combat,
+                side,
+                opposing,
+                key,
+                "  ",
+                &mut text,
+                icons,
+                loc,
+            )?;
+        }
+        let screening = super::naval_air_groups::display_screening_extra(
+            plane, side, side_index, joins, content, lane,
+        )
+        .ok_or("carrier sortie screening breakdown is unavailable")?;
+        text.push_str(&super::naval_air_tooltips::screening_line(
+            screening, loc, icons,
+        )?);
+    }
+    Ok(text)
+}
+
 #[allow(clippy::too_many_arguments)] // The hour's frame, the battle's identity and its draw state.
 fn air_entries(
     out: &mut Bindings,
@@ -254,30 +316,7 @@ fn air_entries(
     let ship_rows = rows::<tables::NavalCombatShips>(frame)?;
     let ship_models = rows::<tables::ShipModels>(frame)?;
     let live_ships = rows::<tables::Ships>(frame)?;
-    let breakdowns = rows::<tables::NavalModifierBreakdowns>(frame)?;
-    let breakdown_layout =
-        replay::fixed_layout::validate_recording(frame, replay::fixed_layout::NAVAL_BREAKDOWNS);
-    let modifier_definitions = rows::<tables::ModifierDefinitions>(frame)?;
-    let expanded_breakdowns = breakdowns
-        .is_complete()
-        .then(|| super::naval_summary_tooltips::expanded_trees(breakdowns.rows()));
-    let breakdown_index = expanded_breakdowns.as_ref().map(|expanded| {
-        let mut by_member = BTreeMap::new();
-        for row in expanded.iter().filter(|row| row.use_.combat == id) {
-            by_member
-                .entry((row.use_.side, row.use_.battle_slot, row.key))
-                .or_insert_with(Vec::new)
-                .push(row);
-        }
-        by_member
-    });
-    let by_modifier = modifier_definitions.is_complete().then(|| {
-        modifier_definitions
-            .rows()
-            .iter()
-            .map(|row| (row.index, row))
-            .collect::<BTreeMap<_, _>>()
-    });
+    let trees = super::naval_trees::Sources::read(frame, &document.recorded_language)?;
     let members: Vec<_> = ship_rows
         .rows()
         .iter()
@@ -476,52 +515,17 @@ fn air_entries(
                         .naval_defines
                         .as_ref()
                         .ok_or("matching carrier sortie defines are unavailable")?;
-                    let mut member_breakdown = String::new();
-                    if first.carrier_member_present != 0 && sortie_efficiency != 100_000 {
-                        breakdown_layout.as_ref().map_err(Clone::clone)?;
-                        let member = joins
-                            .carrier_member(group.side, first)
-                            .ok_or("linked carrier member is unavailable")?;
-                        let trees = breakdown_index
-                            .as_ref()
-                            .ok_or("NavalModifierBreakdowns is incomplete")?;
-                        let definitions = by_modifier
-                            .as_ref()
-                            .ok_or("ModifierDefinitions is incomplete")?;
-                        for (lane, key) in [(0, 0x24), (1, 0x1b6)] {
-                            if lane == 1 && first.efficiency.pool_type_flags & 0x1_0000_0400 == 0 {
-                                continue;
-                            }
-                            member_breakdown.push_str(
-                                &super::naval_air_tooltips::carrier_key_breakdown(
-                                    member,
-                                    trees
-                                        .get(&(group.side, member.battle_slot, key))
-                                        .map(Vec::as_slice)
-                                        .unwrap_or(&[]),
-                                    definitions.get(&key).copied(),
-                                    key,
-                                    &document.recorded_language,
-                                    &document.names.localisation,
-                                    &document.icons.combat,
-                                )?,
-                            );
-                            let screening = super::naval_air_groups::display_screening_extra(
-                                first,
-                                &detail.sides[group.side as usize],
-                                group.side,
-                                &joins,
-                                &document.icons.combat.naval_air_groups,
-                                lane,
-                            )
-                            .ok_or("carrier sortie screening breakdown is unavailable")?;
-                            member_breakdown.push_str(&super::naval_air_tooltips::screening_line(
-                                screening,
-                                &document.names.localisation,
-                                &document.icons.combat,
-                            )?);
-                        }
-                    }
+                    let member_breakdown = sortie_member_breakdown(
+                        first,
+                        sortie_efficiency,
+                        detail,
+                        group.side,
+                        &joins,
+                        &trees,
+                        &document.icons.combat.naval_air_groups,
+                        &document.icons.combat,
+                        &document.names.localisation,
+                    )?;
                     super::naval_air_tooltips::efficiency_prefix(
                         first,
                         sortie_efficiency,
@@ -613,7 +617,7 @@ fn air_entries(
                 None
             }
         };
-        // the game sums current and max(initial,current) in signed i32.
+        // The game sums current and max(initial,current) in signed i32.
         let current = group
             .planes
             .iter()
@@ -694,8 +698,8 @@ pub(super) fn bind(
     }
 }
 
-// the game uses the same display-box predicate as carrier sortie modifiers:
-// the game tests both the ship and its positive equipment pool's bits 22/37.
+// The game uses the same display-box predicate as carrier sortie modifiers:
+// The game tests both the ship and its positive equipment pool's bits 22/37.
 pub(super) fn column(row: &NavalCombatShipRow, pool_flags: u64) -> Option<&'static str> {
     match super::naval_air_groups::display_box(row, pool_flags) {
         1 => Some("screen"),
@@ -748,7 +752,7 @@ struct GroupKey {
 }
 fn key(row: &NavalCombatShipRow, owner: u32, unknown: bool, pool_flags: u64) -> Option<GroupKey> {
     let column = column(row, pool_flags)?;
-    // the game collapses all unseen incoming entries in their box. Otherwise
+    // The game collapses all unseen incoming entries in their box. Otherwise
     // it compares cached formation/subunit/convoy, country aliases and damage.
     Some(GroupKey {
         side: row.side,
@@ -870,7 +874,7 @@ fn active(
             cause.describe()
         ));
     }
-    // the game sorts each combat box after grouping. More
+    // The game sorts each combat box after grouping. More
     // numerous groups precede smaller ones; the final native pointer tie is
     // transient, so retain recorded insertion order for otherwise equal keys.
     groups.sort_by_key(|(key, members)| {
@@ -1028,7 +1032,7 @@ fn active(
                 "escape_icon_right"
             };
             show(&mut values, icon);
-            // the game places the escape icon at the bar's final x plus the
+            // The game places the escape icon at the bar's final x plus the
             // icon's authored x; CENTER_UP alone would add half the ship width.
             values.entry(icon.into()).or_default().offset[0] =
                 escape_bar_x(asset[0], document) - asset[0] / 2.0;
@@ -1065,7 +1069,7 @@ fn active(
     Ok(())
 }
 
-/// the game advances sunk entries by the grid's authored slot direction and
+/// The game advances sunk entries by the grid's authored slot direction and
 /// limits. Fighting boxes instead supply explicit pixel offsets.
 pub(super) fn entry_offset(column: &str, x: f32, y: f32) -> Option<[f32; 2]> {
     (column != "sunk").then_some([x, y])

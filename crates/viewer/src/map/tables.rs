@@ -58,7 +58,11 @@ pub fn combat_limitations(
             );
             out.note::<tables::LandCombatModifiers>(
                 frame,
-                "missing combat modifier lists remain empty",
+                "a combat without its side rows leaves its border-war class, title and                  border modifier hovers undecided",
+            );
+            out.note::<tables::LandCombatDivisionModifiers>(
+                frame,
+                "a division without its row shows no modifier icons or combat-stat hovers",
             );
             out.note::<tables::LandCombats>(
                 frame,
@@ -208,7 +212,7 @@ impl Limitations {
             frame,
             "a supply train whose equipment type token is among the missing rows draws no consist",
         );
-        self.note_field("Supply train phase", "The scheduler seed/counter, remaining interval and existing train fleet are unrecorded. Presentation uses seed 0x54524149 XOR ordered route provinces, a global 9200..12000 ms schedule and animation time (dump=0). Routes/weights/access and signed ordered inventory are recorded in format 21. Rail spline anchors, continent wagon fallback, wheel animation and exhaust remain unverified. A null or missing variant join suppresses that consist; the engine's unrecorded first-owned-train fallback is not invented.");
+        self.note_field("Supply train phase", "The scheduler seed/counter, remaining interval and existing train fleet are unrecorded. Presentation uses seed 0x54524149 XOR ordered route provinces, a global 9200..12000 ms schedule and animation time (dump=0). Routes/weights/access and signed ordered inventory are recorded in format 21, each country's once a game day at its owner slice (its read hour is in SliceReads), so a route, weight or fleet can be up to a day old. Rail spline anchors, continent wagon fallback, wheel animation and exhaust remain unverified. A null or missing variant join suppresses that consist; the engine's unrecorded first-owned-train fallback is not invented.");
     }
 
     /// Entity light state is a field omission, even when every table is whole.
@@ -690,12 +694,7 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     );
     out.note::<tables::DivisionMovement>(
         frame,
-            "a division among the missing rows counts as standing still: its counter and its close-zoom model sit on its province's own anchor instead of along its route, the model faces a hash of the province instead of along the route, its supply crate is not suppressed for a convoy crossing, and a division the row would have shown in naval transfer draws its land figure at full size rather than a quarter-scale transport",
-    );
-    // ETA is derived from current-hour operands in `super::division_eta`.
-    out.note::<tables::DivisionEtaInputs>(
-        frame,
-        "a division among the missing rows shows no arrival time in its counter's tooltip; its counter and close-zoom model still stand at the settled route point, which reads no ETA",
+            "a division among the missing rows counts as standing still: its counter and its close-zoom model sit on its province's own anchor instead of along its route, the model faces a hash of the province instead of along the route, its supply crate is not suppressed for a convoy crossing, its counter's tooltip shows no arrival estimate, and a division the row would have shown in naval transfer draws its land figure at full size rather than a quarter-scale transport",
     );
     out.note::<tables::TaskForces>(
         frame,

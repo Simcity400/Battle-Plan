@@ -655,7 +655,8 @@ mod tests {
         if let replay::frame::TableView::Complete(rows) =
             &mut *observation.tables[TableId::Divisions.index()]
         {
-            rows.rows_mut::<tables::Divisions>().unwrap()[0].hit_points += 1;
+            // A whole display step (replay::display), so the row changes.
+            rows.rows_mut::<tables::Divisions>().unwrap()[0].hit_points += 100_000;
         }
         let changed = encoder.encode(observation, false).unwrap();
         for case in 0..7 {

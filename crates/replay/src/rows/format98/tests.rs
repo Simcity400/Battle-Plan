@@ -334,7 +334,8 @@ fn format98_operands_preserve_bytes_order_and_independent_changed_fields() {
         membership
     );
     assert_eq!(cadence(TableId::OperativeMemberships), Cadence::Daily(16));
-    assert_eq!(cadence(TableId::AvailableAdvisors), Cadence::Hourly);
+    // Available-advisor pools are panel data, read once a game day per country.
+    assert_eq!(cadence(TableId::AvailableAdvisors), Cadence::Sliced);
     assert_eq!(cadence(TableId::DivisionStatus), Cadence::Hourly);
 }
 
@@ -403,12 +404,24 @@ fn nested97<T: RowCodec + Fields + std::fmt::Debug + PartialEq, V: Value>(
 ) -> T {
     let mut needle = Vec::new();
     nested.encode(&mut needle).unwrap();
+    // Format 97 records the fields appended before it; later appended
+    // fields (LandCombatDetails' side inputs) are absent from its rows and
+    // masks.
+    let recorded = format97().fields(table);
+    let recorded_mask = if recorded == 64 {
+        u64::MAX
+    } else {
+        (1_u64 << recorded) - 1
+    };
     let mut fields = Vec::new();
     row.encode_fields(&mut fields).unwrap();
     let mut input = Decoder::new(&fields);
     let mut old = Vec::new();
-    for kind in T::SCHEMA {
+    for (index, kind) in T::SCHEMA.iter().enumerate() {
         let field = kind.decode(&mut input).unwrap();
+        if index >= recorded {
+            continue;
+        }
         if let Field::Opaque(Opaque::Encoded(bytes, _)) = field
             && bytes.windows(needle.len()).any(|window| window == needle)
         {
@@ -417,7 +430,7 @@ fn nested97<T: RowCodec + Fields + std::fmt::Debug + PartialEq, V: Value>(
             field.encode(&mut old).unwrap();
         }
     }
-    let mut input = decoder97(&old, usize::MAX);
+    let mut input = decoder97(&old, recorded);
     let snapshot = T::decode_fields(row.key(), &mut input).unwrap();
     assert_eq!(snapshot.recorded_fields_bytes().unwrap(), old.len());
     assert!(snapshot.encode_fields(&mut Vec::new()).is_err());
@@ -425,8 +438,11 @@ fn nested97<T: RowCodec + Fields + std::fmt::Debug + PartialEq, V: Value>(
     let delta = row.delta(None).unwrap().unwrap();
     let mut input = Decoder::new(&delta.values);
     let mut values = Vec::new();
-    for kind in T::SCHEMA {
+    for (index, kind) in T::SCHEMA.iter().enumerate() {
         let change = kind.decode_change(&mut input).unwrap();
+        if index >= recorded {
+            continue;
+        }
         if let Change::Opaque(Opaque::Encoded(bytes, _)) = &change
             && bytes.windows(needle.len()).any(|window| window == needle)
         {
@@ -437,7 +453,7 @@ fn nested97<T: RowCodec + Fields + std::fmt::Debug + PartialEq, V: Value>(
     }
     let mut wire = Vec::new();
     table.encode_key(row.key(), 0, &mut wire).unwrap();
-    wire.extend_from_slice(&delta.mask.to_le_bytes()[..table.mask_width()]);
+    wire.extend_from_slice(&(delta.mask & recorded_mask).to_le_bytes()[..recorded.div_ceil(8)]);
     wire.extend(values);
     let mut input = decoder97(&wire, usize::MAX);
     let decoded = decode_delta(table, 0, &mut input).unwrap();
@@ -452,7 +468,7 @@ fn nested97<T: RowCodec + Fields + std::fmt::Debug + PartialEq, V: Value>(
         values: Vec::new(),
     };
     let prefix = &needle[..needle.len() - tail];
-    for (index, kind) in T::SCHEMA.iter().enumerate() {
+    for (index, kind) in T::SCHEMA.iter().enumerate().take(recorded) {
         let change = kind.decode_change(&mut input).unwrap();
         if let Change::Opaque(Opaque::Encoded(bytes, _)) = &change
             && bytes.windows(prefix.len()).any(|window| window == prefix)
@@ -633,25 +649,31 @@ fn format97_border_width_and_nested_minimum_keep_following_inputs_aligned() {
         }),
         combat_width: Recorded::Value(Default::default()),
     };
-    let land = nested97(
-        TableId::LandCombatDetails,
-        LandCombatDetailsRow {
-            combat: 4,
-            border_war: Recorded::Value(Some(border.clone())),
-            ..Default::default()
-        },
-        &border,
-        8,
-    );
+    // The historical writer stands in for format 97's side layout, which
+    // still held the parts retired since.
+    let land = crate::rows::with_historical_stamp(0, || {
+        nested97(
+            TableId::LandCombatDetails,
+            LandCombatDetailsRow {
+                combat: 4,
+                border_war: Recorded::Value(Some(border.clone())),
+                ..Default::default()
+            },
+            &border,
+            8,
+        )
+    });
     let Recorded::Value(Some(saved_border)) = &land.border_war else {
         panic!("missing border inputs")
     };
     assert_eq!(saved_border.combat_width, Recorded::NotRecorded);
     assert_eq!(saved_border.sides, border.sides);
+    // Format 97 predates the side inputs (field 10) too.
+    assert_eq!(land.side_inputs, Recorded::NotRecorded);
     let gaps = TableRows::LandCombatDetails(vec![land]);
     assert_eq!(
         gaps.field_gaps().collect::<Vec<_>>(),
-        [("LandBorderWarInputs.combat_width", 1)]
+        [("side_inputs", 1), ("LandBorderWarInputs.combat_width", 1)]
     );
     let commanders = vec![NavalCommanderInputs::default(); 2];
     let mut bytes = 2_u32.to_le_bytes().to_vec();
@@ -862,9 +884,9 @@ fn format98_scope_seeds_and_supply_vehicles_preserve_zero_absence_and_raw_extrem
         assert_eq!(decode_row::<TrainInventoryRow>(0, &mut input).unwrap(), new);
         input.finish().unwrap();
     }
-    for table in [TableId::ScriptVariables, TableId::TrainInventory] {
-        assert_eq!(cadence(table), Cadence::Hourly);
-    }
+    assert_eq!(cadence(TableId::ScriptVariables), Cadence::Hourly);
+    // Supply trains are decorative, read once a game day per country.
+    assert_eq!(cadence(TableId::TrainInventory), Cadence::Sliced);
 }
 
 #[test]

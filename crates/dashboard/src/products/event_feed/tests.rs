@@ -669,7 +669,7 @@ fn event_feed_missing_capture_is_explicit_and_window_validation_is_bounded() {
         "focusCompleted",
         "projectFinished",
         "nukesIncreased",
-        "nuclearDrops",
+        "nuclearStrikeCoverage",
     ] {
         assert!(
             index.unavailable.iter().any(|entry| entry.kind == kind),
@@ -971,12 +971,218 @@ fn event_feed_nuclear_increase_uses_positive_displayed_stockpile_without_drop_in
         (events[0].hour, events[0].read_hour, events[0].exact),
         (101, 101, false)
     );
+    // A stockpile fall is never taken for a strike.
     assert!(
         load(&source, None, None)
-            .unavailable
+            .rows
             .iter()
-            .any(|missing| missing.kind == "nuclearDrops")
+            .all(|row| row.kind != EventFeedKind::NuclearStrike)
     );
+}
+
+#[test]
+fn event_feed_nuclear_strike_names_launcher_and_owner_at_its_impact_hour() {
+    use replay::event_feed_rows::EventFeedCountry;
+    let country = |index: u32| EventFeedCountry {
+        reference: 100_000 + index,
+        id: 100_000 + index,
+        instance: 7 + index,
+    };
+    // The impact hour witnesses both identities; its supplying read is the next
+    // hour, whose renamed holder must not name the strike. The stockpile is not
+    // recorded, yet the bomb keeps its native name.
+    let mut struck = frame(100, 2);
+    *struck.tables[TableId::NuclearStrikes.index()] =
+        TableView::Complete(TableRows::NuclearStrikes(Vec::new()));
+    *struck.tables[TableId::CountryExperienceGains.index()] =
+        TableView::Complete(TableRows::CountryExperienceGains(
+            (0..2)
+                .map(|index| CountryExperienceGainRow {
+                    country: country(index).id,
+                    instance: country(index).instance,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    for table in [
+        TableId::Countries,
+        TableId::CountryLinks,
+        TableId::CountryExperienceGains,
+    ] {
+        struck.metrics.table_ns[table.index()] = 1;
+    }
+    let mut read = frame(101, 2);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *read.tables[TableId::Countries.index()]
+    {
+        rows[0].tag = b"renamed launcher".to_vec();
+    }
+    *read.tables[TableId::NuclearStrikes.index()] =
+        TableView::Complete(TableRows::NuclearStrikes(vec![NuclearStrikeRow {
+            id: 7,
+            hour: 100,
+            launcher: country(0),
+            nuke_type: 1,
+            province: 13_000,
+            state: 2,
+            owner: country(1),
+            controller: 100_001,
+            war_support: vec![NuclearWarSupport {
+                country: 100_001,
+                before_raw: 50_000,
+                after_raw: 30_000,
+            }],
+            buildings: vec![NuclearBuildingDamage {
+                state: 2,
+                amount_raw: 30_000_000,
+                ..Default::default()
+            }],
+            wings: vec![NuclearWingLoss {
+                country: 100_001,
+                manpower_before: 300,
+                manpower_after: 100,
+            }],
+            ..Default::default()
+        }]));
+    for sample in [&mut struck, &mut read] {
+        *sample.tables[TableId::Nukes.index()] = TableView::Unavailable {
+            reason: "stockpile not recorded".into(),
+        };
+        *sample.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![
+                LexicalTokenRow {
+                    token: engine::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
+                    literal: b"nuclear_bomb".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: engine::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
+                    literal: b"thermonuclear_bomb".to_vec(),
+                },
+            ]));
+    }
+    let source = opened(vec![struck, read]);
+    let reply = load(&source, Some(100), Some(101));
+    let strikes: Vec<_> = reply
+        .rows
+        .iter()
+        .filter(|row| row.kind == EventFeedKind::NuclearStrike)
+        .collect();
+    assert_eq!(strikes.len(), 1);
+    let strike = strikes[0];
+    assert_eq!(
+        (strike.hour, strike.read_hour, strike.exact),
+        (100, 101, true)
+    );
+    assert_eq!(strike.category, EventFeedCategory::WarsPeace);
+    let participants = strike.participants.clone().unwrap().map(Option::unwrap);
+    assert_ne!(participants[0], "renamed launcher");
+    assert_eq!(strike.tags, participants);
+    assert_eq!(
+        reply.items[strike.item.unwrap() as usize].token.as_deref(),
+        Some("thermonuclear_bomb")
+    );
+    let detail = strike.strike.as_ref().unwrap();
+    assert_eq!((detail.province, detail.state), (13_000, Some(2)));
+    assert_eq!(detail.building_levels, Some(3.0));
+    assert_eq!(detail.war_support, Some(-20.0));
+    assert_eq!(detail.units, Some(0));
+    assert_eq!(detail.manpower_lost, Some(200.0));
+    assert!(detail.not_recorded.is_empty());
+}
+
+/// The derived "no longer at war" row is only the fallback: a pair whose
+/// ending the native history recorded shows the exact native row alone, and a
+/// pair without one keeps its derived row.
+#[test]
+fn event_feed_native_war_end_replaces_the_derived_peace_row_of_its_pair_only() {
+    use replay::event_feed_rows::{
+        EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow,
+        EventFeedSource,
+    };
+    let country = |index: u32| EventFeedCountry {
+        reference: 100_000 + index,
+        id: 100_000 + index,
+        instance: 7 + index,
+    };
+    let war = |second: u32| WarRelationRow {
+        first_country: 100_000,
+        second_country: 100_000 + second,
+        start_hour: 101,
+        first_was_instigator: 1,
+        ..Default::default()
+    };
+    // Country 0 is at war with 1 and 2 at the reads of 101 and 102; neither
+    // war is read at 103. Only the end of 0-1 is recorded natively, dated 102
+    // and drained with the read of 103.
+    let mut frames: Vec<_> = (100..=103).map(|hour| frame(hour, 3)).collect();
+    for sample in &mut frames {
+        if (101..103).contains(&sample.hour) {
+            *sample.tables[TableId::WarRelations.index()] =
+                TableView::Complete(TableRows::WarRelations(vec![war(1), war(2)]));
+        }
+    }
+    let ended = &mut frames[2];
+    *ended.tables[TableId::CountryExperienceGains.index()] =
+        TableView::Complete(TableRows::CountryExperienceGains(
+            (0..3)
+                .map(|index| CountryExperienceGainRow {
+                    country: country(index).id,
+                    instance: country(index).instance,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    for table in [
+        TableId::Countries,
+        TableId::CountryLinks,
+        TableId::CountryExperienceGains,
+    ] {
+        ended.metrics.table_ns[table.index()] = 1;
+    }
+    *frames[3].tables[TableId::EventFeedHistory.index()] =
+        TableView::Complete(TableRows::EventFeedHistory(vec![EventFeedHistoryRow {
+            generation: 1,
+            read_hour: 103,
+            coverage: EventFeedCoverage::Complete,
+            counts: Some(EventFeedCounts {
+                acquired: 1,
+                settled: 1,
+                ..Default::default()
+            }),
+            outstanding: 0,
+            failure: None,
+            events: vec![EventFeedEvent {
+                sequence: 1,
+                generation: 1,
+                hour: 102,
+                source: EventFeedSource::WarEnded,
+                actor: country(0),
+                target: country(1),
+                cause: Default::default(),
+            }],
+        }]));
+    let source = opened(frames);
+    let reply = load(&source, Some(100), Some(103));
+    let tag = |index: u32| String::from_utf8(crate::test_fixtures::scale_tag(index)).unwrap();
+    let ended: Vec<_> = reply
+        .rows
+        .iter()
+        .filter(|row| row.kind == EventFeedKind::WarEnded)
+        .map(|row| (row.hour, row.tags.clone()))
+        .collect();
+    assert_eq!(ended, [(102, vec![tag(0), tag(1)])]);
+    let mut peace: Vec<_> = reply
+        .rows
+        .iter()
+        .filter(|row| row.kind == EventFeedKind::Peace)
+        .map(|row| (row.hour, row.tags.clone()))
+        .collect();
+    peace.sort();
+    // 0-1 is shown once, natively; 0-2 has no native end and keeps its
+    // derived rows from both sides.
+    let mut expected = vec![(103, vec![tag(0), tag(2)]), (103, vec![tag(2), tag(0)])];
+    expected.sort();
+    assert_eq!(peace, expected);
 }
 
 #[test]

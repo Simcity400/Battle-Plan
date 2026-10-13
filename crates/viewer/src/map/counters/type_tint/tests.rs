@@ -113,7 +113,7 @@ fn world(
                 .map(|slot| CountryCounterInputRow {
                     country: 100 + slot,
                     directed_wars: Recorded::Value(Some(DirectedWars {
-                        sample_hour: frame.hour,
+                        sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
                         receiver_raw_id: (100 + slot) as i32,
                         receiver_slot: slot,
                         matrix_count: 8,
@@ -141,7 +141,7 @@ fn world(
             ReservedCountryNamingRow {
                 faction: Recorded::Value(Some(0)),
                 reverse_visibility: Recorded::Value(Some(ReservedReverseVisibilityInputs {
-                    sample_hour: frame.hour,
+                    sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
                     cells: (0..8)
                         .map(|slot| {
                             Some(ReverseZeroVisibilityInputs {
@@ -680,7 +680,7 @@ fn type_tint_unit_scale() {
                 .map(|slot| CountryCounterInputRow {
                     country: 10_000 + slot,
                     directed_wars: Recorded::Value(Some(DirectedWars {
-                        sample_hour: frame.hour,
+                        sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
                         receiver_raw_id: (10_000 + slot) as i32,
                         receiver_slot: slot,
                         matrix_count: n + 1,

@@ -68,6 +68,14 @@ fn fixture() -> Vec<u8> {
         &(-9_007_199_254_740_993_i64).to_le_bytes(),
     );
     put(&mut bytes, 0x4000 + sweather_per_province::RAW_MUD, &[7]);
+    let words = fixture_words();
+    for (offset, value) in [
+        (sweather_per_province::DRIFT, words.drift),
+        (sweather_per_province::STAGED_TEMPERATURE, words.staged),
+        (sweather_per_province::WORKING_DRIFT, words.working),
+    ] {
+        put(&mut bytes, 0x4000 + offset, &value.to_le_bytes());
+    }
     put(
         &mut bytes,
         0x2000 + cweather_manager::PROVINCE_CLOCKS,
@@ -101,6 +109,16 @@ fn fixture() -> Vec<u8> {
     bytes
 }
 
+/// The fixture province's temperature words.
+fn fixture_words() -> replay::temperature::State {
+    replay::temperature::State {
+        temperature: -9_007_199_254_740_993,
+        drift: 123_456,
+        staged: 5,
+        working: -654_321,
+    }
+}
+
 fn memory(bytes: &[u8]) -> SliceMemory<'_> {
     SliceMemory {
         base: 0x1000,
@@ -121,8 +139,6 @@ fn fixed_job() -> WeatherJob {
         regions: DensePayload::new(512 * sweather_per_region::RECORD_BYTES),
         provinces: DensePayload::new(20_000 * sweather_per_province::RECORD_BYTES),
         clocks: DensePayload::new(20_000 * sweather_per_province::CLOCK_RECORD_BYTES),
-        attack: vec![Default::default(); 512],
-        attack_metadata: engine::selected_attack::ScalarMetadata::try_new(512).unwrap(),
         ..Default::default()
     }
 }
@@ -132,18 +148,13 @@ fn split(memory: &impl Memory, capacities: &Capacities) -> (Captured, WeatherJob
     let mut job = fixed_job();
     let ctx = WeatherCopyContext {
         base: 0,
-        hour: 0,
         game_state: 0x1000,
-        attack_guard: Ok(()),
     };
     let report = copy_weather_refresh(memory, ctx, &mut job);
     assert!(report.raw_ok);
     captured.raw_mode = true;
-    assert_eq!(
-        captured.finish_owned_capture(Err("selected attack modifier layout unverified")),
-        [0; N]
-    );
-    captured.decode_weather_payload(0, &job, &mut [0; N]);
+    assert_eq!(captured.finish_owned_capture(), [0; N]);
+    captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
     (captured, job)
 }
 
@@ -182,13 +193,101 @@ fn acquisition_keeps_native_snow_display_bytes_and_raw_flags() {
             permanent_snow: 40_000,
             display_snow: 200,
             display_mud: 255,
-            temperature: replay::rows::Recorded::Value(-9_007_199_254_740_993),
+            // A first hour anchors the pass at its own words.
+            temperature: rows::ProvinceTemperature::anchored(fixture_words()),
             raw_mud: replay::rows::Recorded::Value(7),
-            local_hour: replay::rows::Recorded::Value(-7),
-            night_factor: replay::rows::Recorded::Value(-9_007_199_254_740_993),
+            clock: rows::DayNightClock::held(replay::day_night::Clock {
+                local_hour: -7,
+                night_factor: -9_007_199_254_740_993,
+            }),
             display: rows::Recorded::Value(None),
+            temperature_pass: rows::Recorded::Value(Some(rows::TemperaturePass {
+                anchor: 0,
+                cursor: 0,
+                anchor_seed: None,
+                hours: Vec::new(),
+                checksum: replay::temperature::checksum([fixture_words().temperature]),
+            })),
         }]
     );
+}
+
+/// The fixture with a second province (slot 1, record 0x4180, clock 0x4C30)
+/// and the given suspension gates.
+fn two_provinces(gates: [u8; 2]) -> Vec<u8> {
+    let mut bytes = fixture();
+    for offset in [
+        cweather_manager::PROVINCES,
+        cweather_manager::DISPLAY_SNOW,
+        cweather_manager::DISPLAY_MUD,
+        cweather_manager::PROVINCE_CLOCKS,
+    ] {
+        put(&mut bytes, 0x2000 + offset + 12, &2_u32.to_le_bytes());
+    }
+    put(
+        &mut bytes,
+        0x4180,
+        &(sweather_per_province::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        0x4180 + sweather_per_province::ID,
+        &1_u32.to_le_bytes(),
+    );
+    let clock = 0x4900 + sweather_per_province::CLOCK_STRIDE;
+    put(
+        &mut bytes,
+        clock + sweather_per_province::CLOCK_LOCAL_HOUR,
+        &19_i32.to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        clock + sweather_per_province::CLOCK_NIGHT_FACTOR,
+        &61_234_i64.to_le_bytes(),
+    );
+    put(&mut bytes, 0x2000 + cweather_manager::SUSPEND_FLAGS, &gates);
+    bytes
+}
+
+#[test]
+fn clear_gates_record_updated_clocks_from_slot_one_and_hold_the_rest() {
+    let capacities = Capacities {
+        rows: [2; N],
+        ..Default::default()
+    };
+    let held = |local_hour, night_factor| {
+        rows::DayNightClock::held(replay::day_night::Clock {
+            local_hour,
+            night_factor,
+        })
+    };
+    let slot_zero = held(-7, -9_007_199_254_740_993);
+    for (gates, slot_one) in [
+        // Hourly weather update ran day/night update: slot 1 is the hour's derivation.
+        ([0, 0], rows::DayNightClock::UPDATED),
+        // Either gate skips the writer; the records keep their clocks.
+        ([0, 1], held(19, 61_234)),
+        ([1, 0], held(19, 61_234)),
+        ([3, 255], held(19, 61_234)),
+    ] {
+        let bytes = two_provinces(gates);
+        let direct = direct(&memory(&bytes), &capacities);
+        let (split, _) = split(&memory(&bytes), &capacities);
+        assert_matches(&split, &direct);
+        for captured in [&direct, &split] {
+            let tables = captured.tables();
+            let TableView::Complete(provinces) = &tables[1] else {
+                panic!("provinces")
+            };
+            let clocks: Vec<_> = provinces
+                .rows::<tables::WeatherProvinces>()
+                .unwrap()
+                .iter()
+                .map(|row| row.clock)
+                .collect();
+            assert_eq!(clocks, [slot_zero, slot_one], "{gates:?}");
+        }
+    }
 }
 
 #[test]
@@ -350,6 +449,9 @@ fn a_faulted_field_or_display_array_is_unavailable_in_both_paths() {
         0x4000 + sweather_per_province::SNOW + 3,
         0x4000 + sweather_per_province::TEMPERATURE + 7,
         0x4000 + sweather_per_province::RAW_MUD,
+        0x4000 + sweather_per_province::DRIFT + 7,
+        0x4000 + sweather_per_province::STAGED_TEMPERATURE,
+        0x4000 + sweather_per_province::WORKING_DRIFT + 4,
         0x4810,
         0x2000 + cweather_manager::PROVINCE_CLOCKS,
         0x4900 + sweather_per_province::CLOCK_NIGHT_FACTOR + 7,
@@ -455,7 +557,7 @@ fn an_ordinary_province_suffix_fault_preserves_the_admitted_display_and_clock_pr
         rows: [2, 2],
         ..Default::default()
     });
-    raw_full.decode_weather_payload(0, &job, &mut [0; N]);
+    raw_full.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
     assert_matches(&raw_full, &full);
     assert_eq!(
         memory.failures.get(),
@@ -471,9 +573,7 @@ fn clock_payload_shortage_keeps_exact_demand_and_recovers_after_worker_growth() 
     job.clocks = DensePayload::new(sweather_per_province::CLOCK_RECORD_BYTES - 1);
     let context = WeatherCopyContext {
         base: 0,
-        hour: 0,
         game_state: 0x1000,
-        attack_guard: Ok(()),
     };
     assert!(!copy_weather_refresh(&memory(&bytes), context, &mut job).raw_ok);
     assert_eq!(
@@ -496,7 +596,7 @@ fn clock_payload_shortage_keeps_exact_demand_and_recovers_after_worker_growth() 
         rows: [2; N],
         ..Default::default()
     });
-    captured.decode_weather_payload(0, &job, &mut [0; N]);
+    captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
     assert_matches(
         &captured,
         &direct(
@@ -523,9 +623,7 @@ fn staging_overflow_falls_back_to_the_typed_walk_and_grows() {
     let bytes = fixture();
     let ctx = WeatherCopyContext {
         base: 0,
-        hour: 0,
         game_state: 0x1000,
-        attack_guard: Ok(()),
     };
     let mut tiny = WeatherJob {
         log: RawLog::new(8, 8),
@@ -646,7 +744,7 @@ impl Memory for AttackWeatherMemory {
     }
 }
 
-fn split_attack_at(source: &AttackWeatherMemory, hour: i32) -> (Captured, WeatherJob) {
+fn split_attack_at(source: &AttackWeatherMemory) -> (Captured, WeatherJob) {
     let capacity = Capacities {
         rows: [2; N],
         ..Default::default()
@@ -655,16 +753,14 @@ fn split_attack_at(source: &AttackWeatherMemory, hour: i32) -> (Captured, Weathe
     let mut job = fixed_job();
     let context = WeatherCopyContext {
         base: 0,
-        hour,
         game_state: 0x1000,
-        attack_guard: Ok(()),
     };
     assert!(copy_weather_refresh(source, context, &mut job).raw_ok);
     let reads = source.reads.borrow().len();
     captured.raw_mode = true;
-    assert_eq!(captured.finish_owned_capture(Ok(())), [0; N]);
+    assert_eq!(captured.finish_owned_capture(), [0; N]);
     assert!(captured.raw_mode);
-    captured.decode_weather_payload(0, &job, &mut [0; N]);
+    captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
     assert_eq!(
         source.reads.borrow().len(),
         reads,
@@ -680,11 +776,11 @@ fn missing_weather_acquisition_refuses_previously_complete_typed_rows() {
         rows: [2; N],
         ..Default::default()
     });
-    captured.capture_at(&source, 0, 0x1000, 83, Ok(()));
+    captured.capture(&source, 0, 0x1000);
     assert_eq!(captured.outcomes(), [Outcome::Rows { len: 1 }; N]);
     let reads = source.reads.borrow().len();
     let reason = "weather acquisition not supplied";
-    assert_eq!(captured.finish_owned_capture(Ok(())), [0; N]);
+    assert_eq!(captured.finish_owned_capture(), [0; N]);
     assert!(!captured.raw_mode);
     assert_eq!(captured.outcomes(), [Outcome::Unavailable { reason }; N]);
     assert_eq!(
@@ -705,26 +801,25 @@ fn projected_weather_regions(captured: &Captured) -> Vec<rows::WeatherRegionRow>
 }
 
 #[test]
-fn real_weather_raw_and_typed_scalar_paths_match_with_unchanged_flags() {
+fn weather_regions_record_raw_combat_entries_and_no_witness() {
+    // A fixed fixture has no combat storage: the regions are refused, and
+    // neither path reads the modifier accumulator or its definitions.
     let source = AttackWeatherMemory::new(None);
-    let (copied, job) = split_attack_at(&source, -23);
+    let (copied, job) = split_attack_at(&source);
     assert_eq!(job.log.fault, [false; N]);
     let mut typed = Captured::with_capacities(&Capacities {
         rows: [2; N],
         ..Default::default()
     });
-    typed.capture_at(&source, 0, 0x1000, -23, Ok(()));
+    typed.capture(&source, 0, 0x1000);
     assert_matches(&copied, &typed);
     let copied_rows = projected_weather_regions(&copied);
     assert_eq!(copied_rows, projected_weather_regions(&typed));
     assert_eq!(
         copied_rows[0].attack,
-        rows::Recorded::Value(rows::WeatherRegionAttackInputs {
-            sample_hour: -23,
-            attack: Some(-9_007_199_254_740_993),
-            breakthrough: Some(100_000),
-        })
+        rows::Recorded::Value(rows::Witnessed(None))
     );
+    assert_eq!(copied_rows[0].combat, rows::Recorded::Value(None));
     assert_eq!(
         (
             copied_rows[0].light_rain,
@@ -736,175 +831,35 @@ fn real_weather_raw_and_typed_scalar_paths_match_with_unchanged_flags() {
         ),
         (1, 0, 255, 1, 2, 3)
     );
-    assert_eq!(copied.attack_refusals(), [0, 0]);
-    assert_eq!(
-        source.attempts(0x3000 + sweather_per_region::MODIFIERS),
-        2,
-        "one raw accumulator observation per independent acquisition"
-    );
-}
-
-#[test]
-fn real_weather_scalar_faults_are_independent_and_do_not_change_prefix_outcomes() {
-    use engine::modifier_definition as definition;
-    let clean = AttackWeatherMemory::new(None);
-    let clean_prefix = direct(
-        &clean,
-        &Capacities {
-            rows: [2; N],
-            ..Default::default()
-        },
-    );
-    let attack_flags = 0x10_0000 + 0xad * definition::STRIDE + definition::FLAGS;
-    for (fault, expected_attack, expected_breakthrough, refusals) in [
-        (attack_flags, None, Some(100_000), [1_u64, 0]),
-        (0x3000 + sweather_per_region::MODIFIERS, None, None, [1, 1]),
-        (0x4a00 + engine::modifier_entry::VALUE, None, None, [1, 1]),
-    ] {
-        let source = AttackWeatherMemory::new(Some(fault));
-        let (copied, job) = split_attack_at(&source, 83);
-        assert_eq!(source.fault_once.get(), None);
-        assert_eq!(
-            job.log.fault, [false; N],
-            "appended scalar faults are not prefix faults"
-        );
-        assert_matches(&copied, &clean_prefix);
-        let copied_rows = projected_weather_regions(&copied);
-        assert_eq!(
-            copied_rows[0].attack,
-            rows::Recorded::Value(rows::WeatherRegionAttackInputs {
-                sample_hour: 83,
-                attack: expected_attack,
-                breakthrough: expected_breakthrough,
-            })
-        );
-        assert_eq!(copied.attack_refusals(), refusals);
-        // Reset the one-shot fault in a separate independent direct source.
-        // Its read prefix/failure must match the raw acquisition exactly.
-        let typed_source = AttackWeatherMemory::new(Some(fault));
-        let mut typed = Captured::with_capacities(&Capacities {
-            rows: [2; N],
-            ..Default::default()
-        });
-        typed.capture_at(&typed_source, 0, 0x1000, 83, Ok(()));
-        assert_matches(&copied, &typed);
-        assert_eq!(copied_rows, projected_weather_regions(&typed));
-        assert_eq!(typed_source.fault_once.get(), None);
-        assert_eq!(source.attempts(0x3000 + sweather_per_region::MODIFIERS), 1);
-        assert_eq!(
-            typed_source.attempts(0x3000 + sweather_per_region::MODIFIERS),
-            1
-        );
-        // A subsequent fresh raw pass may recover; no prior-hour refusal carries.
-        let (recovered, _) = split_attack_at(&source, 84);
-        assert_eq!(
-            projected_weather_regions(&recovered)[0].attack,
-            rows::Recorded::Value(rows::WeatherRegionAttackInputs {
-                sample_hour: 84,
-                attack: Some(-9_007_199_254_740_993),
-                breakthrough: Some(100_000),
-            })
-        );
-    }
-}
-
-#[test]
-fn real_weather_short_append_arena_preserves_flags_then_recovers_after_checked_growth() {
+    assert_eq!(source.attempts(0x3000 + sweather_per_region::MODIFIERS), 0);
+    assert_eq!(source.attempts(engine::modifier_definition::TABLE_RVA), 0);
+    // A worker reads each region's raw entries once, during the copy; the
+    // definitions stay unread, as playback applies them.
     let source = AttackWeatherMemory::new(None);
-    let mut job = fixed_job();
-    job.attack.clear(); // Deliberately no admitted logical append slots.
+    let mut job = WeatherJob::new();
     let context = WeatherCopyContext {
         base: 0,
-        hour: 91,
         game_state: 0x1000,
-        attack_guard: Ok(()),
     };
-    assert!(copy_weather_refresh(&source, context, &mut job).raw_ok);
-    assert_eq!(job.attack_required, 1);
-    assert_eq!(source.attempts(0x3000 + sweather_per_region::MODIFIERS), 0);
+    assert!(copy_weather_refresh_growing(&source, context, &mut job).raw_ok);
+    let reads = source.reads.borrow().len();
     let mut captured = Captured::with_capacities(&Capacities {
         rows: [2; N],
         ..Default::default()
     });
-    captured.decode_weather_payload(0, &job, &mut [0; N]);
-    assert_eq!(captured.outcomes(), [Outcome::Rows { len: 1 }; N]);
-    assert_eq!(captured.attack_refusals(), [1, 1]);
-    let prefix = captured.regions.rows[0];
-    assert!(job.grow_for_next());
-    job.grow();
-    assert!(
-        copy_weather_refresh(
-            &source,
-            WeatherCopyContext {
-                hour: 92,
-                ..context
-            },
-            &mut job
-        )
-        .raw_ok
-    );
-    let reads = source.reads.borrow().len();
-    captured.decode_weather_payload(0, &job, &mut [0; N]);
+    captured.raw_mode = true;
+    captured.finish_owned_capture();
+    captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
     assert_eq!(source.reads.borrow().len(), reads);
-    assert_eq!(captured.regions.rows[0], prefix);
-    assert_eq!(captured.attack_refusals(), [0, 0]);
-    assert_eq!(
-        projected_weather_regions(&captured)[0].attack,
-        rows::Recorded::Value(rows::WeatherRegionAttackInputs {
-            sample_hour: 92,
-            attack: Some(-9_007_199_254_740_993),
-            breakthrough: Some(100_000),
-        })
-    );
-    assert!(!job.grow_for_next());
-}
-
-#[test]
-fn refused_weather_layout_keeps_prefix_and_reports_real_typed_raw_refusals_without_key_reads() {
-    let source = AttackWeatherMemory::new(None);
-    let reason = "synthetic changed built-in layout";
-    let mut job = fixed_job();
-    assert!(
-        copy_weather_refresh(
-            &source,
-            WeatherCopyContext {
-                base: 0,
-                hour: -71,
-                game_state: 0x1000,
-                attack_guard: Err(reason)
-            },
-            &mut job
-        )
-        .raw_ok
-    );
-    let mut copied = Captured::with_capacities(&Capacities {
-        rows: [2; N],
-        ..Default::default()
-    });
-    copied.decode_weather_payload(0, &job, &mut [0; N]);
-    let mut typed = Captured::with_capacities(&Capacities {
-        rows: [2; N],
-        ..Default::default()
-    });
-    typed.capture_at(&source, 0, 0x1000, -71, Err(reason));
-    assert_matches(&copied, &typed);
-    assert_eq!(copied.outcomes(), [Outcome::Rows { len: 1 }; N]);
-    assert_eq!(copied.attack_refusals(), [1, 1]);
-    assert_eq!(typed.attack_refusals(), [1, 1]);
-    assert_eq!(
-        projected_weather_regions(&copied),
-        projected_weather_regions(&typed)
-    );
-    assert_eq!(
-        projected_weather_regions(&copied)[0].attack,
-        rows::Recorded::Value(rows::WeatherRegionAttackInputs {
-            sample_hour: -71,
-            attack: None,
-            breakthrough: None
-        })
-    );
-    assert_eq!(source.attempts(0x3000 + sweather_per_region::MODIFIERS), 0);
+    assert_eq!(source.attempts(0x3000 + sweather_per_region::MODIFIERS), 1);
     assert_eq!(source.attempts(engine::modifier_definition::TABLE_RVA), 0);
+    assert_eq!(
+        projected_weather_regions(&captured)[0].combat,
+        rows::Recorded::Value(Some(rows::RegionCombatWeather {
+            army_attack_factor: Some(-9_007_199_254_740_993),
+            breakthrough_factor: Some(150_001),
+        }))
+    );
 }
 
 fn weather_display_memory(fault: Option<usize>) -> AttackWeatherMemory {
@@ -993,13 +948,11 @@ fn weather_display_split(source: &impl Memory, capacity: usize) -> (Captured, We
     job.display = DisplayCapture::new(capacity);
     let context = WeatherCopyContext {
         base: 0,
-        hour: 42,
         game_state: 0x1000,
-        attack_guard: Ok(()),
     };
     assert!(copy_weather_refresh(source, context, &mut job).raw_ok);
     let mut captured = Captured::with_capacities(&capacities);
-    captured.decode_weather_payload(0, &job, &mut [0; N]);
+    captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
     (captured, job)
 }
 
@@ -1030,14 +983,14 @@ fn weather_display_raw_and_typed_attach_dirty_and_full_rebuild_snapshots_match()
         }
         let (mut copied, job) = weather_display_split(&source, 10);
         let native_reads = source.reads.borrow().len();
-        copied.decode_weather_payload(0, &job, &mut [0; N]);
+        copied.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
         assert_eq!(
             source.reads.borrow().len(),
             native_reads,
             "owned decode never follows live pointers"
         );
         let mut typed = Captured::with_capacities(&capacity);
-        typed.capture_at(&source, 0, 0x1000, 42, Ok(()));
+        typed.capture(&source, 0, 0x1000);
         assert_eq!(copied.tables(), typed.tables());
         let row = weather_display_row(&copied);
         let rows::Recorded::Value(Some(display)) = row.display else {
@@ -1073,10 +1026,16 @@ fn weather_display_refusals_and_growth_preserve_independent_province_fields() {
         let row = weather_display_row(&copied);
         assert_eq!(row.display, rows::Recorded::Value(None));
         assert_eq!(
-            row.temperature,
-            rows::Recorded::Value(-9_007_199_254_740_993)
+            row.temperature.record(),
+            Ok(rows::TemperatureRecord::Anchored(fixture_words()))
         );
-        assert_eq!(row.local_hour, rows::Recorded::Value(-7));
+        assert_eq!(
+            row.clock.state(row.id),
+            Ok(rows::ClockState::Held(replay::day_night::Clock {
+                local_hour: -7,
+                night_factor: -9_007_199_254_740_993
+            }))
+        );
         assert!(copied.display_failure().is_some());
         assert_eq!(
             source
@@ -1092,7 +1051,7 @@ fn weather_display_refusals_and_growth_preserve_independent_province_fields() {
             rows: [2; N],
             display_bytes: 10,
         });
-        typed.capture_at(&typed_source, 0, 0x1000, 42, Ok(()));
+        typed.capture(&typed_source, 0, 0x1000);
         assert_eq!(copied.tables(), typed.tables());
     }
     let source = weather_display_memory(None);
@@ -1115,15 +1074,13 @@ fn weather_display_refusals_and_growth_preserve_independent_province_fields() {
             &source,
             WeatherCopyContext {
                 base: 0,
-                hour: 42,
                 game_state: 0x1000,
-                attack_guard: Ok(())
             },
             &mut job
         )
         .raw_ok
     );
-    captured.decode_weather_payload(0, &job, &mut [0; N]);
+    captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
     assert!(matches!(
         weather_display_row(&captured).display,
         rows::Recorded::Value(Some(_))
@@ -1165,14 +1122,14 @@ fn weather_display_refresh_crossing_the_copy_refuses_only_the_boundary() {
                 rows: [2; N],
                 display_bytes: 10,
             });
-            captured.capture_at(&source, 0, 0x1000, 42, Ok(()));
+            captured.capture(&source, 0, 0x1000);
             captured
         };
         let row = weather_display_row(&captured);
         assert_eq!(row.display, rows::Recorded::Value(None));
         assert_eq!(
-            row.temperature,
-            rows::Recorded::Value(-9_007_199_254_740_993)
+            row.temperature.record(),
+            Ok(rows::TemperatureRecord::Anchored(fixture_words()))
         );
         assert_eq!(
             captured.display_failure(),
@@ -1235,14 +1192,14 @@ fn weather_display_already_running_refresh_with_equal_token_refuses_only_the_bou
                 rows: [2; N],
                 display_bytes: 10,
             });
-            captured.capture_at(&source, 0, 0x1000, 42, Ok(()));
+            captured.capture(&source, 0, 0x1000);
             captured
         };
         let row = weather_display_row(&captured);
         assert_eq!(row.display, rows::Recorded::Value(None));
         assert_eq!(
-            row.temperature,
-            rows::Recorded::Value(-9_007_199_254_740_993)
+            row.temperature.record(),
+            Ok(rows::TemperatureRecord::Anchored(fixture_words()))
         );
         assert_eq!(row.display_snow, 200);
         assert_eq!(
@@ -1271,7 +1228,7 @@ fn weather_display_already_running_refresh_with_equal_token_refuses_only_the_bou
                 rows: [2; N],
                 display_bytes: 10,
             });
-            captured.capture_at(&source, 0, 0x1000, 43, Ok(()));
+            captured.capture(&source, 0, 0x1000);
             captured
         };
         let rows::Recorded::Value(Some(display)) = weather_display_row(&recovered).display else {
@@ -1329,12 +1286,18 @@ fn weather_display_completion_guard_refuses_pending_or_faulted_work_after_edges(
                     rows: [2; N],
                     display_bytes: 10,
                 });
-                captured.capture_at(&source, 0, 0x1000, 42, Ok(()));
+                captured.capture(&source, 0, 0x1000);
                 captured
             };
             let row = weather_display_row(&captured);
             assert_eq!(row.display, rows::Recorded::Value(None));
-            assert_eq!(row.local_hour, rows::Recorded::Value(-7));
+            assert_eq!(
+                row.clock.state(row.id),
+                Ok(rows::ClockState::Held(replay::day_night::Clock {
+                    local_hour: -7,
+                    night_factor: -9_007_199_254_740_993
+                }))
+            );
             assert_eq!(
                 captured.display_failure(),
                 Some(if fault_after_copy {
@@ -1489,8 +1452,6 @@ fn live_weather_hints_and_original_worker_headers_cover_large_mod_maps() {
             WeatherCopyContext {
                 base: 0,
                 game_state: 0x1000,
-                hour: 11,
-                attack_guard: Err("selected attack modifier layout unverified"),
             },
             &mut job,
         );
@@ -1513,7 +1474,7 @@ fn live_weather_hints_and_original_worker_headers_cover_large_mod_maps() {
             "growth retains each original header"
         );
         let calls = source.calls.get();
-        captured.decode_weather_payload(0, &job, &mut [0; N]);
+        captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
         assert_eq!(source.calls.get(), calls, "decode reads only owned data");
         assert_eq!(
             captured.outcomes(),
@@ -1535,4 +1496,97 @@ fn live_weather_hints_and_original_worker_headers_cover_large_mod_maps() {
             ((provinces - 1) as u32, (provinces - 1) as i64, 200, 255, -7)
         );
     }
+}
+
+/// One hour's acquisition and decode with the decode worker's pass tracker.
+fn tracked(
+    memory: &impl Memory,
+    hour: i32,
+    tracker: &mut temperature::Tracker,
+) -> rows::WeatherProvinceRow {
+    let mut captured = Captured::with_capacities(&Capacities {
+        rows: [2; N],
+        ..Default::default()
+    });
+    let mut job = fixed_job();
+    let ctx = WeatherCopyContext {
+        base: 0,
+        game_state: 0x1000,
+    };
+    assert!(copy_weather_refresh(memory, ctx, &mut job).raw_ok);
+    captured.raw_mode = true;
+    captured.finish_owned_capture();
+    captured.decode_weather_payload(0, &job, hour, tracker, &mut [0; N]);
+    let tables = captured.tables();
+    let TableView::Complete(provinces) = &tables[1] else {
+        panic!("provinces")
+    };
+    provinces.rows::<tables::WeatherProvinces>().unwrap()[0].clone()
+}
+
+#[test]
+fn the_temperature_pass_records_proven_hours_against_the_anchored_words() {
+    let mut bytes = fixture();
+    let manager = |bytes: &mut Vec<u8>, cursor: i32, window: i32, seed: u32, gates: [u8; 2]| {
+        put(
+            bytes,
+            0x2000 + cweather_manager::UPDATE_CURSOR,
+            &cursor.to_le_bytes(),
+        );
+        put(
+            bytes,
+            0x2000 + cweather_manager::PROVINCES_PER_UPDATE,
+            &window.to_le_bytes(),
+        );
+        put(bytes, 0x2000 + cweather_manager::SEED, &seed.to_le_bytes());
+        put(bytes, 0x2000 + cweather_manager::SUSPEND_FLAGS, &gates);
+    };
+    let mut tracker = temperature::Tracker::default();
+    manager(&mut bytes, 0, 584, 77, [0, 0]);
+    let first = tracked(&memory(&bytes), 500, &mut tracker);
+    assert_eq!(
+        first.temperature.record(),
+        Ok(rows::TemperatureRecord::Anchored(fixture_words()))
+    );
+    let pass = |row: &rows::WeatherProvinceRow| match &row.temperature_pass {
+        rows::Recorded::Value(Some(pass)) => pass.clone(),
+        other => panic!("pass {other:?}"),
+    };
+    assert_eq!(
+        pass(&first),
+        rows::TemperaturePass {
+            anchor: 500,
+            cursor: 0,
+            anchor_seed: None,
+            hours: Vec::new(),
+            checksum: replay::temperature::checksum([fixture_words().temperature]),
+        }
+    );
+    // The next hour's pass visits the one slot and moves its words; the rows keep the
+    // anchor's words and the pass records the hour's seed and read checksum.
+    put(
+        &mut bytes,
+        0x4000 + sweather_per_province::TEMPERATURE,
+        &42_i64.to_le_bytes(),
+    );
+    manager(&mut bytes, 0, 584, 78, [0, 0]);
+    let second = tracked(&memory(&bytes), 501, &mut tracker);
+    assert_eq!(second.temperature, first.temperature);
+    let recorded = pass(&second);
+    assert_eq!(
+        (recorded.anchor, recorded.hours.clone()),
+        (500, vec![Some(78)])
+    );
+    assert_eq!(recorded.checksum, replay::temperature::checksum([42]));
+    // An unread seed records no pass, keeps every province field, and the next hour anchors.
+    let unread = FaultReads {
+        memory: memory(&bytes),
+        fault: 0x2000 + cweather_manager::SEED + 2,
+        failures: Cell::new(0),
+    };
+    let refused = tracked(&unread, 502, &mut tracker);
+    assert_eq!(refused.temperature_pass, rows::Recorded::Value(None));
+    assert_eq!(refused.raw_mud, rows::Recorded::Value(7));
+    let third = tracked(&memory(&bytes), 503, &mut tracker);
+    assert_eq!(pass(&third).anchor, 503);
 }

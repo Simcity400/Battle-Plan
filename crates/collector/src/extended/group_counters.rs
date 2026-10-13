@@ -1,14 +1,19 @@
-//! Hourly COrdersGroup withdrawing byte over its own bounded registry census.
+//! Hourly COrdersGroup withdrawing byte over its own bounded registry census,
+//! and each group's direct commander's attack operands (`COrdersGroup+0x88`,
+//! `engine::carmy_leader::attack_stats`), which the selected army's attack
+//! list reads through its direct commander lookup.
 use crate::{
     sampling::qpc,
     spooling::table,
     table_capture::{CaptureRows, grow_capacity, grow_vec},
 };
 use engine::allocation::{default_vec, owned_vec};
-use engine::{Memory, corders_group, walk::Outcome};
+use engine::{Memory, carmy_leader, corders_group, walk::Outcome};
 use replay::{
     frame::TableView,
-    rows::{OrdersGroupCounterInputRow, Recorded, TableId, tables},
+    rows::{
+        CommanderAttackStats, OrdersGroupCounterInputRow, Recorded, TableId, Witnessed, tables,
+    },
 };
 use std::mem::size_of;
 
@@ -20,12 +25,15 @@ static COOLDOWN_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 static BORDER_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static INVASION_DISTANCE_REFUSALS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+static COMMANDER_ATTACK_REFUSALS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn tooltip_data() -> impl serde::Serialize {
     crate::status::status!({
         "leader_enroute_days_refused": COOLDOWN_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
         "border_war_presence_refused": BORDER_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
         "invasion_source_distance_refused": INVASION_DISTANCE_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
+        "commander_attack_refused": COMMANDER_ATTACK_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
         "scope": "cumulative independent orders-group tooltip input refusals; existing withdrawing and HQ-distance operands remain available",
     })
 }
@@ -33,7 +41,6 @@ pub(crate) fn tooltip_data() -> impl serde::Serialize {
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
-    attack: super::attack_inputs::GroupCapacities,
 }
 
 impl Capacities {
@@ -51,7 +58,6 @@ impl Capacities {
             Outcome::Unavailable { reason } => return Err(reason),
         };
         self.rows = self.rows.max(count);
-        self.attack.0.rows = self.attack.0.rows.max(count);
         Ok(())
     }
 }
@@ -59,98 +65,116 @@ impl Capacities {
 pub struct Captured {
     rows: CaptureRows<corders_group::CounterInputsRow>,
     roots: Vec<corders_group::Root>,
-    commanders: Vec<corders_group::DirectCommander>,
-    root_outcome: Outcome,
-    pub(super) attack: super::attack_inputs::Groups,
+    /// Each row's direct commander's attack operands by group handle:
+    /// `Some(None)` without a commander, `None` for a read refusal.
+    commanders: Vec<(u64, Option<Option<carmy_leader::AttackStats>>)>,
     required: usize,
+}
+
+/// The direct commander lookup for a group and its
+/// attack operands.
+fn commander(
+    memory: &impl Memory,
+    base: usize,
+    root: corders_group::Root,
+) -> Option<Option<carmy_leader::AttackStats>> {
+    let leader = root
+        .pointer()
+        .checked_add(corders_group::LEADER)
+        .and_then(|address| engine::read::<u64>(memory, address))
+        .and_then(|leader| usize::try_from(leader).ok())?;
+    if leader == 0 {
+        return Some(None);
+    }
+    carmy_leader::attack_stats(memory, base, leader)
+        .ok()
+        .map(Some)
+}
+
+fn recorded(commander: &carmy_leader::AttackStats) -> CommanderAttackStats {
+    CommanderAttackStats {
+        leader: commander.leader,
+        terrain: commander.terrain.clone(),
+        fort: commander.fort,
+        river: commander.river,
+        snow: commander.snow,
+        night: commander.night,
+    }
 }
 impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
-        Self::with_capacities(&Capacities {
-            rows: 0,
-            attack: super::attack_inputs::GroupCapacities(
-                engine::selected_attack::GroupCapacity::default(),
-            ),
-        })
+        Self::with_capacities(&Capacities { rows: 0 })
     }
 
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
             roots: owned_vec(default_vec(capacity.rows)),
-            commanders: owned_vec(default_vec(capacity.rows)),
-            root_outcome: Outcome::Unavailable {
-                reason: "orders group roots not acquired",
-            },
-            attack: super::attack_inputs::Groups::new(capacity.attack),
+            commanders: Vec::new(),
             required: 0,
         }
     }
     pub fn reset(&mut self) {
         self.rows.reset();
         self.roots.fill(Default::default());
-        self.commanders.fill(Default::default());
-        self.root_outcome = Outcome::Unavailable {
-            reason: "orders group roots not acquired",
-        };
-        self.attack.reset();
+        self.commanders.clear();
         self.required = 0;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
             + self.roots.capacity() * size_of::<corders_group::Root>()
-            + self.commanders.capacity() * size_of::<corders_group::DirectCommander>()
-            + self.attack.allocated_bytes()
+            + self.commanders.capacity()
+                * size_of::<(u64, Option<Option<carmy_leader::AttackStats>>)>()
+            + self
+                .commanders
+                .iter()
+                .filter_map(|(_, commander)| commander.as_ref()?.as_ref())
+                .map(|commander| commander.terrain.capacity() * 8)
+                .sum::<usize>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         grow_capacity(&mut capacity.rows, self.required);
         self.rows.grow(&mut capacity.rows);
         grow_vec(&mut self.roots, capacity.rows);
-        grow_vec(&mut self.commanders, capacity.rows);
-        self.attack.grow(&mut capacity.attack, capacity.rows);
     }
     fn read(&mut self, memory: &impl Memory, base: usize, state: usize) -> Outcome {
         let source = corders_group::walk_roots_growing(memory, base, &mut self.roots);
-        self.root_outcome = source;
-        if !matches!(source, Outcome::Unavailable { .. }) {
-            let prepared = (|| {
-                engine::walk::Buffer::Growing(&mut self.rows.rows).ensure(source.len())?;
-                engine::walk::Buffer::Growing(&mut self.commanders).ensure(source.len())?;
-                self.attack
-                    .packet
-                    .reserve(engine::selected_attack::GroupCapacity {
-                        rows: source.len(),
-                        values: 0,
-                    })
-                    .map_err(|error| {
-                        crate::allocation::observe(&error);
-                        "group attack allocation failed"
-                    })?;
-                Ok::<_, &'static str>(())
-            })();
-            if let Err(reason) = prepared {
-                self.root_outcome = Outcome::Unavailable { reason };
-                return self.root_outcome;
-            }
+        if !matches!(source, Outcome::Unavailable { .. })
+            && let Err(reason) =
+                engine::walk::Buffer::Growing(&mut self.rows.rows).ensure(source.len())
+        {
+            return Outcome::Unavailable { reason };
         }
         if let Outcome::Truncated { len, unread_rows } = source {
             self.required = self.required.max(len + unread_rows as usize);
         }
-        corders_group::walk_counter_inputs_with_commanders(
+        corders_group::walk_counter_inputs_in_state(
             memory,
             base,
             state,
             &self.roots,
             source,
             &mut self.rows.rows,
-            &mut self.commanders,
         )
     }
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
         self.rows.outcome = self.read(memory, base, state);
+        // The census rows follow the roots one for one.
+        self.commanders.clear();
+        let len = self.rows.outcome.len();
+        for (row, root) in self.rows.rows[..len].iter().zip(&self.roots) {
+            let commander = commander(memory, base, *root);
+            if commander.is_none() {
+                COMMANDER_ATTACK_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            self.commanders.push((row.group, commander));
+        }
+        self.commanders.sort_unstable_by_key(|(group, _)| *group);
+        // No later consumer borrows the root controls.
+        self.roots.fill(Default::default());
         let rows = &self.rows.rows[..self.rows.outcome.len()];
         COOLDOWN_REFUSALS.fetch_add(
             rows.iter()
@@ -170,8 +194,6 @@ impl Captured {
                 .count() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
-        // Root/direct-leader controls remain held until the final joined
-        // commander consumer; no pointer is used by decode or spooling.
         [qpc().saturating_sub(begin).max(0) as u64]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -187,43 +209,26 @@ impl Captured {
         }
     }
 
-    pub(super) fn capture_attack(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        hour: i32,
-        units: &mut super::attack_inputs::Units,
-        geometry: &mut engine::cprovince::GeometryPacket,
-        current_geometry: engine::selected_attack::Field<()>,
-    ) {
-        self.attack.capture(
-            memory,
-            base,
-            hour,
-            &self.commanders,
-            self.root_outcome,
-            units,
-            geometry,
-            current_geometry,
-        );
-        self.roots.fill(Default::default());
-        self.commanders.fill(Default::default());
+    fn commander_attack(&self, group: u64) -> Option<Option<CommanderAttackStats>> {
+        let at = self
+            .commanders
+            .binary_search_by_key(&group, |(group, _)| *group)
+            .ok()?;
+        self.commanders[at]
+            .1
+            .as_ref()
+            .map(|commander| commander.as_ref().map(recorded))
     }
 
     pub fn tables(&self) -> [TableView; N] {
-        self.tables_attack(Some(&self.attack))
-    }
-    fn tables_attack(&self, attack: Option<&super::attack_inputs::Groups>) -> [TableView; N] {
         [table::<tables::OrdersGroupCounterInputs, _>(
             self.outcomes()[0],
             &self.rows.rows,
             |r| OrdersGroupCounterInputRow {
                 group: r.group,
-                attack: replay::rows::Recorded::Value(
-                    attack
-                        .map(|attack| attack.group(r.group))
-                        .unwrap_or_default(),
-                ),
+                // No commander operand is witnessed; current writers leave it empty.
+                attack: Recorded::Value(Witnessed(None)),
+                commander_attack: Recorded::Value(self.commander_attack(r.group)),
                 withdrawing: r.withdrawing,
                 hq_distance: Recorded::Value(r.hq_distance),
                 leader_enroute_days: Recorded::Value(r.leader_enroute_days),
@@ -244,10 +249,7 @@ mod tests {
             base: 0,
             bytes: &[],
         };
-        let mut capacity = Capacities {
-            rows: 1,
-            attack: Default::default(),
-        };
+        let mut capacity = Capacities { rows: 1 };
         let mut capture = Captured::with_capacities(&capacity);
         capture.capture(&memory, 0, 0);
         assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
@@ -272,6 +274,9 @@ mod tests {
         assert_eq!(rows[0].leader_enroute_days, Recorded::Value(Some(-3)));
         assert_eq!(rows[0].border_war_presence, Recorded::Value(Some(1)));
         assert_eq!(rows[0].invasion_source_distance, Recorded::Value(Some(-17)));
+        // No commander was read: the operands are refused, never zero.
+        assert_eq!(rows[0].attack, Recorded::Value(Witnessed(None)));
+        assert_eq!(rows[0].commander_attack, Recorded::Value(None));
         let mut work = super::super::division_presentation::CounterWork::default();
         capture.observe_counter_inputs(&mut work);
         let status = serde_json::to_value(work.status()).unwrap();
@@ -283,209 +288,5 @@ mod tests {
         capture.required = 9;
         capture.grow(&mut capacity);
         assert!(capacity.rows >= 9 && capture.roots.len() >= 9);
-    }
-
-    fn joined_group_fixture(
-        capture: &mut Captured,
-        group: u64,
-        leader: Result<Option<u64>, &'static str>,
-    ) {
-        engine::walk::Buffer::Growing(&mut capture.rows.rows)
-            .ensure(1)
-            .unwrap();
-        engine::walk::Buffer::Growing(&mut capture.roots)
-            .ensure(2)
-            .unwrap();
-        engine::walk::Buffer::Growing(&mut capture.commanders)
-            .ensure(2)
-            .unwrap();
-        capture.rows.rows[0] = corders_group::CounterInputsRow {
-            group,
-            withdrawing: 255,
-            hq_distance: Some(i32::MIN),
-            leader_enroute_days: Some(-3),
-            border_war_presence: Some(1),
-            invasion_source_distance: Some(-17),
-        };
-        capture.rows.outcome = Outcome::Rows { len: 1 };
-        capture.root_outcome = Outcome::Rows { len: 1 };
-        capture.roots[0].handle = group;
-        capture.roots[0].country = 3;
-        capture.commanders[0] = corders_group::DirectCommander {
-            group,
-            pointer: Ok(0),
-            leader,
-            enroute_days: Ok(-3),
-        };
-        // This stale tail is outside the admitted census. Retirement still owns it.
-        capture.roots[1].handle = (99_u64 << 32) | u64::from(corders_group::REFERENCE_TYPE);
-        capture.commanders[1] = corders_group::DirectCommander {
-            group: capture.roots[1].handle,
-            pointer: Ok(0xdead_beef),
-            leader: Ok(Some(
-                (99_u64 << 32) | u64::from(engine::cunit_leader::REFERENCE_TYPE),
-            )),
-            enroute_days: Ok(7),
-        };
-    }
-
-    #[test]
-    fn direct_null_and_failed_commander_project_differently_and_retire_the_whole_control_buffer() {
-        struct NoGroupReads;
-        impl Memory for NoGroupReads {
-            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-                panic!("joined null/refused commander controls must not be reacquired")
-            }
-        }
-        let group = (5_u64 << 32) | u64::from(corders_group::REFERENCE_TYPE);
-        let capacity = Capacities {
-            rows: 2,
-            attack: super::super::attack_inputs::GroupCapacities(
-                engine::selected_attack::GroupCapacity { rows: 2, values: 0 },
-            ),
-        };
-        let mut capture = Captured::with_capacities(&capacity);
-        let mut units = super::super::attack_inputs::Units::vacant();
-        let mut geometry = engine::cprovince::GeometryPacket::vacant();
-        for (hour, observed, expected) in [
-            (71, Ok(None), Some(None)),
-            (72, Err("direct commander unreadable"), None),
-        ] {
-            joined_group_fixture(&mut capture, group, observed);
-            let allocated = capture.allocated_bytes();
-            capture.capture_attack(
-                &NoGroupReads,
-                0,
-                hour,
-                &mut units,
-                &mut geometry,
-                Err("current geometry deliberately unavailable"),
-            );
-            assert_eq!(capture.attack.packet.outcome(), Outcome::Rows { len: 1 });
-            assert!(
-                capture
-                    .roots
-                    .iter()
-                    .all(|root| *root == corders_group::Root::default())
-            );
-            assert!(
-                capture
-                    .commanders
-                    .iter()
-                    .all(|control| *control == corders_group::DirectCommander::default())
-            );
-            assert_eq!(capture.allocated_bytes(), allocated);
-            let [TableView::Complete(replay::rows::TableRows::OrdersGroupCounterInputs(rows))] =
-                capture.tables()
-            else {
-                panic!("independent primary group row")
-            };
-            assert_eq!(
-                rows[0].attack,
-                Recorded::Value(replay::rows::OrdersGroupAttackInputs {
-                    sample_hour: hour,
-                    commander: expected,
-                })
-            );
-            assert_eq!(
-                (
-                    rows[0].withdrawing,
-                    rows[0].hq_distance,
-                    rows[0].leader_enroute_days,
-                    rows[0].border_war_presence,
-                    rows[0].invasion_source_distance
-                ),
-                (
-                    255,
-                    Recorded::Value(Some(i32::MIN)),
-                    Recorded::Value(Some(-3)),
-                    Recorded::Value(Some(1)),
-                    Recorded::Value(Some(-17))
-                )
-            );
-        }
-    }
-
-    #[test]
-    fn capture_tables_all_executes_the_final_group_consumer_and_current_hour_spooling() {
-        // Completed worker markers retain the same-census controls for the actual
-        // final capture_tables_all call. We do not call capture_attack_map ourselves.
-        let mut all = super::super::Captured::with_capacities(&super::super::Capacities::default());
-        let group = (7_u64 << 32) | u64::from(corders_group::REFERENCE_TYPE);
-        joined_group_fixture(&mut all.group_counters, group, Ok(None));
-        all.install_unit_inputs(Some(std::sync::Arc::new(
-            super::super::UnitInputs::empty_rows(),
-        )));
-        all.ordinary_ticks = Some([0; replay::frame::TABLE_COUNT]);
-        all.late_ticks = Some([0; replay::frame::TABLE_COUNT]);
-        all.presentation_report = Some(super::super::division_presentation::CaptureReport {
-            ticks: [0; super::super::division_presentation::N],
-        });
-        all.division_presentation.stamp_attack_epoch(93, true);
-        all.set_attack_guard(Err("fixture fixed modifier layout refused"));
-        let memory = SliceMemory {
-            base: 0,
-            bytes: &[],
-        };
-        let _ticks = all.capture_tables_all(&memory, 0, 0x1000, 93, false);
-        assert!(
-            all.presentation_report.is_none(),
-            "actual table routing consumed the completed presentation report"
-        );
-        assert_eq!(
-            all.group_counters.attack.packet.outcome(),
-            Outcome::Rows { len: 1 }
-        );
-        assert_eq!(
-            all.group_counters.attack.group(group),
-            replay::rows::OrdersGroupAttackInputs {
-                sample_hour: 93,
-                commander: Some(None),
-            }
-        );
-        assert!(
-            all.group_counters
-                .roots
-                .iter()
-                .all(|root| *root == corders_group::Root::default())
-        );
-        assert!(
-            all.group_counters
-                .commanders
-                .iter()
-                .all(|control| *control == corders_group::DirectCommander::default())
-        );
-        let [TableView::Complete(replay::rows::TableRows::OrdersGroupCounterInputs(rows))] =
-            all.group_counters.tables()
-        else {
-            panic!("joined primary row remains complete")
-        };
-        assert_eq!(
-            rows[0].attack,
-            Recorded::Value(replay::rows::OrdersGroupAttackInputs {
-                sample_hour: 93,
-                commander: Some(None),
-            })
-        );
-        assert_eq!(rows[0].withdrawing, 255);
-        assert_eq!(
-            all.division_presentation
-                .attack
-                .division((2_u64 << 32) | 51)
-                .sample_hour,
-            93
-        );
-        assert!(
-            all.division_presentation
-                .attack
-                .packet
-                .originals()
-                .is_empty()
-        );
-        assert_eq!(
-            all.province_attack(1).sample_hour,
-            93,
-            "the final map suffix also receives the actual assembly hour"
-        );
     }
 }

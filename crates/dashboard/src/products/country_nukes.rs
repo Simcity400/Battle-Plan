@@ -189,7 +189,12 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                         }
                     }
                     let rows = decoded.complete::<tables::Nukes>().ok();
-                    let read = slot_read(&decoded.metrics, TableId::Nukes, decoded.hour);
+                    let read = slot_read(
+                        replay.format,
+                        &decoded.metrics,
+                        TableId::Nukes,
+                        decoded.hour,
+                    );
                     if read && rows.is_some() {
                         scanned.read_hours.push(frame.hour);
                     }
@@ -343,16 +348,34 @@ pub fn type_info(
     scanned
         .types
         .iter()
-        .map(|&ordinal| {
-            let token = scanned.tokens.get(&ordinal).cloned();
-            NukeTypeInfo {
-                ordinal,
-                name: token.as_deref().and_then(&localise),
-                token,
-                supported: name_token(ordinal).is_some(),
-            }
-        })
+        .map(|&ordinal| info(scanned, ordinal, &localise))
         .collect()
+}
+
+/// Every type the game names, spelled from the recorded lexical tokens
+/// whether or not a stockpile read saw it.
+pub fn native_type_info(
+    scanned: &ScannedNukes,
+    localise: impl Fn(&str) -> Option<String>,
+) -> Vec<NukeTypeInfo> {
+    (0..)
+        .take_while(|&ordinal| name_token(ordinal).is_some())
+        .map(|ordinal| info(scanned, ordinal, &localise))
+        .collect()
+}
+
+fn info(
+    scanned: &ScannedNukes,
+    ordinal: u32,
+    localise: impl Fn(&str) -> Option<String>,
+) -> NukeTypeInfo {
+    let token = scanned.tokens.get(&ordinal).cloned();
+    NukeTypeInfo {
+        ordinal,
+        name: token.as_deref().and_then(&localise),
+        token,
+        supported: name_token(ordinal).is_some(),
+    }
 }
 
 pub(crate) fn requested_series(

@@ -291,6 +291,46 @@ fn available_advisor_walk_and_header_demand_follow_5000_countries() {
     assert_eq!(rows[COUNT - 1].country, COUNT as u32);
     assert_eq!(rows[COUNT - 1].character, COUNT as u32 * 2);
     assert_eq!(result.bytes_len, COUNT * 4);
+    // A walk of selected countries reads exactly their pools, each equal to
+    // the whole walk's: 24 slices by country id cover the census once.
+    let identity = |row: &Row, text: &[u8]| {
+        (
+            row.country,
+            row.ordinal,
+            row.character,
+            text[row.idea_start..row.idea_start + row.idea_len].to_vec(),
+        )
+    };
+    let whole: Vec<_> = rows.iter().map(|row| identity(row, &arena)).collect();
+    let mut covered = 0;
+    for slice in 0..24_u32 {
+        let select = |country: u32| country % 24 == slice;
+        let mut selected = Vec::new();
+        let mut text = Vec::new();
+        let walk = walk_available_carried(
+            &memory,
+            0,
+            GS,
+            &mut selected,
+            &mut text,
+            &mut Fresh,
+            &select,
+        );
+        let expected: Vec<_> = whole.iter().filter(|row| select(row.0)).cloned().collect();
+        assert_eq!(
+            walk.outcome,
+            Outcome::Rows {
+                len: expected.len()
+            }
+        );
+        let actual: Vec<_> = selected[..expected.len()]
+            .iter()
+            .map(|row| identity(row, &text))
+            .collect();
+        assert_eq!(actual, expected, "slice {slice}");
+        covered += expected.len();
+    }
+    assert_eq!(covered, COUNT);
 }
 
 #[test]
@@ -693,4 +733,105 @@ fn unauthenticated_active_records_fail_the_table() {
         run_active(&bytes, 4).0,
         Outcome::Unavailable { .. }
     ));
+}
+
+/// Counts guarded calls: one per copy and one per scattered batch.
+struct Guarded<'a> {
+    bytes: &'a [u8],
+    guards: std::cell::Cell<usize>,
+}
+
+impl Memory for Guarded<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.guards.set(self.guards.get() + 1);
+        SliceMemory {
+            base: 0,
+            bytes: self.bytes,
+        }
+        .copy(address, destination)
+    }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.guards.set(self.guards.get() + 1);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: self.bytes,
+        };
+        for (index, (address, destination)) in addresses.into_iter().zip(destinations).enumerate() {
+            if !destination.is_empty() && (address == 0 || !memory.copy(address, destination)) {
+                return index;
+            }
+        }
+        N
+    }
+}
+
+/// Country 1 holds 30 active records naming the three characters in turn.
+fn many_active_fixture() -> Vec<u8> {
+    let mut bytes = fixture();
+    vector(&mut bytes, OBJ1 + ACTIVE_CHARACTERS, ACTIVE1, 30);
+    for record in 0..30 {
+        p64(
+            &mut bytes,
+            ACTIVE1 + record * ACTIVE_RECORD_STRIDE,
+            CHARACTERS[record % 3].0 as u64,
+        );
+    }
+    bytes
+}
+
+/// A page of records costs one guarded batch of their characters' identity
+/// headers, where a read per record took one guarded call each (30 here).
+#[test]
+fn a_page_of_active_records_reads_its_characters_in_one_guarded_batch() {
+    let bytes = many_active_fixture();
+    let memory = Guarded {
+        bytes: &bytes,
+        guards: Default::default(),
+    };
+    let mut output = vec![ActiveRow::default(); 30];
+    let [outcome, _] = walk_records(&memory, 0, GS, &mut output, &mut []);
+    assert_eq!(outcome, Outcome::Rows { len: 30 });
+    for (ordinal, row) in output.iter().enumerate() {
+        assert_eq!(
+            *row,
+            ActiveRow {
+                country: 1,
+                ordinal: ordinal as u32,
+                character: Some(CHARACTERS[ordinal % 3].1),
+            }
+        );
+    }
+    let guards = memory.guards.get();
+    assert!(guards < 30, "{guards} guarded calls");
+}
+
+/// The first faulty record in native order decides the table's reason, as
+/// with a read per record.
+#[test]
+fn the_first_faulty_active_record_decides_the_reason() {
+    let unreadable = 0x9_0000_u64;
+    for (records, reason) in [
+        (
+            [unreadable, CHARACTERS[1].0 as u64 + 1],
+            "character identity unreadable",
+        ),
+        (
+            [CHARACTERS[1].0 as u64 + 1, unreadable],
+            "character vtable or reference type mismatch",
+        ),
+    ] {
+        let mut bytes = active_fixture();
+        p64(&mut bytes, ACTIVE1, records[0]);
+        p64(&mut bytes, ACTIVE1 + ACTIVE_RECORD_STRIDE, records[1]);
+        assert_eq!(
+            run_active(&bytes, 4).0,
+            Outcome::Unavailable { reason },
+            "{records:x?}"
+        );
+    }
 }

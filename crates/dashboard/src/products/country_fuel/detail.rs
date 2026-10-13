@@ -65,6 +65,7 @@ fn scan_reads(
         TableId::Countries,
         TableId::CountryLinks,
         TableId::CountryFuel,
+        TableId::FuelDemandParts,
     ];
     let replay = source.replay_ref();
     let mut reads = Reads::new();
@@ -95,7 +96,12 @@ fn scan_reads(
                         break;
                     }
                     if !hours.contains(&frame.hour)
-                        || !slot_read(&decoded.metrics, TableId::CountryFuel, frame.hour)
+                        || !slot_read(
+                            replay.format,
+                            &decoded.metrics,
+                            TableId::CountryFuel,
+                            frame.hour,
+                        )
                     {
                         continue;
                     }
@@ -106,8 +112,14 @@ fn scan_reads(
                     ) else {
                         continue;
                     };
+                    // Each pack with its lists, which later formats record apart.
+                    let rows = replay::rows::with_demand_parts(
+                        rows,
+                        &decoded.tables[TableId::FuelDemandParts.index()],
+                        replay.format,
+                    )?;
                     let mut by_slot = BTreeMap::new();
-                    for row in rows {
+                    for row in &rows {
                         if let Some(slot) = link_slot(links, row.country) {
                             by_slot.entry(slot).or_insert(row);
                         }
@@ -215,35 +227,29 @@ fn recipient_amount(
     key: &str,
     cancelled: &AtomicBool,
 ) -> io::Result<Result<String, String>> {
-    if let Err(reason) = awards_of(row, hour) {
-        return Ok(Err(reason));
-    }
-    let replay::rows::Recorded::Value(window) = &row.awards else {
-        unreachable!()
+    let day = match award_day(row, hour) {
+        Ok(day) => day,
+        Err(reason) => return Ok(Err(reason)),
     };
     let mut amount = 0_i128;
-    for entry in &window.hours {
-        for part in &entry.recipients {
-            crate::metadata::check_cancel(cancelled)?;
-            if part.kind > 2 {
-                return Ok(Err(format!(
-                    "Fuel recipient kind {} unsupported",
-                    part.kind
-                )));
-            }
-            if recipient_key(
-                part.kind,
-                part.reference,
-                part.owner,
-                part.host,
-                part.name.as_deref(),
-                &part.name_reason,
-            )? == key
-            {
-                amount = amount
-                    .checked_add(i128::from(part.amount_raw))
-                    .ok_or_else(|| crate::invalid("Fuel recipient total exceeds exact range"))?;
-            }
+    for part in &day.recipients {
+        crate::metadata::check_cancel(cancelled)?;
+        if part.kind > 2 {
+            return Ok(Err(format!(
+                "Fuel recipient kind {} unsupported",
+                part.kind
+            )));
+        }
+        if recipient_key(
+            part.kind,
+            part.reference,
+            part.owner,
+            part.host,
+            part.name.as_deref(),
+            &part.name_reason,
+        )? == key
+        {
+            amount += i128::from(part.amount_raw);
         }
     }
     // Absence is zero only after the actual complete 24-update census above.
@@ -378,11 +384,8 @@ impl Product for CountryFuelAwardHistory {
         };
         let basis = basis_reads(source, branch, params.hour, cancelled)?;
         let row = authenticated(&basis, &basis_params)?;
-        awards_of(row, params.hour).map_err(crate::invalid)?;
-        let replay::rows::Recorded::Value(window) = &row.awards else {
-            unreachable!()
-        };
-        let continuity = window
+        let day = award_day(row, params.hour).map_err(crate::invalid)?;
+        let continuity = day
             .continuity_start_hour
             .ok_or_else(|| crate::invalid("Fuel receipt continuity boundary not recorded"))?;
         let parts = recipients_of(row, cancelled, |_| Ok(String::new()))?;

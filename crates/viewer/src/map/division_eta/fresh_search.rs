@@ -1,28 +1,23 @@
 //! Fresh counter queries over hourly simulation inputs, never the client's
-//! hover/path cache. Route admission is the shared native `unit_path` search;
-//! edge speed and duration use the engine's pure movement evaluators.
+//! hover/path cache. Route admission is the shared native `unit_path` search.
+//! A division's searched route is timed as its arrival estimate
+//! ([`replay::eta_derive::estimate_route`]); a railway gun's duration uses its
+//! own fresh speed operands ([`super::railway`]).
 
 use super::MovementContent;
 use crate::map::raids::reach::Moves;
-use engine::{
-    carmy::{MovementSpeedInputs, NormalEdgeOperands, PreparedNormalSpeed},
-    crailway_manager::fresh_inputs,
-    cunit::eta_ratio,
-};
-use installed_content::unit_path::{CounterRequest, Fact, MoveWorld};
+use engine::crailway_manager::fresh_inputs;
+use installed_content::unit_path::{CounterRequest, Fact};
 use replay::{
     frame::DecodedFrame,
-    rows::{
-        CountryCounterInputRow, DivisionMovementRow, DivisionRow, FreshCounterEta, ProvinceRow,
-        RailCooldownRow, StateRow, TableSchema, WeatherProvinceRow, tables,
-    },
+    rows::{DivisionMovementRow, DivisionRow, ProvinceRow, RailCooldownRow, TableSchema, tables},
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 /// Immutable row indexes for one hour. Each domain retains its own refusal;
-/// constructing the adapter cannot make a failed rail or normal domain deny
-/// a route which takes only transport edges.
+/// constructing the adapter cannot make a failed rail domain deny a route
+/// which takes only transport edges.
 pub(super) struct Inputs<'a> {
     pub(super) frame: &'a DecodedFrame,
     pub(super) hour: i32,
@@ -32,20 +27,10 @@ pub(super) struct Inputs<'a> {
     movement: OnceLock<Fact<BTreeMap<u64, &'a DivisionMovementRow>>>,
     divisions: Fact<BTreeMap<u64, &'a DivisionRow>>,
     provinces: Fact<BTreeMap<u32, &'a ProvinceRow>>,
-    states: Fact<BTreeMap<u32, &'a StateRow>>,
     links: Fact<BTreeMap<u32, u32>>,
     countries: Fact<BTreeMap<u32, u32>>,
-    owners: Fact<BTreeMap<u32, &'a CountryCounterInputRow>>,
     cooldowns: Fact<BTreeMap<u32, &'a RailCooldownRow>>,
     edges: Fact<BTreeMap<(u32, u32), i32>>,
-    weather: Fact<BTreeMap<u32, &'a WeatherProvinceRow>>,
-    snow_ceiling: Fact<i64>,
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum Endpoint {
-    Next,
-    Destination,
 }
 
 pub(super) fn index<T: TableSchema, K: Ord>(
@@ -64,27 +49,6 @@ pub(super) fn index<T: TableSchema, K: Ord>(
 
 pub(super) fn available<T>(domain: &Fact<T>) -> Fact<&T> {
     domain.as_ref().map_err(Clone::clone)
-}
-
-pub(super) fn owner_entry<'a, T, K: Ord>(
-    rows: &'a [T],
-    key: impl Fn(&T) -> K,
-    wanted: K,
-    domain: &str,
-) -> Fact<&'a T> {
-    // Owner acquisition sorts and deduplicates its complete key demand. Keep
-    // that contract explicit even for frames which bypass normal decoding.
-    if let Some(pair) = rows.windows(2).find(|pair| key(&pair[0]) >= key(&pair[1])) {
-        let reason = if key(&pair[0]) == key(&pair[1]) {
-            "contains duplicate keys"
-        } else {
-            "keys are not increasing"
-        };
-        return Err(format!("fresh ETA {domain} {reason}"));
-    }
-    rows.binary_search_by(|row| key(row).cmp(&wanted))
-        .map(|position| &rows[position])
-        .map_err(|_| format!("fresh ETA {domain} key is outside its domain"))
 }
 
 impl<'a> Inputs<'a> {
@@ -111,15 +75,6 @@ impl<'a> Inputs<'a> {
                 .map(|(edge, row)| (edge, row.level))
                 .collect()
         });
-        let snow_ceiling = (|| {
-            let regions = frame
-                .complete::<tables::WeatherRegions>()
-                .map_err(|error| error.to_string())?;
-            Ok(regions
-                .first()
-                .ok_or("fresh ETA weather snow ceiling is unavailable")?
-                .max_snow)
-        })();
         Self {
             frame,
             hour: frame.hour,
@@ -129,31 +84,11 @@ impl<'a> Inputs<'a> {
             movement: OnceLock::new(),
             divisions: index::<tables::Divisions, _>(frame, |row| row.id),
             provinces: index::<tables::Provinces, _>(frame, |row| row.id),
-            states: index::<tables::States, _>(frame, |row| row.id),
             links,
             countries,
-            owners: index::<tables::CountryCounterInputs, _>(frame, |row| row.country),
             cooldowns: index::<tables::RailCooldowns, _>(frame, |row| row.province),
             edges,
-            weather: index::<tables::WeatherProvinces, _>(frame, |row| row.id),
-            snow_ceiling,
         }
-    }
-
-    /// One native endpoint query. A first-query refusal cannot suppress a
-    /// known destination query, or vice versa. Native foreign and own counter
-    /// callers choose Next and Destination respectively.
-    pub(super) fn derive(
-        &self,
-        moves: &Moves<'_, '_>,
-        movement: &DivisionMovementRow,
-        endpoint: Endpoint,
-        local_option: bool,
-    ) -> Fact<i64> {
-        let movement = self.movement(movement.division)?;
-        let target = endpoint.target(movement)?;
-        self.derive_to(moves, movement.division, target, local_option)
-            .and_then(|preview| preview.duration)
     }
 
     pub(super) fn route_identities(&self) -> Fact<()> {
@@ -161,117 +96,6 @@ impl<'a> Inputs<'a> {
         available(&self.links)?;
         available(&self.countries)?;
         Ok(())
-    }
-
-    fn province(&self, id: u32) -> Fact<&ProvinceRow> {
-        available(&self.provinces)?
-            .get(&id)
-            .copied()
-            .ok_or_else(|| format!("fresh ETA province {id} is not recorded"))
-    }
-
-    fn state(&self, id: u32) -> Fact<&StateRow> {
-        available(&self.states)?
-            .get(&id)
-            .copied()
-            .ok_or_else(|| format!("fresh ETA state {id} is not recorded"))
-    }
-
-    fn snow(&self, id: u32) -> Fact<bool> {
-        let Some(row) = available(&self.weather)?.get(&id) else {
-            // movement_snow returns before reading MAX_SNOW on an absent
-            // native per-province record. Completeness certifies that absence.
-            return Ok(false);
-        };
-        Ok(row
-            .permanent_snow
-            .wrapping_add(row.snow)
-            .min(*available(&self.snow_ceiling)?)
-            > 0)
-    }
-
-    fn slot(&self, raw: u32) -> Fact<u32> {
-        if raw == 0 {
-            return Ok(0);
-        }
-        available(&self.links)?
-            .get(&raw)
-            .copied()
-            .ok_or_else(|| format!("fresh ETA country reference {raw} has no link"))
-    }
-
-    fn owner(&self, raw: u32) -> Fact<&replay::rows::CountryMovementInputs> {
-        // The passive current-hour owner reader explicitly refuses zero and
-        // signed-nonpositive logical/land owners. Never join them to slot zero.
-        if raw as i32 <= 0 {
-            return Err("fresh ETA owner is not a supported positive country reference".into());
-        }
-        let slot = self.slot(raw)?;
-        if slot == 0 {
-            return Err("fresh ETA owner links to no country".into());
-        }
-        let id = available(&self.countries)?
-            .get(&slot)
-            .ok_or_else(|| format!("fresh ETA country slot {slot} is not recorded"))?;
-        let movement = available(&self.owners)?
-            .get(id)
-            .ok_or_else(|| format!("fresh ETA owner {raw} has no CountryCounterInputs row"))?
-            .movement
-            .require("CountryCounterInputs.movement")
-            .map_err(|error| error.to_string())?
-            .as_ref()
-            .ok_or("fresh ETA owner movement packet was refused")?;
-        if movement.sample_hour != self.hour {
-            return Err(format!(
-                "fresh ETA owner inputs sampled at {}, frame is {}",
-                movement.sample_hour, self.hour
-            ));
-        }
-        Ok(movement)
-    }
-
-    pub(super) fn transport(&self, owner: u32, region: u32) -> Fact<i64> {
-        let domain = self
-            .owner(owner)?
-            .transport
-            .as_ref()
-            .ok_or("fresh ETA owner transport domain was refused")?;
-        owner_entry(domain, |entry| entry.region, region, "owner transport")?
-            .speed
-            .ok_or_else(|| format!("fresh ETA transport region {region} was refused"))
-    }
-
-    fn river(&self, owner: u32, to: u32) -> Fact<i64> {
-        let target = self.slot(self.province(to)?.controller)?;
-        let domain = self
-            .owner(owner)?
-            .river
-            .as_ref()
-            .ok_or("fresh ETA owner river domain was refused")?;
-        owner_entry(domain, |entry| entry.target_slot, target, "owner river")?
-            .modifier
-            .ok_or_else(|| format!("fresh ETA river target {target} was refused"))
-    }
-
-    fn rail(&self, from: u32, to: u32) -> Fact<i64> {
-        let defines = available(&self.content.rail)?;
-        let target_state = self.province(to)?.state;
-        let infrastructure = if target_state == 0 {
-            0
-        } else {
-            (*self
-                .state(target_state)?
-                .railway_infrastructure
-                .require("States.railway_infrastructure")
-                .map_err(|error| error.to_string())?)
-            .ok_or("fresh ETA railway infrastructure was refused")?
-        };
-        let percentage = self.directed_rail_percentage(from, to)?;
-        Ok(fresh_inputs::road_or_rail_speed(
-            infrastructure,
-            percentage,
-            defines.speed,
-        ))
     }
 
     pub(super) fn directed_rail_percentage(&self, from: u32, to: u32) -> Fact<i64> {
@@ -314,7 +138,7 @@ impl<'a> Inputs<'a> {
 
     pub(super) fn naval(&self) -> &super::naval::NavalInputs<'a> {
         self.naval
-            .get_or_init(|| super::naval::NavalInputs::new(self.frame, self.content))
+            .get_or_init(|| super::naval::NavalInputs::new(self.frame))
     }
 
     pub(super) fn railway(&self, handle: u64) -> Fact<&'a replay::rows::RailwayGunCounterInputRow> {
@@ -324,167 +148,6 @@ impl<'a> Inputs<'a> {
         .get(&handle)
         .copied()
         .ok_or_else(|| format!("fresh ETA railway gun {handle} is not recorded"))
-    }
-
-    fn remaining(
-        &self,
-        division: &DivisionRow,
-        movement: &DivisionMovementRow,
-        fresh: &FreshCounterEta,
-        route: &[u32],
-        source_region: impl Fn(u32) -> Fact<u32>,
-    ) -> Fact<i64> {
-        if route.is_empty() {
-            return Ok(0);
-        }
-        let map = &self.content.map;
-        let defines = &self.content.defines;
-        let terrain = |id| {
-            map.terrain(id)
-                .ok_or_else(|| format!("fresh ETA province {id} has no content terrain"))
-        };
-        // The native original-location/ordinary-first predicate is reached
-        // only after the current candidate edge's transport branch fails.
-        let invasion = || -> Fact<bool> {
-            if terrain(division.province)?.flags & 3 != 0 {
-                return Ok(false);
-            }
-            movement
-                .path
-                .first()
-                .map_or(Ok(false), |&first| Ok(terrain(first)?.flags & 1 != 0))
-        };
-        let land_owner = if division.expeditionary_owner as i32 > 0 {
-            division.expeditionary_owner
-        } else {
-            division.roster_owner
-        };
-        let mut duration = 0_i64;
-        let mut normal_terrain_checked = false;
-        let mut from = division.province;
-        for &to in route {
-            if to == 0 {
-                return Err("fresh ETA searched route contains a null province".into());
-            }
-            if from == to {
-                continue;
-            }
-            let source = terrain(from)?;
-            let target = terrain(to)?;
-            let distance = if source.flags & 3 == 0 && target.flags & 1 != 0 {
-                defines.embark_distance
-            } else {
-                map.distance(from, to)
-                    .ok_or_else(|| format!("fresh ETA edge {from}->{to} distance is unavailable"))?
-            };
-            let speed = if movement.naval_transfer != 0
-                || source.flags & 1 == 0
-                || target.flags & 1 == 0
-            {
-                MovementSpeedInputs::Scaled {
-                    speed: self.transport(division.logical_owner, source_region(from)?)?,
-                    scale: defines.transport_scale,
-                }
-                .evaluate()
-            } else if invasion()? {
-                defines.invasion_speed
-            } else if movement.strategic_redeployment != 0
-                && !fresh
-                    .rail
-                    .ok_or("fresh ETA strategic gate was refused")?
-                    .blocked()
-            {
-                MovementSpeedInputs::Scaled {
-                    speed: self.rail(from, to)?,
-                    scale: defines.outer_scale,
-                }
-                .evaluate()
-            } else {
-                let normal = fresh
-                    .normal
-                    .as_ref()
-                    .ok_or("fresh ETA normal domain was refused")?;
-                let row = self.province(to)?;
-                if !normal_terrain_checked {
-                    let mut keys = BTreeSet::new();
-                    for entry in &normal.terrain_speed {
-                        if entry.terrain <= 0 {
-                            return Err(
-                                "fresh ETA normal terrain contains a nonpositive key".into()
-                            );
-                        }
-                        if !keys.insert(entry.terrain) {
-                            return Err("fresh ETA normal terrain contains duplicate keys".into());
-                        }
-                    }
-                    normal_terrain_checked = true;
-                }
-                let mut additive = normal
-                    .terrain_speed
-                    .iter()
-                    .find(|entry| entry.terrain == target.index)
-                    .ok_or_else(|| {
-                        format!(
-                            "fresh ETA terrain {} is outside its normal domain",
-                            target.index
-                        )
-                    })?
-                    .modifier;
-                if row.fort_positive != 0 {
-                    additive = additive.wrapping_add(normal.fort_penalty);
-                }
-                if self.snow(to)? {
-                    additive = additive.wrapping_add(normal.snow_penalty);
-                }
-                if row.state != 0 {
-                    additive =
-                        additive.wrapping_add(self.state(row.state)?.movement_infrastructure);
-                }
-                let crossing = map.crossing_kind(from, to).ok_or_else(|| {
-                    format!("fresh ETA edge {from}->{to} crossing is unavailable")
-                })?;
-                let river = if (1..=3).contains(&crossing) {
-                    Some((
-                        self.river(land_owner, to)?
-                            .wrapping_add(normal.river_leader),
-                        normal.river_adjustment,
-                        match crossing {
-                            2 => defines.river_crossing_two,
-                            3 => defines.river_crossing_three,
-                            _ => 0,
-                        },
-                    ))
-                } else {
-                    None
-                };
-                PreparedNormalSpeed {
-                    modifier: normal.speed_modifier,
-                    base_speed: normal.speed_base,
-                    organisation: normal.speed_org,
-                    fuel: normal.speed_fuel,
-                    outer_scale: defines.outer_scale,
-                }
-                .evaluate(NormalEdgeOperands { additive, river })
-            };
-            if speed == 0 {
-                // Return before progress subtraction or any later route operand.
-                return Ok(0);
-            }
-            duration = duration.wrapping_add(eta_ratio(distance, speed).map_err(str::to_owned)?);
-            from = to;
-        }
-        let progress = if !route.is_empty() && route.first() == movement.path.first() {
-            eta_ratio(
-                movement.numerator,
-                fresh
-                    .current_speed
-                    .ok_or("fresh ETA actual first-edge speed was refused")?,
-            )
-            .map_err(str::to_owned)?
-        } else {
-            0
-        };
-        Ok(duration.wrapping_sub(progress))
     }
 }
 
@@ -534,7 +197,7 @@ impl crate::map::raids::reach::CounterFacts for Inputs<'_> {
             .map_err(|error| error.to_string())?
             .as_ref()
             .ok_or("fresh ETA railway inputs were refused")?;
-        if fresh.sample_hour != self.hour {
+        if !fresh.sample_hour.fresh_at(self.hour) {
             return Err("fresh ETA railway group is not from the frame hour".into());
         }
         fresh
@@ -542,46 +205,17 @@ impl crate::map::raids::reach::CounterFacts for Inputs<'_> {
             .ok_or_else(|| "fresh ETA railway orders group was refused".into())
     }
 
-    fn naval_access(&self, moves: &Moves<'_, '_>, handle: u64, to: u32) -> Fact<bool> {
-        self.naval().access(moves, handle, to)
+    // Class-1 admission (range and target access, submarine rules and hostile
+    // strength) is reached only
+    // by a task-force search, which the viewer never runs.
+    fn naval_access(&self, _: &Moves<'_, '_>, _: u64, _: u32) -> Fact<bool> {
+        Err(super::task_force::ADMISSION_UNRECORDED.into())
     }
-    fn all_submarine(&self, handle: u64) -> Fact<bool> {
-        self.naval().all_submarine(handle)
+    fn all_submarine(&self, _: u64) -> Fact<bool> {
+        Err(super::task_force::ADMISSION_UNRECORDED.into())
     }
-    fn hostile_allows(&self, moves: &Moves<'_, '_>, handle: u64, to: u32) -> Fact<bool> {
-        self.naval().hostile_allows(moves, handle, to)
-    }
-}
-
-impl Endpoint {
-    fn target(self, movement: &DivisionMovementRow) -> Fact<u32> {
-        if movement.path_total == 0 {
-            return Err("fresh ETA division has no ordinary route".into());
-        }
-        let target = match self {
-            Self::Next => movement.path.first(),
-            Self::Destination => {
-                if movement.path.len() != movement.path_total as usize {
-                    return Err("fresh ETA ordinary route is incomplete".into());
-                }
-                movement.path.last()
-            }
-        };
-        target
-            .copied()
-            .filter(|&id| id != 0)
-            .ok_or_else(|| "fresh ETA ordinary route endpoint is unavailable".into())
-    }
-}
-
-fn current_hour(fresh: &FreshCounterEta, hour: i32) -> Fact<()> {
-    if fresh.sample_hour == hour {
-        Ok(())
-    } else {
-        Err(format!(
-            "fresh ETA inputs sampled at {}, frame is {hour}",
-            fresh.sample_hour
-        ))
+    fn hostile_allows(&self, _: &Moves<'_, '_>, _: u64, _: u32) -> Fact<bool> {
+        Err(super::task_force::ADMISSION_UNRECORDED.into())
     }
 }
 
@@ -597,17 +231,10 @@ impl<'a> Inputs<'a> {
         .ok_or_else(|| format!("fresh ETA division {handle:#x} has no DivisionMovement row"))
     }
 
-    fn fresh(&self, movement: &'a DivisionMovementRow) -> Fact<&'a FreshCounterEta> {
-        let profile = movement
-            .fresh
-            .require("DivisionMovement.fresh")
-            .map_err(|error| error.to_string())?
-            .as_ref()
-            .ok_or("fresh ETA division inputs were refused")?;
-        current_hour(profile, self.hour)?;
-        Ok(profile)
-    }
-
+    /// A division counter cache miss: search a new route to `target`, then
+    /// integrate duration over that route as an estimate. A
+    /// failed admission/search is distinguishable from missing facts: native
+    /// false yields Ok(empty), missing simulation inputs yield Err.
     pub(super) fn derive_to(
         &self,
         moves: &Moves<'_, '_>,
@@ -629,18 +256,19 @@ impl<'a> Inputs<'a> {
                 class: Default::default(),
             },
         )?;
-        // A nonpositive count requests no speed or actual-progress operand.
-        // Failed admission/search gives Ok(empty); missing simulation facts give Err.
+        // A nonpositive route count never asks for speed or actual progress.
         let duration = if route.is_empty() {
             Ok(0)
         } else {
-            self.fresh(movement).and_then(|fresh| {
-                self.remaining(division, movement, fresh, &route, |from| {
-                    moves
-                        .strategic_region(from)
-                        .ok_or_else(|| format!("fresh ETA source {from} has no strategic region"))
-                })
-            })
+            let map = &self.content.map;
+            replay::eta_derive::estimate_route(
+                movement,
+                division.province,
+                &route,
+                |id| super::operands(map, id),
+                |from, to| map.distance(from, to),
+                &self.content.defines,
+            )
         };
         Ok(super::CounterPreview { duration, route })
     }
@@ -653,9 +281,8 @@ mod tests {
     use replay::{
         frame::{Metrics, TableView},
         rows::{
-            ControllerRiverSpeed, CountryLinkRow, CountryMovementInputs, CountryRow,
-            FreshNormalEta, RailEdgeRow, RailwayBuildingHealth, RailwayBuildingState, Recorded,
-            RegionTransportSpeed, StrategicRedeploymentInputs, TableId, TableRows, TerrainSpeed,
+            CountryLinkRow, CountryRow, RailEdgeRow, RailwayBuildingHealth, RailwayBuildingState,
+            Recorded, TableId, TableRows,
         },
     };
 
@@ -705,13 +332,15 @@ mod tests {
                 speed: [300_000, 0, 0, 0],
                 maximum_level: 5,
             }),
-            naval: Err("unrelated naval defines are unavailable".into()),
             task_force_terrain: Err("unrelated task-force terrain is unavailable".into()),
         }
     }
 
+    /// The prospective preview keeps the native route search and times the
+    /// searched route as the division's estimate: distance over its recorded
+    /// base speed, with no fresh speed profile.
     #[test]
-    fn idle_explicit_target_keeps_a_known_route_when_duration_profile_is_refused() {
+    fn idle_explicit_target_times_the_searched_route_at_the_estimated_speed() {
         engine::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::map::raids::{reach::Cells, script::World};
@@ -747,117 +376,47 @@ mod tests {
                 ..Default::default()
             }]),
         );
-        put(
-            &mut frame,
-            TableRows::DivisionMovement(vec![DivisionMovementRow {
-                division: 7,
-                source: 3,
-                target: 3,
-                fresh: Recorded::Value(None),
-                ..Default::default()
-            }]),
-        );
-        {
+        let idle = |base_speed| DivisionMovementRow {
+            division: 7,
+            source: 3,
+            target: 3,
+            base_speed,
+            ..Default::default()
+        };
+        for (base_speed, expected) in [
+            (
+                Recorded::NotRecorded,
+                Err("DivisionMovement.base_speed is not recorded in this format".to_owned()),
+            ),
+            (
+                Recorded::Value(None),
+                Err("the division's base speed was refused".to_owned()),
+            ),
+            // 50000 over 200000 per hour is a quarter hour.
+            (Recorded::Value(Some(200_000)), Ok(25_000)),
+        ] {
+            put(
+                &mut frame,
+                TableRows::DivisionMovement(vec![idle(base_speed)]),
+            );
             let inputs = Inputs::new(&frame, &content);
             let world = World::read(&frame, assets.facts());
             let cells = Cells::default();
             let moves = Moves::for_counter(&world, &assets, &cells, &inputs);
             let preview = inputs.derive_to(&moves, 7, 4, false).unwrap();
+            // A known route survives a refused duration.
             assert_eq!(preview.route, [4]);
-            assert!(
-                preview
-                    .duration
-                    .unwrap_err()
-                    .contains("inputs were refused")
-            );
+            assert_eq!(preview.duration, expected);
+            // The empty route needs no speed at all.
             let same = inputs.derive_to(&moves, 7, 3, false).unwrap();
             assert!(same.route.is_empty());
             assert_eq!(same.duration, Ok(0));
-            assert!(
-                inputs
-                    .derive(
-                        &moves,
-                        inputs.movement(7).unwrap(),
-                        Endpoint::Destination,
-                        false
-                    )
-                    .unwrap_err()
-                    .contains("has no ordinary route")
-            );
-        }
-        let mut profile = normal();
-        profile.sample_hour = frame.hour;
-        assert_eq!(profile.current_speed, None);
-        put(
-            &mut frame,
-            TableRows::DivisionMovement(vec![DivisionMovementRow {
-                division: 7,
-                source: 3,
-                target: 3,
-                fresh: Recorded::Value(Some(profile)),
-                ..Default::default()
-            }]),
-        );
-        let inputs = Inputs::new(&frame, &content);
-        let world = World::read(&frame, assets.facts());
-        let cells = Cells::default();
-        let moves = Moves::for_counter(&world, &assets, &cells, &inputs);
-        let preview = inputs.derive_to(&moves, 7, 4, false).unwrap();
-        assert_eq!(preview.route, [4]);
-        // Idle has no actual first edge, so the missing current_speed is unreached.
-        assert_eq!(preview.duration, Ok(25_000));
-    }
-
-    fn division() -> DivisionRow {
-        DivisionRow {
-            id: 7,
-            province: 1,
-            logical_owner: 99,
-            roster_owner: 99,
-            ..Default::default()
         }
     }
 
-    fn movement(first: u32) -> DivisionMovementRow {
-        DivisionMovementRow {
-            division: 7,
-            path: vec![first],
-            path_total: 1,
-            ..Default::default()
-        }
-    }
-
-    fn normal() -> FreshCounterEta {
-        FreshCounterEta {
-            sample_hour: 20,
-            normal: Some(FreshNormalEta {
-                speed_modifier: 100_000,
-                speed_base: 200_000,
-                terrain_speed: vec![TerrainSpeed {
-                    terrain: 2,
-                    modifier: 0,
-                }],
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-    }
-
-    fn normal_frame() -> DecodedFrame {
+    fn country_frame() -> DecodedFrame {
         let mut frame = frame();
-        put(
-            &mut frame,
-            TableRows::Provinces(vec![ProvinceRow {
-                id: 2,
-                ..Default::default()
-            }]),
-        );
-        put(&mut frame, TableRows::WeatherProvinces(vec![]));
-        frame
-    }
-
-    fn transport_frame(speed: i64) -> DecodedFrame {
-        let mut frame = frame();
+        put(&mut frame, TableRows::Provinces(vec![]));
         put(
             &mut frame,
             TableRows::CountryLinks(vec![CountryLinkRow {
@@ -873,263 +432,7 @@ mod tests {
                 ..Default::default()
             }]),
         );
-        put(
-            &mut frame,
-            TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
-                country: 101,
-                movement: Recorded::Value(Some(CountryMovementInputs {
-                    sample_hour: 20,
-                    river: None,
-                    transport: Some(vec![RegionTransportSpeed {
-                        region: 9,
-                        speed: Some(speed),
-                    }]),
-                    ..Default::default()
-                })),
-                ..Default::default()
-            }]),
-        );
         frame
-    }
-
-    #[test]
-    fn fresh_domain_requires_the_exact_hour_even_when_legacy_age_is_valid() {
-        let fresh = FreshCounterEta {
-            sample_hour: 20,
-            ..Default::default()
-        };
-        assert_eq!(current_hour(&fresh, 20), Ok(()));
-        assert_eq!(
-            current_hour(&fresh, 21),
-            Err("fresh ETA inputs sampled at 20, frame is 21".into())
-        );
-        assert_eq!(
-            current_hour(&fresh, 19),
-            Err("fresh ETA inputs sampled at 20, frame is 19".into())
-        );
-    }
-
-    #[test]
-    fn transport_route_ignores_missing_normal_rail_weather_and_unreached_stored_terrain() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let frame = transport_frame(200_000);
-        let content = content(0);
-        let inputs = Inputs::new(&frame, &content);
-        let fresh = FreshCounterEta {
-            sample_hour: 20,
-            ..Default::default()
-        };
-        // Stored first=3 has no content terrain. Query first=2 is transport,
-        // so neither the stored invasion predicate nor progress is reached.
-        assert_eq!(
-            inputs.remaining(&division(), &movement(3), &fresh, &[2], |_| Ok(9)),
-            Ok(200_000)
-        );
-    }
-
-    #[test]
-    fn refused_rail_content_does_not_deny_transport_or_normal_duration() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let transport = transport_frame(200_000);
-        let land = normal_frame();
-        for (frame, flags, fresh) in [
-            (&transport, 0, FreshCounterEta::default()),
-            (&land, 1, normal()),
-        ] {
-            let mut content = content(flags);
-            content.rail = Err("fixture rail define refused".into());
-            let inputs = Inputs::new(frame, &content);
-            assert_eq!(
-                inputs.remaining(&division(), &movement(3), &fresh, &[2], |_| Ok(9)),
-                Ok(200_000)
-            );
-            assert_eq!(inputs.rail(1, 2), Err("fixture rail define refused".into()));
-        }
-    }
-
-    #[test]
-    fn fresh_progress_uses_actual_speed_only_when_first_edges_match() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let frame = normal_frame();
-        let content = content(1);
-        let inputs = Inputs::new(&frame, &content);
-        let mut fresh = normal();
-        let mut movement = movement(2);
-        movement.numerator = 50_000;
-        let no_region = |_| Err("transport was unexpectedly reached".into());
-        assert_eq!(
-            inputs.remaining(&division(), &movement, &fresh, &[2], no_region),
-            Err("fresh ETA actual first-edge speed was refused".into())
-        );
-        fresh.current_speed = Some(200_000);
-        assert_eq!(
-            inputs.remaining(&division(), &movement, &fresh, &[2], no_region),
-            Ok(175_000)
-        );
-        movement.path[0] = 3;
-        fresh.current_speed = None;
-        assert_eq!(
-            inputs.remaining(&division(), &movement, &fresh, &[2], no_region),
-            Ok(200_000)
-        );
-        assert_eq!(
-            inputs.remaining(&division(), &movement, &fresh, &[], no_region),
-            Ok(0)
-        );
-    }
-
-    #[test]
-    fn refused_strategic_gate_does_not_become_a_normal_speed_fallback() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let frame = normal_frame();
-        let content = content(1);
-        let inputs = Inputs::new(&frame, &content);
-        let mut movement = movement(3);
-        movement.strategic_redeployment = 1;
-        let mut fresh = normal();
-        assert_eq!(
-            inputs.remaining(&division(), &movement, &fresh, &[2], |_| Ok(9)),
-            Err("fresh ETA strategic gate was refused".into())
-        );
-        fresh.rail = Some(StrategicRedeploymentInputs {
-            country_modifier: 1,
-            ..Default::default()
-        });
-        assert_eq!(
-            inputs.remaining(&division(), &movement, &fresh, &[2], |_| Ok(9)),
-            Ok(200_000)
-        );
-    }
-
-    #[test]
-    fn zero_transport_speed_returns_before_missing_actual_progress_speed() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let frame = transport_frame(0);
-        let content = content(0);
-        let inputs = Inputs::new(&frame, &content);
-        assert_eq!(
-            inputs.remaining(
-                &division(),
-                &movement(2),
-                &FreshCounterEta::default(),
-                &[2],
-                |_| Ok(9)
-            ),
-            Ok(0)
-        );
-    }
-
-    #[test]
-    fn earlier_transport_division_overflow_is_not_hidden_by_later_zero_speed() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let mut frame = transport_frame(-1);
-        put(
-            &mut frame,
-            TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
-                country: 101,
-                movement: Recorded::Value(Some(CountryMovementInputs {
-                    sample_hour: 20,
-                    transport: Some(vec![
-                        RegionTransportSpeed {
-                            region: 9,
-                            speed: Some(-1),
-                        },
-                        RegionTransportSpeed {
-                            region: 10,
-                            speed: Some(0),
-                        },
-                    ]),
-                    ..Default::default()
-                })),
-                ..Default::default()
-            }]),
-        );
-        let mut content = content(0);
-        let sea = ProvinceTerrain { flags: 0, index: 1 };
-        content.map = MovementMap::from_parts(&[
-            (
-                1,
-                sea,
-                vec![Neighbour {
-                    to: 2,
-                    distance: Some(1_i64 << 58),
-                    ..Default::default()
-                }],
-            ),
-            (
-                2,
-                sea,
-                vec![Neighbour {
-                    to: 3,
-                    distance: Some(100_000),
-                    ..Default::default()
-                }],
-            ),
-            (3, sea, vec![]),
-        ]);
-        // The first fixed5 product is i64::MIN and division by -1 traps.
-        // Native has already reached that division before the next speed0.
-        assert_eq!(
-            Inputs::new(&frame, &content).remaining(
-                &division(),
-                &movement(3),
-                &FreshCounterEta::default(),
-                &[2, 3],
-                |from| Ok(if from == 1 { 9 } else { 10 }),
-            ),
-            Err("ETA native signed division overflows".into()),
-        );
-    }
-
-    #[test]
-    fn refused_and_stale_owner_packets_cannot_supply_transport() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let mut frame = transport_frame(200_000);
-        let content = content(0);
-        for (packet, expected) in [
-            (
-                Recorded::NotRecorded,
-                "CountryCounterInputs.movement not recorded",
-            ),
-            (
-                Recorded::Value(None),
-                "fresh ETA owner movement packet was refused",
-            ),
-            (
-                Recorded::Value(Some(CountryMovementInputs {
-                    sample_hour: 19,
-                    transport: Some(vec![RegionTransportSpeed {
-                        region: 9,
-                        speed: Some(200_000),
-                    }]),
-                    ..Default::default()
-                })),
-                "fresh ETA owner inputs sampled at 19, frame is 20",
-            ),
-        ] {
-            put(
-                &mut frame,
-                TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-                    forward_visibility: replay::rows::Recorded::NotRecorded,
-                    country: 101,
-                    movement: packet,
-                    ..Default::default()
-                }]),
-            );
-            assert_eq!(
-                Inputs::new(&frame, &content).transport(99, 9),
-                Err(expected.into())
-            );
-        }
     }
 
     #[test]
@@ -1211,16 +514,23 @@ mod tests {
         );
     }
 
+    /// Task-force admission inputs are not recorded, so a reached class-1
+    /// fact refuses by name instead of admitting or denying an edge.
+    #[test]
+    fn task_force_admission_facts_refuse_by_name() {
+        use crate::map::raids::reach::CounterFacts;
+        let frame = frame();
+        let content = content(0);
+        let inputs = Inputs::new(&frame, &content);
+        assert_eq!(
+            inputs.all_submarine(7),
+            Err(super::super::task_force::ADMISSION_UNRECORDED.into())
+        );
+    }
+
     #[test]
     fn rail_health_absence_is_consumed_only_on_an_open_directed_edge() {
         let mut frame = frame();
-        put(
-            &mut frame,
-            TableRows::Provinces(vec![ProvinceRow {
-                id: 2,
-                ..Default::default()
-            }]),
-        );
         put(
             &mut frame,
             TableRows::RailCooldowns(vec![RailCooldownRow {
@@ -1232,7 +542,10 @@ mod tests {
             }]),
         );
         let content = content(1);
-        assert_eq!(Inputs::new(&frame, &content).rail(1, 2), Ok(300_000));
+        assert_eq!(
+            Inputs::new(&frame, &content).directed_rail_percentage(1, 2),
+            Ok(0)
+        );
         // Edges and health become required only after the cooldown gate opens.
         *frame.tables[TableId::RailCooldowns.index()] =
             TableView::Complete(TableRows::RailCooldowns(vec![RailCooldownRow {
@@ -1251,61 +564,14 @@ mod tests {
             }]),
         );
         assert_eq!(
-            Inputs::new(&frame, &content).rail(1, 2),
+            Inputs::new(&frame, &content).directed_rail_percentage(1, 2),
             Err("RailCooldowns.building not recorded".into())
         );
     }
 
     #[test]
-    fn first_endpoint_remains_available_when_the_ordinary_suffix_is_clipped() {
-        let movement = DivisionMovementRow {
-            path: vec![2],
-            path_total: 3,
-            ..Default::default()
-        };
-        assert_eq!(Endpoint::Next.target(&movement), Ok(2));
-        assert_eq!(
-            Endpoint::Destination.target(&movement),
-            Err("fresh ETA ordinary route is incomplete".into())
-        );
-    }
-
-    #[test]
-    fn absent_weather_record_does_not_require_the_snow_ceiling() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let mut frame = normal_frame();
-        let content = content(1);
-        let fresh = normal();
-        assert_eq!(
-            Inputs::new(&frame, &content).remaining(
-                &division(),
-                &movement(3),
-                &fresh,
-                &[2],
-                |_| Ok(9)
-            ),
-            Ok(200_000)
-        );
-        put(
-            &mut frame,
-            TableRows::WeatherProvinces(vec![WeatherProvinceRow {
-                id: 2,
-                snow: 1,
-                ..Default::default()
-            }]),
-        );
-        assert!(
-            Inputs::new(&frame, &content)
-                .remaining(&division(), &movement(3), &fresh, &[2], |_| Ok(9))
-                .unwrap_err()
-                .contains("WeatherRegions")
-        );
-    }
-
-    #[test]
     fn observed_null_rail_building_is_zero_but_missing_selection_is_refused() {
-        let mut frame = normal_frame();
+        let mut frame = frame();
         put(
             &mut frame,
             TableRows::RailEdges(vec![RailEdgeRow {
@@ -1314,8 +580,7 @@ mod tests {
                 level: 5,
             }]),
         );
-        let mut content = content(1);
-        content.rail.as_mut().unwrap().speed = [0, 0, 0, 1_000_000];
+        let content = content(1);
         for (building, expected) in [
             (Some(RailwayBuildingState { building: None }), Ok(0)),
             (
@@ -1333,163 +598,11 @@ mod tests {
                     selection_hour: Default::default(),
                 }]),
             );
-            assert_eq!(Inputs::new(&frame, &content).rail(1, 2), expected);
-        }
-    }
-
-    #[test]
-    fn refused_owner_entries_are_independent_but_duplicate_domain_keys_refuse() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let mut frame = transport_frame(200_000);
-        put(
-            &mut frame,
-            TableRows::Provinces(vec![ProvinceRow {
-                id: 2,
-                controller: 0,
-                ..Default::default()
-            }]),
-        );
-        let mut domain = CountryMovementInputs {
-            sample_hour: 20,
-            river: Some(vec![
-                ControllerRiverSpeed {
-                    target_slot: 0,
-                    modifier: Some(-10_000),
-                },
-                ControllerRiverSpeed {
-                    target_slot: 1,
-                    modifier: None,
-                },
-            ]),
-            transport: Some(vec![
-                RegionTransportSpeed {
-                    region: 9,
-                    speed: Some(200_000),
-                },
-                RegionTransportSpeed {
-                    region: 10,
-                    speed: None,
-                },
-            ]),
-            ..Default::default()
-        };
-        let content = content(0);
-        for duplicate in [false, true] {
-            if duplicate {
-                domain.river.as_mut().unwrap().push(ControllerRiverSpeed {
-                    target_slot: 1,
-                    modifier: Some(0),
-                });
-                domain
-                    .transport
-                    .as_mut()
-                    .unwrap()
-                    .push(RegionTransportSpeed {
-                        region: 10,
-                        speed: Some(0),
-                    });
-            }
-            put(
-                &mut frame,
-                TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-                    forward_visibility: replay::rows::Recorded::NotRecorded,
-                    country: 101,
-                    movement: Recorded::Value(Some(domain.clone())),
-                    ..Default::default()
-                }]),
-            );
-            let inputs = Inputs::new(&frame, &content);
             assert_eq!(
-                inputs.transport(99, 9),
-                if duplicate {
-                    Err("fresh ETA owner transport contains duplicate keys".into())
-                } else {
-                    Ok(200_000)
-                }
-            );
-            assert_eq!(
-                inputs.river(99, 2),
-                if duplicate {
-                    Err("fresh ETA owner river contains duplicate keys".into())
-                } else {
-                    Ok(-10_000)
-                }
+                Inputs::new(&frame, &content).directed_rail_percentage(1, 2),
+                expected
             );
         }
-        assert_eq!(
-            owner_entry(
-                &[
-                    RegionTransportSpeed {
-                        region: 10,
-                        speed: Some(0)
-                    },
-                    RegionTransportSpeed {
-                        region: 9,
-                        speed: Some(200_000)
-                    },
-                ],
-                |entry| entry.region,
-                9,
-                "owner transport",
-            ),
-            Err("fresh ETA owner transport keys are not increasing".into())
-        );
-    }
-
-    #[test]
-    fn normal_terrain_rejects_duplicate_and_nonpositive_keys_only_when_reached() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let frame = normal_frame();
-        let land = content(1);
-        let inputs = Inputs::new(&frame, &land);
-        for terrain in [-1, 0, 2] {
-            let mut fresh = normal();
-            fresh
-                .normal
-                .as_mut()
-                .unwrap()
-                .terrain_speed
-                .push(TerrainSpeed {
-                    terrain,
-                    modifier: 0,
-                });
-            assert_eq!(
-                inputs.remaining(&division(), &movement(3), &fresh, &[2], |_| Ok(9)),
-                Err(if terrain <= 0 {
-                    "fresh ETA normal terrain contains a nonpositive key"
-                } else {
-                    "fresh ETA normal terrain contains duplicate keys"
-                }
-                .into())
-            );
-            // The same invalid normal domain cannot deny a transport route.
-            let transport = transport_frame(200_000);
-            let sea = content(0);
-            assert_eq!(
-                Inputs::new(&transport, &sea).remaining(
-                    &division(),
-                    &movement(3),
-                    &fresh,
-                    &[2],
-                    |_| Ok(9)
-                ),
-                Ok(200_000)
-            );
-        }
-        let mut fresh = normal();
-        fresh.normal.as_mut().unwrap().terrain_speed.insert(
-            0,
-            TerrainSpeed {
-                terrain: 3,
-                modifier: 0,
-            },
-        );
-        assert_eq!(
-            inputs.remaining(&division(), &movement(3), &fresh, &[2], |_| Ok(9)),
-            Ok(200_000)
-        );
     }
 
     #[test]
@@ -1497,7 +610,7 @@ mod tests {
         engine::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = content(0);
-        let mut frame = transport_frame(200_000);
+        let mut frame = country_frame();
         put(
             &mut frame,
             TableRows::CountryLinks(vec![
@@ -1512,11 +625,11 @@ mod tests {
             ]),
         );
         assert_eq!(
-            Inputs::new(&frame, &content).transport(99, 9),
+            Inputs::new(&frame, &content).route_identities(),
             Err("fresh ETA CountryLinks contains duplicate keys".into())
         );
 
-        let mut frame = transport_frame(200_000);
+        let mut frame = country_frame();
         put(
             &mut frame,
             TableRows::Countries(vec![
@@ -1533,7 +646,7 @@ mod tests {
             ]),
         );
         assert_eq!(
-            Inputs::new(&frame, &content).transport(99, 9),
+            Inputs::new(&frame, &content).route_identities(),
             Err("fresh ETA Countries contains duplicate keys".into())
         );
 
@@ -1557,7 +670,7 @@ mod tests {
             Err("fresh ETA Countries contains duplicate keys".into())
         );
 
-        let mut frame = normal_frame();
+        let mut frame = self::frame();
         put(
             &mut frame,
             TableRows::RailCooldowns(vec![RailCooldownRow {
@@ -1584,7 +697,7 @@ mod tests {
             ]),
         );
         assert_eq!(
-            Inputs::new(&frame, &content).rail(1, 2),
+            Inputs::new(&frame, &content).directed_rail_percentage(1, 2),
             Err("fresh ETA RailEdges contains duplicate keys".into())
         );
     }
@@ -1592,9 +705,8 @@ mod tests {
     #[test]
     fn route_identity_gate_refuses_incomplete_and_duplicate_core_domains_only() {
         let content = content(1);
-        let mut frame = transport_frame(200_000);
+        let mut frame = country_frame();
         put(&mut frame, TableRows::Provinces(vec![]));
-        // States are unavailable: reached edge predicates own that domain.
         assert_eq!(Inputs::new(&frame, &content).route_identities(), Ok(()));
         for rows in [
             TableRows::Provinces(vec![

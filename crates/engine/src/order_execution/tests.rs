@@ -95,6 +95,8 @@ fn orders<'a>(
         rows,
         source: Outcome::Rows { len: rows.len() },
         geometry: &[],
+        plan_rows: &[],
+        census: &[],
     }
 }
 fn source<'a>(
@@ -166,6 +168,136 @@ fn route_zero_does_not_reach_progress_country_or_province() {
         &[(PARA + order::CONDITION_CACHE, 1)]
     );
     assert_eq!(packet.work().progress_demand, 0);
+}
+
+/// Each census order's census row and plan come from the plan walk's
+/// placement when they hold its key, and are searched for otherwise: every
+/// placement gives the same operands and reads.
+#[test]
+fn any_plan_placement_gives_the_searched_execution() {
+    // A line order, which the execution operands skip unread.
+    const LINE: usize = 0xb000;
+    let run = |plan_rows: &[u32]| {
+        let mut image = Image::default();
+        image.put(PARA + order::CONDITION_CACHE, &[0]);
+        let roots = [corders_group::Root {
+            pointer: GROUP,
+            handle: HANDLE,
+            country: 0,
+        }];
+        // Census order is pointer-hashed: here the reverse of key order.
+        let visits = [
+            order::Visit::fixture(PARA, 0, 2),
+            order::Visit::fixture(LINE, 0, 1),
+        ];
+        let rows = [1, 2].map(|instance| order::Row {
+            owner_group: HANDLE,
+            instance,
+            order_type: if instance == 2 {
+                order::TYPE_PARADROP
+            } else {
+                order::TYPE_LINE
+            },
+            path_start: usize::MAX,
+            path_len: 1,
+            ..Default::default()
+        });
+        let mut plans = [1, 2].map(|instance| PlanRow {
+            owner_group: HANDLE,
+            instance,
+            ..Default::default()
+        });
+        let mut memo = ccountry::NativeReferenceMemo::try_with_capacity(0, 0).unwrap();
+        memo.reset(BASE, STATE);
+        let countries = memo.view(&image, BASE, STATE);
+        let mut packet = Prepared::try_new(capacity()).unwrap();
+        packet.capture_orders(
+            &image,
+            BASE,
+            STATE,
+            Orders {
+                plan_rows,
+                ..orders(&roots, &visits, &rows)
+            },
+            &mut plans,
+            Outcome::Rows { len: 2 },
+            &countries,
+        );
+        let reads = image.reads.borrow().clone();
+        (plans, reads)
+    };
+    let searched = run(&[]);
+    assert_eq!(
+        searched.0[1].execution,
+        Some(OrderExecutionInputs {
+            route_is_ok: Some(0),
+            paradrop: None
+        })
+    );
+    assert_eq!(searched.0[0].execution, None);
+    for plan_rows in [&[1, 0][..], &[0, 1], &[1], &[7, 7]] {
+        assert_eq!(run(plan_rows), searched, "{plan_rows:?}");
+    }
+}
+
+/// The census index is the same from any placement: a sorted one, a
+/// permutation the sort repairs, one naming a row twice, a short one, none.
+/// Its failures are the census order's.
+#[test]
+fn any_plan_placement_gives_the_same_order_index() {
+    let roots = [
+        corders_group::Root {
+            pointer: GROUP,
+            handle: HANDLE,
+            country: 0,
+        },
+        corders_group::Root {
+            pointer: GROUP + 0x100,
+            handle: HANDLE + 1,
+            country: 0,
+        },
+    ];
+    // Census order is pointer-hashed: empty slots, keys out of order.
+    let visits = [
+        order::Visit::fixture(PARA + 0x300, 1, 4),
+        order::Visit::default(),
+        order::Visit::fixture(PARA, 0, 9),
+        order::Visit::fixture(PARA + 0x100, 0, 2),
+        order::Visit::default(),
+    ];
+    let rows =
+        [(HANDLE, 2), (HANDLE, 9), (HANDLE + 1, 4)].map(|(owner_group, instance)| order::Row {
+            owner_group,
+            instance,
+            ..Default::default()
+        });
+    let index = |visits: &[order::Visit], plan_rows: &[u32]| {
+        let mut packet = Prepared::try_new(capacity()).unwrap();
+        packet.index_orders(Orders {
+            plan_rows,
+            ..orders(&roots, visits, &rows)
+        });
+        (packet.visits.clone(), packet.index_error)
+    };
+    let census = index(&visits, &[]);
+    assert_eq!(census.1, None);
+    assert_eq!(
+        census.0.iter().map(|entry| entry.1).collect::<Vec<_>>(),
+        [3, 2, 0]
+    );
+    for plan_rows in [&[2, 1, 0][..], &[0, 1, 2], &[2, 2, 0], &[2], &[2, 1, 7]] {
+        assert_eq!(index(&visits, plan_rows), census, "{plan_rows:?}");
+    }
+    // An absent owner fails with the census order's reason either way.
+    let mut orphaned = visits;
+    orphaned[3] = order::Visit::fixture(PARA + 0x100, 5, 2);
+    let failed = index(&orphaned, &[]);
+    assert_eq!(failed.1, Some("execution order owner missing"));
+    assert_eq!(index(&orphaned, &[2, 1, 0]).1, failed.1);
+    // So does a census shorter than its rows.
+    let short = index(&visits[..3], &[]);
+    assert_eq!(short.1, Some("execution visit census count mismatch"));
+    assert_eq!(index(&visits[..3], &[1, 0, 2]).1, short.1);
 }
 
 #[test]

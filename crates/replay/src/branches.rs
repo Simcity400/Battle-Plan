@@ -297,6 +297,12 @@ impl BranchTracker {
         self.last.map(|last| last.branch)
     }
 
+    /// The branch and hour of the last observation: before a resumed
+    /// session's first observation, its recorded tail.
+    pub fn last_observation(&self) -> Option<(BranchId, Hour)> {
+        self.last.map(|last| (last.branch, last.hour))
+    }
+
     /// Reattach to the same process after seeding its recovered history. This is
     /// not a new process session; the next observation still checks load/discontinuity.
     pub fn resume_session(

@@ -1,5 +1,5 @@
-//! SWeatherPerProvince snow, temperature and mud at the completed hourly boundary, with the
-//! manager's per-province display bytes and stored day/night clock.
+//! SWeatherPerProvince snow, temperature words and mud at the completed hourly boundary, with
+//! the manager's per-province display bytes and stored day/night clock.
 //!
 //! Normal staging jobs finish before publication jobs, then display bytes
 //! are written serially. Provinces update in rotating subsets; each row
@@ -31,11 +31,23 @@ pub const MODIFIERS: usize = 0x58;
 /// temperature classification. Serialization retains all eight bytes,
 /// including zero.
 pub const TEMPERATURE: usize = 0x118;
-/// Raw mud byte used by the province tooltip. Display mud combines this
-/// with custom mud at +0x138, so the display value is independent.
+/// Committed drift, signed i64 fixed5: weather smoothing averages the active
+/// neighbours' words and weather modifier tasks commit the working drift
+/// +0x170 into it with the staged temperature.
+pub const DRIFT: usize = 0x128;
+/// Raw mud byte tested by the province tooltip.
+/// Display updating writes display mud from this OR custom mud +0x138, so it is
+/// independent.
 pub const RAW_MUD: usize = 0x130;
-/// Separate day/night row stride, indexed by physical province slot in
-/// the weather-manager +0x370 array.
+/// Staged temperature, signed i64 fixed5: province weather calculation stores
+/// +0x118 plus the clamped working drift and weather smoothing then smooths it;
+/// weather modifier tasks commit it into +0x118 when +0x168 is set.
+pub const STAGED_TEMPERATURE: usize = 0x160;
+/// Working drift, signed i64 fixed5: province weather calculation adds the
+/// hashed step, clamps it and resets it outside the period's range.
+pub const WORKING_DRIFT: usize = 0x170;
+/// Separate day/night row stride; day and night getters index the
+/// CWeatherManager+0x370 array by this physical province slot.
 pub const CLOCK_STRIDE: usize = 0x330;
 /// Stored night factor, signed i64 fixed5 at +0x240, updated by day/night
 /// processing and read at full width.
@@ -55,12 +67,15 @@ pub struct Row {
     pub display_mud: u8,
     pub raw_mud: u8,
     pub temperature: i64,
+    pub drift: i64,
+    pub staged_temperature: i64,
+    pub working_drift: i64,
     pub local_hour: i32,
     pub night_factor: i64,
 }
 
 /// Identity and stored weather values, gathered per batch without padding.
-pub const FIELDS: [RecordField; 5] = [
+pub const FIELDS: [RecordField; 8] = [
     RecordField {
         source_offset: 0,
         destination_offset: 0,
@@ -86,8 +101,23 @@ pub const FIELDS: [RecordField; 5] = [
         destination_offset: 36,
         len: 1,
     },
+    RecordField {
+        source_offset: DRIFT,
+        destination_offset: 37,
+        len: 8,
+    },
+    RecordField {
+        source_offset: STAGED_TEMPERATURE,
+        destination_offset: 45,
+        len: 8,
+    },
+    RecordField {
+        source_offset: WORKING_DRIFT,
+        destination_offset: 53,
+        len: 8,
+    },
 ];
-pub const RECORD_BYTES: usize = 37;
+pub const RECORD_BYTES: usize = 61;
 
 /// Only the two stored clock words: no row identity or dense padding exists
 /// in this capture. The authenticated manager and equal live counts own the join.
@@ -203,6 +233,9 @@ pub fn decode_record(
         permanent_snow: i64::from_le_bytes(record[20..28].try_into().unwrap()),
         temperature: i64::from_le_bytes(record[28..36].try_into().unwrap()),
         raw_mud: record[36],
+        drift: i64::from_le_bytes(record[37..45].try_into().unwrap()),
+        staged_temperature: i64::from_le_bytes(record[45..53].try_into().unwrap()),
+        working_drift: i64::from_le_bytes(record[53..61].try_into().unwrap()),
         ..Row::default()
     })
 }

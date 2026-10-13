@@ -274,8 +274,8 @@ mod tests {
     fn frame(rows: Vec<HiredAdvisorRow>) -> DecodedFrame {
         let mut frame = DecodedFrame {
             branch: 1,
-            // HiredAdvisors' daily slot: the table is fresh at this hour.
-            hour: replay::cadence::refresh_slot(TableId::HiredAdvisors).unwrap() as i32,
+            // HiredAdvisors is hourly: the table is fresh at any hour.
+            hour: 21,
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
             })
@@ -372,8 +372,14 @@ mod tests {
         assert!(report.failed_comparisons.contains_key("HiredAdvisors"));
     }
 
+    /// HiredAdvisors is hourly (has_idea reads it), so every oracle hour
+    /// compares it.
     #[test]
-    fn a_stale_daily_table_is_a_limitation_not_a_comparison() {
+    fn appointments_are_compared_at_every_hour() {
+        assert_eq!(
+            replay::cadence::cadence(TableId::HiredAdvisors),
+            replay::cadence::Cadence::Hourly
+        );
         let mut rows = frame(Vec::new());
         rows.hour += 1;
         let germany = CountryRow {
@@ -384,8 +390,8 @@ mod tests {
         let links = BTreeMap::from([(102, &germany)]);
         let mut report = Report::default();
         compare(&rows, &pack(), &links, Ok(&BTreeMap::new()), &mut report).unwrap();
-        assert!(report.differences.is_empty());
-        assert!(!report.compared_tables.contains_key("HiredAdvisors"));
+        assert!(report.compared_tables.contains_key("HiredAdvisors"));
+        assert!(!report.differences.is_empty());
         // A token outside the dictionary is named, not guessed.
         assert!(
             report

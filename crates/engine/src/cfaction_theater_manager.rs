@@ -17,7 +17,7 @@ pub const OWNER: usize = 0x08;
 /// Theatre array header: data +0, capacity +8, count +0xC.
 /// Serialization and pin visibility use the stored count.
 pub const THEATRES: usize = 0x10;
-/// Theatre entry stride; `WriteTheaters` and every pin reader step by 0xA8.
+/// Theatre entry stride; theatre serialization and every pin reader step by 0xA8.
 pub const THEATRE_STRIDE: usize = 0xa8;
 /// Theatre raw-country-tag array; pins use only its count.
 pub const COUNTRIES: usize = 0x30;

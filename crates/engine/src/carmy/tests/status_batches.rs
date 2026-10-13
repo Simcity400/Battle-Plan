@@ -268,11 +268,8 @@ fn worker_manpower_and_lazy_thresholds_grow_before_first_and_later_payloads() {
 }
 
 #[test]
-fn worker_acclimatization_entries_and_registry_grow_from_original_5000_and_later_headers() {
-    use crate::{
-        acclimatization_category as category, acclimatization_data as data,
-        acclimatization_entry::Entry,
-    };
+fn worker_acclimatization_registry_grows_from_original_5000_and_later_headers() {
+    use crate::{acclimatization_category as category, acclimatization_data as data};
     let mut growing = packet(0);
     growing.enable_growth();
     for count in [5_000, 12_000] {
@@ -290,11 +287,14 @@ fn worker_acclimatization_entries_and_registry_grow_from_original_5000_and_later
         source
             .globals
             .insert(category::REGISTRY_RVA, 0x20000_u64.to_le_bytes().to_vec());
+        source
+            .globals
+            .insert(data::CAMO_SHOW_AT_RVA, 50_000_i64.to_le_bytes().to_vec());
         array(&mut source.bytes, 0x20000, 0x60000, count as u32);
         for index in 0..count {
             let pointer = 0x80000 + index * 0x40;
             p64(&mut source.bytes, 0x30000 + index * 16, pointer as u64);
-            p64(&mut source.bytes, 0x30008 + index * 16, index as u64);
+            p64(&mut source.bytes, 0x30008 + index * 16, index as u64 * 100);
             p64(&mut source.bytes, 0x60000 + index * 8, pointer as u64);
             p32(
                 &mut source.bytes,
@@ -309,31 +309,30 @@ fn worker_acclimatization_entries_and_registry_grow_from_original_5000_and_later
         }];
         carmy::capture_division_seeds(&source, &mut seeds);
         let actual = ScalarBatchMemory::new(&source);
+        // The last entry weighs most and every entry is read.
+        let last = carmy::Camouflage {
+            category: Some(count as u32),
+        };
+        let (object, winner) = carmy::acclimatization_winner(&actual, 0, &seeds[0], None).unwrap();
         assert_eq!(
-            growing.read_acclimatization(&actual, 0, &seeds[0]),
-            Ok(250_000)
+            growing.read_camouflage(&actual, 0, &object, winner),
+            Ok(last)
         );
-        let entries: Vec<_> = (0..count)
-            .map(|index| Entry {
-                category: index as u32 + 1,
-                weight: index as i64,
-            })
-            .collect();
-        assert_eq!(growing.acclimatization, entries);
         assert_eq!(
             growing.required_capacities().acclimatization_categories,
             count
         );
         let expected = ScalarBatchMemory::new(&source);
         let mut fixed = carmy::StatusPacket::with_capacities(carmy::StatusCapacities {
-            acclimatization: count,
             acclimatization_categories: count,
             ..carmy::StatusCapacities::new(2)
         })
         .unwrap();
+        let (object, winner) =
+            carmy::acclimatization_winner(&expected, 0, &seeds[0], None).unwrap();
         assert_eq!(
-            fixed.read_acclimatization(&expected, 0, &seeds[0]),
-            Ok(250_000)
+            fixed.read_camouflage(&expected, 0, &object, winner),
+            Ok(last)
         );
         assert_eq!(*actual.reads.borrow(), *expected.reads.borrow());
     }
@@ -359,4 +358,52 @@ fn acquired_status_demand_excludes_allocator_spare_capacity() {
         assert_eq!(packet.capacities.thresholds, 3);
         assert_eq!(packet.required_capacities().manpower, COUNT);
     }
+}
+
+/// A seed's carried maxima stand in for a read of its stat block, as the
+/// read would; maxima of another block are not the seed's and are ignored.
+#[test]
+fn carried_maxima_replace_the_stat_block_read() {
+    use crate::csub_unit_definition::DivisionMaxima;
+    let source = manpower_fixture(&[1; 2]);
+    let mut seeds = [carmy::DivisionSeed {
+        pointer: A1,
+        division: presentation_source()[0].division,
+        ..Default::default()
+    }; 2];
+    carmy::capture_division_seeds(&source, &mut seeds);
+    let stats = seeds[0].stat_block.unwrap();
+    let capture = |held: &[Option<DivisionMaxima>]| {
+        let memory = ScalarBatchMemory::new(&source);
+        let mut packet = packet(65);
+        let outcome =
+            packet.capture_holding(&memory, 0, GS, &seeds, Outcome::Rows { len: 2 }, 1, held);
+        let reads = memory.reads.borrow().clone();
+        (outcome, packet.unit_maxima(0), reads)
+    };
+    let (outcome, fresh, reads) = capture(&[]);
+    let fresh = fresh.unwrap();
+    assert_eq!(fresh.pointer, stats);
+    assert!(reads.iter().any(|&(at, _)| at == stats));
+    let held = DivisionMaxima {
+        // Any other value: the fixture's maximum sits at the top of the range.
+        organisation: fresh.organisation.wrapping_sub(7),
+        ..fresh
+    };
+    let (carried_outcome, carried, reads) = capture(&[Some(held)]);
+    assert_eq!(carried_outcome, outcome);
+    assert_eq!(carried, Some(held));
+    use crate::csub_unit_definition::{CAN_EXFILTRATE_FROM_COAST, MAXIMUM_ORGANISATION};
+    for at in [
+        stats,
+        stats + MAXIMUM_ORGANISATION,
+        stats + CAN_EXFILTRATE_FROM_COAST,
+    ] {
+        assert!(!reads.iter().any(|read| read.0 == at), "{at:x}");
+    }
+    let other = DivisionMaxima {
+        pointer: stats + 0x10,
+        ..held
+    };
+    assert_eq!(capture(&[Some(other)]).1, Some(fresh));
 }

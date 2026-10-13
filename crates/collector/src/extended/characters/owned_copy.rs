@@ -11,9 +11,9 @@ pub(crate) struct CharactersJob {
     pub(super) character_demand: AdvisorDemand,
     pub(super) unit_demand: AdvisorDemand,
     pub part: usize,
-    pub log: crate::raw::RawLog<6>,
+    pub log: crate::raw::RawLog<N>,
     pub game_state: usize,
-    pub active: [bool; 6],
+    pub active: [bool; N],
     pub(super) traits: TraitCapture,
     pub(super) advisor_demand: AdvisorDemand,
     // Authenticated roles whose appended fields are copied after every old
@@ -31,10 +31,28 @@ pub(crate) struct CharactersJob {
     // Advisor-only jobs authenticate both headers once, then acquire the two
     // rosters sequentially with independent fresh-read programs. The child has
     // no child of its own; neither root authentication nor values are cached.
-    pub(super) advisor_roots: crate::raw::RawLog<6>,
+    pub(super) advisor_roots: crate::raw::RawLog<N>,
     pub(super) advisor_dynamic: Option<Box<CharactersJob>>,
     pub(super) advisor_cache: Option<advisors::Cache>,
     pub(super) advisor_section_complete: bool,
+    /// The leader role job's held rows ([`leaders::LeaderCache`]); its
+    /// payload came from them when `leader_cached`.
+    pub(super) leader_cache: Option<leaders::LeaderCache>,
+    pub(super) leader_cached: bool,
+    pub(super) leader_charge: crate::raw_memory::Charge,
+    /// Characters rows the roster job carries ([`carry::Carry`]).
+    pub(super) carry: carry::Carry,
+    pub(super) carry_charge: crate::raw_memory::Charge,
+    /// The roster job's held roster token and quiet hours ([`quiet`]).
+    pub(super) roster: quiet::QuietRoster,
+    /// The Characters rows of this job's latest quiet decode.
+    pub(super) published: quiet::Published,
+    /// UnitLeaders rows held between quiet roster hours.
+    pub(super) unit_carry: leader_carry::UnitCarry,
+    /// UnitLeaderTraits rows held between the traits job's captures.
+    pub(super) trait_carry: leader_carry::TraitCarry,
+    /// The role census kept between gathers.
+    pub(super) census_carry: census::CensusCarry,
     pub(super) census_charge: crate::raw_memory::Charge,
     // The roster job gathers the role census on role hours. It persists
     // like the portrait census; the flag admits only this pass's gather.
@@ -43,6 +61,9 @@ pub(crate) struct CharactersJob {
     /// Historical roster length of the retained portrait census, or of the
     /// loaned census this payload was acquired from.
     pub(super) census_historical: usize,
+    /// The generation of the census a role job's capture borrowed; zero for
+    /// none.
+    pub(super) census_generation: u64,
     /// A role payload acquired from a loaned census, the occurrences its
     /// decode visits, and the demand recorded when that storage ran out.
     pub(super) census_capture: bool,
@@ -56,14 +77,14 @@ pub(crate) struct CharactersJob {
 
 /// Auxiliary bindings whose selecting character/unit bytes are controls in the
 /// raw read program. Only addresses and capacity demand survive a refresh;
-/// trait vectors, definitions and experience are acquired on every refresh.
+/// trait vectors and definitions are acquired on every refresh.
 #[derive(Debug)]
 pub(super) struct CharacterSourceBindings {
     pub(super) sources: Vec<TraitVectorCopy>,
     pub(super) overflowed: bool,
     pub(super) ready: bool,
-    pub(super) rows: [usize; 2],
-    pub(super) bytes: [usize; 2],
+    pub(super) rows: usize,
+    pub(super) bytes: usize,
     pub(super) advisor: AdvisorDemand,
     pub(super) advisor_section_complete: bool,
     pub(super) charge: crate::raw_memory::Charge,
@@ -72,11 +93,11 @@ pub(super) struct CharacterSourceBindings {
 impl CharacterSourceBindings {
     pub(super) fn new() -> Self {
         let mut value = Self {
-            sources: owned_vec(vec(census::initial_len().saturating_mul(2))),
+            sources: owned_vec(vec(census::initial_len())),
             overflowed: false,
             ready: false,
-            rows: [0; 2],
-            bytes: [0; 2],
+            rows: 0,
+            bytes: 0,
             advisor: AdvisorDemand::default(),
             advisor_section_complete: false,
             charge: crate::raw_memory::Charge::default(),
@@ -171,7 +192,7 @@ pub(super) struct AdvisorDemand {
 }
 
 impl AdvisorDemand {
-    fn add(&mut self, rows: usize, bytes: usize) {
+    pub(super) fn add(&mut self, rows: usize, bytes: usize) {
         self.overflowed |=
             self.rows.checked_add(rows).is_none() || self.bytes.checked_add(bytes).is_none();
         self.rows = self.rows.saturating_add(rows);
@@ -191,8 +212,27 @@ pub(super) enum AppendedRole {
 }
 
 impl CharactersJob {
+    /// Whether recycling keeps the job. A leader role job that carried its
+    /// rows from the census copied no raw log, but its held rows are its
+    /// storage: dropping it would start every later hour cold.
     pub(crate) fn has_storage(&self) -> bool {
-        self.worker_growing || self.advisor_cache.is_some() || self.log.spans.capacity() != 0
+        self.worker_growing
+            || self.advisor_cache.is_some()
+            || self.leader_cache.is_some()
+            || self.log.spans.capacity() != 0
+    }
+
+    /// A pool miss's empty job, allocation-free: its part's caches that
+    /// need no storage until a worker fills them.
+    pub(crate) fn vacant(part: usize) -> Self {
+        let mut job = Self {
+            part,
+            ..Self::default()
+        };
+        if part == 1 && cfg!(feature = "character_changes") {
+            job.leader_cache = Some(leaders::LeaderCache::default());
+        }
+        job
     }
     pub(super) fn source_mask(&self) -> u32 {
         self.active
@@ -205,7 +245,7 @@ impl CharactersJob {
     #[cfg(test)]
     pub fn new() -> Self {
         let mut job = Self::with_storage(0, 1 << 19, 24 << 20, true);
-        job.traits = TraitCapture::with_test_capacities(4096, [4096, 32768], 4096, 1 << 20);
+        job.traits = TraitCapture::with_test_capacities(4096, 4096, 4096, 1 << 20);
         job.source_bindings = Some(super::tests::fixture_bindings());
         job
     }
@@ -253,7 +293,7 @@ impl CharactersJob {
             part,
             log,
             game_state: 0,
-            active: [true; 6],
+            active: [true; N],
             traits: if has_traits {
                 TraitCapture::new()
             } else {
@@ -273,10 +313,21 @@ impl CharactersJob {
             advisor_dynamic: None,
             advisor_cache: None,
             advisor_section_complete: false,
+            leader_cache: None,
+            leader_cached: false,
+            leader_charge: crate::raw_memory::Charge::default(),
+            carry: carry::Carry::default(),
+            carry_charge: crate::raw_memory::Charge::default(),
+            roster: quiet::QuietRoster::default(),
+            published: quiet::Published::default(),
+            unit_carry: leader_carry::UnitCarry::default(),
+            trait_carry: leader_carry::TraitCarry::default(),
+            census_carry: census::CensusCarry::default(),
             census_charge,
             role_census: role_census.map(Arc::new),
             role_census_current: false,
             census_historical: 0,
+            census_generation: 0,
             census_capture: false,
             census_visited,
             census_required: 0,
@@ -295,8 +346,11 @@ impl CharactersJob {
         }
         assert!(part < PARTS, "invalid character part");
         let mask = PART_MASKS[part];
-        let mut job = Self::with_storage(part, 0, 0, mask[4] || mask[5]);
+        let mut job = Self::with_storage(part, 0, 0, mask[4]);
         job.worker_growing = true;
+        if part == 1 && cfg!(feature = "character_changes") {
+            job.leader_cache = Some(leaders::LeaderCache::default());
+        }
         if part == 2 {
             job.advisor_roots = crate::raw::RawLog::new(4, 48);
             job.advisor_dynamic = Some(Box::new(Self::with_storage(part, 0, 0, false)));
@@ -307,7 +361,7 @@ impl CharactersJob {
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
-        self.active = [false; 6];
+        self.active = [false; N];
         self.traits.clear();
         self.advisor_demand = AdvisorDemand::default();
         self.appended_roles.clear();
@@ -320,6 +374,8 @@ impl CharactersJob {
         self.census_visited.clear();
         self.census_required = 0;
         self.advisor_section_complete = false;
+        self.leader_cached = false;
+        self.roster.quiet = false;
         self.advisor_roots.clear();
         if let Some(dynamic) = &mut self.advisor_dynamic {
             dynamic.clear();
@@ -349,7 +405,9 @@ impl CharactersJob {
                     .role_census
                     .as_ref()
                     .map_or(0, |census| census.allocated_bytes() as u64)
-                + crate::raw_memory::vector_bytes(&self.census_visited),
+                + crate::raw_memory::vector_bytes(&self.census_visited)
+                + self.roster.allocated_bytes()
+                + self.census_carry.allocated_bytes() as u64,
             ..Default::default()
         });
     }
@@ -517,8 +575,8 @@ pub(crate) struct CharactersCopyReport {
     pub raw_ok: bool,
     /// A stopped prepared pass may not fall back to another native capture.
     pub plan_failed: bool,
-    pub copy_ticks: [u64; 6],
-    pub raw_bytes: [u64; 6],
+    pub copy_ticks: [u64; N],
+    pub raw_bytes: [u64; N],
 }
 
 /// Acquisition parameters, bundled to keep the refresh entry small.
@@ -528,9 +586,9 @@ pub(crate) struct CharactersCopyContext {
     pub game_state: usize,
     /// A full hour reads every character template again.
     pub force_full: bool,
-    pub active: [bool; 6],
-    pub trait_rows: [usize; 2],
-    pub trait_bytes: [usize; 2],
+    pub active: [bool; N],
+    pub trait_rows: usize,
+    pub trait_bytes: usize,
 }
 
 /// Per-batch failure flags mirroring `Batch::active`: once a typed batch
@@ -543,7 +601,6 @@ pub(super) struct Dead {
     pub(super) advisors: bool,
     pub(super) units: bool,
     pub(super) traits: bool,
-    pub(super) experience: bool,
 }
 
 /// Successful view fields remain in the current capture's append-only raw
@@ -552,6 +609,9 @@ pub(super) struct Dead {
 pub(super) struct ViewCopy {
     pub(super) starts: [u32; 8],
     pub(super) unit_id: Option<u32>,
+    /// The roster job carries this character's Characters row: its
+    /// name-token span, names and gender were not copied.
+    pub(super) carried: bool,
 }
 
 impl Default for ViewCopy {
@@ -559,6 +619,7 @@ impl Default for ViewCopy {
         Self {
             starts: [u32::MAX; 8],
             unit_id: None,
+            carried: false,
         }
     }
 }
@@ -583,15 +644,38 @@ impl ViewCopy {
 /// Mirror of `View::read`'s scatter plus single-resume sequence with no
 /// decoding. Returns `None` only when the identity span fails, which aborts
 /// the whole copy exactly like the typed cursor error.
+#[cfg(test)]
 pub(super) fn copy_view(
     job: &mut CharactersJob,
     memory: &impl Memory,
     base: usize,
     pointer: usize,
 ) -> Option<ViewCopy> {
-    let mut view = ViewCopy::default();
+    copy_view_carrying(job, memory, base, pointer, false)
+}
+
+/// The Characters-only spans a carried character omits: the name-token span
+/// (which holds the template pointer), both name headers and the gender.
+const CARRIED_SPANS: [usize; 3] = [2, 3, 7];
+
+pub(super) fn copy_view_carrying(
+    job: &mut CharactersJob,
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    carried: bool,
+) -> Option<ViewCopy> {
+    let mut view = ViewCopy {
+        carried,
+        ..ViewCopy::default()
+    };
     let active = job.source_mask();
-    let masks = VIEW_MASKS.map(|mask| mask & active);
+    let mut masks = VIEW_MASKS.map(|mask| mask & active);
+    if carried {
+        for index in CARRIED_SPANS {
+            masks[index] = 0;
+        }
+    }
     let lengths = std::array::from_fn(|index| {
         if masks[index] != 0 {
             VIEW_LENS[index]
@@ -703,7 +787,7 @@ pub(super) fn hint_character_targets(
             hint_character_target(head, 26, &mut hint);
         }
     }
-    if !(dead.units && dead.traits && dead.experience)
+    if !(dead.units && dead.traits)
         && let Ok(unit) =
             usize::try_from(u64::from_le_bytes(view.field(job, 5).try_into().unwrap()))
         && unit != 0
@@ -1584,16 +1668,16 @@ pub(super) fn copy_unit(
         // Null role pointers are handled by the caller: no rows, no reads.
         return true;
     };
-    if dead.units && dead.traits && dead.experience {
-        // The typed walk `continue`s without reads once all three batches
-        // are dead, and so does the mirror.
+    if dead.units && dead.traits {
+        // The typed walk `continue`s without reads once both batches are
+        // dead, and so does the mirror.
         return true;
     }
-    // The replay calls the identity fallback while its traits or experience
-    // batch is still alive at this character, which is exactly the entry
-    // state here: later kills in this function happen after the replay's
-    // call point, so they must not close this gate.
-    let need_fallback = !dead.traits || !dead.experience;
+    // The replay calls the identity fallback while its traits batch is still
+    // alive at this character, which is exactly the entry state here: later
+    // kills in this function happen after the replay's call point, so they
+    // must not close this gate.
+    let need_fallback = !dead.traits;
     // Scalar and trait identities are independent native observations. The
     // trait acquisition authenticates its own identity even after a scalar
     // failure, provided the fallback can still resolve the parent handle.
@@ -1614,30 +1698,24 @@ pub(super) fn copy_unit(
     let kind = parsed.map(|(kind, _)| kind);
     if !dead.units {
         // State scatter in `cunit_leader::read` order: character backlink,
-        // category, experience, skill pointer, exile country.
-        let state = take_fixed_fields::<5, false>(
+        // category, skill pointer, exile country (the retired experience is
+        // not read).
+        let state = take_fixed_fields::<4, false>(
             job,
             memory,
             [
                 cunit_leader::CHARACTER_TYPE,
                 cunit_leader::CATEGORY,
-                cunit_leader::EXPERIENCE,
                 cunit_leader::SKILL,
                 cunit_leader::EXILE_COUNTRY,
             ]
             .map(|offset| unit.checked_add(offset)),
-            [8, 4, 8, 8, 4],
+            [8, 4, 8, 4],
             MASK_UNITS,
             &mut dead.units,
         );
         if !job.log.overflowed
-            && let [
-                Some(backlink),
-                Some(_category),
-                Some(_experience),
-                Some(skill),
-                Some(_exile),
-            ] = state
+            && let [Some(backlink), Some(_category), Some(skill), Some(_exile)] = state
         {
             // These are independent registries: a leader's id is not the
             // id of the character whose role points to it.
@@ -1687,8 +1765,8 @@ pub(super) fn copy_unit(
     }
     // Identity-fallback spans for the trait replay. Recorded whenever the
     // replay could still call the fallback (entry gate above); a live
-    // failure here kills only traits and experience, exactly like the
-    // typed fallback error, and never the units outcome.
+    // failure here kills only traits, exactly like the typed fallback
+    // error, and never the units outcome.
     if need_fallback {
         let mut fallback_dead = false;
         let [first, second] = take_fixed_fields::<2, false>(
@@ -1707,7 +1785,6 @@ pub(super) fn copy_unit(
         }
         if dead.units && (first.is_none() || second.is_none()) {
             dead.traits = true;
-            dead.experience = true;
         }
         if dead.units
             && let Some(first) = first
@@ -1900,7 +1977,7 @@ struct AppendedCopy<'a, M> {
 /// A short suffix leaves the completed prefix admitted; the raw log retains
 /// its actual overflow and growth demand, and missing owned reads refuse only
 /// the corresponding appended field during decode.
-fn copy_appended_roles(job: &mut CharactersJob, memory: &impl Memory, base: usize) {
+pub(super) fn copy_appended_roles(job: &mut CharactersJob, memory: &impl Memory, base: usize) {
     if job.overflowed() || job.log.planned_capture_failed() {
         return;
     }
@@ -2066,8 +2143,8 @@ pub(super) fn copy_trait_vector(
     !job.traits.overflowed()
 }
 
-/// Mirror of one staged `walk_family` entry's body read set across all six
-/// batches. Returns `false` only to abort the whole copy (pool overflow or a
+/// Mirror of one staged `walk_family` entry's body read set across every
+/// batch. Returns `false` only to abort the whole copy (pool overflow or a
 /// census-level fault); batch kills are recorded in `dead` and the loop
 /// continues exactly like the typed walk.
 pub(super) fn copy_character_body(
@@ -2086,13 +2163,40 @@ pub(super) fn copy_character_body(
             .try_into()
             .unwrap(),
     );
-    copy_character_text(job, memory, view, pointer, dead);
-    if job.log.overflowed {
-        return false;
+    if view.carried && job.carry.carried_row(pointer, id).is_none() {
+        // A carried pointer names another character: read its omitted
+        // spans now and rediscover the program without it.
+        job.carry.uncarry(pointer);
+        job.log.invalidate_read_plan();
+        view.carried = false;
+        let mask = job.source_mask();
+        for index in CARRIED_SPANS {
+            let len = VIEW_LENS[index];
+            if VIEW_MASKS[index] & mask == 0 {
+                continue;
+            }
+            let address = pointer.checked_add(VIEW_OFFSETS[index]).unwrap_or(0);
+            if let Some(start) = job.log.take(memory, address, len, VIEW_MASKS[index] & mask) {
+                view.starts[index] = start as u32;
+            }
+        }
+        if job.log.overflowed {
+            return false;
+        }
     }
-    copy_character_template(job, memory, base, view, id, dead);
-    if job.log.overflowed {
-        return false;
+    if view.carried {
+        // Decode supplies the held row; its text joins this pass's demand.
+        job.character_demand
+            .add(1, job.carry.carried_bytes(pointer));
+    } else {
+        copy_character_text(job, memory, view, pointer, dead);
+        if job.log.overflowed {
+            return false;
+        }
+        copy_character_template(job, memory, base, view, id, dead);
+        if job.log.overflowed {
+            return false;
+        }
     }
     let fields = *view;
     let header = |job: &CharactersJob| fields.field(job, 4).try_into().unwrap();
@@ -2121,8 +2225,8 @@ pub(super) fn copy_character_body(
     ) {
         return false;
     }
-    // Trait vectors share the unit leader pointer resolved view-locally
-    // above; a null role skips them silently like the typed walk.
+    // The trait vector shares the unit leader pointer resolved view-locally
+    // above; a null role skips it silently like the typed walk.
     match view_unit(job, view) {
         Some(unit) => copy_trait_vectors(job, memory, base, unit, view.unit_id.unwrap_or(id), dead),
         None => true,
@@ -2135,7 +2239,7 @@ pub(super) fn view_unit(job: &CharactersJob, view: &ViewCopy) -> Option<usize> {
         .filter(|&unit| unit != 0)
 }
 
-/// Both trait vectors of one unit leader, in the typed walk's order.
+/// The assigned trait vector of one unit leader, as the typed walk reads it.
 pub(super) fn copy_trait_vectors(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -2148,26 +2252,8 @@ pub(super) fn copy_trait_vectors(
         job,
         memory,
         base,
-        TraitVectorCopy {
-            unit,
-            leader_id,
-            array_offset: cunit_leader::TRAIT_DATA,
-            stride: 8,
-            has_experience: false,
-        },
+        TraitVectorCopy { unit, leader_id },
         &mut dead.traits,
-    ) && copy_trait_vector(
-        job,
-        memory,
-        base,
-        TraitVectorCopy {
-            unit,
-            leader_id,
-            array_offset: cunit_leader::TRAIT_EXPERIENCE_DATA,
-            stride: unit_leader_trait_experience_entry::STRIDE,
-            has_experience: true,
-        },
-        &mut dead.experience,
     )
 }
 
@@ -2196,7 +2282,7 @@ pub(super) fn copy_pass(
     job.advisor_section_complete = false;
     // Each table owner retains its own raw program. Parts beyond the core
     // also preserve capacity demand and freshly reacquire bound trait sources.
-    let hourly = context.active == [true, false, false, true, false, false];
+    let hourly = context.active == PART_MASKS[0];
     let bound = !hourly && job.source_bindings.is_some();
     if bound && !job.source_bindings.as_ref().unwrap().matches(context) {
         job.log.invalidate_read_plan();
@@ -2205,14 +2291,24 @@ pub(super) fn copy_pass(
         job.templates
             .begin(context.base, context.game_state, context.force_full);
     }
-    // Which templates the program reads depends on the identities this job
-    // already holds, so their generation keys it.
+    // A quiet roster attempt ([`quiet`]) already certified this hour's carry.
+    if job.part == 0 && section.is_none() && !std::mem::take(&mut job.roster.carry_begun) {
+        // Characters rows of certified characters are carried, not read.
+        job.carry.begin_hour(
+            context.active[0] && !context.force_full && cfg!(feature = "character_changes"),
+        );
+        job.carry.sample(memory, context.base);
+    }
+    // Which templates and names the program reads depends on the identities
+    // this job already holds and the characters it carries, so their
+    // generations key it.
     let key = section.map_or(
         [
             context.base,
             context.game_state,
             job.source_mask() as usize,
-            job.templates.generation as usize,
+            job.templates.generation as usize
+                ^ (job.carry.generation as usize).rotate_left(usize::BITS / 2),
         ],
         |array| {
             [
@@ -2245,6 +2341,7 @@ pub(super) fn copy_pass(
             section,
         );
         copy_appended_roles(job, memory, context.base);
+        job.carry.finish_pass(!job.overflowed());
         if bound {
             let complete = !job.overflowed()
                 && !job.advisor_demand.overflowed
@@ -2253,7 +2350,6 @@ pub(super) fn copy_pass(
                     .traits
                     .vectors
                     .iter()
-                    .flatten()
                     .all(|v| matches!(v.outcome, Outcome::Rows { .. }));
             let plan = job.source_bindings.as_mut().unwrap();
             plan.ready = complete && !plan.overflowed;
@@ -2278,14 +2374,12 @@ pub(super) fn copy_pass(
             let plan = job.source_bindings.as_ref().unwrap();
             job.advisor_demand = plan.advisor;
             job.advisor_section_complete = plan.advisor_section_complete;
-            let mut dead = [false; 2];
+            // A failed vector kills the table; later sources are not read.
             for &source in &plan.sources {
-                let table = usize::from(source.has_experience);
-                if !dead[table] {
-                    dead[table] = job.traits.acquire(memory, context.base, source).is_err();
-                    if job.traits.overflowed() {
-                        break;
-                    }
+                if job.traits.acquire(memory, context.base, source).is_err()
+                    || job.traits.overflowed()
+                {
+                    break;
                 }
             }
         }
@@ -2320,7 +2414,6 @@ pub(super) fn copy_roster(
         advisors: !job.active[2],
         units: !job.active[3],
         traits: !job.active[4],
-        experience: !job.active[5],
     };
     let arrays = if let Some(array) = section {
         [array, Array { data: 0, count: 0 }]
@@ -2410,8 +2503,11 @@ pub(super) fn copy_roster_entries(
                 else {
                     break;
                 };
+                let carried = job.carry.carries(pointer);
                 for (index, (offset, len)) in VIEW_OFFSETS.into_iter().zip(VIEW_LENS).enumerate() {
-                    if VIEW_MASKS[index] & source_mask == 0 {
+                    if VIEW_MASKS[index] & source_mask == 0
+                        || (carried && CARRIED_SPANS.contains(&index))
+                    {
                         continue;
                     }
                     if let Some(address) = pointer.checked_add(offset) {
@@ -2433,7 +2529,12 @@ pub(super) fn copy_roster_entries(
                     terminal = true;
                     break;
                 };
-                let Some(view) = copy_view(job, memory, base, pointer) else {
+                let carried = job.carry.carries(pointer);
+                if job.carry.active {
+                    // Registration precedes every read it certifies.
+                    job.carry.visit(pointer, carried);
+                }
+                let Some(view) = copy_view_carrying(job, memory, base, pointer, carried) else {
                     // A fatal later slot is observed now, but its predecessors'
                     // bodies must run before the corresponding typed error.
                     terminal = true;
@@ -2495,10 +2596,10 @@ pub(super) fn copy_roster_entries(
 }
 
 /// Role jobs that take their roster from a loaned census: country-leader
-/// roles alone, or unit-leader traits and experience alone.
-pub(super) fn census_part(active: [bool; 6]) -> bool {
-    let leaders = active[1] && !active[4] && !active[5];
-    let traits = !active[1] && (active[4] || active[5]);
+/// roles alone, or unit-leader traits alone.
+pub(super) fn census_part(active: [bool; N]) -> bool {
+    let leaders = active[1] && !active[4];
+    let traits = !active[1] && active[4];
     !active[0] && !active[2] && !active[3] && (leaders || traits)
 }
 
@@ -2515,21 +2616,29 @@ pub(super) fn gather_role_census(
     }
     let _reads = read_accounting::table(TABLES[anchor(ctx.active)]);
     let scope = (ctx.base, ctx.game_state);
-    let rows = job
-        .portrait_census
-        .as_ref()
-        .and_then(|census| census.rows(ctx.base, ctx.game_state));
+    let portraits = job.portrait_census.as_ref();
+    let rows = portraits.and_then(|census| census.rows(ctx.base, ctx.game_state));
+    let stamp = portraits.map_or(0, |census| census.stamp());
     if let (Some(rows), Some(roles)) = (rows, job.role_census.as_mut().and_then(Arc::get_mut)) {
-        job.role_census_current = roles.acquire_with_growth(
+        let (admitted, counts) = job.census_carry.acquire(
             memory,
+            roles,
             scope,
             rows,
+            stamp,
             job.census_historical,
             job.worker_growing,
         );
-        if job.role_census_current {
-            job.log.raw_bytes[0] += (rows.len() * (census::ROW - 4)) as u64;
+        job.role_census_current = admitted;
+        if admitted {
+            let gathered = if counts.gathered {
+                rows.len()
+            } else {
+                counts.compared as usize
+            };
+            job.log.raw_bytes[0] += (gathered * (census::ROW - 4)) as u64;
         }
+        crate::census_changes::record(&counts);
     }
 }
 
@@ -2563,13 +2672,13 @@ pub(super) fn copy_census(
     job.census_visited.clear();
     job.census_required = 0;
     job.census_historical = census.historical;
+    job.census_generation = census.generation;
     let mut dead = Dead {
         characters: true,
         leaders: !context.active[1],
         advisors: true,
         units: true,
         traits: !context.active[4],
-        experience: !context.active[5],
     };
     // Trait-source bindings belong to the independent walk's prepared program.
     let bindings = job.source_bindings.take();
@@ -2701,19 +2810,24 @@ pub(super) fn copy_census_units(
             .filter(|&unit| unit != 0)
     };
     let needs = |occurrence: census::Occurrence| unit(occurrence).is_some();
+    // The traits job carries the leaders no forwarded writer touched
+    // ([`leader_carry`]); the roster job has none to carry here.
+    job.trait_carry.begin_hour();
+    // A fixed-capacity capture's trait budget counts only fresh rows.
+    if !dead.traits && dead.units && job.worker_growing {
+        job.trait_carry
+            .certify(census.generation, census.len(), || quiet::leaders(census));
+    }
     for index in 0..census.len() {
-        if dead.traits && dead.experience {
+        if dead.traits {
             return;
         }
         if let Some(ahead) = (index + LOOKAHEAD < census.len())
             .then(|| unit(census.occurrence(index + LOOKAHEAD)))
             .flatten()
+            .filter(|&ahead| !job.trait_carry.carries(ahead))
         {
-            for offset in [
-                0,
-                cunit_leader::TRAIT_DATA,
-                cunit_leader::TRAIT_EXPERIENCE_DATA,
-            ] {
+            for offset in [0, cunit_leader::TRAIT_DATA] {
                 if let Some(address) = ahead.checked_add(offset) {
                     memory.prefetch(address, 16);
                 }
@@ -2725,6 +2839,10 @@ pub(super) fn copy_census_units(
         };
         if !visit_census(job, census, index, needs) {
             return;
+        }
+        if job.trait_carry.carries(pointer) {
+            // Decode publishes the held rows.
+            continue;
         }
         let id = occurrence.id();
         let mut unit_id = None;
@@ -2748,7 +2866,7 @@ pub(super) fn copy_advisor_sections(
     use std::sync::atomic::Ordering::Relaxed;
     struct Roots<'a, M> {
         memory: &'a M,
-        log: RefCell<&'a mut crate::raw::RawLog<6>>,
+        log: RefCell<&'a mut crate::raw::RawLog<N>>,
     }
     impl<M: Memory> Memory for Roots<'_, M> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {

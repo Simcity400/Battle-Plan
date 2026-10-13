@@ -1,16 +1,21 @@
 //! The stored inputs of a raid offer's launch gate, which the game computes
 //! per viewing country on demand (`engine::raid_launch_inputs`).
-//! RaidCountryInputs, StockpileArchetypes, RaidAirSites and AceRangeInputs
-//! are the sliced `raid_launch` family (owner: canonical slot), read daily:
+//! RaidAirSites is the sliced `raid_launch` family (owner: canonical slot):
 //! each hour reads that hour's country slice, a country new to the census
-//! and the owners of a read that was not published. There is no change
-//! fingerprint; the game re-checks raid offers in a rolling sweep too, so a
-//! launch input can lag up to a day. CountryCommandPower, which the stability
-//! dashboard also reads, is read for every country each hour in the same
-//! walk.
+//! and the owners of a read that was not published, and every country a
+//! site list writer marked since the previous hour ([`crate::raid_changes`],
+//! [`SliceSelection::mark`]), so it equals the game's at every hour. A take
+//! that does not certify the previous hour's read reads every country
+//! ([`SliceSelection::certify`]), and every country read and not marked
+//! compares its RaidAirSites rows with its previous read
+//! ([`SliceSelection::compare`]): a difference disables the marks.
+//! RaidCountryInputs, AceRangeInputs, StockpileArchetypes (the essential
+//! stock, capped) and CountryCommandPower, which the stability dashboard
+//! also reads, are read for every country each hour in the same walk.
 use crate::{
+    raid_changes::{Changes, Counts, Family},
     sampling::qpc,
-    slicing::{SliceFingerprints, SliceSelection},
+    slicing::{Digest, SliceFingerprints, SliceSelection},
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
@@ -46,7 +51,7 @@ pub struct Capacities {
 }
 
 impl Capacities {
-    /// One selected launch-input row and one hourly command-power row per country.
+    /// One launch-input row and one command-power row per country.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[0], rows(slots, 1));
@@ -99,8 +104,19 @@ pub struct Captured {
     command_power: CaptureRows<native::CommandPowerRow>,
     /// The canonical slots this hour's sliced rows cover.
     selection: SliceSelection,
+    /// The raid types' essential archetypes, read each walk; the storage is
+    /// kept.
+    essentials: Vec<native::Essential>,
+    /// Each read country's RaidAirSites digest, ascending.
+    hashes: Vec<(u32, u64)>,
     /// Modifier metadata, read once per walk; its storage is kept.
     memo: engine::modifier_definition::DefinitionMemo,
+}
+
+/// The family's owner store and the site list writers' marks.
+pub(crate) struct Owners<'a> {
+    pub(crate) store: &'a mut SliceFingerprints,
+    pub(crate) changes: &'a dyn Changes,
 }
 
 impl Captured {
@@ -130,6 +146,8 @@ impl Captured {
             reservations: Arena::new(capacity.reservations),
             command_power: CaptureRows::new(capacity.command_power),
             selection: SliceSelection::new(capacity.rows[0] != 0),
+            hashes: Vec::new(),
+            essentials: Vec::new(),
             memo: Default::default(),
         }
     }
@@ -148,6 +166,8 @@ impl Captured {
             + self.aces.allocated_bytes()
             + self.reservations.allocated_bytes()
             + self.command_power.allocated_bytes()
+            + self.hashes.capacity() * size_of::<(u32, u64)>()
+            + self.essentials.capacity() * size_of::<native::Essential>()
             + self.memo.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -181,10 +201,11 @@ impl Captured {
         self.capture_sliced(memory, base, game_state, hour, force_full, None)
     }
 
-    /// Scan the country census into `owners` with a constant print (a new
-    /// country, or the owner of an unpublished read, joins this hour's read),
-    /// then read the sliced tables for this hour's slice and those countries,
-    /// and command power for every country.
+    /// Scan the country census into the store with a constant print (a new
+    /// country, or the owner of an unpublished read, joins this hour's read)
+    /// and add every country a site list writer marked, then read the sliced
+    /// tables for this hour's slice and those countries, and the country
+    /// inputs, aces and command power for every country.
     pub(crate) fn capture_sliced(
         &mut self,
         memory: &impl Memory,
@@ -192,7 +213,7 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
-        owners: Option<&mut SliceFingerprints>,
+        mut owners: Option<Owners<'_>>,
     ) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         self.reset();
@@ -209,11 +230,15 @@ impl Captured {
             return [0; N];
         }
         let started = qpc();
-        if let Some(store) = owners {
+        // The link ids a complete census saw, sizing the site mark set.
+        let mut links = None;
+        if let Some(owners) = owners.as_mut() {
+            let store = &mut *owners.store;
             let scan = qpc();
-            let census = match ccountry::Reader::new(memory, base, game_state) {
-                Err(_) => false,
-                Ok(countries) => {
+            let reader = ccountry::Reader::new(memory, base, game_state).ok();
+            let census = match reader.as_ref() {
+                None => false,
+                Some(countries) => {
                     let mut complete = true;
                     for slot in 1..countries.count() {
                         match countries.at(slot) {
@@ -228,6 +253,29 @@ impl Captured {
             store.finish_scan();
             // Without a complete census every owner is read this hour.
             self.selection.finish_pass(store, census);
+            if census {
+                links = reader
+                    .as_ref()
+                    .map(|countries| countries.arrays()[1].count as usize);
+            }
+            // Every country a site list writer marked joins this hour's
+            // read, by its link's canonical slot; a take that does not
+            // certify the previous hour's read, or an unresolved link, reads
+            // every country.
+            let selection = &mut self.selection;
+            let mut resolved = true;
+            let epoch = owners.changes.take(Family::Sites, &mut |raw| match reader
+                .as_ref()
+                .map(|reader| reader.resolve(raw as u32))
+            {
+                Some(Ok(country)) => selection.mark(country.canonical_slot),
+                _ => resolved = false,
+            });
+            selection.certify(
+                store,
+                epoch.filter(|_| resolved),
+                crate::raid_changes::VERIFY,
+            );
             self.selection.scan_ticks = qpc().saturating_sub(scan).max(0) as u64;
         }
         // The launch keys are fixed built-ins, checked by the fixed layout
@@ -241,6 +289,7 @@ impl Captured {
             native::Buffers {
                 memo: &self.memo,
                 keys: &keys,
+                essentials: &mut self.essentials,
                 countries: engine::walk::Buffer::Growing(&mut self.countries.rows),
                 command_power: engine::walk::Buffer::Growing(&mut self.command_power.rows),
                 reservations: engine::walk::Buffer::Growing(&mut self.reservations.first),
@@ -257,9 +306,65 @@ impl Captured {
         self.aces.outcome = walk.aces;
         self.reservations.len = walk.reservations_len;
         self.reservations.required = walk.required_reservations;
+        if let Some(owners) = owners {
+            self.compare_sites(owners, links);
+        }
         let mut ticks = [0; N];
         ticks[0] = qpc().saturating_sub(started).max(0) as u64;
         ticks
+    }
+
+    /// Compare every country this hour read and no site list writer marked
+    /// with its previous read, disable the marks at a difference, and record
+    /// the hour's counts.
+    fn compare_sites(&mut self, owners: Owners<'_>, links: Option<usize>) {
+        let complete = matches!(self.sites.outcome, Outcome::Rows { .. }) && self.site_hashes();
+        let (verified, mismatches) = self
+            .selection
+            .compare(owners.store, complete.then_some(&self.hashes[..]));
+        if mismatches != 0 {
+            owners.changes.mismatch(Family::Sites);
+        }
+        crate::raid_changes::record(
+            Family::Sites,
+            &Counts {
+                marked: u64::from(self.selection.marked_count),
+                read: self.selection.read_owners().count() as u64,
+                early: u64::from(self.selection.marked_early()),
+                full: self.selection.force_full,
+                verified,
+                mismatches,
+            },
+            links,
+        );
+    }
+
+    /// The RaidAirSites digest of every country this hour read, rows or
+    /// none, ascending; `false` when they do not fit.
+    fn site_hashes(&mut self) -> bool {
+        self.hashes.clear();
+        let rows = &self.sites.rows[..self.sites.outcome.len()];
+        let mut at = 0;
+        for owner in self.selection.read_owners() {
+            while rows.get(at).is_some_and(|row| row.canonical_slot < owner) {
+                at += 1;
+            }
+            let mut digest = Digest::new();
+            while let Some(row) = rows.get(at).filter(|row| row.canonical_slot == owner) {
+                digest
+                    .u64(u64::from(row.ordinal))
+                    .u64(u64::from(row.list))
+                    .u64(row.base)
+                    .u64(u64::from(row.container_capacity_raw.is_some()))
+                    .i64(row.container_capacity_raw.unwrap_or(0));
+                at += 1;
+            }
+            if engine::allocation::reserve(&mut self.hashes, 1).is_err() {
+                return false;
+            }
+            self.hashes.push((owner, digest.finish()));
+        }
+        true
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [
@@ -279,7 +384,7 @@ impl Captured {
                 |row| StockpileArchetypeRow {
                     canonical_slot: row.canonical_slot,
                     archetype: row.archetype,
-                    quantity_raw: row.quantity_raw,
+                    units: row.units,
                 },
             ),
             table::<tables::RaidAirSites, _>(self.sites.outcome, &self.sites.rows, |row| {
@@ -438,5 +543,65 @@ mod tests {
         selection.reset(8, false);
         scan(&mut selection, &mut store, 49);
         assert_eq!(selection.early_count, 0);
+    }
+
+    /// No writer runs; a mismatch is reported.
+    struct Quiet(std::sync::atomic::AtomicBool);
+    impl Changes for Quiet {
+        fn take(&self, _: Family, _: &mut dyn FnMut(usize)) -> Option<u64> {
+            Some(1)
+        }
+        fn mismatch(&self, family: Family) {
+            assert_eq!(family, Family::Sites);
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Each read country's RaidAirSites rows are compared with its previous
+    /// read in the same epoch: a site that changed without a mark, or a
+    /// capacity, is a write no hook saw and disables the marks; an unchanged
+    /// country, or one with no sites, compares equal.
+    #[test]
+    fn an_unmarked_country_whose_sites_changed_disables_the_marks() {
+        let mut captured = Captured::with_capacities(&Capacities {
+            rows: [0, 0, 2, 0],
+            reservations: 0,
+            command_power: 0,
+        });
+        let mut store = SliceFingerprints::new();
+        let site = |slot, base, capacity| native::SiteRow {
+            canonical_slot: slot,
+            ordinal: 0,
+            list: 0,
+            base,
+            container_capacity_raw: capacity,
+        };
+        let changes = Quiet(std::sync::atomic::AtomicBool::new(false));
+        let mut hour = |captured: &mut Captured, rows: &[native::SiteRow]| {
+            captured.selection = SliceSelection::for_test(0, true, &[]).with_census(&[3, 5, 7]);
+            captured.selection.certify(&mut store, Some(1), false);
+            captured.sites.rows[..rows.len()].copy_from_slice(rows);
+            captured.sites.outcome = Outcome::Rows { len: rows.len() };
+            captured.compare_sites(
+                Owners {
+                    store: &mut store,
+                    changes: &changes,
+                },
+                None,
+            );
+            changes.0.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        assert!(!hour(
+            &mut captured,
+            &[site(3, 0x41, Some(100_000)), site(5, 0x42, None)]
+        ));
+        assert!(!hour(
+            &mut captured,
+            &[site(3, 0x41, Some(100_000)), site(5, 0x42, None)]
+        ));
+        assert!(hour(
+            &mut captured,
+            &[site(3, 0x41, Some(0)), site(5, 0x42, None)]
+        ));
     }
 }

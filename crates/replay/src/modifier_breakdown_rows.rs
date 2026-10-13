@@ -6,7 +6,8 @@ opaque_value!(Vec<ModifierBreakdownNode>);
 opaque_value!(Option<Vec<ModifierBreakdownNode>>);
 opaque_value!(Vec<Vec<u8>>);
 
-/// Country (kind 0) or selected commander (kind 1/2) reserve-rate tree.
+/// Retired: the reserve reinforcement hover's country (kind 0) or selected
+/// commander (kind 1/2) reserve-rate tree. Kept for older recordings' framing.
 /// Country owners are raw links; commander owners are full handles.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ReserveModifierBreakdownRow {
@@ -23,7 +24,18 @@ typed_codec!(ReserveModifierBreakdownRow, 72, |row| (row.kind as u128) << 64 | r
    check_tree(&row.nodes)
 });
 
-/// Cached balance description values and the ordered static-modifier keys.
+/// One power-balance record's (`PowerBalances.ordinal`) static-modifier sources: the
+/// complete `+0x50` roster in array order, every occurrence and empty sources included,
+/// by `static modifier` script name (`+0x1A8`). The cached description tree `+0xC8` is
+/// built from these alone by rebuilds and additions, so playback derives it with the
+/// content's static modifiers ([`crate::power_balance_derive`]).
+///
+/// `daily` and `weekly` are the native cached trees for keys 0x98/0x99 read
+/// as witnesses: every row of recordings made before playback derived them,
+/// and only the rows a diagnostic `breakdown_witness` collector build sampled
+/// since. Empty means not read; current production writers leave both
+/// empty. `recorder derived` compares each witness with the derivation;
+/// consumers never display them.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PowerBalanceModifierBreakdownRow {
     pub record: u32,
@@ -34,6 +46,13 @@ pub struct PowerBalanceModifierBreakdownRow {
 typed_codec!(PowerBalanceModifierBreakdownRow, 32, |row| row.record as u128,
 |key| Self { record: key as u32, ..Default::default() },
 { 0 => (sources): Opaque, 1 => (daily): Opaque, 2 => (weekly): Opaque }, |row| {
+   // A witness is a complete tree; both are read together or not at all.
+   if row.daily.is_empty() != row.weekly.is_empty() {
+       return Err(invalid("power balance witness trees are read together"));
+   }
+   if row.daily.is_empty() {
+       return Ok(());
+   }
    check_tree(&row.daily)?;
    check_tree(&row.weekly)
 });
@@ -78,6 +97,9 @@ value_struct!(NavalModifierUse {
 });
 opaque_value!(Vec<NavalModifierUse>);
 
+/// Retired: the naval combat hovers' modifier trees. Kept for older
+/// recordings' framing.
+///
 /// One tree per stable native accumulator identity and key. A repeated
 /// source or combat adds a small use, not another tree. The node field has
 /// its own delta bit, so unchanged trees carry across hours when uses change.
@@ -104,6 +126,94 @@ typed_codec!(NavalModifierBreakdownRow, 96,
     check_tree(&row.nodes)
 });
 
+/// One key's tree of a naval hover source ([`NavalModifierTreeRow`]): the preorder the
+/// modifier-breakdown formatter walks at depth -1 for that key, pruned to the root, the
+/// nonzero leaves and the interior nodes above them. The root keeps its value (convoy
+/// escape and the side sums read it); a root whose native children all pruned keeps one
+/// zero child, so it stays interior and prints nothing, as the native walk does. Only
+/// leaves keep their display bytes (modifier +0x58); a key whose root is zero and prints
+/// nothing is absent.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct NavalModifierKeyTree {
+    pub key: u32,
+    pub nodes: Vec<ModifierBreakdownNode>,
+}
+value_struct!(NavalModifierKeyTree {
+    key: u32,
+    nodes: Vec<ModifierBreakdownNode>
+});
+opaque_value!(Vec<NavalModifierKeyTree>);
+
+/// The hover trees of one naval modifier source accumulator: the side sources used for
+/// positioning, screening and convoy escape, and the ship sources used for ship escape
+/// and carrier sortie, each for every key in [`crate::naval_trees::KEYS`] that prints or
+/// has a nonzero root. `kind` and `owner`/`sub` name the source by recorded identities
+/// ([`crate::naval_trees`]), so a combat, side or ship reaches its trees by joining what
+/// it already records. Rows exist only for sources a live combat reaches this hour; a
+/// reached source without a row prints nothing and has a zero root for every key. Display
+/// bytes are native stored text in the recording language.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct NavalModifierTreeRow {
+    pub kind: u8,
+    pub owner: u64,
+    pub sub: u32,
+    pub trees: Vec<NavalModifierKeyTree>,
+}
+typed_codec!(NavalModifierTreeRow, 104,
+|row| (row.kind as u128) << 96 | (row.owner as u128) << 32 | row.sub as u128,
+|key| Self { kind: (key >> 96) as u8, owner: (key >> 32) as u64, sub: key as u32, ..Default::default() },
+{ 0 => (trees): Opaque },
+|row| check_naval_trees(row.kind, &row.trees));
+
+/// Diagnostic oracle rows (collector feature `naval_tree_oracle`): the fresh
+/// native trees of one source occurrence of a live combat, read at the hour
+/// through the source's own accumulator. `battle_slot` is `u32::MAX` for a
+/// side source, whose `ordinal` is its [`crate::naval_trees::SideSource`];
+/// a ship source's `ordinal` is its position in
+/// `NavalCombatShips.weapon_context.sources`. `kind`/`owner`/`sub` are the
+/// identity the capture filed the source's [`NavalModifierTreeRow`] under.
+/// Production builds take no sample and record the table empty.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct NavalModifierTreeSampleRow {
+    pub combat: u64,
+    pub side: u8,
+    pub battle_slot: u32,
+    pub ordinal: u16,
+    pub scope: u8,
+    pub kind: u8,
+    pub owner: u64,
+    pub sub: u32,
+    pub trees: Vec<NavalModifierKeyTree>,
+}
+typed_codec!(NavalModifierTreeSampleRow, 120,
+|row| (row.combat as u128) << 56 | (row.side as u128) << 48 | (row.battle_slot as u128) << 16 | row.ordinal as u128,
+|key| Self { combat: (key >> 56) as u64, side: (key >> 48) as u8, battle_slot: (key >> 16) as u32, ordinal: key as u16, ..Default::default() },
+{ 0 => (scope): U8, 1 => (kind): U8, 2 => (owner): U64, 3 => (sub): U32, 4 => (trees): Opaque },
+|row| {
+    if row.side > 1 { return Err(invalid("invalid naval tree sample side")); }
+    check_naval_trees(row.kind, &row.trees)
+});
+
+/// Known kind, strictly ascending keys, and one complete nonempty preorder
+/// tree per key.
+fn check_naval_trees(kind: u8, trees: &[NavalModifierKeyTree]) -> io::Result<()> {
+    if crate::naval_trees::Kind::from_u8(kind).is_none() {
+        return Err(invalid("unknown naval modifier source kind"));
+    }
+    let mut previous = None;
+    for tree in trees {
+        if previous.is_some_and(|key| key >= tree.key) {
+            return Err(invalid("naval modifier tree keys are not ascending"));
+        }
+        previous = Some(tree.key);
+        if tree.nodes.is_empty() {
+            return Err(invalid("naval modifier key tree is empty"));
+        }
+        check_tree(&tree.nodes)?;
+    }
+    Ok(())
+}
+
 /// One fresh attrition formatter tree per native accumulator/key. The ordered
 /// per-division uses, depth and scaling are in ArmyAttritionInputs.sources.
 /// None is a counted root-local capture failure; it leaves other trees and all
@@ -122,6 +232,35 @@ typed_codec!(AttritionModifierBreakdownRow, 96,
     if let Some(nodes) = &row.nodes { check_tree(nodes)?; }
     Ok(())
 });
+
+#[cfg(test)]
+mod balance_tests {
+    use super::*;
+
+    /// Production rows carry sources alone; a witness carries both complete
+    /// trees, as every row of older recordings does.
+    #[test]
+    fn witness_trees_are_both_complete_or_both_absent() {
+        let row = |daily: Vec<ModifierBreakdownNode>, weekly: Vec<ModifierBreakdownNode>| {
+            PowerBalanceModifierBreakdownRow {
+                record: 1,
+                sources: vec![b"source".to_vec()],
+                daily,
+                weekly,
+            }
+        };
+        let root = vec![ModifierBreakdownNode::default()];
+        let incomplete = vec![ModifierBreakdownNode {
+            children: 1,
+            ..Default::default()
+        }];
+        assert!(row(Vec::new(), Vec::new()).check_key_fields().is_ok());
+        assert!(row(root.clone(), root.clone()).check_key_fields().is_ok());
+        assert!(row(root.clone(), Vec::new()).check_key_fields().is_err());
+        assert!(row(Vec::new(), root.clone()).check_key_fields().is_err());
+        assert!(row(incomplete, root).check_key_fields().is_err());
+    }
+}
 
 #[cfg(test)]
 mod naval_tests {

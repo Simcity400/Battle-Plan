@@ -360,7 +360,6 @@ fn scan_5000_countries_changed_rows_and_gaps() {
                     owner: n / 4 + 1,
                     kind: 1,
                     category: 1,
-                    experience: i64::from(tick),
                     skill_status: 2,
                     skill_level: 3,
                     components: [3 + tick / 2, 2, 2, 1],

@@ -262,7 +262,7 @@ fn zero_subject(
             .require("ReservedCountryNaming.reverse_visibility")?
             .as_ref()
             .ok_or("Country0 naval family reverse visibility refused")?;
-        if packet.sample_hour != frame.hour {
+        if !packet.sample_hour.fresh_at(frame.hour) {
             return Err("Country0 naval family reverse visibility stale".into());
         }
         let cell = packet
@@ -493,7 +493,7 @@ mod tests {
             TableView::Complete(TableRows::ReservedCountryNaming(vec![
                 ReservedCountryNamingRow {
                     reverse_visibility: Recorded::Value(Some(ReservedReverseVisibilityInputs {
-                        sample_hour: 7,
+                        sample_hour: replay::rows::PacketHour::Stamped(7),
                         cells: vec![
                             None,
                             Some(ReverseZeroVisibilityInputs {
@@ -547,7 +547,7 @@ mod tests {
                 ReservedCountryNamingRow {
                     faction,
                     reverse_visibility: Recorded::Value(Some(ReservedReverseVisibilityInputs {
-                        sample_hour: frame.hour,
+                        sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
                         cells: vec![Some(ReverseZeroVisibilityInputs {
                             target: Some(0),
                             subject: Some(ZeroSubjectInputs::default()),
@@ -663,7 +663,7 @@ mod tests {
                 country: 11,
                 target_index: 1,
                 transport_subject: Recorded::Value(Some(TransportSubjectAccess {
-                    sample_hour: frame.hour,
+                    sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
                     complete_owner: true,
                     ..Default::default()
                 })),
@@ -862,6 +862,22 @@ mod tests {
     }
 
     #[test]
+    fn the_scheduled_read_certifies_every_hour_of_its_day() {
+        // The sorted cache is rebuilt inside the update entered at hour 23,
+        // so the latest scheduled read must belong to the hour's own day.
+        use replay::rows::TableId;
+        for hour in 24..24 * 4 {
+            let sampled = (0..=hour)
+                .rev()
+                .find(|&h| replay::cadence::is_refresh(TableId::NavalSupremacy, h));
+            assert!(
+                cache_epoch(hour, sampled).is_ok(),
+                "hour {hour} holds the read of hour {sampled:?}"
+            );
+        }
+    }
+
+    #[test]
     fn mod_terrain_and_control_ratio_supply_the_minimum() {
         engine::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -907,6 +923,7 @@ mod tests {
                 naval_terrain: Some("CRYSTAL_SEA".into()),
                 static_modifiers: false,
                 static_modifier_names: Vec::new(),
+                ..Default::default()
             },
         )]
         .into_iter()

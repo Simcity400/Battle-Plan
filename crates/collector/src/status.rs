@@ -6,36 +6,6 @@ use serde::{
 };
 use std::fmt;
 
-/// Worker-only refusal diagnostics retain each original error independently.
-#[derive(Default)]
-pub(crate) struct RefusalReasons(std::sync::Mutex<Vec<(&'static str, u64)>>);
-impl RefusalReasons {
-    pub(crate) const fn new() -> Self {
-        Self(std::sync::Mutex::new(Vec::new()))
-    }
-    pub(crate) fn record(&self, reason: &'static str) {
-        let mut reasons = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((_, count)) = reasons.iter_mut().find(|(name, _)| *name == reason) {
-            *count = count.saturating_add(1);
-        } else if engine::allocation::reserve_push_batch(&mut reasons, 1).is_ok() {
-            reasons.push((reason, 1));
-            reasons.sort_unstable_by_key(|&(name, _)| name);
-        }
-    }
-}
-impl Serialize for RefusalReasons {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let reasons = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map(reasons.iter().copied()).serialize(serializer)
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct Empty;
 #[derive(Clone)]
@@ -309,6 +279,38 @@ pub(crate) fn allocation_failure_exercise() -> std::io::Result<()> {
             "opinion": crate::opinion_changes::status(),
             "relations": crate::relation_changes::status(),
             "histories": crate::history_changes::status(),
+            "flags": crate::flag_changes::status(),
+            "buildings": crate::building_changes::status(),
+            "advisor_pools": crate::advisor_pool_changes::status(),
+            "party_leaders": crate::party_leader_changes::status(),
+            "variables": crate::variable_changes::status(),
+            "parties": crate::party_changes::status(),
+            "wings": crate::wing_changes::status(),
+            "roster": crate::roster_changes::status(),
+            "political_status": crate::political_status_changes::status(),
+            "wars": crate::war_changes::status(),
+            "missions": crate::mission_changes::status(),
+            "rails": crate::rail_changes::status(),
+            "territory": crate::territory_changes::status(),
+            "army_stats": crate::army_stat_changes::status(),
+            "ship_models": crate::ship_model_changes::status(),
+            "province_units": crate::province_unit_changes::status(),
+            "country_inputs": crate::country_input_changes::status(),
+            "stability_batches": crate::extended::country_stability::status(),
+            "raid": crate::raid_changes::status(),
+            "naval_trees": crate::naval_tree_changes::status(),
+            "raid_intel": crate::extended::raid_intel_carry::status(),
+            "unit_leaders": crate::unit_leader_changes::status(),
+            "census": crate::census_changes::status(),
+            "unit_leader_traits": crate::unit_leader_trait_changes::status(),
+            "world_inputs": crate::world_input_changes::status(),
+            "retreat_bans": crate::retreat_ban_changes::status(),
+            "local_subunits": crate::local_subunit_changes::status(),
+            "templates": crate::template_changes::status(),
+            "air_base_carry": crate::air_base_carry_changes::status(),
+            "areas": crate::area_changes::status(),
+            "provinces": crate::province_changes::status(),
+            "characters": crate::character_changes::status(),
             "construction": crate::construction_ic::status(),
             "production": crate::line_output::status(),
             "prunes": crate::combat_log_prune::status(),

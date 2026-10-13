@@ -387,7 +387,7 @@ fn every_family_keeps_native_order_widths_and_absent_values() {
             capacity_raw: engine::ccountry_air_container::INITIAL_CAPACITY_RAW,
             wings: vec![(77 << 32) | u64::from(engine::cair_wing::TYPE)],
             carrier: rows::Recorded::Value(None),
-            transport_planes: rows::Recorded::Value(None),
+            transport_planes: rows::Recorded::Value(rows::Retired),
         }]
     );
 }
@@ -629,48 +629,52 @@ fn accepted_fog_failures_are_terminal_and_leave_other_tables_independent() {
     ));
 }
 
+/// TheatreAreas is hourly: every hour's one theatre traversal reads the
+/// controller areas with the stationed units.
 #[test]
-fn offslot_areas_keep_stationed_units_and_ignore_private_capacity_and_faults() {
-    struct NoAreas<'a> {
+fn areas_and_stationed_units_share_one_traversal_every_hour() {
+    struct Counted<'a> {
         inner: SliceMemory<'a>,
         unit_roots: std::cell::Cell<usize>,
+        area_roots: std::cell::Cell<usize>,
     }
-    impl Memory for NoAreas<'_> {
+    impl Memory for Counted<'_> {
         fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
-            assert_ne!(address, THEATRE + ctheatre::CONTROLLER_AREA_DATA);
             if address == THEATRE + ctheatre::STATIONED_UNIT_DATA {
                 self.unit_roots.set(self.unit_roots.get() + 1);
+            }
+            if address == THEATRE + ctheatre::CONTROLLER_AREA_DATA {
+                self.area_roots.set(self.area_roots.get() + 1);
             }
             self.inner.copy(address, bytes)
         }
     }
     let bytes = fixture();
     let mut captured = Captured::with_capacities(&Capacities {
-        rows: [4, 4, 0, 4, 4, 4, 4],
+        rows: [4; N],
         radar_provinces: 8,
-        area_provinces: 0,
+        area_provinces: 8,
         wings: 8,
     });
-    for hour in (0..24).filter(|hour| *hour != 18) {
-        let memory = NoAreas {
+    for hour in 0..24 {
+        assert!(replay::cadence::should_walk(
+            TableId::TheatreAreas,
+            hour,
+            false
+        ));
+        let memory = Counted {
             inner: SliceMemory {
                 base: BASE,
                 bytes: &bytes,
             },
             unit_roots: std::cell::Cell::new(0),
+            area_roots: std::cell::Cell::new(0),
         };
-        let ticks = captured.capture(&memory, 0, BASE, hour, false);
-        assert_eq!(captured.areas.outcome, SKIPPED);
-        assert_eq!(captured.units.outcome, Outcome::Rows { len: 1 });
+        let _ticks = captured.capture(&memory, 0, BASE, hour, false);
+        assert_eq!(captured.areas.outcome, Outcome::Rows { len: 1 }, "{hour}");
+        assert_eq!(captured.units.outcome, Outcome::Rows { len: 1 }, "{hour}");
         assert_eq!(memory.unit_roots.get(), 1);
-        assert_eq!(ticks[2], 0);
-        assert_eq!(
-            (
-                captured.area_provinces.len,
-                captured.area_provinces.required
-            ),
-            (0, 0)
-        );
+        assert!(memory.area_roots.get() >= 1);
     }
     let _ = captured.capture(
         &SliceMemory {
@@ -682,7 +686,6 @@ fn offslot_areas_keep_stationed_units_and_ignore_private_capacity_and_faults() {
         0,
         false,
     );
-    assert_eq!(captured.areas.outcome, SKIPPED);
     assert!(matches!(
         captured.units.outcome,
         Outcome::Unavailable { .. }

@@ -495,7 +495,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 }
                 let ships = decoded.complete::<tables::SunkShips>();
                 if let Ok([_]) = ships
-                    && slot_read(&decoded.metrics, TableId::SunkShips, hour)
+                    && slot_read(replay.format, &decoded.metrics, TableId::SunkShips, hour)
                 {
                     track.ships(&mut out, &decoded.tables[TableId::SunkShips.index()], hour);
                 } else if !matches!(ships, Ok([_])) || !track.ship_open {
@@ -509,7 +509,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 }
                 let convoys = decoded.complete::<tables::SunkConvoys>();
                 if let Ok(rows) = convoys
-                    && slot_read(&decoded.metrics, TableId::SunkConvoys, hour)
+                    && slot_read(replay.format, &decoded.metrics, TableId::SunkConvoys, hour)
                 {
                     track.convoys(&mut out, rows, hour, tags);
                 } else if convoys.is_err() || !track.convoy_open {

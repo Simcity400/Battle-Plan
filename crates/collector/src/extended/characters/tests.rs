@@ -4,8 +4,8 @@ use std::cell::Cell;
 
 pub(super) fn fixture_capacities() -> Capacities {
     Capacities {
-        rows: [16_384, 4096, 4096, 2048, 4096, 32_768],
-        bytes: [524_288, 0, 262_144, 131_072, 131_072, 524_288],
+        rows: [16_384, 4096, 4096, 2048, 4096],
+        bytes: [524_288, 0, 262_144, 131_072, 131_072],
     }
 }
 
@@ -189,8 +189,8 @@ fn appended_raw_shortage_keeps_the_complete_advisor_prefix_without_live_retry() 
         base: IMAGE,
         game_state: ADDRESS,
         active: PART_MASKS[2],
-        trait_rows: [0; 2],
-        trait_bytes: [0; 2],
+        trait_rows: 0,
+        trait_bytes: 0,
     };
     let mut baseline = CharactersJob::with_storage(2, 2048, 32768, false);
     assert!(copy_characters_refresh(&kit::memory(&bytes), context, &mut baseline).raw_ok);
@@ -347,8 +347,8 @@ fn section_context() -> CharactersCopyContext {
         base: IMAGE,
         game_state: ADDRESS,
         active: PART_MASKS[2],
-        trait_rows: [capacities.rows[4], capacities.rows[5]],
-        trait_bytes: [capacities.bytes[4], capacities.bytes[5]],
+        trait_rows: capacities.rows[4],
+        trait_bytes: capacities.bytes[4],
     }
 }
 
@@ -386,7 +386,7 @@ fn direct_advisors(memory: &impl Memory) -> Captured {
 
 fn assert_advisors_match(job: &CharactersJob, memory: &impl Memory) {
     let mut captured = Captured::with_capacities(&split_capacities());
-    captured.decode_characters_payload(IMAGE, job, &mut [0; 6]);
+    captured.decode_characters_payload(IMAGE, job, &mut [0; 5]);
     let direct = direct_advisors(memory);
     assert_eq!(captured.advisors.rows.outcome, direct.advisors.rows.outcome);
     let len = direct.advisors.rows.outcome.len();
@@ -445,7 +445,7 @@ fn advisor_raw_copy_keeps_fresh_ordered_modifier_entries_and_owned_bytes() {
     }
     bytes.fill(0);
     let mut captured = Captured::with_capacities(&split_capacities());
-    captured.decode_characters_payload(IMAGE, &job, &mut [0; 6]);
+    captured.decode_characters_payload(IMAGE, &job, &mut [0; 5]);
     assert_eq!(captured.advisors_table(), expected.advisors_table());
     let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
         panic!("complete advisor roles");
@@ -734,7 +734,7 @@ fn independent_parts_merge_fresh_rows_and_isolate_fallbacks_and_failures() {
             part,
             appended_roles: Vec::with_capacity(log.spans.capacity() / 8),
             log,
-            traits: TraitCapture::with_test_capacities(4096, [4096, 32768], 4096, 1 << 20),
+            traits: TraitCapture::with_test_capacities(4096, 4096, 4096, 1 << 20),
             source_bindings: Some(fixture_bindings()),
             ..Default::default()
         }
@@ -743,9 +743,9 @@ fn independent_parts_merge_fresh_rows_and_isolate_fallbacks_and_failures() {
         force_full: false,
         base: kit::BASE,
         game_state: kit::GAME_STATE,
-        active: [true; 6],
-        trait_rows: [capacities.rows[4], capacities.rows[5]],
-        trait_bytes: [capacities.bytes[4], capacities.bytes[5]],
+        active: [true; 5],
+        trait_rows: capacities.rows[4],
+        trait_bytes: capacities.bytes[4],
     };
     let mut fresh = baseline.clone();
     put(
@@ -784,14 +784,14 @@ fn independent_parts_merge_fresh_rows_and_isolate_fallbacks_and_failures() {
         }
         for order in [[0, 1, 2, 3], [3, 2, 1, 0], [2, 0, 3, 1]] {
             let mut merged = Captured::with_capacities(&capacities);
-            merged.set_character_activity([true; 6]);
-            merged.raw_active = [true; 6];
+            merged.set_character_activity([true; 5]);
+            merged.raw_active = [true; 5];
             merged.capture(&memory, kit::BASE, kit::GAME_STATE, 0, false);
             for part in order {
-                merged.decode_characters_payload(kit::BASE, &jobs[part], &mut [0; 6]);
+                merged.decode_characters_payload(kit::BASE, &jobs[part], &mut [0; 5]);
             }
             kit::assert_matches_direct(&merged, &kit::direct(&memory, &capacities));
-            assert_eq!(merged.raw_active, [false; 6]);
+            assert_eq!(merged.raw_active, [false; 5]);
         }
         for job in &mut jobs {
             job.log.prepare_read_plan();
@@ -813,9 +813,9 @@ fn independent_parts_merge_fresh_rows_and_isolate_fallbacks_and_failures() {
     for (missing, missing_mask) in PART_MASKS.into_iter().enumerate() {
         for failed in [false, true] {
             let mut merged = Captured::with_capacities(&capacities);
-            merged.set_character_activity([true; 6]);
+            merged.set_character_activity([true; 5]);
             merged.raw_active = if failed {
-                [true; 6]
+                [true; 5]
             } else {
                 missing_mask.map(|active| !active)
             };
@@ -828,7 +828,7 @@ fn independent_parts_merge_fresh_rows_and_isolate_fallbacks_and_failures() {
                 expected.fail_character_tables(missing_mask, "test failure");
             }
             for part in (0..PARTS).rev().filter(|&part| part != missing) {
-                merged.decode_characters_payload(kit::BASE, &jobs[part], &mut [0; 6]);
+                merged.decode_characters_payload(kit::BASE, &jobs[part], &mut [0; 5]);
             }
             kit::assert_matches_direct(&merged, &expected);
         }
@@ -853,9 +853,9 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
         force_full: false,
         base: kit::BASE,
         game_state: kit::GAME_STATE,
-        active: [true, false, false, true, false, false],
-        trait_rows: [0; 2],
-        trait_bytes: [0; 2],
+        active: [true, false, false, true, false],
+        trait_rows: 0,
+        trait_bytes: 0,
     };
     let baseline = kit::mapped_fixture();
     let mut job = make();
@@ -907,7 +907,7 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
     // rebuild, never loan B after A's prepared controls succeed.
     let mut job = make();
     let daily = CharactersCopyContext {
-        active: [true, true, false, true, false, false],
+        active: [true, true, false, true, false],
         ..ctx
     };
     copy_characters_refresh(&kit::memory(&baseline), ctx, &mut job);
@@ -1015,9 +1015,9 @@ fn hourly_plan_reads_fresh_values_and_preserves_every_fault_without_retry() {
         force_full: false,
         base: kit::BASE,
         game_state: kit::GAME_STATE,
-        active: [true, false, false, true, false, false],
-        trait_rows: [0; 2],
-        trait_bytes: [0; 2],
+        active: [true, false, false, true, false],
+        trait_rows: 0,
+        trait_bytes: 0,
     };
     let baseline = kit::mapped_fixture();
     let mut first = job();
@@ -1040,7 +1040,7 @@ fn hourly_plan_reads_fresh_values_and_preserves_every_fault_without_retry() {
     assert!(first.log.logs_equal(&canonical.log));
     let captured = |payload: &CharactersJob| {
         let mut result = Captured::with_capacities(&split_capacities());
-        result.decode_characters_payload(kit::BASE, payload, &mut [0; 6]);
+        result.decode_characters_payload(kit::BASE, payload, &mut [0; 5]);
         result
     };
     kit::assert_matches_direct(&captured(&first), &captured(&canonical));
@@ -1232,8 +1232,8 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
         active,
-        trait_rows: [0; 2],
-        trait_bytes: [0; 2],
+        trait_rows: 0,
+        trait_bytes: 0,
     };
     let direct = |world: &[u8]| {
         let mut captured = Captured::with_capacities(&split_capacities());
@@ -1260,7 +1260,7 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
         let report = copy_characters_refresh(&source, context(force_full), job);
         assert!(report.raw_ok && !report.plan_failed, "fault {fault:?}");
         let mut captured = Captured::with_capacities(&split_capacities());
-        captured.decode_characters_payload(kit::BASE, job, &mut [0; 6]);
+        captured.decode_characters_payload(kit::BASE, job, &mut [0; 5]);
         captured.remember_templates(job);
         let planned = job.log.planned_capture_succeeded();
         job.prepare_read_plans();
@@ -1315,7 +1315,7 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
     };
     sized.raise_for_characters(demand);
     let mut captured = Captured::with_capacities(&sized);
-    let only = [true, false, false, false, false, false];
+    let only = [true, false, false, false, false];
     let results = walk_family(
         &kit::memory(&world),
         kit::BASE,
@@ -1417,7 +1417,7 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
 }
 
 #[test]
-fn complete_family_plan_refreshes_roles_traits_and_experience_without_retry() {
+fn complete_family_plan_refreshes_roles_and_traits_without_retry() {
     use super::characters_test_kit as kit;
     use std::cell::RefCell;
     struct Trace<'a> {
@@ -1439,13 +1439,13 @@ fn complete_family_plan_refreshes_roles_traits_and_experience_without_retry() {
         log.initialize_scattered_read_plan(8192, 8192, 65536);
         CharactersJob {
             log,
-            traits: TraitCapture::with_test_capacities(4096, [4096, 32768], 4096, 1 << 20),
+            traits: TraitCapture::with_test_capacities(4096, 4096, 4096, 1 << 20),
             appended_roles: Vec::with_capacity(1024),
             source_bindings: Some(fixture_bindings()),
             ..Default::default()
         }
     }
-    fn direct(memory: &impl Memory, capacities: &Capacities, active: [bool; 6]) -> Captured {
+    fn direct(memory: &impl Memory, capacities: &Capacities, active: [bool; 5]) -> Captured {
         let mut captured = Captured::with_capacities(capacities);
         let results = walk_family(
             memory,
@@ -1455,23 +1455,23 @@ fn complete_family_plan_refreshes_roles_traits_and_experience_without_retry() {
             None,
             None,
         );
-        captured.install_family([true; 6], results);
+        captured.install_family([true; 5], results);
         captured
     }
-    for active in [[true; 6], PART_MASKS[1], PART_MASKS[2], PART_MASKS[3]] {
+    for active in [[true; 5], PART_MASKS[1], PART_MASKS[2], PART_MASKS[3]] {
         let capacities = split_capacities();
         let context = CharactersCopyContext {
             force_full: false,
             base: kit::BASE,
             game_state: kit::GAME_STATE,
             active,
-            trait_rows: [capacities.rows[4], capacities.rows[5]],
-            trait_bytes: [capacities.bytes[4], capacities.bytes[5]],
+            trait_rows: capacities.rows[4],
+            trait_bytes: capacities.bytes[4],
         };
         let baseline = kit::mapped_fixture();
         let decode = |payload: &CharactersJob| {
             let mut captured = Captured::with_capacities(&capacities);
-            captured.decode_characters_payload(kit::BASE, payload, &mut [0; 6]);
+            captured.decode_characters_payload(kit::BASE, payload, &mut [0; 5]);
             captured
         };
         let mut prepared = job();
@@ -1564,41 +1564,38 @@ fn complete_family_plan_refreshes_roles_traits_and_experience_without_retry() {
         }
         // A recycled job must rebuild bindings after capacity changes. A
         // truncated census cannot seed an apparently complete later plan.
-        for table in [4, 5] {
-            for limit in [0, 1, 2] {
-                let mut prepared = job();
-                copy_characters_refresh(&kit::memory(&baseline), context, &mut prepared);
-                prepared.log.prepare_read_plan();
-                for bytes_limit in [false, true] {
-                    let mut limited = split_capacities();
-                    if bytes_limit {
-                        limited.bytes[table] = limit;
-                    } else {
-                        limited.rows[table] = limit;
-                    }
-                    let limited_context = CharactersCopyContext {
-                        force_full: false,
-                        trait_rows: [limited.rows[4], limited.rows[5]],
-                        trait_bytes: [limited.bytes[4], limited.bytes[5]],
-                        ..context
-                    };
-                    for (ctx, caps) in [(limited_context, &limited), (context, &capacities)] {
-                        assert!(
-                            copy_characters_refresh(&kit::memory(&baseline), ctx, &mut prepared)
-                                .raw_ok
-                        );
-                        let mut actual = Captured::with_capacities(caps);
-                        actual.decode_characters_payload(kit::BASE, &prepared, &mut [0; 6]);
-                        kit::assert_matches_direct(
-                            &actual,
-                            &direct(&kit::memory(&baseline), caps, active),
-                        );
-                        prepared.log.prepare_read_plan();
-                    }
+        for limit in [0, 1, 2] {
+            let mut prepared = job();
+            copy_characters_refresh(&kit::memory(&baseline), context, &mut prepared);
+            prepared.log.prepare_read_plan();
+            for bytes_limit in [false, true] {
+                let mut limited = split_capacities();
+                if bytes_limit {
+                    limited.bytes[4] = limit;
+                } else {
+                    limited.rows[4] = limit;
+                }
+                let limited_context = CharactersCopyContext {
+                    force_full: false,
+                    trait_rows: limited.rows[4],
+                    trait_bytes: limited.bytes[4],
+                    ..context
+                };
+                for (ctx, caps) in [(limited_context, &limited), (context, &capacities)] {
+                    assert!(
+                        copy_characters_refresh(&kit::memory(&baseline), ctx, &mut prepared).raw_ok
+                    );
+                    let mut actual = Captured::with_capacities(caps);
+                    actual.decode_characters_payload(kit::BASE, &prepared, &mut [0; 5]);
+                    kit::assert_matches_direct(
+                        &actual,
+                        &direct(&kit::memory(&baseline), caps, active),
+                    );
+                    prepared.log.prepare_read_plan();
                 }
             }
         }
-        if active[4] || active[5] {
+        if active[4] {
             let mut bounded = job();
             bounded.source_bindings.as_mut().unwrap().sources = Vec::with_capacity(1);
             assert!(copy_characters_refresh(&kit::memory(&baseline), context, &mut bounded).raw_ok);
@@ -1630,8 +1627,7 @@ fn walk_units(
     game_state: usize,
     units: Batch<'_, LeaderRow>,
     traits: Batch<'_, cunit_leader::TraitRow>,
-    experience: Batch<'_, cunit_leader::TraitExperienceRow>,
-) -> [ReadResult; 3] {
+) -> [ReadResult; 2] {
     let result = walk_family(
         memory,
         base,
@@ -1642,12 +1638,11 @@ fn walk_units(
             advisors: Batch::new(&mut [], &mut []),
             units,
             traits,
-            experience,
         },
         None,
         None,
     );
-    [result[3], result[4], result[5]]
+    [result[3], result[4]]
 }
 
 pub(crate) fn put<const N: usize>(bytes: &mut [u8], offset: usize, value: [u8; N]) {
@@ -1859,15 +1854,12 @@ fn shared_roster_keeps_traits_when_scalar_capacity_is_exhausted() {
     let mut names = [0; 24];
     let mut traits = [cunit_leader::TraitRow::default(); 2];
     let mut tokens = [0; 12];
-    let mut experience = [cunit_leader::TraitExperienceRow::default(); 2];
-    let mut experience_tokens = [0; 12];
     let results = walk_units(
         &memory,
         IMAGE,
         ADDRESS,
         Batch::new(&mut units, &mut names),
         Batch::new(&mut traits, &mut tokens),
-        Batch::new(&mut experience, &mut experience_tokens),
     );
     assert_eq!(memory.character_header_reads.get(), 2);
     assert_eq!(
@@ -1878,11 +1870,13 @@ fn shared_roster_keeps_traits_when_scalar_capacity_is_exhausted() {
         }
     );
     assert_eq!(results[1].outcome, Outcome::Rows { len: 2 });
-    assert_eq!(results[2].outcome, Outcome::Rows { len: 2 });
     assert_eq!(traits[1].token_start, 6);
     assert_eq!(&tokens, b"trait\xfftrait\xff");
-    assert_eq!(experience[1].experience, i64::MAX - 1);
-    assert_eq!(leader_row(&units[0], &names).experience, i64::MIN);
+    // The oracle-only experience publishes its tombstone.
+    assert_eq!(
+        leader_row(&units[0], &names).experience,
+        replay::rows::RetiredI64::default()
+    );
     assert_eq!(leader_row(&units[0], &names).inherited_text_a, b"saved1");
     assert_eq!(leader_row(&units[0], &names).inherited_text_b, b"other1");
     assert_eq!(leader_reference(traits[0].leader_id), 0xffff_ffff_0000_1269);
@@ -1904,20 +1898,16 @@ fn one_trait_vector_fault_does_not_invalidate_other_family_tables() {
     let mut names = [0; 24];
     let mut traits = [cunit_leader::TraitRow::default(); 2];
     let mut tokens = [0; 12];
-    let mut experience = [cunit_leader::TraitExperienceRow::default(); 2];
-    let mut experience_tokens = [0; 12];
     let results = walk_units(
         &memory,
         IMAGE,
         ADDRESS,
         Batch::new(&mut units, &mut names),
         Batch::new(&mut traits, &mut tokens),
-        Batch::new(&mut experience, &mut experience_tokens),
     );
     assert_eq!(results[0].outcome, Outcome::Rows { len: 2 });
     assert!(matches!(results[1].outcome, Outcome::Unavailable { .. }));
     assert_eq!(results[1].bytes_len, 0);
-    assert_eq!(results[2].outcome, Outcome::Rows { len: 2 });
     assert_eq!(leader_row(&units[1], &names).inherited_text_a, b"saved2");
 }
 
@@ -1945,12 +1935,11 @@ fn character_parts_read_each_identity_once_per_owner_and_refresh_current_fields(
         captured.capture(&memory, IMAGE, ADDRESS, 0, true);
         assert_eq!(memory.character_header_reads.get(), 2 * PARTS);
         assert_eq!(
-            &captured.outcomes()[..6],
-            &[
+            captured.outcomes(),
+            [
                 Outcome::Rows { len: 2 },
                 Outcome::Rows { len: 0 },
                 Outcome::Rows { len: 0 },
-                Outcome::Rows { len: 2 },
                 Outcome::Rows { len: 2 },
                 Outcome::Rows { len: 2 },
             ]
@@ -1992,28 +1981,22 @@ fn partial_character_span_faults_are_local_and_failed_spans_are_never_retried() 
         rows: [2; N],
         bytes: [32; N],
     };
-    let expected = [2, 0, 0, 2, 2, 2];
+    let expected = [2, 0, 0, 2, 2];
     for (offset, affected) in [
-        (
-            ccharacter::NAME + 32,
-            [true, false, false, false, false, false],
-        ),
+        (ccharacter::NAME + 32, [true, false, false, false, false]),
         (
             ccharacter::LEADER_MAP_HEAD + 8,
-            [false, true, false, false, false, false],
+            [false, true, false, false, false],
         ),
         (
             ccharacter::ADVISOR_MAP_HEAD + 8,
-            [false, false, true, false, false, false],
+            [false, false, true, false, false],
         ),
         (
             ccharacter::UNIT_LEADER + 4,
-            [false, false, false, true, true, true],
+            [false, false, false, true, true],
         ),
-        (
-            ccharacter::COUNTRY + 2,
-            [true, true, true, false, false, false],
-        ),
+        (ccharacter::COUNTRY + 2, [true, true, true, false, false]),
     ] {
         let fault = ADDRESS + CHARACTERS[0] + offset;
         let memory = FaultMemory {
@@ -2342,8 +2325,9 @@ fn conversion_rejects_bad_ranges_and_duplicate_keys() {
 // Deterministic read-cost proxy over one synthetic roster. Its proportions
 // approach the measured capture's 0.154 country-leader roles, 0.728 advisor
 // roles and 0.098 unit leaders per character: 32 characters carry 5, 22 and
-// 3 of them, that is 0.156, 0.688 and 0.094, with two traits and fifteen
-// trait experience entries per leader and heap literals throughout. The
+// 3 of them, that is 0.156, 0.688 and 0.094, with two traits per leader
+// (and fifteen native trait-experience entries, which no walk reads) and
+// heap literals throughout. The
 // counts asserted below are guarded entries into the copy shim, the spans
 // inside them, and the bytes those spans move.
 const COST_CHARACTERS: usize = 32;
@@ -2723,12 +2707,12 @@ fn character_nested_prefetch_selects_fixed_groups_without_rehinting_main_or_heap
     let definition = job
         .traits
         .definitions
-        .header(&source, IMAGE, ADDRESS + DEFINITION, 0)
+        .header(&source, IMAGE, ADDRESS + DEFINITION)
         .unwrap();
     job.traits.definitions.result(definition).unwrap();
     job.traits
         .definitions
-        .consume(&source, definition, 0, true)
+        .consume(&source, definition, true)
         .unwrap();
     job.traits.definitions.result(definition).unwrap();
     assert_eq!(source.prefetched.borrow().len(), 1);
@@ -2802,7 +2786,6 @@ fn character_family_read_cost_stays_at_its_measured_shape() {
             Outcome::Rows { len: 22 },
             Outcome::Rows { len: 3 },
             Outcome::Rows { len: 6 },
-            Outcome::Rows { len: 45 },
         ]
     );
     assert!(captured.leaders.rows.rows[..5]
@@ -2827,12 +2810,17 @@ fn character_family_read_cost_stays_at_its_measured_shape() {
     // Each advisor adds its fresh 16-byte modifier-cache header; all are empty.
     // The five country leaders each read an eight-byte null current-ideology
     // pointer, and the 22 advisors each read an empty 17-byte tooltip header.
+    // No unit leader's trait-experience vector is read: its identity, header
+    // and fifteen 16-byte entries with their definitions and heap tokens
+    // (47 guards, 92 spans and 1,262 bytes per leader) stay out of the totals.
+    // Nor is a unit leader's experience (+0xE68, one 8-byte span each): the
+    // skill hover takes the combat side's commander.
     assert_eq!(
         (memory.guards.get(), memory.spans.get(), memory.bytes.get()),
         (
-            588 + 3 + 22 + 5 + 22,
-            1204 + 9 + 32 + 3 + 22 + 5 + 22,
-            16_872 + 39 + 32 * (12 + 4) + 3 * 4 + 22 * 16 + 5 * 8 + 22 * 17
+            447 + 3 + 22 + 5 + 22,
+            928 + 9 + 32 + 3 + 22 + 5 + 22 - 3,
+            13_086 + 39 + 32 * (12 + 4) + 3 * 4 + 22 * 16 + 5 * 8 + 22 * 17 - 3 * 8
         )
     );
 }
@@ -3010,10 +2998,6 @@ fn split_copy_matches_direct_walk_on_cost_census() {
     assert_eq!(split.advisors.rows.outcome, Outcome::Rows { len: 22 });
     assert_eq!(split.units.rows.outcome, Outcome::Rows { len: 3 });
     assert_eq!(split.traits.rows.outcome, Outcome::Rows { len: 6 });
-    assert_eq!(
-        split.trait_experience.rows.outcome,
-        Outcome::Rows { len: 45 }
-    );
     let reads = source.reads.borrow().clone();
     for (rows, arena) in [(0, 0), (1, 1), (21, 64), (22, 22 * 3 * COST_LITERAL.len())] {
         let mut small = capacities;
@@ -3037,14 +3021,14 @@ fn split_copy_matches_direct_walk_on_cost_census() {
             force_full: false,
             base: IMAGE,
             game_state: ADDRESS,
-            active: [true; 6],
-            trait_rows: [small.rows[4], small.rows[5]],
-            trait_bytes: [small.bytes[4], small.bytes[5]],
+            active: [true; 5],
+            trait_rows: small.rows[4],
+            trait_bytes: small.bytes[4],
         };
         assert!(copy_characters_refresh(&memory, context, &mut job).raw_ok);
         assert_eq!(job.advisor_demand.rows, 22);
         assert_eq!(job.advisor_demand.bytes, 22 * 3 * COST_LITERAL.len());
-        decoded.decode_characters_payload(IMAGE, &job, &mut [0; 6]);
+        decoded.decode_characters_payload(IMAGE, &job, &mut [0; 5]);
         kit::assert_matches_direct(&decoded, &direct);
     }
 }
@@ -3057,9 +3041,9 @@ fn shared_trait_definitions_are_read_once_charged_and_fresh_after_recycling() {
         force_full: false,
         base: IMAGE,
         game_state: ADDRESS,
-        active: [true; 6],
-        trait_rows: [capacities.rows[4], capacities.rows[5]],
-        trait_bytes: [capacities.bytes[4], capacities.bytes[5]],
+        active: [true; 5],
+        trait_rows: capacities.rows[4],
+        trait_bytes: capacities.bytes[4],
     };
     let mut job = small_wave_job();
     for value in [b'x', b'y'] {
@@ -3096,11 +3080,10 @@ fn shared_trait_definitions_are_read_once_charged_and_fresh_after_recycling() {
         assert_eq!((counted.record_calls, counted.plan_calls), (0, 0));
         drop(reads);
         let mut captured = Captured::with_capacities(&capacities);
-        captured.decode_characters_payload(IMAGE, &job, &mut [0; 6]);
+        captured.decode_characters_payload(IMAGE, &job, &mut [0; 5]);
         let direct = characters_test_kit::direct(&characters_test_kit::memory(&bytes), &capacities);
         assert_wave_rows(&captured, &direct);
         assert_eq!(captured.traits.bytes.first[0], value);
-        assert_eq!(captured.trait_experience.bytes.first[0], value);
         assert_eq!(native.finish(), counts);
     }
 }
@@ -3115,9 +3098,9 @@ fn shared_skills_keep_current_rows_native_costs_and_recycled_freshness() {
         force_full: false,
         base: IMAGE,
         game_state: ADDRESS,
-        active: [true; 6],
-        trait_rows: [capacities.rows[4], capacities.rows[5]],
-        trait_bytes: [capacities.bytes[4], capacities.bytes[5]],
+        active: [true; 5],
+        trait_rows: capacities.rows[4],
+        trait_bytes: capacities.bytes[4],
     };
     let mut job = small_wave_job();
     for level in [-7_i32, 9] {
@@ -3161,7 +3144,7 @@ fn shared_skills_keep_current_rows_native_costs_and_recycled_freshness() {
             report.raw_bytes.iter().sum::<u64>()
         );
         let mut decoded = Captured::with_capacities(&capacities);
-        decoded.decode_characters_payload(IMAGE, &job, &mut [0; 6]);
+        decoded.decode_characters_payload(IMAGE, &job, &mut [0; 5]);
         kit::assert_matches_direct(&decoded, &kit::direct(&kit::memory(&bytes), &capacities));
         assert_eq!(decoded.units.rows.rows[0].native.skill_level, level);
         assert_eq!(decoded.units.rows.rows[1].native.skill_level, level);
@@ -3172,7 +3155,7 @@ fn shared_skills_keep_current_rows_native_costs_and_recycled_freshness() {
         assert!(report.raw_ok);
         assert!(job.skills.iter().all(|skill| skill.pointer == 0));
         let mut decoded = Captured::with_capacities(&capacities);
-        decoded.decode_characters_payload(IMAGE, &job, &mut [0; 6]);
+        decoded.decode_characters_payload(IMAGE, &job, &mut [0; 5]);
         kit::assert_matches_direct(&decoded, &kit::direct(&source, &capacities));
     }
 }
@@ -3223,9 +3206,9 @@ fn trait_definition_staging_exhaustion_requires_growth_before_acceptance() {
         force_full: false,
         base: IMAGE,
         game_state: ADDRESS,
-        active: [true; 6],
-        trait_rows: [capacities.rows[4], capacities.rows[5]],
-        trait_bytes: [capacities.bytes[4], capacities.bytes[5]],
+        active: [true; 5],
+        trait_rows: capacities.rows[4],
+        trait_bytes: capacities.bytes[4],
     };
     let source = characters_test_kit::memory(&bytes);
     let mut job = small_wave_job();
@@ -3237,7 +3220,7 @@ fn trait_definition_staging_exhaustion_requires_growth_before_acceptance() {
     job.grow();
     assert!(copy_characters_refresh(&source, context, &mut job).raw_ok);
     let mut captured = Captured::with_capacities(&capacities);
-    captured.decode_characters_payload(IMAGE, &job, &mut [0; 6]);
+    captured.decode_characters_payload(IMAGE, &job, &mut [0; 5]);
     assert_wave_rows(
         &captured,
         &characters_test_kit::direct(&source, &capacities),
@@ -3286,14 +3269,14 @@ fn army_formation_suffix_is_fresh_in_prepared_copy_and_preserves_prefix_on_fault
     use super::characters_test_kit as kit;
     let mut bytes = kit::mapped_fixture();
     let capacities = split_capacities();
-    let active = [true, false, false, true, false, false];
+    let active = [true, false, false, true, false];
     let context = CharactersCopyContext {
         force_full: false,
         base: IMAGE,
         game_state: ADDRESS,
         active,
-        trait_rows: [capacities.rows[4], capacities.rows[5]],
-        trait_bytes: [capacities.bytes[4], capacities.bytes[5]],
+        trait_rows: capacities.rows[4],
+        trait_bytes: capacities.bytes[4],
     };
     let mut job = CharactersJob::new_part(0);
     let field = UNITS[1] + carmy_leader::FORMATION_REFERENCE;
@@ -3313,7 +3296,7 @@ fn army_formation_suffix_is_fresh_in_prepared_copy_and_preserves_prefix_on_fault
             "a formation suffix cannot withhold the old prefix"
         );
         let mut decoded = Captured::with_capacities(&capacities);
-        decoded.decode_characters_payload(IMAGE, &job, &mut [0; 6]);
+        decoded.decode_characters_payload(IMAGE, &job, &mut [0; 5]);
         let direct = kit::direct(
             &WaveMemory::new(&bytes, blocked.then_some(ADDRESS + field)),
             &capacities,
@@ -3371,7 +3354,7 @@ fn army_formation_suffix_is_fresh_in_prepared_copy_and_preserves_prefix_on_fault
     let source = WaveMemory::new(&bytes, Some(ADDRESS + field));
     assert!(copy_characters_refresh(&source, context, &mut job).raw_ok);
     let mut decoded = Captured::with_capacities(&capacities);
-    decoded.decode_characters_payload(IMAGE, &job, &mut [0; 6]);
+    decoded.decode_characters_payload(IMAGE, &job, &mut [0; 5]);
     assert_eq!(decoded.units.rows.rows[1].formation_reference, None);
     assert_eq!(decoded.units.rows.rows[1].formation_reason, None);
     assert!(
@@ -3402,7 +3385,6 @@ fn split_keeps_character_and_unit_leader_registry_ids_distinct() {
     kit::assert_matches_direct(&split, &direct);
     assert_eq!(split.units.rows.outcome, Outcome::Rows { len: 3 });
     assert!(matches!(split.traits.rows.outcome, Outcome::Rows { len } if len > 0));
-    assert!(matches!(split.trait_experience.rows.outcome, Outcome::Rows { len } if len > 0));
 }
 
 #[test]
@@ -3435,9 +3417,9 @@ fn characters_copy_sizes_cover_documented_read_set() {
         force_full: false,
         base: kit::BASE,
         game_state: kit::GAME_STATE,
-        active: [true; 6],
-        trait_rows: [4096; 2],
-        trait_bytes: [131_072; 2],
+        active: [true; 5],
+        trait_rows: 4096,
+        trait_bytes: 131_072,
     };
     let mut first = CharactersJob::new();
     let report = copy_characters_refresh(&memory, ctx, &mut first);
@@ -3455,8 +3437,8 @@ fn characters_copy_sizes_cover_documented_read_set() {
 fn characters_truncation_matrix_keeps_advisors_complete() {
     // Other tables keep their bounded outputs. Advisors grow from this
     // payload and match a sufficiently sized single typed walk.
-    // Cost fixture holds 32 characters, 5 leaders, 22 advisors, 3 units,
-    // 6 traits, 45 experience rows. u32 unread saturation is not
+    // Cost fixture holds 32 characters, 5 leaders, 22 advisors, 3 units
+    // and 6 traits. u32 unread saturation is not
     // reachable synthetically and is covered by the walk's own
     // saturating arithmetic.
     use super::characters_test_kit as kit;
@@ -3466,8 +3448,8 @@ fn characters_truncation_matrix_keeps_advisors_complete() {
         ([0; N], 0),
         ([1; N], 64),
         ([2; N], 64),
-        ([32, 5, 22, 3, 6, 45], 131_072),
-        ([33, 6, 23, 4, 7, 46], 131_072),
+        ([32, 5, 22, 3, 6], 131_072),
+        ([33, 6, 23, 4, 7], 131_072),
         ([4096; N], 131_072),
     ] {
         let capacities = Capacities {
@@ -3484,16 +3466,13 @@ fn characters_truncation_matrix_keeps_advisors_complete() {
     }
     // Exact-fit arm pins Rows on every table.
     let capacities = Capacities {
-        rows: [32, 5, 22, 3, 6, 45],
+        rows: [32, 5, 22, 3, 6],
         bytes: [131_072; N],
     };
     let (split, _, _) = kit::split(&memory, &capacities);
     assert_eq!(split.characters.rows.outcome, Outcome::Rows { len: 32 });
     assert_eq!(split.leaders.rows.outcome, Outcome::Rows { len: 5 });
-    assert_eq!(
-        split.trait_experience.rows.outcome,
-        Outcome::Rows { len: 45 }
-    );
+    assert_eq!(split.traits.rows.outcome, Outcome::Rows { len: 6 });
 }
 
 #[test]
@@ -3809,7 +3788,6 @@ fn fixed_field_matrix<const M: usize, const CONTINUE: bool>(lengths: [usize; M],
 #[test]
 fn characters_fixed_gathers_match_scalar_at_every_field_fault_and_capacity() {
     fixed_field_matrix::<3, false>([12, 4, 32], MASK_TRAITS);
-    fixed_field_matrix::<3, false>([12, 4, 32], MASK_EXPERIENCE);
     fixed_field_matrix::<4, false>([8, 4, 8, 8], MASK_UNITS);
     fixed_field_matrix::<4, false>([4; 4], MASK_UNITS);
     fixed_field_matrix::<2, false>([8; 2], MASK_TRAIT_FALLBACK);
@@ -3854,7 +3832,6 @@ fn characters_fixed_gathers_keep_family_rows_and_faults_exact() {
     let fields = [
         (UNITS[0] + cunit_leader::CHARACTER_TYPE, 8),
         (UNITS[0] + cunit_leader::CATEGORY, 4),
-        (UNITS[0] + cunit_leader::EXPERIENCE, 8),
         (UNITS[0] + cunit_leader::SKILL, 8),
         (UNITS[0] + cunit_leader::TYPE, 8),
         (kit::SKILL0, 8),
@@ -3888,8 +3865,8 @@ fn characters_fixed_gathers_keep_family_rows_and_faults_exact() {
                 log: crate::raw::RawLog::new(4096, 65_536),
                 appended_roles: Vec::with_capacity(512),
                 game_state: 0,
-                active: [true; 6],
-                traits: TraitCapture::with_test_capacities(4096, [4096, 32768], 4096, 1 << 20),
+                active: [true; 5],
+                traits: TraitCapture::with_test_capacities(4096, 4096, 4096, 1 << 20),
                 advisor_demand: AdvisorDemand::default(),
                 skills: [SkillCopy::default(); 32],
                 ..Default::default()
@@ -3901,9 +3878,9 @@ fn characters_fixed_gathers_keep_family_rows_and_faults_exact() {
                     force_full: false,
                     base: IMAGE,
                     game_state: ADDRESS,
-                    active: [true; 6],
-                    trait_rows: [capacities.rows[4], capacities.rows[5]],
-                    trait_bytes: [capacities.bytes[4], capacities.bytes[5]],
+                    active: [true; 5],
+                    trait_rows: capacities.rows[4],
+                    trait_bytes: capacities.bytes[4],
                 },
                 &mut first,
             );
@@ -3917,10 +3894,10 @@ fn characters_fixed_gathers_keep_family_rows_and_faults_exact() {
                     .log
                     .fault
                     .iter()
-                    .chain(&first.traits.fault)
+                    .chain([&first.traits.fault])
                     .any(|&fault| fault)
             );
-            captured.decode_characters_payload(IMAGE, &first, &mut [0; 6]);
+            captured.decode_characters_payload(IMAGE, &first, &mut [0; 5]);
             kit::assert_matches_direct(&captured, &direct);
         }
     }
@@ -3963,7 +3940,7 @@ fn advisor_gathers_preserve_every_partial_fault_and_exact_prefix() {
             let (split, report, job) = kit::split(&memory, &capacities);
             kit::assert_matches_direct(&split, &direct);
             assert!(report.raw_ok);
-            assert_eq!(job.log.fault, [false, false, true, false, false, false]);
+            assert_eq!(job.log.fault, [false, false, true, false, false]);
             // One failure in the direct walk and one in the current raw pass.
             // No failed field is retried and no later field is copied.
             assert_eq!(memory.failures.get(), 2, "field={failed} byte={byte}");
@@ -4028,7 +4005,7 @@ fn advisor_gather_address_overflow_keeps_the_scalar_prefix_without_a_fault_read(
     assert_eq!(job.log.spans.len(), 1);
     assert_eq!(job.log.spans[0].addr, 0x1000);
     assert!(job.log.spans[0].ok);
-    assert_eq!(job.log.fault, [false; 6]);
+    assert_eq!(job.log.fault, [false; 5]);
     assert!(!job.log.overflowed);
 }
 
@@ -4041,51 +4018,49 @@ fn split_copy_matches_direct_walk_on_fault_matrix() {
     for (offset, fault_mask) in [
         (
             cgame_state::CHARACTER_MANAGER,
-            [true, true, true, true, true, true],
+            [true, true, true, true, true],
         ),
-        (ROSTER, [true, true, true, true, true, true]),
-        (CHARACTERS[0], [true, true, true, true, true, true]),
+        (ROSTER, [true, true, true, true, true]),
+        (CHARACTERS[0], [true, true, true, true, true]),
         (
             CHARACTERS[0] + ccharacter::COUNTRY,
-            [true, true, true, false, false, false],
+            [true, true, true, false, false],
         ),
         (
             CHARACTERS[0] + ccharacter::NAME_TOKEN_ID,
-            [true, false, false, false, false, false],
+            [true, false, false, false, false],
         ),
         (
             CHARACTERS[0] + ccharacter::NAME,
-            [true, false, false, false, false, false],
+            [true, false, false, false, false],
         ),
         (
             CHARACTERS[0] + ccharacter::LEADER_MAP_HEAD,
-            [false, true, false, false, false, false],
+            [false, true, false, false, false],
         ),
         (
             CHARACTERS[0] + ccharacter::ADVISOR_MAP_HEAD,
-            [false, false, true, false, false, false],
+            [false, false, true, false, false],
         ),
         (
             CHARACTERS[0] + ccharacter::UNIT_LEADER,
-            [false, false, false, true, true, true],
+            [false, false, false, true, true],
         ),
-        (kit::HEAP_AREA, [false, false, true, false, false, false]),
+        (kit::HEAP_AREA, [false, false, true, false, false]),
         (
             kit::LEAD_NODE + character_leader_node::IDEOLOGY,
-            [false, true, false, false, false, false],
+            [false, true, false, false, false],
         ),
-        (UNITS[0], [false, false, false, true, true, true]),
+        (UNITS[0], [false, false, false, true, true]),
         (
             UNITS[0] + cunit_leader::TRAIT_DATA,
-            [false, false, false, false, true, false],
+            [false, false, false, false, true],
         ),
-        (DEFINITION, [false, false, false, false, true, true]),
-        (EXPERIENCE_ARRAY, [false, false, false, false, false, true]),
-        (kit::SKILL0, [false, false, false, true, false, false]),
-        (
-            kit::HEAP_AREA + 64,
-            [true, false, false, false, false, false],
-        ),
+        (DEFINITION, [false, false, false, false, true]),
+        // The retired trait-experience vector is never read.
+        (EXPERIENCE_ARRAY, [false, false, false, false, false]),
+        (kit::SKILL0, [false, false, false, true, false]),
+        (kit::HEAP_AREA + 64, [true, false, false, false, false]),
     ] {
         let bytes = kit::mapped_fixture();
         let fault = ADDRESS + offset;
@@ -4102,9 +4077,8 @@ fn split_copy_matches_direct_walk_on_fault_matrix() {
         let (split, report, job) = kit::split(&memory, &capacities);
         assert!(report.raw_ok, "offset={offset:x}");
         kit::assert_matches_direct(&split, &direct);
-        let actual: [bool; 6] = std::array::from_fn(|index| {
-            job.log.fault[index] || (index >= 4 && job.traits.fault[index - 4])
-        });
+        let actual: [bool; 5] =
+            std::array::from_fn(|index| job.log.fault[index] || (index == 4 && job.traits.fault));
         assert_eq!(actual, fault_mask, "offset={offset:x}");
     }
 }
@@ -4112,14 +4086,14 @@ fn split_copy_matches_direct_walk_on_fault_matrix() {
 #[test]
 fn failed_character_refresh_preserves_capacity() {
     let mut captured = Captured::with_capacities(&small_capacities());
-    captured.raw_active = [true; 6];
+    captured.raw_active = [true; 5];
     captured.characters.rows.outcome = Outcome::Rows { len: 1 };
     captured.characters.bytes.len = 1;
     captured.characters.bytes.required = 7;
     let bytes = captured.allocated_bytes();
-    captured.fail_characters_capture([true; 6], "character worker failed");
+    captured.fail_characters_capture([true; 5], "character worker failed");
     assert!(!captured.raw_active.iter().any(|&active| active));
-    for outcome in &captured.outcomes()[..6] {
+    for outcome in &captured.outcomes() {
         assert_eq!(
             *outcome,
             Outcome::Unavailable {
@@ -4133,10 +4107,7 @@ fn failed_character_refresh_preserves_capacity() {
 
     captured.leaders.bytes.required = 11;
     captured.traits.bytes.required = 13;
-    captured.fail_characters_capture(
-        [true, false, false, true, false, false],
-        "next worker failed",
-    );
+    captured.fail_characters_capture([true, false, false, true, false], "next worker failed");
     assert_eq!(captured.characters.bytes.required, 7);
     assert_eq!(captured.leaders.bytes.required, 0);
     assert_eq!(captured.traits.bytes.required, 0);
@@ -4159,15 +4130,15 @@ fn staging_overflow_falls_back_to_typed_walk() {
         force_full: false,
         base: IMAGE,
         game_state: ADDRESS,
-        active: [true; 6],
-        trait_rows: [capacities.rows[4], capacities.rows[5]],
-        trait_bytes: [capacities.bytes[4], capacities.bytes[5]],
+        active: [true; 5],
+        trait_rows: capacities.rows[4],
+        trait_bytes: capacities.bytes[4],
     };
     let mut first = CharactersJob {
         log: crate::raw::RawLog::new(8, 8),
         game_state: 0,
-        active: [true; 6],
-        traits: TraitCapture::with_test_capacities(4096, [4096, 32768], 4096, 1 << 20),
+        active: [true; 5],
+        traits: TraitCapture::with_test_capacities(4096, 4096, 4096, 1 << 20),
         advisor_demand: AdvisorDemand::default(),
         skills: [SkillCopy::default(); 32],
         ..Default::default()
@@ -4183,14 +4154,13 @@ fn serial_family_reference(
     base: usize,
     game_state: usize,
     family: Family<'_>,
-) -> [ReadResult; 6] {
+) -> [ReadResult; 5] {
     let Family {
         mut characters,
         mut leaders,
         mut advisors,
         mut units,
         mut traits,
-        mut experience,
     } = family;
     let result = (|| {
         let roster = ccharacter_manager::Roster::read(memory, base, game_state)?;
@@ -4201,7 +4171,6 @@ fn serial_family_reference(
                 && !advisors.active()
                 && !units.active()
                 && !traits.active()
-                && !experience.active()
             {
                 break;
             }
@@ -4210,7 +4179,7 @@ fn serial_family_reference(
                 [
                     characters.active(),
                     leaders.active(),
-                    units.active() || traits.active() || experience.active(),
+                    units.active() || traits.active(),
                     advisors.active(),
                 ],
             )?
@@ -4257,7 +4226,7 @@ fn serial_family_reference(
                     advisors.fail(reason);
                 }
             }
-            if !units.active() && !traits.active() && !experience.active() {
+            if !units.active() && !traits.active() {
                 continue;
             }
             let pointer = character_pointer
@@ -4267,7 +4236,6 @@ fn serial_family_reference(
             let Some(pointer) = pointer else {
                 units.fail("character unit leader pointer unreadable");
                 traits.fail("character unit leader pointer unreadable");
-                experience.fail("character unit leader pointer unreadable");
                 continue;
             };
             if pointer == 0 {
@@ -4282,9 +4250,9 @@ fn serial_family_reference(
                 },
             );
             // Reuse the authenticated scalar header on the normal path. The
-            // trait vectors retain independent availability when scalar capacity
+            // trait vector retains independent availability when scalar capacity
             // or a skill/text fault requires reading only the parent's identity.
-            let identity = if traits.active() || experience.active() {
+            let identity = if traits.active() {
                 Some(if units.len > previous_len {
                     Ok(units.rows[previous_len].native.id)
                 } else {
@@ -4301,20 +4269,8 @@ fn serial_family_reference(
                         },
                         |row, offset| relocate(&mut row.token_start, offset),
                     );
-                    experience.append(
-                        |rows, bytes| {
-                            cunit_leader::walk_trait_experience(
-                                memory, base, pointer, id, rows, bytes,
-                            )
-                            .into()
-                        },
-                        |row, offset| relocate(&mut row.trait_row.token_start, offset),
-                    );
                 }
-                Some(Err(reason)) => {
-                    traits.fail(reason);
-                    experience.fail(reason);
-                }
+                Some(Err(reason)) => traits.fail(reason),
                 None => {}
             }
         }
@@ -4326,7 +4282,6 @@ fn serial_family_reference(
         advisors.fail(reason);
         units.fail(reason);
         traits.fail(reason);
-        experience.fail(reason);
     }
     advisors.append_tooltips(memory, 0, advisors.len);
     [
@@ -4335,7 +4290,6 @@ fn serial_family_reference(
         advisors.result(),
         units.result(),
         traits.result(),
-        experience.result(),
     ]
 }
 
@@ -4400,7 +4354,6 @@ fn serial_family_capture(memory: &impl Memory, capacities: &Capacities) -> Captu
     captured.advisors.primary(results[2]);
     captured.units.primary(results[3]);
     captured.traits.primary(results[4]);
-    captured.trait_experience.primary(results[5]);
     captured
 }
 
@@ -4409,8 +4362,8 @@ fn small_wave_job() -> CharactersJob {
         log: crate::raw::RawLog::new(8192, 262_144),
         appended_roles: Vec::with_capacity(1024),
         game_state: 0,
-        active: [true; 6],
-        traits: TraitCapture::with_test_capacities(4096, [4096, 32768], 4096, 1 << 20),
+        active: [true; 5],
+        traits: TraitCapture::with_test_capacities(4096, 4096, 4096, 1 << 20),
         advisor_demand: AdvisorDemand::default(),
         skills: [SkillCopy::default(); 32],
         ..Default::default()
@@ -4447,14 +4400,14 @@ fn character_family_matches_raw_and_typed_at_every_hour() {
                     base: IMAGE,
                     game_state: ADDRESS,
                     active,
-                    trait_rows: [capacities.rows[4], capacities.rows[5]],
-                    trait_bytes: [capacities.bytes[4], capacities.bytes[5]],
+                    trait_rows: capacities.rows[4],
+                    trait_bytes: capacities.bytes[4],
                 },
                 &mut job,
             );
             assert!(report.raw_ok, "hour={hour} blocked={blocked:?}");
             let mut decoded = Captured::with_capacities(&capacities);
-            decoded.decode_characters_payload(IMAGE, &job, &mut [0; 6]);
+            decoded.decode_characters_payload(IMAGE, &job, &mut [0; 5]);
             characters_test_kit::assert_matches_direct(&decoded, &typed);
             assert_eq!(decoded.character_activity(), active);
             // Roster, roles and traits are all hourly (replay::cadence).
@@ -4471,16 +4424,16 @@ fn wave_split_once(memory: &impl Memory, capacities: &Capacities) -> Captured {
             force_full: false,
             base: IMAGE,
             game_state: ADDRESS,
-            active: [true; 6],
-            trait_rows: [capacities.rows[4], capacities.rows[5]],
-            trait_bytes: [capacities.bytes[4], capacities.bytes[5]],
+            active: [true; 5],
+            trait_rows: capacities.rows[4],
+            trait_bytes: capacities.bytes[4],
         },
         &mut job,
         None,
     );
     assert!(!job.overflowed());
     let mut captured = Captured::with_capacities(capacities);
-    captured.decode_characters_payload(IMAGE, &job, &mut [0; 6]);
+    captured.decode_characters_payload(IMAGE, &job, &mut [0; 5]);
     captured
 }
 
@@ -4493,10 +4446,6 @@ fn assert_wave_rows(left: &Captured, right: &Captured) {
     assert_eq!(left.advisors.rows.rows, right.advisors.rows.rows);
     assert_eq!(left.units.rows.rows, right.units.rows.rows);
     assert_eq!(left.traits.rows.rows, right.traits.rows.rows);
-    assert_eq!(
-        left.trait_experience.rows.rows,
-        right.trait_experience.rows.rows
-    );
 }
 
 fn check_wave_static(bytes: &[u8], blocked: Option<usize>, capacities: &Capacities) {
@@ -4533,7 +4482,7 @@ fn character_page_wave_matches_serial_static_rows_capacity_and_every_view_fault(
             );
         }
     }
-    for slot in 0..6 {
+    for slot in 0..N {
         let mut capacity = full;
         capacity.rows[slot] = 0;
         check_wave_static(&bytes, None, &capacity);
@@ -4746,15 +4695,15 @@ fn character_page_wave_preserves_alias_cursors_and_current_values() {
                 force_full: false,
                 base: IMAGE,
                 game_state: ADDRESS,
-                active: [true; 6],
-                trait_rows: [full.rows[4], full.rows[5]],
-                trait_bytes: [full.bytes[4], full.bytes[5]],
+                active: [true; 5],
+                trait_rows: full.rows[4],
+                trait_bytes: full.bytes[4],
             },
             &mut job,
             None,
         );
         assert!(!job.log.overflowed);
-        decoded.decode_characters_payload(IMAGE, &job, &mut [0; 6]);
+        decoded.decode_characters_payload(IMAGE, &job, &mut [0; 5]);
         let current = characters_test_kit::direct(&WaveMemory::new(&bytes, None), &full);
         assert_wave_rows(&decoded, &current);
     }
@@ -4771,8 +4720,8 @@ fn character_page_wave_keeps_staging_overflow_unaccepted() {
         let mut job = CharactersJob {
             log: crate::raw::RawLog::new(spans, bytes_capacity),
             game_state: 0,
-            active: [true; 6],
-            traits: TraitCapture::with_test_capacities(4096, [4096, 32768], 4096, 1 << 20),
+            active: [true; 5],
+            traits: TraitCapture::with_test_capacities(4096, 4096, 4096, 1 << 20),
             advisor_demand: AdvisorDemand::default(),
             skills: [SkillCopy::default(); 32],
             ..Default::default()
@@ -4783,9 +4732,9 @@ fn character_page_wave_keeps_staging_overflow_unaccepted() {
                 force_full: false,
                 base: IMAGE,
                 game_state: ADDRESS,
-                active: [true; 6],
-                trait_rows: [capacities.rows[4], capacities.rows[5]],
-                trait_bytes: [capacities.bytes[4], capacities.bytes[5]],
+                active: [true; 5],
+                trait_rows: capacities.rows[4],
+                trait_bytes: capacities.bytes[4],
             },
             &mut job,
         );

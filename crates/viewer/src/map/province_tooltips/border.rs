@@ -205,35 +205,25 @@ fn power(
     Ok(power)
 }
 
-/// Numeric getter used by fresh attrition; the optional native text pointer is null.
-pub(super) fn ratio(
+/// The enemy share of border-war power around `state`, seen from `country`
+/// (a raw link, mode zero), which the
+/// attrition hover asks for the unit's
+/// logical owner and scales by `BORDER_WAR_ATTRITION_FACTOR`.
+pub(super) fn enemy_share(
     content: &super::Content,
     frame: &DecodedFrame,
     country: u32,
-    state: u32,
     links: &BTreeMap<u32, u32>,
+    state: u32,
 ) -> Result<i64, String> {
-    let flag = frame
-        .complete::<tables::StateFlags>()
-        .map_err(|e| e.to_string())?
-        .iter()
-        .find(|row| row.state == state)
-        .ok_or("border state active predicate absent")?;
-    if *flag
-        .border_conflict_active
-        .require("StateFlags.border_conflict_active")?
-        == 0
-    {
-        return Ok(0);
-    }
     let states = frame
         .complete::<tables::States>()
         .map_err(|e| e.to_string())?;
-    let states = states.iter().map(|row| (row.id, row)).collect();
+    let states: BTreeMap<_, _> = states.iter().map(|row| (row.id, row)).collect();
     let countries = frame
         .complete::<tables::Countries>()
         .map_err(|e| e.to_string())?;
-    let countries = countries
+    let countries: BTreeMap<_, _> = countries
         .iter()
         .map(|row| (row.canonical_slot, row))
         .collect();

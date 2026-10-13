@@ -25,7 +25,7 @@ use replay::{
 };
 use std::mem::size_of;
 
-pub const N: usize = 11;
+pub const N: usize = 12;
 pub const TABLES: [TableId; N] = [
     TableId::CountryFuel,
     TableId::CountryExperience,
@@ -38,19 +38,22 @@ pub const TABLES: [TableId; N] = [
     TableId::ResourceExchanges,
     TableId::PurchaseContracts,
     TableId::CountryFuelConsumers,
+    // The demand packs' parts, split from the fuel walk's packs at conversion
+    // (`fuel_demand::attach`); no capture or read of their own.
+    TableId::FuelDemandParts,
 ];
 
 /// Definitions are authenticated once and reused by the two dependent walks.
 /// Their read time is charged to ResourceDefinitions, not charged again to each
-/// consumer. CountryResources and ResourceExchanges are hourly and the
-/// definitions daily (replay::cadence): the census is walked every hour for
-/// its two consumers and published only in its slot. The consumers' own
-/// timings include their additional native reads.
+/// consumer. CountryResources, ResourceExchanges and the definitions are hourly
+/// (replay::cadence): the census is walked every hour for its two consumers
+/// and published with them. The consumers' own timings include their
+/// additional native reads.
 /// One fuel walk reads each country's status once for both its tables and is
 /// charged to CountryFuel.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("resource dictionary and consumers", 6, &[6, 7, 8]),
-    ("fuel status and consumers", 0, &[0, 10]),
+    ("fuel status, consumers and demand parts", 0, &[0, 10, 11]),
 ];
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -138,8 +141,6 @@ pub struct Captured {
     /// CountryResources, ResourceExchanges and the resource census they need
     /// are walked.
     resources_active: bool,
-    /// ResourceDefinitions is in its daily slot.
-    definitions_slot: bool,
     other_active: bool,
 }
 
@@ -177,7 +178,6 @@ impl Captured {
             )),
             rest_raw_mode: false,
             resources_active: false,
-            definitions_slot: false,
             other_active: false,
         }
     }
@@ -410,7 +410,6 @@ impl Captured {
                 self.exchanges.outcome = unavailable_descriptors();
             }
             ticks[8] = elapsed(begin);
-            self.hide_off_slot_census();
         }
         if self.other_active {
             let _reads = read_accounting::table(TABLES[9]);
@@ -464,8 +463,10 @@ impl Captured {
             self.resources_active,
             replay::cadence::should_walk(TableId::ResourceExchanges, hour, force_full)
         );
-        self.definitions_slot =
-            replay::cadence::should_walk(TableId::ResourceDefinitions, hour, force_full);
+        debug_assert_eq!(
+            self.resources_active,
+            replay::cadence::should_walk(TableId::ResourceDefinitions, hour, force_full)
+        );
         self.other_active = replay::cadence::should_walk(TableId::CountryFuel, hour, force_full);
         self.mark_inactive();
     }
@@ -489,15 +490,6 @@ impl Captured {
         }
     }
 
-    /// Off the census's slot, a census read only for its consumers is not
-    /// published; a failed or truncated one stays visible so it grows and is
-    /// retried.
-    fn hide_off_slot_census(&mut self) {
-        if !self.definitions_slot && matches!(self.definitions.outcome, Outcome::Rows { .. }) {
-            self.definitions.outcome = skipped();
-        }
-    }
-
     pub fn outcomes(&self) -> [Outcome; N] {
         [
             self.fuel.outcome,
@@ -511,6 +503,8 @@ impl Captured {
             self.exchanges.outcome,
             self.purchases.outcome,
             self.fuel_consumers.outcome,
+            // FuelDemandParts follows CountryFuel's read, a part list a row.
+            self.fuel.outcome,
         ]
     }
 
@@ -531,26 +525,18 @@ impl Captured {
                     country: r.country,
                     current_raw: r.current_raw,
                     maximum_raw: r.maximum_raw,
-                    gain_raw: r.gain_raw,
-                    cost_raw: r.cost_raw,
-                    gain_from_states_raw: r.gain_from_states_raw,
                     lend_lease_gain_raw: r.lend_lease_gain_raw,
-                    lend_lease_consumption_raw: r.lend_lease_consumption_raw,
-                    gain_per_oil_raw: r.gain_per_oil_raw,
-                    history_index: r.history_index,
-                    remaining_hours: r.remaining_hours,
                     ring_gain_raw: r.ring_gain_raw,
                     ring_consumed_raw: r.ring_consumed_raw,
                     ring_other_raw: r.ring_other_raw,
-                    ring_requested_0_raw: r.ring_requested_raw[0],
-                    ring_requested_1_raw: r.ring_requested_raw[1],
-                    ring_requested_2_raw: r.ring_requested_raw[2],
                     ring_received_0_raw: r.ring_received_raw[0],
                     ring_received_1_raw: r.ring_received_raw[1],
                     ring_received_2_raw: r.ring_received_raw[2],
-                    awards: rows::Recorded::NotRecorded,
+                    awards: rows::Recorded::Value(rows::Retired),
                     demand: rows::Recorded::NotRecorded,
+                    award_day: rows::Recorded::NotRecorded,
                     country_instance: rows::Recorded::Value(r.country_instance),
+                    ..Default::default()
                 },
             ),
             scalar_table::<tables::CountryExperience, _>(
@@ -705,11 +691,16 @@ impl Captured {
                     received_raw: r.received_raw,
                 },
             ),
+            // Replaced by the parts `fuel_demand::attach` splits off below.
+            unavailable("fuel demand parts were not split").into(),
         ];
-        if let Err(error) = super::fuel_demand::attach(&mut tables[0], &self.demand) {
-            // OOM follows the existing terminal ownership policy. A named
-            // demand refusal must never discard the independently known prefix.
-            let _ = engine::allocation::owned_vec::<()>(Err(error));
+        match super::fuel_demand::attach(&mut tables[0], &self.demand) {
+            Ok(parts) => tables[11] = parts.into(),
+            Err(error) => {
+                // OOM follows the existing terminal ownership policy. A named
+                // demand refusal must never discard the independently known prefix.
+                let _ = engine::allocation::owned_vec::<()>(Err(error));
+            }
         }
         tables
     }

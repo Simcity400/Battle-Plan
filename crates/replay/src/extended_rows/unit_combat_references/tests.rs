@@ -12,7 +12,7 @@ fn round_trip<T: Value + std::fmt::Debug + PartialEq>(value: &T) -> Vec<u8> {
 }
 fn packet() -> UnitCombatReferences {
     UnitCombatReferences {
-        sample_hour: i32::MIN,
+        sample_hour: PacketHour::Host,
         entries: vec![
             UnitCombatReference {
                 combat: u64::MAX,
@@ -33,11 +33,11 @@ fn packet() -> UnitCombatReferences {
 fn ordered_full_handles_and_repeats_round_trip_without_class_word_inference() {
     let packet = packet();
     let bytes = round_trip(&packet);
-    assert_eq!(bytes.len(), 8 + 9 * 3);
-    assert_eq!(&bytes[8..16], &u64::MAX.to_le_bytes());
-    assert_eq!(bytes[16], 0);
-    assert_eq!(bytes[25], 2);
-    assert_eq!(bytes[34], 0);
+    assert_eq!(bytes.len(), 4 + 9 * 3);
+    assert_eq!(&bytes[4..12], &u64::MAX.to_le_bytes());
+    assert_eq!(bytes[12], 0);
+    assert_eq!(bytes[21], 2);
+    assert_eq!(bytes[30], 0);
 }
 #[test]
 fn historical_absence_current_refusal_and_known_empty_are_distinct() {
@@ -48,11 +48,11 @@ fn historical_absence_current_refusal_and_known_empty_are_distinct() {
     assert!(Value::encode(&absent, &mut Vec::new()).is_err());
     assert_eq!(round_trip::<Field>(&None.into()), [0]);
     let empty = Some(UnitCombatReferences {
-        sample_hour: 0,
+        sample_hour: PacketHour::Host,
         entries: Vec::new(),
     })
     .into();
-    assert_eq!(round_trip::<Field>(&empty), [1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(round_trip::<Field>(&empty), [1, 0, 0, 0, 0]);
 }
 #[test]
 fn malformed_tags_handles_kinds_counts_and_truncation_refuse() {
@@ -61,13 +61,13 @@ fn malformed_tags_handles_kinds_counts_and_truncation_refuse() {
         assert!(UnitCombatReferences::decode(&mut Decoder::new(&bytes[..end])).is_err());
     }
     let mut zero = bytes.clone();
-    zero[8..16].fill(0);
+    zero[4..12].fill(0);
     assert!(UnitCombatReferences::decode(&mut Decoder::new(&zero)).is_err());
     let mut kind = bytes.clone();
-    kind[16] = 3;
+    kind[12] = 3;
     assert!(UnitCombatReferences::decode(&mut Decoder::new(&kind)).is_err());
     let mut count = bytes;
-    count[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+    count[..4].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(UnitCombatReferences::decode(&mut Decoder::new(&count)).is_err());
     assert!(<Option<UnitCombatReferences> as Value>::decode(&mut Decoder::new(&[2])).is_err());
     for entry in [
@@ -80,9 +80,17 @@ fn malformed_tags_handles_kinds_counts_and_truncation_refuse() {
 #[test]
 fn frame_hour_count_and_kind_admission_are_exact() {
     let packet = packet();
+    // A host packet was read with its hourly row; a historical stamp binds
+    // its own hour.
     assert!(packet.valid_at(i32::MIN, 3));
-    assert!(!packet.valid_at(i32::MAX, 3));
+    assert!(packet.valid_at(i32::MAX, 3));
     assert!(!packet.valid_at(i32::MIN, 2));
+    let stamped = UnitCombatReferences {
+        sample_hour: PacketHour::Stamped(i32::MIN),
+        ..packet.clone()
+    };
+    assert!(stamped.valid_at(i32::MIN, 3));
+    assert!(!stamped.valid_at(i32::MAX, 3));
     let mut invalid = packet;
     invalid.entries[1].kind = 3;
     assert!(!invalid.valid_at(i32::MIN, 3));

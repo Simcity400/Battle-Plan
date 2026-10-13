@@ -31,7 +31,7 @@ fn reserved_certificate_readiness_uses_only_the_projectable_naming_prefix() {
         let original = std::mem::replace(&mut capture.reserved.row, row);
         assert!(!capture.reserved_land_certificate_ready());
         assert!(matches!(
-            capture.reserved_table_attack(None, None),
+            capture.reserved_table(None),
             TableView::Unavailable { .. }
         ));
         capture.reserved.row = original;
@@ -69,6 +69,7 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
     let [
         TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
         TableView::Truncated { missing: 1, .. },
+        ..,
     ] = capture.tables()
     else {
         panic!("singleton shortage must preserve the country table");
@@ -91,6 +92,7 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
     let [
         _,
         TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+        ..,
     ] = capture.tables()
     else {
         panic!("singleton must publish after growth");
@@ -112,6 +114,7 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
     let [
         _,
         TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+        ..,
     ] = capture.tables()
     else {
         panic!("empty getter bytes are exact");
@@ -125,6 +128,7 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
         let [
             _,
             TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+            ..,
         ] = capture.tables()
         else {
             panic!("optional getter refusal preserves naming operands");
@@ -139,6 +143,7 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
         let [
             TableView::Complete(replay::rows::TableRows::CountryAppearance(positive)),
             TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+            ..,
         ] = capture.tables()
         else {
             panic!("independent faction refusal preserves both naming and positive appearance");
@@ -151,8 +156,60 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
     capture.reserved.row.group = Some(Name { start: 4, len: 1 });
     assert!(matches!(
         capture.tables(),
-        [TableView::Complete(_), TableView::Unavailable { .. }]
+        [TableView::Complete(_), TableView::Unavailable { .. }, ..]
     ));
+}
+
+#[test]
+fn the_singleton_publishes_no_retired_transport_tables_or_packet() {
+    use engine::csubject_relation::Name;
+    // The retired split tables are no longer this pack's tables.
+    assert_eq!(
+        TABLES,
+        [TableId::CountryAppearance, TableId::ReservedCountryNaming]
+    );
+    for table in replay::rows::RESERVED_SPLIT_TABLES {
+        assert!(!TABLES.contains(&table), "{table:?}");
+    }
+    let mut capture = Captured::with_capacities(&Capacities {
+        rows: 1,
+        naming_bytes: 4,
+        ..Default::default()
+    });
+    capture.rows.outcome = Outcome::Rows { len: 0 };
+    capture.reserved.outcome = Outcome::Unavailable {
+        reason: "reserved naming refused",
+    };
+    let tables = capture.tables();
+    assert!(matches!(&tables[1], TableView::Unavailable { .. }));
+    capture.naming.first[..2].copy_from_slice(&[0xff, 0]);
+    capture.naming.len = 2;
+    capture.reserved.row = ccountry::ReservedNamingRow {
+        tag: Name { start: 0, len: 2 },
+        ..Default::default()
+    };
+    capture.reserved.outcome = Outcome::Rows { len: 1 };
+    let tables = capture.tables();
+    let TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)) = &tables[1]
+    else {
+        panic!("complete singleton");
+    };
+    // The naval movement, raw country and selected transport fields are
+    // retired tombstones; Country0's attack operands are not witnessed.
+    for retired in [
+        &rows[0].movement,
+        &rows[0].raw_country_observations,
+        &rows[0].transport_mission_inputs,
+    ] {
+        assert_eq!(
+            *retired,
+            replay::rows::Recorded::Value(replay::rows::Retired)
+        );
+    }
+    assert_eq!(
+        rows[0].attack,
+        replay::rows::Recorded::Value(replay::rows::Witnessed(None))
+    );
 }
 
 #[test]
@@ -181,6 +238,7 @@ fn unreadable_census_is_unavailable_and_raw_colors_preserve_primary_values() {
     let [
         TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
         _,
+        ..,
     ] = capture.tables()
     else {
         panic!("complete");
@@ -236,6 +294,7 @@ fn subject_payload_demand_is_positive_count_only_and_keeps_raw_order() {
     let [
         TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
         _,
+        ..,
     ] = capture.tables()
     else {
         panic!("complete subject roster");
@@ -268,6 +327,7 @@ fn positive_original_tag_projection_preserves_binary_absence_and_local_refusal()
         let [
             TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
             _,
+            ..,
         ] = capture.tables()
         else {
             panic!("optional original-tag failures preserve the appearance prefix");
@@ -315,6 +375,7 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
     let [
         _,
         TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+        ..,
     ] = capture.tables()
     else {
         panic!("complete singleton")
@@ -347,6 +408,7 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
         let [
             _,
             TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+            ..,
         ] = capture.tables()
         else {
             panic!("count refusal preserves singleton")
@@ -378,6 +440,7 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
         let [
             _,
             TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+            ..,
         ] = capture.tables()
         else {
             panic!("bucket refusal preserves prefix")
@@ -408,6 +471,7 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
         let [
             _,
             TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+            ..,
         ] = capture.tables()
         else {
             panic!("array refusal preserves other fields")
@@ -486,6 +550,7 @@ fn subject_growth_keeps_all_rows_and_payload_fault_omits_only_affected_countries
                 missing: actual_missing,
             },
             _,
+            ..,
         ] = capture.tables()
         else {
             panic!("unaffected countries must remain partial rows");
@@ -552,6 +617,7 @@ fn subject_arena_grows_first_and_later_mod_sized_5000_country_lists() {
         let [
             TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
             _,
+            ..,
         ] = capture.tables()
         else {
             panic!("complete native subjects must be published in the same sample");
@@ -597,6 +663,7 @@ fn deferred_reserved_table_retains_the_already_guarded_signed_boundary() {
         let [
             _,
             TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+            ..,
         ] = captured.tables()
         else {
             panic!("reserved singleton must remain complete");

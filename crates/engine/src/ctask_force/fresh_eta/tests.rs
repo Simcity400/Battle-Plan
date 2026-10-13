@@ -83,6 +83,14 @@ impl Fixture {
             self.i64(data + index * 16 + 8, *value);
         }
     }
+    /// Reads of exactly `len` bytes at `address`.
+    fn observed(&self, address: usize, len: usize) -> usize {
+        self.reads
+            .borrow()
+            .iter()
+            .filter(|&&read| read == (address, len))
+            .count()
+    }
     fn calls(&self, address: usize) -> usize {
         self.reads
             .borrow()
@@ -143,6 +151,55 @@ fn current_packet_preserves_native_values_and_independent_stats_fields() {
     assert_eq!(memory.calls(TASK + cunit::ROSTER_OWNER), 1);
 }
 
+/// A lasting fault on the range alone stops the stat gather at its
+/// speed-and-range span: speed and class are read alone and kept, and the
+/// range is refused only where it is used (an accepted ETA guard); a refused
+/// guard keeps its own refusal and the independent risk result.
+#[test]
+fn a_range_only_fault_keeps_speed_and_class_and_the_guard_decides_its_use() {
+    let mut memory = fixture();
+    memory.fault = Some((STATS + mission::STAT_RANGE, 8));
+    let row = verified_reader(&memory).capture(TASK, 1).0;
+    assert_eq!((row.base_speed, row.terrain_class), (Ok(700_001), Ok(-1)));
+    assert!(row.modified_range.is_err());
+    assert_eq!(row.speed_modifier, Ok(0));
+    let memory = {
+        let mut memory = mission_risk_fixture();
+        memory.fault = Some((STATS + mission::STAT_RANGE, 8));
+        memory
+    };
+    let (eta, _, risk) = Reader::new(&memory, TERRAIN_IMAGE, STATE)
+        .with_modifier_guard(Err("ETA layout mismatch"))
+        .capture_with_mission_risk(TASK, 25, Ok(true), Ok(()));
+    assert_eq!(
+        (eta.speed_modifier, eta.modified_range),
+        (Err("ETA layout mismatch"), Err("ETA layout mismatch"))
+    );
+    assert_eq!((eta.base_speed, eta.terrain_class), (Ok(700_001), Ok(-1)));
+    assert_eq!(risk.combined_detection, Ok(Some(RISK_COMBINED)));
+}
+
+/// The stat block is gathered in one call; a gather that stops at a faulting
+/// field reads the later fields alone, so a speed fault keeps the range as
+/// the per-field reads did, and the fallback is counted. A fault that clears
+/// after its first touch refuses no more than those reads: the gather meets
+/// it and the speed read alone succeeds.
+#[test]
+fn a_stat_gather_that_stops_early_reads_the_rest_alone() {
+    use crate::batch_fallback::{Batch, count};
+    let fallbacks = count(Batch::FreshEtaGathers);
+    let mut memory = fixture();
+    memory.fault = Some((STATS + 0x1a8, 8));
+    let row = verified_reader(&memory).capture(TASK, 1).0;
+    assert!(row.base_speed.is_err());
+    assert_eq!(row.modified_range, Ok(1_000_000));
+    assert!(count(Batch::FreshEtaGathers) > fallbacks);
+    memory.fail_once = true;
+    let row = verified_reader(&memory).capture(TASK, 2).0;
+    assert_eq!(row.base_speed, Ok(700_001));
+    assert_eq!(row.modified_range, Ok(1_000_000));
+}
+
 #[test]
 fn stats_root_failure_keeps_common_and_simulation_flags_available() {
     let mut memory = fixture();
@@ -184,6 +241,182 @@ fn metadata_component_and_shared_root_failures_are_retained_without_retry() {
         assert_eq!(memory.calls(fault), 1);
         assert_eq!(memory.calls(metadata::TABLE_RVA), 1);
     }
+}
+
+/// Task forces of a capture share their country's accumulator: its census
+/// is read once per reader, and each task force's terms are the same.
+#[test]
+fn a_capture_reads_a_shared_accumulator_census_once() {
+    let mut memory = fixture();
+    memory.accumulator(
+        COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
+        0x1800,
+        &[(KEYS[0], 123), (KEYS[1], 5), (KEYS[2], -100_000)],
+    );
+    let mut reader = verified_reader(&memory);
+    let first = reader.capture(TASK, 1).0;
+    let second = reader.capture(TASK, 2).0;
+    assert_eq!(first.speed_modifier, second.speed_modifier);
+    assert_eq!(first.modified_range, second.modified_range);
+    assert_eq!(first.modified_range, Ok(100_000));
+    assert_eq!(memory.calls(COUNTRY + ccountry::MODIFIER_ACCUMULATOR), 1);
+}
+
+/// The country census a certified reader logged.
+fn country_census(log: &[HeldCensus]) -> HeldCensus {
+    let address = COUNTRY + ccountry::MODIFIER_ACCUMULATOR;
+    *log.iter()
+        .find(|census| census.receiver == COUNTRY && census.address == address)
+        .expect("the certified country census is logged")
+}
+
+/// A reader logs the certified country census it used under the certificate
+/// it took before reading it; a later reader served that census from the
+/// held ones (the certificate unchanged) reads no country accumulator, gives
+/// the same packet and logs the census again under the same certificate.
+#[test]
+fn a_held_country_census_is_served_without_reading() {
+    let mut memory = fixture();
+    let address = COUNTRY + ccountry::MODIFIER_ACCUMULATOR;
+    memory.accumulator(
+        address,
+        0x1800,
+        &[(KEYS[0], 123), (KEYS[1], 5), (KEYS[2], -100_000)],
+    );
+    // Each certification of the country: the accumulator reads before it.
+    let asked = RefCell::new(Vec::new());
+    let certify = |receiver: usize| {
+        if receiver == COUNTRY {
+            asked.borrow_mut().push(memory.calls(address));
+        }
+        Some((1_u64, 4_u64))
+    };
+    let mut log = Vec::new();
+    let first = verified_reader(&memory)
+        .with_censuses(Censuses {
+            held: &[],
+            certify: &certify,
+            log: &mut log,
+        })
+        .capture(TASK, 1)
+        .0;
+    assert_eq!(*asked.borrow(), [0], "the certificate precedes the read");
+    assert_eq!(memory.calls(address), 1);
+    assert_eq!(country_census(&log).certificate, (1, 4));
+    let mut held = log.clone();
+    held.sort_by_key(HeldCensus::identity);
+    let reads = memory.calls(address);
+    let mut next = Vec::new();
+    let second = verified_reader(&memory)
+        .with_censuses(Censuses {
+            held: &held,
+            certify: &certify,
+            log: &mut next,
+        })
+        .capture(TASK, 2)
+        .0;
+    assert_eq!(memory.calls(address), reads, "the held census is served");
+    assert_eq!(
+        (second.speed_modifier, second.modified_range),
+        (first.speed_modifier, first.modified_range)
+    );
+    assert_eq!(next, log);
+}
+
+/// A held census is served only under the certificate it was read under.
+/// After a writer moved the receiver's certificate, the reader takes the new
+/// certificate, then reads the accumulator afresh: it gives the current
+/// values, and logs them under the new certificate, never the held values.
+#[test]
+fn a_held_census_whose_certificate_moved_is_read_afresh() {
+    let mut memory = fixture();
+    let address = COUNTRY + ccountry::MODIFIER_ACCUMULATOR;
+    memory.accumulator(
+        address,
+        0x1800,
+        &[(KEYS[0], 123), (KEYS[1], 5), (KEYS[2], -100_000)],
+    );
+    let mut log = Vec::new();
+    let _ = verified_reader(&memory)
+        .with_censuses(Censuses {
+            held: &[],
+            certify: &|_: usize| Some((1_u64, 4_u64)),
+            log: &mut log,
+        })
+        .capture(TASK, 1);
+    let mut held = log.clone();
+    held.sort_by_key(HeldCensus::identity);
+    let before = country_census(&held);
+    // A hooked writer rebuilds the tree, moving its certificate to (1, 6).
+    memory.accumulator(
+        address,
+        0x1800,
+        &[(KEYS[0], 250), (KEYS[1], 5), (KEYS[2], -100_000)],
+    );
+    let current = verified_reader(&memory).capture(TASK, 2).0;
+    let reads = memory.calls(address);
+    let asked = RefCell::new(Vec::new());
+    let certify = |receiver: usize| {
+        if receiver == COUNTRY {
+            asked.borrow_mut().push(memory.calls(address));
+        }
+        Some((1_u64, 6_u64))
+    };
+    let mut next = Vec::new();
+    let row = verified_reader(&memory)
+        .with_censuses(Censuses {
+            held: &held,
+            certify: &certify,
+            log: &mut next,
+        })
+        .capture(TASK, 2)
+        .0;
+    assert_eq!(
+        *asked.borrow(),
+        [reads],
+        "the certificate precedes the read"
+    );
+    assert_eq!(memory.calls(address), reads + 1, "the moved census is read");
+    assert_eq!(
+        (row.speed_modifier, row.modified_range),
+        (current.speed_modifier, current.modified_range)
+    );
+    let after = country_census(&next);
+    assert_eq!(after.certificate, (1, 6));
+    assert_ne!(
+        after.values, before.values,
+        "the held values are not served"
+    );
+}
+
+/// A receiver that cannot be certified (no certificate before the read) is
+/// never served its held census, and its fresh census is not logged.
+#[test]
+fn an_uncertified_census_is_read_and_not_logged() {
+    let mut memory = fixture();
+    let address = COUNTRY + ccountry::MODIFIER_ACCUMULATOR;
+    memory.accumulator(address, 0x1800, &[(KEYS[0], 123)]);
+    let mut held = Vec::new();
+    let _ = verified_reader(&memory)
+        .with_censuses(Censuses {
+            held: &[],
+            certify: &|_: usize| Some((1_u64, 4_u64)),
+            log: &mut held,
+        })
+        .capture(TASK, 1);
+    held.sort_by_key(HeldCensus::identity);
+    country_census(&held);
+    let reads = memory.calls(address);
+    let mut log = Vec::new();
+    let _ = verified_reader(&memory)
+        .with_censuses(Censuses {
+            held: &held,
+            certify: &|_: usize| -> Option<Certificate> { None },
+            log: &mut log,
+        })
+        .capture(TASK, 2);
+    assert_eq!(memory.calls(address), reads + 1);
+    assert!(log.iter().all(|census| census.receiver != COUNTRY));
 }
 
 #[test]
@@ -290,6 +523,44 @@ fn actual_location_terrain_keeps_adjacent_class_runs_and_native_weighting() {
     assert_eq!(memory.calls(terrain + 0xb8), 1);
     assert_eq!(memory.calls(terrain + 0xa8), 0);
     assert_eq!(memory.calls(TASK + cunit::LOCATION), 1);
+}
+
+/// The ETA's ship walk reads each roster ship's vtable, parent and class in
+/// one guarded call, where it read each in a call of its own: a fourth ship
+/// of the last class costs one call more. A ship whose parent is unreadable
+/// still fails as before.
+#[test]
+fn eta_roster_ships_cost_one_guarded_call_each() {
+    const FOURTH: usize = 0x20000;
+    let capture = |memory: &Fixture| {
+        let census = crate::read_census::ReadCensus::new(memory);
+        let row = Reader::new(&census, TERRAIN_IMAGE, STATE)
+            .with_modifier_guard(Ok(()))
+            .capture(TASK, 17)
+            .0;
+        (row.speed_modifier, census.calls())
+    };
+    let three = located_fixture();
+    let mut four = located_fixture();
+    four.array(TASK + ctask_force::SHIPS, 0xa000, 4);
+    four.u64(0xa018, FOURTH as u64);
+    four.u64(FOURTH, (TERRAIN_IMAGE + cship::VTABLE_RVA) as u64);
+    four.u64(FOURTH + cship::TASK_FORCE, TASK as u64);
+    four.u32(FOURTH + cship::CLASS_DATABASE_ID, 3);
+    let (speed, with_three) = capture(&three);
+    assert_eq!(speed, Ok(26_666));
+    let (_, with_four) = capture(&four);
+    assert_eq!(with_four - with_three, 1);
+
+    four.fault = Some((FOURTH + cship::TASK_FORCE, 8));
+    let row = Reader::new(&four, TERRAIN_IMAGE, STATE)
+        .with_modifier_guard(Ok(()))
+        .capture(TASK, 17)
+        .0;
+    assert_eq!(
+        row.speed_modifier,
+        Err("fresh task-force operand unreadable")
+    );
 }
 
 #[test]
@@ -655,7 +926,10 @@ fn refused_or_unverified_layout_skips_modifier_graph_and_keeps_independent_prefi
         );
         assert_eq!(rows[0].fresh_owner.unwrap().unwrap().id, 1);
         assert_eq!(memory.calls(COUNTRY + ccountry::MODIFIER_ACCUMULATOR), 0);
-        assert_eq!(memory.calls(STATS + mission::STAT_RANGE), 0);
+        // The range arrives in the stat gather's speed-and-range span, read
+        // once; nothing reads it alone, and the refused guard keeps it unused.
+        assert_eq!(memory.observed(STATS + 0x1a8, 16), 1);
+        assert_eq!(memory.observed(STATS + mission::STAT_RANGE, 8), 0);
         assert_eq!(memory.calls(TASK + cunit::LOCATION), 0);
         assert_eq!(memory.calls(TASK + ctask_force::CURRENT_FUEL_USAGE), 0);
         assert_eq!(memory.calls(TASK + mission::UNDERWAY), 0);
@@ -1056,8 +1330,8 @@ fn assert_mission_risk_graph_read_once(memory: &Fixture) {
 }
 
 fn assert_mission_risk_skips_eta_fields(memory: &Fixture) {
+    assert_eq!(memory.observed(STATS + mission::STAT_RANGE, 8), 0);
     for address in [
-        STATS + mission::STAT_RANGE,
         TASK + mission::UNDERWAY,
         TASK + cunit::EXILED,
         TASK + cunit::STRATEGIC_REDEPLOYMENT,
@@ -1176,7 +1450,8 @@ fn mission_risk_guard_succeeds_independently_of_eta_layout_refusal() {
         (Err("ETA layout mismatch"), Err("ETA layout mismatch"))
     );
     assert_eq!((eta.base_speed, eta.terrain_class), (Ok(700_001), Ok(-1)));
-    assert_eq!(memory.calls(STATS + mission::STAT_RANGE), 0);
+    assert_eq!(memory.observed(STATS + 0x1a8, 16), 1);
+    assert_eq!(memory.observed(STATS + mission::STAT_RANGE, 8), 0);
     assert_eq!(memory.calls(TASK + ctask_force::CURRENT_FUEL_USAGE), 1);
     assert_eq!(
         memory.calls(META + KEYS[0] as usize * metadata::STRIDE + metadata::FLAGS),
@@ -1587,9 +1862,14 @@ fn contribution_only_borrows_detection_stats_without_own_risk_later_leaves() {
         );
         assert_eq!(risk.speed_base, risk.coordination);
         assert_mission_risk_graph_read_once(&memory);
-        for offset in [0x148, 0x150, 0x1a8, 8, mission::STAT_RANGE] {
+        for offset in [0x148, 0x150] {
             assert_eq!(memory.calls(STATS + offset), 0);
         }
+        // The stat gather copies the class and the speed-and-range span once
+        // each; the own-risk speed and coordination above stay unused.
+        assert_eq!(memory.observed(STATS + 8, 4), 1);
+        assert_eq!(memory.observed(STATS + 0x1a8, 16), 1);
+        assert_eq!(memory.observed(STATS + mission::STAT_RANGE, 8), 0);
         for key in [KEYS[0], 0x19, 0x55, 0x108, 0x19f] {
             assert_eq!(
                 memory.calls(META + key as usize * metadata::STRIDE + metadata::FLAGS),

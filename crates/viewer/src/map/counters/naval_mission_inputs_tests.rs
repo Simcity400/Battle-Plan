@@ -88,6 +88,7 @@ fn anchors() -> CounterContent {
         defines: CounterDefines::VANILLA,
         supply_grace: Err("unused in fixture".into()),
         dig_in_factor: Err("unused in fixture".into()),
+        attrition: Err("unused in fixture".into()),
         ability_comms_scaling: Err("unused in fixture".into()),
         ability_no_hq_scaling: Err("unused in fixture".into()),
         comms_max_distance: Err("unused in fixture".into()),

@@ -484,7 +484,12 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                         continue;
                     };
                     let rows = decoded.complete::<tables::CountryFactories>().ok();
-                    let read = slot_read(&decoded.metrics, TableId::CountryFactories, decoded.hour);
+                    let read = slot_read(
+                        replay.format,
+                        &decoded.metrics,
+                        TableId::CountryFactories,
+                        decoded.hour,
+                    );
                     // Each row by the slot its link names; a slot two rows name is unknown.
                     let by_slot =
                         unique_by_slot(rows.filter(|_| read).into_iter().flatten(), links, |row| {

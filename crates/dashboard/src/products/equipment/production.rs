@@ -292,7 +292,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                     let hour = frame.hour;
                     // Rocket rows retain every country/design total; they do not depend
                     // on a registered line or on the equipment census being readable.
-                    result.rocket.observe(decoded)?;
+                    result.rocket.observe(replay.format, decoded)?;
                     if let Some(last) = last_frame
                         && last.checked_add(1) != Some(hour)
                     {
@@ -303,8 +303,9 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                         );
                     }
                     last_frame = Some(hour);
-                    result.variants.observe(decoded);
+                    result.variants.observe(replay.format, decoded);
                     let read = slot_read(
+                        replay.format,
                         &decoded.metrics,
                         TableId::ProductionLineOutput,
                         decoded.hour,

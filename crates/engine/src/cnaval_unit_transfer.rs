@@ -1,4 +1,5 @@
-//! CNavalUnitTransfer resolved from combat participant handles; no event hook is installed.
+//! CNavalUnitTransfer resolved from combat participant handles; no event hook
+//! is installed.
 
 /// CNavalUnitTransfer vtable.
 pub const VTABLE_RVA: usize = 0x0295_6cf8;
@@ -53,6 +54,8 @@ const P: i64 = 100_000;
 struct EnemyWeight {
     country: ccountry::Country,
     weight: i64,
+    /// This enemy navy's bound-domain cells, once copied.
+    operands: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -66,14 +69,22 @@ struct OwnerEnemies {
 struct NavyInputs {
     country: ccountry::Country,
     regions: Array,
+    /// Start of this navy's cells for the bound source-region domain.
+    operands: Option<usize>,
 }
 
+/// One enemy navy's regional access operand for one bound domain region.
 #[derive(Clone, Copy)]
-struct Speed {
-    owner: u32,
-    region: usize,
-    value: i64,
+enum OperandCell {
+    /// Not copied yet: the region's own element is read on first use.
+    Unread,
+    Value(i64),
+    Unreadable,
 }
+
+/// Elements per guarded copy of a navy's consecutive region ids.
+const OPERAND_BATCH: usize = 64;
+const OPERAND_UNREADABLE: &str = "navy regional operand unreadable";
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum SharedInput {
@@ -140,6 +151,38 @@ impl Hash for Input {
                 country(enemy, state);
             }
         }
+    }
+}
+
+/// Pass-local observation index hash. Probes compare complete keys, so the
+/// hash only selects where a probe starts; it needs speed and spread, not
+/// SipHash's flooding resistance.
+#[derive(Default)]
+struct ObservationHasher(u64);
+
+impl Hasher for ObservationHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.write_u64(u64::from_le_bytes(word));
+        }
+    }
+    fn write_u32(&mut self, value: u32) {
+        self.write_u64(u64::from(value));
+    }
+    fn write_u64(&mut self, value: u64) {
+        self.0 = (self.0.rotate_left(26) ^ value).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+    fn write_usize(&mut self, value: usize) {
+        self.write_u64(value as u64);
+    }
+    fn finish(&self) -> u64 {
+        // SplitMix64 finalizer: masked low bits depend on every input word.
+        let mut value = self.0;
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
     }
 }
 
@@ -218,8 +261,16 @@ fn observe<T: ObservedValue>(
         if let Some(result) = state.shared[input as usize] {
             return result.map(T::from_owned);
         }
+    } else if let Some(value) = state.recent(input) {
+        return Ok(T::from_owned(value));
     } else if let Some(observation) = state.observation(input) {
-        return observation.result.map(T::from_owned);
+        let result = observation.result;
+        if let Ok(value) = result {
+            memo.as_deref_mut()
+                .expect("transport observation memo retained")
+                .remember(input, value);
+        }
+        return result.map(T::from_owned);
     } else if state.retain_failures && state.failures.len() == state.failures.capacity() {
         // Each entered query can introduce at most one refused input. Reserve
         // that live query demand before acquisition, including cache saturation.
@@ -245,23 +296,46 @@ fn observe<T: ObservedValue>(
             state.failures.push(observation);
             state.index_observation(input, index * 2 + 2);
         }
-    } else if state.observations.len() < state.observations.capacity() {
-        let index = state.observations.len();
-        state.observations.push(observation);
-        state.index_observation(input, index * 2 + 1);
+    } else {
+        if let Ok(value) = observation.result {
+            state.remember(input, value);
+        }
+        if state.observations.len() < state.observations.capacity() {
+            let index = state.observations.len();
+            state.observations.push(observation);
+            state.index_observation(input, index * 2 + 1);
+        }
     }
     result
+}
+
+/// Successful per-owner inputs of the most recent query. A domain walk asks
+/// every region for one owner in turn.
+#[derive(Clone, Copy, Default)]
+struct RecentOwner {
+    country: Option<(u32, ccountry::Country)>,
+    navy: Option<(ccountry::Country, usize)>,
+    reduction: Option<(ccountry::Country, i64)>,
+}
+
+/// Successful per-region inputs at one bound domain position.
+#[derive(Clone, Copy, Default)]
+struct RegionCell {
+    key: Option<(usize, u32)>,
+    region: Option<(usize, i64)>,
+    weather: Option<(u32, i64)>,
 }
 
 /// Successful transport observations in one frozen acquisition. Enemy gates
 /// and reciprocal intel depend on the owner, not the queried region. Preserve
 /// their original interleaving with regional reads on the first query; only a
 /// complete successful roster may serve a later region. Every clear expires
-/// the owned inputs, including current naval array geometry and speed results.
+/// the owned inputs, including current naval array geometry.
 pub(crate) struct MovementSpeeds {
     key: Option<(usize, usize)>,
-    speeds: Vec<Option<Speed>>,
     owners: Vec<OwnerEnemies>,
+    /// `owners` position + 1 by masked canonical slot; 0 was never pushed.
+    owner_index: Vec<usize>,
     enemies: Vec<EnemyWeight>,
     navies: Vec<Option<NavyInputs>>,
     shared: [Option<Result<InputValue, &'static str>>; SHARED_INPUTS],
@@ -269,14 +343,24 @@ pub(crate) struct MovementSpeeds {
     failures: Vec<Observation>,
     observation_index: Vec<usize>,
     retain_failures: bool,
+    /// The caller's complete source-region key domain, in its key order, and
+    /// the position of the region being queried (`get_in_domain`).
+    domain: Vec<u32>,
+    position: Option<usize>,
+    /// One cell per bound domain region for each enemy navy reached.
+    operands: Vec<OperandCell>,
+    /// Successful observations repeated by consecutive or same-position
+    /// queries, served before the hashed index with identical values.
+    recent: RecentOwner,
+    regions: Vec<RegionCell>,
 }
 
 impl MovementSpeeds {
     pub fn vacant() -> Self {
         Self {
             key: None,
-            speeds: Vec::new(),
             owners: Vec::new(),
+            owner_index: Vec::new(),
             enemies: Vec::new(),
             navies: Vec::new(),
             shared: [None; SHARED_INPUTS],
@@ -284,6 +368,11 @@ impl MovementSpeeds {
             failures: Vec::new(),
             observation_index: Vec::new(),
             retain_failures: false,
+            domain: Vec::new(),
+            position: None,
+            operands: Vec::new(),
+            recent: RecentOwner::default(),
+            regions: Vec::new(),
         }
     }
 
@@ -294,22 +383,27 @@ impl MovementSpeeds {
             rows.checked_next_power_of_two()
                 .ok_or_else(crate::allocation::oom)?
         };
-        let speed_slots = slots.checked_mul(2).ok_or_else(crate::allocation::oom)?;
+        let query_slots = slots.checked_mul(2).ok_or_else(crate::allocation::oom)?;
         let enemy_slots = 0;
         Ok(Self {
             key: None,
-            speeds: crate::allocation::filled(speed_slots, None)?,
             owners: crate::allocation::vec(slots)?,
+            owner_index: crate::allocation::filled(slots, 0)?,
             enemies: crate::allocation::vec(enemy_slots)?,
             navies: crate::allocation::filled(slots, None)?,
             shared: [None; SHARED_INPUTS],
             observations: crate::allocation::vec(enemy_slots)?,
-            failures: crate::allocation::vec(speed_slots)?,
+            failures: crate::allocation::vec(query_slots)?,
             observation_index: crate::allocation::filled(
-                observation_slots(enemy_slots, speed_slots)?,
+                observation_slots(enemy_slots, query_slots)?,
                 0,
             )?,
             retain_failures: false,
+            domain: Vec::new(),
+            position: None,
+            operands: Vec::new(),
+            recent: RecentOwner::default(),
+            regions: Vec::new(),
         })
     }
     #[cfg(test)]
@@ -318,14 +412,19 @@ impl MovementSpeeds {
     }
     pub fn clear(&mut self) {
         self.key = None;
-        self.speeds.fill(None);
         self.owners.clear();
+        self.owner_index.fill(0);
         self.enemies.clear();
         self.navies.fill(None);
         self.shared.fill(None);
         self.observations.clear();
         self.failures.clear();
         self.observation_index.fill(0);
+        self.domain.clear();
+        self.position = None;
+        self.operands.clear();
+        self.recent = RecentOwner::default();
+        self.regions.clear();
     }
     pub fn reserve(&mut self, rows: usize) -> std::io::Result<()> {
         if self.owners.capacity() < rows {
@@ -334,12 +433,15 @@ impl MovementSpeeds {
         Ok(())
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.speeds.capacity() * size_of::<Option<Speed>>()
-            + self.owners.capacity() * size_of::<OwnerEnemies>()
+        self.owners.capacity() * size_of::<OwnerEnemies>()
+            + self.owner_index.capacity() * size_of::<usize>()
             + self.enemies.capacity() * size_of::<EnemyWeight>()
             + self.navies.capacity() * size_of::<Option<NavyInputs>>()
             + (self.observations.capacity() + self.failures.capacity()) * size_of::<Observation>()
             + self.observation_index.capacity() * size_of::<usize>()
+            + self.domain.capacity() * size_of::<u32>()
+            + self.operands.capacity() * size_of::<OperandCell>()
+            + self.regions.capacity() * size_of::<RegionCell>()
     }
 
     pub fn reserve_queries(&mut self, queries: usize, regions: usize) -> std::io::Result<()> {
@@ -351,6 +453,10 @@ impl MovementSpeeds {
         let observations = observations.saturating_sub(self.observations.len());
         crate::allocation::reserve(&mut self.failures, failures)?;
         crate::allocation::reserve(&mut self.observations, observations)?;
+        let domain = regions.saturating_sub(self.domain.len());
+        crate::allocation::reserve(&mut self.domain, domain)?;
+        let cells = regions.saturating_sub(self.regions.len());
+        crate::allocation::reserve(&mut self.regions, cells)?;
         let slots = observation_slots(
             observation_demand.max(self.observations.len()),
             queries.max(self.failures.len()),
@@ -370,7 +476,7 @@ impl MovementSpeeds {
 
     fn observation_slot(&self, input: Input) -> Option<usize> {
         let mask = self.observation_index.len().checked_sub(1)?;
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        let mut hash = ObservationHasher::default();
         input.hash(&mut hash);
         let mut slot = hash.finish() as usize & mask;
         loop {
@@ -401,7 +507,14 @@ impl MovementSpeeds {
             .expect("prepared transport observation index");
         self.observation_index[slot] = index;
     }
-    pub fn get(
+    fn select_pass(&mut self, base: usize, state: usize) {
+        if self.key.is_some_and(|key| key != (base, state)) {
+            self.clear();
+        }
+        self.key = Some((base, state));
+    }
+
+    fn query(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -409,51 +522,35 @@ impl MovementSpeeds {
         owner: u32,
         region: usize,
     ) -> Result<i64, &'static str> {
-        if self.key.is_some_and(|key| key != (base, state)) {
-            self.clear();
-        }
-        self.key = Some((base, state));
-        let mut slot = None;
-        if let Some(mask) = self.speeds.len().checked_sub(1) {
-            let hash = (region
-                ^ (usize::try_from(owner).unwrap_or(0)).wrapping_mul(0x9e37_79b9_7f4a_7c15))
-            .wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            for probe in 0..self.speeds.len() {
-                let index = ((hash ^ (hash >> 32)).wrapping_add(probe)) & mask;
-                match self.speeds[index] {
-                    Some(value) if (value.owner, value.region) == (owner, region) => {
-                        return Ok(value.value);
-                    }
-                    None => {
-                        slot = Some(index);
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-        }
         let enemy_start = self.enemies.len();
         let owner_start = self.owners.len();
-        let result = match movement_speed_shared(memory, base, state, owner, region, Some(self)) {
-            Ok(result) => result,
-            Err(reason) => {
-                // A failed query may have staged an incomplete enemy roster.
-                // Never retain that prefix as a successful observation.
-                self.enemies.truncate(enemy_start);
-                self.owners.truncate(owner_start);
-                return Err(reason);
-            }
-        };
-        if let Some(slot) = slot {
-            self.speeds[slot] = Some(Speed {
-                owner,
-                region,
-                value: result,
-            });
+        let result = movement_speed_shared(memory, base, state, owner, region, Some(self));
+        if result.is_err() {
+            // A failed query may have staged an incomplete enemy roster.
+            // Never retain that prefix as a successful observation.
+            self.enemies.truncate(enemy_start);
+            self.owners.truncate(owner_start);
         }
-        Ok(result)
+        result
     }
 
+    fn region_key(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        region: usize,
+        id: u32,
+    ) -> Result<(), &'static str> {
+        observe(&mut Some(&mut *self), Input::RegionKey(region, id), |_| {
+            let observed = cstrategic_region::id(memory, base, region)?;
+            (observed == Some(id))
+                .then_some(i64::from(id))
+                .ok_or("country movement source-region key mismatch")
+        })
+        .map(|_| ())
+    }
+
+    #[cfg(test)]
     pub fn get_for_region(
         &mut self,
         memory: &impl Memory,
@@ -464,17 +561,171 @@ impl MovementSpeeds {
         id: u32,
     ) -> Result<i64, &'static str> {
         self.retain_failures = true;
-        if self.key.is_some_and(|key| key != (base, state)) {
-            self.clear();
+        self.select_pass(base, state);
+        self.position = None;
+        self.region_key(memory, base, region, id)?;
+        self.query(memory, base, state, owner, region)
+    }
+
+    /// Binds the caller's complete source-region key domain for this pass.
+    /// `get_in_domain` then serves each enemy navy's regional access operands from one
+    /// copy of its consecutive region ids. False keeps per-operand reads.
+    pub fn bind_domain(
+        &mut self,
+        base: usize,
+        state: usize,
+        ids: impl ExactSizeIterator<Item = u32> + Clone,
+    ) -> bool {
+        self.select_pass(base, state);
+        if self.domain.len() == ids.len() && self.domain.iter().copied().eq(ids.clone()) {
+            return true;
         }
-        self.key = Some((base, state));
-        observe(&mut Some(&mut *self), Input::RegionKey(region, id), |_| {
-            let observed = cstrategic_region::id(memory, base, region)?;
-            (observed == Some(id))
-                .then_some(i64::from(id))
-                .ok_or("country movement source-region key mismatch")
-        })?;
-        self.get(memory, base, state, owner, region)
+        self.domain.clear();
+        self.operands.clear();
+        self.regions.clear();
+        for navy in self.navies.iter_mut().flatten() {
+            navy.operands = None;
+        }
+        for enemy in &mut self.enemies {
+            enemy.operands = None;
+        }
+        if ids.len() > self.domain.capacity() || ids.len() > self.regions.capacity() {
+            return false;
+        }
+        self.regions.resize(ids.len(), RegionCell::default());
+        self.domain.extend(ids);
+        true
+    }
+
+    /// Transport speed for one owner and one region of the bound domain. A
+    /// caller queries each (owner, region) key once per pass, so no speed
+    /// result is retained; every native input keeps its first observation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_in_domain(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        owner: u32,
+        region: usize,
+        id: u32,
+        position: usize,
+    ) -> Result<i64, &'static str> {
+        self.retain_failures = true;
+        self.select_pass(base, state);
+        self.position = (self.domain.get(position) == Some(&id)).then_some(position);
+        let result = self
+            .region_key(memory, base, region, id)
+            .and_then(|()| self.query(memory, base, state, owner, region));
+        self.position = None;
+        result
+    }
+
+    fn recent(&self, input: Input) -> Option<InputValue> {
+        let cell = || self.regions.get(self.position?);
+        match input {
+            Input::Country(raw) => self
+                .recent
+                .country
+                .filter(|(key, _)| *key == raw)
+                .map(|(_, country)| InputValue::Country(country)),
+            Input::Navy(country) => self
+                .recent
+                .navy
+                .filter(|(key, _)| same_country(*key, country))
+                .map(|(_, navy)| InputValue::Pointer(navy)),
+            Input::Reduction(country) => self
+                .recent
+                .reduction
+                .filter(|(key, _)| same_country(*key, country))
+                .map(|(_, value)| InputValue::Scalar(value)),
+            Input::RegionKey(pointer, id) => cell()?
+                .key
+                .filter(|key| *key == (pointer, id))
+                .map(|_| InputValue::Scalar(i64::from(id))),
+            Input::Region(pointer) => cell()?
+                .region
+                .filter(|(key, _)| *key == pointer)
+                .map(|(_, value)| InputValue::Scalar(value)),
+            Input::Weather(id) => cell()?
+                .weather
+                .filter(|(key, _)| *key == id)
+                .map(|(_, value)| InputValue::Scalar(value)),
+            _ => None,
+        }
+    }
+
+    fn remember(&mut self, input: Input, value: InputValue) {
+        let cell = self
+            .position
+            .and_then(|position| self.regions.get_mut(position));
+        match (input, value) {
+            (Input::Country(raw), InputValue::Country(country)) => {
+                self.recent.country = Some((raw, country));
+            }
+            (Input::Navy(country), InputValue::Pointer(navy)) => {
+                self.recent.navy = Some((country, navy));
+            }
+            (Input::Reduction(country), InputValue::Scalar(value)) => {
+                self.recent.reduction = Some((country, value));
+            }
+            (Input::RegionKey(pointer, id), _) => {
+                if let Some(cell) = cell {
+                    cell.key = Some((pointer, id));
+                }
+            }
+            (Input::Region(pointer), InputValue::Scalar(value)) => {
+                if let Some(cell) = cell {
+                    cell.region = Some((pointer, value));
+                }
+            }
+            (Input::Weather(id), InputValue::Scalar(value)) => {
+                if let Some(cell) = cell {
+                    cell.weather = Some((id, value));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The bound domain position of the queried region, if any.
+    fn bound_position(&self, region: u32) -> Option<usize> {
+        self.position
+            .filter(|&position| self.domain.get(position) == Some(&region))
+    }
+
+    /// A navy's copied cells for the bound domain (own unmasked slot only).
+    fn navy_operands(&self, country: ccountry::Country) -> Option<usize> {
+        self.navies
+            .get(country.canonical_slot as usize)
+            .copied()
+            .flatten()
+            .filter(|entry| same_country(entry.country, country))
+            .and_then(|entry| entry.operands)
+    }
+
+    fn owner_roster(&self, owner: ccountry::Country) -> Option<OwnerEnemies> {
+        let mask = self.owner_index.len().checked_sub(1)?;
+        let index = self.owner_index[owner.canonical_slot as usize & mask];
+        if index == 0 {
+            return None;
+        }
+        match self.owners.get(index - 1) {
+            Some(entry) if same_country(entry.owner, owner) => Some(*entry),
+            // A shared masked slot or a truncated failed roster.
+            _ => self
+                .owners
+                .iter()
+                .find(|entry| same_country(entry.owner, owner))
+                .copied(),
+        }
+    }
+
+    fn push_owner(&mut self, entry: OwnerEnemies) {
+        self.owners.push(entry);
+        if let Some(mask) = self.owner_index.len().checked_sub(1) {
+            self.owner_index[entry.owner.canonical_slot as usize & mask] = self.owners.len();
+        }
     }
 
     fn regional_operand<M: Memory>(
@@ -494,28 +745,109 @@ impl MovementSpeeds {
         let found = slot
             .and_then(|i| self.navies[i])
             .filter(|entry| same_country(entry.country, country));
-        let regions = match found {
-            Some(entry) => entry.regions,
+        let mut entry = match found {
+            Some(entry) => entry,
             None => {
                 let mut memo = Some(&mut *self);
                 let navy = selected_navy(memory, base, state, country, countries, &mut memo)?;
-                observe(&mut memo, Input::NavyRegions(country), |_| {
+                let regions = observe(&mut memo, Input::NavyRegions(country), |_| {
                     cstrategic_navy::regional_array(memory, navy)
-                })?
+                })?;
+                NavyInputs {
+                    country,
+                    regions,
+                    operands: None,
+                }
             }
         };
-        let at = regions
+        // Regional access lookup indexes the navy's +C8 array by region id.
+        let at = entry
+            .regions
             .element(region, 8)
             .ok_or("navy regional operand outside array")?;
+        // Domain cells need this navy's own unmasked slot, so a navy keeps one
+        // span per bound domain.
+        let position = self
+            .bound_position(region)
+            .filter(|_| (country.canonical_slot as usize) < self.navies.len());
+        if let Some(position) = position {
+            if entry.operands.is_none() {
+                entry.operands = self.copy_operands(memory, entry.regions);
+            }
+            if let Some(start) = entry.operands {
+                let value = self.operand_cell(memory, start + position, at);
+                self.navies[country.canonical_slot as usize] = Some(entry);
+                return value;
+            }
+        }
         let value = observe(
             &mut Some(&mut *self),
             Input::RegionalOperand(country, region),
-            |_| read::<i64>(memory, at).ok_or("navy regional operand unreadable"),
+            |_| read::<i64>(memory, at).ok_or(OPERAND_UNREADABLE),
         )?;
         if let Some(slot) = slot {
-            self.navies[slot] = Some(NavyInputs { country, regions });
+            self.navies[slot] = Some(entry);
         }
         Ok(value)
+    }
+
+    /// Copies one enemy navy's elements for every bound domain region inside
+    /// its array, a run of consecutive ids per guarded copy. A failed run
+    /// leaves its cells unread, so each region later reads only its own
+    /// element. None (optional storage unavailable) keeps per-operand reads.
+    fn copy_operands(&mut self, memory: &impl Memory, regions: Array) -> Option<usize> {
+        let len = self.domain.len();
+        let start = self.operands.len();
+        crate::allocation::advisory(|| crate::allocation::reserve(&mut self.operands, len)).ok()?;
+        self.operands.resize(start + len, OperandCell::Unread);
+        let mut first = 0;
+        while first < len {
+            let Some(at) = regions.element(self.domain[first], 8) else {
+                // Outside the native array: refused before any cell is read.
+                first += 1;
+                continue;
+            };
+            let mut end = first + 1;
+            while end < len
+                && end - first < OPERAND_BATCH
+                && self.domain[end] == self.domain[end - 1].wrapping_add(1)
+                && self.domain[end] < regions.count
+            {
+                end += 1;
+            }
+            let mut bytes = [0; OPERAND_BATCH * 8];
+            let bytes = &mut bytes[..(end - first) * 8];
+            if crate::memory::read_slice(memory, at, bytes) {
+                for (cell, value) in self.operands[start + first..start + end]
+                    .iter_mut()
+                    .zip(bytes.chunks_exact(8))
+                {
+                    *cell = OperandCell::Value(i64::from_le_bytes(
+                        value.try_into().expect("eight-byte operand"),
+                    ));
+                }
+            }
+            first = end;
+        }
+        Some(start)
+    }
+
+    fn operand_cell(
+        &mut self,
+        memory: &impl Memory,
+        index: usize,
+        at: usize,
+    ) -> Result<i64, &'static str> {
+        match self.operands[index] {
+            OperandCell::Value(value) => Ok(value),
+            OperandCell::Unreadable => Err(OPERAND_UNREADABLE),
+            OperandCell::Unread => {
+                // Only this region's own element, attempted once per pass.
+                let value = read::<i64>(memory, at);
+                self.operands[index] = value.map_or(OperandCell::Unreadable, OperandCell::Value);
+                value.ok_or(OPERAND_UNREADABLE)
+            }
+        }
     }
 }
 
@@ -646,18 +978,37 @@ fn totals<M: Memory>(
     mut memo: Option<&mut MovementSpeeds>,
 ) -> Result<(i64, i64), &'static str> {
     if let Some(memo) = memo.as_deref_mut()
-        && let Some(owner) = memo
-            .owners
-            .iter()
-            .find(|entry| same_country(entry.owner, owner))
-            .copied()
+        && let Some(owner) = memo.owner_roster(owner)
     {
         let mut total = 0_i64;
         let mut weighted = 0_i64;
+        let position = memo.bound_position(region);
         for index in owner.start..owner.start + owner.len {
             let enemy = memo.enemies[index];
-            let operand =
-                memo.regional_operand(memory, base, state, enemy.country, region, countries)?;
+            // A copied in-array value; every other cell takes the full path.
+            let copied = position.zip(enemy.operands).and_then(|(position, start)| {
+                match memo.operands[start + position] {
+                    OperandCell::Value(value) => Some(value),
+                    _ => None,
+                }
+            });
+            let operand = match copied {
+                Some(value) => value,
+                None => {
+                    let value = memo.regional_operand(
+                        memory,
+                        base,
+                        state,
+                        enemy.country,
+                        region,
+                        countries,
+                    )?;
+                    if position.is_some() {
+                        memo.enemies[index].operands = memo.navy_operands(enemy.country);
+                    }
+                    value
+                }
+            };
             total = total.wrapping_add(operand);
             weighted = weighted.wrapping_add(multiply(operand, enemy.weight));
         }
@@ -687,7 +1038,7 @@ fn totals<M: Memory>(
     let mut complete = true;
     if let Some(memo) = memo
         .as_deref_mut()
-        .filter(|memo| memo.retain_failures || !memo.speeds.is_empty())
+        .filter(|memo| memo.retain_failures || !memo.owner_index.is_empty())
     {
         // Consume the original owner's enemy vector. Reserve reached
         // dependencies before payloads without a per-country ratio.
@@ -747,7 +1098,11 @@ fn totals<M: Memory>(
         weighted = weighted.wrapping_add(multiply(operand, weight));
         if let Some(memo) = memo.as_deref_mut() {
             if memo.enemies.len() < memo.enemies.capacity() {
-                memo.enemies.push(EnemyWeight { country, weight });
+                memo.enemies.push(EnemyWeight {
+                    country,
+                    weight,
+                    operands: None,
+                });
             } else {
                 complete = false;
             }
@@ -755,11 +1110,8 @@ fn totals<M: Memory>(
     }
     if let Some(memo) = memo {
         if complete && memo.owners.len() < memo.owners.capacity() {
-            memo.owners.push(OwnerEnemies {
-                owner,
-                start,
-                len: memo.enemies.len() - start,
-            });
+            let len = memo.enemies.len() - start;
+            memo.push_owner(OwnerEnemies { owner, start, len });
         } else {
             memo.enemies.truncate(start);
         }
@@ -1044,5 +1396,7 @@ fn movement_speed_shared(
     ))
 }
 
+#[cfg(test)]
+mod scale_tests;
 #[cfg(test)]
 mod tests;

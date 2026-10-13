@@ -211,6 +211,26 @@ impl Names<'_> {
     }
 }
 
+/// The parts of a member span its recorded naming depends on, as `(offset,
+/// len)`: the vtable, type, first-name key header and hash, template
+/// reference, name cache header, order, override header and both flags.
+/// Two spans equal over these give the same inputs and cache.
+pub const RECORDED_FIELDS: [(usize, usize); 6] = [
+    (0, 12),
+    (FIRST_NAME_TEXT, 0x24),
+    (TEMPLATE_REFERENCE, 8),
+    (CACHED_NAME, 0x24),
+    (OVERRIDE_NAME, 0x20),
+    (FLAG_A, 2),
+];
+
+/// Whether two member spans are equal over [`RECORDED_FIELDS`].
+pub fn same_recorded_fields(left: &[u8; INPUT_SPAN], right: &[u8; INPUT_SPAN]) -> bool {
+    RECORDED_FIELDS
+        .iter()
+        .all(|&(at, len)| left[at..at + len] == right[at..at + len])
+}
+
 /// Every field [`inputs`] reads lies in `[vtable, FLAG_B]`, so one guarded
 /// copy acquires them. `inputs` ignores the +0x60 cache inside that span;
 /// [`cached_name`] independently publishes its exact retained bytes.
@@ -616,12 +636,85 @@ pub fn inputs(
     result
 }
 
-/// Retain name-selection gates while growing worker storage.
-/// Acquired member/group headers and failed payloads are never retried.
+/// One guarded copy of a member's `[vtable, +0xA9]` span: every field
+/// [`inputs`] reads and the +0x60 cache header [`cached_name`] reads.
+pub fn member(memory: &impl Memory, pointer: usize) -> Result<[u8; INPUT_SPAN], &'static str> {
+    read::<[u8; INPUT_SPAN]>(memory, pointer).ok_or("division name unreadable")
+}
+
+/// The constructor owns exactly the member span through +0xA9. Zero pointers
+/// mark rows whose member is absent or carried, and cause no native read. Each
+/// serial naming gate still validates the returned span.
+pub struct MemberBatch {
+    bytes: [u8; 64 * INPUT_SPAN],
+    rows: [usize; 64],
+    complete: [bool; 64],
+}
+
+impl Default for MemberBatch {
+    fn default() -> Self {
+        Self {
+            bytes: [0; 64 * INPUT_SPAN],
+            rows: [usize::MAX; 64],
+            complete: [false; 64],
+        }
+    }
+}
+
+impl MemberBatch {
+    pub fn capture(&mut self, memory: &impl Memory, selected: &[usize]) {
+        const FIELDS: [crate::memory::RecordField; 1] = [crate::memory::RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: INPUT_SPAN,
+        }];
+        const LAYOUT: crate::memory::RecordLayout<'static> =
+            crate::memory::RecordLayout::new(&FIELDS, INPUT_SPAN).expect("valid member layout");
+        self.rows.fill(usize::MAX);
+        let mut pointers = [0_usize; 64];
+        let mut len = 0;
+        for (index, &pointer) in selected.iter().enumerate() {
+            if pointer != 0 {
+                pointers[len] = pointer;
+                self.rows[index] = len;
+                len += 1;
+            }
+        }
+        crate::memory::gather_records_once(
+            memory,
+            &pointers[..len],
+            &LAYOUT,
+            &mut self.bytes[..len * INPUT_SPAN],
+            &mut self.complete,
+            crate::batch_fallback::Batch::DivisionNaming,
+        );
+    }
+
+    pub fn member(
+        &self,
+        memory: &impl Memory,
+        index: usize,
+        pointer: usize,
+    ) -> Result<[u8; INPUT_SPAN], &'static str> {
+        let row = self.rows[index];
+        if row != usize::MAX && self.complete[row] {
+            return Ok(self.bytes[row * INPUT_SPAN..][..INPUT_SPAN]
+                .try_into()
+                .unwrap());
+        }
+        member(memory, pointer)
+    }
+}
+
+/// [`inputs`] over the member span [`member`] copied, as stored-name and
+/// group-name selection use it. Only worker storage grows; acquired
+/// member/group headers and failed payloads are never retried.
+#[allow(clippy::too_many_arguments)]
 pub fn inputs_growing(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
+    member: &[u8; INPUT_SPAN],
     groups: &mut GroupKeys,
     bytes: &mut Vec<u8>,
     len: &mut usize,
@@ -632,13 +725,95 @@ pub fn inputs_growing(
         len: *len,
         required: *required,
     };
-    let result = read_inputs(memory, base, pointer, groups, &mut names, false);
+    let result = member_inputs(memory, base, pointer, member, groups, &mut names, false);
     *len = names.len;
     *required = names.required;
     result
 }
 
-/// Naming operands with fixed or original-header growing storage.
+/// Copies held cache bytes into the arena at `len`, uncommitted, as a read
+/// of the same text would; the caller advances `len` on admission.
+pub fn held_cached_name_growing(
+    text: &[u8],
+    bytes: &mut Vec<u8>,
+    len: usize,
+    required: &mut usize,
+) -> Result<Option<Span>, &'static str> {
+    *required = required
+        .checked_add(text.len())
+        .ok_or("division name demand overflow")?;
+    let start = len;
+    let end = start
+        .checked_add(text.len())
+        .ok_or("division name arena overflow")?;
+    let mut arena = crate::walk::Buffer::Growing(bytes);
+    arena.ensure(end)?;
+    arena[start..end].copy_from_slice(text);
+    Ok(Some((start, text.len())))
+}
+
+/// [`cached_name_growing`] over the member span [`member`] copied, which
+/// holds the vtable and the +0x60 header. A heap text that fits the arena
+/// with its terminator is one copy of both; any other text, or a copy that
+/// faults, takes [`copy_string_buffer`]'s reads, which name the fault.
+pub fn cached_name_from_member_growing(
+    memory: &impl Memory,
+    base: usize,
+    member: &[u8; INPUT_SPAN],
+    bytes: &mut Vec<u8>,
+    len: &mut usize,
+    required: &mut usize,
+) -> Result<Option<Span>, &'static str> {
+    let expected = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("division cached name module address overflow")?;
+    if u64::from_le_bytes(member[..8].try_into().unwrap()) != expected as u64 {
+        return Err("division cached name member identity unreadable or invalid");
+    }
+    let header = &member[CACHED_NAME..CACHED_NAME + msvc_string::STRIDE];
+    let mut names = NameArena {
+        bytes: crate::walk::Buffer::Growing(bytes),
+        len: *len,
+        required: *required,
+    };
+    let result = copy_fitting_string(memory, header, &mut names, &CACHED);
+    *len = names.len;
+    *required = names.required;
+    result
+}
+
+/// [`copy_string_buffer`] with one copy of a fitting heap string's bytes and
+/// terminator in place of its first/last-byte gather and payload copy.
+fn copy_fitting_string(
+    memory: &impl Memory,
+    header: &[u8],
+    names: &mut NameArena<'_>,
+    errors: &StringErrors,
+) -> Result<Option<Span>, &'static str> {
+    let word = |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
+    let (len, capacity) = (word(msvc_string::LENGTH), word(msvc_string::CAPACITY));
+    let start = names.len;
+    if let (Ok(len), Ok(source)) = (usize::try_from(len), usize::try_from(word(0)))
+        && capacity > msvc_string::INLINE_CAPACITY
+        && len as u64 <= capacity
+        && len != 0
+        && len < names.bytes.len().saturating_sub(start)
+        && read_slice(memory, source, &mut names.bytes[start..=start + len])
+    {
+        if names.bytes[start + len] != 0 {
+            return Err(errors[3]);
+        }
+        names.required = names
+            .required
+            .checked_add(len)
+            .ok_or("division name demand overflow")?;
+        return Ok(Some((start, len)));
+    }
+    copy_string_buffer(memory, header, names, errors)
+}
+
+/// Stored-name and group-name selection with fixed or original-header growing
+/// storage.
 #[allow(clippy::too_many_arguments)]
 pub fn inputs_buffer(
     memory: &impl Memory,
@@ -660,6 +835,10 @@ pub fn inputs_buffer(
     result
 }
 
+/// An operative codename's operands ([`read_inputs`]); `heap` receives
+/// whether its group key and its stored name are heap-held (their header's
+/// capacity is not the inline one), which decides how
+/// [`copy_string_buffer`] grows a growing arena for them.
 pub(crate) fn codename_inputs_buffer(
     memory: &impl Memory,
     base: usize,
@@ -667,16 +846,26 @@ pub(crate) fn codename_inputs_buffer(
     buffer: crate::walk::Buffer<'_, u8>,
     len: &mut usize,
     required: &mut usize,
+    heap: &mut [bool; 2],
 ) -> Result<Naming, &'static str> {
+    // read_inputs, with the member's two string headers kept.
+    base.checked_add(VTABLE_RVA)
+        .ok_or("division name module address overflow")?;
+    let member = member(memory, pointer)?;
+    *heap = [FIRST_NAME_TEXT, OVERRIDE_NAME].map(|at| {
+        let at = at + msvc_string::CAPACITY;
+        u64::from_le_bytes(member[at..at + 8].try_into().unwrap()) != msvc_string::INLINE_CAPACITY
+    });
     let mut arena = NameArena {
         bytes: buffer,
         len: *len,
         required: *required,
     };
-    let result = read_inputs(
+    let result = member_inputs(
         memory,
         base,
         pointer,
+        &member,
         &mut GroupKeys::default(),
         &mut arena,
         true,
@@ -684,6 +873,102 @@ pub(crate) fn codename_inputs_buffer(
     *len = arena.len;
     *required = arena.required;
     result
+}
+
+/// Whether [`member_inputs`] copied a type-two codename's stored name: it does
+/// whenever +0xA9 is clear, and with it set only for a nonzero stored length,
+/// which is then the name's own length. A skipped name keeps the default span.
+pub(crate) fn custom_copied(row: &Inputs) -> bool {
+    row.programmatic == 0 || row.custom.1 != 0
+}
+
+/// [`member_inputs`]' type-two path over a held read's operands: `held`'s
+/// fields, its group key's bytes and its stored name's (`None` when it was
+/// not copied, [`custom_copied`]), placed as [`copy_string_buffer`] places
+/// them, `heap` deciding each one's growth ([`codename_inputs_buffer`]).
+pub(crate) fn carry_codename(
+    names: &mut NameArena<'_>,
+    held: Inputs,
+    group: &[u8],
+    custom: Option<&[u8]>,
+    heap: [bool; 2],
+) -> Result<Naming, &'static str> {
+    let mut row = Inputs {
+        custom: Span::default(),
+        group: Span::default(),
+        ..held
+    };
+    let mut fits = true;
+    match place_string(names, group, heap[0], &KEY)? {
+        Some(span) => {
+            row.group = span;
+            names.len += span.1;
+        }
+        None => fits = false,
+    }
+    if let Some(custom) = custom {
+        match place_string(names, custom, heap[1], &CUSTOM)? {
+            Some(span) => row.custom = span,
+            None => return Ok(Naming::DoesNotFit),
+        }
+    }
+    Ok(if fits {
+        Naming::Row(row)
+    } else {
+        Naming::DoesNotFit
+    })
+}
+
+/// [`copy_string_buffer`] of held bytes: demand, fit, growth and span as
+/// the fresh copy of an inline or heap-held string of the same bytes.
+fn place_string(
+    names: &mut NameArena<'_>,
+    bytes: &[u8],
+    heap: bool,
+    errors: &StringErrors,
+) -> Result<Option<Span>, &'static str> {
+    let len = bytes.len();
+    let start = names.len;
+    let free = names.bytes.len().saturating_sub(start);
+    if !heap {
+        names.required = names
+            .required
+            .checked_add(len)
+            .ok_or("division name demand overflow")?;
+        if !names.bytes.ensure(
+            start
+                .checked_add(len)
+                .ok_or("division name arena overflow")?,
+        )? {
+            return Ok(None);
+        }
+        names.bytes[start..start + len].copy_from_slice(bytes);
+        return Ok(Some((start, len)));
+    }
+    if len == 0 {
+        return Ok(Some((start, 0)));
+    }
+    names.required = names
+        .required
+        .checked_add(len)
+        .ok_or("division name demand overflow")?;
+    if len > free {
+        let (output, at) = match &mut names.bytes {
+            crate::walk::Buffer::Fixed(_) => return Ok(None),
+            crate::walk::Buffer::GrowingFrom(output, offset) => (output, *offset + start),
+            crate::walk::Buffer::Growing(output) => (output, start),
+        };
+        msvc_string::place_growing(
+            bytes,
+            output,
+            at,
+            errors[2],
+            "division name arena allocation failed",
+        )?;
+        return Ok(Some((start, len)));
+    }
+    names.bytes[start..start + len].copy_from_slice(bytes);
+    Ok(Some((start, len)))
 }
 
 pub(crate) fn read_inputs(
@@ -694,10 +979,25 @@ pub(crate) fn read_inputs(
     names: &mut NameArena<'_>,
     codename: bool,
 ) -> Result<Naming, &'static str> {
+    // The module check precedes the member copy, as it always has.
+    base.checked_add(VTABLE_RVA)
+        .ok_or("division name module address overflow")?;
+    let member = member(memory, pointer)?;
+    member_inputs(memory, base, pointer, &member, groups, names, codename)
+}
+
+fn member_inputs(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    member: &[u8; INPUT_SPAN],
+    groups: &mut GroupKeys,
+    names: &mut NameArena<'_>,
+    codename: bool,
+) -> Result<Naming, &'static str> {
     let expected = base
         .checked_add(VTABLE_RVA)
         .ok_or("division name module address overflow")?;
-    let member = read::<[u8; INPUT_SPAN]>(memory, pointer).ok_or("division name unreadable")?;
     let word = |at: usize| u64::from_le_bytes(member[at..at + 8].try_into().unwrap());
     if word(0) != expected as u64 {
         return Err("division name vtable mismatch");
@@ -735,7 +1035,7 @@ pub(crate) fn read_inputs(
     if row.programmatic == 0
         || (row.kind == 2
             && word(OVERRIDE_NAME_LENGTH) != 0
-            && operative_group_is_null(memory, base, pointer, &member)?)
+            && operative_group_is_null(memory, base, pointer, member)?)
     {
         match copy_string_buffer(memory, header, names, &CUSTOM)? {
             Some(span) => row.custom = span,

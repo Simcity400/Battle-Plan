@@ -1,6 +1,8 @@
 use super::*;
 use engine::allocation::{reserve, reserve_exact, resize_default};
 
+#[cfg(test)]
+mod oob_entry_tests;
 mod order_group_source;
 pub(crate) use order_group_source::OrderGroupSource;
 
@@ -27,6 +29,9 @@ pub(crate) struct NavalJob {
     pub(super) wing_outcome: Option<Outcome>,
     pub(super) wing_growing: bool,
     pub(super) wing_required: usize,
+    /// The copy left before the wing census joined: the callback installs it
+    /// after the copy returns ([`Self::install_wings_after`]).
+    pub(super) wings_follow: bool,
     /// OOB-only memo of freshly authenticated theatre pointers, in root order.
     /// It never shares observations with theatre/member source families. The
     /// root walk pushes every root's theatre; [`dedup_first_seen`] then keeps
@@ -60,6 +65,40 @@ pub(crate) struct NavalJob {
 }
 
 impl NavalJob {
+    /// The copy leaves with the root census, before the wing census joins:
+    /// its raw phase ([`copy_naval_pass`]) reads no wing value, so the
+    /// callback installs the wing census after it returns
+    /// ([`Self::install_wings_after`]).
+    pub(crate) fn defer_wings(&mut self) {
+        self.wings_follow = true;
+    }
+
+    /// This callback's wing census, into a copy that left before it
+    /// ([`Self::defer_wings`]): the install ticks, and whether the copy
+    /// stands. A copy that walked the theatres without a wing census (the
+    /// wing job failed) is refused, as a copy that found none installed is
+    /// ([`copy_naval_refresh`]). The copy's own theatre cadence is kept.
+    pub(crate) fn install_wings_after(
+        &mut self,
+        wings: Option<&mut super::super::air::AirWingJob>,
+    ) -> (u64, bool) {
+        self.wings_follow = false;
+        let active = self.theatres_active;
+        let ticks = match wings {
+            Some(wings) => self.install_wings(wings),
+            None if active => {
+                self.clear_reserved();
+                self.roster.clear();
+                self.update_capacity_charge();
+                return (0, false);
+            }
+            None => 0,
+        };
+        self.theatres_active = active;
+        self.update_capacity_charge();
+        (ticks, true)
+    }
+
     /// Callback-owned values from the one shared complete wing census.
     pub(crate) fn install_wings(&mut self, job: &mut super::super::air::AirWingJob) -> u64 {
         self.theatres_active = job.theatres_active;
@@ -154,6 +193,7 @@ impl NavalJob {
         self.wing_outcome = None;
         self.wing_growing = false;
         self.wing_required = 0;
+        self.wings_follow = false;
         self.oob_theatres.clear();
         self.oob_theatre_positions.clear();
         self.oob_theatres_required = 0;
@@ -1005,6 +1045,10 @@ fn copy_oob_root(
     base: usize,
     pointer: usize,
 ) -> bool {
+    #[cfg(test)]
+    if oob_entry_tests::SERIAL.get() {
+        return oob_entry_tests::copy_oob_root_serial(job, memory, base, pointer);
+    }
     let log = &mut job.log;
     // OOB identity fields: army-group flag, motorization, country
     // (already above), theatre/theater-group/parent/leader/provider
@@ -1084,7 +1128,8 @@ fn copy_oob_root(
         }
     }
     // Member vector with per-member host identity (32-byte header)
-    // and group backlink, exactly like `member_unit`.
+    // and group backlink, exactly like `member_unit`: the entries in runs
+    // of up to 64 per guarded copy, each member's two spans in one.
     let Some(members_header) = own[7] else {
         return true;
     };
@@ -1094,31 +1139,28 @@ fn copy_oob_root(
         Some(array) => array,
         None => return true,
     };
-    for index in 0..members.count {
-        let entry_addr = members.data.checked_add((index as usize).saturating_mul(8));
-        let member = match nspan(log, memory, entry_addr, 8, OOB_MASK)
-            .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0))
-        {
-            Some(member) => member,
-            None => continue,
-        };
-        // Host identity span (vtable/class/secondary/handle 32 bytes)
-        // at the embedded base, plus group backlink at the member.
-        let unit = match member.checked_sub(engine::corders_group_member::HOST_OFFSET) {
-            Some(unit) => unit,
-            None => continue,
-        };
-        let _ = nspan(log, memory, Some(unit), 32, OOB_MASK);
-        let _ = nspan(
-            log,
-            memory,
-            member.checked_add(engine::corders_group_member::GROUP),
-            8,
-            OOB_MASK,
-        );
-        if log.overflowed {
-            return false;
-        }
+    let walked = take_oob_entries(
+        log,
+        memory,
+        &members,
+        OOB_MEMBER_WORST,
+        |log, member, batched| {
+            // Host identity span (vtable/class/secondary/handle 32 bytes)
+            // at the embedded base, plus group backlink at the member.
+            if let Some(unit) = member.checked_sub(engine::corders_group_member::HOST_OFFSET) {
+                let backlink = member.checked_add(engine::corders_group_member::GROUP);
+                if batched {
+                    take_oob_member(log, memory, unit, backlink);
+                } else {
+                    let _ = nspan(log, memory, Some(unit), 32, OOB_MASK);
+                    let _ = nspan(log, memory, backlink, 8, OOB_MASK);
+                }
+            }
+            !log.overflowed
+        },
+    );
+    if !walked {
+        return false;
     }
     // The typed walk accepts any nonzero discriminator. The child
     // header starts beyond an ordinary COrdersGroup's allocation,
@@ -1137,20 +1179,12 @@ fn copy_oob_root(
         let mut children_raw = [0u8; 16];
         children_raw.copy_from_slice(&log.bytes[children_header..children_header + 16]);
         if let Some(children) = Array::from_header(children_raw, 8) {
-            for index in 0..children.count {
-                let entry_addr = children
-                    .data
-                    .checked_add((index as usize).saturating_mul(8));
-                let child = match nspan(log, memory, entry_addr, 8, OOB_MASK)
-                    .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0))
-                {
-                    Some(child) => child,
-                    None => continue,
-                };
+            let walked = take_oob_entries(log, memory, &children, (1, 16), |log, child, _| {
                 let _ = nspan(log, memory, Some(child), 16, OOB_MASK);
-                if log.overflowed {
-                    return false;
-                }
+                !log.overflowed
+            });
+            if !walked {
+                return false;
             }
         }
     }
@@ -1174,6 +1208,114 @@ fn copy_oob_root(
         return false;
     }
     true
+}
+
+/// A member visit's worst case: its host identity and backlink spans and
+/// their 40 bytes ([`take_oob_member`]).
+const OOB_MEMBER_WORST: (usize, usize) = (2, 40);
+
+/// Takes `array`'s 8-byte entries in runs of up to 64 per guarded copy
+/// ([`RawLog::take_array_entries`]), each entry its own exact span with its
+/// own failure, as taking each on its own logs them, then hands each read
+/// nonzero entry to `visit` in array order, with `true` (it may batch its
+/// own reads). A run that stops at a failed entry goes on with a new run
+/// after it, as the per-entry loop goes on, and is counted in
+/// `batch_fallbacks` (`order_of_battle`). False from `visit` ends the walk
+/// with false. The log holds the per-entry loop's spans, and each key's
+/// occurrences keep their order unless two keys alias: a run's entries are
+/// logged before the spans their visits take, and the replay serves each
+/// read from its exact key.
+///
+/// A run is batched only when its whole worst case fits the storage the log
+/// already holds: an entry span and eight bytes for each entry, a span for
+/// a failed one, and `visit_worst` (spans, bytes) for each entry's visit.
+/// Then neither this run nor the per-entry loop can overflow within it.
+/// Otherwise the run's entries are taken and visited one by one, with
+/// `false`, as the per-entry loop takes them, its visits too.
+fn take_oob_entries<M: engine::Memory>(
+    log: &mut RawLog<NAVAL_PACK_N>,
+    memory: &M,
+    array: &Array,
+    visit_worst: (usize, usize),
+    mut visit: impl FnMut(&mut RawLog<NAVAL_PACK_N>, usize, bool) -> bool,
+) -> bool {
+    let count = array.count as usize;
+    let mut pointers = [0usize; 64];
+    let mut index = 0;
+    while index < count {
+        let run = (count - index).min(pointers.len());
+        // An entry address that overflows is no read, as for the
+        // per-entry take; every later one overflows too.
+        let Some(address) = array.data.checked_add(index.saturating_mul(8)) else {
+            return true;
+        };
+        let (visit_spans, visit_bytes) = visit_worst;
+        let worst_spans = run + 1 + run * visit_spans;
+        let worst_bytes = run * (8 + visit_bytes);
+        let batched = if log.fits(worst_spans, worst_bytes) {
+            log.take_array_entries(memory, address, 8, run, OOB_MASK)
+        } else {
+            None
+        };
+        let Some((start, completed)) = batched else {
+            // No room for the run's worst case, or no run admitted here:
+            // the per-entry loop's takes and visits, request by request.
+            for slot in 0..run {
+                let pointer = nspan(log, memory, address.checked_add(slot * 8), 8, OOB_MASK)
+                    .and_then(|start| usize::try_from(npool_u64(log, start)).ok())
+                    .unwrap_or(0);
+                if pointer != 0 && !visit(log, pointer, false) {
+                    return false;
+                }
+            }
+            index += run;
+            continue;
+        };
+        for (slot, pointer) in pointers[..completed].iter_mut().enumerate() {
+            *pointer = usize::try_from(npool_u64(log, start + slot * 8)).unwrap_or(0);
+        }
+        let stopped = completed < run;
+        if stopped {
+            engine::batch_fallback::record(engine::batch_fallback::Batch::OrderOfBattle);
+        }
+        for &pointer in &pointers[..completed] {
+            if pointer != 0 && !visit(log, pointer, true) {
+                return false;
+            }
+        }
+        // The failed entry is logged; the next run starts after it.
+        index += completed + usize::from(stopped);
+    }
+    true
+}
+
+/// A member's host identity (32 bytes at `unit`) and group backlink (8
+/// bytes at `backlink`) in one guarded copy, each its own exact span with
+/// its own failure, as their two takes log them: after a failed host
+/// identity the backlink is taken on its own (counted in `batch_fallbacks`
+/// as `order_of_battle`). Only a batched run calls it, whose admission
+/// already holds its worst case ([`OOB_MEMBER_WORST`]).
+fn take_oob_member<M: engine::Memory>(
+    log: &mut RawLog<NAVAL_PACK_N>,
+    memory: &M,
+    unit: usize,
+    backlink: Option<usize>,
+) {
+    if let Some(backlink) = backlink {
+        match log.take_scattered(memory, [unit, backlink], [32, 8], [OOB_MASK; 2]) {
+            // Both read, or the backlink's failure logged.
+            Some((_, 1..)) => return,
+            Some(_) => {
+                engine::batch_fallback::record(engine::batch_fallback::Batch::OrderOfBattle);
+                let _ = nspan(log, memory, Some(backlink), 8, OOB_MASK);
+                return;
+            }
+            // No scatter admitted here: the two takes below.
+            None => {}
+        }
+    }
+    let _ = nspan(log, memory, Some(unit), 32, OOB_MASK);
+    let _ = nspan(log, memory, backlink, 8, OOB_MASK);
 }
 
 /// The order-of-battle roots from the orders-group registry itself: its
@@ -1579,7 +1721,8 @@ fn copy_naval_pass(
     game_state: usize,
     ticks: &mut [u64; NAVAL_PACK_N],
 ) {
-    // Shared wing values were installed before this independent raw phase.
+    // This independent raw phase reads no shared wing value: they are
+    // installed before it, or after it returns (`NavalJob::defer_wings`).
     job.log.clear();
     if job.growing {
         job.log.enable_worker_growth();
@@ -1624,7 +1767,9 @@ pub(crate) fn copy_naval_refresh(
 ) -> NavalCopyReport {
     job.theatres_active =
         replay::cadence::should_walk(TableId::LandTheatreGroups, ctx.hour, ctx.force_full);
-    if job.theatres_active && job.wing_outcome.is_none() {
+    // A copy whose wing census follows it is refused when that census is
+    // installed (`NavalJob::install_wings_after`).
+    if job.theatres_active && job.wing_outcome.is_none() && !job.wings_follow {
         job.clear_reserved();
         job.roster.clear();
         return NavalCopyReport::default();

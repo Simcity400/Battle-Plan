@@ -14,7 +14,7 @@ pub(super) fn compare(
     report: &mut Report,
 ) -> io::Result<()> {
     report.limitation(
-        "recording self-check only: the war-link observation records the second war link and the annex observation precedes annex on-actions. Text saves retain neither these calls nor the native actor/target instance words. Saved war and country state cannot certify action kind, sequence, exact hour, actor roles or complete capture; matched native observations and world/load, unwind and detach checks are required",
+        "recording self-check only: the war-link observation records the second war link, the annex observation precedes annex on-actions and the provenance entries observe the operations that join and end wars, start peace conferences, release countries and change state owners. Text saves retain neither these calls, their causes nor the native actor/target instance words. Saved war and country state cannot certify action kind, sequence, exact hour, actor roles or complete capture; matched native observations and world/load, unwind and detach checks are required",
         "EventFeedHistory",
     );
     let selected = [TableId::EventFeedHistory];
@@ -187,6 +187,7 @@ mod tests {
                     id: 0,
                     instance: 0,
                 },
+                cause: Default::default(),
             }],
         };
         for mode in 0..5 {

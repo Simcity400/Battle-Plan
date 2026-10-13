@@ -318,9 +318,9 @@ impl Product for CasualtyPairs {
     ) -> io::Result<Self::Reply> {
         Self::validate(params).map_err(io::Error::other)?;
         check_cancel(cancelled)?;
-        check_cadence(cadence::cadence(TableId::WarRelations))?;
         let branch = params.branch_id.parse().expect("validated branch");
         let replay = source.replay();
+        check_cadence(cadence::cadence_in(TableId::WarRelations, replay.format))?;
         if !replay.branches.iter().any(|recorded| recorded.id == branch) {
             return Err(io::Error::other("Unknown casualty branch"));
         }

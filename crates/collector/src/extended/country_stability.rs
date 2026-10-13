@@ -1,12 +1,17 @@
 //! Each country's stability, war support and maximum command power inputs
 //! and its modifier tree lines with their proven sources
 //! (`engine::country_stability`). The `stability` sliced family: each hour
-//! reads the hour's country slice, every country on a full hour and every
-//! country whose change fingerprint moved. It runs in the Slow pool job; the
-//! family's fingerprint store is loaned with that job.
+//! reads the hour's country slice, every country on a full hour, a country
+//! new to the census or whose last read was not published, and every country
+//! a hooked writer marked since the previous hour
+//! ([`crate::country_input_changes`]); a quiet country costs no read until
+//! its slice, which compares it with its last read. It runs in its own pool
+//! job of the first burst, the Stability job, beside Slow; the family's store
+//! is loaned with that job.
 use crate::{
+    country_input_changes::{self as changes, Changes, Table},
     sampling::qpc,
-    slicing::{SliceFingerprints, SliceSelection},
+    slicing::{self, Changed, SliceFingerprints, SliceSelection},
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
@@ -17,6 +22,13 @@ use replay::{
     frame::TableView,
     rows::{CountryStabilityInputRow, CountryStabilityLineRow, TableId, tables},
 };
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static BATCH_FALLBACKS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn status() -> impl serde::Serialize {
+    crate::status::status!({ "batch_fallbacks": BATCH_FALLBACKS.load(Ordering::Relaxed) })
+}
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [
@@ -24,7 +36,7 @@ pub const TABLES: [TableId; N] = [
     TableId::CountryStabilityLines,
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("stability inputs, fingerprints and tree lines", 0, &[0, 1])];
+    &[("stability inputs, census and tree lines", 0, &[0, 1])];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
@@ -62,8 +74,12 @@ pub struct Captured {
     lines: CaptureRows<native::LineRow>,
     bytes: Arena<u8>,
     scratch: native::Scratch,
+    /// Shared static observations, invalidated before every hourly attempt.
+    memo: native::Memo,
     /// Which countries this hour's rows cover.
     selection: SliceSelection,
+    /// This hour's marked countries and comparisons.
+    changed: Changed,
     /// Tracked keys, resolved once per modifier definition table header.
     keys: Option<native::Keys>,
     /// The globals every input row of this read carries.
@@ -85,7 +101,9 @@ impl Captured {
             lines: CaptureRows::new(0),
             bytes: Arena::new(0),
             scratch: native::Scratch::vacant(),
+            memo: native::Memo::default(),
             selection: SliceSelection::new(false),
+            changed: Changed::default(),
             keys: None,
             context: None,
         }
@@ -98,7 +116,9 @@ impl Captured {
             scratch: native::Scratch::with_demand(capacity.demand)
                 .map_err(crate::allocation::io)
                 .unwrap_or_else(|_| native::Scratch::vacant()),
+            memo: native::Memo::default(),
             selection: SliceSelection::new(true),
+            changed: Changed::default(),
             keys: None,
             context: None,
         }
@@ -108,12 +128,14 @@ impl Captured {
         self.lines.reset();
         self.bytes.reset();
         self.context = None;
+        self.memo.clear();
     }
     pub fn allocated_bytes(&self) -> usize {
         self.inputs.allocated_bytes()
             + self.lines.allocated_bytes()
             + self.bytes.allocated_bytes()
             + self.scratch.allocated_bytes()
+            + self.memo.allocated_bytes()
             + self
                 .context
                 .as_ref()
@@ -135,8 +157,8 @@ impl Captured {
         self.selection.reset(hour, force_full);
     }
 
-    /// Reads this hour's countries. Without a fingerprint store (the inline
-    /// fallback) only the hour's slice is read: a fingerprint only adds reads.
+    /// Reads this hour's countries, as the hooks' marks select them
+    /// ([`Self::capture_changed`]).
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -145,6 +167,32 @@ impl Captured {
         hour: i32,
         force_full: bool,
         fingerprints: Option<&mut SliceFingerprints>,
+    ) -> [u64; N] {
+        self.capture_changed(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            fingerprints,
+            &changes::Observer,
+        )
+    }
+
+    /// Reads this hour's countries. Without a store (the inline fallback)
+    /// only the hour's slice is read; with one, also the countries new to the
+    /// census or whose read was not published and those `changes` marked,
+    /// or every country when its take certifies nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_changed(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        fingerprints: Option<&mut SliceFingerprints>,
+        changes: &dyn Changes,
     ) -> [u64; N] {
         self.reset();
         self.selection.reset(hour, force_full);
@@ -158,7 +206,7 @@ impl Captured {
         }
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
-        let result = self.walk(memory, base, game_state, fingerprints);
+        let result = self.walk(memory, base, game_state, fingerprints, changes);
         if let Err(reason) = result {
             self.inputs.outcome = Outcome::Unavailable { reason };
             self.lines.outcome = Outcome::Unavailable { reason };
@@ -171,7 +219,8 @@ impl Captured {
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        fingerprints: Option<&mut SliceFingerprints>,
+        mut fingerprints: Option<&mut SliceFingerprints>,
+        changes: &dyn Changes,
     ) -> Result<(), &'static str> {
         // The first failure stands: a failed check is not retried by resolving again.
         let cached = match self.keys {
@@ -188,29 +237,44 @@ impl Captured {
             }
         };
         let countries = ccountry::Reader::new(memory, base, game_state)?;
-        if let Some(fingerprints) = fingerprints {
-            // Scan first, so a changed country joins this hour's read.
+        let context = native::Context::read(memory, base, game_state, keys)?;
+        self.changed.reset();
+        let mut ids = None;
+        if let Some(fingerprints) = fingerprints.as_deref_mut() {
+            // The census scan reads no country's stability: a constant print
+            // finds new and unpublished countries; the hooks' marks find
+            // changed ones.
             let started = qpc();
             let mut census = true;
+            let mut bound = 0_usize;
             for slot in 1..countries.count() {
-                let country = match countries.at(slot) {
-                    Ok(Some(country)) => country,
-                    Ok(None) => continue,
-                    Err(_) => {
-                        census = false;
-                        continue;
+                match countries.at(slot) {
+                    Ok(Some(country)) => {
+                        bound = bound.max(country.id as usize + 1);
+                        self.selection.scan(fingerprints, country.id, Some(0));
                     }
-                };
-                let value = native::fingerprint_country(memory, base, country.pointer, &keys).ok();
-                self.selection.scan(fingerprints, country.id, value);
+                    Ok(None) => {}
+                    Err(_) => census = false,
+                }
             }
             fingerprints.finish_scan();
             if census {
                 self.selection.finish_census(fingerprints);
+                // Every native id indexes the link table: its count bounds
+                // the ids a writer can mark, dynamic countries included.
+                ids = Some(bound.max(countries.arrays()[1].count as usize));
             }
+            slicing::select_changed(
+                &mut self.selection,
+                fingerprints,
+                &mut self.changed,
+                |visit| changes.take(Table::Stability, visit),
+                context.digest(),
+                changes.every(Table::Stability),
+            );
             self.selection.scan_ticks = qpc().saturating_sub(started).max(0) as u64;
         }
-        let context = native::Context::read(memory, base, game_state, keys)?;
+        let mut read = 0_u64;
         let mut inputs = 0;
         let mut lines = Outcome::Rows { len: 0 };
         for slot in 1..countries.count() {
@@ -222,19 +286,27 @@ impl Captured {
             }
             let mut input = native::InputRow::default();
             let start = lines.len();
-            let walk = native::walk_country_growing(
+            let walk = native::walk_country_growing_memo(
                 memory,
                 base,
                 &countries,
                 country,
                 &context,
+                &mut self.memo,
                 &mut self.scratch,
                 &mut input,
                 &mut self.lines.rows,
                 &mut self.bytes.first,
                 start,
                 self.bytes.len,
-            )?;
+            );
+            // Count failed speculative batches even when the serial fallback
+            // refuses this country, before propagating that original reason.
+            let fallbacks = self.scratch.batch_fallbacks();
+            if fallbacks != 0 {
+                BATCH_FALLBACKS.fetch_add(fallbacks, Ordering::Relaxed);
+            }
+            let walk = walk?;
             let offset = self.bytes.len;
             self.bytes.required = self
                 .bytes
@@ -242,6 +314,29 @@ impl Captured {
                 .max(offset.saturating_add(walk.required_bytes));
             self.bytes.len += walk.bytes_len;
             lines = combine(lines, walk.lines)?;
+            read += 1;
+            if let Some(fingerprints) = fingerprints.as_deref_mut() {
+                // A truncated read holds nothing to compare with.
+                if !matches!(walk.lines, Outcome::Rows { .. }) {
+                    self.changed.unread(fingerprints, country.id);
+                } else if self.changed.read(
+                    fingerprints,
+                    country.id,
+                    digest(
+                        &input,
+                        self.lines.rows.get(start..lines.len()).unwrap_or(&[]),
+                        self.bytes.first.get(..self.bytes.len).unwrap_or(&[]),
+                    ),
+                ) {
+                    changes.mismatch(
+                        Table::Stability,
+                        crate::country_input_changes::Mismatch {
+                            country: country.id,
+                            field: "CountryStabilityInputs and CountryStabilityLines",
+                        },
+                    );
+                }
+            }
             if self.inputs.rows.len() <= inputs {
                 engine::allocation::resize_default(
                     &mut self.inputs.rows,
@@ -257,6 +352,19 @@ impl Captured {
         self.inputs.outcome = Outcome::Rows { len: inputs };
         self.lines.outcome = lines;
         self.context = Some(context);
+        if fingerprints.is_some() {
+            changes::record(
+                Table::Stability,
+                &changes::Counts {
+                    marked: self.changed.marked() as u64,
+                    read,
+                    verified: self.changed.verified,
+                    mismatches: self.changed.mismatches,
+                    full: !self.changed.certified,
+                },
+                ids,
+            );
+        }
         Ok(())
     }
 
@@ -359,6 +467,58 @@ impl Captured {
     }
 }
 
+/// The digest of one country's rows that its hooked writers certify
+/// ([`slicing::Changed::read`]): every input but the daily drift (ruling
+/// party popularity, rewritten by the daily politics update; the
+/// coastal term, stored once a day; the interception window,
+/// advanced daily by history cursor advance), and every tree line with the bytes of its
+/// identity and display text (`bytes`, the read's arena).
+fn digest(input: &native::InputRow, lines: &[native::LineRow], bytes: &[u8]) -> u64 {
+    let mut digest = slicing::Digest::new();
+    digest
+        .u64(u64::from(input.country))
+        .i64(input.stability_raw)
+        .i64(input.war_support_raw)
+        .u64(u64::from(input.at_war))
+        .u64(u64::from(input.offensive_war))
+        .u64(u64::from(input.defensive_war))
+        .i64(input.propaganda_stability_q15)
+        .i64(input.bombing_q15)
+        .i64(input.heroes_q15)
+        .i64(input.convoys_q15)
+        .i64(input.propaganda_war_support_q15)
+        .u64(u64::from(input.children));
+    for total in input.totals {
+        match total {
+            Some(value) => digest.u64(1).i64(value),
+            None => digest.u64(0),
+        };
+    }
+    let text = |span: native::Span| {
+        span.start
+            .checked_add(span.len)
+            .and_then(|end| bytes.get(span.start..end))
+    };
+    digest.u64(lines.len() as u64);
+    for line in lines {
+        digest
+            .u64(u64::from(line.country))
+            .u64(u64::from(line.line))
+            .u64(u64::from(line.key))
+            .u64(u64::from(kind(line.kind)))
+            .u64(u64::from(line.identity_id))
+            .i64(line.secondary)
+            .i64(line.value);
+        for span in [line.identity, line.text] {
+            match text(span) {
+                Some(text) => digest.u64(1).text(text),
+                None => digest.u64(0),
+            };
+        }
+    }
+    digest.finish()
+}
+
 fn kind(kind: native::Kind) -> u8 {
     use native::Kind;
     match kind {
@@ -396,6 +556,147 @@ fn combine(total: Outcome, next: Outcome) -> Result<Outcome, &'static str> {
 mod tests {
     use super::*;
     use replay::rows::TableRows;
+
+    #[test]
+    fn stability_capture_counts_refused_fallbacks_and_resets_before_inputs() {
+        use engine::{
+            cdiplomacy_status, cgame_state, cidea, cideology_group, cmodifier, cpdx_array::Array,
+            cpolitical_party, cpolitical_status, cworld_threat,
+        };
+        use std::{cell::Cell, collections::BTreeMap};
+
+        // Independently authored, zero-initialized sparse synthetic memory.
+        // Empty rosters/accumulators keep this about capture's error fold.
+        struct World {
+            bytes: BTreeMap<usize, u8>,
+            fault: Cell<Option<usize>>,
+        }
+        impl World {
+            fn word(&mut self, at: usize, value: u64) {
+                self.bytes.extend(
+                    value
+                        .to_le_bytes()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, byte)| (at + i, byte)),
+                );
+            }
+            fn array(&mut self, at: usize, data: usize, count: u32) {
+                self.word(at, data as u64);
+                self.word(at + 8, u64::from(count) | (u64::from(count) << 32));
+            }
+        }
+        impl Memory for World {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                if self
+                    .fault
+                    .get()
+                    .is_some_and(|fault| at <= fault && fault - at < out.len())
+                {
+                    return false;
+                }
+                for (i, byte) in out.iter_mut().enumerate() {
+                    *byte = self.bytes.get(&(at + i)).copied().unwrap_or(0);
+                }
+                true
+            }
+        }
+        const BASE: usize = 0x1_4000_0000;
+        const STATE: usize = 0x1000;
+        const COUNTRY: usize = 0x10000;
+        const STATUS: usize = 0x20000;
+        const PARTY: usize = 0x21000;
+        const IDEA: usize = 0x22000;
+        const GROUP: usize = 0x23000;
+        const DIPLOMACY: usize = 0x24000;
+        const STATS: usize = 0x25000;
+        const RING: usize = 0x26000;
+        const WORLD: usize = 0x27000;
+        let mut memory = World {
+            bytes: BTreeMap::new(),
+            fault: Cell::new(None),
+        };
+        memory.array(STATE + cgame_state::COUNTRIES, 0x3000, 2);
+        memory.array(STATE + cgame_state::COUNTRY_LINKS, 0x4000, 2);
+        memory.word(0x3008, COUNTRY as u64);
+        memory.word(0x4004, 1);
+        memory.word(COUNTRY, (BASE + ccountry::VTABLE_RVA) as u64);
+        memory.word(COUNTRY + ccountry::ID, 1);
+        memory.word(COUNTRY + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
+        memory.word(DIPLOMACY, (BASE + cdiplomacy_status::VTABLE_RVA) as u64);
+        memory.word(DIPLOMACY + cdiplomacy_status::COUNTRY, COUNTRY as u64);
+        memory.word(COUNTRY + ccountry::POLITICAL_STATUS, STATUS as u64);
+        memory.word(STATUS, (BASE + cpolitical_status::VTABLE_RVA) as u64);
+        memory.word(STATUS + cpolitical_status::RULING_PARTY, PARTY as u64);
+        memory.word(PARTY, (BASE + cpolitical_party::VTABLE_RVA) as u64);
+        memory.word(PARTY + cpolitical_party::IDEOLOGY_GROUP, GROUP as u64);
+        memory.word(GROUP, (BASE + cideology_group::VTABLE_RVA) as u64);
+        memory.word(
+            GROUP
+                + native::IDEOLOGY_GROUP_MODIFIER
+                + cmodifier::DISPLAY_NAME
+                + engine::msvc_string::CAPACITY,
+            15,
+        );
+        memory.array(STATUS + cpolitical_status::IDEAS, 0x5000, 1);
+        memory.word(0x5000, IDEA as u64);
+        memory.word(IDEA, (BASE + cidea::VTABLE_RVA) as u64);
+        memory.word(COUNTRY + native::AIR_STATISTICS, STATS as u64);
+        memory.word(STATS + 0x10, RING as u64); // empty interception ring
+        memory.word(STATE + cgame_state::WORLD_THREAT, WORLD as u64);
+        memory.word(WORLD, (BASE + cworld_threat::VTABLE_RVA) as u64);
+        memory.word(BASE + native::STATIC_DATABASE_RVA, 0x28000);
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        // Bypass name resolution with an explicitly empty synthetic table.
+        captured.keys = Some(native::Keys {
+            keys: [None; native::TRACKED],
+            table: Array { data: 0, count: 0 },
+        });
+        let count = || {
+            serde_json::to_value(status()).unwrap()["batch_fallbacks"]
+                .as_u64()
+                .unwrap()
+        };
+        let before = count();
+        captured.capture(&memory, BASE, STATE, 0, true, None);
+        assert_eq!(
+            captured.outcomes(),
+            [Outcome::Rows { len: 1 }, Outcome::Rows { len: 0 }]
+        );
+        assert_eq!(count(), before);
+
+        memory
+            .fault
+            .set(Some(IDEA + native::IDEA_MODIFIER + cmodifier::ACCUMULATOR));
+        captured.capture(&memory, BASE, STATE, 1, true, None);
+        assert_eq!(
+            captured.outcomes(),
+            [Outcome::Unavailable {
+                reason: "modifier source entries invalid"
+            }; N]
+        );
+        assert_eq!(count(), before + 1);
+        assert_eq!(captured.scratch.batch_fallbacks(), 1);
+
+        // A different country reuses refused-country scratch. Its inputs fail
+        // before Observed exists, so the previous count must not be folded.
+        const NEXT_COUNTRY: usize = 0x40000;
+        memory.word(0x3008, NEXT_COUNTRY as u64);
+        memory.word(NEXT_COUNTRY, (BASE + ccountry::VTABLE_RVA) as u64);
+        memory.word(NEXT_COUNTRY + ccountry::ID, 1);
+        memory
+            .fault
+            .set(Some(NEXT_COUNTRY + native::PROPAGANDA_STABILITY_PENALTY));
+        captured.capture(&memory, BASE, STATE, 2, true, None);
+        assert_eq!(
+            captured.outcomes(),
+            [Outcome::Unavailable {
+                reason: "country stability fields unreadable"
+            }; N]
+        );
+        assert_eq!(captured.scratch.batch_fallbacks(), 0);
+        assert_eq!(count(), before + 1);
+    }
 
     #[test]
     fn the_engine_and_replay_track_the_same_names_in_the_same_order() {
@@ -490,5 +791,79 @@ mod tests {
             })
         );
         let _ = TableRows::empty(TableId::CountryStabilityLines);
+    }
+
+    /// The digest a slice read compares covers every certified input and
+    /// every line with its text bytes, and leaves out only the daily drift.
+    #[test]
+    fn the_digest_leaves_out_only_the_daily_drift() {
+        let input = native::InputRow {
+            country: 7,
+            stability_raw: 500,
+            ..Default::default()
+        };
+        let bytes = b"idea_aDec".to_vec();
+        let lines = [native::LineRow {
+            country: 7,
+            line: 0,
+            key: 0x8d,
+            kind: native::Kind::Idea,
+            identity: native::Span { start: 0, len: 6 },
+            value: 10_000,
+            ..Default::default()
+        }];
+        let base = digest(&input, &lines, &bytes);
+        assert_eq!(digest(&input, &lines, &bytes), base);
+        for drift in [
+            native::InputRow {
+                ruling_party_popularity_raw: 1,
+                ..input
+            },
+            native::InputRow {
+                coastal_protection_stability_raw: 1,
+                ..input
+            },
+            native::InputRow {
+                interception_sum_raw: 1,
+                ..input
+            },
+        ] {
+            assert_eq!(digest(&drift, &lines, &bytes), base);
+        }
+        for changed in [
+            native::InputRow {
+                stability_raw: 501,
+                ..input
+            },
+            native::InputRow {
+                at_war: true,
+                ..input
+            },
+            native::InputRow {
+                bombing_q15: 1,
+                ..input
+            },
+            native::InputRow {
+                children: 1,
+                ..input
+            },
+            native::InputRow {
+                totals: [Some(0); native::TOTALS],
+                ..input
+            },
+        ] {
+            assert_ne!(digest(&changed, &lines, &bytes), base);
+        }
+        let mut line = lines[0];
+        line.value = 10_001;
+        assert_ne!(digest(&input, &[line], &bytes), base);
+        assert_ne!(digest(&input, &lines, b"idea_bDec"), base);
+        assert_ne!(digest(&input, &[], &bytes), base);
+        // The same text at another arena offset is the same row.
+        let moved = native::LineRow {
+            identity: native::Span { start: 3, len: 6 },
+            ..lines[0]
+        };
+        assert_eq!(digest(&input, &[moved], b"xxxidea_a"), base);
     }
 }

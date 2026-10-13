@@ -25,6 +25,9 @@ Run from the repository root. Build outside timed measurements:
 cargo build -p recorder -p collector --release
 ```
 
+While iterating on throughput, `--profile release-incremental` rebuilds a collector edit in seconds instead of minutes (output in `.cargo-target
+elease-incremental`); its code can run at a different speed, so smoke, checkpoints and reported benchmark results use `--release`.
+
 Keep `collector.dll` beside `recorder.exe`. Replace these example paths with your own. A **bare `recorder.exe` attaches to the running game or waits for one**. Use `--help` for options and explicit subcommands for operations; never launch it bare as a probe.
 
 ```powershell
@@ -48,17 +51,26 @@ Game exit finalizes and, without `--once`, waits for another process. Ctrl+C det
 
 The detach command waits for the session's checked completion while the recorder
 controller remains alive and progress continues. During drain it follows collector
-status publications; after collector absence or game exit it follows actual
-metadata, frame and replay-write progress in `finalization-progress.json`. An inactivity
+status publications and the collector's step log; after collector absence or game exit it follows actual
+metadata, frame and replay-write progress in `finalization-progress.json`. An inactivity (180 s, as the controller allows the
+collector)
 timeout reports stopped progress and retains the spool. Total finalization time
 has no deadline. Controller exit without completion fails immediately; normal
 game exit can still finish recovery. Completion retains partial/drain failures.
+
+The collector appends each attach and detach step to `progress` in the session
+directory: milliseconds since attach began, the step (each hook family installed
+or restored, each worker join and queue drain) and an optional count. The controller
+waits for readiness while attach takes steps (180 s without one ends it) and for
+the collector's done signal and unload while detach takes steps (180 s without one: one hook publication holds every game thread and on a loaded machine has taken 44 s),
+at most 15 minutes for either, and names the last step when it gives up. After
+each it prints the total and the slowest steps.
 
 Each process session, in-process load or unexplained hour discontinuity starts a branch. Parentage is probable or unknown; one-second load timestamps can collide. Different campaign IDs produce separate replay files.
 
 Game-score, operation-outcome and politics capture default to enabled. Record-only `--no-game-score`, `--disable-operation-outcomes` and `--disable-politics-capture` preserve named unavailable coverage, never recorded zero.
 
-Finalization uses two streaming spool passes and compresses blocks before the shared decoder size bound. Split hours become self-contained keyframes with original metrics and sample hours; an oversized frame or a split with a truncated table is refused by name. Allocation and I/O failures abort finalization and retain the spool. Repeated finalization compares complete decoded values, availability and metrics, then syncs the matching destination file and parent directory before acknowledging success without changing recording bytes or modification time. A sync failure retains the spool and reports failure.
+Finalization uses two streaming spool passes and compresses blocks before the shared decoder size bound, which applies to each table. Split hours become keyframes, anchored like any other, with original metrics and sample hours; an oversized frame or a split with a truncated table is refused by name. Allocation and I/O failures abort finalization and retain the spool. Repeated finalization compares complete decoded values, availability and metrics, then syncs the matching destination file and parent directory before acknowledging success without changing recording bytes or modification time. A sync failure retains the spool and reports failure.
 
 ## Inspect and compare
 
@@ -97,8 +109,6 @@ Inspection establishes no save agreement. Set `$oracleHour`/`$branchId` to the r
 
 6. Report the exit status, `Differences`, coverage, failed/skipped groups, content exclusions and limitations. A complete requested-refresh check needs a successful exit, zero differences, zero table availability issues, zero failed/skipped groups and no membership exclusions. **Never waive a difference.** Retain failing artifacts, investigate, fix and repeat the matched check; report what remains unverified.
 
-[Selected transport comparisons](src/oracle/selected_transport.rs) check the complete saved unit census, exact signed combat count and source province for zero-combat transfers. Convoy comparisons retain original cache observations, nonzero pool order and signed stock; physical navy access uses the native signed-positive projection. Runtime priority, reservations, risk graphs and pointer lifetimes retain named limitations. Missing saved operands and current capture failures remain differences.
-
 ### Load check
 
 With your recorder attached, load through the game menu. Pause at the load hour, make a **new** text save, step one hour, detach and compare on the new `LoadSignal` branch. Loading reruns weather, so the loaded file cannot substitute. Retain each event family's first-interval coverage verdict; a full refresh cannot supply events from before observation began. Use a fully observed subsequent hour with a requested refresh and a new matched save for the complete check.
@@ -106,22 +116,26 @@ With your recorder attached, load through the game menu. Pause at the load hour,
 ### Comparison boundaries
 
 - Daily/sliced groups compare only their actual reads/owners. Carried groups report their read hour instead of comparing stale rows with current save values. [report.rs](src/oracle/report.rs) owns freshness rules; a sibling table's timing is not proof.
-- Historical appended-field absence, current read refusal and native empty/zero stay distinct. Readable prefixes still compare, and inspection uses source-format byte sizes. See [replay compatibility](../replay/README.md#compatibility-and-recovery).
+- Columns stored at the game's display precision ([display steps](../replay/src/display.rs)) compare with the save's exact value rounded by the same step (the remaining supply grace by the content's `SUPPLY_GRACE`), and the report lists each such column with its precision; a recording before those steps compares them exactly.
+- Historical appended-field absence, current read refusal and native empty/zero stay distinct. Readable prefixes still compare, and inspection uses source-format byte sizes. Retired tables and fields are named as compatibility gaps and in recorded-table coverage; no comparison reads them, so they are never availability issues. See [replay compatibility](../replay/README.md#compatibility-and-recovery).
 - Partial state-history membership skips only dependent joins, names/counts excluded states and makes coverage incomplete. Independent saved fields, identities and locations still compare. History effects are parsed, never executed; see [save parsing](../installed-content/src/save.rs) and [construction comparisons](src/oracle/construction.rs).
-- Template comparisons preserve omitted keys versus emitted empty strings and the native first-NUL prefix. Transport comparisons preserve signed convoy allocation and complete wing pool/raid identity; unavailable historical operands remain limitations, while current reached saved-operand faults remain differences.
+- Template comparisons preserve omitted keys versus emitted empty strings and the native first-NUL prefix. Air transport comparisons preserve complete wing pool/raid identity; unavailable historical operands remain limitations, while current reached saved-operand faults remain differences.
 - Stored names compare the native first-NUL text, retaining counted limitations for captured trailing bytes. State, province, faction, unit and ace-callsign names preserve the stored-length gate and omitted versus emitted-empty keys; unconditional name writers require key presence in ordinary saves.
 - Active ideas compare the recorded lexical dictionary's canonical writer spelling in roster order; absent or ambiguous dictionary joins fail the comparison. Advisor-token set membership uses its native case-insensitive hash/key identity, while saved advisor role strings compare exactly. The set's retained spelling depends on unsaved insertion history.
 - Research definition names authenticate against the recorded dictionary entry for the exact serialized technology handle, preserving repeated database occurrences and canonical writer spelling. Missing, ambiguous or contradictory bindings are named differences and fail the comparison.
 - Native omission rules also apply to advisor idea strings, deployment name flags and state resource blocks. An omitted advisor idea string contributes its empty token key. Unowned states retain the nonpositive owner class; their provinces keep absent ownership and independent explicit controllers. Factory sums use captured control where the state writer omits it, with that input dependency reported. Naval-base membership follows saved navy rosters, and each base occurrence compares its ordered country strings, including repeats and zero-level bases. Raw aliases use their own tag-string slots; unreadable saved operands remain differences.
 - Construction self-checks use a line's remaining quantity independently of other target growth: native script effects can add levels without spending the waiting line's IC. Native count-reset observations separate cleared quantity from completed construction, including transfers that lower target levels. Historical prefixes check exact progress and integral completed-cost debits within a witnessed transfer's cleared count. A decrease without completed target levels or a native reset fails. Progress and spending still compare exactly.
-- Current route queries, combat-vector order and retained snow/mud display boundaries have runtime-only operands. Match native observations at their supplying hour; saved-value agreement cannot certify those displays.
+- A division's supply footer compares only its disruption with the save's positive-only `disrupted_supply`; its demands, receipts and origin rows are unsaved runtime caches of the hourly supply solve, like those of railway guns and task forces, and need matched native hovers.
+- A division's exile compares DivisionStatus's exile bit with the saved `exile`. Controller and owner area labels, area representatives and contact order have no save counterpart; the [selected-route checks](src/oracle/selected_routes.rs) prove only the recording's invariants (labels are smallest members naming themselves, one node on each label province, representatives are members, contacts are other areas' labels) and treat a refused label or node as a difference.
+- Division base speed, railway-gun and task-force route queries, combat-vector order and retained snow/mud display boundaries have runtime-only operands. Match native observations at their supplying hour; saved-value agreement cannot certify those displays. Division arrival times are playback estimates from the recorded route and base speed; the save has no arrival time to compare.
+- AirRegionCombat compares the save's regional air-combat holders after playback's daily prune ([air_region_derive](../replay/src/air_region_derive.rs)) at the frame's hour with the save's `AIR_LOG_TIMEOUT_HOURS`: owner, record count and order, each record's wing, date, planes, mission mask, selection, copied flag and attribution, and both damage vectors with each amount. A holder whose container country owns no state is not pruned by the daily pass, so its retained records are a named limitation; equipment pools and empty saved holders are named limitations too.
 - Naval task-force participant membership and combat identities compare with the save. The first combat's role depends on its unsaved attacker country set and the unit's current logical owner; participant side cannot certify it. Empty versus nonempty recorded combat identities constrain role presence only as a recording consistency check.
 - Domain joins and unsaved limits live in [oracle/](src/oracle/). Self-checks cannot certify runtime caches, events, source splits or displays. Changed unsaved inputs need matched native observations at the same identity and supplying read, plus smoke; later rates, net pool changes and reconstruction cannot replace them.
 
 The [retained naval details oracle](src/oracle/combat_details.rs) compares every readable detail row and reports unexpected rows as differences. A saved result with no detail row makes coverage incomplete after those comparisons; zero differences cannot certify missing HQ inputs. HQ inputs themselves are omitted from the native save.
 - Only collector-verified sessions compare, including mods; there is no override. Unhashed content reads retain named uncovered-read notes.
 
-The [Event feed](src/oracle/event_feed.rs) and [rocket output](src/oracle/rocket_output.rs) self-checks validate recorded continuity/accounting; saves contain neither native actions nor historical applied IC/deliveries. After a world reset or load their coverage restarts at the next hourly boundary as a partial interval; integration needs matched native observations and the fresh-save/load and smoke workflows. Event feed partial or unavailable intervals are named coverage limitations, with an incomplete comparison at the selected save hour; a save cannot supply a complete-history expectation. Requested full refreshes preserve native event observation. Signed equipment gains and bombing corrections stay exact; air event dates can precede supplying reads.
+Saves hold no strike history, so NuclearStrikes has no save comparison. A recorded event loss (a same-process reattach) makes the partial first interval after it a named limitation in the naval result source check instead of a difference, restarts the rocket output continuity check at it, stops peace finalizer completeness from crossing it (a named limitation), and leaves an air loss day window that includes it uncertified with that reason; a partial interval without a recorded loss stays a difference. `inspect` prints each event loss. The [Event feed](src/oracle/event_feed.rs) and [rocket output](src/oracle/rocket_output.rs) self-checks validate recorded continuity/accounting; saves contain neither native actions, their causes nor historical applied IC/deliveries. After a world reset or load their coverage restarts at the next hourly boundary as a partial interval; integration needs matched native observations and the fresh-save/load and smoke workflows. Event feed partial or unavailable intervals are named coverage limitations, with an incomplete comparison at the selected save hour; a save cannot supply a complete-history expectation. Requested full refreshes preserve native event observation. Signed equipment gains and bombing corrections stay exact; air event dates can precede supplying reads.
 
 ### Movement load oracle
 
@@ -167,9 +181,25 @@ Build the recorder from final integrated source before measurement. Both offline
 & $recorder $replayFile $branchId $firstHour $lastHour
 ```
 
-[bench.ps1](../../tools/bench.ps1) converts its exclusive end first. The JSON schema/calculation lives in [metrics.rs](src/metrics.rs). `callback` is recorded hourly acquisition wall time excluding the native tick, not summed table timers, spool service or game throughput. `pool_bytes_max` is the interval's recorded pool maximum.
+[bench.ps1](../../tools/bench.ps1) converts its exclusive end first. The JSON schema/calculation lives in [metrics.rs](src/metrics.rs). `callback` is recorded hourly acquisition wall time excluding the native tick, not summed table timers, spool service or game throughput. `pool_bytes_max` is the interval's recorded pool maximum. Both are exact in replay blocks. Replay blocks record which tables were read but not their read times, so `inspect` reports those as `not_recorded` (older recordings keep theirs); the finalization summary reads exact nanoseconds from the spool.
 
-Every hour must occur exactly once. Gaps, undated loss, partial/recovered files, damage, unsupported layouts and invalid bounds fail. Unavailable/truncated tables and dropped frames also fail; counts are affected decoded hours including carried tables, not native events. Historical lifetimes follow the code catalog.
+Every hour must occur exactly once. Gaps, undated loss, partial/recovered files, damage, unsupported layouts and invalid bounds fail. Unavailable/truncated tables and dropped frames also fail; counts are affected decoded hours including carried tables, not native events. Historical lifetimes follow the code catalog: a table the recording's format does not record, or one the current format retired, is no capture failure.
+
+### Offline size attribution
+
+[sizes.rs](src/sizes.rs) writes a current-format recording's frames again with the current block writer, in memory, and attributes every compressed byte to its block section: frame header, diagnostics, and each table's keyframe and later entries, beside the recording's stored size and its plain frame bytes. It prints bytes per recorded hour and ranks tables by compressed bytes, so encoding and layout changes can be compared without a game run; `--verify` also decodes both and requires every hour to match. `--columns` splits each table's stored bytes between its section columns (control, keys, masks and each field by its row member's name), attributing a section's compressed bytes in proportion to each column compressed alone, beside each column's keyframe bytes, how many delta rows per hour were written whole, changed some fields or were deleted, and how often each field changed. `--levels <levels>` compresses every rewritten section again at each zstd level and reports all sections' and each table's bytes per hour and the single-threaded time per level. Older formats are refused because frames are written again only in the format they were recorded in.
+
+```powershell
+& $recorder sizes $replayFile [--json] [--verify] [--columns] [--levels <level>[,<level>...]]
+```
+
+### Derivation check
+
+[derived.rs](src/derived.rs) resolves the recording's verified content stack and compares every value playback derives with what the recording holds, row by row and hour by hour: held day/night clocks whose hour proves the update ran, [province temperatures](src/derived/temperature.rs), the [selected army's attack operands](src/derived/attack.rs): wherever a DivisionStatus row holds both the stat-block operands and the native operands the collector's `attack_witness` diagnostic read, each terrain's attack derived from the stat block's entry and the content terrain's adjuster, and each scalar and the acclimatization factor, must equal the native one; and [power-balance description trees](src/derived/power_balance.rs), which it compares with the native witness trees of recordings made before the derivation and of a `breakdown_witness` collector build's sampled slice. A recording that stores the temperature pass's inputs must reproduce each hour's read checksum, and every anchor whose own pass the hour before proves must equal its derivation word for word; one that recorded every hour's temperature is checked where the pass needs neither seed nor drift: changes only in the rotating window from a single cursor, only at active provinces with an active neighbour, none while suspended, and each a smoothed stage within the content's maximum change. It counts equal values, mismatches (listing the first with their province and hour), held rows by suspension state and derivations the content cannot supply. A recording from a `naval_tree_oracle` collector also has each [naval source tree](src/derived/naval_trees.rs) occurrence's fresh native read: the identity playback joins from NavalCombatDetails and NavalCombatShips must be the one the capture filed, and the recorded (carried or read) trees must equal the fresh read. `--census` counts each table's changed rows and fields per hour; `--sizes` writes the weather table again with the current writer, as recorded and with each derivation applied, and attributes its compressed bytes as `sizes` does. `--weather-factor <steps>` (comma-separated fixed5 raw steps, or `default` for 25 and 5) writes DivisionStatus again as recorded and with `weather_factor` truncated toward zero to each step, a factor below one step staying exact, and prints each variant's B/h, changed rows and factor changes per hour, and how often the attack list's region weather entry at each division's own province would be shown, hidden or printed differently ([weather_factor.rs](src/derived/weather_factor.rs)).
+
+```powershell
+& $recorder derived $replayFile [--game-dir <directory>] [--user-dir <directory>] [--census] [--sizes] [--weather-factor <steps>]
+```
 
 ## Recovery and checking changes
 
@@ -191,7 +221,7 @@ Allocation-failure checks require both binaries' `alloc-fault-injection` feature
 
 Update affected inspection, metrics, oracle and playback consumers together. New inputs need a save comparison or named limitation. Follow scoped [AGENTS.md checks](../../AGENTS.md), then relevant fresh-save/load, smoke and native observations above. Documentation-only changes need link/diff checks, not live captures.
 
-The optional installed-save parser regression is ignored by default. To run it explicitly, set `BATTLE_PLAN_LAND_SAVE` to your text save and `BATTLE_PLAN_LAND_EXPECTATIONS` to a JSON file with `division_id` and `division_type` (unsigned 32-bit words), `manpower` (ordered `[tag, signed_integer]` pairs), `maximum` and `remaining` (signed fixed5 raw integers), `history_count` (unsigned count), and `first_date`/`last_date` (date strings accepted by the save parser). It checks the exact selected division values, history count and date bounds after parsing all divisions/history. Missing inputs or invalid expectations fail; an ignored test is not live validation.
+The optional installed-save parser regression is ignored by default. To run it explicitly, set `BATTLE_PLAN_LAND_SAVE` to your text save and `BATTLE_PLAN_LAND_EXPECTATIONS` to a JSON file with `division_id` and `division_type` (unsigned 32-bit words), `manpower` (ordered `[tag, signed_integer]` pairs), `history_count` (unsigned count), and `first_date`/`last_date` (date strings accepted by the save parser). It checks the exact selected division values, history count and date bounds after parsing all divisions/history. Missing inputs or invalid expectations fail; an ignored test is not live validation.
 
 ```powershell
 $env:BATTLE_PLAN_LAND_SAVE = $saveFile

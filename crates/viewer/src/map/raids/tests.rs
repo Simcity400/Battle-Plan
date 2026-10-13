@@ -142,6 +142,13 @@ fn unnamed_assets() -> RaidAssets {
         source_distances: Default::default(),
         regions: BTreeMap::new(),
         region_provinces: BTreeMap::new(),
+        // GMT at column 0 of the fixture's map; the poles and feather of vanilla.
+        day_night: Ok(replay::day_night::Defines {
+            gmt_offset: 0,
+            south_pole_offset: 17_000,
+            north_pole_offset: 93_000,
+            day_night_feather: 2_400,
+        }),
         transport_sub_units: Err("the test has no shared sub-unit database".into()),
         combat_minimum_time: 4,
         naval_combat_min_duration: Ok(7),
@@ -156,22 +163,6 @@ fn unnamed_assets() -> RaidAssets {
         invasion_prepare_days: Ok(60),
         script_constants: Err("the test has no script constants".into()),
         defines: Default::default(),
-        transport_exposure: Ok(
-            installed_content::unit_path::selected_transport_risk::ExposureDefines {
-                embark_distance: 100_000,
-                speed_scale: 100_000,
-            },
-        ),
-        transport_spotting: Err("fixture strategic spotting defines unavailable".into()),
-        transport_air_defines: Err("fixture transport air defines unavailable".into()),
-        transport_air_factors: Err("fixture transport air factors unavailable".into()),
-        transport_air_disruption: Err("fixture transport air disruption defines unavailable".into()),
-        transport_air_normalization: Err(
-            "fixture transport air normalization defines unavailable".into()
-        ),
-        transport_damage: Err("fixture transport damage defines unavailable".into()),
-        transport_detection: Err("fixture transport detection defines unavailable".into()),
-        transport_chance: Err("fixture transport chance defines unavailable".into()),
         warnings: Vec::new(),
     }
 }
@@ -2589,7 +2580,7 @@ mod launch_gate {
             vec![StockpileArchetypeRow {
                 canonical_slot: 0,
                 archetype: TRANSPORT,
-                quantity_raw: 10 * 100_000,
+                units: 10,
             }],
         );
         put::<tables::Stockpiles>(
@@ -2978,7 +2969,7 @@ mod launch_gate {
                 faction: Recorded::Value(Some(7)),
                 owned_state_count: Recorded::Value(Some(count)),
                 launch_sources: Recorded::Value(Some(ReservedLaunchSources {
-                    sample_hour: hour,
+                    sample_hour: replay::rows::PacketHour::Stamped(hour),
                     naval_bases: bases.map_or(
                         replay::rows::LaunchNavalBases::Unavailable,
                         replay::rows::LaunchNavalBases::Bases,
@@ -3598,7 +3589,7 @@ mod launch_gate {
                                 .unwrap()
                                 .as_mut()
                                 .unwrap()
-                                .sample_hour -= 1
+                                .sample_hour = replay::rows::PacketHour::Stamped(frame.hour - 1)
                         }
                         _ => unreachable!(),
                     }
@@ -3993,9 +3984,8 @@ mod launch_gate {
         assert_eq!(gate(&assets, &frame, &naval, 3), Eval::False);
     }
 
-    /// The launch inputs are daily slices (the game re-checks raid offers in
-    /// a rolling sweep, so a day's lag is no harsher), and the gate reads
-    /// them whatever hour their owner was last read at.
+    /// The launch inputs are daily slices, and the gate reads them whatever
+    /// hour their owner was last read at.
     #[test]
     fn launch_inputs_read_before_the_hour_still_decide_the_gate() {
         engine::executable_tables::initialize_for_tests()
@@ -5784,7 +5774,8 @@ fn character_scope_global_flag_overlord_and_cosmetic_triggers() {
         eval(&frame, "has_character_flag = exiled", in_leader),
         False
     );
-    put::<tables::ScriptFlags>(&mut frame, vec![flag(3, 44), flag(0, 0)]);
+    // Rows in key order (scope kind, scope id, token), as every decoded table holds them.
+    put::<tables::ScriptFlags>(&mut frame, vec![flag(0, 0), flag(3, 44)]);
     assert_eq!(eval(&frame, "has_character_flag = exiled", in_leader), True);
     assert!(matches!(
         eval(&frame, "is_country_leader = no", in_leader),

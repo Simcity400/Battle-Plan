@@ -74,6 +74,79 @@ pub struct InfluenceBuffers<'a> {
     pub required: &'a mut [usize; 2],
 }
 
+/// One capture's modifier definition table header and successful metadata
+/// reads (flags, category mask and feature selector, the 12 bytes at
+/// `FLAGS`) by key. Both are static content, so in the stopped world a
+/// capture reads each once rather than once per accumulator entry; a failed
+/// read is not kept, so it recurs where it would.
+pub struct TermMetadata {
+    /// Whether anything is kept; [`Self::unkept`] reads every time.
+    keep: bool,
+    table: Option<Array>,
+    /// Indexed by key, sized to the live table's row count on first use; an
+    /// allocation failure leaves it unsized, and every read direct.
+    rows: Vec<Option<[u8; 12]>>,
+    sized: bool,
+}
+
+impl Default for TermMetadata {
+    fn default() -> Self {
+        Self {
+            keep: true,
+            table: None,
+            rows: Vec::new(),
+            sized: false,
+        }
+    }
+}
+
+impl TermMetadata {
+    /// A memo that keeps nothing: the table header and each entry's
+    /// metadata are read every time (benchmarks compare against it).
+    pub fn unkept() -> Self {
+        Self {
+            keep: false,
+            ..Self::default()
+        }
+    }
+
+    fn table(&mut self, memory: &impl Memory, base: usize) -> Result<Array, &'static str> {
+        if let Some(table) = self.table {
+            return Ok(table);
+        }
+        let table = crate::modifier_definition::table(memory, base)?;
+        self.table = Some(table).filter(|_| self.keep);
+        Ok(table)
+    }
+
+    /// The metadata of `key`, whose row `at` lies in `table`.
+    fn flags(
+        &mut self,
+        memory: &impl Memory,
+        table: Array,
+        key: u32,
+        at: usize,
+    ) -> Result<[u8; 12], &'static str> {
+        if let Some(Some(bytes)) = self.rows.get(key as usize) {
+            return Ok(*bytes);
+        }
+        let bytes: [u8; 12] = field(memory, at, crate::modifier_definition::FLAGS)?;
+        if !self.keep {
+            return Ok(bytes);
+        }
+        if !self.sized {
+            self.sized = true;
+            if crate::allocation::resize_default(&mut self.rows, table.count as usize).is_err() {
+                self.rows = Vec::new();
+            }
+        }
+        if let Some(slot) = self.rows.get_mut(key as usize) {
+            *slot = Some(bytes);
+        }
+        Ok(bytes)
+    }
+}
+
 pub fn capture_influence(
     memory: &impl Memory,
     base: usize,
@@ -86,6 +159,7 @@ pub fn capture_influence(
         memory,
         base,
         buffers,
+        metadata: None,
     };
     visit_influence(memory, base, wrapper, index, &mut |row, accumulator| {
         capture.source(row, accumulator)
@@ -162,6 +236,8 @@ struct Capture<'a, 'b, M> {
     memory: &'a M,
     base: usize,
     buffers: InfluenceBuffers<'b>,
+    /// The capture's metadata memo, when the caller keeps one.
+    metadata: Option<&'b mut TermMetadata>,
 }
 impl<M: Memory> Capture<'_, '_, M> {
     fn source(
@@ -219,7 +295,10 @@ impl<M: Memory> Capture<'_, '_, M> {
             .map_err(|_| "collector allocation failed")?;
         if let Some(entries) = data {
             use crate::modifier_definition as md;
-            let table = md::table(self.memory, self.base)?;
+            let table = match self.metadata.as_deref_mut() {
+                Some(metadata) => metadata.table(self.memory, self.base)?,
+                None => md::table(self.memory, self.base)?,
+            };
             let mut previous = 0;
             let mut bytes = [0u8; 64 * 16];
             for start in (0..count).step_by(64) {
@@ -240,7 +319,10 @@ impl<M: Memory> Capture<'_, '_, M> {
                     let at = table
                         .element(key, md::STRIDE)
                         .ok_or("naval weapon modifier key outside definition table")?;
-                    let metadata: [u8; 12] = field(self.memory, at, md::FLAGS)?;
+                    let metadata: [u8; 12] = match self.metadata.as_deref_mut() {
+                        Some(memo) => memo.flags(self.memory, table, key, at)?,
+                        None => field(self.memory, at, md::FLAGS)?,
+                    };
                     let term = ModifierTerm {
                         key,
                         raw: i64::from_le_bytes(b[8..16].try_into().unwrap()),
@@ -321,27 +403,74 @@ pub(crate) fn terrain_with_policy<const TERMINAL: bool>(
     terrain_from_template_with_policy::<TERMINAL>(memory, base, ptr(memory, definition, 0x30)?)
 }
 
+/// [`terrain`] keeping the ocean fallback in `ocean` for the capture. The
+/// fallback is content, fixed after load, so every fallback of one stopped
+/// capture resolves the same terrain; only a complete one is kept.
+pub(crate) fn terrain_kept(
+    memory: &impl Memory,
+    base: usize,
+    definition: usize,
+    ocean: &mut Option<usize>,
+) -> Result<usize, &'static str> {
+    terrain_from_template_kept(memory, base, ptr(memory, definition, 0x30)?, ocean)
+}
+
 /// The same native terrain selector, consuming a template pointer already
-/// acquired by the caller. This avoids reacquiring that selecting control.
-pub(crate) fn terrain_from_template(
+/// acquired by the caller (which avoids reacquiring that selecting control),
+/// keeping the ocean fallback as [`terrain_kept`].
+pub(crate) fn terrain_from_template_kept(
     memory: &impl Memory,
     base: usize,
     template: usize,
+    ocean: &mut Option<usize>,
 ) -> Result<usize, &'static str> {
-    terrain_from_template_with_policy::<true>(memory, base, template)
+    if let Some(terrain) = template_terrain(memory, base, template)? {
+        return Ok(terrain);
+    }
+    if let Some(terrain) = *ocean {
+        return Ok(terrain);
+    }
+    let terrain = ocean_terrain::<true>(memory, base)?;
+    *ocean = Some(terrain);
+    Ok(terrain)
 }
 
+/// Terrain lookup: the template's terrain when present and active, else the
+/// terrain database's ocean.
 fn terrain_from_template_with_policy<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
     template: usize,
 ) -> Result<usize, &'static str> {
+    match template_terrain(memory, base, template)? {
+        Some(terrain) => Ok(terrain),
+        None => ocean_terrain::<TERMINAL>(memory, base),
+    }
+}
+
+/// The template's own terrain (+0x130) when present and active (+0x10).
+fn template_terrain(
+    memory: &impl Memory,
+    base: usize,
+    template: usize,
+) -> Result<Option<usize>, &'static str> {
     let terrain = ptr(memory, template, 0x130)?;
     if terrain != 0 && field::<u8>(memory, terrain, 0x10)? != 0 {
         auth(memory, base, terrain, crate::cterrain_type::VTABLE_RVA)?;
-        return Ok(terrain);
+        return Ok(Some(terrain));
     }
-    // Read the fallback terrain-key bytes from the supported module.
+    Ok(None)
+}
+
+/// Terrain lookup's fallback: the one active terrain named by the
+/// installation's five-byte ocean key, found by hashed-name lookup over the
+/// database.
+fn ocean_terrain<const TERMINAL: bool>(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<usize, &'static str> {
+    // Capture the key from the pinned module instead of assuming English
+    // content.
     let key: [u8; 5] = field(memory, base, 0x0296_2540)?;
     let root = ptr(memory, base, crate::cterrain_database::SINGLETON_RVA)?;
     let types = array(memory, root, 0x40, 8)?;
@@ -388,9 +517,476 @@ pub(crate) fn selected_class(
     Ok(found.unwrap_or(add(leader, fallback)?))
 }
 
-/// Select two country keys without calculating their modifiers. Compare raw
-/// prefix, type-token and suffix segments while walking the bounded modifier-key
-/// dictionary; no game lexer method or lock runs.
+/// One capture's task-force-level sources for the weapon contexts: the
+/// rows each task force's doctrine walk emitted, in order, each fleet's
+/// default leader and each commander's selected class records, each roster
+/// country, each task force's location terms and each terrain's class
+/// records. Every ship of a task force in the stopped capture reaches the
+/// same ones, so later ships re-emit the doctrine rows instead of walking
+/// the tree and take the other observations instead of reading them again,
+/// in the same order as the reads they replace. A walk, search or read that
+/// fails keeps nothing, so its failure recurs where it would.
+#[derive(Default)]
+pub struct SourceMemo {
+    /// Task force -> its doctrine rows' span of `rows`.
+    tasks: crate::recent::Recent<usize, (usize, usize), 16>,
+    rows: Vec<(SourceRow, Option<usize>)>,
+    /// Fleet -> its default leader (zero: none).
+    leaders: crate::recent::Recent<usize, usize, 8>,
+    /// (commander, subunit, modifier or adjuster) -> the selected record.
+    classes: crate::recent::Recent<(usize, u32, bool), usize, 16>,
+    /// (game, native country id) -> the resolved country.
+    countries: crate::recent::Recent<(usize, u32), crate::ccountry::Country, 8>,
+    /// (task force, location) -> its location terms and terrain name, the
+    /// latest [`LOCATION_SLOTS`] task forces.
+    locations: Vec<((usize, usize), LocationTerms, Owned)>,
+    /// (selected terrain, ship class) -> its class records.
+    terrain_classes: crate::recent::Recent<(usize, u32), TerrainClass, 16>,
+    /// Task force -> its HQ influence rows' span of `rows`.
+    influences: crate::recent::Recent<usize, (usize, usize), 16>,
+    /// The fuel defines, eligibility answer and trade feature flags (scopes
+    /// 24 and 26), module globals.
+    globals: Option<([i64; 2], i64, u32)>,
+}
+
+/// Task forces whose location terms a [`SourceMemo`] keeps.
+const LOCATION_SLOTS: usize = 16;
+
+/// A task force's location terms in ship modifier source selection's location
+/// branch, as the first ship of it read them: the relation the
+/// expeditionary-or-roster owner holds with the location's controller, the
+/// selected terrain and the weather region and province records.
+#[derive(Clone, Copy)]
+struct LocationTerms {
+    owner_id: u32,
+    target: u32,
+    /// The relation's accumulator (`+0x140`), when the matrix holds one.
+    relation: Option<usize>,
+    selected: usize,
+    /// The weather region record's modifiers (`+0x48`).
+    region: usize,
+    /// The province weather record.
+    record: usize,
+    night: i64,
+}
+
+/// A terrain's class records for one ship class: the modifier and the
+/// adjuster's gun, depth and movement words.
+#[derive(Clone, Copy)]
+struct TerrainClass {
+    modifier: usize,
+    weights: [i64; 2],
+    movement: i64,
+}
+
+/// A copy of `text` in its own storage; an allocation failure fails as a
+/// read of it would.
+fn owned_copy(text: &Owned) -> Result<Owned, &'static str> {
+    let mut copy = Owned::default();
+    copy.prepare(text.len)
+        .map_err(|_| "string allocation failed")?;
+    copy.copy_prepared(text.as_bytes())?;
+    Ok(copy)
+}
+
+impl SourceMemo {
+    fn location(&self, task: usize, location: usize) -> Option<(LocationTerms, &Owned)> {
+        self.locations
+            .iter()
+            .rev()
+            .find(|(key, _, _)| *key == (task, location))
+            .map(|(_, terms, name)| (*terms, name))
+    }
+
+    fn keep_location(&mut self, task: usize, location: usize, terms: LocationTerms, name: &Owned) {
+        let Ok(name) = owned_copy(name) else {
+            return;
+        };
+        if self.locations.len() == LOCATION_SLOTS {
+            self.locations.remove(0);
+        } else if crate::allocation::reserve(&mut self.locations, 1).is_err() {
+            return;
+        }
+        self.locations.push(((task, location), terms, name));
+    }
+
+    fn selected_class(
+        &mut self,
+        memory: &impl Memory,
+        leader: usize,
+        subunit: u32,
+        modifiers: bool,
+    ) -> Result<usize, &'static str> {
+        let key = (leader, subunit, modifiers);
+        if let Some(found) = self.classes.get(&key) {
+            return Ok(found);
+        }
+        let found = selected_class(memory, leader, subunit, modifiers)?;
+        self.classes.insert(key, found);
+        Ok(found)
+    }
+}
+
+/// `selected`'s class records for `class` (`terrain_class`) through `memo`
+/// when the caller keeps one, emitting its modifier (scope 5) between the
+/// selection and the adjuster's words as the location branch does.
+fn terrain_class_kept(
+    memory: &impl Memory,
+    memo: &mut Option<&mut SourceMemo>,
+    selected: usize,
+    class: u32,
+    emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
+) -> Result<TerrainClass, &'static str> {
+    if let Some(kept) = memo
+        .as_deref()
+        .and_then(|memo| memo.terrain_classes.get(&(selected, class)))
+    {
+        visit_modifier(emit, 5, kept.modifier)?;
+        return Ok(kept);
+    }
+    let (modifier, adjuster) = terrain_class(memory, selected, class)?;
+    visit_modifier(emit, 5, modifier)?;
+    let found = TerrainClass {
+        modifier,
+        weights: [
+            field(memory, adjuster, 0x10)?,
+            field(memory, adjuster, 0x18)?,
+        ],
+        movement: field(memory, adjuster, 0x20)?,
+    };
+    if let Some(memo) = memo.as_deref_mut() {
+        memo.terrain_classes.insert((selected, class), found);
+    }
+    Ok(found)
+}
+
+/// A negative ship class delegates to an unweighted average of each task-force
+/// ship's terrain adjuster, not an opaque cache: one scope 25 row per roster
+/// ship.
+fn mixed_terrain(
+    memory: &impl Memory,
+    base: usize,
+    task: usize,
+    selected: usize,
+    emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    use crate::cship;
+    let ships = array(memory, task, 0x348, 8)?;
+    for index in 0..ships.count {
+        let p = ptr(memory, element(ships, index, 8)?, 0)?;
+        auth(memory, base, p, cship::VTABLE_RVA)?;
+        let class = field(memory, p, 0x88)?;
+        let (_, adjuster) = terrain_class(memory, selected, class)?;
+        emit(
+            SourceRow {
+                scope: 25,
+                index,
+                selector: class,
+                reference: field(memory, p, 8)?,
+                weights: [
+                    field(memory, adjuster, 0x10)?,
+                    field(memory, adjuster, 0x18)?,
+                ],
+                movement: field(memory, adjuster, 0x20)?,
+                ..Default::default()
+            },
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+/// Ship modifier source selection's location branch for the first ship of a
+/// task force at `location`: the relation (scope 16), terrain (5, 20, 25),
+/// weather region (6), province (7) and task-force (8) sources, the terrain
+/// name and night, read in native order and kept in `memo` for the task force's
+/// later ships. Returns the selected terrain.
+#[allow(clippy::too_many_arguments)] // The ship's context row, the capture's memo and visitor.
+fn location_terms<const TERMINAL: bool>(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    task: usize,
+    location: usize,
+    country_id: u32,
+    row: &mut ContextRow,
+    memo: &mut Option<&mut SourceMemo>,
+    emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
+) -> Result<usize, &'static str> {
+    use crate::ccountry;
+    auth(memory, base, location, crate::cprovince::VTABLE_RVA)?;
+    let province = field::<u32>(memory, location, crate::cprovince::ID)?;
+    // Ship modifier source selection chooses expeditionary owner when positive,
+    // then the relation matrix entry for the location's controller (ordinal0
+    // when unowned). Keep this separate from roster-country modifier scope0.
+    let expeditionary = field::<i32>(memory, task, crate::cunit::EXPEDITIONARY_OWNER)?;
+    let owner_id = if expeditionary > 0 {
+        expeditionary as u32
+    } else {
+        country_id
+    };
+    let countries = ccountry::Reader::new(memory, base, game)?;
+    let owner = countries.resolve(owner_id)?;
+    let target = field::<u32>(memory, location, 0x188)?;
+    let target_slot = if target == 0 {
+        0
+    } else {
+        countries.resolve(target)?.canonical_slot
+    };
+    let diplomacy = ptr(memory, owner.pointer, ccountry::DIPLOMACY_STATUS)?;
+    auth(
+        memory,
+        base,
+        diplomacy,
+        crate::cdiplomacy_status::VTABLE_RVA,
+    )?;
+    let relations = array(memory, diplomacy, crate::cdiplomacy_status::RELATIONS, 8)?;
+    let relation = ptr(memory, element(relations, target_slot, 8)?, 0)?;
+    let relation = if relation != 0 {
+        auth(memory, base, relation, crate::crelation_status::VTABLE_RVA)?;
+        if ptr(memory, relation, crate::crelation_status::DIPLOMACY_STATUS)? != diplomacy {
+            return Err("naval weapon relation owner mismatch");
+        }
+        let accumulator = add(relation, 0x140)?;
+        emit(
+            SourceRow {
+                scope: 16,
+                index: owner_id,
+                selector: target,
+                ..Default::default()
+            },
+            Some(accumulator),
+        )?;
+        Some(accumulator)
+    } else {
+        None
+    };
+    let definition = ptr(memory, location, 0xc8)?;
+    let selected = terrain_with_policy::<TERMINAL>(memory, base, definition)?;
+    row.terrain_name = text::<TERMINAL>(
+        memory,
+        add(selected, 0x18)?,
+        "naval selected terrain name invalid",
+    )?;
+    let class = terrain_class_kept(memory, memo, selected, row.ship_class, emit)?;
+    emit(
+        SourceRow {
+            scope: 20,
+            selector: row.ship_class,
+            weights: class.weights,
+            movement: class.movement,
+            ..Default::default()
+        },
+        None,
+    )?;
+    if (row.ship_class as i32) < 0 {
+        mixed_terrain(memory, base, task, selected, emit)?;
+    }
+    let weather = ptr(memory, game, crate::cgame_state::WEATHER_MANAGER)?;
+    auth(memory, base, weather, crate::cweather_manager::VTABLE_RVA)?;
+    let region = field::<u32>(memory, definition, 0x58)?;
+    let regions = array(memory, weather, 0x40, 0x160)?;
+    let region = add(element(regions, region, 0x160)?, 0x48)?;
+    visit_modifier(emit, 6, region)?;
+    let provinces = array(memory, weather, 0x370, 0x330)?;
+    let record = element(provinces, province, 0x330)?;
+    visit_modifier(emit, 7, add(record, 0x270)?)?;
+    row.night = field(memory, record, 0x240)?;
+    visit_modifier(emit, 8, add(task, 0x658)?)?;
+    if let Some(memo) = memo.as_deref_mut() {
+        memo.keep_location(
+            task,
+            location,
+            LocationTerms {
+                owner_id,
+                target,
+                relation,
+                selected,
+                region,
+                record,
+                night: row.night,
+            },
+            &row.terrain_name,
+        );
+    }
+    Ok(selected)
+}
+
+/// [`selected_class`] through `memo` when the caller keeps one.
+fn class_kept(
+    memory: &impl Memory,
+    memo: &mut Option<&mut SourceMemo>,
+    leader: usize,
+    subunit: u32,
+    modifiers: bool,
+) -> Result<usize, &'static str> {
+    match memo.as_deref_mut() {
+        Some(memo) => memo.selected_class(memory, leader, subunit, modifiers),
+        None => selected_class(memory, leader, subunit, modifiers),
+    }
+}
+
+/// `task`'s doctrine sources: re-emitted from `memo` when an earlier ship of
+/// the capture walked them, else walked ([`visit_doctrine`]) and kept.
+fn doctrine_kept<const TERMINAL: bool>(
+    memory: &impl Memory,
+    base: usize,
+    task: usize,
+    keys: &mut DoctrineKeys,
+    memo: &mut Option<&mut SourceMemo>,
+    emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    let Some(memo) = memo.as_deref_mut() else {
+        return visit_doctrine::<TERMINAL>(memory, base, task, keys, emit);
+    };
+    if let Some((start, len)) = memo.tasks.get(&task) {
+        for at in start..start + len {
+            let (row, accumulator) = memo.rows[at];
+            emit(row, accumulator)?;
+        }
+        return Ok(());
+    }
+    let start = memo.rows.len();
+    let mut kept = true;
+    let rows = &mut memo.rows;
+    let result = visit_doctrine::<TERMINAL>(memory, base, task, keys, &mut |row, accumulator| {
+        if kept && crate::allocation::reserve(rows, 1).is_ok() {
+            rows.push((row, accumulator));
+        } else {
+            kept = false;
+        }
+        emit(row, accumulator)
+    });
+    if result.is_ok() && kept {
+        let len = memo.rows.len() - start;
+        memo.tasks.insert(task, (start, len));
+    } else {
+        memo.rows.truncate(start);
+    }
+    result
+}
+
+/// `task`'s HQ influence sources (scopes 12 to 15): re-emitted from `memo` when
+/// an earlier ship of the capture read them, else read ([`visit_influence`]
+/// over the task force's `+0x728` array) and kept.
+fn influences_kept(
+    memory: &impl Memory,
+    base: usize,
+    task: usize,
+    memo: &mut Option<&mut SourceMemo>,
+    emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    let walk = |emit: &mut dyn FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>| {
+        let mut emit = emit;
+        let influences = array(memory, task, 0x728, 8)?;
+        for index in 0..influences.count {
+            let wrapper = ptr(memory, element(influences, index, 8)?, 0)?;
+            visit_influence(memory, base, wrapper, index, &mut emit)?;
+        }
+        Ok(())
+    };
+    let Some(memo) = memo.as_deref_mut() else {
+        return walk(emit);
+    };
+    if let Some((start, len)) = memo.influences.get(&task) {
+        for at in start..start + len {
+            let (row, accumulator) = memo.rows[at];
+            emit(row, accumulator)?;
+        }
+        return Ok(());
+    }
+    let start = memo.rows.len();
+    let mut kept = true;
+    let rows = &mut memo.rows;
+    let result = walk(&mut |row, accumulator| {
+        if kept && crate::allocation::reserve(rows, 1).is_ok() {
+            rows.push((row, accumulator));
+        } else {
+            kept = false;
+        }
+        emit(row, accumulator)
+    });
+    if result.is_ok() && kept {
+        let len = memo.rows.len() - start;
+        memo.influences.insert(task, (start, len));
+    } else {
+        memo.rows.truncate(start);
+    }
+    result
+}
+
+/// The fuel defines (scope 24) and the modifier eligibility answer and
+/// trade feature flags (scope 26), module globals read once per capture when
+/// the caller keeps a memo.
+fn globals_kept(
+    memory: &impl Memory,
+    base: usize,
+    memo: &mut Option<&mut SourceMemo>,
+    emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    use crate::modifier_definition as md;
+    let defines = |weights: [i64; 2]| SourceRow {
+        scope: 24,
+        weights,
+        ..Default::default()
+    };
+    let features = |flags: u32, eligibility: i64| SourceRow {
+        scope: 26,
+        weights: [i64::from(flags), eligibility],
+        ..Default::default()
+    };
+    if let Some((weights, eligibility, flags)) = memo.as_deref().and_then(|memo| memo.globals) {
+        emit(defines(weights), None)?;
+        return emit(features(flags, eligibility), None);
+    }
+    let weights = [
+        field(memory, base, 0x0331_bea0)?,
+        field(memory, base, 0x0331_bf40)?,
+    ];
+    emit(defines(weights), None)?;
+    let callback = field::<u64>(memory, base, md::ELIGIBILITY_CALLBACK_RVA)?;
+    let eligibility = if callback == 0 {
+        0
+    } else if callback == add(base, md::ELIGIBILITY_FLAGS_GETTER_RVA)? as u64 {
+        1
+    } else {
+        return Err("naval weapon modifier callback unsupported");
+    };
+    let flags = field::<u32>(memory, base, md::TRADE_FEATURE_FLAGS_RVA)?;
+    emit(features(flags, eligibility), None)?;
+    if let Some(memo) = memo.as_deref_mut() {
+        memo.globals = Some((weights, eligibility, flags));
+    }
+    Ok(())
+}
+
+/// Doctrine selector -> its two country keys ([`doctrine_keys`]) for one
+/// capture or sizing pass.
+pub type DoctrineKeys = crate::recent::Recent<u32, [u32; 2], 64>;
+
+/// [`doctrine_keys`] keeping each selector's complete answer in `keys`. The
+/// lexer's dictionary does not change within a stopped capture, so a capture
+/// walks it once per selector rather than once per doctrine node of every
+/// ship.
+pub(crate) fn doctrine_keys_kept<const TERMINAL: bool>(
+    memory: &impl Memory,
+    base: usize,
+    selector: u32,
+    keys: &mut DoctrineKeys,
+) -> Result<[u32; 2], &'static str> {
+    if let Some(found) = keys.get(&selector) {
+        return Ok(found);
+    }
+    let found = doctrine_keys::<TERMINAL>(memory, base, selector)?;
+    keys.insert(selector, found);
+    Ok(found)
+}
+
+/// Select the two native country keys without calculating either modifier.
+/// Country key selection constructs prefix+lexer(type)+suffix and maps its
+/// lexer id through the immutable modifier-key dictionary. We compare the raw
+/// string segments while walking that bounded dictionary; no engine lexer
+/// method or lock runs.
 pub(crate) fn doctrine_keys<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
@@ -530,6 +1126,7 @@ fn visit_doctrine<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
     task: usize,
+    keys: &mut DoctrineKeys,
     emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     // Task-force doctrine uses successor order and a stored u64 count, without
@@ -548,7 +1145,7 @@ fn visit_doctrine<const TERMINAL: bool>(
         }
         previous = Some(key);
         let modifier = ptr(memory, node, 0x30)?;
-        let dynamic_keys = doctrine_keys::<TERMINAL>(memory, base, key as u32)?;
+        let dynamic_keys = doctrine_keys_kept::<TERMINAL>(memory, base, key as u32, keys)?;
         emit(
             SourceRow {
                 scope: 4,
@@ -587,22 +1184,33 @@ pub(crate) fn read(
             lengths: &mut buffers.weapon_lengths,
             required: &mut buffers.weapon_required,
         },
+        metadata: Some(&mut buffers.term_metadata),
     };
-    let mut row =
-        visit_sources::<true>(memory, base, game, ship, side, &mut |row, accumulator| {
-            capture.source(row, accumulator)
-        })?;
+    let mut row = visit_sources::<true>(
+        memory,
+        base,
+        game,
+        ship,
+        side,
+        &mut buffers.doctrine_keys,
+        buffers.source_memo.as_mut(),
+        &mut |row, accumulator| capture.source(row, accumulator),
+    )?;
     row.sources = [start, capture.buffers.lengths[0] - start];
     Ok(row)
 }
 
-/// Shared ordered source selection without reading accumulator entries; capture and sizing use separate visitors.
+/// Shared ship modifier source selection, in native order, without reading
+/// accumulator entries. Capture and off-thread sizing supply separate visitors.
+#[allow(clippy::too_many_arguments)] // The ship, its side, and the capture's memos and visitor.
 pub(crate) fn visit_sources<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
     game: usize,
     ship: usize,
     side: usize,
+    doctrine_keys: &mut DoctrineKeys,
+    mut memo: Option<&mut SourceMemo>,
     emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
 ) -> Result<ContextRow, &'static str> {
     use crate::{ccountry, cnavy_leader, cship, ctask_force, cunit};
@@ -611,12 +1219,32 @@ pub(crate) fn visit_sources<const TERMINAL: bool>(
     auth(memory, base, task, ctask_force::VTABLE_RVA)?;
     let task_ref = field(memory, task, cunit::HANDLE)?;
     let country_id = field(memory, task, cunit::ROSTER_OWNER)?;
-    let country = ccountry::Reader::new(memory, base, game)?.resolve(country_id)?;
+    let country = match memo
+        .as_deref()
+        .and_then(|memo| memo.countries.get(&(game, country_id)))
+    {
+        Some(country) => country,
+        None => {
+            let country = ccountry::Reader::new(memory, base, game)?.resolve(country_id)?;
+            if let Some(memo) = memo.as_deref_mut() {
+                memo.countries.insert((game, country_id), country);
+            }
+            country
+        }
+    };
     let fleet = ptr(memory, task, 0x340)?;
     let default_leader = if fleet == 0 {
         0
+    } else if let Some(leader) = memo.as_deref().and_then(|memo| memo.leaders.get(&fleet)) {
+        leader
     } else {
-        crate::creference_registry::resolve(memory, base, field(memory, fleet, 0xb0)?)?.unwrap_or(0)
+        let leader =
+            crate::creference_registry::resolve(memory, base, field(memory, fleet, 0xb0)?)?
+                .unwrap_or(0);
+        if let Some(memo) = memo.as_deref_mut() {
+            memo.leaders.insert(fleet, leader);
+        }
+        leader
     };
     let mut leader = ptr(memory, side, 0x110)?;
     if leader == 0 {
@@ -681,136 +1309,92 @@ pub(crate) fn visit_sources<const TERMINAL: bool>(
     // Medals select their own accumulator and label, rebuilt independently of ship experience.
     let medals = ptr(memory, ship, 0x8f8)?;
     visit_modifier(emit, 3, add(medals, 0x1a0)?)?;
-    visit_doctrine::<TERMINAL>(memory, base, task, emit)?;
+    doctrine_kept::<TERMINAL>(memory, base, task, doctrine_keys, &mut memo, emit)?;
     let location = ptr(memory, task, cunit::LOCATION)?;
-    if location != 0 {
-        auth(memory, base, location, crate::cprovince::VTABLE_RVA)?;
-        let province = field::<u32>(memory, location, crate::cprovince::ID)?;
-        // Weapon selection uses a positive expeditionary owner, then the relation
-        // cell for the location controller (ordinal zero when unowned). This scope is
-        // independent of the roster-country modifier.
-        let expeditionary = field::<i32>(memory, task, crate::cunit::EXPEDITIONARY_OWNER)?;
-        let owner_id = if expeditionary > 0 {
-            expeditionary as u32
-        } else {
-            country_id
-        };
-        let countries = ccountry::Reader::new(memory, base, game)?;
-        let owner = countries.resolve(owner_id)?;
-        let target = field::<u32>(memory, location, 0x188)?;
-        let target_slot = if target == 0 {
-            0
-        } else {
-            countries.resolve(target)?.canonical_slot
-        };
-        let diplomacy = ptr(memory, owner.pointer, ccountry::DIPLOMACY_STATUS)?;
-        auth(
-            memory,
-            base,
-            diplomacy,
-            crate::cdiplomacy_status::VTABLE_RVA,
-        )?;
-        let relations = array(memory, diplomacy, crate::cdiplomacy_status::RELATIONS, 8)?;
-        let relation = ptr(memory, element(relations, target_slot, 8)?, 0)?;
-        if relation != 0 {
-            auth(memory, base, relation, crate::crelation_status::VTABLE_RVA)?;
-            if ptr(memory, relation, crate::crelation_status::DIPLOMACY_STATUS)? != diplomacy {
-                return Err("naval weapon relation owner mismatch");
-            }
+    // A later ship of a task force whose location terms an earlier ship
+    // read: the same rows and the same remaining reads, in the same order.
+    let kept = memo
+        .as_deref()
+        .filter(|_| location != 0)
+        .and_then(|memo| memo.location(task, location))
+        .map(|(terms, _)| terms);
+    let selected_terrain = if location == 0 {
+        None
+    } else if let Some(terms) = kept {
+        if let Some(accumulator) = terms.relation {
             emit(
                 SourceRow {
                     scope: 16,
-                    index: owner_id,
-                    selector: target,
+                    index: terms.owner_id,
+                    selector: terms.target,
                     ..Default::default()
                 },
-                Some(add(relation, 0x140)?),
+                Some(accumulator),
             )?;
         }
-        let definition = ptr(memory, location, 0xc8)?;
-        let selected = terrain_with_policy::<TERMINAL>(memory, base, definition)?;
-        row.terrain_name = text::<TERMINAL>(
-            memory,
-            add(selected, 0x18)?,
-            "naval selected terrain name invalid",
-        )?;
-        let (terrain_modifier, terrain_adjuster) = terrain_class(memory, selected, row.ship_class)?;
-        visit_modifier(emit, 5, terrain_modifier)?;
+        // The terrain name where the first ship read it: after the relation.
+        if let Some((_, name)) = memo
+            .as_deref()
+            .and_then(|memo| memo.location(task, location))
+        {
+            row.terrain_name = owned_copy(name)?;
+        }
+        let class = terrain_class_kept(memory, &mut memo, terms.selected, row.ship_class, emit)?;
         emit(
             SourceRow {
                 scope: 20,
                 selector: row.ship_class,
-                weights: [
-                    field(memory, terrain_adjuster, 0x10)?,
-                    field(memory, terrain_adjuster, 0x18)?,
-                ],
-                movement: field(memory, terrain_adjuster, 0x20)?,
+                weights: class.weights,
+                movement: class.movement,
                 ..Default::default()
             },
             None,
         )?;
-        // Negative class selects an unweighted average of every task-force ship's terrain adjustment.
         if (row.ship_class as i32) < 0 {
-            let ships = array(memory, task, 0x348, 8)?;
-            for index in 0..ships.count {
-                let p = ptr(memory, element(ships, index, 8)?, 0)?;
-                auth(memory, base, p, cship::VTABLE_RVA)?;
-                let class = field(memory, p, 0x88)?;
-                let (_, adjuster) = terrain_class(memory, selected, class)?;
-                emit(
-                    SourceRow {
-                        scope: 25,
-                        index,
-                        selector: class,
-                        reference: field(memory, p, 8)?,
-                        weights: [
-                            field(memory, adjuster, 0x10)?,
-                            field(memory, adjuster, 0x18)?,
-                        ],
-                        movement: field(memory, adjuster, 0x20)?,
-                        ..Default::default()
-                    },
-                    None,
-                )?;
-            }
+            mixed_terrain(memory, base, task, terms.selected, emit)?;
         }
-        let weather = ptr(memory, game, crate::cgame_state::WEATHER_MANAGER)?;
-        auth(memory, base, weather, crate::cweather_manager::VTABLE_RVA)?;
-        let region = field::<u32>(memory, definition, 0x58)?;
-        let regions = array(memory, weather, 0x40, 0x160)?;
-        visit_modifier(emit, 6, add(element(regions, region, 0x160)?, 0x48)?)?;
-        let provinces = array(memory, weather, 0x370, 0x330)?;
-        let p = element(provinces, province, 0x330)?;
-        visit_modifier(emit, 7, add(p, 0x270)?)?;
-        row.night = field(memory, p, 0x240)?;
+        visit_modifier(emit, 6, terms.region)?;
+        visit_modifier(emit, 7, add(terms.record, 0x270)?)?;
+        row.night = terms.night;
         visit_modifier(emit, 8, add(task, 0x658)?)?;
-        if leader != 0 {
-            let a = array(memory, leader, 0x248, 0x28)?;
-            let terrain_index = field::<i32>(memory, selected, 0x88)?;
-            let index = if terrain_index >= 0 && (terrain_index as u32) < a.count {
-                terrain_index as u32
-            } else {
-                0
-            };
-            let adjuster = element(a, index, 0x28)?;
-            emit(
-                SourceRow {
-                    scope: 21,
-                    selector: terrain_index as u32,
-                    weights: [
-                        field(memory, adjuster, 0x10)?,
-                        field(memory, adjuster, 0x18)?,
-                    ],
-                    ..Default::default()
-                },
-                None,
-            )?;
-        }
+        Some(terms.selected)
+    } else {
+        Some(location_terms::<TERMINAL>(
+            memory, base, game, task, location, country_id, &mut row, &mut memo, emit,
+        )?)
+    };
+    if let Some(selected) = selected_terrain
+        && leader != 0
+    {
+        let a = array(memory, leader, 0x248, 0x28)?;
+        let terrain_index = field::<i32>(memory, selected, 0x88)?;
+        let index = if terrain_index >= 0 && (terrain_index as u32) < a.count {
+            terrain_index as u32
+        } else {
+            0
+        };
+        let adjuster = element(a, index, 0x28)?;
+        emit(
+            SourceRow {
+                scope: 21,
+                selector: terrain_index as u32,
+                weights: [
+                    field(memory, adjuster, 0x10)?,
+                    field(memory, adjuster, 0x18)?,
+                ],
+                ..Default::default()
+            },
+            None,
+        )?;
     }
     if leader != 0 {
         visit_modifier(emit, 9, add(leader, 0x408)?)?;
-        visit_modifier(emit, 10, selected_class(memory, leader, row.subunit, true)?)?;
-        let adjuster = selected_class(memory, leader, row.subunit, false)?;
+        visit_modifier(
+            emit,
+            10,
+            class_kept(memory, &mut memo, leader, row.subunit, true)?,
+        )?;
+        let adjuster = class_kept(memory, &mut memo, leader, row.subunit, false)?;
         emit(
             SourceRow {
                 scope: 22,
@@ -853,7 +1437,7 @@ pub(crate) fn visit_sources<const TERMINAL: bool>(
                 ..Default::default()
             },
             Some(add(
-                selected_class(memory, default_leader, row.subunit, true)?,
+                class_kept(memory, &mut memo, default_leader, row.subunit, true)?,
                 0x10,
             )?),
         )?;
@@ -872,42 +1456,8 @@ pub(crate) fn visit_sources<const TERMINAL: bool>(
             Some(add(definition, 0x98)?),
         )?;
     }
-    let influences = array(memory, task, 0x728, 8)?;
-    for index in 0..influences.count {
-        let wrapper = ptr(memory, element(influences, index, 8)?, 0)?;
-        visit_influence(memory, base, wrapper, index, emit)?;
-    }
-    emit(
-        SourceRow {
-            scope: 24,
-            weights: [
-                field(memory, base, 0x0331_bea0)?,
-                field(memory, base, 0x0331_bf40)?,
-            ],
-            ..Default::default()
-        },
-        None,
-    )?;
-    use crate::modifier_definition as md;
-    let callback = field::<u64>(memory, base, md::ELIGIBILITY_CALLBACK_RVA)?;
-    let eligibility = if callback == 0 {
-        0
-    } else if callback == add(base, md::ELIGIBILITY_FLAGS_GETTER_RVA)? as u64 {
-        1
-    } else {
-        return Err("naval weapon modifier callback unsupported");
-    };
-    emit(
-        SourceRow {
-            scope: 26,
-            weights: [
-                i64::from(field::<u32>(memory, base, md::TRADE_FEATURE_FLAGS_RVA)?),
-                eligibility,
-            ],
-            ..Default::default()
-        },
-        None,
-    )?;
+    influences_kept(memory, base, task, &mut memo, emit)?;
+    globals_kept(memory, base, &mut memo, emit)?;
     Ok(row)
 }
 

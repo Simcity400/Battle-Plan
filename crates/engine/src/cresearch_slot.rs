@@ -85,6 +85,18 @@ pub(crate) fn row(
     Ok(row)
 }
 
+// Research serialization, updating and template selection use the same four
+// spans as copy_raw, one record per slot, with no padding or new field
+// acquisition.
+pub(crate) const FIELDS: [crate::memory::RecordField; 4] = crate::memory::packed_fields([
+    (0, 12),
+    (STATUS, 16),
+    (RESEARCH_SPEED, 12),
+    (BANKED_DAYS, 16),
+]);
+pub(crate) const LAYOUT: crate::memory::RecordLayout<'static> =
+    crate::memory::RecordLayout::new(&FIELDS, 56).expect("valid slot record layout");
+
 /// Game-thread raw copy with no validation beyond address bounds.
 /// Returns completed scattered fields; failed field may be partial.
 pub fn copy_raw(

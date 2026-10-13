@@ -221,8 +221,9 @@ fn unit_scale_orders() {
                 map.orders.rows.outcome,
                 &map.orders.rows.rows[..map.orders.rows.outcome.len()],
                 &map.orders.geometry[..map.orders.geometry_len],
-                None,
             );
+            plans.visit_child_fronts(&live, world.base, map.orders.roots(), None);
+            plans.capture_fronts(&live, world.base);
             plans.capture();
             plans.grow(&mut capacities);
         }
@@ -239,8 +240,9 @@ fn unit_scale_orders() {
                 map.orders.rows.outcome,
                 &map.orders.rows.rows[..map.orders.rows.outcome.len()],
                 &map.orders.geometry[..map.orders.geometry_len],
-                None,
             );
+            plans.visit_child_fronts(&live, world.base, map.orders.roots(), None);
+            plans.capture_fronts(&live, world.base);
             plans.capture();
             assert_eq!(
                 plans.outcomes(),
@@ -449,6 +451,9 @@ fn unit_scale_capture() {
         });
         let mut map = crate::map_capture::MapCaptured::new();
         map.air_wings.rows.resize(shape.wings, Default::default());
+        // The frame's storage holds the hour's names, as it does once grown:
+        // each install copies them, and none swaps the job's buffer away.
+        map.air_wing_names.resize(job.names_len, 0);
         let copied = std::mem::size_of_val(job.map_rows[..shape.wings].as_ref());
         println!("UNIT_OWNED_COPY name=AirWingMapCallbackCopy bytes={copied}");
         measure(
@@ -459,6 +464,78 @@ fn unit_scale_capture() {
                 map.install_owned_air(&mut job);
                 assert_eq!(map.air_wings.outcome, Outcome::Rows { len: shape.wings });
             },
+        );
+    }
+}
+
+/// The division inputs walked by one job against the same census walked in
+/// [`crate::division_census::parts_for`] parts on as many threads and
+/// joined in slot order, as the hourly callback splits it. Prints the median
+/// wall time of each (the parted one includes spawning its threads, which
+/// the pool's running workers do not pay) and checks the joined census
+/// equals the serial one.
+#[test]
+#[ignore = "release unit scaling benchmark"]
+fn division_input_parts_scale() {
+    use crate::division_census::{MAX_PARTS, parts_for};
+    for (countries, divisions) in [(1_500, 3_300), (1_500, 6_000), (5_000, 30_000)] {
+        let world = fixture::build(Shape {
+            countries,
+            divisions,
+            wings: 1,
+            planes: 1,
+            ships: 0,
+        });
+        let mut serial = Census::new_worker();
+        let serial_memory = world.live();
+        serial.capture_inputs_growing(&serial_memory, world.base, world.state);
+        let mut starts = [0; MAX_PARTS - 1];
+        let split = serial.part_starts(&mut starts);
+        let parts = split + 1;
+        assert!(parts <= parts_for(divisions));
+        let ranges: Vec<(u32, u32)> = (0..parts)
+            .map(|part| {
+                let first = if part == 0 { 1 } else { starts[part - 1] };
+                (first, if part < split { starts[part] } else { u32::MAX })
+            })
+            .collect();
+        let mut censuses: Vec<Census> = (0..parts).map(|_| Census::new_worker()).collect();
+        let time = |work: &mut dyn FnMut()| {
+            let mut samples: Vec<f64> = (0..15)
+                .map(|_| {
+                    let begin = std::time::Instant::now();
+                    work();
+                    begin.elapsed().as_secs_f64() * 1e3
+                })
+                .collect();
+            samples.sort_by(f64::total_cmp);
+            samples[samples.len() / 2]
+        };
+        let serial_ms = time(&mut || {
+            serial.capture_inputs_growing(&serial_memory, world.base, world.state);
+        });
+        let (base, state) = (world.base, world.state);
+        let parted_ms = time(&mut || {
+            std::thread::scope(|scope| {
+                for (census, &slots) in censuses.iter_mut().zip(&ranges) {
+                    scope.spawn(move || {
+                        // SAFETY: the fixture outlives the scope and is only read.
+                        let memory = unsafe { engine::memory::LiveMemory::new() };
+                        census.capture_inputs_part(&memory, base, state, slots);
+                    });
+                }
+            });
+            let (first, rest) = censuses.split_at_mut(1);
+            for part in rest {
+                first[0].absorb(part).unwrap();
+            }
+        });
+        let joined = censuses[0].unit_inputs().unwrap();
+        let whole = serial.unit_inputs().unwrap();
+        assert_eq!(joined.seeds(), whole.seeds());
+        assert_eq!(joined.outcome(), whole.outcome());
+        println!(
+            "DIVISION_INPUT_PARTS countries={countries} divisions={divisions} parts={parts} serial_ms={serial_ms:.3} parted_ms={parted_ms:.3}"
         );
     }
 }

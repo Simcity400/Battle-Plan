@@ -840,7 +840,7 @@ impl Captured {
                     requested_factories: r.requested_factories,
                     cost_raw: r.cost_raw,
                     speed_raw: r.speed_raw,
-                    produced_raw: r.produced_raw,
+                    produced_raw: replay::rows::RetiredI64::default(),
                     priority: r.priority,
                     amount: r.amount,
                     max_factories: r.max_factories,

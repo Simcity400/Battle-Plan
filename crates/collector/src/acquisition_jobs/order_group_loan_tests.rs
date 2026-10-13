@@ -57,15 +57,15 @@ fn inspect_return(mut request: OrdersRequest, bytes: usize, spans: usize, count:
 }
 
 fn loan(job: &Job) -> &naval_history::NavalJob {
-    let Job::Orders(request) = job else {
-        panic!("fixture must retain its submitted Orders variant");
+    let Job::ChildFronts(request) = job else {
+        panic!("fixture must retain its submitted ChildFronts variant");
     };
     request.group_source.as_ref().unwrap()
 }
 
 fn inspect_job(job: Job, bytes: usize, spans: usize, count: i32) {
-    let Job::Orders(request) = job else {
-        panic!("executor must return the submitted Orders variant");
+    let Job::ChildFronts(request) = job else {
+        panic!("executor must return the submitted ChildFronts variant");
     };
     inspect_return(request, bytes, spans, count);
 }
@@ -76,7 +76,7 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&calls);
         let pool = crate::acquisition::Pool::start(0, 1, move |job: &mut Job| {
-            let Job::Orders(request) = job else {
+            let Job::ChildFronts(request) = job else {
                 panic!("unexpected fixture runner");
             };
             observed.fetch_add(1, Ordering::Relaxed);
@@ -93,17 +93,16 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
             if mode == 2 {
                 // Unwinding must drop the borrowed reader before completing
                 // the request, so its ordinary decode can rebuild/reset it.
-                panic!("synthetic Orders failure with an active OOB reader");
+                panic!("synthetic ChildFronts failure with an active OOB reader");
             }
             drop(source);
             if mode == 1 {
-                Report::Orders(request.fail("synthetic order plan refusal"))
-            } else {
-                Report::Orders(OrdersReport)
+                request.plans.fail_child_fronts();
             }
+            Report::ChildFronts(OrdersReport)
         })
         .unwrap();
-        let mut pending = Some(Job::Orders(request(7)));
+        let mut pending = Some(Job::ChildFronts(request(7)));
         let payload = loan(pending.as_ref().unwrap());
         let bytes = payload.log.bytes.as_ptr() as usize;
         let spans = payload.log.spans.as_ptr() as usize;
@@ -113,7 +112,7 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
         if mode == 2 {
             assert!(matches!(completed.report, Err(Failure::Panicked)));
         } else {
-            assert!(matches!(completed.report, Ok(Report::Orders(_))));
+            assert!(matches!(completed.report, Ok(Report::ChildFronts(_))));
         }
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         inspect_job(completed.request, bytes, spans, 7);
@@ -122,12 +121,12 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
 }
 
 #[test]
-fn stopped_orders_request_returns_its_unread_naval_loan() {
+fn stopped_child_fronts_request_returns_its_unread_naval_loan() {
     let pool = crate::acquisition::Pool::start(0, 1, |_: &mut Job| -> Report {
-        panic!("cancelled Orders runner must not execute");
+        panic!("cancelled ChildFronts runner must not execute");
     })
     .unwrap();
-    let mut pending = Some(Job::Orders(request(8)));
+    let mut pending = Some(Job::ChildFronts(request(8)));
     let payload = loan(pending.as_ref().unwrap());
     let bytes = payload.log.bytes.as_ptr() as usize;
     let spans = payload.log.spans.as_ptr() as usize;
@@ -143,11 +142,11 @@ fn stopped_orders_request_returns_its_unread_naval_loan() {
 #[test]
 fn admission_rejection_keeps_the_loan_for_refusal_and_ordinary_decode() {
     let pool = crate::acquisition::Pool::start(0, 1, |_: &mut Job| -> Report {
-        panic!("rejected Orders must never run");
+        panic!("rejected ChildFronts must never run");
     })
     .unwrap();
     pool.shutdown().unwrap();
-    let mut pending = Some(Job::Orders(request(9)));
+    let mut pending = Some(Job::ChildFronts(request(9)));
     let payload = loan(pending.as_ref().unwrap());
     let bytes = payload.log.bytes.as_ptr() as usize;
     let spans = payload.log.spans.as_ptr() as usize;
@@ -156,9 +155,25 @@ fn admission_rejection_keeps_the_loan_for_refusal_and_ordinary_decode() {
         unsafe { pool.submit(&mut pending) },
         Err(SubmitError::Stopped)
     );
-    let Job::Orders(mut request) = pending.take().unwrap() else {
+    let Job::ChildFronts(mut request) = pending.take().unwrap() else {
         unreachable!();
     };
-    request.fail("synthetic Orders admission refusal");
+    request.plans.fail_child_fronts();
     inspect_return(request, bytes, spans, 9);
+}
+
+/// A ChildFronts pass that demands no army-group operand allocates nothing,
+/// so a joining thread may run it while it is still queued; the role, which
+/// sizes the reserved slots, stays worker-only for a pass that does.
+#[test]
+fn a_child_fronts_pass_without_group_demand_is_not_worker_only() {
+    let job = Job::ChildFronts(request(1));
+    assert!(!job.worker_only());
+    assert!(job.role().worker_only());
+    let payload = loan(&job);
+    let (bytes, spans) = (
+        payload.log.bytes.as_ptr() as usize,
+        payload.log.spans.as_ptr() as usize,
+    );
+    inspect_job(job, bytes, spans, 1);
 }

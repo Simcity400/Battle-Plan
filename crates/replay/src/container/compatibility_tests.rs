@@ -54,7 +54,15 @@ fn legacy_rows(table: TableId, hour: Hour, format: FormatVersion) -> TableRows {
             can_occupy_non_war: 1,
             enemies_read: 1,
             enemies: vec![2, 3],
-            ..Default::default()
+            ordered: if format.version() >= rows::compatibility::POLITICAL_FORMAT {
+                Some(rows::OrderedEnemyInputs {
+                    sample_hour: rows::PacketHour::Host,
+                    entries: vec![3, 2],
+                })
+                .into()
+            } else {
+                Default::default()
+            },
         }]),
         TableId::DivisionTemplates => {
             TableRows::DivisionTemplates(vec![rows::DivisionTemplateRow {
@@ -144,6 +152,7 @@ fn legacy_rows(table: TableId, hour: Hour, format: FormatVersion) -> TableRows {
             ..Default::default()
         }]),
         TableId::AirAces => TableRows::AirAces(vec![Default::default()]),
+        TableId::Politics => TableRows::Politics(vec![Default::default()]),
         TableId::Operations => TableRows::Operations(vec![Default::default()]),
         TableId::ConstructionLineOutput => {
             TableRows::ConstructionLineOutput(vec![Default::default()])
@@ -176,6 +185,13 @@ fn legacy_rows(table: TableId, hour: Hour, format: FormatVersion) -> TableRows {
             }])
         }
         TableId::LandCombatDetails => TableRows::LandCombatDetails(vec![Default::default()]),
+        // Older formats end before the reserve speed share.
+        TableId::LandCombatDivisions => {
+            TableRows::LandCombatDivisions(vec![rows::LandCombatDivisionRow {
+                combat: 1,
+                ..Default::default()
+            }])
+        }
         TableId::NavalCombatDetails if format.version() >= RECORDER_INPUTS_FORMAT => {
             TableRows::NavalCombatDetails(vec![rows::NavalCombatDetailsRow {
                 combat: 1,
@@ -277,10 +293,10 @@ fn legacy_rows(table: TableId, hour: Hour, format: FormatVersion) -> TableRows {
         TableId::LandCombatProgress => {
             TableRows::LandCombatProgress(vec![rows::LandCombatProgressRow {
                 combat: 7 << 32 | 62,
-                attacker_progress: 33_333,
-                defender_progress: 66_667,
-                direction_attacker: 9 << 32 | 4713,
-                direction_province: 7,
+                attacker_progress: rows::RetiredI64::holding(33_333),
+                defender_progress: rows::RetiredI64::holding(66_667),
+                direction_attacker: rows::RetiredU64::holding(9 << 32 | 4713),
+                direction_province: rows::RetiredU32::holding(7),
                 ..Default::default()
             }])
         }
@@ -335,9 +351,53 @@ fn legacy_rows(table: TableId, hour: Hour, format: FormatVersion) -> TableRows {
         }]),
         _ => match source(1, hour).tables[table.index()].clone().into_inner() {
             TableView::Complete(rows) => rows,
+            // A table today's format retired was recorded by older writers.
+            _ if crate::frame::current_absence(table).is_some() => TableRows::empty(table),
             _ => unreachable!(),
         },
     }
+}
+
+#[test]
+fn format_101_transport_packets_and_split_tables_are_refused_by_name() {
+    let previous = FormatVersion::read(rows::compatibility::RESERVED_SPLIT_FORMAT - 1).unwrap();
+    let payload = legacy_frame(previous, 1000, true);
+    let old = FrameDecoder::new()
+        .apply(&Frame::decode_version(&mut Decoder::new(&payload), None, previous).unwrap())
+        .unwrap();
+    // Neither format records the split tables; each refusal names its table.
+    for format in [previous, FormatVersion::CURRENT] {
+        for table in rows::RESERVED_SPLIT_TABLES {
+            assert!(!table.last_change().present(format.version()));
+            let reason = format.table_refusal(table).unwrap();
+            assert!(reason.contains(&format!("{table:?}")), "{reason}");
+        }
+    }
+    for table in rows::RESERVED_SPLIT_TABLES {
+        assert!(
+            FormatVersion::CURRENT
+                .table_refusal(table)
+                .unwrap()
+                .contains("retired at format")
+        );
+        assert!(matches!(
+            &*old.tables[table.index()],
+            TableView::Unavailable { reason } if reason.contains("not recorded")
+        ));
+    }
+    // The singleton itself stays readable; its packet field is a tombstone.
+    assert!(
+        previous
+            .table_refusal(TableId::ReservedCountryNaming)
+            .is_none()
+    );
+    let row = &old
+        .complete::<rows::tables::ReservedCountryNaming>()
+        .unwrap()[0];
+    assert_eq!(
+        row.transport_mission_inputs,
+        rows::Recorded::Value(rows::Retired)
+    );
 }
 
 #[test]
@@ -354,41 +414,48 @@ fn fuel_award_suffix_keeps_the_previous_prefix_readable_and_signed_receipts_exac
     assert_eq!(old.country_instance, rows::Recorded::NotRecorded);
     assert_eq!(old.awards, rows::Recorded::NotRecorded);
     assert_eq!(old.demand, rows::Recorded::NotRecorded);
+    assert_eq!(old.award_day, rows::Recorded::NotRecorded);
+    // Recordings before the day sums hold the update-by-update window, which
+    // decodes through its framing and is discarded.
+    assert_eq!(
+        FormatVersion::read(rows::compatibility::POLITICAL_FORMAT)
+            .unwrap()
+            .fields(TableId::CountryFuel),
+        22
+    );
 
     let row = rows::CountryFuelRow {
         country: 1,
         current_raw: 17,
         country_instance: rows::Recorded::Value(Some(7)),
-        awards: rows::Recorded::Value(rows::FuelAwardWindow {
+        award_day: rows::Recorded::Value(rows::FuelAwardDay {
             country_instance: 7,
             continuity_start_hour: Some(977),
-            reason: Vec::new(),
-            hours: vec![rows::FuelAwardHour {
-                hour: 1000,
-                gains_raw: [i64::MIN, 0, 1, -1],
-                own_gain_raw: 0,
-                recipients: (0..5000)
-                    .map(|index| rows::FuelAwardRecipient {
-                        reference: index << 32 | 29,
-                        owner: 8,
-                        kind: 0,
-                        amount_raw: if index == 0 { 0 } else { -1 },
-                        name: Some(b"synthetic retained name".to_vec()),
-                        ..Default::default()
-                    })
-                    .collect(),
-                ..Default::default()
-            }],
+            last_hour: 1000,
+            gains_raw: [i64::MIN, 0, 1, -1],
+            recipients: (0..5000)
+                .map(|index| rows::FuelAwardDayRecipient {
+                    reference: index << 32 | 29,
+                    owner: 8,
+                    kind: 0,
+                    first_hour: 977,
+                    last_hour: 1000,
+                    amount_raw: if index == 0 { 0 } else { -1 },
+                    name: Some(b"synthetic retained name".to_vec()),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
         }),
         ..Default::default()
     };
     let delta = row.delta(None).unwrap().unwrap();
     assert_eq!(delta.apply::<rows::CountryFuelRow>(None).unwrap(), row);
     let mut corrected = row.clone();
-    let rows::Recorded::Value(window) = &mut corrected.awards else {
+    let rows::Recorded::Value(day) = &mut corrected.award_day else {
         panic!()
     };
-    window.hours[0].recipients[4999].amount_raw = i64::MIN;
+    day.recipients[4999].amount_raw = i64::MIN;
     assert_eq!(
         corrected
             .delta(Some(&row))
@@ -477,7 +544,13 @@ fn legacy_frame_with_history(
         let rows = legacy_rows(table, hour, format);
         bytes.push(0);
         bytes.extend_from_slice(&(rows.len() as u32).to_le_bytes());
-        bytes.extend(rows.fixture_prefix(history[table.index()].fields(table, format.version())));
+        let fields = history[table.index()].fields(table, format.version());
+        // Stamped formats wrote every hourly-host packet with its frame hour.
+        bytes.extend(if format.version() <= rows::STAMPED_PACKET_FORMAT {
+            rows::with_historical_stamp(hour, || rows.fixture_prefix(fields))
+        } else {
+            rows.fixture_prefix(fields)
+        });
     }
     bytes
 }
@@ -516,17 +589,24 @@ fn replace_legacy_snapshot(
 }
 
 fn legacy_replay(format: u16) -> Replay {
+    legacy_replay_with(
+        format,
+        &legacy_frame(FormatVersion::read(format).unwrap(), 1000, true),
+    )
+}
+
+/// A file of `format` whose one block holds `payload`, hour 1000's frame.
+fn legacy_replay_with(format: u16, payload: &[u8]) -> Replay {
     let mut records = records(1, &[1000]);
     let Record::SessionStart(session) = &mut records[0] else {
         unreachable!()
     };
     session.identity.coverage_policy = 3;
     let current = Replay::from_records(CAMPAIGN.to_vec(), &[records]).unwrap();
-    let payload = legacy_frame(FormatVersion::read(format).unwrap(), 1000, true);
     let replay = edited_block(&current, |raw| {
         raw.clear();
         raw.extend_from_slice(&1_u32.to_le_bytes());
-        put_bytes(raw, &payload).unwrap();
+        put_bytes(raw, payload).unwrap();
     });
     let mut bytes = replay.bytes().to_vec();
     bytes[4..6].copy_from_slice(&format.to_le_bytes());
@@ -543,7 +623,7 @@ fn older_recording_opens_without_weather_display_boundary() {
     assert_eq!(weather.len(), 1);
     assert_eq!(weather[0].display, rows::Recorded::NotRecorded);
     assert_eq!(weather[0].snow, 0);
-    assert_eq!(weather[0].local_hour, rows::Recorded::NotRecorded);
+    assert_eq!(weather[0].clock, rows::DayNightClock::NOT_RECORDED);
 }
 
 #[test]
@@ -740,7 +820,7 @@ fn compatibility_published_air_history_updates_preserve_prefixes_and_siblings() 
 
 #[test]
 fn compatibility_before_political_runtime_inputs_keeps_carrier_prefixes() {
-    let before = crate::FORMAT_VERSION - 1;
+    let before = crate::rows::compatibility::POLITICAL_FORMAT - 1;
     let replay = legacy_replay(before);
     let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
         panic!("missing hour");
@@ -848,7 +928,6 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
         .filter(|table| {
             [
                 TableId::AvailableAdvisors,
-                TableId::OwnedWargoals,
                 TableId::LandCombatDetails,
                 TableId::NavalCombatDetails,
             ]
@@ -863,6 +942,18 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
     let selected = replay
         .read_block_selected(&replay.index[0], &tables)
         .unwrap();
+    // OwnedWargoals, introduced with these tables, retired since: its
+    // framing is consumed and every recording refuses it by name.
+    assert_eq!(
+        *frame.tables[TableId::OwnedWargoals.index()],
+        TableView::Unavailable {
+            reason: format!(
+                "OwnedWargoals retired at format {}; this recording is format {}",
+                crate::FORMAT_VERSION,
+                RECORDER_INPUTS_FORMAT
+            )
+        }
+    );
     for table in tables {
         let mut expected = legacy_rows(table, 1000, replay.format);
         // The fixture writes the historical prefix, not today's appended operands.
@@ -875,6 +966,16 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
             TableRows::UnitLeaders(rows) => {
                 for row in rows {
                     row.formation_reference = rows::Recorded::NotRecorded;
+                }
+            }
+            TableRows::LandCombatDetails(rows) => {
+                for row in rows {
+                    row.side_inputs = rows::Recorded::NotRecorded;
+                    // The older side layout's CAS operands decode and stay.
+                    for side in &mut row.sides {
+                        side.anti_air_attack = rows::RetiredKept::older_value(0);
+                        side.prevented_damage = rows::RetiredKept::older_value([0; 2]);
+                    }
                 }
             }
             TableRows::OperativeMemberships(rows) => {
@@ -896,6 +997,9 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
                     row.dig_in_factor = rows::Recorded::NotRecorded;
                     row.name = rows::Recorded::NotRecorded;
                     row.attack = rows::Recorded::NotRecorded;
+                    row.camouflage = rows::Recorded::NotRecorded;
+                    row.attack_stats = rows::Recorded::NotRecorded;
+                    row.weather_factor = rows::Recorded::NotRecorded;
                 }
             }
             TableRows::CountryCounterInputs(rows) => {
@@ -910,6 +1014,7 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
                     row.forward_visibility = rows::Recorded::NotRecorded;
                     row.attack = rows::Recorded::NotRecorded;
                     row.directed_wars = rows::Recorded::NotRecorded;
+                    row.attack_modifiers = rows::Recorded::NotRecorded;
                 }
             }
             _ => {}
@@ -940,7 +1045,15 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
             "{table:?}"
         );
     }
-    assert!(replay.format.nested_field_gaps().next().is_none());
+    // Only nested fields appended after format 98 are gaps: the event feed's
+    // causes, whose table format 98 does not hold.
+    assert_eq!(
+        replay.format.nested_field_gaps().collect::<Vec<_>>(),
+        [format!(
+            "EventFeedEvent.cause not recorded (introduced at format {}; this recording is format 98); other fields decode",
+            crate::rows::compatibility::EVENT_CAUSE_FORMAT
+        )]
+    );
     // Existing prefixes remain readable; additions are named field/table gaps.
     assert_eq!(
         replay.compatibility_gaps().len(),
@@ -968,10 +1081,20 @@ fn compatibility_land_appends_preserve_old_progress_and_mark_casualties_absent()
         else {
             panic!("missing progress")
         };
-        assert_eq!(progress.attacker_progress, 33_333);
-        assert_eq!(progress.defender_progress, 66_667);
-        assert_eq!(progress.direction_attacker, 9 << 32 | 4713);
-        assert_eq!(progress.direction_province, 7);
+        // The retired progress and direction still follow their framing.
+        assert_eq!(
+            progress.attacker_progress,
+            rows::RetiredI64::holding(33_333)
+        );
+        assert_eq!(
+            progress.defender_progress,
+            rows::RetiredI64::holding(66_667)
+        );
+        assert_eq!(
+            progress.direction_attacker,
+            rows::RetiredU64::holding(9 << 32 | 4713)
+        );
+        assert_eq!(progress.direction_province, rows::RetiredU32::holding(7));
         assert_eq!(progress.attacker_manpower_loss, rows::Recorded::NotRecorded);
         assert_eq!(progress.defender_manpower_loss, rows::Recorded::NotRecorded);
         assert_eq!(
@@ -1015,7 +1138,7 @@ fn compatibility_land_appends_preserve_old_progress_and_mark_casualties_absent()
     let next = delta
         .apply::<rows::LandCombatProgressRow>(Some(first))
         .unwrap();
-    assert_eq!(next.attacker_progress, 50_000);
+    assert_eq!(next.attacker_progress, rows::RetiredI64::holding(50_000));
     assert_eq!(next.defender_manpower_loss, rows::Recorded::NotRecorded);
     assert_eq!(next.defender_equipment_losses, rows::Recorded::NotRecorded);
 }
@@ -1311,13 +1434,6 @@ fn compatibility_format99_movement_prefix_delta_cannot_admit_a_current_profile()
             rows::StrategicActionFailure::CountryModifier,
         )
         .into(),
-        fresh: Some(rows::FreshCounterEta {
-            sample_hour: 1000,
-            current_speed: Some(i64::MIN),
-            normal: Some(Default::default()),
-            rail: None,
-        })
-        .into(),
         ..Default::default()
     };
     let after = rows::DivisionMovementRow {
@@ -1342,14 +1458,14 @@ fn compatibility_current_movement_profile_delta_uses_only_its_actual_suffix() {
     let format = FormatVersion::CURRENT;
     let table = TableId::DivisionMovement;
     let fields = format.fields(table);
-    assert_eq!(fields, 22);
+    assert_eq!(fields, 23);
     let suffix = table
         .last_change()
         .appended
         .iter()
-        .find(|field| field.name == "fresh")
-        .expect("movement fresh suffix history");
-    assert_eq!(suffix.index, 18);
+        .find(|field| field.name == "base_speed")
+        .expect("movement base speed suffix history");
+    assert_eq!(suffix.index, 22);
     let before = rows::DivisionMovementRow {
         division: 1,
         source: 7,
@@ -1357,30 +1473,18 @@ fn compatibility_current_movement_profile_delta_uses_only_its_actual_suffix() {
         numerator: i64::MIN,
         combat_count: 1,
         combat_references: Some(rows::UnitCombatReferences {
-            sample_hour: 1000,
+            sample_hour: rows::PacketHour::Host,
             entries: vec![rows::UnitCombatReference {
                 combat: u64::MAX,
                 kind: 0,
             }],
         })
         .into(),
-        fresh: Some(rows::FreshCounterEta {
-            sample_hour: 1000,
-            current_speed: None,
-            normal: Some(Default::default()),
-            rail: None,
-        })
-        .into(),
+        base_speed: rows::Recorded::Value(None),
         ..Default::default()
     };
     let after = rows::DivisionMovementRow {
-        fresh: Some(rows::FreshCounterEta {
-            sample_hour: 1001,
-            current_speed: None,
-            normal: Some(Default::default()),
-            rail: None,
-        })
-        .into(),
+        base_speed: Some(400_000).into(),
         ..before.clone()
     };
     let mut update = vec![0];
@@ -1435,7 +1539,7 @@ fn compatibility_current_movement_profile_delta_uses_only_its_actual_suffix() {
 }
 
 #[test]
-fn compatibility_format99_eta_snapshot_and_delta_keep_the_published_layout() {
+fn compatibility_format99_eta_rows_are_discarded_through_their_published_layout() {
     let format = FormatVersion::read(rows::compatibility::EFFECT_INPUTS_FORMAT).unwrap();
     let table = TableId::DivisionEtaInputs;
     let fields = format.fields(table);
@@ -1465,15 +1569,24 @@ fn compatibility_format99_eta_snapshot_and_delta_keep_the_published_layout() {
         first.table_encoded_sizes_version(format).unwrap()[table.index()],
         update.len()
     );
+    // The retired table's published framing is consumed and refused by name;
+    // the frame's other tables still decode.
+    let retired = format!(
+        "DivisionEtaInputs retired at format 102; this recording is format {}",
+        format.version()
+    );
     let mut decoder = FrameDecoder::new();
-    let decoded = decoder
-        .advance(&first)
-        .unwrap()
-        .complete::<rows::tables::DivisionEtaInputs>()
-        .unwrap()[0]
-        .clone();
-    assert_eq!(decoded, before);
-    assert_eq!(decoded.not_recorded_fields(), 0);
+    let decoded = decoder.advance(&first).unwrap();
+    assert_eq!(
+        *decoded.tables[table.index()],
+        TableView::Unavailable {
+            reason: retired.clone()
+        }
+    );
+    assert_eq!(
+        decoded.complete::<rows::tables::Clock>().unwrap()[0].hour,
+        1000
+    );
     let delta = after.delta(Some(&before)).unwrap().unwrap();
     assert_eq!(delta.mask, 1 << 17);
     update.clear();
@@ -1493,29 +1606,20 @@ fn compatibility_format99_eta_snapshot_and_delta_keep_the_published_layout() {
         frame.table_encoded_sizes_version(format).unwrap()[table.index()],
         update.len()
     );
-    let TableUpdate::Delta { changed, .. } = &frame.tables[table.index()] else {
-        panic!("published ETA sample-hour delta unavailable");
-    };
-    assert_eq!(changed[0].recorded_fields, fields);
-    assert_eq!(changed[0].mask, 1 << 17);
-    let decoded = decoder
-        .advance(&frame)
-        .unwrap()
-        .complete::<rows::tables::DivisionEtaInputs>()
-        .unwrap()[0]
-        .clone();
-    assert_eq!(decoded, after);
-    assert_eq!(decoded.not_recorded_fields(), 0);
-    let mut encoded = Vec::new();
-    decoded.encode_fields(&mut encoded).unwrap();
-    let mut expected = Vec::new();
-    after.encode_fields(&mut expected).unwrap();
-    assert_eq!(encoded, expected);
+    let decoded = decoder.advance(&frame).unwrap();
+    assert_eq!(
+        *decoded.tables[table.index()],
+        TableView::Unavailable { reason: retired }
+    );
+    assert_eq!(
+        decoded.complete::<rows::tables::Clock>().unwrap()[0].hour,
+        1001
+    );
 }
 
 #[test]
 fn compatibility_oracle_witnesses_keep_integrated_recordings_readable() {
-    let replay = legacy_replay(crate::FORMAT_VERSION - 1);
+    let replay = legacy_replay(crate::rows::compatibility::POLITICAL_FORMAT - 1);
     let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
         panic!("missing historical hour");
     };
@@ -1646,6 +1750,7 @@ fn compatibility_table_lifetimes_keep_the_old_frame_stream_readable() {
     let added = TableId::NavalModifierBreakdowns;
     history[added.index()].introduced = 96;
     history[added.index()].format = 96;
+    history[added.index()].retired = None;
     let retired = TableId::Ships;
     history[retired.index()].retired = Some(96);
     for version in [94, 97] {
@@ -1873,5 +1978,296 @@ fn compatibility_previous_format_keeps_positive_destruction_and_refuses_only_new
             panic!("an unrecorded ledger is not a complete empty interval")
         };
         assert!(reason.contains("not recorded"));
+    }
+}
+
+#[test]
+fn compatibility_previous_format_opens_and_refuses_only_nuclear_strikes() {
+    let replay = legacy_replay(rows::compatibility::NUCLEAR_STRIKES_FORMAT - 1);
+    let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
+        panic!("missing previous-format hour")
+    };
+    assert_eq!(
+        frame.complete::<rows::tables::Countries>().unwrap()[0].tag,
+        b"AAA"
+    );
+    let TableView::Unavailable { reason } = &*frame.tables[TableId::NuclearStrikes.index()] else {
+        panic!("an unrecorded strike ledger is not a complete empty interval")
+    };
+    assert!(reason.contains("not recorded"));
+}
+
+#[test]
+fn compatibility_previous_format_keeps_whole_fuel_packs_and_refuses_only_their_parts() {
+    let replay = legacy_replay(rows::compatibility::FUEL_DEMAND_PARTS_FORMAT - 1);
+    let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
+        panic!("missing previous-format hour")
+    };
+    let fuel = frame.complete::<rows::tables::CountryFuel>().unwrap();
+    // The previous writer stored the pack's hour, which reads as a stamp.
+    let rows::Recorded::Value(pack) = &fuel[0].demand else {
+        panic!("previous-format pack missing")
+    };
+    assert_eq!(pack.hour, rows::FuelDemandHour::Historical(1000));
+    let parts = &*frame.tables[TableId::FuelDemandParts.index()];
+    let TableView::Unavailable { reason } = parts else {
+        panic!("unrecorded parts are not a complete empty table")
+    };
+    assert!(reason.contains("not recorded"), "{reason}");
+    // Its packs keep their own lists.
+    assert_eq!(
+        rows::with_demand_parts(fuel, parts, replay.format).unwrap(),
+        fuel
+    );
+    // A selected read of both tables, as the dashboard makes, refuses the
+    // parts the same way.
+    let selected = [TableId::CountryFuel, TableId::FuelDemandParts];
+    let frames = replay
+        .read_block_selected(&replay.index[0], &selected)
+        .unwrap();
+    let mut decoder = FrameDecoder::for_tables(&selected);
+    let decoded = decoder.advance(&frames[0]).unwrap();
+    assert!(matches!(
+        &*decoded.tables[TableId::FuelDemandParts.index()],
+        TableView::Unavailable { reason } if reason.contains("not recorded")
+    ));
+    assert_eq!(
+        decoded.complete::<rows::tables::CountryFuel>().unwrap(),
+        fuel
+    );
+}
+
+#[test]
+fn compatibility_previous_format_keeps_modifier_sides_and_refuses_only_member_rows() {
+    use crate::rows::{CombatModifierValue, LandCombatModifierRow, Retired};
+    use crate::value::{Value, value_struct};
+    // One element of the side list LandCombatModifiers held before
+    // LAND_MODIFIER_ROWS_FORMAT, as its writers encoded it.
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    struct OldDivision {
+        division: u64,
+        ordinal: u32,
+        entries: Vec<CombatModifierValue>,
+    }
+    value_struct!(OldDivision { division: u64, ordinal: u32, entries: Vec<CombatModifierValue> });
+    fn opaque(value: &impl Value, output: &mut Vec<u8>) {
+        let mut payload = Vec::new();
+        Value::encode(value, &mut payload).unwrap();
+        output.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        output.extend(payload);
+    }
+    let entry = |id, value: i64| CombatModifierValue {
+        id,
+        value_a: value,
+        value_b: -value,
+    };
+    let format = FormatVersion::read(rows::compatibility::LAND_MODIFIER_ROWS_FORMAT - 1).unwrap();
+    let table = TableId::LandCombatModifiers;
+    let fields = format.fields(table);
+    assert_eq!(fields, 2);
+    // Border war 62 (both sides' border values, no members) and ordinary
+    // combat 63, whose attacker lists two members and defender one.
+    // (combat, side, border values, member divisions)
+    type OldSide = (u64, u8, Option<[i64; 3]>, Vec<OldDivision>);
+    let sides: [OldSide; 4] = [
+        (62, 0, Some([1, -2, 300_000]), Vec::new()),
+        (62, 1, Some([-4, 5, i64::MAX]), Vec::new()),
+        (
+            63,
+            0,
+            None,
+            vec![
+                OldDivision {
+                    division: (0x35 << 32) | 0x33,
+                    ordinal: 0,
+                    entries: vec![entry(4, 10), entry(4, 10), entry(9, -7_000)],
+                },
+                OldDivision {
+                    division: 77,
+                    ordinal: 1,
+                    entries: Vec::new(),
+                },
+            ],
+        ),
+        (
+            63,
+            1,
+            None,
+            vec![OldDivision {
+                division: 78,
+                ordinal: 0,
+                entries: vec![entry(i32::MAX as u32, i64::MIN + 1)],
+            }],
+        ),
+    ];
+    let key = |combat: u64, side: u8| u128::from(combat) << 1 | u128::from(side);
+    let mut update = vec![0];
+    update.extend_from_slice(&(sides.len() as u32).to_le_bytes());
+    let mut previous = 0;
+    for (combat, side, border, divisions) in &sides {
+        table
+            .encode_key(key(*combat, *side), previous, &mut update)
+            .unwrap();
+        previous = key(*combat, *side);
+        opaque(border, &mut update);
+        opaque(divisions, &mut update);
+    }
+    let payload = replace_legacy_snapshot(format, legacy_frame(format, 1000, true), table, &update);
+    let mut input = Decoder::new(&payload);
+    let first = Frame::decode_version(&mut input, None, format).unwrap();
+    input.finish().unwrap();
+    let mut decoder = FrameDecoder::new();
+    let decoded = decoder.advance(&first).unwrap();
+    let expected = |border: [Option<[i64; 3]>; 4]| {
+        sides
+            .iter()
+            .zip(border)
+            .map(
+                |((combat, side, _, _), border_values)| LandCombatModifierRow {
+                    combat: *combat,
+                    side: *side,
+                    border_values,
+                    divisions: Retired,
+                },
+            )
+            .collect::<Vec<_>>()
+    };
+    // The side rows and their border values decode; the member lists are
+    // discarded through their framing; only the member rows are refused.
+    assert_eq!(
+        decoded
+            .complete::<rows::tables::LandCombatModifiers>()
+            .unwrap(),
+        expected(sides.clone().map(|side| side.2)).as_slice()
+    );
+    let TableView::Unavailable { reason } =
+        &*decoded.tables[TableId::LandCombatDivisionModifiers.index()]
+    else {
+        panic!("unrecorded member rows are not a complete empty table")
+    };
+    assert!(reason.contains("LandCombatDivisionModifiers"), "{reason}");
+    assert!(reason.contains("not recorded"), "{reason}");
+    assert_eq!(
+        decoded.complete::<rows::tables::Clock>().unwrap()[0].hour,
+        1000
+    );
+    // The same frame in a previous-format file opens and seeks alike.
+    let replay = legacy_replay_with(format.version(), &payload);
+    let SeekResult::Frame(sought) = replay.seek(1, 1000).unwrap() else {
+        panic!("missing previous-format hour")
+    };
+    assert_eq!(
+        sought
+            .complete::<rows::tables::LandCombatModifiers>()
+            .unwrap(),
+        expected(sides.clone().map(|side| side.2)).as_slice()
+    );
+    let TableView::Unavailable { reason } =
+        &*sought.tables[TableId::LandCombatDivisionModifiers.index()]
+    else {
+        panic!("a sought previous-format hour has no member rows")
+    };
+    assert!(reason.contains("not recorded"), "{reason}");
+    assert_eq!(
+        sought.complete::<rows::tables::Clock>().unwrap()[0].hour,
+        1000
+    );
+
+    // A delta that moves the defender's border values in 62 and replaces
+    // the attacker's member list in 63.
+    update.clear();
+    update.push(1);
+    update.extend_from_slice(&1000_i32.to_le_bytes());
+    update.extend_from_slice(&2_u32.to_le_bytes());
+    table.encode_key(key(62, 1), 0, &mut update).unwrap();
+    update.push(1 << 0);
+    opaque(&Some([-4_i64, 6, 0]), &mut update);
+    table
+        .encode_key(key(63, 0), key(62, 1), &mut update)
+        .unwrap();
+    update.push(1 << 1);
+    opaque(
+        &vec![OldDivision {
+            division: 79,
+            ordinal: 0,
+            entries: vec![entry(1, 1)],
+        }],
+        &mut update,
+    );
+    update.extend_from_slice(&0_u32.to_le_bytes());
+    let payload =
+        replace_legacy_snapshot(format, legacy_frame(format, 1001, false), table, &update);
+    let mut input = Decoder::new(&payload);
+    let frame = Frame::decode_version(&mut input, None, format).unwrap();
+    input.finish().unwrap();
+    let decoded = decoder.advance(&frame).unwrap();
+    assert_eq!(
+        decoded
+            .complete::<rows::tables::LandCombatModifiers>()
+            .unwrap(),
+        expected([Some([1, -2, 300_000]), Some([-4, 6, 0]), None, None]).as_slice()
+    );
+    assert!(matches!(
+        &*decoded.tables[TableId::LandCombatDivisionModifiers.index()],
+        TableView::Unavailable { .. }
+    ));
+    assert_eq!(
+        decoded.complete::<rows::tables::Clock>().unwrap()[0].hour,
+        1001
+    );
+}
+
+#[test]
+fn compatibility_stamped_packets_still_prove_freshness_in_their_own_recordings() {
+    use crate::rows::{PACKET_HOUR_HOSTS, PacketHour, STAMPED_PACKET_FORMAT, packet_hours};
+    let format = FormatVersion::read(STAMPED_PACKET_FORMAT).unwrap();
+    let replay = legacy_replay(STAMPED_PACKET_FORMAT);
+    let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
+        panic!("missing stamped hour");
+    };
+    let mut stamped = 0;
+    for table in PACKET_HOUR_HOSTS {
+        assert!(format.table_refusal(table).is_none(), "{table:?}");
+        let TableView::Complete(rows) = &*frame.tables[table.index()] else {
+            panic!("{table:?} unreadable at format {STAMPED_PACKET_FORMAT}");
+        };
+        for hour in packet_hours(rows) {
+            assert_eq!(hour, PacketHour::Stamped(1000), "{table:?}");
+            assert!(hour.fresh_at(frame.hour));
+            stamped += 1;
+        }
+    }
+    assert!(stamped >= 2);
+
+    // A stamped table carried unchanged into the next hour keeps its read
+    // hour, so its packets are stale there; a reacquired snapshot is fresh.
+    let table = TableId::CountryWars;
+    let first = legacy_frame(format, 1000, true);
+    let mut unchanged = vec![2];
+    unchanged.extend_from_slice(&1000_i32.to_le_bytes());
+    let mut decoder = FrameDecoder::new();
+    for (hour, payload, fresh) in [
+        (1000, first, true),
+        (
+            1001,
+            replace_legacy_snapshot(format, legacy_frame(format, 1001, false), table, &unchanged),
+            false,
+        ),
+        (1002, legacy_frame(format, 1002, false), true),
+    ] {
+        let mut input = Decoder::new(&payload);
+        let wire = Frame::decode_version(&mut input, None, format).unwrap();
+        input.finish().unwrap();
+        let decoded = decoder.advance(&wire).unwrap();
+        assert_eq!(decoded.hour, hour);
+        let TableView::Complete(rows) = &*decoded.tables[table.index()] else {
+            panic!("stamped enemy lists unavailable at {hour}");
+        };
+        let hours = packet_hours(rows);
+        assert!(!hours.is_empty());
+        assert!(
+            hours.iter().all(|stamp| stamp.fresh_at(hour) == fresh),
+            "hour {hour}: {hours:?}"
+        );
     }
 }

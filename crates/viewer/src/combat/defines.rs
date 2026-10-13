@@ -18,7 +18,10 @@ pub(crate) struct ArmourHover {
     pub(crate) strength_die: i32,
 }
 
-/// reserve reinforcement operands, fixed5.
+/// Reserve reinforcement operands, fixed5: the width rejection's
+/// `COMBAT_OVER_WIDTH_PENALTY` and `_MAX`, then the chance's `REINFORCE_CHANCE`,
+/// `ARMY_INITIATIVE_REINFORCE_FACTOR` and `SPEED_REINFORCEMENT_BONUS`. The collector
+/// applies `SLOWEST_SPEED` with the share it records.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Reinforce {
     pub(crate) over_width_penalty: i64,
@@ -26,7 +29,6 @@ pub(crate) struct Reinforce {
     pub(crate) chance: i64,
     pub(crate) initiative_factor: i64,
     pub(crate) speed_bonus: i64,
-    pub(crate) slowest_speed: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -37,7 +39,8 @@ pub(crate) struct LandDefines {
     /// `PIERCING_THRESHOLDS` and `PIERCING_THRESHOLD_DAMAGE_VALUES`, parallel.
     pub(crate) piercing_thresholds: Vec<i64>,
     pub(crate) piercing_damage: Vec<i64>,
-    /// `ENEMY_AIR_SUPERIORITY_DEFENSE_STEEPNESS` and `_DEFENSE`.
+    /// `ENEMY_AIR_SUPERIORITY_DEFENSE_STEEPNESS` and `_DEFENSE`, used by
+    /// the anti-air defence calculation.
     pub(crate) air_superiority: [i64; 2],
     /// `NAir.ANTI_AIR_ATTACK_TO_DAMAGE_REDUCTION_FACTOR` and
     /// `ANTI_AIR_MAXIMUM_DAMAGE_REDUCTION_FACTOR`.
@@ -50,8 +53,6 @@ pub(crate) struct LandDefines {
     /// the NCountry loaders clamp a negative value to zero.
     pub(crate) exile_against_occupier: [i64; 2],
     pub(crate) exile_on_core: [i64; 2],
-    /// `NPolitics.LEADER_TRAITS_XP_SHOW`, the learning-trait display floor.
-    pub(crate) learning_threshold: i64,
     pub(crate) armour_hover: ArmourHover,
     pub(crate) reinforce: Reinforce,
     /// Country, general and field-marshal preferred-tactic weight factors
@@ -70,7 +71,6 @@ impl LandDefines {
                 )))
             }
         };
-        let fixed = |section: &str, name: &str| defines.fixed5(section, name);
         let military = |name: &str| defines.fixed5("NMilitary", name);
         let dice = |name: &str| defines.int32("NMilitary", name);
         let exile = |name: &str| defines.fixed5("NCountry", name).map(|value| value.max(0));
@@ -97,8 +97,8 @@ impl LandDefines {
                 military("ENEMY_AIR_SUPERIORITY_DEFENSE")?,
             ],
             anti_air: [
-                fixed("NAir", "ANTI_AIR_ATTACK_TO_DAMAGE_REDUCTION_FACTOR")?,
-                fixed("NAir", "ANTI_AIR_MAXIMUM_DAMAGE_REDUCTION_FACTOR")?,
+                defines.fixed5("NAir", "ANTI_AIR_ATTACK_TO_DAMAGE_REDUCTION_FACTOR")?,
+                defines.fixed5("NAir", "ANTI_AIR_MAXIMUM_DAMAGE_REDUCTION_FACTOR")?,
             ],
             planes_per_width: military("LAND_AIR_COMBAT_MAX_PLANES_PER_ENEMY_WIDTH")?,
             fuel_penalty_start_ratio: military("FUEL_PENALTY_START_RATIO")?,
@@ -111,7 +111,6 @@ impl LandDefines {
                 exile("GIE_DIVISION_ATTACK_BONUS_ON_CORE")?,
                 exile("GIE_DIVISION_DEFENSE_BONUS_ON_CORE")?,
             ],
-            learning_threshold: fixed("NPolitics", "LEADER_TRAITS_XP_SHOW")?,
             armour_hover: ArmourHover {
                 organisation_deflection: military("LAND_COMBAT_ORG_ARMOR_DEFLECTION_FACTOR")?,
                 strength_deflection: military("LAND_COMBAT_STR_ARMOR_DEFLECTION_FACTOR")?,
@@ -126,7 +125,6 @@ impl LandDefines {
                 chance: military("REINFORCE_CHANCE")?,
                 initiative_factor: military("ARMY_INITIATIVE_REINFORCE_FACTOR")?,
                 speed_bonus: military("SPEED_REINFORCEMENT_BONUS")?,
-                slowest_speed: military("SLOWEST_SPEED")?,
             },
             preference_factors: [
                 military("COUNTRY_PREFERRED_TACTIC_WEIGHT_FACTOR")?,

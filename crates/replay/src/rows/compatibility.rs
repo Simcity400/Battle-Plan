@@ -31,6 +31,448 @@ pub(crate) const WAR_OVERVIEW_FORMAT: u16 = WIDGET_CAPTURE_FORMAT;
 pub(crate) const PEACE_SETTLEMENTS_FORMAT: u16 = WIDGET_CAPTURE_FORMAT;
 /// Provisional introduction for observed air loss and applied building damage events.
 pub(crate) const AIR_LEDGER_FORMAT: u16 = WIDGET_CAPTURE_FORMAT;
+/// Main's political integration: runtime, selected-route and technology
+/// occurrence inputs, with the provisional suffixes reconciled beside them.
+pub(crate) const POLITICAL_FORMAT: u16 = 101;
+/// Provisional main+1: packets on hourly host rows stop storing their read
+/// hour ([`crate::rows::PacketHour`]). Older nested records keep their stamp
+/// and stay readable, so no table is refused.
+pub(crate) const PACKET_HOUR_FORMAT: u16 = FORMAT_VERSION;
+/// Provisional main+1: the reserved singleton's transport packet was split
+/// into keyed hourly tables ([`super::RESERVED_SPLIT_TABLES`]), which retired
+/// in the same provisional format; no published build wrote them.
+pub(crate) const RESERVED_SPLIT_FORMAT: u16 = FORMAT_VERSION;
+/// Provisional main+1: per-division speed graphs and fresh counter-route
+/// operands, the movement inputs only arrival times used, attrition modifier
+/// breakdowns, selected-attack operands and the selected transport and
+/// selected-route previews (the reserved transport packet, owner transport
+/// speeds, convoy pools, unit transport and selection operands, selected
+/// areas and carrier transport plane sums) stop
+/// being recorded, and DivisionLandInputs stops copying the supply operands
+/// DivisionStatus records. Hover-only breakdowns and operands, oracle-only
+/// values and values playback derives exactly from other recorded fields stop
+/// being recorded too. Their tables retire and their row fields become
+/// [`super::Retired`], [`super::RetiredI64`] or sibling fixed-width
+/// tombstones ([`RETIRED_FIELDS`]); older recordings discard them by name.
+/// The selected-attack operands' fields instead decode older payloads again
+/// ([`ATTACK_INPUTS_FORMAT`]).
+pub(crate) const RETIRED_INPUTS_FORMAT: u16 = FORMAT_VERSION;
+/// Provisional main+1: each moving division's stat-block base speed, from
+/// which playback estimates arrival times.
+pub(crate) const BASE_SPEED_FORMAT: u16 = FORMAT_VERSION;
+/// Provisional main+1: DivisionStatus records the camouflage category selected from a
+/// division's acclimatization (field 27, `camouflage`) instead of every entry and the
+/// maximum, which current writers leave empty. Format 101 and earlier keep their entries,
+/// from which consumers still decide. Format-102 captures written before this change
+/// share the version number but not the field count, so their blocks read as malformed.
+pub(crate) const CAMOUFLAGE_FORMAT: u16 = FORMAT_VERSION;
+/// Provisional main+1: drifting values the game displays are stored at its
+/// display precision ([`crate::display`]): each stepped column holds whole
+/// multiples of its step and its wire holds the value divided by the step.
+/// Field counts and widths are unchanged, so no table is refused: format 101
+/// and earlier decode those columns exact and unscaled. Format-102 captures
+/// written before this change share the version number and hold exact values
+/// in those columns, which this reader would multiply by the step; no
+/// published build wrote them.
+pub const DISPLAY_PRECISION_FORMAT: u16 = FORMAT_VERSION;
+/// Provisional main+1: CountryFuel stores the day of applied fuel updates
+/// before a read summed as the Fuel widget shows it (`award_day`, field 22)
+/// and retires the update-by-update window (`awards`, field 20). Older
+/// recordings discard their windows by name and show no applied-update
+/// totals. Format-102 captures written before this change share the version
+/// number but not CountryFuel's field count, so their blocks read as
+/// malformed; no published build wrote them.
+pub(crate) const FUEL_AWARD_DAY_FORMAT: u16 = FORMAT_VERSION;
+/// Provisional main+1: LandCombatDetails appends each side's CAS and
+/// commander hover inputs (field 10, `side_inputs`,
+/// [`super::LandCombatSideInputs`]): the anti-air cache, prevented CAS damage,
+/// skill progress, offence and defence, description token, timed traits and
+/// shown learning traits, at their display precision, in a field that
+/// re-encodes only when they change. The side layout (field 7) keeps the
+/// anti-air cache and prevented lanes as retired parts that current writers
+/// leave empty; formats 101 and earlier hold both there, exact, and still
+/// answer the CAS hover with them
+/// ([`super::LandCombatDetailsRow::cas_inputs`]), while their other hover
+/// parts stay discarded and the field reads as not recorded. The skill
+/// hover's leader block and the shown learning rows are optional: `None` when
+/// their read failed, the progress its unread word. Format-102 captures
+/// written before this change, or before those two parts became optional,
+/// share the version number but not LandCombatDetails' layout, so their
+/// blocks read as malformed; no published build wrote them.
+pub const SIDE_INPUTS_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: each LandCombatDetails side (field 7,
+/// [`super::LandCombatSideDetails`]) stores the sum of its 24 organisation loss samples,
+/// one i64, where earlier layouts store the samples (`organisation_loss_sum`): the
+/// marker's survival estimate is their only displayed reader, and it takes only the sum.
+/// The side marks the layout by storing its committed division count inverted. Field
+/// counts are unchanged, so no table is refused: format 101 and earlier decode the
+/// samples and sum them, and format-102 captures written before this change, which share
+/// the version number, are told apart by their committed count (below 2^31, where an
+/// inverted one is above) and decode the same way. A reader built before this change
+/// refuses the whole block holding a marked side with the payload error `nested
+/// collection length exceeds remaining payload`; it never misreads it. Main+1 is never
+/// released and is renumbered at merge, so only in-flight tools predate the change.
+pub const LOSS_SUM_FORMAT: u16 = FORMAT_VERSION;
+/// Provisional main+1: LandCombatDivisions records the stat block's initiative again
+/// (field 16, which format 101 holds with the same meaning) and appends each reserve's
+/// reinforcement speed share (`reinforcement_speed`, field 30), which the collector
+/// composes from the native speed-share operands; the reinforcement operand packets
+/// (fields 22 to 26) stay retired. Older recordings hold no share, so their reserve
+/// chance arm stays unknown. Format-102 captures written before this change share the
+/// version number but not LandCombatDivisions' field count, so their blocks read as
+/// malformed; no published build wrote them.
+pub(crate) const RESERVE_SPEED_FORMAT: u16 = FORMAT_VERSION;
+/// Provisional main+1: LandCombatDivisions stores fuel and capacity, the
+/// five stats and the four scales as a numeric field each (fields 31 to
+/// 41, [`super::LandCombatDivisionRow::fuel_inputs`],
+/// [`super::LandCombatDivisionRow::stat_values`] and
+/// [`super::LandCombatDivisionRow::scales`]), so the grouped layout predicts
+/// each from its own changes instead of rewriting a packet when one drifts.
+/// The packets (fields 10, 11 and 18) are tombstones current writers leave
+/// empty ([`RETIRED_FIELDS`]); format 101 and earlier hold the values there,
+/// exact, and still answer with them. Format-102 captures written before
+/// this change share the version number but not LandCombatDivisions' field
+/// count, so their blocks read as malformed; no published build wrote them.
+pub const LAND_DIVISION_NUMBERS_FORMAT: u16 = FORMAT_VERSION;
+/// Provisional main+1: AirRegionCombat records each retained regional air-combat holder
+/// (`strategic air+0x170`) with its records and their damage together, read when the
+/// record updater touched it and carried otherwise; playback derives the daily pruning.
+/// The retired AirRegionHistory and AirRegionDamage tables (a whole-table daily walk
+/// without a parent link from damage to record) stay retired.
+pub(crate) const AIR_REGION_COMBAT_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: Politics appends what the `has_elections` trigger tests
+/// (`has_elections`, field 6): the elections byte nonzero and the frequency positive, as
+/// the trigger reads them. The retired `election_frequency` and `elections_allowed`
+/// (fields 1 and 2) stay tombstones. Older recordings hold no value, so the trigger stays
+/// refused by name for them. Format-102 captures written before this change share the
+/// version number but not Politics' field count, so their blocks read as malformed; no
+/// published build wrote them.
+pub(crate) const HAS_ELECTIONS_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: the selected army's attack list is derived on playback
+/// ([`crate::attack_derive`]) from the inputs it reads that nothing else records:
+/// DivisionStatus gains each division's stat-block operands (field 28, `attack_stats`)
+/// and acclimatization factor (29, `weather_factor`), OrdersGroupCounterInputs the direct
+/// commander's operands (6, `commander_attack`), CountryCounterInputs the raw night and
+/// bunker modifier entries (19, `attack_modifiers`), Provinces the state's bunker factor
+/// for a fortified province's controller (9, `fort_bunker`) and WeatherRegions the raw
+/// weather attack and breakthrough entries (8, `combat`). The native operands format 101
+/// recorded in each table's `attack` field decode again ([`super::Witnessed`]) and answer
+/// for those recordings; current writers leave them empty. Format-102 captures written
+/// before this change share the version number but not these tables' field counts, so
+/// their blocks read as malformed.
+pub(crate) const ATTACK_INPUTS_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: DivisionStatus.supply (field 22), the division supply
+/// footer, is recorded again for every division at display precision
+/// ([`super::DivisionSupplyFooter`], owner decision 2026-10-11) with the
+/// wire layout formats 99 to 101 recorded exact, which they still decode
+/// unscaled. Format-102 recordings written while the field was a provisional
+/// tombstone hold its empty payload, which reads as not recorded
+/// (`opaque_value!(T, restored)`); format-102 captures written before that
+/// retirement hold exact amounts this reader multiplies by the step. No
+/// published build wrote either.
+pub const SUPPLY_FOOTER_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: DivisionStatus.supply ([`super::DivisionSupplyFooter`])
+/// stores its received amount as the shortfall from the asked amount, and
+/// each origin's received amount as the shortfall from its requested amount,
+/// in whole display steps (wrapping), and tags its origins list `2` or `3`
+/// instead of `0` or `1` to say so. A supplied division's received words then
+/// repeat while its asked and requested words drift. Field counts and widths
+/// are unchanged, so no table is refused: earlier recordings decode the
+/// amounts themselves, and format-102 captures written before this change,
+/// which share the version number, are told apart by the origins tag and
+/// decode exactly. A reader built before this change refuses the whole block
+/// holding a marked footer with the payload error `invalid nested option
+/// tag`; it never misreads it. Main+1 is never released and is renumbered at
+/// merge, so only in-flight tools predate the change.
+pub const SUPPLY_SHORTFALL_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: the task force and railway gun supply footers
+/// (TaskForceCounterInputs.supply, field 11, and RailwayGunCounterInputs.supply,
+/// [`super::UnitSupplyInputs`]) are stored at the footer's display step, as
+/// DivisionStatus.supply is: the same formatter prints every unit's footer. Field counts
+/// and widths are unchanged, so no table is refused: format 101 and earlier decode those
+/// amounts exact and unscaled. Format-102 captures written before this change share the
+/// version number and hold exact amounts, which this reader multiplies by the step; no
+/// published build wrote them.
+pub const UNIT_SUPPLY_FOOTER_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: DivisionStatus.supply_grace_remaining (field 19) is
+/// stored at the whole percent of the supply grace share the game shows
+/// ([`super::DivisionStatusRow::displayed_grace`]) instead of every 0.01
+/// hour. The wire and its step are unchanged and every consumer reads the
+/// same share, so no table is refused and nothing decodes differently.
+/// Format-102 captures written before this change share the version number
+/// and hold the finer value, which the save comparison reports as differing;
+/// no published build wrote them.
+pub const GRACE_PERCENT_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: the naval hovers' source trees, keyed by recorded
+/// source identities and carried while no hooked writer touches a country or
+/// commander tree (NavalModifierTrees), and their diagnostic oracle samples
+/// (NavalModifierTreeSamples). Older recordings refuse both by name; the
+/// retired NavalModifierBreakdowns stays refused.
+pub(crate) const NAVAL_TREES_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: Provinces rows label each province's controller and
+/// owner areas by their smallest member and hold each controller area's
+/// representative and ordered contacts on its label province's row (fields
+/// 10-12, `controller_area`, `owner_area`, `area_node`), which the collector
+/// reads again only where a controller change can have touched them. Format
+/// 101 and earlier lack them, and the selected-route search refuses by name
+/// there. Format-102 captures written before this change share the version
+/// number but not Provinces' field count, so their blocks read as malformed;
+/// no published build wrote them.
+pub(crate) const AREA_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: DivisionRetreatBans holds every division's commander
+/// bans at the frame's hour instead of each roster owner's daily read, which
+/// the selected-route search accepted only at that owner's read hour. The
+/// layout is unchanged; older recordings refuse the table by name.
+/// Format-102 captures written before this change share the version number
+/// and hold daily reads; no published build wrote them.
+pub(crate) const RETREAT_BANS_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1 (owner decision 2026-10-11): StockpileArchetypes holds,
+/// every hour, only the archetypes a raid type lists as essential equipment,
+/// in whole units capped at the largest amount any raid type requires
+/// (`units`, I32), instead of each owner's daily read of every archetype
+/// total (`quantity_raw`, I64). Older recordings refuse the table by name.
+/// Format-102 captures written before this change share the version number
+/// but not the field's width, so their blocks read as malformed; no
+/// published build wrote them.
+pub(crate) const ESSENTIAL_STOCK_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: EventFeedHistory events append what caused them
+/// (`EventFeedEvent.cause`, [`crate::event_feed_rows::EventFeedCause`]): the
+/// native operation each happened in, named by its caller, the operation
+/// that one ran inside, and the operands the game passed. The feed also
+/// records ended war relations, releases, state owner changes and peace
+/// conferences (`EventFeedSource` 4 to 7). Format 101 and earlier events
+/// decode with their cause not recorded. Format-102 captures written before
+/// this change share the version number but not the event layout, so their
+/// blocks read as malformed; no published build wrote them.
+pub const EVENT_CAUSE_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: the tables in [`crate::cadence::EARLIER_CADENCES`]
+/// changed cadence (most daily tables read within the hour, a few sliced or
+/// moved to another slot). Recordings before it were written with their
+/// earlier cadence, which [`crate::cadence::cadence_in`] returns.
+pub(crate) const CADENCE_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: NuclearStrikes records each nuclear impact with its
+/// launcher, type, target and the outcome the impact applied before the
+/// authored `on_nuke_drop` effects ([`crate::rows::NuclearStrikeRow`]).
+/// Older recordings refuse the table by name.
+pub(crate) const NUCLEAR_STRIKES_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: LandCombatDivisionModifiers holds each combat
+/// member's ordered modifier entries, a row a member keyed (combat, side,
+/// ordinal) as LandCombatDivisions, so an hour that changes one division's
+/// entries stores only that row. LandCombatModifiers keeps a row a side with
+/// its border values; its list of every member's entries is a retired
+/// tombstone ([`RETIRED_FIELDS`]), so older recordings keep its framing and
+/// border values and refuse only LandCombatDivisionModifiers, by name.
+/// Format-102 captures written before this change share the version number
+/// but not the table set, so their blocks read as malformed; no published
+/// build wrote them.
+pub const LAND_MODIFIER_ROWS_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: FuelDemandParts holds each element of a CountryFuel
+/// row's demand pack lists, a row a part keyed by country, list and identity,
+/// so a read that changes one division's rate stores only that row; the pack
+/// in CountryFuel keeps its header. The pack's hour is a tag
+/// ([`crate::rows::FuelDemandHour`]): a pack read with its row, as every
+/// current pack is, stores no hour, so a daily read of an unchanged pack
+/// stores no change. Older recordings keep their packs whole, hours
+/// included, and refuse only FuelDemandParts, by name. Format-102 captures
+/// written before this change share the version number but not the table
+/// set or the pack's layout, so their blocks read as malformed; no
+/// published build wrote them.
+pub const FUEL_DEMAND_PARTS_FORMAT: u16 = FORMAT_VERSION;
+
+/// A row field whose capture ended at `retired`. A whole field keeps its
+/// Opaque framing as a [`super::Retired`] tombstone; a nested name
+/// (`field.part`) left its parent's nested layout, which still decodes older
+/// bytes through their source format.
+#[derive(Clone, Copy, Debug)]
+pub struct RetiredField {
+    pub table: TableId,
+    pub index: usize,
+    pub name: &'static str,
+    pub retired: u16,
+}
+
+const fn retired(table: TableId, index: usize, name: &'static str) -> RetiredField {
+    RetiredField {
+        table,
+        index,
+        name,
+        retired: RETIRED_INPUTS_FORMAT,
+    }
+}
+
+/// Every retired table: no current writer emits it, and older recordings
+/// discard it through its framing and refuse it by name.
+pub static RETIRED_TABLES: [TableId; 19] = [
+    TableId::DivisionEtaInputs,
+    TableId::AttritionModifierBreakdowns,
+    TableId::ReservedNearestNavies,
+    TableId::ReservedNearestBases,
+    // Hover-only modifier breakdowns.
+    TableId::ReserveModifierBreakdowns,
+    TableId::NavalModifierBreakdowns,
+    // Read only by create_wargoal's effect-description hover text.
+    TableId::OwnedWargoals,
+    // Superseded by AirRegionCombat, which records both in one row.
+    TableId::AirRegionHistory,
+    TableId::AirRegionDamage,
+    // Oracle-only.
+    TableId::UnitLeaderTraitExperience,
+    // The selected transport preview's split tables (RESERVED_SPLIT_TABLES).
+    TableId::TransportNavies,
+    TableId::TransportLedgers,
+    TableId::TransportReceivers,
+    TableId::TransportSearchRegions,
+    TableId::TransportSpottingOwners,
+    TableId::TransportSpottingRegions,
+    TableId::TransportAirRoots,
+    TableId::TransportAirRegions,
+    TableId::TransportRiskShips,
+];
+
+/// Every retired row field, beside the retired tables' lifetimes in [`HISTORY`].
+pub static RETIRED_FIELDS: [RetiredField; 63] = [
+    retired(TableId::Provinces, 8, "selected_areas"),
+    retired(TableId::DivisionMovement, 18, "fresh"),
+    retired(TableId::DivisionMovement, 20, "selected"),
+    retired(TableId::DivisionMovement, 21, "transport"),
+    retired(TableId::DivisionStatus, 23, "attrition_inputs"),
+    retired(TableId::DivisionLandInputs, 1, "received_supply"),
+    retired(TableId::DivisionLandInputs, 2, "maximum_grace"),
+    retired(TableId::DivisionLandInputs, 3, "remaining_grace"),
+    retired(TableId::CountryAppearance, 21, "transport_convoys"),
+    retired(TableId::CountryCounterInputs, 13, "movement"),
+    retired(TableId::RailwayGunCounterInputs, 29, "transport"),
+    retired(TableId::AirBaseRegistrations, 3, "transport_planes"),
+    retired(TableId::ReservedCountryNaming, 15, "movement"),
+    retired(
+        TableId::ReservedCountryNaming,
+        21,
+        "raw_country_observations",
+    ),
+    retired(
+        TableId::ReservedCountryNaming,
+        22,
+        "transport_mission_inputs",
+    ),
+    // The reserve reinforcement speed operands, which the appended
+    // `reinforcement_speed` share replaces ([`RESERVE_SPEED_FORMAT`]), and
+    // the division-commander hover operands; playback takes the division
+    // commander's name, skill and traits from UnitLeaders and
+    // UnitLeaderTraits.
+    retired(TableId::LandCombatDivisions, 21, "commander_inputs"),
+    retired(TableId::LandCombatDivisions, 22, "reinforcement"),
+    retired(TableId::LandCombatDivisions, 23, "reinforcement_modifiers"),
+    retired(TableId::LandCombatDivisions, 24, "reinforcement_supply"),
+    retired(
+        TableId::LandCombatDivisions,
+        25,
+        "reinforcement_acclimatization",
+    ),
+    retired(TableId::LandCombatDivisions, 26, "reinforcement_transport"),
+    // Fuel, the stats and the scales as packets, which a numeric field each
+    // replaces ([`LAND_DIVISION_NUMBERS_FORMAT`]); older recordings' packets
+    // still answer.
+    retired(TableId::LandCombatDivisions, 10, "fuel_packet"),
+    retired(TableId::LandCombatDivisions, 11, "stat_packet"),
+    retired(TableId::LandCombatDivisions, 18, "scale_packet"),
+    // The side's list of every member's entries, which
+    // LandCombatDivisionModifiers holds a row a member
+    // ([`LAND_MODIFIER_ROWS_FORMAT`]).
+    retired(TableId::LandCombatModifiers, 1, "divisions"),
+    // The side's hover and oracle round values and its commander's hover
+    // operands, which the side inputs record ([`SIDE_INPUTS_FORMAT`]); the
+    // marker's organisation-loss ring and the window's air damage lanes stay.
+    retired(TableId::LandCombatDetails, 7, "sides.anti_air_attack"),
+    retired(TableId::LandCombatDetails, 7, "sides.damage[2..6]"),
+    retired(TableId::LandCombatDetails, 7, "sides.commander_experience"),
+    retired(
+        TableId::LandCombatDetails,
+        7,
+        "sides.commander_description_token",
+    ),
+    retired(TableId::LandCombatDetails, 7, "sides.timed_traits"),
+    retired(TableId::LandCombatDetails, 7, "sides.learning_traits"),
+    // Playback derives progress and direction from LandCombats, Divisions
+    // and DivisionMovement.
+    retired(TableId::LandCombatProgress, 0, "attacker_progress"),
+    retired(TableId::LandCombatProgress, 1, "defender_progress"),
+    retired(TableId::LandCombatProgress, 2, "direction_attacker"),
+    retired(TableId::LandCombatProgress, 3, "direction_province"),
+    // The port strike-force readiness hover's strike operands.
+    retired(TableId::ShipModels, 7, "strike"),
+    // Oracle-only values. Ships.experience is recorded again, at its display
+    // step ([`super::ShipRow::EXPERIENCE_STEP`]); format-102 captures written
+    // while it was retired hold zero there, and no published build wrote them.
+    retired(TableId::UnitLeaders, 3, "experience"),
+    retired(TableId::CountryFuel, 2, "gain_raw"),
+    retired(TableId::CountryFuel, 3, "cost_raw"),
+    retired(TableId::CountryFuel, 4, "gain_from_states_raw"),
+    retired(TableId::CountryFuel, 6, "lend_lease_consumption_raw"),
+    retired(TableId::CountryFuel, 7, "gain_per_oil_raw"),
+    retired(TableId::CountryFuel, 8, "history_index"),
+    retired(TableId::CountryFuel, 9, "remaining_hours"),
+    retired(TableId::CountryFuel, 13, "ring_requested_0_raw"),
+    retired(TableId::CountryFuel, 14, "ring_requested_1_raw"),
+    retired(TableId::CountryFuel, 15, "ring_requested_2_raw"),
+    // The update-by-update fuel award window; `award_day` sums what the Fuel
+    // widget shows, and only the oracle read the hourly source witness.
+    retired(TableId::CountryFuel, 20, "awards"),
+    retired(TableId::Politics, 1, "election_frequency"),
+    retired(TableId::Politics, 2, "elections_allowed"),
+    retired(TableId::Capitulation, 2, "last_surrender_hour"),
+    retired(TableId::Capitulation, 3, "faction_join_hour"),
+    retired(TableId::Capitulation, 4, "legitimacy_raw"),
+    retired(TableId::Capitulation, 5, "exile_army_leaders"),
+    retired(TableId::ProductionLines, 8, "produced_raw"),
+    retired(TableId::ProductionLineOutput, 4, "mio_credit"),
+    retired(TableId::ProductionLineOutput, 10, "instant_raw"),
+    // No reader at all.
+    retired(TableId::ProductionLineModifiers, 7, "conversion"),
+    // Playback derives the glyph byte from the row's own value and threshold.
+    retired(TableId::DivisionStatus, 7, "attrition"),
+    // Path-cost operands no consumer reads; CountryCounterInputs records
+    // the same slot-0 relation bytes.
+    retired(TableId::InvasionPreparations, 9, "zero_war_present"),
+    retired(TableId::InvasionPreparations, 10, "zero_war_retired"),
+    retired(TableId::InvasionPreparations, 11, "zero_co_belligerent"),
+    retired(TableId::InvasionPreparations, 12, "co_belligerents"),
+];
+/// Provisional main+1: playback derives what the game computes from the hour
+/// and the content ([`crate::day_night`]). WeatherProvinces appends each
+/// province clock's source (fields 6 and 7 then hold only a held clock).
+/// Format-102 captures written before this change share the version number
+/// but not this layout, so their blocks read as malformed; format 101 keeps
+/// its recorded clocks.
+pub(crate) const DERIVED_CLOCKS_FORMAT: u16 = FORMAT_VERSION;
+/// Provisional main+1: WeatherProvinces rows hold each province's temperature
+/// words at their frame's anchor and slot zero the hourly pass's inputs since
+/// ([`crate::rows::ProvinceTemperature`], [`crate::temperature`]), so field 4
+/// is the anchor's temperature. Format-102 captures written before this
+/// change share the version number but not the layout, so their blocks read
+/// as malformed; format 101 keeps each hour's recorded temperature.
+pub(crate) const DERIVED_TEMPERATURE_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: a same-process reattach that continues its branch
+/// records the event interval it could not observe as a control record
+/// (`ControlRecord::EventLoss`, spool and trailer tag 8). Older recordings
+/// hold none; their reattached first intervals stay unexplained.
+pub(crate) const EVENT_LOSS_FORMAT: u16 = FORMAT_VERSION;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordKind {
@@ -51,10 +493,12 @@ pub enum RecordKind {
     Partial,
     NavalCommanderInputs,
     LandBorderWarInputs,
+    EventFeedEvent,
+    EventLoss,
 }
 
 impl RecordKind {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 19] = [
         Self::ReplayHeader,
         Self::ReplayBlock,
         Self::ReplayTrailer,
@@ -72,6 +516,8 @@ impl RecordKind {
         Self::Partial,
         Self::NavalCommanderInputs,
         Self::LandBorderWarInputs,
+        Self::EventFeedEvent,
+        Self::EventLoss,
     ];
 }
 
@@ -101,6 +547,8 @@ pub struct LastChange {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeKind {
     Unchanged,
+    /// Every older layout decodes: fields were appended, or retired as
+    /// tombstones that keep their framing ([`RETIRED_FIELDS`]).
     AppendedOnly,
     Layout,
     Meaning,
@@ -162,7 +610,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     }
     history[TableId::ResearchTechnologies.index()] = table(
         TableId::ResearchTechnologies,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "technology-occurrences",
     );
     // The changed key has the same width; the old payload's five scalar
@@ -171,37 +619,37 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         AppendedField {
             index: 5,
             name: "technology_handle",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         },
         AppendedField {
             index: 6,
             name: "applied_bonus_count",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         },
     ];
     history[TableId::TechnologyDefinitions.index()] = table(
         TableId::TechnologyDefinitions,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "technology-occurrences",
     );
     history[TableId::ResearchSlots.index()] = appended_at(
         TableId::ResearchSlots,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "technology-occurrences",
         &[AppendedField {
             index: 5,
             name: "database_index",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         }],
     );
     history[TableId::ResearchInputs.index()] = appended_at(
         TableId::ResearchInputs,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "technology-occurrences",
         &[AppendedField {
             index: 15,
             name: "database_index",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         }],
     );
     let politics = [
@@ -265,6 +713,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             RecordKind::Partial => (92, "11b905d2b2"),
             RecordKind::NavalCommanderInputs => (RECORDER_INPUTS_FORMAT, "d53fa4e05c"),
             RecordKind::LandBorderWarInputs => (RECORDER_INPUTS_FORMAT, "9d09404c0d"),
+            RecordKind::EventFeedEvent => (EVENT_CAUSE_FORMAT, "record/war-provenance"),
+            RecordKind::EventLoss => (EVENT_LOSS_FORMAT, "record/reattach-loss"),
             _ => (1, "5d3b4dd945"),
         };
         history[i + r] = LastChange {
@@ -321,7 +771,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         table(TableId::LandCombatDetails, 93, "9fb09a565f");
     history[TableId::SimulationFeatures.index()] = appended_at(
         TableId::SimulationFeatures,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[
             AppendedField {
@@ -337,50 +787,77 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             AppendedField {
                 index: 4,
                 name: "runtime_scalars",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
         ],
     );
     history[TableId::Provinces.index()] = appended_at(
         TableId::Provinces,
-        FORMAT_VERSION,
-        "pending political runtime inputs",
+        ATTACK_INPUTS_FORMAT,
+        "pending political runtime inputs, perf/attack-preview inputs, restore/move areas",
         &[
             AppendedField {
                 index: 7,
                 name: "attack",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 8,
                 name: "selected_areas",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
+            },
+            AppendedField {
+                index: 9,
+                name: "fort_bunker",
+                introduced: ATTACK_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 10,
+                name: "controller_area",
+                introduced: AREA_FORMAT,
+            },
+            AppendedField {
+                index: 11,
+                name: "owner_area",
+                introduced: AREA_FORMAT,
+            },
+            AppendedField {
+                index: 12,
+                name: "area_node",
+                introduced: AREA_FORMAT,
             },
         ],
     );
     history[TableId::CountryWars.index()] = appended_at(
         TableId::CountryWars,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending selected route inputs",
         &[AppendedField {
             index: 3,
             name: "ordered",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         }],
     );
     history[TableId::WeatherRegions.index()] = appended_at(
         TableId::WeatherRegions,
-        FORMAT_VERSION,
-        "pending political runtime inputs",
-        &[AppendedField {
-            index: 7,
-            name: "attack",
-            introduced: FORMAT_VERSION,
-        }],
+        ATTACK_INPUTS_FORMAT,
+        "pending political runtime inputs, perf/attack-preview inputs",
+        &[
+            AppendedField {
+                index: 7,
+                name: "attack",
+                introduced: POLITICAL_FORMAT,
+            },
+            AppendedField {
+                index: 8,
+                name: "combat",
+                introduced: ATTACK_INPUTS_FORMAT,
+            },
+        ],
     );
     history[TableId::WeatherProvinces.index()] = table(
         TableId::WeatherProvinces,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
     );
     history[TableId::StateFlags.index()] = table(TableId::StateFlags, 93, "9fb09a565f");
@@ -389,7 +866,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         table(TableId::RaidTooltipOperands, 94, "ccf740b81d");
     history[TableId::DivisionMovement.index()] = table(
         TableId::DivisionMovement,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
     );
     history[TableId::CountryAppearance.index()] = table(
@@ -399,7 +876,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::States.index()] = appended_at(
         TableId::States,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[
             AppendedField {
@@ -410,51 +887,51 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             AppendedField {
                 index: 7,
                 name: "railway_infrastructure",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
         ],
     );
     history[TableId::RailCooldowns.index()] = appended_at(
         TableId::RailCooldowns,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[
             AppendedField {
                 index: 1,
                 name: "building",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 2,
                 name: "selection",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 3,
                 name: "selection_hour",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
         ],
     );
     history[TableId::ArmyOrderPlans.index()] = appended_at(
         TableId::ArmyOrderPlans,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[
             AppendedField {
                 index: 20,
                 name: "child_fronts",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 21,
                 name: "invasion_transports",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 22,
                 name: "execution",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
         ],
     );
@@ -467,12 +944,96 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         name: "border_land_doctrine_level",
         introduced: 93,
     }];
+    history[TableId::Politics.index()] = appended_at(
+        TableId::Politics,
+        HAS_ELECTIONS_FORMAT,
+        "restore/economy has_elections",
+        &[AppendedField {
+            index: 6,
+            name: "has_elections",
+            introduced: HAS_ELECTIONS_FORMAT,
+        }],
+    );
+    history[TableId::LandCombatDivisions.index()] = appended_at(
+        TableId::LandCombatDivisions,
+        LAND_DIVISION_NUMBERS_FORMAT,
+        "restore/combat reserve speed share, size/lcd-flat numeric fields",
+        &[
+            AppendedField {
+                index: 30,
+                name: "reinforcement_speed",
+                introduced: RESERVE_SPEED_FORMAT,
+            },
+            AppendedField {
+                index: 31,
+                name: "fuel_inputs[0]",
+                introduced: LAND_DIVISION_NUMBERS_FORMAT,
+            },
+            AppendedField {
+                index: 32,
+                name: "fuel_inputs[1]",
+                introduced: LAND_DIVISION_NUMBERS_FORMAT,
+            },
+            AppendedField {
+                index: 33,
+                name: "stat_values[0]",
+                introduced: LAND_DIVISION_NUMBERS_FORMAT,
+            },
+            AppendedField {
+                index: 34,
+                name: "stat_values[1]",
+                introduced: LAND_DIVISION_NUMBERS_FORMAT,
+            },
+            AppendedField {
+                index: 35,
+                name: "stat_values[2]",
+                introduced: LAND_DIVISION_NUMBERS_FORMAT,
+            },
+            AppendedField {
+                index: 36,
+                name: "stat_values[3]",
+                introduced: LAND_DIVISION_NUMBERS_FORMAT,
+            },
+            AppendedField {
+                index: 37,
+                name: "stat_values[4]",
+                introduced: LAND_DIVISION_NUMBERS_FORMAT,
+            },
+            AppendedField {
+                index: 38,
+                name: "scales[0]",
+                introduced: LAND_DIVISION_NUMBERS_FORMAT,
+            },
+            AppendedField {
+                index: 39,
+                name: "scales[1]",
+                introduced: LAND_DIVISION_NUMBERS_FORMAT,
+            },
+            AppendedField {
+                index: 40,
+                name: "scales[2]",
+                introduced: LAND_DIVISION_NUMBERS_FORMAT,
+            },
+            AppendedField {
+                index: 41,
+                name: "scales[3]",
+                introduced: LAND_DIVISION_NUMBERS_FORMAT,
+            },
+        ],
+    );
     history[TableId::LandCombatDetails.index()].kind = ChangeKind::AppendedOnly;
-    history[TableId::LandCombatDetails.index()].appended = &[AppendedField {
-        index: 9,
-        name: "border_war",
-        introduced: 93,
-    }];
+    history[TableId::LandCombatDetails.index()].appended = &[
+        AppendedField {
+            index: 9,
+            name: "border_war",
+            introduced: 93,
+        },
+        AppendedField {
+            index: 10,
+            name: "side_inputs",
+            introduced: SIDE_INPUTS_FORMAT,
+        },
+    ];
     history[TableId::WeatherProvinces.index()].kind = ChangeKind::AppendedOnly;
     history[TableId::WeatherProvinces.index()].appended = &[
         AppendedField {
@@ -488,19 +1049,46 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         AppendedField {
             index: 6,
             name: "local_hour",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         },
         AppendedField {
             index: 7,
             name: "night_factor",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         },
         AppendedField {
             index: 8,
             name: "display",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
+        },
+        AppendedField {
+            index: 9,
+            name: "clock_source",
+            introduced: DERIVED_CLOCKS_FORMAT,
+        },
+        AppendedField {
+            index: 10,
+            name: "temperature_drift",
+            introduced: DERIVED_TEMPERATURE_FORMAT,
+        },
+        AppendedField {
+            index: 11,
+            name: "temperature_staged",
+            introduced: DERIVED_TEMPERATURE_FORMAT,
+        },
+        AppendedField {
+            index: 12,
+            name: "temperature_working",
+            introduced: DERIVED_TEMPERATURE_FORMAT,
+        },
+        AppendedField {
+            index: 13,
+            name: "temperature_pass",
+            introduced: DERIVED_TEMPERATURE_FORMAT,
         },
     ];
+    history[TableId::WeatherProvinces.index()].format = DERIVED_TEMPERATURE_FORMAT;
+    history[TableId::WeatherProvinces.index()].commit = "perf/temperature";
     history[TableId::StateFlags.index()].kind = ChangeKind::AppendedOnly;
     history[TableId::StateFlags.index()].appended = &[
         AppendedField {
@@ -524,51 +1112,56 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         AppendedField {
             index: 15,
             name: "withdrawal",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         },
         AppendedField {
             index: 16,
             name: "movement_priority",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         },
         AppendedField {
             index: 17,
             name: "order_transport",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         },
         AppendedField {
             index: 18,
             name: "fresh",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         },
         AppendedField {
             index: 19,
             name: "combat_references",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         },
         AppendedField {
             index: 20,
             name: "selected",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         },
         AppendedField {
             index: 21,
             name: "transport",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
+        },
+        AppendedField {
+            index: 22,
+            name: "base_speed",
+            introduced: BASE_SPEED_FORMAT,
         },
     ];
     history[TableId::RelationLinks.index()] = appended_at(
         TableId::RelationLinks,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[AppendedField {
             index: 1,
             name: "transport_subject",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         }],
     );
     history[TableId::CountryAppearance.index()].kind = ChangeKind::AppendedOnly;
-    history[TableId::CountryAppearance.index()].format = FORMAT_VERSION;
+    history[TableId::CountryAppearance.index()].format = POLITICAL_FORMAT;
     history[TableId::CountryAppearance.index()].commit = "pending political runtime inputs";
     history[TableId::CountryAppearance.index()].appended = &[
         AppendedField {
@@ -589,7 +1182,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         AppendedField {
             index: 21,
             name: "transport_convoys",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         },
     ];
     history[TableId::DivisionTemplates.index()].kind = ChangeKind::AppendedOnly;
@@ -755,7 +1348,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     }
     history[TableId::DivisionStatus.index()] = appended_at(
         TableId::DivisionStatus,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[
             AppendedField {
@@ -811,14 +1404,29 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             AppendedField {
                 index: 26,
                 name: "attack",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
+            },
+            AppendedField {
+                index: 27,
+                name: "camouflage",
+                introduced: CAMOUFLAGE_FORMAT,
+            },
+            AppendedField {
+                index: 28,
+                name: "attack_stats",
+                introduced: ATTACK_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 29,
+                name: "weather_factor",
+                introduced: ATTACK_INPUTS_FORMAT,
             },
         ],
     );
     history[TableId::OrdersGroupCounterInputs.index()] = appended_at(
         TableId::OrdersGroupCounterInputs,
-        FORMAT_VERSION,
-        "pending political runtime inputs",
+        ATTACK_INPUTS_FORMAT,
+        "pending political runtime inputs, perf/attack-preview inputs",
         &[
             AppendedField {
                 index: 1,
@@ -843,13 +1451,18 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             AppendedField {
                 index: 5,
                 name: "attack",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
+            },
+            AppendedField {
+                index: 6,
+                name: "commander_attack",
+                introduced: ATTACK_INPUTS_FORMAT,
             },
         ],
     );
     history[TableId::DivisionTemplateIcons.index()] = appended_at(
         TableId::DivisionTemplateIcons,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[
             AppendedField {
@@ -860,13 +1473,18 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             AppendedField {
                 index: 14,
                 name: "display_name",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
         ],
     );
+    // From provisional format 102 `directed_wars` (index 18) is no longer
+    // captured: writers store None and playback derives every cell from the
+    // hour's WarRelations (`directed_war_derive`). The layout is unchanged,
+    // so format 101 and earlier 102 development recordings keep answering
+    // from their packets and no table is refused.
     history[TableId::CountryCounterInputs.index()] = appended_at(
         TableId::CountryCounterInputs,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[
             AppendedField {
@@ -907,42 +1525,47 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             AppendedField {
                 index: 11,
                 name: "co_belligerents",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 12,
                 name: "zero_war",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 13,
                 name: "movement",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 14,
                 name: "zero_subject",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 15,
                 name: "pride_name",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 16,
                 name: "forward_visibility",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 17,
                 name: "attack",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 18,
                 name: "directed_wars",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
+            },
+            AppendedField {
+                index: 19,
+                name: "attack_modifiers",
+                introduced: ATTACK_INPUTS_FORMAT,
             },
         ],
     );
@@ -990,7 +1613,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::AirWings.index()] = appended_at(
         TableId::AirWings,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[
             AppendedField {
@@ -1001,87 +1624,87 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             AppendedField {
                 index: 16,
                 name: "pool_subunit",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 17,
                 name: "raid_reference",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 18,
                 name: "strategic_bombing_raw",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
         ],
     );
     history[TableId::AirMissionInputs.index()] = appended_at(
         TableId::AirMissionInputs,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[AppendedField {
             index: 6,
             name: "cas_ratio_raw",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         }],
     );
     history[TableId::AirNavalPatrolHistories.index()] = appended_at(
         TableId::AirNavalPatrolHistories,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[AppendedField {
             index: 2,
             name: "scenario_channels",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         }],
     );
     history[TableId::ShipModels.index()] = appended_at(
         TableId::ShipModels,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[
             AppendedField {
                 index: 6,
                 name: "subunit_index",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 7,
                 name: "strike",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 8,
                 name: "hull_variant",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
         ],
     );
     history[TableId::TaskForceCounterInputs.index()] = appended_at(
         TableId::TaskForceCounterInputs,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[
             AppendedField {
                 index: 10,
                 name: "name",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 11,
                 name: "supply",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 12,
                 name: "port_mission",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
         ],
     );
     history[TableId::RailwayGunCounterInputs.index()] = appended_at(
         TableId::RailwayGunCounterInputs,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[
             AppendedField {
@@ -1102,59 +1725,59 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             AppendedField {
                 index: 26,
                 name: "withdrawal",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 27,
                 name: "fresh",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 28,
                 name: "combat_references",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 29,
                 name: "transport",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
         ],
     );
     history[TableId::TaskForceMapMotion.index()] = appended_at(
         TableId::TaskForceMapMotion,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[
             AppendedField {
                 index: 4,
                 name: "movement_numerator",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 5,
                 name: "retreat",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 6,
                 name: "withdrawal",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 7,
                 name: "naval_transfer",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 8,
                 name: "combat_links",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 9,
                 name: "fresh",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
         ],
     );
@@ -1175,7 +1798,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     history[TableId::CapturedOperativeReferences.index()].introduced = EFFECT_INPUTS_FORMAT;
     history[TableId::ReservedCountryNaming.index()] = appended_at(
         TableId::ReservedCountryNaming,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[
             AppendedField {
@@ -1211,49 +1834,49 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             AppendedField {
                 index: 14,
                 name: "faction",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 15,
                 name: "movement",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 16,
                 name: "land_theatre_count",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 17,
                 name: "launch_sources",
                 // The native-null naval discriminator preserves the original
                 // unavailable/list bytes and this historical field boundary.
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 18,
                 name: "reverse_visibility",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 19,
                 name: "country_intel_sample",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 20,
                 name: "attack",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 21,
                 name: "raw_country_observations",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 22,
                 name: "transport_mission_inputs",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
         ],
     );
@@ -1266,28 +1889,28 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     history[TableId::AttritionModifierBreakdowns.index()].introduced = EFFECT_INPUTS_FORMAT;
     history[TableId::AirBases.index()] = appended_at(
         TableId::AirBases,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[AppendedField {
             index: 5,
             name: "carrier",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         }],
     );
     history[TableId::AirBaseRegistrations.index()] = appended_at(
         TableId::AirBaseRegistrations,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "pending political runtime inputs",
         &[
             AppendedField {
                 index: 2,
                 name: "carrier",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
             AppendedField {
                 index: 3,
                 name: "transport_planes",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
         ],
     );
@@ -1317,6 +1940,38 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         };
         ledger += 1;
     }
+    history[TableId::AirRegionCombat.index()] = LastChange {
+        introduced: AIR_REGION_COMBAT_FORMAT,
+        ..table(
+            TableId::AirRegionCombat,
+            AIR_REGION_COMBAT_FORMAT,
+            "restore/experience",
+        )
+    };
+    history[TableId::NuclearStrikes.index()] = LastChange {
+        introduced: NUCLEAR_STRIKES_FORMAT,
+        ..table(
+            TableId::NuclearStrikes,
+            NUCLEAR_STRIKES_FORMAT,
+            "record/nuclear-strikes",
+        )
+    };
+    history[TableId::LandCombatDivisionModifiers.index()] = LastChange {
+        introduced: LAND_MODIFIER_ROWS_FORMAT,
+        ..table(
+            TableId::LandCombatDivisionModifiers,
+            LAND_MODIFIER_ROWS_FORMAT,
+            "perf/land-modifiers",
+        )
+    };
+    history[TableId::FuelDemandParts.index()] = LastChange {
+        introduced: FUEL_DEMAND_PARTS_FORMAT,
+        ..table(
+            TableId::FuelDemandParts,
+            FUEL_DEMAND_PARTS_FORMAT,
+            "perf/fuel-air-rows",
+        )
+    };
     history[TableId::VariantDefinitions.index()] = appended(
         TableId::VariantDefinitions,
         "9d09404c0d",
@@ -1375,6 +2030,15 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             name: "LandBorderWarInputs.combat_width",
             introduced: RECORDER_INPUTS_FORMAT,
         }];
+    history[TableId::ALL.len() + RecordKind::EventFeedEvent as usize].introduced =
+        WIDGET_CAPTURE_FORMAT;
+    history[TableId::ALL.len() + RecordKind::EventFeedEvent as usize].kind =
+        ChangeKind::AppendedOnly;
+    history[TableId::ALL.len() + RecordKind::EventFeedEvent as usize].appended = &[AppendedField {
+        index: 6,
+        name: "EventFeedEvent.cause",
+        introduced: EVENT_CAUSE_FORMAT,
+    }];
     history[TableId::CountryFuel.index()] = appended_at(
         TableId::CountryFuel,
         ECONOMY_INPUTS_FORMAT,
@@ -1395,6 +2059,11 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 name: "demand",
                 introduced: WIDGET_CAPTURE_FORMAT,
             },
+            AppendedField {
+                index: 22,
+                name: "award_day",
+                introduced: FUEL_AWARD_DAY_FORMAT,
+            },
         ],
     );
     history[TableId::LogisticsEquipment.index()] = appended_at(
@@ -1409,17 +2078,17 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::NavalBases.index()] = appended_at(
         TableId::NavalBases,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "naval base serialized country tag witnesses (provisional)",
         &[AppendedField {
             index: 5,
             name: "country_tags",
-            introduced: FORMAT_VERSION,
+            introduced: POLITICAL_FORMAT,
         }],
     );
     history[TableId::ConstructionLineOutput.index()] = appended_at(
         TableId::ConstructionLineOutput,
-        FORMAT_VERSION,
+        POLITICAL_FORMAT,
         "construction completion and count-reset witnesses (provisional)",
         &[
             AppendedField {
@@ -1430,7 +2099,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             AppendedField {
                 index: 14,
                 name: "count_reset",
-                introduced: FORMAT_VERSION,
+                introduced: POLITICAL_FORMAT,
             },
         ],
     );
@@ -1529,6 +2198,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         "91cbbe55",
     );
     history[TableId::DivisionLandInputs.index()].introduced = WIDGET_CAPTURE_FORMAT;
+    // Its retired supply copies keep their framing: every layout decodes.
+    history[TableId::DivisionLandInputs.index()].kind = ChangeKind::AppendedOnly;
     history[TableId::LandCombatResults.index()] = table(
         TableId::LandCombatResults,
         WIDGET_CAPTURE_FORMAT,
@@ -1547,6 +2218,92 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         "91cbbe55",
     );
     history[TableId::LandEventCoverage.index()].introduced = WIDGET_CAPTURE_FORMAT;
+    // Hourly hosts' nested packets stopped storing their read hour. The
+    // stamped nested layout decodes through its source format, so these
+    // tables stay readable and only their nested records changed.
+    let mut host = 0;
+    while host < super::PACKET_HOUR_HOSTS.len() {
+        let id = super::PACKET_HOUR_HOSTS[host];
+        history[id.index()].format = PACKET_HOUR_FORMAT;
+        history[id.index()].commit = "perf/stamps packet hours";
+        host += 1;
+    }
+    // The singleton's transport packet was split into hourly tables in this
+    // provisional format, and both retired in it; no published build wrote
+    // the tables.
+    history[TableId::ReservedCountryNaming.index()].format = RESERVED_SPLIT_FORMAT;
+    history[TableId::ReservedCountryNaming.index()].commit = "perf/reserved-split";
+    let mut split = 0;
+    while split < super::RESERVED_SPLIT_TABLES.len() {
+        let id = super::RESERVED_SPLIT_TABLES[split];
+        history[id.index()] = table(id, RESERVED_SPLIT_FORMAT, "perf/reserved-split");
+        history[id.index()].introduced = RESERVED_SPLIT_FORMAT;
+        split += 1;
+    }
+    // The nearest-cache tables were introduced and retired in this same
+    // provisional format; no published build wrote them.
+    let mut nearest = 0;
+    while nearest < 2 {
+        let id = [
+            TableId::ReservedNearestNavies,
+            TableId::ReservedNearestBases,
+        ][nearest];
+        history[id.index()] = table(id, RESERVED_SPLIT_FORMAT, "perf/reserved-split");
+        history[id.index()].introduced = RESERVED_SPLIT_FORMAT;
+        nearest += 1;
+    }
+    // The naval hover source trees and their diagnostic oracle samples.
+    let mut naval = 0;
+    while naval < 2 {
+        let id = [
+            TableId::NavalModifierTrees,
+            TableId::NavalModifierTreeSamples,
+        ][naval];
+        history[id.index()] = table(id, NAVAL_TREES_FORMAT, "restore/naval");
+        history[id.index()].introduced = NAVAL_TREES_FORMAT;
+        naval += 1;
+    }
+    history[TableId::DivisionRetreatBans.index()] = table(
+        TableId::DivisionRetreatBans,
+        RETREAT_BANS_FORMAT,
+        "cadence/raid",
+    );
+    history[TableId::DivisionRetreatBans.index()].kind = ChangeKind::Meaning;
+    history[TableId::StockpileArchetypes.index()] = table(
+        TableId::StockpileArchetypes,
+        ESSENTIAL_STOCK_FORMAT,
+        "cadence/raid",
+    );
+    // Arrival-time, attrition-breakdown, selected-attack and selected
+    // transport inputs retire. Tables keep their ids and framing so older
+    // recordings discard them by name.
+    // Hover-only breakdowns, oracle-only histories and the owned-wargoal
+    // roster only effect-description hovers read retire the same way.
+    let mut r = 0;
+    while r < RETIRED_TABLES.len() {
+        history[RETIRED_TABLES[r].index()].retired = Some(RETIRED_INPUTS_FORMAT);
+        r += 1;
+    }
+    let mut field = 0;
+    while field < RETIRED_FIELDS.len() {
+        let id = RETIRED_FIELDS[field].table;
+        // A tombstone keeps its field's framing, so every layout since the
+        // table's last layout change still decodes. A table whose layout
+        // changed within its lifetime keeps that refusal and its format.
+        let entry = history[id.index()];
+        let earlier_layout = !matches!(entry.kind, ChangeKind::AppendedOnly)
+            && !matches!(entry.kind, ChangeKind::Unchanged)
+            && entry.format > entry.introduced;
+        if earlier_layout {
+            field += 1;
+            continue;
+        }
+        history[id.index()].kind = ChangeKind::AppendedOnly;
+        history[id.index()].format = RETIRED_INPUTS_FORMAT;
+        history[id.index()].commit = "perf/eta-tooltips, perf/supply-dedupe, perf/retire-tooltips and perf/retire-previews retired inputs";
+        field += 1;
+    }
+    history[TableId::DivisionStatus.index()].commit = "perf/supply-dedupe, perf/retire-tooltips retired inputs, perf/division-status-2 camouflage, perf/attack-preview inputs, restore/supply footer";
     history
 };
 
@@ -1638,6 +2395,28 @@ impl RecordKind {
 mod tests {
     use super::*;
 
+    /// An older recording's DivisionRetreatBans are each owner's daily read,
+    /// not the hour's bans, and its StockpileArchetypes every archetype's raw
+    /// total: it refuses both by name.
+    #[test]
+    fn older_retreat_bans_and_stock_are_refused() {
+        for table in [TableId::DivisionRetreatBans, TableId::StockpileArchetypes] {
+            assert!(
+                table
+                    .last_change()
+                    .table_gap(table, POLITICAL_FORMAT)
+                    .unwrap()
+                    .contains(&format!("{table:?}"))
+            );
+            assert!(
+                table
+                    .last_change()
+                    .table_gap(table, FORMAT_VERSION)
+                    .is_none()
+            );
+        }
+    }
+
     #[test]
     fn technology_key_changes_refuse_only_the_changed_contracts() {
         let historical = WIDGET_CAPTURE_FORMAT;
@@ -1723,6 +2502,51 @@ mod tests {
     }
 
     #[test]
+    fn retired_inputs_refuse_by_name_in_every_recording() {
+        for table in RETIRED_TABLES {
+            let history = table.last_change();
+            assert!(!history.present(FORMAT_VERSION), "{table:?}");
+            assert!(
+                history
+                    .table_gap(table, FORMAT_VERSION)
+                    .unwrap()
+                    .contains("retired at format")
+            );
+        }
+        // Older recordings held the arrival and attrition tables; they are
+        // framed for discard and refused by the same name.
+        for table in [
+            TableId::DivisionEtaInputs,
+            TableId::AttritionModifierBreakdowns,
+            TableId::ReserveModifierBreakdowns,
+            TableId::NavalModifierBreakdowns,
+            TableId::OwnedWargoals,
+            TableId::AirRegionHistory,
+            TableId::AirRegionDamage,
+            TableId::UnitLeaderTraitExperience,
+        ] {
+            let history = table.last_change();
+            assert!(history.present(POLITICAL_FORMAT));
+            assert!(
+                history
+                    .table_gap(table, POLITICAL_FORMAT)
+                    .unwrap()
+                    .contains(&format!(
+                        "{table:?} retired at format {RETIRED_INPUTS_FORMAT}"
+                    ))
+            );
+        }
+        // Tables holding retired fields stay readable in every recording.
+        for field in RETIRED_FIELDS {
+            let history = field.table.last_change();
+            assert_eq!(history.kind, ChangeKind::AppendedOnly, "{:?}", field.table);
+            assert_eq!(history.format, RETIRED_INPUTS_FORMAT, "{:?}", field.table);
+            assert!(history.table_gap(field.table, POLITICAL_FORMAT).is_none());
+            assert!(history.table_gap(field.table, FORMAT_VERSION).is_none());
+        }
+    }
+
+    #[test]
     fn compatibility_catalog_covers_every_table_and_record_once() {
         for table in TableId::ALL {
             let entry = table.last_change();
@@ -1730,13 +2554,23 @@ mod tests {
             assert!(!entry.commit.is_empty());
             assert!(entry.introduced <= entry.format);
             assert!(entry.format <= FORMAT_VERSION);
+            // A provisional table can retire in the format that introduced
+            // it; no published build ever wrote it.
             assert!(
                 entry
                     .retired
-                    .is_none_or(|retired| retired > entry.introduced)
+                    .is_none_or(|retired| retired > entry.introduced
+                        || (retired == entry.introduced && retired == FORMAT_VERSION))
             );
             if entry.kind == ChangeKind::AppendedOnly {
-                assert!(!entry.appended.is_empty());
+                if entry.appended.is_empty() {
+                    // Only framing-preserving retirements changed it.
+                    assert!(
+                        RETIRED_FIELDS.iter().any(|field| field.table == table),
+                        "{table:?}"
+                    );
+                    continue;
+                }
                 let first = entry.appended[0].index;
                 for (offset, field) in entry.appended.iter().enumerate() {
                     assert_eq!(field.index, first + offset);
@@ -1755,10 +2589,16 @@ mod tests {
                 RecordKind::LandBorderWarInputs => {
                     Some(<super::super::LandBorderWarInputs as crate::value::Value>::STRUCT_FIELDS)
                 }
+                RecordKind::EventFeedEvent => Some(
+                    <crate::event_feed_rows::EventFeedEvent as crate::value::Value>::STRUCT_FIELDS,
+                ),
                 _ => None,
             };
             if let Some(fields) = fields {
-                assert_eq!(entry.introduced, PROVEN_FROM);
+                assert!(
+                    entry.introduced >= PROVEN_FROM
+                        && entry.introduced < entry.appended[0].introduced
+                );
                 assert_eq!(entry.kind, ChangeKind::AppendedOnly);
                 let first = entry.appended[0].index;
                 for (offset, field) in entry.appended.iter().enumerate() {

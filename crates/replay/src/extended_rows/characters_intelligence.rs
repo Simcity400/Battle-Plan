@@ -93,7 +93,8 @@ pub struct UnitLeaderRow {
     pub character_type: u32,
     pub character_id: u32,
     pub category: i32,
-    pub experience: i64,
+    /// Retired: only the save comparison read it.
+    pub experience: RetiredI64,
     pub kind: u8,
     pub skill_status: u8,
     pub skill_valid: u8,
@@ -142,6 +143,9 @@ pub struct UnitLeaderTraitRow {
 typed_codec!(UnitLeaderTraitRow, 96, |row| (row.leader_reference as u128) << 32 | row.ordinal as u128, |key| Self { leader_reference: (key >> 32) as u64, ordinal: key as u32, token_id: Default::default(), definition_ordinal: Default::default(), token: Default::default() },
  { 0 => (token_id): I32, 1 => (definition_ordinal): I32, 2 => (token): Bytes }, |_row| Ok(()));
 
+/// Retired: only the save comparison read it. Kept for older recordings'
+/// framing.
+///
 /// UnitLeaderTraitExperience: key leader_reference:ordinal (96 bits), 4 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct UnitLeaderTraitExperienceRow {
@@ -600,7 +604,7 @@ typed_codec!(HiredAdvisorRow, 64, |row| (row.country as u128) << 32 | row.ordina
 /// The entry's decay accumulator is deliberately not recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct UnitIntelRow {
-    /// Full native CUnit handle; join it to Divisions or TaskForces.
+    /// Full native unit handle; join it to Divisions or TaskForces.
     pub unit: u64,
     pub ordinal: u32,
     /// Stored viewer key: the country's ordinal in the engine's country array.
@@ -716,8 +720,9 @@ impl CountryIntelRow {
     }
 }
 
-/// Stored advisor search order, hourly.
-/// The primary roster is independent of hired appointments and has no slot bytes.
+/// The country-character roster's +0x40 advisor search order, read once a game day at the
+/// country's owner slice; SliceReads holds each country's read hour. The primary roster
+/// is independent of hired appointments and has no slot bytes.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AvailableAdvisorRow {
     pub country: u32,

@@ -442,8 +442,9 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
     }
 
     /// Begins one accepted indexed container before its original pool-header
-    /// read. Both scalar reads run and retain independent results.
-    pub fn begin_registration(&mut self) {
+    /// read, with the fuel scalars the original pass read in that container's
+    /// span ([`super::container_span_words`]).
+    pub fn begin_registration(&mut self, fuel: ContainerFuel) {
         let Some(base) = self.current.as_mut() else {
             return;
         };
@@ -460,7 +461,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         if let Err(reason) = self.registrations.ensure(self.demand.registrations) {
             self.demand.failure.get_or_insert(reason);
         }
-        let fuel = carrier::container_fuel(self.memory, certificate.pointer);
         base.registration_output = (self.lengths.registrations < self.registrations.len())
             .then_some(self.lengths.registrations);
         if let Some(index) = base.registration_output {

@@ -885,7 +885,7 @@ fn game_score_typed_air_fallback_uses_frame_buffers_while_ordinary_is_loaned() {
     let mut captured = extended::Captured::with_capacities(&capacity);
     let countries =
         std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
-    let mut ordinary = captured.take_ordinary_request(
+    let mut parts = captured.take_ordinary_parts(
         &countries,
         0,
         kit::GAME_STATE,
@@ -893,6 +893,7 @@ fn game_score_typed_air_fallback_uses_frame_buffers_while_ordinary_is_loaned() {
         Ok(()),
         Default::default(),
     );
+    let mut ordinary = captured.take_ordinary_request(&countries, 0, kit::GAME_STATE, 0);
     let mut map_capacity = MapCapacities::default();
     map_capacity.raise_air_wings(2);
     let mut map = MapCaptured::with_capacities(&map_capacity);
@@ -903,15 +904,19 @@ fn game_score_typed_air_fallback_uses_frame_buffers_while_ordinary_is_loaned() {
         });
     }
     assert!(matches!(map.air_wings.outcome, Outcome::Unavailable { .. }));
-    ordinary.packs.capture(
-        &memory,
-        0,
-        kit::GAME_STATE,
-        None,
-        (ordinary.hour, &mut ordinary.naval_missions),
-        ordinary.fresh_modifier_guard,
-    );
-    captured.restore_ordinary_request(ordinary, None);
+    for part in &mut parts {
+        part.part.capture(
+            &memory,
+            0,
+            kit::GAME_STATE,
+            part.hour,
+            part.fresh_modifier_guard,
+        );
+    }
+    ordinary
+        .packs
+        .capture_at(&memory, 0, kit::GAME_STATE, ordinary.hour);
+    captured.restore_ordinary_request(ordinary, None, parts.map(|part| (part, None)));
     let [
         TableView::Complete(TableRows::CountryGameScoreInputs(rows)),
         TableView::Complete(TableRows::AirWingGameScoreStats(wings)),
@@ -928,4 +933,45 @@ fn game_score_typed_air_fallback_uses_frame_buffers_while_ordinary_is_loaned() {
     assert!(rows[0].first_sites.is_empty());
     assert_eq!(wings.len(), 2);
     assert_eq!((wings[0].planes, wings[0].stat_raw), (Some(10), Some(73)));
+}
+
+#[test]
+fn worker_score_pass_grows_storage_a_frame_lent_back_instead_of_truncating() {
+    use crate::extended::air::{self, AirWingCopyContext, AirWingJob, wing_test_kit as kit};
+    let mut bytes = kit::fixture();
+    for wing in [kit::WING, 0x34000] {
+        bytes[wing + cair_wing::MISSION_STATS + cair_wing::MISSION_STAT_INDEXES] = 255;
+    }
+    let memory = kit::memory(&bytes);
+    let context = AirWingCopyContext {
+        base: kit::BASE,
+        game_state: kit::GAME_STATE,
+        hour: 0,
+        force_full: true,
+        limits: [1024, 8192, 4096],
+        naval_limit: 4096,
+        game_score: true,
+    };
+    // A pool miss starts from storage with no rows at all.
+    let mut job = AirWingJob::default();
+    for hour in 0..3 {
+        assert!(air::copy_air_refresh_growing(&memory, context, &mut job).raw_ok);
+        assert_eq!(
+            job.game_score.wings.outcome,
+            Outcome::Rows { len: 2 },
+            "hour {hour}: ordinary growth truncated the shared census"
+        );
+        assert!(job.game_score.countries.len() > 1);
+        assert_ne!(
+            job.game_score.countries[1].read.error,
+            AirCountry::short_storage().read.error
+        );
+        // The frame publishes this hour and lends back fixed storage sized
+        // before either wing or the owner's air slot was witnessed.
+        let mut frame = Captured::with_capacities(&Capacities::default());
+        frame.install_air(&mut job.game_score);
+        assert!(!frame.air.growing, "a typed fallback must not grow");
+        assert_eq!(frame.air.wings.outcome, Outcome::Rows { len: 2 });
+        assert!(job.game_score.wings.rows.is_empty());
+    }
 }

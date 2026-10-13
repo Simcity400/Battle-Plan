@@ -5,16 +5,16 @@ use installed_content::{
 };
 use replay::rows::{WeatherProvinceRow, WeatherRegionRow};
 
-/// Independent weather flags, first matching thermal range.
+/// Independent weather flags, first matching thermal range, with the
+/// temperature the province's record holds at the frame's hour.
 pub(super) fn row(
     loc: &Localisation,
     ranges: &[TemperatureRange; 4],
+    temperature: Result<i64, String>,
     province: &WeatherProvinceRow,
     region: &WeatherRegionRow,
 ) -> Result<String, String> {
-    let temperature = *province
-        .temperature
-        .require("WeatherProvinces.temperature")?;
+    let temperature = temperature?;
     let mud = *province.raw_mud.require("WeatherProvinces.raw_mud")?;
     let flags = [
         region.light_rain,

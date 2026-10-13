@@ -561,7 +561,7 @@ mod tests {
         let mut captured = fixture();
         let mut encoder = FrameEncoder::new();
         let mut ordinary = FrameEncoder::new();
-        let mut scratch = ProjectionScratch::default();
+        let scratch = ProjectionScratch::default();
         for hour in 0..3 {
             if hour == 2 {
                 captured.player_names[0] ^= 1;
@@ -570,7 +570,7 @@ mod tests {
             }
             let current = table_inputs(
                 &captured,
-                Some(&mut Projection::new(&encoder, 1, hour, false, &mut scratch)),
+                Some(&mut Projection::new(&encoder, 1, hour, false, &scratch)),
             );
             for (index, table) in current.iter().enumerate() {
                 let reused = hour == 1 || (hour == 2 && !matches!(index, 0 | 8 | 9));
@@ -593,7 +593,7 @@ mod tests {
         };
         let rejected = table_inputs(
             &captured,
-            Some(&mut Projection::new(&encoder, 1, 3, false, &mut scratch)),
+            Some(&mut Projection::new(&encoder, 1, 3, false, &scratch)),
         );
         for index in [0, 5, 9] {
             assert!(matches!(
@@ -803,7 +803,9 @@ mod tests {
                 task_force: u64::MAX - 1,
                 strength: i64::MIN,
                 organisation: i64::MAX,
-                experience: -123456789012345,
+                // Stored at whole hundredths (ShipRow::EXPERIENCE_STEP),
+                // truncated toward zero.
+                experience: -123_456_789_012_000,
                 category: u32::MAX,
                 sunk_convoys: i32::MIN + 1,
                 class_id: i32::MIN,

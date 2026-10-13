@@ -100,14 +100,13 @@ fn staged_name_hints_require_both_valid_headers_and_keep_inline_values_owned() {
 
 #[test]
 fn character_target_hints_obey_independent_dead_guards_and_empty_maps() {
-    for bits in 0..64 {
+    for bits in 0..32 {
         let dead = Dead {
             characters: bits & 1 != 0,
             leaders: bits & 2 != 0,
             advisors: bits & 4 != 0,
             units: bits & 8 != 0,
             traits: bits & 16 != 0,
-            experience: bits & 32 != 0,
         };
         for count in [0, 1, u64::from(u32::MAX)] {
             let mut expected = Vec::new();
@@ -117,7 +116,7 @@ fn character_target_hints_obey_independent_dead_guards_and_empty_maps() {
             if !dead.advisors {
                 expected.push((0x3000, 1));
             }
-            if !(dead.units && dead.traits && dead.experience) {
+            if !(dead.units && dead.traits) {
                 expected.push((0x4000, 1));
             }
             if !dead.units {
@@ -273,7 +272,7 @@ fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
         let mut job = CharactersJob {
             log: crate::raw::RawLog::new(16, 256),
             game_state: ADDRESS,
-            active: [true; 6],
+            active: [true; 5],
             ..CharactersJob::default()
         };
         let copied = copy_view(&mut job, &memory, IMAGE, pointer);
@@ -352,8 +351,8 @@ fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
     // Zero-length inactive scatter slots may have the same raw offset as
     // the next successful field. They must never publish that offset.
     for active in [
-        [true, false, false, true, true, true],
-        [false, true, false, false, false, false],
+        [true, false, false, true, true],
+        [false, true, false, false, false],
     ] {
         let memory = engine::memory::SliceMemory {
             base: ADDRESS,
@@ -379,9 +378,9 @@ fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
             }
         }
     }
-    // Eight span offsets (including gender) and the optional unit ID
-    // replace the old 128-byte image.
-    assert_eq!(size_of::<ViewCopy>(), 40);
+    // Eight span offsets (including gender), the optional unit ID and the
+    // carried flag replace the old 128-byte image.
+    assert_eq!(size_of::<ViewCopy>(), 44);
 }
 
 // Frozen pre-hint text path: independent caller sequencing, with the same

@@ -1,11 +1,40 @@
 //! A clearable registry of the receiver addresses a mutation observer
 //! watches, for the observers' hooks ([`crate::relation_changes`],
-//! [`crate::history_changes`]).
+//! [`crate::history_changes`], [`crate::character_changes`]).
 //!
 //! A capture registers each receiver it certifies and takes its
 //! `(epoch, sequence)`. A hooked writer bumps the sequence of a registered
-//! receiver on entry and on return, and the domain-wide revision either way.
-//! Equal values across hours prove that no observed writer touched it.
+//! receiver once, on entry, and the domain-wide revision with it. Equal
+//! values across hours prove that no observed writer touched it.
+//!
+//! The revision and the count of running writers share one word
+//! ([`WatchRegistry::state`]), on its own cache line: a writer's entry is one
+//! checked compare-and-swap (running +1, revision +1; one locked operation
+//! when uncontended, a retry per lost race) and its return one subtract
+//! (running −1), and [`WatchRegistry::quiet`] reads both at once. The same
+//! swap that would fill the running field to half its width, or take the
+//! revision past its last value, instead sets the word's sticky untrusted
+//! bit and leaves the writer uncounted. A word carrying that bit is never
+//! quiet, so the registry certifies nothing more and reports writers running
+//! to detach; a boundary that reads it refuses every clear, install and
+//! retirement, and one already past its quiet check cannot retire a table a
+//! notification may still hold (its later check sees the bit or the count).
+//! Neither field can wrap. One bump per writer
+//! suffices because no certificate or quiet token is taken while a writer
+//! runs. Take a writer W (entry E, then its write, then its return X, each
+//! sequentially consistent) and a certificate C, which loads the sequence
+//! and then requires the running count to be zero:
+//! - if E's bump precedes C's sequence load, either X precedes C's count load
+//!   (C includes the bump, and W's write happened before anything C's
+//!   capture reads after it) or W still runs there and C is refused;
+//! - if E's bump follows C's sequence load, every later certificate of that
+//!   receiver loads the bumped sequence (or is refused while W runs), so it
+//!   differs from C and the receiver is read again.
+//!
+//! Either way an equal later certificate excludes any write after the read C
+//! covers. The same holds for the revision in a quiet token, which reads the
+//! revision and the count in one load. A writer's return bumps nothing. A
+//! marking registry still marks on return (below).
 //!
 //! Registrations are dropped only together with an epoch change, so no
 //! certificate outlives a notification it could have missed:
@@ -29,6 +58,17 @@
 //! ([`WatchRegistry::collect`]) once no notification can still hold it.
 //! Bounded probing refuses a registration when the table is full; that
 //! receiver is then read afresh every hour, and the refusal is counted.
+//!
+//! A [`WatchRegistry::marking`] registry also keeps one bit per slot, which a
+//! notification of a registered receiver sets on entry and again on return,
+//! beside its sequence. Its single consumer takes the bits once an hour
+//! ([`WatchRegistry::take`]), clearing every word and visiting each marked
+//! receiver, so it finds what writers touched without looking up every
+//! receiver, as a [`crate::dirty_set::DirtySet`] does for dense ids: the take
+//! certifies only when observation is on, no writer ran and the epoch held
+//! still across it, and a bit set after its word was swapped survives to the
+//! next take. A clear or an install moves the epoch, so no take spanning one
+//! certifies a receiver it could have missed.
 
 use std::{
     ptr,
@@ -37,6 +77,38 @@ use std::{
         Ordering::{Relaxed, SeqCst},
     },
 };
+
+/// Low bits of [`WatchRegistry::state`]: the writers running now.
+const RUNNING_BITS: u32 = 20;
+/// Running writers a word may count; the admission that would reach this
+/// sets [`UNTRUSTED`] instead, so the field never carries.
+const RUNNING_LIMIT: u64 = 1 << (RUNNING_BITS - 1);
+/// [`WatchRegistry::active`] once the count is untrusted: never zero, and
+/// small enough that the families' sums of several counts cannot overflow.
+const UNTRUSTED_ACTIVE: usize = usize::MAX >> 8;
+/// One running writer, and one revision, in [`WatchRegistry::state`]; the
+/// revision takes the bits between the running field and [`UNTRUSTED`].
+const RUNNING: u64 = 1;
+const REVISION: u64 = 1 << RUNNING_BITS;
+const UNTRUSTED: u64 = 1 << 63;
+const LAST_REVISION: u64 = (UNTRUSTED - 1) >> RUNNING_BITS;
+
+/// The writers running in a state word.
+const fn running(state: u64) -> u64 {
+    state & (REVISION - 1)
+}
+
+/// The revision in a state word.
+const fn revision(state: u64) -> u64 {
+    (state & !UNTRUSTED) >> RUNNING_BITS
+}
+
+/// The word every writer updates, alone on its cache line so that the
+/// read-mostly fields beside it (the table, the epoch and the flags each
+/// notification and certificate loads) are not invalidated by every entry
+/// and return.
+#[repr(align(64))]
+struct Hot(AtomicU64);
 
 /// Slots probed from a receiver's hash before its registration is refused.
 const PROBES: usize = 16;
@@ -53,22 +125,30 @@ struct Slot {
 
 struct Table {
     slots: Vec<Slot>,
+    /// One bit per slot in a marking registry; empty otherwise.
+    marks: Vec<AtomicU64>,
 }
 
 enum Lookup<'a> {
-    Watched(&'a AtomicU64),
+    /// The receiver's slot index and sequence.
+    Watched(usize, &'a AtomicU64),
     Registered(&'a AtomicU64),
     Unwatched,
     Full,
 }
 
+const MARK_BITS: usize = u64::BITS as usize;
+
 impl Table {
     /// Off the hook path; `None` when the allocation fails.
-    fn new(len: usize) -> Option<Box<Self>> {
+    fn new(len: usize, marking: bool) -> Option<Box<Self>> {
         debug_assert!(len.is_power_of_two());
         let mut slots = engine::allocation::vec(len).ok()?;
         slots.resize_with(len, Slot::default);
-        Some(Box::new(Self { slots }))
+        let words = if marking { len.div_ceil(MARK_BITS) } else { 0 };
+        let mut marks = engine::allocation::vec(words).ok()?;
+        marks.resize_with(words, AtomicU64::default);
+        engine::allocation::boxed(Self { slots, marks }).ok()
     }
 
     fn find(&self, address: usize, register: bool) -> Lookup<'_> {
@@ -76,9 +156,11 @@ impl Table {
             return Lookup::Unwatched;
         }
         let mask = self.slots.len() - 1;
-        let first = ((address >> 3).wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 32) & mask;
+        // Strided receivers spread like random ones (`table_hash`).
+        let first = crate::table_hash::slot((address >> 3) as u64, self.slots.len());
         for probe in 0..PROBES.min(self.slots.len()) {
-            let slot = &self.slots[(first + probe) & mask];
+            let index = (first + probe) & mask;
+            let slot = &self.slots[index];
             let mut current = slot.address.load(SeqCst);
             if current == 0 && register {
                 match slot.address.compare_exchange(0, address, SeqCst, SeqCst) {
@@ -87,7 +169,7 @@ impl Table {
                 }
             }
             if current == address {
-                return Lookup::Watched(&slot.sequence);
+                return Lookup::Watched(index, &slot.sequence);
             }
             if current == 0 {
                 return Lookup::Unwatched;
@@ -100,11 +182,21 @@ impl Table {
         }
     }
 
+    /// The word and bit of slot `index`, in a marking table.
+    fn mark_of(&self, index: usize) -> Option<(&AtomicU64, u64)> {
+        self.marks
+            .get(index / MARK_BITS)
+            .map(|word| (word, 1 << (index % MARK_BITS)))
+    }
+
     /// Between two epoch changes, which order these stores.
     fn clear(&self) {
         for slot in &self.slots {
             slot.sequence.store(0, Relaxed);
             slot.address.store(0, Relaxed);
+        }
+        for word in &self.marks {
+            word.store(0, Relaxed);
         }
     }
 }
@@ -136,9 +228,11 @@ pub struct WatchRegistry {
     registered: AtomicUsize,
     /// Clear once dead receivers fill half the table.
     purge: bool,
+    /// Notifications mark their receiver's slot for [`Self::take`].
+    marking: bool,
     epoch: AtomicU64,
-    revision: AtomicU64,
-    active: AtomicUsize,
+    /// The revision (above [`RUNNING_BITS`]) and the writers running now.
+    state: Hot,
     enabled: AtomicBool,
     poisoned: AtomicBool,
     refused: AtomicU64,
@@ -149,6 +243,10 @@ pub struct WatchRegistry {
     /// offered table for the next invalidating hour.
     held: AtomicU64,
     failed_offers: AtomicU64,
+    /// Marked receivers the takes visited.
+    taken: AtomicU64,
+    /// Takes that certified nothing: a writer ran or the epoch moved.
+    refused_takes: AtomicU64,
 }
 
 impl Default for WatchRegistry {
@@ -159,17 +257,23 @@ impl Default for WatchRegistry {
 
 impl WatchRegistry {
     pub const fn new() -> Self {
-        Self::with_purge(true)
+        Self::with(true, false)
     }
 
     /// Cleared only on an invalidation: every clear starts an epoch, so each
     /// certified receiver is read afresh once. Offer a table large enough
     /// for the receivers instead; a full one refuses registrations.
     pub const fn retaining() -> Self {
-        Self::with_purge(false)
+        Self::with(false, false)
     }
 
-    const fn with_purge(purge: bool) -> Self {
+    /// [`Self::new`] whose notifications also mark their receiver for
+    /// [`Self::take`].
+    pub const fn marking() -> Self {
+        Self::with(true, true)
+    }
+
+    const fn with(purge: bool, marking: bool) -> Self {
         Self {
             table: AtomicPtr::new(ptr::null_mut()),
             offered: AtomicPtr::new(ptr::null_mut()),
@@ -179,9 +283,9 @@ impl WatchRegistry {
             requested: AtomicUsize::new(0),
             registered: AtomicUsize::new(0),
             purge,
+            marking,
             epoch: AtomicU64::new(1),
-            revision: AtomicU64::new(0),
-            active: AtomicUsize::new(0),
+            state: Hot(AtomicU64::new(0)),
             enabled: AtomicBool::new(false),
             poisoned: AtomicBool::new(false),
             refused: AtomicU64::new(0),
@@ -190,6 +294,8 @@ impl WatchRegistry {
             deferred: AtomicU64::new(0),
             held: AtomicU64::new(0),
             failed_offers: AtomicU64::new(0),
+            taken: AtomicU64::new(0),
+            refused_takes: AtomicU64::new(0),
         }
     }
 
@@ -209,6 +315,61 @@ impl WatchRegistry {
         self.increment(&self.epoch);
     }
 
+    /// A writer begins (one running more and, for a writer, one revision);
+    /// whether it was counted. In the same swap, an admission that would
+    /// fill the running field to [`RUNNING_LIMIT`] or pass [`LAST_REVISION`]
+    /// sets [`UNTRUSTED`] instead and counts nothing; an untrusted word
+    /// counts nothing more.
+    fn admit(&self, writer: bool) -> bool {
+        let mut current = self.state.0.load(Relaxed);
+        loop {
+            if current & UNTRUSTED != 0 {
+                return false;
+            }
+            let full = running(current) + 1 >= RUNNING_LIMIT
+                || writer && revision(current) == LAST_REVISION;
+            let next = if full {
+                current | UNTRUSTED
+            } else {
+                current + RUNNING + if writer { REVISION } else { 0 }
+            };
+            match self
+                .state
+                .0
+                .compare_exchange_weak(current, next, SeqCst, Relaxed)
+            {
+                Ok(_) if full => {
+                    self.poison();
+                    return false;
+                }
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn enter(&self) -> bool {
+        self.admit(true)
+    }
+
+    /// A writer, or a [`Running`] guard, ends; only a counted one is
+    /// subtracted.
+    fn leave(&self, counted: bool) {
+        if counted {
+            self.state.0.fetch_sub(RUNNING, SeqCst);
+        }
+    }
+
+    fn quiet_now(&self) -> bool {
+        self.quiet_state().is_some()
+    }
+
+    /// The state word when no writer runs and the count is trusted.
+    fn quiet_state(&self) -> Option<u64> {
+        let state = self.state.0.load(SeqCst);
+        (running(state) == 0 && state & UNTRUSTED == 0).then_some(state)
+    }
+
     fn observing(&self) -> bool {
         self.enabled.load(SeqCst) && !self.poisoned.load(SeqCst)
     }
@@ -216,19 +377,99 @@ impl WatchRegistry {
     /// Hook path, allocation-free: a writer is about to change `receiver`.
     /// Dropping the guard notifies its return.
     pub fn notify(&self, receiver: usize) -> Notification<'_> {
-        self.active.fetch_add(1, SeqCst);
-        let sequence = match self.table().map(|table| table.find(receiver, false)) {
-            Some(Lookup::Watched(sequence)) => Some(sequence),
-            _ => None,
+        let counted = self.enter();
+        let (sequence, mark) = match self.table() {
+            Some(table) => match table.find(receiver, false) {
+                Lookup::Watched(index, sequence) => (Some(sequence), table.mark_of(index)),
+                _ => (None, None),
+            },
+            None => (None, None),
         };
-        self.increment(&self.revision);
         if let Some(sequence) = sequence {
             self.increment(sequence);
         }
+        if let Some((word, bit)) = mark {
+            word.fetch_or(bit, SeqCst);
+        }
         Notification {
             registry: self,
-            sequence,
+            mark,
+            every: false,
+            counted,
         }
+    }
+
+    /// Hook path, allocation-free: a writer whose receiver cannot be named
+    /// is about to run. It starts an epoch on entry and on return, so no
+    /// certificate taken before it, or while it runs, survives it.
+    pub fn notify_every(&self) -> Notification<'_> {
+        let counted = self.enter();
+        self.new_epoch();
+        Notification {
+            registry: self,
+            mark: None,
+            every: true,
+            counted,
+        }
+    }
+
+    /// Hook path, allocation-free: a writer that often leaves every receiver
+    /// unchanged is running. While the guard lives no certificate is taken
+    /// and no hour is quiet, as for a notification, but dropping it revokes
+    /// nothing; the writer notifies a receiver it did change before the
+    /// guard drops.
+    pub fn running(&self) -> Running<'_> {
+        Running {
+            registry: self,
+            counted: self.admit(false),
+        }
+    }
+
+    /// The single consumer of a marking registry, after the hour's boundary:
+    /// clears every marked slot, visiting its receiver, and returns the epoch
+    /// they were marked in. A receiver no take visited since its
+    /// registration in that epoch was touched by no observed writer. `None`
+    /// when the registry does not mark, observation is off, no table is
+    /// installed, a writer runs (its bits stay set) or the epoch moved during
+    /// the take; nothing taken then certifies anything.
+    pub fn take(&self, mut visit: impl FnMut(usize)) -> Option<u64> {
+        if !self.marking || !self.observing() {
+            return None;
+        }
+        if !self.quiet_now() {
+            self.refused_takes.fetch_add(1, Relaxed);
+            return None;
+        }
+        let epoch = self.epoch.load(SeqCst);
+        let table = self.table()?;
+        let mut taken = 0;
+        for (index, word) in table.marks.iter().enumerate() {
+            if word.load(Relaxed) == 0 {
+                continue;
+            }
+            let mut value = word.swap(0, SeqCst);
+            while value != 0 {
+                let slot = index * MARK_BITS + value.trailing_zeros() as usize;
+                value &= value - 1;
+                let address = table.slots[slot].address.load(SeqCst);
+                if address != 0 {
+                    visit(address);
+                    taken += 1;
+                }
+            }
+        }
+        self.taken.fetch_add(taken, Relaxed);
+        if self.epoch.load(SeqCst) == epoch && self.quiet_now() {
+            Some(epoch)
+        } else {
+            self.refused_takes.fetch_add(1, Relaxed);
+            None
+        }
+    }
+
+    /// Marked receivers the takes visited, and takes that certified nothing.
+    pub fn takes(&self) -> (u64, u64) {
+        (self.taken.load(Relaxed), self.refused_takes.load(Relaxed))
     }
 
     /// `(epoch, revision)` while observing with no writer running; equal
@@ -238,32 +479,55 @@ impl WatchRegistry {
             return None;
         }
         let epoch = self.epoch.load(SeqCst);
-        let revision = self.revision.load(SeqCst);
-        (self.active.load(SeqCst) == 0).then_some((epoch, revision))
+        let state = self.quiet_state()?;
+        Some((epoch, revision(state)))
+    }
+
+    /// A cache hint for `receiver`'s first slot, ahead of its
+    /// [`Self::sequence`]: reads and changes nothing.
+    pub fn prefetch(&self, receiver: usize) {
+        if receiver == 0 {
+            return;
+        }
+        if let Some(table) = self.table() {
+            let index = crate::table_hash::slot((receiver >> 3) as u64, table.slots.len());
+            if let Some(slot) = table.slots.get(index) {
+                engine::prefetch::span(
+                    std::ptr::from_ref(slot) as usize,
+                    std::mem::size_of::<Slot>(),
+                );
+            }
+        }
     }
 
     /// `(epoch, sequence)` of `receiver`, registering it; `None` when it
     /// cannot be observed. Captures only, after the hour's boundary.
     pub fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+        self.register(receiver).map(|(certificate, _)| certificate)
+    }
+
+    /// [`Self::sequence`], and whether this call registered `receiver`: a
+    /// writer that ran before it was not observed, even one that ran after
+    /// the capture's earlier reads.
+    pub fn register(&self, receiver: usize) -> Option<((u64, u64), bool)> {
         if !self.observing() {
             return None;
         }
         let epoch = self.epoch.load(SeqCst);
-        let sequence = match self.table()?.find(receiver, true) {
-            Lookup::Watched(sequence) => sequence,
+        let (sequence, fresh) = match self.table()?.find(receiver, true) {
+            Lookup::Watched(_, sequence) => (sequence, false),
             Lookup::Registered(sequence) => {
                 self.registered.fetch_add(1, Relaxed);
-                sequence
+                (sequence, true)
             }
             Lookup::Unwatched => return None,
             Lookup::Full => {
                 self.refused.fetch_add(1, Relaxed);
                 return None;
             }
-        }
-        .load(SeqCst);
-        (self.epoch.load(SeqCst) == epoch && self.active.load(SeqCst) == 0)
-            .then_some((epoch, sequence))
+        };
+        let sequence = sequence.load(SeqCst);
+        (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some(((epoch, sequence), fresh))
     }
 
     /// Game thread, in the hourly callback before any capture: start an
@@ -283,12 +547,12 @@ impl WatchRegistry {
             if full || !self.offered.load(SeqCst).is_null() {
                 self.held.fetch_add(1, Relaxed);
             }
-            if self.active.load(SeqCst) == 0 {
+            if self.quiet_now() {
                 self.retire_drained();
             }
             return false;
         }
-        if self.active.load(SeqCst) != 0 {
+        if !self.quiet_now() {
             if full
                 || invalidate
                 || !self.offered.load(SeqCst).is_null()
@@ -314,7 +578,7 @@ impl WatchRegistry {
                 self.installs.fetch_add(1, Relaxed);
                 // A notification begun since the check above may hold it.
                 self.draining.store(previous, SeqCst);
-                if self.active.load(SeqCst) == 0 {
+                if self.quiet_now() {
                     self.retire_drained();
                 }
                 return true;
@@ -363,11 +627,22 @@ impl WatchRegistry {
         self.offer_slots(len);
     }
 
+    /// An enabled registry with a `len`-slot table installed (`len` a power
+    /// of two), for tests.
+    #[cfg(test)]
+    pub(crate) fn enabled(len: usize) -> Self {
+        let registry = Self::new();
+        registry.offer_slots(len);
+        registry.boundary(false);
+        registry.set_enabled(true);
+        registry
+    }
+
     fn offer_slots(&self, len: usize) {
         if len <= self.requested.load(SeqCst) {
             return;
         }
-        let Some(table) = Table::new(len) else {
+        let Some(table) = Table::new(len, self.marking) else {
             self.failed_offers.fetch_add(1, Relaxed);
             return;
         };
@@ -423,7 +698,12 @@ impl WatchRegistry {
 
     /// Notifications running now.
     pub fn active(&self) -> usize {
-        self.active.load(SeqCst)
+        let state = self.state.0.load(SeqCst);
+        if state & UNTRUSTED != 0 {
+            UNTRUSTED_ACTIVE
+        } else {
+            running(state) as usize
+        }
     }
 
     pub fn status(&self) -> impl serde::Serialize {
@@ -451,16 +731,36 @@ impl Drop for WatchRegistry {
 /// A running writer; its drop notifies the writer's return.
 pub struct Notification<'a> {
     registry: &'a WatchRegistry,
-    sequence: Option<&'a AtomicU64>,
+    /// The receiver's mark in a marking registry, set again on return.
+    mark: Option<(&'a AtomicU64, u64)>,
+    /// The receiver is unknown: every certificate is revoked.
+    every: bool,
+    /// The entry was counted as running (the word was trusted).
+    counted: bool,
+}
+
+/// A writer running without a notification ([`WatchRegistry::running`]).
+pub struct Running<'a> {
+    registry: &'a WatchRegistry,
+    counted: bool,
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.registry.leave(self.counted);
+    }
 }
 
 impl Drop for Notification<'_> {
     fn drop(&mut self) {
-        if let Some(sequence) = self.sequence {
-            self.registry.increment(sequence);
+        // The entry bumped the sequence and the revision (module docs).
+        if let Some((word, bit)) = self.mark {
+            word.fetch_or(bit, SeqCst);
         }
-        self.registry.increment(&self.registry.revision);
-        self.registry.active.fetch_sub(1, SeqCst);
+        if self.every {
+            self.registry.new_epoch();
+        }
+        self.registry.leave(self.counted);
     }
 }
 
@@ -470,12 +770,27 @@ mod tests {
 
     /// An enabled registry with a `len`-slot table installed.
     fn registry(len: usize) -> WatchRegistry {
-        let registry = WatchRegistry::new();
-        registry.offer_slots(len);
-        registry.boundary(false);
-        registry.set_enabled(true);
+        let registry = WatchRegistry::enabled(len);
         assert_eq!(registry.capacity.load(Relaxed), len);
         registry
+    }
+
+    /// A running writer certifies nothing while it runs and, unless it
+    /// notifies, revokes nothing when it ends.
+    #[test]
+    fn a_running_writer_blocks_certificates_without_revoking_them() {
+        let registry = registry(64);
+        let certificate = registry.sequence(0x1000).unwrap();
+        let quiet = registry.quiet().unwrap();
+        let running = registry.running();
+        assert!(registry.sequence(0x1000).is_none() && registry.quiet().is_none());
+        drop(running);
+        assert_eq!(registry.sequence(0x1000), Some(certificate));
+        assert_eq!(registry.quiet(), Some(quiet));
+        let running = registry.running();
+        drop(registry.notify(0x1000));
+        drop(running);
+        assert_ne!(registry.sequence(0x1000), Some(certificate));
     }
 
     #[test]
@@ -488,13 +803,40 @@ mod tests {
         assert!(registry.sequence(40).is_none());
         assert_eq!(registry.refused.load(Relaxed), 1);
         drop(registry.notify(8));
-        assert_eq!(registry.sequence(8).map(|(_, s)| s), Some(2));
+        assert_eq!(registry.sequence(8).map(|(_, s)| s), Some(1));
         assert_eq!(registry.sequence(16).map(|(_, s)| s), Some(0));
         // An unregistered receiver moves only the revision.
         let quiet = registry.quiet().unwrap();
         drop(registry.notify(40));
         assert_ne!(registry.quiet(), Some(quiet));
         assert_eq!(registry.sequence(24).map(|(_, s)| s), Some(0));
+    }
+
+    /// Receivers allocated one after another, at any object size, all
+    /// register in the table `offer` sizes for them: 155,000 (the
+    /// characters of 5,000 countries) at each stride. The bits 32 up of a
+    /// multiplicative hash refused 73,654 of them at a 0xF8 stride, 102,428
+    /// at 0x1F0, 127,608 at 0xF80 and 46 at 0x100; its top bits 14,825 at
+    /// 0x370, 41,234 at 0x6E0, 54,441 at 0xDC0 and 58,114 at 0x1310.
+    #[test]
+    fn strided_receivers_at_5000_countries_all_register() {
+        const RECEIVERS: usize = 5_000 * 31;
+        for stride in [
+            0x48, 0xf8, 0x100, 0x1f0, 0x200, 0x370, 0x6e0, 0xdc0, 0xf80, 0x1310, 0x2000,
+        ] {
+            let registry = WatchRegistry::new();
+            registry.offer(RECEIVERS);
+            registry.boundary(false);
+            registry.set_enabled(true);
+            for index in 0..RECEIVERS {
+                assert!(
+                    registry.sequence(0x4_0000_0000 + index * stride).is_some(),
+                    "stride {stride:#x}, receiver {index}"
+                );
+            }
+            assert_eq!(registry.refused.load(Relaxed), 0, "stride {stride:#x}");
+            assert_eq!(registry.registered(), RECEIVERS);
+        }
     }
 
     #[test]
@@ -572,17 +914,17 @@ mod tests {
     }
 
     /// A writer that began after the boundary saw no notification running
-    /// can overlap the clear. Whether its bumps land before or after the
+    /// can overlap the clear. Whether its bump lands before or after the
     /// clear zeroes its slot, a receiver registered there is refused while
-    /// it runs and certified after it ends with those bumps included, so it
-    /// never adds a later +2 that would read as an advance.
+    /// it runs and certified after it ends with that bump included; its
+    /// return bumps nothing that could read as a later advance.
     #[test]
     fn a_notification_spanning_a_clear_never_advances_a_new_certificate() {
         for bumped_after_clear in [false, true] {
             let registry = registry(64);
             registry.sequence(8).unwrap();
             let table = registry.table().unwrap();
-            let Lookup::Watched(slot) = table.find(8, false) else {
+            let Lookup::Watched(_, slot) = table.find(8, false) else {
                 unreachable!("registered above")
             };
             // Found its slot before the clear reached it.
@@ -591,11 +933,13 @@ mod tests {
             table.clear();
             registry.new_epoch();
             let running = running.unwrap_or_else(|| {
-                registry.active.fetch_add(1, SeqCst);
+                let counted = registry.enter();
                 slot.fetch_add(1, SeqCst);
                 Notification {
                     registry: &registry,
-                    sequence: Some(slot),
+                    mark: None,
+                    every: false,
+                    counted,
                 }
             });
             assert!(registry.sequence(8).is_none());
@@ -603,7 +947,7 @@ mod tests {
             let (_, baseline) = registry.sequence(8).unwrap();
             assert_eq!(registry.sequence(8).map(|(_, s)| s), Some(baseline));
             drop(registry.notify(8));
-            assert_eq!(registry.sequence(8).map(|(_, s)| s), Some(baseline + 2));
+            assert_eq!(registry.sequence(8).map(|(_, s)| s), Some(baseline + 1));
         }
     }
 
@@ -648,6 +992,223 @@ mod tests {
         assert_eq!(registry.table.load(SeqCst), installed);
         assert!(registry.offered.load(SeqCst).is_null());
         assert_eq!(registry.sequence(8), Some(certificate));
+    }
+
+    #[test]
+    fn an_unnamed_receiver_revokes_every_certificate() {
+        let registry = registry(64);
+        let certified = [8, 16].map(|address| registry.sequence(address).unwrap());
+        let running = registry.notify_every();
+        assert!(registry.sequence(8).is_none() && registry.quiet().is_none());
+        drop(running);
+        for (address, certificate) in [8, 16].into_iter().zip(certified) {
+            assert_ne!(registry.sequence(address), Some(certificate));
+        }
+    }
+
+    /// A writer is one bump of its receiver and of the revision, at its
+    /// entry; certificates and quiet tokens are refused until it returns,
+    /// and its return bumps nothing. The running count and the revision
+    /// share a word on its own cache line.
+    #[test]
+    fn a_writer_bumps_once_at_entry_and_is_refused_until_it_returns() {
+        let registry = registry(64);
+        let (epoch, sequence) = registry.sequence(8).unwrap();
+        let (_, initial_revision) = registry.quiet().unwrap();
+        let writer = registry.notify(8);
+        assert_eq!(registry.active(), 1);
+        assert!(registry.sequence(8).is_none() && registry.quiet().is_none());
+        let nested = registry.notify(16);
+        assert_eq!(registry.active(), 2);
+        drop(nested);
+        drop(writer);
+        assert_eq!(registry.active(), 0);
+        assert_eq!(registry.sequence(8), Some((epoch, sequence + 1)));
+        assert_eq!(registry.quiet(), Some((epoch, initial_revision + 2)));
+        // A running guard moves neither.
+        drop(registry.running());
+        assert_eq!(registry.quiet(), Some((epoch, initial_revision + 2)));
+        assert_eq!(std::mem::align_of::<Hot>(), 64);
+        assert_eq!(std::mem::size_of::<Hot>(), 64);
+        // The last representable revision makes the word untrusted rather
+        // than wrapping into a value an older token holds.
+        registry
+            .state
+            .0
+            .store(LAST_REVISION << RUNNING_BITS, SeqCst);
+        drop(registry.notify(8));
+        assert!(registry.poisoned());
+        assert_eq!(registry.state.0.load(SeqCst) & UNTRUSTED, UNTRUSTED);
+        assert_eq!(revision(registry.state.0.load(SeqCst)), LAST_REVISION);
+        assert!(registry.quiet().is_none());
+    }
+
+    /// The admission that would fill the running field to its limit sets
+    /// the word's untrusted bit in the same swap and counts nothing, so the
+    /// field never carries: no interleaving of admissions can bring the
+    /// count back to zero while writers it counted still run. From then on
+    /// the word is never quiet, even once every counted writer returned:
+    /// nothing is certified, no table (installed, offered or draining) is
+    /// cleared, installed or retired, and detach sees writers running.
+    #[test]
+    fn the_admission_at_the_running_limit_makes_the_word_untrusted() {
+        for guard in [false, true] {
+            let registry = registry(64);
+            registry.sequence(8).unwrap();
+            // A replaced table a stale notification may still hold.
+            let draining = Box::into_raw(Table::new(64, false).unwrap());
+            registry.draining.store(draining, SeqCst);
+            registry
+                .state
+                .0
+                .store((7 << RUNNING_BITS) | (RUNNING_LIMIT - 2), SeqCst);
+            let hold = || {
+                (
+                    guard.then(|| registry.running()),
+                    (!guard).then(|| registry.notify(8)),
+                )
+            };
+            let counted = hold();
+            let state = registry.state.0.load(SeqCst);
+            assert_eq!((state & UNTRUSTED, running(state)), (0, RUNNING_LIMIT - 1));
+            let refused = hold();
+            let state = registry.state.0.load(SeqCst);
+            assert_eq!(state & UNTRUSTED, UNTRUSTED);
+            assert_eq!(running(state), RUNNING_LIMIT - 1, "not counted");
+            assert!(registry.poisoned());
+            // Uncounted admissions and returns leave the count alone.
+            drop(hold());
+            drop(refused);
+            assert_eq!(running(registry.state.0.load(SeqCst)), RUNNING_LIMIT - 1);
+            drop(counted);
+            assert_eq!(running(registry.state.0.load(SeqCst)), RUNNING_LIMIT - 2);
+            // Even a count that reads zero is never quiet again.
+            registry
+                .state
+                .0
+                .store(UNTRUSTED | (9 << RUNNING_BITS), SeqCst);
+            assert_eq!(registry.active(), UNTRUSTED_ACTIVE);
+            assert!(registry.quiet().is_none() && registry.sequence(8).is_none());
+            let installed = registry.table.load(SeqCst);
+            registry.offer(1_000);
+            for invalidate in [false, true] {
+                assert!(!registry.boundary(invalidate));
+            }
+            assert_eq!(registry.table.load(SeqCst), installed, "no install");
+            assert_eq!(registry.draining.load(SeqCst), draining, "not retired");
+            assert!(registry.retired.load(SeqCst).is_null());
+        }
+    }
+
+    /// Release bench: one notification of a registered receiver (entry and
+    /// return), on one thread and on four at once.
+    #[test]
+    #[ignore = "release per-call notification cost; run with --release --ignored --nocapture --test-threads=1"]
+    fn hook_cost_watch_registry() {
+        const RECEIVERS: usize = 1500;
+        let registry = registry(8192);
+        let receiver = |index: usize| 0x10_0000 + index * 0x200;
+        for index in 0..RECEIVERS {
+            registry.sequence(receiver(index)).unwrap();
+        }
+        let one = crate::hook_timing::per_call_ns(RECEIVERS, || {
+            for index in 0..RECEIVERS {
+                drop(std::hint::black_box(registry.notify(receiver(index))));
+            }
+        });
+        let four = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        crate::hook_timing::per_call_ns(RECEIVERS, || {
+                            for index in 0..RECEIVERS {
+                                drop(std::hint::black_box(registry.notify(receiver(index))));
+                            }
+                        })
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .sum::<f64>()
+                / 4.0
+        });
+        println!(
+            "hook_cost watch_registry notify+return: {one:.1} ns/call on one thread, {four:.1} ns/call on each of four"
+        );
+    }
+
+    /// An enabled marking registry with a `len`-slot table installed.
+    fn marking(len: usize) -> WatchRegistry {
+        let registry = WatchRegistry::marking();
+        registry.offer_slots(len);
+        registry.boundary(false);
+        registry.set_enabled(true);
+        registry
+    }
+
+    fn take(registry: &WatchRegistry) -> (Option<u64>, Vec<usize>) {
+        let mut seen = Vec::new();
+        let epoch = registry.take(|address| seen.push(address));
+        seen.sort_unstable();
+        (epoch, seen)
+    }
+
+    #[test]
+    fn a_marking_registry_takes_each_touched_receiver_once_within_one_epoch() {
+        let registry = marking(64);
+        for address in [8, 16, 24] {
+            registry.sequence(address).unwrap();
+        }
+        let (Some(epoch), seen) = take(&registry) else {
+            unreachable!("observing")
+        };
+        assert!(seen.is_empty());
+        // A registration says whether it was this call's.
+        assert_eq!(registry.register(48).map(|(_, fresh)| fresh), Some(true));
+        assert_eq!(registry.register(48).map(|(_, fresh)| fresh), Some(false));
+        drop(registry.notify(16));
+        drop(registry.notify(16));
+        // An unregistered receiver has no slot to mark.
+        drop(registry.notify(40));
+        assert_eq!(take(&registry), (Some(epoch), vec![16]));
+        // A quiet hour visits nothing and keeps the epoch.
+        assert_eq!(take(&registry), (Some(epoch), vec![]));
+        assert_eq!(registry.takes(), (1, 0));
+        // A running writer refuses the take and keeps its mark.
+        let running = registry.notify(24);
+        assert_eq!(take(&registry), (None, vec![]));
+        drop(running);
+        assert_eq!(take(&registry), (Some(epoch), vec![24]));
+        // A writer that begins during the take, after its word was swapped,
+        // refuses it and marks again on return for the next take.
+        drop(registry.notify(8));
+        let mut running = None;
+        let certified = registry.take(|address| {
+            if address == 8 {
+                running = Some(registry.notify(8));
+            }
+        });
+        assert_eq!(certified, None);
+        drop(running);
+        assert_eq!(take(&registry), (Some(epoch), vec![8]));
+        // An invalidation moves the epoch.
+        registry.boundary(true);
+        assert_ne!(take(&registry).0, Some(epoch));
+    }
+
+    #[test]
+    fn only_a_marking_registry_takes_and_a_poisoned_one_refuses() {
+        let plain = registry(64);
+        plain.sequence(8).unwrap();
+        drop(plain.notify(8));
+        assert_eq!(take(&plain), (None, vec![]));
+        let marking = marking(64);
+        marking.sequence(8).unwrap();
+        marking.poison();
+        drop(marking.notify(8));
+        assert_eq!(take(&marking), (None, vec![]));
     }
 
     #[test]

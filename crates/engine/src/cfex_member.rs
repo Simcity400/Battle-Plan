@@ -3,7 +3,13 @@
 //! information survives ship loss and remains separate from live ship fields.
 
 use crate::capture_text::Value;
-use crate::{Memory, cnaval_combatant, cpdx_array::Array, creference_registry, cship, read};
+use crate::{
+    Memory, cnaval_combatant,
+    cpdx_array::Array,
+    creference_registry, cship,
+    memory::{FieldBatch, Raw},
+    read,
+};
 
 /// CFEXMember vtable.
 pub const VTABLE_RVA: usize = 0x02a0_a228;
@@ -52,6 +58,13 @@ pub struct DetailBuffers<'a> {
     pub weapon_terms: &'a mut Vec<crate::naval_ship_modifier_inputs::ModifierTerm>,
     pub weapon_lengths: [usize; 2],
     pub weapon_required: [usize; 2],
+    /// The capture's doctrine selector answers for the weapon contexts.
+    pub doctrine_keys: crate::naval_ship_modifier_inputs::DoctrineKeys,
+    /// The capture's modifier definition metadata for the weapon contexts.
+    pub term_metadata: crate::naval_ship_modifier_inputs::TermMetadata,
+    /// The capture's task-force doctrine and leader sources for the weapon
+    /// contexts; `None` walks and searches for every ship.
+    pub source_memo: Option<crate::naval_ship_modifier_inputs::SourceMemo>,
     pub commander_inputs: crate::walk::Buffer<'a, crate::naval_commander_inputs::Row>,
     pub commander_inputs_len: usize,
     pub commander_inputs_required: usize,
@@ -80,6 +93,87 @@ pub struct DetailBuffers<'a> {
 }
 
 pub const DETAIL_ARENA_CAPACITY: &str = "naval detail nested arena capacity exceeded";
+
+/// The member fields [`details`] reads at fixed offsets, in its order: the
+/// damage, two air-hit and naval-hit array headers, then the scalars (convoy
+/// handle, subunit index, formation type, build cost, cached strength,
+/// pride and convoy bytes, variant, arrival hours, received criticals,
+/// evacuation and detection states, escape progress).
+const MEMBER_FIELDS: [(usize, usize); 17] = [
+    (DAMAGE_ENTRIES, 16),
+    (0x150, 16),
+    (0x168, 16),
+    (0x180, 16),
+    (CONVOY_HANDLE, 8),
+    (0x24, 4),
+    (0x28, 4),
+    (BUILD_COST_IC, 8),
+    (CACHED_STRENGTH, 8),
+    (0x40, 1),
+    (0x41, 1),
+    (0xc8, 8),
+    (ARRIVAL_HOURS, 4),
+    (RECEIVED_CRITICALS, 4),
+    (EVACUATION_STATE, 4),
+    (DETECTION_STATE, 4),
+    (ESCAPE_PROGRESS, 8),
+];
+/// Every fixed member field [`details`] reads, ascending: the identity
+/// (`cnaval_combatant::member`: vtable, ship handle, owner, state, group,
+/// battle slot), [`MEMBER_FIELDS`], the four text headers (name, type, sprite,
+/// attribution) and the last-target record (`clast_target_info::read`). A
+/// member's are gathered in one prefetched guarded call and served to those
+/// readers; a field the gather could not copy is read alone, as before.
+const MEMBER_RECORD: [(usize, usize); 31] = [
+    (0, 8),
+    (SHIP_HANDLE, 8),
+    (CONVOY_HANDLE, 8),
+    (OWNER, 4),
+    (0x24, 4),
+    (0x28, 4),
+    (BUILD_COST_IC, 8),
+    (CACHED_STRENGTH, 8),
+    (0x40, 1),
+    (0x41, 1),
+    (0x48, 32),
+    (0x68, 32),
+    (0x88, 32),
+    (ATTRIBUTION_NAME, 32),
+    (0xc8, 8),
+    (STATE, 4),
+    (ARRIVAL_HOURS, 4),
+    (GROUP, 8),
+    (DAMAGE_ENTRIES, 16),
+    (BATTLE_SLOT, 4),
+    (RECEIVED_CRITICALS, 4),
+    (EVACUATION_STATE, 4),
+    (DETECTION_STATE, 4),
+    (ESCAPE_PROGRESS, 8),
+    (0x138, 8),
+    (0x140, 1),
+    (0x144, 4),
+    (0x148, 1),
+    (0x150, 16),
+    (0x168, 16),
+    (0x180, 16),
+];
+
+/// Past the furthest [`MEMBER_FIELDS`] byte.
+const MEMBER_FIELDS_END: usize = 0x190;
+
+/// Field `index` of [`MEMBER_FIELDS`] of the member at `pointer`, from its
+/// gathered `fields` or, without them, read singly.
+fn member_field<T: Raw>(
+    memory: &impl Memory,
+    pointer: usize,
+    fields: &Option<FieldBatch<17>>,
+    index: usize,
+) -> Result<T, &'static str> {
+    match fields {
+        Some(fields) => fields.get(memory, index).ok_or("naval field unreadable"),
+        None => cnaval_combatant::field(memory, pointer, MEMBER_FIELDS[index].0),
+    }
+}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
@@ -139,6 +233,44 @@ impl DetailsRow {
     }
 }
 
+/// Every fixed field of a live combat ship that [`details`] and its weapon
+/// context (`naval_ship_modifier_inputs::read`) read, each span enclosing
+/// their exact reads: identity and handle, the equipment pool's vtable and
+/// array header, the class, the detection and weapon bases, the escape speed,
+/// the weather factor, the base organisation with the maximum hit points,
+/// the fifth weapon base, the subunit, the formation flags, the strength with
+/// the organisation, the task force with the carrier air base, the modifier
+/// accumulator's header, the medal store and the critical array's header.
+const COMBAT_SHIP_FIELDS: [(usize, usize); 18] = [
+    (0, 16),
+    (cship::EQUIPMENT_POOL, 8),
+    (
+        cship::EQUIPMENT_POOL + crate::cequipment_variant_pool::ITEMS,
+        16,
+    ),
+    (0x88, 4),
+    (0x1b8, 8),
+    (0x1e0, 16),
+    (0x1f8, 32),
+    (0x228, 8),
+    (0x270, 8),
+    (0x300, 16),
+    (0x318, 8),
+    (0x60c, 4),
+    (cship::FORMATION_FLAGS, 8),
+    (cship::STRENGTH, 16),
+    (cship::TASK_FORCE, 16),
+    (0x750, 16),
+    (0x8f8, 8),
+    (0x918, 16),
+];
+
+/// Combat members read, live ships whose weapon context was attempted, and
+/// the QPC ticks of the whole member reads and of those weapon contexts,
+/// cumulative (diagnostics only: no row depends on them).
+pub static MEMBER_PHASES: [std::sync::atomic::AtomicU64; 4] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+
 /// Read a copied battle slot using its authenticated group and stable native key.
 /// Storage grows only on the acquisition worker. Every full handle and byte
 /// survives; no engine function is called and no observation is retried.
@@ -153,25 +285,67 @@ pub(crate) fn details(
     game_state: usize,
     buffers: &mut DetailBuffers<'_>,
 ) -> Result<DetailsRow, &'static str> {
+    let started = crate::clock::qpc();
+    let row = details_timed(
+        memory, base, pointer, group, combat, side, game_state, buffers,
+    );
+    MEMBER_PHASES[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    MEMBER_PHASES[3].fetch_add(
+        crate::clock::since(started),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    row
+}
+
+#[allow(clippy::too_many_arguments)]
+fn details_timed(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    group: usize,
+    combat: u64,
+    side: u8,
+    game_state: usize,
+    buffers: &mut DetailBuffers<'_>,
+) -> Result<DetailsRow, &'static str> {
     use cnaval_combatant::field;
+    // The member's own fixed fields in one guarded call, served to its
+    // identity, scalar, text and last-target readers below; the nested
+    // arrays, received damage, the live ship and the convoy read the source.
+    let record = cship::GatheredObject::gather(memory, pointer, MEMBER_RECORD);
+    if !record.complete() {
+        crate::batch_fallback::record(crate::batch_fallback::Batch::NavalMemberRecords);
+    }
+    let source = memory;
+    let memory = &record.memory(source);
     let member = cnaval_combatant::member(memory, base, pointer, group, combat, side)?;
+    // The nested headers and scalars below in one guarded call, each
+    // consulted where it is read; a member whose fields would overflow reads
+    // them singly.
+    let fields = pointer
+        .checked_add(MEMBER_FIELDS_END)
+        .map(|_| FieldBatch::gather(memory, MEMBER_FIELDS.map(|(at, len)| (pointer + at, len))));
     let mut row_counts = [0usize; 3];
     // Each array uses its stored count. Header validation checks capacity
     // and extent; guarded entry reads validate payloads.
     let mut arrays = [Array { data: 0, count: 0 }; 4];
-    for (header, (offset, stride, lane)) in arrays.iter_mut().zip([
-        (DAMAGE_ENTRIES, 0x20, 0),
-        (0x150, 8, 1),
-        (0x168, 8, 1),
-        (0x180, 8, 2),
-    ]) {
-        let array = Array::read(
-            memory,
-            pointer
-                .checked_add(offset)
-                .ok_or("naval detail nested header overflow")?,
-            stride,
-        )
+    for (index, (header, (stride, lane))) in arrays
+        .iter_mut()
+        .zip([(0x20, 0), (8, 1), (8, 1), (8, 2)])
+        .enumerate()
+    {
+        let array = match &fields {
+            Some(fields) => fields
+                .get::<[u8; 16]>(memory, index)
+                .and_then(|header| Array::from_header(header, stride)),
+            None => Array::read(
+                memory,
+                pointer
+                    .checked_add(MEMBER_FIELDS[index].0)
+                    .ok_or("naval detail nested header overflow")?,
+                stride,
+            ),
+        }
         .ok_or("naval detail nested array invalid")?;
         row_counts[lane] += array.count as usize;
         *header = array;
@@ -200,23 +374,23 @@ pub(crate) fn details(
     let mut row = DetailsRow {
         native_group: group,
         member,
-        convoy: field(memory, pointer, CONVOY_HANDLE)?,
-        subunit_index: field(memory, pointer, 0x24)?,
-        formation_type: field(memory, pointer, 0x28)?,
-        build_cost_ic: field(memory, pointer, BUILD_COST_IC)?,
-        cached_strength_ratio: field(memory, pointer, CACHED_STRENGTH)?,
-        pride: field(memory, pointer, 0x40)?,
-        is_convoy: field(memory, pointer, 0x41)?,
+        convoy: member_field(memory, pointer, &fields, 4)?,
+        subunit_index: member_field(memory, pointer, &fields, 5)?,
+        formation_type: member_field(memory, pointer, &fields, 6)?,
+        build_cost_ic: member_field(memory, pointer, &fields, 7)?,
+        cached_strength_ratio: member_field(memory, pointer, &fields, 8)?,
+        pride: member_field(memory, pointer, &fields, 9)?,
+        is_convoy: member_field(memory, pointer, &fields, 10)?,
         name: text(0x48)?,
         type_name: text(0x68)?,
         sprite: text(0x88)?,
         sunk_by: text(ATTRIBUTION_NAME)?,
-        variant: field(memory, pointer, 0xc8)?,
-        arrival_hours: field(memory, pointer, ARRIVAL_HOURS)?,
-        received_criticals: field(memory, pointer, RECEIVED_CRITICALS)?,
-        evacuation_state: field(memory, pointer, EVACUATION_STATE)?,
-        detection_state: field(memory, pointer, DETECTION_STATE)?,
-        escape_progress: field(memory, pointer, ESCAPE_PROGRESS)?,
+        variant: member_field(memory, pointer, &fields, 11)?,
+        arrival_hours: member_field(memory, pointer, &fields, 12)?,
+        received_criticals: member_field(memory, pointer, &fields, 13)?,
+        evacuation_state: member_field(memory, pointer, &fields, 14)?,
+        detection_state: member_field(memory, pointer, &fields, 15)?,
+        escape_progress: member_field(memory, pointer, &fields, 16)?,
         last_target: crate::clast_target_info::read(
             memory,
             base,
@@ -226,6 +400,7 @@ pub(crate) fn details(
         )?,
         ..DetailsRow::default()
     };
+    let memory = source;
     let damage: [u8; 48] = field(memory, pointer, RECEIVED_DAMAGE)?;
     for (value, bytes) in row.received_damage.iter_mut().zip(damage.chunks_exact(8)) {
         *value = i64::from_le_bytes(bytes.try_into().unwrap());
@@ -236,8 +411,8 @@ pub(crate) fn details(
         0x20,
         EntryOutput::Owned(buffers.damage),
         &mut buffers.lengths[0],
-        |p| crate::cfex_damage_entry::read(memory, base, p),
-        false,
+        |memory, p| crate::cfex_damage_entry::read(memory, base, p),
+        None,
     )?;
     for (index, array) in arrays[1..3].iter().copied().enumerate() {
         row.air_hits[index] = append_entries(
@@ -246,8 +421,8 @@ pub(crate) fn details(
             8,
             EntryOutput::Owned(buffers.air_hits),
             &mut buffers.lengths[1],
-            |p| crate::naval_combat_air_hit::read(memory, base, p),
-            true,
+            |memory, p| crate::naval_combat_air_hit::read(memory, base, p),
+            Some(&crate::naval_combat_air_hit::RECORD),
         )?;
     }
     row.naval_hits = append_entries(
@@ -256,10 +431,14 @@ pub(crate) fn details(
         8,
         EntryOutput::Owned(buffers.naval_hits),
         &mut buffers.lengths[2],
-        |p| crate::naval_combat_hit::read(memory, base, p),
-        true,
+        |memory, p| crate::naval_combat_hit::read(memory, base, p),
+        Some(&crate::naval_combat_hit::RECORD),
     )?;
     if let Some(ship) = creference_registry::resolve(memory, base, member.ship)? {
+        // The live ship's fixed fields, read below and by its weapon context,
+        // in one guarded call and served to them.
+        let fields = crate::cship::GatheredObject::gather(memory, ship, COMBAT_SHIP_FIELDS);
+        let memory = &fields.memory(memory);
         if field::<u64>(memory, ship, 0)? != (base + cship::VTABLE_RVA) as u64
             || field::<u64>(memory, ship, cship::HANDLE)? != member.ship
         {
@@ -274,14 +453,17 @@ pub(crate) fn details(
         row.base_organisation = field(memory, ship, 0x300)?;
         row.maximum_hit_points = field(memory, ship, 0x308)?;
         row.formation_flags = field(memory, ship, cship::FORMATION_FLAGS)?;
-        row.weapon_context = crate::naval_ship_modifier_inputs::read(
-            memory,
-            base,
-            game_state,
-            ship,
-            field::<u64>(memory, group, crate::cfex_group::SIDE)? as usize,
-            buffers,
-        )?;
+        let side = field::<u64>(memory, group, crate::cfex_group::SIDE)? as usize;
+        // Every attempted weapon context is timed, a refused one too.
+        let started = crate::clock::qpc();
+        let context =
+            crate::naval_ship_modifier_inputs::read(memory, base, game_state, ship, side, buffers);
+        MEMBER_PHASES[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        MEMBER_PHASES[2].fetch_add(
+            crate::clock::since(started),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        row.weapon_context = context?;
     }
     if row.live_ship == 0
         && let Some(convoy) = creference_registry::resolve(memory, base, row.convoy)?
@@ -305,14 +487,105 @@ pub(crate) enum EntryOutput<'a, T> {
 
 /// Owned storage reserves the validated header count once; rows are appended
 /// only after each entry's guarded reads complete.
-pub(crate) fn append_entries<T>(
-    memory: &impl Memory,
+/// Entries of a nested array read in one run: up to this many elements per
+/// guarded call, and their pointed objects' fields per record copy.
+const ENTRY_RUN: usize = 64;
+/// The widest element (a damage entry) and the widest object record (a
+/// naval hit's) a run holds.
+const ENTRY_STRIDE: usize = 0x20;
+const ENTRY_RECORD: usize = 64;
+
+/// One run of a nested array's elements, copied in one guarded call and
+/// served to the entries' decoders; every other read, and every read when
+/// the copy failed, goes to the source.
+pub(crate) struct EntryRun<'a, M> {
+    source: &'a M,
+    start: usize,
+    bytes: &'a [u8],
+}
+
+impl<M: Memory> Memory for EntryRun<'_, M> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        if let Some(offset) = address.checked_sub(self.start)
+            && offset
+                .checked_add(destination.len())
+                .is_some_and(|end| end <= self.bytes.len())
+        {
+            destination.copy_from_slice(&self.bytes[offset..offset + destination.len()]);
+            return true;
+        }
+        self.source.copy(address, destination)
+    }
+
+    fn prefetch(&self, address: usize, len: usize) {
+        self.source.prefetch(address, len);
+    }
+
+    fn authenticated_countries(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<crate::ccountry::AuthenticatedRoster<'_>> {
+        self.source.authenticated_countries(base, game_state)
+    }
+
+    fn modifier_definitions(&self) -> Option<&crate::modifier_definition::PassDefinitions> {
+        self.source.modifier_definitions()
+    }
+}
+
+/// One pointed object's fields from its run's record copy, when that copy
+/// completed the object's record; otherwise nothing, and its decoder reads the
+/// source, as it read every entry before.
+pub(crate) struct EntryRecord<'a> {
+    pointer: usize,
+    fields: &'a [crate::memory::RecordField],
+    record: &'a [u8],
+}
+
+impl cship::Served for EntryRecord<'_> {
+    fn lookup(&self, address: usize, len: usize) -> cship::Lookup<'_> {
+        if self.pointer == 0 || len == 0 || self.record.is_empty() {
+            return cship::Lookup::Source;
+        }
+        let Some(offset) = address.checked_sub(self.pointer) else {
+            return cship::Lookup::Source;
+        };
+        for field in self.fields {
+            if offset >= field.source_offset
+                && offset
+                    .checked_add(len)
+                    .is_some_and(|end| end <= field.source_offset + field.len)
+            {
+                let at = field.destination_offset + offset - field.source_offset;
+                return cship::Lookup::Served(&self.record[at..at + len]);
+            }
+        }
+        cship::Lookup::Source
+    }
+}
+
+/// The memory an entry decoder reads: its object's record, then its run's
+/// elements, then the source.
+pub(crate) type EntryMemory<'a, M> = cship::GatheredMemory<'a, EntryRun<'a, M>, EntryRecord<'a>>;
+
+/// Appends an array's entries in order. `object` names the fields of the
+/// objects an array of pointers leads to (`None`: the elements are the
+/// entries). Up to [`ENTRY_RUN`] elements are copied in one guarded call, and
+/// their objects' fields in one record copy; each entry is then decoded, in
+/// order, from those bytes through its unchanged reader. A run whose element
+/// copy failed decodes each of its entries from the source, as before (each
+/// element and object read once, at most a run's worth); an object whose
+/// record the copy did not complete is read from the source too. So a lasting
+/// fault gives the per-entry result and a fault that clears refuses no more.
+pub(crate) fn append_entries<M: Memory, T>(
+    memory: &M,
     array: Array,
     stride: usize,
     mut output: EntryOutput<'_, T>,
     length: &mut usize,
-    mut decode: impl FnMut(usize) -> Result<T, &'static str>,
-    indirect: bool,
+    mut decode: impl FnMut(&EntryMemory<'_, M>, usize) -> Result<T, &'static str>,
+    object: Option<&'static [crate::memory::RecordField]>,
 ) -> Result<[usize; 2], &'static str> {
     let count = array.count as usize;
     let end = length
@@ -328,20 +601,85 @@ pub(crate) fn append_entries<T>(
         EntryOutput::Slice(rows) if end > rows.len() => return Err(DETAIL_ARENA_CAPACITY),
         EntryOutput::Slice(_) => (),
     }
-    for index in 0..array.count {
-        let entry = array
-            .element(index, stride)
+    let fields = object.unwrap_or(&[]);
+    let row_bytes = fields
+        .iter()
+        .map(|field| field.destination_offset + field.len)
+        .max()
+        .unwrap_or(0);
+    let layout = (row_bytes != 0 && row_bytes <= ENTRY_RECORD)
+        .then(|| crate::memory::RecordLayout::new(fields, row_bytes))
+        .flatten();
+    let mut elements = [0_u8; ENTRY_RUN * ENTRY_STRIDE];
+    let mut records = [0_u8; ENTRY_RUN * ENTRY_RECORD];
+    let mut pointers = [0_usize; ENTRY_RUN];
+    let mut first = 0_u32;
+    while first < array.count {
+        let run = ((array.count - first) as usize).min(ENTRY_RUN);
+        let start = array
+            .element(first, stride)
             .ok_or("naval detail nested element overflow")?;
-        let entry = if indirect {
-            read::<u64>(memory, entry).ok_or("naval detail nested pointer unreadable")? as usize
-        } else {
-            entry
+        // The run's elements in one guarded call.
+        let copied = stride <= ENTRY_STRIDE && memory.copy(start, &mut elements[..run * stride]);
+        let elements = EntryRun {
+            source: memory,
+            start,
+            bytes: if copied {
+                &elements[..run * stride]
+            } else {
+                &[]
+            },
         };
-        let row = decode(entry)?;
-        match &mut output {
-            EntryOutput::Owned(rows) => rows.push(row),
-            EntryOutput::Slice(rows) => rows[*length + index as usize] = row,
+        // The pointed objects' fields in one record copy, from copied pointers.
+        let mut complete = 0;
+        if copied
+            && object.is_some()
+            && let Some(layout) = &layout
+        {
+            for (index, pointer) in pointers[..run].iter_mut().enumerate() {
+                let at = index * stride;
+                *pointer = u64::from_le_bytes(
+                    elements.bytes[at..at + 8]
+                        .try_into()
+                        .expect("pointer element"),
+                ) as usize;
+            }
+            complete = memory.copy_records(
+                crate::memory::RecordSources::Pointers(&pointers[..run]),
+                layout,
+                &mut records[..run * row_bytes],
+            ) / fields.len().max(1);
         }
+        if !copied || (object.is_some() && complete < run) {
+            crate::batch_fallback::record(crate::batch_fallback::Batch::NavalEntryRuns);
+        }
+        for offset in 0..run {
+            let index = first + offset as u32;
+            let entry = array
+                .element(index, stride)
+                .ok_or("naval detail nested element overflow")?;
+            let entry = if object.is_some() {
+                read::<u64>(&elements, entry).ok_or("naval detail nested pointer unreadable")?
+                    as usize
+            } else {
+                entry
+            };
+            let record = EntryRecord {
+                pointer: entry,
+                fields,
+                record: if offset < complete {
+                    &records[offset * row_bytes..(offset + 1) * row_bytes]
+                } else {
+                    &[]
+                },
+            };
+            let row = decode(&cship::GatheredMemory::new(&elements, &record), entry)?;
+            match &mut output {
+                EntryOutput::Owned(rows) => rows.push(row),
+                EntryOutput::Slice(rows) => rows[*length + index as usize] = row,
+            }
+        }
+        first += run as u32;
     }
     *length = end;
     Ok(span)
@@ -398,3 +736,9 @@ pub const CONVOY_TERMINAL_CONTEXT_SENTINEL: [u8; 25] = [
     0x4d, 0x8d, 0x4c, 0x24, 0x20, 0x4d, 0x8b, 0xc7, 0xba, 0x01, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x0d,
     0x18, 0x4b, 0x9b, 0x01, 0xe8, 0x13, 0x8b, 0x86, 0xfe,
 ];
+
+#[cfg(test)]
+mod serial_reference;
+
+#[cfg(test)]
+mod entry_run_tests;

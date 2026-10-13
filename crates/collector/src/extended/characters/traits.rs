@@ -24,7 +24,7 @@ pub(super) struct TraitDefinitions {
     growing: bool,
     pub(super) entries: Vec<TraitDefinition>,
     by_address: std::collections::HashMap<usize, usize>,
-    log: crate::raw::RawLog<2>,
+    log: crate::raw::RawLog<1>,
     overflowed: bool,
     charge: crate::raw_memory::Charge,
 }
@@ -32,8 +32,7 @@ pub(super) struct TraitDefinitions {
 impl TraitDefinitions {
     pub(super) fn new() -> Self {
         let hint = demand::initial_traits();
-        let rows = hint[0].rows.saturating_add(hint[1].rows);
-        let bytes = hint[0].bytes.saturating_add(hint[1].bytes);
+        let (rows, bytes) = (hint.rows, hint.bytes);
         let mut value = Self {
             entries: owned_vec(vec(rows)),
             by_address: std::collections::HashMap::default(),
@@ -107,7 +106,6 @@ impl TraitDefinitions {
         memory: &impl Memory,
         base: usize,
         address: usize,
-        table: usize,
     ) -> Result<usize, &'static str> {
         if let Some(&index) = self.by_address.get(&address) {
             return Ok(index);
@@ -145,7 +143,7 @@ impl TraitDefinitions {
                         at(cunit_leader_trait::TOKEN)?,
                     ],
                     [12, 4, 32],
-                    [1 << table; 3],
+                    [1; 3],
                 )
                 .ok_or("character trait definition staging capacity exhausted")?;
             definition.identity = starts[0];
@@ -197,12 +195,11 @@ impl TraitDefinitions {
 
     /// A byte-limited consumer witnesses only the terminator. Upgrading that
     /// observation creates a separate entry, so a payload fault cannot alter an
-    /// earlier successful truncated observation in the other table.
+    /// earlier successful truncated observation.
     pub(super) fn consume(
         &mut self,
         memory: &impl Memory,
         mut index: usize,
-        table: usize,
         fits: bool,
     ) -> Result<usize, &'static str> {
         if self.entries[index].error.is_some() {
@@ -236,7 +233,7 @@ impl TraitDefinitions {
                             memory,
                             [terminator, definition.source],
                             [1, definition.len],
-                            [1 << table; 2],
+                            [1; 2],
                         )
                         .ok_or("character trait definition staging capacity exhausted")?;
                     if completed == 0 || self.log.bytes[starts[0]] != 0 {
@@ -249,7 +246,7 @@ impl TraitDefinitions {
                 } else {
                     let terminated = self
                         .log
-                        .take(memory, terminator, 1, 1 << table)
+                        .take(memory, terminator, 1, 1)
                         .is_some_and(|start| self.log.bytes[start] == 0);
                     if !terminated {
                         return Err("unit leader string terminator invalid or unreadable");
@@ -298,7 +295,6 @@ impl TraitDefinitions {
 
 #[derive(Debug)]
 pub(super) struct TraitOccurrence {
-    entry: [u8; 16],
     ordinal: u32,
     definition: usize,
 }
@@ -306,11 +302,11 @@ pub(super) struct TraitOccurrence {
 #[derive(Debug)]
 pub(super) struct TraitVector {
     pub(super) unit: usize,
-    leader: u32,
+    pub(super) leader: u32,
     start: usize,
     len: usize,
     pub(super) outcome: Outcome,
-    bytes_len: usize,
+    pub(super) bytes_len: usize,
     required_bytes: usize,
 }
 
@@ -320,15 +316,15 @@ pub(super) struct TraitVector {
 pub(super) struct TraitCapture {
     pub(super) growing: bool,
     pub(super) definitions: TraitDefinitions,
-    pub(super) vectors: [Vec<TraitVector>; 2],
-    occurrences: [Vec<TraitOccurrence>; 2],
-    rows: [usize; 2],
-    bytes: [usize; 2],
-    used_rows: [usize; 2],
-    used_bytes: [usize; 2],
-    truncated: [bool; 2],
-    pub(super) fault: [bool; 2],
-    pub(super) raw_bytes: [u64; 2],
+    pub(super) vectors: Vec<TraitVector>,
+    occurrences: Vec<TraitOccurrence>,
+    rows: usize,
+    bytes: usize,
+    used_rows: usize,
+    used_bytes: usize,
+    truncated: bool,
+    pub(super) fault: bool,
+    pub(super) raw_bytes: u64,
     overflowed: bool,
     charge: crate::raw_memory::Charge,
 }
@@ -337,7 +333,7 @@ impl TraitCapture {
     #[cfg(test)]
     pub(super) fn with_test_capacities(
         vectors: usize,
-        occurrences: [usize; 2],
+        occurrences: usize,
         definitions: usize,
         bytes: usize,
     ) -> Self {
@@ -347,8 +343,8 @@ impl TraitCapture {
                 log: crate::raw::RawLog::new(definitions.saturating_mul(8), bytes),
                 ..TraitDefinitions::default()
             },
-            vectors: std::array::from_fn(|_| owned_vec(vec(vectors))),
-            occurrences: std::array::from_fn(|index| owned_vec(vec(occurrences[index]))),
+            vectors: owned_vec(vec(vectors)),
+            occurrences: owned_vec(vec(occurrences)),
             ..Self::default()
         };
         let _ = reserve_map(&mut value.definitions.by_address, definitions);
@@ -361,8 +357,8 @@ impl TraitCapture {
         let hint = demand::initial_traits();
         let mut value = Self {
             definitions: TraitDefinitions::new(),
-            vectors: std::array::from_fn(|_| owned_vec(vec(census::initial_len()))),
-            occurrences: std::array::from_fn(|index| owned_vec(vec(hint[index].rows))),
+            vectors: owned_vec(vec(census::initial_len())),
+            occurrences: owned_vec(vec(hint.rows)),
             ..Self::default()
         };
         value.update_charge();
@@ -372,25 +368,20 @@ impl TraitCapture {
     pub(super) fn update_charge(&mut self) {
         use crate::raw_memory::{Capacity, vector_bytes};
         self.charge.set(Capacity {
-            payload_vectors: self.vectors.iter().map(vector_bytes).sum::<u64>()
-                + self.occurrences.iter().map(vector_bytes).sum::<u64>(),
+            payload_vectors: vector_bytes(&self.vectors) + vector_bytes(&self.occurrences),
             ..Capacity::default()
         });
     }
 
     pub(super) fn clear(&mut self) {
         self.definitions.clear();
-        for vector in &mut self.vectors {
-            vector.clear();
-        }
-        for occurrences in &mut self.occurrences {
-            occurrences.clear();
-        }
-        self.used_rows = [0; 2];
-        self.used_bytes = [0; 2];
-        self.truncated = [false; 2];
-        self.fault = [false; 2];
-        self.raw_bytes = [0; 2];
+        self.vectors.clear();
+        self.occurrences.clear();
+        self.used_rows = 0;
+        self.used_bytes = 0;
+        self.truncated = false;
+        self.fault = false;
+        self.raw_bytes = 0;
         self.overflowed = false;
     }
 
@@ -404,15 +395,11 @@ impl TraitCapture {
 
     pub(super) fn grow(&mut self) {
         if self.overflowed {
-            for vector in &mut self.vectors {
-                if vector.len() == vector.capacity() {
-                    let _ = engine::allocation::reserve(vector, 1);
-                }
+            if self.vectors.len() == self.vectors.capacity() {
+                let _ = engine::allocation::reserve(&mut self.vectors, 1);
             }
-            for occurrences in &mut self.occurrences {
-                if occurrences.len() == occurrences.capacity() {
-                    let _ = engine::allocation::reserve(occurrences, 1);
-                }
+            if self.occurrences.len() == self.occurrences.capacity() {
+                let _ = engine::allocation::reserve(&mut self.occurrences, 1);
             }
             self.update_charge();
         }
@@ -436,19 +423,18 @@ impl TraitCapture {
         base: usize,
         params: TraitVectorCopy,
     ) -> Result<(), &'static str> {
-        let table = usize::from(params.has_experience);
         if self.growing {
-            engine::allocation::reserve(&mut self.vectors[table], 1)
+            engine::allocation::reserve(&mut self.vectors, 1)
                 .map_err(|_| "character trait vector allocation failed")?;
         }
-        if self.vectors[table].len() == self.vectors[table].capacity() {
+        if self.vectors.len() == self.vectors.capacity() {
             self.overflowed = true;
             return Err("character trait vector staging capacity exhausted");
         }
         let mut vector = TraitVector {
             unit: params.unit,
             leader: params.leader_id,
-            start: self.occurrences[table].len(),
+            start: self.occurrences.len(),
             len: 0,
             outcome: Outcome::Rows { len: 0 },
             bytes_len: 0,
@@ -456,10 +442,10 @@ impl TraitCapture {
         };
         let result = (|| -> Result<(), &'static str> {
             let identity = read::<[u8; 16]>(memory, params.unit).ok_or_else(|| {
-                self.fault[table] = true;
+                self.fault = true;
                 "unit leader identity unreadable"
             })?;
-            self.raw_bytes[table] += 16;
+            self.raw_bytes += 16;
             let relative = usize::try_from(u64::from_le_bytes(identity[..8].try_into().unwrap()))
                 .ok()
                 .and_then(|value| value.checked_sub(base));
@@ -484,36 +470,36 @@ impl TraitCapture {
             }
             let at = params
                 .unit
-                .checked_add(params.array_offset)
+                .checked_add(cunit_leader::TRAIT_DATA)
                 .ok_or("unit leader address overflow")?;
             let header = read::<[u8; 16]>(memory, at);
             if header.is_none() {
-                self.fault[table] = true;
+                self.fault = true;
             } else {
-                self.raw_bytes[table] += 16;
+                self.raw_bytes += 16;
             }
             let array = header
-                .and_then(|header| Array::from_header(header, params.stride))
+                .and_then(|header| Array::from_header(header, TRAIT_STRIDE))
                 .ok_or("unit leader trait vector invalid or unreadable")?;
-            // The vectors' original acquired counts reserve every occurrence
-            // before reads.
+            // Assigned trait visitor bounds this vector by +0xDD4. Its original acquired
+            // count reserves every occurrence before reads.
             if self.growing {
-                engine::allocation::reserve(&mut self.occurrences[table], array.count as usize)
+                engine::allocation::reserve(&mut self.occurrences, array.count as usize)
                     .map_err(|_| "character trait occurrence allocation failed")?;
             }
             base.checked_add(cunit_leader_trait::VTABLE_RVA)
                 .ok_or("unit leader address overflow")?;
             let row_limit = if self.growing {
                 array.count as usize
-            } else if self.truncated[table] {
+            } else if self.truncated {
                 0
             } else {
-                self.rows[table].saturating_sub(self.used_rows[table])
+                self.rows.saturating_sub(self.used_rows)
             };
-            let byte_limit = if self.truncated[table] {
+            let byte_limit = if self.truncated {
                 0
             } else {
-                self.bytes[table].saturating_sub(self.used_bytes[table])
+                self.bytes.saturating_sub(self.used_bytes)
             };
             let mut unread = 0;
             for ordinal in 0..array.count {
@@ -521,26 +507,22 @@ impl TraitCapture {
                     unread = array.count - ordinal;
                     break;
                 }
-                if self.occurrences[table].len() == self.occurrences[table].capacity() {
+                if self.occurrences.len() == self.occurrences.capacity() {
                     self.overflowed = true;
                     return Err("character trait occurrence staging capacity exhausted");
                 }
                 let address = array
-                    .element(ordinal, params.stride)
+                    .element(ordinal, TRAIT_STRIDE)
                     .ok_or("unit leader trait entry address overflow")?;
-                let mut entry = [0u8; 16];
-                if !memory.copy(address, &mut entry[..params.stride]) {
-                    self.fault[table] = true;
-                    return Err(if params.has_experience {
-                        "unit leader trait experience entry unreadable"
-                    } else {
-                        "unit leader trait pointer unreadable"
-                    });
+                let mut entry = [0u8; TRAIT_STRIDE];
+                if !memory.copy(address, &mut entry) {
+                    self.fault = true;
+                    return Err("unit leader trait pointer unreadable");
                 }
-                self.raw_bytes[table] += params.stride as u64;
-                let address = usize::try_from(u64::from_le_bytes(entry[..8].try_into().unwrap()))
+                self.raw_bytes += TRAIT_STRIDE as u64;
+                let address = usize::try_from(u64::from_le_bytes(entry))
                     .map_err(|_| "unit leader trait pointer overflow")?;
-                let definition = self.definitions.header(memory, base, address, table)?;
+                let definition = self.definitions.header(memory, base, address)?;
                 self.definitions.result(definition)?;
                 let len = self.definitions.token_len(definition);
                 vector.required_bytes = vector
@@ -548,14 +530,13 @@ impl TraitCapture {
                     .checked_add(len)
                     .ok_or("unit leader trait byte count overflow")?;
                 let fits = self.growing || len <= byte_limit - vector.bytes_len;
-                let definition = self.definitions.consume(memory, definition, table, fits)?;
+                let definition = self.definitions.consume(memory, definition, fits)?;
                 self.definitions.result(definition)?;
                 if !fits {
                     unread = array.count - ordinal;
                     break;
                 }
-                self.occurrences[table].push(TraitOccurrence {
-                    entry,
+                self.occurrences.push(TraitOccurrence {
                     ordinal,
                     definition,
                 });
@@ -570,52 +551,45 @@ impl TraitCapture {
                     unread_rows: unread,
                 }
             };
-            self.used_rows[table] += vector.len;
-            self.used_bytes[table] += vector.bytes_len;
-            self.truncated[table] |= unread != 0;
+            self.used_rows += vector.len;
+            self.used_bytes += vector.bytes_len;
+            self.truncated |= unread != 0;
             Ok(())
         })();
         if let Err(reason) = result {
             vector.outcome = Outcome::Unavailable { reason };
         }
-        self.vectors[table].push(vector);
+        self.vectors.push(vector);
         result
     }
 
     pub(super) fn finish(&mut self) {
-        for table in 0..2 {
-            self.fault[table] |= self.definitions.log.fault[table];
-            self.raw_bytes[table] += self.definitions.log.raw_bytes[table];
-        }
+        self.fault |= self.definitions.log.fault[0];
+        self.raw_bytes += self.definitions.log.raw_bytes[0];
         self.update_charge();
         self.definitions.update_charge();
     }
 
-    pub(super) fn demand(&self) -> [Result<(usize, usize), &'static str>; 2] {
-        std::array::from_fn(|table| {
-            self.vectors[table]
-                .iter()
-                .try_fold(0_usize, |bytes, vector| {
-                    bytes
-                        .checked_add(vector.bytes_len)
-                        .ok_or("unit leader trait projection byte count overflow")
-                })
-                .map(|bytes| (self.occurrences[table].len(), bytes))
-        })
+    pub(super) fn demand(&self) -> Result<(usize, usize), &'static str> {
+        self.vectors
+            .iter()
+            .try_fold(0_usize, |bytes, vector| {
+                bytes
+                    .checked_add(vector.bytes_len)
+                    .ok_or("unit leader trait projection byte count overflow")
+            })
+            .map(|bytes| (self.occurrences.len(), bytes))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn project<R>(
+    pub(super) fn project(
         &self,
-        table: usize,
         cursor: &mut usize,
         unit: usize,
         leader: u32,
-        rows: &mut [R],
+        rows: &mut [cunit_leader::TraitRow],
         bytes: &mut [u8],
-        make: impl Fn(cunit_leader::TraitRow, i64) -> R,
     ) -> ReadResult {
-        let Some(vector) = self.vectors[table].get(*cursor) else {
+        let Some(vector) = self.vectors.get(*cursor) else {
             return ReadResult::rows(Outcome::Unavailable {
                 reason: "character trait owned vector missing",
             });
@@ -634,22 +608,19 @@ impl TraitCapture {
         let mut start = 0;
         for (output, occurrence) in rows
             .iter_mut()
-            .zip(&self.occurrences[table][vector.start..vector.start + vector.len])
+            .zip(&self.occurrences[vector.start..vector.start + vector.len])
         {
             let (token_id, definition_ordinal, token) =
                 self.definitions.project(occurrence.definition);
             bytes[start..start + token.len()].copy_from_slice(token);
-            *output = make(
-                cunit_leader::TraitRow {
-                    leader_id: leader,
-                    ordinal: occurrence.ordinal,
-                    token_id,
-                    definition_ordinal,
-                    token_start: start,
-                    token_len: token.len(),
-                },
-                i64::from_le_bytes(occurrence.entry[8..].try_into().unwrap()),
-            );
+            *output = cunit_leader::TraitRow {
+                leader_id: leader,
+                ordinal: occurrence.ordinal,
+                token_id,
+                definition_ordinal,
+                token_start: start,
+                token_len: token.len(),
+            };
             start += token.len();
         }
         if let Outcome::Unavailable { .. } = vector.outcome {
@@ -663,12 +634,13 @@ impl TraitCapture {
     }
 }
 
-/// Native trait-vector identity and layout for one owned acquisition.
+/// Assigned trait visitor visits the assigned traits at +0xDC8 (count +0xDD4) as 8-byte
+/// definition pointers.
+pub(super) const TRAIT_STRIDE: usize = 8;
+
+/// Native trait-vector identity for one owned acquisition.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TraitVectorCopy {
     pub(super) unit: usize,
     pub(super) leader_id: u32,
-    pub(super) array_offset: usize,
-    pub(super) stride: usize,
-    pub(super) has_experience: bool,
 }

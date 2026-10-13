@@ -2,9 +2,10 @@
 //! names and the ruling party's first leader's character, sampled hourly.
 //! The reserved-country naming singleton has independent availability and
 //! live-sized operand bytes; it never enters the positive country census.
+//! The selected transport preview's packet, convoy pools and spotting owners
+//! retired; the singleton and rows store their tombstones.
 use super::country_naval_movement_inputs as naval;
 use super::reserved_visibility;
-use super::transport_mission_shared as transport;
 use crate::{
     sampling::qpc,
     spooling::unavailable,
@@ -16,6 +17,9 @@ use replay::{
     frame::TableView,
     rows::{CountryAppearanceRow, ReservedCountryNamingRow, TableId, tables},
 };
+
+mod store;
+pub(crate) use store::{AppearanceStore, Carry};
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::CountryAppearance, TableId::ReservedCountryNaming];
@@ -81,41 +85,10 @@ pub struct Capacities {
     country_array: usize,
     launch_states: usize,
     reverse_visibility: usize,
-    naval: naval::SharedCapacities,
-    transport: transport::Capacities,
-    convoys: super::transport_convoys::Capacities,
-    spotting: super::transport_spotting_context::Capacities,
+    launch: naval::LaunchCapacities,
     raw: engine::raw_country_observations::Capacity,
 }
 impl Capacities {
-    pub(crate) fn raise_for_transport(&mut self, demand: &super::transport_demand::Demand) {
-        self.transport.navies = self.transport.navies.max(demand.missions.navies);
-        self.transport.ledgers = self.transport.ledgers.max(demand.missions.ledgers);
-        self.transport.occurrences = self.transport.occurrences.max(demand.missions.occurrences);
-        self.transport.receivers = self.transport.receivers.max(demand.missions.receivers);
-        self.transport.access_modes = self
-            .transport
-            .access_modes
-            .max(demand.missions.access_modes);
-        self.transport.ships = self.transport.ships.max(demand.missions.ships);
-        self.transport.weather_entries = self
-            .transport
-            .weather_entries
-            .max(demand.missions.weather_entries);
-        let search = &mut self.transport.search;
-        search.regions = search.regions.max(demand.missions.search.regions);
-        search.edges = search.edges.max(demand.missions.search.edges);
-        search.occurrences = search.occurrences.max(demand.missions.search.occurrences);
-        search.names = search.names.max(demand.missions.search.names);
-        search.bytes = search.bytes.max(demand.missions.search.bytes);
-        self.convoys.countries = self.convoys.countries.max(demand.convoys.countries);
-        self.convoys.pool = self.convoys.pool.max(demand.convoys.pool);
-        self.convoys.reservations = self.convoys.reservations.max(demand.convoys.reservations);
-        self.convoys.variants = self.convoys.variants.max(demand.convoys.variants);
-        self.spotting.owners = self.spotting.owners.max(demand.spotting.owners);
-        self.spotting.radar_values = self.spotting.radar_values.max(demand.spotting.radar_values);
-        self.spotting.intel_values = self.spotting.intel_values.max(demand.spotting.intel_values);
-    }
     #[cfg(test)]
     pub(crate) fn with_rows(rows: usize) -> Self {
         Self {
@@ -146,9 +119,6 @@ impl Capacities {
         raw
     }
 
-    pub(crate) fn raise_for_naval_movement(&mut self, demand: naval::SharedCapacities) {
-        self.naval.raise(demand);
-    }
     /// One row per canonical country slot.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         crate::country_scale::raise(&mut self.rows, crate::country_scale::rows(slots, 1));
@@ -201,10 +171,7 @@ pub struct Captured {
     original_tag_bucket_len: Result<usize, &'static str>,
     country_array: Arena<u32>,
     country_array_len: Result<usize, &'static str>,
-    naval: naval::Shared,
-    transport: transport::Shared,
-    pub(crate) convoys: super::transport_convoys::Captured,
-    pub(crate) spotting_owners: super::transport_spotting_context::Captured,
+    launch: naval::Launch,
     land_theatre_count: Option<u32>,
     launch_states: Arena<u32>,
     launch_state_scratch: Arena<ccountry::launch_sources::Occurrence>,
@@ -223,10 +190,7 @@ impl Captured {
             country_array: 0,
             launch_states: 0,
             reverse_visibility: 0,
-            naval: Default::default(),
-            transport: Default::default(),
-            convoys: Default::default(),
-            spotting: Default::default(),
+            launch: Default::default(),
             raw: Default::default(),
         })
     }
@@ -257,23 +221,7 @@ impl Captured {
             original_tag_bucket_len: Err("clock unavailable"),
             country_array: Arena::new(capacity.country_array),
             country_array_len: Err("clock unavailable"),
-            naval: naval::Shared::new(capacity.naval),
-            transport: transport::Shared::new(capacity.transport),
-            convoys: super::transport_convoys::Captured::new(
-                super::transport_convoys::Capacities {
-                    countries: capacity.convoys.countries.max(capacity.rows),
-                    ..capacity.convoys
-                },
-            ),
-            spotting_owners: super::transport_spotting_context::Captured::new(
-                super::transport_spotting_context::Capacities {
-                    owners: capacity
-                        .rows
-                        .max(capacity.country_array)
-                        .max(capacity.spotting.owners),
-                    ..capacity.spotting
-                },
-            ),
+            launch: naval::Launch::new(capacity.launch),
             land_theatre_count: None,
             launch_states: Arena::new(capacity.launch_states),
             launch_state_scratch: Arena::new(capacity.launch_states),
@@ -297,10 +245,7 @@ impl Captured {
         self.original_tag_bucket_len = Err("clock unavailable");
         self.country_array.reset();
         self.country_array_len = Err("clock unavailable");
-        self.naval.reset();
-        self.transport.reset();
-        self.convoys.reset();
-        self.spotting_owners.reset();
+        self.launch.reset();
         self.land_theatre_count = None;
         self.launch_states.reset();
         self.launch_state_scratch.reset();
@@ -308,15 +253,8 @@ impl Captured {
         self.reverse_visibility.reset();
     }
 
-    pub(crate) fn fail(&mut self, reason: &'static str) {
-        let required = self.transport.required();
-        let convoys_required = self.convoys.required();
+    pub(crate) fn fail(&mut self) {
         self.reset();
-        self.transport.retain_required(required);
-        self.transport.fail(reason);
-        self.convoys.retain_required(convoys_required);
-        self.convoys.fail();
-        self.spotting_owners.fail();
     }
 
     pub(crate) fn install_land_theatre_count(&mut self, count: Option<u32>) {
@@ -375,10 +313,7 @@ impl Captured {
             + self.original_tag_buckets.allocated_bytes()
             + self.original_tag_members.allocated_bytes()
             + self.country_array.allocated_bytes()
-            + self.naval.allocated_bytes()
-            + self.transport.allocated_bytes()
-            + self.convoys.allocated_bytes()
-            + self.spotting_owners.allocated_bytes()
+            + self.launch.allocated_bytes()
             + self.launch_states.allocated_bytes()
             + self.launch_state_scratch.allocated_bytes()
             + self.reverse_visibility.allocated_bytes()
@@ -399,18 +334,7 @@ impl Captured {
         self.original_tag_members
             .grow(&mut capacity.original_tag_members);
         self.country_array.grow(&mut capacity.country_array);
-        self.naval.grow(&mut capacity.naval);
-        self.transport.grow(&mut capacity.transport);
-        capacity.convoys.countries = capacity.convoys.countries.max(capacity.rows);
-        self.convoys.grow(&mut capacity.convoys);
-        self.spotting_owners
-            .prepare(super::transport_spotting_context::Capacities {
-                owners: capacity
-                    .rows
-                    .max(capacity.country_array)
-                    .max(capacity.spotting.owners),
-                ..capacity.spotting
-            });
+        self.launch.grow(&mut capacity.launch);
         self.launch_states.grow(&mut capacity.launch_states);
         self.launch_state_scratch.grow(&mut capacity.launch_states);
         self.reverse_visibility
@@ -448,16 +372,22 @@ impl Captured {
             return [0; N];
         }
         self.raw.begin(base, state, hour);
-        self.capture_original(memory, base, state)
+        let ticks = self.capture_original(memory, base, state, None);
+        // No later borrower reads the journal's native controls.
+        self.raw.finish_native();
+        ticks
     }
+    /// The Countries job's read; with `carry`, countries the held store
+    /// certifies are copied instead of read ([`store`]).
     pub(crate) fn capture_preacquired(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
         hour: i32,
+        carry: Option<Carry<'_>>,
     ) {
-        let ticks = self.capture_original(memory, base, state);
+        let ticks = self.capture_original(memory, base, state, carry);
         self.preacquired = Some(Preacquired {
             base,
             state,
@@ -472,12 +402,8 @@ impl Captured {
         hour: i32,
         reason: &'static str,
     ) {
-        self.convoys.fail();
-        self.spotting_owners.fail();
         self.rows.fail(Outcome::Unavailable { reason });
         self.reserved.outcome = Outcome::Unavailable { reason };
-        self.raw.refuse(reason);
-        self.raw.seal();
         self.preacquired = Some(Preacquired {
             base,
             state,
@@ -485,12 +411,18 @@ impl Captured {
             ticks: Some([0; N]),
         });
     }
-    fn capture_original(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+    fn capture_original(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        mut carry: Option<Carry<'_>>,
+    ) -> [u64; N] {
         self.raw.enable_growth();
         self.land_theatre_count = None;
         self.reserved.visibility = None;
         self.reverse_visibility.reset();
-        self.naval.reset();
+        self.launch.reset();
         self.subjects.reset();
         self.naming.reset();
         self.launch_states.reset();
@@ -498,18 +430,39 @@ impl Captured {
         self.launch_state_result = Err("reserved launch state control unavailable");
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
+        if let Some(carry) = carry.as_mut() {
+            carry.store.begin(carry.changes);
+        }
         match ccountry::dynamic_boundary(memory, base) {
             Some(boundary) => {
-                self.rows.outcome = ccountry::walk_appearance_observed_growing(
-                    memory,
-                    base,
-                    state,
-                    boundary,
-                    &mut self.rows.rows,
-                    &mut self.raw,
-                );
+                self.rows.outcome = match carry.as_mut() {
+                    Some(carry) => {
+                        let check = carry.check;
+                        let store = &mut *carry.store;
+                        ccountry::walk_appearance_carrying_growing(
+                            memory,
+                            base,
+                            state,
+                            boundary,
+                            &mut self.rows.rows,
+                            &mut self.raw,
+                            &mut |globals, country, row| store.select(check, globals, country, row),
+                        )
+                    }
+                    None => ccountry::walk_appearance_observed_growing(
+                        memory,
+                        base,
+                        state,
+                        boundary,
+                        &mut self.rows.rows,
+                        &mut self.raw,
+                    ),
+                };
                 if !matches!(self.rows.outcome, Outcome::Unavailable { .. }) {
-                    self.capture_subjects(memory);
+                    self.capture_subjects_carrying(
+                        memory,
+                        carry.as_ref().map(|carry| &*carry.store),
+                    );
                 }
             }
             None => {
@@ -526,22 +479,13 @@ impl Captured {
             engine::raw_country_observations::Source::AppearanceOriginal,
             self.rows.outcome,
         );
-        let spotting = &mut self.spotting_owners;
-        self.reserved = ccountry::read_reserved_naming_observed_with_transport_growing(
+        self.reserved = ccountry::read_reserved_naming_observed_growing(
             memory,
             base,
             state,
             &mut self.naming.first,
             &mut self.raw,
-            &mut |reader, original, owned_count| {
-                if let Ok(reader) = reader {
-                    spotting.reserved_with_owned_count(memory, base, reader, original, owned_count);
-                } else {
-                    spotting.fail();
-                }
-            },
         );
-        self.spotting_owners.finish();
         self.raw.table(
             engine::raw_country_observations::Source::ReservedTag,
             self.reserved.outcome,
@@ -594,21 +538,16 @@ impl Captured {
         drop(_reads);
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
-        ccountry::capture_appearance_original_tags_observed_growing(
-            memory,
-            state,
-            &mut self.rows.rows[..self.rows.outcome.len()],
-            &mut self.naming.first,
-            &mut self.naming.len,
-            &mut self.naming.required,
-            &mut self.raw,
-        );
+        self.capture_original_tags(memory, state, carry.as_ref().map(|carry| &*carry.store));
         let refused = self.rows.rows[..self.rows.outcome.len()]
             .iter()
             .filter(|row| row.original_tag.is_none())
             .count();
         POSITIVE_ORIGINAL_TAG_REFUSALS
             .fetch_add(refused as u64, std::sync::atomic::Ordering::Relaxed);
+        if let Some(carry) = carry {
+            carry.store.finish(self, carry.changes);
+        }
         let appearance_ticks =
             appearance_ticks.saturating_add(qpc().saturating_sub(begin).max(0) as u64);
         drop(_reads);
@@ -644,36 +583,20 @@ impl Captured {
         if array.len.is_err() {
             COUNTRY_ARRAY_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        [
-            appearance_ticks,
-            reserved_ticks.saturating_add(qpc().saturating_sub(begin).max(0) as u64),
-        ]
+        let mut ticks = [0; N];
+        ticks[0] = appearance_ticks;
+        ticks[1] = reserved_ticks.saturating_add(qpc().saturating_sub(begin).max(0) as u64);
+        ticks
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [self.rows.outcome, self.reserved.outcome]
     }
 
-    pub(crate) fn transport_missions_mut(&mut self) -> &mut transport::Shared {
-        &mut self.transport
+    pub(crate) fn launch_sources_mut(&mut self) -> &mut naval::Launch {
+        &mut self.launch
     }
-    pub(crate) fn take_transport_regions(
-        &mut self,
-        hour: i32,
-    ) -> super::transport_spotting_context::RegionLoan {
-        self.transport.take_spotting_regions(hour)
-    }
-    pub(crate) fn restore_transport_regions(
-        &mut self,
-        loan: super::transport_spotting_context::RegionLoan,
-    ) -> Result<(), &'static str> {
-        self.transport.restore_spotting_regions(loan)
-    }
-
-    pub(crate) fn naval_movement_mut(&mut self) -> &mut naval::Shared {
-        &mut self.naval
-    }
-    pub(crate) fn naval_movement(&self) -> &naval::Shared {
-        &self.naval
+    pub(crate) fn launch_sources(&self) -> &naval::Launch {
+        &self.launch
     }
 
     pub(crate) fn take_reserved_visibility(
@@ -697,7 +620,103 @@ impl Captured {
         self.reverse_visibility.observe(work)
     }
 
+    /// Appends each positive original reference's tag bytes to the naming
+    /// arena in row order (`capture_appearance_original_tags`). A carried
+    /// row's are its held bytes, placed where a full read puts them; one that
+    /// cannot be placed, and every row once a subject payload refusal moved
+    /// rows, is read.
+    fn capture_original_tags(
+        &mut self,
+        memory: &impl Memory,
+        state: usize,
+        store: Option<&AppearanceStore>,
+    ) {
+        let len = self.rows.outcome.len();
+        let store = store.filter(|_| matches!(self.rows.outcome, Outcome::Rows { .. }));
+        let mut start = 0;
+        for index in 0..=len {
+            let held = store
+                .filter(|_| index < len)
+                .and_then(|store| store.carried_tag(index));
+            if index < len && held.is_none() {
+                continue;
+            }
+            // The fresh rows before this carried row (or the end).
+            if start < index {
+                ccountry::capture_appearance_original_tags_observed_growing(
+                    memory,
+                    state,
+                    &mut self.rows.rows[start..index],
+                    &mut self.naming.first,
+                    &mut self.naming.len,
+                    &mut self.naming.required,
+                    &mut self.raw,
+                );
+            }
+            if let Some(bytes) = held
+                && !self.place_held_tag(index, bytes)
+            {
+                ccountry::capture_appearance_original_tags_observed_growing(
+                    memory,
+                    state,
+                    &mut self.rows.rows[index..index + 1],
+                    &mut self.naming.first,
+                    &mut self.naming.len,
+                    &mut self.naming.required,
+                    &mut self.raw,
+                );
+            }
+            start = index + 1;
+        }
+    }
+
+    /// Appends a carried row's held original tag bytes as the native pass
+    /// would (a positive +0x130C reference: its bytes; otherwise an empty
+    /// span); false when the arena cannot hold them.
+    fn place_held_tag(&mut self, index: usize, bytes: &[u8]) -> bool {
+        let used = self.naming.len;
+        let row = &mut self.rows.rows[index];
+        if row.original_tag_reference <= 0 {
+            row.original_tag = Some(engine::csubject_relation::Name {
+                start: used,
+                len: 0,
+            });
+            row.original_tag_failure = None;
+            return true;
+        }
+        let (Some(required), Some(end)) = (
+            self.naming.required.checked_add(bytes.len()),
+            used.checked_add(bytes.len()),
+        ) else {
+            return false;
+        };
+        if self.naming.first.len() < end
+            && engine::allocation::advisory(|| {
+                engine::allocation::resize_default(&mut self.naming.first, end)
+            })
+            .is_err()
+        {
+            return false;
+        }
+        self.naming.first[used..end].copy_from_slice(bytes);
+        self.naming.required = required;
+        self.naming.len = end;
+        row.original_tag = Some(engine::csubject_relation::Name {
+            start: used,
+            len: bytes.len(),
+        });
+        row.original_tag_failure = None;
+        true
+    }
+
+    #[cfg(test)]
     fn capture_subjects(&mut self, memory: &impl Memory) {
+        self.capture_subjects_carrying(memory, None);
+    }
+
+    /// Copies each row's subject roster payload into the subject arena; a
+    /// carried row's is its held payload.
+    fn capture_subjects_carrying(&mut self, memory: &impl Memory, store: Option<&AppearanceStore>) {
         let result = (|| {
             let initial = self.rows.outcome;
             for row in &self.rows.rows[..initial.len()] {
@@ -724,20 +743,26 @@ impl Captured {
                     .len
                     .checked_add(subjects.count as usize)
                     .ok_or("country subject arena demand overflow")?;
-                // Faction previews name the stored roster in its order.
-                // Read no payload for countries without subjects.
+                // Native faction previews name the stored roster in its order
+                // in subject naming. Read no payload for countries without subjects.
+                let held = store.and_then(|store| store.carried_subjects(index));
                 let copied = self
                     .subjects
                     .first
                     .get_mut(self.subjects.len..end)
-                    .is_some_and(|destination| {
-                        engine::cpdx_array::copy_u32s(
+                    .is_some_and(|destination| match held {
+                        Some(held) if held.len() == destination.len() => {
+                            destination.copy_from_slice(held);
+                            true
+                        }
+                        Some(_) => false,
+                        None => engine::cpdx_array::copy_u32s(
                             memory,
                             subjects,
                             destination,
                             "country subject roster payload unreadable",
                         )
-                        .is_ok()
+                        .is_ok(),
                     });
                 if !copied {
                     unread_rows = unread_rows
@@ -766,25 +791,13 @@ impl Captured {
 
     #[cfg(test)]
     pub fn tables(&self) -> [TableView; N] {
-        self.tables_attack(None, None)
+        self.tables_at(None)
     }
-    pub(super) fn tables_with_attack_and_air(
-        &self,
-        attack: &super::attack_inputs::Map,
-        air: &super::air::Captured,
-        hour: i32,
-    ) -> [TableView; N] {
-        self.tables_attack(Some(attack), Some((air, hour)))
-    }
-    fn tables_attack(
-        &self,
-        attack: Option<&super::attack_inputs::Map>,
-        air: Option<(&super::air::Captured, i32)>,
-    ) -> [TableView; N] {
-        [
-            self.appearance_table(),
-            self.reserved_table_attack(attack, air),
-        ]
+
+    /// `hour` is the frame's: a packet is published only when read for it.
+    /// Tests without a frame pass None.
+    pub(crate) fn tables_at(&self, hour: Option<i32>) -> [TableView; N] {
+        [self.appearance_table(), self.reserved_table(hour)]
     }
 
     fn appearance_table(&self) -> TableView {
@@ -859,21 +872,12 @@ impl Captured {
                 original_tag_reference: replay::rows::Recorded::Value(Some(
                     r.original_tag_reference,
                 )),
-                transport_convoys: replay::rows::Recorded::Value(
-                    self.convoys.projection(r.country).unwrap_or_else(|error| {
-                        crate::allocation::observe(&error);
-                        None
-                    }),
-                ),
+                transport_convoys: replay::rows::Recorded::Value(replay::rows::Retired),
             },
         )
     }
 
-    fn reserved_table_attack(
-        &self,
-        attack: Option<&super::attack_inputs::Map>,
-        air: Option<(&super::air::Captured, i32)>,
-    ) -> TableView {
+    fn reserved_table(&self, frame_hour: Option<i32>) -> TableView {
         let r = &self.reserved.row;
         if self.naming.first.get(..self.naming.len).is_none() {
             return unavailable("reserved naming arena invalid");
@@ -907,12 +911,17 @@ impl Captured {
         };
         // Malformed optional spans refuse only their field, never the prefix.
         let original_tag = r.original_tag.and_then(span);
+        // Packets store no hour: only one read for this frame's hour is published.
+        let current = |sample: Option<i32>| {
+            sample.is_some_and(|sample| frame_hour.is_none_or(|hour| sample == hour))
+        };
         crate::spooling::table::<tables::ReservedCountryNaming, _>(
             self.reserved.outcome,
             std::slice::from_ref(r),
             |_| ReservedCountryNamingRow {
-                attack: replay::rows::Recorded::Value(attack.and_then(|attack| attack.country(0))),
-                raw_country_observations: replay::rows::Recorded::Value(self.raw_packet()),
+                // Country0's operands are not witnessed; current writers leave them empty.
+                attack: replay::rows::Recorded::Value(replay::rows::Witnessed(None)),
+                raw_country_observations: replay::rows::Recorded::Value(replay::rows::Retired),
                 tag: owned_vec(copy_vec(tag)),
                 name_tag: owned_vec(copy_vec(name_tag)),
                 cosmetic_tag: owned_vec(copy_vec(cosmetic_tag)),
@@ -942,17 +951,14 @@ impl Captured {
                 owned_state_count: replay::rows::Recorded::Value(r.owned_state_count),
                 faction: replay::rows::Recorded::Value(r.faction),
                 land_theatre_count: replay::rows::Recorded::Value(self.land_theatre_count),
-                movement: replay::rows::Recorded::Value(self.naval.projection().unwrap_or_else(
-                    |error| {
-                        crate::allocation::observe(&error);
-                        None
-                    },
-                )),
+                movement: replay::rows::Recorded::Value(replay::rows::Retired),
                 launch_sources: replay::rows::Recorded::Value(
-                    self.launch_projection().unwrap_or_else(|error| {
-                        crate::allocation::observe(&error);
-                        None
-                    }),
+                    self.launch_projection()
+                        .unwrap_or_else(|error| {
+                            crate::allocation::observe(&error);
+                            None
+                        })
+                        .filter(|_| current(self.launch.launch_sample_hour())),
                 ),
                 reverse_visibility: replay::rows::Recorded::Value(
                     self.reverse_visibility
@@ -960,90 +966,18 @@ impl Captured {
                         .unwrap_or_else(|error| {
                             crate::allocation::observe(&error);
                             None
-                        }),
+                        })
+                        .filter(|_| current(self.reverse_visibility.sample_hour())),
                 ),
-                transport_mission_inputs: replay::rows::Recorded::Value(
-                    self.transport_projection(air).unwrap_or_else(|error| {
-                        crate::allocation::observe(&error);
-                        None
-                    }),
-                ),
+                transport_mission_inputs: replay::rows::Recorded::Value(replay::rows::Retired),
                 country_intel_sample: replay::rows::Recorded::Value(None),
                 dynamic_tag_boundary: replay::rows::Recorded::Value(Some(r.dynamic_tag_boundary)),
             },
         )
     }
 
-    /// All worker jobs have joined before this numerical-only assembly. A
-    /// valid sibling packet cannot rescue an absent/current-hour refusal.
-    fn transport_projection(
-        &self,
-        air: Option<(&super::air::Captured, i32)>,
-    ) -> std::io::Result<Option<replay::rows::TransportMissionInputs>> {
-        let Some(mut packet) = self.transport.projection()? else {
-            return Ok(None);
-        };
-        packet.spotting_context = super::transport_spotting_context::merge(
-            self.spotting_owners.projection()?,
-            packet.spotting_context,
-        )
-        .filter(|context| context.sample_hour == packet.sample_hour);
-        if let Some((air, hour)) = air {
-            if packet.sample_hour != hour {
-                return Ok(None);
-            }
-            packet.air = air.transport_air_packet(hour)?;
-        }
-        Ok(Some(packet))
-    }
-
-    fn raw_packet(&self) -> Option<replay::rows::RawCountryObservations> {
-        use engine::raw_country_observations::{Mapping, Tag};
-        use replay::rows::{
-            RawCountryMapping, RawCountryObservation, RawCountryObservations, RawCountryTag,
-        };
-        if !self.raw.complete() {
-            return None;
-        }
-        let mut entries = owned_vec(engine::allocation::collect_vec(
-            self.raw.entries().iter().map(|entry| {
-                let mapping = match entry.mapping {
-                    Mapping::Unreached => RawCountryMapping::Unreached,
-                    Mapping::Refused(_) => RawCountryMapping::Refused,
-                    Mapping::Observed {
-                        canonical_slot,
-                        country_id,
-                    } => RawCountryMapping::Observed {
-                        canonical_slot,
-                        country_id,
-                    },
-                };
-                let tag = match entry.tag {
-                    Tag::Unreached => RawCountryTag::Unreached,
-                    Tag::Refused(_) => RawCountryTag::Refused,
-                    Tag::Bytes(span) => match self.raw.bytes(span) {
-                        Some(bytes) => RawCountryTag::Bytes(owned_vec(copy_vec(bytes))),
-                        None => RawCountryTag::Refused,
-                    },
-                };
-                RawCountryObservation {
-                    raw: entry.raw,
-                    mapping,
-                    tag,
-                }
-            }),
-        ));
-        entries.sort_unstable_by_key(|entry| entry.raw);
-        let packet = RawCountryObservations {
-            sample_hour: self.raw.sample_hour(),
-            entries,
-        };
-        packet.check().ok()?;
-        Some(packet)
-    }
-
     fn launch_projection(&self) -> std::io::Result<Option<replay::rows::ReservedLaunchSources>> {
-        if self.naval.launch_sample_hour().is_none() {
+        if self.launch.launch_sample_hour().is_none() {
             return Ok(None);
         }
         let owned_states = match self.launch_state_result {
@@ -1058,7 +992,7 @@ impl Captured {
             }
             Err(_) => None,
         };
-        self.naval.projection_launch(owned_states)
+        self.launch.projection_launch(owned_states)
     }
 
     fn original_tag_lists(&self) -> Option<Vec<Vec<u32>>> {

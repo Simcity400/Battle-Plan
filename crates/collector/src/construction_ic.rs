@@ -110,7 +110,7 @@ pub fn capacity() -> usize {
     OBSERVATION.capacity.load(Ordering::Acquire)
 }
 
-/// Loader/spool thread: two native passes cover the bounded hourly handoff,
+/// Loader/sizing thread: two native passes cover the bounded hourly handoff,
 /// independently of country count. Rejected bursts retain their whole demand.
 pub fn presize(events: usize) {
     engine::allocation::advisory(|| presize_storage(events));
@@ -519,7 +519,7 @@ pub fn status() -> impl serde::Serialize {
 pub struct Hooks {
     shared: ManuallyDrop<output_hooks::Hooks<7>>,
 }
-const SITES: [&Site; 7] = [
+pub(crate) const SITES: [&Site; 7] = [
     &BUILDING_SPEED,
     &RAILWAY_ADVANCE,
     &RAILWAY_PROGRESS,
@@ -603,6 +603,7 @@ fn original(site: usize) -> usize {
 }
 
 unsafe extern "system-unwind" fn building_reset(line: usize) {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::ConstructionIc);
     let _call = OBSERVATION.enter();
     let memory = unsafe { engine::memory::LiveMemory::new() };
     match engine::construction_ic_sites::count_reset(&memory, BASE.load(Ordering::Relaxed), line) {
@@ -615,7 +616,7 @@ unsafe extern "system-unwind" fn building_reset(line: usize) {
     }
     let original: unsafe extern "system-unwind" fn(usize) =
         unsafe { std::mem::transmute(original(6)) };
-    unsafe { original(line) };
+    timing.original(|| unsafe { original(line) });
 }
 
 // The speed getter takes two integer arguments, so R8 is free: its entry copies
@@ -638,18 +639,20 @@ unsafe extern "system" fn railway_complete_entry() {
 }
 
 unsafe extern "system" fn building_complete(line: usize, caller: usize) -> u8 {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::ConstructionIc);
     let _call = OBSERVATION.enter();
     let original: unsafe extern "system" fn(usize) -> u8 =
         unsafe { std::mem::transmute(original(3)) };
-    let result = unsafe { original(line) };
+    let result = timing.original(|| unsafe { original(line) });
     observe_completion(line, caller, result, false);
     result
 }
 unsafe extern "system" fn railway_complete(line: usize, caller: usize) -> u8 {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::ConstructionIc);
     let _call = OBSERVATION.enter();
     let original: unsafe extern "system" fn(usize) -> u8 =
         unsafe { std::mem::transmute(original(4)) };
-    let result = unsafe { original(line) };
+    let result = timing.original(|| unsafe { original(line) });
     observe_completion(line, caller, result, true);
     result
 }
@@ -662,29 +665,32 @@ unsafe extern "system" fn linked_complete_entry() {
     core::arch::naked_asm!("mov r8, qword ptr [rsp]", "jmp {body}", body = sym linked_complete);
 }
 unsafe extern "system" fn linked_complete(status: usize, line: usize, caller: usize) {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::ConstructionIc);
     let _call = OBSERVATION.enter();
     observe_linked_completion(status, line, caller);
     let original: unsafe extern "system" fn(usize, usize) =
         unsafe { std::mem::transmute(original(5)) };
-    unsafe { original(status, line) };
+    timing.original(|| unsafe { original(status, line) });
 }
 
 // Every argument is passed through unchanged and every result returned.
 unsafe extern "system" fn speed(line: usize, out: usize, caller: usize) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::ConstructionIc);
     let _call = OBSERVATION.enter();
     let original: unsafe extern "system" fn(usize, usize) -> usize =
         unsafe { std::mem::transmute(original(0)) };
-    let result = unsafe { original(line, out) };
+    let result = timing.original(|| unsafe { original(line, out) });
     observe_building(line, caller);
     result
 }
 
 unsafe extern "system" fn railway_advance(line: usize) {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::ConstructionIc);
     let _call = OBSERVATION.enter();
     COUNTERS[2].fetch_add(1, Ordering::Relaxed);
     let outer = RAILWAY_LINE.replace((line, 0));
     let original: unsafe extern "system" fn(usize) = unsafe { std::mem::transmute(original(1)) };
-    unsafe { original(line) };
+    timing.original(|| unsafe { original(line) });
     RAILWAY_LINE.set(outer);
 }
 
@@ -695,10 +701,11 @@ unsafe extern "system" fn railway_progress(
     amount: i64,
     country: usize,
 ) -> u8 {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::ConstructionIc);
     let _call = OBSERVATION.enter();
     let original: unsafe extern "system" fn(usize, u32, u32, i64, usize) -> u8 =
         unsafe { std::mem::transmute(original(2)) };
-    let completed = unsafe { original(manager, from, to, amount, country) };
+    let completed = timing.original(|| unsafe { original(manager, from, to, amount, country) });
     observe_segment(amount);
     completed
 }

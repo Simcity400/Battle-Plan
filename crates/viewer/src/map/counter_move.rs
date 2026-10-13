@@ -384,7 +384,7 @@ pub struct DivisionRoute {
     /// The animator's display route (`DivisionMovement.alternate_path` when nonempty, else
     /// `path`); `path[0]` is the next hop. Empty when content cannot place the route.
     pub path: Vec<u32>,
-    /// Derived fixed5 `(next_remaining, destination_remaining)`; absent derivations stay absent.
+    /// Estimated fixed5 `(next_remaining, destination_remaining)`; refused estimates stay absent.
     pub eta: Option<(i64, i64)>,
     pub naval_transfer: bool,
     pub retreat: bool,

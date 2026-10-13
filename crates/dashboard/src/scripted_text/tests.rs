@@ -68,19 +68,28 @@ pub(super) fn catalogue(
     scripted: &str,
     extra: &str,
 ) -> (crate::catalogue::Catalogue, crate::catalogue::tests::Folder) {
-    crate::catalogue::tests::folder_catalogue(&[
+    catalogue_with(scripted, extra, &[])
+}
+
+/// [`catalogue`] with further content files.
+pub(super) fn catalogue_with(
+    scripted: &str,
+    extra: &str,
+    files: &[(&str, &str)],
+) -> (crate::catalogue::Catalogue, crate::catalogue::tests::Folder) {
+    let extra = format!("\u{feff}l_english:\n{extra}");
+    let mut all = vec![
         ("localisation/mod_l_english.yml", LOCALISATION),
         // A replace file overwrites.
-        (
-            "localisation/replace/extra_l_english.yml",
-            &format!("\u{feff}l_english:\n{extra}"),
-        ),
+        ("localisation/replace/extra_l_english.yml", extra.as_str()),
         (
             "common/defines/00_defines.lua",
             "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
         ),
         ("common/scripted_localisation/mod.txt", scripted),
-    ])
+    ];
+    all.extend_from_slice(files);
+    crate::catalogue::tests::folder_catalogue(&all)
 }
 
 const SCRIPTED: &str = "defined_text = { name = GetModText text = { localization_key = GER } }";

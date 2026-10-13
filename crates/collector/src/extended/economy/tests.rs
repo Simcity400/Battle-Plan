@@ -31,7 +31,7 @@ fn final_worker_failure_keeps_owned_economy_and_publishes_terminal_fuel_demand_r
             let rows::Recorded::Value(demand) = &fuel[0].demand else {
                 panic!("terminal demand verdict missing");
             };
-            assert_eq!(demand.hour, 777);
+            assert_eq!(demand.hour, rows::FuelDemandHour::Host);
             assert_eq!(demand.country_instance, Some(77));
             assert_eq!(demand.reason, REASON.as_bytes());
             assert!(demand.divisions.is_empty() && demand.sites.is_empty());
@@ -212,8 +212,8 @@ fn fuel_suffix_assembly_materializes_before_an_equal_scalar_projection() {
             .comparison_baseline::<tables::CountryFuel>(1, 1, false)
             .is_some()
     );
-    let mut scratch = ProjectionScratch::default();
-    let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
+    let scratch = ProjectionScratch::default();
+    let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
     let inputs = captured.table_inputs(Some(&mut projection));
     let TableInput::Sampled(TableView::Complete(rows::TableRows::CountryFuel(rows))) = &inputs[0]
     else {
@@ -363,11 +363,11 @@ fn cold_resource_worker_consumes_original_headers_when_the_frame_has_nonzero_liv
     assert_eq!(captured.exchanges.rows[0].id, 0x1234_5678_0000_0033);
 }
 
-/// CountryResources and ResourceExchanges are hourly: off the daily slot
-/// the census is walked for them and not published, and both consumers
-/// are walked and published. A job without capacity still starts nothing.
+/// CountryResources, ResourceExchanges and their census are hourly: every
+/// hour walks the census once and publishes it with both consumers. A job
+/// without capacity still starts nothing.
 #[test]
-fn off_slot_hours_walk_the_census_for_its_hourly_consumers_only() {
+fn every_hour_publishes_the_census_with_its_hourly_consumers() {
     let source = resource_fixture::Fixture::new();
     let memory = engine::memory::CountedMemory::new(ResourceTrace {
         source: &source,
@@ -377,7 +377,6 @@ fn off_slot_hours_walk_the_census_for_its_hourly_consumers_only() {
     let mut captured = Captured::with_capacities(&e_capacities());
     let context = captured.resource_copy_context(0, 0x1000, 0, false);
     assert!(context.resources_active);
-    assert!(!context.definitions_slot);
     let mut job = resource_job();
     let report = copy_economy_rest_refresh(&memory, context, &mut job);
     assert!(report.raw_ok);
@@ -393,19 +392,16 @@ fn off_slot_hours_walk_the_census_for_its_hourly_consumers_only() {
         job.resources.outcomes[2],
         Some(Outcome::Rows { .. })
     ));
-    let skipped = Outcome::Unavailable {
-        reason: replay::cadence::SKIPPED_REASON,
-    };
     let mut ticks = [0; N];
     captured.decode_economy_rest_payload(0, &job, &mut ticks);
-    assert_eq!(captured.definitions.outcome, skipped);
+    assert!(matches!(captured.definitions.outcome, Outcome::Rows { .. }));
     assert!(matches!(captured.resources.outcome, Outcome::Rows { .. }));
     assert!(matches!(captured.exchanges.outcome, Outcome::Rows { .. }));
 
     // The typed walk publishes the same.
     let mut direct = Captured::with_capacities(&e_capacities());
     direct.capture(&memory, 0, 0x1000, 0, false);
-    assert_eq!(direct.definitions.outcome, skipped);
+    assert_eq!(direct.definitions.outcome, captured.definitions.outcome);
     assert_eq!(direct.resources.outcome, captured.resources.outcome);
     assert_eq!(direct.exchanges.outcome, captured.exchanges.outcome);
 
@@ -419,8 +415,21 @@ fn off_slot_hours_walk_the_census_for_its_hourly_consumers_only() {
     assert_eq!(native.finish(), read_accounting::ZERO);
 }
 
+/// A value fault stays local to CountryResources. Under the relaxed read
+/// order a one-shot fault on a value is read again once, by the batched
+/// walk's bounded fallback, and the table completes; a persistent one
+/// refuses the table, as the serial walk does. Its siblings complete either
+/// way, and decoding reads no native memory.
 #[test]
-fn owned_resource_faults_remain_local_and_never_retry_failed_values() {
+fn owned_resource_value_faults_recover_once_and_remain_local() {
+    let reads_at = |memory: &ResourceTrace<'_>| {
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&at| at == 0x10010)
+            .count()
+    };
     let source = resource_fixture::Fixture::new();
     let memory = ResourceTrace {
         source: &source,
@@ -430,8 +439,25 @@ fn owned_resource_faults_remain_local_and_never_retry_failed_values() {
     let mut captured = Captured::with_capacities(&e_capacities());
     let ctx = captured.resource_copy_context(0, 0x1000, 10, false);
     let mut job = resource_job();
-    let report = copy_economy_rest_refresh(&memory, ctx, &mut job);
-    assert!(report.raw_ok);
+    assert!(copy_economy_rest_refresh(&memory, ctx, &mut job).raw_ok);
+    captured.decode_economy_rest_payload(0, &job, &mut [0; N]);
+    assert!(matches!(captured.resources.outcome, Outcome::Rows { .. }));
+    assert_eq!(captured.definitions.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(captured.exchanges.outcome, Outcome::Rows { len: 1 });
+    // The block, then its one fallback read.
+    assert_eq!(reads_at(&memory), 2);
+
+    let mut source = resource_fixture::Fixture::new();
+    source.bytes.remove(&0x10010);
+    let memory = ResourceTrace {
+        source: &source,
+        reads: Default::default(),
+        fault: None,
+    };
+    let mut captured = Captured::with_capacities(&e_capacities());
+    let ctx = captured.resource_copy_context(0, 0x1000, 10, false);
+    let mut job = resource_job();
+    assert!(copy_economy_rest_refresh(&memory, ctx, &mut job).raw_ok);
     captured.decode_economy_rest_payload(0, &job, &mut [0; N]);
     assert!(matches!(
         captured.resources.outcome,
@@ -439,15 +465,7 @@ fn owned_resource_faults_remain_local_and_never_retry_failed_values() {
     ));
     assert_eq!(captured.definitions.outcome, Outcome::Rows { len: 1 });
     assert_eq!(captured.exchanges.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(
-        memory
-            .reads
-            .borrow()
-            .iter()
-            .filter(|&&at| at == 0x10010)
-            .count(),
-        1
-    );
+    assert_eq!(reads_at(&memory), 2);
     let before = memory.reads.borrow().len();
     captured.decode_economy_rest_payload(0, &job, &mut [0; N]);
     assert_eq!(
@@ -565,7 +583,6 @@ fn worker_supply_growth_stages_and_decodes_mod_sized_rows_in_the_same_hour() {
         resource_rows: [0; 3],
         resource_scratch: 0,
         resources_active: false,
-        definitions_slot: false,
         other_active: false,
     };
     assert!(copy_economy_rest_refresh_growing(&memory, context, &mut job).raw_ok);
@@ -707,7 +724,7 @@ fn projection_matches_full_conversion_after_reordering_changes_and_faults() {
             let rows::Recorded::Value(Some(country_instance)) = &row.country_instance else {
                 panic!("projection fixture must supply the country instance")
             };
-            row.awards = rows::Recorded::Value(rows::FuelAwardWindow {
+            row.award_day = rows::Recorded::Value(rows::FuelAwardDay {
                 country_instance: *country_instance,
                 reason: b"fuel awards not provided by projection fixture".to_vec(),
                 ..Default::default()
@@ -838,16 +855,16 @@ fn projection_matches_full_conversion_after_reordering_changes_and_faults() {
     }
     let mut encoder = FrameEncoder::new();
     encoder.encode_input(baseline, false).unwrap();
-    let mut scratch = ProjectionScratch::default();
-    let mut projection = Projection::new(&encoder, 1, 101, false, &mut scratch);
+    let scratch = ProjectionScratch::default();
+    let mut projection = Projection::new(&encoder, 1, 101, false, &scratch);
     let assert_unchanged = |inputs: [TableInput; N]| {
-        // Hourly supply, country resources and exchanges may reuse their
-        // validated baselines. Daily tables materialize complete rows for
-        // their separate recovery cache.
-        for index in [2, 7, 8] {
+        // Hourly supply, resource definitions, country resources and
+        // exchanges may reuse their validated baselines. Daily tables
+        // materialize complete rows for their separate recovery cache.
+        for index in [2, 6, 7, 8] {
             assert!(matches!(inputs[index], TableInput::ComparedEqual(_)));
         }
-        for index in [0, 1, 3, 4, 5, 6, 9, 10] {
+        for index in [0, 1, 3, 4, 5, 9, 10] {
             assert_eq!(inputs[index], original_inputs[index], "table {index}");
         }
     };
@@ -862,11 +879,12 @@ fn projection_matches_full_conversion_after_reordering_changes_and_faults() {
     ));
 
     captured.supply.rows[0].flags -= 1;
+    captured.definitions.rows[0].factory_cost -= 1;
     captured.resources.rows[0].exported += 1;
     captured.exchanges.rows[0].delivered -= 1;
     let changed = with_award_refusal(captured.table_inputs(Some(&mut projection)));
     let converted = with_award_refusal(captured.table_inputs(None));
-    for index in [2, 7, 8] {
+    for index in [2, 6, 7, 8] {
         match &changed[index] {
             TableInput::ComparedChanges { indices, rows, .. } => {
                 assert_eq!(indices, &[0]);
@@ -955,18 +973,10 @@ fn conversion_preserves_raw_quantities_full_hub_identity_and_literal_source_byte
         country_instance: Some(u32::MAX - 1),
         current_raw: i64::MIN,
         maximum_raw: i64::MAX,
-        gain_raw: -4_294_967_303,
-        cost_raw: 4_294_967_311,
-        gain_from_states_raw: -4_294_967_313,
         lend_lease_gain_raw: 4_294_967_317,
-        lend_lease_consumption_raw: -4_294_967_319,
-        gain_per_oil_raw: 4_294_967_323,
-        history_index: i32::MIN,
-        remaining_hours: -1,
         ring_gain_raw: i64::MIN,
         ring_consumed_raw: -1,
         ring_other_raw: i64::MAX,
-        ring_requested_raw: [2, -3, 4],
         ring_received_raw: [-5, 6, i64::MIN + 1],
     };
     captured.fuel_consumers.outcome = Outcome::Rows { len: 1 };
@@ -1008,30 +1018,29 @@ fn conversion_preserves_raw_quantities_full_hub_identity_and_literal_source_byte
         replay::rows::Recorded::Value(Some(u32::MAX - 1))
     );
     assert_eq!(
-        (
-            fuel.current_raw,
-            fuel.maximum_raw,
-            fuel.gain_raw,
-            fuel.cost_raw
-        ),
-        (i64::MIN, i64::MAX, -4_294_967_303, 4_294_967_311)
+        (fuel.current_raw, fuel.maximum_raw, fuel.lend_lease_gain_raw),
+        (i64::MIN, i64::MAX, 4_294_967_317)
     );
+    // The oracle-only operands publish their tombstones.
+    let retired = replay::rows::RetiredI64::default();
     assert_eq!(
-        (
+        [
+            fuel.gain_raw,
+            fuel.cost_raw,
             fuel.gain_from_states_raw,
-            fuel.lend_lease_gain_raw,
             fuel.lend_lease_consumption_raw,
             fuel.gain_per_oil_raw,
-            fuel.history_index,
-            fuel.remaining_hours
-        ),
+            fuel.ring_requested_0_raw,
+            fuel.ring_requested_1_raw,
+            fuel.ring_requested_2_raw,
+        ],
+        [retired; 8]
+    );
+    assert_eq!(
+        (fuel.history_index, fuel.remaining_hours),
         (
-            -4_294_967_313,
-            4_294_967_317,
-            -4_294_967_319,
-            4_294_967_323,
-            i32::MIN,
-            -1
+            replay::rows::RetiredI32::default(),
+            replay::rows::RetiredI32::default()
         )
     );
     let consumer = &complete::<tables::CountryFuelConsumers>(&views[10])[0];
@@ -1049,14 +1058,11 @@ fn conversion_preserves_raw_quantities_full_hub_identity_and_literal_source_byte
             fuel.ring_gain_raw,
             fuel.ring_consumed_raw,
             fuel.ring_other_raw,
-            fuel.ring_requested_0_raw,
-            fuel.ring_requested_1_raw,
-            fuel.ring_requested_2_raw,
             fuel.ring_received_0_raw,
             fuel.ring_received_1_raw,
             fuel.ring_received_2_raw,
         ],
-        [i64::MIN, -1, i64::MAX, 2, -3, 4, -5, 6, i64::MIN + 1]
+        [i64::MIN, -1, i64::MAX, -5, 6, i64::MIN + 1]
     );
     let hub = &complete::<tables::HubMotorization>(&views[3])[0];
     let expected_key = (u128::from(u32::MAX) << 96)
@@ -1189,7 +1195,7 @@ fn e_census(bytes: &mut [u8]) {
 
 fn e_capacities() -> Capacities {
     Capacities {
-        rows: [4, 4, 8, 4, 4, 4, 4, 8, 4, 4, 8],
+        rows: [4, 4, 8, 4, 4, 4, 4, 8, 4, 4, 8, 8],
         foreign_sources: 64,
         demand: Default::default(),
     }
@@ -1751,7 +1757,7 @@ fn economy_truncation_matrix_matches_direct_with_same_caps() {
     };
     for rows in [0_usize, 1, 2, 4] {
         let cap = Capacities {
-            rows: [rows, 4, 8, 4, 4, 4, 4, 8, 4, 4, 8],
+            rows: [rows, 4, 8, 4, 4, 4, 4, 8, 4, 4, 8, 8],
             foreign_sources: 64,
             demand: Default::default(),
         };

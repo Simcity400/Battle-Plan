@@ -14,9 +14,9 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_BAD_LENGTH, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER,
-        ERROR_NO_MORE_FILES, ERROR_NOT_ENOUGH_MEMORY, ERROR_RETRY, GetLastError, HANDLE,
-        INVALID_HANDLE_VALUE,
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_BAD_LENGTH, ERROR_INSUFFICIENT_BUFFER,
+        ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_ENOUGH_MEMORY, ERROR_RETRY,
+        GetLastError, HANDLE, INVALID_HANDLE_VALUE,
     },
     System::{
         Diagnostics::{
@@ -311,6 +311,11 @@ impl Hook {
         if hooks.is_empty() || !enabled && hooks.iter().all(|hook| !hook.is_enabled()) {
             return Ok(true);
         }
+        // Taken before any protection change and released after the last
+        // restore and resume; a panicking publisher cannot leave it unusable.
+        let _publication = PUBLICATION
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut threads = Threads::open()?;
         let mut previous = publication_storage(hooks.len(), enabled)
             .map_err(|_| "hook state allocation failed")?;
@@ -521,6 +526,21 @@ pub(crate) fn fail_flushes(count: usize) {
 }
 #[cfg(test)]
 pub(crate) static FAMILY_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(test)]
+std::thread_local! {
+    /// Thread suspensions this thread began ([`Threads::suspend`]).
+    pub(crate) static SUSPENSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Held by one publication at a time, from its first page-protection change
+/// to its last restore. Two publications whose sites share a code page would
+/// otherwise race: one restores the page's original protection while the
+/// other, already past its own `VirtualProtect`, writes its patch into a
+/// page that is no longer writable (an access violation), or suspends the
+/// other publisher mid-suspension. The runtime publishes from one thread, so
+/// this lock is never contended in production; it makes the order a property
+/// of the publication itself rather than of its callers.
+pub(crate) static PUBLICATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl Drop for Hook {
     fn drop(&mut self) {
@@ -652,6 +672,28 @@ fn visit_census(
     }
 }
 
+/// A refused `SuspendThread`: `Ok(false)` (not held) for a thread that has
+/// exited or is exiting, the error otherwise. A thread whose termination
+/// began (`NtTerminateThread`, after its DLL and TLS detach) refuses
+/// suspension with `STATUS_THREAD_IS_TERMINATING`, which Win32 reports as
+/// `ERROR_ACCESS_DENIED`, before its handle is signalled; it never runs
+/// user code again, so leaving it unheld is safe. Every other refusal fails
+/// the publication as before.
+fn refused_suspension(error: u32, exited: bool) -> Result<bool, u32> {
+    if exited || error == ERROR_ACCESS_DENIED {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+/// Opens a thread a census of this process listed, or `None` when that
+/// thread has exited since. A thread id is unique only among live threads:
+/// once the listed thread exits, the id can name a thread of another process
+/// before this opens it. Such a thread is never ours to suspend, so a handle
+/// whose owner is another process is closed, and an id this process may not
+/// open (`ERROR_ACCESS_DENIED`, which no thread of this process returns for
+/// these rights) is the same exit.
 fn open_thread(id: u32) -> Result<Option<HANDLE>, u32> {
     let handle = unsafe {
         OpenThread(
@@ -664,11 +706,19 @@ fn open_thread(id: u32) -> Result<Option<HANDLE>, u32> {
         )
     };
     if !handle.is_null() {
+        // An owned handle pins the id: its owner cannot change from here on.
+        if unsafe { GetProcessIdOfThread(handle) } != unsafe { GetCurrentProcessId() } {
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Ok(None);
+        }
         Ok(Some(handle))
     } else {
         let error = unsafe { GetLastError() };
-        // The snapshot thread exited; an owned handle pins each retained ID.
-        if error == ERROR_INVALID_PARAMETER {
+        // The snapshot thread exited, and its id is free or another
+        // process's.
+        if error == ERROR_INVALID_PARAMETER || error == ERROR_ACCESS_DENIED {
             Ok(None)
         } else {
             Err(error)
@@ -735,6 +785,8 @@ impl Threads {
     }
 
     pub fn suspend(&mut self) -> Result<(), u32> {
+        #[cfg(test)]
+        SUSPENSIONS.with(|count| count.set(count.get() + 1));
         // Query sizing and prepare aligned caller storage immediately before
         // acquiring any hold. A resize retry always resumes before preparing.
         self.prepare_census()?;
@@ -745,10 +797,8 @@ impl Threads {
                 }
                 if unsafe { SuspendThread(handle) } == u32::MAX {
                     let error = unsafe { GetLastError() };
-                    if unsafe { WaitForSingleObject(handle, 0) } == 0 {
-                        return Ok(false);
-                    }
-                    return Err(error);
+                    let exited = unsafe { WaitForSingleObject(handle, 0) } == 0;
+                    return refused_suspension(error, exited);
                 }
                 Ok(true)
             },
@@ -978,8 +1028,13 @@ impl Drop for Threads {
     }
 }
 
+#[path = "hook/shared.rs"]
+pub(crate) mod shared;
 #[path = "hook/tap.rs"]
 mod tap;
+/// The bytes a [`Tap`] at a sentinel replaces, for the site-overlap test.
+#[cfg(test)]
+pub(crate) use tap::instruction_span as tap_span;
 pub use tap::{Registers, Tap};
 
 #[cfg(test)]
@@ -1055,7 +1110,9 @@ mod call_tap_tests {
     }
     #[test]
     fn call_patch_returns_to_native_continuation_and_restores_exactly() {
-        let _guard = FAMILY_TEST.lock().unwrap();
+        let _guard = FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let site = call_tap_test_call_site as *const () as usize;
         let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
             .try_into()
@@ -1077,7 +1134,9 @@ mod call_tap_tests {
     #[test]
     fn counted_call_restore_waits_for_the_native_return() {
         static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
-        let _guard = FAMILY_TEST.lock().unwrap();
+        let _guard = FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let site = call_tap_test_call_site as *const () as usize;
         let callback = tapped as *const () as usize;
         let sentinel = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }

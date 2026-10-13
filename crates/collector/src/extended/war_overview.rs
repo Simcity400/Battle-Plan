@@ -1,4 +1,5 @@
-//! Missing native overview operands, hourly in the Slow worker.
+//! Missing native overview operands, hourly in their own WarOverview job,
+//! beside Slow.
 //! Native order is explicit in keys; all growth/conversion is off-thread.
 use crate::{sampling::qpc, spooling::table, table_capture::CaptureRows};
 use engine::{

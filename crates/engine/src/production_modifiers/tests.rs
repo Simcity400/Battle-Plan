@@ -10,6 +10,9 @@ struct Fixture {
     globals: BTreeMap<usize, Vec<u8>>,
     global_reads: Cell<usize>,
     fault: Option<usize>,
+    /// The fault fails only its first read.
+    once: bool,
+    spent: Cell<bool>,
     lines: Vec<usize>,
     variant: usize,
     equipment: usize,
@@ -117,6 +120,8 @@ impl Fixture {
             globals,
             global_reads: Cell::new(0),
             fault: None,
+            once: false,
+            spent: Cell::new(false),
             lines,
             variant,
             equipment,
@@ -129,7 +134,8 @@ impl Memory for Fixture {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         if self.fault.is_some_and(|fault| {
             address <= fault && fault < address.saturating_add(destination.len())
-        }) {
+        }) && !(self.once && self.spent.replace(true))
+        {
             return false;
         }
         if let Some(bytes) = self.globals.get(&address) {
@@ -393,4 +399,248 @@ fn reader_keeps_type_classifier_variant_flags_dlc_conversion_and_virtual_refit_s
         acquire(&fixture, 1, 3).0,
         Err("unreached production refit virtual implementation")
     );
+}
+
+/// One growing capture of `slots` with `provided` defines: its result,
+/// context, countries, lines (each with its factory efficiencies) and
+/// requests.
+#[allow(clippy::type_complexity)]
+fn growing(
+    fixture: &Fixture,
+    slots: std::ops::Range<u32>,
+    provided: Option<Result<Context, &'static str>>,
+) -> (
+    Result<(), &'static str>,
+    Option<Context>,
+    Vec<Country>,
+    Vec<(Line, Vec<i64>)>,
+    Vec<Request>,
+) {
+    let (mut countries, mut lines, mut efficiencies, mut requests, mut archetypes) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut context = None;
+    let mut out = GrowingBuffers {
+        countries: &mut countries,
+        country_len: 0,
+        country_required: 0,
+        lines: &mut lines,
+        line_len: 0,
+        line_required: 0,
+        efficiencies: &mut efficiencies,
+        efficiency_len: 0,
+        efficiency_required: 0,
+        requests: &mut requests,
+        request_len: 0,
+        request_required: 0,
+        archetypes: &mut archetypes,
+        archetype_required: 0,
+    };
+    let result = capture_growing_slots(
+        fixture,
+        fixture.world.module,
+        fixture.world.game_state(),
+        slots,
+        provided,
+        &mut context,
+        &mut out,
+    );
+    let lengths = [out.country_len, out.line_len, out.request_len];
+    let lines = lines[..lengths[1]]
+        .iter()
+        .map(|line| {
+            let [start, len] = line.efficiencies;
+            (
+                Line {
+                    efficiencies: [0, 0],
+                    ..*line
+                },
+                efficiencies[start..start + len].to_vec(),
+            )
+        })
+        .collect();
+    countries.truncate(lengths[0]);
+    requests.truncate(lengths[2]);
+    (result, context, countries, lines, requests)
+}
+
+/// Consecutive slot ranges, with the defines read once and handed to each,
+/// concatenate to the whole walk: its countries, lines and requests in
+/// order and its context. A persistent fault fails the part holding its
+/// country with the whole walk's reason, the parts before it whole, and a
+/// failed define read fails the first part with lines with the whole walk's
+/// reason.
+#[test]
+fn slot_parts_concatenate_to_the_whole_walk_and_meet_its_first_failure() {
+    let mut fixture = Fixture::new(200, true);
+    let bounds = [1, 37, 90, 151, u32::MAX];
+    let parts = |fixture: &Fixture| {
+        let provided = Context::read(fixture, fixture.world.module);
+        bounds
+            .windows(2)
+            .map(|range| growing(fixture, range[0]..range[1], Some(provided)))
+            .collect::<Vec<_>>()
+    };
+    let whole = growing(&fixture, 1..u32::MAX, None);
+    assert_eq!(whole.0, Ok(()));
+    assert_eq!(whole.2.len(), 200);
+    let split = parts(&fixture);
+    assert!(
+        split
+            .iter()
+            .all(|part| part.0 == Ok(()) && part.1 == whole.1)
+    );
+    assert_eq!(
+        split
+            .iter()
+            .flat_map(|part| part.2.clone())
+            .collect::<Vec<_>>(),
+        whole.2
+    );
+    assert_eq!(
+        split
+            .iter()
+            .flat_map(|part| part.3.clone())
+            .collect::<Vec<_>>(),
+        whole.3
+    );
+    assert_eq!(
+        split
+            .iter()
+            .flat_map(|part| part.4.clone())
+            .collect::<Vec<_>>(),
+        whole.4
+    );
+    // Country 120's line, in the third part.
+    fixture.fault = Some(fixture.lines[119]);
+    let whole = growing(&fixture, 1..u32::MAX, None);
+    assert!(whole.0.is_err());
+    let split = parts(&fixture);
+    assert_eq!(split[0].0, Ok(()));
+    assert_eq!(split[1].0, Ok(()));
+    assert_eq!(split[2].0, whole.0);
+    fixture.fault = None;
+    fixture.globals.clear();
+    let whole = growing(&fixture, 1..u32::MAX, None);
+    assert!(whole.0.is_err());
+    assert_eq!(parts(&fixture)[0].0, whole.0);
+}
+
+/// At 5,000 countries, with an idle range (its countries' rosters empty),
+/// every seventh country holding its line three times and an empty range,
+/// slot parts concatenate to the whole walk. Under a persistent fault on a
+/// country's, a line's or a define's operand, and under a one-shot fault on
+/// each, the part holding it gives the whole walk's result and the parts
+/// before it are whole and the whole walk's rows, so the combined capture
+/// (the first failure in slot order) refuses no more than the whole walk.
+#[test]
+fn slot_parts_match_the_whole_walk_at_scale_and_under_every_fault() {
+    let mut fixture = Fixture::new(5_000, true);
+    let status = |fixture: &Fixture, slot: u32| {
+        crate::read::<u64>(
+            &fixture.world.memory(),
+            fixture.world.object(slot) + ccountry::PRODUCTION_STATUS,
+        )
+        .unwrap() as usize
+    };
+    for slot in 2_000..2_600 {
+        let status = status(&fixture, slot);
+        fixture
+            .world
+            .array(status + cproduction_status::LINES, 0, 0);
+    }
+    for slot in (7..=5_000)
+        .step_by(7)
+        .filter(|slot| !(2_000..2_600).contains(slot))
+    {
+        let roster = fixture.world.alloc(24);
+        let line = fixture.lines[slot as usize - 1];
+        for index in 0..3 {
+            fixture.world.u64(roster + index * 8, line as u64);
+        }
+        let status = status(&fixture, slot);
+        fixture
+            .world
+            .array(status + cproduction_status::LINES, roster, 3);
+    }
+    let bounds = [1, 1_200, 2_000, 2_600, 2_600, u32::MAX];
+    let split = |fixture: &Fixture| {
+        fixture.spent.set(false);
+        let provided = Context::read(fixture, fixture.world.module);
+        bounds
+            .windows(2)
+            .map(|range| growing(fixture, range[0]..range[1], Some(provided)))
+            .collect::<Vec<_>>()
+    };
+    let whole = |fixture: &Fixture| {
+        fixture.spent.set(false);
+        growing(fixture, 1..u32::MAX, None)
+    };
+    let healthy = whole(&fixture);
+    assert_eq!(healthy.0, Ok(()));
+    assert_eq!(healthy.2.len(), 5_000 - 600);
+    let parts = split(&fixture);
+    assert!(parts[2].2.is_empty() && parts[3].2.is_empty());
+    // A range without a country with lines reads no defines, as the whole
+    // walk reads them only at its first such country; the collector takes
+    // the defines of the first part with requests.
+    for part in &parts {
+        assert_eq!(part.0, Ok(()));
+        let expected = if part.2.is_empty() { None } else { healthy.1 };
+        assert_eq!(part.1, expected);
+    }
+    assert_eq!(
+        parts
+            .iter()
+            .flat_map(|part| part.2.clone())
+            .collect::<Vec<_>>(),
+        healthy.2
+    );
+    assert_eq!(
+        parts
+            .iter()
+            .flat_map(|part| part.3.clone())
+            .collect::<Vec<_>>(),
+        healthy.3
+    );
+    assert_eq!(
+        parts
+            .iter()
+            .flat_map(|part| part.4.clone())
+            .collect::<Vec<_>>(),
+        healthy.4
+    );
+    // The part of each slot, and the faults: country 1,500's stored power,
+    // country 3,500's line's factories, the first define.
+    let part_of = |slot: u32| {
+        bounds
+            .windows(2)
+            .position(|range| range[0] <= slot && slot < range[1])
+            .unwrap()
+    };
+    let power = status(&fixture, 1_500) + 0x3a8;
+    let line = fixture.lines[3_499] + cproduction_line::ACTIVE_FACTORIES;
+    for (fault, slot) in [(power, 1_500), (line, 3_500), (DEFINE_RVAS[0], 1)] {
+        for once in [false, true] {
+            fixture.fault = Some(fault);
+            fixture.once = once;
+            let serial = whole(&fixture);
+            let parts = split(&fixture);
+            let at = part_of(slot);
+            assert!(serial.0.is_err(), "{fault:x} once {once}");
+            assert_eq!(parts[at].0, serial.0, "{fault:x} once {once}");
+            // The parts before it are whole; later parts are not published
+            // past the first failure, as the whole walk stops there.
+            for (index, part) in parts[..at].iter().enumerate() {
+                assert_eq!(part.0, Ok(()), "{fault:x} once {once} part {index}");
+            }
+            // The parts before the fault are the whole walk's rows there.
+            let before: Vec<_> = parts[..at].iter().flat_map(|part| part.2.clone()).collect();
+            assert_eq!(
+                before[..],
+                healthy.2[..before.len()],
+                "{fault:x} once {once}"
+            );
+        }
+    }
+    fixture.fault = None;
 }

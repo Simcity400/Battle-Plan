@@ -1,8 +1,10 @@
 //! Engine-native typed tables and lossless field-mask codecs.
 use crate::codec::{Decoder, invalid_static as invalid, put_bytes, put_varint};
+use crate::display::{Rounding, Step};
 pub use crate::event_feed_rows::EventFeedHistoryRow;
 #[cfg(test)]
 use crate::format::FormatVersion;
+pub use crate::nuclear_rows::*;
 pub use crate::peace_rows::*;
 use crate::value::{EncodeValue, Value};
 pub use combat_rows::*;
@@ -52,7 +54,7 @@ pub struct CampaignRow {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CountryRow {
-    /// Raw CCountry link id, which need not equal its canonical array slot.
+    /// Raw country link id, which need not equal its canonical array slot.
     pub id: u32,
     pub canonical_slot: u32,
     pub tag: Vec<u8>,
@@ -101,19 +103,41 @@ pub struct ProvinceRow {
     /// by path-edge port classification; zero without a port. Static: one delta
     /// on the first hour.
     pub port_sea: i32,
-    /// Fresh signed fort sum and controller-specific state factor.
-    pub attack: Recorded<ProvinceAttackInputs>,
-    pub selected_areas: Recorded<Option<ProvinceAreaInputs>>,
+    /// The selected-attack fort sum and state factor recordings through
+    /// format 101 captured ([`ProvinceAttackInputs`]); current writers leave
+    /// it empty ([`Witnessed`]).
+    pub attack: Recorded<Witnessed<ProvinceAttackInputs>>,
+    /// Retired controller-area graph operands of the selected-route preview.
+    pub selected_areas: Recorded<Retired>,
+    /// For a province whose healthy land fort level (the walk's fort sum) is positive and
+    /// whose controller is positive, its state's effective
+    /// `land_bunker_effectiveness_factor` for that controller added to the controller's
+    /// own factor by the fort-base calculation. None for every other province, which no
+    /// attack list asks for it, and for a fortified one's read refusal. Older formats use
+    /// NotRecorded.
+    pub fort_bunker: Recorded<Option<i64>>,
+    /// The province's controller area (`+0xD0`, compared and searched during route
+    /// finding), as the id of its smallest member province, whose row holds its
+    /// [`Self::area_node`]; zero for a null area. None is a capture refusal. The
+    /// collector reads an area again only when a controller change can have touched it
+    /// (`engine::controller_areas`).
+    pub controller_area: Recorded<Option<u32>>,
+    /// The province's owner area (`+0xD8`) labelled the same way; the route search reads
+    /// only equality and null.
+    pub owner_area: Recorded<Option<u32>>,
+    /// On the province whose id labels its controller area, that area's node;
+    /// None on every other province. On the label province None refuses the
+    /// node.
+    pub area_node: Recorded<Option<ControllerAreaNode>>,
 }
 
 impl ProvinceRow {
     /// A land, non-lake province (terrain flags bit 0 set, bit 1 clear) whose
     /// A null owner area refuses province movement access.
     pub const MOVE_NULL_OWNER_AREA: u8 = 1;
-    /// The size of the province's border-conflict set is
-    /// nonzero. `ProvinceAccessForMove` then refuses entry unless the army's
-    /// own location has this bit or the province's BorderConflicts row lists
-    /// the army's orders group.
+    /// The size of the province's border-conflict set is nonzero. Province movement
+    /// access then refuses entry unless the army's own location has this bit or the
+    /// province's BorderConflicts row lists the army's orders group.
     pub const MOVE_BORDER_CONFLICT: u8 = 2;
 }
 
@@ -150,7 +174,7 @@ pub struct DivisionRow {
     pub id: u64,
     /// Raw country reference of the roster containing this division.
     pub roster_owner: u32,
-    /// Raw CUnit owner reference.
+    /// Raw unit owner reference.
     pub logical_owner: u32,
     /// Raw expeditionary-owner reference, including the engine's null value.
     pub expeditionary_owner: u32,
@@ -161,12 +185,35 @@ pub struct DivisionRow {
     pub hit_points: i64,
     /// Native signed fixed-point organisation, with denominator 100,000.
     pub organisation: i64,
-    /// Full COrdersGroup handle of the army holding this division, or zero for
-    /// the engine's own null parent. It is an independent second source for
+    /// Full orders group handle of the army holding this division, or zero for the
+    /// engine's own null parent. It is an independent second source for
     /// OrdersGroupMembers, never a substitute for that ordered vector.
     pub orders_group: u64,
     /// The standard template's native fog reveal-skip byte (zero for none).
     pub reveal_skip: u8,
+}
+
+impl DivisionRow {
+    /// `hit_points` at the game's display precision ([`crate::display`]). The game shows
+    /// a division's strength only as a share of its maximum (whole percentages in combat,
+    /// army-average and current-strength text) and its maximum at one highlighted
+    /// decimal, so hit points keep that tenth, truncated as the fixed5 formatter does. A
+    /// nonzero value below a tenth keeps one tenth with its sign, so the zero and sign
+    /// tests consumers apply (`hp >= 0`, the retreat sum's `<= 0`) read the same. By
+    /// owner decision 2026-10-11 the derived displays (strength percentages and bars,
+    /// army totals, border war power, the retreat-admission sum and the move-strength
+    /// warning) read the stepped value and can differ from the game in their last digit
+    /// at boundaries.
+    pub const HIT_POINTS_STEP: Step = Step::fixed5(10_000, Rounding::TowardZeroNonzero);
+    /// `organisation` at the game's finest display of it: the combat window prints
+    /// current organisation with one decimal truncated toward zero by the fixed5
+    /// formatter; the counter hover's whole units in a fixed colour and every installed
+    /// mod's override are coarser. Damage application clamps it at zero. By owner
+    /// decision 2026-10-11 the derived displays (land combat progress and the marker's
+    /// whole-unit progress text, the combat heading frame, average organisation, bars,
+    /// border war power and the move-organisation warning) read the stepped value and can
+    /// differ from the game in their last digit at boundaries.
+    pub const ORGANISATION_STEP: Step = Step::fixed5(10_000, Rounding::TowardZero);
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -197,9 +244,9 @@ pub struct FactionRow {
     /// That localised name is not recorded; resolve it through the content's
     /// faction templates.
     pub template_token: Option<u32>,
-    /// The faction colour, the save's `color`: the native `CColor` components as raw
-    /// f32 bits. The save writes each of red, green and blue as `(int)(c * 255.0f)` and
-    /// alpha only when it is not 1.0.
+    /// The faction colour, the save's `color`: the native `colour` components as raw f32
+    /// bits. The save writes each of red, green and blue as `(int)(c * 255.0f)` and alpha
+    /// only when it is not 1.0.
     pub color_red: u32,
     pub color_green: u32,
     pub color_blue: u32,
@@ -243,7 +290,7 @@ pub struct LandCombatRow {
     pub province: u32,
     pub duration: i32,
     pub day: i32,
-    /// Ordered native CArmy handles, including the complete type word.
+    /// Ordered native division handles, including the complete type word.
     pub attackers: Vec<u64>,
     pub defenders: Vec<u64>,
 }
@@ -281,10 +328,31 @@ pub struct ShipRow {
     pub task_force: u64,
     pub strength: i64,
     pub organisation: i64,
+    /// `ship+0x708`, signed fixed5, at [`Self::EXPERIENCE_STEP`]. Its run-time writers
+    /// are experience awards (accepted fixed5 addition, then the `+0x710` cap),
+    /// assignment during transfer and captain replacement, and damage scaling.
+    /// Construction zeroes it and loading floors a negative saved value at zero. Save
+    /// serialization writes all eight bytes.
     pub experience: i64,
     pub category: u32,
     pub sunk_convoys: i32,
     pub class_id: i32,
+}
+
+impl ShipRow {
+    /// `experience` at the game's finest display of it ([`crate::display`]). The game
+    /// shows a ship's experience only through its ratio to the maximum, flooring
+    /// experience at zero and truncating the fixed5 ratio: the level counts the
+    /// `NMilitary.UNIT_EXP_LEVELS` thresholds the ratio reaches (`>=`), and the tooltip
+    /// prints progress through the current level as a whole percentage in a fixed colour,
+    /// truncated by the fixed5 formatter. One percent of the narrowest level of any
+    /// installed mod (UNIT_EXP_LEVELS steps of 0.02 at NNavy.NAVY_MAX_XP 100) is 0.02,
+    /// and of vanilla's 0.1, so a hundredth truncated toward zero is never coarser than
+    /// the game. Every installed threshold times NAVY_MAX_XP is a whole multiple of the
+    /// step, so the level read from the stepped value is the game's; by owner decision
+    /// 2026-10-11 the progress percent can differ from the game's in its last digit at
+    /// boundaries.
+    pub const EXPERIENCE_STEP: Step = Step::fixed5(1_000, Rounding::TowardZero);
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -346,9 +414,9 @@ pub struct AirWingRow {
     /// is an observed empty name. Older recordings are absent. Ordinary text
     /// saves write `name` even when empty; only checksum mode omits it.
     pub name: Recorded<Option<Vec<u8>>>,
-    /// Containing pool's authenticated CSubUnitDefinition database index,
-    /// joined to the recorded content stack. Some(0) is the null subtype;
-    /// None is an optional acquisition refusal, older formats NotRecorded.
+    /// Containing pool's authenticated subunit definition database index, joined to the
+    /// recorded content stack. Some(0) is the null subtype; None is an optional
+    /// acquisition refusal, older formats NotRecorded.
     pub pool_subunit: Recorded<Option<u32>>,
     /// Stored full paired raid reference and same-read liveness for idle
     /// transport wings. Never derive liveness from the raid roster.
@@ -417,10 +485,19 @@ pub trait RowCodec: Default + Clone + Eq {
     fn decode_fields(key: u128, input: &mut Decoder<'_>) -> io::Result<Self>;
     /// Takes ownership so an unchanged string or list keeps its existing allocation.
     fn apply_delta(delta: &DeltaRow, previous: Option<Self>) -> io::Result<Self>;
+    /// Whether a field of this row, or a part nested in one, has a display
+    /// step ([`crate::display`]).
+    fn has_display_steps(&self) -> bool;
+    /// Round every stepped field to its display step, in place.
+    fn round_to_display(&mut self);
 }
 
 trait Fields {
     const SCHEMA: &'static [Kind];
+    /// Each field's display step ([`crate::display`]), in schema order.
+    const STEPS: &'static [Option<Step>];
+    /// Each field's row member, in schema order.
+    const NAMES: &'static [&'static str];
 }
 
 pub trait TableSchema {
@@ -506,6 +583,17 @@ macro_rules! define_tables {
             pub(crate) const fn key_bits(self) -> u32 {
                 match self { $(Self::$table => <$row as RowCodec>::KEY_BITS),+ }
             }
+            /// The display step ([`crate::display`]) of top-level field
+            /// `field`; nested steps belong to their value declarations.
+            pub fn display_step(self, field: usize) -> Option<Step> {
+                let steps: &[Option<Step>] = match self { $(Self::$table => <$row as Fields>::STEPS),+ };
+                steps.get(field).copied().flatten()
+            }
+            /// The row member field `field` is stored from, as its codec names it.
+            pub fn field_name(self, field: usize) -> Option<&'static str> {
+                let names: &[&str] = match self { $(Self::$table => <$row as Fields>::NAMES),+ };
+                names.get(field).copied()
+            }
             pub(crate) fn decode_rows(self, count: usize, input: &mut Decoder<'_>) -> io::Result<TableRows> {
                 Ok(match self { $(Self::$table => TableRows::$table(decode_typed::<$row>(count, input)?)),+ })
             }
@@ -518,6 +606,12 @@ macro_rules! define_tables {
             }
             pub fn truncate(&mut self, len: usize) {
                 match self { $(Self::$table(rows) => rows.truncate(len)),+ }
+            }
+            /// Round every row's stepped fields to their display steps
+            /// ([`crate::display`]), as capture stores them; a table without
+            /// steps is left untouched.
+            pub fn round_to_display(&mut self) {
+                match self { $(Self::$table(rows) => round_rows_to_display(rows)),+ }
             }
             pub fn from_rows<T: TableSchema>(rows: Vec<T::Row>) -> Self { T::wrap(rows) }
             pub fn empty(table: TableId) -> Self {
@@ -584,13 +678,17 @@ macro_rules! define_tables {
             }
             /// Indices, types and unchanged keys were checked while encoding,
             /// before any table in the frame could change its baseline.
-            pub(crate) fn install_replacements(&mut self, replacement: Self, indices: &[usize]) {
-                match (self, replacement) {
+            /// Returns the replaced rows, in the replacement's storage.
+            pub(crate) fn install_replacements(&mut self, mut replacement: Self, indices: &[usize]) -> Self {
+                match (self, &mut replacement) {
                     $((Self::$table(previous), Self::$table(rows)) => {
-                        for (&index, row) in indices.iter().zip(rows) { previous[index] = row; }
+                        for (&index, row) in indices.iter().zip(rows.iter_mut()) {
+                            std::mem::swap(&mut previous[index], row);
+                        }
                     }),+,
                     _ => unreachable!("validated replacement type"),
                 }
+                replacement
             }
             pub(crate) fn apply_delta(self, changed: &[DeltaRow], deleted: &[u128]) -> io::Result<Self> {
                 Ok(match self { $(Self::$table(rows) => Self::$table(apply_typed(rows, changed, deleted)?)),+ })
@@ -945,6 +1043,23 @@ BuildingBombingDamage = 304 => BuildingBombingDamage(BuildingBombingDamageRow),
 AirDailyRoster = 305 => AirDailyRoster(AirDailyRosterRow),
 EventFeedHistory = 306 => EventFeedHistory(EventFeedHistoryRow),
 RocketProductionOutput = 307 => RocketProductionOutput(RocketProductionOutputRow),
+ReservedNearestNavies = 308 => ReservedNearestNavy(ReservedNearestNavyRow),
+ReservedNearestBases = 309 => ReservedNearestBase(ReservedNearestBaseRow),
+TransportNavies = 310 => TransportNavy(TransportNavyRow),
+TransportLedgers = 311 => TransportLedger(TransportLedgerRow),
+TransportReceivers = 312 => TransportReceiver(TransportReceiverRow),
+TransportSearchRegions = 313 => TransportSearchRegion(TransportSearchRegionRow),
+TransportSpottingOwners = 314 => TransportSpottingOwner(TransportSpottingOwnerRow),
+TransportSpottingRegions = 315 => TransportSpottingRegion(TransportSpottingRegionRow),
+TransportAirRoots = 316 => TransportAirRoot(TransportAirRootRow),
+TransportAirRegions = 317 => TransportAirRegion(TransportAirRegionRow),
+TransportRiskShips = 318 => TransportRiskShips(TransportRiskShipsRow),
+NavalModifierTrees = 319 => NavalModifierTrees(NavalModifierTreeRow),
+NavalModifierTreeSamples = 320 => NavalModifierTreeSamples(NavalModifierTreeSampleRow),
+AirRegionCombat = 321 => AirRegionCombat(AirRegionCombatRow),
+NuclearStrikes = 322 => NuclearStrike(NuclearStrikeRow),
+LandCombatDivisionModifiers = 323 => LandCombatDivisionModifier(LandCombatDivisionModifierRow),
+FuelDemandParts = 324 => FuelDemandPart(FuelDemandPartRow),
 }
 impl TableId {
     /// Discard only proven field framing. No old row is decoded, validated as
@@ -1004,6 +1119,138 @@ impl TableId {
                 return Err(invalid("deleted keys did not advance"));
             }
             previous = key;
+        }
+        Ok(())
+    }
+
+    /// Whether a field's changes are whole byte strings (strings, lists and
+    /// nested records) rather than numeric differences.
+    pub(crate) fn byte_field(self, field: usize) -> bool {
+        matches!(
+            self.schema().get(field),
+            Some(Kind::Bytes | Kind::U32List | Kind::U64List | Kind::Opaque)
+        )
+    }
+
+    /// The exact bytes of one field's plain encoding, read from `input`.
+    pub(crate) fn field_span<'a>(
+        self,
+        field: usize,
+        input: &mut Decoder<'a>,
+    ) -> io::Result<&'a [u8]> {
+        let before = input.rest();
+        self.schema()[field].decode(input)?;
+        Ok(&before[..before.len() - input.remaining()])
+    }
+
+    /// The exact bytes of one field's plain delta change, read from `input`.
+    pub(crate) fn change_span<'a>(
+        self,
+        field: usize,
+        input: &mut Decoder<'a>,
+    ) -> io::Result<&'a [u8]> {
+        let before = input.rest();
+        self.schema()[field].decode_change(input)?;
+        Ok(&before[..before.len() - input.remaining()])
+    }
+
+    /// Walk one plain table update in `format`, from its status byte, and
+    /// report every token's exact bytes in wire order. Counts, masks and field
+    /// framing get the same checks as decoding; row values are not decoded.
+    pub(crate) fn walk_update<'a>(
+        self,
+        bytes: &'a [u8],
+        format: u16,
+        visit: &mut dyn FnMut(Token, &'a [u8]),
+    ) -> io::Result<()> {
+        let mut input = Decoder::new(bytes);
+        input.format = format;
+        let fields = self.last_change().fields(self, format);
+        let (status, token) = span(&mut input, |input| input.u8())?;
+        visit(Token::Status, token);
+        match status {
+            0 | 3 => {
+                if status == 3 {
+                    let (missing, token) = span(&mut input, |input| input.u32())?;
+                    if missing == 0 {
+                        return Err(invalid("truncated table has no missing rows"));
+                    }
+                    visit(Token::Missing, token);
+                }
+                let minimum = self.minimum_row_bytes_at(format);
+                self.walk_rows(fields, WalkRows::Snapshot, minimum, &mut input, visit)?;
+            }
+            1 => {
+                let (_, token) = span(&mut input, |input| input.i32())?;
+                visit(Token::Baseline, token);
+                let minimum = self.minimum_delta_bytes_at(format);
+                self.walk_rows(fields, WalkRows::Changed, minimum, &mut input, visit)?;
+                self.walk_rows(fields, WalkRows::Deleted, 1, &mut input, visit)?;
+            }
+            2 => {
+                let (_, token) = span(&mut input, |input| input.i32())?;
+                visit(Token::Baseline, token);
+            }
+            4 => {
+                let (reason, token) = span(&mut input, |input| input.string())?;
+                if reason.is_empty() {
+                    return Err(invalid("unavailable table needs a reason"));
+                }
+                visit(Token::Reason, token);
+            }
+            _ => return Err(invalid("unknown table status")),
+        }
+        input.finish()
+    }
+
+    /// A counted run of snapshot rows, changed rows or deleted keys.
+    fn walk_rows<'a>(
+        self,
+        fields: usize,
+        rows: WalkRows,
+        minimum: usize,
+        input: &mut Decoder<'a>,
+        visit: &mut dyn FnMut(Token, &'a [u8]),
+    ) -> io::Result<()> {
+        let schema = &self.schema()[..fields];
+        let width = fields.div_ceil(8);
+        let (count, token) = span(input, |input| input.count(minimum))?;
+        visit(Token::Count, token);
+        let mut previous = 0;
+        for index in 0..count {
+            let (key, token) = span(input, |input| self.decode_key(previous, input))?;
+            if index != 0 && key <= previous {
+                return Err(invalid("row keys did not advance"));
+            }
+            previous = key;
+            visit(Token::Key(key), token);
+            match rows {
+                WalkRows::Snapshot => {
+                    for (field, kind) in schema.iter().enumerate() {
+                        let (_, token) = span(input, |input| kind.decode(input).map(|_| ()))?;
+                        visit(Token::Field(field), token);
+                    }
+                }
+                WalkRows::Changed => {
+                    let (mask, token) = span(input, |input| {
+                        let mut bytes = [0; 8];
+                        bytes[..width].copy_from_slice(input.take(width)?);
+                        Ok(u64::from_le_bytes(bytes))
+                    })?;
+                    if mask == 0 || mask & !full_mask(fields) != 0 {
+                        return Err(invalid("invalid recorded delta mask"));
+                    }
+                    visit(Token::Mask, token);
+                    for (field, kind) in schema.iter().enumerate() {
+                        if mask & (1 << field) != 0 {
+                            let (_, token) =
+                                span(input, |input| kind.decode_change(input).map(|_| ()))?;
+                            visit(Token::Field(field), token);
+                        }
+                    }
+                }
+                WalkRows::Deleted => {}
+            }
         }
         Ok(())
     }
@@ -1152,6 +1399,36 @@ impl TryFrom<u16> for TableId {
             .copied()
             .ok_or_else(|| invalid("unknown table id"))
     }
+}
+
+#[derive(Clone, Copy)]
+enum WalkRows {
+    Snapshot,
+    Changed,
+    Deleted,
+}
+
+/// Read one value and return it with the exact bytes it occupied.
+fn span<'a, T>(
+    input: &mut Decoder<'a>,
+    read: impl FnOnce(&mut Decoder<'a>) -> io::Result<T>,
+) -> io::Result<(T, &'a [u8])> {
+    let before = input.rest();
+    let value = read(input)?;
+    Ok((value, &before[..before.len() - input.remaining()]))
+}
+
+/// One token of a plain table update ([`TableId::walk_update`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Token {
+    Status,
+    Baseline,
+    Count,
+    Missing,
+    Reason,
+    Key(u128),
+    Mask,
+    Field(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1353,6 +1630,14 @@ fn encode_replacements_typed<T: RowCodec>(
     Ok(changed_count != 0)
 }
 
+fn round_rows_to_display<T: RowCodec>(rows: &mut [T]) {
+    if rows.first().is_some_and(RowCodec::has_display_steps) {
+        for row in rows {
+            row.round_to_display();
+        }
+    }
+}
+
 fn apply_typed<T: RowCodec>(
     mut previous: Vec<T>,
     changed: &[DeltaRow],
@@ -1432,6 +1717,19 @@ fn merge_typed<T: RowCodec, R: std::borrow::Borrow<T>>(
 }
 
 trait NativeValue: Sized {
+    /// Whether this field holds nested parts with display steps
+    /// ([`crate::display`]).
+    const HAS_STEPS: bool = false;
+    /// A whole Opaque row field restored after a provisional retirement
+    /// (`opaque_value!(T, restored)`): the tombstone's empty payload, which
+    /// format-102 writers stored meanwhile and no recorded value encodes,
+    /// reads as [`Recorded::NotRecorded`].
+    const RESTORED: bool = false;
+    /// This field holds a restored field's tombstone ([`Self::RESTORED`]),
+    /// which writes the provisional writer's empty payload again.
+    fn restored_tombstone(&self) -> bool {
+        false
+    }
     fn try_clone(&self) -> io::Result<Self>;
     fn field(&self) -> Field<'_>;
     fn from_field(field: Field<'_>) -> io::Result<Self>;
@@ -1439,11 +1737,50 @@ trait NativeValue: Sized {
         Err(invalid("uncatalogued absent row field"))
     }
     fn visit_field_gaps(&self, _visit: &mut dyn FnMut(&'static str)) {}
+    /// Round every nested stepped part to its step, in place.
+    fn round_display(&mut self) {}
+    /// Round this field's numbers to its own `step`, in place.
+    fn round_to(&mut self, _step: Step) {}
+    /// This field's numbers rounded and divided by `step`, as the wire holds them.
+    fn to_units(&self, _step: Step) -> io::Result<Self> {
+        Err(invalid("row field takes no display step"))
+    }
+    /// A decoded field's numbers multiplied back by `step`.
+    #[allow(clippy::wrong_self_convention)]
+    fn from_units(self, _step: Step) -> io::Result<Self> {
+        Err(invalid("row field takes no display step"))
+    }
 }
 impl<T: NativeValue> NativeValue for Recorded<T> {
+    const HAS_STEPS: bool = T::HAS_STEPS;
+    fn restored_tombstone(&self) -> bool {
+        T::RESTORED && matches!(self, Self::NotRecorded)
+    }
     fn visit_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
         if let Self::Value(value) = self {
             value.visit_field_gaps(visit);
+        }
+    }
+    fn round_display(&mut self) {
+        if let Self::Value(value) = self {
+            value.round_display();
+        }
+    }
+    fn round_to(&mut self, step: Step) {
+        if let Self::Value(value) = self {
+            value.round_to(step);
+        }
+    }
+    fn to_units(&self, step: Step) -> io::Result<Self> {
+        match self {
+            Self::NotRecorded => Ok(Self::NotRecorded),
+            Self::Value(value) => value.to_units(step).map(Self::Value),
+        }
+    }
+    fn from_units(self, step: Step) -> io::Result<Self> {
+        match self {
+            Self::NotRecorded => Ok(Self::NotRecorded),
+            Self::Value(value) => value.from_units(step).map(Self::Value),
         }
     }
     fn try_clone(&self) -> io::Result<Self> {
@@ -1459,6 +1796,13 @@ impl<T: NativeValue> NativeValue for Recorded<T> {
         }
     }
     fn from_field(field: Field<'_>) -> io::Result<Self> {
+        if T::RESTORED
+            && let Field::Opaque(Opaque::Encoded(bytes, format)) = &field
+            && bytes.is_empty()
+            && *format >= compatibility::RETIRED_INPUTS_FORMAT
+        {
+            return Ok(Self::NotRecorded);
+        }
         T::from_field(field).map(Self::Value)
     }
     fn not_recorded() -> io::Result<Self> {
@@ -1472,11 +1816,105 @@ fn read_field<T: NativeValue>(index: usize, kind: Kind, input: &mut Decoder<'_>)
         read_value(kind, input)
     }
 }
+/// [`read_field`] for a declared field: step units become native units.
+fn read_stepped_field<T: NativeValue>(
+    index: usize,
+    kind: Kind,
+    step: Option<Step>,
+    input: &mut Decoder<'_>,
+) -> io::Result<T> {
+    let value: T = read_field(index, kind, input)?;
+    match step {
+        Some(step) if crate::display::stepped_format(input.format) => value.from_units(step),
+        _ => Ok(value),
+    }
+}
+/// Round a declared field: to its own step, or each nested stepped part.
+fn round_native_field<T: NativeValue>(value: &mut T, step: Option<Step>) {
+    match step {
+        Some(step) => value.round_to(step),
+        None if T::HAS_STEPS => value.round_display(),
+        None => {}
+    }
+}
+fn native_has_steps<T: NativeValue>(_: &T, step: Option<Step>) -> bool {
+    step.is_some() || T::HAS_STEPS
+}
+/// The field a declared value writes: its own, or for a restored field's
+/// tombstone ([`NativeValue::RESTORED`]) the empty payload a provisional
+/// writer stored, so a recording holding one is written again byte for byte.
+fn native_wire_field<T: NativeValue>(value: &T) -> Field<'_> {
+    if value.restored_tombstone() {
+        Field::Opaque(Opaque::Encoded(&[], crate::FORMAT_VERSION))
+    } else {
+        value.field()
+    }
+}
+/// Encode a declared field, in step units when it has a step.
+fn encode_native_field<T: NativeValue>(
+    value: &T,
+    step: Option<Step>,
+    output: &mut Vec<u8>,
+) -> io::Result<()> {
+    match step {
+        None => native_wire_field(value).encode(output),
+        Some(step) => value.to_units(step)?.field().encode(output),
+    }
+}
+/// Encode a declared field's change from `previous`, in step units when it has
+/// a step: both sides are rounded, so the difference is a whole number of steps.
+fn encode_native_change<T: NativeValue>(
+    value: &T,
+    previous: Option<&T>,
+    step: Option<Step>,
+    output: &mut Vec<u8>,
+) -> io::Result<()> {
+    match step {
+        None => native_wire_field(value)
+            .change(previous.map_or(Field::Empty, native_wire_field))?
+            .encode(output),
+        Some(step) => {
+            let units = value.to_units(step)?;
+            let previous = previous.map(|old| old.to_units(step)).transpose()?;
+            units
+                .field()
+                .change(previous.as_ref().map_or(Field::Empty, NativeValue::field))?
+                .encode(output)
+        }
+    }
+}
+/// Apply a recorded change to a declared field: a stepped field in a stepped
+/// format changes by whole steps.
+fn apply_stepped_value<T: NativeValue>(
+    target: &mut T,
+    kind: Kind,
+    step: Option<Step>,
+    input: &mut Decoder<'_>,
+) -> io::Result<()> {
+    match step {
+        Some(step) if crate::display::stepped_format(input.format) => {
+            let mut units = target.to_units(step)?;
+            apply_value(&mut units, kind, input)?;
+            *target = units.from_units(step)?;
+            Ok(())
+        }
+        _ => apply_value(target, kind, input),
+    }
+}
 macro_rules! native_scalar {
     ($ty:ty, $kind:ident) => {
         impl NativeValue for $ty {
             fn try_clone(&self) -> io::Result<Self> {
                 Ok(*self)
+            }
+            fn round_to(&mut self, step: Step) {
+                <$ty as Value>::round_to(self, step);
+            }
+            fn to_units(&self, step: Step) -> io::Result<Self> {
+                <$ty as Value>::to_units(self, step)
+            }
+            fn from_units(self, step: Step) -> io::Result<Self> {
+                <$ty as Value>::from_units(self, step)
             }
             fn field(&self) -> Field<'_> {
                 Field::$kind(*self)
@@ -1565,14 +2003,34 @@ fn apply_value<T: NativeValue>(
     *target = value;
     Ok(())
 }
+/// A field written `5 => (hit_points): I64 @ STEP` is stored at a display
+/// step ([`crate::display`]).
 macro_rules! typed_codec {
     ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| $initial:expr,
-     { $($index:literal => ($($field:tt)+) : $kind:ident),+ $(,)? }, |$checked:ident| $check:expr) => {
-        impl Fields for $ty { const SCHEMA: &'static [Kind] = &[$(Kind::$kind),+]; }
-        impl $ty { pub const fn key(&self) -> u128 { let $row = self; $key } }
+     { $($index:literal => ($($field:tt)+) : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident| $check:expr) => {
+        impl Fields for $ty {
+            const SCHEMA: &'static [Kind] = &[$(Kind::$kind),+];
+            const STEPS: &'static [Option<$crate::display::Step>] = &[$($crate::value::display_step!($($step)?)),+];
+            const NAMES: &'static [&'static str] = &[$(stringify!($($field)+)),+];
+        }
+        impl $ty {
+            pub const fn key(&self) -> u128 { let $row = self; $key }
+            /// Restored fields holding their tombstone, which encode again.
+            fn restored_tombstones(&self) -> u64 {
+                let mut mask = 0;
+                $(if NativeValue::restored_tombstone(&self.$($field)+) { mask |= 1 << $index; })+
+                mask
+            }
+        }
         impl RowCodec for $ty {
             const KEY_BITS: u32 = $bits;
             fn key(&self) -> u128 { self.key() }
+            fn has_display_steps(&self) -> bool {
+                [$(native_has_steps(&self.$($field)+, $crate::value::display_step!($($step)?))),+].contains(&true)
+            }
+            fn round_to_display(&mut self) {
+                $(round_native_field(&mut self.$($field)+, $crate::value::display_step!($($step)?));)+
+            }
             fn check_key_fields(&self) -> io::Result<()> { let $checked = self; $check }
             fn visit_nested_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
                 $(NativeValue::visit_field_gaps(&self.$($field)+, visit);)+
@@ -1603,16 +2061,16 @@ macro_rules! typed_codec {
             }
             fn snapshot_bytes(&self) -> io::Result<usize> {
                 let size = ($bits as usize).div_ceil(7).max(1);
-                $(let size = allocation::add(size, self.$($field)+.field().encoded_bytes()?)?;)+
+                $(let size = allocation::add(size, native_wire_field(&self.$($field)+).encoded_bytes()?)?;)+
                 Ok(size)
             }
             fn encoded_bound(&self) -> io::Result<usize> {
                 let size = ($bits as usize).div_ceil(7).max(1) + Self::SCHEMA.len().div_ceil(8);
-                $(let size = allocation::add(size, self.$($field)+.field().encoded_bound()?)?;)+
+                $(let size = allocation::add(size, native_wire_field(&self.$($field)+).encoded_bound()?)?;)+
                 Ok(size)
             }
             fn encode_change_reserved(&self, previous: Option<&Self>, previous_key: u128, output: &mut Vec<u8>) -> io::Result<bool> {
-                if self.not_recorded_fields() != 0 { return Err(invalid("row fields not recorded")); }
+                if self.not_recorded_fields() & !self.restored_tombstones() != 0 { return Err(invalid("row fields not recorded")); }
                 self.check_key_fields()?;
                 check_native_key(self.key(), Self::KEY_BITS)?;
                 if let Some(previous) = previous {
@@ -1626,12 +2084,12 @@ macro_rules! typed_codec {
                 put_varint(output, self.key().checked_sub(previous_key).ok_or_else(|| invalid("row keys decreased"))?);
                 output.extend_from_slice(&mask.to_le_bytes()[..Self::SCHEMA.len().div_ceil(8)]);
                 $(if mask & (1_u64 << $index) != 0 {
-                    self.$($field)+.field().change(previous.map_or(Field::Empty, |old| old.$($field)+.field()))?.encode(output)?;
+                    encode_native_change(&self.$($field)+, previous.map(|old| &old.$($field)+), $crate::value::display_step!($($step)?), output)?;
                 })+
                 Ok(true)
             }
             fn delta(&self, previous: Option<&Self>) -> io::Result<Option<DeltaRow>> {
-                if self.not_recorded_fields() != 0 { return Err(invalid("row fields not recorded")); }
+                if self.not_recorded_fields() & !self.restored_tombstones() != 0 { return Err(invalid("row fields not recorded")); }
                 self.check_key_fields()?;
                 check_native_key(self.key(), Self::KEY_BITS)?;
                 if let Some(previous) = previous {
@@ -1643,21 +2101,20 @@ macro_rules! typed_codec {
                 $(
                     if previous.is_none_or(|old| old.$($field)+ != self.$($field)+) {
                         delta.mask |= 1_u64 << $index;
-                        self.$($field)+.field().change(previous.map_or(Field::Empty, |old| old.$($field)+.field()))?
-                            .encode(&mut delta.values)?;
+                        encode_native_change(&self.$($field)+, previous.map(|old| &old.$($field)+), $crate::value::display_step!($($step)?), &mut delta.values)?;
                     }
                 )+
                 Ok(Some(delta))
             }
             fn encode_fields_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
-                $(self.$($field)+.field().encode(output)?;)+
+                $(encode_native_field(&self.$($field)+, $crate::value::display_step!($($step)?), output)?;)+
                 Ok(())
             }
             #[allow(clippy::field_reassign_with_default)]
             fn decode_fields(key: u128, input: &mut Decoder<'_>) -> io::Result<Self> {
                 let $key_name = key;
                 let mut row = $initial;
-                $(row.$($field)+ = read_field($index, Kind::$kind, input)?;)+
+                $(row.$($field)+ = read_stepped_field($index, Kind::$kind, $crate::value::display_step!($($step)?), input)?;)+
                 Ok(row)
             }
             fn apply_delta(delta: &DeltaRow, previous: Option<Self>) -> io::Result<Self> {
@@ -1679,7 +2136,7 @@ macro_rules! typed_codec {
                 input.format = delta.format;
                 $(if $index >= fields { row.$($field)+ = NativeValue::not_recorded()?; })+
 
-                $(if delta.mask & (1_u64 << $index) != 0 { apply_value(&mut row.$($field)+, Kind::$kind, &mut input)?; })+
+                $(if delta.mask & (1_u64 << $index) != 0 { apply_stepped_value(&mut row.$($field)+, Kind::$kind, $crate::value::display_step!($($step)?), &mut input)?; })+
                 input.finish()?;
                 Ok(row)
             }
@@ -1689,10 +2146,10 @@ macro_rules! typed_codec {
 
 macro_rules! row_codec {
     ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| { $($key_field:ident : $key_value:expr),* $(,)? },
-     { $($index:literal => $field:ident : $kind:ident),+ $(,)? }, |$checked:ident| $check:expr) => {
+     { $($index:literal => $field:ident : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident| $check:expr) => {
         typed_codec!($ty, $bits, |$row| $key,
             |$key_name| Self { $($key_field: $key_value,)* $($field: Default::default(),)+ },
-            { $($index => ($field): $kind),+ }, |$checked| $check);
+            { $($index => ($field): $kind $(@ $step)?),+ }, |$checked| $check);
     };
 }
 row_codec!(ClockRow, 0, |_row| 0, |_key| {  }, {0 => hour: I32, 1 => play_time: U64, 2 => play_session_started_at: I64, 3 => seed: I32, 4 => speed: I32, 5 => debug_current_ref_id: OptionalU32, 6 => unit: OptionalI32, 7 => order_index: OptionalI32, 8 => front_index: OptionalI32, 9 => theatre_index: OptionalI32, 10 => theater_group_index: OptionalI32, 11 => military_deployment_line_index: OptionalI32, 12 => military_deployment_conveyor_index: OptionalI32, 13 => equipment_variant_index: OptionalI32, 14 => country_leader_index: OptionalI32, 15 => navy_id: OptionalI32, 16 => land_combat_id: OptionalI32, 17 => multiplayer_random_count: OptionalI32}, |_row| Ok(()));
@@ -1704,9 +2161,9 @@ row_codec!(EventFeedHistoryRow, 0, |_row| 0, |_key| {}, {
 }, |row| row.validate());
 row_codec!(CountryRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32, 1 => tag: Bytes, 2 => political_power_raw: OptionalI64, 3 => command_power_raw: I64, 4 => stability_raw: I64, 5 => war_support_raw: I64, 6 => convoys_raw: OptionalI64, 7 => peace_conference_participant: U8, 8 => manpower_residual: I32, 9 => border_land_doctrine_level: OptionalI32}, |_row| Ok(()));
 row_codec!(CountryLinkRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32}, |_row| Ok(()));
-row_codec!(ProvinceRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => state: U32, 1 => owner: U32, 2 => controller: U32, 3 => victory_points: I32, 4 => fort_positive: U8, 5 => move_gate: U8, 6 => port_sea: I32, 7 => attack: Opaque, 8 => selected_areas: Opaque}, |_row| Ok(()));
+row_codec!(ProvinceRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => state: U32, 1 => owner: U32, 2 => controller: U32, 3 => victory_points: I32, 4 => fort_positive: U8, 5 => move_gate: U8, 6 => port_sea: I32, 7 => attack: Opaque, 8 => selected_areas: Opaque, 9 => fort_bunker: OptionalI64, 10 => controller_area: OptionalU32, 11 => owner_area: OptionalU32, 12 => area_node: Opaque}, |_row| Ok(()));
 row_codec!(StateRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => owner: U32, 1 => controller: U32, 2 => movement_infrastructure: I64, 3 => custom_name: Bytes, 4 => owner_name: Bytes, 5 => manpower_available: I32, 6 => continent: OptionalU32, 7 => railway_infrastructure: OptionalI64}, |_row| Ok(()));
-row_codec!(DivisionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => roster_owner: U32, 1 => logical_owner: U32, 2 => expeditionary_owner: U32, 3 => province: U32, 4 => template: U64, 5 => hit_points: I64, 6 => organisation: I64, 7 => orders_group: U64, 8 => reveal_skip: U8}, |_row| Ok(()));
+row_codec!(DivisionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => roster_owner: U32, 1 => logical_owner: U32, 2 => expeditionary_owner: U32, 3 => province: U32, 4 => template: U64, 5 => hit_points: I64 @ Self::HIT_POINTS_STEP, 6 => organisation: I64 @ Self::ORGANISATION_STEP, 7 => orders_group: U64, 8 => reveal_skip: U8}, |_row| Ok(()));
 row_codec!(WarRelationRow, 64, |row| (row.first_country as u128) << 32 | row.second_country as u128, |key| { first_country: (key >> 32) as u32, second_country: key as u32 }, {0 => start_hour: I32, 1 => end_hour: I32, 2 => cancel: U8, 3 => first_casualties: I64, 4 => second_casualties: I64, 5 => first_unknown_casualties: I64, 6 => second_unknown_casualties: I64, 7 => first_was_instigator: U8}, |_row| Ok(()));
 row_codec!(FactionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => name: Bytes, 1 => template_token: OptionalU32, 2 => color_red: U32, 3 => color_green: U32, 4 => color_blue: U32, 5 => color_alpha: U32, 6 => color_overridden: U8}, |_row| Ok(()));
 row_codec!(FactionMemberRow, 32, |row| row.country as u128, |key| { country: key as u32 }, {0 => faction: U64, 1 => ordinal: U32}, |_row| Ok(()));
@@ -1715,7 +2172,7 @@ row_codec!(HumanControllerRow, 32, |row| row.country as u128, |key| { country: k
 row_codec!(LandCombatRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => province: U32, 1 => duration: I32, 2 => day: I32, 3 => attackers: U64List, 4 => defenders: U64List}, |_row| Ok(()));
 row_codec!(FleetRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => owner: U32, 1 => home_base: U32, 2 => name: Opaque, 3 => leader: OptionalU64}, |_row| Ok(()));
 row_codec!(TaskForceRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => fleet: U64, 1 => roster_owner: U32, 2 => logical_owner: U32, 3 => expeditionary_owner: U32, 4 => province: U32, 5 => mission: U32, 6 => route_count: I32, 7 => combat_references: I32}, |_row| Ok(()));
-row_codec!(ShipRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => task_force: U64, 1 => strength: I64, 2 => organisation: I64, 3 => experience: I64, 4 => category: U32, 5 => sunk_convoys: I32, 6 => class_id: I32}, |_row| Ok(()));
+row_codec!(ShipRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => task_force: U64, 1 => strength: I64, 2 => organisation: I64, 3 => experience: I64 @ Self::EXPERIENCE_STEP, 4 => category: U32, 5 => sunk_convoys: I32, 6 => class_id: I32}, |_row| Ok(()));
 row_codec!(NavalCombatRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => province: U32, 1 => attacker_positioning: I64, 2 => defender_positioning: I64, 3 => attacker_anti_air: I64, 4 => defender_anti_air: I64, 5 => registry_ordinal: U32}, |_row| Ok(()));
 row_codec!(NavalCombatParticipantRow, 97, |row| (row.combat as u128) << 33 | (row.side as u128) << 32 | row.battle_slot as u128, |key| { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, battle_slot: key as u32 }, {0 => ship: U64, 1 => owner: U32, 2 => state: U32}, |row| if row.side > 1 { Err(invalid("naval combat participant side exceeds one")) } else { Ok(()) });
 row_codec!(AirWingRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => owner: U32, 1 => air_base: U64, 2 => base_override: U64, 3 => country_override: I32, 4 => planes: I32, 5 => mission_mask: U32, 6 => mission_region: OptionalU32, 7 => base_range_raw: I64, 8 => ace: U64, 9 => mission_active: U8, 10 => eligibility_veto: U8, 11 => eligibility_counter: I32, 12 => eligibility_limit: I32, 13 => attached_orders_group: OptionalU64, 14 => pool_ordinal: U32, 15 => name: Opaque, 16 => pool_subunit: OptionalU32, 17 => raid_reference: Opaque, 18 => strategic_bombing_raw: OptionalI64}, |_row| Ok(()));
@@ -2237,11 +2694,33 @@ impl<'a> Field<'a> {
         Ok(())
     }
 }
+// `opaque_value!(T, restored)` marks a whole field restored after a
+// provisional retirement (`NativeValue::RESTORED`).
 macro_rules! opaque_value {
+    ($ty:ty, restored) => {
+        opaque_value!($ty, true);
+    };
     ($ty:ty) => {
+        opaque_value!($ty, false);
+    };
+    ($ty:ty, $restored:literal) => {
         impl NativeValue for $ty {
+            const HAS_STEPS: bool = <$ty as Value>::HAS_STEPS;
+            const RESTORED: bool = $restored;
             fn visit_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
                 Value::visit_field_gaps(self, visit);
+            }
+            fn round_display(&mut self) {
+                Value::round_display(self);
+            }
+            fn round_to(&mut self, step: $crate::display::Step) {
+                Value::round_to(self, step);
+            }
+            fn to_units(&self, step: $crate::display::Step) -> io::Result<Self> {
+                Value::to_units(self, step)
+            }
+            fn from_units(self, step: $crate::display::Step) -> io::Result<Self> {
+                Value::from_units(self, step)
             }
             fn try_clone(&self) -> io::Result<Self> {
                 Value::try_clone(self)
@@ -2324,6 +2803,12 @@ macro_rules! native_list {
 native_list!(u32, 4);
 native_list!(u64, 8);
 
+#[path = "rows/retired.rs"]
+mod retired;
+pub use retired::{
+    Retired, RetiredBool, RetiredI32, RetiredI64, RetiredKept, RetiredNested, RetiredOptionalI64,
+    RetiredU8, RetiredU32, RetiredU32List, RetiredU64,
+};
 #[path = "combat_rows.rs"]
 mod combat_rows;
 #[path = "extended_rows.rs"]
@@ -2339,6 +2824,22 @@ mod politics_rows;
 mod modifier_breakdown_rows;
 #[path = "production_modifier_rows.rs"]
 mod production_modifier_rows;
+
+#[cfg(test)]
+#[path = "rows/display_tests.rs"]
+mod display_tests;
+
+#[cfg(test)]
+#[path = "rows/supply_footer_tests.rs"]
+mod supply_footer_tests;
+
+#[cfg(test)]
+#[path = "rows/loss_sum_tests.rs"]
+mod loss_sum_tests;
+
+#[cfg(test)]
+#[path = "rows/land_modifier_tests.rs"]
+mod land_modifier_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2431,6 +2932,77 @@ mod tests {
         round_trip(TableId::PeaceSettlements, success.clone());
         round_trip(TableId::PeaceSettlements, failure.clone());
         pair(TableId::PeaceSettlements, success, failure);
+    }
+
+    #[test]
+    fn nuclear_strike_outcomes_and_refusals_round_trip_and_validate() {
+        let row = NuclearStrikeRow {
+            id: 41,
+            hour: -7,
+            launcher: crate::event_feed_rows::EventFeedCountry {
+                reference: 4_999,
+                id: 4_998,
+                instance: u32::MAX,
+            },
+            nuke_type: 1,
+            province: 13_000,
+            state: 0,
+            owner: crate::event_feed_rows::EventFeedCountry {
+                reference: 0,
+                id: 0,
+                instance: 7,
+            },
+            controller: 77,
+            war_support: vec![NuclearWarSupport {
+                country: 0,
+                before_raw: i64::MIN,
+                after_raw: i64::MAX,
+            }],
+            buildings: vec![NuclearBuildingDamage {
+                state: 0,
+                province: Some(13_000),
+                controller: 77,
+                building_type: 0xf004,
+                amount_raw: -1,
+            }],
+            units: vec![NuclearUnitDamage {
+                handle: (8 << 32) | 0x42,
+                class: 13,
+                owner: 5,
+                strength_before: 100_000,
+                strength_after: 0,
+                organisation_before: None,
+                organisation_after: None,
+                manpower_before: 250,
+                manpower_after: 0,
+            }],
+            equipment: vec![NuclearEquipmentLoss {
+                country: 3,
+                wing: true,
+                variant: u64::MAX,
+                amount_raw: 300_000,
+            }],
+            refusals: vec![NuclearStrikeRefusal {
+                part: NuclearStrikePart::Units,
+                reason: b"nuclear strike unit class unsupported".to_vec(),
+                count: 2,
+            }],
+            wings: vec![NuclearWingLoss {
+                country: 3,
+                manpower_before: 400,
+                manpower_after: 0,
+            }],
+        };
+        assert!(row.complete(NuclearStrikePart::Buildings));
+        assert!(!row.complete(NuclearStrikePart::Units));
+        round_trip(TableId::NuclearStrikes, row.clone());
+        round_trip(TableId::NuclearStrikes, NuclearStrikeRow::default());
+        let mut uncounted = row.clone();
+        uncounted.refusals[0].count = 0;
+        assert!(uncounted.check_key_fields().is_err());
+        let mut half = row;
+        half.units[0].organisation_before = Some(1);
+        assert!(half.check_key_fields().is_err());
     }
 
     fn round_trip<T: RowCodec + std::fmt::Debug>(table: TableId, row: T) {
@@ -2558,8 +3130,9 @@ mod tests {
             expeditionary_owner: 0,
             province: 123,
             template: 0x8000_0002_0000_002a,
-            hit_points: -9_007_199_254_740_993,
-            organisation: 100_001,
+            // Whole display steps (crate::display), as capture stores them.
+            hit_points: -9_007_199_254_740_000,
+            organisation: 100_000,
             orders_group: 0x0000_0039_0000_0035,
             reveal_skip: 0,
         }
@@ -2656,13 +3229,15 @@ mod tests {
                 fort_positive: 1,
                 move_gate: 0,
                 port_sea: 0,
-                attack: ProvinceAttackInputs {
-                    sample_hour: i32::MIN,
-                    fort_sum: Some(i32::MIN),
-                    land_bunker_effectiveness_factor: Some(i64::MAX),
-                }
-                .into(),
+                attack: Default::default(),
                 selected_areas: Default::default(),
+                fort_bunker: Recorded::Value(Some(-25_000)),
+                controller_area: Recorded::Value(Some(u32::MAX)),
+                owner_area: Recorded::Value(None),
+                area_node: Recorded::Value(Some(ControllerAreaNode {
+                    first_land: None,
+                    neighbours: Some(vec![u32::MAX, 0, u32::MAX]),
+                })),
             },
         );
         round_trip(
@@ -2757,8 +3332,12 @@ mod tests {
             port_sea: 0,
             attack: Default::default(),
             selected_areas: Default::default(),
+            fort_bunker: Recorded::Value(None),
+            controller_area: Default::default(),
+            owner_area: Default::default(),
+            area_node: Default::default(),
         };
-        assert_eq!(TableId::Provinces.full_mask(), 511);
+        assert_eq!(TableId::Provinces.full_mask(), 8191);
         // Keep the independently covered legacy seven-field mask domain.
         for mask in 1..=127 {
             let next = ProvinceRow {
@@ -2794,8 +3373,12 @@ mod tests {
                 } else {
                     previous.port_sea
                 },
-                attack: previous.attack,
-                selected_areas: previous.selected_areas.clone(),
+                attack: previous.attack.clone(),
+                selected_areas: previous.selected_areas,
+                fort_bunker: previous.fort_bunker,
+                controller_area: previous.controller_area,
+                owner_area: previous.owner_area,
+                area_node: previous.area_node.clone(),
             };
             let delta = next.delta(Some(&previous)).unwrap().unwrap();
             assert_eq!(delta.mask, mask);
@@ -2833,6 +3416,53 @@ mod tests {
                 &victory_points.to_le_bytes()
             );
             round_trip(TableId::Provinces, row);
+        }
+    }
+
+    /// Labels, a null area, a refused label, a refused node operand and a
+    /// known empty contact list are each their own value, field by field.
+    #[test]
+    fn province_areas_keep_labels_null_and_node_refusals_distinct() {
+        let base = ProvinceRow {
+            id: 17,
+            controller: 701,
+            owner: 702,
+            controller_area: Recorded::Value(Some(17)),
+            owner_area: Recorded::Value(Some(0)),
+            area_node: Recorded::Value(Some(ControllerAreaNode {
+                first_land: Some(u32::MAX),
+                neighbours: Some(vec![29, 29, 0, u32::MAX]),
+            })),
+            ..Default::default()
+        };
+        round_trip(TableId::Provinces, base.clone());
+        for change in 0..7 {
+            let mut next = base.clone();
+            fn node(row: &mut ProvinceRow) -> &mut ControllerAreaNode {
+                match &mut row.area_node {
+                    Recorded::Value(Some(node)) => node,
+                    _ => unreachable!(),
+                }
+            }
+            match change {
+                0 => next.controller_area = Recorded::Value(None),
+                1 => next.controller_area = Recorded::Value(Some(0)),
+                2 => next.owner_area = Recorded::Value(None),
+                3 => next.area_node = Recorded::Value(None),
+                4 => node(&mut next).first_land = None,
+                5 => node(&mut next).neighbours = None,
+                _ => node(&mut next).neighbours = Some(Vec::new()),
+            }
+            assert_ne!(next, base, "{change}");
+            let delta = next.delta(Some(&base)).unwrap().unwrap();
+            assert_eq!(delta.mask, 1 << [10, 10, 11, 12, 12, 12, 12][change]);
+            let mut wire = Vec::new();
+            encode_delta(TableId::Provinces, &delta, 0, &mut wire).unwrap();
+            let mut input = Decoder::new(&wire);
+            let restored = decode_delta(TableId::Provinces, 0, &mut input).unwrap();
+            input.finish().unwrap();
+            assert_eq!(restored.apply(Some(base.clone())).unwrap(), next);
+            round_trip(TableId::Provinces, next);
         }
     }
 
@@ -2897,7 +3527,7 @@ mod tests {
                 task_force: u64::MAX,
                 strength: i64::MIN,
                 organisation: i64::MAX,
-                experience: -9_007_199_254_740_993,
+                experience: -9_007_199_254_741_000,
                 category: u32::MAX,
                 sunk_convoys: i32::MIN,
                 class_id: i32::MIN,
@@ -3045,7 +3675,7 @@ mod tests {
     }
 
     #[test]
-    fn division_rows_keep_full_handles_and_native_fixed_point_bytes() {
+    fn division_rows_keep_full_handles_and_store_health_in_display_steps() {
         for id in [0, 1_u64 << 63, u64::MAX] {
             let row = DivisionRow { id, ..division() };
             let mut bytes = Vec::new();
@@ -3056,13 +3686,14 @@ mod tests {
                 &bytes[key_len + 16..key_len + 24],
                 &division().template.to_le_bytes()
             );
+            // Hit points and organisation are stored in tenths.
             assert_eq!(
                 &bytes[key_len + 24..key_len + 32],
-                &division().hit_points.to_le_bytes()
+                &(division().hit_points / 10_000).to_le_bytes()
             );
             assert_eq!(
                 &bytes[key_len + 32..key_len + 40],
-                &division().organisation.to_le_bytes()
+                &(division().organisation / 10_000).to_le_bytes()
             );
             assert_eq!(
                 &bytes[key_len + 40..key_len + 48],
@@ -3084,7 +3715,7 @@ mod tests {
     }
 
     #[test]
-    fn division_masks_preserve_every_field_subset_without_quantization() {
+    fn division_masks_preserve_every_field_subset() {
         let original = division();
         let old = original.clone();
         for mask in 1..=TableId::Divisions.full_mask() {

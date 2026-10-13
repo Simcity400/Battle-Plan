@@ -1,11 +1,13 @@
-//! Original-unit borrower for raw weight and the coastal predicate.
-//! Borrow selected-attack originals, then retire pointer memos before the
-//! admitted callback ends. Weight is read from stat +0x2B8. The coastal
-//! predicate walks composition +0xA8/+0xB4, stride 16, and tests member
-//! +0x5C0 or signed +0x5A4 equal to 0x2F9C. These are stored operands
-//! rather than a reconstructed unit composition.
+//! Original-unit borrower for raw weight and the coastal predicate. Borrow
+//! selected unit originals before their owner retires them, then retire every
+//! pointer memo before the authentic callback finishes. No unit UI state.
+//!
+//! The weight getter reads stat+2B8. The coastal predicate walks real
+//! composition+A8/+B4 with stride16 and tests member+5C0 or a transport
+//! classifier's signed +5A4 equal to 0x2F9C. These are stored operands, never
+//! an infantry/support reconstruction.
 
-use crate::{Memory, cpdx_array::Array, read, selected_attack::OriginalObservation};
+use crate::{Memory, cpdx_array::Array, read, selected_unit_originals::OriginalObservation};
 
 pub type Fact<T> = Result<T, &'static str>;
 const WEIGHT: usize = crate::csub_unit_definition::TRANSPORT_WEIGHT;
@@ -207,43 +209,6 @@ impl Drop for Memo<'_> {
     }
 }
 
-/// A complete grouped-header upper bound for off-thread sizing. The caller's
-/// selecting seed and template identity must already be authenticated. This
-/// observation is only a capacity hint, never a captured value.
-pub(crate) fn member_demand(
-    memory: &impl Memory,
-    base: usize,
-    seed: &crate::carmy::DivisionSeed,
-    registry: &mut crate::creference_registry::HeaderResolver,
-) -> Fact<usize> {
-    crate::selected_attack::authenticate_original(seed, base)?;
-    let wrapper = seed
-        .standard_template
-        .filter(|wrapper| *wrapper != 0)
-        .ok_or("selected transport sizing template absent")?;
-    let expected = base
-        .checked_add(crate::creferenced_division_template::VTABLE_RVA)
-        .ok_or("selected transport sizing module overflow")? as u64;
-    if read::<u64>(memory, wrapper) != Some(expected) {
-        return Err("selected transport sizing template identity refused");
-    }
-    let handle = read::<u64>(
-        memory,
-        at(wrapper, crate::creferenced_division_template::TYPE)?,
-    )
-    .filter(|handle| {
-        *handle >> 32 != 0 && *handle as u32 == crate::creferenced_division_template::REFERENCE_TYPE
-    })
-    .ok_or("selected transport sizing template handle refused")?;
-    if registry.resolve(memory, base, handle)? != Some(wrapper) {
-        return Err("selected transport sizing template registry refused");
-    }
-    let composition = at(wrapper, crate::creferenced_division_template::COMPOSITION)?;
-    Array::read(memory, at(composition, GROUPED_MEMBERS)?, STRIDE)
-        .map(|members| members.count as usize)
-        .ok_or("selected transport grouped composition sizing invalid")
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transfer {
     Absent,
@@ -319,8 +284,14 @@ pub struct Packet {
     rows: Vec<Row>,
     templates: Vec<TemplateMemo>,
     members: Vec<MemberMemo>,
-    transfers: Vec<(usize, Fact<Transfer>)>,
-    weights: Vec<(usize, Fact<i64>)>,
+    /// Per-pass first attempts keyed by the original transfer and stat
+    /// pointers; one lookup per division instead of a scan of every earlier
+    /// division's entry.
+    transfers: crate::combat_sources::Map<usize, Fact<Transfer>>,
+    weights: crate::combat_sources::Map<usize, Fact<i64>>,
+    /// Memo lookups since the last clear: one per hashed probe.
+    #[cfg(test)]
+    probes: usize,
     required: Capacity,
     outcome: crate::walk::Outcome,
     growing: bool,
@@ -332,8 +303,10 @@ impl Packet {
             rows: Vec::new(),
             templates: Vec::new(),
             members: Vec::new(),
-            transfers: Vec::new(),
-            weights: Vec::new(),
+            transfers: Default::default(),
+            weights: Default::default(),
+            #[cfg(test)]
+            probes: 0,
             required: Capacity::default(),
             growing: false,
             outcome: crate::walk::Outcome::Unavailable {
@@ -357,8 +330,10 @@ impl Packet {
             Ok(())
         }
         reserve(&mut self.rows, capacity.rows)?;
-        reserve(&mut self.transfers, capacity.rows)?;
-        reserve(&mut self.weights, capacity.rows)?;
+        let additional = capacity.rows.saturating_sub(self.transfers.len());
+        crate::allocation::reserve_map(&mut self.transfers, additional)?;
+        let additional = capacity.rows.saturating_sub(self.weights.len());
+        crate::allocation::reserve_map(&mut self.weights, additional)?;
         let rows = capacity.rows.max(self.templates.len());
         let members = capacity.members.max(self.members.len());
         crate::allocation::resize(&mut self.templates, rows, TemplateMemo::default())?;
@@ -368,6 +343,10 @@ impl Packet {
         self.rows.clear();
         self.transfers.clear();
         self.weights.clear();
+        #[cfg(test)]
+        {
+            self.probes = 0;
+        }
         self.templates.fill(TemplateMemo::default());
         self.members.fill(MemberMemo::default());
         self.required = Capacity::default();
@@ -397,8 +376,8 @@ impl Packet {
         self.rows.capacity() * size_of::<Row>()
             + self.templates.capacity() * size_of::<TemplateMemo>()
             + self.members.capacity() * size_of::<MemberMemo>()
-            + self.transfers.capacity() * size_of::<(usize, Fact<Transfer>)>()
-            + self.weights.capacity() * size_of::<(usize, Fact<i64>)>()
+            + self.transfers.capacity() * (size_of::<(usize, Fact<Transfer>)>() + 1)
+            + self.weights.capacity() * (size_of::<(usize, Fact<i64>)>() + 1)
     }
     pub fn capture(
         &mut self,
@@ -407,7 +386,7 @@ impl Packet {
         hour: i32,
         seeds: &[crate::carmy::DivisionSeed],
         source: crate::walk::Outcome,
-        originals: &crate::selected_attack::UnitsPacket,
+        originals: &crate::selected_unit_originals::Packet,
     ) {
         self.clear();
         self.required.rows = match source {
@@ -444,38 +423,39 @@ impl Packet {
             };
             let mut registry = crate::creference_registry::ScopedResolver::new(base);
             for seed in seeds {
-                let identity = crate::selected_attack::authenticate_original(seed, base);
+                let identity = crate::selected_unit_originals::authenticate_original(seed, base);
                 let original = identity.and_then(|_| {
-                    let index = originals
-                        .rows()
-                        .binary_search_by_key(&seed.division, |row| row.division)
-                        .map_err(|_| "selected transport original unit observation unavailable")?;
-                    if originals.rows()[index].sample_hour != hour {
+                    let original = originals
+                        .original(seed.division)
+                        .ok_or("selected transport original unit observation unavailable")?;
+                    if original.sample_hour != hour {
                         return Err("selected transport original sample is stale");
                     }
-                    originals
-                        .original(seed.division, seed.pointer)
-                        .ok_or("selected transport original unit observation unavailable")
+                    if original.pointer != seed.pointer {
+                        return Err("selected transport original unit observation unavailable");
+                    }
+                    Ok(original)
                 });
                 let (weight, coastal) = match original {
                     Ok(original) => {
                         // The weight memo uses the original authenticated stat
                         // pointer. Shared stat failures are already memoized by
-                        // selected_attack; this leaf also attempts only once.
+                        // the originals; this leaf also attempts only once.
                         let coastal = memo.capture(memory, base, original);
                         let weight = original.stat.and_then(|stat| {
-                            if let Some((_, value)) = self
-                                .weights
-                                .iter()
-                                .find(|(pointer, _)| *pointer == stat.pointer)
+                            #[cfg(test)]
                             {
+                                self.probes += 1;
+                            }
+                            if let Some(value) = self.weights.get(&stat.pointer) {
                                 return *value;
                             }
                             let value = at(stat.pointer, WEIGHT).and_then(|address| {
                                 read(memory, address)
                                     .ok_or("selected transport original stat weight unreadable")
                             });
-                            self.weights.push((stat.pointer, value));
+                            // Admission reserved one entry per division.
+                            self.weights.insert(stat.pointer, value);
                             value
                         });
                         (weight, coastal)
@@ -488,15 +468,18 @@ impl Packet {
                             .ok_or("selected transport original transfer selector unavailable")
                     })
                     .and_then(|pointer| {
-                        if let Some((_, value)) =
-                            self.transfers.iter().find(|(key, _)| *key == pointer)
+                        #[cfg(test)]
                         {
+                            self.probes += 1;
+                        }
+                        if let Some(value) = self.transfers.get(&pointer) {
                             return *value;
                         }
                         let value = transfer(memory, base, Ok(pointer), true, |handle| {
                             registry.resolve(memory, handle)
                         });
-                        self.transfers.push((pointer, value));
+                        // Admission reserved one entry per division.
+                        self.transfers.insert(pointer, value);
                         value
                     });
                 self.rows.push(Row {

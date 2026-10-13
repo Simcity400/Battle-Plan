@@ -1,8 +1,11 @@
 use super::*;
 
-/// A country's owned war goals in stored order. `recipient` is the raw
-/// recipient country reference; `goal_type` is the definition's lexer token,
-/// not a database ordinal.
+/// Retired: only create_wargoal's effect-description hover read it. Kept for
+/// older recordings' framing.
+///
+/// A country's owned war goals in native order. Recipient is the war goal's +0x3C
+/// reference; goal_type is the definition's lexer token (+0x40 -> +8), not a database
+/// ordinal.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OwnedWargoalRow {
     pub country: u32,
@@ -171,13 +174,13 @@ pub struct RelationLinkRow {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TransportSubjectAccess {
-    pub sample_hour: i32,
+    pub sample_hour: PacketHour,
     pub complete_owner: bool,
     pub target_raw: Option<u32>,
     pub subject: Option<ZeroSubjectInputs>,
 }
 value_struct!(TransportSubjectAccess {
-    sample_hour: i32, complete_owner: bool, target_raw: Option<u32>, subject: Option<ZeroSubjectInputs>,
+    sample_hour: PacketHour, complete_owner: bool, target_raw: Option<u32>, subject: Option<ZeroSubjectInputs>,
 });
 opaque_value!(Option<TransportSubjectAccess>);
 impl RelationLinkRow {
@@ -348,20 +351,26 @@ pub struct TechnologyDefinitionRow {
 typed_codec!(TechnologyDefinitionRow, 32, |row| row.database_index as u32 as u128, |key| Self { database_index: key as u32 as i32, technology_handle: Default::default(), year: Default::default(), max_level: Default::default(), research_cost_raw: Default::default(), id: Default::default() },
  { 0 => (technology_handle): U32, 1 => (year): I32, 2 => (max_level): I32, 3 => (research_cost_raw): I64, 4 => (id): Bytes }, |_row| Ok(()));
 
-/// Politics: key country (32 bits), 5 payload mask bits.
+/// Politics: key country (32 bits), 7 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PoliticsRow {
     pub country: u32,
     pub last_election: i32,
-    pub election_frequency: i32,
-    pub elections_allowed: u8,
+    /// Retired: only the save comparison read these two; `has_elections`
+    /// records what the trigger tests of them.
+    pub election_frequency: RetiredI32,
+    pub elections_allowed: RetiredU8,
     pub capital: i32,
     pub ruling_party: Option<u32>,
     /// Stored research-location province, preferred to the capital unless zero.
     pub original_capital: i32,
+    /// What the `has_elections` trigger tests: the elections byte `+0xEC` is nonzero and
+    /// the frequency `+0xE8` is positive
+    /// ([`crate::rows::compatibility::HAS_ELECTIONS_FORMAT`]).
+    pub has_elections: Recorded<bool>,
 }
 typed_codec!(PoliticsRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
- { 0 => (last_election): I32, 1 => (election_frequency): I32, 2 => (elections_allowed): U8, 3 => (capital): I32, 4 => (ruling_party): OptionalU32, 5 => (original_capital): I32 }, |_row| Ok(()));
+ { 0 => (last_election): I32, 1 => (election_frequency): I32, 2 => (elections_allowed): U8, 3 => (capital): I32, 4 => (ruling_party): OptionalU32, 5 => (original_capital): I32, 6 => (has_elections): Bool }, |_row| Ok(()));
 
 /// PoliticalParties: key country:id (64 bits), 7 payload mask bits.
 ///
@@ -562,11 +571,11 @@ pub struct PowerBalanceOverrideRow {
 typed_codec!(PowerBalanceOverrideRow, 64, |row| (row.record as u128) << 32 | row.ordinal as u128, |key| Self { record: (key >> 32) as u32, ordinal: key as u32, side: Default::default(), gfx: Default::default() },
  { 0 => (side): Bytes, 1 => (gfx): Bytes }, |_row| Ok(()));
 
-/// Accepted positive native experience awards during the preceding
-/// hourly interval. Instance is the native CCountry identity word, not a tag.
-/// The bank cap and spending never reduce these awards. `complete` also needs
-/// the same authenticated owner at both hourly boundaries. Every current
-/// country is present, even at zero or in its first incomplete interval.
+/// Accepted positive native experience awards during the preceding hourly interval.
+/// Instance is the native country identity word, not a tag. The bank cap and spending
+/// never reduce these awards. `complete` also needs the same authenticated owner at both
+/// hourly boundaries. Every current country is present, even at zero or in its first
+/// incomplete interval.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CountryExperienceGainRow {
     pub country: u32,
@@ -606,7 +615,7 @@ typed_codec!(CountryExperienceRow, 32, |row| row.country as u128, |key| Self { c
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OccupationGroupLaw {
     pub occupied: u32,
-    /// Current id through the retained +0x18 CCountry pointer; None is a capture fault.
+    /// Current id through the retained +0x18 country pointer; None is a capture fault.
     pub scope_country: Option<u32>,
     pub law: Option<Vec<u8>>,
 }
@@ -743,10 +752,11 @@ pub struct CapitulationRow {
     pub country: u32,
     pub capitulated: u8,
     pub capitulated_hour: i32,
-    pub last_surrender_hour: i32,
-    pub faction_join_hour: i32,
-    pub legitimacy_raw: i64,
-    pub exile_army_leaders: i32,
+    /// Retired fields 2-5: only the save comparison read them.
+    pub last_surrender_hour: RetiredI32,
+    pub faction_join_hour: RetiredI32,
+    pub legitimacy_raw: RetiredI64,
+    pub exile_army_leaders: RetiredI32,
 }
 typed_codec!(CapitulationRow, 32, |row| row.country as u128, |key| Self { country: key as u32, capitulated: Default::default(), capitulated_hour: Default::default(), last_surrender_hour: Default::default(), faction_join_hour: Default::default(), legitimacy_raw: Default::default(), exile_army_leaders: Default::default() },
  { 0 => (capitulated): U8, 1 => (capitulated_hour): I32, 2 => (last_surrender_hour): I32, 3 => (faction_join_hour): I32, 4 => (legitimacy_raw): I64, 5 => (exile_army_leaders): I32 }, |_row| Ok(()));
@@ -939,8 +949,8 @@ typed_codec!(CountryCivilWarRow, 64, |row| (row.country as u128) << 32 | row.ord
 /// Resolve through CountryLinks. A state read with no cores has a row with
 /// an empty list.
 ///
-/// Sliced, daily, with `StateResourceInputs` (family `raid_state`, owner:
-/// the state): the list as it stood at the state's read hour.
+/// Sliced, with `StateResourceInputs` (family `raid_state`, owner: the state): core
+/// insertion and removal are hooked, so the list equals the game's at every hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StateCoreRow {
     pub state: u32,
@@ -955,8 +965,8 @@ typed_codec!(StateCoreRow, 32, |row| row.state as u128, |key| Self { state: key 
 /// the entry's scope. `has_dynamic_modifier` without `scope=` counts only
 /// the first entry of a definition, and only when it is unscoped.
 ///
-/// Sliced, daily, with `StateResourceInputs`: the list as it stood at the
-/// state's read hour.
+/// Sliced, with `StateResourceInputs`: every writer of the list is hooked,
+/// so it equals the game's at every hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StateDynamicModifierRow {
     pub state: u32,
@@ -1187,7 +1197,7 @@ pub struct CountryStabilityLineRow {
 impl CountryStabilityLineRow {
     /// The reader could not prove the child's source; `text` holds its label.
     pub const UNPAIRED: u8 = 0;
-    /// A political idea (`CPoliticalStatus` +0x50): identity = idea token.
+    /// A political idea (`political status` +0x50): identity = idea token.
     pub const IDEA: u8 = 1;
     /// The ruling party's first country leader: identity_id = character id.
     pub const COUNTRY_LEADER: u8 = 2;
@@ -1263,7 +1273,7 @@ typed_codec!(ThreatCountryAggregateRow, 32, |row| row.country_slot as u128, |key
 pub struct IncomingDiplomaticActionRow {
     pub country: u32,
     pub ordinal: u32,
-    /// Full CIncomingDiplomaticAction handle from the wrapper's +0x08.
+    /// Full incoming diplomatic action handle from the wrapper's +0x08.
     pub handle: u64,
     /// Raw wrapper byte at +0x10; no writer serializes it.
     pub status: u8,
@@ -1296,10 +1306,10 @@ typed_codec!(RelationOpinionRow, 64, |row| (row.owner_country as u128) << 32 | r
 
 /// RelationTuples: key owner_country:target_country:type_id:ordinal (112 bits), 6 payload mask bits.
 ///
-/// One row per element of a relation status's serializable vector, in native
-/// order. `type_id` is the engine's own CRelation type word, which is also the
-/// key token the save writes for that block. The ordinal completes the key
-/// because nothing in the engine forbids two relations of one type in one pair.
+/// One row per element of a relation status's serializable vector, in native order.
+/// `type_id` is the engine's own relation type word, which is also the key token the save
+/// writes for that block. The ordinal completes the key because nothing in the engine
+/// forbids two relations of one type in one pair.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RelationTupleRow {
     pub owner_country: u32,
@@ -1311,9 +1321,9 @@ pub struct RelationTupleRow {
     /// new one, so the vector holds at most one relation per compiled slot,
     /// whatever the country count or content.
     pub ordinal: u16,
-    /// Raw CRelation first-endpoint reference, which may be an alias of the owner.
+    /// Raw relation first-endpoint reference, which may be an alias of the owner.
     pub first_country: u32,
-    /// Raw CRelation second-endpoint reference, which may be an alias of the target.
+    /// Raw relation second-endpoint reference, which may be an alias of the target.
     pub second_country: u32,
     pub start_hour: i32,
     pub end_hour: i32,

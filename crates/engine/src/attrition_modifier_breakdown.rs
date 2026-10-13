@@ -9,8 +9,8 @@ use crate::{
     Memory, cpdx_array::Array, modifier_accumulator, modifier_definition, msvc_string, read,
 };
 
-mod demand;
-pub use demand::{Demand, demand};
+mod repeats;
+pub use repeats::RepeatCache;
 
 pub const REQUEST_CAPACITY: &str = "attrition modifier request arena capacity exceeded";
 pub const ROOT_CAPACITY: &str = "attrition modifier root arena capacity exceeded";
@@ -67,6 +67,9 @@ pub struct Buffers<'a> {
     pub text_required: usize,
     pub stack: crate::walk::Buffer<'a, Frame>,
     pub stack_required: usize,
+    /// The reads one accumulator's walks repeat ([`RepeatCache`]); `None`
+    /// repeats every read.
+    pub repeats: Option<&'a mut RepeatCache>,
 }
 
 fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
@@ -168,12 +171,27 @@ pub fn capture(
     buffers.stack_required = 0;
     buffers.roots.ensure(unique)?;
     let limits = StackLimits::current();
+    let mut repeats = buffers.repeats.take();
     for index in 0..unique {
         let request = buffers.requests[index];
         let first_node = buffers.node_len;
         let first_text = buffers.text_len;
         let mut failure = None;
-        let result = capture_root(memory, base, request, true, buffers, &mut failure, &limits);
+        // Requests are sorted by accumulator: its keys' walks are adjacent,
+        // and only they repeat each other's reads.
+        let result = match repeats.as_deref_mut() {
+            Some(cache) => {
+                if index == 0 || buffers.requests[index - 1].accumulator != request.accumulator {
+                    cache.clear();
+                }
+                let memory = repeats::Repeats {
+                    inner: memory,
+                    cache: std::cell::RefCell::new(cache),
+                };
+                capture_root(&memory, base, request, true, buffers, &mut failure, &limits)
+            }
+            None => capture_root(memory, base, request, true, buffers, &mut failure, &limits),
+        };
         failure = failure.or(result.err());
         let nodes = if failure.is_some() {
             buffers.node_len = first_node;
@@ -192,6 +210,7 @@ pub fn capture(
             buffers.root_len += 1;
         }
     }
+    buffers.repeats = repeats;
     if unique > buffers.roots.len() {
         Err(ROOT_CAPACITY)
     } else {

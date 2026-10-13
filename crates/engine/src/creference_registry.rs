@@ -69,7 +69,7 @@ pub fn entry_count(
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Header {
+pub(crate) struct Header {
     entries: usize,
     count: u32,
     mask: u32,
@@ -116,6 +116,47 @@ impl ScopedResolver {
             None => Ok(None),
         }
     }
+
+    /// The first bucket a [`Self::resolve`] of `handle` reads, and the
+    /// header it reads it under: `None` when the resolve reads no bucket (a
+    /// zero handle, a null root or a probe that ends at once), so it misses.
+    /// The header is read as `resolve` reads it, once a pass.
+    pub(crate) fn first_cell(
+        &mut self,
+        memory: &impl crate::Memory,
+        handle: u64,
+    ) -> Result<Option<(Header, usize)>, &'static str> {
+        if handle == 0 {
+            return Ok(None);
+        }
+        let kind = handle as u32;
+        let slot = if kind < LOW_ROOT_COUNT {
+            kind as usize
+        } else if kind < MID_TYPE_LIMIT {
+            LOW_ROOT_COUNT as usize
+        } else {
+            LOW_ROOT_COUNT as usize + 1
+        };
+        let observed = *self.headers[slot].get_or_insert_with(|| {
+            root_address(self.base, handle).and_then(|root| read_header(memory, self.base, root))
+        });
+        let Some(header) = observed? else {
+            return Ok(None);
+        };
+        Ok(first_cell(header, handle)?.map(|cell| (header, cell)))
+    }
+
+    /// [`Self::resolve`] of `handle` from its [`Self::first_cell`]'s bytes,
+    /// copied with other handles' first buckets; later buckets are read.
+    pub(crate) fn resolve_gathered(
+        &self,
+        memory: &impl crate::Memory,
+        header: Header,
+        handle: u64,
+        first: [u8; 24],
+    ) -> Result<Option<usize>, &'static str> {
+        probe_with(memory, header, handle, Some(first))
+    }
 }
 
 /// Province occupant lookups share successful structural observations only
@@ -127,6 +168,14 @@ pub(crate) struct HeaderResolver {
 }
 
 impl HeaderResolver {
+    /// Whether a [`Self::resolve`] of `handle` would take a header this
+    /// resolver already read, without reading anything.
+    pub(crate) fn holds(&self, base: usize, handle: u64) -> bool {
+        handle != 0
+            && root_address(base, handle)
+                .is_ok_and(|root| self.headers.iter().flatten().any(|(key, _)| *key == root))
+    }
+
     pub(crate) fn resolve(
         &mut self,
         memory: &impl crate::Memory,
@@ -238,10 +287,43 @@ fn probe(
     header: Header,
     handle: u64,
 ) -> Result<Option<usize>, &'static str> {
+    probe_with(memory, header, handle, None)
+}
+
+/// The first probe index of `handle` under `header`.
+fn first_index(header: Header, handle: u64) -> u32 {
+    // Engine hashes type-high/id-low, the reverse of the stored handle words.
+    let hash = handle.rotate_left(32).wrapping_mul(HASH_MULTIPLIER);
+    ((hash >> 32) as u32 ^ hash as u32) & header.mask
+}
+
+/// The bucket [`probe`] reads first, with its checks in their order; `None`
+/// when the probe ends before reading one.
+fn first_cell(header: Header, handle: u64) -> Result<Option<usize>, &'static str> {
+    let index = first_index(header, handle);
+    if index == header.terminal {
+        return Ok(None);
+    }
+    if index > header.terminal {
+        return Err("reference probe past sentinel");
+    }
+    header
+        .entries
+        .checked_add(index as usize * crate::reference_bucket::STRIDE)
+        .map(Some)
+        .ok_or("reference bucket overflow")
+}
+
+/// [`probe`], taking the first bucket's bytes when already copied.
+fn probe_with(
+    memory: &impl crate::Memory,
+    header: Header,
+    handle: u64,
+    gathered: Option<[u8; 24]>,
+) -> Result<Option<usize>, &'static str> {
     use crate::{read, reference_bucket as bucket};
     let Header {
         entries,
-        mask,
         overflow,
         terminal,
         ..
@@ -251,9 +333,7 @@ fn probe(
             .checked_add(index as usize * bucket::STRIDE)
             .ok_or("reference bucket overflow")
     };
-    // Engine hashes type-high/id-low, the reverse of the stored handle words.
-    let hash = handle.rotate_left(32).wrapping_mul(HASH_MULTIPLIER);
-    let first = ((hash >> 32) as u32 ^ hash as u32) & mask;
+    let first = first_index(header, handle);
     let mut found = None;
     for distance in 1..=255_u32 {
         let index = first + distance - 1;
@@ -263,7 +343,10 @@ fn probe(
         if index > terminal {
             return Err("reference probe past sentinel");
         }
-        let bytes = read::<[u8; 24]>(memory, cell(index)?).ok_or("reference bucket unreadable")?;
+        let bytes = match gathered {
+            Some(bytes) if distance == 1 => bytes,
+            _ => read::<[u8; 24]>(memory, cell(index)?).ok_or("reference bucket unreadable")?,
+        };
         let stored_distance = u32::from(bytes[bucket::DISTANCE]);
         if stored_distance == 255 {
             return Err("reference early sentinel");

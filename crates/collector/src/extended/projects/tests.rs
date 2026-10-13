@@ -110,10 +110,10 @@ fn daily_project_job_skips_empty_storage_and_preserves_raw_typed_identity() {
     let bytes = kit::fixture();
     let (capacities, _) = small();
     for hour in 0..24 {
-        let active = replay::cadence::should_walk(TableId::Projects, hour, false);
+        let active = replay::cadence::should_walk(TableId::ProjectPrograms, hour, false);
         assert_eq!(
             active,
-            Some(hour as u32) == replay::cadence::refresh_slot(TableId::Projects)
+            Some(hour as u32) == replay::cadence::refresh_slot(TableId::ProjectPrograms)
         );
         let memory = ProgramSource::new(&bytes);
         let mut job = if active {
@@ -134,7 +134,7 @@ fn daily_project_job_skips_empty_storage_and_preserves_raw_typed_identity() {
         assert_eq!(job.active, active);
         let mut captured = Captured::with_capacities(&capacities);
         captured.nukes.outcome = Outcome::Rows { len: 1 };
-        let mut ticks = [0; 4];
+        let mut ticks = [0; RAW.len()];
         captured.decode_projects_payload(kit::BASE, &job, &mut ticks);
         if active {
             let direct = kit::direct(&kit::memory(&bytes), &capacities);
@@ -142,10 +142,10 @@ fn daily_project_job_skips_empty_storage_and_preserves_raw_typed_identity() {
             assert!(!memory.calls.borrow().is_empty());
         } else {
             assert!(memory.calls.borrow().is_empty());
-            assert_eq!(report.copy_ticks, [0; 4]);
-            assert_eq!(report.raw_bytes, [0; 4]);
-            assert_eq!(ticks, [0; 4]);
-            assert!(captured.outcomes()[..4].iter().all(|outcome| *outcome
+            assert_eq!(report.copy_ticks, [0; RAW.len()]);
+            assert_eq!(report.raw_bytes, [0; RAW.len()]);
+            assert_eq!(ticks, [0; RAW.len()]);
+            assert!([0, 3].iter().all(|&index| captured.outcomes()[index]
                 == Outcome::Unavailable {
                     reason: replay::cadence::SKIPPED_REASON,
                 }));
@@ -161,6 +161,8 @@ fn daily_project_job_skips_empty_storage_and_preserves_raw_typed_identity() {
     }
 }
 
+/// A failed raw copy hides only the two tables it carries: the sliced
+/// Projects and ProjectHistory come from the typed family read.
 #[test]
 fn failed_project_job_hides_prior_rows_and_preserves_independent_results() {
     let (_, mut captured) = small();
@@ -170,21 +172,26 @@ fn failed_project_job_hides_prior_rows_and_preserves_independent_results() {
     captured.breakthroughs.outcome = Outcome::Rows { len: 1 };
     captured.nukes.outcome = Outcome::Rows { len: 1 };
     captured.raids.outcome = Outcome::Rows { len: 1 };
-    let independent = captured.outcomes()[4..].to_vec();
+    let before = captured.outcomes();
     captured.raw_mode = true;
     captured.fail_projects_capture(true, "project acquisition worker failed");
     assert!(!captured.raw_mode);
-    assert!(
-        captured.outcomes()[..4]
-            .iter()
-            .all(|outcome| matches!(outcome, Outcome::Unavailable { .. }))
-    );
-    assert_eq!(&captured.outcomes()[4..], independent);
-    assert!(
-        captured.tables()[..4]
-            .iter()
-            .all(|table| matches!(table, TableView::Unavailable { .. }))
-    );
+    let after = captured.outcomes();
+    let tables = captured.tables();
+    for index in 0..N {
+        if [0, 3].contains(&index) {
+            assert!(
+                matches!(after[index], Outcome::Unavailable { .. }),
+                "{index}"
+            );
+            assert!(
+                matches!(tables[index], TableView::Unavailable { .. }),
+                "{index}"
+            );
+        } else {
+            assert_eq!(after[index], before[index], "{index}");
+        }
+    }
 }
 
 fn complete<S: TableSchema>(view: &TableView) -> &[S::Row] {
@@ -630,7 +637,7 @@ fn program_links(bytes: &[u8]) -> Array {
 /// The fixture's three-slot country table, read in full.
 const COUNTRIES: Array = Array { data: 0, count: 3 };
 
-fn copy_fixture_program(log: &mut RawLog<4>, memory: &ProgramSource<'_>) -> bool {
+fn copy_fixture_program(log: &mut RawLog<2>, memory: &ProgramSource<'_>) -> bool {
     use super::projects_test_kit as kit;
     let links = program_links(memory.memory.bytes);
     copy_program_row(
@@ -675,7 +682,7 @@ fn program_script(bytes: &[u8], pointer: usize) -> Vec<(Option<usize>, usize)> {
 }
 
 fn scalar_program_script(
-    log: &mut RawLog<4>,
+    log: &mut RawLog<2>,
     memory: &ProgramSource<'_>,
     script: &[(Option<usize>, usize)],
 ) -> bool {
@@ -684,14 +691,14 @@ fn scalar_program_script(
         .all(|&(address, len)| span(log, memory, address, len, M_PROGRAMS).is_some())
 }
 
-fn dirty_program_log(span_capacity: usize, byte_capacity: usize) -> RawLog<4> {
+fn dirty_program_log(span_capacity: usize, byte_capacity: usize) -> RawLog<2> {
     let mut log = RawLog::new(span_capacity, byte_capacity);
     log.bytes.extend_from_slice(&vec![0xa7; byte_capacity]);
     log.clear();
     log
 }
 
-fn assert_program_logs_equal(actual: &RawLog<4>, expected: &RawLog<4>) {
+fn assert_program_logs_equal(actual: &RawLog<2>, expected: &RawLog<2>) {
     assert_eq!(actual.spans, expected.spans);
     assert_eq!(actual.bytes, expected.bytes);
     assert_eq!(actual.fault, expected.fault);
@@ -743,7 +750,7 @@ fn program_body_batch_matches_scalar_at_every_fault_and_partial_byte() {
                     61
                 );
                 assert!(actual.spans.iter().all(|span| span.mask == M_PROGRAMS));
-                assert_eq!(actual.raw_bytes, [105, 0, 0, 0]);
+                assert_eq!(actual.raw_bytes, [105, 0]);
             }
         }
     }
@@ -967,7 +974,7 @@ fn program_body_batch_preserves_duplicate_observations() {
     assert_eq!(*source.calls.borrow(), *reference.calls.borrow());
     assert_eq!(source.scatters.borrow().len(), 2);
     assert_eq!(actual.spans.len(), 20);
-    assert_eq!(actual.raw_bytes, [210, 0, 0, 0]);
+    assert_eq!(actual.raw_bytes, [210, 0]);
 }
 
 #[test]
@@ -1004,7 +1011,7 @@ fn program_body_batch_keeps_plan_blocking_and_cold_retirement() {
         assert!(!copy_fixture_program(&mut log, &current));
         assert!(log.planned_capture_failed());
         assert!(log.planned_capture_requires_no_retry());
-        assert_eq!(log.fault, [true; 4]);
+        assert_eq!(log.fault, [true; 2]);
         assert_eq!(log.spans.len(), 1);
         assert_eq!(log.bytes.len(), 16);
         assert_eq!(current.calls.borrow().len(), 2);
@@ -1048,8 +1055,8 @@ fn split_copy_matches_direct_walk() {
     assert_eq!(counts, expected_counts);
     assert!(report.raw_ok);
     kit::assert_matches_direct(&split, &direct);
-    // Spot-checks: program identity with heap building bytes, project
-    // lifecycle and state, history context, breakthrough payload.
+    // Spot-checks: program identity with heap building bytes and the
+    // breakthrough payload. The project pools are not in the payload.
     assert_eq!(split.programs.outcome, Outcome::Rows { len: 1 });
     let program = &split.programs.rows[0];
     assert_eq!((program.id, program.owner, program.province), (5, 1, 13413));
@@ -1058,33 +1065,12 @@ fn split_copy_matches_direct_walk() {
         &split.names.first[program.building_start..program.building_start + program.building_len],
         b"program-building-01"
     );
-    assert_eq!(split.projects.outcome, Outcome::Rows { len: 1 });
-    let project = &split.projects.rows[0];
-    assert_eq!(
-        (project.owner, project.local_id, project.definition_id),
-        (1, 3, 45)
-    );
-    assert_eq!((project.started, project.completed), (1, 0));
-    assert_eq!(split.history.outcome, Outcome::Rows { len: 1 });
-    let history = &split.history.rows[0];
-    assert_eq!(
-        (
-            history.owner,
-            history.project,
-            history.prototype_reward_handle,
-            history.option_handle,
-            history.date
-        ),
-        (1, 3, 11, 22, 333)
-    );
-    assert_eq!(
-        (
-            history.context.province,
-            history.context.country_reference,
-            history.context.state_reference
-        ),
-        (-5, Some(1), Some(9))
-    );
+    assert_eq!(direct.projects.outcome, Outcome::Rows { len: 1 });
+    assert!(matches!(
+        split.projects.outcome,
+        Outcome::Unavailable { .. }
+    ));
+    assert!(matches!(split.history.outcome, Outcome::Unavailable { .. }));
     assert_eq!(split.breakthroughs.outcome, Outcome::Rows { len: 1 });
     let breakthrough = &split.breakthroughs.rows[0];
     assert_eq!(
@@ -1102,7 +1088,7 @@ fn projects_truncation_matrix_matches_direct_with_same_caps() {
     // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
     // copy→decode against the SAME memory with the SAME pooled caps,
     // asserting identical outcome (incl. len/unread) and identical rows.
-    // Fixture holds 1 program, 1 project, 1 history, 1 breakthrough, so
+    // Fixture holds 1 program and 1 breakthrough, so
     // cap 1 is both the one-row and exact-fit arm, cap 0 is both the
     // zero-cap, overflow-by-one (total 1 == cap+1) and massive arm;
     // u32 unread saturation is not reachable and is covered by the
@@ -1145,7 +1131,7 @@ fn projects_truncation_matrix_matches_direct_with_same_caps() {
         assert!(report.raw_ok);
         kit::assert_matches_direct(&split, &direct);
     }
-    // Exact-fit arm pins Rows on every table.
+    // Exact-fit arm pins Rows on both tables.
     let capacities = Capacities {
         rows: [1; N],
         program_names: 8192,
@@ -1159,8 +1145,6 @@ fn projects_truncation_matrix_matches_direct_with_same_caps() {
     };
     let (split, _, _) = kit::split(&memory, &capacities);
     assert_eq!(split.programs.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(split.projects.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(split.history.outcome, Outcome::Rows { len: 1 });
     assert_eq!(split.breakthroughs.outcome, Outcome::Rows { len: 1 });
 }
 
@@ -1224,21 +1208,23 @@ fn split_copy_matches_direct_walk_on_fault_matrix() {
             self.memory.copy(address, output)
         }
     }
-    // Primary raw fault attribution remains independent of decoded outcomes.
+    // Primary raw fault attribution, [programs, breakthroughs], remains
+    // independent of decoded outcomes. The project pools are not copied, so
+    // their faults touch neither.
     for (offset, fault_mask) in [
-        (cgame_state::COUNTRIES, [true, true, true, true]),
-        (kit::C1, [true, true, true, true]),
-        (kit::S1, [true, true, true, true]),
-        (kit::PROG1, [true, false, false, false]),
-        (kit::HEAP, [true, false, false, false]),
-        (kit::PROJ1, [false, true, false, false]),
-        (kit::MACH1, [false, true, false, false]),
-        (kit::HIST1, [false, false, true, false]),
+        (cgame_state::COUNTRIES, [true, true]),
+        (kit::C1, [true, true]),
+        (kit::S1, [true, true]),
+        (kit::PROG1, [true, false]),
+        (kit::HEAP, [true, false]),
+        (kit::PROJ1, [false, false]),
+        (kit::MACH1, [false, false]),
+        (kit::HIST1, [false, false]),
         (
             kit::HIST1 + nproject_sproject_history::CONTEXT,
-            [false, false, true, false],
+            [false, false],
         ),
-        (kit::BT_NODE, [false, false, false, true]),
+        (kit::BT_NODE, [false, true]),
     ] {
         let bytes = kit::fixture();
         let fault = kit::GAME_STATE + offset;
@@ -1283,4 +1269,117 @@ fn staging_overflow_falls_back_to_typed_walk() {
     assert!(!report.raw_ok);
     assert!(tiny.log.overflowed);
     assert!(tiny.grow_for_next());
+}
+
+fn project_hour(
+    captured: &mut Captured,
+    bytes: &[u8],
+    hour: i32,
+    store: &mut SliceFingerprints,
+    changes: &crate::country_input_changes::Domain,
+) -> Vec<u32> {
+    use super::projects_test_kit as kit;
+    captured.capture_selected(
+        &kit::memory(bytes),
+        &kit::memory(bytes),
+        kit::BASE,
+        kit::GAME_STATE,
+        hour,
+        false,
+        store,
+        changes,
+    );
+    assert!(
+        matches!(captured.projects.outcome, Outcome::Rows { .. }),
+        "hour {hour}"
+    );
+    assert!(
+        matches!(captured.history.outcome, Outcome::Rows { .. }),
+        "hour {hour}"
+    );
+    let mut owners: Vec<u32> = captured.project_read.iter().map(|&(_, raw)| raw).collect();
+    owners.sort_unstable();
+    owners
+}
+
+/// Projects and ProjectHistory are read for every country at the hour after
+/// the daily tick and, in between, for the countries a project writer marked,
+/// within the hour. A country's alias raw id is read and kept with it. Lifecycle
+/// changes no hook saw disable reuse at the boundary; the daily pass's
+/// history and progress do not.
+#[test]
+fn projects_are_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
+    use super::projects_test_kit as kit;
+    use crate::country_input_changes::{Domain, Table};
+    let mut bytes = kit::fixture();
+    let changes = Domain::enabled(64);
+    let mut captured = Captured::with_capacities(&split_capacities());
+    let mut store = SliceFingerprints::new();
+    // Nothing held: every country, off the boundary too.
+    assert_eq!(
+        project_hour(&mut captured, &bytes, 5, &mut store, &changes),
+        [1, 2]
+    );
+    assert_eq!(captured.projects.outcome, Outcome::Rows { len: 1 });
+    assert!(project_hour(&mut captured, &bytes, 6, &mut store, &changes).is_empty());
+    // A completion marks country 1: read at the next hour, alone.
+    bytes[kit::PROJ1 + nproject_cproject::COMPLETED] = 1;
+    changes.write(Table::Projects, 1);
+    assert_eq!(
+        project_hour(&mut captured, &bytes, 7, &mut store, &changes),
+        [1]
+    );
+    assert_eq!(captured.projects.rows[0].completed, 1);
+    assert!(project_hour(&mut captured, &bytes, 8, &mut store, &changes).is_empty());
+    // Country 1 gains the alias raw id 3, which its project now names: the
+    // country is read with both raw ids, and the rows keep the alias.
+    let links = cgame_state::COUNTRY_LINKS;
+    bytes[links + 8..links + 12].copy_from_slice(&4_u32.to_le_bytes());
+    bytes[links + 12..links + 16].copy_from_slice(&4_u32.to_le_bytes());
+    let link =
+        u64::from_le_bytes(bytes[links..links + 8].try_into().unwrap()) as usize - kit::GAME_STATE;
+    bytes[link + 12..link + 16].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[kit::PROJ1 + nproject_cproject::OWNER..][..4].copy_from_slice(&3_u32.to_le_bytes());
+    changes.write(Table::Projects, 1);
+    assert_eq!(
+        project_hour(&mut captured, &bytes, 9, &mut store, &changes),
+        [1, 3]
+    );
+    assert_eq!(captured.projects.rows[0].owner, 3);
+    assert_eq!(captured.history.rows[0].owner, 3);
+    assert!(!changes.poisoned(Table::Projects));
+    assert!(project_hour(&mut captured, &bytes, 10, &mut store, &changes).is_empty());
+    // A writer marks the country, not the alias its project names: the
+    // alias's rows are read and compared as the country's.
+    bytes[kit::PROJ1 + nproject_cproject::STARTED] = 0;
+    changes.write(Table::Projects, 1);
+    assert_eq!(
+        project_hour(&mut captured, &bytes, 11, &mut store, &changes),
+        [1, 3]
+    );
+    assert_eq!(captured.projects.rows[0].started, 0);
+    assert!(!changes.poisoned(Table::Projects));
+    // The daily pass appends history: every country is read at the
+    // boundary, and the unmarked history compares equal.
+    let date = kit::HIST1 + nproject_sproject_history::DATE;
+    bytes[date..date + 4].copy_from_slice(&444_i32.to_le_bytes());
+    assert_eq!(
+        project_hour(&mut captured, &bytes, 24, &mut store, &changes),
+        [1, 2, 3]
+    );
+    assert_eq!(captured.history.rows[0].date, 444);
+    assert!(!changes.poisoned(Table::Projects));
+    // A completion no hook marked waits for the boundary, whose comparison
+    // disables reuse; every country is read from then on.
+    bytes[kit::PROJ1 + nproject_cproject::COMPLETED] = 0;
+    assert!(project_hour(&mut captured, &bytes, 25, &mut store, &changes).is_empty());
+    assert_eq!(
+        project_hour(&mut captured, &bytes, 48, &mut store, &changes),
+        [1, 2, 3]
+    );
+    assert!(changes.poisoned(Table::Projects));
+    assert_eq!(
+        project_hour(&mut captured, &bytes, 49, &mut store, &changes),
+        [1, 2, 3]
+    );
 }

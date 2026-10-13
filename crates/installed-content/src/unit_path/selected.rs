@@ -8,8 +8,6 @@ use crate::adjacency_rules::AdjacencyRule;
 
 mod advance_warning;
 mod area;
-pub mod naval_search;
-pub mod risk;
 pub mod transport;
 pub use area::AreaNode;
 

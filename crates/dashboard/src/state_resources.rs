@@ -261,9 +261,10 @@ impl<'a> StateResources<'a> {
         let input = inputs
             .get(&state)
             .ok_or_else(|| format!("state {state} has no recorded resource inputs"))?;
-        // The operands are the state's and its controller's at their daily
-        // reads (owner rule: no harsher than the game's rolling re-check of
-        // raid offers), so an amount can lag up to a day.
+        // The operands are the game's at the frame's hour (the raid state
+        // family reads every state and country a hooked writer touched),
+        // except the supply-route flag, the value at the state's last read,
+        // up to a day old.
         let resources = get(&self.state_resources, || {
             Ok(table::<tables::StateResources>(self.frame)?
                 .iter()
@@ -341,9 +342,9 @@ impl<'a> StateResources<'a> {
             let Some(&(_, amount)) = list.iter().find(|(token, _)| *token == resource) else {
                 continue;
             };
-            // Override presence uses the first building entry; its amount
-            // uses the first matching resource element.
-            // The amounts are the country's at its daily read.
+            // Override presence reads the first entry; value lookup reads the
+            // first matching element.
+            // The amounts are the country's at the frame's hour.
             let bonus = overrides
                 .iter()
                 .find(|row| row.building == building)

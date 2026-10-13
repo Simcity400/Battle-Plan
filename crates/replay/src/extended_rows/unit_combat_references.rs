@@ -51,12 +51,12 @@ impl Value for UnitCombatReference {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UnitCombatReferences {
     /// The authenticated acquisition request's callback hour, not a UI clock.
-    pub sample_hour: i32,
+    pub sample_hour: PacketHour,
     /// Native order including repeats. A present empty vector is known zero.
     pub entries: Vec<UnitCombatReference>,
 }
 value_struct!(UnitCombatReferences {
-    sample_hour: i32,
+    sample_hour: PacketHour,
     entries: Vec<UnitCombatReference>
 });
 opaque_value!(Option<UnitCombatReferences>);
@@ -80,7 +80,7 @@ impl UnitCombatReferences {
     /// Consumer admission also binds the immutable frame hour. Historical
     /// absence and field-local refusal stay distinct at the caller's require.
     pub fn valid_at(&self, hour: i32, count: u32) -> bool {
-        self.sample_hour == hour
+        self.sample_hour.fresh_at(hour)
             && self.entries.len() == count as usize
             && self.entries.iter().all(|entry| entry.check().is_ok())
     }

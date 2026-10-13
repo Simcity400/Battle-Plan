@@ -33,6 +33,7 @@ use engine::{
     cgame_state as gs, creference_registry as registry, cship, cstrategic_air, cstrategic_navy,
     ctask_force, cunit,
     map_air_base_reference::{BaseReference, Host},
+    memory::{RecordLayout, RecordSources},
     reference_bucket as bucket,
 };
 use replay::rows::{AirReferenceWitnessRow, TableSchema};
@@ -682,9 +683,7 @@ impl Scale {
                 parent,
                 histories: &mut [],
                 changes: &crate::history_changes::Unobserved,
-                transport_regions: Err("test transport region loan not supplied"),
-                transport_guard: Err("test transport air guard not supplied"),
-                transport_admission: Err("test transport original callback admission not supplied"),
+                carry: None,
             },
         );
         air.capture(
@@ -693,7 +692,7 @@ impl Scale {
             self.world.game_state,
             HOUR,
             false,
-            &mut Default::default(),
+            Some(&mut Default::default()),
         );
         air.outcomes()
     }
@@ -714,12 +713,15 @@ fn joined(air: &Captured) -> (Vec<WingIdentity>, Vec<cair_regional_mission::Row>
 }
 
 /// Guarded calls by kind: gathers, copies inside the registration window,
-/// reads of the air-base registry root and each base object's field copy.
+/// reads of the air-base registry root and of the air manager pointer, all
+/// copies, and each base object's field copy.
 struct Counted<'a> {
     world: &'a World,
     gathers: Cell<usize>,
     regional: Cell<usize>,
     roots: Cell<usize>,
+    managers: Cell<usize>,
+    copies: Cell<usize>,
     fields: std::cell::RefCell<BTreeMap<usize, usize>>,
 }
 
@@ -730,6 +732,8 @@ impl<'a> Counted<'a> {
             gathers: Cell::new(0),
             regional: Cell::new(0),
             roots: Cell::new(0),
+            managers: Cell::new(0),
+            copies: Cell::new(0),
             fields: Default::default(),
         }
     }
@@ -737,11 +741,15 @@ impl<'a> Counted<'a> {
 
 impl Memory for Counted<'_> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.copies.set(self.copies.get() + 1);
         if self.world.missions.contains(&address) {
             self.regional.set(self.regional.get() + 1);
         }
         if address == BASE + registry::LOW_ROOTS_RVA + cair_base::TYPE as usize * 8 {
             self.roots.set(self.roots.get() + 1);
+        }
+        if address == self.world.game_state + gs::STRATEGIC_AIR_MANAGER {
+            self.managers.set(self.managers.get() + 1);
         }
         self.world.copy(address, destination)
     }
@@ -753,7 +761,18 @@ impl Memory for Counted<'_> {
         destination: &mut [u8],
     ) -> usize {
         self.gathers.set(self.gathers.get() + 1);
-        self.world.copy_records(sources, layout, destination)
+        let completed = self.world.copy_records(sources, layout, destination);
+        // A base's six fields, gathered (`Pass::read_bases`): each base read
+        // counts as its per-object scatter does.
+        if layout.field_count() == 6
+            && let RecordSources::Pointers(pointers) = sources
+        {
+            let mut fields = self.fields.borrow_mut();
+            for &pointer in &pointers[..completed / 6] {
+                *fields.entry(pointer).or_default() += 1;
+            }
+        }
+        completed
     }
 
     fn copy_scattered<const K: usize>(
@@ -772,7 +791,7 @@ fn ample() -> Capacities {
         wings: 1 << 14,
         ..Default::default()
     };
-    capacity.rows[7..].fill(1 << 14);
+    capacity.rows[5..].fill(1 << 14);
     capacity
 }
 
@@ -942,7 +961,7 @@ fn mission_tables_grow_before_the_first_5000_country_publication() {
     let witnesses = scale.witnesses();
     let mines = scale.mines();
     let mut capacity = Capacities::default();
-    capacity.rows[7..].fill(0);
+    capacity.rows[5..].fill(0);
     capacity.wings = 0;
     let mut air = Captured::with_capacities(&capacity);
     let joins = Outcome::Unavailable {
@@ -952,7 +971,7 @@ fn mission_tables_grow_before_the_first_5000_country_publication() {
     // AirBases is complete and empty, so every witness keeps its fields.
     assert_eq!(outcomes[1], Outcome::Rows { len: 0 });
     assert_eq!(
-        outcomes[7..10],
+        outcomes[5..8],
         [
             Outcome::Rows {
                 len: registrations.len()
@@ -973,12 +992,12 @@ fn mission_tables_grow_before_the_first_5000_country_publication() {
         })
         .collect();
     by_wing.sort_unstable_by_key(|row| row.wing);
-    assert_eq!(complete::<tables::AirRegionalMissions>(&tables[7]), by_wing);
+    assert_eq!(complete::<tables::AirRegionalMissions>(&tables[5]), by_wing);
     assert_eq!(
-        complete::<tables::AirReferenceWitnesses>(&tables[8]),
+        complete::<tables::AirReferenceWitnesses>(&tables[6]),
         witness_rows(&witnesses)
     );
-    assert_eq!(complete::<tables::NavalMineLevels>(&tables[9]), mines);
+    assert_eq!(complete::<tables::NavalMineLevels>(&tables[7]), mines);
 
     // Content can grow without a population change. Discard only output
     // preparation and prove that a later hour publishes the complete demand.
@@ -987,7 +1006,7 @@ fn mission_tables_grow_before_the_first_5000_country_publication() {
     air.mines.rows.clear();
     air.handles.clear();
     let later = scale.hour(&scale.census, &mut air);
-    assert_eq!(later[7..10], outcomes[7..10]);
+    assert_eq!(later[5..8], outcomes[5..8]);
 
     // A registered wing missing from the census fails the registrations,
     // and the joins with them.
@@ -995,7 +1014,7 @@ fn mission_tables_grow_before_the_first_5000_country_publication() {
     census.remove(scale.registered[0].regions[0].1[0]);
     let outcomes = scale.hour(&census, &mut air);
     assert_eq!(
-        outcomes[7..10],
+        outcomes[5..8],
         [
             Outcome::Unavailable {
                 reason: "registered mission missing from AirWings"
@@ -1004,6 +1023,187 @@ fn mission_tables_grow_before_the_first_5000_country_publication() {
             joins
         ]
     );
+}
+
+/// The AirMissions job's pack once its missions are captured, after the
+/// wing census was installed, before its joins.
+fn mission_pack(scale: &Scale, memory: &impl Memory) -> Captured {
+    let mut air = Captured::with_capacities(&ample());
+    let len = scale.census.len();
+    let mut job = AirWingJob {
+        identities: scale
+            .census
+            .iter()
+            .map(|source| WingIdentity::new(source.pointer, source.pool, &source.row).unwrap())
+            .collect(),
+        identity_outcome: Outcome::Rows { len },
+        ..Default::default()
+    };
+    let parent = Outcome::Rows { len };
+    air.reset();
+    air.prepare_hour(HOUR, false);
+    air.install_owned_mission_identities(&mut job);
+    air.finish_wings(parent);
+    air.capture_missions(
+        memory,
+        BASE,
+        scale.world.game_state,
+        MissionSources {
+            parent,
+            histories: &mut [],
+            changes: &crate::history_changes::Unobserved,
+            carry: None,
+        },
+    );
+    air
+}
+
+/// Every read's address in order; `fault` fails the first read of one
+/// address once, as a one-shot guard page does.
+struct Ordered<'a> {
+    world: &'a World,
+    reads: std::cell::RefCell<Vec<usize>>,
+    fault: Option<usize>,
+    faulted: Cell<bool>,
+}
+
+impl<'a> Ordered<'a> {
+    fn new(world: &'a World, fault: Option<usize>) -> Self {
+        Self {
+            world,
+            reads: Default::default(),
+            fault,
+            faulted: Cell::new(false),
+        }
+    }
+}
+
+impl Memory for Ordered<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.reads.borrow_mut().push(address);
+        if self.fault == Some(address) && !self.faulted.replace(true) {
+            return false;
+        }
+        self.world.copy(address, destination)
+    }
+}
+
+/// Without a mission job the Late job captures the missions itself and
+/// meets every shared read where it did: the joins run after the AirBases,
+/// AirAces and AirStatistics walks, so a one-shot fault on the air manager
+/// fails AirBases, as before, and not the joins.
+#[test]
+fn without_the_mission_job_late_meets_shared_reads_in_their_old_order() {
+    let scale = Scale::new();
+    let game_state = scale.world.game_state;
+    // The read order of the whole fallback: the missions, then the capture.
+    let ordered = Ordered::new(&scale.world, None);
+    let mut clean = mission_pack(&scale, &ordered);
+    clean.capture(
+        &ordered,
+        BASE,
+        game_state,
+        HOUR,
+        false,
+        Some(&mut Default::default()),
+    );
+    let reads = ordered.reads.into_inner();
+    let manager =
+        engine::read::<u64>(&scale.world, game_state + gs::STRATEGIC_AIR_MANAGER).unwrap() as usize;
+    let bases = reads
+        .iter()
+        .position(|&at| at == manager + cstrategic_air_manager::STATE_AIR_BASES)
+        .expect("the AirBases walk");
+    let witnesses = reads
+        .iter()
+        .position(|&at| at == BASE + registry::LOW_ROOTS_RVA + cair_base::TYPE as usize * 8)
+        .expect("the base witnesses");
+    assert!(bases < witnesses, "{bases} {witnesses}");
+    // The capture's first read of the manager pointer faults once.
+    let mut faulted = mission_pack(&scale, &scale.world);
+    let memory = Ordered::new(&scale.world, Some(game_state + gs::STRATEGIC_AIR_MANAGER));
+    faulted.capture(
+        &memory,
+        BASE,
+        game_state,
+        HOUR,
+        false,
+        Some(&mut Default::default()),
+    );
+    assert!(memory.faulted.get());
+    let (outcomes, expected) = (faulted.outcomes(), clean.outcomes());
+    assert!(matches!(outcomes[1], Outcome::Unavailable { .. }));
+    assert_ne!(outcomes[1], expected[1]);
+    assert_eq!(outcomes[6..13], expected[6..13]);
+    assert_eq!(faulted.tables()[6..13], clean.tables()[6..13]);
+}
+
+/// The joins resolve their countries from the hour's snapshot bytes: the
+/// same tables with fewer reads of the game.
+#[test]
+fn the_mission_joins_take_country_bytes_from_the_hours_snapshot() {
+    let scale = Scale::new();
+    let game_state = scale.world.game_state;
+    let mut storage =
+        std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(1 << 18).unwrap());
+    let snapshot =
+        engine::country_memory::Cache::prepare_shared(&mut storage, &scale.world, BASE, game_state)
+            .unwrap();
+    let mut native = mission_pack(&scale, &scale.world);
+    let counted = Counted::new(&scale.world);
+    native.join_missions(&counted, BASE, game_state);
+    let native_copies = counted.copies.get();
+    let mut loaned = mission_pack(&scale, &scale.world);
+    let counted = Counted::new(&scale.world);
+    loaned.join_missions(&snapshot.bytes_view(&counted), BASE, game_state);
+    assert!(
+        counted.copies.get() < native_copies,
+        "{} {native_copies}",
+        counted.copies.get()
+    );
+    assert_eq!(loaned.outcomes(), native.outcomes());
+    assert_eq!(loaned.tables()[6..13], native.tables()[6..13]);
+}
+
+/// The AirMissions job joins the registered missions itself: once it
+/// returns, the base witnesses, sortie inputs and mine levels are complete,
+/// and the Late job's capture keeps them without probing a base again.
+#[test]
+fn the_mission_job_leaves_the_joins_complete_for_the_late_capture() {
+    let scale = Scale::new();
+    let mut reference = Captured::with_capacities(&ample());
+    let expected = scale.hour(&scale.census, &mut reference);
+    let missions = |join: bool| {
+        let mut air = mission_pack(&scale, &scale.world);
+        if join {
+            air.join_missions(&scale.world, BASE, scale.world.game_state);
+        }
+        air
+    };
+    // The Late capture's probes of the base registry.
+    let late = |air: &mut Captured| {
+        let memory = Counted::new(&scale.world);
+        air.capture(
+            &memory,
+            BASE,
+            scale.world.game_state,
+            HOUR,
+            false,
+            Some(&mut Default::default()),
+        );
+        memory.roots.get()
+    };
+    let mut joined = missions(true);
+    for table in [6, 7, 8] {
+        assert_eq!(joined.outcomes()[table], expected[table], "table {table}");
+    }
+    // Without the mission job's joins the Late capture reads the base
+    // registry's header itself.
+    let mut unjoined = missions(false);
+    assert_eq!(late(&mut unjoined), late(&mut joined) + 1);
+    assert_eq!(joined.outcomes(), expected);
+    assert_eq!(joined.tables()[6..13], reference.tables()[6..13]);
+    assert_eq!(unjoined.tables()[6..13], reference.tables()[6..13]);
 }
 
 /// AirReferenceWitnesses over thousands of wings: each distinct probed
@@ -1042,7 +1242,7 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
     let mut air = Captured::with_capacities(&ample());
     let outcomes = scale.hour(&scale.census, &mut air);
     assert_eq!(
-        outcomes[8],
+        outcomes[6],
         Outcome::Rows {
             len: expected.len()
         }
@@ -1068,7 +1268,9 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         })
     );
     assert_eq!(witnessed(&output), expected);
-    assert_eq!(memory.roots.get(), expected.len());
+    // One pass reads the base registry's header and the air manager once,
+    // however many bases it probes or finds without a cached province.
+    assert_eq!((memory.roots.get(), memory.managers.get()), (1, 1));
     let fields: BTreeMap<usize, usize> = expected
         .iter()
         .filter(|(_, base, ..)| base.is_some())
@@ -1097,7 +1299,7 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         })
     );
     assert_eq!(witnessed(&output[..short]), expected[..short]);
-    assert_eq!(memory.roots.get(), expected.len());
+    assert_eq!(memory.roots.get(), 1);
 
     // Scratch too small for every probe, duplicates included, reads nothing.
     let probes = registered
@@ -1204,22 +1406,22 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         Some(reason)
     );
     let outcomes = scale.hour(&scale.census, &mut air);
-    assert_eq!(outcomes[8], Outcome::Unavailable { reason });
+    assert_eq!(outcomes[6], Outcome::Unavailable { reason });
     assert_eq!(
-        air.tables()[8],
+        air.tables()[6],
         TableView::Unavailable {
             reason: reason.into()
         }
     );
     // The registrations and mines stand.
     assert_eq!(
-        outcomes[7],
+        outcomes[5],
         Outcome::Rows {
             len: registrations.len()
         }
     );
     assert_eq!(
-        outcomes[9],
+        outcomes[7],
         Outcome::Rows {
             len: scale.mines().len()
         }
@@ -1255,13 +1457,13 @@ fn mine_levels_at_scale_are_one_row_per_pair_in_key_order() {
     let mut air = Captured::with_capacities(&ample());
     let outcomes = scale.hour(&scale.census, &mut air);
     assert_eq!(
-        outcomes[9],
+        outcomes[7],
         Outcome::Rows {
             len: expected.len()
         }
     );
     assert_eq!(
-        complete::<tables::NavalMineLevels>(&air.tables()[9]),
+        complete::<tables::NavalMineLevels>(&air.tables()[7]),
         expected
     );
     let (wings, registrations) = joined(&air);
@@ -1319,9 +1521,9 @@ fn mine_levels_at_scale_are_one_row_per_pair_in_key_order() {
         })
     );
     let outcomes = scale.hour(&scale.census, &mut air);
-    assert_eq!(outcomes[9], Outcome::Unavailable { reason });
+    assert_eq!(outcomes[7], Outcome::Unavailable { reason });
     assert_eq!(
-        air.tables()[9],
+        air.tables()[7],
         TableView::Unavailable {
             reason: reason.into()
         }
@@ -1341,7 +1543,7 @@ fn mine_levels_at_scale_are_one_row_per_pair_in_key_order() {
     layer.row.country_override = scale.empty as i32;
     let outcomes = scale.hour(&census, &mut air);
     assert_eq!(
-        outcomes[7..10],
+        outcomes[5..8],
         [
             Outcome::Rows {
                 len: registrations.len()
@@ -1353,5 +1555,107 @@ fn mine_levels_at_scale_are_one_row_per_pair_in_key_order() {
                 reason: "country link resolves to null country"
             }
         ]
+    );
+}
+
+/// One AirMissions hour with held registrations: the owned census
+/// installed, then the registrations captured through `store`. Returns the
+/// outcome and the reads of active-region ids, regional vectors and mission
+/// pointers.
+fn carried_hour(
+    scale: &Scale,
+    air: &mut Captured,
+    store: &mut MissionStore,
+    watches: &crate::mission_changes::Watches,
+) -> (Outcome, usize) {
+    let census = &scale.census;
+    let mut job = AirWingJob {
+        sources: census.to_vec(),
+        source_outcome: Outcome::Rows { len: census.len() },
+        identities: census
+            .iter()
+            .map(|source| WingIdentity::new(source.pointer, source.pool, &source.row).unwrap())
+            .collect(),
+        identity_outcome: Outcome::Rows { len: census.len() },
+        ..Default::default()
+    };
+    let parent = Outcome::Rows { len: census.len() };
+    air.reset();
+    air.prepare_hour(HOUR, false);
+    air.install_owned_mission_identities(&mut job);
+    air.finish_wings(parent);
+    let memory = Counted::new(&scale.world);
+    air.capture_missions(
+        &memory,
+        BASE,
+        scale.world.game_state,
+        MissionSources {
+            parent,
+            histories: &mut [],
+            changes: &crate::history_changes::Unobserved,
+            carry: Some(MissionCarry {
+                store,
+                changes: watches,
+                check: crate::sampled_verify::Check::Nothing,
+            }),
+        },
+    );
+    (air.registrations.outcome, memory.regional.get())
+}
+
+/// The AirMissions job's held registrations at 5,000 countries: a quiet
+/// hour publishes the fresh walk's rows without reading one active-region
+/// id, regional vector or mission pointer (the old walk read them all every
+/// hour), and a registration on the heavy country re-reads only its own.
+#[test]
+fn carried_registrations_at_5000_countries_reread_only_notified_countries() {
+    let scale = Scale::new();
+    let expected = scale.registrations();
+    let reads = |country: &Registered| {
+        country.regions.len().div_ceil(64)
+            + country
+                .regions
+                .iter()
+                .map(|(_, wings)| 1 + wings.len().div_ceil(64))
+                .sum::<usize>()
+    };
+    let every: usize = scale.registered.iter().map(reads).sum();
+    let watches = crate::mission_changes::Watches::enabled(COUNTRIES as usize);
+    let mut store = MissionStore::new();
+    let mut air = Captured::with_capacities(&ample());
+    let complete = Outcome::Rows {
+        len: expected.len(),
+    };
+    let first = carried_hour(&scale, &mut air, &mut store, &watches);
+    assert_eq!(first, (complete, every));
+    assert_eq!(air.registrations.rows[..expected.len()], expected);
+    watches.boundary(false);
+    let quiet = carried_hour(&scale, &mut air, &mut store, &watches);
+    assert_eq!(quiet, (complete, 0));
+    assert_eq!(air.registrations.rows[..expected.len()], expected);
+    assert_eq!(store.counts().reused, COUNTRIES as u64 - 1);
+    assert!(store.counts().quiet);
+
+    let heavy = scale
+        .registered
+        .iter()
+        .find(|country| country.regions.len() > 64)
+        .unwrap();
+    let mut address = None;
+    engine::cstrategic_air::visit(&scale.world, BASE, scale.world.game_state, |root| {
+        if root.canonical_slot == heavy.slot {
+            address = Some(root.address);
+        }
+        Ok(())
+    })
+    .unwrap();
+    drop(watches.notify(address.unwrap(), 0));
+    watches.boundary(false);
+    let notified = carried_hour(&scale, &mut air, &mut store, &watches);
+    assert_eq!(notified, (complete, reads(heavy)));
+    assert_eq!(air.registrations.rows[..expected.len()], expected);
+    assert_eq!(
+        (store.counts().read, store.counts().reused),
+        (1, COUNTRIES as u64 - 2)
     );
 }

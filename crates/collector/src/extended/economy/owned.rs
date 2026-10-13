@@ -31,7 +31,6 @@ fn copy_economy_rest(
     }
     job.game_state = ctx.game_state;
     job.resources_active = ctx.resources_active;
-    job.definitions_slot = ctx.definitions_slot;
     job.other_active = ctx.other_active;
     // Fixed resources require their grants before any raw source fault is consumed.
     // Worker buffers grow from the original headers without restarting acquisition.
@@ -189,7 +188,6 @@ impl Captured {
         decode_ticks: &mut [u64; N],
     ) {
         self.resources_active = job.resources_active;
-        self.definitions_slot = job.definitions_slot;
         self.other_active = job.other_active;
         self.mark_inactive();
         if let Some(reason) = job.staging_failure {
@@ -330,7 +328,6 @@ impl Captured {
                 unavailable_descriptors()
             };
             decode_ticks[8] += elapsed(started);
-            self.hide_off_slot_census();
         }
         if self.other_active {
             let started = qpc();
@@ -379,7 +376,7 @@ impl Captured {
 // ResourceDefinitions, CountryResources, ResourceExchanges,
 // PurchaseContracts, CountryFuelConsumers).
 //
-// Eight tables retain their raw mirror and indexed decode. The existing World
+// Eight tables retain their raw mirror and indexed decode. The Economy
 // acquisition request also owns native resource-definition, pool and exchange
 // rows, acquired by the direct readers with exact per-frame capacity grants.
 // All raw staging completes before typed resource acquisition, preventing a
@@ -408,13 +405,12 @@ const M_E_SUPPLY_OBJ: u32 = 0x038;
 
 /// One hour of eight raw tables and three owned native resource tables.
 /// Raw staging and resource pools grow from their original headers on the
-/// allocating World worker; decode grows the receiving frame before installation.
+/// allocating Economy worker; decode grows the receiving frame before installation.
 #[derive(Debug, Default)]
 pub(crate) struct EconomyRestJob {
     pub log: RawLog<N>,
     pub game_state: usize,
     pub(super) resources_active: bool,
-    pub(super) definitions_slot: bool,
     pub(super) other_active: bool,
     pub(super) resources: OwnedResources,
     pub(super) staging_failure: Option<&'static str>,
@@ -426,7 +422,6 @@ impl EconomyRestJob {
             log: RawLog::new(0, 0),
             game_state: 0,
             resources_active: false,
-            definitions_slot: false,
             other_active: false,
             resources: OwnedResources::new([0; 3], 0),
             staging_failure: None,
@@ -438,7 +433,6 @@ impl EconomyRestJob {
         self.log.clear();
         self.game_state = 0;
         self.resources_active = false;
-        self.definitions_slot = false;
         self.other_active = false;
         self.resources.clear();
         self.staging_failure = None;
@@ -479,8 +473,6 @@ pub(crate) struct EconomyRestCopyContext {
     /// CountryResources, ResourceExchanges and their census are walked
     /// (hourly).
     pub resources_active: bool,
-    /// ResourceDefinitions is in its daily slot.
-    pub definitions_slot: bool,
     pub other_active: bool,
 }
 
@@ -558,7 +550,6 @@ impl Captured {
             ],
             resource_scratch: self.exchange_scratch.len(),
             resources_active: self.resources_active,
-            definitions_slot: self.definitions_slot,
             other_active: self.other_active,
         }
     }

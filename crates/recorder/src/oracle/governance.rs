@@ -9,7 +9,7 @@ use std::{
 use installed_content::save::{Save, governance as saved};
 use replay::{
     frame::DecodedFrame,
-    rows::{CountryRow, tables},
+    rows::{CountryRow, Recorded, tables},
 };
 
 use super::{
@@ -263,18 +263,6 @@ fn compare_politics(
         );
         equal(
             report,
-            format!("{subject}.election_frequency"),
-            Some(row.election_frequency),
-            saved.election_frequency,
-        );
-        equal(
-            report,
-            format!("{subject}.elections_allowed"),
-            Some(row.elections_allowed),
-            saved.elections_allowed.map(u8::from),
-        );
-        equal(
-            report,
             format!("{subject}.capital"),
             Some(row.capital),
             country.capital,
@@ -285,6 +273,19 @@ fn compare_politics(
             Some(row.original_capital),
             country.original_capital,
         );
+        // The country writer writes both elections operands unconditionally;
+        // an older recording holds no value.
+        if let Recorded::Value(has_elections) = row.has_elections {
+            equal(
+                report,
+                format!("{subject}.has_elections"),
+                Some(has_elections),
+                saved
+                    .elections_allowed
+                    .zip(saved.election_frequency)
+                    .map(|(allowed, frequency)| allowed && frequency > 0),
+            );
+        }
         count += 1;
     }
     for (tag, country) in report.canonical_countries(&pack.countries) {

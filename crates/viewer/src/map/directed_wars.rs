@@ -2,10 +2,16 @@
 //! attack and transport. Local selection does not select recording demand.
 //! Each Owner holds exactly this immutable frame/world/hour, admits once on
 //! first reached direct predicate, and cannot be reassigned to a later frame.
+//!
+//! A positive receiver's cells derive from the hour's WarRelations
+//! ([`replay::directed_war_derive`]). Recordings through format 101 stored a
+//! sparse packet per receiver; where one is present it answers instead, so
+//! those recordings keep their recorded cells and unknowns.
 
 use replay::{
+    directed_war_derive::ReceiverWars,
     frame::DecodedFrame,
-    rows::{DirectedWarContext, ReservedReverseVisibilityInputs, tables},
+    rows::{DirectedWarContext, DirectedWars, ReservedReverseVisibilityInputs, tables},
 };
 use std::sync::OnceLock;
 
@@ -13,6 +19,7 @@ type Fact<T> = Result<T, String>;
 
 enum Context<'a> {
     Positive(DirectedWarContext<'a>),
+    Derived(ReceiverWars),
     ActualZero(&'a ReservedReverseVisibilityInputs),
 }
 
@@ -20,6 +27,7 @@ impl Context<'_> {
     fn pointer_active(&self, target_slot: u32) -> Fact<bool> {
         match self {
             Self::Positive(context) => context.pointer_active(target_slot),
+            Self::Derived(wars) => Ok(wars.pointer_active(target_slot)),
             Self::ActualZero(packet) => {
                 let cell=packet.cells.get(target_slot as usize).and_then(Option::as_ref)
                     .ok_or("ReservedCountryNaming.reverse_visibility cell capture refused or outside observed matrix")?;
@@ -110,7 +118,7 @@ impl<'a> Owner<'a> {
                 .require("ReservedCountryNaming.reverse_visibility")?
                 .as_ref()
                 .ok_or("ReservedCountryNaming.reverse_visibility capture refused")?;
-            if packet.sample_hour != self.frame.hour {
+            if !packet.sample_hour.fresh_at(self.frame.hour) {
                 return Err("ReservedCountryNaming.reverse_visibility sample hour mismatch".into());
             }
             if packet.cells.len() > 65_536 {
@@ -120,26 +128,27 @@ impl<'a> Owner<'a> {
             }
             return Ok(Context::ActualZero(packet));
         }
-        let mut rows = self
-            .frame
-            .complete::<tables::CountryCounterInputs>()
-            .map_err(|e| e.to_string())?
-            .iter()
-            .filter(|row| row.country == self.actual_raw_id as u32);
-        let row = rows
-            .next()
-            .ok_or("directed-war receiver CountryCounterInputs row missing")?;
-        if rows.next().is_some() {
-            return Err("directed-war receiver CountryCounterInputs row duplicated".into());
+        match self.recorded_packet() {
+            Some(packet) => packet
+                .admit(self.frame.hour, self.actual_raw_id, self.canonical_slot)
+                .map(Context::Positive),
+            None => ReceiverWars::read(self.frame, self.canonical_slot).map(Context::Derived),
         }
-        let packet = row
+    }
+
+    /// The receiver's packet in a recording through format 101. Current
+    /// recordings store none, and neither does a capture an older recording
+    /// refused or never made; those cells derive like current ones.
+    fn recorded_packet(&self) -> Option<&'a DirectedWars> {
+        self.frame
+            .complete::<tables::CountryCounterInputs>()
+            .ok()?
+            .iter()
+            .find(|row| row.country == self.actual_raw_id as u32)?
             .directed_wars
-            .require("CountryCounterInputs.directed_wars")?
+            .require("CountryCounterInputs.directed_wars")
+            .ok()?
             .as_ref()
-            .ok_or("CountryCounterInputs.directed_wars capture refused")?;
-        packet
-            .admit(self.frame.hour, self.actual_raw_id, self.canonical_slot)
-            .map(Context::Positive)
     }
 
     /// Direct relation-byte predicate without positive-receiver or self veto.
@@ -189,7 +198,7 @@ mod tests {
     #[test]
     fn actual_zero_active_cell_survives_native_skipped_target_read() {
         let packet = ReservedReverseVisibilityInputs {
-            sample_hour: 12,
+            sample_hour: replay::rows::PacketHour::Stamped(12),
             cells: vec![
                 Some(ReverseZeroVisibilityInputs {
                     target: None,
@@ -212,7 +221,7 @@ mod tests {
     #[test]
     fn direct_positive_alias_to_zero_remains_a_direct_cell() {
         let packet = DirectedWars {
-            sample_hour: 12,
+            sample_hour: replay::rows::PacketHour::Stamped(12),
             receiver_raw_id: 99,
             receiver_slot: 1,
             matrix_count: 3,
@@ -230,7 +239,7 @@ mod tests {
     fn corrupt_actual_zero_presence_never_becomes_clear_war() {
         for war in [[0, 8], [2, 0]] {
             let packet = ReservedReverseVisibilityInputs {
-                sample_hour: 12,
+                sample_hour: replay::rows::PacketHour::Stamped(12),
                 cells: vec![Some(ReverseZeroVisibilityInputs {
                     war: Some(war),
                     ..Default::default()
@@ -249,6 +258,7 @@ mod owner_tests {
         rows::{
             CountryCounterInputRow, CountryLinkRow, CountryRow, DirectedWars, Recorded,
             ReservedCountryNamingRow, ReverseZeroVisibilityInputs, TableId, TableRows, WarCell,
+            WarRelationRow,
         },
     };
 
@@ -284,13 +294,19 @@ mod owner_tests {
                 },
             ]))
             .into();
-        frame.tables[TableId::Countries.index()] =
-            TableView::Complete(TableRows::Countries(vec![CountryRow {
+        frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+            CountryRow {
+                id: 20,
+                canonical_slot: 2,
+                ..Default::default()
+            },
+            CountryRow {
                 id: 99,
                 canonical_slot: 1,
                 ..Default::default()
-            }]))
-            .into();
+            },
+        ]))
+        .into();
         frame.tables[TableId::CountryCounterInputs.index()] =
             TableView::Complete(TableRows::CountryCounterInputs(vec![
                 CountryCounterInputRow {
@@ -305,7 +321,7 @@ mod owner_tests {
 
     fn packet(hour: i32, active: bool) -> DirectedWars {
         DirectedWars {
-            sample_hour: hour,
+            sample_hour: replay::rows::PacketHour::Stamped(hour),
             receiver_raw_id: 99,
             receiver_slot: 1,
             matrix_count: 3,
@@ -344,7 +360,7 @@ mod owner_tests {
             TableView::Complete(TableRows::ReservedCountryNaming(vec![
                 ReservedCountryNamingRow {
                     reverse_visibility: Recorded::Value(Some(ReservedReverseVisibilityInputs {
-                        sample_hour: 12,
+                        sample_hour: replay::rows::PacketHour::Stamped(12),
                         cells: vec![Some(ReverseZeroVisibilityInputs {
                             target: None,
                             war: Some([1, 0]),
@@ -381,8 +397,42 @@ mod owner_tests {
         assert_eq!(cached, later);
     }
 
+    /// The hour's WarRelations: raw 20 (slot 2) at war with alias raw 7 (slot 1).
+    fn with_wars(mut frame: DecodedFrame) -> DecodedFrame {
+        frame.tables[TableId::WarRelations.index()] =
+            TableView::Complete(TableRows::WarRelations(vec![WarRelationRow {
+                first_country: 20,
+                second_country: 7,
+                ..Default::default()
+            }]))
+            .into();
+        frame
+    }
+
     #[test]
-    fn owner_keeps_historical_absence_and_current_refusal_unknown() {
+    fn owner_without_a_packet_derives_every_cell_from_war_relations() {
+        // Current recordings store None; older ones may lack the field.
+        for packet in [Recorded::Value(None), Recorded::NotRecorded] {
+            let frame = with_wars(frame(packet));
+            let owner = Owner::new(&frame, 99).unwrap();
+            assert_eq!(owner.at_war(99), Ok(false));
+            assert!(owner.context.get().is_none());
+            assert_eq!(owner.at_war(20), Ok(true));
+            assert!(matches!(owner.context.get(), Some(Ok(Context::Derived(_)))));
+            assert_eq!(owner.pointer_active_slot(2), Ok(true));
+            // The receiver's own cell and its cell toward slot zero, through
+            // the positive alias 12, hold no war.
+            assert_eq!(owner.pointer_active_slot(1), Ok(false));
+            assert_eq!(owner.pointer_active(12), Ok(false));
+            // The other endpoint derives the reverse cell.
+            let enemy = Owner::new(&frame, 20).unwrap();
+            assert_eq!(enemy.pointer_active_slot(1), Ok(true));
+            assert_eq!(enemy.at_war(7), Ok(true));
+        }
+    }
+
+    #[test]
+    fn owner_without_war_relations_keeps_its_cells_unknown() {
         for packet in [Recorded::NotRecorded, Recorded::Value(None)] {
             let frame = frame(packet);
             let owner = Owner::new(&frame, 7).unwrap();
@@ -391,6 +441,20 @@ mod owner_tests {
             assert!(owner.pointer_active_slot(2).is_err());
             assert!(matches!(owner.context.get(), Some(Err(_))));
         }
+    }
+
+    #[test]
+    fn an_older_recordings_packet_keeps_answering_over_the_derivation() {
+        // The packet records the cell toward slot 2 as clear and leaves slot
+        // zero unobserved; WarRelations would derive both differently.
+        let frame = with_wars(frame(Recorded::Value(Some(packet(12, false)))));
+        let owner = Owner::new(&frame, 7).unwrap();
+        assert_eq!(owner.pointer_active_slot(2), Ok(false));
+        assert!(matches!(
+            owner.context.get(),
+            Some(Ok(Context::Positive(_)))
+        ));
+        assert!(owner.pointer_active_slot(0).is_err());
     }
 
     #[test]

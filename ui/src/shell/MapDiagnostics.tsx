@@ -48,6 +48,7 @@ function Recording({ metadata, shown }: { metadata: ReplayMetadata; shown: Branc
   const labels = branchLabels(branches);
   const first = Math.min(...branches.map(branch => branch.firstHour)), last = Math.max(...branches.map(branch => branch.lastHour));
   const gaps = branches.reduce((sum, branch) => sum + branch.gaps.length, 0);
+  const losses = branches.flatMap(branch => (branch.eventLosses ?? []).map(loss => ({ branch: branch.id, loss })));
   const status = metadata.partial ? { tone: 'warning', label: 'Stopped early' } : gaps ? { tone: 'warning', label: `${gaps} ${gaps === 1 ? 'gap' : 'gaps'}` }
     : { tone: 'positive', label: 'Complete' };
   return <>
@@ -70,6 +71,13 @@ function Recording({ metadata, shown }: { metadata: ReplayMetadata; shown: Branc
           : <button type="button" className="button small quiet coverage-action" aria-label={`Show ${labels.get(branch.id)}`} onClick={() => shown.choose(branch.id)}>Show</button>)}
       </div>;
     })}
+    {losses.length > 0 && <details className="diagnostics-details">
+      <summary><span className="settings-row-text"><strong>Event losses</strong>
+        <small>{losses.length} {losses.length === 1 ? 'interval' : 'intervals'} between two reads whose recorded events are incomplete; a lost frame is listed as a gap.</small></span>
+        <Icon name="chevron-down" className="diagnostics-chevron" /></summary>
+      <div className="diagnostics-list"><ul>{losses.map(({ branch, loss }, index) => <li key={index}>
+        {branches.length > 1 && `${labels.get(branch)}: `}{formatDateTime(loss.afterHour)} – {formatDateTime(loss.hour)}: {loss.reason}</li>)}</ul></div>
+    </details>}
     {metadata.warnings.length > 0 && <details className="diagnostics-details">
       <summary><span className="settings-row-text"><strong>File notes</strong>
         <small>{metadata.warnings.length} {metadata.warnings.length === 1 ? 'thing' : 'things'} this file couldn’t provide, such as details only newer versions record.</small></span>

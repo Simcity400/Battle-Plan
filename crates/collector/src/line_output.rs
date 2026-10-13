@@ -21,7 +21,7 @@
 //! (the daily production pass is serial); the log is multi-producer safe
 //! anyway, and a delivery pairs only with a credit on its own thread.
 //! Storage follows live equipment and rocket header demand, observed before the
-//! hooks are installed and by the spool thread. After draining, the callback
+//! hooks are installed and by the spool's sizing thread. After draining, the callback
 //! installs an offered larger log only with no waiting entries or active
 //! writer; the spool frees the retired log. A swap preserves cursor and epoch.
 //!
@@ -160,7 +160,7 @@ pub fn install_offered() {
     }
 }
 
-/// Spool thread: no writer or drain can still hold the replaced log.
+/// Sizing thread: no writer or drain can still hold the replaced log.
 pub fn collect() {
     if native_retention_required() {
         return;

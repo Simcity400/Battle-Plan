@@ -66,7 +66,26 @@ pub fn countries_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    output: Buffer<'_, CountryRow>,
+) -> (Outcome, usize) {
+    countries_buffer_with(memory, base, game_state, output, &mut |_, accumulator| {
+        modifier_accumulator::lookup_at(memory, accumulator, UNIT_MODIFIER)
+    })
+}
+
+/// The same census and native read order, with an authenticated country's raw
+/// accumulator lookup supplied by the worker's change-certified held store.
+/// Every present value still reads effective metadata at its original position
+/// (effective modifier lookup used by unit intel); absent keys skip it.
+pub fn countries_buffer_with(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
     mut output: Buffer<'_, CountryRow>,
+    lookup: &mut impl FnMut(
+        ccountry::Country,
+        usize,
+    ) -> Result<modifier_accumulator::Value, &'static str>,
 ) -> (Outcome, usize) {
     let mut slots = 0;
     let result = (|| {
@@ -83,13 +102,12 @@ pub fn countries_buffer(
                 .pointer
                 .checked_add(ccountry::MODIFIER_ACCUMULATOR)
                 .ok_or("country modifier address overflow")?;
-            let value = modifier_accumulator::lookup_effective_at(
-                memory,
-                base,
-                accumulator,
-                UNIT_MODIFIER,
-            )?
-            .effective;
+            let raw = lookup(country, accumulator)?;
+            let value = if raw.present {
+                crate::modifier_definition::effective(memory, base, UNIT_MODIFIER, raw.raw)?
+            } else {
+                0
+            };
             if value == 0 {
                 continue;
             }

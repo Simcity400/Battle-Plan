@@ -5,6 +5,33 @@ use std::{hint::black_box, time::Instant};
 mod foreign_unwind;
 
 static SERIAL: Mutex<()> = Mutex::new(());
+thread_local! {
+    static OWNER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+pub(super) fn owns_observation() -> bool {
+    OWNER.get()
+}
+/// Serialises the fixtures that share this module's statics and makes this
+/// thread the observation's owner. As with the naval, air-loss and bombing
+/// observers, another test's hourly path (`lost_observer_interval`) then
+/// cannot poison a fixture mid-test. A failing test releases SERIAL poisoned;
+/// the next fixture's `setup` resets every static it reads, so one failure
+/// stays one failure instead of failing every later test.
+struct Serial {
+    _serial: std::sync::MutexGuard<'static, ()>,
+}
+fn serial() -> Serial {
+    let serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    OWNER.set(true);
+    Serial { _serial: serial }
+}
+impl Drop for Serial {
+    fn drop(&mut self) {
+        OWNER.set(false);
+    }
+}
 static FORWARDED: Mutex<[usize; 8]> = Mutex::new([0; 8]);
 static OBSERVED_DELETION: Mutex<Option<Deletion>> = Mutex::new(None);
 
@@ -549,25 +576,25 @@ fn record_land_gain(before: i64, damage: i64, expected: i64) {
 
 #[test]
 fn negative_damage_records_signed_gain_without_poison() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     record_land_gain(1000000, -10000, -100000);
 }
 
 #[test]
 fn fractional_pool_rounding_up_records_signed_gain_without_poison() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     record_land_gain(1030000, 1000, -70000);
 }
 
 #[test]
 fn negative_pool_entries_record_signed_differences_without_poison() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     record_land_gain(-1000000, 50000, -500000);
 }
 
 #[test]
 fn scripted_factor_above_one_records_signed_gain_without_poison() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -589,7 +616,7 @@ fn scripted_factor_above_one_records_signed_gain_without_poison() {
 
 #[test]
 fn negative_air_request_records_signed_gain_without_poison() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -604,7 +631,14 @@ fn negative_air_request_records_signed_gain_without_poison() {
     unsafe { *((address + 0x9c4) as *mut u32) = 4999 };
     ORIGINAL[SiteId::Air as usize].store(air_request as *const () as usize, Ordering::Release);
     let diagnostics = refusal_diagnostics();
+    let family = crate::hook_timing::Family::EquipmentDestruction;
+    let _sampled = crate::hook_timing::sample_all();
+    let timed = crate::hook_timing::counts(family);
     unsafe { air(address, (-2i32) as usize, 1500, 0) };
+    // The callback is counted and its original timed apart from the detour.
+    let after = crate::hook_timing::counts(family);
+    assert!(after.calls > timed.calls && after.sampled > timed.sampled);
+    assert!(after.original > timed.original && after.detour > timed.detour);
     assert_signed_row(-200000, native::Cause::Unknown, 0xf00000000046);
     assert_eq!(refusal_diagnostics(), diagnostics);
     assert_eq!(
@@ -708,8 +742,15 @@ fn setup(capacity: usize, designs: usize) {
     }
     // Source, existing reserves and newly credited rows share the pool arenas.
     let pool_bound = designs * 3;
-    *STORAGE_SWAP.lock().unwrap() = StorageSwap::default();
-    *STORE.lock().unwrap() = Store {
+    // A previous fixture that failed while holding one of these locks leaves it
+    // poisoned; its contents are replaced below, so recover and clear it.
+    *STORAGE_SWAP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = StorageSwap::default();
+    STORAGE_SWAP.clear_poison();
+    *STORE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Store {
         entries: Vec::with_capacity(capacity),
         queued: FixedIndex::with_capacity(capacity),
         queued_by_army: FixedIndex::with_capacity(capacity),
@@ -724,15 +765,23 @@ fn setup(capacity: usize, designs: usize) {
         credits: Credits::try_new(capacity, capacity * designs).unwrap(),
         ..Store::new()
     };
+    STORE.clear_poison();
     {
         let mut store = STORE.lock().unwrap();
         let capacity = store.owned_capacity();
         store._charge.set(capacity);
     }
-    *CLOCK.lock().unwrap() = None;
+    *CLOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    CLOCK.clear_poison();
     DELETION.set(None);
     WHOLE_MERGE.set(false);
     BASE.store(0, Ordering::Relaxed);
+    // The event hint only rises within an attachment (a DLL load starts at 0).
+    // Each fixture is a fresh attachment: an earlier fixture's 5,000-country
+    // hint must not size this one's storage.
+    EVENT_HINT.store(0, Ordering::Release);
     CAPACITY.store(capacity, Ordering::Release);
     OFFERED_CAPACITY.store(0, Ordering::Release);
     QUEUED_CAPACITY.store(capacity, Ordering::Release);
@@ -793,7 +842,7 @@ fn clock(hour: i32, session: i64) -> Option<Clock> {
 
 #[test]
 fn refusals_identify_each_writer_and_recover_at_clean_boundary() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 1);
     for site in 0..native::SITES.len() {
         boundary(clock(1, site as i64 + 1));
@@ -836,7 +885,7 @@ fn refusals_identify_each_writer_and_recover_at_clean_boundary() {
 
 #[test]
 fn supplemental_snapshot_refusals_identify_writer_and_preserve_first_diagnostic() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let site = SiteId::ScriptedEquipmentFraction;
     for (designs, bad_vtable, quantity, reason) in [
         (
@@ -904,7 +953,7 @@ fn supplemental_snapshot_refusals_identify_writer_and_preserve_first_diagnostic(
 
 #[test]
 fn locked_writer_refusal_counts_hook_and_keeps_first_slot_visible() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -951,7 +1000,7 @@ fn locked_writer_refusal_counts_hook_and_keeps_first_slot_visible() {
 
 #[test]
 fn live_attrition_store_overlap_refuses_one_interval_then_records_again() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -986,7 +1035,7 @@ fn live_attrition_store_overlap_refuses_one_interval_then_records_again() {
 
 #[test]
 fn prepared_growth_never_locks_writers_and_retires_storage_off_thread() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -1071,7 +1120,7 @@ fn prepared_growth_never_locks_writers_and_retires_storage_off_thread() {
 
 #[test]
 fn interval_recovery_preserves_skipped_source_refusal_and_admits_other_sources() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     for site in [SiteId::Attrition, SiteId::ScriptedEquipmentFraction] {
         setup(8, 2);
         boundary(clock(1, 1));
@@ -1138,7 +1187,7 @@ fn interval_recovery_preserves_skipped_source_refusal_and_admits_other_sources()
 
 #[test]
 fn actual_events_every_country_fail_closed_and_detach() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let memory = unsafe { engine::memory::LiveMemory::new() };
     let mut world = World::new(3);
     setup(5000, 3);
@@ -1279,7 +1328,7 @@ fn actual_events_every_country_fail_closed_and_detach() {
 
 #[test]
 fn failed_prepare_observations_skip_growth_without_losing_the_branch() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -1340,7 +1389,7 @@ fn enabled_land_shim_passes_caller_pc_and_records_stable_causes() {
         rows::{EquipmentDestructionCause, TableRows},
     };
 
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let caller = destruction_land_test_return as *const () as usize;
     let invoke: ArmyFn = unsafe { std::mem::transmute(destruction_land_test_caller as *const ()) };
     for (return_rva, cause, recorded_cause) in [
@@ -1439,7 +1488,7 @@ fn enabled_land_shim_passes_caller_pc_and_records_stable_causes() {
 
 #[test]
 fn real_delete_entry_preserves_four_slots_and_classifies_its_stack_return_pc() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -1469,7 +1518,7 @@ fn real_delete_entry_preserves_four_slots_and_classifies_its_stack_return_pc() {
 
 #[test]
 fn real_division_free_entry_preserves_flags_result_and_pending_cause_before_free() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     for cause in [native::Cause::Unknown, native::Cause::DivisionOverrun] {
         setup(8, 1);
         boundary(clock(1, 1));
@@ -1514,7 +1563,7 @@ fn real_division_free_entry_preserves_flags_result_and_pending_cause_before_free
 
 #[test]
 fn real_queue_entry_preserves_slots_and_replaces_r8_with_the_stack_return_pc() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -1580,7 +1629,7 @@ fn context_rebased(world: &World, base: usize, cause: native::Cause) -> Deletion
 
 #[test]
 fn deletion_paths_snapshot_before_free_and_ignore_actual_returns_and_cleanup() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let mut memory = StateMemory::new(3);
     for cause in [
         native::Cause::DivisionDestroyed,
@@ -1683,7 +1732,7 @@ fn deletion_paths_snapshot_before_free_and_ignore_actual_returns_and_cleanup() {
 
 #[test]
 fn merge_transfers_suppress_source_flush_and_record_signed_uncredited_equipment() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(100, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -1719,7 +1768,7 @@ fn merge_transfers_suppress_source_flush_and_record_signed_uncredited_equipment(
 
 #[test]
 fn queued_deletion_provenance_is_bounded_exact_and_unknown_on_conflict() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let memory = StateMemory::new(1);
     setup(100, 1);
     boundary(clock(1, 1));
@@ -1793,7 +1842,7 @@ fn queued_deletion_provenance_is_bounded_exact_and_unknown_on_conflict() {
 
 #[test]
 fn transferred_provenance_survives_conflicting_requests_and_direct_deletion() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let memory = StateMemory::new(1);
     for requests in [
         [
@@ -1919,7 +1968,7 @@ fn transferred_provenance_survives_conflicting_requests_and_direct_deletion() {
 
 #[test]
 fn pending_transfers_exclude_each_army_writer_and_direct_free_but_not_reused_handles() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     for disposal in ["delete", "free"] {
         setup(100, 1);
         boundary(clock(1, 1));
@@ -2038,7 +2087,7 @@ fn pending_transfers_exclude_each_army_writer_and_direct_free_but_not_reused_han
 
 #[test]
 fn completed_disposal_retires_owned_metadata_without_reading_a_freed_unit() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(100, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -2113,7 +2162,7 @@ fn completed_disposal_retires_owned_metadata_without_reading_a_freed_unit() {
 
 #[test]
 fn residual_follows_damage_flush_attrition_and_owner_cleanup_without_double_counting() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     for residual in [
         native::Cause::DivisionDestroyed,
         native::Cause::DivisionOverrun,
@@ -2176,7 +2225,7 @@ fn residual_follows_damage_flush_attrition_and_owner_cleanup_without_double_coun
 
 #[test]
 fn recovered_deletion_scope_retains_owner_and_allows_native_nested_flushes() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     for return_equipment in [0, 1] {
         setup(100, 1);
         boundary(clock(1, 1));
@@ -2254,7 +2303,7 @@ fn recovered_deletion_scope_retains_owner_and_allows_native_nested_flushes() {
 
 #[test]
 fn paradrop_records_exact_division_and_flooring_and_preserves_five_abi_slots() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(100, 3);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -2304,7 +2353,7 @@ fn paradrop_records_exact_division_and_flooring_and_preserves_five_abi_slots() {
 
 #[test]
 fn expeditionary_scope_owns_each_nested_army_writer_but_not_a_reused_handle() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     for writer in ["land", "attrition", "paradrop"] {
         setup(8, 1);
         boundary(clock(1, 1));
@@ -2356,7 +2405,7 @@ fn expeditionary_scope_owns_each_nested_army_writer_but_not_a_reused_handle() {
 
 #[test]
 fn hq_transfer_provenance_survives_same_session_gap_and_clears_on_load() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let memory = StateMemory::new(1);
     setup(8, 1);
     boundary(clock(1, 1));
@@ -2421,7 +2470,7 @@ fn hq_transfer_provenance_survives_same_session_gap_and_clears_on_load() {
 
 #[test]
 fn live_division_counts_size_both_queue_indexes_and_deletion_allowances() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     for countries in [1500, 5000] {
         setup(0, 0);
         let mut memory = StateMemory::new(2);
@@ -2503,7 +2552,7 @@ fn live_division_counts_size_both_queue_indexes_and_deletion_allowances() {
 
 #[test]
 fn event_and_live_division_queue_overflow_are_named_counted_and_refused() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(1, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -2595,7 +2644,7 @@ fn event_and_live_division_queue_overflow_are_named_counted_and_refused() {
 
 #[test]
 fn hundred_division_burst_and_log_growth_preserve_pending_events_and_provenance() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     for countries in [1500, 5000] {
         let mut memory = StateMemory::new(64);
         memory.population(&[100]);
@@ -2693,7 +2742,7 @@ fn sentinel_verification_keeps_the_original_and_supplemental_install_groups_inde
 
 #[test]
 fn fake_intel_queue_entry_and_direct_free_record_no_witness_or_loss() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -2936,7 +2985,7 @@ fn sentinel_install_refusal_withholds_both_tables() {
 #[test]
 #[ignore = "release benchmark; run with --release --ignored --nocapture --test-threads=1"]
 fn destruction_scale_bench() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     if cfg!(debug_assertions) {
         panic!("benchmark requires release");
     }
@@ -3120,7 +3169,7 @@ fn destruction_scale_bench() {
 
 #[test]
 fn worker_drain_grows_empty_and_recycled_frames_for_every_owned_entry() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let mut output = Vec::new();
     for count in [5000, 10003] {
         setup(count, 1);
@@ -3156,7 +3205,7 @@ fn worker_drain_grows_empty_and_recycled_frames_for_every_owned_entry() {
 
 #[test]
 fn rejected_rows_and_calls_prepare_the_full_burst_without_country_growth() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(1, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -3213,7 +3262,7 @@ fn rejected_rows_and_calls_prepare_the_full_burst_without_country_growth() {
 
 #[test]
 fn rejected_original_pool_headers_prepare_every_scratch_arena_without_country_growth() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(1, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -3409,7 +3458,7 @@ unsafe extern "system-unwind" fn roster_remove(country: usize, army: usize) -> u
 
 #[test]
 fn roster_transfers_witness_only_actual_removal_and_keep_owned_pre_call_identity() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let mut state = StateMemory::new(1);
     let base = state.live_base();
     for (site, disposition) in [
@@ -3454,7 +3503,7 @@ fn roster_transfers_witness_only_actual_removal_and_keep_owned_pre_call_identity
 
 #[test]
 fn new_live_pool_writers_capture_exact_signed_net_removals() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     for (site, cause) in [
         (SiteId::SetExiled, native::Cause::ExileEquipment),
         (
@@ -3521,7 +3570,7 @@ fn new_live_pool_writers_capture_exact_signed_net_removals() {
 
 #[test]
 fn signed_pool_difference_is_shared_by_every_writer_independently_of_cause() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 1);
     let mut world = World::new(1);
     let memory = unsafe { engine::memory::LiveMemory::new() };
@@ -3634,7 +3683,7 @@ fn supplemental_enable_byte_mismatch_rolls_back_published_members_and_keeps_orig
 
 #[test]
 fn scripted_reserve_fraction_captures_authentic_owner_and_all_designs() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(16, 2);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -3674,7 +3723,7 @@ fn scripted_reserve_fraction_captures_authentic_owner_and_all_designs() {
 
 #[test]
 fn nested_pool_writer_runs_original_and_refuses_observation_without_holding_native_locks() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(16, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -3704,7 +3753,7 @@ fn nested_pool_writer_runs_original_and_refuses_observation_without_holding_nati
 
 #[test]
 fn queued_provenance_survives_attach_and_unproven_attach_deletion_is_one_partial_interval() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let memory = StateMemory::new(1);
     for classified in [
         native::QueuedContext::Transfer(native::Disposition::HqTransferred),
@@ -3793,7 +3842,7 @@ fn queued_provenance_survives_attach_and_unproven_attach_deletion_is_one_partial
 
 #[test]
 fn poison_skipped_queue_opens_unproven_window_on_same_session_transition() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -3838,7 +3887,7 @@ fn poison_skipped_queue_opens_unproven_window_on_same_session_transition() {
 
 #[test]
 fn initial_partial_drain_clears_only_its_unproven_deletion() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let memory = StateMemory::new(1);
     for before_boundary in [false, true] {
         setup(8, 1);
@@ -3877,7 +3926,7 @@ fn initial_partial_drain_clears_only_its_unproven_deletion() {
 
 #[test]
 fn boundary_refuses_straddling_observations_and_native_originals_without_clearing_provenance() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     for (observation, load) in [(true, false), (true, true), (false, true)] {
         setup(8, 1);
         boundary(clock(1, 1));
@@ -3958,7 +4007,7 @@ fn boundary_refuses_straddling_observations_and_native_originals_without_clearin
 
 #[test]
 fn callback_entering_claimed_boundary_marks_conflict_and_skips_provenance() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -3988,7 +4037,7 @@ fn callback_entering_claimed_boundary_marks_conflict_and_skips_provenance() {
 
 #[test]
 fn ordinary_hour_overlap_recovers_after_writer_returns_without_transition() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -4009,7 +4058,7 @@ fn ordinary_hour_overlap_recovers_after_writer_returns_without_transition() {
 
 #[test]
 fn provenance_fixed_indexes_survive_full_churn_and_retirement_while_poisoned() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     const BOUND: usize = 64;
     setup(BOUND, 1);
     boundary(clock(1, 1));
@@ -4081,7 +4130,7 @@ unsafe extern "system-unwind" fn bench_roster_remove(_country: usize, _army: usi
 
 #[test]
 fn owned_event_and_provenance_capacity_releases_only_when_quiet() {
-    let _guard = SERIAL.lock().unwrap();
+    let _guard = serial();
     setup(8, 3);
     static TRACKER: crate::raw_memory::Tracker = crate::raw_memory::Tracker::new();
     let expected = {
@@ -4120,7 +4169,7 @@ fn owned_event_and_provenance_capacity_releases_only_when_quiet() {
 
 #[test]
 fn disabled_queue_unwind_still_blocks_detach() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     unsafe extern "system-unwind" fn incomplete_queue(_: usize, _: usize) {
         panic!("synthetic unobserved queue unwind");
     }
@@ -4141,7 +4190,7 @@ fn disabled_queue_unwind_still_blocks_detach() {
 
 #[test]
 fn observed_unwind_releases_scratch_but_retains_callback_for_detach() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(4, 1);
     let refusals = SITE_REFUSALS[SiteId::Land as usize].load(Ordering::Relaxed);
     let result = std::panic::catch_unwind(|| {
@@ -4183,7 +4232,7 @@ fn observed_unwind_releases_scratch_but_retains_callback_for_detach() {
 
 #[test]
 fn returned_callback_unwind_refuses_accepted_credit_but_preserves_ignored_exclusion() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     unsafe extern "system-unwind" fn incomplete_credit(_: usize, _: usize) {
         panic!("synthetic credit unwind");
     }
@@ -4239,7 +4288,7 @@ fn returned_callback_unwind_refuses_accepted_credit_but_preserves_ignored_exclus
 
 #[test]
 fn returned_and_hq_credit_deficits_use_source_time_and_publish_only_at_deletion() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     for site in [SiteId::Return, SiteId::HqReturn] {
         for (source, initial, deficit) in [
             (100001, 0, 0),
@@ -4336,7 +4385,7 @@ fn returned_and_hq_credit_deficits_use_source_time_and_publish_only_at_deletion(
 
 #[test]
 fn return_credits_require_actual_witness_and_do_not_cross_full_handle_or_load() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(8, 2);
     let mut state = StateMemory::new(1);
     let base = state.live_base();
@@ -4371,7 +4420,7 @@ fn return_credits_require_actual_witness_and_do_not_cross_full_handle_or_load() 
 
 #[test]
 fn five_thousand_native_country_return_proofs_remain_deferred_and_recycle_without_growth() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let countries = 5000;
     setup(countries * 3, 2);
     boundary(clock(1, 1));
@@ -4622,7 +4671,7 @@ unsafe extern "system-unwind" fn merged_delete_fixture(_: usize, army: usize, _:
 
 #[test]
 fn whole_native_merge_captures_retained_saturation_signed_discard_and_rounding_once() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     for (survivor_amount, source_amount, retained, credit, expected) in [
         (0x53e2d620fb40, 100000, 0x53e2d620fb40, 0, 100000),
         (0, -100000, 0, 0, -100000),
@@ -4710,7 +4759,7 @@ fn whole_native_merge_captures_retained_saturation_signed_discard_and_rounding_o
 
 #[test]
 fn whole_merge_includes_only_canceled_held_pools_and_all_bulk_designs() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let limit = 0x53e2d620fb40i64;
     for (held, reserve_amount, expected) in [
         (200000, 0, 0),
@@ -4833,7 +4882,7 @@ fn whole_merge_includes_only_canceled_held_pools_and_all_bulk_designs() {
 
 #[test]
 fn canceled_deliveries_conserve_their_own_native_country_destination() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     static TRACKER: crate::raw_memory::Tracker = crate::raw_memory::Tracker::new();
     let limit = 0x53e2d620fb40;
     for countries in [2usize, 5000] {
@@ -4987,7 +5036,7 @@ fn canceled_deliveries_conserve_their_own_native_country_destination() {
 
 #[test]
 fn pending_hq_source_settles_saved_deficit_during_whole_merge_without_scratch_reuse() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(32, 16);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -5076,7 +5125,7 @@ fn pending_hq_source_settles_saved_deficit_during_whole_merge_without_scratch_re
 
 #[test]
 fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     static NESTED_CREDIT: AtomicBool = AtomicBool::new(false);
     unsafe extern "system-unwind" fn nested_credit(manager: usize, source: usize) {
         if !NESTED_CREDIT.swap(true, Ordering::SeqCst) {
@@ -5279,7 +5328,7 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
 
 #[test]
 fn refused_pool_writers_and_unrelated_destructor_keep_outer_basis_unavailable() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     static OTHER_POOL: AtomicUsize = AtomicUsize::new(0);
     static OUTER_POOL: AtomicUsize = AtomicUsize::new(0);
     static MANAGER: AtomicUsize = AtomicUsize::new(0);
@@ -5456,7 +5505,7 @@ pub(super) fn return_revision_overlap(moment: usize, manager: usize, pool: usize
 
 #[test]
 fn first_return_and_post_rebuild_keep_the_admitted_revision() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     for moment in [1, 2] {
         setup(8, 4);
         boundary(clock(1, 1));
@@ -5499,7 +5548,7 @@ fn first_return_and_post_rebuild_keep_the_admitted_revision() {
 
 #[test]
 fn missed_destructor_invalidation_survives_contention_unwind_and_gap() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     unsafe extern "system-unwind" fn incomplete_free(army: usize, flags: usize) -> usize {
         unsafe {
             erase(army, flags);
@@ -5558,7 +5607,7 @@ fn missed_destructor_invalidation_survives_contention_unwind_and_gap() {
 
 #[test]
 fn live_credited_survivor_can_later_merge_as_a_queued_hq_source() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     setup(32, 16);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -5701,7 +5750,7 @@ fn conservation_wide_duplicates_cancel_before_serialized_width_check() {
 
 #[test]
 fn native_merge_selection_and_reserve_reads_stay_with_reached_designs() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     let memory = unsafe { engine::memory::LiveMemory::new() };
     let mut survivor = World::new(2);
     survivor.word(0x1f0, 17);
@@ -5785,7 +5834,7 @@ fn native_merge_selection_and_reserve_reads_stay_with_reached_designs() {
 
 #[test]
 fn skipped_whole_merge_revokes_survivor_and_donor_proofs_before_unwind() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     unsafe extern "system-unwind" fn incomplete_donor_mutation(argument: usize) {
         let inputs = unsafe { *((argument + 8) as *const usize) };
         let donor = unsafe { *(inputs as *const usize) };
@@ -5864,7 +5913,7 @@ fn skipped_whole_merge_revokes_survivor_and_donor_proofs_before_unwind() {
 
 #[test]
 fn native_merge_unwind_keeps_original_once_and_poisoned_observation_quiet() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = serial();
     static ORIGINAL_CALLS: AtomicUsize = AtomicUsize::new(0);
     unsafe extern "system-unwind" fn incomplete_merge(argument: usize) {
         let survivor = unsafe { *(argument as *const usize) };

@@ -137,14 +137,6 @@ fn observation(memory: &impl Memory) -> ccountry::ReservedVisibilityObservation 
     naming.launch_states = None;
     observed
 }
-fn missing_sources<'a, T>() -> super::super::production::Sources<'a, T> {
-    super::super::production::Sources {
-        rows: &[],
-        outcome: Outcome::Unavailable {
-            reason: "fixture has no moving sources",
-        },
-    }
-}
 
 #[test]
 fn short_matrix_and_failed_prefix_skip_body_keep_full_demand_and_clear_previous_cells() {
@@ -177,7 +169,7 @@ fn short_matrix_and_failed_prefix_skip_body_keep_full_demand_and_clear_previous_
     assert_eq!(memory.body_reads.get(), old_reads);
     assert!(capture.cells.first.iter().all(|cell| cell.value.is_none()));
     assert!(capture.projection().unwrap().is_none());
-    assert_eq!(owned.sample_hour, 52);
+    assert_eq!(owned.sample_hour, replay::rows::PacketHour::Host);
     assert!(
         owned.cells[0].is_some(),
         "off-thread projection owns its values"
@@ -283,12 +275,10 @@ fn one_reader_supports_zero_alias_even_with_no_positive_prefix_and_raw_zero_surv
     let observed = observation(&memory);
     let mut counters = super::super::country_counters::Captured::vacant();
     let mut capture = Captured::new(2);
-    counters.capture_with_movement_and_reverse(
+    counters.capture_with_reverse(
         &memory,
         0,
         STATE,
-        missing_sources(),
-        missing_sources(),
         Some(Request {
             hour: Some(91),
             observation: Some(observed),
@@ -305,12 +295,10 @@ fn one_reader_supports_zero_alias_even_with_no_positive_prefix_and_raw_zero_surv
     put32(&mut bytes, status(0) + crelation_status::TARGET_COUNTRY, 0);
     let memory = self::memory(&bytes, Some(STATE + cgame_state::COUNTRIES));
     let observed = observation(&memory);
-    counters.capture_with_movement_and_reverse(
+    counters.capture_with_reverse(
         &memory,
         0,
         STATE,
-        missing_sources(),
-        missing_sources(),
         Some(Request {
             hour: Some(92),
             observation: Some(observed),
@@ -335,12 +323,10 @@ fn integration_starts_after_all_positive_prefixes_and_successive_growth_uses_liv
     let mut counters =
         super::super::country_counters::Captured::with_capacities(&Default::default());
     let mut capture = Captured::new(2);
-    counters.capture_with_movement_and_reverse(
+    counters.capture_with_reverse(
         &memory,
         0,
         STATE,
-        missing_sources(),
-        missing_sources(),
         Some(Request {
             hour: Some(101),
             observation: Some(observed),
@@ -407,24 +393,15 @@ fn failed_original_prefix_header_is_not_retried_for_a_positive_alias_to_zero() {
     // against the unchanged pass so only an added reverse retry is rejected.
     let baseline_memory = memory(&bytes, Some(STATE + cgame_state::COUNTRIES));
     let mut baseline = super::super::country_counters::Captured::vacant();
-    baseline.capture_with_movement_and_reverse(
-        &baseline_memory,
-        0,
-        STATE,
-        missing_sources(),
-        missing_sources(),
-        None,
-    );
+    baseline.capture_with_reverse(&baseline_memory, 0, STATE, None);
     let memory = memory(&bytes, Some(STATE + cgame_state::COUNTRIES));
     let observed = observation(&memory);
     let mut counters = super::super::country_counters::Captured::vacant();
     let mut capture = Captured::new(2);
-    counters.capture_with_movement_and_reverse(
+    counters.capture_with_reverse(
         &memory,
         0,
         STATE,
-        missing_sources(),
-        missing_sources(),
         Some(Request {
             hour: Some(111),
             observation: Some(observed),

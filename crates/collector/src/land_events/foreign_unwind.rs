@@ -65,7 +65,9 @@ fn registered(address: usize) -> bool {
 #[ignore = "parent-only real C++/SEH run; requires BATTLE_PLAN_TAP_UNWIND_PROBE and reviewed shared Hook"]
 fn production_verdict_indirect_foreign_unwind() {
     let _probe_guard = probe::SERIAL.lock().unwrap();
-    let _guard = test_support::EXCLUSIVE.lock().unwrap();
+    let _guard = test_support::EXCLUSIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     test_support::reset();
     let probe = probe::Probe::load();
     let site = tests::land_leader_tap_test_site as *const () as usize;

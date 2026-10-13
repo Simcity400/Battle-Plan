@@ -674,7 +674,10 @@ pub(super) struct DivisionStatus {
     pub(super) entrenchment: i64,
     pub(super) entrenchment_cap: i64,
     pub(super) supply_ratio: i64,
-    pub(super) attrition: u8,
+    /// Attrition-presence predicate ([`DivisionStatusRow::has_attrition`]).
+    ///
+    /// [`DivisionStatusRow::has_attrition`]: replay::rows::DivisionStatusRow::has_attrition
+    pub(super) attrition: bool,
     pub(super) exercising: u8,
     /// `DivisionStatus.has_order`; `None` without a row.
     pub(super) has_order: Option<bool>,
@@ -1035,7 +1038,7 @@ impl Movements {
         let routes = counter_move::DivisionRoutes::read(frame, etas, map, &|id| {
             content.anchor(id, STANDSTILL)
         })?;
-        let mut eta = etas.report();
+        let mut eta = etas.report().clone();
         eta.routes_unresolved = routes.unresolved;
         eta.route_hops_skipped = routes.skipped_hops;
         Ok(Self {
@@ -1065,7 +1068,7 @@ impl DivisionStatuses {
         entrenchment: 0,
         entrenchment_cap: 0,
         supply_ratio: counter_status::FIXED,
-        attrition: 0,
+        attrition: false,
         exercising: 0,
         has_order: None,
         invalid_orders: 0,
@@ -1084,7 +1087,7 @@ impl DivisionStatuses {
                     entrenchment: row.entrenchment,
                     entrenchment_cap: row.entrenchment_cap,
                     supply_ratio: row.supply_ratio,
-                    attrition: row.attrition,
+                    attrition: row.has_attrition(),
                     exercising: row.exercising,
                     has_order: Some(row.has_order != 0),
                     invalid_orders: row.invalid_orders,
@@ -2676,6 +2679,35 @@ pub(super) fn draw_type_icon(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The attrition glyph follows the attrition-presence predicate on the row's
+    /// recorded value and threshold, strictly greater; the retired byte is
+    /// not read.
+    #[test]
+    fn attrition_comes_from_the_recorded_value_against_its_threshold() {
+        let mut frame = crate::map::test_frame(3);
+        let row =
+            |division, attrition_value, attrition_threshold| replay::rows::DivisionStatusRow {
+                division,
+                attrition_value,
+                attrition_threshold,
+                ..Default::default()
+            };
+        crate::map::test_put(
+            &mut frame,
+            replay::rows::TableRows::DivisionStatus(vec![
+                row(1, 1, 0),
+                row(2, 5_000, 5_000),
+                row(3, 0, 0),
+                row(4, -2, -3),
+            ]),
+        );
+        let statuses = DivisionStatuses::read(&frame).unwrap();
+        let attrition: Vec<_> = (1..=5)
+            .map(|division| statuses.get(division).attrition)
+            .collect();
+        assert_eq!(attrition, [true, false, false, true, false]);
+    }
 
     #[test]
     fn columns_keep_the_native_grid_origin_and_viewport_item_offsets() {

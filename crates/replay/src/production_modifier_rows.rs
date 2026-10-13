@@ -59,7 +59,8 @@ pub struct ProductionLineModifiersRow {
     pub active_factories: i32,
     pub resource_penalty_raw: i64,
     pub organisation_dirty: bool,
-    pub conversion: bool,
+    /// Retired: nothing read it; `conversion_output` keeps its effect.
+    pub conversion: RetiredBool,
     pub licensed: bool,
     pub conversion_output: bool,
     pub refit_output: bool,

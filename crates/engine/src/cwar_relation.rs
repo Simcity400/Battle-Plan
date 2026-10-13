@@ -97,6 +97,7 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [
         crate::walk::Buffer::Fixed(output),
         &mut crelation_status::Resolver::default(),
         None,
+        None,
     )
 }
 
@@ -119,9 +120,14 @@ pub fn walk_owned(
         game_state,
         crate::walk::Buffer::Fixed(output),
         scratch,
+        None,
     )
 }
 
+/// [`walk_owned`] into growing rows, with each row's war pointer, when `wars`
+/// is given, at the row's index, for [`read_casualties`] on a later hour. A
+/// pointer that cannot be stored leaves `wars` shorter than the rows; the
+/// rows are unaffected.
 pub fn walk_owned_growing(
     memory: &impl Memory,
     country_memory: &impl Memory,
@@ -129,6 +135,7 @@ pub fn walk_owned_growing(
     game_state: usize,
     output: &mut Vec<Row>,
     scratch: &mut OwnedSnapshotScratch,
+    wars: Option<&mut Vec<usize>>,
 ) -> Outcome {
     walk_owned_buffer(
         memory,
@@ -137,7 +144,43 @@ pub fn walk_owned_growing(
         game_state,
         crate::walk::Buffer::Growing(output),
         scratch,
+        wars,
     )
+}
+
+/// The casualty counters `+0x50..+0x70` of each war in `wars` into the row at
+/// the same index, one guarded copy per batch of wars. They are the only
+/// recorded fields the hourly combat settlement writes (known and unknown
+/// casualty additions); every other field and the war set itself change only
+/// through hooked writers. False when any war's counters are unreadable; the
+/// rows are then partly written.
+pub fn read_casualties(memory: &impl Memory, wars: &[usize], rows: &mut [Row]) -> bool {
+    const SPAN: usize = SECOND_UNKNOWN_CASUALTIES + 8 - FIRST_CASUALTIES;
+    const FIELDS: [RecordField; 1] = [RecordField {
+        source_offset: FIRST_CASUALTIES,
+        destination_offset: 0,
+        len: SPAN,
+    }];
+    const LAYOUT: RecordLayout<'static> =
+        RecordLayout::new(&FIELDS, SPAN).expect("valid record layout");
+    let mut bytes = [0_u8; BATCH_SIZE * SPAN];
+    if wars.len() != rows.len() {
+        return false;
+    }
+    for (wars, rows) in wars.chunks(BATCH_SIZE).zip(rows.chunks_mut(BATCH_SIZE)) {
+        let gathered = &mut bytes[..wars.len() * SPAN];
+        if memory.copy_records(RecordSources::Pointers(wars), &LAYOUT, gathered) != wars.len() {
+            return false;
+        }
+        for (row, counters) in rows.iter_mut().zip(gathered.chunks_exact(SPAN)) {
+            let counter = |at: usize| i64::from_le_bytes(counters[at..at + 8].try_into().unwrap());
+            row.first_casualties = counter(0);
+            row.second_casualties = counter(SECOND_CASUALTIES - FIRST_CASUALTIES);
+            row.first_unknown_casualties = counter(FIRST_UNKNOWN_CASUALTIES - FIRST_CASUALTIES);
+            row.second_unknown_casualties = counter(SECOND_UNKNOWN_CASUALTIES - FIRST_CASUALTIES);
+        }
+    }
+    true
 }
 
 /// Original owned-vector counts bound filtered war rows without reading values.
@@ -184,6 +227,7 @@ fn walk_owned_buffer(
     game_state: usize,
     output: crate::walk::Buffer<'_, Row>,
     scratch: &mut OwnedSnapshotScratch,
+    wars: Option<&mut Vec<usize>>,
 ) -> Outcome {
     scratch.begin();
     scratch.worker_growth(output.is_growing());
@@ -198,6 +242,7 @@ fn walk_owned_buffer(
         output,
         &mut resolver,
         Some(&mut *scratch),
+        wars,
     );
     scratch.resolver = resolver;
     outcome
@@ -666,6 +711,7 @@ impl OwnedSnapshotScratch {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Both memories, the census, its outcome and the held wars.
 fn walk_from(
     memory: &impl Memory,
     country_memory: &impl Memory,
@@ -674,7 +720,11 @@ fn walk_from(
     mut output: crate::walk::Buffer<'_, Row>,
     resolver: &mut crelation_status::Resolver,
     ownership: Option<&mut OwnedSnapshotScratch>,
+    mut wars: Option<&mut Vec<usize>>,
 ) -> Outcome {
+    if let Some(wars) = wars.as_deref_mut() {
+        wars.clear();
+    }
     let result = (|| {
         let countries = ccountry::Reader::new(country_memory, base, game_state)?;
         resolver.begin(&countries);
@@ -717,6 +767,15 @@ fn walk_from(
             if let Some(scratch) = reader.ownership.as_deref_mut() {
                 scratch.observe_owned(source.count);
             }
+            // Optional storage: a failed reservation stops recording wars only.
+            if wars.as_deref_mut().is_some_and(|wars| {
+                crate::allocation::advisory(|| {
+                    crate::allocation::reserve(wars, source.count as usize)
+                })
+                .is_err()
+            }) {
+                wars = None;
+            }
             for index in 0..source.count {
                 let offset = index as usize % BATCH_SIZE;
                 if offset == 0 {
@@ -743,6 +802,9 @@ fn walk_from(
                 } else {
                     output[len] = row;
                     len += 1;
+                    if let Some(wars) = wars.as_deref_mut() {
+                        wars.push(pointer);
+                    }
                 }
             }
         }

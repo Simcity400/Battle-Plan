@@ -13,7 +13,7 @@ pub struct MutationSite {
     pub sentinel: [u8; 16],
 }
 
-/// Receivers: a CDiplomacyStatus for the first two, a CCountry for the rest.
+/// Receivers: a diplomacy status for the first two, a country for the rest.
 pub const MUTATIONS: [MutationSite; 4] = [
     MutationSite {
         name: "rebuild_wartime_allies",

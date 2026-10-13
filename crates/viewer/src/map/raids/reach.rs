@@ -27,8 +27,6 @@ use super::{
 type Index<T> = OnceLock<Result<T, String>>;
 #[path = "reach/selected_common.rs"]
 mod selected_common;
-#[path = "reach/selected_transport.rs"]
-mod selected_transport;
 pub(crate) use selected_common::{CommonCells, CommonText};
 
 /// One country's `CountryWars` row in canonical slots.
@@ -73,6 +71,8 @@ pub struct Cells {
     war_sets: Index<BTreeMap<u32, BTreeSet<u32>>>,
     region_access: Index<BTreeMap<(u32, u32), u8>>,
     move_flags: Index<BTreeMap<u64, u8>>,
+    /// Provinces per controller-area label (`Provinces.controller_area`).
+    area_members: Index<BTreeMap<u32, i32>>,
     reach: Mutex<HashMap<(u64, u32), Eval>>,
     /// One search per distinct army key, run as far as its sources need.
     /// Threads evaluating parts of one batch share them: each search has
@@ -141,20 +141,7 @@ impl<'w, 'a> Moves<'w, 'a> {
         }
     }
 
-    pub(crate) fn counter_topology(
-        &self,
-    ) -> Fact<(
-        &installed_content::province_graph::ProvinceGraph,
-        &installed_content::province_geometry::ProvinceGeometry,
-    )> {
-        self.assets.mission_topology()
-    }
-
-    pub(crate) fn counter_discloses(&self, owner: Country, target: Country) -> Fact<bool> {
-        unit_path::discloses(self, owner, target, true)
-    }
-
-    /// Shared rule verdict, using the submarine or navy bit.
+    /// Shared rule verdict, selecting the submarine or navy bit.
     pub(crate) fn naval_rule(
         &self,
         rule: &installed_content::adjacency_rules::AdjacencyRule,
@@ -219,29 +206,6 @@ impl<'w, 'a> Moves<'w, 'a> {
             owner: self.slot(row.logical_owner)?,
             naval_transfer: row.naval_transfer != 0,
             exiled: row.exiled != 0,
-            ..Default::default()
-        };
-        Mover { graph, world: self }.counter_route(&unit, row.province, to, request)
-    }
-
-    pub(crate) fn task_force_counter_route(
-        &self,
-        row: &TaskForceRow,
-        fresh: &replay::rows::FreshTaskForceCounterEta,
-        to: u32,
-        mut request: CounterRequest,
-    ) -> Fact<Vec<u32>> {
-        let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;
-        request.class = CounterClass::TaskForce(row.id);
-        let unit = Army {
-            location: row.province,
-            owner: self.slot(row.logical_owner)?,
-            // Class 1 always uses the transport classifier and checks
-            // cross-landmass; its route does not read the transfer operand.
-            exiled: fresh
-                .exiled
-                .ok_or("fresh ETA task force exile byte was refused")?
-                != 0,
             ..Default::default()
         };
         Mover { graph, world: self }.counter_route(&unit, row.province, to, request)

@@ -1,11 +1,22 @@
 //! Stored regional air-superiority pairs used by raid target intel and success.
 //! Copy these region-slot pairs rather than reconstructing them from wings.
 //!
-//! The game rewrites only regions with provinces whose phase matches the signed
-//! remainder of elapsed game hours over twice the loaded combat delay. It clears
-//! and accumulates active countries at those slots; setup zeroes new entries.
-//! Sampling sees the hour advanced by the preceding update. After a complete read,
-//! each hour therefore rereads its phase slots and carries the other pairs.
+//! The game rewrites a region's pairs only in its phase hour. Its phase roster
+//! lists slots from 1 whose region has provinces and whose
+//! [`cstrategic_region::AIR_PHASE`] equals the signed 32-bit remainder of
+//! `CURRENT_HOUR - 43,800,000` over twice
+//! `NAir::HOURS_DELAY_AFTER_EACH_COMBAT`. At those slots alone the
+//! strategic-air phase pass clears every active country's entry and the
+//! regional update accumulates it; setup zeroes new entries. The hook samples
+//! at hourly-update entry, whose previous call advanced to the hour it reads
+//! before updating air. After one complete read, each hour therefore re-reads
+//! only its phase slots and carries every other pair.
+//!
+//! One other writer clears pairs off phase: country strategic-air reset, called
+//! during dynamic country reuse, zeroes every region entry in place after
+//! clearing its site lists through two clearing operations. The caller
+//! certifies the carry with a token those two sites move ([`Held::certify`]),
+//! and a country is carried only under the raw id it was read with.
 
 use crate::{
     Memory, cgame_state,
@@ -52,6 +63,8 @@ impl Region {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Country {
     canonical_slot: u32,
+    /// The raw country id the pairs were read under.
+    id: u32,
     address: usize,
     data: usize,
     rows: usize,
@@ -72,12 +85,25 @@ pub struct Held {
     next_regions: Vec<Region>,
     next_countries: Vec<Country>,
     slots: Vec<u32>,
+    /// The token the held table was read under.
+    token: Option<u64>,
 }
 
 impl Held {
     /// The next walk reads every pair.
     pub fn invalidate(&mut self) {
         self.hour = None;
+    }
+
+    /// The next walk carries off-phase pairs only under `token`, which the
+    /// caller takes before it from the writers that clear pairs in place (both
+    /// site-list clears called by strategic-air reset): an absent token, or one
+    /// other than the held table's, reads every pair.
+    pub fn certify(&mut self, token: Option<u64>) {
+        if token.is_none() || token != self.token {
+            self.hour = None;
+        }
+        self.token = token;
     }
 
     pub fn grow(&mut self, regions: usize, countries: usize, rows: usize) -> std::io::Result<()> {
@@ -276,6 +302,7 @@ fn read_table(
         };
         match previous.get(country).filter(|kept| {
             kept.canonical_slot == root.canonical_slot
+                && kept.id == root.country
                 && kept.address == root.address
                 && kept.data == scores.data
         }) {
@@ -303,6 +330,7 @@ fn read_table(
         if let Some(next) = next.get_mut(countries) {
             *next = Country {
                 canonical_slot: root.canonical_slot,
+                id: root.country,
                 address: root.address,
                 data: scores.data,
                 rows: len - first,
@@ -793,6 +821,57 @@ mod tests {
         assert!(!walked.full);
         let got = pairs(&walked, &rows);
         assert!(got.contains(&(1, 1_006, 3, 0)) && !got.contains(&(2, 1_006, 4, 0)));
+    }
+
+    /// Strategic-air reset zeroes a country's pairs in place, off phase: a
+    /// token its clears moved, an absent token or a new raw id at the same slot
+    /// and address rereads the pairs a carry would keep.
+    #[test]
+    fn an_in_place_reset_or_a_new_raw_id_rereads_the_carried_pairs() {
+        let mut world = World::new(2, 12);
+        // Slot 5 is rewritten only at phase 5; HOUR is phase 3.
+        world.pair(1, 5, 9, 9);
+        let mut held = held(12, 2, 16);
+        let mut rows = [Row::default(); 16];
+        held.certify(Some(1));
+        assert!(world.walk(HOUR - 1, &mut held, &mut rows).full);
+        world.pair(1, 5, 0, 0);
+        // Under the same token the pair is carried, as before the token.
+        held.certify(Some(1));
+        let carried = world.walk(HOUR, &mut held, &mut rows);
+        assert!(!carried.full);
+        assert!(pairs(&carried, &rows).contains(&(1, 1_005, 9, 9)));
+        // The reset moved the token: every pair is read.
+        held.certify(Some(2));
+        let reread = world.walk(HOUR + 1, &mut held, &mut rows);
+        assert!(reread.full);
+        assert!(!pairs(&reread, &rows).contains(&(1, 1_005, 9, 9)));
+        // Without a token nothing is carried, nor the hour after one returns.
+        for (hour, token, full) in [
+            (HOUR + 2, None, true),
+            (HOUR + 3, None, true),
+            (HOUR + 4, Some(2), true),
+            (HOUR + 5, Some(2), false),
+        ] {
+            held.certify(token);
+            assert_eq!(world.walk(hour, &mut held, &mut rows).full, full, "{hour}");
+        }
+        // A new raw id for slot one's object (an alias linked to slot one)
+        // rereads that country alone.
+        const LINKS: usize = 0x3000 + 3 * 8;
+        let links = world.bytes.len();
+        world.bytes.extend_from_within(LINKS..LINKS + 3 * 4);
+        world.bytes.extend_from_slice(&1_u32.to_le_bytes());
+        world.header(0x1000 + cgame_state::COUNTRY_LINKS, links, 4);
+        world.pair(1, 6, 4, 4);
+        world.pair(2, 6, 5, 5);
+        let air = world.air(1);
+        world.put(air + cstrategic_air::COUNTRY, 3);
+        held.certify(Some(2));
+        let walked = world.walk(HOUR + 6, &mut held, &mut rows);
+        assert!(!walked.full);
+        let got = pairs(&walked, &rows);
+        assert!(got.contains(&(3, 1_006, 4, 4)) && !got.contains(&(2, 1_006, 5, 5)));
     }
 
     #[test]

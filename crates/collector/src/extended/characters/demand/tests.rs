@@ -10,6 +10,8 @@ const BASE: usize = 0x1_4000_0000;
 const STATE: usize = 0x1000;
 const COUNT: usize = 5_000;
 const TRAITS: usize = 5;
+/// The native trait-experience vector each leader also holds. The
+/// UnitLeaderTraitExperience table is retired, so no walk reads it.
 const EXPERIENCE: usize = 17;
 const TOKEN: &[u8] = b"mod_trait_name";
 
@@ -117,13 +119,11 @@ impl World {
 fn live_trait_demand_presizes_complete_5000_country_roster_and_token_arenas() {
     let world = World::new();
     let mut capacity = Capacities::default();
-    assert!(capacity.rows[5] < COUNT * EXPERIENCE);
+    assert!(capacity.rows[4] < COUNT * TRAITS);
     capacity.presize(&world.memory(), BASE, STATE).unwrap();
     assert!(capacity.rows[3] >= COUNT);
     assert!(capacity.rows[4] >= COUNT * TRAITS);
     assert!(capacity.bytes[4] >= COUNT * TRAITS * TOKEN.len());
-    assert!(capacity.rows[5] >= COUNT * EXPERIENCE);
-    assert!(capacity.bytes[5] >= COUNT * EXPERIENCE * TOKEN.len());
 }
 
 #[test]
@@ -143,26 +143,19 @@ fn attach_hints_seed_character_auxiliary_storage_from_5000_country_demand() {
     assert!(roster.appended_roles.capacity() >= COUNT);
     let traits = CharactersJob::with_storage(3, 0, 0, true);
     assert!(traits.census_visited.capacity() >= COUNT);
-    assert!(traits.source_bindings.as_ref().unwrap().sources.capacity() >= COUNT * 2);
-    assert!(traits.traits.definitions.entries.capacity() >= COUNT * (TRAITS + EXPERIENCE));
-    assert!(
-        traits
-            .traits
-            .vectors
-            .iter()
-            .all(|rows| rows.capacity() >= COUNT)
-    );
+    assert!(traits.source_bindings.as_ref().unwrap().sources.capacity() >= COUNT);
+    assert!(traits.traits.definitions.entries.capacity() >= COUNT * TRAITS);
+    assert!(traits.traits.vectors.capacity() >= COUNT);
 }
 
 #[test]
-fn failed_assigned_trait_hint_preserves_experience_and_other_occurrences() {
+fn failed_assigned_trait_hint_preserves_other_occurrences() {
     let mut world = World::new();
     world.u32(world.units[0] + cunit_leader::TRAIT_COUNT, u32::MAX);
     let mut capacity = Capacities::default();
     assert!(capacity.presize(&world.memory(), BASE, STATE).is_err());
     assert!(capacity.rows[4] >= (COUNT - 1) * TRAITS);
-    assert!(capacity.rows[5] >= COUNT * EXPERIENCE);
-    assert!(capacity.bytes[5] >= COUNT * EXPERIENCE * TOKEN.len());
+    assert!(capacity.bytes[4] >= (COUNT - 1) * TRAITS * TOKEN.len());
 }
 
 #[test]
@@ -172,7 +165,7 @@ fn final_input_fallback_grows_5000_country_traits_before_first_publication() {
     assert_eq!(captured.allocated_bytes(), 0);
     assert!(captured.fallback_jobs.iter().all(Option::is_none));
     for _ in 0..2 {
-        captured.set_character_activity([false, false, false, false, true, true]);
+        captured.set_character_activity([false, false, false, false, true]);
         // An independent raw-owned table does not authorize a duplicate read.
         captured.raw_active[0] = true;
         captured.capture_growing(&world.memory(), BASE, STATE, 0, false);
@@ -182,16 +175,7 @@ fn final_input_fallback_grows_5000_country_traits_before_first_publication() {
                 len: COUNT * TRAITS
             }
         );
-        assert_eq!(
-            captured.trait_experience.rows.outcome,
-            Outcome::Rows {
-                len: COUNT * EXPERIENCE
-            }
-        );
-        assert_eq!(
-            captured.trait_experience.bytes.len,
-            COUNT * EXPERIENCE * TOKEN.len()
-        );
+        assert_eq!(captured.traits.bytes.len, COUNT * TRAITS * TOKEN.len());
         assert!(captured.fallback_jobs[..3].iter().all(Option::is_none));
         assert!(captured.fallback_jobs[3].is_some());
         assert!(captured.raw_active[0]);
@@ -223,46 +207,34 @@ fn worker_capture_grows_original_trait_observations_and_projection_at_5000_count
         base: BASE,
         game_state: STATE,
         force_full: true,
-        active: [false, false, false, false, true, true],
-        trait_rows: [1; 2],
-        trait_bytes: [1; 2],
+        active: [false, false, false, false, true],
+        trait_rows: 1,
+        trait_bytes: 1,
     };
     assert!(copy_characters_growing(&memory, context, &mut job, Roles::Independent).raw_ok);
-    assert_eq!(memory.first_xp_header_reads.get(), 1);
+    // The retired trait-experience vector is never read.
+    assert_eq!(memory.first_xp_header_reads.get(), 0);
     let mut capacity = Capacities::default();
     let mut captured = Captured::with_capacities(&capacity);
-    captured.decode_characters_payload(BASE, &job, &mut [0; 6]);
+    captured.decode_characters_payload(BASE, &job, &mut [0; 5]);
     assert_eq!(
         captured.traits.rows.outcome,
         Outcome::Rows {
             len: COUNT * TRAITS
         }
     );
-    assert_eq!(
-        captured.trait_experience.rows.outcome,
-        Outcome::Rows {
-            len: COUNT * EXPERIENCE
-        }
-    );
-    assert_eq!(
-        captured.trait_experience.bytes.len,
-        COUNT * EXPERIENCE * TOKEN.len()
-    );
-    let last = captured.trait_experience.rows.rows[COUNT * EXPERIENCE - 1];
-    assert_eq!(last.trait_row.leader_id as usize, COUNT);
-    assert_eq!(last.trait_row.ordinal as usize, EXPERIENCE - 1);
-    assert_eq!(
-        last.experience as u64,
-        (COUNT as u64) << 32 | (EXPERIENCE - 1) as u64
-    );
+    assert_eq!(captured.traits.bytes.len, COUNT * TRAITS * TOKEN.len());
+    let last = captured.traits.rows.rows[COUNT * TRAITS - 1];
+    assert_eq!(last.leader_id as usize, COUNT);
+    assert_eq!(last.ordinal as usize, TRAITS - 1);
     captured.reset();
     captured.grow(&mut capacity);
     let mut idle = Captured::with_capacities(&capacity);
-    idle.decode_characters_payload(BASE, &job, &mut [0; 6]);
+    idle.decode_characters_payload(BASE, &job, &mut [0; 5]);
     assert_eq!(
-        idle.trait_experience.rows.outcome,
+        idle.traits.rows.outcome,
         Outcome::Rows {
-            len: COUNT * EXPERIENCE
+            len: COUNT * TRAITS
         }
     );
 }
@@ -276,13 +248,13 @@ fn worker_grows_5000_country_leader_maps_and_retains_prepared_demand() {
         base: BASE,
         game_state: STATE,
         force_full: false,
-        active: [false, true, false, false, false, false],
-        trait_rows: [0; 2],
-        trait_bytes: [0; 2],
+        active: [false, true, false, false, false],
+        trait_rows: 0,
+        trait_bytes: 0,
     };
     let mut captured = Captured::with_capacities(&Capacities {
-        rows: [0; 6],
-        bytes: [0; 6],
+        rows: [0; 5],
+        bytes: [0; 5],
     });
     for count in [3_usize, 7] {
         for index in 0..COUNT {
@@ -323,7 +295,7 @@ fn worker_grows_5000_country_leader_maps_and_retains_prepared_demand() {
                 copy_characters_growing(&world.memory(), context, &mut job, Roles::Independent)
                     .raw_ok
             );
-            captured.decode_characters_payload(BASE, &job, &mut [0; 6]);
+            captured.decode_characters_payload(BASE, &job, &mut [0; 5]);
             assert_eq!(
                 captured.leaders.rows.outcome,
                 Outcome::Rows { len: COUNT * count }
@@ -366,13 +338,13 @@ fn worker_grows_character_unit_text_and_census_before_first_publication() {
         base: BASE,
         game_state: STATE,
         force_full: false,
-        active: [true, false, false, true, false, false],
-        trait_rows: [0; 2],
-        trait_bytes: [0; 2],
+        active: [true, false, false, true, false],
+        trait_rows: 0,
+        trait_bytes: 0,
     };
     let mut captured = Captured::with_capacities(&Capacities {
-        rows: [0; 6],
-        bytes: [0; 6],
+        rows: [0; 5],
+        bytes: [0; 5],
     });
     for enlarged in [false, true] {
         if enlarged {
@@ -404,7 +376,7 @@ fn worker_grows_character_unit_text_and_census_before_first_publication() {
                 .len(),
             COUNT
         );
-        captured.decode_characters_payload(BASE, &job, &mut [0; 6]);
+        captured.decode_characters_payload(BASE, &job, &mut [0; 5]);
         assert_eq!(
             captured.characters.rows.outcome,
             Outcome::Rows { len: COUNT }

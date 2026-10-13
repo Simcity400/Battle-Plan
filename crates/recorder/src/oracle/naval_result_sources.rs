@@ -34,7 +34,10 @@ pub(super) fn compare(
         "recording self-check only: naval-result fill/merge/save retain no source-combat reference, fleet/task-force identity, start hour or duration. Text saves contain retained results and live combats, but no live reference for an ended combat, so they cannot certify the captured mapping or transient source identity. Complete consecutive branch reads certify observed new-result and result_hour transitions against events; results retired before a read and same-hour merges that leave result_hour unchanged are invisible to those checks. Callback context, hook counters and native probes still require the live run; no save difference is waived",
         "NavalResultSources",
     );
-    let mut check = SourceCheck::default();
+    let mut check = SourceCheck {
+        event_losses: replay.event_losses(frame.branch).collect(),
+        ..SourceCheck::default()
+    };
     for gap in replay
         .gaps
         .iter()
@@ -74,6 +77,9 @@ struct SourceCheck {
     combats: Option<BTreeSet<u64>>,
     results: Option<BTreeMap<u64, Hour>>,
     declared_gaps: Vec<(Hour, Hour)>,
+    /// The branch's recorded event losses (`ControlRecord::EventLoss`), as
+    /// the reads each lies between.
+    event_losses: Vec<(Hour, Hour)>,
     last_event: Option<(u64, Hour)>,
     sources: BTreeSet<u64>,
     pending: BTreeMap<u64, NavalResultSourceRow>,
@@ -82,12 +88,18 @@ struct SourceCheck {
 
 impl SourceCheck {
     fn observe(&mut self, frame: &DecodedFrame, report: &mut Report) {
-        let partial_first = self.previous_hour.is_none()
-            && matches!(
-                &*frame.tables[TableId::NavalResultSources.index()],
-                TableView::Unavailable { reason }
-                    if reason == "naval result sources first/branch interval is partial"
-            );
+        let first_reason = matches!(
+            &*frame.tables[TableId::NavalResultSources.index()],
+            TableView::Unavailable { reason }
+                if reason == "naval result sources first/branch interval is partial"
+        );
+        let partial_first = self.previous_hour.is_none() && first_reason;
+        // A reattached collector's first interval, which the recording
+        // declares lost from the previous read to this one.
+        let partial_reattach = first_reason
+            && self
+                .previous_hour
+                .is_some_and(|previous| self.event_losses.contains(&(previous, frame.hour)));
         let partial_recovery = matches!(
             &*frame.tables[TableId::NavalResultSources.index()],
             TableView::Unavailable { reason }
@@ -111,6 +123,10 @@ impl SourceCheck {
         match rows {
             Err(error) if partial_first => report.limitation(
                 "the branch's first event interval is partial and unavailable; its missing combat-to-result events are not certified",
+                format!("NavalResultSources hour {}: {error}", frame.hour),
+            ),
+            Err(error) if partial_reattach => report.limitation(
+                "the event interval after a recorded event loss (the recorder was detached between two reads of the branch) is partial and unavailable; its missing combat-to-result events are not certified",
                 format!("NavalResultSources hour {}: {error}", frame.hour),
             ),
             Err(error) if partial_recovery => report.limitation(

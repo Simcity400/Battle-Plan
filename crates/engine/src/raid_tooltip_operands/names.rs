@@ -4,26 +4,73 @@
 use super::*;
 use crate::{cname_group_member as member, msvc_string};
 
-/// Shared stored-text descriptor. Both AirWings and the historical raid
-/// projection use this exact scalar header, SSO/heap and overflow protocol.
+/// Shared stored-text descriptor. AirWings, railway guns and the historical
+/// raid projection use this exact scalar header, SSO/heap and overflow
+/// protocol.
 pub(crate) struct StoredString {
     pub(crate) len: usize,
     source: usize,
+    /// The inline buffer, when a whole header read holds the text.
+    inline: Option<[u8; 16]>,
+    /// [`Self::read_whole`] took the descriptor: a heap text is copied with
+    /// its terminator in one guarded round.
+    whole: bool,
 }
 
 impl StoredString {
     pub(crate) fn read(memory: &impl Memory, at: usize) -> Result<Self, NameReadError> {
+        Self::parse(memory, at, None)
+    }
+
+    /// [`Self::read`] from the whole header, read in one guarded round, which
+    /// also holds an inline text; [`Self::copy`] then reads a heap text with
+    /// its terminator in one more. Each field the protocol reads lies in
+    /// those spans, so they read exactly when the field reads would. When the
+    /// header does not, its field reads run in protocol order and their first
+    /// failure names the reason; when a heap text does not, the terminator,
+    /// which the protocol reads first, decides it.
+    pub(crate) fn read_whole(memory: &impl Memory, at: usize) -> Result<Self, NameReadError> {
+        let header = crate::read::<[u8; msvc_string::STRIDE]>(memory, at);
+        Ok(Self {
+            whole: true,
+            ..Self::parse(memory, at, header)?
+        })
+    }
+
+    /// [`Self::read_whole`] from a header already copied whole, in a census
+    /// record gather: the same parse of the same bytes.
+    pub(crate) fn from_whole_header(
+        memory: &impl Memory,
+        at: usize,
+        header: [u8; msvc_string::STRIDE],
+    ) -> Result<Self, NameReadError> {
+        Ok(Self {
+            whole: true,
+            ..Self::parse(memory, at, Some(header))?
+        })
+    }
+
+    fn parse(
+        memory: &impl Memory,
+        at: usize,
+        header: Option<[u8; msvc_string::STRIDE]>,
+    ) -> Result<Self, NameReadError> {
         use NameReadError::{Header, NullPointer, Overflow, Unreadable};
-        let len = field::<u64>(memory, at, msvc_string::LENGTH).map_err(|_| Unreadable)?;
-        let capacity = field::<u64>(memory, at, msvc_string::CAPACITY).map_err(|_| Unreadable)?;
+        let word = |offset: usize| match header {
+            Some(header) => Ok(u64::from_le_bytes(
+                header[offset..offset + 8].try_into().unwrap(),
+            )),
+            None => field::<u64>(memory, at, offset).map_err(|_| Unreadable),
+        };
+        let len = word(msvc_string::LENGTH)?;
+        let capacity = word(msvc_string::CAPACITY)?;
         if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
             return Err(Header);
         }
-        let source = if capacity == msvc_string::INLINE_CAPACITY {
-            at
+        let (source, inline) = if capacity == msvc_string::INLINE_CAPACITY {
+            (at, header.map(|header| header[..16].try_into().unwrap()))
         } else {
-            usize::try_from(field::<u64>(memory, at, 0).map_err(|_| Unreadable)?)
-                .map_err(|_| Overflow)?
+            (usize::try_from(word(0)?).map_err(|_| Overflow)?, None)
         };
         if source == 0 {
             return Err(NullPointer);
@@ -31,7 +78,12 @@ impl StoredString {
         let len = usize::try_from(len).map_err(|_| Overflow)?;
         let copied = len.checked_add(1).ok_or(Overflow)?;
         source.checked_add(copied).ok_or(Overflow)?;
-        Ok(Self { len, source })
+        Ok(Self {
+            len,
+            source,
+            inline,
+            whole: false,
+        })
     }
 
     pub(crate) fn copy(
@@ -41,6 +93,32 @@ impl StoredString {
     ) -> Result<(), NameReadError> {
         use NameReadError::{Overflow, Terminator, Unreadable};
         let output = output.get_mut(..self.len).ok_or(Overflow)?;
+        if let Some(inline) = &self.inline {
+            // An inline length is at most its capacity, 15.
+            if inline[self.len] != 0 {
+                return Err(Terminator);
+            }
+            output.copy_from_slice(&inline[..self.len]);
+            return Ok(());
+        }
+        if self.whole {
+            let mut terminator = [0_u8; 1];
+            let copied = memory.copy_scattered(
+                [self.source, self.source + self.len],
+                &mut [&mut *output, &mut terminator],
+            );
+            return match copied {
+                2 if terminator[0] == 0 => Ok(()),
+                2 => Err(Terminator),
+                // The text did not read: the protocol reads the terminator
+                // first, so a stored nonzero one is the reason.
+                0 => match field::<u8>(memory, self.source, self.len) {
+                    Ok(0) | Err(_) => Err(Unreadable),
+                    Ok(_) => Err(Terminator),
+                },
+                _ => Err(Unreadable),
+            };
+        }
         if field::<u8>(memory, self.source, self.len).map_err(|_| Unreadable)? != 0 {
             return Err(Terminator);
         }
@@ -58,7 +136,7 @@ fn string(
     sink: &mut Sink<'_>,
 ) -> Result<(), NameReadError> {
     use NameReadError::{Overflow, Terminator, Unreadable};
-    let StoredString { len, source } = StoredString::read(memory, at)?;
+    let StoredString { len, source, .. } = StoredString::read(memory, at)?;
     let raw_len = i64::try_from(len).map_err(|_| Overflow)?;
     let copied = len.checked_add(1).ok_or(Overflow)?;
     let count = len.div_ceil(8).checked_add(1).ok_or(Overflow)?;

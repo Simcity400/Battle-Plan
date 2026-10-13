@@ -317,15 +317,17 @@ fn completion_world_scan_skips_carried_views_and_reprojects_each_dependency() {
         world.observe(&sample);
     }
     assert_eq!(world.projected_frames, 5);
+    // After a gap the next recorded hour is projected afresh and, as every
+    // hour of the sliced projects family is exact, read again at once.
     sample.hour += 2;
     world.observe(&sample);
     assert_eq!(world.projected_frames, 6);
-    assert!(!world.countries[&(0, 5)].admitted);
-    sample.hour += 1;
-    sample.metrics.table_ns[TableId::ProjectPrograms.index()] = 1;
-    world.observe(&sample);
-    assert_eq!(world.projected_frames, 7);
     assert!(world.countries[&(0, 5)].admitted);
+    assert_eq!(world.countries[&(0, 5)].last, Some(((0, 5), sample.hour)));
+    sample.hour += 1;
+    world.observe(&sample);
+    assert_eq!(world.projected_frames, 6);
+    assert_eq!(world.countries[&(0, 5)].last, Some(((0, 5), sample.hour)));
 }
 
 #[test]

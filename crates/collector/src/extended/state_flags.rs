@@ -518,6 +518,7 @@ mod tests {
                 names: crate::acquisition_states::Names::take(&mut vec![0; 64]),
                 visitor,
                 inputs: crate::acquisition_states::Inputs::with_capacity(core_capacity).unwrap(),
+                store: None,
             };
             let report = request.run(&memory);
             assert_eq!(request.visitor.required, 2);

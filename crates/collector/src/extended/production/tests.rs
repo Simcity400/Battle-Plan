@@ -130,6 +130,8 @@ fn production_rest_terminal_failure_preserves_variant_and_division_tables() {
 
 #[test]
 fn production_rest_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
+    // Sizes from the process-wide country hints; hold them at a fresh attachment's values.
+    let _hint = crate::country_scale::hint_guard();
     use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
     static LOCAL: Tracker = Tracker::new();
     let mut job = ProductionRestJob::default();
@@ -252,7 +254,7 @@ fn conversion_preserves_native_precision_full_keys_and_raw_control_bytes() {
     );
     assert_eq!(
         (line.cost_raw, line.speed_raw, line.produced_raw),
-        (i64::MIN, -100_001, i64::MAX)
+        (i64::MIN, -100_001, replay::rows::RetiredI64::default())
     );
     assert_eq!(
         (
@@ -328,8 +330,8 @@ fn conversion_preserves_native_precision_full_keys_and_raw_control_bytes() {
             false,
         )
         .unwrap();
-    let mut scratch = crate::projection::ProjectionScratch::default();
-    let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
+    let scratch = crate::projection::ProjectionScratch::default();
+    let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
     let original_inputs = captured.table_inputs(None);
     let inputs = captured.table_inputs(Some(&mut projection));
     for index in [2, 7, 8, 9, 10] {

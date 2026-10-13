@@ -48,15 +48,13 @@ use windows_sys::Win32::System::Performance::QueryPerformanceCounter;
 
 // Reuse a bounded producer/consumer pool; a burst waits rather than dropping an hour.
 pub const BUFFERS: usize = 4;
-/// One DivisionEtaInputs job per contiguous seed range.
-const ETA_INPUT_RANGES: usize = extended::division_eta_inputs::MAX_RANGES;
 const SUPPLY_PARTS: usize = extended::supply_trains::PARTS;
 const CHARACTER_PARTS: usize = extended::characters::PARTS;
 const AIR_RELATION_PARTS: usize = extended::air_relations::PARTS;
 const AIR_HISTORY_PARTS: usize = extended::air_histories::PARTS;
 const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
 pub const SEGMENTS: usize = 15;
-pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst (ShipModels census, World, Research, off-slot Governance first, slot-hour Variants); 1 division inputs copy + divisions/intel dispatch + character roster, relations, original ShipModels census/detail join, ordinary, slow and supply parts; 2 World join + Focus-slot governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated/character role dispatch + Naval join + owned wing install + Ordinary region join + AirMissions dispatch; 7 map sample; 8 AirMissions dispatch after a typed wing census + Orders and AirMissions joins + Late and history-part dispatch + core joins; 9 supply/portraits/order/relations/slow/gated/governance/variants/research/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late and history-part joins + capture_tables_late; 13 visibility + failure handling; 14 ShipModels completed projection";
+pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first burst (every job that needs no other job, queued without waking the pool and released at once: ShipModels census, Countries, the template dictionary, division inputs, root census, AirWing, character roster, World, Economy, Research, Governance, slot-hour Variants, the Ordinary parts but task forces, Slow, WarOverview, Stability, the slot-8 production walks and their production modifier parts, IntelResidual, AirBases, the core and raw-copy jobs but provinces, states and wars, raids, air relations, supply, MapCombats and ScoresRails); 1 root census join + Orders, OrdersPart and Naval dispatch + the slack burst (Ordinary task forces, provinces, weather, capitulation, states, wars, relations) + division inputs and parts join + divisions/presentation/movement/intel/Gated/province-order dispatch + ShipModels census join + detail dispatch + Countries join + Ordinary counter-part dispatch; 2 unused; 3 character roster join + portrait/character input/character role dispatch; 4 AirWing join; 5 AirMissions dispatch + Orders and OrdersPart joins and OrdersStitch dispatch when they have all completed + radar/projects joins + Economy and World joins + divisions/players/air statistics/supremacy/sunk joins; 6 Orders and OrdersPart joins and OrdersStitch dispatch otherwise + Naval join + wing census install + OrdersStitch join + Fronts and ChildFronts dispatch; 7 MapCombats join + map sample; 8 AirMissions dispatch after a typed wing census + ChildFronts, ArmyIcons, AirMissions and ScoresRails joins + Late and history-part dispatch + intel residual/capitulation/weather/lexical/session/relations/variants/character role joins + FinalInputs dispatch + core joins; 9 supply/portraits/order/template/slow/war overview/stability/raid/gated/character input/governance/research joins + ShipModels detail joins + Ordinary family joins + slot-8 production and part joins; 10 capture_tables; 11 Late join + Fronts join + presentation and movement joins + order transport + border inputs; 12 history-part joins + FinalInputs join + capture_tables_late; 13 Intel and AirBases joins + visibility + failure handling; 14 ShipModels completed projection";
 /// Core row capacities: countries, provinces, links, states, divisions, wars,
 /// factions, faction members, faction name bytes, border-conflict provinces,
 /// their admitted group handles, and state name bytes.
@@ -79,6 +77,23 @@ pub const SAMPLE_BOUNDARY: replay::identity::SampleBoundary =
 const LOSS_RUNS: usize = 64;
 pub static SHARED: AtomicPtr<Shared> = AtomicPtr::new(ptr::null_mut());
 pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+std::thread_local! {
+    /// This thread is running the hourly original, the native tick.
+    static TICKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// Whether the calling thread is inside the hourly original: the native tick
+/// the hourly detour runs after its capture.
+pub(crate) fn ticking() -> bool {
+    TICKING.get()
+}
+/// Tests: run `body` as inside the hourly original.
+#[cfg(test)]
+pub(crate) fn in_tick<T>(body: impl FnOnce() -> T) -> T {
+    let ticking = TICKING.replace(true);
+    let result = body();
+    TICKING.set(ticking);
+    result
+}
 
 // Staggered cadence branch/keyframe state. Game thread only.
 #[derive(Debug, Default)]
@@ -321,9 +336,47 @@ pub struct Captured {
     pub pool_bytes: u64,
     pub dropped_frames: u64,
     pub dropped_before: LossBatch,
+    /// The verdicts were reset for the next hour when the spool returned
+    /// this frame ([`Self::reset_verdicts`]); the callback then skips it.
+    verdicts_reset: bool,
 }
 
 impl Captured {
+    /// Clear every verdict and cost of the previous hour, as the callback did
+    /// before reading. The spool runs it when it returns the frame, after
+    /// growth, so the hour's game thread only takes the frame.
+    pub(crate) fn reset_verdicts(&mut self) {
+        let unavailable = Outcome::Unavailable {
+            reason: "clock unavailable",
+        };
+        self.table_ns = [0; TABLE_COUNT];
+        self.table_reads = crate::read_accounting::ZERO;
+        self.countries_result = unavailable;
+        self.provinces_result = unavailable;
+        self.provinces.conflict_walk = cprovince::ConflictWalk::default();
+        self.states_result = unavailable;
+        self.state_inputs.reset();
+        self.state_names_len = 0;
+        self.state_names_required = 0;
+        self.divisions_result = unavailable;
+        self.wars_result = unavailable;
+        self.wars_snapshot_sampled = false;
+        self.factions_result = unavailable;
+        self.faction_names_len = 0;
+        self.faction_names_required = 0;
+        self.faction_members_result = unavailable;
+        self.links_result = unavailable;
+        self.map.reset();
+        self.extended.reset_keeping_country_intel();
+        self.country_cache_status = SeedStatus::Unavailable {
+            reason: "clock unavailable",
+        };
+        self.country_cache_entries = 0;
+        self.country_cache_ns = 0;
+        self.order_counters.reset();
+        self.fixed_layout = None;
+    }
+
     /// Vanilla-sized frame for synthetic tests; production frames come from
     /// `Shared::with_sizing`.
     #[cfg(test)]
@@ -400,6 +453,7 @@ impl Captured {
             pool_bytes: 0,
             dropped_frames: 0,
             dropped_before: LossBatch::default(),
+            verdicts_reset: false,
         };
         if crate::allocation::failed() {
             return Err(std::io::ErrorKind::OutOfMemory.into());
@@ -462,6 +516,7 @@ impl Captured {
             names: acquisition_states::Names::take(&mut self.state_names),
             visitor: self.extended.take_state_visitor(),
             inputs: std::mem::take(&mut self.state_inputs),
+            store: None,
         }
     }
 
@@ -499,6 +554,7 @@ impl Captured {
             table: acquisition::GatherRequest::take(base, game_state, &mut self.wars),
             snapshot: std::mem::take(&mut self.wars_snapshot),
             snapshot_sampled: false,
+            store: None,
         }
     }
 
@@ -583,27 +639,47 @@ impl Captured {
     }
 }
 
-/// Cumulative DivisionEtaInputs attribution. Game thread writer; `hours` is the
-/// divisor. `walks` counts single acquisitions; spans are wall time inside the
-/// owning worker rather than the whole game-thread block.
+/// The game thread's own work in the parked hour, by kind: cumulative QPC
+/// wall since attach over `hours` acquired hours. Worker time overlaps it and
+/// is not here; join waits are `acquisition_wait_ns`.
 #[derive(Default)]
-pub struct EtaInputStats {
+pub struct GameThreadPhases {
     pub hours: AtomicU64,
-    pub walks: AtomicU64,
-    pub divisions: AtomicU64,
-    pub legs: AtomicU64,
-    pub graph_ns: AtomicU64,
-    pub scan_ns: AtomicU64,
-    pub other_ns: AtomicU64,
-    pub geometry_hits: AtomicU64,
-    pub geometry_misses: AtomicU64,
-    pub static_hits: AtomicU64,
-    pub static_misses: AtomicU64,
-    pub static_cleared: AtomicU64,
-    pub state_modifier_requests: AtomicU64,
-    pub state_modifier_hits: AtomicU64,
-    pub air_defense_requests: AtomicU64,
-    pub air_defense_hits: AtomicU64,
+    /// Resetting the reused frame's verdicts and reserving its decode slot.
+    pub frame_reset_ns: AtomicU64,
+    /// The observer boundary job, submission and join included.
+    pub boundaries_ns: AtomicU64,
+    /// The shared country authentication snapshot.
+    pub country_snapshot_ns: AtomicU64,
+    /// Jobs submitted, and their submission wall.
+    pub dispatched_jobs: AtomicU64,
+    /// Wakes that released held bursts, the jobs they released and their wall.
+    pub releases: AtomicU64,
+    pub released_jobs: AtomicU64,
+    pub release_ns: AtomicU64,
+    /// The map sample's typed walk.
+    pub map_sample_ns: AtomicU64,
+    /// Table assembly after the joins: capture_tables, border inputs, the
+    /// late tables and the ShipModels projection.
+    pub table_assembly_ns: AtomicU64,
+}
+
+impl GameThreadPhases {
+    fn release(&self, jobs: usize, ns: u64) {
+        if jobs != 0 {
+            self.releases.fetch_add(1, Ordering::Relaxed);
+            self.released_jobs.fetch_add(jobs as u64, Ordering::Relaxed);
+        }
+        self.release_ns.fetch_add(ns, Ordering::Relaxed);
+    }
+}
+
+/// Cumulative Presentation acquisition by pass, one observation per hour.
+#[derive(Default)]
+pub struct PresentationStats {
+    pub hours: AtomicU64,
+    /// [`extended::division_presentation::PHASE_NAMES`] order.
+    pub phase_ns: [AtomicU64; extended::division_presentation::PHASES],
 }
 
 /// Cumulative DivisionTemplateIcons rows whose model inputs failed, by
@@ -640,6 +716,173 @@ impl TemplateModelStats {
     }
 }
 
+/// One pool role's collected jobs, as offsets from their acquisition body's
+/// entry: when each was queued, when a pool participant began and ended its
+/// body, and when the game thread began and ended its join. Sums of QPC
+/// ticks; status reports the mean per job. Atomics only, written once per
+/// collected job on the game thread.
+pub struct RoleTimeline {
+    /// Collected jobs, and those whose body a participant ran.
+    jobs: AtomicU64,
+    bodies: AtomicU64,
+    /// Queued, body begin, body end, join begin, join end.
+    offsets: [AtomicU64; 5],
+    /// Joins whose wait fell in [0.25, 1), [1, 4) and [4, ∞) ms
+    /// ([`Self::SLOW_JOIN_NS`]): one increment at most per join.
+    slow: [AtomicU64; 3],
+}
+
+impl RoleTimeline {
+    /// The join-wait thresholds the slow counts start at, in ns.
+    pub const SLOW_JOIN_NS: [u64; 3] = [250_000, 1_000_000, 4_000_000];
+
+    const fn new() -> Self {
+        Self {
+            jobs: AtomicU64::new(0),
+            bodies: AtomicU64::new(0),
+            offsets: [const { AtomicU64::new(0) }; 5],
+            slow: [const { AtomicU64::new(0) }; 3],
+        }
+    }
+
+    /// The joins whose wait reached each of [`Self::SLOW_JOIN_NS`].
+    pub fn slow_joins(&self) -> [u64; 3] {
+        let [quarter, one, four] = self
+            .slow
+            .each_ref()
+            .map(|count| count.load(Ordering::Relaxed));
+        [quarter + one + four, one + four, four]
+    }
+
+    fn record(
+        &self,
+        entry: i64,
+        timeline: &crate::acquisition::Timeline,
+        join: i64,
+        joined: i64,
+        wait_ns: u64,
+    ) {
+        if let Some(bucket) = Self::SLOW_JOIN_NS
+            .iter()
+            .rposition(|&floor| wait_ns >= floor)
+        {
+            self.slow[bucket].fetch_add(1, Ordering::Relaxed);
+        }
+        let offset = |qpc: i64| u64::try_from(qpc.saturating_sub(entry)).unwrap_or(0);
+        let ran = timeline.body_begin_qpc != 0 && timeline.body_end_qpc != 0;
+        for (index, qpc) in [
+            (0, timeline.queued_qpc),
+            (1, timeline.body_begin_qpc),
+            (2, timeline.body_end_qpc),
+            (3, join),
+            (4, joined),
+        ] {
+            if ran || !matches!(index, 1 | 2) {
+                self.offsets[index].fetch_add(offset(qpc), Ordering::Relaxed);
+            }
+        }
+        self.jobs.fetch_add(1, Ordering::Relaxed);
+        if ran {
+            self.bodies.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// `(jobs, [queued, body begin, body end, join begin, join end])`, the
+    /// mean offsets in ticks; the body means cover only the jobs that ran.
+    pub fn means(&self) -> (u64, [u64; 5]) {
+        let jobs = self.jobs.load(Ordering::Relaxed);
+        let bodies = self.bodies.load(Ordering::Relaxed);
+        let mean = |index: usize, count: u64| {
+            self.offsets[index]
+                .load(Ordering::Relaxed)
+                .checked_div(count)
+                .unwrap_or(0)
+        };
+        (
+            jobs,
+            [
+                mean(0, jobs),
+                mean(1, bodies),
+                mean(2, bodies),
+                mean(3, jobs),
+                mean(4, jobs),
+            ],
+        )
+    }
+}
+
+/// Where a pool role's joins spend their wall once the awaited job is done,
+/// over every collected job: the collector's first wait for the queue mutex,
+/// the stall from the moment the job is both awaited and published to its
+/// collection (the mutex, the condition-variable wake and rescheduling), and
+/// the worker's wait to publish after its body ended. Diagnostics only.
+pub struct JoinCosts {
+    /// Collected jobs whose completion was published (canceled ones too).
+    published: AtomicU64,
+    /// Of those, the jobs already published when their join began.
+    ready: AtomicU64,
+    /// Summed ticks: first finish-lock wait, collection stall, publication wait.
+    ticks: [AtomicU64; 3],
+    /// Stalls of at least [`Self::STALL_NS`] (0.25 and 1 ms).
+    stalls: [AtomicU64; 2],
+}
+
+impl JoinCosts {
+    /// The collection-stall thresholds the stall counts start at, in ns.
+    pub const STALL_NS: [u64; 2] = [250_000, 1_000_000];
+
+    const fn new() -> Self {
+        Self {
+            published: AtomicU64::new(0),
+            ready: AtomicU64::new(0),
+            ticks: [const { AtomicU64::new(0) }; 3],
+            stalls: [const { AtomicU64::new(0) }; 2],
+        }
+    }
+
+    /// One collected job: `join` is when its join began; `ns` converts
+    /// ticks for the stall thresholds. A job that no participant ran or that
+    /// was never published (rejected or inline work) is not counted.
+    fn record(&self, timeline: &crate::acquisition::Timeline, join: i64, ns: impl Fn(i64) -> u64) {
+        if timeline.published_qpc == 0 || timeline.collected_qpc == 0 {
+            return;
+        }
+        let ticks = |from: i64, to: i64| u64::try_from(to.saturating_sub(from)).unwrap_or(0);
+        let stall = ticks(join.max(timeline.published_qpc), timeline.collected_qpc);
+        self.published.fetch_add(1, Ordering::Relaxed);
+        if timeline.published_qpc <= join {
+            self.ready.fetch_add(1, Ordering::Relaxed);
+        }
+        self.ticks[0].fetch_add(timeline.finish_lock_ticks, Ordering::Relaxed);
+        self.ticks[1].fetch_add(stall, Ordering::Relaxed);
+        if timeline.body_end_qpc != 0 {
+            self.ticks[2].fetch_add(
+                ticks(timeline.body_end_qpc, timeline.published_qpc),
+                Ordering::Relaxed,
+            );
+        }
+        let stall_ns = ns(i64::try_from(stall).unwrap_or(i64::MAX));
+        for (count, floor) in self.stalls.iter().zip(Self::STALL_NS) {
+            if stall_ns >= floor {
+                count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// `(published jobs, of them ready at their join, [finish-lock wait,
+    /// collection stall, publication wait] summed ticks, [stalls of at least
+    /// 0.25 ms, at least 1 ms])`.
+    pub fn totals(&self) -> (u64, u64, [u64; 3], [u64; 2]) {
+        let load = |value: &AtomicU64| value.load(Ordering::Relaxed);
+        (
+            load(&self.published),
+            load(&self.ready),
+            self.ticks.each_ref().map(load),
+            self.stalls.each_ref().map(load),
+        )
+    }
+}
+
 pub struct Shared {
     /// Initialized before hook publication; workers own raw jobs, never frames.
     pub acquisition: OnceLock<acquisition::Pool>,
@@ -669,6 +912,15 @@ pub struct Shared {
     /// Game-thread wall spent joining each pool role, indexed by
     /// `acquisition::ROLES`.
     pub join_wait: [AtomicU64; acquisition::ROLE_COUNT],
+    /// QPC at the current acquisition body's entry, the reference of
+    /// [`Self::role_timeline`].
+    pub acquisition_entry_qpc: AtomicI64,
+    /// Each pool role's collected jobs on the timeline of their hour,
+    /// indexed by `acquisition::ROLES`.
+    pub role_timeline: [RoleTimeline; acquisition::ROLE_COUNT],
+    /// Each pool role's collection costs after its jobs finished, indexed by
+    /// `acquisition::ROLES`.
+    pub join_costs: [JoinCosts; acquisition::ROLE_COUNT],
     /// Existing QPC brackets around the original native tick, not collector
     /// acquisition. These diagnostic counters also include ticks with no free
     /// recording buffer and exclude game-loop work outside the hooked function.
@@ -699,6 +951,10 @@ pub struct Shared {
     pub pool_bytes: AtomicU64,
     pub recording: AtomicBool,
     pub stop_spool: AtomicBool,
+    /// The spool thread, set once when its loop starts. Its idle wait parks
+    /// until a ready buffer, a parked clock preparation or a stop request
+    /// unparks it ([`Shared::wake_spool`]), or its next periodic deadline.
+    pub spool_waker: OnceLock<std::thread::Thread>,
     /// The game thread owns this until ready is published; the spool thread
     /// then takes it once, independent of any particular FIFO buffer.
     pub roster: UnsafeCell<Option<Box<Roster>>>,
@@ -719,14 +975,122 @@ pub struct Shared {
         crate::slicing::FAMILIES.len()],
     /// Fresh country authentication for this quiescent callback. Game thread only.
     country_cache: UnsafeCell<Arc<Cache>>,
-    eta_cadence:
-        [UnsafeCell<Option<Box<extended::division_eta_inputs::CadenceStore>>>; ETA_INPUT_RANGES],
-    eta_cadence_bytes: [AtomicU64; ETA_INPUT_RANGES],
+    /// The carried province weather records, loaned to the Weather job each
+    /// hour ([`extended::weather::carry`]). Only the game thread takes and
+    /// returns it.
+    weather_carry: UnsafeCell<Option<Box<extended::weather::carry::WeatherCarry>>>,
     /// The held RaidAirScores table, loaned to the Late job each hour. Only
     /// the game thread takes and returns it.
     raid_air_scores: UnsafeCell<Option<Box<engine::raid_air_scores::Held>>>,
     raid_air_score_bytes: AtomicU64,
-    pub eta_inputs: EtaInputStats,
+    /// Held CharacterRoleTraits role rows, loaned to the Gated job each hour
+    /// with the roster job's role census. Only the game thread takes and
+    /// returns it.
+    character_role_store: UnsafeCell<Option<Box<extended::character_inputs::RoleStore>>>,
+    character_role_store_bytes: AtomicU64,
+    /// Held ScriptFlags rows, loaned to the IntelResidual job each hour. Only
+    /// the game thread takes and returns it.
+    script_flag_store: UnsafeCell<Option<Box<extended::intel::FlagStore>>>,
+    script_flag_store_bytes: AtomicU64,
+    /// Held ScriptVariables rows, loaned to the IntelResidual job each hour.
+    /// Only the game thread takes and returns it.
+    script_variable_store: UnsafeCell<Option<Box<extended::intel::VariableStore>>>,
+    script_variable_store_bytes: AtomicU64,
+    /// Held StateBuildings and ProvinceBuildings rows, loaned to the
+    /// Governance job each hour. Only the game thread takes and returns it.
+    building_store: UnsafeCell<Option<Box<extended::construction::BuildingStore>>>,
+    building_store_bytes: AtomicU64,
+    /// Held PartyLeaders rows, loaned to the Governance job each hour. Only
+    /// the game thread takes and returns it.
+    leader_store: UnsafeCell<Option<Box<extended::governance::LeaderStore>>>,
+    leader_store_bytes: AtomicU64,
+    /// Held PoliticalParties and ActiveIdeas rows, loaned to the Governance
+    /// job each hour. Only the game thread takes and returns it.
+    party_store: UnsafeCell<Option<Box<extended::governance::PartyStore>>>,
+    party_store_bytes: AtomicU64,
+    /// Held WingEquipment rows, lent to the AirWing job's payload each hour.
+    /// Only the game thread takes and returns it.
+    wing_store: UnsafeCell<Option<Box<extended::air::WingStore>>>,
+    wing_store_bytes: AtomicU64,
+    /// The AirWing census parts after the first, each with its own held
+    /// WingEquipment rows, lent to their jobs each hour, and where the next
+    /// hour's parts start ([`extended::air::part_starts`]). Only the game
+    /// thread takes, returns, joins and splits them.
+    air_wing_parts: UnsafeCell<[extended::air::AirWingJob; extended::air::WING_PARTS - 1]>,
+    air_wing_part_starts: UnsafeCell<([u32; extended::air::WING_PARTS - 1], usize)>,
+    /// The production modifier capture's split, from the last slot hour.
+    production_part_starts:
+        UnsafeCell<([u32; extended::production_modifiers::MAX_PARTS - 1], usize)>,
+    /// Held AirBaseRegistrations subtrees, lent to the AirBases job each
+    /// hour. Only the game thread takes and returns it.
+    air_base_store: UnsafeCell<Option<Box<extended::air::RegistrationStore>>>,
+    air_base_store_bytes: AtomicU64,
+    /// Held AirRegionalMissions registrations, lent to the AirMissions job
+    /// each hour. Only the game thread takes and returns it.
+    mission_store: UnsafeCell<Option<Box<extended::air::MissionStore>>>,
+    mission_store_bytes: AtomicU64,
+    /// Held RailCooldowns inputs and RailEdges rows, lent to the Late job
+    /// each hour. Only the game thread takes and returns it.
+    rail_store: UnsafeCell<Option<Box<extended::naval_history::RailStore>>>,
+    rail_store_bytes: AtomicU64,
+    /// Held States rows, lent to the States job each hour. Only the game
+    /// thread takes and returns it.
+    state_store: UnsafeCell<Option<Box<acquisition_states::StateStore>>>,
+    state_store_bytes: AtomicU64,
+    /// Held WarRelations rows, lent to the Wars job each hour. Only the game
+    /// thread takes and returns it.
+    war_store: UnsafeCell<Option<Box<acquisition_wars::WarStore>>>,
+    war_store_bytes: AtomicU64,
+    /// Held DivisionStatus attack operands, lent to the Presentation job
+    /// each hour. Only the game thread takes and returns it.
+    army_stat_store: UnsafeCell<Option<Box<extended::attack_stats::ArmyStatStore>>>,
+    army_stat_store_bytes: AtomicU64,
+    /// The censuses of the division input parts, lent to their jobs each
+    /// hour, and where the next hour's parts start
+    /// ([`crate::division_census::Census::part_starts`]). Only the game
+    /// thread takes, returns and splits them.
+    division_parts: UnsafeCell<
+        [Option<Box<crate::division_census::Census>>; crate::division_census::MAX_PARTS - 1],
+    >,
+    division_part_starts: UnsafeCell<([u32; crate::division_census::MAX_PARTS - 1], usize)>,
+    /// The order census split the last stitched hour planned for the next
+    /// ([`crate::orders_parts::Split`]). Only the game thread reads and
+    /// writes it.
+    order_split: UnsafeCell<crate::orders_parts::Split>,
+    /// The joined census's storage the next hour's inputs job reserves, so
+    /// the join copies without allocating
+    /// ([`crate::division_census::Census::join_capacity`]).
+    division_join_capacity: UnsafeCell<crate::division_census::JoinCapacity>,
+    /// The held ProvinceUnitOrder walk, lent to its job each hour. Only the
+    /// game thread takes and returns it.
+    province_unit_store: UnsafeCell<Option<Box<extended::province_unit_order::ProvinceUnitStore>>>,
+    province_unit_store_bytes: AtomicU64,
+    /// Held controller and owner areas, lent to the Provinces job each hour
+    /// ([`crate::area_changes`]). Only the game thread takes and returns it.
+    area_store: UnsafeCell<Option<Box<engine::controller_areas::Store>>>,
+    area_store_bytes: AtomicU64,
+    /// Held Provinces rows, lent to the Provinces job each hour
+    /// ([`crate::province_changes`]). Only the game thread takes and returns it.
+    province_store: UnsafeCell<Option<Box<engine::cprovince::carry::RowStore>>>,
+    province_store_bytes: AtomicU64,
+    /// Held AvailableAdvisors and AdvisorTokens rows, loaned to the Slow job
+    /// each hour. Only the game thread takes and returns it.
+    advisor_store: UnsafeCell<Option<Box<extended::hired_advisors::AdvisorStore>>>,
+    advisor_store_bytes: AtomicU64,
+    /// Held CountryLocalSubunits rows, loaned to the Slow job each hour.
+    /// Only the game thread takes and returns it.
+    local_subunit_store: UnsafeCell<Option<Box<extended::model_inputs::LocalStore>>>,
+    local_subunit_store_bytes: AtomicU64,
+    /// Held CountryCounterInputs rows, loaned to the Ordinary counter part
+    /// each hour. Only the game thread takes and returns it.
+    counter_store: UnsafeCell<Option<Box<extended::country_counters::CounterStore>>>,
+    counter_store_bytes: AtomicU64,
+    /// Held CountryAppearance rows, loaned to the Countries job each hour.
+    /// Only the game thread takes and returns it.
+    appearance_store: UnsafeCell<Option<Box<extended::country_appearance::AppearanceStore>>>,
+    appearance_store_bytes: AtomicU64,
+    pub presentation: PresentationStats,
+    pub game_thread: GameThreadPhases,
     /// Template rows whose model inputs failed; the status thread copies it.
     pub template_models: Mutex<TemplateModelStats>,
     /// Hours whose failures were not folded because the status thread held
@@ -766,6 +1130,9 @@ pub struct Shared {
     /// The one CountryIntel buffer every frame borrows; counted once in
     /// `pool_bytes`.
     pub country_intel: crate::extended::daily_intel::Home,
+    /// The weather temperature pass across hours; only the single FIFO decode
+    /// worker locks it, in hour order.
+    pub weather_temperature: Mutex<extended::weather::temperature::Tracker>,
 }
 
 #[derive(Default)]
@@ -836,6 +1203,52 @@ impl Shared {
             + country_intel.allocated_bytes()
             + raid_air_score_bytes
             + fixed_layout_buffer.capacity();
+        let character_role_store = cfg!(feature = "character_changes")
+            .then(|| Box::new(extended::character_inputs::RoleStore::new()));
+        let script_flag_store =
+            cfg!(feature = "flag_changes").then(|| Box::new(extended::intel::FlagStore::new()));
+        let script_variable_store = cfg!(feature = "variable_changes")
+            .then(|| Box::new(extended::intel::VariableStore::new()));
+        let building_store = cfg!(feature = "building_changes")
+            .then(|| Box::new(extended::construction::BuildingStore::new()));
+        let leader_store = cfg!(feature = "party_leader_changes")
+            .then(|| Box::new(extended::governance::LeaderStore::new()));
+        let party_store = cfg!(feature = "party_changes")
+            .then(|| Box::new(extended::governance::PartyStore::new()));
+        let wing_store =
+            cfg!(feature = "wing_changes").then(|| Box::new(extended::air::WingStore::new()));
+        let air_base_store = cfg!(feature = "air_base_carry_changes")
+            .then(|| Box::new(extended::air::RegistrationStore::new()));
+        let mission_store =
+            cfg!(feature = "mission_changes").then(|| Box::new(extended::air::MissionStore::new()));
+        let rail_store = cfg!(feature = "rail_changes")
+            .then(|| Box::new(extended::naval_history::RailStore::new()));
+        let state_store = cfg!(feature = "territory_changes").then(|| {
+            Box::new(acquisition_states::StateStore::new(
+                &crate::territory_changes::Observer,
+            ))
+        });
+        let war_store =
+            cfg!(feature = "war_changes").then(|| Box::new(acquisition_wars::WarStore::default()));
+        let advisor_store = cfg!(feature = "advisor_pool_changes")
+            .then(|| Box::new(extended::hired_advisors::AdvisorStore::new()));
+        let local_subunit_store = cfg!(feature = "local_subunit_changes")
+            .then(|| Box::new(extended::model_inputs::LocalStore::default()));
+        let counter_store = cfg!(feature = "counter_changes")
+            .then(|| Box::new(extended::country_counters::CounterStore::observed()));
+        let appearance_store = cfg!(feature = "appearance_changes")
+            .then(|| Box::new(extended::country_appearance::AppearanceStore::default()));
+        let army_stat_store = cfg!(feature = "army_stat_changes")
+            .then(|| Box::new(extended::attack_stats::ArmyStatStore::new()));
+        let province_unit_store = crate::province_unit_changes::CARRY.then(|| {
+            Box::new(extended::province_unit_order::ProvinceUnitStore::new(
+                &crate::province_unit_changes::Observer,
+            ))
+        });
+        let area_store = cfg!(feature = "area_changes")
+            .then(|| Box::new(engine::controller_areas::Store::new()));
+        let province_store = cfg!(feature = "province_changes")
+            .then(|| Box::new(engine::cprovince::carry::RowStore::new()));
         let mut slice_fingerprints = std::array::from_fn(|_| UnsafeCell::new(None));
         for (family, cell) in slice_fingerprints.iter_mut().enumerate() {
             if !matches!(
@@ -844,12 +1257,6 @@ impl Shared {
             ) {
                 *cell.get_mut() = Some(Box::new(crate::slicing::SliceFingerprints::new()));
             }
-        }
-        let mut eta_cadence = std::array::from_fn(|_| UnsafeCell::new(None));
-        for cell in &mut eta_cadence {
-            *cell.get_mut() = Some(Box::new(
-                extended::division_eta_inputs::CadenceStore::default(),
-            ));
         }
         let shared = Self {
             acquisition: OnceLock::new(),
@@ -863,6 +1270,9 @@ impl Shared {
             phase_join_ns: AtomicU64::new(0),
             phase_segments: std::array::from_fn(|_| AtomicU64::new(0)),
             join_wait: std::array::from_fn(|_| AtomicU64::new(0)),
+            acquisition_entry_qpc: AtomicI64::new(0),
+            role_timeline: std::array::from_fn(|_| RoleTimeline::new()),
+            join_costs: std::array::from_fn(|_| JoinCosts::new()),
             acquisition_dispatch_ns: AtomicU64::new(0),
             acquisition_wait_ns: AtomicU64::new(0),
             native_tick_ns: AtomicU64::new(0),
@@ -887,6 +1297,7 @@ impl Shared {
             pool_bytes: AtomicU64::new(pool_bytes as u64),
             recording: AtomicBool::new(true),
             stop_spool: AtomicBool::new(false),
+            spool_waker: OnceLock::new(),
             roster: UnsafeCell::new(Some(roster)),
             roster_ready: AtomicBool::new(false),
             pending: UnsafeCell::new(LossBatch::default()),
@@ -900,11 +1311,65 @@ impl Shared {
             // The air families' stores belong to their decode steps.
             slice_fingerprints,
             country_cache: UnsafeCell::new(country_cache),
-            eta_cadence,
-            eta_cadence_bytes: std::array::from_fn(|_| AtomicU64::new(0)),
             raid_air_scores: UnsafeCell::new(Some(raid_air_scores)),
+            weather_carry: UnsafeCell::new(Some(Box::default())),
             raid_air_score_bytes: AtomicU64::new(raid_air_score_bytes as u64),
-            eta_inputs: EtaInputStats::default(),
+            character_role_store: UnsafeCell::new(character_role_store),
+            character_role_store_bytes: AtomicU64::new(0),
+            script_flag_store: UnsafeCell::new(script_flag_store),
+            script_flag_store_bytes: AtomicU64::new(0),
+            script_variable_store: UnsafeCell::new(script_variable_store),
+            script_variable_store_bytes: AtomicU64::new(0),
+            building_store: UnsafeCell::new(building_store),
+            building_store_bytes: AtomicU64::new(0),
+            leader_store: UnsafeCell::new(leader_store),
+            leader_store_bytes: AtomicU64::new(0),
+            party_store: UnsafeCell::new(party_store),
+            party_store_bytes: AtomicU64::new(0),
+            wing_store: UnsafeCell::new(wing_store),
+            wing_store_bytes: AtomicU64::new(0),
+            air_wing_parts: UnsafeCell::new(std::array::from_fn(|_| {
+                extended::air::AirWingJob::part()
+            })),
+            air_wing_part_starts: UnsafeCell::new(([0; extended::air::WING_PARTS - 1], 0)),
+            production_part_starts: UnsafeCell::new((
+                [0; extended::production_modifiers::MAX_PARTS - 1],
+                0,
+            )),
+            air_base_store: UnsafeCell::new(air_base_store),
+            air_base_store_bytes: AtomicU64::new(0),
+            mission_store: UnsafeCell::new(mission_store),
+            mission_store_bytes: AtomicU64::new(0),
+            rail_store: UnsafeCell::new(rail_store),
+            rail_store_bytes: AtomicU64::new(0),
+            state_store: UnsafeCell::new(state_store),
+            state_store_bytes: AtomicU64::new(0),
+            war_store: UnsafeCell::new(war_store),
+            war_store_bytes: AtomicU64::new(0),
+            army_stat_store: UnsafeCell::new(army_stat_store),
+            army_stat_store_bytes: AtomicU64::new(0),
+            division_parts: UnsafeCell::new(std::array::from_fn(|_| {
+                Some(Box::new(crate::division_census::Census::new_worker()))
+            })),
+            division_part_starts: UnsafeCell::new(([0; crate::division_census::MAX_PARTS - 1], 0)),
+            order_split: UnsafeCell::new(crate::orders_parts::Split::default()),
+            division_join_capacity: UnsafeCell::new(Default::default()),
+            province_unit_store: UnsafeCell::new(province_unit_store),
+            province_unit_store_bytes: AtomicU64::new(0),
+            area_store: UnsafeCell::new(area_store),
+            area_store_bytes: AtomicU64::new(0),
+            province_store: UnsafeCell::new(province_store),
+            province_store_bytes: AtomicU64::new(0),
+            advisor_store: UnsafeCell::new(advisor_store),
+            advisor_store_bytes: AtomicU64::new(0),
+            local_subunit_store: UnsafeCell::new(local_subunit_store),
+            local_subunit_store_bytes: AtomicU64::new(0),
+            counter_store: UnsafeCell::new(counter_store),
+            counter_store_bytes: AtomicU64::new(0),
+            appearance_store: UnsafeCell::new(appearance_store),
+            appearance_store_bytes: AtomicU64::new(0),
+            presentation: PresentationStats::default(),
+            game_thread: GameThreadPhases::default(),
             template_models: Mutex::new(TemplateModelStats::default()),
             template_models_missed: AtomicU64::new(0),
             force_next: AtomicBool::new(false),
@@ -918,6 +1383,7 @@ impl Shared {
             country_cache_swap: Mutex::new(CountryCacheSwap::default()),
             country_cache_cells: AtomicUsize::new(country_cells),
             country_intel,
+            weather_temperature: Mutex::new(Default::default()),
         };
         let mut borrowed = sizing.extended;
         borrowed.intel.rows[15] = 0;
@@ -1029,6 +1495,15 @@ impl Shared {
         index
     }
 
+    /// End the spool loop's idle wait. Allocation-free and lock-free, so the
+    /// game thread may call it; a wake before the wait begins is kept and ends
+    /// that wait at once, so none is lost.
+    pub(crate) fn wake_spool(&self) {
+        if let Some(spool) = self.spool_waker.get() {
+            spool.unpark();
+        }
+    }
+
     /// At most one reusable capture buffer is free: the next callback may wait
     /// in `take_frame` for the decode and spool threads to return one.
     pub fn buffers_backlogged(&self) -> bool {
@@ -1041,8 +1516,12 @@ impl Shared {
 
     /// Spool only: an in-service frame may have missed a new preparation
     /// request while it was absent from the free queue.
+    /// The frame's verdicts are reset for the next hour here, after any
+    /// growth, so the callback does not ([`Captured::reset_verdicts`]).
     pub(crate) fn recycle_frame_prepared(&self, index: usize) {
         let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
+        frame.reset_verdicts();
+        frame.verdicts_reset = true;
         let before = frame.allocated_bytes();
         let result = frame.prepare_clock(self.clock_required());
         self.pool_bytes
@@ -1068,31 +1547,12 @@ impl Shared {
         self.frame_available.notify_one();
     }
 
-    /// Fold one hour's ETA input attribution into the cumulative counters.
-    fn record_eta_inputs(&self, counters: engine::carmy::EtaInputCounters) {
-        let add = |slot: &AtomicU64, value: u64| {
-            slot.fetch_add(value, Ordering::Relaxed);
-        };
-        let stats = &self.eta_inputs;
-        add(&stats.hours, 1);
-        add(&stats.walks, counters.walks);
-        add(&stats.divisions, counters.divisions);
-        add(&stats.legs, counters.legs);
-        add(&stats.graph_ns, self.ns(counters.graph_ticks as i64));
-        add(&stats.scan_ns, self.ns(counters.scan_ticks as i64));
-        add(&stats.other_ns, self.ns(counters.other_ticks as i64));
-        add(&stats.geometry_hits, counters.geometry_hits);
-        add(&stats.geometry_misses, counters.geometry_misses);
-        add(&stats.static_hits, counters.static_hits);
-        add(&stats.static_misses, counters.static_misses);
-        add(&stats.static_cleared, counters.static_cleared);
-        add(
-            &stats.state_modifier_requests,
-            counters.state_modifier_requests,
-        );
-        add(&stats.state_modifier_hits, counters.state_modifier_hits);
-        add(&stats.air_defense_requests, counters.air_defense_requests);
-        add(&stats.air_defense_hits, counters.air_defense_hits);
+    /// Fold one hour's Presentation pass split into the cumulative counters.
+    fn record_presentation(&self, ticks: [u64; extended::division_presentation::PHASES]) {
+        self.presentation.hours.fetch_add(1, Ordering::Relaxed);
+        for (slot, ticks) in self.presentation.phase_ns.iter().zip(ticks) {
+            slot.fetch_add(self.ns(ticks as i64), Ordering::Relaxed);
+        }
     }
 
     pub fn ns(&self, ticks: i64) -> u64 {
@@ -1183,6 +1643,8 @@ impl Shared {
             && !self.cancel_buffer_wait.load(Ordering::Acquire)
             && !crate::allocation::failed()
         {
+            // The spool prepares the destination; end its idle wait.
+            self.wake_spool();
             capture = self
                 .clock_available
                 .wait_timeout(capture, std::time::Duration::from_millis(5))
@@ -1291,6 +1753,7 @@ fn lost_observer_interval() {
     crate::land_events::fail("land observer frame not captured");
     crate::air_losses::lost_drain();
     crate::building_bombing::lost_drain();
+    crate::nuclear_strikes::lost_drain();
 }
 
 /// Restore an owned frame's absorbed witnesses, record its lost hour and return
@@ -1474,6 +1937,7 @@ pub(crate) unsafe fn synthetic_callback(
 /// runs only after every live read has finished, so the recorded frame is that
 /// settled end-of-hour state.
 pub unsafe extern "system" fn tick(state: usize, commands: usize) {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::Hourly);
     ACTIVE.fetch_add(1, Ordering::SeqCst);
     let shared = unsafe { &*SHARED.load(Ordering::Acquire) };
     let admission = crate::runtime::admit_hourly_capture();
@@ -1504,8 +1968,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             world_generation != u64::MAX && world_generation == crate::world_lifetime::generation()
         });
         crate::world_lifetime::boundary(world_generation, entry.is_some());
-        let _transport_boundary =
-            crate::transport_admission::Scope::enter(&memory, shared.base, state, entry);
         crate::allocation::set_context(crate::allocation::Context {
             campaign_id: entry.and_then(|clock| clock.campaign_id.try_into().ok()),
             branch: None,
@@ -1522,9 +1984,11 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
         );
         crate::air_losses::boundary(entry.map(|clock| clock.with_campaign_id(campaign_epoch)));
+        crate::fuel_awards::boundary();
         crate::building_bombing::boundary(
             entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
         );
+        crate::nuclear_strikes::boundary(entry.map(|clock| clock.with_campaign_id(campaign_epoch)));
         let entry_ticks = qpc() - clock_start;
         #[cfg(feature = "callback_profile")]
         let profile_before = callback_profile_counters(shared);
@@ -1533,6 +1997,9 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         #[cfg(feature = "callback_profile")]
         let profile_stamp = crate::callback_profile::Stamp::start();
         let dispatched = qpc();
+        shared
+            .acquisition_entry_qpc
+            .store(dispatched, Ordering::Relaxed);
         let index = shared.take_frame();
         if let Some(index) = index {
             shared.completed[index].store(0, Ordering::Relaxed);
@@ -1587,9 +2054,9 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     let original_begin = qpc();
     let original: unsafe extern "system" fn(usize, usize) =
         unsafe { std::mem::transmute(shared.trampoline) };
-    unsafe {
-        original(state, commands);
-    }
+    let ticking = TICKING.replace(true);
+    timing.original(|| unsafe { original(state, commands) });
+    TICKING.set(ticking);
     let original_end = qpc();
     if recording {
         shared
@@ -1597,29 +2064,64 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             .fetch_add(shared.ns(original_end - original_begin), Ordering::Relaxed);
         shared.native_tick_calls.fetch_add(1, Ordering::Relaxed);
     }
+    drop(timing);
     ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
 
-unsafe fn capture_observer_boundary(
+/// An observer boundary job on its way, with the bytes it took from the frame.
+struct PendingBoundary {
+    pending: PendingAcquisition,
+    previous_bytes: u64,
+}
+
+/// # Safety
+/// The caller holds the original native boundary through the join.
+unsafe fn submit_observer_boundary(
+    shared: &Shared,
+    batch: &mut acquisition::Batch<'_>,
+    request: extended::observer_boundary::ObserverBoundaryRequest,
+) -> PendingBoundary {
+    let previous_bytes = request.allocated_bytes();
+    PendingBoundary {
+        // SAFETY: forwarded from the caller.
+        pending: unsafe {
+            submit_acquisition(shared, batch, acquisition::Job::ObserverBoundary(request))
+        },
+        previous_bytes,
+    }
+}
+
+/// # Safety
+/// As [`submit_observer_boundary`].
+unsafe fn finish_observer_boundary(
     shared: &Shared,
     batch: &mut acquisition::Batch<'_>,
     frame: &mut Captured,
-    request: extended::observer_boundary::ObserverBoundaryRequest,
+    PendingBoundary {
+        pending,
+        previous_bytes,
+    }: PendingBoundary,
 ) {
-    let previous_bytes = request.allocated_bytes();
-    // SAFETY: the caller holds the original native boundary through this join.
-    let pending =
-        unsafe { submit_acquisition(shared, batch, acquisition::Job::ObserverBoundary(request)) };
-    let done = unsafe { finish_acquisition(shared, batch, pending) };
-    let acquisition::Job::ObserverBoundary(request) = done.request else {
-        unreachable!("observer ticket retains its submitted type")
+    // SAFETY: as above.
+    let (request, report) = unsafe {
+        collect_acquisition(
+            shared,
+            batch,
+            pending,
+            |job| {
+                let acquisition::Job::ObserverBoundary(request) = job else {
+                    unreachable!("observer ticket retains its submitted type")
+                };
+                request
+            },
+            |report| {
+                let acquisition::Report::ObserverBoundary(report) = report else {
+                    unreachable!("observer report retains its submitted type")
+                };
+                report
+            },
+        )
     };
-    let report = done.report.map(|report| {
-        let acquisition::Report::ObserverBoundary(report) = report else {
-            unreachable!("observer report retains its submitted type")
-        };
-        report
-    });
     let failure = report
         .as_ref()
         .err()
@@ -1654,104 +2156,98 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
     let memory = CountedMemory::new(unsafe { LiveMemory::new() });
 
     if let Some(index) = index {
+        let reset_begin = qpc();
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        // The spool reset this frame's verdicts when it returned it; a frame
+        // returned another way is reset here.
+        if !std::mem::take(&mut frame.verdicts_reset) {
+            frame.reset_verdicts();
+        }
+        // The shared CountryIntel buffer goes home at this callback, as when
+        // the callback reset every frame.
+        frame.extended.release_country_intel();
         frame.world_generation = world_generation;
         frame.set_clock(entry);
         frame.qpc = dispatched;
-        frame.table_ns = [0; TABLE_COUNT];
-        frame.table_reads = crate::read_accounting::ZERO;
         let before = qpc();
         // Passive scalar reads of the same counters the save header emits.
         frame.counters = frame.clock.as_ref().map(|clock| {
             save_allocation_counters::read_counters(&memory, shared.base, clock.game_state as usize)
         });
-        let clock_ticks = entry_ticks + qpc() - before;
-        let unavailable = Outcome::Unavailable {
-            reason: "clock unavailable",
-        };
-        frame.countries_result = unavailable;
-        frame.provinces_result = unavailable;
-        frame.provinces.conflict_walk = cprovince::ConflictWalk::default();
-        frame.states_result = unavailable;
-        frame.state_inputs.reset();
-        frame.state_names_len = 0;
-        frame.state_names_required = 0;
-        frame.divisions_result = unavailable;
-        frame.wars_result = unavailable;
-        frame.wars_snapshot_sampled = false;
-        frame.factions_result = unavailable;
-        frame.faction_names_len = 0;
-        frame.faction_names_required = 0;
-        frame.faction_members_result = unavailable;
-        frame.links_result = unavailable;
-        frame.map.reset();
-        frame.extended.reset();
-        frame.country_cache_status = SeedStatus::Unavailable {
-            reason: "clock unavailable",
-        };
-        frame.country_cache_entries = 0;
-        frame.country_cache_ns = 0;
-        frame.order_counters.reset();
-        frame.fixed_layout = None;
+        let clock_reads = qpc() - before;
+        let clock_ticks = entry_ticks + clock_reads;
+        // The hour's decode job is filled in place in its queue slot, so its
+        // payloads never sit in this frame. Owning a buffer guarantees a slot.
+        let mut decode_slot = shared
+            .decode_queue
+            .reserve()
+            .expect("an owned buffer has a decode slot");
+        shared.game_thread.frame_reset_ns.fetch_add(
+            shared.ns(qpc() - reset_begin - clock_reads),
+            Ordering::Relaxed,
+        );
+        let decode::DecodeJob {
+            relations_payload,
+            characters_payload,
+            projects_payload,
+            lexical_payload,
+            divisions_payload,
+            air_wing_payload,
+            air_stats_payload,
+            naval_payload,
+            players_payload,
+            session_payload,
+            production_rest_payload,
+            construction_rest_payload,
+            economy_rest_payload,
+            air_bases_payload,
+            supremacy_payload,
+            sunk_payload,
+            radar_payload,
+            intel_payload,
+            weather_payload,
+            capitulation_payload,
+            ..
+        } = decode_slot.job();
         // Relations handoff state: same FIFO, same ordering guarantees.
-        let mut relations_payload: Option<extended::intel::RelationsJob> = None;
         let mut relations_report = extended::intel::RelationsCopyReport::default();
         // Characters handoff state: same FIFO, same ordering guarantees.
-        let mut characters_payload: [Option<extended::characters::CharactersJob>; CHARACTER_PARTS] =
-            [const { None }; CHARACTER_PARTS];
         let mut characters_report =
             [extended::characters::CharactersCopyReport::default(); CHARACTER_PARTS];
         // Projects handoff state: same FIFO, same ordering guarantees.
-        let mut projects_payload: Option<extended::projects::ProjectsJob> = None;
         let mut projects_report = extended::projects::ProjectsCopyReport::default();
         // Lexical handoff state: same FIFO, same ordering guarantees.
-        let mut lexical_payload: Option<extended::lexical::LexicalJob> = None;
         let mut lexical_report = extended::lexical::LexicalCopyReport::default();
         // Divisions handoff state: same FIFO, same ordering guarantees.
         // The hourly payload carries the divisions walk and any scheduled
         // equipment/upgrade detail walks sharing its census.
-        let mut divisions_payload: Option<DivisionsJob> = None;
         let mut divisions_report = DivisionsCopyReport::default();
-        // Focus handoff state: same FIFO, same ordering guarantees. The
-        // scheduled payload carries the summary walk plus the completed
-        // roster; staging overflow falls back to the typed walk inside
-        // governance capture with no payload enqueued.
-        let mut focus_payload: Option<extended::governance::FocusJob> = None;
-        let mut focus_report = extended::governance::FocusCopyReport::default();
-        let mut air_wing_payload: Option<extended::air::AirWingJob> = None;
         let mut air_wing_report = extended::air::AirWingCopyReport::default();
-        let mut air_stats_payload: Option<extended::air::AirStatsJob> = None;
         let mut air_stats_report = extended::air::AirStatsCopyReport::default();
-        let mut naval_payload: Option<extended::naval_history::NavalJob> = None;
         let mut naval_report = extended::naval_history::NavalCopyReport::default();
         // Players handoff state: same FIFO, same ordering
         // guarantees. The hourly payload carries the independent roster
         // and controller walks with its own root refs and no
         // cross-family decoded roots. Staging overflow falls back to the
         // typed walks with no payload enqueued.
-        let mut players_payload: Option<crate::map_capture::PlayersJob> = None;
         let mut players_report = crate::map_capture::PlayersCopyReport::default();
         // Session family handoff state: same FIFO, same ordering
         // guarantees. The scheduled payload carries the manager, sources
         // and aggregates with its own root refs and no cross-family
         // decoded roots. Staging overflow falls back to the typed walks
         // with no payload enqueued.
-        let mut session_payload: Option<extended::session::SessionJob> = None;
         let mut session_report = extended::session::SessionCopyReport::default();
         // Production rest handoff state: same FIFO, same ordering
         // guarantees. The scheduled payload carries lines, stockpiles,
         // licences, the deployment queue and licence records with its own
         // census and no cross-family decoded roots. Staging overflow
         // falls back to the typed walks with no payload enqueued.
-        let mut production_rest_payload: Option<extended::production::ProductionRestJob> = None;
         let mut production_rest_report = extended::production::ProductionRestCopyReport::default();
         // Construction rest handoff state: same FIFO, same ordering
         // guarantees. The scheduled payload carries resources, the
         // construction queue, occupation, resistance and collaboration
         // with its own census and no cross-family decoded roots. Staging
         // overflow falls back to the typed walks with no payload enqueued.
-        let mut construction_rest_payload: Option<extended::construction::ConstructionRestJob> =
-            None;
         let mut construction_rest_report =
             extended::construction::ConstructionRestCopyReport::default();
         // Economy hourly rest handoff state: same FIFO, same ordering
@@ -1760,57 +2256,42 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
         // exchanges and purchases with its own census and no
         // cross-family decoded roots. Staging overflow falls back to the
         // typed walks with no payload enqueued.
-        let mut economy_rest_payload: Option<extended::economy::EconomyRestJob> = None;
         let mut economy_rest_report = extended::economy::EconomyRestCopyReport::default();
         // Shared hourly bases handoff state: same FIFO, same ordering
         // guarantees. The hourly payload carries the wing/manager census
         // once with bases, registrations and scheduled aces detail; the
         // decodes read the shared spans. Staging overflow falls back to
         // the typed walks with no payload enqueued.
-        let mut air_bases_payload: Option<extended::air::AirBasesJob> = None;
         let mut air_bases_report = extended::air::AirBasesCopyReport::default();
-        // Shared history handoff state: same FIFO, same ordering
-        // guarantees. The scheduled payload carries the regional walk once
-        // with history and damage detail; both decodes read the shared
-        // spans. Staging overflow falls back to the typed walk with no
-        // payload enqueued.
-        let mut air_history_payload: Option<extended::air::AirHistoryJob> = None;
-        let mut air_history_report = extended::air::AirHistoryCopyReport::default();
         // Scheduled supremacy handoff state: same FIFO, same ordering
         // guarantees. Staging overflow falls back to the typed walk with
         // no payload enqueued.
-        let mut supremacy_payload: Option<extended::naval_history::SupremacyJob> = None;
         let mut supremacy_report = extended::naval_history::SupremacyCopyReport::default();
         // Scheduled sunk-ships handoff state: same FIFO, same ordering
         // guarantees. Staging overflow falls back to the typed walk with
         // no payload enqueued.
-        let mut sunk_payload: Option<extended::naval_history::SunkJob> = None;
         let mut sunk_report = extended::naval_history::SunkCopyReport::default();
         // Scheduled radar handoff state: same FIFO, same ordering
         // guarantees. Staging overflow falls back to the typed walk with
         // no payload enqueued.
-        let mut radar_payload: Option<extended::fog::RadarJob> = None;
         let mut radar_report = extended::fog::RadarCopyReport::default();
         // Hourly intel handoff state: same FIFO, same ordering
         // guarantees. The hourly payload carries the walk's own
         // division/fleet census once with viewer detail; both unit paths
         // decode from the shared spans. Staging overflow falls back to
         // the typed walk with no payload enqueued.
-        let mut intel_payload: Option<extended::fog::IntelJob> = None;
         let mut intel_report = extended::fog::IntelCopyReport::default();
         // Hourly weather handoff state: same FIFO, same ordering
         // guarantees. The hourly payload carries the manager header once
         // with limits, regions and provinces detail; all three decodes
         // read the shared spans. Staging overflow falls back to the typed
         // walks with no payload enqueued.
-        let mut weather_payload: Option<extended::weather::WeatherJob> = None;
         let mut weather_report = extended::weather::WeatherCopyReport::default();
         // Hourly capitulation handoff state: same FIFO, same ordering
         // guarantees. The hourly payload carries the country census once
         // with diplomacy detail; the decode reads the shared spans.
         // Staging overflow falls back to the typed walk with no payload
         // enqueued.
-        let mut capitulation_payload: Option<extended::intel::CapitulationJob> = None;
         let mut capitulation_report = extended::intel::CapitulationCopyReport::default();
         let mut decode_hour = 0;
         let mut decode_force_full = false;
@@ -1822,13 +2303,16 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
         let mut inline_walk_ns = 0u64;
         let mut join_ns = 0u64;
         if let Some(clock) = entry {
-            frame.fixed_layout = Some(match shared.fixed_layout.get() {
-                Some(report) => Ok(*report),
-                None => {
-                    let buffer = unsafe { &mut *shared.fixed_layout_buffer.get() };
-                    engine::fixed_layout::check(&memory, shared.base, buffer)
-                        .inspect(|report| _ = shared.fixed_layout.set(*report))
-                }
+            // Out of line: the layout report (about 10 KiB) stays off this frame.
+            out_of_line(|| {
+                frame.fixed_layout = Some(match shared.fixed_layout.get() {
+                    Some(report) => Ok(*report),
+                    None => {
+                        let buffer = unsafe { &mut *shared.fixed_layout_buffer.get() };
+                        engine::fixed_layout::check(&memory, shared.base, buffer)
+                            .inspect(|report| _ = shared.fixed_layout.set(*report))
+                    }
+                });
             });
             let cadence = unsafe { &mut *shared.cadence.get() };
             let continuous = cadence.continuous(&clock);
@@ -1854,13 +2338,14 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 continuous,
                 recovery,
             );
-            // SAFETY: the native hourly call stays parked through both boundary phases.
-            unsafe { capture_observer_boundary(shared, &mut batch, frame, boundary_request) };
-            frame
-                .extended
-                .set_load_signal(clock.play_session_started_at);
-            frame.extended.prepare_hour(clock.hour, force_full);
+            let boundary_begin = qpc();
+            // SAFETY: the native hourly call stays parked through the boundary job.
+            let boundary_pending =
+                unsafe { submit_observer_boundary(shared, &mut batch, boundary_request) };
+            let mut boundary_ticks = qpc() - boundary_begin;
             let state = clock.game_state as usize;
+            // The country snapshot reads only native memory and the shared
+            // cache: it runs while a worker drains the observers.
             let cache_begin = qpc();
             shared.install_offered_country_cache();
             let country_snapshot =
@@ -1874,53 +2359,18 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 })
                 .expect("every country snapshot lease returned before the next callback");
             let cached = country_snapshot.view(&memory);
-            let boundary_request = frame.extended.take_lane_boundary_request();
-            // SAFETY: lane sealing retains its original later boundary.
-            unsafe { capture_observer_boundary(shared, &mut batch, frame, boundary_request) };
+            let snapshot_ticks = qpc() - cache_begin;
+            frame
+                .extended
+                .set_load_signal(clock.play_session_started_at);
+            frame.extended.prepare_hour(clock.hour, force_full);
+            shared
+                .game_thread
+                .country_snapshot_ns
+                .fetch_add(shared.ns(snapshot_ticks), Ordering::Relaxed);
             frame.country_cache_status = cached.seed_status();
             frame.country_cache_entries = cached.cached_entries();
             let cache_prepare_ticks = qpc() - cache_begin;
-            // Every accepted request is owned by this callback-scoped draining guard.
-            // Rejected submissions retain their buffers. Only fixed-storage
-            // readers may execute inline; allocating readers require a worker.
-            ts_setup = qpc();
-            let mut segment_prev = ts_setup;
-            macro_rules! segment {
-                ($index:expr) => {{
-                    let now = qpc();
-                    shared.phase_segments[$index]
-                        .fetch_add(shared.ns(now - segment_prev), Ordering::Relaxed);
-                    segment_prev = now;
-                }};
-            }
-            let wait_at_setup = shared.acquisition_wait_ns.load(Ordering::Relaxed);
-            macro_rules! queue {
-                ($job:expr) => {{
-                    // SAFETY: batch drains all accepted work before this callback returns.
-                    unsafe { submit_acquisition(shared, &mut batch, $job) }
-                }};
-            }
-            macro_rules! completed {
-                ($pending:expr, $variant:ident) => {{
-                    // SAFETY: this thread still owns the live acquisition boundary.
-                    let completed = unsafe { finish_acquisition(shared, &mut batch, $pending) };
-                    let acquisition::Job::$variant(request) = completed.request else {
-                        unreachable!("acquisition ticket retains its submitted job type")
-                    };
-                    let report = completed.report.map(|report| {
-                        let acquisition::Report::$variant(report) = report else {
-                            unreachable!("acquisition report retains its submitted job type")
-                        };
-                        report
-                    });
-                    let failure = report
-                        .as_ref()
-                        .err()
-                        .copied()
-                        .map(acquisition_failure_reason);
-                    (request, report.unwrap_or_default(), failure)
-                }};
-            }
             let characters_refresh = decode::characters_refresh_hour(clock.hour, force_full);
             let projects_refresh = decode::projects_refresh_hour(clock.hour, force_full);
             let lexical_max =
@@ -1944,33 +2394,346 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 ),
             ));
             let relations_refresh = decode::relations_refresh_hour(clock.hour, force_full);
-            // ShipModels is the longest single job and walks its own ship census:
-            // dispatch it first so it overlaps everything else.
+            // The observer join, as late as the first dispatch allows. Nothing
+            // since the submission reads what the boundary job writes: the
+            // lanes it took from the frame, the observer registries'
+            // boundaries, its drained and sealed lanes and the offered output
+            // stores. Any job below may, and a held job can still run, so it
+            // joins before the first `queue!`.
+            let boundary_begin = qpc();
+            // SAFETY: as above.
+            unsafe { finish_observer_boundary(shared, &mut batch, frame, boundary_pending) };
+            boundary_ticks += qpc() - boundary_begin;
+            shared
+                .game_thread
+                .boundaries_ns
+                .fetch_add(shared.ns(boundary_ticks), Ordering::Relaxed);
+            // Every accepted request is owned by this callback-scoped draining guard.
+            // Rejected submissions retain their buffers. Only fixed-storage
+            // readers may execute inline; allocating readers require a worker.
+            ts_setup = qpc();
+            let mut segment_prev = ts_setup;
+            macro_rules! segment {
+                ($index:expr) => {{
+                    let now = qpc();
+                    shared.phase_segments[$index]
+                        .fetch_add(shared.ns(now - segment_prev), Ordering::Relaxed);
+                    segment_prev = now;
+                }};
+            }
+            let wait_at_setup = shared.acquisition_wait_ns.load(Ordering::Relaxed);
+            // Requests are built, submitted and collected out of line, so this
+            // frame holds tickets and variant results, never a job or completion.
+            macro_rules! queue {
+                ($job:expr) => {{
+                    let job = || $job;
+                    // SAFETY: batch drains all accepted work before this callback returns.
+                    unsafe { queue_acquisition(shared, &mut batch, job) }
+                }};
+            }
+            // One wake for every job queued since `batch.hold()`.
+            macro_rules! release {
+                () => {{
+                    let begin = qpc();
+                    let jobs = batch.release();
+                    shared.game_thread.release(jobs, shared.ns(qpc() - begin));
+                }};
+            }
+            macro_rules! collected {
+                ($pending:expr, $variant:ident) => {{
+                    // SAFETY: this thread still owns the live acquisition boundary.
+                    unsafe {
+                        collect_acquisition(
+                            shared,
+                            &mut batch,
+                            $pending,
+                            |job| {
+                                let acquisition::Job::$variant(request) = job else {
+                                    unreachable!(
+                                        "acquisition ticket retains its submitted job type"
+                                    )
+                                };
+                                request
+                            },
+                            |report| {
+                                let acquisition::Report::$variant(report) = report else {
+                                    unreachable!(
+                                        "acquisition report retains its submitted job type"
+                                    )
+                                };
+                                report
+                            },
+                        )
+                    }
+                }};
+            }
+            macro_rules! completed {
+                ($pending:expr, $variant:ident) => {{
+                    let (request, report) = collected!($pending, $variant);
+                    let failure = report
+                        .as_ref()
+                        .err()
+                        .copied()
+                        .map(acquisition_failure_reason);
+                    (request, report.unwrap_or_default(), failure)
+                }};
+            }
+            // The first burst: every job that needs no other job's output,
+            // except the slack burst that leaves behind the Naval copy. It
+            // queues without waking the pool and is released at once
+            // (`Batch::release`), the jobs that gate others first.
+            batch.hold();
+            // ShipModels walks its own ship census; its detail parts follow its join.
             let ship_census = std::mem::replace(&mut frame.map.naval, ShipCensus::vacant());
             let ship_models_pending = queue!(acquisition::Job::ShipModels(
                 frame.extended.take_ship_models_request(
                     &country_snapshot,
                     shared.base,
                     state,
-                    clock.hour,
                     ship_census,
                 )
             ));
-            let world_request = acquire_world_request(
+            // The Ordinary counter part reads the naming this job leaves in
+            // the appearance pack; it leaves as soon as this job joins.
+            let countries_pending = queue!(acquisition::Job::Countries(
+                frame.extended.take_countries_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    &mut frame.countries,
+                    &mut frame.links,
+                    (clock.hour, force_full),
+                    // SAFETY: only this callback takes and returns the store.
+                    unsafe { (*shared.appearance_store.get()).take() },
+                )
+            ));
+            // The template dictionary reads only the shared country cache: it
+            // walks beside Countries and joins before the tables.
+            let templates_pending = queue!(acquisition::Job::Templates(
+                frame.extended.take_templates_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    (clock.hour, force_full),
+                )
+            ));
+            // Original inputs grow on a worker before any consumer receives a
+            // lease. Rejection/failure is terminal for this attempt, without a
+            // callback fallback or a second native roster walk. Presentation,
+            // Divisions and Intel wait for this join.
+            let (division_source_capacity, detail_capacities) =
+                frame.extended.division_capture_capacities();
+            let divisions_ctx = DivisionsCopyContext {
+                base: shared.base,
+                game_state: state,
+                row_capacity: frame.divisions.len(),
+                source_capacity: division_source_capacity,
+                detail_capacities,
+                details_active: replay::cadence::should_walk(
+                    TableId::DivisionEquipment,
+                    clock.hour,
+                    force_full,
+                ),
+            };
+            // The country slots split into parts by the previous hour's
+            // census; the inputs job walks the first.
+            // SAFETY: only this callback reads and writes the split.
+            let (starts, split) = unsafe { *shared.division_part_starts.get() };
+            let slots = |part: usize| {
+                let first = if part == 0 { 1 } else { starts[part - 1] };
+                (
+                    first,
+                    starts
+                        .get(part)
+                        .filter(|_| part < split)
+                        .copied()
+                        .unwrap_or(u32::MAX),
+                )
+            };
+            let mut input_payload = decode::acquire_divisions_job();
+            input_payload.slots = (split != 0).then(|| slots(0));
+            // SAFETY: only this callback reads and writes the split.
+            input_payload.join_capacity = unsafe { *shared.division_join_capacity.get() };
+            let input_pending = queue!(acquisition::Job::DivisionInputs(acquisition::RawRequest {
+                countries: Arc::clone(&country_snapshot),
+                context: divisions_ctx,
+                payload: input_payload,
+            }));
+            let mut part_pending: [Option<PendingAcquisition>;
+                crate::division_census::MAX_PARTS - 1] =
+                [const { None }; crate::division_census::MAX_PARTS - 1];
+            for (part, pending) in part_pending.iter_mut().enumerate().take(split) {
+                // SAFETY: only this callback takes and returns the censuses.
+                if let Some(census) = unsafe { (*shared.division_parts.get())[part].take() } {
+                    *pending = Some(queue!(acquisition::Job::DivisionInputParts(
+                        acquisition::DivisionPartRequest {
+                            countries: Arc::clone(&country_snapshot),
+                            base: shared.base,
+                            game_state: state,
+                            slots: slots(part + 1),
+                            census,
+                        }
+                    )));
+                }
+            }
+            // Naval uses this callback's independently bounded wing-membership census.
+            // Both consumers borrow the same original registry census. Its
+            // worker prepares their full storage before either job is queued.
+            // The wing job bounds its naval memberships by the naval payload's
+            // membership capacity, which the root census does not change
+            // (`NavalJob::capture_roots_growing` reserves only its roots): it
+            // leaves in this burst with the capacity taken here.
+            let naval = decode::acquire_naval_job();
+            let naval_limit = naval.wing_limit();
+            // SAFETY: the hourly callback is the split's only reader and writer.
+            let order_part_bytes = unsafe { begin_order_parts(shared, &mut frame.map.orders) };
+            let root_pending = queue!(acquisition::Job::OrderRoots(
+                acquisition::OrderRootsRequest {
+                    base: shared.base,
+                    orders: std::mem::replace(
+                        &mut frame.map.orders,
+                        crate::map_capture::Orders::vacant()
+                    ),
+                    naval,
+                }
+            ));
+            // The wing census reads only the country snapshot; AirMissions
+            // waits for its join, and the Naval copy takes its memberships
+            // when it returns.
+            let wing_limits = frame.extended.air_wing_pilot().wing_limits();
+            let air_ctx = extended::air::AirWingCopyContext {
+                base: shared.base,
+                game_state: state,
+                hour: clock.hour,
+                force_full,
+                limits: [
+                    frame.map.air_wings.rows.len(),
+                    wing_limits[0],
+                    wing_limits[1],
+                ],
+                naval_limit,
+                game_score: shared.game_score_enabled,
+            };
+            // Split by owner slots, sized by the last joined census: every
+            // part after the first leaves now too, and the join below puts
+            // them together in slot order.
+            // SAFETY: only this callback reads and writes the split.
+            let (air_starts, air_split) = unsafe { *shared.air_wing_part_starts.get() };
+            let air_slots = |part: usize| {
+                let first = if part == 0 { 0 } else { air_starts[part - 1] };
+                let end = air_starts
+                    .get(part)
+                    .filter(|_| part < air_split)
+                    .copied()
+                    .unwrap_or(u32::MAX);
+                first..end
+            };
+            let mut air_payload = decode::acquire_air_wing_job();
+            // SAFETY: only this callback takes and returns the store.
+            air_payload.wing_store = unsafe { (*shared.wing_store.get()).take() };
+            air_payload.slots = air_slots(0);
+            air_payload.split = air_split != 0;
+            let air_pending = queue!(acquisition::Job::AirWing(acquisition::RawRequest {
+                countries: Arc::clone(&country_snapshot),
+                context: air_ctx,
+                payload: air_payload,
+            }));
+            let mut air_part_pending: [Option<PendingAcquisition>; extended::air::WING_PARTS - 1] =
+                [const { None }; extended::air::WING_PARTS - 1];
+            for (part, pending) in air_part_pending.iter_mut().enumerate().take(air_split) {
+                // SAFETY: only this callback takes and returns the parts.
+                let mut payload =
+                    std::mem::take(unsafe { &mut (*shared.air_wing_parts.get())[part] });
+                payload.slots = air_slots(part + 1);
+                payload.split = true;
+                *pending = Some(queue!(acquisition::Job::AirWing(acquisition::RawRequest {
+                    countries: Arc::clone(&country_snapshot),
+                    // A part grows its own storage; the frame's grants size
+                    // the joined census.
+                    context: extended::air::AirWingCopyContext {
+                        limits: [0; 3],
+                        naval_limit: 0,
+                        ..air_ctx
+                    },
+                    payload,
+                })));
+            }
+            // The character roster supplies the portrait shares, the role jobs
+            // and the Gated job's role census.
+            let (trait_rows, trait_bytes) =
+                frame.extended.characters_pilot().trait_capture_capacities();
+            let characters_ctx = extended::characters::CharactersCopyContext {
+                base: shared.base,
+                game_state: state,
+                force_full,
+                trait_rows,
+                trait_bytes,
+                active: decode::CHARACTERS
+                    .map(|table| replay::cadence::should_walk(table, clock.hour, force_full)),
+            };
+            frame
+                .extended
+                .characters_pilot()
+                .set_character_activity(characters_ctx.active);
+            let mut characters_pending: [Option<PendingAcquisition>; CHARACTER_PARTS] =
+                [const { None }; CHARACTER_PARTS];
+            let character_part = |part: usize| -> [bool; extended::characters::N] {
+                std::array::from_fn(|index| {
+                    characters_ctx.active[index] && extended::characters::PART_MASKS[part][index]
+                })
+            };
+            // The roster job gathers the role census only when a role job or
+            // the character inputs run.
+            let role_hour = (1..CHARACTER_PARTS)
+                .any(|part| character_part(part).iter().any(|&value| value))
+                || extended::character_inputs::TABLES
+                    .iter()
+                    .any(|&table| replay::cadence::should_walk(table, clock.hour, force_full));
+            let roster_active = character_part(0);
+            if characters_refresh && roster_active.iter().any(|&value| value) {
+                characters_pending[0] = Some(queue!(acquisition::Job::Characters(
+                    acquisition::CharactersRequest {
+                        context: extended::characters::CharactersCopyContext {
+                            active: roster_active,
+                            ..characters_ctx
+                        },
+                        payload: decode::acquire_characters_job(0),
+                        roles: if role_hour {
+                            extended::characters::Roles::Gather
+                        } else {
+                            extended::characters::Roles::Independent
+                        },
+                    }
+                )));
+            }
+            // The production and construction rests, and beside them the
+            // economy rest, each its own job joined at the same point.
+            // Out of line: the job-sized request stays off the hourly body's
+            // frame. The construction rest's verdict, installed in the Gated
+            // packs before they leave, is whether its part was scheduled:
+            // `settle_world` set it to exactly this.
+            let (world_pending, construction_active) = out_of_line(|| {
+                let request = acquire_world_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                );
+                let construction_active = request.construction.is_some();
+                (
+                    queue!(acquisition::Job::World(request)),
+                    construction_active,
+                )
+            });
+            let economy_pending = queue!(acquisition::Job::Economy(acquire_economy_request(
                 &country_snapshot,
                 shared.base,
                 state,
-                frame.extended.focus_pilot().focus_copy_context(
-                    shared.base,
-                    state,
-                    replay::cadence::should_walk(TableId::Focus, clock.hour, force_full),
-                ),
                 frame.extended.economy_rest_pilot(),
                 clock.hour,
                 force_full,
-            );
-            let world_pending = queue!(acquisition::Job::World(world_request));
-            // The longest hourly jobs go out first: the block ends when they do.
+            )));
             // The research tables are loaned before the family that owns them.
             // SAFETY: only this callback takes and returns the store.
             let fingerprints =
@@ -1987,26 +2750,31 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     fingerprints,
                 )
             ));
-            // Governance waits for the World join only to learn whether World
-            // delegated this hour's Focus walk. Off the Focus slot there is
-            // nothing to delegate, so it leaves in the first burst instead.
-            let focus_hour = replay::cadence::should_walk(TableId::Focus, clock.hour, force_full);
-            let early_governance = (!focus_hour).then(|| {
-                // Off the Focus slot World delegates nothing: the loaned family
-                // must not carry an older delegation into this capture.
-                frame.extended.focus_pilot().focus_raw_mode = false;
-                let request = frame.extended.take_governance_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    clock.hour,
-                    force_full,
-                    // SAFETY: only this callback takes and returns the store.
-                    unsafe { take_slice_store(shared, crate::slicing::TECHNOLOGIES) },
-                );
-                let bytes = request.allocated_bytes();
-                (queue!(acquisition::Job::Governance(request)), bytes)
-            });
+            let (governance_pending, governance_bytes) = {
+                let mut bytes = 0;
+                let pending = queue!(acquisition::Job::Governance({
+                    let request = frame.extended.take_governance_request(
+                        &country_snapshot,
+                        shared.base,
+                        state,
+                        clock.hour,
+                        force_full,
+                        // SAFETY: only this callback takes and returns the store.
+                        unsafe { take_slice_store(shared, crate::slicing::TECHNOLOGIES) },
+                        // SAFETY: only this callback takes and returns the store.
+                        unsafe { take_slice_store(shared, crate::slicing::FOCUS) },
+                        // SAFETY: only this callback takes and returns the store.
+                        unsafe { (*shared.building_store.get()).take() },
+                        // SAFETY: only this callback takes and returns the store.
+                        unsafe { (*shared.leader_store.get()).take() },
+                        // SAFETY: only this callback takes and returns the store.
+                        unsafe { (*shared.party_store.get()).take() },
+                    );
+                    bytes = request.allocated_bytes();
+                    request
+                }));
+                (pending, bytes)
+            };
             // Variant rows read live memory only; the family leaves on its slot.
             let variants_pending = frame
                 .extended
@@ -2015,74 +2783,133 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     let bytes = request.allocated_bytes();
                     (queue!(acquisition::Job::Variants(request)), bytes)
                 });
-            // Naval uses this callback's independently bounded wing-membership census.
-            // Both consumers borrow the same original registry census. Its
-            // worker prepares their full storage before either job is queued.
-            let root_pending = queue!(acquisition::Job::OrderRoots(
-                acquisition::OrderRootsRequest {
-                    base: shared.base,
-                    orders: std::mem::replace(
-                        &mut frame.map.orders,
-                        crate::map_capture::Orders::vacant()
-                    ),
-                    naval: decode::acquire_naval_job(),
+            // The Ordinary family's independent parts: combat and naval
+            // details, map counters, task forces, and the physical navy pass
+            // with the naval mission ledgers. The naval mission store travels
+            // with the navy part. The task-force part is taken here with the
+            // others and queued in the slack burst behind the Naval copy.
+            // Out of line: the parts' requests stay off the hourly body's frame.
+            let (mut ordinary_parts_pending, ordinary_slack_parts, ordinary_parts_bytes) =
+                out_of_line(|| {
+                    let mut bytes = 0;
+                    let parts = frame.extended.take_ordinary_parts(
+                        &country_snapshot,
+                        shared.base,
+                        state,
+                        clock.hour,
+                        crate::fixed_layout::task_force_eta_guard(frame.fixed_layout.as_ref()),
+                        crate::extended::NavalMissionLoan {
+                            force_full,
+                            // SAFETY: only this callback takes and returns this store.
+                            fingerprints: unsafe {
+                                (*shared.slice_fingerprints[crate::slicing::NAVAL_MISSIONS].get())
+                                    .take()
+                            },
+                        },
+                    );
+                    let mut slack: [Option<acquisition::OrdinaryPartRequest>;
+                        extended::ORDINARY_PARTS] = [const { None }; extended::ORDINARY_PARTS];
+                    let mut index = 0;
+                    let pending = parts.map(|part| {
+                        let slot = index;
+                        index += 1;
+                        bytes += part.allocated_bytes();
+                        if matches!(part.part, extended::OrdinaryPart::TaskForces(_)) {
+                            slack[slot] = Some(part);
+                            None
+                        } else {
+                            Some(queue!(acquisition::Job::OrdinaryPart(part)))
+                        }
+                    });
+                    (pending, slack, bytes)
+                });
+            // SAFETY: only this callback takes and returns the stores.
+            let slow_stores = unsafe {
+                crate::extended::SlowStores {
+                    available: (*shared.slice_fingerprints[crate::slicing::AVAILABLE_ADVISORS]
+                        .get())
+                    .take(),
+                    advisors: (*shared.advisor_store.get()).take(),
+                    local_subunits: (*shared.local_subunit_store.get()).take(),
                 }
-            ));
-            let (root_request, naval_roots_ticks, root_failure) =
-                completed!(root_pending, OrderRoots);
-            frame.map.orders = root_request.orders;
-            let mut naval_job = root_request.naval;
-            if let Some(reason) = root_failure {
-                frame.map.orders.fail_roots(reason);
-                naval_job.fail_roots(reason);
-            }
-            let mut orders_request = frame.extended.take_orders_request(
+            };
+            let slow_pending = queue!(acquisition::Job::Slow(frame.extended.take_slow_request(
                 &country_snapshot,
-                &mut frame.map.orders,
                 shared.base,
                 state,
-            );
-            let orders_bytes = orders_request.allocated_bytes();
-            // Queue after this pass's OOB copy finishes. The existing payload
-            // is loaned by value; all other independent jobs keep their order.
-            let wing_limits = frame.extended.air_wing_pilot().wing_limits();
-            let air_ctx = extended::air::AirWingCopyContext {
-                base: shared.base,
-                game_state: state,
-                hour: clock.hour,
+                clock.hour,
                 force_full,
-                limits: [
-                    frame.map.air_wings.rows.len(),
-                    wing_limits[0],
-                    wing_limits[1],
-                ],
-                naval_limit: naval_job.wing_limit(),
-                game_score: shared.game_score_enabled,
-            };
-            let air_pending = queue!(acquisition::Job::AirWing(acquisition::RawRequest {
-                countries: Arc::clone(&country_snapshot),
-                context: air_ctx,
-                payload: decode::acquire_air_wing_job(),
-            }));
-            let air_bases_ctx = extended::air::AirBasesCopyContext {
-                base: shared.base,
-                game_state: state,
-                hour: clock.hour,
-                force_full,
-                transport_admission: crate::transport_admission::current(
+                slow_stores
+            )));
+            // The daily production slot's walks, beside Slow, at that slot.
+            // On its slot the production modifier capture splits at the last
+            // slot hour's balance: the parts after the first leave first, then
+            // the ProductionDaily job with the first; all join in slot order.
+            let mut production_part_pending: [Option<PendingAcquisition>;
+                extended::production_modifiers::MAX_PARTS - 1] =
+                [const { None }; extended::production_modifiers::MAX_PARTS - 1];
+            if extended::ProductionDailyPacks::due(clock.hour, force_full) {
+                // SAFETY: only this callback reads and writes the split.
+                let (starts, split) = unsafe { *shared.production_part_starts.get() };
+                let parts = frame.extended.prepare_production_modifier_parts(
+                    &memory,
+                    shared.base,
+                    &starts[..split],
+                );
+                for (part, pending) in production_part_pending
+                    .iter_mut()
+                    .enumerate()
+                    .take(parts - 1)
+                {
+                    *pending = Some(queue!(acquisition::Job::ProductionModifierPart(
+                        frame.extended.take_production_modifier_part(
+                            part + 1,
+                            &country_snapshot,
+                            shared.base,
+                            state,
+                            clock.hour,
+                            force_full,
+                        )
+                    )));
+                }
+            }
+            let production_daily_pending =
+                extended::ProductionDailyPacks::due(clock.hour, force_full).then(|| {
+                    queue!(acquisition::Job::ProductionDaily(
+                        frame.extended.take_production_daily_request(
+                            &country_snapshot,
+                            shared.base,
+                            state,
+                            clock.hour,
+                            force_full,
+                        )
+                    ))
+                });
+            // The war overview, beside Slow.
+            let war_overview_pending = queue!(acquisition::Job::WarOverview(
+                frame.extended.take_war_overview_request(
+                    &country_snapshot,
                     shared.base,
                     state,
                     clock.hour,
-                ),
-            };
-            let air_bases_pending = {
-                let payload = decode::acquire_air_bases_job();
-                queue!(acquisition::Job::AirBases(acquisition::RawRequest {
-                    countries: Arc::clone(&country_snapshot),
-                    context: air_bases_ctx,
-                    payload,
-                }))
-            };
+                    force_full,
+                )
+            ));
+            // The stability tables, beside Slow. Their store travels with the
+            // job; missing it drops only that family's early reads this hour.
+            // SAFETY: only this callback takes and returns the store.
+            let stability_store =
+                unsafe { (*shared.slice_fingerprints[crate::slicing::STABILITY].get()).take() };
+            let stability_pending = queue!(acquisition::Job::Stability(
+                frame.extended.take_stability_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                    stability_store,
+                )
+            ));
             // The relations context, activity and owner slice come from the
             // real Intel pack: IntelResidual borrows it from here to its join,
             // leaving a vacant placeholder with no rows and no selection.
@@ -2103,14 +2930,28 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                         hour: clock.hour,
                         force_full,
                     },
+                    // SAFETY: only this callback takes and returns the store.
+                    unsafe { (*shared.script_flag_store.get()).take() },
+                    // SAFETY: only this callback takes and returns the store.
+                    unsafe { (*shared.script_variable_store.get()).take() },
                 )
             ));
-            let provinces_pending = queue!(acquisition::Job::Provinces(
-                acquisition::ProvincesRequest::take(shared.base, state, &mut frame.provinces)
-            ));
-            let states_pending = queue!(acquisition::Job::States(
-                frame.take_states_request(shared.base, state)
-            ));
+            let air_bases_ctx = extended::air::AirBasesCopyContext {
+                base: shared.base,
+                game_state: state,
+                hour: clock.hour,
+                force_full,
+            };
+            let air_bases_pending = {
+                let mut payload = decode::acquire_air_bases_job();
+                // SAFETY: only this callback takes and returns the store.
+                payload.registration_store = unsafe { (*shared.air_base_store.get()).take() };
+                queue!(acquisition::Job::AirBases(acquisition::RawRequest {
+                    countries: Arc::clone(&country_snapshot),
+                    context: air_bases_ctx,
+                    payload,
+                }))
+            };
             let factions_pending =
                 queue!(acquisition::Job::Factions(acquisition_factions::Request {
                     countries: Arc::clone(&country_snapshot),
@@ -2128,36 +2969,15 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                         &mut frame.faction_members
                     ),
                 }));
-            let countries_pending = queue!(acquisition::Job::Countries(
-                frame.extended.take_countries_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    &mut frame.countries,
-                    &mut frame.links,
-                    (clock.hour, force_full),
-                )
-            ));
-            let wars_pending = queue!(acquisition::Job::Wars(frame.take_wars_request(
-                &country_snapshot,
-                shared.base,
-                state
-            )));
-            let province_unit_order_pending = queue!(acquisition::Job::ProvinceUnitOrder(
-                frame
-                    .extended
-                    .take_province_unit_order_request(shared.base, state,)
-            ));
             let players_ctx = crate::map_capture::PlayersCopyContext {
                 base: shared.base,
                 game_state: state,
             };
             let players_pending = {
-                let payload = decode::acquire_players_job();
                 queue!(acquisition::Job::Players(acquisition::RawRequest {
                     countries: Arc::clone(&country_snapshot),
                     context: players_ctx,
-                    payload,
+                    payload: decode::acquire_players_job(),
                 }))
             };
             let air_stats_ctx = extended::air::AirStatsCopyContext {
@@ -2168,43 +2988,17 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             };
             let air_stats_pending =
                 if replay::cadence::should_walk(TableId::AirStatistics, clock.hour, force_full) {
-                    let payload = decode::acquire_air_stats_job();
                     Some(queue!(acquisition::Job::AirStats(
                         acquisition::RawRequest {
                             countries: Arc::clone(&country_snapshot),
                             context: air_stats_ctx,
-                            payload,
+                            payload: decode::acquire_air_stats_job(),
                         }
                     )))
                 } else {
                     frame.extended.air_stats_pilot().stats_raw_mode = false;
                     None
                 };
-            let air_history_ctx = extended::air::AirHistoryCopyContext {
-                base: shared.base,
-                game_state: state,
-                hour: clock.hour,
-                force_full,
-                history_limit: frame.extended.air_history_pilot().air_history_limits()[0],
-                damage_limit: frame.extended.air_history_pilot().air_history_limits()[1],
-            };
-            let air_history_pending = if replay::cadence::should_walk(
-                TableId::AirRegionHistory,
-                clock.hour,
-                force_full,
-            ) {
-                let payload = decode::acquire_air_history_job();
-                Some(queue!(acquisition::Job::AirHistory(
-                    acquisition::RawRequest {
-                        countries: Arc::clone(&country_snapshot),
-                        context: air_history_ctx,
-                        payload,
-                    }
-                )))
-            } else {
-                frame.extended.air_history_pilot().history_raw_mode = false;
-                None
-            };
             let supremacy_ctx = extended::naval_history::SupremacyCopyContext {
                 base: shared.base,
                 game_state: state,
@@ -2213,12 +3007,11 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             };
             let supremacy_pending =
                 if replay::cadence::should_walk(TableId::NavalSupremacy, clock.hour, force_full) {
-                    let payload = decode::acquire_supremacy_job();
                     Some(queue!(acquisition::Job::Supremacy(
                         acquisition::RawRequest {
                             countries: Arc::clone(&country_snapshot),
                             context: supremacy_ctx,
-                            payload,
+                            payload: decode::acquire_supremacy_job(),
                         }
                     )))
                 } else {
@@ -2233,11 +3026,10 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             };
             let sunk_pending =
                 if replay::cadence::should_walk(TableId::SunkShips, clock.hour, force_full) {
-                    let payload = decode::acquire_sunk_job();
                     Some(queue!(acquisition::Job::Sunk(acquisition::RawRequest {
                         countries: Arc::clone(&country_snapshot),
                         context: sunk_ctx,
-                        payload,
+                        payload: decode::acquire_sunk_job(),
                     })))
                 } else {
                     frame.extended.sunk_pilot().sunk_raw_mode = false;
@@ -2251,56 +3043,26 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             );
             let radar_pending =
                 if replay::cadence::should_walk(TableId::RadarCoverage, clock.hour, force_full) {
-                    let payload = decode::acquire_radar_job();
                     Some(queue!(acquisition::Job::Radar(acquisition::RawRequest {
                         countries: Arc::clone(&country_snapshot),
                         context: radar_ctx,
-                        payload,
+                        payload: decode::acquire_radar_job(),
                     })))
                 } else {
                     frame.extended.radar_pilot().radar_raw_mode = false;
                     None
                 };
-            let attack_guard = crate::fixed_layout::attack_guard(frame.fixed_layout.as_ref());
-            frame.extended.set_attack_guard(attack_guard);
-            let weather_ctx = extended::weather::WeatherCopyContext {
-                game_state: state,
-                base: shared.base,
-                hour: clock.hour,
-                attack_guard,
-            };
-            let weather_pending = {
-                let payload = decode::acquire_weather_job();
-                queue!(acquisition::Job::Weather(acquisition::RawRequest {
-                    countries: Arc::clone(&country_snapshot),
-                    context: weather_ctx,
-                    payload,
-                }))
-            };
-            let capitulation_ctx = extended::intel::CapitulationCopyContext {
-                base: shared.base,
-                game_state: state,
-            };
-            let capitulation_pending = {
-                let payload = decode::acquire_capitulation_job();
-                queue!(acquisition::Job::Capitulation(acquisition::RawRequest {
-                    countries: Arc::clone(&country_snapshot),
-                    context: capitulation_ctx,
-                    payload,
-                }))
-            };
             let projects_ctx = extended::projects::ProjectsCopyContext {
                 base: shared.base,
                 game_state: state,
                 active: projects_refresh,
             };
             let projects_pending = if projects_refresh {
-                let payload = decode::acquire_projects_job();
                 Some(queue!(acquisition::Job::Projects(
                     acquisition::RawRequest {
                         countries: Arc::clone(&country_snapshot),
                         context: projects_ctx,
-                        payload,
+                        payload: decode::acquire_projects_job(),
                     }
                 )))
             } else {
@@ -2309,11 +3071,10 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             };
             let lexical_ctx = extended::lexical::LexicalCopyContext { base: shared.base };
             let lexical_pending = if lexical_refresh {
-                let payload = decode::acquire_lexical_job();
                 Some(queue!(acquisition::Job::Lexical(acquisition::RawRequest {
                     countries: Arc::clone(&country_snapshot),
                     context: lexical_ctx,
-                    payload,
+                    payload: decode::acquire_lexical_job(),
                 })))
             } else {
                 None
@@ -2326,211 +3087,15 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             };
             let session_pending =
                 if replay::cadence::should_walk(TableId::WorldTension, clock.hour, force_full) {
-                    let payload = decode::acquire_session_job();
                     Some(queue!(acquisition::Job::Session(acquisition::RawRequest {
                         countries: Arc::clone(&country_snapshot),
                         context: session_ctx,
-                        payload,
+                        payload: decode::acquire_session_job(),
                     })))
                 } else {
                     frame.extended.session_pilot().raw_mode = false;
                     None
                 };
-            segment!(0);
-            let (division_source_capacity, detail_capacities) =
-                frame.extended.division_capture_capacities();
-            let divisions_ctx = DivisionsCopyContext {
-                base: shared.base,
-                game_state: state,
-                row_capacity: frame.divisions.len(),
-                source_capacity: division_source_capacity,
-                detail_capacities,
-                details_active: replay::cadence::should_walk(
-                    TableId::DivisionEquipment,
-                    clock.hour,
-                    force_full,
-                ),
-            };
-            // Original inputs grow on a worker before any consumer receives a
-            // lease. Rejection/failure is terminal for this attempt, without a
-            // callback fallback or a second native roster walk.
-            let input_pending = queue!(acquisition::Job::DivisionInputs(acquisition::RawRequest {
-                countries: Arc::clone(&country_snapshot),
-                context: divisions_ctx,
-                payload: decode::acquire_divisions_job(),
-            }));
-            let (mut input_request, inputs_ok, input_failure) =
-                completed!(input_pending, DivisionInputs);
-            let inputs = if inputs_ok && input_failure.is_none() {
-                input_request.payload.census.unit_inputs().cloned()
-            } else {
-                input_request.payload.inputs_captured = false;
-                None
-            };
-            frame.extended.install_unit_inputs(inputs.clone());
-            let divisions_pending = Some(queue!(acquisition::Job::Divisions(input_request)));
-            let intel_ctx = frame
-                .extended
-                .intel_pilot()
-                .intel_copy_context(shared.base, state);
-            let intel_pending = queue!(acquisition::Job::Intel(acquisition::IntelRequest {
-                countries: Arc::clone(&country_snapshot),
-                context: intel_ctx,
-                payload: decode::acquire_intel_job(),
-                inputs: inputs.clone(),
-                input_failure: input_failure
-                    .or((!inputs_ok).then_some("division input acquisition could not complete")),
-            }));
-            // The fat late-joined jobs go out after Divisions and Intel so those
-            // find a free worker; the burst's short jobs have freed some by now.
-            let (trait_rows, trait_bytes) =
-                frame.extended.characters_pilot().trait_capture_capacities();
-            let characters_ctx = extended::characters::CharactersCopyContext {
-                base: shared.base,
-                game_state: state,
-                force_full,
-                trait_rows,
-                trait_bytes,
-                active: decode::CHARACTERS
-                    .map(|table| replay::cadence::should_walk(table, clock.hour, force_full)),
-            };
-            frame
-                .extended
-                .characters_pilot()
-                .set_character_activity(characters_ctx.active);
-            let mut characters_pending: [Option<PendingAcquisition>; CHARACTER_PARTS] =
-                [const { None }; CHARACTER_PARTS];
-            let character_part = |part: usize| -> [bool; 6] {
-                std::array::from_fn(|index| {
-                    characters_ctx.active[index] && extended::characters::PART_MASKS[part][index]
-                })
-            };
-            // The roster job gathers the role census only when a role job runs.
-            let role_hour =
-                (1..CHARACTER_PARTS).any(|part| character_part(part).iter().any(|&value| value));
-            let roster_active = character_part(0);
-            if characters_refresh && roster_active.iter().any(|&value| value) {
-                characters_pending[0] = Some(queue!(acquisition::Job::Characters(
-                    acquisition::CharactersRequest {
-                        context: extended::characters::CharactersCopyContext {
-                            active: roster_active,
-                            ..characters_ctx
-                        },
-                        payload: decode::acquire_characters_job(0),
-                        roles: if role_hour {
-                            extended::characters::Roles::Gather
-                        } else {
-                            extended::characters::Roles::Independent
-                        },
-                    }
-                )));
-            }
-            let relations_pending = if relations_refresh {
-                let mut payload = decode::acquire_relations_job();
-                // The hour's owner slice and the family's store go with the
-                // job and come back at its join. The slice was taken from the
-                // real Intel pack before IntelResidual borrowed it.
-                payload.selection = relations_selection.take();
-                // SAFETY: only this callback takes and returns the store.
-                payload.fingerprints =
-                    Some(unsafe { take_slice_store(shared, crate::slicing::RELATIONS) });
-                Some(queue!(acquisition::Job::Relations(
-                    acquisition::RawRequest {
-                        countries: Arc::clone(&country_snapshot),
-                        context: relations_ctx,
-                        payload,
-                    }
-                )))
-            } else {
-                None
-            };
-            // Restore the original appearance/template buffers and their
-            // completed first-result journal before either dependent loan.
-            // Other submitted jobs remain owned by the same draining batch.
-            let (countries_request, countries_report, countries_failure) =
-                completed!(countries_pending, Countries);
-            frame.extended.restore_countries_request(
-                countries_request,
-                &mut frame.countries,
-                &mut frame.links,
-                countries_failure,
-            );
-            frame.countries_result = countries_report.countries;
-            frame.table_ns[2] = shared.ns(countries_report.countries_ticks);
-            frame.links_result = countries_report.links.result;
-            frame.table_ns[3] = shared.ns(countries_report.links_ticks);
-            // Transport risk borrows the original model detail attempts. Join
-            // that source and all its detail parts before Ordinary takes the
-            // transport holder; no later census can repair this first result.
-            let ship_models_completed =
-                unsafe { finish_acquisition(shared, &mut batch, ship_models_pending) };
-            let acquisition::Job::ShipModels(ship_models_request) = ship_models_completed.request
-            else {
-                unreachable!("ShipModels ticket type")
-            };
-            let ship_models_report = ship_models_completed.report.map(|report| {
-                let acquisition::Report::ShipModels = report else {
-                    unreachable!("ShipModels report type")
-                };
-            });
-            frame.map.naval = frame
-                .extended
-                .restore_ship_models_request(ship_models_request, ship_models_report);
-            // Written after the map-tick copy below, which covers these indices.
-            let naval_ns = frame.map.naval.ticks.map(|cost| shared.ns(cost as i64));
-            let ship_detail_pending = frame
-                .extended
-                .take_ship_model_parts(&country_snapshot, shared.base)
-                .map(|request| {
-                    request.map(|request| queue!(acquisition::Job::ShipModelDetails(request)))
-                });
-            // Join the last-dispatched parts first: any still queued then run
-            // inline here instead of parking. Part 0, the family's own capture,
-            // is restored first.
-            let mut ship_detail_completed: [Option<
-                acquisition::Completion<acquisition::Job, acquisition::Report>,
-            >; extended::ship_models::MAX_PARTS] =
-                [const { None }; extended::ship_models::MAX_PARTS];
-            for (pending, completed) in ship_detail_pending
-                .into_iter()
-                .zip(ship_detail_completed.iter_mut())
-                .rev()
-            {
-                if let Some(pending) = pending {
-                    *completed = Some(unsafe { finish_acquisition(shared, &mut batch, pending) });
-                }
-            }
-            for completed in ship_detail_completed.into_iter().flatten() {
-                let acquisition::Job::ShipModelDetails(request) = completed.request else {
-                    unreachable!("ShipModelDetails ticket type")
-                };
-                let report = completed.report.map(|report| {
-                    let acquisition::Report::ShipModelDetails(report) = report else {
-                        unreachable!("ShipModelDetails report type")
-                    };
-                    report
-                });
-                frame.extended.restore_ship_model_part(request, report);
-            }
-            frame.extended.finish_ship_model_parts();
-            let mut ordinary_request = frame.extended.take_ordinary_request(
-                &country_snapshot,
-                shared.base,
-                state,
-                clock.hour,
-                crate::fixed_layout::task_force_eta_guard(frame.fixed_layout.as_ref()),
-                crate::extended::NavalMissionLoan {
-                    force_full,
-                    // SAFETY: only this callback takes and returns this store.
-                    fingerprints: unsafe {
-                        (*shared.slice_fingerprints[crate::slicing::NAVAL_MISSIONS].get()).take()
-                    },
-                },
-            );
-            ordinary_request.transport_modifier_guard =
-                crate::fixed_layout::transport_modifier_guard(frame.fixed_layout.as_ref());
-            let ordinary_bytes = ordinary_request.allocated_bytes();
-            let ordinary_pending = queue!(acquisition::Job::Ordinary(ordinary_request));
             // SAFETY: only this callback takes and returns the stores.
             let (launch_store, state_stores) = unsafe {
                 (
@@ -2570,22 +3135,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     launch_store,
                 )
             ));
-            // The stability store travels with Slow. Missing it drops only
-            // that family's early reads for this hour.
-            // SAFETY: only this callback takes and returns the stores.
-            let slow_stores = unsafe {
-                crate::extended::SlowStores {
-                    stability: (*shared.slice_fingerprints[crate::slicing::STABILITY].get()).take(),
-                }
-            };
-            let slow_pending = queue!(acquisition::Job::Slow(frame.extended.take_slow_request(
-                &country_snapshot,
-                shared.base,
-                state,
-                clock.hour,
-                force_full,
-                slow_stores
-            )));
             let mut air_relations_pending: [Option<PendingAcquisition>; AIR_RELATION_PARTS] =
                 [const { None }; AIR_RELATION_PARTS];
             for (part, pending) in air_relations_pending.iter_mut().enumerate() {
@@ -2601,137 +3150,99 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             let mut supply_trains_pending: [Option<PendingAcquisition>; SUPPLY_PARTS] =
                 [const { None }; SUPPLY_PARTS];
             for (part, pending) in supply_trains_pending.iter_mut().enumerate() {
+                // Part 0 carries the family's owner selection and store.
+                let fingerprints = (part == 0).then(|| {
+                    // SAFETY: only this callback takes and returns the store.
+                    unsafe { take_slice_store(shared, crate::slicing::SUPPLY_TRAINS) }
+                });
                 *pending = Some(queue!(acquisition::Job::SupplyTrains(
                     frame.extended.take_supply_trains_request(
                         &country_snapshot,
                         shared.base,
                         state,
-                        part
+                        clock.hour,
+                        force_full,
+                        part,
+                        fingerprints,
                     )
                 )));
             }
-            // Focus delegation must be settled before the complete Governance job moves.
-            segment!(1);
-            let (world, world_report, world_failure) = completed!(world_pending, World);
-            let production_active = world.production.is_some();
-            let construction_active = world.construction.is_some();
-            let focus_active = world.focus.as_ref().is_some_and(|part| part.context.active);
-            production_rest_report = world_report.production;
-            construction_rest_report = world_report.construction;
-            economy_rest_report = world_report.economy;
-            focus_report = world_report.focus;
-            // An interrupted accepted job is final for this callback. Capacity
-            // admission failures retain each family's existing typed fallback.
-            let terminal = world_failure.is_some();
-            frame.extended.production_rest_pilot().rest_raw_mode = production_active;
-            frame.extended.construction_rest_pilot().rest_raw_mode = construction_active;
-            frame.extended.economy_rest_pilot().rest_raw_mode = true;
-            // An early-loaned family already holds its (false) delegation; the
-            // pilot here would be its vacant placeholder.
-            if early_governance.is_none() {
-                frame.extended.focus_pilot().focus_raw_mode = focus_active;
-            }
-            if let Some(part) = world.production {
-                if production_rest_report.raw_ok && !terminal && !production_rest_report.plan_failed
-                {
-                    production_rest_payload = Some(part.payload);
-                } else {
-                    decode::recycle_production_rest_job(part.payload);
+            // The battles, participants and casualty visitors the map sample
+            // installs; joined right before it.
+            let progress = frame.extended.take_combat_progress();
+            let combat_request = frame.map.take_combat_request(shared.base, state, progress);
+            let combat_bytes = combat_request.allocated_bytes();
+            let combat_pending = queue!(acquisition::Job::MapCombats(combat_request));
+            // RaidAirScores and the shared rail tables read only the game
+            // state and the hour, with the held score table and rail store on
+            // loan; the Late job keeps the tables they leave in the packs.
+            let scores_rails_pending = queue!(acquisition::Job::ScoresRails({
+                // SAFETY: only this callback takes and returns these stores.
+                let air_scores = unsafe { &mut *shared.raid_air_scores.get() }
+                    .take()
+                    .expect("raid air score loan");
+                // SAFETY: as above.
+                let rail_store = unsafe { (*shared.rail_store.get()).take() };
+                frame.extended.take_scores_rails_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                    air_scores,
+                    rail_store,
+                )
+            }));
+            release!();
+            segment!(0);
+            // The root census joins first: a registry walk, it is in long
+            // before the division inputs, and the Orders job it releases is
+            // the longest that waits for another job. The unit inputs follow;
+            // Presentation leaves behind them.
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            let (naval_roots_ticks, mut naval_job) = out_of_line(|| {
+                let (root_request, naval_roots_ticks, root_failure) =
+                    completed!(root_pending, OrderRoots);
+                frame.map.orders = root_request.orders;
+                charge_order_parts(shared, &frame.map.orders, order_part_bytes);
+                let mut naval_job = root_request.naval;
+                if let Some(reason) = root_failure {
+                    frame.map.orders.fail_roots(reason);
+                    naval_job.fail_roots(reason);
                 }
-            }
-
-            if let Some(part) = world.construction {
-                if construction_rest_report.raw_ok && !terminal {
-                    construction_rest_payload = Some(part.payload);
-                } else {
-                    decode::recycle_construction_rest_job(part.payload);
-                }
-            }
-
-            if economy_rest_report.raw_ok && !terminal {
-                economy_rest_payload = Some(world.economy.payload);
-            } else {
-                decode::recycle_economy_rest_job(world.economy.payload);
-            }
-
-            if let Some(part) = world.focus {
-                if focus_report.raw_ok && !terminal {
-                    focus_payload = Some(part.payload);
-                } else {
-                    decode::recycle_focus_job(part.payload);
-                }
-            }
-
-            if terminal {
-                production_rest_report.raw_ok = false;
-                construction_rest_report.raw_ok = false;
-                economy_rest_report.raw_ok = false;
-                focus_report.raw_ok = false;
-            }
-            // On the Focus slot the delegation is settled now; the family follows.
-            let (governance_pending, governance_bytes) = match early_governance {
-                Some(early) => early,
-                None => {
-                    let request = frame.extended.take_governance_request(
-                        &country_snapshot,
-                        shared.base,
-                        state,
-                        clock.hour,
-                        force_full,
-                        // SAFETY: only this callback takes and returns the store.
-                        unsafe { take_slice_store(shared, crate::slicing::TECHNOLOGIES) },
-                    );
-                    let bytes = request.allocated_bytes();
-                    (queue!(acquisition::Job::Governance(request)), bytes)
-                }
-            };
-            let presentation_request = frame.extended.take_presentation_request(
+                (naval_roots_ticks, naval_job)
+            });
+            let mut orders_request = frame.extended.take_orders_request(
                 &country_snapshot,
+                &mut frame.map.orders,
                 shared.base,
                 state,
-                clock.hour,
-                force_full,
-                // SAFETY: only this callback takes and returns the store.
-                Some(unsafe { take_slice_store(shared, crate::slicing::RETREAT_BANS) }),
             );
-            let presentation_bytes = presentation_request.allocated_bytes();
-            let presentation_pending = queue!(acquisition::Job::Presentation(presentation_request));
-            let eta_ranges = frame.extended.plan_eta_input_ranges();
-            let mut eta_inputs_pending: [Option<PendingAcquisition>; ETA_INPUT_RANGES] =
-                [const { None }; ETA_INPUT_RANGES];
-            for (range, pending) in eta_inputs_pending.iter_mut().enumerate().take(eta_ranges) {
-                // SAFETY: this callback alone loans and returns each store.
-                let cadence = unsafe { &mut *shared.eta_cadence[range].get() }
-                    .take()
-                    .expect("ETA cadence loan");
-                *pending = Some(queue!(acquisition::Job::EtaInputs(
-                    frame.extended.take_eta_inputs_request(
-                        range,
-                        &country_snapshot,
-                        shared.base,
-                        state,
-                        clock.hour,
-                        force_full,
-                        cadence
-                    )
-                )));
+            let orders_bytes = orders_request.allocated_bytes();
+            // The order census and its plans need only the root census: they
+            // leave in parts over ranges of the groups (`orders_parts`): the
+            // Orders job walks part 0, an OrdersPart job each other part. The
+            // Naval copy leaves with them; ChildFronts waits for both.
+            let mut order_part_pending: [Option<PendingAcquisition>;
+                crate::orders_parts::MAX_PARTS - 1] =
+                [const { None }; crate::orders_parts::MAX_PARTS - 1];
+            for index in 1..orders_request.orders.part_count() {
+                if let Some(part) = orders_request.orders.take_part(index) {
+                    order_part_pending[index - 1] = Some(queue!(acquisition::Job::OrdersPart(
+                        acquisition::OrdersPartRequest {
+                            base: shared.base,
+                            index,
+                            part,
+                            rejected: false,
+                        }
+                    )));
+                }
             }
-            // Keep the original collection span. Accepted pool joins in this
-            // span are already charged to join_ns; subtract those from
-            // the inline subtotal, including callback helping inside a join.
-            let inline_walk_begin = qpc();
-            let inline_wait_begin = shared.acquisition_wait_ns.load(Ordering::Relaxed);
-            segment!(2);
-            segment!(3);
-            let (air_request, report, air_failure) = completed!(air_pending, AirWing);
-            let air_failure = air_failure
-                .or((!report.raw_ok).then_some("AirWing owned acquisition could not complete"));
-            air_wing_report = report;
-            if air_wing_report.raw_ok && air_failure.is_none() {
-                air_wing_payload = Some(air_request.payload);
-            } else {
-                decode::recycle_air_wing_job(air_request.payload);
-            }
+            let orders_pending = queue!(acquisition::Job::Orders(orders_request));
+            // The Naval copy's raw phase reads no wing value: the wing census
+            // is installed when it returns. Behind the wing
+            // join it was the next join the game thread waited for (0.18 ms
+            // per hour at 1943, int_761c274).
             let naval_ctx = extended::naval_history::NavalCopyContext {
                 base: shared.base,
                 game_state: state,
@@ -2739,279 +3250,366 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 force_full,
             };
             let mut naval_install_ticks = naval_roots_ticks;
-            if let Some(wings) = air_wing_payload.as_mut() {
-                naval_install_ticks += naval_job.install_wings(wings);
-            }
-            segment!(4);
+            naval_job.defer_wings();
             let naval_pending = queue!(acquisition::Job::Naval(acquisition::RawRequest {
                 countries: Arc::clone(&country_snapshot),
                 context: naval_ctx,
                 payload: naval_job,
             }));
-            let mut divisions_failure = None;
-            if let Some(pending) = divisions_pending {
-                let (mut request, report, failure) = completed!(pending, Divisions);
-                divisions_report = report;
-                divisions_failure =
-                    input_failure
-                        .or(failure)
-                        .or((!report.raw_ok)
-                            .then_some("division owned acquisition could not complete"));
-                let source_started = qpc();
-                request.payload.supply_sources(
-                    &mut frame.extended,
-                    division_source_capacity,
-                    divisions_failure,
-                );
-                divisions_report.copy_ticks[0] += elapsed(source_started);
-                divisions_payload = Some(request.payload);
-                frame.extended.set_divisions_raw_mode(true);
-                let ns = shared.ns(divisions_report.copy_ticks[0] as i64);
-                frame.table_ns[6] = ns;
-                decode::add_divisions_copy_ns(0, ns);
-                decode::add_divisions_raw_bytes(0, divisions_report.raw_bytes[0]);
+            // The slack burst: first-burst jobs whose joins come long after
+            // their bodies end leave here, behind the Naval copy and the
+            // Orders parts, in one held burst. In the first burst they took
+            // workers 1.4-2.4 ms into the hour, once the priority-0 jobs were
+            // claimed, and still held them when the Orders parts and the Naval
+            // copy were queued (1.96 and 2.08 ms), which then waited 0.24 and
+            // 0.34 ms for a worker (1943, int_2d1ede901c). Queued with the
+            // Naval copy, waiting as long as any job of that segment waited
+            // for a worker (0.77/0.44 ms at 1943/1936) and running half as
+            // long again as their mean body, each still ends before its join:
+            // the task forces 0.95/0.32 ms before it, provinces 1.11/0.81,
+            // weather, capitulation, states, wars and relations 2.2/1.2 or
+            // more. Only the queue position moves: each job takes the same
+            // request and stores and reads the same sources in the same order,
+            // with the same failures.
+            batch.hold();
+            for (slot, part) in ordinary_parts_pending.iter_mut().zip(ordinary_slack_parts) {
+                if let Some(part) = part {
+                    *slot = Some(queue!(acquisition::Job::OrdinaryPart(part)));
+                }
             }
-            let intel_residual_completed =
-                unsafe { finish_acquisition(shared, &mut batch, intel_residual_pending) };
-            let acquisition::Job::IntelResidual(intel_residual_request) =
-                intel_residual_completed.request
-            else {
-                unreachable!("IntelResidual ticket type")
+            let provinces_pending = queue!(acquisition::Job::Provinces({
+                let mut request =
+                    acquisition::ProvincesRequest::take(shared.base, state, &mut frame.provinces);
+                // SAFETY: only this callback takes and returns the store.
+                if let Some(store) = unsafe { (*shared.area_store.get()).take() } {
+                    request.payload.area_store = Some(store);
+                } else if let Some(store) = request.payload.area_store.as_mut() {
+                    // A store an unfinished hour left in this frame certifies nothing.
+                    store.forget();
+                }
+                if let Some(store) = request.payload.area_store.as_mut() {
+                    store.force_full = force_full;
+                }
+                // SAFETY: only this callback takes and returns the store.
+                if let Some(store) = unsafe { (*shared.province_store.get()).take() } {
+                    request.payload.province_store = Some(store);
+                } else if let Some(store) = request.payload.province_store.as_mut() {
+                    // A store an unfinished hour left in this frame certifies nothing.
+                    store.forget();
+                }
+                if let Some(store) = request.payload.province_store.as_mut() {
+                    store.force_full = force_full;
+                }
+                request
+            }));
+            let states_pending = queue!(acquisition::Job::States({
+                let mut request = frame.take_states_request(shared.base, state);
+                // SAFETY: only this callback takes and returns the store.
+                request.store = unsafe { (*shared.state_store.get()).take() };
+                request
+            }));
+            let weather_ctx = extended::weather::WeatherCopyContext {
+                game_state: state,
+                base: shared.base,
             };
-            let intel_residual_report = intel_residual_completed.report.map(|report| {
-                let acquisition::Report::IntelResidual(report) = report else {
-                    unreachable!("IntelResidual report type")
+            let weather_pending = {
+                let mut payload = decode::acquire_weather_job();
+                // SAFETY: game thread; the previous callback returned it.
+                payload.carry = unsafe { &mut *shared.weather_carry.get() }.take();
+                if let Some(carry) = payload.carry.as_mut() {
+                    carry.begin(
+                        clock.hour,
+                        force_full,
+                        crate::country_input_changes::weather_writes(),
+                    );
+                }
+                queue!(acquisition::Job::Weather(acquisition::RawRequest {
+                    countries: Arc::clone(&country_snapshot),
+                    context: weather_ctx,
+                    payload,
+                }))
+            };
+            let capitulation_ctx = extended::intel::CapitulationCopyContext {
+                base: shared.base,
+                game_state: state,
+            };
+            let capitulation_pending = {
+                queue!(acquisition::Job::Capitulation(acquisition::RawRequest {
+                    countries: Arc::clone(&country_snapshot),
+                    context: capitulation_ctx,
+                    payload: decode::acquire_capitulation_job(),
+                }))
+            };
+            let wars_pending = queue!(acquisition::Job::Wars({
+                let mut request = frame.take_wars_request(&country_snapshot, shared.base, state);
+                // SAFETY: only this callback takes and returns the store.
+                request.store = unsafe { (*shared.war_store.get()).take() };
+                request
+            }));
+            let relations_pending = if relations_refresh {
+                Some(queue!(acquisition::Job::Relations(
+                    acquisition::RawRequest {
+                        countries: Arc::clone(&country_snapshot),
+                        context: relations_ctx,
+                        payload: {
+                            let mut payload = decode::acquire_relations_job();
+                            // The hour's owner slice and the family's store go with the
+                            // job and come back at its join. The slice was taken from the
+                            // real Intel pack before IntelResidual borrowed it.
+                            payload.selection = relations_selection.take();
+                            // SAFETY: only this callback takes and returns the store.
+                            payload.fingerprints = Some(unsafe {
+                                take_slice_store(shared, crate::slicing::RELATIONS)
+                            });
+                            payload
+                        },
+                    }
+                )))
+            } else {
+                None
+            };
+            release!();
+            let (mut input_request, inputs_ok, mut input_failure) =
+                completed!(input_pending, DivisionInputs);
+            // The parts join the census in slot order, as one walk would
+            // have left it. The first failure in slot order is the hour's:
+            // the census's own refusal, or a part that did not run.
+            let mut joining = input_failure.is_none();
+            for (part, pending) in part_pending.into_iter().enumerate() {
+                let Some(pending) = pending else {
+                    if joining && part < split {
+                        input_failure = Some("division input part not dispatched");
+                        joining = false;
+                    }
+                    continue;
                 };
-                report
+                let (mut request, _, failure) = completed!(pending, DivisionInputParts);
+                if joining {
+                    let census = &mut input_request.payload.census;
+                    let result = match failure {
+                        Some(reason) => Err(reason),
+                        None => census.absorb(&mut request.census),
+                    };
+                    if let Err(reason) = result {
+                        input_failure = Some(reason);
+                    }
+                    joining = input_failure.is_none() && census.joinable();
+                }
+                // SAFETY: the part has joined; only this callback returns it.
+                unsafe { (*shared.division_parts.get())[part] = Some(request.census) };
+            }
+            input_request.payload.overflowed |= input_request.payload.census.overflowed;
+            let inputs_ok = inputs_ok && !input_request.payload.overflowed;
+            // SAFETY: only this callback reads and writes the split.
+            unsafe {
+                let (starts, split) = &mut *shared.division_part_starts.get();
+                *split = input_request.payload.census.part_starts(starts);
+                *shared.division_join_capacity.get() = input_request.payload.census.join_capacity();
+            }
+            let inputs = if inputs_ok && input_failure.is_none() {
+                input_request.payload.census.unit_inputs().cloned()
+            } else {
+                input_request.payload.inputs_captured = false;
+                None
+            };
+            frame.extended.install_unit_inputs(inputs.clone());
+            batch.hold();
+            let divisions_pending = Some(queue!(acquisition::Job::Divisions(input_request)));
+            // Presentation needs only the country snapshot and the unit inputs
+            // installed above; it leaves as soon as those exist, its status
+            // side and its movement pass as two jobs side by side.
+            // Out of line: the job-sized requests stay off the hourly body's frame.
+            let (presentation_pending, movement_pending, presentation_bytes) = out_of_line(|| {
+                let mut presentation_request = frame.extended.take_presentation_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    // SAFETY: only this callback takes and returns the store.
+                    unsafe { (*shared.army_stat_store.get()).take() },
+                );
+                let movement_request = presentation_request.take_movement();
+                let presentation_bytes =
+                    presentation_request.allocated_bytes() + movement_request.allocated_bytes();
+                let presentation_pending =
+                    queue!(acquisition::Job::Presentation(presentation_request));
+                let movement_pending =
+                    queue!(acquisition::Job::PresentationMovement(movement_request));
+                (presentation_pending, movement_pending, presentation_bytes)
             });
-            frame
+            let intel_ctx = frame
                 .extended
-                .restore_intel_residual_request(intel_residual_request, intel_residual_report);
-            let (request, report, failure) = completed!(players_pending, Players);
-            let failure = failure
-                .or((!report.raw_ok).then_some("Players owned acquisition could not complete"));
-            players_report = report;
-            let players_failure = failure;
-            frame.map.players_raw_mode = report.raw_ok || failure.is_some();
-            if report.raw_ok && failure.is_none() {
-                players_payload = Some(request.payload);
-            } else {
-                decode::recycle_players_job(request.payload);
+                .intel_pilot()
+                .intel_copy_context(shared.base, state);
+            let intel_pending = queue!(acquisition::Job::Intel(acquisition::IntelRequest {
+                countries: Arc::clone(&country_snapshot),
+                context: intel_ctx,
+                payload: decode::acquire_intel_job(),
+                inputs: inputs.clone(),
+                input_failure: input_failure
+                    .or((!inputs_ok).then_some("division input acquisition could not complete")),
+            }));
+            // Every verdict the Gated packs read is settled once its job is
+            // queued, so they leave here instead of after the joins: each
+            // raw-copy join turns an incomplete acquisition into a failure
+            // (`raw_copy_join_failure`, `air_bases_join_failure`), and its
+            // verdict was `raw_ok || failure.is_some()`, true for every
+            // queued job (the Radar, Projects, AirBases and Intel jobs);
+            // World's construction verdict was whether its part was
+            // scheduled. Unqueued Radar and Projects keep the false their
+            // dispatch set. The joins then only stage payloads and failures,
+            // which the packs never read.
+            if radar_pending.is_some() {
+                frame.extended.radar_pilot().radar_raw_mode = true;
             }
-
-            let mut air_stats_failure = None;
-            if let Some(pending) = air_stats_pending {
-                let (request, report, failure) = completed!(pending, AirStats);
-                let failure =
-                    failure
-                        .or((!report.raw_ok)
-                            .then_some("AirStats owned acquisition could not complete"));
-                air_stats_report = report;
-                air_stats_failure = failure;
-                frame.extended.air_stats_pilot().stats_raw_mode =
-                    report.raw_ok || failure.is_some();
-                if report.raw_ok && failure.is_none() {
-                    air_stats_payload = Some(request.payload);
-                } else {
-                    decode::recycle_air_stats_job(request.payload);
+            frame.extended.radar_pilot().registrations_raw_mode = true;
+            frame.extended.intel_pilot().intel_raw_mode = true;
+            if projects_pending.is_some() {
+                frame.extended.projects_pilot().raw_mode = true;
+            }
+            frame.extended.construction_rest_pilot().rest_raw_mode = construction_active;
+            let gated_pending = queue!(acquisition::Job::Gated(frame.extended.take_gated_request(
+                shared.base,
+                state,
+                clock.hour,
+                force_full,
+                // SAFETY: only this callback takes and returns the store.
+                unsafe { take_slice_store(shared, crate::slicing::PROJECTS) },
+                Some(Arc::clone(&country_snapshot)),
+            )));
+            // ProvinceUnitOrder takes its division occupants from the census
+            // the inputs job acquired; without it the walk reads them all.
+            let province_unit_order_pending = queue!(acquisition::Job::ProvinceUnitOrder(
+                frame.extended.take_province_unit_order_request(
+                    shared.base,
+                    state,
+                    inputs.clone(),
+                    // SAFETY: only this callback takes and returns the store.
+                    unsafe { (*shared.province_unit_store.get()).take() },
+                )
+            ));
+            release!();
+            // The census's detail parts go out once it joins; they are joined
+            // with the late joins, before capture_tables. No other job borrows
+            // their model attempts.
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            out_of_line(|| {
+                // SAFETY: this thread still owns the live acquisition boundary.
+                let (ship_models_request, ship_models_report) = unsafe {
+                    collect_acquisition(
+                        shared,
+                        &mut batch,
+                        ship_models_pending,
+                        |job| {
+                            let acquisition::Job::ShipModels(request) = job else {
+                                unreachable!("ShipModels ticket type")
+                            };
+                            request
+                        },
+                        |report| {
+                            let acquisition::Report::ShipModels = report else {
+                                unreachable!("ShipModels report type")
+                            };
+                        },
+                    )
+                };
+                frame.map.naval = frame
+                    .extended
+                    .restore_ship_models_request(ship_models_request, ship_models_report);
+            });
+            // Written after the map-tick copy below, which covers these indices.
+            let naval_ns = frame.map.naval.ticks.map(|cost| shared.ns(cost as i64));
+            // Out of line: the parts' requests stay off the hourly body's frame.
+            let ship_detail_pending = out_of_line(|| {
+                batch.hold();
+                let pending = frame
+                    .extended
+                    .take_ship_model_parts(&country_snapshot, shared.base)
+                    .map(|request| {
+                        request.map(|request| queue!(acquisition::Job::ShipModelDetails(request)))
+                    });
+                release!();
+                pending
+            });
+            // Restore the original appearance buffers and their completed
+            // first-result journal. The Ordinary counter part reads the
+            // reserved naming they hold: it leaves right after this join.
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            out_of_line(|| {
+                let (countries_request, countries_report, countries_failure) =
+                    completed!(countries_pending, Countries);
+                let appearance_store = frame.extended.restore_countries_request(
+                    countries_request,
+                    &mut frame.countries,
+                    &mut frame.links,
+                    countries_failure,
+                );
+                if let Some(store) = appearance_store {
+                    let bytes = store.allocated_bytes() as u64;
+                    let previous = shared.appearance_store_bytes.swap(bytes, Ordering::Relaxed);
+                    shared
+                        .pool_bytes
+                        .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                    // SAFETY: the Countries job has joined; no worker retains this store.
+                    unsafe { *shared.appearance_store.get() = Some(store) };
                 }
-            }
-
-            let (request, report, failure) = completed!(air_bases_pending, AirBases);
-            let failure = failure
-                .or((!report.raw_ok).then_some("AirBases owned acquisition could not complete"));
-            air_bases_report = report;
-            let air_bases_failure = failure;
-            frame.extended.air_bases_pilot().bases_raw_mode = report.raw_ok || failure.is_some();
-            frame.extended.radar_pilot().registrations_raw_mode =
-                report.raw_ok || failure.is_some();
-            if report.raw_ok && failure.is_none() {
-                air_bases_payload = Some(request.payload);
-            } else {
-                decode::recycle_air_bases_job(request.payload);
-            }
-
-            let mut air_history_failure = None;
-            if let Some(pending) = air_history_pending {
-                let (request, report, failure) = completed!(pending, AirHistory);
-                let failure = failure
-                    .or((!report.raw_ok)
-                        .then_some("AirHistory owned acquisition could not complete"));
-                air_history_report = report;
-                air_history_failure = failure;
-                frame.extended.air_history_pilot().history_raw_mode =
-                    report.raw_ok || failure.is_some();
-                if report.raw_ok && failure.is_none() {
-                    air_history_payload = Some(request.payload);
-                } else {
-                    decode::recycle_air_history_job(request.payload);
-                }
-            }
-
-            let mut supremacy_failure = None;
-            if let Some(pending) = supremacy_pending {
-                let (request, report, failure) = completed!(pending, Supremacy);
-                let failure = failure
-                    .or((!report.raw_ok)
-                        .then_some("Supremacy owned acquisition could not complete"));
-                supremacy_report = report;
-                supremacy_failure = failure;
-                frame.extended.supremacy_pilot().supremacy_raw_mode =
-                    report.raw_ok || failure.is_some();
-                if report.raw_ok && failure.is_none() {
-                    supremacy_payload = Some(request.payload);
-                } else {
-                    decode::recycle_supremacy_job(request.payload);
-                }
-            }
-
-            let mut sunk_failure = None;
-            if let Some(pending) = sunk_pending {
-                let (request, report, failure) = completed!(pending, Sunk);
-                let failure = failure
-                    .or((!report.raw_ok).then_some("Sunk owned acquisition could not complete"));
-                sunk_report = report;
-                sunk_failure = failure;
-                frame.extended.sunk_pilot().sunk_raw_mode = report.raw_ok || failure.is_some();
-                if report.raw_ok && failure.is_none() {
-                    sunk_payload = Some(request.payload);
-                } else {
-                    decode::recycle_sunk_job(request.payload);
-                }
-            }
-
-            let mut radar_failure = None;
-            if let Some(pending) = radar_pending {
-                let (request, report, failure) = completed!(pending, Radar);
-                let failure = failure
-                    .or((!report.raw_ok).then_some("Radar owned acquisition could not complete"));
-                radar_report = report;
-                radar_failure = failure;
-                frame.extended.radar_pilot().radar_raw_mode = report.raw_ok || failure.is_some();
-                if report.raw_ok && failure.is_none() {
-                    radar_payload = Some(request.payload);
-                } else {
-                    decode::recycle_radar_job(request.payload);
-                }
-            }
-
-            let (request, report, failure) = completed!(weather_pending, Weather);
-            let failure = failure
-                .or((!report.raw_ok).then_some("Weather owned acquisition could not complete"));
-            weather_report = report;
-            let weather_failure = failure;
-            frame.extended.weather_pilot().raw_mode = report.raw_ok || failure.is_some();
-            if report.raw_ok && failure.is_none() {
-                weather_payload = Some(request.payload);
-            } else {
-                decode::recycle_weather_job(request.payload);
-            }
-
-            let (request, report, failure) = completed!(capitulation_pending, Capitulation);
-            let failure =
-                failure
-                    .or((!report.raw_ok)
-                        .then_some("Capitulation owned acquisition could not complete"));
-            capitulation_report = report;
-            let capitulation_failure = failure;
-            frame.extended.capitulation_pilot().capitulation_raw_mode =
-                report.raw_ok || failure.is_some();
-            if report.raw_ok && failure.is_none() {
-                capitulation_payload = Some(request.payload);
-            } else {
-                decode::recycle_capitulation_job(request.payload);
-            }
-
-            let mut projects_failure = None;
-            if let Some(pending) = projects_pending {
-                let (request, report, failure) = completed!(pending, Projects);
-                let failure =
-                    failure
-                        .or((!report.raw_ok)
-                            .then_some("Projects owned acquisition could not complete"));
-                projects_report = report;
-                projects_failure = failure;
-                frame.extended.projects_pilot().raw_mode = report.raw_ok || failure.is_some();
-                if report.raw_ok && failure.is_none() {
-                    projects_payload = Some(request.payload);
-                } else {
-                    decode::recycle_projects_job(request.payload);
-                }
-            }
-            let mut lexical_failure = None;
-            if let Some(pending) = lexical_pending {
-                let (request, report, failure) = completed!(pending, Lexical);
-                let failure = failure
-                    .or((!report.raw_ok).then_some("Lexical owned acquisition could not complete"));
-                lexical_report = report;
-                lexical_failure = failure;
-                frame.extended.lexical_pilot().raw_mode = report.raw_ok || failure.is_some();
-                if report.raw_ok && failure.is_none() {
-                    lexical_payload = Some(request.payload);
-                } else {
-                    decode::recycle_lexical_job(request.payload);
-                }
-            }
-            let mut session_failure = None;
-            if let Some(pending) = session_pending {
-                let (request, report, failure) = completed!(pending, Session);
-                let failure = failure
-                    .or((!report.raw_ok).then_some("Session owned acquisition could not complete"));
-                session_report = report;
-                session_failure = failure;
-                frame.extended.session_pilot().raw_mode = report.raw_ok || failure.is_some();
-                if report.raw_ok && failure.is_none() {
-                    session_payload = Some(request.payload);
-                } else {
-                    decode::recycle_session_job(request.payload);
-                }
-            }
-
-            let (request, report, failure) = completed!(intel_pending, Intel);
-            let failure = failure
-                .or((!report.raw_ok).then_some("Intel owned acquisition could not complete"));
-            intel_report = report;
-            let intel_failure = failure;
-            frame.extended.intel_pilot().intel_raw_mode = report.raw_ok || failure.is_some();
-            if report.raw_ok && failure.is_none() {
-                intel_payload = Some(request.payload);
-            } else {
-                decode::recycle_intel_job(request.payload);
-            }
-
-            // Release the shared seed leases before the Census can be
-            // cleared on the decode worker during payload retirement.
-            drop(request.inputs);
-            segment!(5);
-            // Resolve the character producer before dispatching its consumers.
+                frame.countries_result = countries_report.countries;
+                frame.table_ns[2] = shared.ns(countries_report.countries_ticks);
+                frame.links_result = countries_report.links.result;
+                frame.table_ns[3] = shared.ns(countries_report.links_ticks);
+            });
+            let mut ordinary_request = frame.extended.take_ordinary_request(
+                &country_snapshot,
+                shared.base,
+                state,
+                clock.hour,
+            );
+            // SAFETY: only this callback takes and returns the store.
+            ordinary_request.counters = unsafe { (*shared.counter_store.get()).take() };
+            let ordinary_bytes = ordinary_request.allocated_bytes() + ordinary_parts_bytes;
+            let ordinary_pending = queue!(acquisition::Job::Ordinary(ordinary_request));
+            segment!(1);
+            // Keep the original collection span. Accepted pool joins in this
+            // span are already charged to join_ns; subtract those from
+            // the inline subtotal, including callback helping inside a join.
+            let inline_walk_begin = qpc();
+            let inline_wait_begin = shared.acquisition_wait_ns.load(Ordering::Relaxed);
+            segment!(2);
+            // The roster (0.79 ms at 1943, int_761c274) is in long before the
+            // wing join: its consumers leave here, two segments before the
+            // Late chain needs the workers. Resolve the character producer
+            // before dispatching its consumers.
             // The root owns this dependency; executor jobs never enqueue jobs.
             let mut characters_failure = [None; CHARACTER_PARTS];
-            frame.extended.characters_pilot().raw_active = [false; 6];
+            frame.extended.characters_pilot().raw_active = [false; extended::characters::N];
             macro_rules! join_characters {
                 ($part:expr) => {{
                     let part = $part;
                     if let Some(pending) = characters_pending[part].take() {
-                        let (request, report, failure) = completed!(pending, Characters);
-                        // Return any census loan before the roster job can recycle.
-                        drop(request.roles);
-                        characters_report[part] = report;
-                        let failure = failure.or((report.plan_failed || !report.raw_ok)
-                            .then_some("character prepared acquisition failed"));
-                        characters_failure[part] = failure;
-                        for (raw, active) in frame
-                            .extended
-                            .characters_pilot()
-                            .raw_active
-                            .iter_mut()
-                            .zip(request.context.active)
-                        {
-                            *raw |= active && (report.raw_ok || failure.is_some());
-                        }
-                        if report.raw_ok && failure.is_none() {
-                            characters_payload[part] = Some(request.payload);
-                        } else {
-                            decode::recycle_characters_job(request.payload);
-                        }
+                        // Out of line: the job-sized request stays off the hourly body's frame.
+                        out_of_line(|| {
+                            let (request, report, failure) = completed!(pending, Characters);
+                            // Return any census loan before the roster job can recycle.
+                            drop(request.roles);
+                            characters_report[part] = report;
+                            let failure = failure.or((report.plan_failed || !report.raw_ok)
+                                .then_some("character prepared acquisition failed"));
+                            characters_failure[part] = failure;
+                            for (raw, active) in frame
+                                .extended
+                                .characters_pilot()
+                                .raw_active
+                                .iter_mut()
+                                .zip(request.context.active)
+                            {
+                                *raw |= active && (report.raw_ok || failure.is_some());
+                            }
+                            if report.raw_ok && failure.is_none() {
+                                characters_payload[part] = Some(request.payload);
+                            } else {
+                                decode::recycle_characters_job(request.payload);
+                            }
+                        });
                     }
                 }};
             }
@@ -3028,17 +3626,25 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     .and_then(|job| job.portrait_census());
                 *pending = Some(queue!(acquisition::Job::CharacterPortraits(request)));
             }
-            let gated_pending = queue!(acquisition::Job::Gated(frame.extended.take_gated_request(
-                shared.base,
-                state,
-                clock.hour,
-                force_full
-            )));
-            // Role jobs borrow the roster's census like the portrait shares;
-            // without one they walk the roster independently.
+            // Role jobs and the character inputs borrow the roster's census
+            // like the portrait shares; without one they walk the roster
+            // independently. They read no raw-copy verdict.
             let role_census = characters_payload[0]
                 .as_ref()
                 .and_then(|job| job.role_census());
+            let character_inputs_pending = queue!(acquisition::Job::CharacterInputs(
+                frame.extended.take_character_inputs_request(
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                    extended::CharacterInputRoles {
+                        census: role_census.clone(),
+                        // SAFETY: only this callback takes and returns the store.
+                        store: unsafe { (*shared.character_role_store.get()).take() },
+                    },
+                )
+            ));
             for (part, pending) in characters_pending.iter_mut().enumerate().skip(1) {
                 let active = character_part(part);
                 if characters_refresh && active.iter().any(|&value| value) {
@@ -3060,84 +3666,375 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 }
             }
             drop(role_census);
-            let (mut naval_request, report, naval_failure) = completed!(naval_pending, Naval);
-            let naval_failure = naval_failure
-                .or((!report.raw_ok).then_some("Naval owned acquisition could not complete"));
-            naval_report = report;
-            if naval_report.raw_ok {
-                naval_report.copy_ticks[0] += naval_install_ticks;
-            }
-            if let Some(wings) = air_wing_payload.as_mut() {
-                naval_report.copy_ticks[0] += wings.membership_ticks;
-                if !naval_report.raw_ok && naval_failure.is_none() {
-                    frame.extended.naval_pilot().add_wing_source_ticks(
-                        naval_install_ticks.saturating_add(wings.membership_ticks),
-                    );
+            segment!(3);
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            let air_failure = out_of_line(|| {
+                let (mut air_request, report, air_failure) = completed!(air_pending, AirWing);
+                let mut air_failure = air_failure
+                    .or((!report.raw_ok).then_some("AirWing owned acquisition could not complete"));
+                air_wing_report = report;
+                // SAFETY: only this callback takes and returns the parts.
+                let parts = unsafe { &mut *shared.air_wing_parts.get() };
+                let mut joined = 0;
+                for (part, pending) in air_part_pending.into_iter().enumerate() {
+                    let Some(pending) = pending else {
+                        continue;
+                    };
+                    let (request, report, failure) = completed!(pending, AirWing);
+                    air_failure = air_failure.or(failure).or((!report.raw_ok)
+                        .then_some("AirWing owned acquisition part could not complete"));
+                    air_wing_report.add(&report);
+                    parts[part] = request.payload;
+                    joined = part + 1;
+                }
+                let active = &mut parts[..joined];
+                if air_failure.is_none() && air_request.payload.split {
+                    let begin = qpc();
+                    air_failure = air_request.payload.join_parts(active).err();
+                    air_wing_report.copy_ticks[0] += elapsed(begin);
+                }
+                if air_failure.is_none()
+                    && let Some(split) = extended::air::part_starts(&air_request.payload, active)
+                {
+                    // SAFETY: only this callback reads and writes the split.
+                    unsafe { *shared.air_wing_part_starts.get() = split };
+                }
+                // An idle part keeps its store, and its bytes, for when the
+                // split grows again.
+                let mut store = air_request.payload.wing_store.take();
+                let bytes = extended::air::retained_store_bytes(
+                    store.as_deref_mut(),
+                    parts,
+                    air_failure.is_some(),
+                );
+                if store.is_some() {
+                    // SAFETY: the AirWing job has joined; no worker retains this store.
+                    unsafe { *shared.wing_store.get() = store };
+                }
+                let previous = shared.wing_store_bytes.swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                if air_wing_report.raw_ok && air_failure.is_none() {
+                    *air_wing_payload = Some(air_request.payload);
+                } else {
+                    decode::recycle_air_wing_job(air_request.payload);
+                }
+                air_failure
+            });
+            segment!(4);
+            batch.hold();
+            // With the owned wing census the registered missions and the
+            // naval-patrol combats need nothing else: they leave now. The air
+            // statistics and base verdicts, which the Late job reads from the
+            // same pack, are installed when it returns.
+            let air_missions_pending = out_of_line(|| {
+                air_wing_payload.as_mut().map(|wings| {
                     frame
                         .extended
-                        .naval_pilot()
-                        .install_owned_wings(&mut naval_request.payload);
-                }
-                air_wing_report.copy_ticks[0] += frame.map.install_owned_air(wings);
-                frame
-                    .extended
-                    .air_wing_pilot()
-                    .install_owned_mission_identities(wings);
-            }
-            frame.extended.naval_pilot().raw_mode = naval_report.raw_ok || naval_failure.is_some();
-            if naval_report.raw_ok && naval_failure.is_none() {
-                orders_request.group_source = Some(naval_request.payload);
+                        .air_wing_pilot()
+                        .install_owned_mission_identities(wings);
+                    queue!(acquisition::Job::AirMissions(
+                        frame.extended.take_air_missions_request(
+                            &country_snapshot,
+                            shared.base,
+                            state,
+                            // SAFETY: only this callback takes and returns the store.
+                            unsafe { (*shared.mission_store.get()).take() },
+                        )
+                    ))
+                })
+            });
+            release!();
+            // The Orders job and its parts left right after the root census
+            // and are usually done by now: their bodies end 1.05/1.68 ms into
+            // the hour at 1936/1943 and the wing join comes 1.39/2.33 ms in
+            // (7d9455efc1). The stitch needs only them, so when every one of
+            // them has completed it leaves here and runs beside this
+            // segment's joins; joined after them, behind the Naval join, the
+            // game thread waited for most of its body (0.21/0.46 ms per hour).
+            // Only completed jobs are joined here, so this neither waits nor
+            // runs one of them on this thread: their failures land exactly
+            // when they would have. Otherwise they are joined and the stitch
+            // leaves behind this segment, as before. The stitch contains its
+            // own panic, which is applied at its join (`settle_stitch`).
+            let mut order_joins = Some((orders_pending, order_part_pending));
+            let early_stitch = if order_joins
+                .as_ref()
+                .is_some_and(|(orders, parts)| orders_complete(&batch, orders, parts))
+            {
+                let (orders, parts) = order_joins.take().expect("checked order joins");
+                // Out of line: the job-sized request stays off the hourly body's frame.
+                Some(out_of_line(|| {
+                    // SAFETY: this thread still owns the live acquisition boundary.
+                    let orders_request =
+                        unsafe { collect_orders(shared, &mut batch, orders, parts) };
+                    queue!(acquisition::Job::OrdersStitch(orders_request))
+                }))
             } else {
-                decode::recycle_naval_job(naval_request.payload);
+                None
+            };
+            // The air pack's statistics and base verdicts, held while the
+            // AirMissions job owns the pack.
+            let mut air_stats_raw = None;
+            let mut divisions_failure = None;
+            // AirBases' verdicts never depended on its join: the join set
+            // them to `raw_ok || failure.is_some()`, and an incomplete
+            // acquisition is a failure there (`air_bases_join_failure`), so
+            // both were always true. The registrations verdict the Gated
+            // packs' fog capture reads was set before the Gated dispatch,
+            // and the bases verdict the air pack takes on its install; the
+            // job joins at its first reader, the failure handling after the
+            // late assembly.
+            let mut air_bases_raw = Some(true);
+
+            let mut radar_failure = None;
+            if let Some(pending) = radar_pending {
+                let (request, report, failure) = completed!(pending, Radar);
+                let failure = raw_copy_join_failure(
+                    failure,
+                    report.raw_ok,
+                    "Radar owned acquisition could not complete",
+                );
+                radar_report = report;
+                radar_failure = failure;
+                if report.raw_ok && failure.is_none() {
+                    *radar_payload = Some(request.payload);
+                } else {
+                    decode::recycle_radar_job(request.payload);
+                }
             }
-            let orders_pending = queue!(acquisition::Job::Orders(orders_request));
+
+            let mut projects_failure = None;
+            if let Some(pending) = projects_pending {
+                let (request, report, failure) = completed!(pending, Projects);
+                let failure = raw_copy_join_failure(
+                    failure,
+                    report.raw_ok,
+                    "Projects owned acquisition could not complete",
+                );
+                projects_report = report;
+                projects_failure = failure;
+                if report.raw_ok && failure.is_none() {
+                    *projects_payload = Some(request.payload);
+                } else {
+                    decode::recycle_projects_job(request.payload);
+                }
+            }
+            // World (the production and construction rests) and Economy (the
+            // economy rest) join here, off the early segments: the production
+            // and economy rests' verdicts are the final borrowers'
+            // (dispatched later). Joined after the wing and verdict joins,
+            // their daily slots (3 and 8) run beside them instead of holding
+            // the roster's consumers.
+            // An interrupted accepted job is final for this callback and
+            // refuses only its own tables. Capacity admission failures retain
+            // each family's existing typed fallback.
+            let (economy_request, report, economy_failure) = completed!(economy_pending, Economy);
+            economy_rest_report = report;
+            settle_economy(
+                frame.extended.economy_rest_pilot(),
+                economy_request,
+                &mut economy_rest_report,
+                economy_failure,
+                economy_rest_payload,
+            );
+            let (world, mut world_report, world_failure) = completed!(world_pending, World);
+            let world_active = settle_world(
+                &mut frame.extended,
+                world,
+                &mut world_report,
+                world_failure,
+                production_rest_payload,
+                construction_rest_payload,
+            );
+            production_rest_report = world_report.production;
+            construction_rest_report = world_report.construction;
+            let mut army_icons_pending = None;
+            if let Some(pending) = divisions_pending {
+                let (mut request, report, failure) = completed!(pending, Divisions);
+                divisions_report = report;
+                divisions_failure =
+                    input_failure
+                        .or(failure)
+                        .or((!report.raw_ok)
+                            .then_some("division owned acquisition could not complete"));
+                let source_started = qpc();
+                request.payload.supply_sources(
+                    &mut frame.extended,
+                    division_source_capacity,
+                    divisions_failure,
+                );
+                divisions_report.copy_ticks[0] += elapsed(source_started);
+                *divisions_payload = Some(request.payload);
+                frame.extended.set_divisions_raw_mode(true);
+                // ArmyIconInputs reads the division sources and the seeded
+                // census: it leaves now, and the Late job keeps its rows.
+                army_icons_pending = Some(queue!(acquisition::Job::ArmyIcons(
+                    frame.extended.take_army_icons_request(shared.base)
+                )));
+                let ns = shared.ns(divisions_report.copy_ticks[0] as i64);
+                frame.table_ns[6] = ns;
+                decode::add_divisions_copy_ns(0, ns);
+                decode::add_divisions_raw_bytes(0, divisions_report.raw_bytes[0]);
+            }
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            let players_failure = out_of_line(|| {
+                let (request, report, failure) = completed!(players_pending, Players);
+                let failure = failure
+                    .or((!report.raw_ok).then_some("Players owned acquisition could not complete"));
+                players_report = report;
+                frame.map.players_raw_mode = report.raw_ok || failure.is_some();
+                if report.raw_ok && failure.is_none() {
+                    *players_payload = Some(request.payload);
+                } else {
+                    decode::recycle_players_job(request.payload);
+                }
+                failure
+            });
+
+            let mut air_stats_failure = None;
+            if let Some(pending) = air_stats_pending {
+                let (request, report, failure) = completed!(pending, AirStats);
+                let failure =
+                    failure
+                        .or((!report.raw_ok)
+                            .then_some("AirStats owned acquisition could not complete"));
+                air_stats_report = report;
+                air_stats_failure = failure;
+                air_stats_raw = Some(report.raw_ok || failure.is_some());
+                if report.raw_ok && failure.is_none() {
+                    *air_stats_payload = Some(request.payload);
+                } else {
+                    decode::recycle_air_stats_job(request.payload);
+                }
+            }
+
+            // Without the AirMissions job the air pack is home: install the
+            // verdicts now, as the typed census below may read them.
+            if air_missions_pending.is_none() {
+                install_air_verdicts(frame, air_stats_raw.take(), air_bases_raw.take());
+            }
+
+            let mut supremacy_failure = None;
+            if let Some(pending) = supremacy_pending {
+                let (request, report, failure) = completed!(pending, Supremacy);
+                let failure = failure
+                    .or((!report.raw_ok)
+                        .then_some("Supremacy owned acquisition could not complete"));
+                supremacy_report = report;
+                supremacy_failure = failure;
+                frame.extended.supremacy_pilot().supremacy_raw_mode =
+                    report.raw_ok || failure.is_some();
+                if report.raw_ok && failure.is_none() {
+                    *supremacy_payload = Some(request.payload);
+                } else {
+                    decode::recycle_supremacy_job(request.payload);
+                }
+            }
+
+            let mut sunk_failure = None;
+            if let Some(pending) = sunk_pending {
+                let (request, report, failure) = completed!(pending, Sunk);
+                let failure = failure
+                    .or((!report.raw_ok).then_some("Sunk owned acquisition could not complete"));
+                sunk_report = report;
+                sunk_failure = failure;
+                frame.extended.sunk_pilot().sunk_raw_mode = report.raw_ok || failure.is_some();
+                if report.raw_ok && failure.is_none() {
+                    *sunk_payload = Some(request.payload);
+                } else {
+                    decode::recycle_sunk_job(request.payload);
+                }
+            }
+
+            segment!(5);
+            // Out of line: the job-sized requests stay off the hourly body's frame.
+            let (naval_failure, child_fronts_pending, fronts_pending) = out_of_line(|| {
+                // The stitch's submission point, where the Orders job and its
+                // parts are joined when they had not all completed behind the
+                // wing join. A stitch that left early settles as if submitted
+                // here: whether the pool had stopped by this point decides
+                // which reason a stitch that did not complete takes
+                // (`settle_stitch`). One submitted here was admitted, or
+                // refused with the admission reason at its join.
+                let (stitch_pending, stitch_admissible) = match early_stitch {
+                    Some(pending) => (pending, !batch.stopped()),
+                    None => {
+                        let (orders, parts) = order_joins.take().expect("unjoined order jobs");
+                        // SAFETY: this thread still owns the live acquisition boundary.
+                        let orders_request =
+                            unsafe { collect_orders(shared, &mut batch, orders, parts) };
+                        // The parts stitched into the census and plans, and
+                        // every other pass over them, beside the Naval join.
+                        (queue!(acquisition::Job::OrdersStitch(orders_request)), true)
+                    }
+                };
+                // The Naval copy left right after the root census; it still
+                // returns for decode whatever the census did.
+                let (mut naval_request, mut report, naval_failure) =
+                    completed!(naval_pending, Naval);
+                // The wing census follows the copy, before anything reads it.
+                let (install_ticks, stands) = naval_request
+                    .payload
+                    .install_wings_after(air_wing_payload.as_mut());
+                naval_install_ticks += install_ticks;
+                if !stands {
+                    report = Default::default();
+                }
+                let naval_failure = naval_failure
+                    .or((!report.raw_ok).then_some("Naval owned acquisition could not complete"));
+                naval_report = report;
+                if naval_report.raw_ok {
+                    naval_report.copy_ticks[0] += naval_install_ticks;
+                }
+                if let Some(wings) = air_wing_payload.as_mut() {
+                    naval_report.copy_ticks[0] += wings.membership_ticks;
+                    if !naval_report.raw_ok && naval_failure.is_none() {
+                        frame.extended.naval_pilot().add_wing_source_ticks(
+                            naval_install_ticks.saturating_add(wings.membership_ticks),
+                        );
+                        frame
+                            .extended
+                            .naval_pilot()
+                            .install_owned_wings(&mut naval_request.payload);
+                    }
+                    air_wing_report.copy_ticks[0] += frame.map.install_owned_air(wings);
+                }
+                frame.extended.naval_pilot().raw_mode =
+                    naval_report.raw_ok || naval_failure.is_some();
+                let (mut orders_request, stitch_report, stitch_failure) =
+                    completed!(stitch_pending, OrdersStitch);
+                settle_stitch(
+                    &batch,
+                    &mut orders_request,
+                    stitch_report,
+                    stitch_failure,
+                    stitch_admissible,
+                );
+                // SAFETY: the hourly callback is the split's only reader and writer.
+                unsafe { end_order_parts(shared, &orders_request.orders) };
+                // The fronts the stitched plans bound are read beside the
+                // ChildFronts job: nothing before the tables reads them, and
+                // the plans take them back after the Late join.
+                let fronts_pending = queue!(acquisition::Job::Fronts(acquisition::FrontsRequest {
+                    base: shared.base,
+                    fronts: orders_request.plans.take_fronts(),
+                }));
+                if naval_report.raw_ok && naval_failure.is_none() {
+                    orders_request.group_source = Some(naval_request.payload);
+                } else {
+                    decode::recycle_naval_job(naval_request.payload);
+                }
+                // The child fronts' owner operands read this pass's OOB copy.
+                let child_fronts_pending = queue!(acquisition::Job::ChildFronts(orders_request));
+                (naval_failure, child_fronts_pending, fronts_pending)
+            });
 
             if let Some(reason) = air_failure {
                 frame.map.fail_air_capture(reason);
             }
-            // The original transport region sample must join before the air
-            // job borrows its numerical sampled-province observations.
-            let (ordinary_request, _, ordinary_failure) = completed!(ordinary_pending, Ordinary);
-            let acquired_bytes = ordinary_request.allocated_bytes();
-            if acquired_bytes >= ordinary_bytes {
-                shared
-                    .pool_bytes
-                    .fetch_add((acquired_bytes - ordinary_bytes) as u64, Ordering::Relaxed);
-            } else {
-                shared
-                    .pool_bytes
-                    .fetch_sub((ordinary_bytes - acquired_bytes) as u64, Ordering::Relaxed);
-            }
-            let naval_missions = frame
-                .extended
-                .restore_ordinary_request(ordinary_request, ordinary_failure);
-            // SAFETY: every terminal Ordinary outcome returns its original
-            // store after invalidating unpublished/failed sliced observations.
-            unsafe {
-                if let Some(store) = naval_missions.fingerprints {
-                    *shared.slice_fingerprints[crate::slicing::NAVAL_MISSIONS].get() = Some(store);
-                }
-            }
-            // The owned census supplied the wing identities: the missions
-            // and naval-patrol combats overlap the map sample.
-            let air_missions_pending = if air_wing_payload.is_some() {
-                Some(queue!(acquisition::Job::AirMissions(
-                    frame.extended.take_air_missions_request(
-                        &country_snapshot,
-                        shared.base,
-                        state,
-                        clock.hour,
-                        crate::fixed_layout::transport_air_guard(frame.fixed_layout.as_ref())
-                    )
-                )))
-            } else {
-                None
-            };
             segment!(6);
-            let progress = frame.extended.take_combat_progress();
-            let combat_request = frame.map.take_combat_request(shared.base, state, progress);
-            let combat_bytes = combat_request.allocated_bytes();
-            let combat_pending = queue!(acquisition::Job::MapCombats(combat_request));
             let (combat_request, combat_report, combat_failure) =
                 completed!(combat_pending, MapCombats);
             let acquired_bytes = combat_request.allocated_bytes();
@@ -3157,6 +4054,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             frame
                 .extended
                 .restore_combat_progress(progress, combat_report.progress_ticks);
+            let sample_begin = qpc();
             let map_ticks = frame.map.sample(
                 &cached,
                 shared.base,
@@ -3168,6 +4066,10 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     naval_report.raw_ok || naval_failure.is_some(),
                 ),
             );
+            shared
+                .game_thread
+                .map_sample_ns
+                .fetch_add(shared.ns(qpc() - sample_begin), Ordering::Relaxed);
             segment!(7);
             // Otherwise the typed visitor supplied them in the map sample.
             let air_missions_pending = match air_missions_pending {
@@ -3177,43 +4079,97 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                         &country_snapshot,
                         shared.base,
                         state,
-                        clock.hour,
-                        crate::fixed_layout::transport_air_guard(frame.fixed_layout.as_ref())
+                        // SAFETY: only this callback takes and returns the store.
+                        unsafe { (*shared.mission_store.get()).take() },
                     )
                 )),
             };
-            let (mut orders_request, _, orders_failure) = completed!(orders_pending, Orders);
-            // Orders may fail, unwind or be cancelled without invalidating the
-            // independently completed OOB copy. Always return it for decode.
-            naval_payload = orders_request.group_source.take();
-            let acquired_bytes = orders_request.allocated_bytes();
-            if acquired_bytes >= orders_bytes {
-                shared
-                    .pool_bytes
-                    .fetch_add((acquired_bytes - orders_bytes) as u64, Ordering::Relaxed);
-            } else {
-                shared
-                    .pool_bytes
-                    .fetch_sub((orders_bytes - acquired_bytes) as u64, Ordering::Relaxed);
-            }
-            frame.extended.restore_orders_request(
-                orders_request,
-                orders_failure.is_none(),
-                &mut frame.map.orders,
-            );
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            out_of_line(|| {
+                let (mut orders_request, _, child_fronts_failure) =
+                    completed!(child_fronts_pending, ChildFronts);
+                // ChildFronts may fail, unwind or be cancelled without
+                // invalidating the independently completed OOB copy. Always
+                // return it for decode.
+                *naval_payload = orders_request.group_source.take();
+                let acquired_bytes = orders_request.allocated_bytes();
+                if acquired_bytes >= orders_bytes {
+                    shared
+                        .pool_bytes
+                        .fetch_add((acquired_bytes - orders_bytes) as u64, Ordering::Relaxed);
+                } else {
+                    shared
+                        .pool_bytes
+                        .fetch_sub((orders_bytes - acquired_bytes) as u64, Ordering::Relaxed);
+                }
+                // Only the child fronts' operands are this job's; the census
+                // and plans the Orders job completed stand.
+                if child_fronts_failure.is_some() {
+                    orders_request.plans.fail_child_fronts();
+                }
+                frame
+                    .extended
+                    .restore_orders_request(orders_request, true, &mut frame.map.orders);
+            });
             // Written after the map-tick copy below, which covers this index.
             let orders_ns = shared.ns(frame.map.orders.ticks as i64);
-            // The Late job joins the registrations; the history parts need
-            // the combats' regions.
+            if let Some(pending) = army_icons_pending {
+                let (request, _, failure) = completed!(pending, ArmyIcons);
+                frame
+                    .extended
+                    .restore_army_icons_request(request, failure.is_none());
+            }
+            // The scores and rails join before the air pack returns: they
+            // install in it below. No dispatch reads this join alone.
+            let (scores_rails_request, _, scores_rails_failure) =
+                completed!(scores_rails_pending, ScoresRails);
+            // The Late job keeps the registrations and their joins; the
+            // history parts need the combats' regions.
             let (air_missions_request, _, air_missions_failure) =
                 completed!(air_missions_pending, AirMissions);
-            frame
+            if let Some(store) = frame
                 .extended
-                .restore_air_missions_request(air_missions_request, air_missions_failure.is_none());
-            // SAFETY: only this callback takes and returns the store.
-            let air_scores = unsafe { &mut *shared.raid_air_scores.get() }
-                .take()
-                .expect("raid air score loan");
+                .restore_air_missions_request(air_missions_request, air_missions_failure.is_none())
+            {
+                let bytes = store.allocated_bytes() as u64;
+                let previous = shared.mission_store_bytes.swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the AirMissions job has joined; no worker retains this store.
+                unsafe { *shared.mission_store.get() = Some(store) };
+            }
+            install_air_verdicts(frame, air_stats_raw, air_bases_raw);
+            // The scores and rails install in the packs the Late job loans,
+            // after the map sample and with the air pack back from the
+            // AirMissions job.
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            out_of_line(|| {
+                let (air_scores, rail_store) = frame.extended.restore_scores_rails_request(
+                    scores_rails_request,
+                    scores_rails_failure.is_none(),
+                );
+                let bytes = air_scores.allocated_bytes() as u64;
+                let previous = shared.raid_air_score_bytes.swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the ScoresRails job has joined; no worker retains
+                // these stores.
+                unsafe { *shared.raid_air_scores.get() = Some(air_scores) };
+                if let Some(store) = rail_store {
+                    let bytes = store.allocated_bytes() as u64;
+                    let previous = shared.rail_store_bytes.swap(bytes, Ordering::Relaxed);
+                    shared
+                        .pool_bytes
+                        .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                    // SAFETY: as above.
+                    unsafe { *shared.rail_store.get() = Some(store) };
+                }
+            });
+            // The Late chain (Late, then the final borrowers) is the longest
+            // left: it leaves before the roster's consumers and the joins only
+            // the assembly reads.
             let late_pending = queue!(acquisition::Job::Late(frame.extended.take_late_request(
                 &country_snapshot,
                 &mut frame.map.orders,
@@ -3222,7 +4178,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 state,
                 clock.hour,
                 force_full,
-                air_scores
             )));
             let mut air_histories_pending: [Option<PendingAcquisition>; AIR_HISTORY_PARTS] =
                 [const { None }; AIR_HISTORY_PARTS];
@@ -3236,18 +4191,241 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     )
                 )));
             }
+            // Verdicts only the assembly and the final borrowers read.
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            out_of_line(|| {
+                let (intel_residual_request, intel_residual_report) =
+                    collected!(intel_residual_pending, IntelResidual);
+                let (flags, variables) = frame
+                    .extended
+                    .restore_intel_residual_request(intel_residual_request, intel_residual_report);
+                if let Some(store) = flags {
+                    let bytes = store.allocated_bytes() as u64;
+                    let previous = shared
+                        .script_flag_store_bytes
+                        .swap(bytes, Ordering::Relaxed);
+                    shared
+                        .pool_bytes
+                        .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                    // SAFETY: the IntelResidual job has joined; no worker retains this store.
+                    unsafe { *shared.script_flag_store.get() = Some(store) };
+                }
+                if let Some(store) = variables {
+                    let bytes = store.allocated_bytes() as u64;
+                    let previous = shared
+                        .script_variable_store_bytes
+                        .swap(bytes, Ordering::Relaxed);
+                    shared
+                        .pool_bytes
+                        .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                    // SAFETY: the IntelResidual job has joined; no worker retains this store.
+                    unsafe { *shared.script_variable_store.get() = Some(store) };
+                }
+            });
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            let capitulation_failure = out_of_line(|| {
+                let (request, report, failure) = completed!(capitulation_pending, Capitulation);
+                let failure = failure
+                    .or((!report.raw_ok)
+                        .then_some("Capitulation owned acquisition could not complete"));
+                capitulation_report = report;
+                frame.extended.capitulation_pilot().capitulation_raw_mode =
+                    report.raw_ok || failure.is_some();
+                if report.raw_ok && failure.is_none() {
+                    *capitulation_payload = Some(request.payload);
+                } else {
+                    decode::recycle_capitulation_job(request.payload);
+                }
+                failure
+            });
+
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            let weather_failure = out_of_line(|| {
+                let (mut request, report, failure) = completed!(weather_pending, Weather);
+                let failure = failure
+                    .or((!report.raw_ok).then_some("Weather owned acquisition could not complete"));
+                if let Some(mut carry) = request.payload.carry.take() {
+                    if failure.is_some() || request.payload.staging_failed() {
+                        carry.forget();
+                    }
+                    // SAFETY: game thread; the Weather job has joined.
+                    unsafe { *shared.weather_carry.get() = Some(carry) };
+                }
+                weather_report = report;
+                frame.extended.weather_pilot().raw_mode = report.raw_ok || failure.is_some();
+                if report.raw_ok && failure.is_none() {
+                    *weather_payload = Some(request.payload);
+                } else {
+                    decode::recycle_weather_job(request.payload);
+                }
+                failure
+            });
+
+            let mut lexical_failure = None;
+            if let Some(pending) = lexical_pending {
+                let (request, report, failure) = completed!(pending, Lexical);
+                let failure = failure
+                    .or((!report.raw_ok).then_some("Lexical owned acquisition could not complete"));
+                lexical_report = report;
+                lexical_failure = failure;
+                frame.extended.lexical_pilot().raw_mode = report.raw_ok || failure.is_some();
+                if report.raw_ok && failure.is_none() {
+                    *lexical_payload = Some(request.payload);
+                } else {
+                    decode::recycle_lexical_job(request.payload);
+                }
+            }
+            let mut session_failure = None;
+            if let Some(pending) = session_pending {
+                let (request, report, failure) = completed!(pending, Session);
+                let failure = failure
+                    .or((!report.raw_ok).then_some("Session owned acquisition could not complete"));
+                session_report = report;
+                session_failure = failure;
+                frame.extended.session_pilot().raw_mode = report.raw_ok || failure.is_some();
+                if report.raw_ok && failure.is_none() {
+                    *session_payload = Some(request.payload);
+                } else {
+                    decode::recycle_session_job(request.payload);
+                }
+            }
+
+            let mut relations_failure = None;
+            if let Some(pending) = relations_pending {
+                let (request, report, failure) = completed!(pending, Relations);
+                let failure = failure
+                    .or((!report.raw_ok)
+                        .then_some("Relations original acquisition could not complete"));
+                let (fingerprints, payload) = frame.extended.relations_pilot().join_relations(
+                    request.payload,
+                    report,
+                    failure,
+                );
+                if fingerprints.is_some() {
+                    // SAFETY: only this callback takes and returns the store.
+                    unsafe {
+                        *shared.slice_fingerprints[crate::slicing::RELATIONS].get() = fingerprints
+                    };
+                }
+                relations_report = report;
+                relations_failure = failure;
+                match payload {
+                    Ok(payload) => *relations_payload = Some(payload),
+                    Err(payload) => decode::recycle_relations_job(payload),
+                }
+            }
+            if let Some((pending, loaned_bytes)) = variants_pending {
+                let (request, report) = collected!(pending, Variants);
+                let acquired_bytes = request.allocated_bytes();
+                if acquired_bytes >= loaned_bytes {
+                    shared
+                        .pool_bytes
+                        .fetch_add((acquired_bytes - loaned_bytes) as u64, Ordering::Relaxed);
+                } else {
+                    shared
+                        .pool_bytes
+                        .fetch_sub((loaned_bytes - acquired_bytes) as u64, Ordering::Relaxed);
+                }
+                frame.extended.restore_variants_request(request, report);
+            }
+            // Role and trait jobs need their verdicts here, before the typed
+            // fallback; they must not delay dispatch of unrelated map/gated/late work.
+            for part in 1..CHARACTER_PARTS {
+                join_characters!(part);
+            }
+            // The final borrowers' packs are all back: the character parts,
+            // the restored Variants (production), Session, the intel and
+            // relation joins and the division sources; the Late job no longer
+            // loans any of them. They leave now, the last dispatch of the
+            // hour, before the core, slow, gated, governance, research,
+            // Ordinary and Late joins and the table assembly, none of which
+            // they read once the residual Intel report is settled; the order
+            // transport still waits for the Presentation join.
+            frame.extended.settle_intel_residual(
+                &cached,
+                extended::intel::CaptureContext {
+                    base: shared.base,
+                    game_state: state,
+                    hour: clock.hour,
+                    force_full,
+                },
+            );
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            let (final_pending, final_bytes) = out_of_line(|| {
+                let mut final_bytes = 0;
+                let final_pending = queue!(acquisition::Job::FinalInputs({
+                    let request = frame.extended.take_final_inputs_request(
+                        &country_snapshot,
+                        shared.base,
+                        state,
+                        clock.hour,
+                        force_full,
+                    );
+                    final_bytes = request.allocated_bytes();
+                    request
+                }));
+                (final_pending, final_bytes)
+            });
             let begin = qpc();
-            let (provinces_request, provinces_report, _provinces_failure) =
+            let (mut provinces_request, provinces_report, provinces_failure) =
                 completed!(provinces_pending, Provinces);
+            if let Some(mut store) = provinces_request.payload.area_store.take() {
+                if provinces_failure.is_some() {
+                    store.forget();
+                }
+                let bytes = store.allocated_bytes() as u64;
+                let previous = shared.area_store_bytes.swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the Provinces job has joined; no worker retains this store.
+                unsafe { *shared.area_store.get() = Some(store) };
+            }
+            if let Some(mut store) = provinces_request.payload.province_store.take() {
+                if provinces_failure.is_some() {
+                    store.forget();
+                }
+                let bytes = store.allocated_bytes() as u64;
+                let previous = shared.province_store_bytes.swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the Provinces job has joined; no worker retains this store.
+                unsafe { *shared.province_store.get() = Some(store) };
+            }
             provinces_request.restore(&mut frame.provinces);
             frame.provinces_result = provinces_report.result;
             frame.table_ns[4] = shared.ns(qpc() - begin);
-            let (states_request, states_report, states_failure) =
+            let (mut states_request, states_report, states_failure) =
                 completed!(states_pending, States);
+            if let Some(mut store) = states_request.store.take() {
+                if states_failure.is_some() {
+                    store.forget();
+                }
+                let bytes = store.allocated_bytes() as u64;
+                let previous = shared.state_store_bytes.swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the States job has joined; no worker retains this store.
+                unsafe { *shared.state_store.get() = Some(store) };
+            }
             let states_report =
                 frame.restore_states_request(states_request, states_report, states_failure);
             frame.table_ns[5] = shared.ns(states_report.ticks);
-            let (wars_request, wars_report, wars_failure) = completed!(wars_pending, Wars);
+            let (mut wars_request, wars_report, wars_failure) = completed!(wars_pending, Wars);
+            if let Some(mut store) = wars_request.store.take() {
+                if wars_failure.is_some() {
+                    store.forget();
+                }
+                let bytes = store.allocated_bytes() as u64;
+                let previous = shared.war_store_bytes.swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the Wars job has joined; no worker retains this store.
+                unsafe { *shared.war_store.get() = Some(store) };
+            }
             let wars_report = frame.restore_wars_request(wars_request, wars_report, wars_failure);
             frame.table_ns[7] = shared.ns(wars_report.table_ticks);
             let (factions_request, mut factions_report, factions_failure) =
@@ -3288,91 +4466,54 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             }
             segment!(8);
             for pending in supply_trains_pending.into_iter().flatten() {
-                // SAFETY: this thread still owns the live acquisition boundary.
-                let completed = unsafe { finish_acquisition(shared, &mut batch, pending) };
-                let acquisition::Job::SupplyTrains(request) = completed.request else {
-                    unreachable!("SupplyTrains ticket type")
-                };
-                let report = completed.report.map(|report| {
-                    let acquisition::Report::SupplyTrains(report) = report else {
-                        unreachable!("SupplyTrains report type")
-                    };
-                    report
-                });
-                frame
+                let (request, report) = collected!(pending, SupplyTrains);
+                if let Some(store) = frame
                     .extended
-                    .restore_supply_trains_request(request, report);
+                    .restore_supply_trains_request(request, report)
+                {
+                    // SAFETY: only this callback takes and returns the store.
+                    unsafe { return_slice_store(shared, crate::slicing::SUPPLY_TRAINS, store) };
+                }
             }
             for pending in character_portraits_pending.into_iter().flatten() {
-                // SAFETY: this thread still owns the live acquisition boundary.
-                let completed = unsafe { finish_acquisition(shared, &mut batch, pending) };
-                let acquisition::Job::CharacterPortraits(request) = completed.request else {
-                    unreachable!("CharacterPortraits ticket type")
-                };
-                let report = completed.report.map(|report| {
-                    let acquisition::Report::CharacterPortraits(report) = report else {
-                        unreachable!("CharacterPortraits report type")
-                    };
-                    report
-                });
+                let (request, report) = collected!(pending, CharacterPortraits);
                 frame
                     .extended
                     .restore_character_portraits_request(request, report);
             }
-            let province_order_completed =
-                unsafe { finish_acquisition(shared, &mut batch, province_unit_order_pending) };
-            let acquisition::Job::ProvinceUnitOrder(province_order_request) =
-                province_order_completed.request
-            else {
-                unreachable!("ProvinceUnitOrder ticket type")
-            };
-            let province_order_report = province_order_completed.report.map(|report| {
-                let acquisition::Report::ProvinceUnitOrder(report) = report else {
-                    unreachable!("ProvinceUnitOrder report type")
-                };
-                report
+            let (province_order_request, province_order_report) =
+                collected!(province_unit_order_pending, ProvinceUnitOrder);
+            let province_unit_store = frame
+                .extended
+                .restore_province_unit_order_request(province_order_request, province_order_report);
+            if let Some(store) = province_unit_store {
+                let bytes = store.allocated_bytes() as u64;
+                let previous = shared
+                    .province_unit_store_bytes
+                    .swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the ProvinceUnitOrder job has joined; no worker
+                // retains this store, and only this callback returns it.
+                unsafe { *shared.province_unit_store.get() = Some(store) };
+            }
+            // The template dictionary's job: take its ticks (no read) and fold
+            // its model failures. Out of line: the job-sized request stays off
+            // the hourly body's frame.
+            out_of_line(|| {
+                let (templates_request, _, templates_failure) =
+                    completed!(templates_pending, Templates);
+                frame
+                    .extended
+                    .restore_templates_request(templates_request, templates_failure);
             });
             frame
                 .extended
-                .restore_province_unit_order_request(province_order_request, province_order_report);
-            let mut relations_failure = None;
-            if let Some(pending) = relations_pending {
-                let (request, report, failure) = completed!(pending, Relations);
-                let failure = failure
-                    .or((!report.raw_ok)
-                        .then_some("Relations original acquisition could not complete"));
-                let (fingerprints, payload) = frame.extended.relations_pilot().join_relations(
-                    request.payload,
-                    report,
-                    failure,
-                );
-                if fingerprints.is_some() {
-                    // SAFETY: only this callback takes and returns the store.
-                    unsafe {
-                        *shared.slice_fingerprints[crate::slicing::RELATIONS].get() = fingerprints
-                    };
-                }
-                relations_report = report;
-                relations_failure = failure;
-                match payload {
-                    Ok(payload) => relations_payload = Some(payload),
-                    Err(payload) => decode::recycle_relations_job(payload),
-                }
-            }
-            let (slow_request, _, slow_failure) = completed!(slow_pending, Slow);
-            let stores = frame
-                .extended
-                .restore_slow_request(slow_request, slow_failure.is_none());
-            // SAFETY: only this callback takes and returns the stores.
-            unsafe {
-                if let Some(store) = stores.stability {
-                    *shared.slice_fingerprints[crate::slicing::STABILITY].get() = Some(store);
-                }
-            };
-            // Only a completed Slow job's hour is counted; the game thread
-            // never waits for the status thread's copy.
+                .take_preacquired_templates(shared.base, state, clock.hour, force_full);
+            // The game thread never waits for the status thread's copy.
             let failures = frame.extended.template_model_failures();
-            if slow_failure.is_none() && failures.rows != 0 {
+            if failures.rows != 0 {
                 match shared.template_models.try_lock() {
                     Ok(mut stats) => stats.fold(failures),
                     Err(_) => {
@@ -3381,6 +4522,53 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                             .fetch_add(1, Ordering::Relaxed);
                     }
                 }
+            }
+            let (slow_request, _, slow_failure) = completed!(slow_pending, Slow);
+            let stores = frame
+                .extended
+                .restore_slow_request(slow_request, slow_failure.is_none());
+            // SAFETY: only this callback takes and returns the stores.
+            unsafe {
+                if let Some(store) = stores.available {
+                    *shared.slice_fingerprints[crate::slicing::AVAILABLE_ADVISORS].get() =
+                        Some(store);
+                }
+            };
+            if let Some(store) = stores.advisors {
+                let bytes = store.allocated_bytes() as u64;
+                let previous = shared.advisor_store_bytes.swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the Slow job has joined; no worker retains this store.
+                unsafe { *shared.advisor_store.get() = Some(store) };
+            }
+            if let Some(store) = stores.local_subunits {
+                let bytes = store.allocated_bytes() as u64;
+                let previous = shared
+                    .local_subunit_store_bytes
+                    .swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the Slow job has joined; no worker retains this store.
+                unsafe { *shared.local_subunit_store.get() = Some(store) };
+            }
+            let (war_overview_request, _, war_overview_failure) =
+                completed!(war_overview_pending, WarOverview);
+            frame
+                .extended
+                .restore_war_overview_request(war_overview_request, war_overview_failure.is_none());
+            let (stability_request, _, stability_failure) =
+                completed!(stability_pending, Stability);
+            let stability_store = frame
+                .extended
+                .restore_stability_request(stability_request, stability_failure.is_none());
+            if let Some(store) = stability_store {
+                // SAFETY: only this callback takes and returns the store.
+                unsafe {
+                    *shared.slice_fingerprints[crate::slicing::STABILITY].get() = Some(store)
+                };
             }
             for pending in air_relations_pending.into_iter().flatten() {
                 let (request, _, failure) = completed!(pending, AirRelations);
@@ -3414,79 +4602,82 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 );
             };
             let (gated_request, _, gated_failure) = completed!(gated_pending, Gated);
-            frame
+            let project_store = frame
                 .extended
                 .restore_gated_request(gated_request, gated_failure.is_none());
-            let governance_completed =
-                unsafe { finish_acquisition(shared, &mut batch, governance_pending) };
-            let acquisition::Job::Governance(governance_request) = governance_completed.request
-            else {
-                unreachable!("Governance ticket type")
-            };
-            let acquired_bytes = governance_request.allocated_bytes();
-            if acquired_bytes >= governance_bytes {
-                shared.pool_bytes.fetch_add(
-                    (acquired_bytes - governance_bytes) as u64,
-                    Ordering::Relaxed,
-                );
-            } else {
-                shared.pool_bytes.fetch_sub(
-                    (governance_bytes - acquired_bytes) as u64,
-                    Ordering::Relaxed,
-                );
+            // SAFETY: the Gated job has joined; no worker retains this store.
+            unsafe { return_slice_store(shared, crate::slicing::PROJECTS, project_store) };
+            let (character_inputs_request, character_inputs_report) =
+                collected!(character_inputs_pending, CharacterInputs);
+            if let Some(store) = frame.extended.restore_character_inputs_request(
+                character_inputs_request,
+                character_inputs_report.ok(),
+            ) {
+                let bytes = store.allocated_bytes() as u64;
+                let previous = shared
+                    .character_role_store_bytes
+                    .swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the CharacterInputs job has joined; no worker retains this store.
+                unsafe { *shared.character_role_store.get() = Some(store) };
             }
-            let governance_report = governance_completed.report.map(|report| {
-                let acquisition::Report::Governance(report) = report else {
-                    unreachable!("Governance report type")
-                };
-                report
-            });
-            let technologies = frame
-                .extended
-                .restore_governance_request(governance_request, governance_report);
-            // SAFETY: only this callback takes and returns the store.
-            unsafe {
-                *shared.slice_fingerprints[crate::slicing::TECHNOLOGIES].get() = Some(technologies)
-            };
-            if let Some((pending, loaned_bytes)) = variants_pending {
-                // SAFETY: this thread still owns the live acquisition boundary.
-                let completed = unsafe { finish_acquisition(shared, &mut batch, pending) };
-                let acquisition::Job::Variants(request) = completed.request else {
-                    unreachable!("Variants ticket type")
-                };
-                let acquired_bytes = request.allocated_bytes();
-                if acquired_bytes >= loaned_bytes {
-                    shared
-                        .pool_bytes
-                        .fetch_add((acquired_bytes - loaned_bytes) as u64, Ordering::Relaxed);
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            out_of_line(|| {
+                let (governance_request, governance_report) =
+                    collected!(governance_pending, Governance);
+                let acquired_bytes = governance_request.allocated_bytes();
+                if acquired_bytes >= governance_bytes {
+                    shared.pool_bytes.fetch_add(
+                        (acquired_bytes - governance_bytes) as u64,
+                        Ordering::Relaxed,
+                    );
                 } else {
+                    shared.pool_bytes.fetch_sub(
+                        (governance_bytes - acquired_bytes) as u64,
+                        Ordering::Relaxed,
+                    );
+                }
+                let (technologies, focus, building_store, leader_store, party_store) = frame
+                    .extended
+                    .restore_governance_request(governance_request, governance_report);
+                // SAFETY: only this callback takes and returns the stores.
+                unsafe {
+                    *shared.slice_fingerprints[crate::slicing::TECHNOLOGIES].get() =
+                        Some(technologies);
+                    *shared.slice_fingerprints[crate::slicing::FOCUS].get() = Some(focus);
+                };
+                if let Some(store) = building_store {
+                    let bytes = store.allocated_bytes() as u64;
+                    let previous = shared.building_store_bytes.swap(bytes, Ordering::Relaxed);
                     shared
                         .pool_bytes
-                        .fetch_sub((loaned_bytes - acquired_bytes) as u64, Ordering::Relaxed);
+                        .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                    // SAFETY: the Governance job has joined; no worker retains this store.
+                    unsafe { *shared.building_store.get() = Some(store) };
                 }
-                let report = completed.report.map(|report| {
-                    let acquisition::Report::Variants(ticks) = report else {
-                        unreachable!("Variants report type")
-                    };
-                    ticks
-                });
-                frame.extended.restore_variants_request(request, report);
-            }
+                if let Some(store) = leader_store {
+                    let bytes = store.allocated_bytes() as u64;
+                    let previous = shared.leader_store_bytes.swap(bytes, Ordering::Relaxed);
+                    shared
+                        .pool_bytes
+                        .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                    // SAFETY: the Governance job has joined; no worker retains this store.
+                    unsafe { *shared.leader_store.get() = Some(store) };
+                }
+                if let Some(store) = party_store {
+                    let bytes = store.allocated_bytes() as u64;
+                    let previous = shared.party_store_bytes.swap(bytes, Ordering::Relaxed);
+                    shared
+                        .pool_bytes
+                        .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                    // SAFETY: the Governance job has joined; no worker retains this store.
+                    unsafe { *shared.party_store.get() = Some(store) };
+                }
+            });
             // Research returns into the restored family and charges its costs there.
-            let (research_request, research_report) = {
-                // SAFETY: this thread still owns the live acquisition boundary.
-                let completed = unsafe { finish_acquisition(shared, &mut batch, research_pending) };
-                let acquisition::Job::Research(request) = completed.request else {
-                    unreachable!("Research ticket type")
-                };
-                let report = completed.report.map(|report| {
-                    let acquisition::Report::Research(report) = report else {
-                        unreachable!("Research report type")
-                    };
-                    report
-                });
-                (request, report)
-            };
+            let (research_request, research_report) = collected!(research_pending, Research);
             let fingerprints = frame
                 .extended
                 .restore_research_request(research_request, research_report);
@@ -3494,49 +4685,169 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             unsafe {
                 *shared.slice_fingerprints[crate::slicing::RESEARCH].get() = Some(fingerprints)
             };
-            // Role and trait jobs need their verdicts here, before the typed
-            // fallback; they must not delay dispatch of unrelated map/gated/late work.
-            for part in 1..CHARACTER_PARTS {
-                join_characters!(part);
+            // No later census can repair the detail parts' first result.
+            // Join the last-dispatched parts first: any still queued then run
+            // inline here instead of parking. Part 0, the family's own capture,
+            // is restored first.
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            out_of_line(|| {
+                let mut ship_detail_completed: [Option<(
+                    acquisition::ShipModelDetailsRequest,
+                    Result<extended::ship_models::CaptureReport, acquisition::Failure>,
+                )>;
+                    extended::ship_models::MAX_PARTS] =
+                    [const { None }; extended::ship_models::MAX_PARTS];
+                for (pending, completed) in ship_detail_pending
+                    .into_iter()
+                    .zip(ship_detail_completed.iter_mut())
+                    .rev()
+                {
+                    if let Some(pending) = pending {
+                        *completed = Some(collected!(pending, ShipModelDetails));
+                    }
+                }
+                for completed in &mut ship_detail_completed {
+                    if let Some((request, report)) = completed.take() {
+                        frame.extended.restore_ship_model_part(request, report);
+                    }
+                }
+                frame.extended.finish_ship_model_parts();
+            });
+            // The Ordinary family joins together, after the map sample (whose
+            // typed air fallback must not see its score pack) and before
+            // capture_tables and the Late join's land certificate, which read
+            // the packs it returns.
+            let naval_missions = out_of_line(|| {
+                let mut acquired_bytes = 0;
+                let parts = ordinary_parts_pending.map(|pending| {
+                    // Queued in the first burst or the slack burst.
+                    let pending = pending.expect("every Ordinary part is queued");
+                    let (request, _, failure) = completed!(pending, OrdinaryPart);
+                    acquired_bytes += request.allocated_bytes();
+                    (request, failure)
+                });
+                let (mut ordinary_request, _, ordinary_failure) =
+                    completed!(ordinary_pending, Ordinary);
+                if let Some(mut store) = ordinary_request.counters.take() {
+                    if ordinary_failure.is_some() {
+                        store.forget();
+                    }
+                    let bytes = store.allocated_bytes() as u64;
+                    let previous = shared.counter_store_bytes.swap(bytes, Ordering::Relaxed);
+                    shared
+                        .pool_bytes
+                        .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                    // SAFETY: the Ordinary job has joined; no worker retains this store.
+                    unsafe { *shared.counter_store.get() = Some(store) };
+                }
+                acquired_bytes += ordinary_request.allocated_bytes();
+                if acquired_bytes >= ordinary_bytes {
+                    shared
+                        .pool_bytes
+                        .fetch_add((acquired_bytes - ordinary_bytes) as u64, Ordering::Relaxed);
+                } else {
+                    shared
+                        .pool_bytes
+                        .fetch_sub((ordinary_bytes - acquired_bytes) as u64, Ordering::Relaxed);
+                }
+                frame
+                    .extended
+                    .restore_ordinary_request(ordinary_request, ordinary_failure, parts)
+            });
+            // SAFETY: every terminal Ordinary outcome returns its original
+            // store after invalidating unpublished/failed sliced observations.
+            unsafe {
+                if let Some(store) = naval_missions.fingerprints {
+                    *shared.slice_fingerprints[crate::slicing::NAVAL_MISSIONS].get() = Some(store);
+                }
+            }
+            // The daily production slot's walks join last before the
+            // assembly that takes their ticks: on their slot they are the
+            // hour's longest job.
+            if let Some(pending) = production_daily_pending {
+                let (request, _, failure) = completed!(pending, ProductionDaily);
+                frame
+                    .extended
+                    .restore_production_daily_request(request, failure.is_none());
+            }
+            for pending in production_part_pending.into_iter().flatten() {
+                let (request, report, failure) = completed!(pending, ProductionModifierPart);
+                frame.extended.restore_production_modifier_part(
+                    request,
+                    failure.is_none(),
+                    report.ticks,
+                );
+            }
+            if extended::ProductionDailyPacks::due(clock.hour, force_full) {
+                // SAFETY: only this callback reads and writes the split.
+                unsafe {
+                    let starts = &mut *shared.production_part_starts.get();
+                    *starts = frame.extended.production_modifier_starts(*starts);
+                }
             }
             segment!(9);
+            let assembly_begin = qpc();
             let mut ticks =
                 frame
                     .extended
                     .capture_tables(&cached, shared.base, state, clock.hour, force_full);
+            let mut assembly_ticks = qpc() - assembly_begin;
             segment!(10);
-            let presentation_completed =
-                unsafe { finish_acquisition(shared, &mut batch, presentation_pending) };
-            let acquisition::Job::Presentation(presentation_request) =
-                presentation_completed.request
-            else {
-                unreachable!("Presentation ticket type")
-            };
-            let acquired_bytes = presentation_request.allocated_bytes();
-            if acquired_bytes >= presentation_bytes {
-                shared.pool_bytes.fetch_add(
-                    (acquired_bytes - presentation_bytes) as u64,
-                    Ordering::Relaxed,
-                );
-            } else {
-                shared.pool_bytes.fetch_sub(
-                    (presentation_bytes - acquired_bytes) as u64,
-                    Ordering::Relaxed,
-                );
-            }
-            let presentation_report = presentation_completed.report.map(|report| {
-                let acquisition::Report::Presentation(report) = report else {
-                    unreachable!("Presentation report type")
-                };
-                report
-            });
-            if let Some(store) = frame
+            let (late_request, _, late_failure) = completed!(late_pending, Late);
+            frame.extended.restore_late_request(
+                late_request,
+                late_failure.is_none(),
+                &mut frame.map.orders,
+            );
+            // The fronts join the plans the Late job returned. The ChildFronts
+            // join released their storage from the Orders job's bytes.
+            let (fronts_request, _, fronts_failure) = completed!(fronts_pending, Fronts);
+            shared.pool_bytes.fetch_add(
+                fronts_request.fronts.allocated_bytes() as u64,
+                Ordering::Relaxed,
+            );
+            frame
                 .extended
-                .restore_presentation_request(presentation_request, presentation_report)
-            {
-                // SAFETY: only this callback takes and returns the store.
-                unsafe { return_slice_store(shared, crate::slicing::RETREAT_BANS, store) };
-            }
+                .install_fronts(fronts_request.fronts, fronts_failure.is_none());
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            out_of_line(|| {
+                let (mut presentation_request, presentation_report) =
+                    collected!(presentation_pending, Presentation);
+                let (movement_request, movement_report) =
+                    collected!(movement_pending, PresentationMovement);
+                let presentation_report = presentation_request.restore_movement(
+                    movement_request,
+                    movement_report,
+                    presentation_report,
+                );
+                let acquired_bytes = presentation_request.allocated_bytes();
+                if acquired_bytes >= presentation_bytes {
+                    shared.pool_bytes.fetch_add(
+                        (acquired_bytes - presentation_bytes) as u64,
+                        Ordering::Relaxed,
+                    );
+                } else {
+                    shared.pool_bytes.fetch_sub(
+                        (presentation_bytes - acquired_bytes) as u64,
+                        Ordering::Relaxed,
+                    );
+                }
+                let army_stats = frame
+                    .extended
+                    .restore_presentation_request(presentation_request, presentation_report);
+                if let Some(army_stats) = army_stats {
+                    let bytes = army_stats.allocated_bytes() as u64;
+                    let previous = shared.army_stat_store_bytes.swap(bytes, Ordering::Relaxed);
+                    shared
+                        .pool_bytes
+                        .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                    // SAFETY: the Presentation job has joined; no worker
+                    // retains this store, and only this callback returns it.
+                    unsafe { *shared.army_stat_store.get() = Some(army_stats) };
+                }
+            });
+            frame.extended.install_order_transport();
+            let assembly_begin = qpc();
             let border_ticks = frame.extended.capture_border_inputs(
                 &cached,
                 shared.base,
@@ -3544,59 +4855,11 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 (&frame.provinces.rows, frame.provinces_result),
                 (&mut frame.countries, &mut frame.countries_result),
             );
+            assembly_ticks += qpc() - assembly_begin;
             ticks[replay::rows::TableId::DivisionStatus.index()] += border_ticks[0];
             frame.table_ns[replay::rows::TableId::Countries.index()] +=
                 shared.ns(border_ticks[1] as i64);
-            for pending in eta_inputs_pending.into_iter().flatten() {
-                // SAFETY: this thread still owns the live acquisition boundary.
-                let completed = unsafe { finish_acquisition(shared, &mut batch, pending) };
-                let acquisition::Job::EtaInputs(mut request) = completed.request else {
-                    unreachable!("EtaInputs ticket type")
-                };
-                let report = completed.report.map(|report| {
-                    let acquisition::Report::EtaInputs(report) = report else {
-                        unreachable!("EtaInputs report type")
-                    };
-                    report
-                });
-                if report.is_err() {
-                    request
-                        .captured
-                        .cadence
-                        .as_mut()
-                        .expect("ETA cadence loan")
-                        .invalidate();
-                }
-                let bytes = request
-                    .captured
-                    .cadence
-                    .as_ref()
-                    .expect("ETA cadence loan")
-                    .allocated_bytes() as u64;
-                let previous =
-                    shared.eta_cadence_bytes[request.range].swap(bytes, Ordering::Relaxed);
-                if bytes >= previous {
-                    shared
-                        .pool_bytes
-                        .fetch_add(bytes - previous, Ordering::Relaxed);
-                } else {
-                    shared
-                        .pool_bytes
-                        .fetch_sub(previous - bytes, Ordering::Relaxed);
-                }
-                // SAFETY: the owned job has joined; no worker retains this store.
-                unsafe {
-                    *shared.eta_cadence[request.range].get() = request.captured.cadence.take()
-                };
-                frame.extended.restore_eta_inputs_request(request, report);
-            }
             segment!(11);
-            let (late_request, _, late_failure) = completed!(late_pending, Late);
-            let air_scores = frame.extended.restore_late_request(
-                late_request,
-                late_failure.is_none(),
-                &mut frame.map.orders,
-            );
             for pending in air_histories_pending.into_iter().flatten() {
                 let (request, _, failure) = completed!(pending, AirHistories);
                 frame
@@ -3604,42 +4867,27 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     .restore_air_histories_request(request, failure.is_none());
             }
             frame.extended.settle_air_histories();
-            let bytes = air_scores.allocated_bytes() as u64;
-            let previous = shared.raid_air_score_bytes.swap(bytes, Ordering::Relaxed);
-            shared
-                .pool_bytes
-                .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
-            // SAFETY: the owned job has joined; no worker retains this store.
-            unsafe { *shared.raid_air_scores.get() = Some(air_scores) };
-            let final_request = frame.extended.take_final_inputs_request(
-                &country_snapshot,
-                shared.base,
-                state,
-                clock.hour,
-                force_full,
-                &mut frame.provinces.rows,
-                frame.provinces_result,
-            );
-            let final_bytes = final_request.allocated_bytes();
-            let final_pending = queue!(acquisition::Job::FinalInputs(final_request));
-            let (final_request, final_ticks, final_failure) =
-                completed!(final_pending, FinalInputs);
-            let acquired_bytes = final_request.allocated_bytes();
-            if acquired_bytes >= final_bytes {
-                shared
-                    .pool_bytes
-                    .fetch_add(acquired_bytes - final_bytes, Ordering::Relaxed);
-            } else {
-                shared
-                    .pool_bytes
-                    .fetch_sub(final_bytes - acquired_bytes, Ordering::Relaxed);
-            }
-            frame.extended.restore_final_inputs_request(
-                final_request,
-                final_ticks,
-                final_failure,
-                &mut frame.provinces.rows,
-            );
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            out_of_line(|| {
+                let (final_request, final_ticks, final_failure) =
+                    completed!(final_pending, FinalInputs);
+                let acquired_bytes = final_request.allocated_bytes();
+                if acquired_bytes >= final_bytes {
+                    shared
+                        .pool_bytes
+                        .fetch_add(acquired_bytes - final_bytes, Ordering::Relaxed);
+                } else {
+                    shared
+                        .pool_bytes
+                        .fetch_sub(final_bytes - acquired_bytes, Ordering::Relaxed);
+                }
+                frame.extended.restore_final_inputs_request(
+                    final_request,
+                    final_ticks,
+                    final_failure,
+                );
+            });
+            let assembly_begin = qpc();
             frame.extended.capture_tables_late(
                 &cached,
                 shared.base,
@@ -3649,88 +4897,68 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 &mut frame.map.orders,
                 &mut ticks,
             );
-            frame
-                .extended
-                .guard_selected_retreat(frame.fixed_layout.as_ref());
+            assembly_ticks += qpc() - assembly_begin;
             segment!(12);
-            shared.record_eta_inputs(frame.extended.eta_input_counters());
-            if production_active
-                && (production_rest_report.plan_failed || !production_rest_report.raw_ok)
-            {
-                frame
-                    .extended
-                    .production_rest_pilot()
-                    .fail_production_rest_capture(
-                        "production acquisition plan could not complete safely",
-                    );
-                for (table, cost) in decode::PRODUCTION_REST
-                    .into_iter()
-                    .zip(production_rest_report.copy_ticks)
-                {
-                    ticks[table.index()] = cost;
+            // UnitIntel joins here, at its first reader: nothing before reads
+            // its rows, report or failure, and its worker finished long ago.
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            let intel_failure = out_of_line(|| {
+                let (request, report, failure) = completed!(intel_pending, Intel);
+                let failure = failure
+                    .or((!report.raw_ok).then_some("Intel owned acquisition could not complete"));
+                intel_report = report;
+                if report.raw_ok && failure.is_none() {
+                    *intel_payload = Some(request.payload);
+                } else {
+                    decode::recycle_intel_job(request.payload);
                 }
-            }
-            if construction_active && !construction_rest_report.raw_ok && world_failure.is_none() {
-                frame
-                    .extended
-                    .construction_rest_pilot()
-                    .fail_construction_rest_capture(
-                        "construction original acquisition could not complete",
-                    );
-            }
-            if !economy_rest_report.raw_ok && world_failure.is_none() {
-                frame
-                    .extended
-                    .economy_rest_pilot()
-                    .fail_economy_rest_capture("economy original acquisition could not complete");
-            }
-            if focus_active && !focus_report.raw_ok && world_failure.is_none() {
-                frame.extended.focus_pilot().fail_focus_capture(
-                    focus_active,
-                    "focus original acquisition could not complete",
-                );
-            }
-            if let Some(reason) = world_failure {
-                if production_active {
-                    frame
-                        .extended
-                        .production_rest_pilot()
-                        .fail_production_rest_capture(reason);
+
+                // Release the shared seed leases before the Census can be
+                // cleared on the decode worker during payload retirement.
+                drop(request.inputs);
+                failure
+            });
+            // AirBases joins here, at its first reader: nothing before reads
+            // its payload, report, failure or registration store, and its
+            // verdicts were set before the Gated dispatch.
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            let air_bases_failure = out_of_line(|| {
+                let (mut request, report, failure) = completed!(air_bases_pending, AirBases);
+                let failure = air_bases_join_failure(failure, report.raw_ok);
+                if let Some(mut store) = request.payload.registration_store.take() {
+                    if failure.is_some() {
+                        store.forget();
+                    }
+                    let bytes = store.allocated_bytes() as u64;
+                    let previous = shared.air_base_store_bytes.swap(bytes, Ordering::Relaxed);
+                    shared
+                        .pool_bytes
+                        .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                    // SAFETY: the AirBases job has joined; no worker retains this store.
+                    unsafe { *shared.air_base_store.get() = Some(store) };
                 }
-                if construction_active {
-                    frame
-                        .extended
-                        .construction_rest_pilot()
-                        .fail_construction_rest_capture(reason);
+                air_bases_report = report;
+                if report.raw_ok && failure.is_none() {
+                    *air_bases_payload = Some(request.payload);
+                } else {
+                    decode::recycle_air_bases_job(request.payload);
                 }
-                frame
-                    .extended
-                    .economy_rest_pilot()
-                    .fail_economy_rest_capture(reason);
-                if focus_active {
-                    frame
-                        .extended
-                        .focus_pilot()
-                        .fail_focus_capture(focus_active, reason);
-                }
-                for (table, cost) in decode::PRODUCTION_REST
-                    .into_iter()
-                    .zip(world_report.production.copy_ticks)
-                    .chain(
-                        decode::CONSTRUCTION_REST
-                            .into_iter()
-                            .zip(world_report.construction.copy_ticks),
-                    )
-                    .chain(
-                        decode::ECONOMY_REST
-                            .into_iter()
-                            .zip(world_report.economy.copy_ticks),
-                    )
-                    .chain(decode::FOCUS.into_iter().zip(world_report.focus.copy_ticks))
-                {
-                    ticks[table.index()] = cost;
-                }
-            }
+                failure
+            });
+            shared.record_presentation(frame.extended.presentation_phase_ticks());
+            refuse_world_rest(
+                &mut frame.extended,
+                world_active,
+                &world_report,
+                world_failure,
+                &mut ticks,
+            );
+            refuse_economy_rest(
+                frame.extended.economy_rest_pilot(),
+                &economy_rest_report,
+                economy_failure,
+                &mut ticks,
+            );
             for (part, failure) in characters_failure.into_iter().enumerate() {
                 if let Some(reason) = failure {
                     let active = std::array::from_fn(|index| {
@@ -3754,12 +4982,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     .extended
                     .air_bases_pilot()
                     .fail_air_bases_capture(reason);
-            }
-            if let Some(reason) = air_history_failure {
-                frame
-                    .extended
-                    .air_history_pilot()
-                    .fail_air_history_capture(reason);
             }
             if let Some(reason) = supremacy_failure {
                 frame
@@ -3826,7 +5048,13 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             // Restore the final independent request before releasing the lease.
             segment!(13);
             let ships = replay::rows::TableId::ShipModels.index();
+            let assembly_begin = qpc();
             ticks[ships] = frame.extended.capture_ship_models(&cached, shared.base);
+            assembly_ticks += qpc() - assembly_begin;
+            shared
+                .game_thread
+                .table_assembly_ns
+                .fetch_add(shared.ns(assembly_ticks), Ordering::Relaxed);
             segment!(14);
             ts_parallel = segment_prev;
             // Join wall spent on the pool jobs during the parallel phase.
@@ -3909,20 +5137,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     frame.table_ns[index] = ns;
                     decode::add_divisions_copy_ns(slot, ns);
                     decode::add_divisions_raw_bytes(slot, divisions_report.raw_bytes[slot]);
-                }
-            }
-            // Focus pair measured copy-only above; same install for the
-            // calibration counters. The single copy pass is
-            // anchor-charged to the focus slot, matching the read-group
-            // convention.
-            if focus_report.raw_ok {
-                for (slot, table) in decode::FOCUS.iter().enumerate() {
-                    let index = table.index();
-                    let ns = shared.ns(focus_report.copy_ticks[slot] as i64);
-                    // Governance retains the shared country traversal on this anchor.
-                    frame.table_ns[index] = frame.table_ns[index].saturating_add(ns);
-                    decode::add_focus_copy_ns(slot, ns);
-                    decode::add_focus_raw_bytes(slot, focus_report.raw_bytes[slot]);
                 }
             }
             if air_wing_report.raw_ok {
@@ -4055,19 +5269,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     decode::add_air_bases_raw_bytes(slot, air_bases_report.raw_bytes[slot]);
                 }
             }
-            // Shared hourly history measured copy-only above; same
-            // install for the calibration counters. The single regional
-            // walk is anchor-charged to the history slot, matching the
-            // read-group convention.
-            if air_history_report.raw_ok {
-                for (slot, table) in decode::AIR_HISTORY.iter().enumerate() {
-                    let index = table.index();
-                    let ns = shared.ns(air_history_report.copy_ticks[slot] as i64);
-                    frame.table_ns[index] = ns;
-                    decode::add_air_history_copy_ns(slot, ns);
-                    decode::add_air_history_raw_bytes(slot, air_history_report.raw_bytes[slot]);
-                }
-            }
             // Hourly supremacy measured copy-only above; same install
             // for the calibration counters.
             if supremacy_report.raw_ok {
@@ -4157,7 +5358,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             shared.sample_roster(&memory, frame.clock.as_ref().map(Clock::borrowed));
         }
         frame.table_ns[0] = shared.ns(clock_ticks);
-        frame.table_reads = crate::read_accounting::snapshot();
+        crate::read_accounting::snapshot_into(&mut frame.table_reads);
         if frame.world_generation != crate::world_lifetime::generation() {
             frame.extended.discard_event_feed();
             lost_observer_interval();
@@ -4199,134 +5400,87 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             .fetch_add(inline_walk_ns, Ordering::Relaxed);
         shared.phase_join_ns.fetch_add(join_ns, Ordering::Relaxed);
         shared.phase_calls.fetch_add(1, Ordering::Relaxed);
+        shared.game_thread.hours.fetch_add(1, Ordering::Relaxed);
         frame.capture_seq = decode::next_seq();
-        let decode_job = decode::DecodeJob {
-            index,
-            seq: frame.capture_seq,
-            hour: decode_hour,
-            relations_refresh: relations_report.raw_ok,
-            characters_refresh: characters_report.map(|report| report.raw_ok),
-            projects_refresh: projects_report.raw_ok,
-            lexical_refresh: lexical_report.raw_ok,
-            divisions_refresh: divisions_report.raw_ok,
-            focus_refresh: focus_report.raw_ok,
-            air_wing_refresh: air_wing_report.raw_ok,
-            air_stats_refresh: air_stats_report.raw_ok,
-            naval_refresh: naval_report.raw_ok,
-            players_refresh: players_report.raw_ok,
-            session_refresh: session_report.raw_ok,
-            production_rest_refresh: production_rest_report.raw_ok,
-            construction_rest_refresh: construction_rest_report.raw_ok,
-            economy_rest_refresh: economy_rest_report.raw_ok,
-            air_bases_refresh: air_bases_report.raw_ok,
-            air_history_refresh: air_history_report.raw_ok,
-            supremacy_refresh: supremacy_report.raw_ok,
-            sunk_refresh: sunk_report.raw_ok,
-            radar_refresh: radar_report.raw_ok,
-            intel_refresh: intel_report.raw_ok,
-            weather_refresh: weather_report.raw_ok,
-            capitulation_refresh: capitulation_report.raw_ok,
-            force_full: decode_force_full,
-            game_elapsed,
-            relations_payload,
-            characters_payload,
-            projects_payload,
-            lexical_payload,
-            divisions_payload,
-            focus_payload,
-            air_wing_payload,
-            air_stats_payload,
-            naval_payload,
-            players_payload,
-            session_payload,
-            production_rest_payload,
-            construction_rest_payload,
-            economy_rest_payload,
-            air_bases_payload,
-            air_history_payload,
-            supremacy_payload,
-            sunk_payload,
-            radar_payload,
-            intel_payload,
-            weather_payload,
-            capitulation_payload,
-        };
-        match decode::enqueue(shared, decode_job) {
-            None => unsafe { (&mut *shared.pending.get()).clear() },
-            Some(returned) => {
-                if let Some(payload) = returned.relations_payload {
-                    decode::recycle_relations_job(payload);
-                }
-                for payload in returned.characters_payload.into_iter().flatten() {
-                    decode::recycle_characters_job(payload);
-                }
-                if let Some(payload) = returned.projects_payload {
-                    decode::recycle_projects_job(payload);
-                }
-                if let Some(payload) = returned.lexical_payload {
-                    decode::recycle_lexical_job(payload);
-                }
-
-                if let Some(payload) = returned.divisions_payload {
-                    decode::recycle_divisions_job(payload);
-                }
-                if let Some(payload) = returned.focus_payload {
-                    decode::recycle_focus_job(payload);
-                }
-
-                if let Some(payload) = returned.air_wing_payload {
-                    decode::recycle_air_wing_job(payload);
-                }
-                if let Some(payload) = returned.air_stats_payload {
-                    decode::recycle_air_stats_job(payload);
-                }
-                if let Some(payload) = returned.naval_payload {
-                    decode::recycle_naval_job(payload);
-                }
-                if let Some(payload) = returned.players_payload {
-                    decode::recycle_players_job(payload);
-                }
-                if let Some(payload) = returned.session_payload {
-                    decode::recycle_session_job(payload);
-                }
-                if let Some(payload) = returned.production_rest_payload {
-                    decode::recycle_production_rest_job(payload);
-                }
-                if let Some(payload) = returned.construction_rest_payload {
-                    decode::recycle_construction_rest_job(payload);
-                }
-                if let Some(payload) = returned.economy_rest_payload {
-                    decode::recycle_economy_rest_job(payload);
-                }
-                if let Some(payload) = returned.air_bases_payload {
-                    decode::recycle_air_bases_job(payload);
-                }
-                if let Some(payload) = returned.air_history_payload {
-                    decode::recycle_air_history_job(payload);
-                }
-
-                if let Some(payload) = returned.supremacy_payload {
-                    decode::recycle_supremacy_job(payload);
-                }
-                if let Some(payload) = returned.sunk_payload {
-                    decode::recycle_sunk_job(payload);
-                }
-                if let Some(payload) = returned.radar_payload {
-                    decode::recycle_radar_job(payload);
-                }
-                if let Some(payload) = returned.intel_payload {
-                    decode::recycle_intel_job(payload);
-                }
-                if let Some(payload) = returned.weather_payload {
-                    decode::recycle_weather_job(payload);
-                }
-                if let Some(payload) = returned.capitulation_payload {
-                    decode::recycle_capitulation_job(payload);
-                }
-                // Existing whole-frame drop plus gap path, unchanged
-                // counters and no new loss reasons.
-                drop_owned_frame(shared, frame, index);
-            }
+        // Every field is named: a new one cannot keep a previous hour's value.
+        let decode::DecodeJob {
+            index: job_index,
+            seq,
+            hour,
+            relations_refresh,
+            characters_refresh,
+            projects_refresh,
+            lexical_refresh,
+            divisions_refresh,
+            air_wing_refresh,
+            air_stats_refresh,
+            naval_refresh,
+            players_refresh,
+            session_refresh,
+            production_rest_refresh,
+            construction_rest_refresh,
+            economy_rest_refresh,
+            air_bases_refresh,
+            supremacy_refresh,
+            sunk_refresh,
+            radar_refresh,
+            intel_refresh,
+            weather_refresh,
+            capitulation_refresh,
+            force_full,
+            game_elapsed: job_elapsed,
+            relations_payload: _,
+            characters_payload: _,
+            projects_payload: _,
+            lexical_payload: _,
+            divisions_payload: _,
+            air_wing_payload: _,
+            air_stats_payload: _,
+            naval_payload: _,
+            players_payload: _,
+            session_payload: _,
+            production_rest_payload: _,
+            construction_rest_payload: _,
+            economy_rest_payload: _,
+            air_bases_payload: _,
+            supremacy_payload: _,
+            sunk_payload: _,
+            radar_payload: _,
+            intel_payload: _,
+            weather_payload: _,
+            capitulation_payload: _,
+        } = decode_slot.job();
+        *job_index = index;
+        *seq = frame.capture_seq;
+        *hour = decode_hour;
+        *relations_refresh = relations_report.raw_ok;
+        *characters_refresh = characters_report.map(|report| report.raw_ok);
+        *projects_refresh = projects_report.raw_ok;
+        *lexical_refresh = lexical_report.raw_ok;
+        *divisions_refresh = divisions_report.raw_ok;
+        *air_wing_refresh = air_wing_report.raw_ok;
+        *air_stats_refresh = air_stats_report.raw_ok;
+        *naval_refresh = naval_report.raw_ok;
+        *players_refresh = players_report.raw_ok;
+        *session_refresh = session_report.raw_ok;
+        *production_rest_refresh = production_rest_report.raw_ok;
+        *construction_rest_refresh = construction_rest_report.raw_ok;
+        *economy_rest_refresh = economy_rest_report.raw_ok;
+        *air_bases_refresh = air_bases_report.raw_ok;
+        *supremacy_refresh = supremacy_report.raw_ok;
+        *sunk_refresh = sunk_report.raw_ok;
+        *radar_refresh = radar_report.raw_ok;
+        *intel_refresh = intel_report.raw_ok;
+        *weather_refresh = weather_report.raw_ok;
+        *capitulation_refresh = capitulation_report.raw_ok;
+        *force_full = decode_force_full;
+        *job_elapsed = game_elapsed;
+        if decode::enqueue_reserved(shared, decode_slot) {
+            unsafe { (&mut *shared.pending.get()).clear() }
+        } else {
+            // Existing whole-frame drop plus gap path, unchanged
+            // counters and no new loss reasons.
+            drop_owned_frame(shared, frame, index);
         }
     } else {
         unsafe {
@@ -4338,11 +5492,65 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
     }
 }
 
-// Keep a rejected request inline: boxing it would allocate on the game thread.
-#[allow(clippy::large_enum_variant)]
+/// The AirBases join's failure: the job's own, else an incomplete raw
+/// acquisition. Every join therefore has a raw payload or a failure, so the
+/// registrations and bases verdicts are true before the join.
+fn air_bases_join_failure(failure: Option<&'static str>, raw_ok: bool) -> Option<&'static str> {
+    failure.or((!raw_ok).then_some("AirBases owned acquisition could not complete"))
+}
+
+/// A raw-copy join's failure: the job's own, else an incomplete raw
+/// acquisition (`incomplete`). Every join therefore has a raw payload or a
+/// failure, so the verdict the Gated packs read is true before the join.
+fn raw_copy_join_failure(
+    failure: Option<&'static str>,
+    raw_ok: bool,
+    incomplete: &'static str,
+) -> Option<&'static str> {
+    failure.or((!raw_ok).then_some(incomplete))
+}
+
+/// Install the air pack's statistics and base verdicts of this hour (`None`:
+/// unchanged). The AirMissions job owns the pack between their joins and its
+/// own; neither verdict is read before the Late job.
+fn install_air_verdicts(frame: &mut Captured, stats: Option<bool>, bases: Option<bool>) {
+    if let Some(raw) = stats {
+        frame.extended.air_stats_pilot().stats_raw_mode = raw;
+    }
+    if let Some(raw) = bases {
+        frame.extended.air_bases_pilot().bases_raw_mode = raw;
+    }
+}
+
+/// Runs `work` in its own frame: values it holds, such as a join's job-sized
+/// request, never occupy the hourly body's frame.
+#[inline(never)]
+fn out_of_line<R>(work: impl FnOnce() -> R) -> R {
+    work()
+}
+
+/// One submitted request's join. A rejected request is parked in the
+/// acquisition pool (`Batch::park`) rather than held here, so the hourly body
+/// keeps a ticket per pending join, not a job-sized request.
 enum PendingAcquisition {
     Accepted(acquisition::Ticket),
-    Rejected(acquisition::Job),
+    Rejected(acquisition::Ticket),
+}
+
+/// Builds one request and submits it out of line: the job-sized request lives
+/// only in this frame, never in the hourly body's.
+///
+/// # Safety
+/// As `submit_acquisition`.
+#[inline(never)]
+unsafe fn queue_acquisition(
+    shared: &Shared,
+    batch: &mut acquisition::Batch<'_>,
+    request: impl FnOnce() -> acquisition::Job,
+) -> PendingAcquisition {
+    let mut retained = Some(request());
+    // SAFETY: forwarded from the caller.
+    unsafe { submit_retained(shared, batch, &mut retained) }
 }
 
 /// Caller retains the game boundary until this guard and all returned jobs finish.
@@ -4351,131 +5559,393 @@ unsafe fn submit_acquisition(
     batch: &mut acquisition::Batch<'_>,
     request: acquisition::Job,
 ) -> PendingAcquisition {
+    // SAFETY: forwarded from the caller.
+    unsafe { submit_retained(shared, batch, &mut Some(request)) }
+}
+
+unsafe fn submit_retained(
+    shared: &Shared,
+    batch: &mut acquisition::Batch<'_>,
+    retained: &mut Option<acquisition::Job>,
+) -> PendingAcquisition {
     let begin = qpc();
-    let mut retained = Some(request);
     // SAFETY: the caller's batch owns this callback's complete live lease.
-    let pending = match unsafe { batch.submit(&mut retained) } {
+    let pending = match unsafe { batch.submit(retained) } {
         Ok(ticket) => PendingAcquisition::Accepted(ticket),
-        Err(_) => PendingAcquisition::Rejected(retained.expect("rejected request retained")),
+        // MAX_JOBS bounds accepted and retained requests together.
+        Err(_) => PendingAcquisition::Rejected(
+            batch
+                .park(retained)
+                .expect("acquisition retains at most MAX_JOBS requests"),
+        ),
     };
     shared
         .acquisition_dispatch_ns
         .fetch_add(shared.ns(qpc() - begin), Ordering::Relaxed);
+    shared
+        .game_thread
+        .dispatched_jobs
+        .fetch_add(1, Ordering::Relaxed);
     pending
 }
 
-/// Accepted work is recovered once; only rejected submissions may execute inline.
+/// Collects one join out of line: the completion, with its job-sized request
+/// and read counts, lives only in this frame. The hourly body receives the
+/// variant's request and report.
+///
+/// # Safety
+/// As `finish_acquisition_into`.
+#[inline(never)]
+unsafe fn collect_acquisition<T, R>(
+    shared: &Shared,
+    batch: &mut acquisition::Batch<'_>,
+    pending: PendingAcquisition,
+    request: impl FnOnce(&acquisition::Job) -> &T,
+    report: impl FnOnce(acquisition::Report) -> R,
+) -> (T, Result<R, acquisition::Failure>) {
+    // Never dropped: the job's variant is its only owned value and moves out
+    // once below, straight from this storage (a panic leaks, never frees).
+    let mut completed = std::mem::ManuallyDrop::new(None);
+    // SAFETY: forwarded from the caller.
+    unsafe { finish_acquisition_into(shared, batch, pending, &mut completed) };
+    let completed = completed.as_ref().expect("every join yields a completion");
+    // SAFETY: `completed` is never dropped, so the variant is read exactly once.
+    let variant = unsafe { std::ptr::read(request(&completed.request)) };
+    (variant, completed.report.map(report))
+}
+
+#[cfg(test)]
 unsafe fn finish_acquisition(
     shared: &Shared,
     batch: &mut acquisition::Batch<'_>,
     pending: PendingAcquisition,
 ) -> acquisition::Completion<acquisition::Job, acquisition::Report> {
+    let mut completed = None;
+    // SAFETY: forwarded from the caller.
+    unsafe { finish_acquisition_into(shared, batch, pending, &mut completed) };
+    completed.expect("every join yields a completion")
+}
+
+/// Accepted work is recovered once; only rejected submissions may execute
+/// inline. The completion moves into the caller's empty `out`.
+unsafe fn finish_acquisition_into(
+    shared: &Shared,
+    batch: &mut acquisition::Batch<'_>,
+    pending: PendingAcquisition,
+    out: &mut Option<acquisition::Completion<acquisition::Job, acquisition::Report>>,
+) {
     match pending {
         PendingAcquisition::Accepted(ticket) => {
             let begin = qpc();
-            let result = batch.finish(ticket).expect("submitted acquisition job");
-            let wait = shared.ns(qpc() - begin);
+            assert!(batch.finish_into(ticket, out), "submitted acquisition job");
+            let result = out.as_ref().expect("submitted acquisition job");
+            let end = qpc();
+            let wait = shared.ns(end - begin);
+            shared.join_costs[result.request.role() as usize].record(
+                &result.timeline,
+                begin,
+                |ticks| shared.ns(ticks),
+            );
             shared
                 .acquisition_wait_ns
                 .fetch_add(wait, Ordering::Relaxed);
             shared.join_wait[result.request.role() as usize].fetch_add(wait, Ordering::Relaxed);
+            shared.role_timeline[result.request.role() as usize].record(
+                shared.acquisition_entry_qpc.load(Ordering::Relaxed),
+                &result.timeline,
+                begin,
+                end,
+                wait,
+            );
             #[cfg(feature = "callback_profile")]
             crate::callback_profile::record_join(
                 result.request.role() as usize,
                 wait,
                 result.profile,
             );
-            result
         }
-        PendingAcquisition::Rejected(mut request) => {
-            let report = match &mut request {
-                acquisition::Job::Governance(governance) => {
-                    let report = governance.fail("governance worker admission failed");
-                    acquisition::Report::Governance(report)
-                }
-                acquisition::Job::Variants(variants) => {
-                    let ticks = variants.fail("variant worker admission failed");
-                    acquisition::Report::Variants(ticks)
-                }
-                acquisition::Job::Orders(orders) => {
-                    let report = orders.fail("army order worker admission failed");
-                    acquisition::Report::Orders(report)
-                }
-                // An inline part could copy megabytes of vectors on the game
-                // thread; its countries are copied afresh at the next hour.
-                acquisition::Job::AirRelations(relations) => {
-                    relations
-                        .staging
-                        .fail("air relation worker admission failed");
-                    extended::air_relations::certificates(relations.part).forget();
-                    acquisition::Report::AirRelations(acquisition::AirRelationsReport)
-                }
-                // Likewise for a history part: the hour's settle then withdraws
-                // every part's certificates and the next hour copies afresh.
-                acquisition::Job::AirHistories(histories) => {
-                    extended::air_histories::refuse(&mut histories.staging);
-                    acquisition::Report::AirHistories(acquisition::AirHistoriesReport)
-                }
-                acquisition::Job::AirMissions(missions) => {
-                    missions.refuse();
-                    acquisition::Report::AirMissions(acquisition::AirMissionsReport)
-                }
-                acquisition::Job::Ordinary(ordinary) => {
-                    let report = ordinary.fail("ordinary worker admission failed");
-                    acquisition::Report::Ordinary(report)
-                }
-                acquisition::Job::Countries(countries) if countries.has_naming() => {
-                    let report = countries.fail_naming("country naming worker admission failed");
-                    acquisition::Report::Countries(report)
-                }
-                acquisition::Job::Presentation(presentation) => {
-                    let report = presentation.fail("division presentation worker admission failed");
-                    acquisition::Report::Presentation(report)
-                }
-                acquisition::Job::EtaInputs(eta) => {
-                    let report = eta
-                        .captured
-                        .fail_owned_capture("division ETA worker admission failed");
-                    acquisition::Report::EtaInputs(report)
-                }
-                _ => {
-                    if request.role().worker_only() {
-                        return acquisition::Completion {
-                            request,
-                            report: Err(acquisition::Failure::Stopped),
-                            table_reads: crate::read_accounting::ZERO,
-                            #[cfg(feature = "callback_profile")]
-                            profile: Default::default(),
-                        };
-                    }
-                    // SAFETY: this request was rejected before acquiring any live state.
-                    return unsafe { batch.run_inline(request) };
-                }
-            };
-            acquisition::Completion {
-                request,
-                report: Ok(report),
-                table_reads: crate::read_accounting::ZERO,
-                #[cfg(feature = "callback_profile")]
-                profile: Default::default(),
-            }
-        }
+        // SAFETY: forwarded from the caller.
+        PendingAcquisition::Rejected(ticket) => unsafe { finish_rejected(batch, ticket, out) },
     }
 }
 
-fn acquisition_failure_reason(failure: acquisition::Failure) -> &'static str {
+/// Whether the Orders job and every part have completed (a refused one is
+/// complete: it never runs), so that joining them neither waits nor runs one
+/// on the game thread.
+fn orders_complete(
+    batch: &acquisition::Batch<'_>,
+    orders: &PendingAcquisition,
+    parts: &[Option<PendingAcquisition>],
+) -> bool {
+    std::iter::once(orders)
+        .chain(parts.iter().flatten())
+        .all(|pending| match pending {
+            PendingAcquisition::Accepted(ticket) => batch.is_complete(*ticket),
+            PendingAcquisition::Rejected(_) => true,
+        })
+}
+
+/// Join the Orders job and its parts into the census the stitch takes. A
+/// failed Orders job fails the census; each part returns, and the first that
+/// did not run fails the census with the reason the single job would have
+/// had, unless the census already failed.
+///
+/// # Safety
+/// The caller still owns the live acquisition boundary.
+unsafe fn collect_orders(
+    shared: &Shared,
+    batch: &mut acquisition::Batch<'_>,
+    orders: PendingAcquisition,
+    parts: [Option<PendingAcquisition>; crate::orders_parts::MAX_PARTS - 1],
+) -> acquisition::OrdersRequest {
+    // SAFETY: forwarded from the caller.
+    let (mut orders_request, report) = unsafe {
+        collect_acquisition(
+            shared,
+            batch,
+            orders,
+            |job| {
+                let acquisition::Job::Orders(request) = job else {
+                    unreachable!("acquisition ticket retains its submitted job type")
+                };
+                request
+            },
+            |report| {
+                let acquisition::Report::Orders(report) = report else {
+                    unreachable!("acquisition report retains its submitted job type")
+                };
+                report
+            },
+        )
+    };
+    if report.is_err() {
+        orders_request.fail("army order acquisition failed");
+    }
+    for pending in parts.into_iter().flatten() {
+        // SAFETY: as above.
+        let (request, report) = unsafe {
+            collect_acquisition(
+                shared,
+                batch,
+                pending,
+                |job| {
+                    let acquisition::Job::OrdersPart(request) = job else {
+                        unreachable!("acquisition ticket retains its submitted job type")
+                    };
+                    request
+                },
+                |report| {
+                    let acquisition::Report::OrdersPart(report) = report else {
+                        unreachable!("acquisition report retains its submitted job type")
+                    };
+                    report
+                },
+            )
+        };
+        let reason = request.failure(report.is_err());
+        orders_request
+            .orders
+            .return_part(request.index, request.part);
+        if let Some(reason) = reason
+            && !orders_request.orders.failed()
+        {
+            orders_request.fail(reason);
+        }
+    }
+    orders_request
+}
+
+/// The OrdersStitch job's outcome at its join, as if it had been submitted
+/// where `stitch_admissible` was taken: after every job the census does not
+/// gate. The stitch leaves earlier, once the Orders job and its parts are
+/// joined, so neither direction of failure may differ from that placement:
+/// - Its own panic, contained in its body, stops the pool only here: no job
+///   dispatched before this join is cancelled or refused for it, as none
+///   would have been had the stitch been submitted later. It is counted as
+///   the runner counts a panic.
+/// - A pool already stopped where it would have been submitted would have
+///   refused it: a stitch that did not complete then takes the admission
+///   reason a refused stitch takes, whether a stop cancelled it while queued
+///   or it panicked. One that completed before the stop keeps its census,
+///   which is never harsher.
+/// - Otherwise a failed, cancelled or panicked stitch fails the census with
+///   the acquisition reason, as a failure after its submission did.
+///
+/// A census an earlier job already failed keeps that reason.
+fn settle_stitch(
+    batch: &acquisition::Batch<'_>,
+    orders: &mut acquisition::OrdersRequest,
+    report: acquisition::StitchReport,
+    failure: Option<&'static str>,
+    stitch_admissible: bool,
+) {
+    if report.contained_panic && stitch_admissible {
+        batch.stop_for_contained_panic(acquisition::Role::OrdersStitch);
+    }
+    if (failure.is_none() && !report.contained_panic) || orders.orders.failed() {
+        return;
+    }
+    orders.fail(if stitch_admissible {
+        "army order acquisition failed"
+    } else {
+        "army order worker admission failed"
+    });
+}
+
+/// Before this hour's root census job: its order census parts follow the
+/// split the last stitched hour planned, whichever pooled frame either hour
+/// uses. Returns the parts' storage before the job prepares them
+/// ([`charge_order_parts`]).
+///
+/// # Safety
+/// Only the hourly callback reads and writes `shared`'s order split.
+unsafe fn begin_order_parts(shared: &Shared, orders: &mut crate::map_capture::Orders) -> usize {
+    // SAFETY: forwarded from the caller.
+    let split = unsafe { *shared.order_split.get() };
+    orders.begin_parts(split, shared.frequency);
+    orders.parts_allocated_bytes()
+}
+
+/// At the root census join: charges the parts' storage the job prepared,
+/// their boxes and roots, against `before`; later growth is charged with
+/// the rest of the Orders request.
+fn charge_order_parts(shared: &Shared, orders: &crate::map_capture::Orders, before: usize) {
+    let prepared = orders.parts_allocated_bytes();
+    if prepared >= before {
+        shared
+            .pool_bytes
+            .fetch_add((prepared - before) as u64, Ordering::Relaxed);
+    } else {
+        shared
+            .pool_bytes
+            .fetch_sub((before - prepared) as u64, Ordering::Relaxed);
+    }
+}
+
+/// After this hour's stitch joins: the split it planned for the next hour,
+/// or one part when it planned none.
+///
+/// # Safety
+/// As [`begin_order_parts`].
+unsafe fn end_order_parts(shared: &Shared, orders: &crate::map_capture::Orders) {
+    // SAFETY: forwarded from the caller.
+    unsafe { *shared.order_split.get() = orders.next_split() };
+}
+
+/// A rejected request's join, out of line from the accepted path.
+///
+/// # Safety
+/// As `finish_acquisition_into`.
+#[inline(never)]
+unsafe fn finish_rejected(
+    batch: &mut acquisition::Batch<'_>,
+    ticket: acquisition::Ticket,
+    out: &mut Option<acquisition::Completion<acquisition::Job, acquisition::Report>>,
+) {
+    let mut request = batch.unpark(ticket).expect("parked acquisition request");
+    let report = match &mut request {
+        acquisition::Job::Governance(governance) => {
+            let report = governance.fail("governance worker admission failed");
+            acquisition::Report::Governance(report)
+        }
+        acquisition::Job::Variants(variants) => {
+            let ticks = variants.fail("variant worker admission failed");
+            acquisition::Report::Variants(ticks)
+        }
+        acquisition::Job::Orders(orders) => {
+            let report = orders.fail("army order worker admission failed");
+            acquisition::Report::Orders(report)
+        }
+        // A census an earlier job already failed keeps that reason: a failed
+        // job stops the pool, which then refuses this one.
+        acquisition::Job::OrdersStitch(orders) => {
+            if !orders.orders.failed() {
+                orders.fail("army order worker admission failed");
+            }
+            acquisition::Report::OrdersStitch(acquisition::StitchReport::default())
+        }
+        // The part returns unrun; the join fails the census with the
+        // admission reason a refused Orders job has.
+        acquisition::Job::OrdersPart(part) => {
+            part.rejected = true;
+            acquisition::Report::OrdersPart(acquisition::OrdersReport)
+        }
+        // An inline part could copy megabytes of vectors on the game
+        // thread; its countries are copied afresh at the next hour.
+        acquisition::Job::AirRelations(relations) => {
+            relations
+                .staging
+                .fail("air relation worker admission failed");
+            extended::air_relations::certificates(relations.part).forget();
+            acquisition::Report::AirRelations(acquisition::AirRelationsReport)
+        }
+        // Likewise for a history part: the hour's settle then withdraws
+        // every part's certificates and the next hour copies afresh.
+        acquisition::Job::AirHistories(histories) => {
+            extended::air_histories::refuse(&mut histories.staging);
+            acquisition::Report::AirHistories(acquisition::AirHistoriesReport)
+        }
+        acquisition::Job::AirMissions(missions) => {
+            missions.refuse();
+            acquisition::Report::AirMissions(acquisition::AirMissionsReport)
+        }
+        acquisition::Job::Ordinary(ordinary) => {
+            let report = ordinary.fail("ordinary worker admission failed");
+            acquisition::Report::Ordinary(report)
+        }
+        acquisition::Job::OrdinaryPart(part) => {
+            let report = part.fail("ordinary worker admission failed");
+            acquisition::Report::OrdinaryPart(report)
+        }
+        acquisition::Job::Countries(countries) if countries.has_naming() => {
+            let report = countries.fail_naming("country naming worker admission failed");
+            acquisition::Report::Countries(report)
+        }
+        acquisition::Job::Templates(templates) => {
+            let report = templates.fail("division template worker admission failed");
+            acquisition::Report::Templates(report)
+        }
+        _ => {
+            if request.worker_only() {
+                *out = Some(acquisition::Completion {
+                    request,
+                    report: Err(acquisition::Failure::Stopped),
+                    table_reads: crate::read_accounting::ZERO,
+                    timeline: Default::default(),
+                    #[cfg(feature = "callback_profile")]
+                    profile: Default::default(),
+                });
+                return;
+            }
+            // SAFETY: this request was rejected before acquiring any live state.
+            *out = Some(unsafe { batch.run_inline(request) });
+            return;
+        }
+    };
+    *out = Some(acquisition::Completion {
+        request,
+        report: Ok(report),
+        table_reads: crate::read_accounting::ZERO,
+        timeline: Default::default(),
+        #[cfg(feature = "callback_profile")]
+        profile: Default::default(),
+    });
+}
+
+pub(crate) fn acquisition_failure_reason(failure: acquisition::Failure) -> &'static str {
     match failure {
         acquisition::Failure::Panicked => "acquisition worker panicked",
         acquisition::Failure::Stopped => "acquisition worker stopped before completion",
     }
 }
 
+/// The World job's scheduled parts: production and construction rests, each
+/// owning a payload only in its slot. The economy rest is the Economy job's
+/// ([`acquire_economy_request`]).
 pub(crate) fn acquire_world_request(
     countries: &Arc<Cache>,
     base: usize,
     game_state: usize,
-    focus: extended::governance::FocusCopyContext,
-    economy: &mut extended::economy::Captured,
     hour: i32,
     force_full: bool,
 ) -> acquisition::WorldRequest {
@@ -4492,16 +5962,154 @@ pub(crate) fn acquire_world_request(
                 context: extended::construction::ConstructionRestCopyContext { base, game_state },
                 payload: decode::acquire_construction_rest_job(),
             }),
-        economy: acquisition::WorldPart {
-            context: economy.resource_copy_context(base, game_state, hour, force_full),
-            payload: decode::acquire_economy_rest_job(),
-        },
-        focus: replay::cadence::should_walk(TableId::Focus, hour, force_full).then(|| {
-            acquisition::WorldPart {
-                context: focus,
-                payload: decode::acquire_focus_job(),
-            }
-        }),
+    }
+}
+
+/// The Economy job: the economy rest runs every hour (province supply, the
+/// resource census and its consumers), its other tables in their daily slot.
+pub(crate) fn acquire_economy_request(
+    countries: &Arc<Cache>,
+    base: usize,
+    game_state: usize,
+    economy: &mut extended::economy::Captured,
+    hour: i32,
+    force_full: bool,
+) -> acquisition::EconomyRequest {
+    acquisition::EconomyRequest {
+        countries: Arc::clone(countries),
+        context: economy.resource_copy_context(base, game_state, hour, force_full),
+        payload: decode::acquire_economy_rest_job(),
+    }
+}
+
+/// The World join. A scheduled part's completed raw copy goes to its decode
+/// payload and anything else is recycled; the part is then installed from
+/// the payload (`rest_raw_mode`: production's here, construction's, which
+/// the Gated packs hold, before their dispatch from the scheduled part). A
+/// failed job lowers only its own parts' `raw_ok`; [`refuse_world_rest`]
+/// refuses their tables after the assembly. Returns whether production and
+/// construction were scheduled.
+pub(crate) fn settle_world(
+    extended: &mut extended::Captured,
+    world: acquisition::WorldRequest,
+    report: &mut acquisition::WorldReport,
+    failure: Option<&'static str>,
+    production_payload: &mut Option<extended::production::ProductionRestJob>,
+    construction_payload: &mut Option<extended::construction::ConstructionRestJob>,
+) -> (bool, bool) {
+    let production_active = world.production.is_some();
+    let construction_active = world.construction.is_some();
+    let terminal = failure.is_some();
+    extended.production_rest_pilot().rest_raw_mode = production_active;
+    if let Some(part) = world.production {
+        if report.production.raw_ok && !terminal && !report.production.plan_failed {
+            *production_payload = Some(part.payload);
+        } else {
+            decode::recycle_production_rest_job(part.payload);
+        }
+    }
+    if let Some(part) = world.construction {
+        if report.construction.raw_ok && !terminal {
+            *construction_payload = Some(part.payload);
+        } else {
+            decode::recycle_construction_rest_job(part.payload);
+        }
+    }
+    if terminal {
+        report.production.raw_ok = false;
+        report.construction.raw_ok = false;
+    }
+    (production_active, construction_active)
+}
+
+/// The Economy join: a completed raw copy goes to the decode payload and
+/// anything else is recycled. A failed job lowers only the economy rest's
+/// `raw_ok`; [`refuse_economy_rest`] refuses its tables after the assembly.
+pub(crate) fn settle_economy(
+    economy: &mut extended::economy::Captured,
+    request: acquisition::EconomyRequest,
+    report: &mut extended::economy::EconomyRestCopyReport,
+    failure: Option<&'static str>,
+    payload: &mut Option<extended::economy::EconomyRestJob>,
+) {
+    economy.rest_raw_mode = true;
+    if report.raw_ok && failure.is_none() {
+        *payload = Some(request.payload);
+    } else {
+        decode::recycle_economy_rest_job(request.payload);
+    }
+    if failure.is_some() {
+        report.raw_ok = false;
+    }
+}
+
+/// After the assembly: a scheduled World part whose raw copy did not complete
+/// is refused, and a failed World job refuses both scheduled parts with its
+/// reason, charging their copy ticks. The economy tables are not touched.
+pub(crate) fn refuse_world_rest(
+    extended: &mut extended::Captured,
+    (production_active, construction_active): (bool, bool),
+    report: &acquisition::WorldReport,
+    failure: Option<&'static str>,
+    ticks: &mut [u64; TABLE_COUNT],
+) {
+    if production_active && (report.production.plan_failed || !report.production.raw_ok) {
+        extended
+            .production_rest_pilot()
+            .fail_production_rest_capture("production acquisition plan could not complete safely");
+        for (table, cost) in decode::PRODUCTION_REST
+            .into_iter()
+            .zip(report.production.copy_ticks)
+        {
+            ticks[table.index()] = cost;
+        }
+    }
+    if construction_active && !report.construction.raw_ok && failure.is_none() {
+        extended
+            .construction_rest_pilot()
+            .fail_construction_rest_capture("construction original acquisition could not complete");
+    }
+    if let Some(reason) = failure {
+        if production_active {
+            extended
+                .production_rest_pilot()
+                .fail_production_rest_capture(reason);
+        }
+        if construction_active {
+            extended
+                .construction_rest_pilot()
+                .fail_construction_rest_capture(reason);
+        }
+        for (table, cost) in decode::PRODUCTION_REST
+            .into_iter()
+            .zip(report.production.copy_ticks)
+            .chain(
+                decode::CONSTRUCTION_REST
+                    .into_iter()
+                    .zip(report.construction.copy_ticks),
+            )
+        {
+            ticks[table.index()] = cost;
+        }
+    }
+}
+
+/// After the assembly: an economy rest whose raw copy did not complete is
+/// refused, and a failed Economy job refuses it with its reason, charging its
+/// copy ticks. The production and construction tables are not touched.
+pub(crate) fn refuse_economy_rest(
+    economy: &mut extended::economy::Captured,
+    report: &extended::economy::EconomyRestCopyReport,
+    failure: Option<&'static str>,
+    ticks: &mut [u64; TABLE_COUNT],
+) {
+    if let Some(reason) = failure {
+        economy.fail_economy_rest_capture(reason);
+        for (table, cost) in decode::ECONOMY_REST.into_iter().zip(report.copy_ticks) {
+            ticks[table.index()] = cost;
+        }
+    } else if !report.raw_ok {
+        economy.fail_economy_rest_capture("economy original acquisition could not complete");
     }
 }
 
@@ -4565,6 +6173,102 @@ fn exported_table_ticks(table: replay::rows::TableId, walk: bool, ticks: u64) ->
 
 #[cfg(test)]
 mod exported_ticks_tests;
+
+#[cfg(test)]
+mod role_timeline_tests {
+    use super::*;
+
+    /// Offsets are taken from the acquisition entry; a job whose body never
+    /// ran adds to the queue and join means but not to the body means.
+    #[test]
+    fn role_timeline_means_offsets_from_the_acquisition_entry() {
+        let timeline = RoleTimeline::new();
+        timeline.record(
+            1_000,
+            &crate::acquisition::Timeline {
+                queued_qpc: 1_010,
+                body_begin_qpc: 1_100,
+                body_end_qpc: 1_500,
+                ..Default::default()
+            },
+            1_200,
+            1_510,
+            0,
+        );
+        timeline.record(
+            2_000,
+            &crate::acquisition::Timeline {
+                queued_qpc: 2_030,
+                ..Default::default()
+            },
+            2_050,
+            2_060,
+            0,
+        );
+        assert_eq!(timeline.means(), (2, [20, 100, 500, 125, 285]));
+        assert_eq!(timeline.slow_joins(), [0; 3]);
+    }
+
+    /// Each join counts once, in the highest threshold its wait reached;
+    /// the reported counts are the joins at or over each threshold.
+    #[test]
+    fn role_timeline_counts_slow_joins_by_threshold() {
+        let timeline = RoleTimeline::new();
+        let record =
+            |wait_ns| timeline.record(0, &crate::acquisition::Timeline::default(), 0, 0, wait_ns);
+        for wait_ns in [
+            0, 249_999, 250_000, 999_999, 1_000_000, 3_999_999, 4_000_000, 90_000_000,
+        ] {
+            record(wait_ns);
+        }
+        assert_eq!(timeline.slow_joins(), [6, 4, 2]);
+        assert_eq!(
+            timeline
+                .slow
+                .each_ref()
+                .map(|count| count.load(Ordering::Relaxed)),
+            [2, 2, 2]
+        );
+    }
+
+    /// A job published before its join stalls from the join's begin to its
+    /// collection; one published during it, from its publication. The first
+    /// finish-lock wait and the worker's wait to publish add up apart, and a
+    /// job never published (rejected or inline work) is not counted.
+    #[test]
+    fn join_costs_split_collection_from_the_unfinished_body() {
+        let costs = JoinCosts::new();
+        let ns = |ticks: i64| ticks as u64 * 100;
+        // Ready before its join at 2_000; collected 3_000 ticks later.
+        costs.record(
+            &crate::acquisition::Timeline {
+                queued_qpc: 100,
+                body_begin_qpc: 200,
+                body_end_qpc: 1_000,
+                published_qpc: 1_040,
+                collected_qpc: 5_000,
+                finish_lock_ticks: 2_900,
+            },
+            2_000,
+            ns,
+        );
+        // Published at 6_500 during its join from 6_000; collected at 6_510.
+        costs.record(
+            &crate::acquisition::Timeline {
+                queued_qpc: 100,
+                body_begin_qpc: 300,
+                body_end_qpc: 6_490,
+                published_qpc: 6_500,
+                collected_qpc: 6_510,
+                finish_lock_ticks: 1,
+            },
+            6_000,
+            ns,
+        );
+        costs.record(&crate::acquisition::Timeline::default(), 7_000, ns);
+        assert_eq!(costs.totals(), (2, 1, [2_901, 3_000 + 10, 40 + 10], [1, 0]));
+    }
+}
 
 #[cfg(test)]
 mod tests;

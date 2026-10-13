@@ -30,7 +30,8 @@ impl Fixture for RocketProductionOutputRow {
 impl Fixture for EventFeedHistoryRow {
     fn fixture(_key: u128, tick: usize) -> Self {
         use crate::event_feed_rows::{
-            EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedSource,
+            EventFeedCause, EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent,
+            EventFeedRoute, EventFeedSource,
         };
         let generation = u64::sample(tick);
         let read_hour = tick as i32;
@@ -59,11 +60,15 @@ impl Fixture for EventFeedHistoryRow {
                     sequence: tick as u64 + 1,
                     generation,
                     hour: read_hour - 1,
-                    source: match (tick / 4) % 4 {
+                    source: match (tick / 4) % 8 {
                         0 => EventFeedSource::Declaration,
                         1 => EventFeedSource::Join,
                         2 => EventFeedSource::CivilWarWarTransfer,
-                        _ => EventFeedSource::Annex,
+                        3 => EventFeedSource::Annex,
+                        4 => EventFeedSource::WarEnded,
+                        5 => EventFeedSource::Release,
+                        6 => EventFeedSource::StateTransfer,
+                        _ => EventFeedSource::PeaceConference,
                     },
                     actor: EventFeedCountry {
                         reference: u32::sample(tick),
@@ -75,6 +80,15 @@ impl Fixture for EventFeedHistoryRow {
                         id: u32::sample(tick + 2),
                         instance: u32::sample(tick),
                     },
+                    cause: crate::rows::Recorded::Value(EventFeedCause {
+                        route: EventFeedRoute::ALL[tick % EventFeedRoute::ALL.len()],
+                        within: EventFeedRoute::ALL[(tick + 1) % EventFeedRoute::ALL.len()],
+                        conference: tick.is_multiple_of(3).then(|| u64::sample(tick)),
+                        state: tick.is_multiple_of(2).then(|| u32::sample(tick + 3)),
+                        ally: None,
+                        reason: tick.is_multiple_of(5).then_some(4),
+                        flags: tick as u8 & 3,
+                    }),
                 }]
             },
         }
@@ -188,6 +202,12 @@ macro_rules! unsigned_samples {
 }
 signed_samples!(i8, i16, i32, i64);
 unsigned_samples!(u8, u16, u32, u64);
+/// Current fixtures encode; only historical decoding produces a stamp.
+impl Sample for PacketHour {
+    fn sample(_tick: usize) -> Self {
+        Self::Host
+    }
+}
 impl Sample for bool {
     fn sample(tick: usize) -> Self {
         tick.is_multiple_of(2)
@@ -228,112 +248,79 @@ trait Fixture: RowCodec + Debug {
         maximum_key::<Self>()
     }
 }
+/// Fixture rows hold their stepped fields at their display steps
+/// ([`crate::display`]), as capture stores them, so they round-trip.
 macro_rules! fixture {
     ($ty:ident, |$key:ident| { $($key_field:ident: $key_value:expr),* $(,)? },
      { $($field:ident: $field_ty:ty),+ $(,)? }) => {
         impl Fixture for $ty {
             fn fixture($key: u128, tick: usize) -> Self {
-                Self { $($key_field: $key_value,)* $($field: <$field_ty as Sample>::sample(tick),)+ }
+                let mut row = Self { $($key_field: $key_value,)* $($field: <$field_ty as Sample>::sample(tick),)+ };
+                RowCodec::round_to_display(&mut row);
+                row
             }
         }
     };
 }
-impl Sample for AttackStats {
-    fn sample(tick: usize) -> Self {
-        Self {
-            river: [Option::<i64>::sample(tick), Option::<i64>::sample(tick + 1)],
-            fort: [
-                Option::<i64>::sample(tick + 2),
-                Option::<i64>::sample(tick + 3),
-            ],
-            snow: Option::<i64>::sample(tick + 4),
-            night: Option::<i64>::sample(tick + 5),
-        }
+impl Sample for Retired {
+    fn sample(_tick: usize) -> Self {
+        Self
     }
 }
-fn attack_terrain_fixture(tick: usize) -> Option<Vec<AttackTerrain>> {
-    if tick.is_multiple_of(4) {
-        None
-    } else {
-        Some(
-            (0..tick % 3)
-                .map(|index| AttackTerrain {
-                    terrain: [1, 256][index],
-                    attack: Option::<i64>::sample(tick + index),
-                })
-                .collect(),
-        )
+macro_rules! retired_samples {
+    ($($ty:ty),+) => {
+        $(impl Sample for $ty {
+            fn sample(_tick: usize) -> Self {
+                Self::default()
+            }
+        })+
+    };
+}
+impl<T> Sample for RetiredNested<T> {
+    fn sample(_tick: usize) -> Self {
+        Self::default()
     }
 }
-impl Sample for DivisionAttackInputs {
-    fn sample(tick: usize) -> Self {
-        Self {
-            sample_hour: i32::sample(tick),
-            template: match tick % 4 {
-                0 => None,
-                1 => Some(0),
-                _ => Some(
-                    (u64::from(u32::sample(tick).max(1)) << 32)
-                        | u64::from(engine::creferenced_division_template::REFERENCE_TYPE),
-                ),
-            },
-            stats: AttackStats::sample(tick),
-            terrain: attack_terrain_fixture(tick + 1),
-            acclimatization: Option::<i64>::sample(tick + 2),
-        }
+/// Current writers hold no older value.
+impl<T> Sample for RetiredKept<T> {
+    fn sample(_tick: usize) -> Self {
+        Self::default()
     }
 }
-impl Sample for CommanderAttackInputs {
-    fn sample(tick: usize) -> Self {
-        Self {
-            leader: (u64::from(u32::sample(tick).max(1)) << 32)
-                | u64::from(engine::cunit_leader::REFERENCE_TYPE),
-            fort: Option::<i64>::sample(tick),
-            river: Option::<i64>::sample(tick + 1),
-            snow: Option::<i64>::sample(tick + 2),
-            night: Option::<i64>::sample(tick + 3),
-            // Present commanders occur every third tick, so vary the domain
-            // separately to reach refusal, empty and populated terrain lists.
-            terrain: attack_terrain_fixture(tick / 3),
-        }
-    }
-}
-impl Sample for OrdersGroupAttackInputs {
-    fn sample(tick: usize) -> Self {
-        Self {
-            sample_hour: i32::sample(tick),
-            commander: match tick % 3 {
-                0 => None,
-                1 => Some(None),
-                _ => Some(Some(CommanderAttackInputs::sample(tick))),
-            },
-        }
-    }
-}
-impl Sample for CountryAttackInputs {
-    fn sample(tick: usize) -> Self {
-        Self {
-            sample_hour: i32::sample(tick),
-            land_night_attack: Option::<i64>::sample(tick),
-            land_bunker_effectiveness_factor: Option::<i64>::sample(tick + 1),
-        }
-    }
-}
-impl Sample for WeatherRegionAttackInputs {
-    fn sample(tick: usize) -> Self {
-        Self {
-            sample_hour: i32::sample(tick),
-            attack: Option::<i64>::sample(tick),
-            breakthrough: Option::<i64>::sample(tick + 1),
-        }
-    }
-}
+retired_samples!(
+    RetiredBool,
+    RetiredI64,
+    RetiredI32,
+    RetiredU8,
+    RetiredU32,
+    RetiredU64,
+    RetiredOptionalI64,
+    RetiredU32List
+);
 sample_struct!(WeatherDisplay { width: u32, height: u32, refresh_interval: i64,
     refresh_identity: u64, edges: Vec<u8> });
+/// Current writers leave most rows without a witnessed packet.
+impl<T: Sample> Sample for Witnessed<T> {
+    fn sample(tick: usize) -> Self {
+        Self((tick % 3 == 1).then(|| T::sample(tick)))
+    }
+}
+sample_struct!(AttackStats { river: [Option<i64>; 2], fort: [Option<i64>; 2], snow: Option<i64>, night: Option<i64> });
+sample_struct!(AttackTerrain { terrain: i32, attack: Option<i64> });
+sample_struct!(DivisionAttackInputs { sample_hour: PacketHour, template: Option<u64>, stats: AttackStats, terrain: Option<Vec<AttackTerrain>>, acclimatization: Option<i64> });
+sample_struct!(CommanderAttackInputs { leader: u64, fort: Option<i64>, river: Option<i64>, snow: Option<i64>, night: Option<i64>, terrain: Option<Vec<AttackTerrain>> });
+sample_struct!(OrdersGroupAttackInputs { sample_hour: PacketHour, commander: Option<Option<CommanderAttackInputs>> });
+sample_struct!(WeatherRegionAttackInputs { sample_hour: PacketHour, attack: Option<i64>, breakthrough: Option<i64> });
+sample_struct!(CountryAttackInputs { sample_hour: PacketHour, land_night_attack: Option<i64>, land_bunker_effectiveness_factor: Option<i64> });
+sample_struct!(ProvinceAttackInputs { sample_hour: PacketHour, fort_sum: Option<i32>, land_bunker_effectiveness_factor: Option<i64> });
+sample_struct!(DivisionAttackStats { terrain: Vec<i64>, river: [i64; 2], fort: [i64; 2], snow: i64, night: i64 });
+sample_struct!(CommanderAttackStats { leader: u64, terrain: Vec<i64>, fort: i64, river: i64, snow: i64, night: i64 });
+sample_struct!(CountryAttackModifiers { land_night_attack: Option<i64>, land_bunker_effectiveness_factor: Option<i64> });
+sample_struct!(RegionCombatWeather { army_attack_factor: Option<i64>, breakthrough_factor: Option<i64> });
 impl Sample for PoliticalRuntimeScalars {
     fn sample(tick: usize) -> Self {
         Self {
-            sample_hour: i32::sample(tick),
+            sample_hour: PacketHour::sample(tick),
             river_small: Option::<i64>::sample(tick),
             river_large: Option::<i64>::sample(tick + 1),
             night: Option::<i64>::sample(tick + 2),
@@ -361,7 +348,7 @@ fn unit_combat_references_fixture(
         None
     } else {
         Some(UnitCombatReferences {
-            sample_hour: i32::sample(tick),
+            sample_hour: PacketHour::sample(tick),
             entries: (0..count as usize)
                 .map(|index| UnitCombatReference::sample(tick + index))
                 .collect(),
@@ -391,7 +378,7 @@ impl Sample for DirectedWars {
         };
         cells.dedup_by_key(|cell| cell.target_slot);
         Self {
-            sample_hour: i32::sample(tick),
+            sample_hour: PacketHour::sample(tick),
             receiver_raw_id: i32::sample(tick),
             receiver_slot,
             matrix_count,
@@ -427,53 +414,9 @@ impl Sample for TemplateNameValue {
     }
 }
 sample_struct!(TemplateDisplayName {
-    sample_hour: i32,
+    sample_hour: PacketHour,
     value: TemplateNameValue
 });
-impl Sample for RawCountryObservations {
-    fn sample(tick: usize) -> Self {
-        let entries = if tick.is_multiple_of(3) {
-            Vec::new()
-        } else {
-            vec![
-                RawCountryObservation {
-                    raw: i32::MIN,
-                    mapping: RawCountryMapping::Refused,
-                    tag: RawCountryTag::Unreached,
-                },
-                RawCountryObservation {
-                    raw: -1,
-                    mapping: RawCountryMapping::Unreached,
-                    tag: RawCountryTag::Refused,
-                },
-                RawCountryObservation {
-                    raw: 0,
-                    mapping: RawCountryMapping::Observed {
-                        canonical_slot: 0,
-                        country_id: 0,
-                    },
-                    tag: RawCountryTag::Bytes(Vec::new()),
-                },
-                RawCountryObservation {
-                    raw: i32::MAX,
-                    mapping: RawCountryMapping::Observed {
-                        canonical_slot: 1,
-                        country_id: u32::MAX,
-                    },
-                    tag: if tick.is_multiple_of(2) {
-                        RawCountryTag::Refused
-                    } else {
-                        RawCountryTag::Bytes(vec![0, 255])
-                    },
-                },
-            ]
-        };
-        Self {
-            sample_hour: i32::sample(tick),
-            entries,
-        }
-    }
-}
 sample_struct!(SettledPeaceAction {
     country: u32, turn: u32, ordinal: u32, token: u32, taker: u32,
     giver: u32, negotiator: u32, status: i32, cost: i32, form: u8,
@@ -490,6 +433,65 @@ sample_struct!(SettledPeaceSubject {
     overlord: u32,
     subject: u32
 });
+sample_struct!(NuclearWarSupport {
+    country: u32,
+    before_raw: i64,
+    after_raw: i64
+});
+sample_struct!(NuclearBuildingDamage { state: u32, province: Option<u32>, controller: u32, building_type: u32, amount_raw: i64 });
+sample_struct!(NuclearEquipmentLoss {
+    country: u32,
+    wing: bool,
+    variant: u64,
+    amount_raw: i64
+});
+sample_struct!(NuclearWingLoss {
+    country: u32,
+    manpower_before: i64,
+    manpower_after: i64
+});
+sample_struct!(crate::event_feed_rows::EventFeedCountry {
+    reference: u32,
+    id: u32,
+    instance: u32
+});
+impl Sample for NuclearStrikePart {
+    fn sample(tick: usize) -> Self {
+        [
+            Self::WarSupport,
+            Self::Buildings,
+            Self::Units,
+            Self::Equipment,
+        ][tick % 4]
+    }
+}
+impl Sample for NuclearUnitDamage {
+    fn sample(tick: usize) -> Self {
+        // A railway gun has no organisation on either side.
+        let organisation = Option::<i64>::sample(tick);
+        Self {
+            handle: u64::sample(tick),
+            class: u32::sample(tick),
+            owner: u32::sample(tick + 1),
+            strength_before: i64::sample(tick),
+            strength_after: i64::sample(tick + 1),
+            organisation_before: organisation,
+            organisation_after: organisation.map(|value| value / 2),
+            manpower_before: i64::sample(tick + 2),
+            manpower_after: i64::sample(tick + 3),
+        }
+    }
+}
+impl Sample for NuclearStrikeRefusal {
+    fn sample(tick: usize) -> Self {
+        Self {
+            part: NuclearStrikePart::sample(tick),
+            reason: Vec::<u8>::sample(tick),
+            count: u32::sample(tick).max(1),
+        }
+    }
+}
+fixture!(NuclearStrikeRow, |key| {id: key as u64}, {hour: i32, launcher: crate::event_feed_rows::EventFeedCountry, nuke_type: u32, province: u32, state: u32, owner: crate::event_feed_rows::EventFeedCountry, controller: u32, war_support: Vec<NuclearWarSupport>, buildings: Vec<NuclearBuildingDamage>, units: Vec<NuclearUnitDamage>, equipment: Vec<NuclearEquipmentLoss>, refusals: Vec<NuclearStrikeRefusal>, wings: Vec<NuclearWingLoss>});
 impl Fixture for PeaceSettlementRow {
     fn fixture(key: u128, tick: usize) -> Self {
         let conference = Option::<u64>::sample(tick);
@@ -518,6 +520,8 @@ sample_struct!(NameOperands { kind: i32, order: i32, ordered: u8, programmatic: 
 sample_struct!(FuelAwardRecipient { kind: u32, reference: u64, owner: u32, host: u64, amount_raw: i64, name: Option<Vec<u8>>, name_reason: Vec<u8> });
 sample_struct!(FuelAwardHour { hour: i32, gains_raw: [i64;4], own_gain_raw: i64, transfers_raw: [i64;4], consumed_raw: i64, received_raw: [i64;3], recipients: Vec<FuelAwardRecipient>, history_index: i32, remaining_hours: i32, pending_raw: [i64;3], current_raw: i64 });
 sample_struct!(FuelAwardWindow { country_instance: u32, continuity_start_hour: Option<i32>, hours: Vec<FuelAwardHour>, reason: Vec<u8> });
+sample_struct!(FuelAwardDayRecipient { kind: u32, reference: u64, owner: u32, host: u64, name: Option<Vec<u8>>, name_reason: Vec<u8>, first_hour: i32, last_hour: i32, amount_raw: i64 });
+sample_struct!(FuelAwardDay { country_instance: u32, continuity_start_hour: Option<i32>, last_hour: i32, gains_raw: [i64;4], own_gain_raw: i64, own_gain_quantity_raw: i64, transfers_raw: [i64;4], consumed_raw: i64, received_raw: [i64;3], recipients: Vec<FuelAwardDayRecipient>, reason: Vec<u8> });
 sample_struct!(CachedModifier {
     definition: u32,
     value: i64
@@ -534,7 +538,7 @@ sample_struct!(LandEquipmentLoss {
 });
 sample_struct!(LandSideLosses { manpower:i32, equipment:Vec<LandEquipmentLoss> });
 sample_struct!(LandResultSide { countries:Vec<u32>, secondary_countries:Vec<u32>, commander:u64, outcome_flags:u8, progress:i64 });
-fixture!(DivisionLandInputsRow, |key| {division:key as u64}, {manpower:Vec<DivisionManpowerContributor>, received_supply:i64, maximum_grace:i64, remaining_grace:i64, naval_transfer:bool});
+fixture!(DivisionLandInputsRow, |key| {division:key as u64}, {manpower:Vec<DivisionManpowerContributor>, received_supply:RetiredI64, maximum_grace:RetiredI64, remaining_grace:RetiredI64, naval_transfer:bool});
 fixture!(DestroyedDivisionsRow, |key| {id:key as u64}, {division:u64, owner:u32, killer_country:u32, killer_division:Option<u64>, province:u32, destination:Option<u32>, combats:Vec<u64>, hour:i32, triggering_combat:Option<u64>, combat_province:Option<u32>});
 fixture!(LandEventCoverageRow, |key| {id:key as u32}, {epoch:u64, from_hour:i32, to_hour:i32, complete:bool, lost_events:u64});
 impl Fixture for LandCombatResultsRow {
@@ -596,6 +600,22 @@ sample_struct!(AirDamageEntry {
     channel: u8,
     cause: u32,
     amount: i64
+});
+sample_struct!(AirCombatDamage {
+    cause: u32,
+    amount: i64
+});
+sample_struct!(AirCombatRecord {
+    wing_id: u32,
+    date: i32,
+    planes: i32,
+    mission_mask: u32,
+    selection: u8,
+    classification: u8,
+    copied: u8,
+    attributed_country: u32,
+    first_damage: Vec<AirCombatDamage>,
+    second_damage: Vec<AirCombatDamage>
 });
 sample_struct!(SunkShipEntry { ship_name: Vec<u8>, attribution_name: Vec<u8>, class_name: Vec<u8>, attribution_class_name: Vec<u8>, victim_country: u32, attacker_country: u32, sink_hour: i32, class_token: u32, attribution_class_token: u32, attribution_class_present: u8, model_level: i32, victim_equipment_variant: u64, damage_source_reference: u64, province: u32, province_present: u8, battle: u64, cause_record: u8, assisted_kill: u8 });
 fixture!(WarOwnedRelationRow, |key| {owner: (key >> 32) as u32, ordinal: key as u32}, {first_country: u32, second_country: u32, retired: u8, first_goal_count: u32, second_goal_count: u32});
@@ -703,7 +723,7 @@ fixture!(ResearchInputRow, |key| {country: (key >> 32) as u32, index: key as u32
 fixture!(ResearchAppliedBonusRow, |key| {country: (key >> 64) as u32, index: (key >> 32) as u32, ordinal: key as u32}, {technology_handle: u32, id: i32, resolved: u8, name: Vec<u8>, ahead_reduction_raw: i64, speed_bonus_raw: i64, cost_reduction_raw: Option<i64>});
 fixture!(ResearchSlotRow, |key| {country: (key >> 32) as u32, index: key as u32}, {technology_handle: u32, technology_present: u8, research_speed_raw: i64, banked_days_raw: i64, applied_days_raw: i64, database_index: Recorded<i32>});
 fixture!(TechnologyDefinitionRow, |key| {database_index: key as u32 as i32}, {technology_handle: u32, year: i32, max_level: i32, research_cost_raw: i64, id: Vec<u8>});
-fixture!(PoliticsRow, |key| {country: key as u32}, {last_election: i32, election_frequency: i32, elections_allowed: u8, capital: i32, ruling_party: Option<u32>, original_capital: i32});
+fixture!(PoliticsRow, |key| {country: key as u32}, {last_election: i32, election_frequency: RetiredI32, elections_allowed: RetiredU8, capital: i32, ruling_party: Option<u32>, original_capital: i32, has_elections: Recorded<bool>});
 fixture!(PoliticalPartyRow, |key| {country: (key >> 32) as u32, id: key as u32}, {popularity: i64, is_ruling: u8, token: Vec<u8>, tag: u32, name_default: u8, name: Vec<u8>, long_name: Vec<u8>});
 fixture!(ActiveIdeaRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {token: Vec<u8>});
 fixture!(DecisionCountsRow, |key| {country: key as u32}, {taken: u32, re_enable: u32, remove: u32, timed: u32, targeted_timed: u32, targeted: u32});
@@ -738,7 +758,7 @@ fixture!(PowerBalanceRow, |key| {ordinal: key as u32}, {value_raw: i64, balance:
 fixture!(PowerBalanceMemberRow, |key| {record: (key >> 32) as u32, ordinal: key as u32}, {country: u32, daily_raw: i64, weekly_raw: i64, daily_present: bool, weekly_present: bool, daily_flags: u32, weekly_flags: u32});
 fixture!(PowerBalanceRangeRow, |key| {record: (key >> 32) as u32, ordinal: key as u32}, {identity: Vec<u8>});
 fixture!(PowerBalanceOverrideRow, |key| {record: (key >> 32) as u32, ordinal: key as u32}, {side: Vec<u8>, gfx: Vec<u8>});
-fixture!(ProductionLineRow, |key| {handle: key as u64}, {country: u32, kind: u8, variant: u64, mio: u64, active_factories: i32, requested_factories: i32, cost_raw: i64, speed_raw: i64, produced_raw: i64, priority: i32, amount: i32, max_factories: i32, efficiency_raw: i64});
+fixture!(ProductionLineRow, |key| {handle: key as u64}, {country: u32, kind: u8, variant: u64, mio: u64, active_factories: i32, requested_factories: i32, cost_raw: i64, speed_raw: i64, produced_raw: RetiredI64, priority: i32, amount: i32, max_factories: i32, efficiency_raw: i64});
 impl Fixture for CountryProductionModifiersRow {
     fn fixture(key: u128, tick: usize) -> Self {
         Self {
@@ -777,7 +797,7 @@ impl Fixture for ProductionLineModifiersRow {
             active_factories: tick as i32,
             resource_penalty_raw: -(tick as i64),
             organisation_dirty: !tick.is_multiple_of(2),
-            conversion: bool::sample(tick),
+            conversion: RetiredBool::default(),
             licensed: bool::sample(tick + 1),
             naval_efficiency: bool::sample(tick),
             naval_output: bool::sample(tick + 1),
@@ -823,11 +843,98 @@ fixture!(ArmyGroupMemberRow, |key| {group: (key >> 32) as u64, ordinal: key as u
 fixture!(IncomingDiplomaticActionRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {handle: u64, status: u8, action_type: i32, actor: u32, original_actor: u32, recipient: u32, original_recipient: u32, hour: i32, last_command_hour: i32});
 fixture!(ScientistRow, |key| {character: key as u32}, {country: u32, ordinal: u32, trait_count: i32, skill_count: i32, active: Recorded<Option<u8>>});
 fixture!(ScientistSkillRow, |key| {character: (key >> 32) as u32, ordinal: key as u32}, {token: u32, level: i32, experience_raw: i64});
-fixture!(CountryFuelRow, |key| {country: key as u32}, {current_raw: i64, maximum_raw: i64, gain_raw: i64, cost_raw: i64, gain_from_states_raw: i64, lend_lease_gain_raw: i64, lend_lease_consumption_raw: i64, gain_per_oil_raw: i64, history_index: i32, remaining_hours: i32, ring_gain_raw: i64, ring_consumed_raw: i64, ring_other_raw: i64, ring_requested_0_raw: i64, ring_requested_1_raw: i64, ring_requested_2_raw: i64, ring_received_0_raw: i64, ring_received_1_raw: i64, ring_received_2_raw: i64, country_instance: Recorded<Option<u32>>, awards: Recorded<FuelAwardWindow>, demand: Recorded<FuelDemandRead>});
+fixture!(CountryFuelRow, |key| {country: key as u32}, {current_raw: i64, maximum_raw: i64, gain_raw: RetiredI64, cost_raw: RetiredI64, gain_from_states_raw: RetiredI64, lend_lease_gain_raw: i64, lend_lease_consumption_raw: RetiredI64, gain_per_oil_raw: RetiredI64, history_index: RetiredI32, remaining_hours: RetiredI32, ring_gain_raw: i64, ring_consumed_raw: i64, ring_other_raw: i64, ring_requested_0_raw: RetiredI64, ring_requested_1_raw: RetiredI64, ring_requested_2_raw: RetiredI64, ring_received_0_raw: i64, ring_received_1_raw: i64, ring_received_2_raw: i64, country_instance: Recorded<Option<u32>>, awards: Recorded<Retired>, demand: Recorded<FuelDemandRead>, award_day: Recorded<FuelAwardDay>});
+impl Sample for FuelDemandHour {
+    fn sample(tick: usize) -> Self {
+        if tick.is_multiple_of(2) {
+            Self::Host
+        } else {
+            Self::Stamped(i32::sample(tick))
+        }
+    }
+}
+impl Sample for FuelDemandPart {
+    fn sample(tick: usize) -> Self {
+        part_of_kind((tick % usize::from(FuelDemandPart::KINDS)) as u8, tick)
+    }
+}
+/// A sampled part of list `kind`.
+fn part_of_kind(kind: u8, tick: usize) -> FuelDemandPart {
+    let unit = || FuelDemandUnit {
+        reference: u64::sample(tick),
+        rate_raw: Some(i64::sample(tick)),
+        name: Some(Vec::<u8>::sample(tick)),
+        ..Default::default()
+    };
+    match kind {
+        0 => FuelDemandPart::Division(unit()),
+        1 => FuelDemandPart::Group(FuelDemandGroup {
+            reference: u64::sample(tick),
+            members: Vec::<u64>::sample(tick),
+            ..Default::default()
+        }),
+        2 => FuelDemandPart::Fleet(FuelDemandFleet {
+            reference: u64::sample(tick),
+            name_reason: Vec::<u8>::sample(tick),
+            ..Default::default()
+        }),
+        3 => FuelDemandPart::TaskForce(unit()),
+        4 => FuelDemandPart::Site(FuelDemandSite {
+            list: (tick % 2) as u8,
+            ordinal: u32::sample(tick),
+            base: u64::sample(tick),
+            wings: vec![FuelDemandWing {
+                reference: u64::sample(tick),
+                context: Option::<u32>::sample(tick),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        _ => FuelDemandPart::Context(FuelDemandContext {
+            region: u32::sample(tick),
+            sums: [i64::sample(tick); 24],
+        }),
+    }
+}
+impl Fixture for FuelDemandPartRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        let kind = ((key >> 80) & 7) as u8;
+        // The part carries the key's identity, as a split pack's does.
+        let mut part = part_of_kind(kind, tick);
+        let ident = (key >> 16) as u64;
+        match &mut part {
+            FuelDemandPart::Division(unit) | FuelDemandPart::TaskForce(unit) => {
+                unit.reference = ident
+            }
+            FuelDemandPart::Group(group) => group.reference = ident,
+            FuelDemandPart::Fleet(fleet) => fleet.reference = ident,
+            FuelDemandPart::Site(site) => {
+                site.list = (ident >> 32) as u8;
+                site.ordinal = ident as u32;
+            }
+            FuelDemandPart::Context(context) => context.region = ident as u32,
+        }
+        Self {
+            country: (key >> 83) as u32,
+            kind,
+            ident: part.ident(),
+            occurrence: key as u16,
+            position: u32::sample(tick),
+            part,
+        }
+    }
+    /// The last list's (contexts') largest identity, a region.
+    fn largest_key() -> u128 {
+        (u32::MAX as u128) << 83
+            | ((FuelDemandPart::KINDS - 1) as u128) << 80
+            | (u32::MAX as u128) << 16
+            | u16::MAX as u128
+    }
+}
 impl Sample for FuelDemandRead {
     fn sample(tick: usize) -> Self {
         Self {
-            hour: tick as i32,
+            hour: FuelDemandHour::sample(tick),
             country_instance: Some(tick as u32),
             divisions: vec![FuelDemandUnit {
                 reference: u64::sample(tick),
@@ -903,7 +1010,7 @@ impl Fixture for UnitLeaderRow {
             character_type: u32::sample(tick),
             character_id: u32::sample(tick),
             category: i32::sample(tick),
-            experience: i64::sample(tick),
+            experience: RetiredI64::default(),
             kind: if codename.is_some() {
                 3
             } else {
@@ -930,7 +1037,7 @@ impl Fixture for UnitLeaderRow {
 fixture!(UnitLeaderTraitRow, |key| {leader_reference: (key >> 32) as u64, ordinal: key as u32}, {token_id: i32, definition_ordinal: i32, token: Vec<u8>});
 fixture!(UnitLeaderTraitExperienceRow, |key| {leader_reference: (key >> 32) as u64, ordinal: key as u32}, {token_id: i32, definition_ordinal: i32, token: Vec<u8>, experience: i64});
 fixture!(ActiveAbilityRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {scope_country: u32, token: Vec<u8>, caster: Option<u64>, strategic_region: Option<u32>, division_count: i32, activation_hour: i32, phase: u8, allocate_cost: u8, allocated_command_power: i64, duration_hours: i32, cooldown_hours: i32, target_kind: i32});
-fixture!(CapitulationRow, |key| {country: key as u32}, {capitulated: u8, capitulated_hour: i32, last_surrender_hour: i32, faction_join_hour: i32, legitimacy_raw: i64, exile_army_leaders: i32});
+fixture!(CapitulationRow, |key| {country: key as u32}, {capitulated: u8, capitulated_hour: i32, last_surrender_hour: RetiredI32, faction_join_hour: RetiredI32, legitimacy_raw: RetiredI64, exile_army_leaders: RetiredI32});
 fixture!(SubjectRow, |key| {overlord: (key >> 32) as u32, subject: key as u32}, {start_hour: i32, end_hour: i32, cancel: u8, autonomy_ratio: i64, state: Vec<u8>});
 fixture!(AutonomyRow, |key| {subject: key as u32}, {score: i64, lower_score: i64, upper_score: i64, last_modified_bits: u32, state: Vec<u8>, previous: Option<Vec<u8>>, next: Option<Vec<u8>>});
 fixture!(IntelligenceAgencyRow, |key| {country: key as u32}, {upgrade_progress_raw: i64, defense_raw: i64, active_count: i32, admission_ceiling: i32, unknown_f0: u32, name: Vec<u8>, created: u8});
@@ -1005,6 +1112,48 @@ impl Fixture for NavalModifierBreakdownRow {
         (u64::MAX as u128) << 32 | u32::MAX as u128
     }
 }
+fn naval_key_trees(tick: usize) -> Vec<NavalModifierKeyTree> {
+    let nodes = ReserveModifierBreakdownRow::fixture(1, tick).nodes;
+    let mut trees = vec![NavalModifierKeyTree {
+        key: 0x24,
+        nodes: nodes.clone(),
+    }];
+    if !tick.is_multiple_of(3) {
+        trees.push(NavalModifierKeyTree { key: 0x1b2, nodes });
+    }
+    trees
+}
+impl Fixture for NavalModifierTreeRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            kind: ((key >> 96) as u8) % 18,
+            owner: (key >> 32) as u64,
+            sub: key as u32,
+            trees: naval_key_trees(tick),
+        }
+    }
+    fn largest_key() -> u128 {
+        (17_u128 << 96) | (u64::MAX as u128) << 32 | u32::MAX as u128
+    }
+}
+impl Fixture for NavalModifierTreeSampleRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            combat: (key >> 56) as u64,
+            side: ((key >> 48) as u8) & 1,
+            battle_slot: (key >> 16) as u32,
+            ordinal: key as u16,
+            scope: tick as u8,
+            kind: (tick % 18) as u8,
+            owner: tick as u64,
+            sub: u32::MAX - tick as u32,
+            trees: naval_key_trees(tick),
+        }
+    }
+    fn largest_key() -> u128 {
+        (u64::MAX as u128) << 56 | (1_u128 << 48) | (u32::MAX as u128) << 16 | u16::MAX as u128
+    }
+}
 impl Fixture for AttritionModifierBreakdownRow {
     fn fixture(key: u128, tick: usize) -> Self {
         Self {
@@ -1049,6 +1198,7 @@ fixture!(AirBaseRow, |key| {id: key as u64}, {state: Option<u32>, province: Opti
 fixture!(WingCumulativeRow, |key| {id: key as u64}, {accidents: i32, experience: i64});
 fixture!(AirRegionHistoryRow, |key| {country: (key >> 32) as u32, region: key as u32}, {entries: Vec<AirHistoryEntry>});
 fixture!(AirRegionDamageRow, |key| {country: (key >> 32) as u32, region: key as u32}, {entries: Vec<AirDamageEntry>});
+fixture!(AirRegionCombatRow, |key| {country: (key >> 32) as u32, region: key as u32}, {owner: u32, own: Vec<AirCombatRecord>, foreign: Vec<AirCombatRecord>});
 sample_struct!(AirAcePortraitInputs {cached: Option<Vec<u8>>, culture: Option<Vec<u8>>, fallback: Option<Vec<u8>>});
 sample_struct!(AirAcePresentation {gender: u8, pool_index: i32, definition: Option<Vec<u8>>, portrait: Option<AirAcePortraitInputs>});
 fixture!(AirAceRow, |key| {id: key as u64}, {country: u32, ordinal: u32, aircraft_type_mask: u32, assigned_wing: u64, alive: u8, handled: u8, kill_type: u32, death: Option<AceDeath>, name: Vec<u8>, surname: Vec<u8>, callsign: Vec<u8>, presentation: Recorded<Option<AirAcePresentation>>});
@@ -1157,8 +1307,44 @@ fixture!(RaidRow, |key| {id: (key >> 32) as u32, reference_type: key as u32}, {p
 fixture!(RaidTargetRow, |key| {id: (key >> 32) as u32, reference_type: key as u32}, {scope: RaidScope, raid_type: u32, detected: u8});
 fixture!(NavalBaseRow, |key| {province: key as u32}, {country: u32, level: i32, healthy_level: i32, countries: Vec<u32>, countries_unreadable: bool, country_tags: Recorded<Option<Vec<Vec<u8>>>>});
 fixture!(PeaceConferenceRow, |key| {id: key as u64}, {ordinal: u32, current_turn: i32, finalized: u8});
-fixture!(WeatherRegionRow, |key| {id: key as u32}, {max_snow: i64, light_rain: u8, heavy_rain: u8, snow: u8, blizzard: u8, sandstorm: u8, arctic_water: u8, attack: Recorded<WeatherRegionAttackInputs>});
-fixture!(WeatherProvinceRow, |key| {id: key as u32}, {snow: i64, permanent_snow: i64, display_snow: u8, display_mud: u8, temperature: Recorded<i64>, raw_mud: Recorded<u8>, local_hour: Recorded<i32>, night_factor: Recorded<i64>, display: Recorded<Option<WeatherDisplay>>});
+fixture!(WeatherRegionRow, |key| {id: key as u32}, {max_snow: i64, light_rain: u8, heavy_rain: u8, snow: u8, blizzard: u8, sandstorm: u8, arctic_water: u8, attack: Recorded<Witnessed<WeatherRegionAttackInputs>>, combat: Recorded<Option<RegionCombatWeather>>});
+/// Slot 0 is never updated, so its fixtures always hold their clock.
+impl Fixture for WeatherProvinceRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        let id = key as u32;
+        Self {
+            id,
+            snow: i64::sample(tick),
+            permanent_snow: i64::sample(tick),
+            display_snow: u8::sample(tick),
+            display_mud: u8::sample(tick),
+            temperature: ProvinceTemperature::sample(tick),
+            raw_mud: Recorded::<u8>::sample(tick),
+            clock: if id == 0 {
+                DayNightClock::held(crate::day_night::Clock {
+                    local_hour: i32::sample(tick),
+                    night_factor: i64::sample(tick),
+                })
+            } else {
+                DayNightClock::sample(tick)
+            },
+            display: Recorded::<Option<WeatherDisplay>>::sample(tick),
+            temperature_pass: Recorded::Value((id == 0).then(|| TemperaturePass::sample(tick))),
+        }
+    }
+}
+/// Current rows hold a record's words at the frame's anchor.
+impl Sample for ProvinceTemperature {
+    fn sample(tick: usize) -> Self {
+        Self::anchored(crate::temperature::State {
+            temperature: i64::sample(tick),
+            drift: i64::sample(tick + 1),
+            staged: i64::sample(tick + 2),
+            working: i64::sample(tick + 3),
+        })
+    }
+}
+sample_struct!(TemperaturePass { anchor: i32, cursor: i32, anchor_seed: Option<u32>, hours: Vec<Option<u32>>, checksum: u64 });
 fixture!(OperationTokensRow, |key| {owner: (key >> 32) as u32, target: key as u32}, {tokens: Vec<u32>});
 fixture!(LexicalTokenRow, |key| {token: key as u32}, {literal: Vec<u8>});
 fixture!(OwnedWargoalRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {recipient: u32, goal_type: i32, states: Vec<u32>});
@@ -1169,22 +1355,29 @@ fixture!(DecisionRandomItemRow, |key| {country: (key >> 32) as u32, ordinal: key
 fixture!(CapturedOperativeReferenceRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {operative: u64, owner: Option<u32>});
 sample_struct!(TransportTaskForceStats { detection_138: Option<i64>, visibility_148: Option<i64>, visibility_150: Option<i64>, carrier_detection_160: Option<i64> });
 sample_struct!(TransportRadarCounts { signed_count: i32, counts: Option<Vec<i32>> });
-sample_struct!(TransportNavyIntel {
-    owner_raw_id: Option<u32>, owner_slot: Option<u32>, signed_count: Option<i32>, lanes: Option<Vec<i64>>
-});
-sample_struct!(TransportSpottingOwner {
-    owner_slot: u32, owner_raw_id: u32, target_owned_states: Option<i32>,
-    radar: Option<TransportRadarCounts>, navy_intel: Option<TransportNavyIntel>
-});
+/// The retired split rows recorded no sample.
+impl Sample for SpottingSample {
+    fn sample(_tick: usize) -> Self {
+        Self::Derived
+    }
+}
+/// Current rows record whether the clock was updated or what it held.
+impl Sample for DayNightClock {
+    fn sample(tick: usize) -> Self {
+        if tick.is_multiple_of(3) {
+            Self::held(crate::day_night::Clock {
+                local_hour: i32::sample(tick),
+                night_factor: i64::sample(tick + 1),
+            })
+        } else {
+            Self::UPDATED
+        }
+    }
+}
 sample_struct!(TransportSpottingRegion {
     region_id: u32, runtime_slot: Option<i32>, signed_province_count: Option<i32>,
-    sampled_province: Option<u32>, weather_detection: Option<Option<i64>>,
+    sample: SpottingSample, weather_detection: Option<Option<i64>>,
     air_environment: Option<TransportAirEnvironment>
-});
-sample_struct!(TransportSpottingContext {
-    sample_hour: i32, owners_complete: bool, regions_complete: bool,
-    owners: Vec<TransportSpottingOwner>, reserved: Option<TransportSpottingOwner>,
-    regions: Vec<TransportSpottingRegion>
 });
 sample_struct!(TransportAirMission {
     wing: u64, current_type: Option<u32>, aircraft: Option<i32>, disruption: Option<i64>,
@@ -1211,13 +1404,7 @@ sample_struct!(TransportRiskShip {
     positive_equipment_flags: Option<u64>, carrier_air_base: Option<Option<u64>>
 });
 sample_struct!(TransportReceiverShips { task_force: u64, count: Option<i32>, ships: Option<Vec<TransportRiskShip>> });
-sample_struct!(TransportRiskShips { sample_hour: i32, receivers: Option<Vec<TransportReceiverShips>> });
 sample_struct!(TransportAirRegion { region: u32, count: Option<i32>, missions: Option<Vec<Option<TransportAirMission>>> });
-sample_struct!(TransportAirCountry {
-    country: Option<u32>, slot: u32, present: bool, regions: Option<Vec<TransportAirRegion>>,
-    factors: Option<Vec<Option<i64>>>
-});
-sample_struct!(TransportAirInputs { sample_hour: i32, countries: Option<Vec<TransportAirCountry>> });
 sample_struct!(TransportReceiverRisk {
     coordination: Option<i64>, spotting_chance: Option<i64>, night_spotting_chance: Option<i64>, visibility: Option<i64>,
     speed_base: Option<i64>, speed_modifier: Option<i64>, terrain_class: Option<i32>, stats: Option<TransportTaskForceStats>,
@@ -1225,86 +1412,6 @@ sample_struct!(TransportReceiverRisk {
     detached_activity: Option<i32>, ship_count: Option<i32>,
     targeted_spotting_modifier: Option<i64>, actual_terrain_speed: Option<i64>
 });
-impl Sample for TransportMissionInputs {
-    fn sample(tick: usize) -> Self {
-        let handle = (u64::from(u32::sample(tick).max(1)) << 32) | 61;
-        Self {
-            sample_hour: i32::sample(tick),
-            spotting_context: Option::<TransportSpottingContext>::sample(tick),
-            air: Option::<TransportAirInputs>::sample(tick + 1),
-            risk_ships: Option::<TransportRiskShips>::sample(tick + 2),
-            naval_search: match tick % 3 {
-                0 => None,
-                1 => Some(TransportNavalSearch {
-                    width: None,
-                    regions: None,
-                    rules: vec![],
-                }),
-                _ => Some(TransportNavalSearch {
-                    width: Option::<i32>::sample(tick),
-                    regions: Some(vec![
-                        None,
-                        Some(TransportNavalRegion {
-                            position: [i32::sample(tick), i32::sample(tick + 1)],
-                            edges: vec![TransportNavalEdge {
-                                to: u32::sample(tick),
-                                flags: u8::sample(tick),
-                                unrestricted: u8::sample(tick + 1),
-                                rules: vec![None, Some(0), Some(0)],
-                            }],
-                        }),
-                    ]),
-                    rules: vec![Vec::<u8>::sample(tick)],
-                }),
-            },
-            navies: match tick % 3 {
-                0 => None,
-                1 => Some(Vec::new()),
-                _ => Some(vec![
-                    TransportNavy {
-                        access_modes: Some(vec![]),
-                        slot: 0,
-                        present: false,
-                        region_slots: Some(0),
-                        ledgers: Some(Vec::new()),
-                    },
-                    TransportNavy {
-                        access_modes: Some(vec![]),
-                        slot: 1,
-                        present: true,
-                        region_slots: Some(u32::MAX),
-                        ledgers: Some(vec![
-                            TransportLedger {
-                                region: 0,
-                                occurrences: Some(vec![0, handle, handle, 0]),
-                            },
-                            TransportLedger {
-                                region: u32::MAX - 1,
-                                occurrences: None,
-                            },
-                        ]),
-                    },
-                ]),
-            },
-            receivers: match (tick / 3) % 3 {
-                0 => None,
-                1 => Some(Vec::new()),
-                _ => Some(vec![TransportMissionReceiver {
-                    task_force: handle,
-                    mission_owner: Option::<u32>::sample(tick + 6),
-                    logical_owner: Option::<u32>::sample(tick),
-                    in_regions: Option::<u8>::sample(tick + 1),
-                    combat_references: Option::<i32>::sample(tick + 2),
-                    combined_detection: Option::<i64>::sample(tick + 3),
-                    detection_cache: Option::<[i64; 2]>::sample(tick + 4),
-                    received_supply_ratio: Option::<i64>::sample(tick + 5),
-                    risk: Option::<TransportReceiverRisk>::sample(tick + 7),
-                }]),
-            },
-        }
-    }
-}
-
 impl Fixture for ReservedCountryNamingRow {
     fn fixture(_key: u128, tick: usize) -> Self {
         Self {
@@ -1323,20 +1430,79 @@ impl Fixture for ReservedCountryNamingRow {
             owned_state_count: Recorded::<Option<i32>>::sample(tick + 10),
             dynamic_tag_boundary: Recorded::<Option<i32>>::sample(tick + 11),
             faction: Recorded::<Option<u64>>::sample(tick + 11),
-            movement: Recorded::<Option<CountryNavalMovementInputs>>::sample(tick + 12),
+            movement: Recorded::Value(Retired),
             land_theatre_count: Recorded::<Option<u32>>::sample(tick + 13),
             launch_sources: Recorded::<Option<ReservedLaunchSources>>::sample(tick + 14),
             reverse_visibility: Recorded::<Option<ReservedReverseVisibilityInputs>>::sample(
                 tick + 15,
             ),
             country_intel_sample: Recorded::<Option<ReservedCountryIntelSample>>::sample(tick + 16),
-            attack: Recorded::<Option<CountryAttackInputs>>::sample(tick),
-            raw_country_observations: Recorded::Value(if tick.is_multiple_of(5) {
-                None
-            } else {
-                Some(RawCountryObservations::sample(tick))
+            attack: Recorded::<Witnessed<Option<CountryAttackInputs>>>::sample(tick + 17),
+            raw_country_observations: Recorded::Value(Retired),
+            transport_mission_inputs: Recorded::Value(Retired),
+        }
+    }
+}
+
+fixture!(ReservedNearestNavyRow, |key| {slot: key as u32}, {present: bool, provinces: Option<u32>});
+fixture!(ReservedNearestBaseRow, |key| {slot: (key >> 32) as u32, province: key as u32}, {base: u32});
+fixture!(TransportNavyRow, |key| {ordinal: key as u32}, {slot: u32, present: bool, region_slots: Option<u32>, ledgers: bool, access_modes: Option<Vec<u8>>});
+fixture!(TransportLedgerRow, |key| {navy: (key >> 32) as u32, region: key as u32}, {occurrences: Option<Vec<u64>>});
+impl Fixture for TransportReceiverRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            receiver: TransportMissionReceiver {
+                task_force: key as u64,
+                mission_owner: Option::<u32>::sample(tick + 6),
+                logical_owner: Option::<u32>::sample(tick),
+                in_regions: Option::<u8>::sample(tick + 1),
+                combat_references: Option::<i32>::sample(tick + 2),
+                combined_detection: Option::<i64>::sample(tick + 3),
+                detection_cache: Option::<[i64; 2]>::sample(tick + 4),
+                received_supply_ratio: Option::<i64>::sample(tick + 5),
+                risk: Option::<TransportReceiverRisk>::sample(tick + 7),
+            },
+        }
+    }
+}
+impl Fixture for TransportSearchRegionRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            ordinal: key as u32,
+            region: (!tick.is_multiple_of(3)).then(|| TransportNavalRegion {
+                position: [i32::sample(tick), i32::sample(tick + 1)],
+                edges: vec![TransportNavalEdge {
+                    to: u32::sample(tick),
+                    flags: u8::sample(tick),
+                    unrestricted: u8::sample(tick + 1),
+                    rules: vec![None, Some(0), Some(u32::sample(tick))],
+                }],
             }),
-            transport_mission_inputs: Recorded::<Option<TransportMissionInputs>>::sample(tick),
+        }
+    }
+}
+impl Sample for SpottingLanes {
+    fn sample(tick: usize) -> Self {
+        if tick.is_multiple_of(3) {
+            Self::CountryIntel
+        } else {
+            Self::Copied(Vec::<i64>::sample(tick))
+        }
+    }
+}
+sample_struct!(SpottingNavyIntel { owner_raw_id: Option<u32>, owner_slot: Option<u32>, signed_count: Option<i32>, lanes: Option<SpottingLanes> });
+fixture!(TransportSpottingOwnerRow, |key| {owner_slot: (key >> 32) as u32, occurrence: key as u32}, {owner_raw_id: u32, target_owned_states: Option<i32>, radar: Option<TransportRadarCounts>, navy_intel: Option<SpottingNavyIntel>});
+fixture!(TransportSpottingRegionRow, |key| {ordinal: key as u32}, {region: TransportSpottingRegion});
+fixture!(TransportAirRootRow, |key| {ordinal: key as u32}, {country: Option<u32>, slot: u32, present: bool, regions: Option<u32>, factors: Option<Vec<Option<i64>>>});
+fixture!(TransportAirRegionRow, |key| {root: (key >> 32) as u32, ordinal: key as u32}, {region: TransportAirRegion});
+impl Fixture for TransportRiskShipsRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            receiver: TransportReceiverShips {
+                task_force: key as u64,
+                count: Option::<i32>::sample(tick),
+                ships: Option::<Vec<TransportRiskShip>>::sample(tick + 1),
+            },
         }
     }
 }
@@ -1386,7 +1552,7 @@ impl Fixture for ConstructionLineOutputRow {
         }
     }
 }
-fixture!(ProductionLineOutputRow, |key| {line: (key >> 32) as u64, ordinal: key as u32}, {country: u32, variant: u64, mio: u64, units: i64, mio_credit: i64, since_hour: i32, observed_since_creation: bool, ended: bool, exact: bool, spent_raw: Recorded<Option<i64>>, instant_raw: Recorded<Option<i64>>});
+fixture!(ProductionLineOutputRow, |key| {line: (key >> 32) as u64, ordinal: key as u32}, {country: u32, variant: u64, mio: u64, units: i64, mio_credit: RetiredI64, since_hour: i32, observed_since_creation: bool, ended: bool, exact: bool, spent_raw: Recorded<Option<i64>>, instant_raw: Recorded<RetiredOptionalI64>});
 fixture!(CombatLogEquipmentRow, |key| {country: (key >> 88) as u32, group: (key >> 56) as u32, kind: (key >> 48) as u8, month: (key >> 32) as u16, variant: key as u32}, {date: i32, amount_raw: i64});
 fixture!(DivisionCensusRow, |key| {country: key as u32}, {grouped: u32, ungrouped: u32});
 fixture!(CombatLogStateRow, |_key| {}, {viewing_country_raw: i32, prune_observed: u8});
@@ -1395,7 +1561,7 @@ fixture!(VolunteerHostRow, |key| {country: (key >> 32) as u32, position: key as 
 fixture!(TheatreAreaRow, |key| {theatre: (key >> 32) as u64, ordinal: key as u32}, {representative: Option<u32>, provinces: Vec<u32>});
 fixture!(StationedUnitRow, |key| {theatre: (key >> 32) as u64, ordinal: key as u32}, {unit: u64});
 fixture!(UnitIntelRow, |key| {unit: (key >> 32) as u64, ordinal: key as u32}, {viewer: u32, level: i8});
-fixture!(AirBaseRegistrationRow, |key| {base: (key >> 32) as u64, slot: key as u32}, {capacity_raw: i64, wings: Vec<u64>, carrier: Recorded<Option<AirBaseRegistrationCarrierInputs>>, transport_planes: Recorded<Option<Vec<Option<i32>>>>});
+fixture!(AirBaseRegistrationRow, |key| {base: (key >> 32) as u64, slot: key as u32}, {capacity_raw: i64, wings: Vec<u64>, carrier: Recorded<Option<AirBaseRegistrationCarrierInputs>>, transport_planes: Recorded<Retired>});
 fixture!(ProductionLicenseRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {variant: u64});
 fixture!(ProductionLicenseRecordRow, |key| {owner: (key >> 32) as u32, ordinal: key as u32}, {giver: u32, lended_cic: i32, required_cic: i32, start_date: i32, parent: u64, operand_raw: i64, equipment: Vec<u64>});
 fixture!(DeploymentConveyorRow, |key| {handle: key as u64}, {country: u32, ordinal: u32, template: u64, amount: i32, location: u32, priority: u32, role_token: u32, closed: u8, name: Vec<u8>, exile_country: Option<u32>});
@@ -1507,7 +1673,6 @@ sample_struct!(CombatModifierValue {
     value_a: i64,
     value_b: i64
 });
-sample_struct!(DivisionCombatModifiers { division: u64, ordinal: u32, entries: Vec<CombatModifierValue> });
 sample_struct!(LandCombatCommanderTrait { token_id: i32, definition_ordinal: i32, kind: u32, relevant: u8, token: Vec<u8> });
 sample_struct!(LandCombatCommanderLearningTrait { token_id: i32, definition_ordinal: i32, required_experience: i32, experience: i64, token: Vec<u8> });
 sample_struct!(LandCombatCommanderPortraitModifier {
@@ -1529,14 +1694,15 @@ sample_struct!(CombatCommanderSkillDefinition {
 sample_struct!(CombatCommanderPortraitEntry { role: u32, size: u32, is_set: u8, kind: u32, text: Vec<u8> });
 sample_struct!(CombatCommanderPresentation { character: u64, character_state: u8, character_country: u32, character_gender: u32, character_role_leader: u64, character_fallback_leader: u64, character_role_source: u8, fallback_text: [Vec<u8>;3], portraits: Vec<CombatCommanderPortraitEntry>, role_traits: Vec<LandCombatCommanderTrait> });
 sample_struct!(NavalCommanderInputs { commander: u64, country: u32, category: i32, experience: i64, skills: [i32; 5], skill_definitions: [CombatCommanderSkillDefinition;5], next_skill: CombatCommanderSkillDefinition, name: Vec<u8>, description: Vec<u8>, presentation: CombatCommanderPresentation, traits: Vec<LandCombatCommanderTrait>, learning_traits: Vec<LandCombatCommanderLearningTrait>, learning_threshold: i64, modifiers: Vec<LandCombatCommanderPortraitModifier>, modifier_feature_flags: u32, modifier_callback_kind: u8, tooltips: Vec<LandCombatCommanderPortraitTooltip>, timed_traits: Recorded<Vec<LandCombatCommanderTimedTrait>> });
-sample_struct!(LandCombatDivisionCommander { skill: i32, name_token: Vec<u8>, traits: Vec<LandCombatCommanderTrait> });
-sample_struct!(LandCombatSideDetails { committed: Vec<u64>, reserves: Vec<u64>, tactic_id: i32, tactic_kind: u8, tactic_counter_id: u32, tactic_token: Vec<u8>, air_counts: Vec<i32>, anti_air_attack: i64, air_kills: u32, damage: [i64; 6], organisation_loss: [i64; 24], organisation_loss_count: u32, commander: u64, commander_skill: i32, commander_category: i32, commander_country: u32, commander_experience: i64, commander_name_token: Vec<u8>, commander_description_token: Vec<u8>, commander_formation: u64, presentation: CombatCommanderPresentation, traits: Vec<LandCombatCommanderTrait>, timed_traits: Vec<LandCombatCommanderTimedTrait>, learning_traits: Vec<LandCombatCommanderLearningTrait> });
+sample_struct!(LandCombatSideDetails { committed: Vec<u64>, reserves: Vec<u64>, tactic_id: i32, tactic_kind: u8, tactic_counter_id: u32, tactic_token: Vec<u8>, air_counts: Vec<i32>, anti_air_attack: RetiredKept<i64>, air_kills: u32, damage: [i64; 2], ground_damage: RetiredNested<[i64; 2]>, prevented_damage: RetiredKept<[i64; 2]>, organisation_loss_sum: i64, organisation_loss_count: u32, commander: u64, commander_skill: i32, commander_category: i32, commander_country: u32, commander_experience: RetiredNested<i64>, commander_name_token: Vec<u8>, commander_description_token: RetiredNested<Vec<u8>>, commander_formation: u64, presentation: CombatCommanderPresentation, traits: Vec<LandCombatCommanderTrait>, timed_traits: RetiredNested<Vec<LandCombatCommanderTimedTrait>>, learning_traits: RetiredNested<Vec<LandCombatCommanderLearningTrait>> });
 sample_struct!(LandCombatExileInputs { origin_type: i32, country: i32, country_fallback: i32, location_cores: Vec<u32>, occupiers: Vec<u32> });
 sample_struct!(LandCombatCommanderTimedTrait {
     token_id: i32,
     definition_ordinal: i32,
     remaining_days: i32
 });
+sample_struct!(LandCombatLearningProgress { token_id: i32, definition_ordinal: i32, progress: i64, token: Vec<u8> });
+sample_struct!(LandCombatSideInputs { anti_air_attack: i64, prevented_damage: [i64; 2], skill_progress: i64, skill_modifiers: Option<[i64; 2]>, description_token: Vec<u8>, timed_traits: Vec<LandCombatCommanderTimedTrait>, learning_traits: Option<Vec<LandCombatLearningProgress>> });
 sample_struct!(LandCombatTacticCountryWeight {
     country: u32,
     tactic_id: i32,
@@ -1570,34 +1736,6 @@ sample_struct!(LandDivisionContext {
     feature_flags: u32,
     eligibility_callback: u8,
     base_speed: i64
-});
-sample_struct!(LandReinforcementModifier {
-    scope: u8,
-    key: u32,
-    raw: i64,
-    present: u8,
-    metadata_flags: u32,
-    feature_selector: u32
-});
-sample_struct!(LandReinforcementSupplyTerm {
-    subunit: u32,
-    count: i32,
-    special: u8
-});
-sample_struct!(LandReinforcementAcclimatization {
-    weight: i64,
-    active: u8
-});
-sample_struct!(LandReinforcementTransportTerm {
-    country: u32,
-    regional_value: i64,
-    own_intel: i64,
-    enemy_intel: i64
-});
-sample_struct!(LandReinforcementInputs {
-    scalar_values: [i64; 32],
-    flags: [u8; 12],
-    ids: [u32; 8]
 });
 sample_struct!(NavalCombatSummaryModifier {
     raw: i64,
@@ -1665,9 +1803,58 @@ sample_struct!(LandBorderWarInputs {
     sides: [LandBorderWarSide; 2],
     combat_width: Recorded<i64>
 });
-fixture!(LandCombatDetailsRow, |key| { combat: key as u64 }, { province: u32, phase: i32, width_factor: i64, attacker_bonus: i64, defender_bonus: i64, stored_terrain_valid: u8, stored_terrain_name: Vec<u8>, sides: [LandCombatSideDetails;2], tactic_inputs: LandCombatTacticInputs, border_war: Recorded<Option<LandBorderWarInputs>> });
-fixture!(LandCombatDivisionRow, |key| { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, ordinal: key as u32 }, { role: u8, province: u32, division: u64, name_type: i32, name_order: i32, name_ordered: u8, name_programmatic: u8, name_custom: Vec<u8>, name_group: Vec<u8>, strength_combat_factor: i64, fuel_inputs: [i64; 2], stat_values: [i64; 5], armour: i64, piercing: i64, air_attack: i64, reconnaissance: i64, initiative: i64, commander: u64, scales: [i64; 4], context: LandDivisionContext, width_terms: Vec<LandDivisionWidthTerm>, commander_inputs: Option<LandCombatDivisionCommander>, reinforcement: LandReinforcementInputs, reinforcement_modifiers: Vec<LandReinforcementModifier>, reinforcement_supply: Vec<LandReinforcementSupplyTerm>, reinforcement_acclimatization: Vec<LandReinforcementAcclimatization>, reinforcement_transport: Vec<LandReinforcementTransportTerm>, direction_group: i32, exile: Option<LandCombatExileInputs>, categories: u64 });
-fixture!(LandCombatModifierRow, |key| { combat: (key >> 1) as u64, side: (key & 1) as u8 }, { border_values: Option<[i64;3]>, divisions: Vec<DivisionCombatModifiers> });
+fixture!(LandCombatDetailsRow, |key| { combat: key as u64 }, { province: u32, phase: i32, width_factor: i64, attacker_bonus: i64, defender_bonus: i64, stored_terrain_valid: u8, stored_terrain_name: Vec<u8>, sides: [LandCombatSideDetails;2], tactic_inputs: LandCombatTacticInputs, border_war: Recorded<Option<LandBorderWarInputs>>, side_inputs: Recorded<[LandCombatSideInputs;2]> });
+impl Fixture for LandCombatDivisionRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        let mut row = Self {
+            combat: (key >> 33) as u64,
+            side: ((key >> 32) & 1) as u8,
+            ordinal: key as u32,
+            role: u8::sample(tick),
+            province: u32::sample(tick),
+            division: u64::sample(tick),
+            name_type: i32::sample(tick),
+            name_order: i32::sample(tick),
+            name_ordered: u8::sample(tick),
+            name_programmatic: u8::sample(tick),
+            name_custom: Vec::<u8>::sample(tick),
+            name_group: Vec::<u8>::sample(tick),
+            strength_combat_factor: i64::sample(tick),
+            fuel_inputs: <[i64; 2]>::sample(tick).map(Recorded::Value),
+            stat_values: <[i64; 5]>::sample(tick).map(Recorded::Value),
+            fuel_packet: RetiredKept::default(),
+            stat_packet: RetiredKept::default(),
+            armour: i64::sample(tick),
+            piercing: i64::sample(tick),
+            air_attack: i64::sample(tick),
+            reconnaissance: i64::sample(tick),
+            initiative: i64::sample(tick),
+            commander: u64::sample(tick),
+            scales: <[i64; 4]>::sample(tick).map(Recorded::Value),
+            scale_packet: RetiredKept::default(),
+            context: LandDivisionContext::sample(tick),
+            width_terms: Vec::<LandDivisionWidthTerm>::sample(tick),
+            commander_inputs: Retired,
+            reinforcement: Retired,
+            reinforcement_modifiers: Retired,
+            reinforcement_supply: Retired,
+            reinforcement_acclimatization: Retired,
+            reinforcement_transport: Retired,
+            direction_group: i32::sample(tick),
+            exile: Option::<LandCombatExileInputs>::sample(tick),
+            categories: u64::sample(tick),
+            // Within the reserve speed-share bounds, which the codec enforces.
+            reinforcement_speed: Recorded::Value(
+                Option::<i64>::sample(tick)
+                    .map(|share| share.clamp(0, LandCombatDivisionRow::SPEED_SHARE_MAXIMUM)),
+            ),
+        };
+        RowCodec::round_to_display(&mut row);
+        row
+    }
+}
+fixture!(LandCombatModifierRow, |key| { combat: (key >> 1) as u64, side: (key & 1) as u8 }, { border_values: Option<[i64;3]>, divisions: Retired });
+fixture!(LandCombatDivisionModifierRow, |key| { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, ordinal: key as u32 }, { division: u64, entries: Vec<CombatModifierValue> });
 impl Fixture for LandCombatSideRow {
     fn fixture(key: u128, tick: usize) -> Self {
         // Secondary sets hold distinct positive tags only.
@@ -1705,15 +1892,7 @@ fixture!(NavalCombatShipRow, |key| { combat: (key >> 33) as u64, side: ((key >> 
 fixture!(NavalCombatResultDetailsRow, |key| { result: key as u64 }, { sides: [NavalResultSideDetails;2] });
 // Combat fixture end
 fixture!(TrainInventoryRow, |key| {country: key as u32}, {node_count: u32, allocations: Vec<TrainAllocation>, controller_access: SparseBytes, allocated_trucks: Recorded<Option<i32>>, required_trucks_raw: Recorded<Option<i64>>, required_trains: Recorded<Option<i32>>});
-sample_struct!(TransportConvoyCache { valid: u8, raw: Option<i64> });
-sample_struct!(TransportConvoyEntry { variant: Option<u64>, flags: Option<u64>, quantity: i64 });
-sample_struct!(TransportConvoyReservation {
-    priority: i32,
-    quantity: i32
-});
-sample_struct!(TransportConvoyVariant { variant: u64, surface_detection: Option<i64>, submarine_detection: Option<i64>, visibility: Option<i64>, speed: Option<i64> });
-sample_struct!(TransportConvoys { sample_hour: i32, priority: Option<i32>, unreserved: Option<i32>, cache: Option<TransportConvoyCache>, pool: Option<Vec<TransportConvoyEntry>>, reservations: Option<Vec<TransportConvoyReservation>>, first_variant: Option<Option<TransportConvoyVariant>> });
-fixture!(CountryAppearanceRow, |key| {country: key as u32}, {red: u32, green: u32, blue: u32, alpha: u32, cosmetic_tag: Vec<u8>, name_tag: Vec<u8>, leader_ideology: Vec<u8>, overlord: i32, graphical_culture: Vec<u8>, leader_character: Option<u32>, old_name: Option<Vec<u8>>, old_adjective: Option<Vec<u8>>, old_definite_name: Option<Vec<u8>>, ui_red: u32, ui_green: u32, ui_blue: u32, ui_alpha: u32, graphical_culture_2d: Vec<u8>, subjects: Recorded<Vec<i32>>, original_tag: Recorded<Option<Vec<u8>>>, original_tag_reference: Recorded<Option<i32>>, transport_convoys: Recorded<Option<TransportConvoys>>});
+fixture!(CountryAppearanceRow, |key| {country: key as u32}, {red: u32, green: u32, blue: u32, alpha: u32, cosmetic_tag: Vec<u8>, name_tag: Vec<u8>, leader_ideology: Vec<u8>, overlord: i32, graphical_culture: Vec<u8>, leader_character: Option<u32>, old_name: Option<Vec<u8>>, old_adjective: Option<Vec<u8>>, old_definite_name: Option<Vec<u8>>, ui_red: u32, ui_green: u32, ui_blue: u32, ui_alpha: u32, graphical_culture_2d: Vec<u8>, subjects: Recorded<Vec<i32>>, original_tag: Recorded<Option<Vec<u8>>>, original_tag_reference: Recorded<Option<i32>>, transport_convoys: Recorded<Retired>});
 fixture!(ArmyIconInputRow, |key| {division: key as u64}, {separate_counter: u8, alternate_template: u64});
 fixture!(ProvinceUnitOrderRow,|key| {province:key as u32},{mixed:Vec<u64>,naval:Vec<u64>});
 sample_struct!(CharacterPortrait {category:u32,size:u32,is_set:u8,kind:u32,identity:Vec<u8>});
@@ -1721,11 +1900,10 @@ fixture!(CharacterPortraitRow,|key| {character:key as u32},{portraits:Vec<Charac
 fixture!(LeaderPortraitRow,|key| {leader:key as u64},{character:u64,portrait_c0:Vec<u8>,portrait_e0:Vec<u8>,portrait_100:Vec<u8>});
 sample_struct!(NavalSearcher { reference: Option<u64>, resolves: Option<bool>, roster_owner: Option<u32> });
 sample_struct!(NavalEngagementTarget { reference: u64, resolves: Option<bool> });
-sample_struct!(NavalPortMissionInputs { sample_hour: i32, searching: Option<Vec<NavalSearcher>>, engagement_target: Option<NavalEngagementTarget>, avoided_ship_types: Option<Vec<Option<Vec<u8>>>> });
-sample_struct!(ShipStrikeInputs { light_attack: Option<i64>, heavy_attack: Option<i64>, light_piercing: Option<i64>, torpedo_attack: Option<i64>, torpedo_cooldown_modifier: Option<i64> });
+sample_struct!(NavalPortMissionInputs { sample_hour: PacketHour, searching: Option<Vec<NavalSearcher>>, engagement_target: Option<NavalEngagementTarget>, avoided_ship_types: Option<Vec<Option<Vec<u8>>>> });
 sample_struct!(HullVariantInputs { definition_index: Option<i32>, module_count: Option<i32>, upgrade_level_sum: Option<i32>, module_priority_sum: Option<i32>, version: Option<u8>, organisation_marker: Option<i32> });
 fixture!(TaskForceCounterInputRow, |key| {task_force: key as u64}, {is_in_regions: u8, running_away: u8, engagement_rule: i32, mission_region_count: i32, bombardment_region: u32, repair_parent: u64, detached_activity: i32, repair_last_mission: i32, received_supply_ratio: i64, attached_headquarters: i32, name: Recorded<Option<Vec<u8>>>, supply: Recorded<Option<UnitSupplyInputs>>, port_mission: Recorded<Option<NavalPortMissionInputs>>});
-sample_struct!(FreshTaskForceCounterEta { sample_hour: i32, base_speed: Option<i64>, speed_modifier: Option<i64>, terrain_class: Option<i32>, modified_range: Option<i64>, exiled: Option<u8>, strategic_redeployment: Option<u8> });
+sample_struct!(FreshTaskForceCounterEta { sample_hour: PacketHour, base_speed: Option<i64>, speed_modifier: Option<i64>, terrain_class: Option<i32>, modified_range: Option<i64>, exiled: Option<u8>, strategic_redeployment: Option<u8> });
 fixture!(TaskForceMapMotionRow, |key| {task_force: key as u64}, {target: u32, combat_role: u8, path: Vec<u32>, alternate_path: Vec<u32>, movement_numerator: Recorded<Option<i64>>, retreat: Recorded<Option<u8>>, withdrawal: Recorded<Option<u8>>, naval_transfer: Recorded<Option<u8>>, combat_links: Recorded<Option<[u64; 2]>>, fresh: Recorded<Option<FreshTaskForceCounterEta>>});
 fixture!(FloatingHarborDeploymentRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {province: i32, status: u8});
 fixture!(FacilityMapFlagRow, |key| {province: key as u32}, {flag: u8});
@@ -1751,7 +1929,7 @@ sample_struct!(RailwayGunEtaOperands {
     current_speed: i64
 });
 sample_struct!(FreshRailwayCounterEta {
-    sample_hour: i32,
+    sample_hour: PacketHour,
     maximum_speed: Option<i64>,
     land_supply_factor: Option<i64>,
     orders_group: Option<u64>
@@ -1759,7 +1937,7 @@ sample_struct!(FreshRailwayCounterEta {
 impl Fixture for RailwayGunCounterInputRow {
     fn fixture(key: u128, tick: usize) -> Self {
         let combat_count = u32::sample(tick);
-        Self {
+        let mut row = Self {
             gun: key as u64,
             roster_owner: u32::sample(tick),
             expeditionary_owner: u32::sample(tick),
@@ -1790,26 +1968,13 @@ impl Fixture for RailwayGunCounterInputRow {
             withdrawal: Recorded::<Option<u8>>::sample(tick),
             fresh: Recorded::<Option<FreshRailwayCounterEta>>::sample(tick),
             combat_references: unit_combat_references_fixture(tick, combat_count),
-            transport: Recorded::sample(tick),
-        }
+            transport: Recorded::Value(Retired),
+        };
+        RowCodec::round_to_display(&mut row);
+        row
     }
 }
 fixture!(AirDailyRosterRow, |key| {country: key as u32}, {eligible: bool});
-impl Sample for UnitTransferInputs {
-    fn sample(tick: usize) -> Self {
-        if tick.is_multiple_of(2) {
-            Self::Absent
-        } else {
-            Self::Present {
-                transfer: u64::sample(tick),
-                status: Option::<i32>::sample(tick),
-                source: Option::<u32>::sample(tick),
-            }
-        }
-    }
-}
-sample_struct!(UnitTransportInputs { sample_hour: i32, weight: Option<i64>,
-    transfer: Option<UnitTransferInputs>, coastal_template: Option<bool> });
 fixture!(FleetCounterInputRow, |key| {fleet: key as u64}, {red: u32, green: u32, blue: u32, alpha: u32, mission_region_count: i32, task_forces: Vec<u64>});
 impl Fixture for CountryCounterInputRow {
     fn fixture(key: u128, tick: usize) -> Self {
@@ -1833,16 +1998,17 @@ impl Fixture for CountryCounterInputRow {
             neighbors: Recorded::<Option<Vec<u32>>>::sample(tick),
             co_belligerents: Recorded::<Option<Vec<u32>>>::sample(tick),
             zero_war: Recorded::<Option<[u8; 2]>>::sample(tick),
-            movement: Recorded::<Option<CountryMovementInputs>>::sample(tick),
+            movement: Recorded::Value(Retired),
             zero_subject: Recorded::<Option<ZeroSubjectInputs>>::sample(tick),
             pride_name: Recorded::<Option<Vec<u8>>>::sample(tick),
             forward_visibility: Recorded::<Option<ReverseZeroVisibilityInputs>>::sample(tick),
-            attack: Recorded::<CountryAttackInputs>::sample(tick),
+            attack: Recorded::<Witnessed<CountryAttackInputs>>::sample(tick),
             directed_wars: Recorded::Value(directed_wars),
+            attack_modifiers: Recorded::<Option<CountryAttackModifiers>>::sample(tick + 1),
         }
     }
 }
-fixture!(OrdersGroupCounterInputRow, |key| {group: key as u64}, {withdrawing: u8, hq_distance: Recorded<Option<i32>>, leader_enroute_days: Recorded<Option<i32>>, border_war_presence: Recorded<Option<u8>>, invasion_source_distance: Recorded<Option<i32>>, attack: Recorded<OrdersGroupAttackInputs>});
+fixture!(OrdersGroupCounterInputRow, |key| {group: key as u64}, {withdrawing: u8, hq_distance: Recorded<Option<i32>>, leader_enroute_days: Recorded<Option<i32>>, border_war_presence: Recorded<Option<u8>>, invasion_source_distance: Recorded<Option<i32>>, attack: Recorded<Witnessed<OrdersGroupAttackInputs>>, commander_attack: Recorded<Option<Option<CommanderAttackStats>>>});
 fixture!(LeaderPortraitPathRow, |key| {leader: key as u64}, {country: u32, tag_reference: u32, tag: Vec<u8>});
 impl Fixture for ShipModelRow {
     fn fixture(key: u128, tick: usize) -> Self {
@@ -1854,7 +2020,7 @@ impl Fixture for ShipModelRow {
             model_number: i32::sample(tick),
             formation_flags: u64::sample(tick),
             subunit_index: Recorded::<Option<i32>>::sample(tick),
-            strike: Recorded::<Option<ShipStrikeInputs>>::sample(tick),
+            strike: Recorded::Value(Retired),
             hull_variant: Recorded::<Option<HullVariantInputs>>::sample(tick),
             counter: Some(ShipCounterInputs {
                 roster_ordinal: tick as u32,
@@ -1887,7 +2053,7 @@ impl Fixture for ModifierDefinitionRow {
 }
 fixture!(CountryVisibilityRow, |key| {country: key as u32}, {unit_modifier: i64});
 fixture!(StateVisibilityRow, |key| {state: key as u32}, {country: u32, network_modifier: i64});
-sample_struct!(TransportSubjectAccess { sample_hour: i32, complete_owner: bool,
+sample_struct!(TransportSubjectAccess { sample_hour: PacketHour, complete_owner: bool,
     target_raw: Option<u32>, subject: Option<ZeroSubjectInputs> });
 fixture!(RelationLinkRow, |key| {country: (key >> 32) as u32, target_index: key as u32},
     {links: u8, transport_subject: Recorded<Option<TransportSubjectAccess>>});
@@ -1905,7 +2071,7 @@ fixture!(RaidCountryInputRow, |key| {canonical_slot: key as u32}, {air_range_fac
 fixture!(CountryCommandPowerRow, |key| {canonical_slot: key as u32}, {allocated_command_power_raw: i64, max_command_power: Option<i64>, max_command_power_factor: Option<i64>, ace_effectiveness_factor: Option<i64>, air_ace_bonuses_factor: Option<i64>});
 fixture!(DivisionRetreatBanRow, |key| {division: key as u64}, {owner: u32, bans: u8});
 fixture!(StateCoreRow, |key| {state: key as u32}, {cores: Vec<u32>});
-fixture!(InvasionPreparationRow, |key| {owner_group: (key >> 32) as u64, instance: key as u32}, {progress: i64, target: u32, country_term: i64, relation_term: Option<i64>, relation_bonus: Option<i64>, leader_term: Option<i64>, leader_applies: u8, days_term: i64, unit_owner: u32, zero_war_present: u8, zero_war_retired: u8, zero_co_belligerent: u8, co_belligerents: Vec<u32>});
+fixture!(InvasionPreparationRow, |key| {owner_group: (key >> 32) as u64, instance: key as u32}, {progress: i64, target: u32, country_term: i64, relation_term: Option<i64>, relation_bonus: Option<i64>, leader_term: Option<i64>, leader_applies: u8, days_term: i64, unit_owner: u32, zero_war_present: RetiredU8, zero_war_retired: RetiredU8, zero_co_belligerent: RetiredU8, co_belligerents: RetiredU32List});
 fixture!(CountryCharacterRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {character: Option<u32>});
 fixture!(PartyLeaderRow, |key| {country: (key >> 64) as u32, party: (key >> 32) as u32, ordinal: key as u32}, {character: Option<u32>, leader_id: i32, role: Option<i32>});
 fixture!(CountryCivilWarRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {target: u32});
@@ -1913,7 +2079,7 @@ fixture!(AdvisorTokenRow, |key| {ordinal: key as u32}, {token: Vec<u8>});
 fixture!(FactionAdvisorRow, |key| {faction: (key >> 32) as u64, ordinal: key as u32}, {token: Vec<u8>});
 fixture!(RaidEquipmentRow, |key| {id: (key >> 32) as u32, reference_type: key as u32}, {phase: i32, end_hour: Option<i32>, variants: Vec<u64>, amounts: Vec<i64>, nukes: i32, archetype_tokens: Vec<u32>, archetype_amounts: Vec<i64>});
 fixture!(RaidSpeedInputRow, |key| {id: (key >> 32) as u32, reference_type: key as u32}, {phase: i32, outcome: i32, end_hour: Option<i32>, wing_max_speed: Option<i64>, army_max_speed: Option<i64>, transport_speeds: Vec<i64>, transport_from_country: u8, transport_fallback: u8, ace_present: u8, ace_alive: u8, ace_speed: i64, ace_type_speed: i64, ace_wing_planes: Option<i32>, ace_owner: Option<u32>, wing_country: Option<u32>});
-fixture!(StockpileArchetypeRow, |key| {canonical_slot: (key >> 32) as u32, archetype: key as u32}, {quantity_raw: i64});
+fixture!(StockpileArchetypeRow, |key| {canonical_slot: (key >> 32) as u32, archetype: key as u32}, {units: i32});
 fixture!(RaidAirSiteRow, |key| {canonical_slot: (key >> 32) as u32, ordinal: key as u32}, {list: u8, base: u64, container_capacity_raw: Option<i64>});
 fixture!(AceRangeInputRow, |key| {canonical_slot: (key >> 64) as u32, ace: key as u64}, {wing: u64, alive: u8, range: i64, type_range: i64});
 fixture!(SliceReadRow, |key| {table: (key >> 32) as u32, owner: key as u32}, {sample_hour: i32});
@@ -2005,17 +2171,6 @@ impl Sample for StrategicRedeploymentInputs {
         strategic_action_fixture(tick)
     }
 }
-sample_struct!(FreshNormalEta {
-    speed_modifier: i64, speed_base: i64, speed_org: Option<i64>,
-    speed_fuel: Option<i64>, fort_penalty: i64, snow_penalty: i64,
-    river_adjustment: i64, river_leader: i64, terrain_speed: Vec<TerrainSpeed>
-});
-sample_struct!(FreshCounterEta {
-    sample_hour: i32, current_speed: Option<i64>, normal: Option<FreshNormalEta>,
-    rail: Option<StrategicRedeploymentInputs>
-});
-sample_struct!(ControllerRiverSpeed { target_slot: u32, modifier: Option<i64> });
-sample_struct!(RegionTransportSpeed { region: u32, speed: Option<i64> });
 impl Sample for ZeroSubjectInputs {
     fn sample(tick: usize) -> Self {
         match tick % 5 {
@@ -2039,26 +2194,6 @@ impl Sample for ZeroSubjectInputs {
         }
     }
 }
-impl Sample for CountryMovementInputs {
-    fn sample(tick: usize) -> Self {
-        let mut river = Option::<Vec<ControllerRiverSpeed>>::sample(tick);
-        let mut transport = Option::<Vec<RegionTransportSpeed>>::sample(tick + 1);
-        if let Some(entries) = &mut river {
-            entries.sort_unstable_by_key(|entry| entry.target_slot);
-        }
-        if let Some(entries) = &mut transport {
-            entries.sort_unstable_by_key(|entry| entry.region);
-        }
-        Self {
-            sample_hour: i32::sample(tick),
-            river,
-            transport,
-            naval: Option::<NavalPathInputs>::sample(tick + 2),
-            theatre: Option::<TheatreControllerAreas>::sample(tick + 3),
-        }
-    }
-}
-sample_struct!(NavalPathInputs { navy_slot: u32, present: bool, foreign_navy_slots: Option<Vec<u32>>, supply_hubs: Option<Vec<u32>> });
 sample_struct!(LaunchNavalBase {
     base_province: u32,
     country: u32
@@ -2072,9 +2207,9 @@ impl Sample for LaunchNavalBases {
         }
     }
 }
-sample_struct!(ReservedLaunchSources { sample_hour: i32, naval_bases: LaunchNavalBases, owned_states: Option<Vec<u32>> });
+sample_struct!(ReservedLaunchSources { sample_hour: PacketHour, naval_bases: LaunchNavalBases, owned_states: Option<Vec<u32>> });
 sample_struct!(ReverseZeroVisibilityInputs { target: Option<u32>, war: Option<[u8; 2]>, subject: Option<ZeroSubjectInputs>, military_access: Option<u8> });
-sample_struct!(ReservedReverseVisibilityInputs { sample_hour: i32, cells: Vec<Option<ReverseZeroVisibilityInputs>> });
+sample_struct!(ReservedReverseVisibilityInputs { sample_hour: PacketHour, cells: Vec<Option<ReverseZeroVisibilityInputs>> });
 impl Sample for ReservedCountryIntelSample {
     fn sample(tick: usize) -> Self {
         Self {
@@ -2087,39 +2222,9 @@ impl Sample for ReservedCountryIntelSample {
         }
     }
 }
-sample_struct!(PhysicalNavyNearestCache { slot: u32, present: bool, nearest_bases: Option<Vec<Option<u32>>> });
-impl Sample for TheatreControllerAreas {
-    fn sample(tick: usize) -> Self {
-        let mut provinces = Vec::<u32>::sample(tick);
-        provinces.retain(|&id| id != 0);
-        provinces.sort_unstable();
-        provinces.dedup();
-        Self {
-            provinces,
-            null_controller_area: bool::sample(tick),
-        }
-    }
-}
-impl Sample for CountryNavalMovementInputs {
-    fn sample(tick: usize) -> Self {
-        let mut nearest_caches = Option::<Vec<PhysicalNavyNearestCache>>::sample(tick);
-        if let Some(entries) = &mut nearest_caches {
-            entries.sort_unstable_by_key(|entry| entry.slot);
-            entries.dedup_by_key(|entry| entry.slot);
-        }
-        Self {
-            sample_hour: i32::sample(tick),
-            nearest_caches,
-            reserved_theatre: Option::<TheatreControllerAreas>::sample(tick + 1),
-        }
-    }
-}
 sample_struct!(RailwayBuildingHealth { level: i16, healthy: i16, partial: Option<i64> });
 sample_struct!(RailwayBuildingState { building: Option<RailwayBuildingHealth> });
-sample_struct!(ProvinceAreaInputs { sample_hour: i32, controller: u32, owner: Option<u32>, node: Option<SelectedAreaNode> });
-sample_struct!(SelectedAreaNode { first_land: Option<u32>, nonsea_index: Option<i32>, nonsea_count: Option<u32>, land_count: Option<i32>, neighbours: Option<Vec<u32>> });
-sample_struct!(SelectedUnitInputs { sample_hour: i32, exiled: Option<u8>, commander: Option<bool>, retreat: [Option<i64>; 2] });
-sample_struct!(OrderedEnemyInputs { sample_hour: i32, entries: Vec<u32> });
+sample_struct!(OrderedEnemyInputs { sample_hour: PacketHour, entries: Vec<u32> });
 
 sample_struct!(RailwaySelectionInputs { levels: Option<Vec<i32>>, pair_count: Option<i32>, building_level: Option<Option<i16>> });
 
@@ -2154,10 +2259,11 @@ impl Fixture for DivisionMovementRow {
             withdrawal: Recorded::sample(tick),
             movement_priority: Recorded::sample(tick),
             order_transport: Recorded::sample(tick),
-            fresh: Recorded::<Option<FreshCounterEta>>::sample(tick),
+            fresh: Recorded::Value(Retired),
             combat_references: unit_combat_references_fixture(tick, u32::sample(tick)),
-            transport: Recorded::sample(tick),
-            selected: Recorded::<Option<SelectedUnitInputs>>::sample(tick),
+            transport: Recorded::Value(Retired),
+            selected: Recorded::Value(Retired),
+            base_speed: Recorded::<Option<i64>>::sample(tick),
             strategic_action: if reached {
                 crate::rows::Recorded::Value(StrategicAction::Available(strategic_action_fixture(
                     tick,
@@ -2168,6 +2274,7 @@ impl Fixture for DivisionMovementRow {
         }
     }
 }
+sample_struct!(DivisionCamouflage { category: Option<u32> });
 sample_struct!(DivisionAcclimatization {
     category: u32,
     weight: i64
@@ -2185,19 +2292,11 @@ sample_struct!(UnitSupplyInputs { asked: i64, received: i64, from_state: i64,
     air_drops: i64, disruption: i64, division_demand: UnitSupplyDemand,
     airplane_demand: UnitSupplyDemand, ship_demand: UnitSupplyDemand,
     origins: Option<Vec<UnitSupplyOrigin>> });
-sample_struct!(AttritionSupply { penalty: Option<i64>, attrition_factor: Option<i64> });
-sample_struct!(AttritionThermal { base: i64, country_factor: Option<i64>, leader_factor: Option<Option<i64>> });
-sample_struct!(AttritionWeather { acclimatization: Option<i64>, attrition: Option<i64>, heat: Option<Option<AttritionThermal>>, winter: Option<Option<AttritionThermal>> });
-sample_struct!(AttritionBorder { state: Option<u32>, country: Option<u32>, factor: Option<i64> });
-sample_struct!(AttritionTerrain { name: Option<Vec<u8>>, attrition: Option<i64>, equipment: Option<i64> });
-sample_struct!(AttritionModifierSource {
-    accumulator: u64,
-    key: u32,
-    depth: i32,
-    scale: i64
-});
-sample_struct!(ArmyAttritionInputs { province: Option<Option<u32>>, upkeep: Option<i64>, terrain: Option<Option<AttritionTerrain>>, state: Option<Option<i64>>, supply: Option<AttritionSupply>, country_upkeep_modifier: Option<i64>, moving_state: Option<Option<i64>>, weather: Option<Option<AttritionWeather>>, training: Option<bool>, training_attrition: Option<Option<i64>>, border: Option<Option<AttritionBorder>>, country_attrition_modifier: Option<i64>, sources: [Option<Option<AttritionModifierSource>>; engine::carmy_attrition::SOURCE_COUNT] });
-fixture!(DivisionStatusRow, |key| {division: key as u64}, {maximum_hit_points: i64, maximum_organisation: i64, entrenchment: i64, entrenchment_cap: i64, supply_ratio: i64, attrition_value: i64, attrition_threshold: i64, attrition: u8, exercising: u8, has_order: u8, invalid_orders: u8, strength_factor: i64, model_number: i32, acclimatization_maximum: Option<i64>, acclimatization: Vec<DivisionAcclimatization>, move_flags: u8, border_combat_stats: Recorded<Option<[i64; 3]>>, naming: Recorded<Option<NameOperands>>, supply_grace_maximum: Recorded<i64>, supply_grace_remaining: Recorded<i64>, country_ordinal: Recorded<Option<u32>>, invalid_orders_reason: Recorded<Option<i32>>, supply: Recorded<Option<UnitSupplyInputs>>, attrition_inputs: Recorded<ArmyAttritionInputs>, dig_in_factor: Recorded<Option<i64>>, name: Recorded<Option<Vec<u8>>>, attack: Recorded<DivisionAttackInputs>});
+sample_struct!(DivisionSupplyFooter { asked: i64, received: i64, from_state: i64,
+    air_drops: i64, disruption: i64, division_demand: UnitSupplyDemand,
+    airplane_demand: UnitSupplyDemand, ship_demand: UnitSupplyDemand,
+    origins: Option<Vec<UnitSupplyOrigin>> });
+fixture!(DivisionStatusRow, |key| {division: key as u64}, {maximum_hit_points: i64, maximum_organisation: i64, entrenchment: i64, entrenchment_cap: i64, supply_ratio: i64, attrition_value: i64, attrition_threshold: i64, attrition: RetiredU8, exercising: u8, has_order: u8, invalid_orders: u8, strength_factor: i64, model_number: i32, acclimatization_maximum: Option<i64>, acclimatization: Vec<DivisionAcclimatization>, move_flags: u8, border_combat_stats: Recorded<Option<[i64; 3]>>, naming: Recorded<Option<NameOperands>>, supply_grace_maximum: Recorded<i64>, supply_grace_remaining: Recorded<i64>, country_ordinal: Recorded<Option<u32>>, invalid_orders_reason: Recorded<Option<i32>>, supply: Recorded<Option<DivisionSupplyFooter>>, attrition_inputs: Recorded<Retired>, dig_in_factor: Recorded<Option<i64>>, name: Recorded<Option<Vec<u8>>>, attack: Recorded<Witnessed<DivisionAttackInputs>>, camouflage: Recorded<Option<DivisionCamouflage>>, attack_stats: Recorded<Option<DivisionAttackStats>>, weather_factor: Recorded<Option<i64>>});
 impl Fixture for DivisionEtaInputsRow {
     fn fixture(key: u128, tick: usize) -> Self {
         // Leg vectors must stay aligned, so they cannot be sampled apart.
@@ -2250,7 +2349,7 @@ sample_struct!(TemplateSubunit {
 });
 fixture!(DivisionTemplateRow, |key| {template: key as u64}, {owner: u32, name: Vec<u8>, unit_type: i32, name_key: Recorded<Vec<u8>>});
 fixture!(DivisionTemplateIconRow, |key| {template: key as u64}, {priority_unit: u32, priority_unit_name: Vec<u8>, custom_icon: i32, custom_icon_nato: u8, representative: u32, representative_local: u8, subunits: Vec<TemplateSubunit>, country: i32, foreign_country: i32, model_category: Option<u64>, model_entity: Vec<u8>, excluded_variants: Vec<u64>, model_unreadable: u8, formation_division_count: Recorded<Option<i32>>, display_name: Recorded<Option<TemplateDisplayName>>});
-fixture!(LandCombatProgressRow, |key| {combat: key as u64}, {attacker_progress: i64, defender_progress: i64, direction_attacker: u64, direction_province: u32, attacker_manpower_loss:Recorded<i32>, defender_manpower_loss:Recorded<i32>, attacker_equipment_losses:Recorded<Vec<LandEquipmentLoss>>, defender_equipment_losses:Recorded<Vec<LandEquipmentLoss>>});
+fixture!(LandCombatProgressRow, |key| {combat: key as u64}, {attacker_progress: RetiredI64, defender_progress: RetiredI64, direction_attacker: RetiredU64, direction_province: RetiredU32, attacker_manpower_loss:Recorded<i32>, defender_manpower_loss:Recorded<i32>, attacker_equipment_losses:Recorded<Vec<LandEquipmentLoss>>, defender_equipment_losses:Recorded<Vec<LandEquipmentLoss>>});
 fixture!(ThreatSourceRow, |key| {ordinal: key as u32}, {country: u32, second_country: u32, current_raw: i64, final_raw: i64, daily_raw: i64, date: i32, reason: Vec<u8>});
 fixture!(ThreatCountryAggregateRow, |key| {country_slot: key as u32}, {total_raw: i64});
 fixture!(RelationOpinionRow, |key| {owner_country: (key >> 32) as u32, target_country: key as u32}, {opinion: i32});
@@ -2558,6 +2657,7 @@ pub(crate) fn sample_extended_table(table: TableId, tick: usize) -> Option<Table
         TableId::WingCumulative => TableRows::WingCumulative(rows::<WingCumulativeRow>(tick)),
         TableId::AirRegionHistory => TableRows::AirRegionHistory(rows::<AirRegionHistoryRow>(tick)),
         TableId::AirRegionDamage => TableRows::AirRegionDamage(rows::<AirRegionDamageRow>(tick)),
+        TableId::AirRegionCombat => TableRows::AirRegionCombat(rows::<AirRegionCombatRow>(tick)),
         TableId::AirAces => TableRows::AirAces(rows::<AirAceRow>(tick)),
         TableId::AirStatistics => TableRows::AirStatistics(rows::<AirStatisticsRow>(tick)),
         TableId::SunkConvoys => TableRows::SunkConvoys(rows::<SunkConvoyRow>(tick)),
@@ -2652,6 +2752,11 @@ pub(crate) fn sample_extended_table(table: TableId, tick: usize) -> Option<Table
         }
         TableId::PeaceBids => TableRows::PeaceBids(rows::<PeaceSettlementRow>(tick)),
         TableId::PeaceSettlements => TableRows::PeaceSettlements(rows::<PeaceSettlementRow>(tick)),
+        TableId::NuclearStrikes => TableRows::NuclearStrikes(rows::<NuclearStrikeRow>(tick)),
+        TableId::LandCombatDivisionModifiers => {
+            TableRows::LandCombatDivisionModifiers(rows::<LandCombatDivisionModifierRow>(tick))
+        }
+        TableId::FuelDemandParts => TableRows::FuelDemandParts(rows::<FuelDemandPartRow>(tick)),
         TableId::DivisionLandInputs => {
             TableRows::DivisionLandInputs(rows::<DivisionLandInputsRow>(tick))
         }
@@ -2887,6 +2992,35 @@ pub(crate) fn sample_extended_table(table: TableId, tick: usize) -> Option<Table
         TableId::CapturedOperativeReferences => {
             TableRows::CapturedOperativeReferences(rows::<CapturedOperativeReferenceRow>(tick))
         }
+        TableId::ReservedNearestNavies => {
+            TableRows::ReservedNearestNavies(rows::<ReservedNearestNavyRow>(tick))
+        }
+        TableId::ReservedNearestBases => {
+            TableRows::ReservedNearestBases(rows::<ReservedNearestBaseRow>(tick))
+        }
+        TableId::TransportNavies => TableRows::TransportNavies(rows::<TransportNavyRow>(tick)),
+        TableId::TransportLedgers => TableRows::TransportLedgers(rows::<TransportLedgerRow>(tick)),
+        TableId::TransportReceivers => {
+            TableRows::TransportReceivers(rows::<TransportReceiverRow>(tick))
+        }
+        TableId::TransportSearchRegions => {
+            TableRows::TransportSearchRegions(rows::<TransportSearchRegionRow>(tick))
+        }
+        TableId::TransportSpottingOwners => {
+            TableRows::TransportSpottingOwners(rows::<TransportSpottingOwnerRow>(tick))
+        }
+        TableId::TransportSpottingRegions => {
+            TableRows::TransportSpottingRegions(rows::<TransportSpottingRegionRow>(tick))
+        }
+        TableId::TransportAirRoots => {
+            TableRows::TransportAirRoots(rows::<TransportAirRootRow>(tick))
+        }
+        TableId::TransportAirRegions => {
+            TableRows::TransportAirRegions(rows::<TransportAirRegionRow>(tick))
+        }
+        TableId::TransportRiskShips => {
+            TableRows::TransportRiskShips(rows::<TransportRiskShipsRow>(tick))
+        }
         TableId::ReservedCountryNaming => {
             TableRows::ReservedCountryNaming(rows::<ReservedCountryNamingRow>(tick))
         }
@@ -2940,6 +3074,12 @@ pub(crate) fn sample_extended_table(table: TableId, tick: usize) -> Option<Table
         ),
         TableId::NavalModifierBreakdowns => {
             TableRows::NavalModifierBreakdowns(rows::<NavalModifierBreakdownRow>(tick))
+        }
+        TableId::NavalModifierTrees => {
+            TableRows::NavalModifierTrees(rows::<NavalModifierTreeRow>(tick))
+        }
+        TableId::NavalModifierTreeSamples => {
+            TableRows::NavalModifierTreeSamples(rows::<NavalModifierTreeSampleRow>(tick))
         }
         TableId::AttritionModifierBreakdowns => {
             TableRows::AttritionModifierBreakdowns(rows::<AttritionModifierBreakdownRow>(tick))
@@ -3239,12 +3379,12 @@ fn equipment_spending_keeps_old_delivery_prefix_and_independent_optional_suffixe
         variant: 9,
         mio: 11,
         units: 3,
-        mio_credit: 5,
+        mio_credit: RetiredI64::holding(5),
         since_hour: 100,
         ended: true,
         exact: true,
         spent_raw: Recorded::Value(Some(i64::MIN)),
-        instant_raw: Recorded::Value(Some(i64::MAX)),
+        instant_raw: Recorded::Value(RetiredOptionalI64::holding(Some(i64::MAX))),
         ..Default::default()
     };
     let mut bytes = Vec::new();
@@ -3260,7 +3400,7 @@ fn equipment_spending_keeps_old_delivery_prefix_and_independent_optional_suffixe
     input.finish().unwrap();
     assert_eq!(
         (old.units, old.mio_credit, old.exact, old.ended),
-        (3, 5, true, true)
+        (3, RetiredI64::holding(5), true, true)
     );
     assert_eq!(old.spent_raw, Recorded::NotRecorded);
     assert_eq!(old.instant_raw, Recorded::NotRecorded);
@@ -3271,7 +3411,7 @@ fn equipment_spending_keeps_old_delivery_prefix_and_independent_optional_suffixe
     ] {
         round_trip(&ProductionLineOutputRow {
             spent_raw: Recorded::Value(spent),
-            instant_raw: Recorded::Value(instant),
+            instant_raw: Recorded::Value(RetiredOptionalI64::holding(instant)),
             ..row.clone()
         });
     }
@@ -3345,7 +3485,7 @@ fn oracle_witness_suffixes_preserve_the_readable_historical_prefixes() {
     }
     let prefix = bytes.len() - input.remaining();
     let mut input = Decoder::new(&bytes[..prefix]);
-    input.format = crate::FORMAT_VERSION - 1;
+    input.format = crate::rows::compatibility::POLITICAL_FORMAT - 1;
     input.recorded_fields = FormatVersion::read(input.format)
         .unwrap()
         .fields(TableId::ConstructionLineOutput);
@@ -3361,7 +3501,7 @@ fn oracle_witness_suffixes_preserve_the_readable_historical_prefixes() {
     }
     let prefix = bytes.len() - input.remaining();
     let mut input = Decoder::new(&bytes[..prefix]);
-    input.format = crate::FORMAT_VERSION - 1;
+    input.format = crate::rows::compatibility::POLITICAL_FORMAT - 1;
     input.recorded_fields = FormatVersion::read(input.format)
         .unwrap()
         .fields(TableId::NavalBases);
@@ -3643,7 +3783,7 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
         subjects: Recorded::Value(vec![7, -1]),
         original_tag: Recorded::Value(Some(b"GER".to_vec())),
         original_tag_reference: Recorded::Value(Some(i32::MAX)),
-        transport_convoys: Recorded::Value(None),
+        transport_convoys: Recorded::Value(Retired),
     };
     let mut bytes = Vec::new();
     encode_row(&previous, 0, &mut bytes).unwrap();
@@ -3713,7 +3853,7 @@ fn ship_models_preserve_full_flags_and_counter_inputs() {
     let row = ShipModelRow {
         formation_flags: u64::MAX,
         subunit_index: Recorded::Value(None),
-        strike: Recorded::Value(None),
+        strike: Recorded::Value(Retired),
         hull_variant: Recorded::Value(None),
         counter: Some(ShipCounterInputs {
             roster_ordinal: 7,
@@ -3777,7 +3917,7 @@ fn naval_port_packet_preserves_ordered_unknowns_and_raw_bytes_in_suffix_delta() 
         ..TaskForceCounterInputRow::fixture(u64::MAX as u128, 4)
     };
     let packet = NavalPortMissionInputs {
-        sample_hour: i32::MIN,
+        sample_hour: PacketHour::Host,
         searching: Some(vec![
             NavalSearcher {
                 reference: Some(u64::MAX),
@@ -3818,16 +3958,8 @@ fn naval_port_packet_preserves_ordered_unknowns_and_raw_bytes_in_suffix_delta() 
 #[test]
 fn current_ship_suffixes_keep_independent_missing_scalars_and_signed_bits() {
     let baseline = ShipModelRow {
-        strike: Recorded::Value(None),
         hull_variant: Recorded::Value(None),
         ..ShipModelRow::fixture(u64::MAX as u128, 4)
-    };
-    let strike = ShipStrikeInputs {
-        light_attack: Some(i64::MIN),
-        heavy_attack: None,
-        light_piercing: Some(0),
-        torpedo_attack: Some(i64::MAX),
-        torpedo_cooldown_modifier: Some(-1),
     };
     let variant = HullVariantInputs {
         definition_index: Some(-1),
@@ -3837,26 +3969,15 @@ fn current_ship_suffixes_keep_independent_missing_scalars_and_signed_bits() {
         version: Some(u8::MAX),
         organisation_marker: Some(-1),
     };
-    for next in [
-        ShipModelRow {
-            strike: Recorded::Value(Some(strike)),
-            ..baseline.clone()
-        },
-        ShipModelRow {
+    {
+        let next = ShipModelRow {
             hull_variant: Recorded::Value(Some(variant)),
             ..baseline.clone()
-        },
-    ] {
+        };
         round_trip(&next);
         let delta = next.delta(Some(&baseline)).unwrap().unwrap();
-        assert_eq!(
-            delta.mask,
-            if next.strike != baseline.strike {
-                1 << 7
-            } else {
-                1 << 8
-            }
-        );
+        // The retired strike tombstone never changes.
+        assert_eq!(delta.mask, 1 << 8);
         let mut bytes = Vec::new();
         encode_delta(TableId::ShipModels, &delta, 0, &mut bytes).unwrap();
         let mut input = Decoder::new(&bytes);
@@ -3874,6 +3995,8 @@ fn naval_window_stored_operands_and_breakdowns_round_trip() {
     check_table::<NavalCombatShipRow>(TableId::NavalCombatShips);
     check_table::<NavalCombatResultDetailsRow>(TableId::NavalCombatResultDetails);
     check_table::<NavalModifierBreakdownRow>(TableId::NavalModifierBreakdowns);
+    check_table::<NavalModifierTreeRow>(TableId::NavalModifierTrees);
+    check_table::<NavalModifierTreeSampleRow>(TableId::NavalModifierTreeSamples);
 }
 
 #[test]
@@ -3915,8 +4038,10 @@ fn combat_window_operands_round_trip() {
         decode_row::<LandCombatDivisionRow>(0, &mut Decoder::new(&bytes)).unwrap(),
         division
     );
-    assert_eq!(TableId::LandCombatDivisions.full_mask(), (1 << 30) - 1);
-    assert_eq!(TableId::LandCombatDivisions.mask_width(), 4);
+    // Fuel, the stats and the scales are a field each after the packets'
+    // tombstones (fields 31 to 41).
+    assert_eq!(TableId::LandCombatDivisions.full_mask(), (1 << 42) - 1);
+    assert_eq!(TableId::LandCombatDivisions.mask_width(), 6);
 }
 
 #[test]
@@ -4096,6 +4221,7 @@ fn structured_fields_reject_hostile_inner_counts_tags_and_suffixes() {
     reject::<Vec<ScriptVariableEntry>>(&u32::MAX.to_le_bytes());
     reject::<Vec<AirHistoryEntry>>(&u32::MAX.to_le_bytes());
     reject::<Vec<AirDamageEntry>>(&u32::MAX.to_le_bytes());
+    reject::<Vec<AirCombatRecord>>(&u32::MAX.to_le_bytes());
     reject::<Vec<SunkShipEntry>>(&u32::MAX.to_le_bytes());
     let mut nested = 1_u32.to_le_bytes().to_vec();
     nested.extend_from_slice(&u32::MAX.to_le_bytes());
@@ -4157,6 +4283,294 @@ fn ace_presentation_suffix_keeps_previous_roster_bytes_and_explicit_absence() {
             .collect::<Vec<_>>(),
         [("presentation", 1)]
     );
+}
+
+/// A recording before the camouflage field keeps every acclimatization
+/// entry and the maximum, from which consumers decide; its camouflage is
+/// historical absence, not a refusal.
+#[test]
+fn older_division_status_keeps_its_acclimatization_and_lacks_camouflage() {
+    let row = DivisionStatusRow {
+        division: 7,
+        acclimatization_maximum: Some(10_000_000),
+        acclimatization: vec![
+            DivisionAcclimatization {
+                category: 20_006,
+                weight: 5_000_000,
+            },
+            DivisionAcclimatization {
+                category: 36_465,
+                weight: -1,
+            },
+        ],
+        camouflage: Recorded::Value(Some(DivisionCamouflage {
+            category: Some(20_006),
+        })),
+        ..Default::default()
+    };
+    let table = TableId::DivisionStatus;
+    let previous =
+        crate::format::FormatVersion::read(crate::rows::compatibility::POLITICAL_FORMAT).unwrap();
+    assert!(previous.table_refusal(table).is_none());
+    assert_eq!(previous.fields(table), 27);
+    let bytes = TableRows::DivisionStatus(vec![row.clone()]).fixture_prefix(previous.fields(table));
+    let mut input = Decoder::new(&bytes);
+    input.format = previous.version();
+    input.recorded_fields = previous.fields(table);
+    let decoded = decode_row::<DivisionStatusRow>(0, &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(decoded.acclimatization, row.acclimatization);
+    assert_eq!(decoded.acclimatization_maximum, row.acclimatization_maximum);
+    assert_eq!(decoded.camouflage, Recorded::NotRecorded);
+    assert_eq!(
+        TableRows::DivisionStatus(vec![decoded])
+            .field_gaps()
+            .collect::<Vec<_>>(),
+        [
+            ("camouflage", 1),
+            ("attack_stats", 1),
+            ("weather_factor", 1)
+        ]
+    );
+    // The current format records the decision and nothing else changes.
+    let current = crate::format::FormatVersion::CURRENT;
+    assert_eq!(current.fields(table), 30);
+    let bytes = TableRows::DivisionStatus(vec![row.clone()]).fixture_prefix(current.fields(table));
+    let mut input = Decoder::new(&bytes);
+    input.recorded_fields = current.fields(table);
+    assert_eq!(decode_row::<DivisionStatusRow>(0, &mut input).unwrap(), row);
+    input.finish().unwrap();
+}
+
+/// The side hover inputs are appended after the retired side parts: older
+/// recordings lack them by name, and the current format stores the prevented
+/// damage and both progress ratios at their printed precision, keeping the
+/// no-progress word and the exact anti-air, offence and defence. The CAS
+/// operands come from them, or from an older recording's side parts.
+#[test]
+fn land_side_inputs_append_at_display_precision_and_older_recordings_lack_them() {
+    let side = LandCombatSideInputs {
+        anti_air_attack: 123_456_789,
+        prevented_damage: [1_234_567, 99_999],
+        skill_progress: 456_789,
+        skill_modifiers: Some([-12_345, 67_891]),
+        description_token: b"GENERAL_DESC".to_vec(),
+        timed_traits: vec![LandCombatCommanderTimedTrait {
+            token_id: 7,
+            definition_ordinal: 3,
+            remaining_days: 0,
+        }],
+        learning_traits: Some(vec![LandCombatLearningProgress {
+            token_id: 9,
+            definition_ordinal: 4,
+            progress: 5_999,
+            token: b"trait_engineer".to_vec(),
+        }]),
+    };
+    let mut row = LandCombatDetailsRow {
+        combat: 9,
+        side_inputs: Recorded::Value([side, LandCombatSideInputs::default()]),
+        ..Default::default()
+    };
+    RowCodec::round_to_display(&mut row);
+    let Recorded::Value([stepped, empty]) = &row.side_inputs else {
+        unreachable!();
+    };
+    assert_eq!(stepped.anti_air_attack, 123_456_789);
+    assert_eq!(stepped.prevented_damage, [1_200_000, 0]);
+    assert_eq!(stepped.skill_progress, 456_000);
+    assert_eq!(stepped.skill_modifiers, Some([-12_345, 67_891]));
+    assert_eq!(stepped.learning_traits.as_ref().unwrap()[0].progress, 5_000);
+    assert_eq!(empty.skill_progress, LandCombatSideInputs::NO_PROGRESS);
+    round_trip(&row);
+    // A part whose optional read failed stays unknown, apart from known
+    // zeros and empties, and keeps its sentinel through the step.
+    let mut unread = row.clone();
+    if let Recorded::Value([side, _]) = &mut unread.side_inputs {
+        side.skill_progress = LandCombatSideInputs::UNREAD_PROGRESS;
+        side.skill_modifiers = None;
+        side.learning_traits = None;
+    }
+    RowCodec::round_to_display(&mut unread);
+    let Recorded::Value([side, _]) = &unread.side_inputs else {
+        unreachable!();
+    };
+    assert_eq!(side.skill_progress, LandCombatSideInputs::UNREAD_PROGRESS);
+    assert_ne!(unread, row);
+    round_trip(&unread);
+    // A drift below the printed precision is no change.
+    let mut drifted = row.clone();
+    if let Recorded::Value([side, _]) = &mut drifted.side_inputs {
+        side.prevented_damage[0] += 99_999;
+        side.skill_progress += 999;
+    }
+    RowCodec::round_to_display(&mut drifted);
+    assert_eq!(drifted, row);
+    assert_eq!(row.cas_inputs(0), Some((123_456_789, [1_200_000, 0])));
+    assert_eq!(row.cas_inputs(1), Some((0, [0, 0])));
+    // A current writer always records the side inputs, its defaults
+    // included; only a row holding neither them nor older side parts has no
+    // CAS operands.
+    assert_eq!(
+        LandCombatDetailsRow::default().cas_inputs(0),
+        Some((0, [0, 0]))
+    );
+    let neither = LandCombatDetailsRow {
+        side_inputs: Recorded::NotRecorded,
+        ..Default::default()
+    };
+    assert_eq!(neither.cas_inputs(0), None);
+    let table = TableId::LandCombatDetails;
+    let previous =
+        crate::format::FormatVersion::read(crate::rows::compatibility::POLITICAL_FORMAT).unwrap();
+    assert!(previous.table_refusal(table).is_none());
+    assert_eq!(previous.fields(table), 10);
+    // The historical writer stands in for format 101's side layout, which
+    // still held the parts retired since, the CAS operands exact.
+    let mut older = row.clone();
+    older.sides[1].anti_air_attack = RetiredKept::older_value(-5);
+    older.sides[1].prevented_damage = RetiredKept::older_value([1_234_567, 1]);
+    let bytes = crate::rows::with_historical_stamp(0, || {
+        TableRows::LandCombatDetails(vec![older]).fixture_prefix(previous.fields(table))
+    });
+    let mut input = Decoder::new(&bytes);
+    input.format = previous.version();
+    input.recorded_fields = previous.fields(table);
+    let decoded = decode_row::<LandCombatDetailsRow>(0, &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(decoded.side_inputs, Recorded::NotRecorded);
+    assert_eq!(decoded.cas_inputs(0), Some((0, [0, 0])));
+    assert_eq!(decoded.cas_inputs(1), Some((-5, [1_234_567, 1])));
+    assert_eq!(
+        TableRows::LandCombatDetails(vec![decoded])
+            .field_gaps()
+            .collect::<Vec<_>>(),
+        [("side_inputs", 1)]
+    );
+    assert_eq!(crate::format::FormatVersion::CURRENT.fields(table), 11);
+}
+
+#[test]
+fn land_division_numbers_are_a_field_each_and_older_packets_still_answer() {
+    use crate::rows::compatibility::LAND_DIVISION_NUMBERS_FORMAT;
+    let table = TableId::LandCombatDivisions;
+    let fuel = [500_000, 1_000_000];
+    let stats = [3_000_000, 1_000_000, 50_000, 7_000_000, 2_000_000];
+    let scales = [99_000, 101_230, 100_000, 100_000];
+    let row = LandCombatDivisionRow {
+        combat: 9,
+        side: 1,
+        ordinal: 2,
+        fuel_inputs: fuel.map(Recorded::Value),
+        stat_values: stats.map(Recorded::Value),
+        scales: scales.map(Recorded::Value),
+        ..LandCombatDivisionRow::default()
+    };
+    assert_eq!(row.fuel_inputs(), Some(fuel));
+    assert_eq!(row.stat_values(), Some(stats));
+    assert_eq!(row.scales(), Some(scales));
+    // Each number is its own field after the packets' tombstones, which
+    // current writers leave empty: a drifting scale changes its field alone.
+    assert_eq!(table.field_count(), 42);
+    for (index, name) in [
+        (10, "fuel_packet"),
+        (11, "stat_packet"),
+        (18, "scale_packet"),
+        (31, "fuel_inputs[0]"),
+        (38, "scales[0]"),
+        (41, "scales[3]"),
+    ] {
+        assert_eq!(
+            table.field_name(index).map(|name| name.replace(' ', "")),
+            Some(name.to_owned())
+        );
+    }
+    let mut next = row.clone();
+    next.scales[0] = Recorded::Value(99_010);
+    let delta = next.delta(Some(&row)).unwrap().unwrap();
+    assert_eq!(delta.mask, 1 << 38);
+    next.stat_values[2] = Recorded::Value(50_001);
+    next.fuel_inputs[1] = Recorded::Value(999_999);
+    let delta = next.delta(Some(&row)).unwrap().unwrap();
+    assert_eq!(delta.mask, (1 << 32) | (1 << 35) | (1 << 38));
+    assert_eq!(delta.apply(Some(row.clone())).unwrap(), next);
+    let mut bytes = Vec::new();
+    encode_row(&row, 0, &mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    assert_eq!(
+        decode_row::<LandCombatDivisionRow>(0, &mut input).unwrap(),
+        row
+    );
+    input.finish().unwrap();
+    // The stats and accumulators keep their display steps a field each:
+    // a drift below the printed precision is no change.
+    let mut drifted = row.clone();
+    drifted.stat_values[0] = Recorded::Value(3_009_999);
+    drifted.scales[1] = Recorded::Value(101_239);
+    RowCodec::round_to_display(&mut drifted);
+    assert_eq!(drifted, row);
+    // Hardness and the invasion scales stay exact.
+    let mut exact = row.clone();
+    exact.stat_values[2] = Recorded::Value(50_001);
+    exact.scales[2] = Recorded::Value(100_001);
+    RowCodec::round_to_display(&mut exact);
+    assert_eq!(
+        exact.stat_values(),
+        Some([3_000_000, 1_000_000, 50_001, 7_000_000, 2_000_000])
+    );
+    assert_eq!(exact.scales(), Some([99_000, 101_230, 100_001, 100_000]));
+
+    // Format 101 held each as one packet; the historical writer stands in
+    // for its layout, and the packets still answer.
+    let previous = crate::format::FormatVersion::read(LAND_DIVISION_NUMBERS_FORMAT - 1).unwrap();
+    assert!(previous.table_refusal(table).is_none());
+    assert_eq!(previous.fields(table), 30);
+    let older = LandCombatDivisionRow {
+        combat: 9,
+        side: 1,
+        ordinal: 2,
+        fuel_packet: RetiredKept::older_value(fuel),
+        stat_packet: RetiredKept::older_value(stats),
+        scale_packet: RetiredKept::older_value(scales),
+        ..LandCombatDivisionRow::default()
+    };
+    let old_bytes = crate::rows::with_historical_stamp(0, || {
+        TableRows::LandCombatDivisions(vec![older.clone()]).fixture_prefix(previous.fields(table))
+    });
+    let mut input = Decoder::new(&old_bytes);
+    input.format = previous.version();
+    input.recorded_fields = previous.fields(table);
+    let decoded = decode_row::<LandCombatDivisionRow>(0, &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(decoded.fuel_inputs, [Recorded::NotRecorded; 2]);
+    assert_eq!(decoded.scales, [Recorded::NotRecorded; 4]);
+    assert_eq!(decoded.fuel_inputs(), Some(fuel));
+    assert_eq!(decoded.stat_values(), Some(stats));
+    assert_eq!(decoded.scales(), Some(scales));
+    // Neither numbers nor packets: no values.
+    let neither = LandCombatDivisionRow {
+        scales: [Recorded::NotRecorded; 4],
+        ..LandCombatDivisionRow::default()
+    };
+    assert_eq!(neither.scales(), None);
+
+    // A format-102 capture written before the numbers became fields held
+    // the packets and 31 fields: read as this format, it is malformed, never
+    // a row of zeros.
+    let provisional = crate::rows::with_historical_stamp(0, || {
+        TableRows::LandCombatDivisions(vec![older]).fixture_prefix(31)
+    });
+    for fields in [31, 42] {
+        let mut input = Decoder::new(&provisional);
+        input.format = crate::FORMAT_VERSION;
+        input.recorded_fields = fields;
+        assert!(
+            decode_row::<LandCombatDivisionRow>(0, &mut input)
+                .and_then(|_| input.finish())
+                .is_err(),
+            "{fields} fields"
+        );
+    }
 }
 
 #[test]
@@ -4326,6 +4740,7 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<WingCumulativeRow>(TableId::WingCumulative);
     check_table::<AirRegionHistoryRow>(TableId::AirRegionHistory);
     check_table::<AirRegionDamageRow>(TableId::AirRegionDamage);
+    check_table::<AirRegionCombatRow>(TableId::AirRegionCombat);
     check_table::<AirAceRow>(TableId::AirAces);
     check_table::<AirStatisticsRow>(TableId::AirStatistics);
     check_table::<SunkConvoyRow>(TableId::SunkConvoys);
@@ -4363,6 +4778,7 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<NavalBaseRow>(TableId::NavalBases);
     check_table::<PeaceConferenceRow>(TableId::PeaceConferences);
     check_table::<PeaceSettlementRow>(TableId::PeaceSettlements);
+    check_table::<NuclearStrikeRow>(TableId::NuclearStrikes);
     check_table::<PeaceSettlementRow>(TableId::PeaceBids);
     check_table::<WeatherRegionRow>(TableId::WeatherRegions);
     check_table::<WeatherProvinceRow>(TableId::WeatherProvinces);
@@ -4425,6 +4841,8 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<LandCombatDetailsRow>(TableId::LandCombatDetails);
     check_table::<LandCombatDivisionRow>(TableId::LandCombatDivisions);
     check_table::<LandCombatModifierRow>(TableId::LandCombatModifiers);
+    check_table::<LandCombatDivisionModifierRow>(TableId::LandCombatDivisionModifiers);
+    check_table::<FuelDemandPartRow>(TableId::FuelDemandParts);
     check_table::<NavalCombatDetailsRow>(TableId::NavalCombatDetails);
     check_table::<NavalCombatShipRow>(TableId::NavalCombatShips);
     check_table::<NavalCombatResultDetailsRow>(TableId::NavalCombatResultDetails);
@@ -4483,6 +4901,17 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<DecisionRandomItemRow>(TableId::DecisionRandomItems);
     check_table::<CapturedOperativeReferenceRow>(TableId::CapturedOperativeReferences);
     check_table::<ReservedCountryNamingRow>(TableId::ReservedCountryNaming);
+    check_table::<ReservedNearestNavyRow>(TableId::ReservedNearestNavies);
+    check_table::<ReservedNearestBaseRow>(TableId::ReservedNearestBases);
+    check_table::<TransportNavyRow>(TableId::TransportNavies);
+    check_table::<TransportLedgerRow>(TableId::TransportLedgers);
+    check_table::<TransportReceiverRow>(TableId::TransportReceivers);
+    check_table::<TransportSearchRegionRow>(TableId::TransportSearchRegions);
+    check_table::<TransportSpottingOwnerRow>(TableId::TransportSpottingOwners);
+    check_table::<TransportSpottingRegionRow>(TableId::TransportSpottingRegions);
+    check_table::<TransportAirRootRow>(TableId::TransportAirRoots);
+    check_table::<TransportAirRegionRow>(TableId::TransportAirRegions);
+    check_table::<TransportRiskShipsRow>(TableId::TransportRiskShips);
     check_table::<AttritionModifierBreakdownRow>(TableId::AttritionModifierBreakdowns);
     check_table::<HiredAdvisorRow>(TableId::HiredAdvisors);
     check_table::<CountryStabilityInputRow>(TableId::CountryStabilityInputs);
@@ -4511,20 +4940,13 @@ fn political_runtime_fixtures_admit_current_hours_and_exact_domains() {
     let mut saw_display_literal = false;
     let mut saw_display_empty_fallback = false;
     let mut saw_display_fallback = false;
-    let mut saw_refused_commander = false;
-    let mut saw_null_commander = false;
-    let mut saw_commander = false;
-    let mut saw_commander_terrain_domains = [false; 3];
     let mut saw_combat_kinds = [false; 3];
     let mut saw_empty_combat_references = false;
     let mut saw_empty_war_domains = [false; 2];
-    let mut saw_independent_reserved_refusal = false;
     for tick in 0..=12 {
         let hour = i32::sample(tick);
         for key in [0, u32::MAX as u128] {
             let row = CountryCounterInputRow::fixture(key, tick);
-            let attack = row.attack.require("CountryCounterInputs.attack").unwrap();
-            assert_eq!(attack.sample_hour, hour);
             if let Recorded::Value(Some(packet)) = &row.directed_wars {
                 packet
                     .admit(hour, row.country as i32, packet.receiver_slot)
@@ -4533,14 +4955,8 @@ fn political_runtime_fixtures_admit_current_hours_and_exact_domains() {
                     saw_empty_war_domains[usize::from(packet.complete_active_domain)] = true;
                 }
             }
-            if let Recorded::Value(Some(packet)) = &row.movement {
-                assert_eq!(packet.sample_hour, attack.sample_hour);
-            }
         }
         let status = DivisionStatusRow::fixture(u64::MAX as u128, tick);
-        let attack = status.attack.require("DivisionStatus.attack").unwrap();
-        assert_eq!(attack.sample_hour, hour);
-        attack.check().unwrap();
         status.check_key_fields().unwrap();
 
         let movement = DivisionMovementRow::fixture(u64::MAX as u128, tick);
@@ -4549,9 +4965,6 @@ fn political_runtime_fixtures_admit_current_hours_and_exact_domains() {
             saw_empty_combat_references |= packet.entries.is_empty();
             for entry in &packet.entries {
                 saw_combat_kinds[entry.kind as usize] = true;
-            }
-            if let Recorded::Value(Some(fresh)) = &movement.fresh {
-                assert_eq!(packet.sample_hour, fresh.sample_hour);
             }
         }
         movement.check_key_fields().unwrap();
@@ -4564,30 +4977,13 @@ fn political_runtime_fixtures_admit_current_hours_and_exact_domains() {
         }
         gun.check_key_fields().unwrap();
 
-        let group = OrdersGroupCounterInputRow::fixture(u64::MAX as u128, tick);
-        let attack = group
-            .attack
-            .require("OrdersGroupCounterInputs.attack")
+        OrdersGroupCounterInputRow::fixture(u64::MAX as u128, tick)
+            .check_key_fields()
             .unwrap();
-        assert_eq!(attack.sample_hour, hour);
-        attack.check().unwrap();
-        match &attack.commander {
-            None => saw_refused_commander = true,
-            Some(None) => saw_null_commander = true,
-            Some(Some(commander)) => {
-                saw_commander = true;
-                let domain = match &commander.terrain {
-                    None => 0,
-                    Some(values) if values.is_empty() => 1,
-                    Some(_) => 2,
-                };
-                saw_commander_terrain_domains[domain] = true;
-            }
-        }
 
         let icon = DivisionTemplateIconRow::fixture(u64::MAX as u128, tick);
         if let Recorded::Value(Some(packet)) = &icon.display_name {
-            assert_eq!(packet.sample_hour, hour);
+            assert_eq!(packet.sample_hour, PacketHour::Host);
             match &packet.value {
                 TemplateNameValue::SameAsDivisionTemplates => saw_display_certificate = true,
                 TemplateNameValue::Changed {
@@ -4608,29 +5004,7 @@ fn political_runtime_fixtures_admit_current_hours_and_exact_domains() {
         }
 
         let reserved = ReservedCountryNamingRow::fixture(0, tick);
-        if let Recorded::Value(Some(packet)) = &reserved.attack {
-            assert_eq!(packet.sample_hour, hour);
-        }
-        if let Recorded::Value(Some(packet)) = &reserved.raw_country_observations {
-            assert_eq!(packet.sample_hour, hour);
-            packet.check().unwrap();
-            for entry in &packet.entries {
-                assert_eq!(packet.entry(hour, entry.raw).unwrap(), entry);
-            }
-        }
-        saw_independent_reserved_refusal |= matches!(&reserved.attack, Recorded::Value(None))
-            != matches!(&reserved.raw_country_observations, Recorded::Value(None));
         reserved.check_key_fields().unwrap();
-
-        let weather = WeatherRegionRow::fixture(u32::MAX as u128, tick);
-        assert_eq!(
-            weather
-                .attack
-                .require("WeatherRegions.attack")
-                .unwrap()
-                .sample_hour,
-            hour
-        );
         let features = SimulationFeatureRow::fixture(0, tick);
         assert_eq!(
             features
@@ -4638,7 +5012,7 @@ fn political_runtime_fixtures_admit_current_hours_and_exact_domains() {
                 .require("SimulationFeatures.runtime_scalars")
                 .unwrap()
                 .sample_hour,
-            hour
+            PacketHour::Host
         );
     }
     assert!(
@@ -4647,11 +5021,8 @@ fn political_runtime_fixtures_admit_current_hours_and_exact_domains() {
             && saw_display_empty_fallback
             && saw_display_fallback
     );
-    assert!(saw_refused_commander && saw_null_commander && saw_commander);
-    assert!(saw_commander_terrain_domains.into_iter().all(|seen| seen));
     assert!(saw_combat_kinds.into_iter().all(|seen| seen) && saw_empty_combat_references);
     assert!(saw_empty_war_domains.into_iter().all(|seen| seen));
-    assert!(saw_independent_reserved_refusal);
 }
 
 #[test]
@@ -4671,13 +5042,27 @@ fn political_runtime_fixture_suffix_deltas_leave_prefixes_unchanged() {
         }
     }
     let old = DivisionStatusRow::fixture(u64::MAX as u128, 1);
-    let mut next = old.clone();
-    next.attack
-        .require_mut("DivisionStatus.attack")
-        .unwrap()
-        .stats
-        .night = Some(0);
-    suffix(TableId::DivisionStatus, 26, &old, &next);
+    let next = DivisionStatusRow {
+        dig_in_factor: Recorded::Value(Some(i64::MIN)),
+        ..old.clone()
+    };
+    suffix(TableId::DivisionStatus, 24, &old, &next);
+    let next = DivisionStatusRow {
+        attack_stats: Recorded::Value(Some(DivisionAttackStats {
+            terrain: vec![i64::MIN, 0, -15_000],
+            river: [-30_000, -60_000],
+            fort: [i64::MAX, 0],
+            snow: -1,
+            night: 7,
+        })),
+        ..old.clone()
+    };
+    suffix(TableId::DivisionStatus, 28, &old, &next);
+    let next = DivisionStatusRow {
+        weather_factor: Recorded::Value(Some(i64::MIN)),
+        ..old.clone()
+    };
+    suffix(TableId::DivisionStatus, 29, &old, &next);
 
     let old = DivisionMovementRow::fixture(u64::MAX as u128, 1);
     let mut next = old.clone();
@@ -4689,14 +5074,11 @@ fn political_runtime_fixture_suffix_deltas_leave_prefixes_unchanged() {
         .entries[0]
         .kind = 2;
     suffix(TableId::DivisionMovement, 19, &old, &next);
-    let mut next = old.clone();
-    next.transport = Recorded::Value(Some(UnitTransportInputs {
-        sample_hour: i32::MIN,
-        weight: Some(i64::MAX),
-        transfer: Some(UnitTransferInputs::Absent),
-        coastal_template: Some(false),
-    }));
-    suffix(TableId::DivisionMovement, 21, &old, &next);
+    let next = DivisionMovementRow {
+        base_speed: Recorded::Value(Some(i64::MIN)),
+        ..old.clone()
+    };
+    suffix(TableId::DivisionMovement, 22, &old, &next);
     let old = RailwayGunCounterInputRow::fixture(u64::MAX as u128, 1);
     let mut next = old.clone();
     next.combat_references
@@ -4707,26 +5089,8 @@ fn political_runtime_fixture_suffix_deltas_leave_prefixes_unchanged() {
         .entries[0]
         .kind = 2;
     suffix(TableId::RailwayGunCounterInputs, 28, &old, &next);
-    let mut next = old.clone();
-    next.transport = Recorded::Value(Some(UnitTransportInputs {
-        sample_hour: i32::MAX,
-        weight: Some(i64::MIN),
-        transfer: Some(UnitTransferInputs::Present {
-            transfer: u64::MAX,
-            status: Some(i32::MIN),
-            source: None,
-        }),
-        coastal_template: None,
-    }));
-    suffix(TableId::RailwayGunCounterInputs, 29, &old, &next);
 
     let old = CountryCounterInputRow::fixture(0, 0);
-    let mut next = old.clone();
-    next.attack
-        .require_mut("CountryCounterInputs.attack")
-        .unwrap()
-        .land_night_attack = Some(0);
-    suffix(TableId::CountryCounterInputs, 17, &old, &next);
     let mut directed_wars = DirectedWars::sample(0);
     directed_wars.receiver_raw_id = old.country as i32;
     let next = CountryCounterInputRow {
@@ -4734,14 +5098,15 @@ fn political_runtime_fixture_suffix_deltas_leave_prefixes_unchanged() {
         ..old.clone()
     };
     suffix(TableId::CountryCounterInputs, 18, &old, &next);
+    let next = CountryCounterInputRow {
+        attack_modifiers: Recorded::Value(Some(CountryAttackModifiers {
+            land_night_attack: Some(i64::MIN),
+            land_bunker_effectiveness_factor: None,
+        })),
+        ..old.clone()
+    };
+    suffix(TableId::CountryCounterInputs, 19, &old, &next);
 
-    let old = OrdersGroupCounterInputRow::fixture(u64::MAX as u128, 1);
-    let mut next = old.clone();
-    next.attack
-        .require_mut("OrdersGroupCounterInputs.attack")
-        .unwrap()
-        .commander = Some(Some(CommanderAttackInputs::sample(1)));
-    suffix(TableId::OrdersGroupCounterInputs, 5, &old, &next);
     let old = DivisionTemplateIconRow::fixture(u64::MAX as u128, 1);
     let mut next = old.clone();
     next.display_name
@@ -4752,30 +5117,6 @@ fn political_runtime_fixture_suffix_deltas_leave_prefixes_unchanged() {
         .value = TemplateNameValue::SameAsDivisionTemplates;
     suffix(TableId::DivisionTemplateIcons, 14, &old, &next);
 
-    let old = ReservedCountryNamingRow::fixture(0, 0);
-    let next = ReservedCountryNamingRow {
-        attack: Recorded::Value(Some(CountryAttackInputs::sample(0))),
-        ..old.clone()
-    };
-    suffix(TableId::ReservedCountryNaming, 20, &old, &next);
-    let next = ReservedCountryNamingRow {
-        raw_country_observations: Recorded::Value(Some(RawCountryObservations::sample(0))),
-        ..old.clone()
-    };
-    suffix(TableId::ReservedCountryNaming, 21, &old, &next);
-    let next = ReservedCountryNamingRow {
-        transport_mission_inputs: Recorded::Value(Some(TransportMissionInputs::sample(2))),
-        ..old.clone()
-    };
-    suffix(TableId::ReservedCountryNaming, 22, &old, &next);
-
-    let old = WeatherRegionRow::fixture(u32::MAX as u128, 0);
-    let mut next = old.clone();
-    next.attack
-        .require_mut("WeatherRegions.attack")
-        .unwrap()
-        .attack = Some(0);
-    suffix(TableId::WeatherRegions, 7, &old, &next);
     let old = SimulationFeatureRow::fixture(0, 0);
     let mut next = old.clone();
     next.runtime_scalars
@@ -4924,7 +5265,7 @@ fn task_force_fresh_eta_round_trips_components_and_changes_only_suffix() {
         ..TaskForceMapMotionRow::fixture(u64::MAX as u128, 4)
     };
     let full = FreshTaskForceCounterEta {
-        sample_hour: i32::MIN,
+        sample_hour: PacketHour::Host,
         base_speed: Some(i64::MIN),
         speed_modifier: Some(i64::MAX),
         terrain_class: Some(i32::MIN),
@@ -4932,10 +5273,7 @@ fn task_force_fresh_eta_round_trips_components_and_changes_only_suffix() {
         exiled: Some(0xfe),
         strategic_redeployment: Some(u8::MAX),
     };
-    let missing = FreshTaskForceCounterEta {
-        sample_hour: i32::MAX,
-        ..Default::default()
-    };
+    let missing = FreshTaskForceCounterEta::default();
     for packet in [
         None,
         Some(full),
@@ -5115,10 +5453,7 @@ fn strategic_action_codec_measures_incremental_payload_bytes() {
             .unwrap(),
         6
     );
-    let base = DivisionMovementRow {
-        transport: Recorded::Value(None),
-        ..DivisionMovementRow::fixture(9, 4)
-    };
+    let base = DivisionMovementRow::fixture(9, 4);
     let baseline = DivisionMovementRow {
         strategic_redeployment: 0,
         strategic_action: crate::rows::Recorded::Value(absent),
@@ -5127,9 +5462,10 @@ fn strategic_action_codec_measures_incremental_payload_bytes() {
     let baseline_bytes = round_trip(&baseline);
     // Withdrawal and transport each add an opaque length and absence tag;
     // native optional i32 priority adds one tag. Strategic action is unchanged.
-    // Fresh ETA, combat references, selected routes and transport each add
-    // an opaque length and absence tag.
-    assert_eq!(baseline_bytes, 74 + 5 + 5 + 5 + 5);
+    // Fresh ETA and combat references each add an opaque length and absence
+    // tag; the retired selected route and unit transport fields add only an
+    // empty opaque length.
+    assert_eq!(baseline_bytes, 74 + 5 + 5 + 4 + 4);
     assert!(baseline.delta(Some(&baseline)).unwrap().is_none());
     for (tick, expected) in [
         (0, 15),
@@ -5166,116 +5502,6 @@ fn selected_route_suffix<T: RowCodec + Debug>(table: TableId, index: usize, old:
 }
 
 #[test]
-fn selected_routes_area_codec_keeps_d0_d8_independent_and_graph_refusals_distinct() {
-    let base = ProvinceRow {
-        id: 17,
-        controller: 701,
-        owner: 702,
-        selected_areas: Some(ProvinceAreaInputs {
-            sample_hour: i32::MIN,
-            controller: 17,
-            owner: Some(29),
-            node: Some(SelectedAreaNode {
-                first_land: Some(u32::MAX),
-                nonsea_index: Some(-1),
-                nonsea_count: Some(u32::MAX),
-                land_count: Some(i32::MIN),
-                neighbours: Some(vec![29, 29, 0, u32::MAX]),
-            }),
-        })
-        .into(),
-        ..Default::default()
-    };
-    for change in 0..10 {
-        let mut next = base.clone();
-        let packet = next
-            .selected_areas
-            .require_mut("selected areas")
-            .unwrap()
-            .as_mut()
-            .unwrap();
-        match change {
-            0 => packet.sample_hour = i32::MAX,
-            1 => packet.controller = 0,
-            2 => packet.owner = Some(0),
-            3 => packet.owner = None,
-            4 => packet.node = None,
-            5 => packet.node.as_mut().unwrap().first_land = None,
-            6 => packet.node.as_mut().unwrap().nonsea_index = None,
-            7 => packet.node.as_mut().unwrap().nonsea_count = None,
-            8 => packet.node.as_mut().unwrap().land_count = None,
-            9 => packet.node.as_mut().unwrap().neighbours = None,
-            _ => unreachable!(),
-        }
-        selected_route_suffix(TableId::Provinces, 8, &base, &next);
-    }
-    for neighbours in [Some(Vec::new()), Some(vec![29, 0, 29, u32::MAX])] {
-        let mut next = base.clone();
-        next.selected_areas
-            .require_mut("selected areas")
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .node
-            .as_mut()
-            .unwrap()
-            .neighbours = neighbours;
-        selected_route_suffix(TableId::Provinces, 8, &base, &next);
-    }
-    let refused = ProvinceRow {
-        selected_areas: None.into(),
-        ..base.clone()
-    };
-    selected_route_suffix(TableId::Provinces, 8, &base, &refused);
-}
-
-#[test]
-fn selected_routes_unit_codec_keeps_raw_exile_and_independent_current_retreat_keys() {
-    let base = DivisionMovementRow {
-        division: u64::MAX,
-        source: 17,
-        selected: Some(SelectedUnitInputs {
-            sample_hour: i32::MAX,
-            exiled: Some(0xfe),
-            commander: Some(true),
-            retreat: [Some(i64::MIN), Some(i64::MAX)],
-        })
-        .into(),
-        ..Default::default()
-    };
-    for change in 0..9 {
-        let mut next = base.clone();
-        let packet = next
-            .selected
-            .require_mut("selected unit")
-            .unwrap()
-            .as_mut()
-            .unwrap();
-        match change {
-            0 => packet.sample_hour = i32::MIN,
-            1 => packet.exiled = Some(0),
-            2 => packet.exiled = Some(1),
-            3 => packet.exiled = Some(u8::MAX),
-            4 => packet.exiled = None,
-            5 => packet.commander = None,
-            6 => {
-                packet.commander = Some(false);
-                packet.retreat = [Some(0), Some(0)];
-            }
-            7 => packet.retreat[0] = None,
-            8 => packet.retreat[1] = None,
-            _ => unreachable!(),
-        }
-        selected_route_suffix(TableId::DivisionMovement, 20, &base, &next);
-    }
-    let refused = DivisionMovementRow {
-        selected: None.into(),
-        ..base.clone()
-    };
-    selected_route_suffix(TableId::DivisionMovement, 20, &base, &refused);
-}
-
-#[test]
 fn selected_routes_enemy_codec_preserves_occurrence_order_separately_from_legacy_sets() {
     let base = CountryWarRow {
         country: 777,
@@ -5283,7 +5509,7 @@ fn selected_routes_enemy_codec_preserves_occurrence_order_separately_from_legacy
         enemies_read: 1,
         enemies: vec![11, 29],
         ordered: Some(OrderedEnemyInputs {
-            sample_hour: i32::MIN,
+            sample_hour: PacketHour::Host,
             entries: vec![29, 0, 11, 29, u32::MAX],
         })
         .into(),
@@ -5291,7 +5517,7 @@ fn selected_routes_enemy_codec_preserves_occurrence_order_separately_from_legacy
     for entries in [Vec::new(), vec![11, 29], vec![29, 11, 0, 29, u32::MAX]] {
         let next = CountryWarRow {
             ordered: Some(OrderedEnemyInputs {
-                sample_hour: i32::MIN,
+                sample_hour: PacketHour::Host,
                 entries,
             })
             .into(),
@@ -5300,14 +5526,6 @@ fn selected_routes_enemy_codec_preserves_occurrence_order_separately_from_legacy
         selected_route_suffix(TableId::CountryWars, 3, &base, &next);
         assert_eq!(next.enemies, base.enemies);
     }
-    let mut next = base.clone();
-    next.ordered
-        .require_mut("ordered enemies")
-        .unwrap()
-        .as_mut()
-        .unwrap()
-        .sample_hour = i32::MAX;
-    selected_route_suffix(TableId::CountryWars, 3, &base, &next);
     let refused = CountryWarRow {
         ordered: None.into(),
         ..base.clone()

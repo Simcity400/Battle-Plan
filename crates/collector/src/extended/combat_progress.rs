@@ -1,4 +1,4 @@
-//! Hourly combat-icon operands, sharing the existing land-combat census.
+//! Hourly land combat losses, sharing the existing land-combat census.
 use crate::{
     spooling::table_iter,
     table_capture::{Arena, CaptureRows, grow_vec},
@@ -13,7 +13,7 @@ use std::mem::size_of;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::LandCombatProgress];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
-    "land combat progress and casualty operands (census charged to LandCombats)",
+    "land combat casualty operands (census charged to LandCombats)",
     0,
     &[0],
 )];
@@ -24,7 +24,8 @@ pub struct Capacities {
     variants: usize,
 }
 impl Capacities {
-    /// Attach/spool thread only: live headers size all side pools, with no cap.
+    /// At attach, or under the spool's capacity lock: live headers size all
+    /// side pools, with no cap.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,
@@ -54,7 +55,9 @@ impl Capacities {
 }
 
 pub struct Captured {
-    rows: CaptureRows<cland_combat::ProgressRow>,
+    /// The combats' full handles, in census order; playback derives their
+    /// progress and direction from LandCombats, Divisions and DivisionMovement.
+    rows: CaptureRows<u64>,
     losses: Vec<[engine::cstats_observer::LossSpan; 2]>,
     equipment: Arena<engine::cstats_observer::LossEntry>,
     pointers: Vec<usize>,
@@ -173,13 +176,8 @@ impl Captured {
             },
         ];
         self.equipment.len += count;
-        match cland_combat::read_progress(memory, base, source) {
-            Ok(row) => {
-                self.rows.rows[self.len] = row;
-                self.len += 1;
-            }
-            Err(reason) => self.failure = Some(reason),
-        }
+        self.rows.rows[self.len] = source.id;
+        self.len += 1;
     }
     pub fn finish(&mut self, parent: Outcome) {
         let missing = match parent {
@@ -222,16 +220,13 @@ impl Captured {
                 .iter()
                 .zip(&self.losses)
                 .take(self.rows.outcome.len()),
-            |(r, losses)| LandCombatProgressRow {
-                combat: r.id,
-                attacker_progress: r.attacker_progress,
-                defender_progress: r.defender_progress,
-                direction_attacker: r.direction_attacker,
-                direction_province: r.direction_province,
+            |(combat, losses)| LandCombatProgressRow {
+                combat: *combat,
                 attacker_manpower_loss: losses[0].manpower.into(),
                 defender_manpower_loss: losses[1].manpower.into(),
                 attacker_equipment_losses: self.equipment_rows(losses[0]).into(),
                 defender_equipment_losses: self.equipment_rows(losses[1]).into(),
+                ..Default::default()
             },
         )]
     }

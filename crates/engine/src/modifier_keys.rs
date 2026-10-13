@@ -222,7 +222,10 @@ keys! {
     NAVAL_DEFENSE_FACTOR = 0x1b8;
 
     NAVAL_CRITICAL_EFFECT_FACTOR = 0x1bb;
-    /// Current relation accumulator.
+    /// The torpedo gun-rate term of port-strike readiness, recorded in the
+    /// naval source trees.
+    NAVAL_TORPEDO_COOLDOWN_FACTOR = 0x1be;
+    /// Targeted spotting reads the current relation accumulator.
     SPOTTING_CHANCE_AGAINST = 0x1c5;
 
     NAVY_CAPITAL_SHIP_ATTACK_FACTOR_AGAINST = 0x1c8;

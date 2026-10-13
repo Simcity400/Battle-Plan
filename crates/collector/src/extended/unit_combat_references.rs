@@ -1,9 +1,10 @@
 //! Checked pure projection of owned native ordered simulation references.
 //! Complete vector only; repeats/order/full bits survive. Frame request/loan
-//! association supplies the attempted hour, not a native admission certificate.
+//! association admits the attempted hour, not a native admission certificate;
+//! the hourly host row, not the packet, records that hour.
 
 use engine::cunit::MapCombatReference;
-use replay::rows::{Recorded, UnitCombatReference, UnitCombatReferences};
+use replay::rows::{PacketHour, Recorded, UnitCombatReference, UnitCombatReferences};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 
 const NAMES: [&str; 6] = [
@@ -56,7 +57,7 @@ pub(crate) fn project(
     entries: Option<&[MapCombatReference]>,
     count: u32,
 ) -> Option<UnitCombatReferences> {
-    let (Some(hour), Some(entries)) = (hour, entries) else {
+    let (Some(_), Some(entries)) = (hour, entries) else {
         return None;
     };
     if !valid(entries, count) {
@@ -68,7 +69,7 @@ pub(crate) fn project(
         kind: entry.kind,
     })) {
         Ok(entries) => Some(UnitCombatReferences {
-            sample_hour: hour,
+            sample_hour: PacketHour::Host,
             entries,
         }),
         Err(error) => {
@@ -78,15 +79,16 @@ pub(crate) fn project(
         }
     }
 }
-/// No temporary Vec/allocation for unchanged-row comparison. Sample hour is
-/// deliberately part of equality, including an authentic empty vector.
+/// No temporary Vec/allocation for unchanged-row comparison. An equal
+/// acquisition at a later hour is unchanged, including an authentic empty
+/// vector; a missing request still differs from a present packet.
 pub(crate) fn matches(
     hour: Option<i32>,
     entries: Option<&[MapCombatReference]>,
     count: u32,
     previous: &Recorded<Option<UnitCombatReferences>>,
 ) -> bool {
-    let (Some(hour), Some(entries)) = (hour, entries) else {
+    let (Some(_), Some(entries)) = (hour, entries) else {
         return *previous == Recorded::Value(None);
     };
     if !valid(entries, count) {
@@ -95,7 +97,7 @@ pub(crate) fn matches(
     let Recorded::Value(Some(previous)) = previous else {
         return false;
     };
-    previous.sample_hour == hour
+    previous.sample_hour == PacketHour::Host
         && previous.entries.len() == entries.len()
         && entries
             .iter()
@@ -108,7 +110,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pure_projection_preserves_order_repeats_full_bits_and_own_hour() {
+    fn pure_projection_preserves_order_repeats_full_bits_and_equal_next_hours_reuse() {
         let entries = [
             MapCombatReference {
                 combat: u64::MAX,
@@ -124,7 +126,7 @@ mod tests {
             },
         ];
         let projected = project(Some(i32::MIN), Some(&entries), 3).unwrap();
-        assert_eq!(projected.sample_hour, i32::MIN);
+        assert_eq!(projected.sample_hour, PacketHour::Host);
         assert_eq!(
             projected
                 .entries
@@ -135,16 +137,24 @@ mod tests {
         );
         let previous = Recorded::Value(Some(projected));
         assert!(matches(Some(i32::MIN), Some(&entries), 3, &previous));
-        assert!(!matches(Some(i32::MIN + 1), Some(&entries), 3, &previous));
+        // The next hour's equal acquisition reuses the unchanged row.
+        assert!(matches(Some(i32::MIN + 1), Some(&entries), 3, &previous));
+        assert!(!matches(None, Some(&entries), 3, &previous));
+        assert!(!matches(
+            Some(i32::MIN + 1),
+            Some(&entries[..2]),
+            2,
+            &previous
+        ));
     }
 
     #[test]
-    fn authentic_empty_changes_with_hour_and_refusal_does_not_reuse_it() {
+    fn authentic_empty_is_unchanged_next_hour_and_refusal_does_not_reuse_it() {
         let empty = project(Some(1), Some(&[]), 0).unwrap();
         assert!(empty.entries.is_empty());
         let previous = Recorded::Value(Some(empty));
         assert!(matches(Some(1), Some(&[]), 0, &previous));
-        assert!(!matches(Some(2), Some(&[]), 0, &previous));
+        assert!(matches(Some(2), Some(&[]), 0, &previous));
         assert_eq!(project(Some(2), None, 0), None);
         assert_eq!(project(None, Some(&[]), 0), None);
         assert!(!matches(Some(2), None, 0, &previous));

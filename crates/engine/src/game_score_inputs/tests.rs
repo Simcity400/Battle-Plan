@@ -756,3 +756,355 @@ fn first_score_air_sites_grow_from_original_headers_for_mod_sized_lists() {
         );
     }
 }
+
+/// Counts guarded rounds: one per copy and one per record gather.
+struct Rounds<'a> {
+    inner: Fault<'a>,
+    rounds: std::cell::Cell<usize>,
+}
+
+impl Memory for Rounds<'_> {
+    fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+        self.rounds.set(self.rounds.get() + 1);
+        self.inner.copy(at, output)
+    }
+
+    fn copy_records(
+        &self,
+        sources: crate::memory::RecordSources<'_>,
+        layout: &crate::memory::RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        self.rounds.set(self.rounds.get() + 1);
+        struct Plain<'a, 'b>(&'a Fault<'b>);
+        impl Memory for Plain<'_, '_> {
+            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+                self.0.copy(at, output)
+            }
+        }
+        Plain(&self.inner).copy_records(sources, layout, destination)
+    }
+}
+
+/// 150 first sites across three batches, with a null pointer, a vtable
+/// mismatch, a null handle, a bound rejection, a null container vector, a
+/// zero access word and one unreadable identity and access word: every site
+/// keeps the result of reading it alone, in a handful of guarded rounds per
+/// batch instead of five reads per site.
+#[test]
+fn game_score_first_sites_gather_by_batch_with_each_site_failing_alone() {
+    const SITES: usize = 150;
+    const ROSTER: usize = 0x500;
+    const OBJECTS: usize = 0x2000;
+    const VECTORS: usize = 0x10000;
+    let mut bytes = vec![0; 0x20000];
+    array(
+        &mut bytes,
+        0x100 + cstrategic_air::FIRST_AIR_SITES,
+        ROSTER,
+        SITES,
+    );
+    let site = |index: usize| OBJECTS + index * 0x80;
+    for index in 0..SITES {
+        let pointer = site(index);
+        u64_at(&mut bytes, ROSTER + index * 8, pointer as u64);
+        u64_at(&mut bytes, pointer, cair_base::VTABLE_RVA as u64);
+        u64_at(&mut bytes, pointer + 8, 1_000 + index as u64);
+        i32_at(&mut bytes, pointer + cair_base::COUNTRY_CONTAINERS_COUNT, 4);
+        let vector = VECTORS + index * 0x40;
+        u64_at(
+            &mut bytes,
+            pointer + cair_base::COUNTRY_CONTAINERS,
+            vector as u64,
+        );
+        u64_at(&mut bytes, vector + 8, (index % 3) as u64);
+    }
+    u64_at(&mut bytes, ROSTER + 5 * 8, 0);
+    u64_at(&mut bytes, site(9), 7);
+    u64_at(&mut bytes, site(20) + 8, 0);
+    i32_at(
+        &mut bytes,
+        site(33) + cair_base::COUNTRY_CONTAINERS_COUNT,
+        1,
+    );
+    u64_at(&mut bytes, site(70) + cair_base::COUNTRY_CONTAINERS, 0);
+    let alone = |memory: &dyn Fn(usize, &mut [u8]) -> bool| {
+        struct Closure<'a>(&'a dyn Fn(usize, &mut [u8]) -> bool);
+        impl Memory for Closure<'_> {
+            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+                (self.0)(at, output)
+            }
+        }
+        let memory = Closure(memory);
+        (0..SITES)
+            .map(|index| {
+                read::<u64>(&memory, ROSTER + index * 8)
+                    .map(|pointer| pointer as usize)
+                    .ok_or("game score air-site pointer unreadable")
+                    .and_then(|pointer| read_air_site(&memory, 0, 1, pointer))
+                    .unwrap_or_else(|error| AirSite {
+                        base: 0,
+                        access: Err(error),
+                    })
+            })
+            .collect::<Vec<_>>()
+    };
+    // An unreadable identity (site 100) and access word (site 130).
+    for fault in [site(100) + 4, VECTORS + 130 * 0x40 + 8] {
+        let memory = Rounds {
+            inner: Fault {
+                bytes: &bytes,
+                address: fault,
+            },
+            rounds: std::cell::Cell::new(0),
+        };
+        let mut rows = vec![AirSite::default(); SITES];
+        assert_eq!(
+            read_first_sites(&memory, 0, 1, Some(0x100), &mut rows).state,
+            AirState::Present
+        );
+        let batched = memory.rounds.get();
+        let expected = alone(&|at, output| {
+            Fault {
+                bytes: &bytes,
+                address: fault,
+            }
+            .copy(at, output)
+        });
+        assert_eq!(rows, expected);
+        assert!(batched < 40, "{batched} guarded rounds");
+    }
+    let mut rows = vec![AirSite::default(); SITES];
+    read_first_sites(
+        &SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        },
+        0,
+        1,
+        Some(0x100),
+        &mut rows,
+    );
+    assert_eq!(rows[5].access, Err("game score air-site pointer is null"));
+    assert_eq!(rows[9].access, Err("game score air-site vtable mismatch"));
+    assert_eq!(rows[20].access, Err("game score air-site handle is null"));
+    assert_eq!(
+        rows[33],
+        AirSite {
+            base: 1_033,
+            access: Ok(false)
+        }
+    );
+    assert_eq!(
+        rows[70].access,
+        Err("game score air-site container pointer is null")
+    );
+    assert_eq!(
+        rows[3],
+        AirSite {
+            base: 1_003,
+            access: Ok(false)
+        }
+    );
+    assert_eq!(
+        rows[4],
+        AirSite {
+            base: 1_004,
+            access: Ok(true)
+        }
+    );
+}
+
+/// One country with 150 fleets across three batches, with a null pointer, a
+/// vtable mismatch, a null handle and an unreadable identity and task-force
+/// count: every fleet keeps the result of reading it alone, and the navy sum
+/// and its first failure stand, in a handful of guarded rounds per batch.
+#[test]
+fn game_score_fleets_gather_by_batch_with_each_fleet_failing_alone() {
+    const FLEETS: usize = 150;
+    const GS: usize = 0x1000;
+    const POINTERS: usize = 0x3000;
+    const LINKS: usize = 0x3100;
+    const COUNTRY: usize = 0x4000;
+    const ROSTER: usize = 0x5000;
+    const OBJECTS: usize = 0x6000;
+    let fleet = |index: usize| OBJECTS + index * 0x100;
+    let mut bytes = vec![0; OBJECTS + FLEETS * 0x100];
+    array(&mut bytes, GS + cgame_state::COUNTRIES, POINTERS, 2);
+    array(&mut bytes, GS + cgame_state::COUNTRY_LINKS, LINKS, 2);
+    u64_at(&mut bytes, POINTERS + 8, COUNTRY as u64);
+    i32_at(&mut bytes, LINKS + 4, 1);
+    u64_at(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+    i32_at(&mut bytes, COUNTRY + ccountry::ID, 1);
+    array(&mut bytes, COUNTRY + ccountry::FLEETS, ROSTER, FLEETS);
+    for index in 0..FLEETS {
+        u64_at(&mut bytes, ROSTER + index * 8, fleet(index) as u64);
+        u64_at(&mut bytes, fleet(index), cfleet::VTABLE_RVA as u64);
+        u64_at(
+            &mut bytes,
+            fleet(index) + cfleet::HANDLE,
+            500 + index as u64,
+        );
+        i32_at(
+            &mut bytes,
+            fleet(index) + cfleet::TASK_FORCE_COUNT,
+            index as i32,
+        );
+    }
+    let good = bytes.clone();
+    u64_at(&mut bytes, ROSTER + 7 * 8, 0);
+    u64_at(&mut bytes, fleet(12), 3);
+    u64_at(&mut bytes, fleet(40) + cfleet::HANDLE, 0);
+    fn walk(memory: &impl Memory) -> (CountryCapture, Vec<CountryRow>, Vec<FleetCount>) {
+        let mut countries = vec![CountryRow::default(); 2];
+        let mut fleets = vec![FleetCount::default(); FLEETS];
+        let capture = walk_country_inputs(memory, 0, GS, &mut countries, &mut fleets);
+        (capture, countries, fleets)
+    }
+    // An unreadable identity (fleet 90) and task-force count (fleet 130).
+    for fault in [fleet(90) + 4, fleet(130) + cfleet::TASK_FORCE_COUNT] {
+        let memory = Rounds {
+            inner: Fault {
+                bytes: &bytes,
+                address: fault,
+            },
+            rounds: std::cell::Cell::new(0),
+        };
+        let (capture, countries, fleets) = walk(&memory);
+        let rounds = memory.rounds.get();
+        assert_eq!(capture.fleet_len, FLEETS);
+        let alone = Fault {
+            bytes: &bytes,
+            address: fault,
+        };
+        let expected: Vec<_> = (0..FLEETS)
+            .map(|index| {
+                read::<u64>(&alone, ROSTER + index * 8)
+                    .map(|pointer| pointer as usize)
+                    .ok_or("game score fleet pointer unreadable")
+                    .and_then(|pointer| read_fleet_count(&alone, 0, pointer))
+                    .unwrap_or_else(|error| FleetCount {
+                        fleet: 0,
+                        task_forces: Err(error),
+                    })
+            })
+            .collect();
+        assert_eq!(fleets, expected);
+        assert_eq!(
+            countries[0].navy_count,
+            Err("game score fleet pointer is null")
+        );
+        assert!(rounds < 60, "{rounds} guarded rounds");
+    }
+    assert_eq!(
+        walk(&SliceMemory {
+            base: 0,
+            bytes: &bytes
+        })
+        .2[12]
+            .task_forces,
+        Err("game score fleet vtable mismatch")
+    );
+    assert_eq!(
+        walk(&SliceMemory {
+            base: 0,
+            bytes: &bytes
+        })
+        .2[40]
+            .task_forces,
+        Err("game score fleet handle is null")
+    );
+    // Without a failure the sum wraps over every fleet, as before.
+    let (_, countries, _) = walk(&SliceMemory {
+        base: 0,
+        bytes: &good,
+    });
+    assert_eq!(countries[0].navy_count, Ok((0..FLEETS as i32).sum()));
+}
+
+/// CountryGameScoreInputs' first-site pass at the 1943 shape (440 owners,
+/// 5,906 site occurrences over 2,000 bases), cold, through guarded live
+/// reads: each site read alone (before) and in batches (now). Prints the
+/// median per-hour time of each.
+#[test]
+#[ignore = "synthetic capture bench; run with --release -- --ignored --nocapture"]
+fn bench_first_site_batches() {
+    use crate::crelation_status::bench::{Arena, Counting, RUNS};
+    const OWNERS: usize = 440;
+    const SITES: usize = 5_906;
+    const BASES: usize = 2_000;
+    const STRIDE: usize = 0x2000;
+    let mut arena = Arena::new(BASES * (STRIDE + 0x1000) + 0x40_0000);
+    let base = arena.base();
+    let bases: Vec<usize> = (0..BASES)
+        .map(|index| {
+            let pointer = arena.alloc(STRIDE);
+            let vector = arena.alloc(OWNERS * 8 + 8);
+            arena.u64(pointer, arena.rva(cair_base::VTABLE_RVA));
+            arena.u64(pointer + 8, 1_000 + index as u64);
+            arena.vector(
+                pointer + cair_base::COUNTRY_CONTAINERS,
+                vector,
+                OWNERS as u32 + 1,
+            );
+            for slot in (1..=OWNERS).step_by(3) {
+                arena.u64(vector + slot * 8, 0xdead);
+            }
+            pointer
+        })
+        .collect();
+    let owners: Vec<(u32, usize)> = (0..OWNERS)
+        .map(|index| {
+            let entry = arena.alloc(0x40);
+            let count = SITES / OWNERS + usize::from(index < SITES % OWNERS);
+            let list = arena.alloc(count * 8);
+            arena.vector(entry + cstrategic_air::FIRST_AIR_SITES, list, count as u32);
+            for site in 0..count {
+                arena.u64(
+                    list + site * 8,
+                    bases[(index * 37 + site * 101) % BASES] as u64,
+                );
+            }
+            (index as u32 + 1, entry)
+        })
+        .collect();
+    let memory = Counting::new();
+    let mut scratch = vec![0_u8; 256 << 20];
+    let mut rows = vec![AirSite::default(); 64];
+    let mut timed = |batched: bool, scratch: &mut [u8]| {
+        let mut times = Vec::with_capacity(RUNS);
+        for _ in 0..RUNS {
+            for (index, byte) in scratch.iter_mut().step_by(64).enumerate() {
+                *byte = byte.wrapping_add(index as u8);
+            }
+            std::hint::black_box(&scratch);
+            let started = std::time::Instant::now();
+            for &(slot, entry) in &owners {
+                if batched {
+                    read_first_sites(&memory, base, slot, Some(entry), &mut rows);
+                } else {
+                    let sites =
+                        Array::read(&memory, entry + cstrategic_air::FIRST_AIR_SITES, 8).unwrap();
+                    for index in 0..sites.count {
+                        rows[index as usize] = sites
+                            .element(index, 8)
+                            .and_then(|at| read::<u64>(&memory, at))
+                            .map(|pointer| pointer as usize)
+                            .ok_or("unreadable")
+                            .and_then(|pointer| read_air_site(&memory, base, slot, pointer))
+                            .unwrap();
+                    }
+                }
+                std::hint::black_box(&rows);
+            }
+            times.push(started.elapsed().as_secs_f64() * 1e6);
+        }
+        times.sort_by(f64::total_cmp);
+        times[RUNS / 2]
+    };
+    let before = timed(false, &mut scratch);
+    let now = timed(true, &mut scratch);
+    println!(
+        "BENCH | CountryGameScoreInputs first sites, cold | {OWNERS} owners, {SITES} sites | {before:.0} -> {now:.0} us/hour"
+    );
+}

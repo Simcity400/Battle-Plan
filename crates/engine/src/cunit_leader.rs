@@ -163,7 +163,6 @@ pub struct Row {
     pub character_type: u32,
     pub character_id: u32,
     pub category: i32,
-    pub experience: i64,
     pub kind: u8,
     /// 0: null pointer, 1: native invalid definition, 2: native valid definition.
     pub skill_status: u8,
@@ -198,25 +197,20 @@ pub fn read(
     let (kind, reference_type, id) = identity(memory, base, pointer)?;
     let mut character = [0; 8];
     let mut category = [0; 4];
-    let mut experience = [0; 8];
     let mut skill = [0; 8];
     let mut exile = [0; 4];
+    // The experience (+0xE68) is not read: UnitLeaders retired it, and the
+    // only display of it, a combat commander's skill progress, takes the
+    // combat side's selected commander (`cland_combat::SideDetails`).
     if memory.copy_scattered(
         [
             at(pointer, CHARACTER_TYPE)?,
             at(pointer, CATEGORY)?,
-            at(pointer, EXPERIENCE)?,
             at(pointer, SKILL)?,
             at(pointer, EXILE_COUNTRY)?,
         ],
-        &mut [
-            &mut character,
-            &mut category,
-            &mut experience,
-            &mut skill,
-            &mut exile,
-        ],
-    ) != 5
+        &mut [&mut character, &mut category, &mut skill, &mut exile],
+    ) != 4
     {
         return Err("unit leader state unreadable");
     }
@@ -231,7 +225,6 @@ pub fn read(
         character_type,
         character_id,
         category: i32::from_le_bytes(category),
-        experience: i64::from_le_bytes(experience),
         kind,
         exile_country: i32::from_le_bytes(exile),
         ..Row::default()
@@ -453,6 +446,7 @@ pub fn read_codename(
         crate::walk::Buffer::Fixed(names.bytes),
         &mut names.len,
         &mut names.required,
+        &mut [false; 2],
     )
 }
 
@@ -463,6 +457,7 @@ pub(crate) fn read_codename_buffer(
     bytes: crate::walk::Buffer<'_, u8>,
     len: &mut usize,
     required: &mut usize,
+    heap: &mut [bool; 2],
 ) -> Result<crate::cname_group_member::Naming, &'static str> {
     use crate::cname_group_member::Naming;
     let result = crate::cname_group_member::codename_inputs_buffer(
@@ -472,6 +467,7 @@ pub(crate) fn read_codename_buffer(
         bytes,
         len,
         required,
+        heap,
     )?;
     if let Naming::Row(row) = result {
         *len += row.custom.1;
@@ -789,6 +785,51 @@ pub fn handle(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, 
     Ok(u64::from(reference_type) | (u64::from(id) << 32))
 }
 
+/// [`handle`] of every pointer of `pointers` into `output`, in order: a null
+/// pointer is handle zero. The leaders are scattered objects, so their
+/// identity headers are copied in one guarded, prefetched batch whose misses
+/// overlap; they are then checked in order, so the first fault is that of a
+/// read per leader.
+pub fn handles(
+    memory: &impl Memory,
+    base: usize,
+    pointers: &[usize],
+    output: &mut [u64],
+) -> Result<(), &'static str> {
+    const BATCH: usize = crate::cpdx_array::POINTER_PAGE;
+    let mut headers = [[0_u8; 16]; BATCH];
+    for (pointers, output) in pointers.chunks(BATCH).zip(output.chunks_mut(BATCH)) {
+        let count = pointers.len().min(output.len());
+        let sources: [usize; BATCH] =
+            std::array::from_fn(|index| pointers.get(index).copied().unwrap_or(0));
+        let mut slots = headers.iter_mut().enumerate();
+        let identified = memory
+            .copy_scattered_prefetched(
+                sources,
+                &mut std::array::from_fn(|_| {
+                    let (index, header) = slots.next().unwrap();
+                    &mut header[..if index < count && sources[index] != 0 {
+                        16
+                    } else {
+                        0
+                    }]
+                }),
+            )
+            .min(count);
+        for (index, handle) in output[..count].iter_mut().enumerate() {
+            *handle = if sources[index] == 0 {
+                0
+            } else if index >= identified {
+                return Err("unit leader identity unreadable");
+            } else {
+                let (_, reference_type, id) = identity_from_header(base, headers[index])?;
+                u64::from(reference_type) | (u64::from(id) << 32)
+            };
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn identity(
     memory: &impl Memory,
     base: usize,
@@ -796,6 +837,11 @@ pub(crate) fn identity(
 ) -> Result<(u8, u32, u32), &'static str> {
     let header =
         read_native::<[u8; 16]>(memory, pointer).ok_or("unit leader identity unreadable")?;
+    identity_from_header(base, header)
+}
+
+/// [`identity`] over its 16 header bytes, already copied.
+fn identity_from_header(base: usize, header: [u8; 16]) -> Result<(u8, u32, u32), &'static str> {
     let vtable = u64::from_le_bytes(header[..8].try_into().unwrap());
     let relative = usize::try_from(vtable)
         .ok()

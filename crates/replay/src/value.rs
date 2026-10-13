@@ -7,6 +7,7 @@
 use std::io;
 
 use crate::codec::{Decoder, invalid_static as invalid};
+use crate::display::Step;
 use engine::allocation;
 
 pub(crate) trait Value: Sized {
@@ -14,6 +15,24 @@ pub(crate) trait Value: Sized {
     const MINIMUM_ENCODED_BYTES: usize;
     #[cfg(test)]
     const STRUCT_FIELDS: usize = 0;
+    /// Whether this value holds a field with a display step
+    /// ([`crate::display`]), directly or nested.
+    const HAS_STEPS: bool = false;
+
+    /// Round every stepped field inside this value to its step, in place.
+    fn round_display(&mut self) {}
+    /// Round this value's numbers to `step`, in place. Only numbers and
+    /// containers of numbers take a step.
+    fn round_to(&mut self, _step: Step) {}
+    /// This value's numbers rounded and divided by `step`, as the wire holds them.
+    fn to_units(&self, _step: Step) -> io::Result<Self> {
+        Err(invalid("value takes no display step"))
+    }
+    /// A decoded wire value's numbers multiplied back by `step`.
+    #[allow(clippy::wrong_self_convention)]
+    fn from_units(self, _step: Step) -> io::Result<Self> {
+        Err(invalid("value takes no display step"))
+    }
 
     fn encoded_bytes(&self) -> io::Result<usize>;
     fn recorded_bytes(&self) -> io::Result<usize> {
@@ -63,6 +82,29 @@ impl<T: Value> Value for crate::rows::Recorded<T> {
         }
     }
     const MINIMUM_ENCODED_BYTES: usize = T::MINIMUM_ENCODED_BYTES;
+    const HAS_STEPS: bool = T::HAS_STEPS;
+    fn round_display(&mut self) {
+        if let Self::Value(value) = self {
+            value.round_display();
+        }
+    }
+    fn round_to(&mut self, step: Step) {
+        if let Self::Value(value) = self {
+            value.round_to(step);
+        }
+    }
+    fn to_units(&self, step: Step) -> io::Result<Self> {
+        match self {
+            Self::Value(value) => value.to_units(step).map(Self::Value),
+            Self::NotRecorded => Ok(Self::NotRecorded),
+        }
+    }
+    fn from_units(self, step: Step) -> io::Result<Self> {
+        match self {
+            Self::Value(value) => value.from_units(step).map(Self::Value),
+            Self::NotRecorded => Ok(Self::NotRecorded),
+        }
+    }
     fn encoded_bytes(&self) -> io::Result<usize> {
         match self {
             Self::Value(value) => Value::encoded_bytes(value),
@@ -145,7 +187,39 @@ macro_rules! integer {
     };
 }
 
-integer!(i8, u16, i16, u32, i32, u64, i64);
+integer!(i8, u16, i16, u32, i32, u64);
+
+/// The only number a display step applies to: every stepped native value is a
+/// signed 64-bit word (fixed5 or Q15).
+impl Value for i64 {
+    const MINIMUM_ENCODED_BYTES: usize = 8;
+
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        Ok(8)
+    }
+    fn encoded_many_bytes(values: &[Self]) -> io::Result<usize> {
+        allocation::mul(values.len(), 8)
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(*self)
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        output.extend_from_slice(&self.to_le_bytes());
+        Ok(())
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        Ok(Self::from_le_bytes(input.take(8)?.try_into().unwrap()))
+    }
+    fn round_to(&mut self, step: Step) {
+        *self = step.round(*self);
+    }
+    fn to_units(&self, step: Step) -> io::Result<Self> {
+        Ok(step.units(*self))
+    }
+    fn from_units(self, step: Step) -> io::Result<Self> {
+        step.value(self)
+    }
+}
 
 impl Value for u8 {
     const MINIMUM_ENCODED_BYTES: usize = 1;
@@ -220,6 +294,23 @@ impl<T: Value> Value for Option<T> {
     fn try_clone(&self) -> io::Result<Self> {
         self.as_ref().map(Value::try_clone).transpose()
     }
+    const HAS_STEPS: bool = T::HAS_STEPS;
+    fn round_display(&mut self) {
+        if let Some(value) = self {
+            value.round_display();
+        }
+    }
+    fn round_to(&mut self, step: Step) {
+        if let Some(value) = self {
+            value.round_to(step);
+        }
+    }
+    fn to_units(&self, step: Step) -> io::Result<Self> {
+        self.as_ref().map(|value| value.to_units(step)).transpose()
+    }
+    fn from_units(self, step: Step) -> io::Result<Self> {
+        self.map(|value| value.from_units(step)).transpose()
+    }
     fn visit_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
         if let Some(value) = self {
             value.visit_field_gaps(visit);
@@ -262,6 +353,40 @@ impl<T: Value> Value for Vec<T> {
         }
         Ok(values)
     }
+    const HAS_STEPS: bool = T::HAS_STEPS;
+    fn round_display(&mut self) {
+        if T::HAS_STEPS {
+            for value in self {
+                value.round_display();
+            }
+        }
+    }
+    fn round_to(&mut self, step: Step) {
+        for (index, value) in self.iter_mut().enumerate() {
+            if step.applies(index) {
+                value.round_to(step.whole());
+            }
+        }
+    }
+    fn to_units(&self, step: Step) -> io::Result<Self> {
+        let mut values = allocation::vec(self.len())?;
+        for (index, value) in self.iter().enumerate() {
+            values.push(if step.applies(index) {
+                value.to_units(step.whole())?
+            } else {
+                value.try_clone()?
+            });
+        }
+        Ok(values)
+    }
+    fn from_units(mut self, step: Step) -> io::Result<Self> {
+        for (index, value) in self.iter_mut().enumerate() {
+            if step.applies(index) {
+                *value = value.try_clone()?.from_units(step.whole())?;
+            }
+        }
+        Ok(self)
+    }
     fn visit_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
         for value in self {
             value.visit_field_gaps(visit);
@@ -299,6 +424,38 @@ impl<T: Value, const N: usize> Value for [T; N] {
         }
     }
     const MINIMUM_ENCODED_BYTES: usize = T::MINIMUM_ENCODED_BYTES.saturating_mul(N);
+    const HAS_STEPS: bool = T::HAS_STEPS;
+    fn round_display(&mut self) {
+        if T::HAS_STEPS {
+            for value in self {
+                value.round_display();
+            }
+        }
+    }
+    fn round_to(&mut self, step: Step) {
+        for (index, value) in self.iter_mut().enumerate() {
+            if step.applies(index) {
+                value.round_to(step.whole());
+            }
+        }
+    }
+    fn to_units(&self, step: Step) -> io::Result<Self> {
+        let mut units = self.try_clone()?;
+        for (index, (unit, value)) in units.iter_mut().zip(self).enumerate() {
+            if step.applies(index) {
+                *unit = value.to_units(step.whole())?;
+            }
+        }
+        Ok(units)
+    }
+    fn from_units(mut self, step: Step) -> io::Result<Self> {
+        for (index, value) in self.iter_mut().enumerate() {
+            if step.applies(index) {
+                *value = value.try_clone()?.from_units(step.whole())?;
+            }
+        }
+        Ok(self)
+    }
 
     fn encoded_bytes(&self) -> io::Result<usize> {
         T::encoded_many_bytes(self)
@@ -347,17 +504,82 @@ pub(crate) fn decode_appended<T: Value>(
     }
 }
 
+/// A field's display step in a value or row declaration: `None` without one.
+macro_rules! display_step {
+    () => {
+        None::<$crate::display::Step>
+    };
+    ($step:path) => {
+        Some::<$crate::display::Step>($step)
+    };
+}
+
+pub(crate) use display_step;
+
+/// Whether any flag is set, for constant declarations.
+pub(crate) const fn any(flags: &[bool]) -> bool {
+    let mut index = 0;
+    while index < flags.len() {
+        if flags[index] {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+/// Round a declared field: to its own step, or each stepped part inside it.
+pub(crate) fn round_field<T: Value>(value: &mut T, step: Option<Step>) {
+    match step {
+        Some(step) => value.round_to(step),
+        None if T::HAS_STEPS => value.round_display(),
+        None => {}
+    }
+}
+
+/// Encode a declared field, in step units when it has a step.
+pub(crate) fn encode_field<T: Value>(
+    value: &T,
+    step: Option<Step>,
+    output: &mut Vec<u8>,
+) -> io::Result<()> {
+    match step {
+        Some(step) => value.to_units(step)?.encode_reserved(output),
+        None => value.encode_reserved(output),
+    }
+}
+
+/// A declared field decoded in `format`: step units become native units.
+pub(crate) fn from_stored<T: Value>(value: T, step: Option<Step>, format: u16) -> io::Result<T> {
+    match step {
+        Some(step) if crate::display::stepped_format(format) => value.from_units(step),
+        _ => Ok(value),
+    }
+}
+
 /// Implement a declared struct's wire field order without encoding its layout.
 /// Example: value_struct!(Entry { name: Vec<u8>, amount: i64 });
+/// A field written `amount @ STEP: i64` is stored at a display step
+/// ([`crate::display`]).
 macro_rules! value_struct {
-    ($ty:ty { $($field:ident : $field_ty:ty),* $(,)? } $(appended $record:ident { $($appended:ident : $appended_ty:ty),* $(,)? })?) => {
+    ($ty:ty { $($field:ident $(@ $step:path)? : $field_ty:ty),* $(,)? } $(appended $record:ident { $($appended:ident $(@ $appended_step:path)? : $appended_ty:ty),* $(,)? })?) => {
         impl $crate::value::Value for $ty {
             #[cfg(test)]
             const STRUCT_FIELDS: usize = [$(stringify!($field)),*].len()
                 $(+ [$(stringify!($appended)),*].len())?;
             const MINIMUM_ENCODED_BYTES: usize = 0_usize
                 $(.saturating_add(<$field_ty as $crate::value::Value>::MINIMUM_ENCODED_BYTES))*;
+            const HAS_STEPS: bool = $crate::value::any(&[
+                $($crate::value::display_step!($($step)?).is_some()
+                    || <$field_ty as $crate::value::Value>::HAS_STEPS,)*
+                $($($crate::value::display_step!($($appended_step)?).is_some()
+                    || <$appended_ty as $crate::value::Value>::HAS_STEPS,)*)?
+            ]);
 
+            fn round_display(&mut self) {
+                $($crate::value::round_field(&mut self.$field, $crate::value::display_step!($($step)?));)*
+                $($($crate::value::round_field(&mut self.$appended, $crate::value::display_step!($($appended_step)?));)*)?
+            }
             fn recorded_bytes(&self) -> std::io::Result<usize> {
                 let size = 0;
                 $(let size = engine::allocation::add(size, <$field_ty as $crate::value::Value>::recorded_bytes(&self.$field)?)?;)*
@@ -375,18 +597,24 @@ macro_rules! value_struct {
                     $($($appended: <$appended_ty as $crate::value::Value>::try_clone(&self.$appended)?,)*)? })
             }
             fn encode_reserved(&self, output: &mut Vec<u8>) -> std::io::Result<()> {
-                $(<$field_ty as $crate::value::Value>::encode_reserved(&self.$field, output)?;)*
-                $($(<$appended_ty as $crate::value::Value>::encode_reserved(&self.$appended, output)?;)*)?
+                $($crate::value::encode_field::<$field_ty>(&self.$field, $crate::value::display_step!($($step)?), output)?;)*
+                $($($crate::value::encode_field::<$appended_ty>(&self.$appended, $crate::value::display_step!($($appended_step)?), output)?;)*)?
                 Ok(())
             }
 
             fn decode(input: &mut $crate::codec::Decoder<'_>) -> std::io::Result<Self> {
                 Ok(Self {
-                    $($field: <$field_ty as $crate::value::Value>::decode(input)?,)*
-                    $($($appended: $crate::value::decode_appended::<$appended_ty>(
-                        $crate::rows::compatibility::RecordKind::$record,
-                        concat!(stringify!($record), ".", stringify!($appended)), input,
-                    )?,)*)?
+                    $($field: {
+                        let value = <$field_ty as $crate::value::Value>::decode(input)?;
+                        $crate::value::from_stored(value, $crate::value::display_step!($($step)?), input.format)?
+                    },)*
+                    $($($appended: {
+                        let value = $crate::value::decode_appended::<$appended_ty>(
+                            $crate::rows::compatibility::RecordKind::$record,
+                            concat!(stringify!($record), ".", stringify!($appended)), input,
+                        )?;
+                        $crate::value::from_stored(value, $crate::value::display_step!($($appended_step)?), input.format)?
+                    },)*)?
                 })
             }
             fn visit_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {

@@ -132,8 +132,8 @@ pub(crate) fn capture_hits(
         8,
         EntryOutput::Owned(buffers.naval_hits),
         &mut buffers.lengths[1],
-        |p| crate::naval_combat_hit::read(memory, base, p),
-        true,
+        |memory, p| crate::naval_combat_hit::read(memory, base, p),
+        Some(&crate::naval_combat_hit::RECORD),
     )?;
     let mut air = [[0; 2]; 2];
     for (index, array) in arrays[1..].iter().copied().enumerate() {
@@ -143,8 +143,8 @@ pub(crate) fn capture_hits(
             8,
             EntryOutput::Owned(buffers.air_hits),
             &mut buffers.lengths[0],
-            |p| crate::naval_combat_air_hit::read(memory, base, p),
-            true,
+            |memory, p| crate::naval_combat_air_hit::read(memory, base, p),
+            Some(&crate::naval_combat_air_hit::RECORD),
         )?;
     }
     Ok((naval, air))
@@ -377,6 +377,9 @@ mod detail_tests {
         assert_eq!(buffers.naval_hits[0].damage, i64::MIN);
         assert_eq!(buffers.air_hits[0].count, -3);
         let trace = memory.reads.borrow().clone();
+        // Each hit array's pointers are read as one run.
+        assert_eq!(trace.iter().filter(|p| **p == (0x800, 16)).count(), 1);
+        assert!(!trace.contains(&(0x800, 8)) && !trace.contains(&(0x808, 8)));
         for capacity in [0, 1, 8] {
             for fault in (0..trace.len()).map(Some).chain([None]) {
                 let reference = Counted::new(&bytes, fault);
@@ -410,8 +413,18 @@ mod detail_tests {
                     &reference_buffers.naval_hits[..reference_buffers.lengths[1]]
                 );
                 if let Some(ordinal) = fault {
-                    assert_eq!(*observed.reads.borrow(), trace[..=ordinal]);
-                    assert!(expected.is_err());
+                    // A one-touch fault (this test's positional fault, met
+                    // once) refuses no more than the per-entry reads: the
+                    // capture stops at the read that met it, or a hit run's
+                    // copy met it and the run's entries were read again one
+                    // at a time, giving the healthy row. Lasting faults keep
+                    // the parent's per-entry result exactly
+                    // (cfex_member::entry_run_tests).
+                    if expected.is_err() {
+                        assert_eq!(*observed.reads.borrow(), trace[..=ordinal]);
+                    } else {
+                        assert_eq!(expected, Ok(row.clone()));
+                    }
                 } else {
                     assert_eq!(expected, Ok(row.clone()));
                 }
@@ -492,8 +505,15 @@ mod detail_tests {
                 lengths: [0; 2],
                 required: [0; 2],
             };
-            assert!(air::capture_details(&memory, BASE, ENTRY, &mut buffers).is_err());
-            assert_eq!(*memory.reads.borrow(), trace[..=ordinal]);
+            // Refused at the read that met the fault, or, when a hit run's
+            // copy met it, read again one hit at a time: never harsher.
+            match air::capture_details(&memory, BASE, ENTRY, &mut buffers) {
+                Err(_) => assert_eq!(*memory.reads.borrow(), trace[..=ordinal]),
+                Ok(observed) => assert_eq!(
+                    (observed.variant, observed.naval_hits, observed.air_hits),
+                    (row.variant, row.naval_hits, row.air_hits)
+                ),
+            }
         }
     }
     #[test]

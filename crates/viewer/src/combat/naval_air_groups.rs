@@ -393,6 +393,7 @@ impl<'a> CarrierJoins<'a> {
         *self.members.as_ref()?.get(&(side, group, ship))?
     }
 
+    /// The carrier member a linked air group's host resolves to.
     pub(super) fn carrier_member(
         &self,
         side: u8,

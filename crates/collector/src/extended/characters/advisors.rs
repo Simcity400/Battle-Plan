@@ -1,7 +1,15 @@
 //! Advisor definitions retained only under uninterrupted mutation observation.
 //! Double-buffered owned arenas let one changed character grow without moving
 //! later cache keys or forcing the rest of the roster to be reacquired.
+//!
+//! Before each section's capture, the held characters in the hour's
+//! sampled-verification slice ([`crate::sampled_verify`], keyed by character
+//! id) whose map no observed writer touched are read afresh and compared with
+//! their held rows ([`Section::sample`]); a difference poisons reuse and the
+//! capture reads every character afresh. Verify mode ([`Check::Every`])
+//! instead reads every hit afresh inside the capture.
 use super::*;
+use crate::sampled_verify::Check;
 use engine::allocation::{default_vec, owned_vec, reserve, reserve_exact, resize, vec};
 use std::cell::Cell;
 #[cfg(feature = "advisor_profile")]
@@ -10,7 +18,8 @@ pub(crate) mod profile;
 pub(crate) trait Changes {
     fn quiet(&self) -> Option<(u64, u64)>;
     fn revision(&self, map: usize) -> Option<(u64, u64)>;
-    fn verify(&self) -> bool;
+    /// The held characters this hour reads afresh and compares.
+    fn check(&self) -> Check;
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Counts {
@@ -71,8 +80,24 @@ struct Section {
     pub(super) counts: Counts,
     characters: usize,
     charge: crate::raw_memory::Charge,
+    /// This hour's slice, compared by a quiet hour that then read afresh.
+    presampled: Option<[u64; 2]>,
 }
 impl Section {
+    /// Every held character of this census-sourced section was certified
+    /// under a watched revision, so a quiet hour may carry it whole.
+    fn carried_whole(&self, scope: (usize, usize)) -> bool {
+        self.valid
+            && self.census
+            && self.scope == scope
+            && matches!(self.result.outcome, Outcome::Rows { .. })
+            && self.current.entries.len() == self.characters
+            && self
+                .current
+                .entries
+                .iter()
+                .all(|entry| entry.revision.is_some())
+    }
     fn with_capacity(rows: usize, bytes: usize, characters: usize) -> Self {
         let mut cache = Self {
             plan: crate::snapshot_plan::SnapshotPlan::new(characters * 6, characters * 96),
@@ -90,6 +115,7 @@ impl Section {
             counts: Counts::default(),
             characters: 0,
             charge: Default::default(),
+            presampled: None,
         };
         cache.update_charge();
         cache
@@ -219,6 +245,75 @@ impl Section {
         self.capture_section_mode(memory, context, observer, source, count_only, false)
     }
 
+    /// This hour's sampled comparison: each held character `check` covers
+    /// whose map no observed writer touched and whose map header and
+    /// sentinel read the same (another is read afresh by the capture anyway)
+    /// is read afresh from the raw `memory`, outside the prepared program's
+    /// trace, into the spare arena, and compared with its held rows. Returns
+    /// `[compared, differing]` characters; a read that fails or does not fit
+    /// compares nothing.
+    fn sample(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        observer: &dyn Changes,
+        check: Check,
+    ) -> [u64; 2] {
+        let Self {
+            current, previous, ..
+        } = self;
+        let mut counts = [0; 2];
+        for entry in &current.entries {
+            if !check.covers(u64::from(entry.id))
+                || entry.revision.is_none()
+                || observer.revision(entry.pointer + ccharacter::ADVISOR_MAP_HEAD) != entry.revision
+            {
+                continue;
+            }
+            let Ok(map) = cadvisor::MapView::read(memory, entry.pointer) else {
+                continue;
+            };
+            if map.header != entry.header || map.sentinel != entry.sentinel {
+                continue;
+            }
+            let held = &current.rows[entry.rows.clone()];
+            let country = held.first().map_or(0, |row| row.country);
+            let fresh = cadvisor::walk_definitions_entry_buffer(
+                &map,
+                base,
+                ccharacter_manager::Entry {
+                    pointer: entry.pointer,
+                    id: entry.id,
+                    country,
+                    roster: 0,
+                    ordinal: 0,
+                },
+                engine::walk::Buffer::Fixed(&mut previous.rows),
+                engine::walk::Buffer::Fixed(&mut previous.bytes),
+            );
+            let Outcome::Rows { len } = fresh.outcome else {
+                continue;
+            };
+            let same = len == held.len()
+                && previous.bytes[..fresh.bytes_len] == current.bytes[entry.bytes.clone()]
+                && previous.rows[..len].iter().zip(held).all(|(new, old)| {
+                    let mut old = *old;
+                    for start in [
+                        &mut old.key_start,
+                        &mut old.idea_start,
+                        &mut old.slot_start,
+                        &mut old.modifier_start,
+                    ] {
+                        *start -= entry.bytes.start;
+                    }
+                    *new == old
+                });
+            counts[0] += 1;
+            counts[1] += u64::from(!same);
+        }
+        counts
+    }
+
     fn capture_section_mode(
         &mut self,
         memory: &impl Memory,
@@ -232,6 +327,24 @@ impl Section {
             self.plan.enable_worker_growth();
         }
         let scope = (context.base, context.game_state);
+        let check = observer.check();
+        let verify = check == Check::Every;
+        let mut sampled = [0; 2];
+        if let Some(presampled) = self.presampled.take() {
+            // A quiet hour already compared this hour's slice.
+            sampled = presampled;
+            if sampled[1] != 0 {
+                self.valid = false;
+                self.plan.invalidate();
+            }
+        } else if check.sampled() && self.valid && self.scope == scope && !count_only {
+            sampled = self.sample(memory, context.base, observer, check);
+            if sampled[1] != 0 {
+                // Nothing certifies reuse: this capture reads every character.
+                self.valid = false;
+                self.plan.invalidate();
+            }
+        }
         let before = observer.quiet();
         let counted = Counted::new(memory);
         let same_source = || match &source {
@@ -257,7 +370,7 @@ impl Section {
         let certified = self.valid
             && self.scope == scope
             && !count_only
-            && !observer.verify()
+            && !verify
             && before.is_some()
             && same_source()
             && (self.observation == before
@@ -266,7 +379,11 @@ impl Section {
                         && observer.revision(entry.pointer + ccharacter::ADVISOR_MAP_HEAD)
                             == entry.revision
                 }));
-        self.counts = Counts::default();
+        self.counts = Counts {
+            verified: sampled[0],
+            mismatches: sampled[1],
+            ..Counts::default()
+        };
         if self.plan.begin(&counted, certified) {
             #[cfg(feature = "advisor_profile")]
             {
@@ -325,7 +442,11 @@ impl Section {
         self.census = matches!(source, Source::Census { .. });
         std::mem::swap(&mut self.current, &mut self.previous);
         self.current.entries.clear();
-        self.counts = Counts::default();
+        self.counts = Counts {
+            verified: sampled[0],
+            mismatches: sampled[1],
+            ..Counts::default()
+        };
         let reuse = self.valid && self.scope == scope && before.is_some();
         self.valid = false;
         self.scope = scope;
@@ -408,7 +529,7 @@ impl Section {
                         });
                     let row_start = batch.len;
                     let byte_start = batch.bytes_len;
-                    if hit && !observer.verify() {
+                    if hit && !verify {
                         let entry = previous.unwrap();
                         let rows = entry.rows.len();
                         let bytes = entry.bytes.len();
@@ -610,7 +731,7 @@ impl Section {
                     .iter()
                     .all(|entry| entry.revision.is_some())
                 && self.counts.mismatches == 0
-                && !observer.verify(),
+                && !verify,
         ) {
             self.result = ReadResult::rows(Outcome::Unavailable {
                 reason: "advisor plan prefix differs",
@@ -648,6 +769,69 @@ struct ModifierSpan {
     tooltip_len: usize,
     tooltip_recorded: bool,
     tooltip_failure: Option<&'static str>,
+    /// Taken before this row's read; certifies holding it for a later hour.
+    certificate: Option<RoleCertificate>,
+    /// The previous capture holds this row under the same certificate.
+    held: bool,
+    /// Published from the held row without reading the role.
+    carried: bool,
+}
+
+/// One advisor role's identity and its character's watch `(epoch, sequence)`
+/// ([`crate::character_changes`]). Equal certificates across hours prove that
+/// no hooked writer touched the character's roles in between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RoleCertificate {
+    role: usize,
+    character: usize,
+    epoch: u64,
+    sequence: u64,
+}
+
+/// The certificates' source and which held rows are read afresh anyway.
+#[derive(Clone, Copy)]
+pub(super) struct RoleObservation {
+    changes: &'static dyn crate::character_changes::Changes,
+    /// Tests: the roles' sampled comparison; otherwise the hour's
+    /// ([`crate::sampled_verify::current`]).
+    check: Option<Check>,
+}
+impl RoleObservation {
+    pub(super) fn with(
+        changes: &'static dyn crate::character_changes::Changes,
+        check: Option<Check>,
+    ) -> Self {
+        Self { changes, check }
+    }
+
+    /// The held roles this capture reads afresh and compares, by character id.
+    fn check(&self) -> Check {
+        self.check.unwrap_or_else(|| {
+            crate::sampled_verify::current_burned_in(crate::character_changes::VERIFY)
+        })
+    }
+}
+impl Default for RoleObservation {
+    fn default() -> Self {
+        Self::with(&crate::character_changes::Observer, None)
+    }
+}
+impl std::fmt::Debug for RoleObservation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RoleObservation")
+            .field("check", &self.check)
+            .finish()
+    }
+}
+
+/// The previous complete capture's spans and bytes; its rows are carried
+/// positionally when their certificates repeat.
+#[derive(Debug, Default)]
+struct HeldModifiers {
+    spans: Vec<ModifierSpan>,
+    bytes: Vec<u8>,
+    rows: usize,
 }
 
 static LIVE_MODIFIER_ROWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -737,8 +921,26 @@ pub(super) fn record_modifiers(rows: &[cadvisor::Row]) {
     );
 }
 
-/// Fresh hourly inputs, outside the mutation-certified definition program.
-/// These headers and entries are never supplied by a previous observation.
+/// Each role's cached modifier accumulator (`CAdvisor+0x1B0`) and its tooltip
+/// key set (`+0x218`, the accumulator's string set at `+0x68`), outside the
+/// advisor-map certified definition program.
+///
+/// A role's held entries and keys are carried, without reading the role,
+/// when the previous complete capture read it at the same position with the
+/// same role and character pointers and the character's watch certificate
+/// ([`crate::character_changes`]) is unchanged. Every writer of both fields is
+/// observed there: the hooked `ADVISOR_MODIFIERS` rebuild alone clears and
+/// refills them. Trait addition, removal, hourly upgrades from combat
+/// experience, both factories and the role update reach that rebuild.
+/// The factories and role update then copy and add the role's own block in
+/// the same call; a factory's role is a new object. Coverage is described in
+/// [`engine::character_role_mutations`]. A role whose character is not
+/// observed (disabled, poisoned, refused registration, a running writer, a
+/// new epoch after a load, gap or recovery) is read afresh. Every hour also
+/// reads the held roles of its sampled-verification slice afresh
+/// ([`crate::sampled_verify`], keyed by the role's character id; verify mode
+/// takes every held role), publishes the fresh bytes and poisons the
+/// character watches on a difference.
 #[derive(Debug)]
 struct Modifiers {
     spans: Vec<ModifierSpan>,
@@ -748,10 +950,79 @@ struct Modifiers {
     required_bytes: usize,
     shortfall: usize,
     failure: Option<&'static str>,
+    /// The latest capture finished without a failure.
+    complete: bool,
+    held: HeldModifiers,
+    roles: RoleObservation,
+    role_counts: crate::character_changes::Counts,
     charge: crate::raw_memory::Charge,
+    /// This hour's slice `[compared, differing]`, compared by a quiet hour
+    /// that then read afresh.
+    presampled: [u64; 2],
+    /// A sampled role's fresh bytes.
+    scratch: Vec<u8>,
 }
 
 impl Modifiers {
+    /// The latest capture recorded every role's cache and keys under a
+    /// certificate, so a quiet hour may carry it whole.
+    fn carried_whole(&self) -> bool {
+        self.complete
+            && self.shortfall == 0
+            && self.required_rows <= self.spans.len()
+            && self.spans[..self.required_rows].iter().all(|span| {
+                span.certificate.is_some()
+                    && span.recorded
+                    && span.tooltip_recorded
+                    && span.tooltip_failure.is_none()
+            })
+    }
+
+    /// A quiet hour's slice: each role whose character `check` covers is
+    /// read afresh, its cache and keys as the capture reads them, and
+    /// compared with its recorded bytes. `[compared, differing]`; `None`
+    /// when a read fails or its bytes cannot be held, which a capture would
+    /// meet too.
+    fn sample<'a>(
+        &mut self,
+        memory: &impl Memory,
+        rows: impl Iterator<Item = &'a cadvisor::Row>,
+        check: Check,
+    ) -> Option<[u64; 2]> {
+        let mut counts = [0; 2];
+        for (index, row) in rows.enumerate() {
+            if !check.covers(u64::from(row.character)) {
+                continue;
+            }
+            let span = *self.spans.get(index)?;
+            let array = cadvisor::modifier_entries(memory, row.pointer).ok()?;
+            let len = (array.count as usize).checked_mul(engine::modifier_entry::STRIDE)?;
+            let scratch = &mut self.scratch;
+            let read = engine::allocation::advisory(|| {
+                resize(scratch, len, 0).ok()?;
+                cadvisor::copy_modifier_entries(memory, array, &mut scratch[..len]).ok()?;
+                cadvisor::copy_tooltip_keys_buffer(
+                    memory,
+                    row.pointer,
+                    engine::walk::Buffer::GrowingFrom(scratch, len),
+                )
+                .ok()
+            })?;
+            if !read.recorded {
+                return None;
+            }
+            counts[0] += 1;
+            let same = self.scratch[..len] == self.bytes[span.start..span.start + span.len]
+                && self.scratch[len..len + read.len]
+                    == self.bytes[span.tooltip_start..span.tooltip_start + span.tooltip_len];
+            if !same {
+                counts[1] += 1;
+                return Some(counts);
+            }
+        }
+        Some(counts)
+    }
+
     fn with_demand(demand: cadvisor::ModifierDemand) -> Self {
         let mut value = Self {
             spans: owned_vec(default_vec(crate::country_scale::rows(demand.rows, 1))),
@@ -764,7 +1035,13 @@ impl Modifiers {
             required_bytes: 0,
             shortfall: 0,
             failure: None,
+            complete: false,
+            held: HeldModifiers::default(),
+            roles: RoleObservation::default(),
+            role_counts: Default::default(),
             charge: Default::default(),
+            presampled: [0; 2],
+            scratch: Vec::new(),
         };
         value.update_charge();
         value
@@ -773,9 +1050,55 @@ impl Modifiers {
     fn update_charge(&mut self) {
         self.charge.set(crate::raw_memory::Capacity {
             payload_vectors: crate::raw_memory::vector_bytes(&self.spans)
-                + crate::raw_memory::vector_bytes(&self.bytes),
+                + crate::raw_memory::vector_bytes(&self.bytes)
+                + crate::raw_memory::vector_bytes(&self.held.spans)
+                + crate::raw_memory::vector_bytes(&self.held.bytes)
+                + crate::raw_memory::vector_bytes(&self.scratch),
             ..Default::default()
         });
+    }
+
+    /// Hands the previous capture's arena to [`HeldModifiers`] when it
+    /// completed and certified a row; the held arena, as large, takes this
+    /// capture. Without a held arena that large (and no growth allowed)
+    /// nothing is held and every role is read.
+    fn begin(&mut self, growing: bool) {
+        self.held.rows = 0;
+        let rows = self.required_rows.min(self.spans.len());
+        if !self.complete
+            || !self.spans[..rows]
+                .iter()
+                .any(|span| span.certificate.is_some())
+        {
+            return;
+        }
+        if (self.held.spans.len() < self.spans.len() || self.held.bytes.len() < self.bytes.len())
+            && (!growing
+                || engine::walk::Buffer::Growing(&mut self.held.spans)
+                    .ensure(self.spans.len())
+                    .is_err()
+                || engine::walk::Buffer::Growing(&mut self.held.bytes)
+                    .ensure(self.bytes.len())
+                    .is_err())
+        {
+            return;
+        }
+        std::mem::swap(&mut self.spans, &mut self.held.spans);
+        std::mem::swap(&mut self.bytes, &mut self.held.bytes);
+        self.held.rows = rows;
+    }
+
+    /// The previous capture's span at `index` when its certificate is
+    /// `certificate` and both of its parts were recorded.
+    fn held_span(
+        &self,
+        index: usize,
+        certificate: Option<RoleCertificate>,
+    ) -> Option<ModifierSpan> {
+        let certificate = certificate?;
+        let span = *self.held.spans[..self.held.rows].get(index)?;
+        (span.certificate == Some(certificate) && span.recorded && span.tooltip_recorded)
+            .then_some(span)
     }
 
     fn needs_growth(&self) -> bool {
@@ -804,6 +1127,13 @@ impl Modifiers {
         {
             return;
         }
+        // A held arena in use takes a later capture: keep it as large.
+        if !self.held.spans.is_empty()
+            && (resize(&mut self.held.spans, rows, ModifierSpan::default()).is_err()
+                || resize(&mut self.held.bytes, bytes, 0).is_err())
+        {
+            return;
+        }
         self.update_charge();
     }
 
@@ -813,34 +1143,57 @@ impl Modifiers {
         memory: &impl Memory,
         rows: impl Iterator<Item = &'a cadvisor::Row> + Clone,
     ) {
-        self.capture_mode(memory, rows, false)
+        self.capture_mode(memory, rows.map(|row| (None, row)), false)
     }
 
+    /// `rows` pairs each role with the character whose advisor map holds it,
+    /// when known; a role without one is read afresh.
     fn capture_mode<'a>(
         &mut self,
         memory: &impl Memory,
-        rows: impl Iterator<Item = &'a cadvisor::Row> + Clone,
+        rows: impl Iterator<Item = (Option<usize>, &'a cadvisor::Row)> + Clone,
         growing: bool,
     ) {
+        self.begin(growing);
         self.len = 0;
         self.required_rows = 0;
         self.required_bytes = 0;
         self.shortfall = 0;
         self.failure = None;
+        self.role_counts = Default::default();
+        let check = self.roles.check();
         self.spans.fill(ModifierSpan::default());
         let result = (|| {
             // Acquire every pre-existing numeric cache before appended keys
             // can use the remaining byte arena.
-            for row in rows.clone() {
-                let array = cadvisor::modifier_entries(memory, row.pointer)?;
-                let len = (array.count as usize)
-                    .checked_mul(engine::modifier_entry::STRIDE)
-                    .ok_or("advisor modifier cache size overflow")?;
+            for (character, row) in rows.clone() {
+                // Registration precedes every read it certifies.
+                let certificate = character.and_then(|character| {
+                    let (epoch, sequence) = self.roles.changes.sequence(character)?;
+                    Some(RoleCertificate {
+                        role: row.pointer,
+                        character,
+                        epoch,
+                        sequence,
+                    })
+                });
+                let index = self.required_rows;
+                let held = self.held_span(index, certificate);
+                let carried = held.filter(|_| !check.covers(u64::from(row.character)));
+                let (array, len) = match carried {
+                    Some(held) => (None, held.len),
+                    None => {
+                        let array = cadvisor::modifier_entries(memory, row.pointer)?;
+                        let len = (array.count as usize)
+                            .checked_mul(engine::modifier_entry::STRIDE)
+                            .ok_or("advisor modifier cache size overflow")?;
+                        (Some(array), len)
+                    }
+                };
                 self.required_bytes = self
                     .required_bytes
                     .checked_add(len)
                     .ok_or("advisor byte count overflow")?;
-                let index = self.required_rows;
                 self.required_rows = index.checked_add(1).ok_or("advisor row count overflow")?;
                 if growing {
                     engine::walk::Buffer::Growing(&mut self.spans).ensure(self.required_rows)?;
@@ -850,34 +1203,67 @@ impl Modifiers {
                             .ok_or("advisor byte count overflow")?,
                     )?;
                 }
-                let mut span = ModifierSpan::default();
+                let mut span = ModifierSpan {
+                    certificate,
+                    held: held.is_some(),
+                    carried: carried.is_some(),
+                    ..ModifierSpan::default()
+                };
                 if index >= self.spans.len() || len > self.bytes.len() - self.len {
                     self.shortfall += 1;
                 } else {
                     span.start = self.len;
                     span.len = len;
                     span.recorded = true;
-                    cadvisor::copy_modifier_entries(
-                        memory,
-                        array,
-                        &mut self.bytes[self.len..self.len + len],
-                    )?;
+                    let target = &mut self.bytes[self.len..self.len + len];
+                    match (array, carried) {
+                        (Some(array), _) => {
+                            cadvisor::copy_modifier_entries(memory, array, target)?;
+                        }
+                        (None, Some(held)) => {
+                            target.copy_from_slice(&self.held.bytes[held.start..held.start + len])
+                        }
+                        (None, None) => unreachable!("a role is either read or carried"),
+                    }
                     self.len += len;
+                }
+                if carried.is_some() {
+                    self.role_counts.reused += 1;
+                } else {
+                    self.role_counts.read += 1;
                 }
                 if let Some(target) = self.spans.get_mut(index) {
                     *target = span;
                 }
             }
-            for (index, row) in rows.enumerate() {
+            for (index, (_, row)) in rows.enumerate() {
                 let mut span = self.spans.get(index).copied().unwrap_or_default();
-                let destination = if growing {
+                let mut destination = if growing {
                     engine::walk::Buffer::GrowingFrom(&mut self.bytes, self.len)
                 } else if index < self.spans.len() {
                     engine::walk::Buffer::Fixed(&mut self.bytes[self.len..])
                 } else {
                     engine::walk::Buffer::Fixed(&mut [])
                 };
-                match cadvisor::copy_tooltip_keys_buffer(memory, row.pointer, destination) {
+                let read = if span.carried {
+                    let held = self.held.spans[index];
+                    let len = held.tooltip_len;
+                    destination.ensure(len)?;
+                    let recorded = len <= destination.len();
+                    if recorded {
+                        destination[..len].copy_from_slice(
+                            &self.held.bytes[held.tooltip_start..held.tooltip_start + len],
+                        );
+                    }
+                    Ok(cadvisor::TooltipRead {
+                        len: if recorded { len } else { 0 },
+                        required: len,
+                        recorded,
+                    })
+                } else {
+                    cadvisor::copy_tooltip_keys_buffer(memory, row.pointer, destination)
+                };
+                match read {
                     Ok(read) => {
                         let required = self.required_bytes.checked_add(read.required);
                         if let Some(required) = required {
@@ -908,10 +1294,44 @@ impl Modifiers {
         if let Err(reason) = result {
             self.failure.get_or_insert(reason);
         }
+        self.verify_held();
+        self.complete = self.failure.is_none();
+        let [verified, mismatches] = std::mem::take(&mut self.presampled);
+        self.role_counts.verified += verified;
+        self.role_counts.mismatches += mismatches;
+        crate::character_changes::record(
+            crate::character_changes::Table::AdvisorRoles,
+            &self.role_counts,
+        );
+    }
+
+    /// Each role a held certificate matched that this hour's check covers was
+    /// read afresh; a difference from its held bytes disables reuse for the
+    /// attachment.
+    fn verify_held(&mut self) {
+        if self.failure.is_some() {
+            return;
+        }
+        let rows = self.required_rows.min(self.spans.len());
+        for (index, span) in self.spans[..rows].iter().enumerate() {
+            if !span.held || span.carried || !span.recorded || !span.tooltip_recorded {
+                continue;
+            }
+            let held = self.held.spans[index];
+            self.role_counts.verified += 1;
+            let same = self.bytes[span.start..span.start + span.len]
+                == self.held.bytes[held.start..held.start + held.len]
+                && self.bytes[span.tooltip_start..span.tooltip_start + span.tooltip_len]
+                    == self.held.bytes[held.tooltip_start..held.tooltip_start + held.tooltip_len];
+            if !same {
+                self.role_counts.mismatches += 1;
+                self.roles.changes.mismatch();
+            }
+        }
     }
 }
 
-/// Independent historical/generated certificates keep generated roster growth
+// Independent historical/generated certificates keep generated roster growth
 /// from invalidating the large historical pass. Roots are acquired once first.
 #[derive(Debug)]
 pub(crate) struct Cache {
@@ -920,6 +1340,33 @@ pub(crate) struct Cache {
     pub(super) result: ReadResult,
     pub(super) raw_bytes: u64,
     pub(super) counts: Counts,
+    /// What lets a quiet hour carry the whole table ([`Quiet`]).
+    quiet: Option<Quiet>,
+    /// Names the held table: a fresh value at every capture that does not
+    /// carry it whole ([`Self::carry_quiet`]), which leaves it unchanged.
+    content: u64,
+}
+
+/// A content version no other cache has held.
+fn fresh_content() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A quiet hour carries every definition, modifier cache and tooltip key
+/// without a lookup or a read: the advisor family's and the character
+/// domain's quiet tokens equal the ones taken before the last complete
+/// capture, so neither family's observed writers ran, and the census has
+/// that capture's generation, so every occurrence, identity, country and map
+/// header is the one read then. That capture certified every character and
+/// role. Only the sampled slices are read and compared; a difference poisons
+/// its family and the hour reads afresh.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Quiet {
+    scope: (usize, usize),
+    advisors: (u64, u64),
+    characters: (u64, u64),
+    generation: u64,
 }
 static LIVE_DEFINITIONS: [[std::sync::atomic::AtomicUsize; 3]; 2] =
     [const { [const { std::sync::atomic::AtomicUsize::new(0) }; 3] }; 2];
@@ -969,7 +1416,92 @@ impl Cache {
             result: ReadResult::rows(Outcome::Rows { len: 0 }),
             raw_bytes: 0,
             counts: Counts::default(),
+            quiet: None,
+            content: fresh_content(),
         }
+    }
+
+    /// A quiet hour, after `quiet` matched: compare both slices and, when
+    /// they read as held, carry the table. `false` reads afresh, with what
+    /// the slices compared kept for the capture's counts.
+    fn carry_quiet(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        observer: &dyn Changes,
+        check: Check,
+        before: Option<(u64, u64)>,
+    ) -> bool {
+        let mut sampled = [[0_u64; 2]; 2];
+        if check.sampled() {
+            for (section, sampled) in self.sections.iter_mut().zip(&mut sampled) {
+                *sampled = section.sample(memory, base, observer, check);
+            }
+        }
+        let differs = sampled.iter().any(|sampled| sampled[1] != 0);
+        let roles = if differs {
+            Some([0; 2])
+        } else {
+            let Self {
+                sections,
+                modifiers,
+                ..
+            } = self;
+            modifiers.sample(
+                memory,
+                sections
+                    .iter()
+                    .flat_map(|section| &section.current.rows[..section.result.outcome.len()]),
+                check,
+            )
+        };
+        // A writer that ran while the slices were read leaves the hour to a
+        // capture, which fails it as mutated.
+        if !differs && roles.is_some_and(|roles| roles[1] == 0) && before == observer.quiet() {
+            let [roles, _] = roles.unwrap();
+            let rows = self.result.outcome.len() as u64;
+            self.counts = Counts {
+                reused: self
+                    .sections
+                    .iter()
+                    .map(|section| section.characters as u64)
+                    .sum(),
+                roles: rows,
+                verified: sampled.iter().map(|sampled| sampled[0]).sum(),
+                ..Counts::default()
+            };
+            crate::character_changes::record(
+                crate::character_changes::Table::AdvisorRoles,
+                &crate::character_changes::Counts {
+                    reused: rows - roles,
+                    read: roles,
+                    verified: roles,
+                    mismatches: 0,
+                    quiet: true,
+                },
+            );
+            return true;
+        }
+        // Read afresh: a difference poisons its family first.
+        for (section, sampled) in self.sections.iter_mut().zip(sampled) {
+            section.presampled = Some(sampled);
+        }
+        if let Some(roles) = roles {
+            if roles[1] != 0 {
+                self.modifiers.roles.changes.mismatch();
+            }
+            self.modifiers.presampled = roles;
+        }
+        false
+    }
+    /// Tests: the roles' certificates and slice come from `changes`.
+    #[cfg(test)]
+    pub(super) fn observe_roles(
+        &mut self,
+        changes: &'static dyn crate::character_changes::Changes,
+        check: Option<Check>,
+    ) {
+        self.modifiers.roles = RoleObservation::with(changes, check);
     }
     pub fn needs_growth(&self) -> bool {
         self.sections.iter().any(Section::needs_growth) || self.modifiers.needs_growth()
@@ -1020,9 +1552,35 @@ impl Cache {
         for section in &mut self.sections {
             section.raw_bytes = 0;
         }
-        self.result = ReadResult::rows(Outcome::Rows { len: 0 });
         let counted = Counted::new(memory);
+        // Taken before any registration or read this capture certifies.
         let before = observer.quiet();
+        let characters = self.modifiers.roles.changes.quiet();
+        let check = observer.check();
+        let scope = (context.base, context.game_state);
+        let quiet =
+            loaned
+                .zip(before)
+                .zip(characters)
+                .and_then(|((roles, advisors), characters)| {
+                    (roles.generation != 0 && check != Check::Every).then_some(Quiet {
+                        scope,
+                        advisors,
+                        characters,
+                        generation: roles.generation,
+                    })
+                });
+        if quiet.is_some()
+            && self.quiet == quiet
+            && self.carry_quiet(&counted, context.base, observer, check, before)
+        {
+            self.raw_bytes = counted.bytes.get();
+            return;
+        }
+        self.quiet = None;
+        self.content = fresh_content();
+        self.counts = Counts::default();
+        self.result = ReadResult::rows(Outcome::Rows { len: 0 });
         #[cfg(feature = "advisor_profile")]
         let mut measurements = [[0; 11]; 2];
         #[cfg(feature = "advisor_profile")]
@@ -1123,7 +1681,22 @@ impl Cache {
             self.modifiers.capture_mode(
                 &counted,
                 self.sections.iter().flat_map(|section| {
-                    section.current.rows[..section.result.outcome.len()].iter()
+                    let entries = &section.current.entries;
+                    let mut entry = 0;
+                    section.current.rows[..section.result.outcome.len()]
+                        .iter()
+                        .enumerate()
+                        .map(move |(index, row)| {
+                            // Entries list each character's rows in order.
+                            while entries.get(entry).is_some_and(|e| e.rows.end <= index) {
+                                entry += 1;
+                            }
+                            let character = entries
+                                .get(entry)
+                                .filter(|e| e.rows.contains(&index))
+                                .map(|e| e.pointer);
+                            (character, row)
+                        })
                 }),
                 growing,
             );
@@ -1147,8 +1720,33 @@ impl Cache {
             .map(|section| section.raw_bytes)
             .sum::<u64>()
             + counted.bytes.get();
+        // Everything this capture published was certified from the census,
+        // with no difference and no writer running: later quiet hours carry it.
+        self.quiet = quiet.filter(|_| {
+            matches!(self.result.outcome, Outcome::Rows { .. })
+                && self.counts.mismatches == 0
+                && self.modifiers.role_counts.mismatches == 0
+                && self
+                    .sections
+                    .iter()
+                    .all(|section| section.carried_whole(scope))
+                && self.modifiers.carried_whole()
+                && before == observer.quiet()
+        });
     }
+    /// A frame whose buffers hold this content's rows publishes them as
+    /// they are.
     pub fn decode(&self, captured: &mut Captured) {
+        if let Some((_, result)) = captured
+            .held
+            .advisors
+            .filter(|&(content, _)| content == self.content)
+        {
+            captured.advisors.primary(result);
+            record_modifiers(&captured.advisors.rows.rows[..result.outcome.len()]);
+            return;
+        }
+        captured.held.advisors = None;
         if let Outcome::Unavailable { .. } = self.result.outcome {
             captured.advisors.primary(self.result);
             return;
@@ -1227,11 +1825,13 @@ impl Cache {
             }
             byte_start += bytes;
         }
-        captured.advisors.primary(ReadResult {
+        let result = ReadResult {
             bytes_len,
             required_bytes,
             ..self.result
-        });
+        };
+        captured.advisors.primary(result);
+        captured.held.advisors = Some((self.content, result));
         record_modifiers(&captured.advisors.rows.rows[..row_start]);
     }
 }

@@ -39,7 +39,8 @@ pub const MOVEMENT: Family = Family {
         keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
     ],
     tokens: &[],
-    tables: &[TableId::DivisionEtaInputs],
+    // The retired speed-graph table was its only recorded dependent.
+    tables: &[],
 };
 
 /// Current-hour class-0 counter action operands.
@@ -57,7 +58,8 @@ pub const NAVAL_TRANSFER: Family = Family {
     name: "naval transfer speed",
     keys: &[keys::NAVAL_SPEED_FACTOR, keys::NAVAL_MINES_EFFECT_REDUCTION],
     tokens: &[],
-    tables: &[TableId::DivisionEtaInputs],
+    // The retired speed-graph table was its only recorded dependent.
+    tables: &[],
 };
 
 /// Fresh task-force counter speed and range; guard only the derived suffix
@@ -75,8 +77,9 @@ pub const TASK_FORCE_COUNTER_ETA: Family = Family {
     tables: &[],
 };
 
-/// Original selected transport modifier graph, independently guarded from
-/// the established ETA keys. A mismatch withholds only reached risk leaves.
+/// The selected transport risk graph's keys. Its only dependents, the
+/// selected transport preview's receiver leaves, retired; the family keeps
+/// the keys authenticated.
 pub const TRANSPORT_RISK: Family = Family {
     name: "selected transport risk",
     keys: &[
@@ -92,8 +95,9 @@ pub const TRANSPORT_RISK: Family = Family {
     tables: &[],
 };
 
-/// Air normalization uses a separate wing, ace and country modifier graph.
-/// Guard its reached leaves independently from the naval receiver family.
+/// The air-transport calculation's separate air-wing, ace and country modifier graph. Its
+/// only dependents, the selected transport preview's air leaves, retired; the family
+/// keeps the keys authenticated.
 pub const TRANSPORT_AIR: Family = Family {
     name: "selected transport air normalization",
     keys: &engine::transport_air_normalization::KEYS,
@@ -110,27 +114,17 @@ pub const RAILWAY_SPEED: Family = Family {
     tables: &[],
 };
 
+/// The division context's three modifier slots (reinforce rate, width and
+/// initiative).
 pub const LAND_COMBAT_DIVISIONS: Family = Family {
     name: "land combat divisions",
     keys: &[
-        keys::ARMY_SPEED_FACTOR,
-        keys::ARMY_ATTACK_SPEED_FACTOR,
-        keys::ARMY_SPEED_FACTOR_FOR_CONTROLLER,
-        keys::ENEMY_ARMY_SPEED_FACTOR,
-        keys::ARMY_RETREAT_SPEED_FACTOR,
-        keys::OUT_OF_SUPPLY_FACTOR,
-        keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
-        keys::NAVAL_SPEED_FACTOR,
-        keys::NAVAL_MINES_EFFECT_REDUCTION,
         keys::LAND_REINFORCE_RATE,
         keys::COMBAT_WIDTH_FACTOR,
         keys::INITIATIVE_FACTOR,
     ],
     tokens: &[],
-    tables: &[
-        TableId::LandCombatDivisions,
-        TableId::ReserveModifierBreakdowns,
-    ],
+    tables: &[TableId::LandCombatDivisions],
 };
 
 pub const DIVISION_STATUS: Family = Family {
@@ -143,14 +137,13 @@ pub const DIVISION_STATUS: Family = Family {
     tables: &[TableId::DivisionStatus],
 };
 
+/// The fresh attrition operands retired with their breakdown table; the
+/// counter's cached attrition values do not depend on these literals.
 pub const ATTRITION: Family = Family {
     name: "fresh army attrition",
     keys: &engine::carmy_attrition::KEYS,
     tokens: &[],
-    tables: &[
-        TableId::DivisionStatus,
-        TableId::AttritionModifierBreakdowns,
-    ],
+    tables: &[],
 };
 
 /// Cached region attack uses modifier slot 0xAD. Field-local capture and
@@ -262,12 +255,16 @@ pub const NAVAL_AIR: Family = Family {
     tables: &[TableId::NavalCombatDetails],
 };
 
-/// Side and ship/carrier trees, selected by the hourly reader's hover keys.
-pub const NAVAL_BREAKDOWNS: Family = Family {
-    name: "naval modifier breakdowns",
-    keys: &engine::naval_ship_modifier_breakdown::KEYS,
+/// The naval hovers' source trees: side trees, and ship and carrier trees, recorded for
+/// these native keys ([`crate::naval_trees`]).
+pub const NAVAL_TREES: Family = Family {
+    name: "naval modifier trees",
+    keys: &engine::naval_modifier_trees::KEYS,
     tokens: &[],
-    tables: &[TableId::NavalModifierBreakdowns],
+    tables: &[
+        TableId::NavalModifierTrees,
+        TableId::NavalModifierTreeSamples,
+    ],
 };
 
 /// The combat window's positioning recomputation: surface detection and
@@ -518,7 +515,7 @@ pub const FAMILIES: &[Family] = &[
     NAVAL_WEAPONS,
     NAVAL_SUMMARY,
     NAVAL_AIR,
-    NAVAL_BREAKDOWNS,
+    NAVAL_TREES,
     NAVAL_POSITIONING,
     NAVAL_ANTI_AIR,
     RESEARCH,
@@ -708,7 +705,7 @@ mod tests {
             SHIP_ORGANISATION,
             NAVAL_POSITIONING,
             NAVAL_ANTI_AIR,
-            NAVAL_BREAKDOWNS,
+            NAVAL_TREES,
             PARADROP_PREPARATION,
             PARADROP_TRANSPORT,
         ] {
@@ -733,13 +730,16 @@ mod tests {
     }
 
     #[test]
-    fn naval_breakdown_family_covers_all_capture_keys_and_its_table() {
+    fn naval_tree_family_covers_all_capture_keys_and_its_tables() {
+        assert_eq!(NAVAL_TREES.keys, engine::naval_modifier_trees::KEYS);
         assert_eq!(
-            NAVAL_BREAKDOWNS.keys,
-            engine::naval_ship_modifier_breakdown::KEYS
+            NAVAL_TREES.tables,
+            [
+                TableId::NavalModifierTrees,
+                TableId::NavalModifierTreeSamples
+            ]
         );
-        assert_eq!(NAVAL_BREAKDOWNS.tables, [TableId::NavalModifierBreakdowns]);
-        for key in NAVAL_BREAKDOWNS.keys {
+        for key in NAVAL_TREES.keys {
             assert!(keys::ALL_INDICES.contains(key));
         }
     }

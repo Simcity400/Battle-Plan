@@ -314,6 +314,42 @@ impl Catalog {
     pub fn get(&self, name: &str) -> Option<&RaidType> {
         self.types.iter().find(|kind| kind.name == name)
     }
+
+    /// Each archetype some raid type lists as essential equipment, by name,
+    /// with the largest amount any raid type requires of it: the stock
+    /// StockpileArchetypes records, capped there. A type holds a repeated
+    /// key once, with its last amount, as the native map does. A refused or
+    /// unsupported type may list essential equipment the port does not see,
+    /// so it leaves the caps unknown.
+    pub fn essential_caps(
+        &self,
+        equipment: &crate::equipment::Database,
+    ) -> Result<BTreeMap<Vec<u8>, i32>, String> {
+        if let Some(name) = self.refused.first() {
+            return Err(format!("raid type {name} is declared twice"));
+        }
+        if let Some((name, reason)) = self.unsupported.first() {
+            return Err(format!("raid type {name} is unsupported: {reason}"));
+        }
+        let mut caps: BTreeMap<Vec<u8>, i32> = BTreeMap::new();
+        for kind in &self.types {
+            for (name, amount) in &kind.essential_equipment {
+                let listed = equipment
+                    .named(name)
+                    .ok_or_else(|| format!("essential equipment {name} is not in the content"))?;
+                let archetype = listed
+                    .archetype
+                    .map(|archetype| &equipment.equipment[archetype])
+                    .ok_or_else(|| {
+                        format!("essential equipment {name} has no archetype in the content")
+                    })?;
+                caps.entry(archetype.name.clone())
+                    .and_modify(|cap| *cap = (*cap).max(*amount))
+                    .or_insert(*amount);
+            }
+        }
+        Ok(caps)
+    }
 }
 
 /// A field's folded keyword; a quoted key has none.

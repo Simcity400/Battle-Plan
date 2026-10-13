@@ -54,6 +54,178 @@ pub struct Report {
     pub outcome: Outcome,
     pub paths: usize,
     pub required_paths: usize,
+    /// Province ids this walk recorded as the game's null province
+    /// ([`ProvinceCheck::is_null_province`]).
+    pub null_provinces: u32,
+    /// The last of them, for diagnostics.
+    pub last_null_province: Option<ProvinceObservation>,
+    /// The province check that refused the walk, when one did.
+    pub refusal: Option<ProvinceObservation>,
+}
+
+/// What resolving a province id stored in the supply companion found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProvinceCheck {
+    /// The hour's province census header was unreadable.
+    CensusUnavailable,
+    /// Zero or not below the census count: the game's province lookup
+    /// returns null for it.
+    OutsideCensus,
+    /// The census slot could not be read.
+    SlotUnreadable,
+    /// The census slot holds null, which province lookup returns as is.
+    SlotEmpty,
+    /// The slot's object is not the CProvince with this id.
+    IdentityMismatch,
+}
+
+impl ProvinceCheck {
+    pub const ALL: [Self; 5] = [
+        Self::CensusUnavailable,
+        Self::OutsideCensus,
+        Self::SlotUnreadable,
+        Self::SlotEmpty,
+        Self::IdentityMismatch,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::CensusUnavailable => "census_unavailable",
+            Self::OutsideCensus => "outside_census",
+            Self::SlotUnreadable => "slot_unreadable",
+            Self::SlotEmpty => "slot_empty",
+            Self::IdentityMismatch => "identity_mismatch",
+        }
+    }
+
+    /// The game holds this id as a null province. The walk's native readers
+    /// only key maps with a node or parent province: train departure routing
+    /// looks it up in the parent and route maps, and a missing parent key ends
+    /// the walk. Node creators store it unchecked, from the copied record or
+    /// companion+0xA0. The walk therefore records such an id as stored.
+    pub const fn is_null_province(self) -> bool {
+        matches!(self, Self::OutsideCensus | Self::SlotEmpty)
+    }
+}
+
+/// Where the walk met a province id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProvinceRole {
+    /// A node's own province (node +4).
+    Node,
+    /// A province-keyed parent from the companion's parent map.
+    Parent,
+    /// A node-less vertex on a parent chain.
+    Vertex,
+}
+
+impl ProvinceRole {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Parent => "parent",
+            Self::Vertex => "vertex",
+        }
+    }
+}
+
+/// One province id the walk could not resolve: its country, the node index
+/// (`VERTEX | province` on a parent chain), the stored value, where it was
+/// met and what the check found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProvinceObservation {
+    pub country: u32,
+    pub index: u32,
+    pub province: u32,
+    pub role: ProvinceRole,
+    pub check: ProvinceCheck,
+}
+
+/// A distinct refusal reason for each check that refuses, by role. A null
+/// province never refuses.
+const fn refusal_reason(role: ProvinceRole, check: ProvinceCheck) -> &'static str {
+    use ProvinceCheck as C;
+    use ProvinceRole as R;
+    match (role, check) {
+        (R::Node, C::CensusUnavailable) => "supply node province census unavailable",
+        (R::Node, C::SlotUnreadable) => "supply node province slot unreadable",
+        (R::Node, C::IdentityMismatch) => "supply node province identity mismatch",
+        (R::Parent, C::CensusUnavailable) => "supply parent province census unavailable",
+        (R::Parent, C::SlotUnreadable) => "supply parent province slot unreadable",
+        (R::Parent, C::IdentityMismatch) => "supply parent province identity mismatch",
+        (R::Vertex, C::CensusUnavailable) => "supply vertex province census unavailable",
+        (R::Vertex, C::SlotUnreadable) => "supply vertex province slot unreadable",
+        (R::Vertex, C::IdentityMismatch) => "supply vertex province identity mismatch",
+        (_, C::OutsideCensus | C::SlotEmpty) => "supply province held as null",
+    }
+}
+
+/// The walk's province checks and what they found.
+#[derive(Default)]
+struct Observations {
+    null_provinces: u32,
+    last_null_province: Option<ProvinceObservation>,
+    refusal: Option<ProvinceObservation>,
+}
+
+impl Observations {
+    /// Resolve `province` as `role`; a null province is recorded as stored,
+    /// any other unresolved id refuses the walk with its own reason.
+    #[allow(clippy::too_many_arguments)]
+    fn check(
+        &mut self,
+        memo: &mut ProvinceMemo,
+        memory: &impl Memory,
+        base: usize,
+        role: ProvinceRole,
+        country: u32,
+        index: u32,
+        province: u32,
+    ) -> Result<(), &'static str> {
+        let Err(check) = memo.province(memory, base, province)? else {
+            return Ok(());
+        };
+        let observed = ProvinceObservation {
+            country,
+            index,
+            province,
+            role,
+            check,
+        };
+        if check.is_null_province() {
+            self.null_provinces = self.null_provinces.saturating_add(1);
+            self.last_null_province = Some(observed);
+            Ok(())
+        } else {
+            self.refusal = Some(observed);
+            Err(refusal_reason(role, check))
+        }
+    }
+
+    /// A positive parent is a province id; zero and negative are roots.
+    #[allow(clippy::too_many_arguments)]
+    fn parent(
+        &mut self,
+        memo: &mut ProvinceMemo,
+        memory: &impl Memory,
+        base: usize,
+        country: u32,
+        index: u32,
+        parent: i32,
+    ) -> Result<(), &'static str> {
+        if parent < 1 {
+            return Ok(());
+        }
+        self.check(
+            memo,
+            memory,
+            base,
+            ProvinceRole::Parent,
+            country,
+            index,
+            parent as u32,
+        )
+    }
 }
 
 /// Immediate parent edges, written into one shared path arena.
@@ -233,19 +405,26 @@ impl ProvinceMemo {
             + self.routes.allocated_bytes()
     }
 
+    /// The authenticated pointer, or what its check found. Only an
+    /// authenticated pointer is memoized; the outer error is allocation.
     fn province(
         &mut self,
         memory: &impl Memory,
         base: usize,
         province: u32,
-    ) -> Result<usize, &'static str> {
+    ) -> Result<Result<usize, ProvinceCheck>, &'static str> {
         if let Some(&pointer) = self.pointers.get(province as usize)
             && pointer != 0
         {
-            return Ok(pointer);
+            return Ok(Ok(pointer));
         }
-        let provinces = self.provinces.ok_or("supply province slot invalid")?;
-        let pointer = validate_province(memory, base, provinces, province)?;
+        let Some(provinces) = self.provinces else {
+            return Ok(Err(ProvinceCheck::CensusUnavailable));
+        };
+        let pointer = match validate_province(memory, base, provinces, province) {
+            Ok(pointer) => pointer,
+            Err(check) => return Ok(Err(check)),
+        };
         if self.key.is_some() {
             if self.pointers.len() <= province as usize {
                 crate::allocation::resize(&mut self.pointers, province as usize + 1, 0)
@@ -253,20 +432,7 @@ impl ProvinceMemo {
             }
             self.pointers[province as usize] = pointer;
         }
-        Ok(pointer)
-    }
-
-    /// The parent's authenticated pointer, or 0 for a root.
-    fn parent(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        parent: i32,
-    ) -> Result<usize, &'static str> {
-        if parent < 1 {
-            return Ok(0);
-        }
-        self.province(memory, base, parent as u32)
+        Ok(Ok(pointer))
     }
 }
 
@@ -293,6 +459,7 @@ pub fn walk_part(
         crate::walk::Buffer::Fixed(output),
         crate::walk::Buffer::Fixed(paths),
         provinces,
+        None,
     )
 }
 
@@ -316,9 +483,42 @@ pub fn walk_part_growing(
         crate::walk::Buffer::Growing(output),
         crate::walk::Buffer::Growing(paths),
         provinces,
+        None,
     )
 }
 
+/// [`walk_part_growing`] for the countries `select` admits by native country
+/// id: an unselected slot's supply objects, nodes and routes are not read,
+/// and its rows are neither returned nor counted as unread. A selected
+/// country's rows equal the whole walk's.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_part_selected_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    part: usize,
+    parts: usize,
+    output: &mut Vec<Row>,
+    paths: &mut Vec<u32>,
+    provinces: &mut ProvinceMemo,
+    select: &dyn Fn(u32) -> bool,
+) -> Report {
+    walk_part_buffer(
+        memory,
+        base,
+        state,
+        part,
+        parts,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(paths),
+        provinces,
+        Some(select),
+    )
+}
+
+/// `select`, when present, admits countries by native id before their supply
+/// objects are read ([`walk_part_selected_growing`]); without it every slot
+/// is read and checked.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_part_buffer(
     memory: &impl Memory,
@@ -329,9 +529,11 @@ pub fn walk_part_buffer(
     mut output: crate::walk::Buffer<'_, Row>,
     paths: crate::walk::Buffer<'_, u32>,
     provinces: &mut ProvinceMemo,
+    select: Option<&dyn Fn(u32) -> bool>,
 ) -> Report {
     let mut used = 0;
     let mut required = 0;
+    let mut observed = Observations::default();
     provinces.routes.begin();
     let result = (|| {
         use crate::memory::{RecordField, RecordLayout, RecordSources};
@@ -378,6 +580,13 @@ pub fn walk_part_buffer(
         let mut cut = 0;
         let mut bytes = [0_u8; 64 * 29];
         for slot in (1 + part as u32..systems.count()).step_by(parts) {
+            if let Some(select) = select
+                && !systems
+                    .country(slot)?
+                    .is_some_and(|country| select(country.id))
+            {
+                continue;
+            }
             let Some(system) = systems.at(slot)? else {
                 continue;
             };
@@ -445,9 +654,21 @@ pub fn walk_part_buffer(
                         return Err("supply node identity differs from array index");
                     }
                     let province = word(PROVINCE);
-                    provinces.province(memory, base, province)?;
+                    let country = system.country.id;
+                    // A null province is recorded as stored
+                    // (ProvinceCheck::is_null_province); a resolved one is
+                    // authenticated.
+                    observed.check(
+                        provinces,
+                        memory,
+                        base,
+                        ProvinceRole::Node,
+                        country,
+                        index,
+                        province,
+                    )?;
                     let parent = parents.parent(memory, province)?;
-                    provinces.parent(memory, base, parent)?;
+                    observed.parent(provinces, memory, base, country, index, parent)?;
                     let Some(route) = edges.read(parent, province, &mut provinces.routes)? else {
                         continue;
                     };
@@ -505,9 +726,18 @@ pub fn walk_part_buffer(
                         cut += 1;
                         break 'chains;
                     }
-                    provinces.province(memory, base, province)?;
+                    let country = system.country.id;
+                    observed.check(
+                        provinces,
+                        memory,
+                        base,
+                        ProvinceRole::Vertex,
+                        country,
+                        VERTEX | province,
+                        province,
+                    )?;
                     let parent = parents.parent(memory, province)?;
-                    provinces.parent(memory, base, parent)?;
+                    observed.parent(provinces, memory, base, country, VERTEX | province, parent)?;
                     let Some(route) = edges.read(parent, province, &mut provinces.routes)? else {
                         cut += 1;
                         break 'chains;
@@ -544,21 +774,29 @@ pub fn walk_part_buffer(
         outcome: result.unwrap_or_else(|reason| Outcome::Unavailable { reason }),
         paths: used,
         required_paths: required,
+        null_provinces: observed.null_provinces,
+        last_null_province: observed.last_null_province,
+        refusal: observed.refusal,
     }
 }
 
+/// Province lookup returns the census slot when `0 < id < count` (signed) and
+/// null otherwise; a resolved slot must hold the CProvince with this id.
 fn validate_province(
     memory: &impl Memory,
     base: usize,
     provinces: Array,
     province: u32,
-) -> Result<usize, &'static str> {
-    let p = provinces
+) -> Result<usize, ProvinceCheck> {
+    let slot = provinces
         .element(province, 8)
         .filter(|_| province != 0)
-        .and_then(|p| read::<u64>(memory, p))
-        .filter(|p| *p != 0)
-        .ok_or("supply province slot invalid")? as usize;
+        .ok_or(ProvinceCheck::OutsideCensus)?;
+    let p = read::<u64>(memory, slot).ok_or(ProvinceCheck::SlotUnreadable)?;
+    if p == 0 {
+        return Err(ProvinceCheck::SlotEmpty);
+    }
+    let p = p as usize;
     // A known pointer permits hints; the vtable still gates the actual ID read.
     crate::prefetch::span(p, 8);
     if let Some(id) = p.checked_add(crate::cprovince::ID) {
@@ -570,7 +808,7 @@ fn validate_province(
             .map(|v| v as u64)
         || read::<u32>(memory, p + crate::cprovince::ID) != Some(province)
     {
-        return Err("supply province identity mismatch");
+        return Err(ProvinceCheck::IdentityMismatch);
     }
     Ok(p)
 }
@@ -639,7 +877,7 @@ mod tests {
         assert_eq!(memo.allocated_bytes(), 0);
         assert_eq!(
             memo.province(&MemoMemory, 0, 0),
-            Err("supply province slot invalid")
+            Ok(Err(ProvinceCheck::OutsideCensus))
         );
         assert_eq!(memo.allocated_bytes(), 0);
         for province in [1, 5, 9, 2] {
@@ -648,7 +886,7 @@ mod tests {
             }
             let pointer = MemoMemory::pointer(province);
             previous[province as usize] = pointer;
-            assert_eq!(memo.province(&MemoMemory, 0, province), Ok(pointer));
+            assert_eq!(memo.province(&MemoMemory, 0, province), Ok(Ok(pointer)));
             assert_eq!(memo.pointers, previous);
             assert_eq!(memo.pointers.capacity(), previous.capacity());
             assert_eq!(
@@ -707,9 +945,9 @@ mod tests {
             assert_eq!(
                 validate_province(&memory, 0, PROVINCES, 1),
                 Err(if failed == 0 {
-                    "supply province slot invalid"
+                    ProvinceCheck::SlotUnreadable
                 } else {
-                    "supply province identity mismatch"
+                    ProvinceCheck::IdentityMismatch
                 })
             );
             assert_eq!(*memory.reads.borrow(), expected[..=failed]);
@@ -720,7 +958,7 @@ mod tests {
             memory.vtable = 0;
             assert_eq!(
                 validate_province(&memory, 0, PROVINCES, 1),
-                Err("supply province identity mismatch")
+                Err(ProvinceCheck::IdentityMismatch)
             );
             assert_eq!(
                 *memory.reads.borrow(),
@@ -731,14 +969,14 @@ mod tests {
         for province in [0, PROVINCES.count, u32::MAX] {
             assert_eq!(
                 validate_province(&memory, 0, PROVINCES, province),
-                Err("supply province slot invalid")
+                Err(ProvinceCheck::OutsideCensus)
             );
         }
         assert!(memory.reads.borrow().is_empty());
         memory.pointer = 0;
         assert_eq!(
             validate_province(&memory, 0, PROVINCES, 1),
-            Err("supply province slot invalid")
+            Err(ProvinceCheck::SlotEmpty)
         );
         assert_eq!(*memory.reads.borrow(), [(SLOT, 8)]);
     }
@@ -752,7 +990,7 @@ mod tests {
         memory.id = 2;
         assert_eq!(
             validate_province(&memory, 0, PROVINCES, 1),
-            Err("supply province identity mismatch")
+            Err(ProvinceCheck::IdentityMismatch)
         );
         assert_eq!(
             *memory.reads.borrow(),

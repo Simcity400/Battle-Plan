@@ -53,11 +53,108 @@ fn assembly_forwards_seven_slots_and_native_return() {
     ENABLED.store(false, Ordering::SeqCst);
     ORIGINAL.store(forwarding as *const () as usize, Ordering::Release);
     let entry: Writer = unsafe { std::mem::transmute(air_loss_entry as *const ()) };
+    let family = crate::hook_timing::Family::AirLosses;
+    let timed = crate::hook_timing::counts(family);
     assert_eq!(
         unsafe { entry(11, 22, 33, 44, 55, 66, 77) },
         0xfeed_0123_abcd_4567
     );
+    // Both halves are counted; the stub runs the original between them.
+    let after = crate::hook_timing::counts(family);
+    assert!(after.calls > timed.calls && after.returns > timed.returns);
     assert_eq!(*FORWARDED.lock().unwrap(), [11, 22, 33, 44, 55, 66, 77]);
+    assert_eq!(active(), 0);
+}
+/// Status sums the ledger's call and zero-write counts with the fast path's
+/// as their atomics count: wrapping, never panicking at the top of the range.
+#[test]
+fn status_sums_wrap_with_their_counters() {
+    let _owner = ObservationOwner::new();
+    let saved = [
+        LEDGER.calls.load(Ordering::Relaxed),
+        LEDGER.zero_writes.load(Ordering::Relaxed),
+        FAST_ZERO_WRITES.load(Ordering::Relaxed),
+    ];
+    LEDGER.calls.store(u64::MAX - 1, Ordering::Relaxed);
+    LEDGER.zero_writes.store(u64::MAX, Ordering::Relaxed);
+    FAST_ZERO_WRITES.store(3, Ordering::Relaxed);
+    let value = serde_json::to_value(status()).unwrap();
+    LEDGER.calls.store(saved[0], Ordering::Relaxed);
+    LEDGER.zero_writes.store(saved[1], Ordering::Relaxed);
+    FAST_ZERO_WRITES.store(saved[2], Ordering::Relaxed);
+    assert_eq!(value["calls"], 1);
+    assert_eq!(value["zero_writes"], 2);
+    assert_eq!(value["fast_zero_writes"], 3);
+}
+static PASSED: Mutex<[usize; 7]> = Mutex::new([0; 7]);
+#[allow(clippy::too_many_arguments)]
+unsafe extern "system" fn passed_through(
+    a: usize,
+    b: usize,
+    c: usize,
+    d: usize,
+    e: usize,
+    f: usize,
+    g: usize,
+) -> usize {
+    *PASSED.lock().unwrap() = [a, b, c, d, e, f, g];
+    // No observer flight: the writer runs with no collector frame below it.
+    assert_eq!(active(), 0);
+    0x0bad_cafe_f00d_1234
+}
+/// The hooked CALLs' target sends the writer's no-write calls (a null
+/// region, or a credited loss of cause 3, by the low byte and dword the
+/// observer and the native writer test) straight to it, with every argument
+/// and its return intact, counting them apart and entering neither observer
+/// half; every other call reaches the observer as before.
+#[test]
+fn the_dispatch_passes_the_writers_no_write_calls_straight_through() {
+    let _owner = ObservationOwner::new();
+    LEDGER.reset();
+    ENABLED.store(false, Ordering::SeqCst);
+    let dispatch: Writer = unsafe { std::mem::transmute(air_loss_dispatch as *const ()) };
+    let family = crate::hook_timing::Family::AirLosses;
+    ORIGINAL.store(passed_through as *const () as usize, Ordering::Release);
+    for arguments in [
+        [11, 22, 33, 0, 0, 66, 77],
+        [11, 22, 33, 1, 55, 66, 3],
+        [11, 22, 33, 0x101, 55, 66, 3],
+        [11, 22, 33, 1, 55, 66, 0x1_0000_0003],
+    ] {
+        let fast = FAST_ZERO_WRITES.load(Ordering::Relaxed);
+        let timed = crate::hook_timing::counts(family);
+        let calls = LEDGER.calls.load(Ordering::Relaxed);
+        let [a, b, c, d, e, f, g] = arguments;
+        assert_eq!(
+            unsafe { dispatch(a, b, c, d, e, f, g) },
+            0x0bad_cafe_f00d_1234
+        );
+        assert_eq!(*PASSED.lock().unwrap(), arguments);
+        assert_eq!(
+            FAST_ZERO_WRITES.load(Ordering::Relaxed),
+            fast + 1,
+            "{arguments:?}"
+        );
+        let after = crate::hook_timing::counts(family);
+        assert_eq!((after.calls, after.returns), (timed.calls, timed.returns));
+        assert_eq!(LEDGER.calls.load(Ordering::Relaxed), calls);
+    }
+    // Any other call is the observer's: own losses of every cause, credited
+    // losses of other causes, with a region.
+    ORIGINAL.store(forwarding as *const () as usize, Ordering::Release);
+    for arguments in [[11, 22, 33, 0, 55, 66, 3], [11, 22, 33, 1, 55, 66, 2]] {
+        let fast = FAST_ZERO_WRITES.load(Ordering::Relaxed);
+        let timed = crate::hook_timing::counts(family);
+        let [a, b, c, d, e, f, g] = arguments;
+        assert_eq!(
+            unsafe { dispatch(a, b, c, d, e, f, g) },
+            0xfeed_0123_abcd_4567
+        );
+        assert_eq!(*FORWARDED.lock().unwrap(), arguments);
+        assert_eq!(FAST_ZERO_WRITES.load(Ordering::Relaxed), fast);
+        let after = crate::hook_timing::counts(family);
+        assert!(after.calls > timed.calls && after.returns > timed.returns);
+    }
     assert_eq!(active(), 0);
 }
 core::arch::global_asm!(
@@ -362,14 +459,6 @@ fn setup(world: &World) {
     LEDGER.prepare(world.countries * 2);
     BASE.store(world.base(), Ordering::Relaxed);
     ENABLED.store(true, Ordering::SeqCst);
-    for ticks in [
-        &WRITER_TICKS,
-        &INTERVAL_TICKS,
-        &LAST_HOUR_TICKS,
-        &MAX_HOUR_TICKS,
-    ] {
-        ticks.store(0, Ordering::Relaxed);
-    }
     ORIGINAL.store(native_write as *const () as usize, Ordering::Release);
     boundary(clock(47));
     assert!(drain(&mut Vec::new()).is_err());
@@ -416,40 +505,117 @@ fn production_observers_keep_family_cause_opponent_and_refuse_saturation() {
     assert_eq!(LEDGER.refusals.load(Ordering::Relaxed), 1);
     assert_eq!(active(), 0);
 }
+/// The gathered operands publish the rows the serial reads publish, and a
+/// withheld gather (here forced; live a fault, a refusal or a new history)
+/// takes the serial reads once and counts it.
 #[test]
-#[ignore = "release synthetic production pre/post guarded-read timing; no native work included"]
-fn air_loss_scale_bench() {
+fn gathered_and_serial_operands_publish_identical_rows() {
     let _owner = ObservationOwner::new();
-    for countries in [1500, 5000] {
-        let mut world = World::new(countries);
-        setup(&world);
-        let mut frequency = 0;
-        unsafe {
-            windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency);
+    let mut world = World::new(5000);
+    world.u32(World::GAME + 0x800, 4999);
+    world.owner(5000);
+    let mut runs = Vec::new();
+    for serial in [false, true] {
+        for field in [30, 31, 71, 77] {
+            world.word(World::VALUES + field * 8, 0);
         }
-        FREQUENCY.store(frequency as u64, Ordering::Relaxed);
-        WRITER_TICKS.store(0, Ordering::Relaxed);
-        INTERVAL_TICKS.store(0, Ordering::Relaxed);
-        let started = std::time::Instant::now();
-        for country in 1..=countries {
+        FORCE_SERIAL.store(serial, Ordering::SeqCst);
+        setup(&world);
+        let fallbacks = SERIAL_FALLBACKS.load(Ordering::Relaxed);
+        world.invoke(0, 1);
+        world.invoke(1, 6);
+        boundary(clock(49));
+        FORCE_SERIAL.store(false, Ordering::SeqCst);
+        assert_eq!(
+            SERIAL_FALLBACKS.load(Ordering::Relaxed) - fallbacks,
+            if serial { 2 } else { 0 }
+        );
+        let mut rows = Vec::with_capacity(capacity());
+        assert_eq!(drain(&mut rows).unwrap(), 2);
+        assert_eq!(
+            (
+                rows[0].country,
+                rows[0].opponent,
+                rows[0].region,
+                rows[0].game_hour
+            ),
+            (5000, Some(4999), 23, 48)
+        );
+        runs.push(rows);
+    }
+    assert_eq!(runs[0], runs[1]);
+    // A refusal the serial reads make withholds the gather and still refuses.
+    setup(&world);
+    let fallbacks = SERIAL_FALLBACKS.load(Ordering::Relaxed);
+    world.owner(5001);
+    world.invoke(0, 1);
+    assert_eq!(SERIAL_FALLBACKS.load(Ordering::Relaxed) - fallbacks, 1);
+    assert_eq!(LEDGER.refusals.load(Ordering::Relaxed), 1);
+    assert_eq!(active(), 0);
+}
+#[test]
+#[ignore = "release per-call detour cost; run with --release --ignored --nocapture --test-threads=1"]
+fn hook_cost_air_losses() {
+    const COUNTRIES: usize = 1500;
+    let _owner = ObservationOwner::new();
+    let mut world = World::new(COUNTRIES);
+    setup(&world);
+    // Room for the eight timed and warm-up rounds' events, installed at the
+    // next drain.
+    LEDGER.prepare(8 * COUNTRIES);
+    boundary(clock(49));
+    assert_eq!(drain(&mut Vec::new()), Ok(0));
+    let hooked = crate::hook_timing::per_call_ns(COUNTRIES, || {
+        for country in 1..=COUNTRIES {
             world.owner(country as u32);
             world.invoke(0, 1);
         }
-        let elapsed = started.elapsed();
-        boundary(clock(49));
-        let drain_start = std::time::Instant::now();
-        let mut rows = Vec::with_capacity(capacity());
-        assert_eq!(drain(&mut rows).unwrap(), countries);
-        println!(
-            "air loss {countries} countries / events: {:?}, drain {:?}, event {} bytes, writer_ns {}, max_hour_writer_ns {}",
-            elapsed,
-            drain_start.elapsed(),
-            std::mem::size_of::<Entry>(),
-            ns(WRITER_TICKS.load(Ordering::Relaxed)),
-            ns(MAX_HOUR_TICKS.load(Ordering::Relaxed))
-        );
-        assert_eq!(LEDGER.refusals.load(Ordering::Relaxed), 0);
-    }
+    });
+    boundary(clock(50));
+    let mut rows = Vec::with_capacity(capacity());
+    assert_eq!(drain(&mut rows), Ok(8 * COUNTRIES));
+    assert_eq!(LEDGER.refusals.load(Ordering::Relaxed), 0);
+    let native = crate::hook_timing::per_call_ns(COUNTRIES, || {
+        for _ in 1..=COUNTRIES {
+            std::hint::black_box(unsafe {
+                native_write(
+                    world.pointer(World::AIR),
+                    world.pointer(World::WING),
+                    1,
+                    0,
+                    world.pointer(World::REGION),
+                    0,
+                    1,
+                )
+            });
+        }
+    });
+    // The guarded native reads alone: family, before and after.
+    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let (base, game) = (world.base(), world.pointer(World::GAME));
+    let reads = crate::hook_timing::per_call_ns(COUNTRIES, || {
+        for country in 1..=COUNTRIES {
+            world.owner(country as u32);
+            let family =
+                native::selected_family(&memory, base, world.pointer(World::WING), 0).unwrap();
+            let snapshot = native::before(
+                &memory,
+                base,
+                game,
+                world.pointer(World::AIR),
+                23,
+                0,
+                1,
+                family,
+            )
+            .unwrap();
+            std::hint::black_box(native::after(&memory, base, game, &snapshot).unwrap());
+        }
+    });
+    println!(
+        "hook_cost air_losses own loss: detour {:.1} ns/call (hooked {hooked:.1}, native {native:.1}; native reads {reads:.1})",
+        hooked - native
+    );
 }
 core::arch::global_asm!(
     ".text", ".globl air_loss_unwind_caller", ".seh_proc air_loss_unwind_caller",
@@ -492,6 +658,11 @@ struct Context(windows_sys::Win32::System::Diagnostics::Debug::CONTEXT);
 
 #[test]
 fn system_unwind_crosses_assembly_and_patched_native_caller_frames() {
+    // Publishing the patch suspends every thread; other patching tests take
+    // the same lock.
+    let _family = crate::hook::FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _owner = ObservationOwner::new();
     let site = air_loss_unwind_site as *const () as usize;
     let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }

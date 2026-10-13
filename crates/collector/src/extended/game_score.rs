@@ -140,6 +140,16 @@ impl AirCountry {
     }
 }
 
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub(crate) struct Witnessed<'a> {
+    pub(crate) countries: Vec<(native::AirRead, &'a [native::AirSite])>,
+    wings: &'a [native::WingRow],
+    required: [usize; 2],
+    outcome: Outcome,
+    allocation_failure: Option<&'static str>,
+}
+
 /// Shared by the owned wing acquisition and its typed fallback. No second
 /// strategic-air, base-registration or wing-payload walk is introduced.
 pub(crate) struct AirInputs {
@@ -198,6 +208,14 @@ impl AirInputs {
         grow_vec(&mut self.countries, crate::country_scale::census_rows(0));
         grow_vec(&mut self.sites.first, sites);
         grow_vec(&mut self.wings.rows, wings);
+    }
+    /// Growth follows the executing pass, not the storage: the frame lends
+    /// its fixed arenas back to the worker job each hour (`install_air`), and
+    /// a pool miss starts from empty storage. A worker pass grows them from
+    /// the acquired headers like the shared census it rides on; callback and
+    /// typed passes keep their fixed limits.
+    pub(crate) fn set_growing(&mut self, growing: bool) {
+        self.growing = growing;
     }
     pub(crate) fn wing_limit(&self) -> Option<usize> {
         self.enabled.then_some(if self.growing {
@@ -283,6 +301,64 @@ impl AirInputs {
         if let Some(destination) = self.wings.rows.get_mut(len) {
             *destination = native::read_wing(memory, pointer, row);
             self.written_wings = len + 1;
+        }
+    }
+    /// Joins `part`, the inputs of a census part that witnessed owner
+    /// slots from `first` on, after this one's: its first sites and wing
+    /// leaves follow these, and its owners index the joined sites.
+    pub(crate) fn absorb(&mut self, part: &AirInputs, first: usize) -> Result<(), &'static str> {
+        if !self.enabled {
+            return Ok(());
+        }
+        self.allocation_failure = self.allocation_failure.or(part.allocation_failure);
+        let offset = self.sites.len;
+        let end = offset
+            .checked_add(part.sites.len)
+            .ok_or("game score air-site join overflow")?;
+        engine::walk::Buffer::Growing(&mut self.sites.first).ensure(end)?;
+        self.sites.first[offset..end].copy_from_slice(&part.sites.first[..part.sites.len]);
+        self.sites.len = end;
+        self.sites.required = self.sites.required.saturating_add(part.sites.required);
+        self.required_countries = self.required_countries.max(part.required_countries);
+        // Short only after the part's own allocation failure, which it carries.
+        let end = part.required_countries.min(part.countries.len());
+        let slots = first.min(end)..end;
+        engine::walk::Buffer::Growing(&mut self.countries).ensure(end)?;
+        for (destination, country) in self.countries[slots.clone()]
+            .iter_mut()
+            .zip(&part.countries[slots])
+        {
+            *destination = AirCountry {
+                start: country.start + offset,
+                ..*country
+            };
+        }
+        let written = self.written_wings;
+        let end = written
+            .checked_add(part.written_wings)
+            .ok_or("game score wing join overflow")?;
+        engine::walk::Buffer::Growing(&mut self.wings.rows).ensure(end)?;
+        self.wings.rows[written..end].copy_from_slice(&part.wings.rows[..part.written_wings]);
+        self.written_wings = end;
+        self.required_wings = self.required_wings.saturating_add(part.required_wings);
+        Ok(())
+    }
+    /// Every witnessed country's read and first sites, the wing leaves and
+    /// the demand, for comparing two acquisitions.
+    #[cfg(test)]
+    pub(crate) fn witnessed(&self) -> Witnessed<'_> {
+        Witnessed {
+            countries: self.countries[..self.required_countries]
+                .iter()
+                .map(|country| {
+                    let end = country.start + country.read.len;
+                    (country.read, &self.sites.first[country.start..end])
+                })
+                .collect(),
+            wings: &self.wings.rows[..self.written_wings],
+            required: [self.required_wings, self.sites.required],
+            outcome: self.wings.outcome,
+            allocation_failure: self.allocation_failure,
         }
     }
     pub(crate) fn finish(&mut self, parent: Outcome) {
@@ -509,6 +585,9 @@ impl Captured {
     }
     pub(crate) fn install_air(&mut self, air: &mut AirInputs) {
         std::mem::swap(&mut self.air, air);
+        // A typed fallback on this frame never grows; the returned storage
+        // grows again on the worker's next pass.
+        self.air.set_growing(false);
         // The returned job grows its replacement buffers from this same hour's
         // demand before recycling; the spool grows the captured set separately.
         air.required_countries = air.required_countries.max(self.air.required_countries);

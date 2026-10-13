@@ -52,9 +52,7 @@ struct Output {
     variant: u64,
     mio: u64,
     units: i64,
-    credit: i64,
     spent: Option<i64>,
-    instant: Option<i64>,
     exact: bool,
 }
 
@@ -231,9 +229,7 @@ impl Totals {
                     variant: row.variant,
                     mio: row.mio,
                     units: 0,
-                    credit: 0,
                     spent: Some(0),
-                    instant: Some(0),
                     exact: true,
                 });
             }
@@ -257,13 +253,13 @@ impl Totals {
                     variant: output.variant,
                     mio: output.mio,
                     units: output.units,
-                    mio_credit: output.credit,
+                    mio_credit: replay::rows::RetiredI64::default(),
                     since_hour,
                     observed_since_creation,
                     ended: line.ended,
                     exact: output.exact && delivery_exact,
                     spent_raw: Recorded::Value(output.spent),
-                    instant_raw: Recorded::Value(output.instant),
+                    instant_raw: Recorded::Value(replay::rows::RetiredOptionalI64::default()),
                 }
             }));
         }
@@ -289,57 +285,44 @@ fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) {
                 variant: entry.variant,
                 mio: entry.mio,
                 units: 0,
-                credit: 0,
                 spent: Some(0),
-                instant: Some(0),
                 exact: true,
             });
             line.outputs.len() - 1
         }
     };
     let output = &mut line.outputs[index];
-    for (total, value) in [
-        (&mut output.units, entry.units),
-        (&mut output.credit, entry.credit),
-    ] {
-        if let Some(next) = total.checked_add(i64::from(value)) {
-            *total = next;
-        } else {
-            output.exact = false;
-        }
+    // The organisation credit and the instant progress are not recorded;
+    // only the delivered units and the factory spending accumulate.
+    if let Some(next) = output.units.checked_add(i64::from(entry.units)) {
+        output.units = next;
+    } else {
+        output.exact = false;
     }
     output.exact &= entry.exact;
     // Classification is coupled by the native instant predicate. Once known,
     // branch-total overflow is field-local and can never recover to zero.
-    let (spent, instant) = entry.spending.map_or((None, None), |(spent, instant)| {
-        (Some(spent), Some(instant))
-    });
-    for (total, value, reason) in [
-        (
-            &mut output.spent,
-            spent,
-            "production line spent_raw cumulative overflow",
-        ),
-        (
-            &mut output.instant,
-            instant,
-            "production line instant_raw cumulative overflow",
-        ),
-    ] {
-        let next = total
-            .zip(value)
-            .and_then(|(total, value)| total.checked_add(value));
-        if total.is_some() && value.is_some() && next.is_none() {
-            crate::line_output::refuse_spending(reason);
-        }
-        *total = next;
+    let spent = entry.spending.map(|(spent, _instant)| spent);
+    let next = output
+        .spent
+        .zip(spent)
+        .and_then(|(total, value)| total.checked_add(value));
+    if output.spent.is_some() && spent.is_some() && next.is_none() {
+        crate::line_output::refuse_spending("production line spent_raw cumulative overflow");
     }
+    output.spent = next;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use replay::frame::TABLE_COUNT;
+    use replay::rows::{RetiredI64, RetiredOptionalI64};
+
+    /// The retired instant spending every row publishes.
+    fn no_instant() -> Recorded<RetiredOptionalI64> {
+        Recorded::Value(RetiredOptionalI64::default())
+    }
 
     const LINE_A: u64 = 0x10_0000_0021;
     const LINE_B: u64 = 0x11_0000_0021;
@@ -448,7 +431,7 @@ mod tests {
         line: u64,
         ordinal: u32,
         (variant, mio): (u64, u64),
-        (units, mio_credit): (i64, i64),
+        units: i64,
         (observed_since_creation, ended): (bool, bool),
     ) -> ProductionLineOutputRow {
         ProductionLineOutputRow {
@@ -458,14 +441,42 @@ mod tests {
             variant,
             mio,
             units,
-            mio_credit,
+            mio_credit: RetiredI64::default(),
             since_hour: 100,
             observed_since_creation,
             ended,
             exact: true,
             spent_raw: Recorded::Value(Some(0)),
-            instant_raw: Recorded::Value(Some(0)),
+            instant_raw: no_instant(),
         }
+    }
+
+    #[test]
+    fn retired_credit_and_instant_never_change_published_output() {
+        let mut totals = Totals::default();
+        let lines = [(LINE_A, TANK, ORG)];
+        assemble(&mut totals, 7, 100, &frame(1, 0, &[]), census(&lines));
+        // Credits and instant progress that would overflow their running
+        // totals: neither is recorded, so units stay exact and spending
+        // stays known.
+        let ticks: Vec<Entry> = (0..3)
+            .map(|_| Entry {
+                spending: Some((5, i64::MAX)),
+                ..entry(LINE_A, TANK, ORG, 1, i32::MAX)
+            })
+            .collect();
+        let output = rows(assemble(
+            &mut totals,
+            7,
+            124,
+            &frame(1, 0, &ticks),
+            census(&lines),
+        ));
+        assert_eq!(output[0].units, 3);
+        assert!(output[0].exact);
+        assert_eq!(output[0].spent_raw, Recorded::Value(Some(15)));
+        assert_eq!(output[0].mio_credit, RetiredI64::default());
+        assert_eq!(output[0].instant_raw, no_instant());
     }
 
     #[test]
@@ -483,9 +494,12 @@ mod tests {
             census(&lines),
         ));
         assert_eq!(first[0].spent_raw, Recorded::Value(Some(i64::MAX)));
-        assert_eq!(first[0].instant_raw, Recorded::Value(Some(-11)));
+        assert_eq!(first[0].instant_raw, no_instant());
         assert!(first[0].exact);
-        assert_eq!((first[0].units, first[0].mio_credit), (0, 0));
+        assert_eq!(
+            (first[0].units, first[0].mio_credit),
+            (0, RetiredI64::default())
+        );
         tick.spending = Some((1, -7));
         tick.units = 2;
         tick.credit = 2;
@@ -497,9 +511,12 @@ mod tests {
             census(&lines),
         ));
         assert_eq!(second[0].spent_raw, Recorded::Value(None));
-        assert_eq!(second[0].instant_raw, Recorded::Value(Some(-18)));
+        assert_eq!(second[0].instant_raw, no_instant());
         assert!(second[0].exact);
-        assert_eq!((second[0].units, second[0].mio_credit), (2, 2));
+        assert_eq!(
+            (second[0].units, second[0].mio_credit),
+            (2, RetiredI64::default())
+        );
         tick.spending = Some((-1, 0));
         let last = rows(assemble(
             &mut totals,
@@ -510,7 +527,7 @@ mod tests {
         ));
         assert!(last[0].ended && last[0].exact);
         assert_eq!(last[0].spent_raw, Recorded::Value(None));
-        assert_eq!(last[0].instant_raw, Recorded::Value(Some(-18)));
+        assert_eq!(last[0].instant_raw, no_instant());
     }
 
     #[test]
@@ -529,10 +546,10 @@ mod tests {
         ));
         assert_eq!(
             (known[0].units, known[0].mio_credit, known[0].exact),
-            (3, 3, true)
+            (3, RetiredI64::default(), true)
         );
         assert_eq!(known[0].spent_raw, Recorded::Value(None));
-        assert_eq!(known[0].instant_raw, Recorded::Value(None));
+        assert_eq!(known[0].instant_raw, no_instant());
     }
 
     /// Ticks drained at the branch's first frame came before its sample; later
@@ -550,8 +567,8 @@ mod tests {
         assert_eq!(
             rows(published),
             [
-                row(LINE_A, 0, (TANK, ORG), (0, 0), (false, false)),
-                row(LINE_B, 0, (SHIP, 0), (0, 0), (false, false)),
+                row(LINE_A, 0, (TANK, ORG), 0, (false, false)),
+                row(LINE_B, 0, (SHIP, 0), 0, (false, false)),
             ]
         );
         // A day of production, off the census slot: carried, still counted.
@@ -583,10 +600,10 @@ mod tests {
         assert_eq!(
             rows(assemble(&mut totals, 7, 124, &next, census(&lines))),
             [
-                row(LINE_A, 0, (TANK, ORG), (3, 3), (false, false)),
-                row(LINE_A, 1, (TANK_2, ORG), (2, 2), (false, false)),
-                row(LINE_B, 0, (SHIP, 0), (1, 3), (false, true)),
-                row(LINE_C, 0, (TANK, ORG), (1, 1), (true, false)),
+                row(LINE_A, 0, (TANK, ORG), 3, (false, false)),
+                row(LINE_A, 1, (TANK_2, ORG), 2, (false, false)),
+                row(LINE_B, 0, (SHIP, 0), 1, (false, true)),
+                row(LINE_C, 0, (TANK, ORG), 1, (true, false)),
             ]
         );
         // The ended line was published once.
@@ -609,7 +626,7 @@ mod tests {
         let both = [(LINE_A, TANK, ORG), (LINE_B, SHIP, 0)];
         let only_a = [(LINE_A, TANK, ORG)];
         assemble(&mut totals, 7, 100, &frame(1, 10, &[]), census(&both));
-        let ended_b = row(LINE_B, 0, (SHIP, 0), (1, 1), (false, true));
+        let ended_b = row(LINE_B, 0, (SHIP, 0), 1, (false, true));
         // Line B completes and is deleted; that publication is not written.
         let day = frame(1, 10, &[entry(LINE_B, SHIP, 0, 1, 1)]);
         let lost = rows(unwritten(&mut totals, 7, 124, &day, census(&only_a)));
@@ -653,7 +670,7 @@ mod tests {
             ended,
             [ProductionLineOutputRow {
                 country: 6001,
-                ..row(LINE_A, 0, (TANK, 0), (3, 3), (true, true))
+                ..row(LINE_A, 0, (TANK, 0), 3, (true, true))
             }]
         );
         assert!(
@@ -803,7 +820,10 @@ mod tests {
         );
         let rest = frame(1, 13, &[entry(LINE_A, TANK, ORG, 2, 2)]);
         let published = rows(assemble(&mut totals, 7, 125, &rest, census(&lines)));
-        assert_eq!((published[0].units, published[0].mio_credit), (3, 3));
+        assert_eq!(
+            (published[0].units, published[0].mio_credit),
+            (3, RetiredI64::default())
+        );
     }
 
     /// A line absent from the first census whose ticks were drained no later
@@ -829,7 +849,7 @@ mod tests {
             published[1],
             ProductionLineOutputRow {
                 exact: false,
-                ..row(LINE_B, 0, (SHIP, 0), (1, 2), (false, true))
+                ..row(LINE_B, 0, (SHIP, 0), 1, (false, true))
             }
         );
     }
@@ -897,7 +917,10 @@ mod tests {
             census(&lines),
         ));
         assert_eq!(equipment.len(), 1); // no Rocket/fake line0 in equipment
-        assert_eq!((equipment[0].units, equipment[0].mio_credit), (7, 7));
+        assert_eq!(
+            (equipment[0].units, equipment[0].mio_credit),
+            (7, RetiredI64::default())
+        );
         assert_eq!(equipment[0].spent_raw, Recorded::Value(Some(24)));
         assert!(!equipment[0].exact);
         let rocket = totals.rocket_publication(&census(&lines)).unwrap().unwrap();

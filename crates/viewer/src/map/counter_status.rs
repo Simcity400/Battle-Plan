@@ -92,7 +92,9 @@ pub struct Member {
     pub naval_transfer: bool,
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
-    pub attrition: u8,
+    /// The division's stored attrition (+0x438) exceeds its recorded threshold.
+    /// This is the counter's attrition-presence predicate.
+    pub attrition: bool,
     pub exercising: u8,
     /// The raw division's group is present; an ungrouped member skips both
     /// order-icon branches even when its invalid-orders byte is nonzero.
@@ -222,7 +224,7 @@ pub fn glyphs(members: &[Member], thresholds: Option<SupplyThresholds>) -> Glyph
     Glyphs {
         supply: thresholds.and_then(|limits| supply_frame(stack_supply(members), limits)),
         digin: if training { None } else { digin_frame(members) },
-        attrition: members.iter().any(|member| member.attrition != 0),
+        attrition: members.iter().any(|member| member.attrition),
         training,
         no_orders,
         invalid_orders,
@@ -381,7 +383,7 @@ mod tests {
         let busy = Member {
             entrenchment: FIXED,
             entrenchment_cap: FIXED,
-            attrition: 1,
+            attrition: true,
             exercising: 1,
             grouped: true,
             own: true,

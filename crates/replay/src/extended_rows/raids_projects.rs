@@ -59,15 +59,15 @@ value_struct!(RaidSource {kind: Option<u32>, kind_present: u8, province: u32, sh
 /// `None` when the reference does not resolve.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RaidScope {
-    /// `+8` CProvince id.
+    /// `+8` province id.
     pub province: u32,
-    /// `+0x10` CState id.
+    /// `+0x10` state id.
     pub state: u32,
     /// `+0x18` full character reference.
     pub leader_reference: u64,
-    /// `+0x20` CProvince id, the save's `leader_province`.
+    /// `+0x20` province id, the save's `leader_province`.
     pub leader_province: u32,
-    /// `+0` CBuilding's lexer type token.
+    /// `+0` building's lexer type token.
     pub building_type: u32,
     pub building_location: u32,
     pub building_flags: u32,
@@ -397,22 +397,14 @@ pub struct RaidEquipmentRow {
 typed_codec!(RaidEquipmentRow, 64, |row| (row.id as u128) << 32 | row.reference_type as u128, |key| Self { id: (key >> 32) as u32, reference_type: key as u32, ..Default::default() },
  { 0 => (phase): I32, 1 => (end_hour): OptionalI32, 2 => (variants): U64List, 3 => (amounts): Opaque, 4 => (nukes): I32, 5 => (archetype_tokens): U32List, 6 => (archetype_amounts): Opaque }, |_row| Ok(()));
 
-/// RaidCountryInputs: key canonical slot. Raid-offer inputs missing from
-/// `Countries`: effective range modifiers, autonomous flag (absent past
-/// the controller arrays), and convoy reservations as flattened
-/// `(priority, quantity)` pairs. Command power and ace country modifiers
-/// come from [`CountryCommandPowerRow`], read hourly.
+/// RaidCountryInputs: key canonical slot. What raid offers need that `Countries` lacks:
+/// the effective getter values of the range modifiers, the autonomous flag (`game
+/// state+0x370`, absent past the controller arrays) and the convoy reservations as
+/// flattened `(priority, quantity)` pairs. Command power and the ace country modifiers
+/// are [`CountryCommandPowerRow`]'s.
 ///
-/// Sliced, daily (owner: canonical slot, with `StockpileArchetypes`,
-/// `RaidAirSites` and `AceRangeInputs`): each country is re-read in its
-/// daily 1/24 slice, with no change fingerprint (owner rule: no harsher
-/// than the game, which re-checks raid offers in a rolling sweep): an
-/// owner new to the census, or whose read was not published, is read at
-/// the next hour. A value is the one at its owner's read hour and can lag
-/// up to a day.
-/// Every read country has a row here, so this table is the family's hour
-/// source: its owners' read hours are the ones in `SliceReads`
-/// (`replay::sliced::read_hour`).
+/// Hourly, every country, in the same country pass as `CountryCommandPower`: the game's
+/// offer cache re-checks every offer at least hourly.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RaidCountryInputRow {
     pub canonical_slot: u32,
@@ -432,14 +424,15 @@ typed_codec!(RaidCountryInputRow, 32, |row| row.canonical_slot as u128, |key| Se
 /// sites, tried as raid sources, with the country's container capacity at
 /// each base, absent without a container.
 ///
-/// Sliced, daily, with `RaidCountryInputs`: the lists and capacities at
-/// the country's read hour.
+/// Sliced, with `StockpileArchetypes`: each country's daily slice and every
+/// country a hooked site list or capacity writer marked since the previous
+/// hour, so the lists and capacities equal the game's at every hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RaidAirSiteRow {
     pub canonical_slot: u32,
     pub ordinal: u32,
     pub list: u8,
-    /// Full `CAirBase` handle; join it to AirBases.
+    /// Full `air base` handle; join it to AirBases.
     pub base: u64,
     pub container_capacity_raw: Option<i64>,
 }
@@ -451,8 +444,7 @@ typed_codec!(RaidAirSiteRow, 64, |row| (row.canonical_slot as u128) << 32 | row.
 /// assigned wing, alive byte and effective key 5 values from its own and
 /// its type's modifier accumulators.
 ///
-/// Sliced, daily, with `RaidCountryInputs`: the roster at the country's
-/// read hour.
+/// Hourly, every country, in the same country pass as `RaidCountryInputs`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AceRangeInputRow {
     pub canonical_slot: u32,

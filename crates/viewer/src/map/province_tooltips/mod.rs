@@ -1,4 +1,5 @@
 //! Political-map location and viewer-selected unit tooltip.
+mod air_region;
 mod border;
 pub(super) mod clock;
 mod selected_attack;
@@ -28,9 +29,15 @@ pub struct Content {
     impassable: BTreeSet<u32>,
     neighbors: Result<BTreeMap<u32, Vec<u32>>, String>,
     temperature: Result<installed_content::weather::TemperatureRanges, String>,
-    clock: Result<clock::Defines, String>,
+    /// What the hourly temperature pass reads ([`replay::temperature`]), and the last frame's
+    /// derivation, which the next hour of the same anchor steps once from.
+    pass: Result<replay::temperature::Content, String>,
+    derived: std::sync::Mutex<replay::temperature::Memo>,
     pub(super) units: Result<units::Content, String>,
     border: Result<border::Defines, String>,
+    /// `NGame.AIR_LOG_TIMEOUT_HOURS`, the daily prune's window
+    /// ([`replay::air_region_derive`]).
+    air_log_timeout: Result<i32, String>,
 }
 
 impl Content {
@@ -44,31 +51,32 @@ impl Content {
             .iter()
             .map(|(&id, state)| (id, state.provinces.clone()))
             .collect();
+        let graph = installed_content::province_graph::ProvinceGraph::read(layers);
         Self {
             impassable: states
                 .iter()
                 .filter_map(|(&id, state)| state.impassable.then_some(id))
                 .collect(),
-            neighbors: installed_content::province_graph::ProvinceGraph::read(layers)
-                .and_then(|(graph, _)| graph.neighbor_states(&members))
-                .map_err(|e| e.to_string()),
+            neighbors: graph
+                .as_ref()
+                .map_err(|e| e.to_string())
+                .and_then(|(graph, _)| graph.neighbor_states(&members).map_err(|e| e.to_string())),
+            pass: graph
+                .as_ref()
+                .map_err(|e| e.to_string())
+                .and_then(|(graph, geometry)| {
+                    installed_content::weather::temperature::read_with(layers, graph, geometry)
+                        .map_err(|e| e.to_string())
+                }),
+            derived: Default::default(),
             members,
             temperature: combat.temperature.clone(),
-            clock: clock::Defines::load(defines).map_err(|e| e.to_string()),
             units: units::Content::load(defines, combat.sub_units()),
             border: border::Defines::load(defines).map_err(|e| e.to_string()),
+            air_log_timeout: defines
+                .int32("NGame", "AIR_LOG_TIMEOUT_HOURS")
+                .map_err(|e| e.to_string()),
         }
-    }
-
-    /// Border power for the unit attrition hover.
-    pub(crate) fn border_ratio(
-        &self,
-        frame: &DecodedFrame,
-        country: u32,
-        state: u32,
-        links: &BTreeMap<u32, u32>,
-    ) -> Result<i64, String> {
-        border::ratio(self, frame, country, state, links)
     }
 
     pub fn warnings(&self) -> Vec<String> {
@@ -81,7 +89,49 @@ impl Content {
         if let Ok(temperature) = &self.temperature {
             warnings.extend(temperature.notes.iter().cloned());
         }
+        if let Err(reason) = &self.pass {
+            warnings.push(format!(
+                "Province temperatures cannot be derived from the recorded content ({reason}); recordings that store only their inputs show none."
+            ));
+        }
         warnings
+    }
+
+    /// The enemy share of `state`'s border-war power from `country`'s side
+    /// in mode zero (a raw link; `links` resolves raw links to canonical slots),
+    /// for the attrition hover.
+    pub(crate) fn border_enemy_share(
+        &self,
+        frame: &DecodedFrame,
+        country: u32,
+        links: &BTreeMap<u32, u32>,
+        state: u32,
+    ) -> Result<i64, String> {
+        border::enemy_share(self, frame, country, links, state)
+    }
+
+    /// The temperature `province`'s record holds at the frame's hour, which the game reads:
+    /// recorded, or derived from the frame's anchor and pass with the recorded content.
+    fn temperature_at(
+        &self,
+        frame: &DecodedFrame,
+        rows: &[replay::rows::WeatherProvinceRow],
+        province: u32,
+    ) -> Result<i64, String> {
+        let mut derived = self
+            .derived
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let states = derived.states(
+            frame.branch,
+            frame.hour,
+            rows,
+            self.pass.as_ref().map_err(String::as_str),
+        )?;
+        states
+            .get(province as usize)
+            .map(|state| state.temperature)
+            .ok_or_else(|| "province weather absent".into())
     }
 }
 
@@ -247,6 +297,7 @@ fn build(
             Err(e) => line(&mut out, "pin header", 0, Err(e)),
         }
     }
+    air_region::append(&context, &mut out);
     let selected = selection::build(&context, selected, nato);
     selection::append(&mut out, selected, &content.names.localisation);
     // Native click/ping/order footers are omitted: replay has no such actions.
@@ -414,13 +465,18 @@ impl Context<'_> {
             "weather",
             1,
             (|| {
-                let weather = self
+                let rows = self
                     .frame
                     .complete::<tables::WeatherProvinces>()
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| e.to_string())?;
+                let weather = rows
                     .iter()
                     .find(|r| r.id == p.id)
                     .ok_or("province weather absent")?;
+                let temperature = self
+                    .content
+                    .province_hover
+                    .temperature_at(self.frame, rows, p.id);
                 let region = self
                     .content
                     .counters
@@ -442,6 +498,7 @@ impl Context<'_> {
                         .as_ref()
                         .map_err(Clone::clone)?
                         .ranges,
+                    temperature,
                     weather,
                     region,
                 )
@@ -459,32 +516,26 @@ impl Context<'_> {
                     .iter()
                     .find(|row| row.id == p.id)
                     .ok_or("province weather absent")?;
-                let clock = clock::resolve(weather, || {
-                    let flags = self
-                        .frame
-                        .complete::<tables::SimulationFeatures>()
-                        .map_err(|e| e.to_string())?
-                        .first()
-                        .ok_or("simulation features absent")?
-                        .weather_suspend
-                        .require("SimulationFeatures.weather_suspend")?;
-                    let centroid = self
-                        .content
-                        .province_geometry
-                        .map_position(p.id)
-                        .ok_or("province centroid absent")?;
-                    clock::derive(
-                        self.frame.hour,
-                        centroid,
-                        [self.content.map.width, self.content.map.height],
+                let clock = clock::resolve(
+                    weather,
+                    |province| {
                         self.content
-                            .province_hover
-                            .clock
-                            .as_ref()
-                            .map_err(Clone::clone)?,
-                        *flags,
-                    )
-                })?;
+                            .icons
+                            .raids
+                            .updated_clock(province, self.frame.hour)
+                            .map_err(str::to_owned)
+                    },
+                    || {
+                        self.frame
+                            .complete::<tables::SimulationFeatures>()
+                            .map_err(|e| e.to_string())?
+                            .first()
+                            .ok_or("simulation features absent")?
+                            .weather_suspend
+                            .require("SimulationFeatures.weather_suspend")
+                            .copied()
+                    },
+                )?;
                 self.loc(
                     "PROV_TOOLTIP_LOCAL_TIME",
                     &[

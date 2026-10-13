@@ -6,7 +6,9 @@ use std::{
 use installed_content::save::{self, Save};
 use replay::{
     frame::DecodedFrame,
-    rows::{CountryRow, Recorded, TableId, tables},
+    rows::{
+        CountryRow, DivisionRow, DivisionStatusRow, DivisionSupplyFooter, Recorded, TableId, tables,
+    },
 };
 
 use super::{
@@ -88,6 +90,7 @@ pub(super) fn compare_division_movement(
 ) -> io::Result<()> {
     let rows = complete::<tables::DivisionMovement>(frame)?;
     let mut seen = BTreeSet::new();
+    let mut base_speeds = 0;
     for row in rows {
         if row.division == 0 || !seen.insert(row.division) {
             return Err(invalid("null or duplicate movement division"));
@@ -102,46 +105,16 @@ pub(super) fn compare_division_movement(
         };
         let saved = &saved.presentation;
         let label = format!("division movement {}", row.division);
-        if let Some(fresh) = report.recorded(&row.fresh, "DivisionMovement.fresh", &label) {
-            match fresh {
-                None => report.difference(
-                    format!("{label}.fresh"),
-                    "unavailable",
-                    "required current-hour operands",
-                ),
-                Some(fresh) => {
-                    report.scalar_checks += 1;
-                    if fresh.sample_hour != frame.hour {
-                        report.difference(
-                            format!("{label}.fresh.sample_hour"),
-                            fresh.sample_hour,
-                            frame.hour,
-                        );
-                    }
-                    if row.path_total != 0 && fresh.current_speed.is_none() {
-                        report.difference(
-                            format!("{label}.fresh.current_speed"),
-                            "unavailable",
-                            "required first-edge speed",
-                        );
-                    }
-                    if let Some(normal) = &fresh.normal {
-                        let mut terrains = BTreeSet::new();
-                        for terrain in &normal.terrain_speed {
-                            if terrain.terrain <= 0 || !terrains.insert(terrain.terrain) {
-                                return Err(invalid(format!(
-                                    "{label}.fresh.normal has a nonpositive or duplicate terrain key"
-                                )));
-                            }
-                        }
-                    } else {
-                        report.limitation("fresh normal domain was not reached or unavailable; transfer, invasion and unblocked rail branches legitimately omit it, so this absence is never a zero-speed value", format!("{label}.fresh.normal"));
-                    }
-                    if fresh.rail.is_none() {
-                        report.limitation("fresh rail domain was not reached or unavailable; ordinary, transfer and invasion branches legitimately omit it, so this absence is never a zero modifier", format!("{label}.fresh.rail"));
-                    }
-                }
-            }
+        // The stat-block speed is read for every division with a route; a
+        // division without one is outside its demand.
+        match report.recorded(&row.base_speed, "DivisionMovement.base_speed", &label) {
+            Some(Some(_)) => base_speeds += 1,
+            Some(None) if row.path_total != 0 => report.difference(
+                format!("{label}.base_speed"),
+                "unavailable",
+                "required stat-block speed for a nonempty route",
+            ),
+            _ => {}
         }
         report.scalar_checks += 5;
         if row.path != saved.path || row.path_total as usize != saved.path.len() {
@@ -259,114 +232,23 @@ pub(super) fn compare_division_movement(
         report.difference(format!("division movement {id}"), "absent", "present");
     }
     report.compared("DivisionMovement", rows.len());
-    report.limitation("fresh counter ETA operands are checked at the current frame hour independently of the legacy stored-route sample. Fresh first-edge speed, prepared normal modifiers and terrain contributions, and effective strategic-rail modifiers have no direct saved scalar counterpart; saved organisation, equipment, buildings and traits do not certify the live composed caches. The fresh route is searched in replay from simulation and matching content. Native local UI selection and hover-cache history are not recorded; cache lag is a presentation difference. Exact fresh route and duration fidelity requires matched live comparison", "DivisionMovement.fresh runtime operands");
+    report.limitation("base_speed is the raw signed fixed5 maximum speed of the division's stat block (maximum-speed field +0x290 of the stat block at +0x138), from which movement-speed calculation starts. The division writer does not save the stat block, so the save has no counterpart; saved template, equipment and traits do not certify the composed cache. Rows without a route are outside its demand; a nonempty route without it is a difference. Matched native observations remain necessary", format!("DivisionMovement.base_speed: {base_speeds} rows recorded, not compared"));
     report.limitation("the unit save writer saves withdraw only as zero/nonzero truth, not the raw nonzero byte identity", "DivisionMovement.withdrawal raw byte");
     report.limitation("effective strategic-action modifiers and per-row query failures have no text-save counterpart; the save omits the queried runtime accumulators. Saved route, target and strategic truth remain compared. Native evidence is in the engine README's strategic-action contract", "DivisionMovement.strategic_action");
-    report.limitation("remaining hours are derived, not stored: fresh counter previews use current-hour DivisionMovement.fresh operands and replay-searched routes; legacy stored-route ETA uses the retained DivisionEtaInputs companion, which route and progress alone cannot supply", "DivisionMovement ETA companion");
+    report.limitation("remaining hours are estimated at playback, not stored: the recorded route, progress numerator and base_speed with matching-content distances. The edge modifiers, organisation and fuel factors of the hourly speed are not recorded, so estimates can differ from the native arrival time; the save has no arrival time to compare", "DivisionMovement arrival estimates");
     report.limitation("retreat/transfer predicates and the first-combat role and province are not independently compared here; the viewer derives progress and the stack kind from them and content", "DivisionMovement unverified fields");
     report.limitation("map_entity records whether the map-entity pointer is set; the army and unit writers do not serialize it, so it has no save counterpart and needs a paused live-memory check (the combat wedge points from the first attacker that has one)", "DivisionMovement.map_entity");
     Ok(())
 }
 
-/// The derived ETA replaces the native DivisionEta walk: its operands are these
-/// per-leg vectors over the same stored route DivisionMovement records.
-pub(super) fn compare_division_eta_inputs(
-    frame: &DecodedFrame,
-    save: &Save,
-    report: &mut Report,
-) -> io::Result<()> {
-    let rows = complete::<tables::DivisionEtaInputs>(frame)?;
-    let mut seen = BTreeSet::new();
-    let mut fresh = 0;
-    let mut carried = 0;
-    let mut oldest = frame.hour;
-    for row in rows {
-        if row.division == 0 || !seen.insert(row.division) {
-            return Err(invalid("null or duplicate ETA input division"));
-        }
-        if !row.valid_at(frame.hour) {
-            return Err(invalid("ETA input read hour is future or expired"));
-        }
-        let label = format!("division ETA inputs {}", row.division);
-        let Some(saved) = save.divisions.get(&row.division) else {
-            report.difference(label, "present", "absent");
-            continue;
-        };
-        let route = &saved.presentation.path;
-        report.scalar_checks += 1;
-        // The native scan skips self edges and stops at a zero-speed leg.
-        // The saved route bounds the evaluated span; no mandatory per-leg
-        // vector remains to prove where the scan stopped.
-        let mut from = saved.province.unwrap_or(0);
-        let possible_legs = route
-            .iter()
-            .filter(|&&to| {
-                let distinct = from != to;
-                from = to;
-                distinct
-            })
-            .count();
-        if route.is_empty() {
-            report.difference(format!("{label}.route"), "present", "absent");
-            continue;
-        }
-        // A carried row's route and location are witnessed unchanged since its
-        // read, so the saved route bounds its spans as it bounds a fresh row's;
-        // a failure here is a missed route change, not operand age.
-        if row.sample_hour == frame.hour {
-            fresh += 1;
-        } else {
-            carried += 1;
-            oldest = oldest.min(row.sample_hour);
-        }
-        let mut branch_span = None;
-        for (name, count) in [
-            ("leg_river_combined", row.leg_river_combined.len()),
-            ("leg_transport_speed", row.leg_transport_speed.len()),
-            ("leg_rail_speed", row.leg_rail_speed.len()),
-        ] {
-            if count > possible_legs {
-                report.difference(
-                    format!("{label}.{name}"),
-                    count,
-                    format!("at most {possible_legs}"),
-                );
-            } else if count != 0 {
-                match branch_span {
-                    Some(span) if count != span => {
-                        report.difference(format!("{label}.{name}"), count, span);
-                    }
-                    None => branch_span = Some(count),
-                    _ => {}
-                }
-            }
-        }
-    }
-    // Every nonempty route has a row, including routes containing only self edges.
-    for id in save
-        .divisions
-        .iter()
-        .filter(|(id, division)| !division.presentation.path.is_empty() && !seen.contains(id))
-        .map(|(id, _)| id)
-    {
-        report.difference(format!("division ETA inputs {id}"), "absent", "present");
-    }
-    report.compared("DivisionEtaInputs", fresh + carried);
-    if carried != 0 {
-        report.compared(
-            &format!("DivisionEtaInputs rows carried from an earlier read (oldest hour {oldest})"),
-            carried,
-        );
-    }
-    report.limitation("next_remaining and destination_remaining are derived at replay from these operands, matching-content native adjacency distances and the authored embark define as native signed i64 fixed5 remaining hours, not saved timestamps. The invasion gate is evaluated in replay from the division class, original location, first stored route province and matching-content terrain flags; the save does not independently serialize those flags. The strategic-rail blocked gate is evaluated in replay from current country, state and friendly-state effective modifier operands; the save has no independent comparison for those values or the friendly branch. The save checks the nonempty-route division census and bounds optional branch-vector lengths by the route's distinct edges; it cannot establish the evaluated-leg count or why a scan stopped early. It has no independent comparator for the per-leg operands, native distances or authored embark value. Exact duration correctness requires live comparison with the engine ETA at the same sampled instant, including normal, rail and naval-transfer routes. Consistency double reads alone do not certify the arithmetic", "DivisionEtaInputs unsaved durations");
-    report.limitation("these operands carry their latest read hour and may be up to four completed hours old between five-hour stagger slots (the same cache lifetime as the game). Every row's census, provenance and route-bounded spans are checked; the save cannot compare operand values, fresh or carried. The native tooltip displays remaining hours using signed fixed5 ceiling, i32 narrowing and positive-only visibility. Adding a derived duration to the recorded hour gives a projected arrival, not a guaranteed future arrival. Retain derived zero/negative/sentinel results without substituting estimates. An absent row means no route and no displayed ETA; unavailable/truncated source data is a gap, not zero-duration travel. A zero result on a nonempty route must not be presented as an independently proven immediate arrival", "DivisionEtaInputs consumer contract");
-    Ok(())
-}
-
+/// `camo_show_at` is the content's `NGraphics.ACCLIMATIZATION_CAMO_SHOW_AT`,
+/// which the recorded camouflage is compared under.
 pub(super) fn compare_division_status(
     frame: &DecodedFrame,
     save: &Save,
     tokens: &TokenNames<'_>,
+    camo_show_at: &Result<i64, String>,
+    supply_grace: &Result<i32, String>,
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = complete::<tables::DivisionStatus>(frame)?;
@@ -438,25 +320,31 @@ pub(super) fn compare_division_status(
                 }
             }
         }
-        compare_acclimatization(
+        compare_camouflage(
             &format!("division status {}", row.division),
             row,
             saved.presentation.acclimatization.as_ref(),
             tokens,
+            camo_show_at,
             report,
         );
         // The army writer saves both signed fixed5 fields
         // unconditionally. An older recording's appended field stays absent.
-        for (name, value, saved) in [
+        // The remaining grace is stored at the whole percent of its share
+        // (DivisionStatusRow::displayed_grace); the save's exact value is
+        // rounded the same way with the content's SUPPLY_GRACE.
+        for (name, value, saved, displayed) in [
             (
                 "supply_grace_maximum",
                 &row.supply_grace_maximum,
                 saved.presentation.max_supply.as_ref(),
+                false,
             ),
             (
                 "supply_grace_remaining",
                 &row.supply_grace_remaining,
                 saved.presentation.army_current_supply_ratio.as_ref(),
+                true,
             ),
         ] {
             if let Some(value) = report.recorded(
@@ -464,12 +352,26 @@ pub(super) fn compare_division_status(
                 &format!("DivisionStatus.{name}"),
                 format!("division status {}.{name}", row.division),
             ) {
-                report.scalar(
-                    &format!("division status {}", row.division),
-                    name,
-                    Some(*value),
-                    saved,
-                );
+                let label = format!("division status {}", row.division);
+                if displayed {
+                    let precision = match supply_grace {
+                        Ok(hours) => format!(
+                            "whole percent of the share over NMilitary.SUPPLY_GRACE ({hours} hours), toward zero"
+                        ),
+                        Err(reason) => format!("0.01 (fixed5, toward zero): {reason}"),
+                    };
+                    report.scalar_displayed_by(
+                        &label,
+                        name,
+                        Some(*value),
+                        saved,
+                        &format!("DivisionStatus.{name}"),
+                        &precision,
+                        |raw| DivisionStatusRow::displayed_grace(raw, supply_grace.clone().ok()),
+                    );
+                } else {
+                    report.scalar(&label, name, Some(*value), saved);
+                }
             }
         }
         if let Some(supply) = report.recorded(
@@ -482,12 +384,17 @@ pub(super) fn compare_division_status(
                 Some(supply) => {
                     // The supply consumer save writer emits token 0x4CF2
                     // only for disruption > 0; omission never proves zero.
+                    // The footer is stored at its display step
+                    // (replay::display), which keeps the sign; the save's
+                    // exact value is rounded the same way.
                     if let Some(saved) = saved.presentation.disrupted_supply.as_ref() {
-                        report.scalar(
+                        report.scalar_displayed(
                             &label,
                             "supply.disrupted_supply",
                             Some(supply.disruption),
                             Some(saved),
+                            "DivisionStatus.supply.disruption",
+                            DivisionSupplyFooter::STEP,
                         );
                     } else {
                         report.scalar_checks += 1;
@@ -553,23 +460,97 @@ pub(super) fn compare_division_status(
     report.compared("DivisionStatus", rows.len());
     report.limitation("invalid_orders_reason is the raw signed reason word selected after the counter's first invalid-order gate. Neither the unit writer nor the army writer serializes it; a separate same-width saved field is a different operand. A fresh save cannot certify this tooltip reason; matched counter hovers remain necessary", "DivisionStatus.invalid_orders_reason");
     report.limitation("border_combat_stats copies defense/soft/hard attack from the army stat cache for the exact active-state army union. The army writer does not save that cache; membership/location and saved HP/organisation checks do not certify these values", "DivisionStatus.border_combat_stats");
-    report.limitation("the supply consumer save writer saves only positive disruption; omission certifies only the nonpositive branch. The asked/received, state/air-drop receipts, demand pairs and origin rows of the supply footer are unsaved runtime caches. Their displayed amounts and aggregation still require matched native hovers", "DivisionStatus.supply runtime operands");
-    report.limitation("the army save writer does not serialize the fresh attrition calculation's terrain, weather, supply-penalty and selected modifier operands or their provenance trees. Saved strength and supply disruption cannot certify that calculation or its tooltip breakdown; matched native hovers remain necessary", "DivisionStatus.attrition_inputs");
-    report.limitation("effective maximum HP/organisation, the strength factor, counter supply input, attrition threshold/input/icon, actual exercising and order-membership predicates are derived or unsaved; entrenchment, its cap and acclimatization compare to save fields. Omitted entrenchment values prove nonpositive, not exactly zero. Source code and double reads do not replace live counter reference pairs", "DivisionStatus unverified fields");
+    report.limitation("the supply consumer save writer saves only positive disruption; omission certifies only the nonpositive branch. The asked/received, state/air-drop receipts, demand pairs and origin rows of the supply footer are unsaved runtime caches, stored at the footer's display step. Their displayed amounts and aggregation still require matched native hovers", "DivisionStatus.supply runtime operands");
+    report.limitation("effective maximum HP/organisation, the strength factor, counter supply input, attrition threshold/input/icon, actual exercising and order-membership predicates are derived or unsaved; entrenchment, its cap and camouflage (or an older recording's acclimatization) compare to save fields. Omitted entrenchment values prove nonpositive, not exactly zero. Source code and double reads do not replace live counter reference pairs", "DivisionStatus unverified fields");
     report.limitation("model_number is the stored army model number, which the army writer does not serialize; active-stat updates rewrite it once a day per division and on template change, deploy and unit creation, so it has no save counterpart and needs a matched-hour screenshot of the drawn model suffix", "DivisionStatus.model_number");
-    report.limitation("the army writer omits the whole acclimatization block unless an entry weighs above zero, so such a division compares only that omission; within the block the game skips zero weights, so only nonzero entries compare in order; a division whose acclimatization was unreadable that hour carries no maximum and is not compared", "DivisionStatus.acclimatization");
+    report.limitation("camouflage is what the game takes from the division with the live NGraphics.ACCLIMATIZATION_CAMO_SHOW_AT; it compares with the same decision over the saved acclimatization block and the content's define. The army writer omits that block unless an entry weighs above zero, when no category can show, and the game skips zero weights, which never win. The saved block cannot show a null winning category pointer. A division whose camouflage was unreadable that hour is not compared. An older recording's acclimatization compares entry by entry instead: only the omission without a positive weight, nonzero entries in order and the maximum", "DivisionStatus.camouflage");
     report.limitation("supply_ratio is the raw fixed5 supply operand: the counter ignores it during naval transfer and applies presentation thresholds/visibility/stack selection. has_order is the order-membership predicate, false for ungrouped units", "DivisionStatus consumer contract");
     report.limitation("DivisionStatus.move_flags combines exile truth with can_exfiltrate_from_coast, the live stat block's AND over the template's subunits. The army save writer delegates to the unit save writer, which saves exile only as zero/nonzero truth; DivisionMovement.selected compares that current byte's truth. The raw nonzero magnitude and coast-exfiltration cache remain unverified", format!("DivisionStatus.move_flags: {} rows decoded, combined flags not certified", rows.len()));
+    report.limitation("attack_stats are the live division+0x138 stat block's attack operands (the +0x3F8 terrain adjusters' attack, +0x340/+0x368/+0x370/+0x390/+0x398/+0x3E0), which the active-stat update rewrites and the division writer does not save; weather_factor is the movement-availability calculation over the acclimatization block and the active climate category (+0x20), which the save omits. Neither has a save counterpart: the collector's sampled verification compares carried operands with fresh reads, and the attack_witness diagnostic with `recorder derived` compares the derived attack operands with native ones. The selected army's attack inputs the save omits likewise: OrdersGroupCounterInputs.commander_attack (the leader's rebuilt trait adjusters), CountryCounterInputs.attack_modifiers (accumulator entries), Provinces.fort_bunker (the state's country-specific modifier) and WeatherRegions.combat (the region weather modifier's entries)", "DivisionStatus.attack_stats and the attack-list inputs");
     report.limitation("the commanders' retreat bans are the cached leader modifier block the unit-leader modifier lookup selects (cannot_retreat_while_defending/attacking); the save serializes the leaders' traits, not that block, so the sliced daily DivisionRetreatBans rows are not compared", "DivisionRetreatBans");
     Ok(())
 }
 
-/// The army writer saves the acclimatization block only when
-/// the game finds an entry: the first of the largest weights, and only
-/// a weight above zero. With none, the whole block is omitted, whatever the
-/// maximum. Inside the block, the acclimatization save writer
-/// writes each nonzero weight by its category's name in native order and the
-/// maximum unless it is 100.
+/// The division's camouflage choice, decided again over the saved block
+/// with the recorded content's define. The division writer emits the block
+/// only when it finds an entry, so an omitted block shows no category.
+/// Inside it, the acclimatization writer writes every nonzero weight by its
+/// category's name in original order, and the maximum unless it is 100. Zero
+/// weights never win, so the saved entries select the live winner. Older recordings hold every entry instead
+/// ([`compare_acclimatization`]).
+pub(super) fn compare_camouflage(
+    label: &str,
+    row: &replay::rows::DivisionStatusRow,
+    saved: Option<&save::Acclimatization>,
+    tokens: &TokenNames<'_>,
+    show_at: &Result<i64, String>,
+    report: &mut Report,
+) {
+    let camouflage = match &row.camouflage {
+        Recorded::NotRecorded => {
+            return compare_acclimatization(label, row, saved, tokens, report);
+        }
+        Recorded::Value(None) => {
+            report.limitation(
+                "the division's camouflage was unreadable at capture; that field alone is unavailable",
+                format!("{label}.camouflage"),
+            );
+            return;
+        }
+        Recorded::Value(Some(camouflage)) => camouflage,
+    };
+    let label = format!("{label}.camouflage");
+    let show_at = match show_at {
+        Ok(show_at) => *show_at,
+        Err(error) => {
+            report.limitation(
+                "the content's NGraphics.ACCLIMATIZATION_CAMO_SHOW_AT is unavailable; camouflage was not compared",
+                format!("{label}: {error}"),
+            );
+            return;
+        }
+    };
+    let captured = match camouflage.category {
+        None => None,
+        Some(token) => match tokens.get(&token) {
+            Some(name) => Some(String::from_utf8_lossy(name).into_owned()),
+            None => {
+                report.limitation(
+                    "the camouflage category's token is absent from the captured lexical dictionary; it was not compared",
+                    label,
+                );
+                return;
+            }
+        },
+    };
+    let expected = saved.and_then(|saved| {
+        engine::acclimatization_data::camouflage(
+            saved
+                .entries
+                .iter()
+                .map(|(name, weight)| (name, weight.raw)),
+            saved
+                .maximum
+                .as_ref()
+                .map_or(save::Acclimatization::OMITTED_MAXIMUM_RAW, |maximum| {
+                    maximum.raw
+                }),
+            show_at,
+        )
+        .map(|name| String::from_utf8_lossy(name).into_owned())
+    });
+    report.scalar_checks += 1;
+    if captured != expected {
+        report.difference(label, captured, expected);
+    }
+}
+
+/// An older recording's entries and maximum. The division writer emits the
+/// acclimatization block only when it finds an entry: the first of the largest
+/// weights, and only a weight above zero. With none, the whole block is omitted,
+/// whatever the maximum. Inside the block, the acclimatization writer writes
+/// each nonzero weight by its category's name in native order and the maximum unless it
+/// is 100.
 pub(super) fn compare_acclimatization(
     label: &str,
     row: &replay::rows::DivisionStatusRow,
@@ -818,8 +799,8 @@ pub(super) fn compare_division_template_icons(
                 (None, Some(_)) => report.limitation("a null template country reference is written through the unrecorded country-tag entry0; its literal spelling is unmapped here, not assumed", label),
             }
         }
-        // Fresh hourly display-name operands compare independently of the
-        // daily dictionary cadence and of optional model acquisition failures.
+        // Fresh hourly GetDisplayName operands compare independently of the
+        // dictionary row and of optional model acquisition failures.
         if let Some(captured) = report.recorded(
             &row.display_name,
             "DivisionTemplateIcons.display_name",
@@ -924,93 +905,6 @@ pub(super) fn compare_division_template_icons(
     report.limitation("the representative and local-clone flags are derived engine caches absent from text saves; saved model choices and excluded variants are not parsed from the save", "DivisionTemplateIcons model inputs");
     report.limitation("the division template save writer omits the composition's signed division-count word consumed by formation counting. Saved grids and formation membership cannot certify this exact runtime count or the ability late-join arithmetic; a matched-hour native comparison remains necessary",
         "DivisionTemplateIcons.formation_division_count");
-    Ok(())
-}
-
-pub(super) fn compare_combat_progress(
-    frame: &DecodedFrame,
-    save: &Save,
-    report: &mut Report,
-) -> io::Result<()> {
-    let rows = complete::<tables::LandCombatProgress>(frame)?;
-    let mut seen = BTreeSet::new();
-    for row in rows {
-        if row.combat == 0 || !seen.insert(row.combat) {
-            return Err(invalid("null or duplicate combat progress handle"));
-        }
-        let label = format!("combat {} progress", row.combat);
-        let Some(saved) = save.land_combats.get(&row.combat) else {
-            report.difference(label, "present", "absent");
-            continue;
-        };
-        // Independent save-side join: the native getter sums all side units,
-        // not just the front subset, using qword addition/multiplication.
-        let sum = |members: &[u64]| -> io::Result<i64> {
-            let mut value = 0_u64;
-            let mut unique = BTreeSet::new();
-            for id in members {
-                if !unique.insert(id) {
-                    return Err(invalid("duplicate saved combat participant"));
-                }
-                let division = save.divisions.get(id).ok_or_else(|| {
-                    invalid("saved combat participant is absent from division roster")
-                })?;
-                value = value.wrapping_add(division.organisation.raw as u64);
-            }
-            Ok(value as i64)
-        };
-        let attacker = sum(&saved.attackers)?;
-        let defender = sum(&saved.defenders)?;
-        let total = attacker.wrapping_add(defender);
-        let expected = if total <= 0 {
-            50_000
-        } else if [i64::MAX, i64::MIN, i64::MIN + 1].contains(&attacker) {
-            100_000
-        } else {
-            let numerator = ((i128::from(attacker) * 100_000) as u64) as i64;
-            numerator
-                .checked_div(total)
-                .ok_or_else(|| invalid("saved combat progress would overflow native division"))?
-                .clamp(0, 100_000)
-        };
-        for (field, actual, expected) in [
-            ("attacker", row.attacker_progress, expected),
-            ("defender", row.defender_progress, 100_000 - expected),
-        ] {
-            report.scalar_checks += 1;
-            if actual != expected {
-                report.difference(format!("{label}.{field}"), actual, expected);
-            }
-        }
-        if row.direction_attacker == 0 {
-            if row.direction_province != 0 {
-                return Err(invalid("combat direction province has no source attacker"));
-            }
-        } else {
-            if !saved.attackers.contains(&row.direction_attacker) {
-                report.difference(
-                    format!("{label}.direction_attacker"),
-                    row.direction_attacker,
-                    &saved.attackers,
-                );
-            } else {
-                let division = &save.divisions[&row.direction_attacker];
-                report.scalar_checks += 1;
-                if Some(row.direction_province) != division.province {
-                    report.difference(
-                        format!("{label}.direction_province"),
-                        row.direction_province,
-                        division.province,
-                    );
-                }
-            }
-        }
-    }
-    for combat in save.land_combats.keys().filter(|id| !seen.contains(id)) {
-        report.difference(format!("combat {combat} progress"), "absent", "present");
-    }
-    report.compared("LandCombatProgress", rows.len());
-    report.limitation("direction selects the first ordered attacker with a live map entity; saves omit that presentation-presence predicate, so only the selected unit's side membership and province are compared; angle/stack-slot geometry is not recorded", "LandCombatProgress.direction_attacker/direction_province");
     Ok(())
 }
 
@@ -1131,7 +1025,7 @@ pub(super) fn compare_naval_units(
                 expected.mission,
             );
         }
-        // The CUnit serializer writes the route as `path`; its
+        // The unit writer writes the route as `path`; its
         // length is the count the strait-fleet test reads.
         if usize::try_from(actual.route_count).ok() != Some(expected.path.len()) {
             report.difference(
@@ -1216,11 +1110,16 @@ pub(super) fn compare_naval_units(
             Some(actual.organisation),
             Some(&expected.organisation),
         );
-        report.scalar(
+        // The ship writer writes +0x708 whole; the recording
+        // stores it at its display step, so the save's value is rounded the
+        // same way (an older recording holds it exact).
+        report.scalar_displayed(
             &label,
             "experience",
             Some(actual.experience),
             Some(&expected.experience),
+            "Ships.experience",
+            replay::rows::ShipRow::EXPERIENCE_STEP,
         );
     }
     for id in ships.keys() {
@@ -1778,17 +1677,23 @@ pub(super) fn compare_divisions(
         } else if expected.template.is_none() {
             report.limitation("division has a null standard template and the save omits its template reference; no fake-intel template was substituted", label.clone());
         }
-        report.scalar(
+        // Both are stored at their display steps (replay::display); the
+        // save's exact values are rounded the same way.
+        report.scalar_displayed(
             &label,
             "hit_points (save strength)",
             Some(actual.hit_points),
             Some(&expected.hit_points),
+            "Divisions.hit_points",
+            DivisionRow::HIT_POINTS_STEP,
         );
-        report.scalar(
+        report.scalar_displayed(
             &label,
             "organisation",
             Some(actual.organisation),
             Some(&expected.organisation),
+            "Divisions.organisation",
+            DivisionRow::ORGANISATION_STEP,
         );
     }
     for &id in divisions.keys() {

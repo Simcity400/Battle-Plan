@@ -15,42 +15,66 @@
 //! it and must publish the same.
 use crate::{
     sampling::qpc,
-    spooling::{table, unavailable},
+    spooling::{table, table_iter, unavailable},
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
 use engine::land_tactic_inputs;
 use engine::{
     Memory, allocation, carmy_combat_inputs, cland_combat,
     combat_sources::{Images, Sources},
-    land_reinforcement_inputs as reinforcement,
+    land_reinforcement_inputs::speed as reserve_speed,
     walk::Outcome,
 };
-use replay::rows::{
-    LandCombatCommanderTimedTrait, LandCombatTacticCountryWeight, LandCombatTacticInputs, RowCodec,
-};
+use replay::rows::{LandCombatTacticCountryWeight, LandCombatTacticInputs};
 use replay::{
     frame::TableView,
     rows::{
-        CombatModifierValue, DivisionCombatModifiers, LandCombatCommanderLearningTrait,
-        LandCombatCommanderTrait, LandCombatDetailsRow, LandCombatDivisionRow,
-        LandCombatExileInputs, LandCombatModifierRow, LandCombatSideDetails, LandCombatSideRow,
-        LandDivisionContext, LandDivisionModifier, LandDivisionWidthTerm,
-        LandReinforcementAcclimatization, LandReinforcementInputs, LandReinforcementModifier,
-        LandReinforcementSupplyTerm, LandReinforcementTransportTerm, TableId, tables,
+        CombatModifierValue, LandCombatCommanderTimedTrait, LandCombatCommanderTrait,
+        LandCombatDetailsRow, LandCombatDivisionModifierRow, LandCombatDivisionRow,
+        LandCombatExileInputs, LandCombatLearningProgress, LandCombatModifierRow,
+        LandCombatSideDetails, LandCombatSideInputs, LandCombatSideRow, LandDivisionContext,
+        LandDivisionModifier, LandDivisionWidthTerm, Recorded, Retired, RetiredKept, RetiredNested,
+        TableId, tables,
     },
 };
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    mem::size_of,
+use std::mem::size_of;
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicU64, Ordering},
 };
 
+static RESERVE_SHARES: AtomicU64 = AtomicU64::new(0);
+static REFUSED_SHARES: AtomicU64 = AtomicU64::new(0);
+static FIRST_SHARE_REFUSAL: OnceLock<&'static str> = OnceLock::new();
+/// Refused optional side inputs of captured LandCombatDetails rows (the
+/// skill hover's next level, the learning floor, the leader block).
+static REFUSED_SIDE_INPUTS: AtomicU64 = AtomicU64::new(0);
+static FIRST_SIDE_INPUT_REFUSAL: OnceLock<&'static str> = OnceLock::new();
+
+/// The reserve reinforcement speed shares the land combat pass composed and
+/// refused since attach.
+pub fn status() -> impl serde::Serialize {
+    crate::status::status!({
+        "computed": RESERVE_SHARES.load(Ordering::Relaxed),
+        "refused": REFUSED_SHARES.load(Ordering::Relaxed),
+        "first_refusal": FIRST_SHARE_REFUSAL.get(),
+        "scope": "cumulative reserve reinforcement speed shares composed at capture for captured LandCombatDivisions reserve rows since attach; a refused share leaves that reserve's chance arm unknown and its row otherwise intact",
+        "side_inputs_refused": REFUSED_SIDE_INPUTS.load(Ordering::Relaxed),
+        "first_side_input_refusal": FIRST_SIDE_INPUT_REFUSAL.get(),
+        "side_inputs_scope": "cumulative optional side inputs of captured LandCombatDetails rows since attach (a selected commander's next skill level, the live LEADER_TRAITS_XP_SHOW threshold, the selected leader modifier block) whose read failed; each leaves only its hover part unknown and the row intact",
+    })
+}
+
 pub const N: usize = 5;
+/// LandCombatDivisionModifiers projects the members the modifier side rows'
+/// pass captured: it has no capture or read accounting of its own, and its
+/// outcome follows theirs and the members' demand ([`Captured::outcomes`]).
 pub const TABLES: [TableId; N] = [
     TableId::LandCombatDetails,
     TableId::LandCombatDivisions,
     TableId::LandCombatModifiers,
     TableId::LandCombatSides,
-    TableId::ReserveModifierBreakdowns,
+    TableId::LandCombatDivisionModifiers,
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
     "land combat detail census and member authentication",
@@ -58,7 +82,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
     &[0, 1, 2, 3, 4],
 )];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     combats: usize,
     census_participants: usize,
@@ -77,14 +101,6 @@ pub struct Capacities {
     /// Pass-scoped naming memo sizes (template handles, group pointers).
     name_templates: usize,
     name_groups: usize,
-    reinforcement_modifiers: usize,
-    supply_terms: usize,
-    acclimatization: usize,
-    transport_terms: usize,
-    division_commanders: usize,
-    /// Division commanders' raw name tokens, bytes.
-    commander_names: usize,
-    commander_keys: usize,
     /// Every detail list is sized from its live vectors' demand: all token
     /// bytes, commander assigned/timed/learning traits and air-support counts
     /// (committed and reserve handles use `rosters`).
@@ -95,7 +111,7 @@ pub struct Capacities {
     learning_traits: usize,
 }
 impl Capacities {
-    /// Before attach and on the spool thread, from the live combat census
+    /// Before attach and on the spool's sizing thread, from the live combat census
     /// and the shared count-only detail walk. Capture keeps its growth fallback.
     pub(crate) fn raise_for_live_details(&mut self, demand: cland_combat::DetailDemand) {
         for (capacity, required) in [
@@ -106,8 +122,6 @@ impl Capacities {
             (&mut self.census_participants, demand.census_participants),
             (&mut self.divisions, demand.census_participants),
             (&mut self.modifier_members, demand.census_participants),
-            (&mut self.division_commanders, demand.census_participants),
-            (&mut self.commander_keys, demand.census_participants),
             (&mut self.rosters, demand.arenas.participants),
             (&mut self.air_counts, demand.arenas.air),
             (&mut self.detail_text, demand.arenas.text),
@@ -130,39 +144,6 @@ impl Capacities {
         crate::country_scale::raise(&mut self.name_groups, slots.saturating_mul(2));
     }
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            combats: 0,
-            census_participants: 0,
-            details: 0,
-            divisions: 0,
-            sides: 0,
-            combat_sides: 0,
-            country_tags: 0,
-            rosters: 0,
-            modifier_members: 0,
-            modifiers: 0,
-            width_terms: 0,
-            exile_tags: 0,
-            division_names: 0,
-            name_templates: 0,
-            name_groups: 0,
-            reinforcement_modifiers: 0,
-            supply_terms: 0,
-            acclimatization: 0,
-            transport_terms: 0,
-            division_commanders: 0,
-            commander_names: 2048,
-            commander_keys: 0,
-            commander_traits: 0,
-            detail_text: 0,
-            timed_traits: 0,
-            air_counts: 0,
-            learning_traits: 0,
-        }
-    }
-}
 #[derive(Default, Clone, PartialEq, Eq)]
 struct Detail {
     row: cland_combat::DetailsRow,
@@ -178,11 +159,11 @@ struct Division {
     role: u8,
     stats: carmy_combat_inputs::Row,
     exile: Option<carmy_combat_inputs::ExileRow>,
-    commander_input: Option<usize>,
     context: carmy_combat_inputs::ContextRow,
     width_start: usize,
-    reinforcement: reinforcement::ContextRow,
-    reinforcement_starts: [usize; 4],
+    /// A reserve's share or why it was refused; `None` for a
+    /// committed division, whose entry has no reinforcement hover.
+    reserve_speed: Option<Result<i64, &'static str>>,
 }
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 struct ModifierSide {
@@ -204,11 +185,6 @@ struct ModifierMember {
     ordinal: u32,
     start: usize,
     len: usize,
-}
-#[derive(Default, Clone, Copy)]
-struct CommanderKey {
-    handle: u64,
-    index: usize,
 }
 #[derive(Default, Clone, Copy)]
 struct Progress {
@@ -255,7 +231,7 @@ struct Acquired {
     stats: carmy_combat_inputs::Row,
     exile: carmy_combat_inputs::Exile,
     context: carmy_combat_inputs::ContextRow,
-    reinforcement: reinforcement::ContextRow,
+    reserve_speed: Option<Result<i64, &'static str>>,
 }
 
 /// Per-division and per-combat reader storage grows from original headers and
@@ -263,27 +239,24 @@ struct Acquired {
 #[derive(Default)]
 struct Scratch {
     widths: Vec<carmy_combat_inputs::WidthTerm>,
-    reinforcement_modifiers: Vec<reinforcement::ModifierTerm>,
-    supply: Vec<reinforcement::SupplyTerm>,
-    acclimatization: Vec<reinforcement::AcclimatizationTerm>,
     modifiers: Vec<carmy_combat_inputs::Modifier>,
+    /// A reserve's movement-speed operands while its share is composed.
+    reinforcement: reserve_speed::Scratch,
 }
 impl Scratch {
     fn allocated_bytes(&self) -> usize {
         self.widths.capacity() * size_of::<carmy_combat_inputs::WidthTerm>()
-            + self.reinforcement_modifiers.capacity() * size_of::<reinforcement::ModifierTerm>()
-            + self.supply.capacity() * size_of::<reinforcement::SupplyTerm>()
-            + self.acclimatization.capacity() * size_of::<reinforcement::AcclimatizationTerm>()
             + self.modifiers.capacity() * size_of::<carmy_combat_inputs::Modifier>()
+            + self.reinforcement.allocated_bytes()
     }
 }
 
-/// One division's stats, exile, context and reinforcement rows.
+/// One division's stats, exile and context rows, and a reserve's speed share.
 type DivisionRead = (
     carmy_combat_inputs::Row,
     carmy_combat_inputs::Exile,
     carmy_combat_inputs::ContextRow,
-    reinforcement::ContextRow,
+    Option<Result<i64, &'static str>>,
 );
 
 /// Where one division's reads write their variable-length results: the
@@ -292,8 +265,6 @@ struct DivisionOutputs<'r, 'n> {
     name_groups: &'r mut engine::cname_group_member::GroupKeys,
     names: &'r mut engine::cname_group_member::NameArena<'n>,
     exile_tags: engine::walk::Buffer<'r, u32>,
-    transport_terms: &'r mut Vec<reinforcement::TransportTerm>,
-    transport_start: usize,
 }
 
 /// One division's readers in the walk's order, through `memory` (the
@@ -341,26 +312,36 @@ fn read_division<M: Memory, C: Memory>(
         handle,
         engine::walk::Buffer::Growing(&mut scratch.widths),
     )?;
-    let row = reinforcement::capture_context_buffer(
-        memory,
-        base,
-        state,
-        sources,
-        pointer,
-        handle,
-        engine::walk::Buffer::Growing(&mut scratch.reinforcement_modifiers),
-        engine::walk::Buffer::Growing(&mut scratch.supply),
-        engine::walk::Buffer::Growing(&mut scratch.acclimatization),
-        outputs.transport_terms,
-        outputs.transport_start,
-    )?;
-    Ok((stats, exile, context, row))
+    // A reserve entry's hover shows its reinforcement chance, whose
+    // speed arm is the clamped reinforcement share: base speed times the
+    // movement factor over the live SLOWEST_SPEED, less one, clamped to [0, 2]. Its operands
+    // drift hourly (weather, supply, acclimatization, air), but the clamped
+    // share is all the hover takes from them, so the collector composes it
+    // here and records that one value, as DivisionStatus records the
+    // camouflage category selected with the live define instead of
+    // every acclimatization weight. A failed read or an unported form
+    // refuses only this share; the division and its table stay.
+    let reserve_speed = (role == 2).then(|| {
+        reserve_speed::capture_share(
+            memory,
+            base,
+            state,
+            sources,
+            pointer,
+            handle,
+            context.base_speed,
+            &mut scratch.reinforcement,
+        )
+    });
+    Ok((stats, exile, context, reserve_speed))
 }
 
 struct Destination<'a> {
     sources: &'a mut Sources,
     /// This combat's commander selections, shared by its readers.
     commanders: cland_combat::Commanders,
+    /// The pass's leader-only commander reads, shared by its combats.
+    leaders: &'a mut cland_combat::Leaders,
     /// This combat's division images.
     images: &'a mut Images,
     scratch: &'a mut Scratch,
@@ -371,14 +352,6 @@ struct Destination<'a> {
     /// image) nor between divisions (no shared sources).
     #[cfg(test)]
     reference: bool,
-    division_commanders: &'a mut Vec<engine::naval_commander_inputs::DivisionCommanderRow>,
-    /// Kept commanders' name tokens; a token that does not fit is counted
-    /// for growth and its divisions are omitted this hour.
-    commander_names: engine::cname_group_member::Names<'a>,
-    commander_progress: Progress,
-    commander_keys: &'a mut Vec<CommanderKey>,
-    commander_key_count: usize,
-    required_commander_keys: usize,
     details: &'a mut Vec<Detail>,
     divisions: &'a mut Vec<Division>,
     sides: &'a mut Vec<ModifierSide>,
@@ -404,106 +377,22 @@ struct Destination<'a> {
     width_progress: Progress,
     exile_tags: &'a mut Vec<u32>,
     exile_progress: Progress,
-    reinforcement_modifiers: &'a mut Vec<reinforcement::ModifierTerm>,
-    supply_terms: &'a mut Vec<reinforcement::SupplyTerm>,
-    acclimatization: &'a mut Vec<reinforcement::AcclimatizationTerm>,
-    transport_terms: &'a mut Vec<reinforcement::TransportTerm>,
-    reinforcement_progress: [Progress; 4],
     progress: [Progress; N],
     arenas: [Progress; N],
     ticks: [u64; N],
 }
 impl Destination<'_> {
-    fn reserve_commander_keys(&mut self, required: usize) -> bool {
-        if required <= self.commander_keys.len() {
-            return true;
-        }
-        let previous = std::mem::take(self.commander_keys);
-        if !grow_vec(
-            self.commander_keys,
-            required.max(previous.len().saturating_mul(2)),
-        ) {
-            return false;
-        }
-        for key in previous.into_iter().filter(|key| key.handle != 0) {
-            let hash = key.handle.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-            let hash = (hash ^ (hash >> 32)) as usize;
-            for probe in 0..self.commander_keys.len() {
-                let slot = hash.wrapping_add(probe) % self.commander_keys.len();
-                if self.commander_keys[slot].handle == 0 {
-                    self.commander_keys[slot] = key;
-                    break;
-                }
-            }
-        }
-        true
-    }
-    fn commander(&mut self, memory: &impl Memory, base: usize, handle: u64) -> Option<usize> {
-        if handle == 0 {
-            return None;
-        }
-        let hash = handle.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        let hash = (hash ^ (hash >> 32)) as usize;
-        for probe in 0..self.commander_keys.len() {
-            let slot = hash.wrapping_add(probe) % self.commander_keys.len();
-            let key = self.commander_keys[slot];
-            if key.handle == handle {
-                return (key.index != usize::MAX).then_some(key.index);
-            }
-            if key.handle != 0 {
-                continue;
-            }
-            self.commander_keys[slot] = CommanderKey {
-                handle,
-                index: usize::MAX,
-            };
-            self.commander_key_count += 1;
-            self.commander_progress.required += 1;
-            self.required_commander_keys =
-                self.required_commander_keys.max(self.commander_key_count);
-            match engine::naval_commander_inputs::capture_division_commander(
-                memory,
-                base,
-                handle,
-                &mut self.commander_names,
-            ) {
-                Ok(Some(row)) => {
-                    let index = self.commander_progress.len;
-                    if !grow_vec(self.division_commanders, index + 1) {
-                        return None;
-                    }
-                    let name_len = row.name_token.1;
-                    self.division_commanders[index] = row;
-                    self.commander_progress.len += 1;
-                    // The token was written uncommitted at the arena's length.
-                    self.commander_names.len += name_len;
-                    self.commander_keys[slot].index = index;
-                    return Some(index);
-                }
-                // Memoized unfit (index stays usize::MAX), so its demand counts
-                // once and every division it leads is omitted this hour.
-                Ok(None) => return None,
-                Err(reason) => {
-                    self.progress[1].failure = Some(reason);
-                    return None;
-                }
-            }
-        }
-        self.required_commander_keys = self.commander_keys.len().saturating_add(1);
-        None
-    }
     /// Retains one division whose native reads all succeeded, or counts it
-    /// out. A name, exile list or commander that has no room this hour omits
-    /// the whole division (the table reports it as unread) and its demand is
+    /// out. A name or exile list that has no room this hour omits the whole
+    /// division (the table reports it as unread) and its demand is
     /// counted so the spool grows the arena for the next hour.
-    fn admit(&mut self, memory: &impl Memory, base: usize, at: Placement, acquired: Acquired) {
+    fn admit(&mut self, at: Placement, acquired: Acquired) {
         let Acquired {
             stats,
             exile,
             context,
-            reinforcement,
+            reserve_speed,
         } = acquired;
-        let commander_input = self.commander(memory, base, stats.commander);
         let (exile, exile_len) = match exile {
             carmy_combat_inputs::Exile::Absent => (Some(None), 0),
             carmy_combat_inputs::Exile::Row(mut row) => {
@@ -517,44 +406,16 @@ impl Destination<'_> {
         self.width_progress.required += context.width_term_count;
         let start = self.width_progress.len;
         let count = context.width_term_count;
-        let counts = [
-            reinforcement.modifier_count,
-            reinforcement.supply_term_count,
-            reinforcement.acclimatization_count,
-            reinforcement.transport_term_count,
-        ];
-        let starts = self.reinforcement_progress.map(|p| p.len);
-        for (p, count) in self.reinforcement_progress.iter_mut().zip(counts) {
-            p.required += count;
-        }
         let (Some(naming), Some(exile)) = (stats.naming, exile) else {
             return;
         };
-        if stats.commander != 0 && commander_input.is_none() {
-            return;
-        }
         // Every prefix was read successfully above. Grow from those exact
         // counts and retain it now, without retrying native reads or
         // dropping the containing division.
-        if !grow_vec(self.width_terms, start + count)
-            || !grow_vec(self.reinforcement_modifiers, starts[0] + counts[0])
-            || !grow_vec(self.supply_terms, starts[1] + counts[1])
-            || !grow_vec(self.acclimatization, starts[2] + counts[2])
-        {
+        if !grow_vec(self.width_terms, start + count) {
             return;
         }
         let scratch = &*self.scratch;
-        self.reinforcement_modifiers[starts[0]..starts[0] + counts[0]]
-            .copy_from_slice(&scratch.reinforcement_modifiers[..counts[0]]);
-        self.supply_terms[starts[1]..starts[1] + counts[1]]
-            .copy_from_slice(&scratch.supply[..counts[1]]);
-        self.acclimatization[starts[2]..starts[2] + counts[2]]
-            .copy_from_slice(&scratch.acclimatization[..counts[2]]);
-        // Transport terms were written in place at starts[3]; admission only
-        // advances the length.
-        for (p, count) in self.reinforcement_progress.iter_mut().zip(counts) {
-            p.len += count;
-        }
         self.width_terms[start..start + count].copy_from_slice(&scratch.widths[..count]);
         self.width_progress.len += count;
         self.exile_progress.len += exile_len;
@@ -570,11 +431,9 @@ impl Destination<'_> {
             role: at.role,
             stats,
             exile,
-            commander_input,
             context,
             width_start: start,
-            reinforcement,
-            reinforcement_starts: starts,
+            reserve_speed,
         };
         self.progress[1].len += 1;
     }
@@ -598,9 +457,7 @@ impl Destination<'_> {
         if !grow_vec(self.divisions, self.progress[1].required + bound) {
             return;
         }
-        if !self.reserve_commander_keys(self.progress[1].required.saturating_add(bound))
-            || !grow_vec(self.sides, self.progress[2].required.saturating_add(2))
-        {
+        if !grow_vec(self.sides, self.progress[2].required.saturating_add(2)) {
             return;
         }
         // A side's committed and reserve lists are subsets of its full
@@ -699,10 +556,6 @@ impl Destination<'_> {
                         let started = qpc();
                         self.progress[1].required += 1;
                         if self.progress[1].failure.is_none() {
-                            // Enemy transport terms go straight into the arena
-                            // past its admitted length; the reader grows it on
-                            // this worker, one successfully read term at a time.
-                            let transport_start = self.reinforcement_progress[3].len;
                             // Exile tags grow from their original list headers
                             // and commit only with the containing division.
                             let exile_start = self.exile_progress.len;
@@ -720,17 +573,13 @@ impl Destination<'_> {
                                         self.exile_tags,
                                         exile_start,
                                     ),
-                                    transport_terms: self.transport_terms,
-                                    transport_start,
                                 },
                                 role,
                                 pointer,
                                 handle,
                             );
                             match result {
-                                Ok((stats, exile, context, reinforcement)) => self.admit(
-                                    memory,
-                                    base,
+                                Ok((stats, exile, context, reserve_speed)) => self.admit(
                                     Placement {
                                         pointer,
                                         combat: source.id,
@@ -744,7 +593,7 @@ impl Destination<'_> {
                                         stats,
                                         exile,
                                         context,
-                                        reinforcement,
+                                        reserve_speed,
                                     },
                                 ),
                                 Err(reason) => self.progress[1].failure = Some(reason),
@@ -851,12 +700,13 @@ impl Destination<'_> {
             engine::walk::Buffer::GrowingFrom(self.timed_traits, at.timed),
             engine::walk::Buffer::GrowingFrom(self.learning_traits, at.learning),
         );
-        let result = cland_combat::read_details(
+        let result = cland_combat::read_details_sharing(
             memory,
             base,
             source,
             members,
             &mut self.commanders,
+            self.leaders,
             &mut arenas,
         );
         let (complete, used, required) = (arenas.complete(), arenas.used, arenas.required);
@@ -872,13 +722,14 @@ impl Destination<'_> {
         }
         match result {
             Ok(mut row) => {
-                let context = land_tactic_inputs::capture_context(
+                let context = land_tactic_inputs::capture_context_sharing(
                     memory,
                     base,
                     state,
                     source,
                     members,
                     &mut self.commanders,
+                    self.leaders,
                 );
                 if let Outcome::Unavailable { reason } = context.outcome {
                     self.progress[0].failure = Some(reason);
@@ -1001,12 +852,6 @@ impl Destination<'_> {
 }
 
 pub struct Captured {
-    breakdowns: Vec<replay::rows::ReserveModifierBreakdownRow>,
-    breakdown_outcome: Outcome,
-    division_commanders: Arena<engine::naval_commander_inputs::DivisionCommanderRow>,
-    commander_names: Arena<u8>,
-    commander_keys: Vec<CommanderKey>,
-    required_commander_keys: usize,
     details: CaptureRows<Detail>,
     divisions: CaptureRows<Division>,
     sides: CaptureRows<ModifierSide>,
@@ -1019,10 +864,7 @@ pub struct Captured {
     exile_tags: Arena<u32>,
     division_names: Arena<u8>,
     name_cache: engine::cname_group_member::GroupKeys,
-    reinforcement_modifiers: Arena<reinforcement::ModifierTerm>,
-    supply_terms: Arena<reinforcement::SupplyTerm>,
-    acclimatization: Arena<reinforcement::AcclimatizationTerm>,
-    transport_terms: Arena<reinforcement::TransportTerm>,
+    leaders: cland_combat::Leaders,
     commander_traits: Arena<cland_combat::CommanderTrait>,
     detail_text: Arena<u8>,
     timed_traits: Arena<cland_combat::CommanderTimedTrait>,
@@ -1053,7 +895,6 @@ impl Captured {
             self.census => c.combats,
             self.census_participants => c.census_participants,
             self.census_pointers => c.census_participants,
-            self.commander_keys => c.census_participants,
             self.details.rows => c.details,
             self.rosters.first => c.rosters,
             self.air_counts.first => c.air_counts,
@@ -1081,13 +922,6 @@ impl Captured {
             division_names: 0,
             name_templates: 0,
             name_groups: 0,
-            reinforcement_modifiers: 0,
-            supply_terms: 0,
-            acclimatization: 0,
-            transport_terms: 0,
-            division_commanders: 0,
-            commander_names: 0,
-            commander_keys: 0,
             commander_traits: 0,
             detail_text: 0,
             timed_traits: 0,
@@ -1098,14 +932,6 @@ impl Captured {
 
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
-            breakdowns: Vec::new(),
-            breakdown_outcome: Outcome::Rows { len: 0 },
-            division_commanders: Arena::new(c.division_commanders),
-            commander_names: Arena::new(c.commander_names),
-            commander_keys: allocation::owned_vec(allocation::default_vec(
-                c.commander_keys.max(c.census_participants),
-            )),
-            required_commander_keys: 0,
             details: CaptureRows::new(c.details),
             divisions: CaptureRows::new(c.divisions),
             sides: CaptureRows::new(c.sides),
@@ -1123,10 +949,7 @@ impl Captured {
             )
             .map_err(crate::allocation::io)
             .unwrap_or_default(),
-            reinforcement_modifiers: Arena::new(c.reinforcement_modifiers),
-            supply_terms: Arena::new(c.supply_terms),
-            acclimatization: Arena::new(c.acclimatization),
-            transport_terms: Arena::new(c.transport_terms),
+            leaders: cland_combat::Leaders::default(),
             commander_traits: Arena::new(c.commander_traits),
             detail_text: Arena::new(c.detail_text),
             timed_traits: Arena::new(c.timed_traits),
@@ -1148,11 +971,6 @@ impl Captured {
         }
     }
     pub fn reset(&mut self) {
-        self.breakdowns.clear();
-        self.breakdown_outcome = Outcome::Rows { len: 0 };
-        self.division_commanders.reset();
-        self.commander_names.reset();
-        self.required_commander_keys = 0;
         self.details.reset();
         self.divisions.reset();
         self.sides.reset();
@@ -1164,10 +982,6 @@ impl Captured {
         self.width_terms.reset();
         self.exile_tags.reset();
         self.division_names.reset();
-        self.reinforcement_modifiers.reset();
-        self.supply_terms.reset();
-        self.acclimatization.reset();
-        self.transport_terms.reset();
         self.commander_traits.reset();
         self.detail_text.reset();
         self.timed_traits.reset();
@@ -1183,19 +997,9 @@ impl Captured {
         self.divisions.outcome = outcome;
         self.sides.outcome = outcome;
         self.combat_sides.outcome = outcome;
-        self.breakdown_outcome = outcome;
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.breakdowns.capacity() * size_of::<replay::rows::ReserveModifierBreakdownRow>()
-            + self
-                .breakdowns
-                .iter()
-                .map(|r| {
-                    r.nodes.capacity() * size_of::<engine::modifier_breakdown::Node>()
-                        + r.nodes.iter().map(|n| n.name.capacity()).sum::<usize>()
-                })
-                .sum::<usize>()
-            + self.details.allocated_bytes()
+        self.details.allocated_bytes()
             + self
                 .details
                 .rows
@@ -1203,18 +1007,6 @@ impl Captured {
                 .flat_map(|row| &row.row.sides)
                 .map(|side| side.presentation.allocated_bytes())
                 .sum::<usize>()
-            + self.division_commanders.allocated_bytes()
-            + self
-                .division_commanders
-                .first
-                .iter()
-                .map(|row| {
-                    row.trait_text.capacity()
-                        + row.traits.capacity() * size_of::<engine::cland_combat::CommanderTrait>()
-                })
-                .sum::<usize>()
-            + self.commander_names.allocated_bytes()
-            + self.commander_keys.capacity() * size_of::<CommanderKey>()
             + self.divisions.allocated_bytes()
             + self.sides.allocated_bytes()
             + self.combat_sides.allocated_bytes()
@@ -1226,10 +1018,7 @@ impl Captured {
             + self.exile_tags.allocated_bytes()
             + self.division_names.allocated_bytes()
             + self.name_cache.allocated_bytes()
-            + self.reinforcement_modifiers.allocated_bytes()
-            + self.supply_terms.allocated_bytes()
-            + self.acclimatization.allocated_bytes()
-            + self.transport_terms.allocated_bytes()
+            + self.leaders.allocated_bytes()
             + self.commander_traits.allocated_bytes()
             + self.detail_text.allocated_bytes()
             + self.timed_traits.allocated_bytes()
@@ -1242,22 +1031,10 @@ impl Captured {
             + self.scratch.allocated_bytes()
     }
     pub fn grow(&mut self, c: &mut Capacities) {
-        c.division_commanders = c.division_commanders.max(self.division_commanders.len);
         c.divisions = c.divisions.max(self.divisions.outcome.len());
         c.width_terms = c.width_terms.max(self.width_terms.len);
         c.exile_tags = c.exile_tags.max(self.exile_tags.len);
         c.division_names = c.division_names.max(self.division_names.len);
-        c.commander_names = c.commander_names.max(self.commander_names.len);
-        c.reinforcement_modifiers = c
-            .reinforcement_modifiers
-            .max(self.reinforcement_modifiers.len);
-        c.supply_terms = c.supply_terms.max(self.supply_terms.len);
-        c.acclimatization = c.acclimatization.max(self.acclimatization.len);
-        c.transport_terms = c.transport_terms.max(self.transport_terms.len);
-        self.division_commanders.grow(&mut c.division_commanders);
-        self.commander_names.grow(&mut c.commander_names);
-        grow_capacity(&mut c.commander_keys, self.required_commander_keys);
-        grow_vec(&mut self.commander_keys, c.commander_keys);
         self.details.grow(&mut c.details);
         self.divisions.grow(&mut c.divisions);
         self.sides.grow(&mut c.sides);
@@ -1287,11 +1064,6 @@ impl Captured {
             };
             self.name_cache = cache;
         }
-        self.reinforcement_modifiers
-            .grow(&mut c.reinforcement_modifiers);
-        self.supply_terms.grow(&mut c.supply_terms);
-        self.acclimatization.grow(&mut c.acclimatization);
-        self.transport_terms.grow(&mut c.transport_terms);
         self.commander_traits.grow(&mut c.commander_traits);
         self.detail_text.grow(&mut c.detail_text);
         self.timed_traits.grow(&mut c.timed_traits);
@@ -1305,8 +1077,6 @@ impl Captured {
         grow_vec(&mut self.census, c.combats);
         grow_vec(&mut self.census_participants, c.census_participants);
         grow_vec(&mut self.census_pointers, c.census_participants);
-        c.commander_keys = c.commander_keys.max(c.census_participants);
-        grow_vec(&mut self.commander_keys, c.commander_keys);
     }
     fn pass(
         &mut self,
@@ -1324,17 +1094,15 @@ impl Captured {
             );
         }
         let _reads = crate::read_accounting::table(TABLES[0]);
-        // Naming memos never outlive the pass that authenticated them.
+        // Naming and leader memos never outlive the pass that authenticated
+        // them.
         self.name_cache.reset();
+        self.leaders.clear();
         let started = qpc();
-        let commander_started = qpc();
-        // visit reserves commander keys from each original participant count,
-        // preserving every earlier key and refusal when the table expands.
-        self.commander_keys.fill(CommanderKey::default());
-        let commander_ticks = elapsed(commander_started);
         let mut destination = Destination {
             sources: &mut self.sources,
             commanders: cland_combat::Commanders::default(),
+            leaders: &mut self.leaders,
             images: &mut self.images,
             scratch: &mut self.scratch,
             name_groups: &mut self.name_cache,
@@ -1345,16 +1113,6 @@ impl Captured {
             },
             #[cfg(test)]
             reference: self.reference,
-            division_commanders: &mut self.division_commanders.first,
-            commander_names: engine::cname_group_member::Names {
-                bytes: &mut self.commander_names.first,
-                len: 0,
-                required: 0,
-            },
-            commander_progress: Progress::default(),
-            commander_keys: &mut self.commander_keys,
-            commander_key_count: 0,
-            required_commander_keys: 0,
             details: &mut self.details.rows,
             divisions: &mut self.divisions.rows,
             sides: &mut self.sides.rows,
@@ -1378,14 +1136,9 @@ impl Captured {
             width_progress: Progress::default(),
             exile_tags: &mut self.exile_tags.first,
             exile_progress: Progress::default(),
-            reinforcement_modifiers: &mut self.reinforcement_modifiers.first,
-            supply_terms: &mut self.supply_terms.first,
-            acclimatization: &mut self.acclimatization.first,
-            transport_terms: &mut self.transport_terms.first,
-            reinforcement_progress: [Progress::default(); 4],
             progress: [Progress::default(); N],
             arenas: [Progress::default(); N],
-            ticks: [0, commander_ticks, 0, 0, 0],
+            ticks: [0; N],
         };
         let census = cland_combat::walk_members_growing(
             memory,
@@ -1406,19 +1159,10 @@ impl Captured {
         destination.finish();
         let outcomes = destination.progress.map(|p| p.outcome(census.outcome));
         let arenas = destination.arenas;
-        let commanders = destination.commander_progress;
-        self.required_commander_keys = self
-            .required_commander_keys
-            .max(destination.required_commander_keys);
         let width = destination.width_progress;
         let exile = destination.exile_progress;
         let names = (destination.names.len, destination.names.required);
-        let commander_names = (
-            destination.commander_names.len,
-            destination.commander_names.required,
-        );
         let country_tags = destination.country_tags_progress;
-        let reinforcement = destination.reinforcement_progress;
         let (detail_used, detail_required) = (destination.detail_used, destination.detail_required);
         let mut ticks = destination.ticks;
         ticks[0] += elapsed(started).saturating_sub(ticks.iter().sum::<u64>());
@@ -1429,8 +1173,6 @@ impl Captured {
         self.required_census_participants = self
             .required_census_participants
             .max(census.required_participants);
-        self.division_commanders.len = commanders.len;
-        self.division_commanders.required = commanders.required;
         self.rosters.len = arenas[0].len;
         self.rosters.required = arenas[0].required;
         self.commander_traits.len = detail_used.traits;
@@ -1448,15 +1190,6 @@ impl Captured {
         self.exile_tags.len = exile.len;
         self.exile_tags.required = exile.required;
         (self.division_names.len, self.division_names.required) = names;
-        (self.commander_names.len, self.commander_names.required) = commander_names;
-        self.reinforcement_modifiers.len = reinforcement[0].len;
-        self.reinforcement_modifiers.required = reinforcement[0].required;
-        self.supply_terms.len = reinforcement[1].len;
-        self.supply_terms.required = reinforcement[1].required;
-        self.acclimatization.len = reinforcement[2].len;
-        self.acclimatization.required = reinforcement[2].required;
-        self.transport_terms.len = reinforcement[3].len;
-        self.transport_terms.required = reinforcement[3].required;
         self.members.len = arenas[1].len;
         self.members.required = arenas[1].required;
         self.modifiers.len = arenas[2].len;
@@ -1472,19 +1205,57 @@ impl Captured {
         self.divisions.outcome = outcomes[1];
         self.sides.outcome = outcomes[2];
         self.combat_sides.outcome = outcomes[3];
+        self.count_reserve_shares();
+        self.count_side_input_refusals();
         if crate::allocation::failed() {
             self.fail("collector allocation failed");
             return ticks;
         }
-        let started_breakdowns = qpc();
-        let _reads = crate::read_accounting::table(TABLES[4]);
-        self.capture_breakdowns(memory, base, state);
-        ticks[4] = elapsed(started_breakdowns);
-        if crate::allocation::failed() {
-            self.fail("collector allocation failed");
-        }
         ticks[0] += elapsed(started).saturating_sub(ticks.iter().sum::<u64>());
         ticks
+    }
+    /// Adds this pass's composed and refused reserve shares of its captured
+    /// division rows to the status.
+    fn count_reserve_shares(&self) {
+        let len = match self.divisions.outcome {
+            Outcome::Rows { len } | Outcome::Truncated { len, .. } => len,
+            Outcome::Unavailable { .. } => 0,
+        };
+        let (mut computed, mut refused) = (0_u64, 0_u64);
+        for row in &self.divisions.rows[..len.min(self.divisions.rows.len())] {
+            match row.reserve_speed {
+                Some(Ok(_)) => computed += 1,
+                Some(Err(reason)) => {
+                    refused += 1;
+                    let _ = FIRST_SHARE_REFUSAL.set(reason);
+                }
+                None => {}
+            }
+        }
+        RESERVE_SHARES.fetch_add(computed, Ordering::Relaxed);
+        REFUSED_SHARES.fetch_add(refused, Ordering::Relaxed);
+    }
+    /// Adds this pass's refused optional side inputs of its captured detail
+    /// rows to the status.
+    fn count_side_input_refusals(&self) {
+        let len = match self.details.outcome {
+            Outcome::Rows { len } | Outcome::Truncated { len, .. } => len,
+            Outcome::Unavailable { .. } => 0,
+        };
+        let mut refused = 0_u64;
+        for detail in &self.details.rows[..len.min(self.details.rows.len())] {
+            for reason in detail
+                .row
+                .sides
+                .iter()
+                .flat_map(|side| side.side_input_refusals)
+                .flatten()
+            {
+                refused += 1;
+                let _ = FIRST_SIDE_INPUT_REFUSAL.set(reason);
+            }
+        }
+        REFUSED_SIDE_INPUTS.fetch_add(refused, Ordering::Relaxed);
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [
@@ -1492,100 +1263,39 @@ impl Captured {
             self.divisions.outcome,
             self.sides.outcome,
             self.combat_sides.outcome,
-            self.breakdown_outcome,
+            self.members_outcome(),
         ]
     }
-    fn capture_breakdowns(&mut self, memory: &impl Memory, base: usize, state: usize) {
-        self.breakdowns.clear();
-        let result = (|| {
-            if !matches!(self.divisions.outcome, Outcome::Rows { .. }) {
-                return Err("reserve modifier breakdown division census incomplete");
-            }
-            if !self.divisions.rows[..self.divisions.outcome.len()]
-                .iter()
-                .any(|r| r.role == 2)
-            {
-                return Ok(());
-            }
-            let countries = engine::ccountry::Reader::new(memory, base, state)?;
-            // Each reserve division selects at most its owner and commander.
-            let bound = self.divisions.rows[..self.divisions.outcome.len()]
-                .iter()
-                .filter(|row| row.role == 2)
-                .count()
-                .checked_mul(2)
-                .ok_or_else(|| {
-                    allocation::oom();
-                    "collector allocation failed"
-                })?;
-            let mut sources = HashMap::new();
-            allocation::reserve_map(&mut sources, bound)
-                .map_err(|_| "collector allocation failed")?;
-            for row in &self.divisions.rows[..self.divisions.outcome.len()] {
-                if row.role != 2 {
-                    continue;
-                }
-                let owners = row
-                    .pointer
-                    .checked_add(engine::cunit::ROSTER_OWNER)
-                    .and_then(|p| engine::read::<[u8; 8]>(memory, p))
-                    .ok_or("reserve modifier breakdown owner unreadable")?;
-                let own = u32::from_le_bytes(owners[..4].try_into().unwrap());
-                let expeditionary = u32::from_le_bytes(owners[4..].try_into().unwrap());
-                let owner = if expeditionary as i32 > 0 {
-                    expeditionary
-                } else {
-                    own
-                };
-                let key = (0, owner as u64);
-                if let Entry::Vacant(entry) = sources.entry(key) {
-                    let country = countries.resolve(owner)?;
-                    let address = country
-                        .pointer
-                        .checked_add(engine::ccountry::MODIFIER_ACCUMULATOR)
-                        .ok_or("reserve modifier breakdown country address overflow")?;
-                    entry.insert(address);
-                }
-                let kind = row.context.leader_modifier_kind;
-                let key = (kind, row.stats.commander);
-                if kind != 0
-                    && let Entry::Vacant(entry) = sources.entry(key)
-                {
-                    let accumulator =
-                        engine::carmy_leader::movement_accumulator(memory, base, row.pointer)?
-                            .ok_or("reserve modifier breakdown selected commander missing")?;
-                    entry.insert(accumulator);
-                }
-            }
-            engine::allocation::reserve_push_batch(&mut self.breakdowns, sources.len())
-                .map_err(crate::allocation::io)
-                .map_err(|_| "collector allocation failed")?;
-            for &(kind, owner) in sources.keys() {
-                self.breakdowns
-                    .push(replay::rows::ReserveModifierBreakdownRow {
-                        kind,
-                        owner,
-                        nodes: Vec::new(),
-                    });
-            }
-            // Preserve the original tree read order and replay row order.
-            self.breakdowns.sort_unstable_by_key(RowCodec::key);
-            for row in &mut self.breakdowns {
-                row.nodes = engine::modifier_breakdown::tree(
-                    memory,
-                    base,
-                    sources[&(row.kind, row.owner)],
-                    engine::modifier_keys::LAND_REINFORCE_RATE,
-                )?;
-            }
-            Ok(())
-        })();
-        self.breakdown_outcome = match result {
-            Ok(()) => Outcome::Rows {
-                len: self.breakdowns.len(),
-            },
-            Err(reason) => Outcome::Unavailable { reason },
+    /// The modifier sides read this pass, each with its members, or none.
+    fn read_sides(&self) -> Option<&[ModifierSide]> {
+        match self.sides.outcome {
+            Outcome::Rows { len } | Outcome::Truncated { len, .. } => self.sides.rows.get(..len),
+            Outcome::Unavailable { .. } => None,
+        }
+    }
+    /// LandCombatDivisionModifiers: a row a member of each read side. Every
+    /// visited member counts toward the members' demand before any refusal,
+    /// so the members of sides left unread, or omitted when their member
+    /// allocation failed, are counted missing; unread sides without members
+    /// leave nothing missing.
+    fn members_outcome(&self) -> Outcome {
+        match self.sides.outcome {
+            Outcome::Unavailable { reason } => return Outcome::Unavailable { reason },
+            Outcome::Rows { .. } | Outcome::Truncated { .. } => {}
+        }
+        let Some(sides) = self.read_sides() else {
+            return Outcome::Unavailable {
+                reason: "walker row count exceeds allocated buffer",
+            };
         };
+        let read: usize = sides.iter().map(|side| side.len).sum();
+        match self.members.required.saturating_sub(read) {
+            0 => Outcome::Rows { len: read },
+            unread => Outcome::Truncated {
+                len: read,
+                unread_rows: unread.min(u32::MAX as usize) as u32,
+            },
+        }
     }
     fn tactic_inputs(context: &land_tactic_inputs::ContextRow) -> LandCombatTacticInputs {
         LandCombatTacticInputs {
@@ -1605,6 +1315,68 @@ impl Captured {
             country_weight_present: context.country_weight_present,
         }
     }
+    /// A side's hover inputs from its owned operands: the CAS counters, the
+    /// skill progress from the leader experience ratio, the leader block's
+    /// keys, the description token, the timed traits and the learning rows
+    /// shown by the leader display. The row's conversion rounds them to their steps.
+    fn side_inputs(&self, s: &cland_combat::SideDetails) -> LandCombatSideInputs {
+        let text = |start: usize, len: usize| {
+            allocation::owned_vec(allocation::copy_vec(
+                &self.detail_text.first[start..start + len],
+            ))
+        };
+        let timed = &self.timed_traits.first
+            [s.timed_traits_start..s.timed_traits_start + s.timed_traits_len];
+        LandCombatSideInputs {
+            // The air-support hover's operands: the stored anti-air cache
+            // (+0x138) and the prevented lanes (+0x168/+0x170).
+            anti_air_attack: s.anti_air_attack,
+            prevented_damage: [s.damage[4], s.damage[5]],
+            skill_progress: skill_progress(
+                s.commander_experience,
+                s.next_skill,
+                s.side_input_refusals[0].is_some(),
+            ),
+            // A side without a selected commander read no block: its keys are
+            // the defaults the hover never shows; a refused read is unknown.
+            skill_modifiers: s
+                .skill_modifiers
+                .or(s.side_input_refusals[2].is_none().then_some([0; 2])),
+            description_token: text(
+                s.commander_description_token.start,
+                s.commander_description_token.len,
+            ),
+            timed_traits: allocation::owned_vec(allocation::collect_vec(timed.iter().map(|t| {
+                LandCombatCommanderTimedTrait {
+                    token_id: t.token_id,
+                    definition_ordinal: t.definition_ordinal,
+                    remaining_days: t.remaining_days,
+                }
+            }))),
+            // Leader learning display shows an entry, in vector order, only when its
+            // ratio is strictly greater than the live floor; without the
+            // floor which rows show is unknown. A side without a selected
+            // commander has no rows.
+            learning_traits: match s.learning_threshold {
+                Some(threshold) => Some(allocation::owned_vec(allocation::collect_vec(
+                    self.learning_traits.first[s.learning_traits.range()]
+                        .iter()
+                        .filter_map(|entry| {
+                            let progress =
+                                experience_ratio(entry.experience, entry.required_experience);
+                            (progress > threshold).then(|| LandCombatLearningProgress {
+                                token_id: entry.token_id,
+                                definition_ordinal: entry.definition_ordinal,
+                                progress,
+                                token: text(entry.token_start, entry.token_len),
+                            })
+                        }),
+                ))),
+                None if s.side_input_refusals[1].is_some() => None,
+                None => Some(Vec::new()),
+            },
+        }
+    }
     pub fn tables(&self) -> [TableView; N] {
         let outcomes = self.outcomes();
         [
@@ -1612,10 +1384,10 @@ impl Captured {
                 let r = &captured.row;
                 LandCombatDetailsRow {
                     tactic_inputs: Self::tactic_inputs(&captured.tactic_context),
-                    border_war: replay::rows::Recorded::Value(r.border_war.map(|border| {
+                    border_war: Recorded::Value(r.border_war.map(|border| {
                         replay::rows::LandBorderWarInputs {
                             transfer_state: border.transfer_state,
-                            combat_width: replay::rows::Recorded::Value(border.combat_width),
+                            combat_width: Recorded::Value(border.combat_width),
                             sides: border.sides.map(|side| replay::rows::LandBorderWarSide {
                                 country: side.country,
                                 state: side.state,
@@ -1638,6 +1410,9 @@ impl Captured {
                         &self.detail_text.first[r.stored_terrain_name.range()],
                     )),
                     stored_terrain_valid: r.stored_terrain_valid,
+                    side_inputs: Recorded::Value(std::array::from_fn(|side| {
+                        self.side_inputs(&r.sides[side])
+                    })),
                     sides: std::array::from_fn(|side| {
                         let s = &r.sides[side];
                         LandCombatSideDetails {
@@ -1659,49 +1434,29 @@ impl Captured {
                             air_counts: allocation::owned_vec(allocation::copy_vec(
                                 &self.air_counts.first[s.air_counts.range()],
                             )),
-                            anti_air_attack: s.anti_air_attack,
+                            // The CAS operands are the side inputs'.
+                            anti_air_attack: RetiredKept::default(),
                             air_kills: s.air_kills,
-                            damage: s.damage,
-                            organisation_loss: s.organisation_loss,
+                            damage: [s.damage[0], s.damage[1]],
+                            ground_damage: RetiredNested::default(),
+                            prevented_damage: RetiredKept::default(),
+                            // Combat sample aggregation reads only the samples' sum.
+                            organisation_loss_sum: LandCombatSideDetails::loss_sum(
+                                &s.organisation_loss,
+                            ),
                             organisation_loss_count: s.organisation_loss_count,
                             commander: s.commander,
                             commander_skill: s.commander_skill,
                             commander_category: s.commander_category,
                             commander_country: s.commander_country,
-                            commander_experience: s.commander_experience,
+                            commander_experience: RetiredNested::default(),
                             commander_name_token: allocation::owned_vec(allocation::copy_vec(
                                 &self.detail_text.first[s.commander_name_token.range()],
                             )),
-                            commander_description_token: allocation::owned_vec(
-                                allocation::copy_vec(
-                                    &self.detail_text.first[s.commander_description_token.range()],
-                                ),
-                            ),
+                            commander_description_token: RetiredNested::default(),
                             commander_formation: s.commander_formation,
-                            timed_traits: allocation::owned_vec(allocation::collect_vec(
-                                self.timed_traits.first[s.timed_traits_start
-                                    ..s.timed_traits_start + s.timed_traits_len]
-                                    .iter()
-                                    .map(|t| LandCombatCommanderTimedTrait {
-                                        token_id: t.token_id,
-                                        definition_ordinal: t.definition_ordinal,
-                                        remaining_days: t.remaining_days,
-                                    }),
-                            )),
-                            learning_traits: allocation::owned_vec(allocation::collect_vec(
-                                self.learning_traits.first[s.learning_traits.range()]
-                                    .iter()
-                                    .map(|t| LandCombatCommanderLearningTrait {
-                                        token_id: t.token_id,
-                                        definition_ordinal: t.definition_ordinal,
-                                        required_experience: t.required_experience,
-                                        experience: t.experience,
-                                        token: allocation::owned_vec(allocation::copy_vec(
-                                            &self.detail_text.first
-                                                [t.token_start..t.token_start + t.token_len],
-                                        )),
-                                    }),
-                            )),
+                            timed_traits: RetiredNested::default(),
+                            learning_traits: RetiredNested::default(),
                             traits: allocation::owned_vec(allocation::collect_vec(
                                 self.commander_traits.first
                                     [s.traits_start..s.traits_start + s.traits_len]
@@ -1744,11 +1499,15 @@ impl Captured {
                     role: r.role,
                     province: r.province,
                     strength_combat_factor: s.strength_combat_factor,
-                    stat_values: s.stat_values,
+                    // A field each; the packets are tombstones.
+                    stat_values: s.stat_values.map(Recorded::Value),
+                    stat_packet: RetiredKept::default(),
                     armour: s.armour,
                     piercing: s.piercing,
                     air_attack: s.air_attack,
                     reconnaissance: s.reconnaissance,
+                    // The stat block's initiative (+0xE0), which the reinforcement chance
+                    // scales by the country's and leader's 0x250 keys.
                     initiative: s.initiative,
                     commander: s.commander,
                     direction_group: s.direction_group,
@@ -1767,80 +1526,17 @@ impl Captured {
                             occupiers: tags(exile.occupiers),
                         }
                     }),
-                    commander_inputs: r.commander_input.map(|index| {
-                        let c = &self.division_commanders.first[index];
-                        replay::rows::LandCombatDivisionCommander {
-                            skill: c.skill,
-                            name_token: allocation::owned_vec(allocation::copy_vec(
-                                &self.commander_names.first
-                                    [c.name_token.0..c.name_token.0 + c.name_token.1],
-                            )),
-                            traits: allocation::owned_vec(allocation::collect_vec(
-                                c.traits[..c.traits_len]
-                                    .iter()
-                                    .map(|t| LandCombatCommanderTrait {
-                                        token_id: t.token_id,
-                                        definition_ordinal: t.definition_ordinal,
-                                        kind: t.kind,
-                                        relevant: t.relevant,
-                                        token: allocation::owned_vec(allocation::copy_vec(
-                                            &c.trait_text
-                                                [t.token_start..t.token_start + t.token_len],
-                                        )),
-                                    }),
-                            )),
-                        }
-                    }),
-                    scales: s.scales,
-                    fuel_inputs: s.fuel_inputs,
-                    reinforcement: LandReinforcementInputs {
-                        scalar_values: r.reinforcement.scalar_values,
-                        flags: r.reinforcement.flags,
-                        ids: r.reinforcement.ids,
-                    },
-                    reinforcement_modifiers: allocation::owned_vec(allocation::collect_vec(
-                        self.reinforcement_modifiers.first[r.reinforcement_starts[0]
-                            ..r.reinforcement_starts[0] + r.reinforcement.modifier_count]
-                            .iter()
-                            .map(|m| LandReinforcementModifier {
-                                scope: m.scope,
-                                key: m.key,
-                                raw: m.raw,
-                                present: m.present,
-                                metadata_flags: m.metadata_flags,
-                                feature_selector: m.feature_selector,
-                            }),
-                    )),
-                    reinforcement_supply: allocation::owned_vec(allocation::collect_vec(
-                        self.supply_terms.first[r.reinforcement_starts[1]
-                            ..r.reinforcement_starts[1] + r.reinforcement.supply_term_count]
-                            .iter()
-                            .map(|s| LandReinforcementSupplyTerm {
-                                subunit: s.subunit,
-                                count: s.count,
-                                special: s.special,
-                            }),
-                    )),
-                    reinforcement_acclimatization: allocation::owned_vec(allocation::collect_vec(
-                        self.acclimatization.first[r.reinforcement_starts[2]
-                            ..r.reinforcement_starts[2] + r.reinforcement.acclimatization_count]
-                            .iter()
-                            .map(|a| LandReinforcementAcclimatization {
-                                weight: a.weight,
-                                active: a.active,
-                            }),
-                    )),
-                    reinforcement_transport: allocation::owned_vec(allocation::collect_vec(
-                        self.transport_terms.first[r.reinforcement_starts[3]
-                            ..r.reinforcement_starts[3] + r.reinforcement.transport_term_count]
-                            .iter()
-                            .map(|t| LandReinforcementTransportTerm {
-                                country: t.country,
-                                regional_value: t.regional_value,
-                                own_intel: t.own_intel,
-                                enemy_intel: t.enemy_intel,
-                            }),
-                    )),
+                    commander_inputs: Retired,
+                    scales: s.scales.map(Recorded::Value),
+                    scale_packet: RetiredKept::default(),
+                    fuel_inputs: s.fuel_inputs.map(Recorded::Value),
+                    fuel_packet: RetiredKept::default(),
+                    reinforcement: Retired,
+                    reinforcement_modifiers: Retired,
+                    reinforcement_supply: Retired,
+                    reinforcement_acclimatization: Retired,
+                    reinforcement_transport: Retired,
+                    reinforcement_speed: Recorded::Value(r.reserve_speed.and_then(Result::ok)),
                     context: LandDivisionContext {
                         template: r.context.template,
                         country_modifiers: r.context.country_modifiers.map(|m| {
@@ -1878,23 +1574,7 @@ impl Captured {
                     combat: r.combat,
                     side: r.side,
                     border_values: r.border_values,
-                    divisions: allocation::owned_vec(allocation::collect_vec(
-                        self.members.first[r.start..r.start + r.len]
-                            .iter()
-                            .map(|m| DivisionCombatModifiers {
-                                division: m.division,
-                                ordinal: m.ordinal,
-                                entries: allocation::owned_vec(allocation::collect_vec(
-                                    self.modifiers.first[m.start..m.start + m.len].iter().map(
-                                        |v| CombatModifierValue {
-                                            id: v.id,
-                                            value_a: v.value_a,
-                                            value_b: v.value_b,
-                                        },
-                                    ),
-                                )),
-                            }),
-                    )),
+                    divisions: Retired,
                 }
             }),
             table::<tables::LandCombatSides, _>(outcomes[3], &self.combat_sides.rows, |r| {
@@ -1916,29 +1596,74 @@ impl Captured {
                     defender_secondary: set(3),
                 }
             }),
-            {
-                let failed = std::cell::Cell::new(false);
-                let view = table::<tables::ReserveModifierBreakdowns, _>(
-                    outcomes[4],
-                    &self.breakdowns,
-                    |row| match row.try_clone() {
-                        Ok(row) => row,
-                        Err(error) => {
-                            crate::allocation::observe(&error);
-                            failed.set(true);
-                            Default::default()
-                        }
+            // Members in key order: sides are read in combat order, each
+            // side's members in ordinal order (the projection sorts anyway).
+            match (outcomes[4], self.read_sides()) {
+                (Outcome::Unavailable { reason }, _) => unavailable(reason),
+                (outcome, Some(sides)) => table_iter::<tables::LandCombatDivisionModifiers, _>(
+                    outcome,
+                    sides.iter().flat_map(|side| {
+                        self.members.first[side.start..side.start + side.len]
+                            .iter()
+                            .map(move |member| (side, member))
+                    }),
+                    |(side, member)| LandCombatDivisionModifierRow {
+                        combat: side.combat,
+                        side: side.side,
+                        ordinal: member.ordinal,
+                        division: member.division,
+                        entries: allocation::owned_vec(allocation::collect_vec(
+                            self.modifiers.first[member.start..member.start + member.len]
+                                .iter()
+                                .map(|v| CombatModifierValue {
+                                    id: v.id,
+                                    value_a: v.value_a,
+                                    value_b: v.value_b,
+                                }),
+                        )),
                     },
-                );
-                if failed.get() {
-                    unavailable("reserve modifier breakdown projection failed")
-                } else {
-                    view
-                }
+                ),
+                (_, None) => unavailable("walker row count exceeds allocated buffer"),
             },
         ]
     }
 }
+/// Leader experience and portrait learning displays use the same fixed5
+/// ratio: multiply experience and the requirement by 100000, divide using
+/// signed truncation, and wrap the experience multiplication. Return
+/// `0xFFFFFFFF` for a zero requirement or any of the three sentinel
+/// experience words selected by the unsigned wrapping range check.
+pub(super) fn experience_ratio(experience: i64, required: i32) -> i64 {
+    let denominator = i64::from(required) * 100_000;
+    if denominator == 0
+        || (experience as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd
+    {
+        return 0xffff_ffff;
+    }
+    // A nonzero multiple of 100000 cannot overflow the division.
+    experience.wrapping_mul(100_000) / denominator
+}
+
+/// The skill hover's progress: [`experience_ratio`] over the next level's
+/// requirement, or no progress when the next skill level lookup found no level or an
+/// invalid one (the hover's LEADER_SKILL_AT_CAP arm). A side without a
+/// selected commander read no level; one whose read was `refused` has its
+/// progress unknown.
+pub(super) fn skill_progress(
+    experience: i64,
+    next: Option<engine::naval_commander_inputs::SkillDefinition>,
+    refused: bool,
+) -> i64 {
+    match next {
+        Some(next) if next.present != 0 && next.valid != 0 => {
+            experience_ratio(experience, next.required_experience)
+        }
+        Some(_) => LandCombatSideInputs::NO_PROGRESS,
+        None if refused => LandCombatSideInputs::UNREAD_PROGRESS,
+        None => LandCombatSideInputs::NO_PROGRESS,
+    }
+}
+
 /// Spool-thread portrait projection shared by hourly land and naval contexts.
 pub(super) fn commander_presentation(
     p: &engine::naval_commander_inputs::Presentation,

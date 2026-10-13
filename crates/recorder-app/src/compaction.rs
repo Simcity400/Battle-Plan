@@ -134,11 +134,49 @@ mod tests {
                 tables,
             }));
         }
-        Replay::from_records(b"synthetic".to_vec(), &[records])
-            .unwrap()
-            .write_atomic(&path)
-            .unwrap();
+        let replay = Replay::from_records(b"synthetic".to_vec(), &[records]).unwrap();
+        fs::write(&path, interleaved(&replay)).unwrap();
         path
+    }
+
+    /// The recording's file with every block stored interleaved (one zstd frame
+    /// of length-prefixed plain frames), which compaction recompresses; the
+    /// writer's grouped blocks are already as small as compaction makes them.
+    fn interleaved(replay: &Replay) -> Vec<u8> {
+        let bytes = replay.bytes();
+        let footer = bytes.len() - 24;
+        let trailer =
+            u64::from_le_bytes(bytes[footer + 4..footer + 12].try_into().unwrap()) as usize;
+        let mut out = bytes[..replay.index[0].offset as usize].to_vec();
+        let mut index = Vec::new();
+        for block in &replay.index {
+            let frames = replay.read_block(block).unwrap();
+            let mut raw = (frames.len() as u32).to_le_bytes().to_vec();
+            for frame in &frames {
+                let mut payload = Vec::new();
+                frame.encode(&mut payload).unwrap();
+                raw.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                raw.extend(payload);
+            }
+            let compressed = zstd::encode_all(raw.as_slice(), 3).unwrap();
+            index.extend_from_slice(&block.branch.to_le_bytes());
+            index.extend_from_slice(&block.first_hour.to_le_bytes());
+            index.extend_from_slice(&block.last_hour.to_le_bytes());
+            index.extend_from_slice(&(out.len() as u64).to_le_bytes());
+            index.extend_from_slice(&(compressed.len() as u64).to_le_bytes());
+            index.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+            out.extend(compressed);
+        }
+        let trailer_start = out.len();
+        out.extend_from_slice(&bytes[trailer..footer - 40 * replay.index.len()]);
+        out.extend(index);
+        let crc = crc32fast::hash(&out[trailer_start..]);
+        let trailer_length = (out.len() - trailer_start) as u64;
+        out.extend_from_slice(&bytes[footer..footer + 4]);
+        out.extend_from_slice(&(trailer_start as u64).to_le_bytes());
+        out.extend_from_slice(&trailer_length.to_le_bytes());
+        out.extend_from_slice(&crc.to_le_bytes());
+        out
     }
 
     fn scratch() -> std::path::PathBuf {

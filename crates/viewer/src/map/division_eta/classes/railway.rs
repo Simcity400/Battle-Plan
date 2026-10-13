@@ -1,13 +1,20 @@
 //! Class-13's fresh counter duration.
 //! The common route search owns admission. Land speed uses equipment maximum
 //! plus the directed railway bonus, then land scale and the gun's own supply
-//! factor; it never uses the army road-speed fallback.
+//! factor; it never uses the army road-speed fallback. Sea-crossing and
+//! transfer legs move at the owner's per-region transport speed, which only
+//! the retired selected transport preview recorded, so a duration reaching
+//! one refuses by [`SEA_SPEED_RETIRED`].
 
 use super::fresh_search::Inputs;
 use crate::map::raids::reach::Moves;
 use engine::{carmy::MovementSpeedInputs, cunit::eta_ratio};
-use installed_content::unit_path::{CounterRequest, Fact, MoveWorld};
+use installed_content::unit_path::{CounterRequest, Fact};
 use replay::rows::{FreshRailwayCounterEta, RailwayGunCounterInputRow};
+
+/// The owner's per-region transport speed (`CountryCounterInputs.movement`)
+/// retired with the selected transport preview.
+pub(super) const SEA_SPEED_RETIRED: &str = "fresh railway ETA sea-crossing speed: CountryCounterInputs.movement is retired with the selected transport preview";
 
 pub(super) fn derive(
     inputs: &Inputs<'_>,
@@ -42,13 +49,7 @@ pub(super) fn derive_to(
     let duration = if route.is_empty() {
         Ok(0)
     } else {
-        fresh(gun, inputs.hour).and_then(|fresh| {
-            remaining(inputs, gun, fresh, &route, |from| {
-                moves.strategic_region(from).ok_or_else(|| {
-                    format!("fresh railway ETA source {from} has no strategic region")
-                })
-            })
-        })
+        fresh(gun, inputs.hour).and_then(|fresh| remaining(inputs, gun, fresh, &route))
     };
     Ok(super::CounterPreview { duration, route })
 }
@@ -71,7 +72,7 @@ fn fresh(gun: &RailwayGunCounterInputRow, hour: i32) -> Fact<&FreshRailwayCounte
         .map_err(|error| error.to_string())?
         .as_ref()
         .ok_or("fresh railway ETA inputs were refused")?;
-    if fresh.sample_hour != hour {
+    if !fresh.sample_hour.fresh_at(hour) {
         return Err(format!(
             "fresh railway ETA inputs sampled at {}, frame is {hour}",
             fresh.sample_hour
@@ -85,7 +86,6 @@ fn remaining(
     gun: &RailwayGunCounterInputRow,
     fresh: &FreshRailwayCounterEta,
     route: &[u32],
-    source_region: impl Fn(u32) -> Fact<u32>,
 ) -> Fact<i64> {
     if route.is_empty() {
         return Ok(0);
@@ -115,11 +115,7 @@ fn remaining(
             })?
         };
         let speed = if gun.naval_transfer != 0 || source.flags & 1 == 0 || target.flags & 1 == 0 {
-            MovementSpeedInputs::Scaled {
-                speed: inputs.transport(gun.logical_owner, source_region(from)?)?,
-                scale: defines.transport_scale,
-            }
-            .evaluate()
+            return Err(SEA_SPEED_RETIRED.into());
         } else {
             let maximum = fresh
                 .maximum_speed
@@ -175,9 +171,8 @@ mod tests {
     use replay::{
         frame::DecodedFrame,
         rows::{
-            CountryCounterInputRow, CountryLinkRow, CountryMovementInputs, CountryRow,
             RailCooldownRow, RailEdgeRow, RailwayBuildingHealth, RailwayBuildingState,
-            RailwayGunEtaOperands, Recorded, RegionTransportSpeed, TableRows,
+            RailwayGunEtaOperands, Recorded, TableRows,
         },
     };
 
@@ -222,7 +217,6 @@ mod tests {
                 speed: [99_000_000, 98_000_000, 97_000_000, 200_000],
                 maximum_level: 5,
             }),
-            naval: Err("unrelated naval defines are unavailable".into()),
             task_force_terrain: Err("unrelated task-force terrain is unavailable".into()),
         }
     }
@@ -240,7 +234,7 @@ mod tests {
 
     fn land() -> FreshRailwayCounterEta {
         FreshRailwayCounterEta {
-            sample_hour: 20,
+            sample_hour: replay::rows::PacketHour::Stamped(20),
             maximum_speed: Some(200_000),
             land_supply_factor: Some(50_000),
             ..Default::default()
@@ -268,41 +262,6 @@ mod tests {
                 from: 1,
                 to: 2,
                 level: 5,
-            }]),
-        );
-    }
-
-    fn transport(frame: &mut DecodedFrame, speed: i64) {
-        put(
-            frame,
-            TableRows::CountryLinks(vec![CountryLinkRow {
-                id: 99,
-                canonical_slot: 1,
-            }]),
-        );
-        put(
-            frame,
-            TableRows::Countries(vec![CountryRow {
-                id: 101,
-                canonical_slot: 1,
-                ..Default::default()
-            }]),
-        );
-        put(
-            frame,
-            TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
-                country: 101,
-                movement: Recorded::Value(Some(CountryMovementInputs {
-                    sample_hour: 20,
-                    river: None,
-                    transport: Some(vec![RegionTransportSpeed {
-                        region: 9,
-                        speed: Some(speed),
-                    }]),
-                    ..Default::default()
-                })),
-                ..Default::default()
             }]),
         );
     }
@@ -355,32 +314,20 @@ mod tests {
         content.defines.outer_scale = 150_000;
         let inputs = Inputs::new(&frame, &content);
         // 1->2: (2+2)*1.5*.5=3; 2->3: 2*1.5*.5=1.5.
-        assert_eq!(
-            remaining(&inputs, &gun(), &land(), &[2, 3], |_| Err(
-                "transport reached".into()
-            )),
-            Ok(400_000)
-        );
+        assert_eq!(remaining(&inputs, &gun(), &land(), &[2, 3]), Ok(400_000));
     }
 
     #[test]
-    fn transport_skips_refused_land_domains_and_uses_embark_distance() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let mut frame = frame();
-        transport(&mut frame, 200_000);
-        let mut transport_content = content(0);
-        transport_content.rail = Err("unreached rail content".into());
-        let inputs = Inputs::new(&frame, &transport_content);
+    fn sea_crossing_and_transfer_legs_refuse_by_name_before_land_domains() {
+        // No owner, country or rail table is recorded: the sea leg's speed
+        // refuses by its own name rather than through an unrelated domain.
+        let frame = frame();
+        let mut sea = content(0);
+        sea.rail = Err("unreached rail content".into());
+        let inputs = Inputs::new(&frame, &sea);
         assert_eq!(
-            remaining(
-                &inputs,
-                &gun(),
-                &FreshRailwayCounterEta::default(),
-                &[2],
-                |_| Ok(9)
-            ),
-            Ok(200_000)
+            remaining(&inputs, &gun(), &FreshRailwayCounterEta::default(), &[2]),
+            Err(SEA_SPEED_RETIRED.into())
         );
         let mut transfer = gun();
         transfer.naval_transfer = 2;
@@ -391,10 +338,14 @@ mod tests {
                 &inputs,
                 &transfer,
                 &FreshRailwayCounterEta::default(),
-                &[2, 3],
-                |_| Ok(9)
+                &[2, 3]
             ),
-            Ok(450_000)
+            Err(SEA_SPEED_RETIRED.into())
+        );
+        // An empty route needs no speed at all.
+        assert_eq!(
+            remaining(&inputs, &transfer, &FreshRailwayCounterEta::default(), &[]),
+            Ok(0)
         );
     }
 
@@ -408,21 +359,15 @@ mod tests {
         let inputs = Inputs::new(&frame, &content);
         let mut gun = gun();
         gun.ordinary_path = vec![2];
-        assert!(remaining(&inputs, &gun, &land(), &[2], |_| Ok(9)).is_err());
+        assert!(remaining(&inputs, &gun, &land(), &[2]).is_err());
         gun.eta = Recorded::Value(Some(RailwayGunEtaOperands {
             numerator: 50_000,
             current_speed: 100_000,
         }));
-        assert_eq!(
-            remaining(&inputs, &gun, &land(), &[2], |_| Ok(9)),
-            Ok(250_000)
-        );
+        assert_eq!(remaining(&inputs, &gun, &land(), &[2]), Ok(250_000));
         gun.ordinary_path = vec![4];
         gun.eta = Recorded::NotRecorded;
-        assert_eq!(
-            remaining(&inputs, &gun, &land(), &[2], |_| Ok(9)),
-            Ok(300_000)
-        );
+        assert_eq!(remaining(&inputs, &gun, &land(), &[2]), Ok(300_000));
     }
 
     #[test]
@@ -430,31 +375,20 @@ mod tests {
         engine::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame();
-        transport(&mut frame, 0);
-        let content = content(0);
+        rails(&mut frame);
+        let mut content = content(1);
+        // No railway bonus and no equipment speed: the first land leg is zero.
+        content.rail.as_mut().unwrap().speed[3] = 0;
         let inputs = Inputs::new(&frame, &content);
         let mut gun = gun();
         gun.ordinary_path = vec![2];
-        assert_eq!(
-            remaining(
-                &inputs,
-                &gun,
-                &FreshRailwayCounterEta::default(),
-                &[2, 3],
-                |_| Ok(9)
-            ),
-            Ok(0)
-        );
-        assert_eq!(
-            remaining(
-                &inputs,
-                &gun,
-                &FreshRailwayCounterEta::default(),
-                &[],
-                |_| Err("unreached region".into())
-            ),
-            Ok(0)
-        );
+        let stopped = FreshRailwayCounterEta {
+            maximum_speed: Some(0),
+            ..land()
+        };
+        // The same first edge would demand the unrecorded actual progress.
+        assert_eq!(remaining(&inputs, &gun, &stopped, &[2, 3]), Ok(0));
+        assert_eq!(remaining(&inputs, &gun, &stopped, &[]), Ok(0));
     }
 
     #[test]
@@ -531,7 +465,7 @@ mod tests {
         // i64::MIN and native division traps. The damaged next departure
         // would produce speed0, but native has already reached the trap.
         assert_eq!(
-            remaining(&inputs, &gun(), &fresh, &[2, 3], |_| Ok(9)),
+            remaining(&inputs, &gun(), &fresh, &[2, 3]),
             Err("ETA native signed division overflows".into()),
         );
     }
@@ -547,14 +481,14 @@ mod tests {
         let mut fresh = land();
         fresh.maximum_speed = None;
         assert!(
-            remaining(&inputs, &gun(), &fresh, &[2], |_| Ok(9))
+            remaining(&inputs, &gun(), &fresh, &[2])
                 .unwrap_err()
                 .contains("maximum speed")
         );
         fresh = land();
         fresh.land_supply_factor = None;
         assert!(
-            remaining(&inputs, &gun(), &fresh, &[2], |_| Ok(9))
+            remaining(&inputs, &gun(), &fresh, &[2])
                 .unwrap_err()
                 .contains("supply factor")
         );

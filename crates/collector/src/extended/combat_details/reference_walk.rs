@@ -33,7 +33,6 @@ impl Destination<'_> {
         let bound =
             (source.attackers.count as usize).saturating_add(source.defenders.count as usize);
         grow_vec(self.divisions, self.progress[1].required + bound);
-        self.reserve_commander_keys(self.progress[1].required.saturating_add(bound));
         grow_vec(self.sides, self.progress[2].required.saturating_add(2));
         // A side's committed and reserve lists are subsets of its full
         // participants, so the larger census count bounds the role scratch.
@@ -110,10 +109,6 @@ impl Destination<'_> {
                         let started = qpc();
                         self.progress[1].required += 1;
                         if self.progress[1].failure.is_none() {
-                            // Enemy transport terms go straight into the arena
-                            // past its admitted length; the reader grows it on
-                            // this worker, one successfully read term at a time.
-                            let transport_start = self.reinforcement_progress[3].len;
                             // Exile tags reserve their original list counts
                             // before their payloads, just like the shared walk.
                             let exile_start = self.exile_progress.len;
@@ -137,17 +132,13 @@ impl Destination<'_> {
                                         self.exile_tags,
                                         exile_start,
                                     ),
-                                    transport_terms: self.transport_terms,
-                                    transport_start,
                                 },
                                 role,
                                 pointer,
                                 handle,
                             );
                             match result {
-                                Ok((stats, exile, context, reinforcement)) => self.admit(
-                                    memory,
-                                    base,
+                                Ok((stats, exile, context, reserve_speed)) => self.admit(
                                     Placement {
                                         pointer,
                                         combat: source.id,
@@ -161,7 +152,7 @@ impl Destination<'_> {
                                         stats,
                                         exile,
                                         context,
-                                        reinforcement,
+                                        reserve_speed,
                                     },
                                 ),
                                 Err(reason) => self.progress[1].failure = Some(reason),

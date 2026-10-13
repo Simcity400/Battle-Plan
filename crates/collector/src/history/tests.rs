@@ -57,6 +57,7 @@ fn event_feed_history_seeds_sequence_generation_and_counts_from_retained_rows() 
                         source: EventFeedSource::Annex,
                         actor: country,
                         target: country,
+                        cause: Default::default(),
                     }]
                 } else {
                     Vec::new()
@@ -413,13 +414,14 @@ fn naval_sequence_prepares_every_retained_branch_before_resuming_same_process() 
 }
 
 #[test]
-fn air_sequences_restore_all_retained_prefixes_before_same_process_resume() {
+fn event_ledger_sequences_restore_all_retained_prefixes_before_same_process_resume() {
     use crate::event_ledger::EventLedger;
     use replay::{
         branches::{BranchReason, BranchStart, Parentage},
         frame::{Frame, Metrics, TableUpdate},
         rows::{
-            AirLossEventRow, BuildingBombingDamageRow, CampaignRow, ClockRow, TableId, TableRows,
+            AirLossEventRow, BuildingBombingDamageRow, CampaignRow, ClockRow, NuclearStrikeRow,
+            TableId, TableRows,
         },
     };
     let id = "21234567-89ab-cdef-0123-456789abcdef";
@@ -428,111 +430,126 @@ fn air_sequences_restore_all_retained_prefixes_before_same_process_resume() {
         std::env::temp_dir().join(format!("hoi4_history_air_sequence_{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
     let session = session();
-    let replay = |campaign: &str, branches: &[(u64, i32, u64, u64, bool)]| {
+    let replay = |campaign: &str, branches: &[(u64, i32, u64, u64, u64, bool)]| {
         let segments: Vec<_> = branches
             .iter()
-            .map(|&(branch, first, loss_id, bombing_id, partial)| {
-                let mut records = vec![
-                    Record::SessionStart(session.clone()),
-                    Record::BranchStart(BranchStart {
-                        id: branch,
-                        session: session.id,
-                        loaded_hour: Some(first - 2),
-                        first_hour: first - 1,
-                        parent: Parentage::Unknown,
-                        reason: if branch == 1 {
-                            BranchReason::SessionStart
-                        } else {
-                            BranchReason::LoadSignal
-                        },
-                    }),
-                ];
-                // Later empty reads must not erase a previously published high key.
-                for hour in [first - 1, first, first + 1] {
-                    records.push(Record::Frame(Frame {
-                        branch,
-                        hour,
-                        keyframe: hour == first - 1,
-                        metrics: Metrics::default(),
-                        tables: std::array::from_fn(|index| {
-                            let table = TableId::ALL[index];
-                            if !matches!(
-                                table,
-                                TableId::Clock
-                                    | TableId::Campaign
-                                    | TableId::AirLossEvents
-                                    | TableId::BuildingBombingDamage
-                            ) {
-                                return TableUpdate::Unavailable {
-                                    reason: "outside air history fixture".into(),
-                                };
-                            }
-                            let rows = match table {
-                                TableId::Clock => TableRows::Clock(vec![ClockRow {
-                                    hour,
-                                    play_session_started_at: branch as i64,
-                                    ..Default::default()
-                                }]),
-                                TableId::Campaign => TableRows::Campaign(vec![CampaignRow {
-                                    id: campaign.as_bytes().to_vec(),
-                                }]),
-                                TableId::AirLossEvents if hour == first => {
-                                    TableRows::AirLossEvents(vec![AirLossEventRow {
-                                        id: loss_id,
-                                        game_hour: hour,
-                                        country: 5000,
-                                        region: 71,
-                                        family_base: 3,
-                                        native_cause: 1,
-                                        amount_raw: -100_000,
-                                        ..Default::default()
-                                    }])
-                                }
-                                TableId::BuildingBombingDamage if hour == first => {
-                                    TableRows::BuildingBombingDamage(vec![
-                                        BuildingBombingDamageRow {
-                                            id: bombing_id,
-                                            game_hour: hour,
-                                            amount_raw: 10_000_000,
-                                            ..Default::default()
-                                        },
-                                    ])
-                                }
-                                table => TableRows::empty(table),
-                            };
-                            if partial
-                                && hour == first
-                                && matches!(
-                                    table,
-                                    TableId::AirLossEvents | TableId::BuildingBombingDamage
-                                )
-                            {
-                                TableUpdate::Truncated { rows, missing: 1 }
+            .map(
+                |&(branch, first, loss_id, bombing_id, nuclear_id, partial)| {
+                    let mut records = vec![
+                        Record::SessionStart(session.clone()),
+                        Record::BranchStart(BranchStart {
+                            id: branch,
+                            session: session.id,
+                            loaded_hour: Some(first - 2),
+                            first_hour: first - 1,
+                            parent: Parentage::Unknown,
+                            reason: if branch == 1 {
+                                BranchReason::SessionStart
                             } else {
-                                TableUpdate::Snapshot(rows)
-                            }
+                                BranchReason::LoadSignal
+                            },
                         }),
-                    }));
-                }
-                records
-            })
+                    ];
+                    // Later empty reads must not erase a previously published high key.
+                    for hour in [first - 1, first, first + 1] {
+                        records.push(Record::Frame(Frame {
+                            branch,
+                            hour,
+                            keyframe: hour == first - 1,
+                            metrics: Metrics::default(),
+                            tables: std::array::from_fn(|index| {
+                                let table = TableId::ALL[index];
+                                if !matches!(
+                                    table,
+                                    TableId::Clock
+                                        | TableId::Campaign
+                                        | TableId::AirLossEvents
+                                        | TableId::BuildingBombingDamage
+                                        | TableId::NuclearStrikes
+                                ) {
+                                    return TableUpdate::Unavailable {
+                                        reason: "outside air history fixture".into(),
+                                    };
+                                }
+                                let rows = match table {
+                                    TableId::Clock => TableRows::Clock(vec![ClockRow {
+                                        hour,
+                                        play_session_started_at: branch as i64,
+                                        ..Default::default()
+                                    }]),
+                                    TableId::Campaign => TableRows::Campaign(vec![CampaignRow {
+                                        id: campaign.as_bytes().to_vec(),
+                                    }]),
+                                    TableId::AirLossEvents if hour == first => {
+                                        TableRows::AirLossEvents(vec![AirLossEventRow {
+                                            id: loss_id,
+                                            game_hour: hour,
+                                            country: 5000,
+                                            region: 71,
+                                            family_base: 3,
+                                            native_cause: 1,
+                                            amount_raw: -100_000,
+                                            ..Default::default()
+                                        }])
+                                    }
+                                    TableId::BuildingBombingDamage if hour == first => {
+                                        TableRows::BuildingBombingDamage(vec![
+                                            BuildingBombingDamageRow {
+                                                id: bombing_id,
+                                                game_hour: hour,
+                                                amount_raw: 10_000_000,
+                                                ..Default::default()
+                                            },
+                                        ])
+                                    }
+                                    TableId::NuclearStrikes if hour == first => {
+                                        TableRows::NuclearStrikes(vec![NuclearStrikeRow {
+                                            id: nuclear_id,
+                                            hour,
+                                            ..Default::default()
+                                        }])
+                                    }
+                                    table => TableRows::empty(table),
+                                };
+                                if partial
+                                    && hour == first
+                                    && matches!(
+                                        table,
+                                        TableId::AirLossEvents
+                                            | TableId::BuildingBombingDamage
+                                            | TableId::NuclearStrikes
+                                    )
+                                {
+                                    TableUpdate::Truncated { rows, missing: 1 }
+                                } else {
+                                    TableUpdate::Snapshot(rows)
+                                }
+                            }),
+                        }));
+                    }
+                    records
+                },
+            )
             .collect();
         Replay::from_records(campaign.as_bytes().to_vec(), &segments).unwrap()
     };
-    let retained = replay(id, &[(1, 10, 0, 5, false), (2, 5, 80, 9, true)]);
+    let retained = replay(id, &[(1, 10, 0, 5, 3, false), (2, 5, 80, 9, 0, true)]);
     assert!(retained.index.len() >= 2);
-    assert_eq!(air_event_sequences(&retained).unwrap(), [Some(80), Some(9)]);
-    let older = replay(other_id, &[(1, 2, 5, 150, true)]);
+    assert_eq!(
+        event_ledger_sequences(&retained).unwrap(),
+        [Some(80), Some(9), Some(3)]
+    );
+    let older = replay(other_id, &[(1, 2, 5, 150, 40, true)]);
     fs::write(root.join(format!("{id}.battleplan")), retained.bytes()).unwrap();
     fs::write(root.join(format!("{other_id}.battleplan")), older.bytes()).unwrap();
     let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
-    let seeds = prepared.air_event_sequences();
-    assert_eq!(seeds, [Some(80), Some(150)]);
+    let seeds = prepared.event_ledger_sequences();
+    assert_eq!(seeds, [Some(80), Some(150), Some(40)]);
     let (mut tracker, lease) = prepared.take(id, &session).unwrap();
     let continued = tracker.observe(Some(6), 7, Some(2), &[]).unwrap();
     assert_eq!(continued.branch, 2);
     assert!(continued.start.is_none());
-    assert_eq!(prepared.air_event_sequences(), seeds);
+    assert_eq!(prepared.event_ledger_sequences(), seeds);
 
     // Fresh producer instances use those exact retained-history seeds before admission.
     let losses = EventLedger::<crate::air_losses::Entry>::new();
@@ -587,8 +604,8 @@ fn air_sequences_restore_all_retained_prefixes_before_same_process_resume() {
     assert_eq!(loss_rows[0].id, 81);
     assert_eq!(damage_rows[0].id, 151);
     assert_eq!(
-        PreparedCampaigns::default().air_event_sequences(),
-        [None, None]
+        PreparedCampaigns::default().event_ledger_sequences(),
+        [None, None, None]
     );
     drop(lease);
     drop(prepared);

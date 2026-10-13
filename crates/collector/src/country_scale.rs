@@ -16,7 +16,7 @@ use std::sync::{
     Mutex,
     atomic::{AtomicU64, AtomicUsize, Ordering},
 };
-mod naval_movement;
+mod navies;
 pub(crate) mod source_demand;
 pub(crate) mod table_demand;
 pub(crate) use table_demand::presize as presize_table_inputs;
@@ -87,7 +87,6 @@ pub(crate) fn demand_diagnostics() -> impl serde::Serialize {
         "politics_records": POLITICS_DEMAND_FAILURES.diagnostics(),
         "co_belligerents": CO_BELLIGERENT_DEMAND_FAILURES.diagnostics(),
         "weather_display": extended::weather::display_demand_diagnostics(),
-        "transport": extended::transport_demand::status(),
         "table_storage": table_demand::diagnostics(),
         "source_storage": source_demand::diagnostics(),
         "observer_boundary": extended::observer_boundary::status(),
@@ -102,12 +101,21 @@ pub fn note_slots(slots: usize) {
     SLOTS_HINT.fetch_max(slots, Ordering::Relaxed);
 }
 
-/// Tests that raise the registry hint, or measure buffers it sizes, hold
-/// this so a parallel test cannot move it mid-measurement.
+/// Tests that raise the registry, carrier or wing-name hints, or measure
+/// buffers they size, hold this so a parallel test cannot move them
+/// mid-measurement. The hints only rise within an attachment (each DLL load
+/// starts at zero), so every holder starts from a fresh attachment's hints:
+/// an earlier test's 5,000-country hint must not size a later test's storage.
 #[cfg(test)]
 pub(crate) fn hint_guard() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    SLOTS_HINT.store(0, Ordering::Relaxed);
+    AIR_WING_NAME_BYTES.store(0, Ordering::Relaxed);
+    for hint in &CARRIER_HINT {
+        hint.store(0, Ordering::Relaxed);
+    }
+    guard
 }
 
 /// Country census rows a raw-copy job needs for the largest observed registry.
@@ -332,130 +340,75 @@ pub fn observe_railway_gun_names(
 
 /// Independent off-thread capacity hints. Failed operands retain their reason;
 /// none of these observations admits recorded data or supplies a zero value.
-pub(crate) struct FreshEtaDemand {
+pub(crate) struct MapDemand {
     pub states: Result<usize, &'static str>,
     pub provinces: Result<usize, &'static str>,
-    pub terrains: Result<usize, &'static str>,
     pub rail_levels: Result<usize, &'static str>,
     pub carrier: Result<engine::cair_base::CarrierDemand, &'static str>,
-    pub movement: engine::carmy::country_movement_inputs::LiveDemand,
-    pub naval: naval_movement::Demand,
+    pub navies: navies::Demand,
 }
 
-impl FreshEtaDemand {
+impl MapDemand {
     pub(crate) fn map_refusals(&self) -> impl Iterator<Item = &'static str> {
         [
             self.states.err(),
             self.provinces.err(),
-            self.terrains.err(),
             self.rail_levels.err(),
             self.carrier.err(),
             self.carrier.as_ref().ok().and_then(|hint| hint.failure),
-            self.movement.country_slots.err(),
-            self.movement.raw_links.err(),
-            self.movement.controller_bound.err(),
-            self.movement.region_bound.err(),
         ]
         .into_iter()
         .flatten()
     }
 }
 
-/// A completed count only: geometry and province/terrain arenas are temporary.
-/// The engine owns this key's session/root law and authenticates it every poll.
-#[derive(Default)]
-pub(crate) struct FreshEtaMapCache {
-    completed: Option<(engine::cprovince::StaticGeometryKey, usize, usize)>,
-}
-
-impl FreshEtaMapCache {
-    fn demand(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        state: usize,
-    ) -> Result<(usize, usize), &'static str> {
-        let key = match engine::cprovince::static_geometry_demand_key(memory, base, state) {
-            Ok(key) => key,
-            Err(reason) => {
-                self.completed = None;
-                return Err(reason);
-            }
-        };
-        if let Some((seen, provinces, terrains)) = self.completed
-            && seen == key
-        {
-            return Ok((provinces, terrains));
-        }
-        self.completed = None;
-        let (captured_key, provinces, terrains) =
-            engine::carmy::fresh_counter_eta_map_demand_keyed(memory, base, state)?;
-        if captured_key != key {
-            return Err("fresh ETA sizing map key changed during census");
-        }
-        self.completed = Some((key, provinces, terrains));
-        Ok((provinces, terrains))
+/// The province census's slot count, including the reserved zero slot; the
+/// Provinces rows and the division movement geometry size from it.
+fn province_slots(memory: &impl Memory, state: usize) -> Result<usize, &'static str> {
+    let root = state
+        .checked_add(cgame_state::PROVINCES)
+        .and_then(|address| engine::cpdx_array::Array::read(memory, address, 8))
+        .ok_or("map sizing province census unreadable or invalid")?;
+    if root.count < 2 {
+        return Err("map sizing province census empty");
     }
+    Ok(root.count as usize)
 }
 
-/// Presize complete-map fresh ETA and only the owners of moving units. The
-/// singleton is the only shared gate: a failed terrain or owner census cannot
+/// Presize the map-wide tables and the physical navy pass. The singleton is the only shared gate: a failed census cannot
 /// discard an independently readable States/province/region header floor.
-pub(crate) fn observe_fresh_eta(
+pub(crate) fn observe_map(
     memory: &impl Memory,
     base: usize,
-    map: &mut FreshEtaMapCache,
-    naval_foreign_scratch: &mut usize,
-) -> Result<Option<FreshEtaDemand>, &'static str> {
-    let state = base
-        .checked_add(cgame_state::SINGLETON_RVA)
-        .and_then(|address| engine::read::<u64>(memory, address))
-        .ok_or("fresh ETA sizing game state unreadable")
-        .inspect_err(|_| map.completed = None)?;
-    let state = usize::try_from(state)
-        .map_err(|_| "fresh ETA sizing game state overflow")
-        .inspect_err(|_| map.completed = None)?;
-    if state == 0 {
-        map.completed = None;
+) -> Result<Option<MapDemand>, &'static str> {
+    let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
-    }
+    };
     let states = state
         .checked_add(cgame_state::STATES)
         .and_then(|address| engine::cpdx_array::Array::read(memory, address, 8))
         .map(|array| array.count as usize)
-        .ok_or("fresh ETA sizing state census unreadable or invalid");
-    let (provinces, terrains) = match engine::carmy::counter_land_terrain_capacity(memory, state) {
-        Ok(floor) => match map.demand(memory, base, state) {
-            Ok((count, terrains)) => (Ok(floor.max(count)), Ok(terrains)),
-            Err(reason) => (Ok(floor), Err(reason)),
-        },
-        Err(reason) => {
-            map.completed = None;
-            (Err(reason), Err(reason))
-        }
-    };
-    Ok(Some(FreshEtaDemand {
+        .ok_or("map sizing state census unreadable or invalid");
+    Ok(Some(MapDemand {
         states,
-        provinces,
-        terrains,
+        provinces: province_slots(memory, state),
         rail_levels: engine::crailway_manager::selected_inputs::demand(memory, base, state),
         carrier: engine::cair_base::carrier_demand(memory, base, state),
-        movement: extended::country_counters::movement_demand(memory, base, state),
-        naval: naval_movement::observe(memory, base, state, naval_foreign_scratch),
+        navies: navies::observe(memory, base, state),
     }))
 }
 
-/// Only the shared army census and the singleton attrition getter's requested
-/// roots. Off-hour observations size all pooled buffers before acquisition;
-/// they never provide captured values or suppress a later guarded failure.
-pub fn observe_attrition_inputs(
+/// Only the shared army census and its presentation headers. Off-hour
+/// observations size the pooled buffers before acquisition; they never
+/// provide captured values or suppress a later guarded failure.
+pub fn observe_presentation_census(
     memory: &impl Memory,
     base: usize,
-) -> Result<Option<engine::attrition_modifier_breakdown::Demand>, &'static str> {
+) -> Result<Option<engine::carmy::PresentationDemand>, &'static str> {
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    engine::attrition_modifier_breakdown::demand(memory, base, state).map(Some)
+    engine::carmy::presentation_demand(memory, base, state).map(Some)
 }
 
 /// Live equipment-line population, using ProductionLines' walk with no row
@@ -512,17 +465,6 @@ pub(crate) fn combat_hint_status() -> CombatHintStatus {
     }
 }
 
-/// Validated native modifier table count, observed only for idle storage.
-/// This never supplies current metadata values or turns a failed hint into zero.
-pub(crate) fn observe_ship_strike_metadata(
-    memory: &impl Memory,
-    base: usize,
-) -> Result<usize, &'static str> {
-    engine::modifier_definition::table(memory, base)
-        .map(|table| table.count as usize)
-        .map_err(|_| "ship strike modifier metadata sizing header unavailable")
-}
-
 /// Shared count-only land details with mutable-header consistency checks.
 pub fn observe_land_details(
     memory: &impl Memory,
@@ -535,15 +477,15 @@ pub fn observe_land_details(
         .map(Some)
         .inspect_err(|_| note_combat_hint_failure(0))
 }
-/// Shared native source selection and count-only modifier tree census.
-pub fn observe_naval_breakdowns(
+/// The naval combat details' live header demand.
+pub fn observe_naval_details(
     memory: &impl Memory,
     base: usize,
-) -> Result<Option<engine::naval_ship_modifier_breakdown::Demand>, &'static str> {
+) -> Result<Option<engine::naval_combat_demand::Demand>, &'static str> {
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    engine::naval_ship_modifier_breakdown::demand(memory, base, state)
+    engine::naval_combat_demand::demand(memory, base, state)
         .map(Some)
         .inspect_err(|_| note_combat_hint_failure(1))
 }
@@ -776,7 +718,7 @@ pub(crate) fn observe_fuel_unit_demand(
 /// leaders, CountryCivilWars' entries, AvailableAdvisors' ideas,
 /// AdvisorTokens' keys and bytes, FactionAdvisors' occupied slots and token
 /// bytes, the country state/leader rosters, registered pride-ship names,
-/// owned wargoals, and the character inputs' rows and values.
+/// and the character inputs' rows and values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PoliticsDemand {
     pub war_overview: engine::cwar_relation::overview::Demand,
@@ -813,7 +755,6 @@ pub struct PoliticsDemand {
     pub original_tag_lists: engine::original_tag_lists::Demand,
     pub country_array: usize,
     pub co_belligerents: usize,
-    pub owned_wargoals: engine::cwar_goal::Demand,
     pub character_inputs: crate::extended::character_inputs::Demand,
 }
 
@@ -859,8 +800,6 @@ impl PoliticsDemand {
             || self.country_rosters.states > seen.country_rosters.states
             || self.country_rosters.leaders > seen.country_rosters.leaders
             || self.pride_name_bytes > seen.pride_name_bytes
-            || self.owned_wargoals.rows > seen.owned_wargoals.rows
-            || self.owned_wargoals.states > seen.owned_wargoals.states
             || self.active_characters > seen.active_characters
             || self.retired_characters > seen.retired_characters
             || self.party_leaders > seen.party_leaders
@@ -957,10 +896,6 @@ impl PoliticsDemand {
             // Keep this poll's refusal separate from retained capacity floors.
             pride_name_failure: other.pride_name_failure,
             optional_failures: other.optional_failures,
-            owned_wargoals: engine::cwar_goal::Demand {
-                rows: self.owned_wargoals.rows.max(other.owned_wargoals.rows),
-                states: self.owned_wargoals.states.max(other.owned_wargoals.states),
-            },
             active_characters: self.active_characters.max(other.active_characters),
             retired_characters: self.retired_characters.max(other.retired_characters),
             party_leaders: self.party_leaders.max(other.party_leaders),
@@ -1021,8 +956,6 @@ fn observe_politics_with_failures(
         .ok_or("operative refusal count exceeds demand")?;
     let (available_advisors, available_advisor_bytes) =
         engine::ccountry_characters::demand_available(memory, base, state)?;
-    let goals = engine::cwar_goal::walk(memory, base, state, &mut [], &mut []);
-    demand(goals.outcome)?;
     let advisor_modifiers = extended::characters::advisors::live_modifier_demand();
     let mut pride_name_bytes = 0_usize;
     let mut pride_name_failure = None;
@@ -1100,7 +1033,6 @@ fn observe_politics_with_failures(
             co_belligerent_failure,
         ],
         co_belligerents,
-        owned_wargoals: goals.required,
         active_characters,
         retired_characters,
         party_leaders: engine::cpolitical_status::party_leader_demand(memory, base, state)?,
@@ -1185,10 +1117,9 @@ impl Sizing {
         );
     }
 
-    /// A partial hint raises its readable floors independently. Terrain rows
-    /// use each range's existing division census times complete distinct LAND
-    /// terrain count; province slots size only map scratch and rail rows.
-    pub(crate) fn raise_for_fresh_map(&mut self, demand: &FreshEtaDemand) -> std::io::Result<()> {
+    /// A partial hint raises its readable floors independently; province
+    /// slots size the Provinces rows, movement geometry and rail rows.
+    pub(crate) fn raise_for_map(&mut self, demand: &MapDemand) {
         if let Ok(levels) = demand.rail_levels {
             raise(&mut self.extended.naval_history.rail_levels, levels);
         }
@@ -1200,7 +1131,7 @@ impl Sizing {
             raise(&mut self.core[1], provinces.saturating_sub(1));
         }
         self.extended
-            .raise_for_fresh_map(demand.provinces.unwrap_or(0), demand.terrains.unwrap_or(0))
+            .raise_for_provinces(demand.provinces.unwrap_or(0));
     }
 }
 
@@ -1208,56 +1139,45 @@ impl Sizing {
 mod tests {
     use super::*;
 
-    struct MapKeyMemory {
-        session: i64,
-        refused: bool,
+    struct ProvinceHeaderMemory {
+        count: u32,
+        reads: std::cell::RefCell<Vec<(usize, usize)>>,
     }
 
-    impl Memory for MapKeyMemory {
+    impl Memory for ProvinceHeaderMemory {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if self.refused {
-                return false;
-            }
-            if address == BASE + cgame_state::PLAY_SESSION_STARTED_AT_RVA && output.len() == 8 {
-                output.copy_from_slice(&self.session.to_le_bytes());
-            } else if address == STATE + cgame_state::PROVINCES && output.len() == 16 {
+            self.reads.borrow_mut().push((address, output.len()));
+            if address == STATE + cgame_state::PROVINCES && output.len() == 16 {
                 output[..8].copy_from_slice(&(TABLE as u64).to_le_bytes());
-                output[8..12].copy_from_slice(&2_u32.to_le_bytes());
-                output[12..16].copy_from_slice(&2_u32.to_le_bytes());
-            } else {
-                return false;
+                output[8..12].copy_from_slice(&self.count.to_le_bytes());
+                output[12..16].copy_from_slice(&self.count.to_le_bytes());
+                return true;
             }
-            true
+            false
         }
     }
 
-    /// A warm hint needs only its native key. Reloads and failed key reads
-    /// cannot reuse the prior count when the replacement census also fails.
+    /// Map sizing reads only the province census header: no province,
+    /// definition or terrain object is visited.
     #[test]
-    fn fresh_eta_map_hint_reuses_only_a_readable_matching_native_key() {
-        let mut memory = MapKeyMemory {
-            session: 1,
-            refused: false,
+    fn province_slot_hint_reads_only_the_census_header() {
+        let memory = ProvinceHeaderMemory {
+            count: 5000,
+            reads: Default::default(),
         };
-        let key = engine::cprovince::static_geometry_demand_key(&memory, BASE, STATE).unwrap();
-        let mut cache = FreshEtaMapCache {
-            completed: Some((key, 2, 1)),
+        assert_eq!(province_slots(&memory, STATE), Ok(5000));
+        assert_eq!(
+            *memory.reads.borrow(),
+            [(STATE + cgame_state::PROVINCES, 16)]
+        );
+        let empty = ProvinceHeaderMemory {
+            count: 1,
+            reads: Default::default(),
         };
-        // No province objects are readable: a repeated cold census would fail.
-        assert_eq!(cache.demand(&memory, BASE, STATE), Ok((2, 1)));
-
-        memory.session = 2;
-        assert!(cache.demand(&memory, BASE, STATE).is_err());
-        assert!(cache.completed.is_none());
-
-        memory.session = 1;
-        cache.completed = Some((key, 2, 1));
-        memory.refused = true;
-        assert!(cache.demand(&memory, BASE, STATE).is_err());
-        assert!(cache.completed.is_none());
-        memory.refused = false;
-        assert!(cache.demand(&memory, BASE, STATE).is_err());
-        assert!(cache.completed.is_none());
+        assert_eq!(
+            province_slots(&empty, STATE),
+            Err("map sizing province census empty")
+        );
     }
 
     #[test]
@@ -2331,6 +2251,7 @@ mod tests {
         let [
             replay::frame::TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
             _,
+            ..,
         ] = appearance.tables()
         else {
             panic!("presized subject capture must be complete");
@@ -2629,10 +2550,7 @@ mod tests {
         let quiet = relations_hour(&world, &changes, &mut hour, 1, true);
         // Only the slot checks read: this world has no roster cache, so each
         // country lookup costs reads that production serves from the cache.
-        // Verify mode's fresh copies are reads too.
-        if !cfg!(feature = "relation_verify") {
-            assert!(quiet.calls <= 8 * 48, "{}", quiet.calls);
-        }
+        assert!(quiet.calls <= 8 * 48, "{}", quiet.calls);
         assert_eq!(quiet.copied, 0);
         assert_eq!(quiet.outcome, Outcome::Rows { len: 2 * 47 });
         // A touched country whose vectors did not change is copied, not emitted.
@@ -2752,10 +2670,12 @@ mod tests {
         bloc_war_relations(200);
     }
 
-    #[cfg(feature = "relation_verify")]
+    /// Verify mode copies and compares every carried country each hour; a
+    /// country a writer touched is copied for the writer instead.
     #[test]
-    fn verify_counts_a_change_no_writer_announced() {
+    fn verify_mode_compares_every_carried_country_each_hour() {
         use crate::extended::air_relations::hour::Hour;
+        use crate::sampled_verify::Check;
         let mut world = World {
             slots: 49,
             bloc: Some((24, 23)),
@@ -2763,19 +2683,90 @@ mod tests {
         };
         let changes = Notified::new(49);
         let mut hour = Hour::new(4096, 4096);
+        hour.check = |_| Check::Every;
         relations_hour(&world, &changes, &mut hour, 0, true);
-        let first = hour.verification();
-        assert_eq!((first.countries, first.mismatches), (48, 0));
-        // An announced change is copied, and the held rows stay exact.
+        assert_eq!(hour.sampled(), [0, 0], "nothing is carried yet");
+        assert_eq!(
+            relations_hour(&world, &changes, &mut hour, 1, true).copied,
+            48
+        );
+        assert_eq!(hour.sampled(), [48, 0]);
+        // An announced change is copied for its writer.
         world.bloc = Some((24, 22));
         changes.touch(1..=48);
-        relations_hour(&world, &changes, &mut hour, 1, true);
-        assert_eq!(hour.verification().mismatches, 0);
-        // An unannounced one keeps stale rows, which the fresh copy exposes.
-        world.bloc = Some((24, 21));
         relations_hour(&world, &changes, &mut hour, 2, true);
-        let stale = hour.verification();
-        assert_eq!((stale.countries, stale.mismatches), (48, 48));
+        assert_eq!(hour.sampled(), [0, 0]);
+        // An unannounced one keeps stale rows, which the fresh copies expose.
+        world.bloc = Some((24, 21));
+        relations_hour(&world, &changes, &mut hour, 3, true);
+        assert_eq!(hour.sampled(), [48, 48]);
+    }
+
+    /// Each hour copies only the carried countries of its slice, and any 24
+    /// consecutive hours compare every carried country exactly once.
+    #[test]
+    fn sampled_relation_slices_cover_every_carried_country_once_per_day() {
+        use crate::extended::air_relations::hour::Hour;
+        use crate::sampled_verify::Check;
+        let world = World {
+            slots: 49,
+            bloc: Some((24, 23)),
+            ..world()
+        };
+        let changes = Notified::new(49);
+        let mut hour = Hour::new(4096, 4096);
+        hour.check = |hour| Check::Slice { hour };
+        relations_hour(&world, &changes, &mut hour, 0, true);
+        let mut compared = 0;
+        for at in 1..=24 {
+            let quiet = relations_hour(&world, &changes, &mut hour, at, true);
+            let [sampled, mismatches] = hour.sampled();
+            assert_eq!((quiet.copied as u64, mismatches), (sampled, 0), "hour {at}");
+            compared += sampled;
+        }
+        assert_eq!(compared, 48);
+    }
+
+    /// A write no hook announced is found within one rotation: the hour that
+    /// samples the stale countries publishes their fresh copies at once, and
+    /// the mismatch poisons the observation.
+    #[test]
+    fn a_missed_relation_write_is_found_within_one_rotation_and_published() {
+        use crate::extended::air_relations::{PARTS, hour::Hour};
+        use crate::sampled_verify::{Check, ROTATION};
+        let mut world = World {
+            slots: 49,
+            bloc: Some((24, 23)),
+            ..world()
+        };
+        let changes = Notified::new(49);
+        let mut hour = Hour::new(4096, 4096);
+        hour.check = |hour| Check::Slice { hour };
+        relations_hour(&world, &changes, &mut hour, 0, true);
+        world.bloc = Some((24, 22));
+        let found = (1..=ROTATION as i32).find(|&at| {
+            relations_hour(&world, &changes, &mut hour, at, true);
+            hour.sampled()[1] != 0
+        });
+        let at = found.expect("found within one rotation");
+        // The countries of this hour's slice: index `at` within each part.
+        let sampled: Vec<u32> = (1..=48)
+            .filter(|&slot| (slot as usize / PARTS) as u64 % ROTATION == at as u64 % ROTATION)
+            .collect();
+        assert_eq!(hour.sampled(), [sampled.len() as u64; 2]);
+        let fresh: Vec<_> = hour
+            .emitted_rows()
+            .iter()
+            .filter(|row| sampled.contains(&row.country))
+            .copied()
+            .collect();
+        assert_bloc_rows(&fresh, &sampled, world.bloc.unwrap());
+        let status = serde_json::to_value(crate::relation_changes::status()).unwrap();
+        assert_eq!(status["poisoned"], true);
+        assert_eq!(
+            status["last_mismatch"],
+            "held relation vectors differ from a fresh copy"
+        );
     }
 
     /// The scale matrix: `cargo test -p collector --release -- --ignored`.
@@ -3017,10 +3008,6 @@ mod tests {
     fn naval_patrol_histories_are_read_where_written() {
         use crate::extended::air_histories::PARTS;
         let calls = naval_patrol_histories(100, 5, 2);
-        // `history_verify` also copies everything every hour.
-        if cfg!(feature = "history_verify") {
-            return;
-        }
         // First hour: gathers batched across countries and histories, the
         // air objects authenticated 64 to a gather.
         assert!(calls[0] <= 12 * PARTS, "{calls:?}");
@@ -3142,6 +3129,105 @@ mod tests {
                 assert!(fresh.same(&hour));
             }
         }
+    }
+
+    /// Each hour copies the carried countries of its slice afresh in every
+    /// wanted region; any 24 consecutive quiet hours compare every carried
+    /// country exactly once and change nothing.
+    #[test]
+    fn sampled_history_slices_cover_every_carried_country_once_per_day() {
+        use crate::extended::air_histories::{
+            PARTS,
+            hour::{self, Hour},
+        };
+        use crate::sampled_verify::Check;
+        let slots = 2 * PARTS * 24 + 1;
+        let world = World {
+            slots,
+            air: Some(AirWorld {
+                every: 3,
+                regions: vec![3, 10],
+                ring: 30,
+                current: 3,
+            }),
+            ..world()
+        };
+        let watches = crate::history_changes::Watches::enabled(slots, 2);
+        let (mut hour, mut frame) = (Hour::new(), hour::frame(&hour::capacities(slots)));
+        histories_hour(&world, &[3, 10], &watches, &mut hour, &mut frame, 0, false);
+        let mut fresh = Hour::new();
+        histories_hour(
+            &world,
+            &[3, 10],
+            &crate::history_changes::Unobserved,
+            &mut fresh,
+            &mut hour::frame(&hour::capacities(slots)),
+            0,
+            false,
+        );
+        let mut compared = 0;
+        for at in 1..=24 {
+            hour.check = Check::Slice { hour: at };
+            histories_hour(&world, &[3, 10], &watches, &mut hour, &mut frame, at, true);
+            let [sampled, mismatches] = Hour::sampled(&frame);
+            assert_eq!(mismatches, 0, "hour {at}");
+            assert!(Hour::counts(&frame).quiet, "hour {at}");
+            compared += sampled;
+            assert!(fresh.same(&hour));
+        }
+        assert_eq!(compared, Hour::counts(&frame).reused);
+        assert_eq!(compared, (slots - 1) as u64);
+    }
+
+    /// A daily advance no hook counted is found within one rotation: the
+    /// hour that samples the stale countries publishes their fresh copies,
+    /// and the mismatch poisons the observation.
+    #[test]
+    fn a_missed_history_write_is_found_within_one_rotation_and_published() {
+        use crate::extended::air_histories::hour::{self, Hour};
+        use crate::sampled_verify::{Check, ROTATION};
+        let world = |current| World {
+            slots: 3,
+            air: Some(AirWorld {
+                every: 1,
+                regions: vec![3],
+                ring: 30,
+                current,
+            }),
+            ..world()
+        };
+        let watches = crate::history_changes::Watches::enabled(3, 1);
+        let (mut hour, mut frame) = (Hour::new(), hour::frame(&hour::capacities(3)));
+        histories_hour(&world(3), &[3], &watches, &mut hour, &mut frame, 0, false);
+        let mut fresh = Hour::new();
+        histories_hour(
+            &world(4),
+            &[3],
+            &crate::history_changes::Unobserved,
+            &mut fresh,
+            &mut hour::frame(&hour::capacities(3)),
+            0,
+            false,
+        );
+        // Both countries are the first of their part: index 0.
+        for at in 1..=ROTATION as i32 {
+            hour.check = Check::Slice { hour: at };
+            histories_hour(&world(4), &[3], &watches, &mut hour, &mut frame, at, true);
+            let found = Hour::sampled(&frame);
+            if at < ROTATION as i32 {
+                assert_eq!(found, [0, 0], "hour {at}");
+                assert!(!fresh.same(&hour), "hour {at} carries the stale histories");
+            } else {
+                assert_eq!(found, [2, 2]);
+                assert!(fresh.same(&hour), "the fresh copies are published");
+            }
+        }
+        let status = serde_json::to_value(crate::history_changes::status()).unwrap();
+        assert_eq!(status["poisoned"], true);
+        assert_eq!(
+            status["last_mismatch"],
+            "held air histories differ from a fresh copy"
+        );
     }
 
     /// Whichever part fails after its hour staged an advance, the hour is
@@ -3296,6 +3382,7 @@ mod tests {
                 "event_feed",
                 "air_losses",
                 "building_bombing",
+                "nuclear_strikes",
                 "operation_outcomes",
                 "war_overview",
                 "production_modifiers",

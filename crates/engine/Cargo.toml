@@ -8,10 +8,14 @@ license.workspace = true
 
 [features]
 alloc-fault-injection = []
+# Thread-local shared-registry assertions in dependent crates' tests.
+batch-fallback-test-counts = []
 
 [dependencies]
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info"] }
 sha2.workspace = true
 
 [build-dependencies]
-cc = "1"
+# Same features as every other selection resolves (zstd-sys enables `parallel`), so `-p engine`
+# alone builds the engine the other selections reuse.
+cc = { version = "1", features = ["parallel"] }

@@ -304,6 +304,7 @@ impl LandMarkers {
                                 format!("committed division {division} on side {side}"),
                             )),
                         ),
+                        Err(gap @ ScoreGap::Numbers { .. }) => (None, Some(gap.reason())),
                     },
                 };
                 Ok(Some((

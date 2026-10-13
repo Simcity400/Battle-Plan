@@ -250,10 +250,14 @@ recorder inspect <campaign.battleplan>
 recorder inspect <campaign.battleplan> --characters <substring> --hour <n> --branch <id>
 {}
 {}
+{}
+{}
 {}",
         crate::metrics::USAGE,
         crate::oracle::USAGE,
-        crate::movement_oracle::USAGE
+        crate::movement_oracle::USAGE,
+        crate::sizes::USAGE,
+        crate::derived::USAGE
     )
 }
 
@@ -335,6 +339,12 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
     }
     if command == "metrics" {
         return crate::metrics::command(args);
+    }
+    if command == "sizes" {
+        return crate::sizes::command(args);
+    }
+    if command == "derived" {
+        return crate::derived::command(args);
     }
     if command == "--help" || args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("{}", usage());
@@ -876,7 +886,7 @@ pub(crate) fn capture(
         .ok_or("game changed before injection")?;
     process.inject(&dll, || control.stopping())?;
     let error_path = bin.join("collector.error.txt");
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut wait = CollectorWait::new(Instant::now(), READY_STALL);
     let mut next_progress = Instant::now() + Duration::from_secs(10);
     while !ready.handle.signaled()? {
         if let Some(witness) = live_failure(&directory, session.id, session.process_start_time)? {
@@ -890,8 +900,11 @@ pub(crate) fn capture(
         if process.handle.signaled()? {
             return Err("game exited before collector became ready".into());
         }
-        if Instant::now() >= deadline {
-            return Err("collector readiness timed out; detach requested; spool retained".into());
+        if let Some(end) = wait.ended(Instant::now(), collector_stamp(&directory)) {
+            return Err(format!(
+                "collector readiness timed out {}; detach requested; spool retained",
+                end.describe(&directory)
+            ));
         }
         if control.stopping() {
             detach.set()?;
@@ -901,6 +914,9 @@ pub(crate) fn capture(
             next_progress = Instant::now() + Duration::from_secs(10);
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+    if let Some(summary) = step_summary(&directory, "attach_started", "ready") {
+        println!("Collector attach {summary}");
     }
     let active = output.join("active.json");
     write_json(
@@ -1000,21 +1016,27 @@ pub(crate) fn capture(
     }
     if !process.handle.signaled()? {
         detach.set()?;
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut wait = CollectorWait::new(Instant::now(), DONE_STALL);
         while !done.handle.signaled()? && !process.handle.signaled()? {
-            if Instant::now() >= deadline {
-                return Err("detach timed out; collector may still be loaded; spool retained and not finalized".into());
+            if let Some(end) = wait.ended(Instant::now(), collector_stamp(&directory)) {
+                return Err(format!(
+                    "detach timed out {}; collector may still be loaded; spool retained and not finalized",
+                    end.describe(&directory)
+                ));
             }
             std::thread::sleep(Duration::from_millis(50));
         }
         while collector_present(&process, &dll)? {
-            if Instant::now() >= deadline {
-                return Err(
-                    "collector signaled done but remains loaded; spool retained and not finalized"
-                        .into(),
-                );
+            if let Some(end) = wait.ended(Instant::now(), collector_stamp(&directory)) {
+                return Err(format!(
+                    "collector signaled done but remains loaded {}; spool retained and not finalized",
+                    end.describe(&directory)
+                ));
             }
             std::thread::sleep(Duration::from_millis(25));
+        }
+        if let Some(summary) = step_summary(&directory, "detach_requested", "done") {
+            println!("Collector detach {summary}");
         }
     }
     // The collector can fail while draining, after signaling was requested. Its
@@ -1646,24 +1668,33 @@ fn request_detach(output: &Path) -> Result<(), String> {
 }
 
 // This is an inactivity timeout, never a limit on total drain/finalization time.
-const DETACH_STALL_TIMEOUT: Duration = Duration::from_secs(120);
-struct ProgressWatch {
+// While the collector detaches it follows the collector's own steps, so it
+// allows what the recording controller allows (DONE_STALL).
+const DETACH_STALL_TIMEOUT: Duration = DONE_STALL;
+/// The detach command's watch over the session's status and finalization.
+type ProgressWatch = StampWatch<(Option<SystemTime>, Option<SystemTime>)>;
+struct StampWatch<S> {
     last_progress: Instant,
-    stamp: (Option<SystemTime>, Option<SystemTime>),
+    stamp: S,
+    stall: Duration,
 }
-impl ProgressWatch {
+impl<S: Default + PartialEq> StampWatch<S> {
     fn new(now: Instant) -> Self {
+        Self::with_stall(now, DETACH_STALL_TIMEOUT)
+    }
+    fn with_stall(now: Instant, stall: Duration) -> Self {
         Self {
             last_progress: now,
-            stamp: (None, None),
+            stamp: S::default(),
+            stall,
         }
     }
-    fn stalled(&mut self, now: Instant, stamp: (Option<SystemTime>, Option<SystemTime>)) -> bool {
+    fn stalled(&mut self, now: Instant, stamp: S) -> bool {
         if stamp != self.stamp {
             self.stamp = stamp;
             self.last_progress = now;
         }
-        now.duration_since(self.last_progress) >= DETACH_STALL_TIMEOUT
+        now.duration_since(self.last_progress) >= self.stall
     }
 }
 fn progress_stamp(directory: &Path) -> (Option<SystemTime>, Option<SystemTime>) {
@@ -1677,11 +1708,141 @@ fn progress_stamp(directory: &Path) -> (Option<SystemTime>, Option<SystemTime>) 
     let finalization = modified("finalization-progress.json");
     (
         if finalization.is_none() {
-            modified("status.json")
+            modified("status.json").max(modified(COLLECTOR_PROGRESS))
         } else {
             None
         },
         finalization,
+    )
+}
+
+/// The collector's step log in its session directory (`progress` in the
+/// collector), one line per attach or detach step: milliseconds since attach
+/// began, the step and an optional count.
+const COLLECTOR_PROGRESS: &str = "progress";
+/// Readiness and detach wait while the collector takes steps (loading a
+/// campaign history; installing, restoring and quiescing each hook family;
+/// joining its workers; draining its queues), up to this long for one step.
+/// A hook publication suspends every game thread and cannot log while they
+/// are held; on a loaded machine one took 43.9 s (2d1ede901c 1936 burn-in,
+/// where the game's working set was being paged out), so the limit leaves
+/// room for several times that.
+const READY_STALL: Duration = Duration::from_secs(180);
+const DONE_STALL: Duration = Duration::from_secs(180);
+/// No attach or detach waits longer in total, progressing or not.
+const COLLECTOR_WAIT_CAP: Duration = Duration::from_secs(15 * 60);
+
+/// The collector's progress: its step log's length and its status's time.
+type CollectorStamp = (Option<u64>, Option<SystemTime>);
+
+fn collector_stamp(directory: &Path) -> CollectorStamp {
+    (
+        fs::metadata(directory.join(COLLECTOR_PROGRESS))
+            .ok()
+            .map(|metadata| metadata.len()),
+        fs::metadata(directory.join("status.json"))
+            .ok()
+            .and_then(|metadata| metadata.modified().ok()),
+    )
+}
+
+/// A controller wait on the collector: it continues while the collector's
+/// stamp changes within `stall`, up to [`COLLECTOR_WAIT_CAP`] in total.
+struct CollectorWait {
+    started: Instant,
+    watch: StampWatch<CollectorStamp>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WaitEnd {
+    /// No collector step for this long.
+    Stalled(Duration),
+    /// The total cap.
+    Capped,
+}
+
+impl WaitEnd {
+    /// "after …", naming the collector's last step.
+    fn describe(self, directory: &Path) -> String {
+        let step = fs::read_to_string(directory.join(COLLECTOR_PROGRESS))
+            .ok()
+            .and_then(|text| last_step(&text))
+            .unwrap_or_else(|| "none recorded".into());
+        match self {
+            Self::Stalled(stall) => format!(
+                "after {} s without collector progress (last step: {step})",
+                stall.as_secs()
+            ),
+            Self::Capped => format!(
+                "after the {} s cap (last step: {step})",
+                COLLECTOR_WAIT_CAP.as_secs()
+            ),
+        }
+    }
+}
+
+impl CollectorWait {
+    fn new(now: Instant, stall: Duration) -> Self {
+        Self {
+            started: now,
+            watch: StampWatch::with_stall(now, stall),
+        }
+    }
+
+    fn ended(&mut self, now: Instant, stamp: CollectorStamp) -> Option<WaitEnd> {
+        if self.watch.stalled(now, stamp) {
+            Some(WaitEnd::Stalled(self.watch.stall))
+        } else if now.duration_since(self.started) >= COLLECTOR_WAIT_CAP {
+            Some(WaitEnd::Capped)
+        } else {
+            None
+        }
+    }
+}
+
+/// `(milliseconds, step)` of each step-log line.
+fn steps(text: &str) -> impl Iterator<Item = (u64, &str)> {
+    text.lines().filter_map(|line| {
+        let (millis, step) = line.split_once(' ')?;
+        Some((millis.parse().ok()?, step))
+    })
+}
+
+/// The last step, with its time.
+fn last_step(text: &str) -> Option<String> {
+    let (millis, step) = steps(text).last()?;
+    Some(format!("{step} at {:.1} s", millis as f64 / 1000.0))
+}
+
+/// "took N s; slowest steps: …" over the steps from the last `from` to the
+/// first `to` after it, each step timed from the one before it.
+fn steps_between(text: &str, from: &str, to: &str) -> Option<String> {
+    let all: Vec<(u64, &str)> = steps(text).collect();
+    let first = all.iter().rposition(|(_, step)| *step == from)?;
+    let last = first + all[first..].iter().position(|(_, step)| *step == to)?;
+    let span = &all[first..=last];
+    let mut durations: Vec<(u64, &str)> = span
+        .windows(2)
+        .map(|pair| (pair[1].0.saturating_sub(pair[0].0), pair[1].1))
+        .collect();
+    durations.sort_by_key(|&(millis, _)| std::cmp::Reverse(millis));
+    let slowest: Vec<String> = durations
+        .iter()
+        .take(5)
+        .map(|(millis, step)| format!("{step} {:.1} s", *millis as f64 / 1000.0))
+        .collect();
+    Some(format!(
+        "took {:.1} s; slowest steps: {}",
+        (span[span.len() - 1].0 - span[0].0) as f64 / 1000.0,
+        slowest.join(", ")
+    ))
+}
+
+fn step_summary(directory: &Path, from: &str, to: &str) -> Option<String> {
+    steps_between(
+        &fs::read_to_string(directory.join(COLLECTOR_PROGRESS)).ok()?,
+        from,
+        to,
     )
 }
 struct FinalizationProgress<'a> {
@@ -1944,9 +2105,86 @@ mod tests {
             let stamp = Some(UNIX_EPOCH + Duration::from_secs(seconds));
             assert!(!watch.stalled(start + Duration::from_secs(seconds), (None, stamp)));
         }
+        // The detach command allows the controller's 180 s without collector
+        // progress: 150 s passes (the old 120 s limit failed it), 180 s ends.
         let stamp = (None, Some(UNIX_EPOCH + Duration::from_secs(1000)));
-        assert!(!watch.stalled(start + Duration::from_secs(1119), stamp));
-        assert!(watch.stalled(start + Duration::from_secs(1120), stamp));
+        assert!(!watch.stalled(start + Duration::from_secs(1150), stamp));
+        assert!(!watch.stalled(start + Duration::from_secs(1179), stamp));
+        assert!(watch.stalled(start + Duration::from_secs(1180), stamp));
+    }
+
+    /// The 48da4248f1 detach: the collector took steps for 92 s before done.
+    /// The controller's old fixed 60 s deadline gave up at 60 s with the
+    /// collector still loaded; the progress wait follows the steps, still
+    /// ends a collector that stops taking them, and caps the total.
+    #[test]
+    fn detach_wait_follows_collector_steps_and_ends_a_stall() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut wait = CollectorWait::new(start, DONE_STALL);
+        let mut length = 0;
+        for second in 0..=92 {
+            if second % 5 == 0 {
+                length += 40;
+            }
+            assert_eq!(
+                wait.ended(at(second), (Some(length), None)),
+                None,
+                "{second} s"
+            );
+        }
+        // One step of 120 s (a hook publication on a loaded machine, like
+        // the 2d1ede901c 1936 burn-in's 43.9 s Opinion restore and worse)
+        // continues; a collector that stops is ended 180 s after its last
+        // step, not before. The old 60 s limit ended both.
+        let mut wait = CollectorWait::new(start, DONE_STALL);
+        assert_eq!(wait.ended(at(10), (Some(40), None)), None);
+        assert_eq!(wait.ended(at(130), (Some(80), None)), None, "a 120 s step");
+        assert_eq!(wait.ended(at(309), (Some(80), None)), None);
+        assert_eq!(
+            wait.ended(at(310), (Some(80), None)),
+            Some(WaitEnd::Stalled(Duration::from_secs(180)))
+        );
+        let mut ready = CollectorWait::new(start, READY_STALL);
+        // Readiness: the step seen at 10 s, unchanged at 160 s (the old
+        // 120 s limit ended it) and ended at 190 s.
+        assert_eq!(ready.ended(at(10), (Some(40), None)), None);
+        assert_eq!(
+            ready.ended(at(160), (Some(40), None)),
+            None,
+            "a 150 s attach step"
+        );
+        assert_eq!(
+            ready.ended(at(190), (Some(40), None)),
+            Some(WaitEnd::Stalled(Duration::from_secs(180)))
+        );
+        // Status writes are progress too; the cap ends any wait.
+        let mut wait = CollectorWait::new(start, DONE_STALL);
+        let cap = COLLECTOR_WAIT_CAP.as_secs();
+        for second in (0..cap).step_by(30) {
+            let stamp = (None, Some(UNIX_EPOCH + Duration::from_secs(second)));
+            assert_eq!(wait.ended(at(second), stamp), None);
+        }
+        let stamp = (None, Some(UNIX_EPOCH + Duration::from_secs(cap)));
+        assert_eq!(wait.ended(at(cap), stamp), Some(WaitEnd::Capped));
+    }
+
+    #[test]
+    fn step_log_names_the_last_step_and_times_the_slowest() {
+        let log = "0 attach_started\n15 ready\n90000 detach_requested\n90100 restore Hourly done\n\
+                   120100 restore Raid done\n121000 spool_draining 3\n182400 done\n";
+        assert_eq!(last_step(log).unwrap(), "done at 182.4 s");
+        assert_eq!(
+            steps_between(log, "detach_requested", "done").unwrap(),
+            "took 92.4 s; slowest steps: done 61.4 s, restore Raid done 30.0 s, \
+             spool_draining 3 0.9 s, restore Hourly done 0.1 s"
+        );
+        assert_eq!(
+            steps_between(log, "attach_started", "ready").unwrap(),
+            "took 0.0 s; slowest steps: ready 0.0 s"
+        );
+        assert_eq!(steps_between(log, "detach_requested", "missing"), None);
+        assert_eq!(last_step(""), None);
     }
 
     #[test]

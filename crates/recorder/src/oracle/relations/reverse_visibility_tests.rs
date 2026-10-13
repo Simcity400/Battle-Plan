@@ -55,7 +55,7 @@ fn historical_refused_and_known_empty_reverse_matrix_remain_distinct() {
         unreachable!()
     };
     rows[0].reverse_visibility = Recorded::Value(Some(ReservedReverseVisibilityInputs {
-        sample_hour: frame.hour,
+        sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
         cells: Vec::new(),
     }));
     let mut report = Report::default();
@@ -86,7 +86,7 @@ fn reverse_cells_preserve_missing_raw_zero_alias_and_retired_subject_inputs() {
         unreachable!()
     };
     rows[0].reverse_visibility = Recorded::Value(Some(ReservedReverseVisibilityInputs {
-        sample_hour: frame.hour,
+        sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
         cells: vec![
             Some(ReverseZeroVisibilityInputs {
                 target: Some(0),
@@ -126,7 +126,7 @@ fn reverse_cells_preserve_missing_raw_zero_alias_and_retired_subject_inputs() {
 #[test]
 fn reverse_packet_requires_its_own_current_hour_and_complete_naming_prefix() {
     let mut frame = fixture(Recorded::Value(Some(ReservedReverseVisibilityInputs {
-        sample_hour: i32::MIN,
+        sample_hour: replay::rows::PacketHour::Stamped(i32::MIN),
         cells: Vec::new(),
     })));
     assert!(compare(&frame, &mut Report::default()).is_err());
@@ -146,7 +146,7 @@ fn reverse_military_presence_preserves_null_refusal_and_invalid_admission() {
             unreachable!()
         };
         rows[0].reverse_visibility = Recorded::Value(Some(ReservedReverseVisibilityInputs {
-            sample_hour: frame.hour,
+            sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
             cells: vec![Some(ReverseZeroVisibilityInputs {
                 target: Some(0),
                 war: Some([0, 0]),

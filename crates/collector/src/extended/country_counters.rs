@@ -1,34 +1,116 @@
-//! Hourly country counter scalars, stored ordered state/leader rosters,
-//! civil-war references and owned wargoals. Arenas follow live header sums.
-use super::{
-    country_movement_inputs as movement, country_naval_movement_inputs as naval,
-    production::Sources, reserved_visibility,
-};
+//! Hourly country counter scalars, stored ordered state/leader rosters and
+//! civil-war references. Arenas follow live header sums. Under
+//! `counter_changes` the counter rows of countries no hooked writer marked
+//! are carried from their last read ([`CounterStore`]).
+use super::{country_naval_movement_inputs as naval, reserved_visibility};
 use crate::{
     sampling::qpc,
     spooling::{table, table_iter, unavailable},
     table_capture::{Arena, CaptureRows},
 };
 use engine::{
-    Memory, ccountry, cname_group_member, creference_registry, crelation_status, cship, cwar_goal,
+    Memory, ccountry, cname_group_member, creference_registry, crelation_status, cship,
     walk::Outcome,
 };
 use replay::{
     frame::TableView,
     rows::{
-        CountryCivilWarRow, CountryCounterInputRow, OwnedWargoalRow, Recorded, TableId, tables,
+        CountryAttackModifiers, CountryCivilWarRow, CountryCounterInputRow, Recorded, Retired,
+        TableId, Witnessed, tables,
     },
 };
 
-pub const N: usize = 3;
-pub const TABLES: [TableId; N] = [
-    TableId::CountryCounterInputs,
-    TableId::CountryCivilWars,
-    TableId::OwnedWargoals,
-];
+mod carry;
+pub(crate) use carry::CounterStore;
+
+pub const N: usize = 2;
+pub const TABLES: [TableId; N] = [TableId::CountryCounterInputs, TableId::CountryCivilWars];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
-static MOVEMENT_PROJECTION_REFUSALS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+
+/// Wall phases charged to CountryCounterInputs, in acquisition order. The
+/// physical navy pass runs in the Ordinary job before the counter pass. The
+/// owner transport speeds of the retired selected transport preview are not
+/// read.
+pub(crate) const PHASES: [&str; 4] = ["physical_navies", "counter_walk", "relations", "total"];
+const PHYSICAL_NAVIES: usize = 0;
+const COUNTER_WALK: usize = 1;
+const RELATIONS: usize = 2;
+const TOTAL: usize = 3;
+
+/// One acquisition's measured phases (QPC ticks); None was not run this hour.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Phases([Option<u64>; PHASES.len()]);
+
+impl Phases {
+    fn set(&mut self, phase: usize, ticks: u64) {
+        self.0[phase] = Some(ticks);
+        self.0[TOTAL] = Some(
+            self.0[..TOTAL]
+                .iter()
+                .flatten()
+                .fold(0_u64, |sum, ticks| sum.saturating_add(*ticks)),
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get(&self, phase: &str) -> Option<u64> {
+        PHASES
+            .iter()
+            .position(|name| *name == phase)
+            .and_then(|index| self.0[index])
+    }
+}
+
+fn elapsed(begin: i64) -> u64 {
+    qpc().saturating_sub(begin).max(0) as u64
+}
+
+/// The hour's physical navy pass on loan from CountryCounterInputs
+/// ([`Captured::take_navies`]): one holder authenticates every strategic
+/// navy manager slot once, the mission borrowers use it until
+/// [`Self::finish`], and slot zero's launch naval bases go to the reserved
+/// country's launch sources.
+pub(crate) struct Navies {
+    holder: naval::Captured,
+    ticks: Option<u64>,
+}
+
+impl Navies {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.holder.allocated_bytes()
+    }
+
+    /// Begin the hour's pass; the mission borrowers use [`Self::holder`]
+    /// until [`Self::finish`].
+    pub(crate) fn begin<'a, M: Memory>(
+        &mut self,
+        memory: &'a M,
+        base: usize,
+        state: usize,
+        hour: i32,
+        launch: &mut naval::Launch,
+    ) -> engine::country_naval_movement_inputs::Reader<'a, M> {
+        let _reads = crate::read_accounting::table(TABLES[0]);
+        let begin = qpc();
+        let reader = self.holder.begin(memory, base, state, Some(hour), launch);
+        self.ticks = Some(elapsed(begin));
+        reader
+    }
+
+    /// The pass's wall, charged to CountryCounterInputs.
+    pub(crate) fn ticks(&self) -> u64 {
+        self.ticks.unwrap_or(0)
+    }
+
+    pub(crate) fn holder(&mut self) -> &mut naval::Captured {
+        &mut self.holder
+    }
+
+    /// Retire the pass's borrowed controls once its borrowers returned.
+    pub(crate) fn finish(&mut self) {
+        self.holder.finish();
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct RosterWork {
@@ -46,13 +128,13 @@ pub(crate) struct RosterWork {
     forward_visibility_captured: u64,
     forward_visibility_refused: u64,
     forward_visibility_faults: [u64; 4],
-    movement: movement::Work,
     co_belligerents_required: usize,
     co_belligerents_capacity: usize,
     pride_names_captured: u64,
     pride_names_absent: u64,
     pride_names_required: usize,
     pride_names_capacity: usize,
+    phases: [crate::spooling::Distribution; PHASES.len()],
 }
 
 impl RosterWork {
@@ -92,7 +174,12 @@ impl RosterWork {
         Ok(())
     }
 
-    fn observe(&mut self, capture: &Captured) -> std::io::Result<()> {
+    fn observe(&mut self, capture: &Captured, frequency: u64) -> std::io::Result<()> {
+        for (distribution, ticks) in self.phases.iter_mut().zip(capture.phases.0) {
+            if let Some(ticks) = ticks {
+                distribution.record_ticks(i64::try_from(ticks).unwrap_or(i64::MAX), frequency);
+            }
+        }
         let rows = capture
             .rows
             .rows
@@ -207,12 +294,17 @@ impl RosterWork {
         self.co_belligerents_capacity = capture.co_belligerents.first.len();
         self.pride_names_required = capture.pride_names.required;
         self.pride_names_capacity = capture.pride_names.first.len();
-        self.movement.observe(&capture.movement)?;
         Ok(())
     }
 
-    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
-        crate::status::status!({
+    pub(crate) fn status(&self) -> std::io::Result<impl serde::Serialize + '_> {
+        let mut phases = [crate::spooling::DistributionStatus::default(); PHASES.len()];
+        for (status, distribution) in phases.iter_mut().zip(&self.phases) {
+            *status = distribution.status()?;
+        }
+        Ok(crate::status::status!({
+            "acquisition_phases": crate::status::map(PHASES.into_iter().zip(phases)),
+            "acquisition_phases_scope": "per-hour CountryCounterInputs acquisition wall by phase over processed frames; the physical navy pass and the counter pass run in the Ordinary job; relations exclude reserved-country naming; total sums the phases run that hour",
             "captured": self.captured,
             "refused": self.refusals.iter().fold(0_u64, |sum, (_, count)| sum.saturating_add(*count)),
             "refusals": crate::status::map(self.refusals.iter().map(|&(reason, count)| (reason, count))),
@@ -231,8 +323,6 @@ impl RosterWork {
             "forward_visibility_war_faults": self.forward_visibility_faults[1],
             "forward_visibility_subject_faults": self.forward_visibility_faults[2],
             "forward_visibility_military_access_faults": self.forward_visibility_faults[3],
-            "movement": self.movement.status(),
-            "movement_projection_refused": MOVEMENT_PROJECTION_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
             "co_belligerents_required": self.co_belligerents_required,
             "co_belligerents_capacity": self.co_belligerents_capacity,
             "pride_names_captured": self.pride_names_captured,
@@ -240,7 +330,7 @@ impl RosterWork {
             "pride_names_required": self.pride_names_required,
             "pride_names_capacity": self.pride_names_capacity,
             "scope": "stored country roster and directed relation-cache inputs at host cadence; independent suffix refusals preserve existing row values",
-        })
+        }))
     }
 }
 
@@ -254,9 +344,6 @@ pub struct Capacities {
     policies: usize,
     co_belligerents: usize,
     pride_names: usize,
-    wargoals: usize,
-    wargoal_states: usize,
-    movement: movement::Capacities,
     naval: naval::Capacities,
 }
 
@@ -265,14 +352,8 @@ impl Capacities {
         crate::country_scale::raise(&mut self.pride_names, crate::country_scale::rows(bytes, 1));
     }
 
-    pub(crate) fn raise_for_naval_movement(&mut self, demand: naval::Capacities) {
+    pub(crate) fn raise_for_physical_navies(&mut self, demand: naval::Capacities) {
         self.naval.raise(demand);
-    }
-    pub(crate) fn raise_for_movement(
-        &mut self,
-        demand: movement::LiveDemand,
-    ) -> Result<(), &'static str> {
-        self.movement.raise_for_demand(demand)
     }
     pub(crate) fn raise_for_co_belligerents(&mut self, targets: usize) {
         crate::country_scale::raise(
@@ -304,17 +385,11 @@ impl Capacities {
         crate::country_scale::raise(&mut self.civil_wars, crate::country_scale::rows(entries, 1));
     }
 
-    pub(crate) fn raise_for_rosters(
-        &mut self,
-        rosters: ccountry::RosterDemand,
-        goals: cwar_goal::Demand,
-    ) {
+    pub(crate) fn raise_for_rosters(&mut self, rosters: ccountry::RosterDemand) {
         let raise = crate::country_scale::raise;
         let rows = crate::country_scale::rows;
         raise(&mut self.states, rows(rosters.states, 1));
         raise(&mut self.leaders, rows(rosters.leaders, 1));
-        raise(&mut self.wargoals, rows(goals.rows, 1));
-        raise(&mut self.wargoal_states, rows(goals.states, 1));
     }
 }
 
@@ -328,13 +403,11 @@ pub struct Captured {
     relations: Arena<RelationRow>,
     co_belligerents: Arena<u32>,
     pride_names: Arena<u8>,
-    wargoals: CaptureRows<cwar_goal::Row>,
-    wargoal_states: Arena<u32>,
-    movement: movement::Captured,
     naval: naval::Captured,
+    phases: Phases,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 struct RelationRow {
     pride_name: Option<cname_group_member::Span>,
     pride_name_reason: Option<&'static str>,
@@ -370,10 +443,8 @@ impl Captured {
             relations: Arena::new(capacity.rows),
             co_belligerents: Arena::new(capacity.co_belligerents),
             pride_names: Arena::new(capacity.pride_names),
-            wargoals: CaptureRows::new(capacity.wargoals),
-            wargoal_states: Arena::new(capacity.wargoal_states),
-            movement: movement::Captured::with_capacities(capacity.movement),
             naval: naval::Captured::new(capacity.naval),
+            phases: Phases::default(),
         }
     }
     pub fn reset(&mut self) {
@@ -386,10 +457,8 @@ impl Captured {
         self.relations.reset();
         self.co_belligerents.reset();
         self.pride_names.reset();
-        self.wargoals.reset();
-        self.wargoal_states.reset();
-        self.movement.reset();
         self.naval.reset();
+        self.phases = Phases::default();
     }
     pub(crate) fn fail(&mut self) {
         let demand = self.naval.required();
@@ -407,9 +476,6 @@ impl Captured {
             + self.relations.allocated_bytes()
             + self.co_belligerents.allocated_bytes()
             + self.pride_names.allocated_bytes()
-            + self.wargoals.allocated_bytes()
-            + self.wargoal_states.allocated_bytes()
-            + self.movement.allocated_bytes()
             + self.naval.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -422,108 +488,73 @@ impl Captured {
         self.relations.grow(&mut capacity.rows);
         self.co_belligerents.grow(&mut capacity.co_belligerents);
         self.pride_names.grow(&mut capacity.pride_names);
-        self.wargoals.grow(&mut capacity.wargoals);
-        self.wargoal_states.grow(&mut capacity.wargoal_states);
-        self.movement.grow(&mut capacity.movement);
         self.naval.grow(&mut capacity.naval);
     }
-    pub(crate) fn begin_naval<'a, M: Memory>(
-        &mut self,
-        memory: &'a M,
-        base: usize,
-        state: usize,
-        hour: i32,
-        shared: &mut naval::Shared,
-    ) -> engine::country_naval_movement_inputs::Reader<'a, M> {
-        let _reads = crate::read_accounting::table(TABLES[0]);
-        self.naval.begin(memory, base, state, Some(hour), shared)
+    /// Lend the physical navy pass to its own job: the counter pass reads
+    /// none of it, so the two run beside each other.
+    pub(crate) fn take_navies(&mut self) -> Navies {
+        Navies {
+            holder: std::mem::replace(&mut self.naval, naval::Captured::new(Default::default())),
+            ticks: None,
+        }
     }
 
-    pub(crate) fn naval_holder(&mut self) -> &mut naval::Captured {
-        &mut self.naval
+    /// Return the pass with its measured wall (charged to this table's
+    /// physical-navy phase when it ran).
+    pub(crate) fn restore_navies(&mut self, navies: Navies) {
+        self.naval = navies.holder;
+        if let Some(ticks) = navies.ticks {
+            self.phases.set(PHYSICAL_NAVIES, ticks);
+        }
     }
 
-    pub(crate) fn finish_naval<M: Memory>(
-        &mut self,
-        memory: &M,
-        base: usize,
-        state: usize,
-        census: naval::OwnerCensus<
-            impl IntoIterator<Item = Result<ccountry::Country, &'static str>>,
-        >,
-        shared: &mut naval::Shared,
-        reader: &engine::country_naval_movement_inputs::Reader<'_, M>,
-    ) -> u64 {
-        let _reads = crate::read_accounting::table(TABLES[0]);
-        let begin = qpc();
-        self.naval
-            .finish(memory, base, state, census, shared, reader);
-        qpc().saturating_sub(begin).max(0) as u64
+    #[cfg(test)]
+    pub(crate) fn phases(&self) -> Phases {
+        self.phases
     }
 
-    pub(crate) fn province_area_matches(
-        &self,
-        province: u32,
-        previous: &replay::rows::Recorded<Option<replay::rows::ProvinceAreaInputs>>,
-    ) -> bool {
-        self.naval.province_area_matches(province, previous)
-    }
-    pub(crate) fn province_area(&self, province: u32) -> Option<replay::rows::ProvinceAreaInputs> {
-        self.naval.province_area(province)
-    }
-    pub(crate) fn observe_naval_movement(
+    pub(crate) fn observe_physical_navies(
         &self,
         work: &mut naval::Work,
-        shared: &naval::Shared,
+        launch: &naval::Launch,
     ) -> std::io::Result<()> {
-        work.observe(&self.naval, shared)
+        work.observe(&self.naval, launch)
     }
 
     #[cfg(test)]
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
-        let missing = Outcome::Unavailable {
-            reason: "country movement sources not supplied",
-        };
-        self.capture_with_movement(
-            memory,
-            base,
-            state,
-            Sources {
-                rows: &[],
-                outcome: missing,
-            },
-            Sources {
-                rows: &[],
-                outcome: missing,
-            },
-        )
+        self.capture_with_reverse(memory, base, state, None)
     }
 
     #[cfg(test)]
-    pub(crate) fn capture_with_movement(
+    pub(crate) fn capture_with_reverse(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
-        divisions: Sources<'_, engine::carmy::DivisionSeed>,
-        railway: Sources<'_, engine::railway_gun_counter_inputs::Row>,
+        reverse: Option<reserved_visibility::Request<'_>>,
     ) -> [u64; N] {
-        self.capture_with_movement_and_reverse(memory, base, state, divisions, railway, None)
+        self.capture_carried(memory, base, state, reverse, None)
     }
 
-    pub(crate) fn capture_with_movement_and_reverse(
+    /// The hour's counter pass with the reserved country's reverse
+    /// visibility, carrying the counter rows `store` certifies from its held
+    /// read ([`CounterStore`]); without a store every country is read.
+    pub(crate) fn capture_carried(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
-        divisions: Sources<'_, engine::carmy::DivisionSeed>,
-        railway: Sources<'_, engine::railway_gun_counter_inputs::Row>,
         reverse: Option<reserved_visibility::Request<'_>>,
+        mut store: Option<&mut CounterStore>,
     ) -> [u64; N] {
         let mut ticks = [0; N];
         {
             let _reads = crate::read_accounting::table(TABLES[0]);
             let begin = qpc();
+            if let Some(store) = store.as_deref_mut() {
+                store.begin(memory, base, state);
+            }
             let mut rosters = ccountry::CounterRosters {
                 states: engine::walk::Buffer::Growing(&mut self.states.first),
                 leaders: engine::walk::Buffer::Growing(&mut self.leaders.first),
@@ -539,15 +570,31 @@ impl Captured {
                 required: Default::default(),
             };
             let mut prefix_reader = None;
-            self.rows.outcome = ccountry::walk_counter_inputs_with_effect_rosters_observed_growing(
-                memory,
-                base,
-                state,
-                &mut self.rows.rows,
-                &mut rosters,
-                &mut effects,
-                &mut prefix_reader,
-            );
+            self.rows.outcome = match store.as_deref_mut() {
+                Some(store) => ccountry::walk_counter_inputs_carried_growing(
+                    memory,
+                    base,
+                    state,
+                    &mut self.rows.rows,
+                    &mut rosters,
+                    &mut effects,
+                    &mut prefix_reader,
+                    &mut |country: ccountry::Country,
+                          rosters: &mut ccountry::CounterRosters<'_>,
+                          effects: &mut ccountry::EffectRosters<'_>| {
+                        store.offer(memory, country, rosters, effects)
+                    },
+                ),
+                None => ccountry::walk_counter_inputs_with_effect_rosters_observed_growing(
+                    memory,
+                    base,
+                    state,
+                    &mut self.rows.rows,
+                    &mut rosters,
+                    &mut effects,
+                    &mut prefix_reader,
+                ),
+            };
             self.states.len = rosters.state_len;
             self.states.required = rosters.required.states;
             self.leaders.len = rosters.leader_len;
@@ -556,17 +603,26 @@ impl Captured {
             self.neighbors.required = effects.required.neighbors;
             self.policies.len = effects.policy_len;
             self.policies.required = effects.required.policies;
+            let walked = qpc();
             let reverse_ticks = self.capture_relations_with_reverse::<_, true>(
                 memory,
                 base,
                 state,
                 reverse,
                 prefix_reader.as_ref(),
+                store.as_deref(),
             );
-            let (demands, failure) = movement::owner_demands(base, divisions, railway);
-            self.movement
-                .capture_growing(memory, base, state, demands, failure);
-            ticks[0] = (qpc().saturating_sub(begin).max(0) as u64).saturating_sub(reverse_ticks);
+            if let Some(store) = store {
+                store.finish(self);
+            }
+            let related = qpc();
+            ticks[0] = elapsed(begin).saturating_sub(reverse_ticks);
+            self.phases
+                .set(COUNTER_WALK, walked.saturating_sub(begin).max(0) as u64);
+            self.phases.set(
+                RELATIONS,
+                (related.saturating_sub(walked).max(0) as u64).saturating_sub(reverse_ticks),
+            );
         }
         {
             let _reads = crate::read_accounting::table(TABLES[1]);
@@ -575,19 +631,6 @@ impl Captured {
                 ccountry::walk_civil_wars_growing(memory, base, state, &mut self.civil_wars.rows);
             ticks[1] = qpc().saturating_sub(begin).max(0) as u64;
         }
-        let _reads = crate::read_accounting::table(TABLES[2]);
-        let begin = qpc();
-        let goals = cwar_goal::walk_growing(
-            memory,
-            base,
-            state,
-            &mut self.wargoals.rows,
-            &mut self.wargoal_states.first,
-        );
-        self.wargoals.outcome = goals.outcome;
-        self.wargoal_states.len = goals.state_len;
-        self.wargoal_states.required = goals.required.states;
-        ticks[2] = qpc().saturating_sub(begin).max(0) as u64;
         ticks
     }
 
@@ -595,9 +638,12 @@ impl Captured {
     /// owner consumes no target span, so later owners can use the same space.
     #[cfg(test)]
     fn capture_relations(&mut self, memory: &impl Memory, base: usize, state: usize) {
-        self.capture_relations_with_reverse::<_, true>(memory, base, state, None, None);
+        self.capture_relations_with_reverse::<_, true>(memory, base, state, None, None, None);
     }
 
+    /// A row whose counter row `store` carried takes its held suffix and
+    /// co-belligerent targets instead of reading them; its pride ship name,
+    /// census resolution and reverse visibility cell are still read.
     fn capture_relations_with_reverse<M: Memory, const GROWING: bool>(
         &mut self,
         memory: &M,
@@ -605,6 +651,7 @@ impl Captured {
         state: usize,
         mut reverse: Option<reserved_visibility::Request<'_>>,
         prefix_reader: Option<&Result<ccountry::Reader<'_, M>, &'static str>>,
+        store: Option<&CounterStore>,
     ) -> u64 {
         self.relations.reset();
         self.co_belligerents.reset();
@@ -682,6 +729,45 @@ impl Captured {
                     continue;
                 }
             };
+            if let Some((held, targets)) =
+                store.and_then(|store| store.carried_relation(index, len, prefix.country))
+            {
+                let start = self.co_belligerents.len;
+                let mut output = if GROWING {
+                    engine::walk::Buffer::GrowingFrom(&mut self.co_belligerents.first, start)
+                } else {
+                    engine::walk::Buffer::Fixed(&mut self.co_belligerents.first[start..])
+                };
+                if output.ensure(targets.len()) == Ok(true) && targets.len() <= output.len() {
+                    output[..targets.len()].copy_from_slice(targets);
+                    *row = RelationRow {
+                        pride_name: row.pride_name,
+                        pride_name_reason: row.pride_name_reason,
+                        co_belligerents: Some(ccountry::RosterSpan {
+                            start,
+                            count: targets.len(),
+                        }),
+                        ..held
+                    };
+                    self.co_belligerents.len += targets.len();
+                    self.co_belligerents.required =
+                        self.co_belligerents.required.saturating_add(targets.len());
+                    // The reverse cell reads its own status: no forward
+                    // observation of this country exists to share.
+                    if let (Some(request), Some(source)) = (reverse.as_mut(), source.as_ref()) {
+                        request.capture.capture_cell(
+                            source,
+                            memory,
+                            base,
+                            countries.as_ref().ok(),
+                            country.canonical_slot,
+                            None,
+                        );
+                    }
+                    self.relations.len = index + 1;
+                    continue;
+                }
+            }
             let mut forward = crelation_status::ForwardZeroObservation::default();
             let targets = if GROWING {
                 engine::walk::Buffer::GrowingFrom(
@@ -773,29 +859,20 @@ impl Captured {
             .map_or(0, |request| request.capture.ticks())
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        [
-            self.rows.outcome,
-            self.civil_wars.outcome,
-            self.wargoals.outcome,
-        ]
+        [self.rows.outcome, self.civil_wars.outcome]
     }
 
-    pub(crate) fn observe_rosters(&self, work: &mut RosterWork) -> std::io::Result<()> {
-        work.observe(self)
-    }
-
-    #[cfg(test)]
-    pub fn tables(&self) -> [TableView; N] {
-        self.tables_with_sources(None, None)
-    }
-
-    pub(crate) fn tables_with_sources(
+    pub(crate) fn observe_rosters(
         &self,
-        attack: Option<&super::attack_inputs::Map>,
-        directed: Option<(&super::country_directed_wars::Captured, i32)>,
-    ) -> [TableView; N] {
+        work: &mut RosterWork,
+        frequency: u64,
+    ) -> std::io::Result<()> {
+        work.observe(self, frequency)
+    }
+
+    pub fn tables(&self) -> [TableView; N] {
         [
-            self.counter_table_with_sources(attack, directed),
+            self.counter_table(),
             table::<tables::CountryCivilWars, _>(
                 self.civil_wars.outcome,
                 &self.civil_wars.rows,
@@ -805,20 +882,10 @@ impl Captured {
                     target: r.target,
                 },
             ),
-            self.wargoal_table(),
         ]
     }
 
-    #[cfg(test)]
     fn counter_table(&self) -> TableView {
-        self.counter_table_with_sources(None, None)
-    }
-
-    fn counter_table_with_sources(
-        &self,
-        attack: Option<&super::attack_inputs::Map>,
-        directed: Option<(&super::country_directed_wars::Captured, i32)>,
-    ) -> TableView {
         let Some(rows) = self.rows.rows.get(..self.rows.outcome.len()) else {
             return unavailable("country counter row count exceeds allocated buffer");
         };
@@ -848,23 +915,18 @@ impl Captured {
                     .get(index)
                     .filter(|_| index < self.relations.len);
                 CountryCounterInputRow {
-                    directed_wars: Recorded::Value(directed.and_then(|(observed, hour)| {
-                        // This mark dates an attempted source in the same
-                        // Ordinary request; it is NOT proof that native reads
-                        // succeeded. Association relies on authenticated shared
-                        // request context, frame loan/reset/join and Ordinary's
-                        // failure override. Missing/stale marks refuse here.
-                        if self.naval.sample_hour() != Some(hour) {
-                            return super::country_directed_wars::Captured::unassociated();
-                        }
-                        observed.for_country(hour, r.country)
-                    })),
+                    // Playback derives every direct-war cell from the hour's
+                    // WarRelations; no packet is captured.
+                    directed_wars: Recorded::Value(None),
                     country: r.country,
-                    attack: replay::rows::Recorded::Value(
-                        attack
-                            .map(|attack| attack.country_or_refused(r.country))
-                            .unwrap_or_default(),
-                    ),
+                    // No country operand is witnessed; current writers leave it empty.
+                    attack: Recorded::Value(Witnessed(None)),
+                    attack_modifiers: Recorded::Value(r.attack_modifiers.map(|[night, bunker]| {
+                        CountryAttackModifiers {
+                            land_night_attack: night,
+                            land_bunker_effectiveness_factor: bunker,
+                        }
+                    })),
                     pride_of_the_fleet: r.pride_of_the_fleet,
                     owned_state_count: r.owned_state_count,
                     controlled_state_count: r.controlled_state_count,
@@ -898,25 +960,8 @@ impl Captured {
                             .and_then(|span| self.effect_list(&self.co_belligerents, span)),
                     ),
                     zero_war: Recorded::Value(relation.and_then(|row| row.zero_war)),
-                    movement: Recorded::Value(
-                        self.naval
-                            .sample_hour()
-                            .map(|sample_hour| {
-                                let mut inputs = self.movement.for_country(r.country)?;
-                                inputs.sample_hour = sample_hour;
-                                let (naval, theatre) = self.naval.for_country(r.country)?;
-                                inputs.naval = naval;
-                                inputs.theatre = theatre;
-                                Ok::<_, std::io::Error>(inputs)
-                            })
-                            .transpose()
-                            .unwrap_or_else(|error| {
-                                crate::allocation::observe(&error);
-                                MOVEMENT_PROJECTION_REFUSALS
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                None
-                            }),
-                    ),
+                    // The selected transport preview's owner speeds retired.
+                    movement: Recorded::Value(Retired),
                     zero_subject: Recorded::Value(relation.and_then(|row| row.zero_subject)),
                     forward_visibility: Recorded::Value(
                         relation.and_then(|row| row.forward_visibility),
@@ -933,27 +978,6 @@ impl Captured {
                 }
             },
         )
-    }
-
-    fn wargoal_table(&self) -> TableView {
-        let Some(rows) = self.wargoals.rows.get(..self.wargoals.outcome.len()) else {
-            return unavailable("owned wargoal row count exceeds allocated buffer");
-        };
-        if rows
-            .iter()
-            .any(|row| !valid_span(&self.wargoal_states, row.state_start, row.state_count))
-        {
-            return unavailable("owned wargoal state span outside acquired arena");
-        }
-        table::<tables::OwnedWargoals, _>(self.wargoals.outcome, rows, |r| OwnedWargoalRow {
-            country: r.country,
-            ordinal: r.ordinal,
-            recipient: r.recipient,
-            goal_type: r.goal_type,
-            states: engine::allocation::owned_vec(engine::allocation::copy_vec(
-                &self.wargoal_states.first[r.state_start..r.state_start + r.state_count],
-            )),
-        })
     }
 
     fn state_list(&self, span: ccountry::RosterSpan) -> Vec<u32> {
@@ -1051,14 +1075,6 @@ pub(crate) fn co_belligerent_demand(
         }
     }
     (required, refusal)
-}
-
-pub(crate) fn movement_demand(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-) -> movement::LiveDemand {
-    engine::carmy::country_movement_inputs::observe_live(memory, base, state)
 }
 
 #[cfg(test)]
@@ -1363,7 +1379,7 @@ mod tests {
             bytes: &bytes,
         };
         let mut capture = co_capture(1);
-        capture.capture_relations_with_reverse::<_, false>(&memory, 0, CO_STATE, None, None);
+        capture.capture_relations_with_reverse::<_, false>(&memory, 0, CO_STATE, None, None, None);
         assert_eq!(capture.rows.outcome, Outcome::Rows { len: 2 });
         assert_eq!(
             (
@@ -1568,7 +1584,7 @@ mod tests {
             assert_eq!(rows[0].co_belligerents, Recorded::Value(Some(vec![0, 2])));
             assert_eq!(rows[1].owned_state_count, 8);
             let mut work = RosterWork::default();
-            capture.observe_rosters(&mut work).unwrap();
+            capture.observe_rosters(&mut work, 10_000_000).unwrap();
             assert_eq!(work.zero_subject_captured, 2);
             assert_eq!(
                 work.refusals
@@ -1723,7 +1739,7 @@ mod tests {
         assert_eq!(rows[0].mio_policies, Recorded::Value(None));
         assert_eq!(rows[0].neighbors, Recorded::Value(Some(Vec::new())));
         let mut work = RosterWork::default();
-        captured.observe_rosters(&mut work).unwrap();
+        captured.observe_rosters(&mut work, 10_000_000).unwrap();
         assert_eq!(work.refusals, [("MIO policy production status is null", 1)]);
     }
     #[test]
@@ -1759,7 +1775,6 @@ mod tests {
         let [
             TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)),
             TableView::Complete(replay::rows::TableRows::CountryCivilWars(wars)),
-            _,
         ] = capture.tables()
         else {
             panic!("complete");
@@ -1780,6 +1795,65 @@ mod tests {
     }
 
     #[test]
+    fn acquisition_phases_report_each_measured_phase_per_processed_hour() {
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        let mut capture = Captured::with_capacities(&Capacities {
+            rows: 1,
+            civil_wars: 2,
+            ..Default::default()
+        });
+        let mut work = RosterWork::default();
+        capture.capture(&memory, 0, 0);
+        let phases = capture.phases();
+        // The counter pass measures its own phases even when they refuse.
+        for phase in ["counter_walk", "relations"] {
+            assert!(phases.get(phase).is_some(), "{phase}");
+        }
+        // The physical navy pass belongs to the Ordinary job around this pass.
+        assert_eq!(phases.get("physical_navies"), None);
+        // The river, naval movement, selected-attack and selected transport
+        // owner-speed phases are gone.
+        for retired in [
+            "naval_begin",
+            "controller_domain",
+            "river",
+            "naval_finish",
+            "attack_inputs",
+            "movement_setup",
+            "region_domain",
+            "transport",
+        ] {
+            assert!(!PHASES.contains(&retired), "{retired}");
+        }
+        let measured = PHASES[..PHASES.len() - 1]
+            .iter()
+            .filter_map(|phase| phases.get(phase))
+            .sum::<u64>();
+        assert_eq!(phases.get("total"), Some(measured));
+        capture.observe_rosters(&mut work, 10_000_000).unwrap();
+        // A failed Ordinary job measures nothing for this hour.
+        capture.fail();
+        assert_eq!(capture.phases(), Phases::default());
+        capture.observe_rosters(&mut work, 10_000_000).unwrap();
+        let status = serde_json::to_value(work.status().unwrap()).unwrap();
+        let phases = &status["acquisition_phases"];
+        assert_eq!(phases["counter_walk"]["calls"], 1);
+        assert_eq!(phases["relations"]["calls"], 1);
+        assert_eq!(phases["physical_navies"]["calls"], 0);
+        assert_eq!(phases["total"]["calls"], 1);
+        assert_eq!(
+            PHASES
+                .iter()
+                .filter(|phase| phases.get(**phase).is_some())
+                .count(),
+            PHASES.len()
+        );
+    }
+
+    #[test]
     fn civil_war_capacity_follows_the_live_entry_total() {
         let mut capacity = Capacities::default();
         capacity.raise_for_civil_wars(3_000);
@@ -1793,18 +1867,11 @@ mod tests {
     fn live_roster_demand_sizes_5000_country_arenas_and_projection_owns_every_operand() {
         let mut capacity = Capacities::default();
         capacity.raise_for_countries(5_001);
-        capacity.raise_for_rosters(
-            ccountry::RosterDemand {
-                states: 45_000,
-                leaders: 30_000,
-            },
-            cwar_goal::Demand {
-                rows: 5_000,
-                states: 20_000,
-            },
-        );
+        capacity.raise_for_rosters(ccountry::RosterDemand {
+            states: 45_000,
+            leaders: 30_000,
+        });
         assert!(capacity.states >= 60_000 && capacity.leaders >= 40_000);
-        assert!(capacity.wargoals >= 6_667 && capacity.wargoal_states >= 26_667);
         let mut captured = Captured::with_capacities(&capacity);
         for index in 0..5_000 {
             let country = index as u32 + 1;
@@ -1833,37 +1900,19 @@ mod tests {
                 })),
                 ..Default::default()
             };
-            captured.wargoal_states.first[index * 4..index * 4 + 4].copy_from_slice(&[
-                country,
-                0,
-                country + 10_000,
-                country,
-            ]);
-            captured.wargoals.rows[index] = cwar_goal::Row {
-                country,
-                recipient: 0x8000_0000 | country,
-                goal_type: 123,
-                state_start: index * 4,
-                state_count: 4,
-                ..Default::default()
-            };
         }
         captured.rows.outcome = Outcome::Rows { len: 5_000 };
-        captured.wargoals.outcome = Outcome::Rows { len: 5_000 };
         captured.states.len = 45_000;
         captured.leaders.len = 30_000;
-        captured.wargoal_states.len = 20_000;
         let [
             TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)),
             _,
-            TableView::Complete(replay::rows::TableRows::OwnedWargoals(goals)),
         ] = captured.tables()
         else {
             panic!("complete");
         };
         captured.states.first.fill(0);
         captured.leaders.first.fill(0);
-        captured.wargoal_states.first.fill(0);
         for (index, row) in rows.iter().enumerate() {
             let country = index as u32 + 1;
             let expected_states = [country + 10_000, 0, country];
@@ -1904,15 +1953,14 @@ mod tests {
                     .as_deref(),
                 Some(expected_leaders.as_slice())
             );
-            assert_eq!(goals[index].states, [country, 0, country + 10_000, country]);
         }
         let raised = capacity;
-        capacity.raise_for_rosters(Default::default(), Default::default());
+        capacity.raise_for_rosters(Default::default());
         assert!(capacity == raised);
     }
 
     #[test]
-    fn observed_empty_owned_goals_are_complete_and_unobserved_inputs_remain_absent() {
+    fn observed_empty_rosters_are_present_and_unobserved_inputs_remain_absent() {
         let mut captured = Captured::with_capacities(&Capacities {
             rows: 1,
             ..Default::default()
@@ -1922,18 +1970,15 @@ mod tests {
             ..Default::default()
         };
         captured.rows.outcome = Outcome::Rows { len: 1 };
-        captured.wargoals.outcome = Outcome::Rows { len: 0 };
         let [
             TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)),
             _,
-            TableView::Complete(replay::rows::TableRows::OwnedWargoals(goals)),
         ] = captured.tables()
         else {
             panic!("complete");
         };
         assert_eq!(rows[0].owned_states, Recorded::Value(None));
         assert_eq!(rows[0].army_leaders, Recorded::Value(None));
-        assert!(goals.is_empty());
         captured.rows.rows[0].state_rosters = Some([ccountry::RosterSpan::default(); 3]);
         captured.rows.rows[0].leader_rosters = Some([ccountry::RosterSpan::default(); 2]);
         let views = captured.tables();
@@ -1948,7 +1993,7 @@ mod tests {
         assert_eq!(rows[0].navy_leaders, Recorded::Value(Some(Vec::new())));
         captured.reset();
         assert!(matches!(
-            captured.tables()[2],
+            captured.tables()[0],
             TableView::Unavailable { .. }
         ));
     }
@@ -1995,7 +2040,6 @@ mod tests {
         let [
             TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)),
             _,
-            _,
         ] = captured.tables()
         else {
             panic!("scalar rows unavailable");
@@ -2012,7 +2056,7 @@ mod tests {
             assert_eq!(row.navy_leaders, Recorded::Value(None));
         }
         let mut work = RosterWork::default();
-        captured.observe_rosters(&mut work).unwrap();
+        captured.observe_rosters(&mut work, 10_000_000).unwrap();
         assert_eq!(work.captured, 0);
         assert_eq!(
             work.refusals,
@@ -2021,11 +2065,11 @@ mod tests {
                 ("unit leader vtable mismatch", 2_500),
             ]
         );
-        let status = serde_json::to_value(work.status()).unwrap();
+        let status = serde_json::to_value(work.status().unwrap()).unwrap();
         assert_eq!(status["refused"], 5_000);
         assert_eq!(status["states_required"], 45_000);
         captured.reset();
-        captured.observe_rosters(&mut work).unwrap();
+        captured.observe_rosters(&mut work, 10_000_000).unwrap();
         assert_eq!(work.refusals[0].1, 2_500);
     }
 
@@ -2035,15 +2079,11 @@ mod tests {
             rows: 1,
             states: 4,
             leaders: 4,
-            wargoals: 1,
-            wargoal_states: 4,
             ..Default::default()
         });
         captured.rows.outcome = Outcome::Rows { len: 1 };
-        captured.wargoals.outcome = Outcome::Rows { len: 1 };
         captured.states.len = 2;
         captured.leaders.len = 2;
-        captured.wargoal_states.len = 2;
         for (start, count) in [(usize::MAX, 1), (1, 2), (4, 1)] {
             let span = ccountry::RosterSpan { start, count };
             captured.rows.rows[0].state_rosters = Some([span; 3]);
@@ -2060,13 +2100,6 @@ mod tests {
                     if reason == "country leader roster span outside acquired arena"
             ));
             captured.rows.rows[0].leader_rosters = None;
-            captured.wargoals.rows[0].state_start = start;
-            captured.wargoals.rows[0].state_count = count;
-            assert!(matches!(
-                &captured.tables()[2],
-                TableView::Unavailable { reason }
-                    if reason == "owned wargoal state span outside acquired arena"
-            ));
         }
     }
 
@@ -2155,7 +2188,7 @@ mod tests {
         assert_eq!(rows[0].zero_war, Recorded::Value(Some([0, 0])));
         assert_eq!(rows[1].owned_state_count, 8);
         let mut work = RosterWork::default();
-        capture.observe_rosters(&mut work).unwrap();
+        capture.observe_rosters(&mut work, 10_000_000).unwrap();
         assert_eq!(work.forward_visibility_faults, [0, 0, 0, 1]);
         assert_eq!(
             work.refusals
@@ -2195,7 +2228,7 @@ mod tests {
         let mut capture = co_capture(3);
         capture.capture_relations(&memory, 0, CO_STATE);
         let mut work = RosterWork::default();
-        capture.observe_rosters(&mut work).unwrap();
+        capture.observe_rosters(&mut work, 10_000_000).unwrap();
         assert_eq!(memory.attempts.get(), 1);
         assert_eq!(work.forward_visibility_faults, [0, 1, 0, 0]);
         assert_eq!(

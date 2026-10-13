@@ -3,16 +3,15 @@
 
 use crate::{
     Memory, cequipment_type, cequipment_variant, cequipment_variant_pool, cname_group_member,
-    ctask_force, cunit, msvc_string::Descriptor, read,
+    ctask_force, cunit, msvc_string::Descriptor, read, recent::Recent,
 };
 
-mod strike;
-pub use strike::{
-    METADATA_CAPACITY as STRIKE_METADATA_CAPACITY, OrganisationAndCooldown, ShipStrikeInputs,
-    TorpedoCooldownMemo, read_maximum_organisation_and_torpedo_cooldown, read_strike_bases,
-};
-
+mod gathered;
 mod hull_variant;
+pub use gathered::{
+    GatheredMemory, GatheredObject, HeldShip, Lookup, Served, ShipFields, SwitchedObject,
+    TaskForceFields,
+};
 pub use hull_variant::{HullVariantInputs, read_hull_variant};
 
 /// CShip primary vtable.
@@ -214,8 +213,6 @@ pub struct ModelRow {
     pub positive_equipment_flags: u64,
     /// Independent guarded suffix; None never invalidates the model prefix.
     pub subunit_index: Option<i32>,
-    /// Current readiness packet; each guarded scalar remains independent.
-    pub strike: Option<ShipStrikeInputs>,
     /// Current selected-variant tuple; acquired independently after max-org.
     pub hull_variant: Option<HullVariantInputs>,
 }
@@ -280,12 +277,16 @@ pub struct TransportModelObservation {
     pub carrier_air_base: Option<Result<Option<u64>, &'static str>>,
 }
 
-/// One completed equipment-definition observation within a stopped capture.
+/// Completed equipment-definition observations within one stopped capture.
+/// A fixed reader keeps the last definition; a worker keeps every completed
+/// definition it reached, keyed by its exact (module, definition, token)
+/// gather, because ships of one task force alternate hull definitions.
 /// Reset before each capture; variant and ship observations remain independent.
 #[derive(Default)]
 pub struct ModelMemo {
     growing: bool,
     hull: Option<ModelHull>,
+    hulls: crate::combat_sources::Map<HullKey, ModelHull>,
     hull_variant: hull_variant::Memo,
 }
 
@@ -293,12 +294,51 @@ impl ModelMemo {
     pub fn enable_worker_growth(&mut self) {
         self.growing = true;
     }
+
+    /// Forget every observation (and every native pointer key) for the next
+    /// capture, keeping worker storage. Growth must be enabled again.
+    pub fn reset(&mut self) {
+        self.growing = false;
+        self.hull = None;
+        self.hulls.clear();
+        self.hull_variant.reset();
+    }
+
+    /// Retained memo storage, excluding text payloads already counted by rows.
+    pub fn allocated_bytes(&self) -> usize {
+        self.hulls.capacity() * std::mem::size_of::<(HullKey, ModelHull)>()
+            + self
+                .hulls
+                .values()
+                .map(|hull| hull.sprite.allocated_bytes())
+                .sum::<usize>()
+            + self.hull_variant.allocated_bytes()
+    }
+
+    fn hull(&self, key: HullKey) -> Option<&ModelHull> {
+        self.hull
+            .as_ref()
+            .filter(|hull| hull.key == key)
+            .or_else(|| self.hulls.get(&key))
+    }
+
+    /// Only a complete successful observation is kept. Worker storage grows
+    /// per reached definition; an allocation failure (already terminal for
+    /// the capture) only forgoes the reuse.
+    fn remember_hull(&mut self, hull: ModelHull) {
+        if !self.growing {
+            self.hull = Some(hull);
+        } else if crate::allocation::reserve_map(&mut self.hulls, 1).is_ok() {
+            self.hulls.insert(hull.key, hull);
+        }
+    }
 }
 
+/// Module base, equipment definition pointer and its embedded token.
+type HullKey = (usize, usize, [u8; 4]);
+
 struct ModelHull {
-    base: usize,
-    definition: usize,
-    token: [u8; 4],
+    key: HullKey,
     sprite: ModelText,
     native_null: bool,
 }
@@ -579,10 +619,8 @@ fn read_model_observed_inner(
         // CEquipmentType clones can share tokens. Match the actual definition
         // from this variant's fresh authenticated gather, not its token alone.
         // The stopped capture owns this complete successful observation; no
-        // failed identity, descriptor, terminator or payload enters the slot.
-        if let Some(hull) = memo.hull.as_ref().filter(|hull| {
-            hull.base == base && hull.definition == definition && hull.token == token
-        }) {
+        // failed identity, descriptor, terminator or payload enters the memo.
+        if let Some(hull) = memo.hull((base, definition, token)) {
             if hull.native_null && row.variant >> 32 == 0 {
                 return Err("ship model equipment definition identity mismatch");
             }
@@ -613,10 +651,8 @@ fn read_model_observed_inner(
                     .ok_or("ship model equipment sprite address overflow")?,
                 memo.growing,
             )?;
-            memo.hull = Some(ModelHull {
-                base,
-                definition,
-                token,
+            memo.remember_hull(ModelHull {
+                key: (base, definition, token),
                 sprite: row.hull_sprite.try_copy()?,
                 native_null: !ordinary,
             });
@@ -858,6 +894,104 @@ pub fn read_transport_model(
     original
 }
 
+/// Cache hints for the census fields [`read_row`] copies from the ship at
+/// `pointer`, ahead of that read: no read, no fault, no value.
+pub(crate) fn prefetch_row(pointer: usize) {
+    for (offset, len) in [
+        (0, 16),
+        (STRENGTH, 24),
+        (CATEGORY, 4),
+        (SUNK_CONVOYS, 4),
+        (CLASS_DATABASE_ID, 4),
+        (TASK_FORCE, 8),
+    ] {
+        crate::prefetch::span(pointer.wrapping_add(offset), len);
+    }
+}
+
+/// The census fields of [`read_row`] as one record per ship, in its read
+/// order: vtable, handle, strength/organisation/experience, category, sunk
+/// convoys, class and parent task force. A run of ships is read with one
+/// guarded `copy_records` over their pointers ([`crate::cfleet`]).
+pub(crate) const ROW_FIELDS: [crate::memory::RecordField; 7] = {
+    use crate::memory::RecordField;
+    [
+        RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: 8,
+        },
+        RecordField {
+            source_offset: HANDLE,
+            destination_offset: 8,
+            len: 8,
+        },
+        RecordField {
+            source_offset: STRENGTH,
+            destination_offset: 16,
+            len: 24,
+        },
+        RecordField {
+            source_offset: CATEGORY,
+            destination_offset: 40,
+            len: 4,
+        },
+        RecordField {
+            source_offset: SUNK_CONVOYS,
+            destination_offset: 44,
+            len: 4,
+        },
+        RecordField {
+            source_offset: CLASS_DATABASE_ID,
+            destination_offset: 48,
+            len: 4,
+        },
+        RecordField {
+            source_offset: TASK_FORCE,
+            destination_offset: 56,
+            len: 8,
+        },
+    ]
+};
+/// Bytes of one [`ROW_FIELDS`] record.
+pub(crate) const ROW_STRIDE: usize = 64;
+pub(crate) const ROW_LAYOUT: crate::memory::RecordLayout<'static> =
+    crate::memory::RecordLayout::new(&ROW_FIELDS, ROW_STRIDE).expect("valid ship row layout");
+
+/// A ship row from a complete [`ROW_FIELDS`] record, with [`read_row`]'s
+/// checks after its guarded copy completed every field: the vtable first,
+/// then the handle, then the parent task force.
+pub(crate) fn decode_row(
+    record: &[u8],
+    expected_vtable: u64,
+    task_force_pointer: usize,
+    task_force: u64,
+) -> Result<Row, &'static str> {
+    let word = |at: usize| u64::from_le_bytes(record[at..at + 8].try_into().expect("fixed span"));
+    let half = |at: usize| u32::from_le_bytes(record[at..at + 4].try_into().expect("fixed span"));
+    if word(0) != expected_vtable {
+        return Err("ship vtable mismatch");
+    }
+    let id = word(8);
+    if id == 0 {
+        return Err("non-null ship has null handle");
+    }
+    if word(56) != task_force_pointer as u64 {
+        return Err("ship parent differs from task force roster");
+    }
+    Ok(Row {
+        id,
+        task_force,
+        strength: word(16) as i64,
+        organisation: word(24) as i64,
+        experience: word(32) as i64,
+        category: half(40),
+        sunk_convoys: half(44) as i32,
+        class_id: half(48) as i32,
+        roster_ordinal: 0,
+    })
+}
+
 pub(crate) fn read_row(
     memory: &impl Memory,
     base: usize,
@@ -865,29 +999,56 @@ pub(crate) fn read_row(
     task_force_pointer: usize,
     task_force: u64,
 ) -> Result<Row, &'static str> {
-    let at = |offset| pointer.checked_add(offset).ok_or("ship address overflow");
     let expected = base
         .checked_add(VTABLE_RVA)
         .ok_or("module address overflow")?;
-    if read::<u64>(memory, pointer) != Some(expected as u64) {
-        return Err("ship vtable mismatch");
-    }
+    let addresses = [
+        0,
+        HANDLE,
+        STRENGTH,
+        CATEGORY,
+        SUNK_CONVOYS,
+        CLASS_DATABASE_ID,
+        TASK_FORCE,
+    ]
+    .map(|offset| pointer.checked_add(offset));
+    let [
+        Some(vtable_at),
+        Some(handle_at),
+        Some(strength_at),
+        Some(category_at),
+        Some(sunk_at),
+        Some(class_at),
+        Some(parent_at),
+    ] = addresses
+    else {
+        // An overflowing field keeps the vtable check ahead of it.
+        if read::<u64>(memory, pointer) != Some(expected as u64) {
+            return Err("ship vtable mismatch");
+        }
+        return Err("ship address overflow");
+    };
+    // The vtable and the fields in one guarded call; the vtable decides
+    // first, as when it was read alone.
+    let mut vtable = [0; 8];
     let mut identity = [0; 8];
     let mut scalars = [0; 24];
     let mut category = [0; 4];
     let mut sunk = [0; 4];
     let mut class = [0; 4];
     let mut parent = [0; 8];
-    if memory.copy_scattered(
+    let completed = memory.copy_scattered(
         [
-            at(HANDLE)?,
-            at(STRENGTH)?,
-            at(CATEGORY)?,
-            at(SUNK_CONVOYS)?,
-            at(CLASS_DATABASE_ID)?,
-            at(TASK_FORCE)?,
+            vtable_at,
+            handle_at,
+            strength_at,
+            category_at,
+            sunk_at,
+            class_at,
+            parent_at,
         ],
         &mut [
+            &mut vtable,
             &mut identity,
             &mut scalars,
             &mut category,
@@ -895,8 +1056,11 @@ pub(crate) fn read_row(
             &mut class,
             &mut parent,
         ],
-    ) != 6
-    {
+    );
+    if completed == 0 || u64::from_le_bytes(vtable) != expected as u64 {
+        return Err("ship vtable mismatch");
+    }
+    if completed != 7 {
         return Err("ship fields unreadable");
     }
     let id = u64::from_le_bytes(identity);
@@ -930,24 +1094,193 @@ mod tests;
 #[derive(Default)]
 pub struct OrganisationMemo {
     last: Option<(usize, [i64; 4])>,
+    /// (game, task roster owner) -> the country Reader::resolve authenticated.
+    owner: Option<(usize, u32, usize)>,
     country: Option<(usize, [i64; 4])>,
+    /// Country -> its pride-of-the-fleet ship handle (`CCountry+0x250`).
+    pride: Recent<usize, [u8; 8], RECENT>,
     support: Option<(usize, [i64; 4])>,
-    terrain: Option<(usize, usize)>,
-    terrain_class: Option<(usize, u32, [i64; 4])>,
+    /// HQ influence character reference -> its commander's four role terms,
+    /// `None` for an influence ship modifier calculation skips: task forces of
+    /// a fleet share their headquarters.
+    influences: Recent<u64, Option<[i64; 4]>, 16>,
+    /// Province definition -> its terrain.
+    terrain: Recent<usize, usize, RECENT>,
+    /// Terrain lookup's ocean fallback, content resolved once per capture.
+    ocean: Option<usize>,
+    /// A task force's ships alternate classes and subunits, so these keep
+    /// the recent selectors rather than the last one.
+    terrain_class: Recent<(usize, u32), [i64; 4], RECENT>,
     fleet: Option<(usize, Option<usize>, [i64; 4])>,
-    leader_class: Option<(usize, u32, [i64; 4])>,
+    leader_class: Recent<(usize, u32), [i64; 4], RECENT>,
+    doctrine_keys: crate::naval_ship_modifier_inputs::DoctrineKeys,
     weather: Option<OrganisationWeather>,
     definitions: crate::modifier_definition::DefinitionMemo,
 }
 
-/// Region, province and task modifiers shared by ships at the same location.
-/// The ship-specific factor stays outside this packet. Game, task, country,
-/// location and province-definition observations expire with the capture memo.
-struct OrganisationWeather {
+/// Recent selectors an [`OrganisationMemo`] keeps.
+const RECENT: usize = 8;
+
+impl OrganisationMemo {
+    /// Serve `task`'s doctrine contribution from an earlier hour's complete
+    /// observation that a certificate keeps: the next ship of `task` reads no
+    /// doctrine tree.
+    pub fn hold_doctrine(&mut self, task: usize, contribution: [i64; 4]) {
+        self.last = Some((task, contribution));
+    }
+
+    /// Serve `country`'s modifier-tree terms (`CCountry+0x5B8`, its four ship
+    /// modifier keys) from an earlier hour's complete observation that a
+    /// certificate keeps: the next ship or task force of that country reads no
+    /// accumulator for them.
+    pub fn hold_country(&mut self, country: usize, terms: [i64; 4]) {
+        self.country = Some((country, terms));
+    }
+
+    /// Forget the held or read country terms, so the next ship or task force
+    /// reads its country's accumulator (a sampled comparison).
+    pub fn forget_country(&mut self) {
+        self.country = None;
+    }
+
+    /// The latest country this capture observed and its modifier-tree terms.
+    pub fn country_terms(&self) -> Option<(usize, [i64; 4])> {
+        self.country
+    }
+
+    /// `task`'s doctrine contribution this capture observed, if complete.
+    pub fn doctrine(&self, task: usize) -> Option<[i64; 4]> {
+        self.last
+            .filter(|&(observed, _)| observed == task)
+            .map(|(_, contribution)| contribution)
+    }
+
+    /// Serve the location terms of `weather`'s task force from an earlier
+    /// hour's complete observation that a certificate keeps; the reader
+    /// still compares its sources (game, task force, country, location and
+    /// province definition) with the ship's.
+    pub fn hold_weather(&mut self, weather: OrganisationWeather) {
+        self.weather = Some(weather);
+    }
+
+    /// The latest location terms this capture observed, if complete.
+    pub fn weather(&self) -> Option<OrganisationWeather> {
+        self.weather
+    }
+
+    /// The task-force terms ship modifier calculation combined into this
+    /// capture's latest maximum for `task`, read for one of its ships: its
+    /// owner's country terms and pride ship, doctrine, terrain and location
+    /// weather, fleet leader and HQ support. `None` unless every one is
+    /// `task`'s. A ship whose own inputs and class selectors are unchanged has
+    /// an unchanged maximum while these are equal.
+    pub fn task_terms(&self, task: &TaskForceFields) -> Option<TaskTerms> {
+        let owner = self.owner.filter(|&(_, id, _)| id == task.roster_owner)?;
+        let country = self.country.filter(|&(country, _)| country == owner.2)?.1;
+        let location = if task.location == 0 {
+            None
+        } else {
+            let weather = self.weather.filter(|weather| {
+                weather.sources[1] == task.pointer && weather.sources[3] == task.location
+            })?;
+            Some((self.terrain.get(&weather.sources[4])?, weather))
+        };
+        Some(TaskTerms {
+            owner,
+            country,
+            pride: self.pride.get(&owner.2)?,
+            doctrine: self.doctrine(task.pointer)?,
+            location,
+            fleet: self.fleet.filter(|&(fleet, _, _)| fleet == task.fleet)?,
+            support: self.support.filter(|&(owner, _)| owner == task.pointer)?.1,
+        })
+    }
+
+    /// The country the latest ship's task force named, as resolved.
+    pub fn country(&self) -> Option<usize> {
+        self.owner.map(|(_, _, country)| country)
+    }
+}
+
+/// A task force's ship modifier terms in one capture
+/// ([`OrganisationMemo::task_terms`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaskTerms {
+    owner: (usize, u32, usize),
+    country: [i64; 4],
+    pride: [u8; 8],
+    doctrine: [i64; 4],
+    location: Option<(usize, OrganisationWeather)>,
+    fleet: (usize, Option<usize>, [i64; 4]),
+    support: [i64; 4],
+}
+
+impl TaskTerms {
+    /// The fleet leader whose class rows select the commander-class term.
+    pub fn leader(&self) -> Option<usize> {
+        self.fleet.1
+    }
+
+    /// Which terms differ from `other`'s, one bit each: owner (1), country
+    /// (2), pride ship (4), doctrine (8), location (16), fleet leader (32)
+    /// and HQ support (64). Diagnostics.
+    pub fn differences(&self, other: &Self) -> u8 {
+        [
+            self.owner != other.owner,
+            self.country != other.country,
+            self.pride != other.pride,
+            self.doctrine != other.doctrine,
+            self.location != other.location,
+            self.fleet != other.fleet,
+            self.support != other.support,
+        ]
+        .into_iter()
+        .enumerate()
+        .fold(0, |bits, (bit, differs)| bits | (u8::from(differs) << bit))
+    }
+}
+
+/// Ship modifier calculation's region, province and task terms are shared by
+/// ships at the same location. The ship's own +270 factor is deliberately
+/// outside this packet. Sources are game, task, country, location and
+/// province-definition pointers; this complete observation expires with the
+/// existing per-capture memo unless a certificate keeps it
+/// ([`OrganisationMemo::hold_weather`]). `region_at` and `province_at` are the
+/// weather region and province clock records whose accumulators (`+0x58`,
+/// `+0x280`) it read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OrganisationWeather {
     sources: [usize; 5],
     country_adjustment: i64,
     region: [i64; 4],
     location_and_task: [i64; 4],
+    region_at: usize,
+    province_at: usize,
+}
+
+impl OrganisationWeather {
+    /// The task force it was read for.
+    pub fn task(&self) -> usize {
+        self.sources[1]
+    }
+
+    /// Whether `other` was read from the same game, task force, country,
+    /// location and province definition.
+    pub fn same_sources(&self, other: &Self) -> bool {
+        self.sources == other.sources
+    }
+
+    /// The weather region record (`CWeatherManager+0x40` element), whose
+    /// accumulator weather updating rebuilds.
+    pub fn region(&self) -> usize {
+        self.region_at
+    }
+
+    /// The province clock record's applied night factor (`+0x268`), which
+    /// day/night updating compares before rewriting `+0x280`.
+    pub fn night_factor(&self) -> usize {
+        self.province_at.saturating_add(0x268)
+    }
 }
 
 fn read_organisation_weather(
@@ -956,6 +1289,20 @@ fn read_organisation_weather(
     ship: usize,
     sources: [usize; 5],
     definitions: &crate::modifier_definition::DefinitionMemo,
+) -> Result<(OrganisationWeather, i64), &'static str> {
+    read_organisation_weather_with(memory, base, sources, definitions, || {
+        crate::cnaval_combatant::field(memory, ship, 0x270)
+    })
+}
+
+/// [`read_organisation_weather`] with the ship's factor read by `factor` at
+/// its place in the walk ([`read_task_terms`] has no ship and reads none).
+fn read_organisation_weather_with(
+    memory: &impl Memory,
+    base: usize,
+    sources: [usize; 5],
+    definitions: &crate::modifier_definition::DefinitionMemo,
+    factor: impl FnOnce() -> Result<i64, &'static str>,
 ) -> Result<(OrganisationWeather, i64), &'static str> {
     use crate::{cnaval_combatant::field, cpdx_array::Array};
     let [game, task, country, location, definition] = sources;
@@ -976,9 +1323,10 @@ fn read_organisation_weather(
     let region = regions
         .element(region, 0x160)
         .ok_or("ship organisation weather region missing")?;
+    let region_at = region;
     // Keep this per-ship observation before the country/region/province terms,
     // exactly where the original walk observes it; a failed packet is not kept.
-    let factor = field(memory, ship, 0x270)?;
+    let factor = factor()?;
     let country_adjustment = effective_scalar(
         memory,
         base,
@@ -994,6 +1342,7 @@ fn read_organisation_weather(
     let province = provinces
         .element(field(memory, location, crate::cprovince::ID)?, 0x330)
         .ok_or("ship organisation weather province missing")?;
+    let province_at = province;
     let mut location_and_task = values(add(province, 0x280)?)?;
     for (value, task) in location_and_task.iter_mut().zip(values(add(task, 0x668)?)?) {
         *value = value.wrapping_add(task);
@@ -1004,6 +1353,8 @@ fn read_organisation_weather(
             country_adjustment,
             region,
             location_and_task,
+            region_at,
+            province_at,
         },
         factor,
     ))
@@ -1045,6 +1396,7 @@ fn doctrine_contribution(
     task: usize,
     country: usize,
     definitions: &crate::modifier_definition::DefinitionMemo,
+    keys: &mut crate::naval_ship_modifier_inputs::DoctrineKeys,
 ) -> Result<[i64; 4], &'static str> {
     use crate::{cnaval_combatant::field, naval_ship_modifier_inputs as sources};
     let add = |p: usize, o: usize| {
@@ -1089,7 +1441,7 @@ fn doctrine_contribution(
         previous = Some(selector);
         let raw = values(add(ptr(node, 0x30)?, 0x10)?)?;
         if raw.iter().any(|&v| v != 0) {
-            let dynamic = sources::doctrine_keys::<true>(memory, base, selector as u32)?;
+            let dynamic = sources::doctrine_keys_kept::<true>(memory, base, selector as u32, keys)?;
             let numerator = scalar(add(country, 0x5b8)?, dynamic[0])?
                 .wrapping_add(100000)
                 .wrapping_mul(i64::from(field::<i32>(memory, node, 0x2c)?))
@@ -1146,37 +1498,216 @@ fn doctrine_contribution(
     Ok(total)
 }
 
-/// Derive fixed5 organisation maximum from all effective sources. Four keys
-/// share one traversal; the fourth scales critical effects. No game function
-/// is invoked, and arrays, trees and address arithmetic remain bounded.
+/// The task-force ship modifier terms ([`OrganisationMemo::task_terms`]) read
+/// without a ship: the task force's owner and its country's terms and pride
+/// ship, its doctrine contribution, its location's terrain and weather, its
+/// fleet leader and its HQ support, each read and kept in `memo` exactly as
+/// [`read_maximum_organisation_memo`] reads and keeps it for the task force's
+/// first ship (served from `memo` when kept), so a ship of `task` read later
+/// finds them there. `task` is the task force a ship named, gathered. None when
+/// a term is missing; an error fails nothing a ship's read would not.
+pub fn read_task_terms(
+    memory: &impl Memory,
+    base: usize,
+    task: &TaskForceFields,
+    memo: &mut OrganisationMemo,
+) -> Result<Option<TaskTerms>, &'static str> {
+    use crate::{
+        cnaval_combatant::field, cpdx_array::Array, naval_ship_modifier_inputs as sources,
+    };
+    let definitions = &memo.definitions;
+    let add = |p: usize, o: usize| {
+        p.checked_add(o)
+            .filter(|_| p != 0)
+            .ok_or("ship organisation pointer overflow")
+    };
+    let ptr = |p, o| field::<u64>(memory, p, o).map(|n| n as usize);
+    let values = |address| organisation_modifier_values(memory, base, address, definitions);
+    let auth = |p, rva| -> Result<(), &'static str> {
+        if ptr(p, 0)? != add(base, rva)? {
+            Err("ship organisation source identity mismatch")
+        } else {
+            Ok(())
+        }
+    };
+    let task_at = task.pointer;
+    auth(task_at, ctask_force::VTABLE_RVA)?;
+    let (game, country_id) = organisation_pair::<8, 4>(
+        memory,
+        (base, crate::cgame_state::SINGLETON_RVA),
+        (task_at, cunit::ROSTER_OWNER),
+    )?;
+    let game = u64::from_le_bytes(game) as usize;
+    let country_id = u32::from_le_bytes(country_id);
+    let country = match memo.owner {
+        Some((source, owner, country)) if source == game && owner == country_id => country,
+        _ => {
+            let country = crate::ccountry::Reader::new(memory, base, game)?
+                .resolve(country_id)?
+                .pointer;
+            memo.owner = Some((game, country_id, country));
+            country
+        }
+    };
+    if !matches!(memo.country, Some((memo_country, _)) if memo_country == country) {
+        let value = values(add(country, 0x5b8)?)?;
+        memo.country = Some((country, value));
+    }
+    if memo.pride.get(&country).is_none() {
+        memo.pride
+            .insert(country, field::<[u8; 8]>(memory, country, 0x250)?);
+    }
+    if !matches!(memo.last, Some((memo_task, _)) if memo_task == task_at) {
+        let value = doctrine_contribution(
+            memory,
+            base,
+            task_at,
+            country,
+            definitions,
+            &mut memo.doctrine_keys,
+        )?;
+        memo.last = Some((task_at, value));
+    }
+    let location = ptr(task_at, cunit::LOCATION)?;
+    if location != 0 {
+        auth(location, crate::cprovince::VTABLE_RVA)?;
+        let definition = ptr(location, 0xc8)?;
+        if memo.terrain.get(&definition).is_none() {
+            let terrain = sources::terrain_kept(memory, base, definition, &mut memo.ocean)?;
+            memo.terrain.insert(definition, terrain);
+        }
+        let sources = [game, task_at, country, location, definition];
+        if memo
+            .weather
+            .as_ref()
+            .is_none_or(|weather| weather.sources != sources)
+        {
+            let (weather, _) =
+                read_organisation_weather_with(memory, base, sources, definitions, || Ok(0))?;
+            memo.weather = Some(weather);
+        }
+    }
+    let fleet = ptr(task_at, ctask_force::FLEET)?;
+    if !matches!(memo.fleet, Some((source, _, _)) if source == fleet) {
+        let leader = if fleet == 0 {
+            None
+        } else {
+            auth(fleet, crate::cfleet::VTABLE_RVA)?;
+            crate::creference_registry::resolve(memory, base, field(memory, fleet, 0xb0)?)?
+        };
+        let value = if let Some(leader) = leader {
+            auth(leader, crate::cnavy_leader::VTABLE_RVA)?;
+            values(add(leader, 0x418)?)?
+        } else {
+            [0; 4]
+        };
+        memo.fleet = Some((fleet, leader, value));
+    }
+    if !matches!(memo.support, Some((memo_task, _)) if memo_task == task_at) {
+        let influences = Array::read(memory, add(task_at, 0x728)?, 8)
+            .ok_or("ship organisation array invalid or bound exceeded")?;
+        let mut support = [0i64; 4];
+        for index in 0..influences.count {
+            let wrapper = ptr(
+                influences
+                    .element(index, 8)
+                    .ok_or("ship support address overflow")?,
+                0,
+            )?;
+            let influence = ptr(wrapper, 0x40)?;
+            if influence == 0 {
+                continue;
+            }
+            let reference = field(memory, influence, 8)?;
+            let terms = match memo.influences.get(&reference) {
+                Some(terms) => terms,
+                None => {
+                    let terms = influence_terms(memory, base, reference, &values)?;
+                    memo.influences.insert(reference, terms);
+                    terms
+                }
+            };
+            let Some(v) = terms else { continue };
+            for n in 0..4 {
+                support[n] = support[n].max(v[n]);
+            }
+        }
+        memo.support = Some((task_at, support));
+    }
+    Ok(memo.task_terms(task))
+}
+
+/// An HQ influence's four navy-skill terms (ship modifier support), `None` for
+/// one it skips: an unresolved character or leader, or a leader that is not a
+/// navy commander.
+fn influence_terms(
+    memory: &impl Memory,
+    base: usize,
+    reference: u64,
+    values: &impl Fn(usize) -> Result<[i64; 4], &'static str>,
+) -> Result<Option<[i64; 4]>, &'static str> {
+    use crate::cnaval_combatant::field;
+    let add = |p: usize, o: usize| {
+        p.checked_add(o)
+            .filter(|_| p != 0)
+            .ok_or("ship organisation pointer overflow")
+    };
+    let ptr = |p, o| field::<u64>(memory, p, o).map(|n| n as usize);
+    let auth = |p, rva| -> Result<(), &'static str> {
+        if ptr(p, 0)? != add(base, rva)? {
+            Err("ship organisation source identity mismatch")
+        } else {
+            Ok(())
+        }
+    };
+    let Some(character) = crate::creference_registry::resolve(memory, base, reference)? else {
+        return Ok(None);
+    };
+    auth(character, crate::ccharacter::VTABLE_RVA)?;
+    let direct = ptr(character, crate::ccharacter::UNIT_LEADER)?;
+    let leader = if direct != 0 {
+        Some(direct)
+    } else {
+        crate::creference_registry::resolve(memory, base, field(memory, character, 0xc8)?)?
+    };
+    let Some(leader) = leader else {
+        return Ok(None);
+    };
+    if field::<i32>(memory, leader, crate::cunit_leader::CATEGORY)? != 2 {
+        return Ok(None);
+    }
+    auth(leader, crate::cnavy_leader::VTABLE_RVA)?;
+    let mut v = [0i64; 4];
+    for offset in [0xf70, 0xf80, 0xfa0, 0xf90] {
+        let terms = values(add(ptr(leader, offset)?, 0xe0)?)?;
+        for n in 0..4 {
+            v[n] = v[n].wrapping_add(terms[n]);
+        }
+    }
+    Ok(Some(v))
+}
+
+/// Derive the native fixed5 organisation maximum from all ship modifier
+/// sources. Four keys share one source traversal; the fourth is critical-effect
+/// scaling. No native function is invoked. Arrays/trees and pointer arithmetic
+/// are bounded.
 pub fn read_maximum_organisation_memo(
     memory: &impl Memory,
     base: usize,
     ship: usize,
     memo: &mut OrganisationMemo,
 ) -> Result<i64, &'static str> {
-    read_organisation_observation(memory, base, ship, memo).map(|observed| observed.maximum)
+    read_organisation_observation(memory, base, ship, memo)
 }
 
-/// Internal completed observation. The optional strike wrapper consumes it in
-/// this same invocation; no source pointer, leader or critical scale is kept
-/// in the hourly memo or projected into replay.
-struct OrganisationObservation {
-    maximum: i64,
-    handle: u64,
-    task: usize,
-    fleet: usize,
-    leader: Option<usize>,
-    criticals: crate::cpdx_array::Array,
-    critical_scale: i64,
-}
-
+/// The completed maximum; no source pointer, leader or critical scale is
+/// kept in the hourly memo or projected into replay.
 fn read_organisation_observation(
     memory: &impl Memory,
     base: usize,
     ship: usize,
     memo: &mut OrganisationMemo,
-) -> Result<OrganisationObservation, &'static str> {
+) -> Result<i64, &'static str> {
     use crate::{
         cnaval_combatant::field, cpdx_array::Array, naval_ship_modifier_inputs as sources,
     };
@@ -1214,9 +1745,18 @@ fn read_organisation_observation(
     )?;
     let game = u64::from_le_bytes(game) as usize;
     let country_id = u32::from_le_bytes(country_id);
-    let country = crate::ccountry::Reader::new(memory, base, game)?
-        .resolve(country_id)?
-        .pointer;
+    // Every ship of a task force names the same roster owner; resolving it
+    // again within the stopped capture would authenticate the same object.
+    let country = match memo.owner {
+        Some((source, owner, country)) if source == game && owner == country_id => country,
+        _ => {
+            let country = crate::ccountry::Reader::new(memory, base, game)?
+                .resolve(country_id)?
+                .pointer;
+            memo.owner = Some((game, country_id, country));
+            country
+        }
+    };
     let mut total = match memo.country {
         Some((memo_country, value)) if memo_country == country => value,
         _ => {
@@ -1225,7 +1765,14 @@ fn read_organisation_observation(
             value
         }
     };
-    let (handle, pride) = organisation_pair::<8, 8>(memory, (ship, HANDLE), (country, 0x250))?;
+    let (handle, pride) = match memo.pride.get(&country) {
+        Some(pride) => (field::<[u8; 8]>(memory, ship, HANDLE)?, pride),
+        None => {
+            let pair = organisation_pair::<8, 8>(memory, (ship, HANDLE), (country, 0x250))?;
+            memo.pride.insert(country, pair.1);
+            pair
+        }
+    };
     if pride == handle {
         let root = ptr(base, 0x0331_7cc8)?;
         accumulate(&mut total, values(add(ptr(root, 0xb0)?, 0x10)?)?);
@@ -1238,7 +1785,14 @@ fn read_organisation_observation(
     let contribution = match memo.last {
         Some((memo_task, value)) if memo_task == task => value,
         _ => {
-            let value = doctrine_contribution(memory, base, task, country, definitions)?;
+            let value = doctrine_contribution(
+                memory,
+                base,
+                task,
+                country,
+                definitions,
+                &mut memo.doctrine_keys,
+            )?;
             memo.last = Some((task, value));
             value
         }
@@ -1248,24 +1802,25 @@ fn read_organisation_observation(
     if location != 0 {
         auth(location, crate::cprovince::VTABLE_RVA)?;
         let definition = ptr(location, 0xc8)?;
-        // Terrain comes from the province definition and class contribution from
-        // the ship. Both sources are shared until the callback returns, including
-        // the complete ocean fallback scan.
-        let terrain = match memo.terrain {
-            Some((source, terrain)) if source == definition => terrain,
-            _ => {
-                let terrain = sources::terrain(memory, base, definition)?;
-                memo.terrain = Some((definition, terrain));
+        // Ship modifier calculation selects terrain from the province
+        // definition; terrain-class adjustment adds only the ship's class. Both
+        // sources are shared until the stopped callback returns, including the
+        // complete ocean fallback scan.
+        let terrain = match memo.terrain.get(&definition) {
+            Some(terrain) => terrain,
+            None => {
+                let terrain = sources::terrain_kept(memory, base, definition, &mut memo.ocean)?;
+                memo.terrain.insert(definition, terrain);
                 terrain
             }
         };
         let class = field(memory, ship, CLASS_DATABASE_ID)?;
-        let contribution = match memo.terrain_class {
-            Some((source, selector, value)) if source == terrain && selector == class => value,
-            _ => {
+        let contribution = match memo.terrain_class.get(&(terrain, class)) {
+            Some(value) => value,
+            None => {
                 let (modifier, _) = sources::terrain_class(memory, terrain, class)?;
                 let value = values(add(modifier, 0x10)?)?;
-                memo.terrain_class = Some((terrain, class, value));
+                memo.terrain_class.insert((terrain, class), value);
                 value
             }
         };
@@ -1320,12 +1875,12 @@ fn read_organisation_observation(
     if let Some(leader) = leader {
         accumulate(&mut total, contribution);
         let subunit = field(memory, ship, 0x60c)?;
-        let contribution = match memo.leader_class {
-            Some((source, selector, value)) if source == leader && selector == subunit => value,
-            _ => {
+        let contribution = match memo.leader_class.get(&(leader, subunit)) {
+            Some(value) => value,
+            None => {
                 let class = sources::selected_class(memory, leader, subunit, true)?;
                 let value = values(add(class, 0x10)?)?;
-                memo.leader_class = Some((leader, subunit, value));
+                memo.leader_class.insert((leader, subunit), value);
                 value
             }
         };
@@ -1363,34 +1918,16 @@ fn read_organisation_observation(
                 if influence == 0 {
                     continue;
                 }
-                let Some(character) = crate::creference_registry::resolve(
-                    memory,
-                    base,
-                    field(memory, influence, 8)?,
-                )?
-                else {
-                    continue;
+                let reference = field(memory, influence, 8)?;
+                let terms = match memo.influences.get(&reference) {
+                    Some(terms) => terms,
+                    None => {
+                        let terms = influence_terms(memory, base, reference, &values)?;
+                        memo.influences.insert(reference, terms);
+                        terms
+                    }
                 };
-                auth(character, crate::ccharacter::VTABLE_RVA)?;
-                let direct = ptr(character, crate::ccharacter::UNIT_LEADER)?;
-                let leader = if direct != 0 {
-                    Some(direct)
-                } else {
-                    crate::creference_registry::resolve(
-                        memory,
-                        base,
-                        field(memory, character, 0xc8)?,
-                    )?
-                };
-                let Some(leader) = leader else { continue };
-                if field::<i32>(memory, leader, crate::cunit_leader::CATEGORY)? != 2 {
-                    continue;
-                }
-                auth(leader, crate::cnavy_leader::VTABLE_RVA)?;
-                let mut v = [0i64; 4];
-                for offset in [0xf70, 0xf80, 0xfa0, 0xf90] {
-                    accumulate(&mut v, values(add(ptr(leader, offset)?, 0xe0)?)?);
-                }
+                let Some(v) = terms else { continue };
                 for n in 0..4 {
                     support[n] = support[n].max(v[n]);
                 }
@@ -1422,19 +1959,10 @@ fn read_organisation_observation(
     for n in 0..3 {
         total[n] = total[n].wrapping_add(support[n]);
     }
-    let maximum = organisation_maximum(
+    Ok(organisation_maximum(
         field(memory, ship, BASE_ORGANISATION)?,
         [total[0], total[1], total[2]],
-    );
-    Ok(OrganisationObservation {
-        maximum,
-        handle: u64::from_le_bytes(handle),
-        task,
-        fleet,
-        leader,
-        criticals,
-        critical_scale,
-    })
+    ))
 }
 
 /// Capture the four organisation-modifier operands with one full direct

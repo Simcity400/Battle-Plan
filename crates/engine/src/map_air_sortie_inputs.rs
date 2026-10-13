@@ -69,8 +69,9 @@ fn vtable(base: usize, rva: usize) -> Result<u64, &'static str> {
 
 /// Missions read per `copy_records` batch.
 pub const MISSION_BATCH: usize = 64;
-const MISSION_ROW: usize = 56;
-const MISSION_FIELDS: [RecordField; 6] = [
+const MISSION_ROW: usize = 64;
+/// The six operand fields every mission must read.
+const OPERAND_FIELDS: [RecordField; 6] = [
     RecordField {
         source_offset: 0,
         destination_offset: 0,
@@ -102,30 +103,60 @@ const MISSION_FIELDS: [RecordField; 6] = [
         len: 4,
     },
 ];
-const MISSION_LAYOUT: RecordLayout<'static> =
+/// The operand fields, then the CAS ratio (`CAS_RATIO`), which a mission
+/// without it keeps as unknown rather than refusing the batch.
+const MISSION_FIELDS: [RecordField; 7] = {
+    let mut fields = [RecordField {
+        source_offset: CAS_RATIO,
+        destination_offset: 56,
+        len: 8,
+    }; 7];
+    let mut index = 0;
+    while index < OPERAND_FIELDS.len() {
+        fields[index] = OPERAND_FIELDS[index];
+        index += 1;
+    }
+    fields
+};
+/// Every field, the CAS ratio included: one copy for the batch.
+const GATHERED_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&MISSION_FIELDS, MISSION_ROW).expect("valid mission layout");
+/// The operand fields only, each CAS ratio then read alone.
+const MISSION_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&OPERAND_FIELDS, MISSION_ROW).expect("valid mission layout");
 
 fn word<const N: usize>(row: &[u8], at: usize) -> [u8; N] {
     row[at..at + N].try_into().expect("fixed mission field")
 }
 
-/// Up to [`MISSION_BATCH`] registered missions' operands in one gathered copy;
-/// the reached IDs and pool definitions are separate reads.
+/// Up to [`MISSION_BATCH`] registered missions' operands and CAS ratios in
+/// one gathered copy; the reached IDs and pool definitions are separate
+/// reads. When that copy stops, the operands are copied without the ratios,
+/// which must all read, and each ratio is read alone, an unreadable one
+/// unknown: what the batch and the ratios' own reads give. That fallback
+/// is counted ([`crate::batch_fallback`]); true when the one copy read
+/// them all.
 pub fn read_missions(
     memory: &impl Memory,
     base: usize,
     missions: &[usize],
     output: &mut [Mission],
-) -> Result<(), &'static str> {
+) -> Result<bool, &'static str> {
     if missions.len() > MISSION_BATCH || output.len() != missions.len() {
         return Err("air mission batch size invalid");
     }
     let mut rows = [0_u8; MISSION_BATCH * MISSION_ROW];
     let rows = &mut rows[..missions.len() * MISSION_ROW];
-    if memory.copy_records(RecordSources::Pointers(missions), &MISSION_LAYOUT, rows)
-        != missions.len() * MISSION_FIELDS.len()
-    {
-        return Err("air mission operands unreadable");
+    let gathered = memory.copy_records(RecordSources::Pointers(missions), &GATHERED_LAYOUT, rows)
+        == missions.len() * MISSION_FIELDS.len();
+    if !gathered {
+        // Counted as it starts, whatever the reads after it return.
+        crate::batch_fallback::record(crate::batch_fallback::Batch::MissionInputs);
+        if memory.copy_records(RecordSources::Pointers(missions), &MISSION_LAYOUT, rows)
+            != missions.len() * MISSION_LAYOUT.field_count()
+        {
+            return Err("air mission operands unreadable");
+        }
     }
     let identity = vtable(base, air_mission::VTABLE_RVA)?;
     for ((mission, row), &pointer) in output
@@ -137,9 +168,13 @@ pub fn read_missions(
             return Err("air mission identity mismatch");
         }
         *mission = Mission {
-            cas_ratio_raw: pointer
-                .checked_add(CAS_RATIO)
-                .and_then(|at| read(memory, at)),
+            cas_ratio_raw: if gathered {
+                Some(i64::from_le_bytes(word(row, 56)))
+            } else {
+                pointer
+                    .checked_add(CAS_RATIO)
+                    .and_then(|at| read(memory, at))
+            },
             coverage_raw: i64::from_le_bytes(word(row, 32)),
             reassignment_penalty_raw: i64::from_le_bytes(word(row, 40)),
             last_target_province: i32::from_le_bytes(word(row, 48)),
@@ -149,7 +184,91 @@ pub fn read_missions(
                 .map_err(|_| "air mission region pointer overflow")?,
         };
     }
-    Ok(())
+    Ok(gathered)
+}
+
+/// Pools whose definitions [`definition_air_flags_gathered`] reads at once.
+pub const DEFINITION_BATCH: usize = 64;
+const POOL_DEFINITION: [RecordField; 1] = [RecordField {
+    source_offset: crate::cair_wing_pool::DEFINITION,
+    destination_offset: 0,
+    len: 8,
+}];
+const POOL_DEFINITION_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&POOL_DEFINITION, 8).expect("valid pool definition layout");
+const DEFINITION_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: csub_unit_definition::AIR_FLAGS,
+        destination_offset: 8,
+        len: 8,
+    },
+];
+const DEFINITION_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&DEFINITION_FIELDS, 16).expect("valid definition layout");
+
+/// [`definition_air_flags`] of up to [`DEFINITION_BATCH`] `pools`: their
+/// definition pointers in one copy, then each definition's identity and
+/// flags in one (the flags read ahead of the identity check). Returns how
+/// many leading pools it read, their flags in `output`; it stops at the
+/// first pool a copy did not complete for or whose identity refuses,
+/// counting that fallback ([`crate::batch_fallback`]), and the caller
+/// reads that pool and the rest with [`definition_air_flags`].
+pub fn definition_air_flags_gathered(
+    memory: &impl Memory,
+    base: usize,
+    pools: &[usize],
+    output: &mut [u64],
+) -> usize {
+    let count = pools.len().min(output.len()).min(DEFINITION_BATCH);
+    let read = gather_definitions(memory, base, &pools[..count], output);
+    if read < count {
+        crate::batch_fallback::record(crate::batch_fallback::Batch::PoolDefinitions);
+    }
+    read
+}
+
+fn gather_definitions(
+    memory: &impl Memory,
+    base: usize,
+    pools: &[usize],
+    output: &mut [u64],
+) -> usize {
+    let count = pools.len();
+    let mut pointers = [0_u8; DEFINITION_BATCH * 8];
+    let read = memory.copy_records(
+        RecordSources::Pointers(&pools[..count]),
+        &POOL_DEFINITION_LAYOUT,
+        &mut pointers[..count * 8],
+    );
+    let mut definitions = [0_usize; DEFINITION_BATCH];
+    for (definition, pointer) in definitions[..read].iter_mut().zip(pointers.chunks_exact(8)) {
+        *definition = u64::from_le_bytes(pointer.try_into().unwrap()) as usize;
+    }
+    let mut records = [0_u8; DEFINITION_BATCH * 16];
+    let read = memory.copy_records(
+        RecordSources::Pointers(&definitions[..read]),
+        &DEFINITION_LAYOUT,
+        &mut records[..read * 16],
+    ) / DEFINITION_FIELDS.len();
+    let (Ok(real), Ok(null)) = (
+        vtable(base, csub_unit_definition::VTABLE_RVA),
+        vtable(base, csub_unit_definition::NULL_VTABLE_RVA),
+    ) else {
+        return 0;
+    };
+    for (index, record) in records[..read * 16].chunks_exact(16).enumerate() {
+        output[index] = match u64::from_le_bytes(record[..8].try_into().unwrap()) {
+            identity if identity == real => u64::from_le_bytes(record[8..].try_into().unwrap()),
+            identity if identity == null => 0,
+            _ => return index,
+        };
+    }
+    read
 }
 
 /// A wing pool's definition AIR_FLAGS; zero for the null sub-unit singleton.
@@ -752,5 +871,441 @@ mod tests {
             bytes: &bytes,
         };
         assert!(definition_air_flags(&memory, 0, POOL).is_err());
+    }
+
+    /// The operands and CAS ratios of a batch take one gathered copy.
+    #[test]
+    fn mission_operands_and_cas_ratios_take_one_copy() {
+        let mut bytes = mission_fixture();
+        put(&mut bytes, MISSION + CAS_RATIO, &(-3_i64).to_le_bytes());
+        let memory = crate::memory::CountingMemory::new(&bytes);
+        let mut rows = [Mission::default(); 2];
+        assert_eq!(
+            read_missions(&memory, 0, &[MISSION, MISSION], &mut rows),
+            Ok(true)
+        );
+        assert_eq!(memory.calls.get(), 1);
+        assert_eq!(rows.map(|row| row.cas_ratio_raw), [Some(-3); 2]);
+    }
+
+    /// `pools` pools over a quarter as many definitions, the null singleton
+    /// every fifth; definition `d` holds flags `d << 8`.
+    fn definition_world(pools: usize) -> (Vec<u8>, Vec<usize>) {
+        const POOLS: usize = 0x1000;
+        /// Room for a definition through its flags.
+        const DEFINITION: usize = (csub_unit_definition::AIR_FLAGS + 8).next_multiple_of(0x40);
+        let definitions = pools / 4 + 1;
+        let first = POOLS + pools * 0x40;
+        let mut bytes = vec![0; first + definitions * DEFINITION];
+        for definition in 0..definitions {
+            let at = first + definition * DEFINITION;
+            let vtable = if definition % 5 == 0 {
+                csub_unit_definition::NULL_VTABLE_RVA
+            } else {
+                csub_unit_definition::VTABLE_RVA
+            };
+            put(&mut bytes, at, &(vtable as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                at + csub_unit_definition::AIR_FLAGS,
+                &((definition as u64) << 8).to_le_bytes(),
+            );
+        }
+        let pools = (0..pools)
+            .map(|pool| {
+                let at = POOLS + pool * 0x40;
+                let definition = first + (pool % definitions) * DEFINITION;
+                put(
+                    &mut bytes,
+                    at + crate::cair_wing_pool::DEFINITION,
+                    &(definition as u64).to_le_bytes(),
+                );
+                at
+            })
+            .collect();
+        (bytes, pools)
+    }
+
+    /// The flags read before the first refusal, and that refusal.
+    type Flags = (Vec<u64>, Result<(), &'static str>);
+
+    fn flags_serial(memory: &impl Memory, pools: &[usize]) -> Flags {
+        let mut flags = Vec::new();
+        for &pool in pools {
+            match definition_air_flags(memory, 0, pool) {
+                Ok(value) => flags.push(value),
+                Err(reason) => return (flags, Err(reason)),
+            }
+        }
+        (flags, Ok(()))
+    }
+
+    /// The gathered reads with their per-pool fallbacks, as the collector
+    /// makes them; with the fallbacks, each also counted for status.
+    fn flags_gathered(memory: &impl Memory, pools: &[usize]) -> (Flags, usize) {
+        use crate::batch_fallback::{Batch, count};
+        let counted = count(Batch::PoolDefinitions);
+        let mut flags = Vec::new();
+        let mut fallbacks = 0;
+        let mut output = [0; DEFINITION_BATCH];
+        let result = (|| {
+            for chunk in pools.chunks(DEFINITION_BATCH) {
+                let read = definition_air_flags_gathered(memory, 0, chunk, &mut output);
+                fallbacks += usize::from(read < chunk.len());
+                flags.extend_from_slice(&output[..read]);
+                for &pool in &chunk[read..] {
+                    flags.push(definition_air_flags(memory, 0, pool)?);
+                }
+            }
+            Ok(())
+        })();
+        assert_eq!(count(Batch::PoolDefinitions) - counted, fallbacks as u64);
+        ((flags, result), fallbacks)
+    }
+
+    /// Healthy, 5,000 pools' gathered flags are the per-pool reads', in two
+    /// copies a 64 pools rather than three reads a pool.
+    #[test]
+    fn gathered_definitions_equal_the_per_pool_reads_at_five_thousand_pools() {
+        let (bytes, pools) = definition_world(5_000);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let expected = flags_serial(&memory, &pools);
+        assert_eq!((expected.0.len(), expected.1), (pools.len(), Ok(())));
+        assert!(expected.0.contains(&0) && expected.0.iter().any(|&flags| flags != 0));
+        assert_eq!(flags_gathered(&memory, &pools), (expected, 0));
+        let counted = |gather: bool| {
+            let memory = crate::memory::CountingMemory::new(&bytes);
+            let read = if gather {
+                flags_gathered(&memory, &pools).0
+            } else {
+                flags_serial(&memory, &pools)
+            };
+            assert_eq!(read.1, Ok(()));
+            memory.calls.get()
+        };
+        let (serial, gathered) = (counted(false), counted(true));
+        assert!(serial >= gathered + 2 * pools.len(), "{serial} {gathered}");
+    }
+
+    /// A persistent fault gives the per-pool result, one that clears after
+    /// its first touch the healthy or the per-pool reads' own; a null
+    /// definition's flags, read ahead, refuse nothing.
+    #[test]
+    fn gathered_definition_faults_refuse_no_more_than_the_per_pool_reads() {
+        struct Faulted<'a> {
+            bytes: &'a [u8],
+            fault: usize,
+            once: bool,
+            met: std::cell::Cell<bool>,
+        }
+        impl Memory for Faulted<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                let touches = address <= self.fault && self.fault < address + destination.len();
+                if touches && !(self.once && self.met.replace(true)) {
+                    return false;
+                }
+                SliceMemory {
+                    base: 0,
+                    bytes: self.bytes,
+                }
+                .copy(address, destination)
+            }
+        }
+        let (bytes, pools) = definition_world(150);
+        let healthy = flags_serial(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            &pools,
+        );
+        let definition = |pool: usize| {
+            let at = pools[pool] + crate::cair_wing_pool::DEFINITION;
+            u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize
+        };
+        let faulted = |fault, once| Faulted {
+            bytes: &bytes,
+            fault,
+            once,
+            met: std::cell::Cell::new(false),
+        };
+        for pool in [0_usize, 1, 63, 64, 70, 149] {
+            for fault in [
+                pools[pool] + crate::cair_wing_pool::DEFINITION,
+                definition(pool),
+                definition(pool) + csub_unit_definition::AIR_FLAGS,
+            ] {
+                let reference = flags_serial(&faulted(fault, false), &pools);
+                let null = pool % 38 % 5 == 0;
+                let flags = fault == definition(pool) + csub_unit_definition::AIR_FLAGS;
+                assert_eq!(reference == healthy, null && flags, "{fault:x}");
+                assert_eq!(
+                    flags_gathered(&faulted(fault, false), &pools).0,
+                    reference,
+                    "{fault:x}"
+                );
+                let once = flags_gathered(&faulted(fault, true), &pools).0;
+                let reference = flags_serial(&faulted(fault, true), &pools);
+                assert!(once == healthy || once == reference, "{fault:x}: {once:?}");
+            }
+        }
+    }
+
+    /// `read_missions` as it stood before the ratios joined the batch
+    /// (eafc953b4f): the six operand fields in one copy, each ratio alone.
+    fn read_missions_parent(
+        memory: &impl Memory,
+        base: usize,
+        missions: &[usize],
+        output: &mut [Mission],
+    ) -> Result<(), &'static str> {
+        const ROW: usize = 56;
+        const LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&OPERAND_FIELDS, ROW).expect("valid mission layout");
+        if missions.len() > MISSION_BATCH || output.len() != missions.len() {
+            return Err("air mission batch size invalid");
+        }
+        let mut rows = [0_u8; MISSION_BATCH * ROW];
+        let rows = &mut rows[..missions.len() * ROW];
+        if memory.copy_records(RecordSources::Pointers(missions), &LAYOUT, rows)
+            != missions.len() * OPERAND_FIELDS.len()
+        {
+            return Err("air mission operands unreadable");
+        }
+        let identity = vtable(base, air_mission::VTABLE_RVA)?;
+        for ((mission, row), &pointer) in
+            output.iter_mut().zip(rows.chunks_exact(ROW)).zip(missions)
+        {
+            if u64::from_le_bytes(word(row, 0)) != identity {
+                return Err("air mission identity mismatch");
+            }
+            *mission = Mission {
+                cas_ratio_raw: pointer
+                    .checked_add(CAS_RATIO)
+                    .and_then(|at| read(memory, at)),
+                coverage_raw: i64::from_le_bytes(word(row, 32)),
+                reassignment_penalty_raw: i64::from_le_bytes(word(row, 40)),
+                last_target_province: i32::from_le_bytes(word(row, 48)),
+                reached: Array::from_header(word(row, 16), REACHED_ENTRY)
+                    .ok_or("air mission reached vector invalid")?,
+                region_pointer: usize::try_from(u64::from_le_bytes(word(row, 8)))
+                    .map_err(|_| "air mission region pointer overflow")?,
+            };
+        }
+        Ok(())
+    }
+
+    const MISSIONS: usize = 0x10_000;
+    const MISSION_SIZE: usize = 0x100;
+
+    /// 70 missions, two batches, with distinct operands and ratios.
+    fn missions_world() -> (Vec<u8>, Vec<usize>) {
+        let mut bytes = vec![0; MISSIONS + 70 * MISSION_SIZE + 0x1000];
+        let reached = MISSIONS + 70 * MISSION_SIZE;
+        let missions = (0..70)
+            .map(|index| {
+                let at = MISSIONS + index * MISSION_SIZE;
+                put(
+                    &mut bytes,
+                    at,
+                    &(air_mission::VTABLE_RVA as u64).to_le_bytes(),
+                );
+                put(
+                    &mut bytes,
+                    at + air_mission::REGION,
+                    &(0x9000 + index as u64).to_le_bytes(),
+                );
+                put(
+                    &mut bytes,
+                    at + air_mission::REACHED_PROVINCES_DATA,
+                    &(reached as u64).to_le_bytes(),
+                );
+                put(
+                    &mut bytes,
+                    at + air_mission::REACHED_PROVINCES_CAPACITY,
+                    &3_u32.to_le_bytes(),
+                );
+                put(
+                    &mut bytes,
+                    at + air_mission::REACHED_PROVINCES_COUNT,
+                    &(index as u32 % 3).to_le_bytes(),
+                );
+                put(
+                    &mut bytes,
+                    at + REGION_COVERAGE,
+                    &(index as i64).to_le_bytes(),
+                );
+                put(
+                    &mut bytes,
+                    at + REASSIGNMENT_PENALTY,
+                    &(-(index as i64)).to_le_bytes(),
+                );
+                put(
+                    &mut bytes,
+                    at + air_mission::LAST_TARGET_PROVINCE,
+                    &(index as i32 + 1).to_le_bytes(),
+                );
+                put(
+                    &mut bytes,
+                    at + CAS_RATIO,
+                    &(index as i64 * 3).to_le_bytes(),
+                );
+                at
+            })
+            .collect();
+        (bytes, missions)
+    }
+
+    /// Each batch's result and every output row, partly written ones too.
+    type Batches = Vec<(Result<(), &'static str>, Vec<Mission>)>;
+
+    fn batches(memory: &impl Memory, missions: &[usize], parent: bool) -> (Batches, u64) {
+        use crate::batch_fallback::{Batch, count};
+        let counted = count(Batch::MissionInputs);
+        let batches = missions
+            .chunks(MISSION_BATCH)
+            .map(|chunk| {
+                let mut output = vec![Mission::default(); chunk.len()];
+                let result = if parent {
+                    read_missions_parent(memory, 0, chunk, &mut output)
+                } else {
+                    read_missions(memory, 0, chunk, &mut output).map(drop)
+                };
+                (result, output)
+            })
+            .collect();
+        (batches, count(Batch::MissionInputs) - counted)
+    }
+
+    /// Against the parent reader: a persistent fault gives its result, each
+    /// output row included, and counts one fallback per batch it stops even
+    /// when the retry refuses; a fault that clears after its first touch
+    /// gives the healthy rows or the parent's; a ratio faulted once
+    /// withholds nothing; malformed and foreign missions at the batch
+    /// boundary refuse as the parent does.
+    #[test]
+    fn mission_batches_refuse_no_more_than_the_parent_reader() {
+        struct Faulted<'a> {
+            bytes: &'a [u8],
+            faults: Vec<usize>,
+            once: bool,
+            met: std::cell::RefCell<Vec<bool>>,
+        }
+        impl Memory for Faulted<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                let mut met = self.met.borrow_mut();
+                for (&fault, met) in self.faults.iter().zip(met.iter_mut()) {
+                    if address <= fault && fault < address + destination.len() && !*met {
+                        *met = self.once;
+                        return false;
+                    }
+                }
+                SliceMemory {
+                    base: 0,
+                    bytes: self.bytes,
+                }
+                .copy(address, destination)
+            }
+        }
+        let (mut bytes, missions) = missions_world();
+        let healthy = batches(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            &missions,
+            true,
+        )
+        .0;
+        assert!(healthy.iter().all(|(result, _)| result.is_ok()));
+        assert_eq!(
+            batches(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                &missions,
+                false
+            ),
+            (healthy.clone(), 0)
+        );
+        let mission = |index: usize| missions[index];
+        let mut cases: Vec<Vec<usize>> = Vec::new();
+        for index in [0, 63, 64, 69] {
+            for offset in [
+                0,
+                air_mission::REGION,
+                air_mission::REACHED_PROVINCES_DATA,
+                air_mission::REACHED_PROVINCES_COUNT,
+                REGION_COVERAGE,
+                REASSIGNMENT_PENALTY,
+                air_mission::LAST_TARGET_PROVINCE,
+                CAS_RATIO,
+            ] {
+                cases.push(vec![mission(index) + offset]);
+            }
+        }
+        // Several failures: two ratios and a later required operand.
+        cases.push(vec![
+            mission(3) + CAS_RATIO,
+            mission(40) + CAS_RATIO,
+            mission(50) + REGION_COVERAGE,
+        ]);
+        cases.push(vec![mission(3) + CAS_RATIO, mission(65) + CAS_RATIO]);
+        for faults in &cases {
+            let run = |parent, once| {
+                let memory = Faulted {
+                    bytes: &bytes,
+                    faults: faults.clone(),
+                    once,
+                    met: std::cell::RefCell::new(vec![false; faults.len()]),
+                };
+                batches(&memory, &missions, parent)
+            };
+            let (reference, _) = run(true, false);
+            assert_ne!(reference, healthy, "{faults:x?}");
+            let stopped = faults
+                .iter()
+                .map(|&fault| (fault - MISSIONS) / MISSION_SIZE / MISSION_BATCH)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len() as u64;
+            assert_eq!(run(false, false), (reference, stopped), "{faults:x?}");
+            let (once, _) = run(false, true);
+            assert!(
+                once == healthy || once == run(true, true).0,
+                "{faults:x?}: {once:?}"
+            );
+            if faults
+                .iter()
+                .all(|fault| (fault - MISSIONS) % MISSION_SIZE == CAS_RATIO)
+            {
+                assert_eq!(once, healthy, "a ratio faulted once withholds nothing");
+            }
+        }
+        // A malformed reached header and a foreign mission at the boundary.
+        for (index, offset, value) in [
+            (63, air_mission::REACHED_PROVINCES_COUNT, 9_u64),
+            (64, 0, 0),
+            (63, 0, 7),
+        ] {
+            let at = mission(index) + offset;
+            let saved = bytes[at..at + 8].to_vec();
+            put(
+                &mut bytes,
+                at,
+                &value.to_le_bytes()[..if offset == 0 { 8 } else { 4 }],
+            );
+            let memory = SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            };
+            let reference = batches(&memory, &missions, true).0;
+            assert_ne!(reference, healthy);
+            assert_eq!(batches(&memory, &missions, false), (reference, 0));
+            put(&mut bytes, at, &saved);
+        }
     }
 }

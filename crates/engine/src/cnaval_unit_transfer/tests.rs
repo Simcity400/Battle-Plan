@@ -13,12 +13,25 @@ fn allocation_capacity_overflow_preserves_movement_memo() {
     assert_eq!(memo.allocated_bytes(), before);
 }
 
+/// One owner/region query outside a bound domain: the pass selection and
+/// shared-observation query `get_in_domain` makes after its region key.
+fn query(
+    memo: &mut MovementSpeeds,
+    memory: &impl Memory,
+    owner: u32,
+    region: usize,
+) -> Result<i64, &'static str> {
+    memo.select_pass(0, 0x1000);
+    memo.position = None;
+    memo.query(memory, 0, 0x1000, owner, region)
+}
+
 #[test]
 fn vacant_legacy_movement_memo_keeps_healthy_uncached_speed() {
     let source = fixture();
     let mut memo = MovementSpeeds::vacant();
     assert_eq!(
-        memo.get(&source, 0, 0x1000, 1, 0xd000),
+        query(&mut memo, &source, 1, 0xd000),
         movement_speed(&source, 0, 0x1000, 1, 0xd000)
     );
 }
@@ -273,7 +286,7 @@ fn hourly_transport_inputs_share_only_complete_current_observations() {
     let expected = movement_speed(&reference, 0, 0x1000, 1, 0xd000).unwrap();
     let first = observed(&source, None);
     assert_eq!(
-        MovementSpeeds::new(8).get(&first, 0, 0x1000, 1, 0xd000),
+        query(&mut MovementSpeeds::new(8), &first, 1, 0xd000),
         Ok(expected)
     );
     // The owner and enemy share this manager's accepted controls. Only their
@@ -311,7 +324,7 @@ fn hourly_transport_inputs_share_only_complete_current_observations() {
         let expected = movement_speed(&direct, 0, 0x1000, 1, 0xd000);
         assert!(expected.is_err());
         assert_eq!(
-            memo.get(&shared, 0, 0x1000, 1, 0xd000),
+            query(&mut memo, &shared, 1, 0xd000),
             expected,
             "fault {fault}"
         );
@@ -337,14 +350,12 @@ fn hourly_transport_inputs_share_only_complete_current_observations() {
     source.word(0x14000, 100_000);
     let mut memo = MovementSpeeds::new(8);
     let shared = observed(&source, None);
-    assert_eq!(memo.get(&shared, 0, 0x1000, 1, 0xd000), Ok(expected));
+    assert_eq!(query(&mut memo, &shared, 1, 0xd000), Ok(expected));
     shared.reads.borrow_mut().clear();
-    assert_eq!(memo.get(&shared, 0, 0x1000, 1, 0xd000), Ok(expected));
-    assert!(shared.reads.borrow().is_empty());
     let direct = observed(&source, None);
     let expected_second = movement_speed(&direct, 0, 0x1000, 1, 0xd100).unwrap();
     assert_ne!(expected_second, expected);
-    assert_eq!(memo.get(&shared, 0, 0x1000, 1, 0xd100), Ok(expected_second));
+    assert_eq!(query(&mut memo, &shared, 1, 0xd100), Ok(expected_second));
     assert!(shared.reads.borrow().len() < direct.reads.borrow().len());
     assert!(
         !shared
@@ -365,7 +376,7 @@ fn hourly_transport_inputs_share_only_complete_current_observations() {
             let mut bounded = MovementSpeeds::new(capacity);
             for region in [0xd000, 0xd100] {
                 assert_eq!(
-                    bounded.get(&source, 0, 0x1000, 1, region),
+                    query(&mut bounded, &source, 1, region),
                     movement_speed(&source, 0, 0x1000, 1, region)
                 );
             }
@@ -378,7 +389,7 @@ fn hourly_transport_inputs_share_only_complete_current_observations() {
     assert_ne!(movement_speed(&source, 0, 0x1000, 1, 0xd000), Ok(expected));
     for region in [0xd000, 0xd100] {
         assert_eq!(
-            memo.get(&source, 0, 0x1000, 1, region),
+            query(&mut memo, &source, 1, region),
             movement_speed(&source, 0, 0x1000, 1, region)
         );
     }
@@ -387,7 +398,7 @@ fn hourly_transport_inputs_share_only_complete_current_observations() {
     let direct = observed(&source, None);
     let shared = observed(&source, None);
     assert_eq!(
-        vacant.get(&shared, 0, 0x1000, 1, 0xd000),
+        query(&mut vacant, &shared, 1, 0xd000),
         movement_speed(&direct, 0, 0x1000, 1, 0xd000)
     );
     assert_eq!(*shared.reads.borrow(), *direct.reads.borrow());

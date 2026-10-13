@@ -54,6 +54,7 @@ static SIGNAL: Signal = Signal::new();
 static ENABLED: AtomicBool = AtomicBool::new(false);
 pub(crate) static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static DELETE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+static STATE_RELOAD_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn generation() -> u64 {
     SIGNAL.generation.load(Ordering::SeqCst)
@@ -107,10 +108,26 @@ pub(crate) fn status() -> impl serde::Serialize {
     })
 }
 unsafe extern "system-unwind" fn observe(_: &Registers, _: usize) {
+    let _timing = crate::hook_timing::enter(crate::hook_timing::Family::WorldLifetime);
     SIGNAL.invalidate();
 }
 extern "system" fn deleting() {
+    let _timing = crate::hook_timing::enter(crate::hook_timing::Family::WorldLifetime);
     SIGNAL.invalidate();
+}
+/// The state nudger's reload (`native::STATE_RELOAD`) rebuilds every live
+/// state and its template: the world is invalid from its entry, and again at
+/// its return, so a boundary while it runs admits nothing it wrote.
+unsafe extern "system" fn state_reload(editor: usize, b: usize, c: usize, d: usize) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::WorldLifetime);
+    ACTIVE.fetch_add(1, Ordering::SeqCst);
+    SIGNAL.invalidate();
+    let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
+        unsafe { std::mem::transmute(STATE_RELOAD_ORIGINAL.load(Ordering::Acquire)) };
+    let result = timing.original(|| unsafe { original(editor, b, c, d) });
+    SIGNAL.invalidate();
+    ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    result
 }
 
 // Tail transfer leaves no DLL return PC in the native destructor. Only the
@@ -146,6 +163,7 @@ unsafe extern "system" {
 pub(crate) struct Hooks {
     taps: [Tap; 2],
     delete: Hook,
+    state_reload: Hook,
 }
 impl Hooks {
     pub(crate) unsafe fn new(
@@ -157,7 +175,12 @@ impl Hooks {
             return Err("native world occurrence exhausted or concurrent invalidation");
         }
         SIGNAL.generation.store(generation.max(1), Ordering::SeqCst);
-        for site in [&native::RESET, &native::CONSTRUCT, &native::DELETE] {
+        for site in [
+            &native::RESET,
+            &native::CONSTRUCT,
+            &native::STATE_RELOAD,
+            &native::DELETE,
+        ] {
             if read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
                 return Err("native world lifetime sentinel differs");
             }
@@ -180,7 +203,20 @@ impl Hooks {
         }
         .map_err(|_| "native world deletion hook construction failed")?;
         DELETE_ORIGINAL.store(delete.trampoline(), Ordering::SeqCst);
-        Ok(Self { taps, delete })
+        let state_reload = unsafe {
+            Hook::new(
+                base + native::STATE_RELOAD.rva,
+                state_reload as *const () as usize,
+                native::STATE_RELOAD.sentinel,
+            )
+        }
+        .map_err(|_| "native state reload hook construction failed")?;
+        STATE_RELOAD_ORIGINAL.store(state_reload.trampoline(), Ordering::SeqCst);
+        Ok(Self {
+            taps,
+            delete,
+            state_reload,
+        })
     }
     pub(crate) fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
@@ -193,6 +229,7 @@ impl Hooks {
                 reset.publication_hook(),
                 construct.publication_hook(),
                 &mut self.delete,
+                &mut self.state_reload,
             ],
             enabled,
         )
@@ -207,6 +244,7 @@ impl Hooks {
             .iter()
             .flat_map(Tap::executable_ranges)
             .chain(self.delete.executable_ranges())
+            .chain(self.state_reload.executable_ranges())
             .chain(std::iter::once(delete_range()))
     }
 }
@@ -249,7 +287,9 @@ mod tests {
                 DELETE_ORIGINAL.store(self.0, Ordering::SeqCst);
             }
         }
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _original =
             Original(DELETE_ORIGINAL.swap(native as *const () as usize, Ordering::SeqCst));
         assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);

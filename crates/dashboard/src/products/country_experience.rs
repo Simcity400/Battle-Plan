@@ -225,7 +225,12 @@ fn scan_reads(
                         break;
                     }
                     let hour = frame.hour;
-                    let read_hour = slot_read(&decoded.metrics, TableId::CountryExperience, hour);
+                    let read_hour = slot_read(
+                        replay.format,
+                        &decoded.metrics,
+                        TableId::CountryExperience,
+                        hour,
+                    );
                     let inputs = decoded
                         .complete::<tables::Countries>()
                         .ok()

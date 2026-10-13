@@ -15,13 +15,14 @@ use replay::{
     BranchId,
     branches::{BranchStart, Parentage},
     container::Replay,
+    format::FormatVersion,
     frame::{DecodedFrame, FrameDecoder, Metrics, TableView, ViewIdentity},
     rows::{CountryLinkRow, CountryRow, TableId, tables},
 };
 
 use crate::{
-    BranchMetadata, CountryMetadata, DamagedRecording, PartialRecording, RecordingGap,
-    ReplayMetadata, invalid,
+    BranchMetadata, CountryMetadata, DamagedRecording, PartialRecording, RecordingEventLoss,
+    RecordingGap, ReplayMetadata, invalid,
 };
 
 const MAX_WARNINGS: usize = 32;
@@ -495,20 +496,25 @@ pub fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()
 /// move off its slot alone, so only its own timing dates it; it and the other
 /// tables of its slot are no evidence for each other. A failed walk leaves its
 /// table incomplete, which callers check. Other hours carry the last read.
+/// Cadences are those `format` recorded with (`replay::cadence::cadence_in`):
+/// a table read daily then is dated at its slot even if it is hourly now.
 /// Every product that dates a daily table's values by their read uses this.
-pub fn slot_read(metrics: &Metrics, table: TableId, hour: i32) -> bool {
+pub fn slot_read(format: FormatVersion, metrics: &Metrics, table: TableId, hour: i32) -> bool {
     let timed = |table: TableId| metrics.table_ns[table.index()] != 0;
     if table == TableId::CountryIntel {
         return timed(table);
     }
-    let slot = replay::cadence::cadence(table);
-    replay::cadence::is_refresh(table, hour)
+    let slot = replay::cadence::cadence_in(table, format);
+    slot.is_refresh(hour)
         || TableId::ALL.into_iter().any(|other| {
             other != TableId::CountryIntel
-                && replay::cadence::cadence(other) == slot
+                && replay::cadence::cadence_in(other, format) == slot
                 && timed(other)
         })
 }
+
+/// Why a recorded event loss happened: only a same-process reattach writes one.
+pub(crate) const EVENT_LOSS_REASON: &str = "The recorder was detached for part of the interval between these reads; its recorded events are incomplete.";
 
 /// A branch's first and last hour: its start, every block and every recorded gap.
 pub(crate) fn branch_bounds(replay: &Replay, branch: &BranchStart) -> (i32, i32) {
@@ -552,6 +558,15 @@ fn read_branches(replay: &Replay, cancelled: &AtomicBool) -> io::Result<Vec<Bran
                 reason: engine::allocation::string(&gap.reason)?,
             });
         }
+        let mut event_losses = Vec::new();
+        for (after_hour, hour) in replay.event_losses(branch.id) {
+            engine::allocation::reserve(&mut event_losses, 1)?;
+            event_losses.push(RecordingEventLoss {
+                after_hour,
+                hour,
+                reason: engine::allocation::string(EVENT_LOSS_REASON)?,
+            });
+        }
         branches.push(BranchMetadata {
             id: branch.id.to_string(),
             session_id: branch.session.to_string(),
@@ -561,6 +576,7 @@ fn read_branches(replay: &Replay, cancelled: &AtomicBool) -> io::Result<Vec<Bran
             parent_hour,
             sample_boundary: engine::allocation::string(session.sample_boundary.name())?,
             gaps,
+            event_losses: (!event_losses.is_empty()).then_some(event_losses),
         });
     }
     Ok(branches)

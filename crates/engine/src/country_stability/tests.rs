@@ -2,6 +2,161 @@ use super::*;
 use crate::{cgame_state, msvc_string};
 use std::collections::BTreeMap;
 
+mod reference;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Phase {
+    Fields,
+    Wars,
+    Totals,
+    Popularity,
+    Interception,
+    Children,
+    ChildHeads,
+    Ideas,
+    Leader,
+    Ideology,
+    Advisors,
+    Statics,
+    Dynamic,
+    ScaledStatics,
+    Matching,
+    Emission,
+}
+
+thread_local! {
+    static PHASE: std::cell::Cell<Phase> = const { std::cell::Cell::new(Phase::Fields) };
+}
+
+pub(super) fn set_phase(phase: Phase) {
+    PHASE.with(|current| current.set(phase));
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CopyCall {
+    phase: Phase,
+    /// Attempted operands in order, including the first failure.
+    operands: Vec<(usize, usize, bool)>,
+}
+
+/// Counts real guarded calls and records every exact span and its walk phase.
+/// Compound calls retain their native boundary and stop at the failed field.
+struct Copies<'a> {
+    source: &'a World,
+    calls: std::cell::RefCell<Vec<CopyCall>>,
+    fault: std::cell::Cell<Option<usize>>,
+    persistent: bool,
+}
+
+impl<'a> Copies<'a> {
+    fn new(source: &'a World) -> Self {
+        Self {
+            source,
+            calls: Default::default(),
+            fault: Default::default(),
+            persistent: false,
+        }
+    }
+
+    fn operand(&self, address: usize, destination: &mut [u8]) -> bool {
+        if destination.is_empty() {
+            return true;
+        }
+        let failed = self
+            .fault
+            .get()
+            .is_some_and(|at| at >= address && at - address < destination.len());
+        if failed && !self.persistent {
+            self.fault.set(None);
+        }
+        let copied = !failed && self.source.copy(address, destination);
+        self.calls.borrow_mut().last_mut().unwrap().operands.push((
+            address,
+            destination.len(),
+            copied,
+        ));
+        copied
+    }
+
+    fn begin(&self) {
+        self.calls.borrow_mut().push(CopyCall {
+            phase: PHASE.with(|phase| phase.get()),
+            operands: Vec::new(),
+        });
+    }
+
+    fn counts(&self) -> [usize; 16] {
+        let mut counts = [0; 16];
+        for call in self.calls.borrow().iter() {
+            counts[call.phase as usize] += 1;
+        }
+        counts
+    }
+}
+
+impl Memory for Copies<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.begin();
+        self.operand(address, destination)
+    }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.begin();
+        for (index, (address, destination)) in addresses
+            .into_iter()
+            .zip(destinations.iter_mut())
+            .enumerate()
+        {
+            if !destination.is_empty()
+                && (address == 0
+                    || address.checked_add(destination.len()).is_none()
+                    || !self.operand(address, destination))
+            {
+                return index;
+            }
+        }
+        N
+    }
+
+    fn copy_records(
+        &self,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        self.begin();
+        let Some(count) = layout.count(sources, destination.len()) else {
+            return 0;
+        };
+        let mut completed = 0;
+        for row in 0..sources.len() {
+            for field in layout.fields() {
+                if field.len != 0 {
+                    let Some(address) = sources
+                        .pointer(row)
+                        .filter(|&p| p != 0)
+                        .and_then(|p| p.checked_add(field.source_offset))
+                        .filter(|p| p.checked_add(field.len).is_some())
+                    else {
+                        return completed;
+                    };
+                    let start = row * layout.stride() + field.destination_offset;
+                    if !self.operand(address, &mut destination[start..start + field.len]) {
+                        return completed;
+                    }
+                }
+                completed += 1;
+            }
+        }
+        assert_eq!(completed, count);
+        completed
+    }
+}
+
 const BASE: usize = 0x1_4000_0000;
 const GS: usize = 0x1000;
 const COUNTRIES: usize = 0x2000;
@@ -164,7 +319,6 @@ fn world() -> World {
         w.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA);
         w.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
         w.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, 0, 0);
-        w.u32(diplomacy + DIPLOMACY_WAR_COUNTER, 0);
     }
     w.u32(D2 + DIPLOMACY_HOSTING, 0);
     w.array(D1 + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 1);
@@ -331,6 +485,7 @@ struct Walked {
     input: InputRow,
     lines: Vec<LineRow>,
     bytes: Vec<u8>,
+    fallbacks: u64,
 }
 
 fn walk(w: &World, capacity: usize) -> Walked {
@@ -357,6 +512,7 @@ fn walk(w: &World, capacity: usize) -> Walked {
         input,
         lines,
         bytes,
+        fallbacks: scratch.batch_fallbacks(),
     }
 }
 
@@ -640,49 +796,43 @@ fn every_short_read_fails_the_country() {
     assert!(walk(&w, 16).result.is_err());
 }
 
+/// The children's heads are one guarded gather per page: the old walk made
+/// one scattered copy per child. A child whose head does not read refuses
+/// after every earlier child, with the old reason.
 #[test]
-fn the_fingerprint_follows_bases_totals_and_tree_shape() {
+fn child_heads_are_gathered_one_page_at_a_time() {
     let w = world();
-    let keys = keys();
-    let first = fingerprint_country(&w, BASE, C1, &keys).unwrap();
-    assert_eq!(fingerprint_country(&w, BASE, C1, &keys), Ok(first));
-    for change in [
-        (C1 + ccountry::STABILITY, 1_i64),
-        (C1 + COASTAL_PROTECTION_STABILITY, 7),
-        (PARTY + cpolitical_party::POPULARITY, 1),
-        (ENTRIES + 0x8000 + 8, 1),
-    ] {
-        let mut w = world();
-        w.i64(change.0, change.1);
-        assert_ne!(fingerprint_country(&w, BASE, C1, &keys), Ok(first));
-    }
+    let walked = walk(&w, 16);
+    let census = crate::read_census::ReadCensus::new(&w);
+    let countries = ccountry::Reader::new(&census, BASE, GS).unwrap();
+    let country = countries.at(1).unwrap().unwrap();
+    let context = Context::read(&w, BASE, GS, keys()).unwrap();
+    let mut scratch = Scratch::new();
+    census.reset();
+    let mut local = Memo::default();
+    let mut shared = Memo::default();
+    let memory = Observed::new(&census, &mut local, &mut shared);
+    let children = read_children(&memory, BASE, country.pointer, &context, &mut scratch).unwrap();
+    assert_eq!(children, 6);
+    // The children header, the pointer page and one gather of six heads
+    // plus one batch for the entries and heap display terminator/payload.
+    assert_eq!(census.calls(), 4);
+    assert!(walked.result.is_ok());
+    // The third child's head does not read: the first two payloads are
+    // gathered together and visited, then the third refuses.
     let mut w = world();
-    w.array(C1 + MODIFIER_CHILDREN, CHILDREN, 5);
-    assert_ne!(fingerprint_country(&w, BASE, C1, &keys), Ok(first));
-    // A source replaced by another with the same tracked values: an idea, the
-    // leader or an advisor.
-    for (slot, other) in [
-        (IDEAS + 8, IDEA_A),
-        (LEADER - 0x100, ADVISOR),
-        (ADVISORS, LEADER),
-    ] {
-        let mut w = world();
-        w.u64(slot, other as u64);
-        assert_ne!(fingerprint_country(&w, BASE, C1, &keys), Ok(first));
-    }
-    // A dynamic modifier replaced in place (same array header) or disabled.
-    let mut w = world();
-    w.u64(
-        ENTRY + dynamic_modifier_entry::DEFINITION,
-        (DEFINITION + 0x10) as u64,
+    w.bytes
+        .remove(&(CHILD + 2 * 0x100 + cmodifier::ACCUMULATOR));
+    let census = crate::read_census::ReadCensus::new(&w);
+    let mut scratch = Scratch::new();
+    let mut local = Memo::default();
+    let mut shared = Memo::default();
+    let memory = Observed::new(&census, &mut local, &mut shared);
+    assert_eq!(
+        read_children(&memory, BASE, country.pointer, &context, &mut scratch),
+        Err("country modifier child unreadable")
     );
-    assert_ne!(fingerprint_country(&w, BASE, C1, &keys), Ok(first));
-    let mut w = world();
-    w.put(ENTRY + dynamic_modifier_entry::ENABLED, &[0]);
-    assert_ne!(fingerprint_country(&w, BASE, C1, &keys), Ok(first));
-    let mut w = world();
-    w.bytes.remove(&(D1 + DIPLOMACY_WAR_COUNTER));
-    assert!(fingerprint_country(&w, BASE, C1, &keys).is_err());
+    assert_eq!(census.calls(), 4);
 }
 
 #[test]
@@ -930,4 +1080,998 @@ fn scaled_static_pairing_has_no_nonzero_key_population_cap() {
             .iter()
             .all(|row| row.kind == Kind::StaticScaled && row.value == 7)
     );
+}
+
+/// Setup acquisitions are outside the per-country census/fault window, just
+/// as the collector reads Context before walking its selected countries.
+fn observed_walk(
+    copies: &Copies<'_>,
+    old: bool,
+    memo: &mut Memo,
+    capacity: usize,
+    fault: Option<usize>,
+) -> Walked {
+    observed_walk_bytes(copies, old, memo, capacity, 256, fault)
+}
+
+fn observed_walk_bytes(
+    copies: &Copies<'_>,
+    old: bool,
+    memo: &mut Memo,
+    capacity: usize,
+    byte_capacity: usize,
+    fault: Option<usize>,
+) -> Walked {
+    let countries = ccountry::Reader::new(copies, BASE, GS).unwrap();
+    let country = countries.at(1).unwrap().unwrap();
+    let context = Context::read(copies, BASE, GS, keys()).unwrap();
+    copies.calls.borrow_mut().clear();
+    copies.fault.set(fault);
+    let mut scratch = Scratch::vacant();
+    let mut input = InputRow::default();
+    let mut lines = vec![LineRow::default(); capacity];
+    let mut bytes = vec![0; byte_capacity];
+    let result = if old {
+        reference::walk_country(
+            copies,
+            BASE,
+            &countries,
+            country,
+            &context,
+            &mut scratch,
+            &mut input,
+            &mut lines,
+            &mut bytes,
+        )
+    } else {
+        walk_country_buffers(
+            memo,
+            copies,
+            BASE,
+            &countries,
+            country,
+            &context,
+            &mut scratch,
+            &mut input,
+            Buffer::Fixed(&mut lines),
+            Buffer::Fixed(&mut bytes),
+            0,
+            0,
+        )
+    };
+    copies.fault.set(None);
+    Walked {
+        result,
+        input,
+        lines,
+        bytes,
+        fallbacks: scratch.batch_fallbacks(),
+    }
+}
+
+fn assert_same_walk(old: &Walked, new: &Walked) {
+    assert_eq!(new.result, old.result);
+    assert_eq!(new.input, old.input);
+    assert_eq!(new.lines, old.lines);
+    assert_eq!(new.bytes, old.bytes);
+}
+
+/// More live source operands, without importing any installed content.
+fn scaled_world() -> World {
+    let mut w = world();
+    const SCALED: usize = 0x6100_0000;
+    w.u64(DATABASE + 0x78, SCALED as u64);
+    w.vtable(SCALED, cstatic_modifier::VTABLE_RVA);
+    w.modifier(SCALED, &[(STABILITY_KEY, 1)], b"Scaled static");
+    w.string(SCALED + STATIC_NAME, b"scaled_static");
+    w.i64(VALUES, 250);
+    w.children(&[
+        (&[(STABILITY_KEY, 10_000)], b"Politics: Idea A"),
+        (&[(WAR_SUPPORT_KEY, 2_000)], b"Leader Name"),
+        (
+            &[(STABILITY_KEY, 15_000), (COMMAND_KEY, 500)],
+            b"Decision: X",
+        ),
+        (&[(WAR_SUPPORT_KEY, 10_000)], b"Advisor"),
+        (&[(STABILITY_KEY, 5_000)], b"At war"),
+        (&[(COMMAND_KEY, 100)], b"Dyn"),
+        (&[(STABILITY_KEY, 250)], b"Dyn"),
+        (&[(STABILITY_KEY, 7)], b"Scaled static"),
+    ]);
+    w
+}
+
+fn secondary_idea_world() -> World {
+    let mut w = world();
+    let idea = IDEA_A + cidea::SECONDARY_BASE;
+    w.u64(IDEAS, idea as u64);
+    w.vtable(idea, cidea::SECONDARY_VTABLE_RVA);
+    w.modifier(
+        idea + IDEA_MODIFIER,
+        &[(STABILITY_KEY, 10_000)],
+        b"built label",
+    );
+    w
+}
+
+/// Three pointer pages of distinct objects, with repeated character and
+/// definition pointers, every bound static slot and heap display strings.
+fn paged_sources_world() -> World {
+    let mut w = scaled_world();
+    const COUNT: u32 = 130;
+    const IDEA_POINTERS: usize = 0x6500_0000;
+    const ADVISOR_POINTERS: usize = 0x6500_1000;
+    const DYNAMIC_ENTRIES: usize = 0x6500_2000;
+    const OBJECTS: usize = 0x6600_0000;
+    let advisor: Vec<_> = w
+        .bytes
+        .range(ADVISOR..ADVISOR + 0x260)
+        .map(|(&at, &byte)| (at - ADVISOR, byte))
+        .collect();
+    let entry: Vec<_> = w
+        .bytes
+        .range(ENTRY..ENTRY + dynamic_modifier_entry::STRIDE)
+        .map(|(&at, &byte)| (at - ENTRY, byte))
+        .collect();
+    w.entries = 0x6800_0000 - ENTRIES;
+    w.heap = 0x6900_0000 - HEAP;
+    w.array(STATUS + cpolitical_status::IDEAS, IDEA_POINTERS, COUNT);
+    w.array(
+        CHARACTERS + ccountry_characters::APPOINTED_ADVISORS,
+        ADVISOR_POINTERS,
+        COUNT,
+    );
+    w.array(
+        C1 + ccountry::DYNAMIC_MODIFIERS + cdynamic_modifier_container::ENTRIES,
+        DYNAMIC_ENTRIES,
+        COUNT,
+    );
+    for index in 0..COUNT as usize {
+        let idea = OBJECTS + index * 0x1000;
+        let advisor_object = idea + 0x400;
+        w.u64(IDEA_POINTERS + index * 8, idea as u64);
+        w.vtable(idea, cidea::VTABLE_RVA);
+        w.string(idea + cidea::TOKEN, b"paged_idea");
+        w.modifier(idea + IDEA_MODIFIER, &[(STABILITY_KEY, 10_000)], b"label");
+        w.u64(ADVISOR_POINTERS + index * 8, advisor_object as u64);
+        for &(offset, byte) in &advisor {
+            w.put(advisor_object + offset, &[byte]);
+        }
+        w.modifier(
+            advisor_object + ADVISOR_MODIFIER,
+            &[(WAR_SUPPORT_KEY, 10_000)],
+            b"A heap display shared by different advisors",
+        );
+        for &(offset, byte) in &entry {
+            w.put(
+                DYNAMIC_ENTRIES + index * dynamic_modifier_entry::STRIDE + offset,
+                &[byte],
+            );
+        }
+    }
+    for (index, slot) in STATIC_SLOTS.iter().enumerate() {
+        let modifier = OBJECTS + COUNT as usize * 0x1000 + index * 0x400;
+        w.u64(DATABASE + slot.offset, modifier as u64);
+        w.vtable(modifier, cstatic_modifier::VTABLE_RVA);
+        w.modifier(
+            modifier,
+            &[(STABILITY_KEY, 1)],
+            b"A heap display shared by different statics",
+        );
+        w.string(modifier + STATIC_NAME, b"paged_static");
+    }
+    w
+}
+
+#[test]
+fn stability_batched_source_pages_keep_aliases_and_every_static_slot() {
+    let w = paged_sources_world();
+    let serial = Copies::new(&w);
+    let batched = Copies::new(&w);
+    assert_same_walk(
+        &observed_walk(&serial, true, &mut Memo::default(), 16, None),
+        &observed_walk(&batched, false, &mut Memo::default(), 16, None),
+    );
+    // Distinct object heads and modifier blocks share a guarded call across
+    // each complete pointer page. Dynamic definitions alias one allocation.
+    for phase in [
+        Phase::Ideas,
+        Phase::Advisors,
+        Phase::Statics,
+        Phase::Dynamic,
+        Phase::ScaledStatics,
+    ] {
+        assert!(
+            batched.counts()[phase as usize] < serial.counts()[phase as usize],
+            "{phase:?} was not batched"
+        );
+    }
+    for (phase, len) in [
+        (Phase::Ideas, 8),
+        (Phase::Advisors, 24),
+        (Phase::Dynamic, 56),
+    ] {
+        assert!(
+            batched.calls.borrow().iter().any(|call| {
+                call.phase == phase
+                    && call
+                        .operands
+                        .iter()
+                        .filter(|operand| operand.1 == len)
+                        .count()
+                        == 64
+            }),
+            "{phase:?} did not gather a full page's object heads in one call"
+        );
+    }
+}
+
+#[test]
+fn stability_batched_later_pages_null_slots_and_duplicate_objects_keep_serial_results() {
+    const IDEAS: usize = 0x6500_0000;
+    const ADVISORS: usize = 0x6500_1000;
+    const OBJECTS: usize = 0x6600_0000;
+    for advisors in [false, true] {
+        let slots = if advisors { ADVISORS } else { IDEAS };
+        let offset = if advisors { 0x400 } else { 0 };
+        let modifier = if advisors {
+            ADVISOR_MODIFIER
+        } else {
+            IDEA_MODIFIER
+        };
+        // A null in the first slot of page two still visits all 64 valid
+        // earlier slots, preserving an earlier invalid object's reason.
+        for invalid_prefix in [false, true] {
+            let mut w = paged_sources_world();
+            w.u64(slots + 64 * 8, 0);
+            if invalid_prefix {
+                w.u64(OBJECTS + 63 * 0x1000 + offset, 0);
+            }
+            let old = observed_walk(&Copies::new(&w), true, &mut Memo::default(), 16, None);
+            let new = observed_walk(&Copies::new(&w), false, &mut Memo::default(), 16, None);
+            assert_same_walk(&old, &new);
+            assert!(new.result.is_err());
+            assert_eq!(new.fallbacks, 0);
+        }
+        for duplicate in [false, true] {
+            for null in [false, true] {
+                let mut w = paged_sources_world();
+                // The same object occurs in both pages, and remains a visit,
+                // not a deduplicated source. Slot 65 stays distinct for faults.
+                if duplicate {
+                    w.u64(slots + 64 * 8, (OBJECTS + offset) as u64);
+                }
+                if null {
+                    w.u64(slots + 66 * 8, 0);
+                }
+                let baseline =
+                    observed_walk(&Copies::new(&w), true, &mut Memo::default(), 16, None);
+                let healthy =
+                    observed_walk(&Copies::new(&w), false, &mut Memo::default(), 16, None);
+                assert_same_walk(&baseline, &healthy);
+                assert_eq!(healthy.fallbacks, 0);
+                if !null {
+                    let countries = ccountry::Reader::new(&w, BASE, GS).unwrap();
+                    let country = countries.at(1).unwrap().unwrap();
+                    let context = Context::read(&w, BASE, GS, keys()).unwrap();
+                    let mut scratch = Scratch::vacant();
+                    let mut local = Memo::default();
+                    let mut shared = Memo::default();
+                    let memory = Observed::new(&w, &mut local, &mut shared);
+                    let visited =
+                        candidates(&memory, BASE, country, &context, &mut scratch).unwrap();
+                    assert_eq!(visited, 130 * 4 + 2 + STATIC_SLOTS.len());
+                    if duplicate {
+                        let first = if advisors { 132 } else { 0 };
+                        assert_eq!(
+                            scratch.candidates[first].identity,
+                            scratch.candidates[first + 64].identity
+                        );
+                    }
+                }
+                // A fault in the second page must not discard the valid first
+                // page, change the first reason before a null, or restart
+                // speculation on the third page after a one-shot recovers.
+                let head = OBJECTS + 65 * 0x1000 + offset + modifier + cmodifier::ACCUMULATOR;
+                for address in head..head + 16 {
+                    for persistent in [false, true] {
+                        let serial = Copies {
+                            persistent,
+                            ..Copies::new(&w)
+                        };
+                        let batched = Copies {
+                            persistent,
+                            ..Copies::new(&w)
+                        };
+                        let old =
+                            observed_walk(&serial, true, &mut Memo::default(), 16, Some(address));
+                        let new =
+                            observed_walk(&batched, false, &mut Memo::default(), 16, Some(address));
+                        assert_eq!(new.fallbacks, 1);
+                        if persistent {
+                            assert_same_walk(&old, &new);
+                        } else {
+                            // Recovery may still reach the later null; it has
+                            // exactly the healthy walk's complete buffers/reason.
+                            assert!(old.result.is_err());
+                            assert_same_walk(&baseline, &new);
+                        }
+                        let failures = batched
+                            .calls
+                            .borrow()
+                            .iter()
+                            .flat_map(|call| &call.operands)
+                            .filter(|&&(at, len, copied)| {
+                                !copied && at <= address && address - at < len
+                            })
+                            .count();
+                        assert_eq!(failures, if persistent { 2 } else { 1 });
+                    }
+                }
+                if null {
+                    // An earlier invalid object wins over the later null,
+                    // including when it is in the validated page prefix.
+                    w.u64(OBJECTS + 63 * 0x1000 + offset, 0);
+                    assert_same_walk(
+                        &observed_walk(&Copies::new(&w), true, &mut Memo::default(), 16, None),
+                        &observed_walk(&Copies::new(&w), false, &mut Memo::default(), 16, None),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn stability_failed_source_preparation_acquires_no_missing_scalars() {
+    let w = scaled_world();
+    let copies = Copies {
+        persistent: true,
+        ..Copies::new(&w)
+    };
+    copies.fault.set(Some(AT_WAR + cmodifier::ACCUMULATOR));
+    let mut local = Memo::default();
+    let mut shared = Memo::default();
+    let memory = Observed::new(&copies, &mut local, &mut shared);
+    batched::sources(&memory, &[AT_WAR, 0x6100_0000], true, true);
+    assert_eq!(copies.calls.borrow().len(), 1);
+    assert_eq!(memory.fallbacks(), 1);
+    batched::sources(&memory, &[AT_WAR, 0x6100_0000], true, true);
+    assert_eq!(copies.calls.borrow().len(), 1);
+    assert!(
+        !memory
+            .shared()
+            .copy(AT_WAR + cmodifier::ACCUMULATOR, &mut [0; 16])
+    );
+    assert_eq!(copies.calls.borrow().len(), 2);
+}
+
+#[test]
+fn stability_copy_census_keeps_first_observations_and_cuts_repeated_copies() {
+    // Guarded calls in Phase order, excluding Context and roster setup.
+    let expected = [
+        (
+            [1, 17, 2, 5, 6, 10, 1, 11, 8, 3, 9, 3, 12, 0, 36, 7],
+            [1, 17, 2, 5, 6, 3, 1, 5, 6, 0, 7, 2, 6, 0, 0, 5],
+        ),
+        (
+            [1, 17, 2, 5, 6, 12, 1, 11, 8, 3, 9, 3, 13, 3, 50, 9],
+            [1, 17, 2, 5, 6, 3, 1, 5, 6, 0, 7, 2, 7, 2, 0, 6],
+        ),
+    ];
+    for (w, (before, after)) in [world(), scaled_world()].into_iter().zip(expected) {
+        let old_copies = Copies::new(&w);
+        let new_copies = Copies::new(&w);
+        let old = observed_walk(&old_copies, true, &mut Memo::default(), 16, None);
+        let new = observed_walk(&new_copies, false, &mut Memo::default(), 16, None);
+        assert_same_walk(&old, &new);
+        assert_eq!(operand_spans(&new_copies), operand_spans(&old_copies));
+        assert_eq!(new.fallbacks, 0);
+        assert_eq!(old_copies.counts(), before);
+        assert_eq!(new_copies.counts(), after);
+        eprintln!(
+            "stability copy census: before {:?}, after {:?}",
+            old_copies.counts(),
+            new_copies.counts()
+        );
+    }
+}
+
+#[test]
+fn stability_copy_faults_at_every_old_operand_byte_keep_the_old_outcome_and_reason() {
+    for w in [world(), scaled_world(), secondary_idea_world()] {
+        let baseline = Copies::new(&w);
+        let walked = observed_walk(&baseline, true, &mut Memo::default(), 16, None);
+        assert!(walked.result.is_ok());
+        let addresses: std::collections::BTreeSet<_> = baseline
+            .calls
+            .borrow()
+            .iter()
+            .flat_map(|call| &call.operands)
+            .flat_map(|&(address, len, _)| address..address + len)
+            .collect();
+        for persistent in [false, true] {
+            for &address in &addresses {
+                let old_copies = Copies {
+                    persistent,
+                    ..Copies::new(&w)
+                };
+                let new_copies = Copies {
+                    persistent,
+                    ..Copies::new(&w)
+                };
+                let old = observed_walk(&old_copies, true, &mut Memo::default(), 16, Some(address));
+                let new =
+                    observed_walk(&new_copies, false, &mut Memo::default(), 16, Some(address));
+                assert!(new.fallbacks <= 1, "fault {address:#x} retried a batch");
+                if persistent || old.result.is_ok() {
+                    assert_same_walk(&old, &new);
+                } else if new.result.is_ok() {
+                    // A failed speculative batch may recover the serial row;
+                    // recovered bytes must be the complete healthy result.
+                    assert_same_walk(&walked, &new);
+                } else {
+                    assert!(
+                        old.result.is_err(),
+                        "one-shot fault {address:#x} refused more data"
+                    );
+                }
+            }
+        }
+        // Row shortage preserves the sizing-only emission protocol too.
+        for capacity in [0, 3] {
+            assert_same_walk(
+                &observed_walk(&Copies::new(&w), true, &mut Memo::default(), capacity, None),
+                &observed_walk(
+                    &Copies::new(&w),
+                    false,
+                    &mut Memo::default(),
+                    capacity,
+                    None,
+                ),
+            );
+        }
+        for byte_capacity in [0, 5, 24, 48] {
+            assert_same_walk(
+                &observed_walk_bytes(
+                    &Copies::new(&w),
+                    true,
+                    &mut Memo::default(),
+                    16,
+                    byte_capacity,
+                    None,
+                ),
+                &observed_walk_bytes(
+                    &Copies::new(&w),
+                    false,
+                    &mut Memo::default(),
+                    16,
+                    byte_capacity,
+                    None,
+                ),
+            );
+        }
+    }
+}
+
+#[test]
+fn stability_shared_static_observations_expire_with_each_hour() {
+    let mut w = scaled_world();
+    let mut memo = Memo::default();
+    let first = Copies::new(&w);
+    let first_walk = observed_walk(&first, false, &mut memo, 16, None);
+    assert!(first_walk.result.is_ok());
+    let next = Copies::new(&w);
+    let next_walk = observed_walk(&next, false, &mut memo, 16, None);
+    assert_same_walk(&first_walk, &next_walk);
+    assert!(next.calls.borrow().len() < first.calls.borrow().len());
+    // A changed bound static's name is observed next hour, at emission's
+    // original first read, even when the Context's pointers did not change.
+    w.string(AT_WAR + STATIC_NAME, b"changed_static_name");
+    memo.clear();
+    let next_hour = Copies::new(&w);
+    let captured = observed_walk(&next_hour, false, &mut memo, 16, None);
+    assert_same_walk(
+        &observed_walk(&Copies::new(&w), true, &mut Memo::default(), 16, None),
+        &captured,
+    );
+    assert_eq!(
+        text(&captured, captured.lines[5].identity),
+        b"changed_static_name"
+    );
+}
+
+#[test]
+fn stability_failed_observations_are_retained_without_partial_bytes_or_retry() {
+    let w = world();
+    let copies = Copies::new(&w);
+    copies.fault.set(Some(AT_WAR + cmodifier::ACCUMULATOR));
+    let mut local = Memo::default();
+    let mut shared = Memo::default();
+    let memory = Observed::new(&copies, &mut local, &mut shared);
+    let mut bytes = [0; 16];
+    assert!(
+        !memory
+            .shared()
+            .copy(AT_WAR + cmodifier::ACCUMULATOR, &mut bytes)
+    );
+    assert!(!memory.copy(AT_WAR + cmodifier::ACCUMULATOR, &mut bytes));
+    assert_eq!(copies.calls.borrow().len(), 1);
+}
+
+#[test]
+fn stability_batched_failure_falls_back_once_without_installing_a_partial_prefix() {
+    for persistent in [false, true] {
+        let w = world();
+        let copies = Copies {
+            persistent,
+            ..Copies::new(&w)
+        };
+        let first = IDEA_A + IDEA_MODIFIER + cmodifier::ACCUMULATOR;
+        let second = IDEA_B + IDEA_MODIFIER + cmodifier::ACCUMULATOR;
+        copies.fault.set(Some(second));
+        let mut local = Memo::default();
+        let mut shared = Memo::default();
+        let memory = Observed::new(&copies, &mut local, &mut shared);
+        memory.gather([(first, 16), (second, 16)], false);
+        assert_eq!(memory.fallbacks(), 1);
+        memory.gather([(first, 16), (second, 16)], false);
+        assert_eq!(copies.calls.borrow().len(), 1);
+        let mut bytes = [0; 16];
+        // The failed batch installed neither its success nor partial failure.
+        assert!(memory.copy(first, &mut bytes));
+        assert_eq!(memory.copy(second, &mut bytes), !persistent);
+        assert_eq!(copies.calls.borrow().len(), 3);
+        assert_eq!(memory.copy(second, &mut bytes), !persistent);
+        assert_eq!(copies.calls.borrow().len(), 3);
+        assert_eq!(memory.fallbacks(), 1);
+        memory.gather([(first, 16), (second, 16)], false);
+        assert_eq!(copies.calls.borrow().len(), 3);
+    }
+}
+
+/// [`scaled_world`] with `count` countries, each with its own country,
+/// diplomacy and character objects and every static shared.
+fn scaled_countries(count: u32) -> World {
+    let mut w = scaled_world();
+    const COUNTRY_OBJECTS: usize = 0x1000_0000;
+    const DIPLOMACY_OBJECTS: usize = 0x2000_0000;
+    const CHARACTER_OBJECTS: usize = 0x3000_0000;
+    const COUNTRY_SLOTS: usize = 0x4000_0000;
+    const COUNTRY_LINKS: usize = 0x4100_0000;
+    let fields: Vec<_> = w
+        .bytes
+        .range(C1..C1 + 0x1700)
+        .map(|(&p, &b)| (p - C1, b))
+        .collect();
+    w.array(GS + cgame_state::COUNTRIES, COUNTRY_SLOTS, count + 1);
+    w.array(GS + cgame_state::COUNTRY_LINKS, COUNTRY_LINKS, count + 1);
+    for id in 1..=count {
+        let country = COUNTRY_OBJECTS + id as usize * 0x2000;
+        let diplomacy = DIPLOMACY_OBJECTS + id as usize * 0x200;
+        let characters = CHARACTER_OBJECTS + id as usize * 0x100;
+        for &(offset, byte) in &fields {
+            w.put(country + offset, &[byte]);
+        }
+        w.u64(COUNTRY_SLOTS + id as usize * 8, country as u64);
+        w.u32(COUNTRY_LINKS + id as usize * 4, id);
+        w.u32(country + ccountry::ID, id);
+        w.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
+        w.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA);
+        w.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
+        w.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, 0, 0);
+        w.u64(country + ccountry::CHARACTERS, characters as u64);
+        w.vtable(characters, ccountry_characters::VTABLE_RVA);
+        w.u64(characters + ccountry_characters::OWNER, country as u64);
+        w.array(
+            characters + ccountry_characters::APPOINTED_ADVISORS,
+            ADVISORS,
+            1,
+        );
+    }
+    w
+}
+
+#[test]
+fn stability_batched_copies_match_serial_at_five_thousand_countries() {
+    const COUNT: u32 = 5_000;
+    let w = scaled_countries(COUNT);
+    let copies = Copies::new(&w);
+    let countries = ccountry::Reader::new(&copies, BASE, GS).unwrap();
+    let context = Context::read(&copies, BASE, GS, keys()).unwrap();
+    let mut memo = Memo::default();
+    let mut old_scratch = Scratch::vacant();
+    let mut new_scratch = Scratch::vacant();
+    let mut before = 0;
+    let mut after = 0;
+    for slot in 1..=COUNT {
+        let country = countries.at(slot).unwrap().unwrap();
+        let mut old_input = InputRow::default();
+        let mut new_input = InputRow::default();
+        let mut old_lines = vec![LineRow::default(); 16];
+        let mut new_lines = old_lines.clone();
+        let mut old_bytes = vec![0; 256];
+        let mut new_bytes = old_bytes.clone();
+        copies.calls.borrow_mut().clear();
+        let old = reference::walk_country(
+            &copies,
+            BASE,
+            &countries,
+            country,
+            &context,
+            &mut old_scratch,
+            &mut old_input,
+            &mut old_lines,
+            &mut old_bytes,
+        );
+        assert_eq!(
+            copies.counts(),
+            [1, 2, 2, 5, 6, 12, 1, 11, 8, 3, 9, 3, 13, 3, 50, 9]
+        );
+        before += copies.calls.borrow().len();
+        copies.calls.borrow_mut().clear();
+        let new = walk_country_growing_memo(
+            &copies,
+            BASE,
+            &countries,
+            country,
+            &context,
+            &mut memo,
+            &mut new_scratch,
+            &mut new_input,
+            &mut new_lines,
+            &mut new_bytes,
+            0,
+            0,
+        );
+        assert_eq!(new, old);
+        assert!(new.is_ok());
+        assert_eq!(new_input, old_input);
+        assert_eq!(new_lines, old_lines);
+        assert_eq!(new_bytes, old_bytes);
+        assert_eq!(
+            copies.counts(),
+            if slot == 1 {
+                [1, 2, 2, 5, 6, 3, 1, 5, 6, 0, 7, 2, 7, 2, 0, 6]
+            } else {
+                [1, 2, 2, 5, 6, 3, 1, 5, 6, 0, 7, 0, 7, 0, 0, 2]
+            }
+        );
+        assert_eq!(new_scratch.batch_fallbacks(), 0);
+        after += copies.calls.borrow().len();
+    }
+    assert_eq!(before, COUNT as usize * 138);
+    assert_eq!(after, 55 + (COUNT as usize - 1) * 47);
+}
+
+#[test]
+fn stability_copy_memo_preserves_the_changed_children_consistency_reread() {
+    struct ChangedChildren<'a> {
+        source: &'a World,
+        reads: std::cell::Cell<usize>,
+    }
+    impl Memory for ChangedChildren<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if !self.source.copy(address, destination) {
+                return false;
+            }
+            if address == C1 + MODIFIER_CHILDREN && destination.len() == 16 {
+                self.reads.set(self.reads.get() + 1);
+                if self.reads.get() == 2 {
+                    destination[12..16].copy_from_slice(&5_u32.to_le_bytes());
+                }
+            }
+            true
+        }
+    }
+    let w = world();
+    for old in [false, true] {
+        let memory = ChangedChildren {
+            source: &w,
+            reads: Default::default(),
+        };
+        let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
+        let country = countries.at(1).unwrap().unwrap();
+        let context = Context::read(&memory, BASE, GS, keys()).unwrap();
+        let mut scratch = Scratch::vacant();
+        let result = if old {
+            reference::walk_country(
+                &memory,
+                BASE,
+                &countries,
+                country,
+                &context,
+                &mut scratch,
+                &mut InputRow::default(),
+                &mut [],
+                &mut [],
+            )
+        } else {
+            walk_country(
+                &memory,
+                BASE,
+                &countries,
+                country,
+                &context,
+                &mut scratch,
+                &mut InputRow::default(),
+                &mut [],
+                &mut [],
+            )
+        };
+        assert_eq!(result, Err("country modifier tree changed during the walk"));
+        assert_eq!(memory.reads.get(), 2);
+    }
+}
+
+/// One country's walk of [`scaled_countries`]: the old reference walk
+/// without a memo, or the new one with the hour's `memo`. The census and
+/// context are read before `fault` is armed.
+fn country_walk(
+    copies: &Copies<'_>,
+    memo: Option<&mut Memo>,
+    slot: u32,
+    fault: Option<usize>,
+) -> Result<CountryWalk, &'static str> {
+    let armed = copies.fault.replace(None);
+    let countries = ccountry::Reader::new(copies, BASE, GS).unwrap();
+    let country = countries.at(slot).unwrap().unwrap();
+    let context = Context::read(copies, BASE, GS, keys()).unwrap();
+    copies.calls.borrow_mut().clear();
+    copies.fault.set(fault.or(armed));
+    let mut scratch = Scratch::vacant();
+    let mut input = InputRow::default();
+    let mut lines = vec![LineRow::default(); 16];
+    let mut bytes = vec![0; 256];
+    match memo {
+        None => reference::walk_country(
+            copies,
+            BASE,
+            &countries,
+            country,
+            &context,
+            &mut scratch,
+            &mut input,
+            &mut lines,
+            &mut bytes,
+        ),
+        Some(memo) => walk_country_growing_memo(
+            copies,
+            BASE,
+            &countries,
+            country,
+            &context,
+            memo,
+            &mut scratch,
+            &mut input,
+            &mut lines,
+            &mut bytes,
+            0,
+            0,
+        ),
+    }
+}
+
+fn operand_spans(copies: &Copies<'_>) -> std::collections::BTreeSet<(usize, usize)> {
+    copies
+        .calls
+        .borrow()
+        .iter()
+        .flat_map(|call| call.operands.iter().map(|&(at, len, _)| (at, len)))
+        .collect()
+}
+
+/// A fault at each span a later country takes from the hour's shared
+/// observations. Persistent, every country meets the old walk's outcome. A
+/// one-shot fault fails the first country as the old walk does, and that
+/// failed observation is kept for the hour: a later country meets the same
+/// failure without reading the span again, never retrying it into success.
+#[test]
+fn stability_shared_static_faults_match_the_old_walk_and_are_never_retried() {
+    let w = scaled_countries(3);
+    let probe = Copies::new(&w);
+    let mut memo = Memo::default();
+    assert!(country_walk(&probe, Some(&mut memo), 1, None).is_ok());
+    let first = operand_spans(&probe);
+    assert!(country_walk(&probe, Some(&mut memo), 2, None).is_ok());
+    let second = operand_spans(&probe);
+    let old = Copies::new(&w);
+    assert!(country_walk(&old, None, 2, None).is_ok());
+    let shared: Vec<_> = operand_spans(&old)
+        .difference(&second)
+        .copied()
+        .filter(|span| first.contains(span))
+        .collect();
+    assert!(!shared.is_empty(), "later countries reuse shared spans");
+    let mut retained = 0;
+    for &(address, len) in &shared {
+        let old = Copies {
+            persistent: true,
+            ..Copies::new(&w)
+        };
+        let new = Copies {
+            persistent: true,
+            ..Copies::new(&w)
+        };
+        let mut memo = Memo::default();
+        for slot in 1..=3 {
+            assert_eq!(
+                country_walk(&new, Some(&mut memo), slot, Some(address)),
+                country_walk(&old, None, slot, Some(address)),
+                "persistent fault {address:#x}, country {slot}"
+            );
+        }
+        let new = Copies::new(&w);
+        let mut memo = Memo::default();
+        let failure = country_walk(&new, Some(&mut memo), 1, Some(address));
+        let serial = country_walk(&Copies::new(&w), None, 1, Some(address));
+        assert!(
+            failure.is_ok() || serial.is_err(),
+            "one-shot fault {address:#x} refused more data"
+        );
+        if failure.is_ok() {
+            assert!(country_walk(&new, Some(&mut memo), 2, None).is_ok());
+            continue;
+        }
+        let failed: Vec<_> = new
+            .calls
+            .borrow()
+            .iter()
+            .flat_map(|call| call.operands.iter().copied())
+            .filter(|operand| !operand.2)
+            .collect();
+        if failed != [(address, len, false)] {
+            // An earlier country-local span met the fault first.
+            continue;
+        }
+        retained += 1;
+        assert!(failure.is_err());
+        assert_eq!(
+            country_walk(&new, Some(&mut memo), 2, None),
+            failure,
+            "the failed shared observation {address:#x} is kept for the hour"
+        );
+        assert!(
+            new.calls
+                .borrow()
+                .iter()
+                .flat_map(|call| call.operands.iter())
+                .all(|&(at, _, _)| at != address),
+            "{address:#x} is not read again"
+        );
+    }
+    assert!(retained != 0, "a shared failure was retained");
+}
+
+/// Memory that counts copies without allocating.
+#[cfg(feature = "alloc-fault-injection")]
+struct Counted<'a> {
+    source: &'a World,
+    calls: std::cell::Cell<usize>,
+}
+
+#[cfg(feature = "alloc-fault-injection")]
+impl Memory for Counted<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.calls.set(self.calls.get() + 1);
+        self.source.copy(address, destination)
+    }
+}
+
+/// Retention is optional storage: when it cannot allocate, the acquired
+/// read stands and nothing is kept, so a later use reads the span again as
+/// the walk without the memo did.
+#[cfg(feature = "alloc-fault-injection")]
+#[test]
+#[ignore = "run alone: allocation hooks are process-global"]
+fn stability_observation_retention_failure_keeps_the_acquired_read() {
+    let w = world();
+    let counted = Counted {
+        source: &w,
+        calls: std::cell::Cell::new(0),
+    };
+    let mut local = Memo::default();
+    let mut shared = Memo::default();
+    let memory = Observed::new(&counted, &mut local, &mut shared);
+    let mut bytes = [0; 16];
+    crate::allocation::tests::with_allocations_denied(|| {
+        assert!(memory.copy(AT_WAR + cmodifier::ACCUMULATOR, &mut bytes));
+        assert!(
+            memory
+                .shared()
+                .copy(AT_WAR + cmodifier::ACCUMULATOR, &mut bytes)
+        );
+    });
+    assert_eq!(counted.calls.get(), 2);
+}
+
+#[cfg(feature = "alloc-fault-injection")]
+#[test]
+#[ignore = "run alone: allocation hooks are process-global"]
+fn stability_batched_retention_failure_reads_nothing_before_the_serial_reader() {
+    let w = scaled_world();
+    let counted = Counted {
+        source: &w,
+        calls: std::cell::Cell::new(0),
+    };
+    let mut local = Memo::default();
+    let mut shared = Memo::default();
+    let memory = Observed::new(&counted, &mut local, &mut shared);
+    let address = AT_WAR + cmodifier::ACCUMULATOR;
+    crate::allocation::tests::with_allocations_denied(|| {
+        batched::sources(&memory, &[AT_WAR, 0x6100_0000], true, true);
+        batched::objects(&memory, &[IDEA_A, IDEA_B], 8, IDEA_MODIFIER, false);
+        assert_eq!(read::<u64>(&memory.prepared(), IDEA_A), None);
+        assert_eq!(counted.calls.get(), 0);
+        assert!(memory.shared().copy(address, &mut [0; 16]));
+        assert_eq!(counted.calls.get(), 1);
+        assert_eq!(memory.fallbacks(), 0);
+    });
+}
+
+#[cfg(feature = "alloc-fault-injection")]
+#[test]
+#[ignore = "run alone: allocation hooks are process-global"]
+fn stability_denied_candidate_preparation_matches_serial_acquisitions() {
+    let w = scaled_world();
+    let countries = ccountry::Reader::new(&w, BASE, GS).unwrap();
+    let country = countries.at(1).unwrap().unwrap();
+    let context = Context::read(&w, BASE, GS, keys()).unwrap();
+    let demand = Demand {
+        children: 8,
+        candidates: 16,
+        values: 8,
+        ..Demand::default()
+    };
+    let mut old_scratch = Scratch::with_demand(demand).unwrap();
+    let mut new_scratch = Scratch::with_demand(demand).unwrap();
+    let serial = Counted {
+        source: &w,
+        calls: std::cell::Cell::new(0),
+    };
+    let counted = Counted {
+        source: &w,
+        calls: std::cell::Cell::new(0),
+    };
+    let old_countries = ccountry::Reader::new(&serial, BASE, GS).unwrap();
+    let new_countries = ccountry::Reader::new(&counted, BASE, GS).unwrap();
+    serial.calls.set(0);
+    counted.calls.set(0);
+    let mut old_input = InputRow::default();
+    let mut new_input = InputRow::default();
+    let mut old_lines = [LineRow::default(); 16];
+    let mut new_lines = old_lines;
+    let mut old_bytes = [0; 256];
+    let mut new_bytes = old_bytes;
+    crate::allocation::tests::with_allocations_denied(|| {
+        let old = reference::walk_country(
+            &serial,
+            BASE,
+            &old_countries,
+            country,
+            &context,
+            &mut old_scratch,
+            &mut old_input,
+            &mut old_lines,
+            &mut old_bytes,
+        );
+        let new = walk_country(
+            &counted,
+            BASE,
+            &new_countries,
+            country,
+            &context,
+            &mut new_scratch,
+            &mut new_input,
+            &mut new_lines,
+            &mut new_bytes,
+        );
+        assert_eq!(new, old);
+        assert!(new.is_ok());
+        assert_eq!(new_input, old_input);
+        assert_eq!(new_lines, old_lines);
+        assert_eq!(new_bytes, old_bytes);
+        assert_eq!(counted.calls.get(), serial.calls.get());
+        assert_eq!(new_scratch.batch_fallbacks(), 0);
+    });
 }

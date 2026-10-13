@@ -1,6 +1,7 @@
-//! Strategic regions from `map/strategicregions/*.txt`: identity, membership
-//! and naval terrain. Weather periods drive the simulation, which the replay
-//! records, so they are not read.
+//! Strategic regions from `map/strategicregions/*.txt`: identity, membership,
+//! naval terrain and the weather periods' dates and temperature ranges, which
+//! playback's temperature pass reads ([`replay::temperature`]). The other
+//! weather chances drive simulation the replay records, so they are not read.
 //!
 //! The database lists the directory's own `.txt` files without recursion
 //! and reads every top-level `strategic_region` as a new template. An id
@@ -30,6 +31,12 @@ pub struct StrategicRegion {
     /// Ordered `static_modifiers` names. Each key/value pair appends, and
     /// the naval grid uses this order.
     pub static_modifier_names: Vec<String>,
+    /// The template's weather periods (+0xB0, count +0xBC) in authored order:
+    /// append one weather period per `period`, across
+    /// repeated `weather` blocks.
+    pub periods: Vec<replay::temperature::Period>,
+    /// Why a period's bounds cannot be ported; the periods are then unknown.
+    pub periods_refused: Option<String>,
 }
 
 /// The database as the game keeps it, by id, and what it deleted or
@@ -144,13 +151,10 @@ fn parse_region(root: &crate::parser::Item) -> io::Result<(i32, StrategicRegion)
                 .iter()
                 .filter(|field| field.keyword_is("period"))
             {
-                for field in block(&period.value, "region weather period")? {
-                    if field.keyword_is("temperature")
-                        && field.value.items().is_some_and(|values| values.len() < 2)
-                    {
-                        return Err(invalid(
-                            "strategic region weather temperature: native range reads uninitialized values with fewer than two entries",
-                        ));
+                match parse_period(period)? {
+                    Ok(period) => out.periods.push(period),
+                    Err(reason) => {
+                        out.periods_refused.get_or_insert(reason);
                     }
                 }
             }
@@ -165,6 +169,95 @@ fn parse_region(root: &crate::parser::Item) -> io::Result<(i32, StrategicRegion)
     }
     out.id = id as u32;
     Ok((id, out))
+}
+
+/// Read one `period` into its defaults: both bounds start at the shared
+/// default date and the temperature range at -10 to 35 degrees. Each
+/// `between` of exactly two strings splits each on `.`, keeping empty parts.
+/// A bound of exactly two parts is normalized to year one, then takes the
+/// second part as its zero-based month and the first as its zero-based day,
+/// using decimal integer conversion. Any other bound is reported and left.
+/// Each `temperature` stores its first two fixed5 values, each starting at
+/// zero when its conversion fails. The inner result names a bound the date
+/// setters cannot take.
+fn parse_period(
+    period: &crate::parser::Item,
+) -> io::Result<Result<replay::temperature::Period, String>> {
+    use replay::temperature::{PERIOD_DEFAULT_DATE, PERIOD_DEFAULT_TEMPERATURE, apply_bound};
+    let [mut minimum, mut maximum] = PERIOD_DEFAULT_TEMPERATURE;
+    let mut bounds = [PERIOD_DEFAULT_DATE; 2];
+    for field in block(&period.value, "region weather period")? {
+        if field.keyword_is("temperature") {
+            let Some(values) = field.value.items() else {
+                return Ok(Err("weather period temperature is not a list".into()));
+            };
+            let [low, high, ..] = values else {
+                return Err(invalid(
+                    "strategic region weather temperature: native range reads uninitialized values with fewer than two entries",
+                ));
+            };
+            let fixed = |value: &crate::parser::Item| {
+                value
+                    .value
+                    .scalar()
+                    .and_then(crate::fixed5::script_fixed5)
+                    .unwrap_or(0)
+            };
+            [minimum, maximum] = [fixed(low), fixed(high)];
+        } else if field.keyword_is("between") {
+            let Some(values) = field.value.items() else {
+                return Ok(Err("weather period between is not a list".into()));
+            };
+            if values.len() != 2 {
+                continue;
+            }
+            for (bound, value) in bounds.iter_mut().zip(values) {
+                let Some(text) = value.value.scalar() else {
+                    return Ok(Err("weather period between bound is a block".into()));
+                };
+                let parts: Vec<&[u8]> = crate::parser::c_string(text)
+                    .split(|&byte| byte == b'.')
+                    .collect();
+                if let [day, month] = parts[..] {
+                    match apply_bound(
+                        *bound,
+                        crate::fixed5::decimal_i32(day),
+                        crate::fixed5::decimal_i32(month),
+                    ) {
+                        Ok(date) => *bound = date,
+                        Err(reason) => {
+                            return Ok(Err(format!(
+                                "weather period bound {}: {reason}",
+                                String::from_utf8_lossy(text)
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(Ok(replay::temperature::Period {
+        start: bounds[0],
+        end: bounds[1],
+        minimum,
+        maximum,
+    }))
+}
+
+impl StrategicRegion {
+    /// The region's province vector (pointer +0x18, count +0x24), built from
+    /// its template during province initialization, which visits every region.
+    /// Keep authored province order; skip an id the province database does not
+    /// return and one already in this region. A province another region's
+    /// template also lists stays in both vectors.
+    pub fn native_provinces(&self, exists: impl Fn(u32) -> bool) -> Vec<u32> {
+        let mut seen = std::collections::BTreeSet::new();
+        self.provinces
+            .iter()
+            .copied()
+            .filter(|&province| exists(province) && seen.insert(province))
+            .collect()
+    }
 }
 
 /// Reads every region of the stack's `map/strategicregions` files.
@@ -204,6 +297,16 @@ mod tests {
     }
 
     #[test]
+    fn native_province_vector_skips_missing_and_repeated_ids_in_authored_order() {
+        let region = parse_region(
+            br#"strategic_region={id=3 name=key provinces={9 4 9 7 2} provinces={4 5}}"#,
+        )
+        .unwrap();
+        assert_eq!(region.provinces, [9, 4, 9, 7, 2, 4, 5]);
+        assert_eq!(region.native_provinces(|id| id != 7), [9, 4, 2, 5]);
+    }
+
+    #[test]
     fn weather_recovery_preserves_name_and_appends_provinces() {
         let region = parse_region(
             br#"@n=010 STRATEGIC_REGION={id=@n name=key provinces={1}
@@ -239,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn a_region_keeps_its_identity_and_membership_and_ignores_weather() {
+    fn a_region_keeps_its_identity_and_membership() {
         let region = parse_region(
             br#"strategic_region={
                 id=1
@@ -254,6 +357,65 @@ mod tests {
         assert_eq!(region.provinces, vec![221, 271, 296]);
         assert_eq!(region.naval_terrain, None);
         assert!(!region.static_modifiers);
+    }
+
+    #[test]
+    fn weather_periods_keep_their_order_bounds_and_temperature_ranges() {
+        use replay::temperature::{PERIOD_DEFAULT_DATE as YEAR_ONE, Period};
+        let day = |days: i32| YEAR_ONE + days * 24;
+        let region = parse_region(
+            br#"strategic_region={ id=1 name=R provinces={}
+                weather={
+                    period={ between={ 0.0 1.12 } temperature={ -12.5 3 9 } snow=0.1 }
+                    period={ }
+                    position={ x=1 }
+                }
+                weather={
+                    period={ between={ 30.1 30.2 } temperature={ 1 2 } temperature={ x 4.25 } }
+                    period={ between={ 4.0 } between={ 5 "6.5.0" } between={ 9.3 "0.4." } }
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(region.periods_refused, None);
+        assert_eq!(
+            region.periods,
+            [
+                // 1.12 is month twelve: the next year's 2 January.
+                Period {
+                    start: day(0),
+                    end: day(366),
+                    minimum: -1_250_000,
+                    maximum: 300_000
+                },
+                Period {
+                    start: day(0),
+                    end: day(0),
+                    minimum: -1_000_000,
+                    maximum: 3_500_000
+                },
+                // Days are not clamped: 30 February is 3 March.
+                Period {
+                    start: day(61),
+                    end: day(89),
+                    minimum: 0,
+                    maximum: 425_000
+                },
+                // One string, or a bound of other than two parts, is left; `0.4.`
+                // has three parts and `9.3` is 10 April.
+                Period {
+                    start: day(99),
+                    end: day(0),
+                    minimum: -1_000_000,
+                    maximum: 3_500_000
+                },
+            ]
+        );
+        let refused = parse_region(
+            br#"strategic_region={ id=1 name=R weather={ period={ between={ 0.13 1.0 } } } }"#,
+        )
+        .unwrap();
+        assert!(refused.periods_refused.unwrap().contains("month"));
     }
 
     #[test]

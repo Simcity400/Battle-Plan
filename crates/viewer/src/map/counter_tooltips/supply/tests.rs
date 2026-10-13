@@ -168,7 +168,12 @@ fn render(data: &Aggregate, name: impl FnMut(i32) -> Result<String, String>) -> 
 #[test]
 fn ordinary_supply_footer_uses_title_and_skips_dangling_refs_before_last_disruption() {
     use crate::map::{counters::CounterControl, test_frame, test_put as put};
-    use replay::rows::{DivisionRow, DivisionStatusRow, RailwayGunCounterInputRow};
+    use replay::rows::{
+        CountryLinkRow, DivisionRow, DivisionStatusRow, DivisionSupplyFooter,
+        RailwayGunCounterInputRow,
+    };
+    // Divisions and railway guns record the same footers, at the printed
+    // hundredth.
     let first = UnitSupplyInputs {
         asked: 100_000,
         received: 50_000,
@@ -179,11 +184,18 @@ fn ordinary_supply_footer_uses_title_and_skips_dangling_refs_before_last_disrupt
     let last = UnitSupplyInputs {
         asked: 200_000,
         received: 150_000,
-        disruption: 1_501,
+        disruption: 2_000,
         origins: Some(vec![]),
         ..Default::default()
     };
     let mut frame = test_frame(0);
+    put(
+        &mut frame,
+        TableRows::CountryLinks(vec![CountryLinkRow {
+            id: 7,
+            canonical_slot: 1,
+        }]),
+    );
     put(
         &mut frame,
         TableRows::Divisions(
@@ -191,6 +203,7 @@ fn ordinary_supply_footer_uses_title_and_skips_dangling_refs_before_last_disrupt
                 .into_iter()
                 .map(|id| DivisionRow {
                     id,
+                    roster_owner: 7,
                     ..Default::default()
                 })
                 .collect(),
@@ -201,6 +214,7 @@ fn ordinary_supply_footer_uses_title_and_skips_dangling_refs_before_last_disrupt
         TableRows::DivisionStatus(
             [first.clone(), last.clone()]
                 .into_iter()
+                .map(DivisionSupplyFooter::from)
                 .enumerate()
                 .map(|(index, supply)| DivisionStatusRow {
                     division: index as u64 + 1,
@@ -218,6 +232,7 @@ fn ordinary_supply_footer_uses_title_and_skips_dangling_refs_before_last_disrupt
                 .enumerate()
                 .map(|(index, supply)| RailwayGunCounterInputRow {
                     gun: index as u64 + 1,
+                    roster_owner: 7,
                     supply: Recorded::Value(Some(supply)),
                     ..Default::default()
                 })
@@ -244,7 +259,8 @@ fn ordinary_supply_footer_uses_title_and_skips_dangling_refs_before_last_disrupt
                 body: "arrival 2h\n".into(),
                 ..Default::default()
             };
-            append(context, &input, &mut out);
+            // The counter's supply child, through the shared-vision gate.
+            super::super::children::append(context, &input, &mut out);
             out
         })
     };
@@ -254,10 +270,12 @@ fn ordinary_supply_footer_uses_title_and_skips_dangling_refs_before_last_disrupt
         assert!(
             baseline
                 .title
-                .starts_with("header\n\nneeded 3.00\n\nreceived 2.00")
+                .starts_with("header\n\nneeded 3.00\n\nreceived 2.00"),
+            "{railway_gun} {:?}",
+            baseline.title
         );
         assert!(baseline.title.ends_with("  disruption 0.02\n"));
-        assert!(baseline.refused.is_empty());
+        assert!(baseline.refused.is_empty(), "{:?}", baseline.refused);
         for members in [&[1, dangling, 2][..], &[1, 2, dangling][..]] {
             assert_eq!(build(&frame, railway_gun, members), baseline);
         }
@@ -294,6 +312,130 @@ fn ordinary_supply_footer_uses_title_and_skips_dangling_refs_before_last_disrupt
         assert_eq!(unknown.body, "arrival 2h\n");
         assert_eq!(unknown.refused.values().sum::<usize>(), 1);
     }
+    // A recording without the division footer refuses it by name and keeps
+    // the rest of the hover.
+    let mut older = frame.clone();
+    if let TableView::Complete(TableRows::DivisionStatus(rows)) =
+        &mut *older.tables[TableId::DivisionStatus.index()]
+    {
+        for row in rows {
+            row.supply = Recorded::NotRecorded;
+        }
+    }
+    let refused = build(&older, false, &[1, 2]);
+    assert_eq!(refused.title, "header");
+    assert_eq!(refused.body, "arrival 2h\n");
+    assert_eq!(refused.refused.values().sum::<usize>(), 1);
+    assert!(
+        refused
+            .refused
+            .keys()
+            .any(|reason| reason.contains("consumer supply inputs were not recorded")),
+        "{:?}",
+        refused.refused
+    );
+}
+
+#[test]
+fn a_division_footer_sums_its_recorded_hundredths() {
+    use crate::map::{counters::CounterControl, test_frame, test_put as put};
+    use replay::rows::{CountryLinkRow, DivisionRow, DivisionStatusRow, DivisionSupplyFooter};
+    // Two divisions as DivisionStatus stores them: the game holds 1.23456
+    // and 0.01499 needed, which print 1.23 and 0.01 and sum to 1.24.
+    let footers = [
+        DivisionSupplyFooter {
+            asked: 123_000,
+            received: 100_000,
+            from_state: 40_000,
+            division_demand: UnitSupplyDemand {
+                count: 1,
+                value: 123_000,
+            },
+            origins: Some(vec![UnitSupplyOrigin {
+                province: 0,
+                requested: 60_000,
+                received: 60_000,
+            }]),
+            ..Default::default()
+        },
+        DivisionSupplyFooter {
+            asked: 1_000,
+            received: 1_000,
+            division_demand: UnitSupplyDemand {
+                count: 1,
+                value: 1_000,
+            },
+            origins: Some(vec![]),
+            ..Default::default()
+        },
+    ];
+    let mut frame = test_frame(0);
+    put(
+        &mut frame,
+        TableRows::CountryLinks(vec![CountryLinkRow {
+            id: 7,
+            canonical_slot: 1,
+        }]),
+    );
+    put(
+        &mut frame,
+        TableRows::Divisions(
+            [1, 2]
+                .into_iter()
+                .map(|id| DivisionRow {
+                    id,
+                    roster_owner: 7,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    // The hub's province resolves as null: an empty label, no refusal.
+    put(&mut frame, TableRows::Provinces(Vec::new()));
+    put(
+        &mut frame,
+        TableRows::DivisionStatus(
+            footers
+                .into_iter()
+                .enumerate()
+                .map(|(index, supply)| DivisionStatusRow {
+                    division: index as u64 + 1,
+                    supply: Recorded::Value(Some(supply)),
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    let out = with_frame_context(&frame, &loc(), |context| {
+        let input = CounterHover {
+            control: CounterControl::Supply,
+            authored: None,
+            rect: [0.0; 4],
+            remaining: None,
+            ours: true,
+            coarse: false,
+            hidden: false,
+            railway_gun: false,
+            members: vec![1, 2].into(),
+            timing: Arc::from([]),
+        };
+        let mut out = Tooltip {
+            title: "header".into(),
+            ..Default::default()
+        };
+        super::super::children::append(context, &input, &mut out);
+        out
+    });
+    assert!(out.refused.is_empty(), "{:?}", out.refused);
+    assert!(
+        out.title.starts_with("header\n\nneeded 1.24\n"),
+        "{:?}",
+        out.title
+    );
+    assert!(out.title.contains("  divisions 2 1.24"), "{:?}", out.title);
+    assert!(out.title.contains("received 1.01"), "{:?}", out.title);
+    assert!(out.title.contains("  state 0.40\n"), "{:?}", out.title);
+    assert!(out.title.contains("  nodes 0.60\n"), "{:?}", out.title);
 }
 
 #[test]

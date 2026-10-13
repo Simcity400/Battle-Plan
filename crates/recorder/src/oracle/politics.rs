@@ -5,7 +5,10 @@
 //! leaders' saved roles, and CountryCivilWars against
 //! each country's saved `civil_war_target`s.
 
-use super::{Report, complete, country_tag, invalid, required_country_tag};
+use super::{
+    Report, complete, country_tag, current_slice_owners, invalid, required_country_tag,
+    slice_owner_limitation,
+};
 use installed_content::save::{Save, characters as saved, governance};
 use replay::{
     frame::DecodedFrame,
@@ -60,6 +63,9 @@ pub(super) fn compare(
 /// Entries compare the primary key then case-insensitive text, not character.
 /// The game saves that flag; the game saves the role's idea.
 /// The save carries membership, not the available array's native order.
+/// Pools are read once a game day per country: only the countries read at the
+/// oracle hour are compared (all of them on a full hour or in a recording
+/// from before the table was sliced).
 fn available_advisors(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -71,15 +77,38 @@ fn available_advisors(
         .manager
         .as_ref()
         .ok_or_else(|| invalid("save lacks character_manager"))?;
+    let current = current_slice_owners(frame, TableId::AvailableAdvisors, report)?;
+    slice_owner_limitation(frame, TableId::AvailableAdvisors, &current, report);
+    let current: Option<BTreeSet<&[u8]>> = match &current {
+        None => None,
+        Some(owners) => {
+            let mut tags = BTreeSet::new();
+            for &owner in owners {
+                if let Some(tag) = country_tag(owner, links)? {
+                    tags.insert(tag);
+                }
+            }
+            Some(tags)
+        }
+    };
+    let read_now = |tag: &[u8]| current.as_ref().is_none_or(|tags| tags.contains(tag));
     let mut recorded = BTreeMap::<Vec<u8>, BTreeSet<(u32, Vec<u8>)>>::new();
+    let mut compared = 0;
     for row in rows {
         let tag = required_country_tag(row.country, links)?;
+        if !read_now(tag) {
+            continue;
+        }
+        compared += 1;
         recorded.entry(tag.to_vec()).or_default().insert((
             row.character,
             installed_content::parser::c_string(&row.idea).to_vec(),
         ));
     }
     for (tag, records) in report.canonical_countries(&pack.character_status) {
+        if !read_now(tag.as_slice()) {
+            continue;
+        }
         let mut expected = BTreeSet::new();
         let mut missing = false;
         for record in records {
@@ -177,7 +206,7 @@ fn available_advisors(
             "country absent from save",
         );
     }
-    report.compared("AvailableAdvisors", rows.len());
+    report.compared("AvailableAdvisors", compared);
     report.limitation(
         "the game saves advisor status and roles but not the available-advisor vector order or duplicate multiplicity; non-ASCII case-insensitive comparison equivalence is not certified by the saved idea bytes",
         "AvailableAdvisors.ordinal",
@@ -826,6 +855,59 @@ mod tests {
             reason: "source failed".into(),
         };
         assert!(available_advisors(&frame, &pack, &links, &mut Report::default()).is_err());
+    }
+
+    /// Pools are read once a game day per country (owner decision
+    /// 2026-10-11): a country whose pool SliceReads dates to an earlier hour
+    /// is not compared with the save, so its held pool is no difference.
+    #[test]
+    fn available_advisors_compare_only_pools_read_at_the_oracle_hour() {
+        let source = br#"
+                character_manager={historical={
+                    character={id={id=1 type=73} token="a" advisors={advisor={idea_token="a1"}}}
+                }}
+                countries={GER={characters={
+                    character_status={character={id=1 type=73} advisor=yes}
+                }}}
+            "#;
+        let pack = saved::parse(&installed_content::parser::parse(source).unwrap().items).unwrap();
+        let germany = germany();
+        let links = BTreeMap::from([(102, &germany)]);
+        let mut frame = frame();
+        // The held pool predates the save's: it lists another idea.
+        *frame.tables[TableId::AvailableAdvisors.index()] =
+            TableView::Complete(TableRows::AvailableAdvisors(vec![
+                replay::rows::AvailableAdvisorRow {
+                    country: 102,
+                    ordinal: 0,
+                    character: 1,
+                    idea: b"old".to_vec(),
+                },
+            ]));
+        let read_at = |hour| {
+            TableView::Complete(TableRows::SliceReads(vec![replay::rows::SliceReadRow {
+                table: TableId::AvailableAdvisors.index() as u32,
+                owner: 102,
+                sample_hour: hour,
+            }]))
+        };
+        *frame.tables[TableId::SliceReads.index()] = read_at(frame.hour - 3);
+        let mut report = Report::default();
+        available_advisors(&frame, &pack, &links, &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["AvailableAdvisors"], 0);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("owner decision 2026-10-11"))
+        );
+        // Read at the oracle hour, the same pool is a difference.
+        *frame.tables[TableId::SliceReads.index()] = read_at(frame.hour);
+        let mut report = Report::default();
+        available_advisors(&frame, &pack, &links, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+        assert_eq!(report.compared_tables["AvailableAdvisors"], 1);
     }
 
     #[test]

@@ -503,6 +503,8 @@ pub fn walk_local_subunits(
         game_state,
         crate::walk::Buffer::Fixed(rows),
         crate::walk::Buffer::Fixed(requirements),
+        |_| LocalSelection::Read,
+        |_| {},
     )
 }
 
@@ -513,21 +515,164 @@ pub fn walk_local_subunits_growing(
     rows: &mut Vec<LocalSubunitRow>,
     requirements: &mut Vec<LocalRequirement>,
 ) -> LocalSubunitWalk {
+    walk_local_subunits_selected_growing(
+        memory,
+        base,
+        game_state,
+        rows,
+        requirements,
+        |_| LocalSelection::Read,
+        |_| {},
+    )
+}
+
+/// One country's rows a caller holds from an earlier walk; their requirement
+/// spans index `requirements`.
+#[derive(Clone, Copy, Debug)]
+pub struct HeldLocalSubunits<'a> {
+    pub rows: &'a [LocalSubunitRow],
+    pub requirements: &'a [LocalRequirement],
+}
+
+/// What [`walk_local_subunits_selected_growing`] does with one country.
+#[derive(Clone, Copy, Debug)]
+pub enum LocalSelection<'a> {
+    /// Read the country's clones.
+    Read,
+    /// Publish the held rows without reading the country: the caller proved
+    /// them current.
+    Carry(HeldLocalSubunits<'a>),
+    /// Publish the held rows when the country's deployment status and clone
+    /// vector header are these, and read the country otherwise.
+    Confirm {
+        deployment: Deployment,
+        held: HeldLocalSubunits<'a>,
+    },
+}
+
+/// A country's authenticated deployment status and its clone vector header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Deployment {
+    pub status: usize,
+    pub clones: Array,
+}
+
+/// What the walk did with one country, in walk order.
+#[derive(Clone, Debug)]
+pub struct LocalVisit {
+    pub country: ccountry::Country,
+    /// The status and header this walk read; `None` for a carried country.
+    pub deployment: Option<Deployment>,
+    /// The country's rows in the output.
+    pub rows: std::ops::Range<usize>,
+    /// Whether its clones were read (otherwise its held rows were published).
+    pub read: bool,
+}
+
+/// [`walk_local_subunits_growing`] over the countries `select` lets it read:
+/// a carried or confirmed country's held rows are copied in its place, so the
+/// walk publishes what a fresh one would whenever every held row is current.
+/// `visit` sees each country once, after its rows.
+pub fn walk_local_subunits_selected_growing<'a>(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    rows: &mut Vec<LocalSubunitRow>,
+    requirements: &mut Vec<LocalRequirement>,
+    select: impl FnMut(ccountry::Country) -> LocalSelection<'a>,
+    visit: impl FnMut(LocalVisit),
+) -> LocalSubunitWalk {
     walk_local_subunits_buffer(
         memory,
         base,
         game_state,
         crate::walk::Buffer::Growing(rows),
         crate::walk::Buffer::Growing(requirements),
+        select,
+        visit,
     )
 }
 
-fn walk_local_subunits_buffer(
+/// A country's authenticated deployment status and clone vector header.
+pub fn deployment(
+    memory: &impl Memory,
+    base: usize,
+    country: ccountry::Country,
+) -> Result<Deployment, &'static str> {
+    let status = manager(memory, base, country)?;
+    let clones = status
+        .checked_add(LOCAL_SUBUNITS)
+        .and_then(|at| Array::read(memory, at, 8))
+        .ok_or("local subunit vector invalid")?;
+    Ok(Deployment { status, clones })
+}
+
+/// The rows and requirements written so far, and the rows that did not fit.
+struct LocalOutput<'r> {
+    rows: crate::walk::Buffer<'r, LocalSubunitRow>,
+    requirements: crate::walk::Buffer<'r, LocalRequirement>,
+    len: usize,
+    missing: u32,
+}
+
+impl LocalOutput<'_> {
+    /// Appends `row` with its `count` requirements (`row.requirements` is
+    /// rewritten), or counts it missing when a fixed output is full. Its
+    /// demand is counted either way.
+    fn push(
+        &mut self,
+        result: &mut LocalSubunitWalk,
+        mut row: LocalSubunitRow,
+        count: usize,
+        mut entry: impl FnMut(usize) -> Result<LocalRequirement, &'static str>,
+    ) -> Result<(), &'static str> {
+        result.required_rows = result
+            .required_rows
+            .checked_add(1)
+            .ok_or("local subunit count overflow")?;
+        result.required_requirements = result
+            .required_requirements
+            .checked_add(count)
+            .ok_or("local subunit requirement count overflow")?;
+        // Cloning and its original requirement header bound the worker-owned
+        // output before publishing a row.
+        self.rows.ensure(
+            self.len
+                .checked_add(1)
+                .ok_or("local subunit count overflow")?,
+        )?;
+        let start = result.requirements_len;
+        self.requirements.ensure(
+            start
+                .checked_add(count)
+                .ok_or("local subunit requirement count overflow")?,
+        )?;
+        if self.len == self.rows.len() || count > self.requirements.len() - start {
+            self.missing = self
+                .missing
+                .checked_add(1)
+                .ok_or("local subunit count overflow")?;
+            return Ok(());
+        }
+        for index in 0..count {
+            self.requirements[start + index] = entry(index)?;
+        }
+        result.requirements_len += count;
+        row.requirements = crate::creferenced_division_template::Span { start, len: count };
+        self.rows[self.len] = row;
+        self.len += 1;
+        Ok(())
+    }
+}
+
+fn walk_local_subunits_buffer<'a>(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut rows: crate::walk::Buffer<'_, LocalSubunitRow>,
-    mut requirements: crate::walk::Buffer<'_, LocalRequirement>,
+    rows: crate::walk::Buffer<'_, LocalSubunitRow>,
+    requirements: crate::walk::Buffer<'_, LocalRequirement>,
+    mut select: impl FnMut(ccountry::Country) -> LocalSelection<'a>,
+    mut visit: impl FnMut(LocalVisit),
 ) -> LocalSubunitWalk {
     let mut result = LocalSubunitWalk {
         outcome: Outcome::Rows { len: 0 },
@@ -535,142 +680,181 @@ fn walk_local_subunits_buffer(
         requirements_len: 0,
         required_requirements: 0,
     };
-    let captured = (|| {
-        let countries = ccountry::Reader::new(memory, base, game_state)?;
-        let database = csub_unit_definition::Database::read(memory, base)?;
-        let expected = base
-            .checked_add(csub_unit_definition::VTABLE_RVA)
-            .ok_or("local subunit module address overflow")? as u64;
-        let mut len = 0;
-        let mut missing = 0_u32;
-        let mut slots = [0_u8; CLONE_BATCH * 8];
-        let mut pointers = [0_usize; CLONE_BATCH];
-        let mut records = [0_u8; CLONE_BATCH * CLONE_RECORD];
-        for slot in 1..countries.count() {
-            let Some(country) = countries.at(slot)? else {
-                continue;
-            };
-            let clones = manager(memory, base, country)?
-                .checked_add(LOCAL_SUBUNITS)
-                .and_then(|at| Array::read(memory, at, 8))
-                .ok_or("local subunit vector invalid")?;
-            let country_rows = len;
-            for first in (0..clones.count).step_by(CLONE_BATCH) {
-                let batch = ((clones.count - first) as usize).min(CLONE_BATCH);
-                let at = clones
-                    .element(first, 8)
-                    .ok_or("local subunit index invalid")?;
-                if !read_slice(memory, at, &mut slots[..batch * 8]) {
-                    return Err("local subunit pointers unreadable");
-                }
-                for (pointer, bytes) in pointers.iter_mut().zip(slots[..batch * 8].chunks_exact(8))
-                {
-                    *pointer = usize::try_from(u64::from_le_bytes(bytes.try_into().unwrap()))
-                        .ok()
-                        .filter(|pointer| *pointer != 0)
-                        .ok_or("local subunit pointer null")?;
-                }
-                if memory.copy_records(
-                    RecordSources::Pointers(&pointers[..batch]),
-                    &CLONE_LAYOUT,
-                    &mut records[..batch * CLONE_RECORD],
-                ) < batch * CLONE_FIELDS.len()
-                {
-                    return Err("local subunit fields unreadable");
-                }
-                for (&clone, record) in pointers[..batch]
-                    .iter()
-                    .zip(records[..batch * CLONE_RECORD].chunks_exact(CLONE_RECORD))
-                {
-                    let token = u32::from_le_bytes(
-                        record[csub_unit_definition::TOKEN..csub_unit_definition::TOKEN + 4]
-                            .try_into()
-                            .unwrap(),
-                    );
-                    if u64::from_le_bytes(record[..8].try_into().unwrap()) != expected
-                        || record[csub_unit_definition::IS_REAL] != 1
-                        || token == 0
-                    {
-                        return Err("local subunit identity invalid");
+    let mut output = LocalOutput {
+        rows,
+        requirements,
+        len: 0,
+        missing: 0,
+    };
+    let captured =
+        (|| {
+            let countries = ccountry::Reader::new(memory, base, game_state)?;
+            let mut database = None;
+            for slot in 1..countries.count() {
+                let Some(country) = countries.at(slot)? else {
+                    continue;
+                };
+                let first = output.len;
+                let (current, held) = match select(country) {
+                    LocalSelection::Read => (Some(deployment(memory, base, country)?), None),
+                    LocalSelection::Carry(held) => (None, Some(held)),
+                    LocalSelection::Confirm {
+                        deployment: expected,
+                        held,
+                    } => {
+                        let current = deployment(memory, base, country)?;
+                        (Some(current), (current == expected).then_some(held))
                     }
-                    let global = database.entry(
-                        memory,
-                        i32::from_le_bytes(record[20..24].try_into().unwrap()),
-                    )?;
-                    if global == clone {
-                        return Err("local subunit is its global definition");
+                };
+                match (held, current) {
+                    (Some(held), _) => {
+                        for row in held.rows {
+                            let entries = row
+                                .requirements
+                                .start
+                                .checked_add(row.requirements.len)
+                                .and_then(|end| held.requirements.get(row.requirements.start..end))
+                                .ok_or("held local subunit requirements invalid")?;
+                            output.push(&mut result, *row, entries.len(), |index| {
+                                Ok(entries[index])
+                            })?;
+                        }
                     }
-                    let own = Array::from_header(
-                        record[24..40].try_into().unwrap(),
-                        csub_unit_definition::ARCHETYPE_REQUIREMENT_STRIDE,
-                    )
-                    .ok_or("subunit requirement vector invalid")?;
-                    if same_requirements(
-                        memory,
-                        own,
-                        csub_unit_definition::requirements(memory, global)?,
-                    )? {
-                        continue;
-                    }
-                    // The table is keyed by (country, token). Each definition is cloned once
-                    // per country, so a repeat is refused.
-                    if rows[country_rows..len].iter().any(|row| row.token == token) {
-                        return Err("local subunit token repeats within a country");
-                    }
-                    result.required_rows = result
-                        .required_rows
-                        .checked_add(1)
-                        .ok_or("local subunit count overflow")?;
-                    result.required_requirements = result
-                        .required_requirements
-                        .checked_add(own.count as usize)
-                        .ok_or("local subunit requirement count overflow")?;
-                    // The clone and its original requirement header bound the worker-owned
-                    // output before publishing a row.
-                    rows.ensure(len.checked_add(1).ok_or("local subunit count overflow")?)?;
-                    let start = result.requirements_len;
-                    requirements.ensure(
-                        start
-                            .checked_add(own.count as usize)
-                            .ok_or("local subunit requirement count overflow")?,
-                    )?;
-                    if len == rows.len() || own.count as usize > requirements.len() - start {
-                        missing = missing
-                            .checked_add(1)
-                            .ok_or("local subunit count overflow")?;
-                        continue;
-                    }
-                    for entry in 0..own.count {
-                        let requirement = csub_unit_definition::requirement(memory, own, entry)?;
-                        requirements[result.requirements_len] = LocalRequirement {
-                            archetype_token: archetype_token(memory, base, requirement.archetype)?,
-                            amount_raw: requirement.amount,
+                    (None, Some(current)) => {
+                        let definitions = match database {
+                            Some(definitions) => definitions,
+                            None => *database
+                                .insert(csub_unit_definition::Database::read(memory, base)?),
                         };
-                        result.requirements_len += 1;
+                        read_country(
+                            memory,
+                            base,
+                            definitions,
+                            country,
+                            current.clones,
+                            &mut output,
+                            &mut result,
+                        )?;
                     }
-                    rows[len] = LocalSubunitRow {
-                        country: country.id,
-                        token,
-                        requirements: crate::creferenced_division_template::Span {
-                            start,
-                            len: own.count as usize,
-                        },
-                    };
-                    len += 1;
+                    (None, None) => unreachable!("only a carried country skips its deployment"),
                 }
+                visit(LocalVisit {
+                    country,
+                    deployment: current,
+                    rows: first..output.len,
+                    read: held.is_none(),
+                });
             }
-        }
-        Ok(if missing == 0 {
-            Outcome::Rows { len }
-        } else {
-            Outcome::Truncated {
-                len,
-                unread_rows: missing,
-            }
-        })
-    })();
-    result.outcome = captured.unwrap_or_else(|reason| Outcome::Unavailable { reason });
+            Ok(())
+        })();
+    result.outcome = match captured {
+        Ok(()) if output.missing == 0 => Outcome::Rows { len: output.len },
+        Ok(()) => Outcome::Truncated {
+            len: output.len,
+            unread_rows: output.missing,
+        },
+        Err(reason) => Outcome::Unavailable { reason },
+    };
     result
+}
+
+/// One country's clones that differ from their global definitions, appended
+/// to `output`.
+fn read_country(
+    memory: &impl Memory,
+    base: usize,
+    database: csub_unit_definition::Database,
+    country: ccountry::Country,
+    clones: Array,
+    output: &mut LocalOutput<'_>,
+    result: &mut LocalSubunitWalk,
+) -> Result<(), &'static str> {
+    let expected = base
+        .checked_add(csub_unit_definition::VTABLE_RVA)
+        .ok_or("local subunit module address overflow")? as u64;
+    let mut slots = [0_u8; CLONE_BATCH * 8];
+    let mut pointers = [0_usize; CLONE_BATCH];
+    let mut records = [0_u8; CLONE_BATCH * CLONE_RECORD];
+    let country_rows = output.len;
+    for first in (0..clones.count).step_by(CLONE_BATCH) {
+        let batch = ((clones.count - first) as usize).min(CLONE_BATCH);
+        let at = clones
+            .element(first, 8)
+            .ok_or("local subunit index invalid")?;
+        if !read_slice(memory, at, &mut slots[..batch * 8]) {
+            return Err("local subunit pointers unreadable");
+        }
+        for (pointer, bytes) in pointers.iter_mut().zip(slots[..batch * 8].chunks_exact(8)) {
+            *pointer = usize::try_from(u64::from_le_bytes(bytes.try_into().unwrap()))
+                .ok()
+                .filter(|pointer| *pointer != 0)
+                .ok_or("local subunit pointer null")?;
+        }
+        if memory.copy_records(
+            RecordSources::Pointers(&pointers[..batch]),
+            &CLONE_LAYOUT,
+            &mut records[..batch * CLONE_RECORD],
+        ) < batch * CLONE_FIELDS.len()
+        {
+            return Err("local subunit fields unreadable");
+        }
+        for (&clone, record) in pointers[..batch]
+            .iter()
+            .zip(records[..batch * CLONE_RECORD].chunks_exact(CLONE_RECORD))
+        {
+            let token = u32::from_le_bytes(
+                record[csub_unit_definition::TOKEN..csub_unit_definition::TOKEN + 4]
+                    .try_into()
+                    .unwrap(),
+            );
+            if u64::from_le_bytes(record[..8].try_into().unwrap()) != expected
+                || record[csub_unit_definition::IS_REAL] != 1
+                || token == 0
+            {
+                return Err("local subunit identity invalid");
+            }
+            let global = database.entry(
+                memory,
+                i32::from_le_bytes(record[20..24].try_into().unwrap()),
+            )?;
+            if global == clone {
+                return Err("local subunit is its global definition");
+            }
+            let own = Array::from_header(
+                record[24..40].try_into().unwrap(),
+                csub_unit_definition::ARCHETYPE_REQUIREMENT_STRIDE,
+            )
+            .ok_or("subunit requirement vector invalid")?;
+            if same_requirements(
+                memory,
+                own,
+                csub_unit_definition::requirements(memory, global)?,
+            )? {
+                continue;
+            }
+            // The table is keyed by (country, token); cloning creates a
+            // definition once per country, so a repeat is refused.
+            if output.rows[country_rows..output.len]
+                .iter()
+                .any(|row| row.token == token)
+            {
+                return Err("local subunit token repeats within a country");
+            }
+            let row = LocalSubunitRow {
+                country: country.id,
+                token,
+                requirements: Default::default(),
+            };
+            output.push(result, row, own.count as usize, |entry| {
+                let requirement = csub_unit_definition::requirement(memory, own, entry as u32)?;
+                Ok(LocalRequirement {
+                    archetype_token: archetype_token(memory, base, requirement.archetype)?,
+                    amount_raw: requirement.amount,
+                })
+            })?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -35,9 +35,11 @@ pub const MOVEMENT_TERRAIN_SPEED: usize = 0x20;
 pub const MOVEMENT_MODIFIER: usize = 0x408;
 /// Separate-HQ cached modifier block.
 pub const SEPARATE_HQ_MOVEMENT_MODIFIER: usize = 0x4c8;
-/// Accumulator displacement inside the selected modifier block.
-const MODIFIER_ACCUMULATOR: usize = 0x10;
-/// Orders-group member primary-root cache, returned only after validation.
+/// Modifier accumulator displacement used for the movement term after selecting
+/// the leader's unit modifier block.
+pub const MODIFIER_ACCUMULATOR: usize = 0x10;
+/// Orders-group member primary-root cache; root lookup returns +20 after
+/// validation.
 const PRIMARY_ROOT_CACHE: usize = 0x20;
 /// Dirty byte causing both orders-group member caches to rebuild.
 const PRIMARY_ROOT_DIRTY: usize = 0x28;
@@ -90,6 +92,17 @@ impl PrimaryRootCache {
     #[cfg(test)]
     pub fn new(roots: usize, chunks: usize) -> Self {
         Self::try_new(roots, chunks).unwrap()
+    }
+
+    /// Keeps nothing: every root and member chunk is read. Allocates nothing.
+    pub fn vacant() -> Self {
+        Self {
+            metadata: crate::carmy::PresentationInputs::vacant(),
+            prefixes: Vec::new(),
+            chunks: Vec::new(),
+            index: Vec::new(),
+            chunk_limit: 0,
+        }
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -499,16 +512,72 @@ fn movement_accumulator_internal(
     own: usize,
     class: impl FnOnce() -> Result<u32, &'static str>,
 ) -> Result<Option<usize>, &'static str> {
-    use crate::{carmy, corders_group as group, corders_group_member, cunit};
     if own == 0 {
         return Ok(None);
     }
-    let leader = movement_group_leader(memory, base, own)?;
+    let leader = movement_leader(memory, base, own)?;
     if leader == 0 {
         return Ok(None);
     }
-    // The leader's identity fields are one guarded call. The trade feature
-    // flags are read only for a class-zero division, where main reads them.
+    // The trade feature flags are read only for a class-zero division, where
+    // main reads them.
+    let mut alternate = false;
+    if class()? == 0
+        && movement_field::<u32>(
+            memory,
+            base,
+            crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+        )? & (1 << 17)
+            != 0
+        && let Some(hq) = movement_hq_root(memory, base, own)?
+    {
+        alternate = hq != movement_own_root(memory, base, army)?;
+    }
+    movement_selected(leader, alternate)
+}
+
+/// The separate-HQ predicate for `unit`, as [`movement_accumulator`] applies it
+/// to a division's own leader: a class-zero unit, with the deployed-HQ feature
+/// (DLC feature 0x39, runtime mask bit 17), whose group has a leader (+0x88)
+/// and an HQ provider (+0x68), and whose primary root differs from the HQ
+/// unit's. Unit modifier selection then selects a leader's separate-HQ block
+/// (+0x4C8) for it. A failed read is unavailable, never false.
+pub fn separate_hq_order(
+    memory: &impl crate::Memory,
+    base: usize,
+    unit: usize,
+) -> Result<bool, &'static str> {
+    if movement_field::<u32>(memory, unit, crate::cunit::CLASS)? != 0
+        || movement_field::<u32>(
+            memory,
+            base,
+            crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+        )? & (1 << 17)
+            == 0
+    {
+        return Ok(false);
+    }
+    let own = movement_field::<u64>(memory, unit, crate::carmy::ORDERS_GROUP)? as usize;
+    if own == 0 || movement_group_leader(memory, base, own)? == 0 {
+        return Ok(false);
+    }
+    let Some(hq) = movement_hq_root(memory, base, own)? else {
+        return Ok(false);
+    };
+    Ok(hq != movement_own_root(memory, base, unit)?)
+}
+
+/// The group's leader, zero for none, after the group's and the leader's
+/// identities authenticate. The leader's identity fields are one guarded call.
+fn movement_leader(
+    memory: &impl crate::Memory,
+    base: usize,
+    group: usize,
+) -> Result<usize, &'static str> {
+    let leader = movement_group_leader(memory, base, group)?;
+    if leader == 0 {
+        return Ok(0);
+    }
     let batch = crate::memory::FieldBatch::gather(
         memory,
         [
@@ -520,37 +589,51 @@ fn movement_accumulator_internal(
         ],
     );
     movement_leader_identity(memory, base, leader, &batch)?;
-    let mut alternate = false;
-    if class()? == 0
-        && movement_field::<u32>(
-            memory,
-            base,
-            crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
-        )? & (1 << 17)
-            != 0
-    {
-        let hq = movement_field::<u64>(memory, own, group::HQ_PROVIDER)? as usize;
-        if hq != 0 {
-            let host = hq
-                .checked_sub(corders_group_member::HOST_OFFSET)
-                .ok_or("movement HQ host underflow")?;
-            if movement_field::<u64>(memory, host, 0)?
-                != movement_at(base, carmy::VTABLE_RVA)? as u64
-                || movement_field::<u64>(memory, host, carmy::SECONDARY_BASE)?
-                    != movement_at(base, carmy::SECONDARY_VTABLE_RVA)? as u64
-                || movement_field::<u64>(memory, host, cunit::HANDLE)? == 0
-                || movement_field::<u64>(memory, hq, corders_group_member::GROUP)? != own as u64
-            {
-                return Err("movement HQ host identity mismatch");
-            }
-            alternate = movement_primary_root(memory, base, hq)?
-                != movement_primary_root(
-                    memory,
-                    base,
-                    movement_at(army, corders_group_member::HOST_OFFSET)?,
-                )?;
-        }
+    Ok(leader)
+}
+
+/// The primary root of the group's HQ provider member, None without one, after
+/// the HQ host's identity authenticates (the separate-HQ predicate compares it
+/// with the division's own).
+fn movement_hq_root(
+    memory: &impl crate::Memory,
+    base: usize,
+    own: usize,
+) -> Result<Option<usize>, &'static str> {
+    use crate::{carmy, corders_group as group, corders_group_member, cunit};
+    let hq = movement_field::<u64>(memory, own, group::HQ_PROVIDER)? as usize;
+    if hq == 0 {
+        return Ok(None);
     }
+    let host = hq
+        .checked_sub(corders_group_member::HOST_OFFSET)
+        .ok_or("movement HQ host underflow")?;
+    if movement_field::<u64>(memory, host, 0)? != movement_at(base, carmy::VTABLE_RVA)? as u64
+        || movement_field::<u64>(memory, host, carmy::SECONDARY_BASE)?
+            != movement_at(base, carmy::SECONDARY_VTABLE_RVA)? as u64
+        || movement_field::<u64>(memory, host, cunit::HANDLE)? == 0
+        || movement_field::<u64>(memory, hq, corders_group_member::GROUP)? != own as u64
+    {
+        return Err("movement HQ host identity mismatch");
+    }
+    movement_primary_root(memory, base, hq).map(Some)
+}
+
+/// The division's own member's primary root, compared with its HQ's.
+fn movement_own_root(
+    memory: &impl crate::Memory,
+    base: usize,
+    army: usize,
+) -> Result<usize, &'static str> {
+    movement_primary_root(
+        memory,
+        base,
+        movement_at(army, crate::corders_group_member::HOST_OFFSET)?,
+    )
+}
+
+/// The selected CModifier's accumulator.
+fn movement_selected(leader: usize, alternate: bool) -> Result<Option<usize>, &'static str> {
     let modifier = if alternate {
         SEPARATE_HQ_MOVEMENT_MODIFIER
     } else {
@@ -559,9 +642,205 @@ fn movement_accumulator_internal(
     Ok(Some(movement_at(leader, modifier + MODIFIER_ACCUMULATOR)?))
 }
 
-/// Army dispatch returns its identity; railway dispatch returns null and
-/// selects no commander. Read keys independently from the same selected
-/// unit-modifier block.
+/// One pass's open-addressed memo by nonzero native pointer. Entries carry the
+/// pass's generation, so a new pass forgets them without clearing the table;
+/// it holds at most half its slots, and a full table only computes afresh.
+pub(crate) struct PassTable<V: Copy> {
+    slots: Vec<Option<PassEntry<V>>>,
+    generation: u32,
+    used: usize,
+}
+
+#[derive(Clone, Copy)]
+struct PassEntry<V: Copy> {
+    generation: u32,
+    key: usize,
+    value: V,
+}
+
+impl<V: Copy> PassTable<V> {
+    /// Room for `keys` entries; zero allocates nothing.
+    pub(crate) fn try_with_capacity(keys: usize) -> std::io::Result<Self> {
+        let slots = if keys == 0 {
+            0
+        } else {
+            keys.checked_mul(2)
+                .and_then(usize::checked_next_power_of_two)
+                .ok_or_else(crate::allocation::oom)?
+        };
+        Ok(Self {
+            slots: crate::allocation::filled(slots, None)?,
+            generation: 1,
+            used: 0,
+        })
+    }
+
+    /// Keeps nothing; allocates nothing.
+    pub(crate) fn vacant() -> Self {
+        Self {
+            slots: Vec::new(),
+            generation: 1,
+            used: 0,
+        }
+    }
+
+    pub(crate) fn capacity(&self) -> usize {
+        self.slots.len() / 2
+    }
+
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.slots.capacity() * std::mem::size_of::<Option<PassEntry<V>>>()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.used = 0;
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.slots.fill(None);
+            self.generation = 1;
+        }
+    }
+
+    /// `key`'s value this pass: the kept one, else `compute`'s, kept while
+    /// the table is at most half full.
+    pub(crate) fn get_or(&mut self, key: usize, compute: impl FnOnce() -> V) -> V {
+        if self.slots.is_empty() {
+            return compute();
+        }
+        let mask = self.slots.len() - 1;
+        let hash = (key as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let mut at = ((hash ^ (hash >> 32)) as usize) & mask;
+        loop {
+            match self.slots[at] {
+                Some(entry) if entry.generation == self.generation => {
+                    if entry.key == key {
+                        return entry.value;
+                    }
+                    at = (at + 1) & mask;
+                }
+                _ => break,
+            }
+        }
+        let value = compute();
+        if self.used < self.slots.len() / 2 {
+            self.slots[at] = Some(PassEntry {
+                generation: self.generation,
+                key,
+                value,
+            });
+            self.used += 1;
+        }
+        value
+    }
+}
+
+/// One acquisition pass's [`movement_accumulator_seeded`] reads that depend
+/// only on a division's group or on no division: the group's identity and
+/// leader with the leader's identity, the group's HQ provider with its host's
+/// identity and primary root, and the trade feature flags. Within one
+/// quiescent acquisition none of them can change, so the pass reads each once
+/// for every division of the group. A division's own member fields stay its
+/// own; the groups, root orders and assigned-member chunks its own primary
+/// root resolves through are read once a pass ([`PrimaryRootCache`]).
+pub struct LeaderMemo {
+    leaders: PassTable<Result<usize, &'static str>>,
+    hq: PassTable<Result<Option<usize>, &'static str>>,
+    flags: Option<Result<u32, &'static str>>,
+    roots: PrimaryRootCache,
+}
+
+impl LeaderMemo {
+    /// Room for `groups` groups; zero allocates nothing.
+    pub fn try_with_capacity(groups: usize) -> std::io::Result<Self> {
+        Ok(Self {
+            leaders: PassTable::try_with_capacity(groups)?,
+            hq: PassTable::try_with_capacity(groups)?,
+            flags: None,
+            // A full cache only reads the rest afresh.
+            roots: PrimaryRootCache::try_new(groups, groups.div_ceil(4))?,
+        })
+    }
+
+    /// Keeps no group: every division reads afresh. Allocates nothing.
+    pub fn vacant() -> Self {
+        Self {
+            leaders: PassTable::vacant(),
+            hq: PassTable::vacant(),
+            flags: None,
+            roots: PrimaryRootCache::vacant(),
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.leaders.capacity().min(self.hq.capacity())
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        self.leaders.allocated_bytes() + self.hq.allocated_bytes() + self.roots.allocated_bytes()
+    }
+
+    /// Starts a pass: nothing a previous pass read is used again.
+    pub fn clear(&mut self) {
+        self.leaders.clear();
+        self.hq.clear();
+        self.flags = None;
+        self.roots.clear();
+    }
+}
+
+/// [`movement_accumulator_seeded`] over a pass's [`LeaderMemo`]: the same
+/// selection and the same first failure, from the same reads in the same
+/// order, except that what depends only on the group, or on no division, is
+/// read once per pass.
+pub fn movement_accumulator_memoized(
+    memory: &impl crate::Memory,
+    base: usize,
+    seed: &crate::carmy::DivisionSeed,
+    memo: &mut LeaderMemo,
+) -> Result<Option<usize>, &'static str> {
+    movement_at(seed.pointer, crate::carmy::ORDERS_GROUP)?;
+    let own = seed
+        .orders_group
+        .ok_or("movement leader field unreadable")?;
+    if own == 0 {
+        return Ok(None);
+    }
+    let leader = memo
+        .leaders
+        .get_or(own, || movement_leader(memory, base, own))?;
+    if leader == 0 {
+        return Ok(None);
+    }
+    movement_at(seed.pointer, crate::cunit::CLASS)?;
+    let class = seed.class.ok_or("movement leader field unreadable")?;
+    let mut alternate = false;
+    if class == 0 {
+        let flags = *memo.flags.get_or_insert_with(|| {
+            movement_field::<u32>(
+                memory,
+                base,
+                crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+            )
+        });
+        if flags? & (1 << 17) != 0
+            && let Some(hq) = memo
+                .hq
+                .get_or(own, || movement_hq_root(memory, base, own))?
+        {
+            let member = movement_at(seed.pointer, crate::corders_group_member::HOST_OFFSET)?;
+            let own = match memory.movement_primary_root(base, member) {
+                Some(root) => root,
+                None => memo.roots.resolve(memory, base, member),
+            }?;
+            alternate = hq != own;
+        }
+    }
+    movement_selected(leader, alternate)
+}
+
+/// Commander-receiver vtable slot 8 (+0x40) returns the army's own identity
+/// and null for a railway unit, so a railway unit never selects a commander.
+/// Read keys independently from the same selected unit modifier block.
 pub fn current_retreat_inputs(
     memory: &impl crate::Memory,
     base: usize,
@@ -761,13 +1040,16 @@ fn bans_from_entries(
 /// to 64 entries 16 per scattered call; the metadata is read once per key per
 /// walk. A failed or mismatched read fails only its own group, with the error
 /// [`retreat_bans`] gives it; later objects continue from the next read, and
-/// no failed read is repeated.
+/// no failed read is repeated. A commander whose bans `held` returns (an
+/// earlier read no observed writer of either block has touched since) is not
+/// read again.
 pub fn retreat_bans_many(
     memory: &impl crate::Memory,
     base: usize,
     groups: &[usize],
     output: &mut [Result<Option<RetreatBans>, &'static str>],
     memo: &crate::modifier_definition::DefinitionMemo,
+    held: &mut dyn FnMut(usize) -> Option<RetreatBans>,
 ) {
     use crate::{cpdx_array::Array, memory::RecordSources, modifier_entry::STRIDE};
     let expected = |rva: usize| base.checked_add(rva).map(|value| value as u64);
@@ -803,6 +1085,10 @@ pub fn retreat_bans_many(
             let leader = u64::from_le_bytes(record[12..20].try_into().unwrap()) as usize;
             if leader == 0 {
                 output[slot] = Ok(None);
+                continue;
+            }
+            if let Some(bans) = held(leader) {
+                output[slot] = Ok(Some(bans));
                 continue;
             }
             leaders[pending] = Some(BansLeader {
@@ -1046,3 +1332,112 @@ pub fn movement_terrain(
 
 #[cfg(test)]
 mod movement_tests;
+
+/// The unit leader's night adjuster's attack (`+0x260 + 0x10`), added to the
+/// night term. Trait recalculation clears and rebuilds it with the terrain
+/// adjusters.
+pub const ATTACK_NIGHT: usize = 0x270;
+/// The army leader's fort (`+0xFA8 + 0x10`), river (`+0xFD0 + 0x10`) and snow
+/// (`+0x1020 + 0x10`) adjusters' attack contributions. Army trait recalculation
+/// rebuilds them.
+pub const ATTACK_FORT: usize = 0xfb8;
+pub const ATTACK_RIVER: usize = 0xfe0;
+pub const ATTACK_SNOW: usize = 0x1030;
+
+/// A direct commander's attack operands: its full handle, the attack of each
+/// terrain adjuster (`MOVEMENT_TERRAIN_DATA`) in order, and its fort, river,
+/// snow and night values, each an exact fixed5 word.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AttackStats {
+    pub leader: u64,
+    pub terrain: Vec<i64>,
+    pub fort: i64,
+    pub river: i64,
+    pub snow: i64,
+    pub night: i64,
+}
+
+/// Reads [`AttackStats`] of the `CUnitLeader` an orders group's `+0x88` names.
+/// Terrain-adjuster lookup returns the vector's first record for an index
+/// outside its live count, even a count of zero, so a vector with storage and
+/// no live entry yields that one retained record; a vector without storage
+/// yields none.
+pub fn attack_stats(
+    memory: &impl crate::Memory,
+    base: usize,
+    leader: usize,
+) -> Result<AttackStats, &'static str> {
+    let handle = crate::cunit_leader::handle(memory, base, leader)?;
+    let word = |offset: usize| -> Result<i64, &'static str> {
+        leader
+            .checked_add(offset)
+            .and_then(|address| crate::read::<i64>(memory, address))
+            .ok_or("commander attack operand unreadable")
+    };
+    let mut scalars = [0_u8; ATTACK_SNOW + 8 - ATTACK_FORT];
+    if !crate::read_slice(
+        memory,
+        leader
+            .checked_add(ATTACK_FORT)
+            .ok_or("commander address overflow")?,
+        &mut scalars,
+    ) {
+        return Err("commander attack operands unreadable");
+    }
+    let scalar = |offset: usize| {
+        let at = offset - ATTACK_FORT;
+        i64::from_le_bytes(scalars[at..at + 8].try_into().unwrap())
+    };
+    let header = crate::read::<[u8; 16]>(
+        memory,
+        leader
+            .checked_add(MOVEMENT_TERRAIN_DATA)
+            .ok_or("commander address overflow")?,
+    )
+    .ok_or("commander terrain adjuster header unreadable")?;
+    let data = u64::from_le_bytes(header[..8].try_into().unwrap()) as usize;
+    let count = i32::from_le_bytes(header[12..16].try_into().unwrap());
+    // The live count; a nonpositive one still leaves the first record.
+    let records = if data == 0 {
+        0
+    } else {
+        usize::try_from(count).unwrap_or(0).max(1)
+    };
+    let mut terrain = Vec::new();
+    crate::allocation::reserve_exact(&mut terrain, records)
+        .map_err(|_| "commander terrain allocation failed")?;
+    const BATCH: usize = 32;
+    let mut entries = [0_u8; BATCH * MOVEMENT_TERRAIN_STRIDE];
+    let mut first = 0;
+    while first < records {
+        let len = (records - first).min(BATCH);
+        let address = first
+            .checked_mul(MOVEMENT_TERRAIN_STRIDE)
+            .and_then(|offset| data.checked_add(offset))
+            .ok_or("commander terrain adjuster address overflow")?;
+        if !crate::read_slice(
+            memory,
+            address,
+            &mut entries[..len * MOVEMENT_TERRAIN_STRIDE],
+        ) {
+            return Err("commander terrain adjusters unreadable");
+        }
+        for entry in entries[..len * MOVEMENT_TERRAIN_STRIDE].chunks_exact(MOVEMENT_TERRAIN_STRIDE)
+        {
+            terrain.push(i64::from_le_bytes(
+                entry[crate::csub_unit_definition::UNIT_ADJUSTER_ATTACK..][..8]
+                    .try_into()
+                    .unwrap(),
+            ));
+        }
+        first += len;
+    }
+    Ok(AttackStats {
+        leader: handle,
+        terrain,
+        fort: scalar(ATTACK_FORT),
+        river: scalar(ATTACK_RIVER),
+        snow: scalar(ATTACK_SNOW),
+        night: word(ATTACK_NIGHT)?,
+    })
+}

@@ -9,10 +9,7 @@ use crate::{document::Document, table_access::rows};
 use installed_content::localisation::{Argument, Localisation};
 use replay::{
     frame::DecodedFrame,
-    rows::{
-        ModifierDefinitionRow, NavalCombatDetailsRow, NavalCombatShipRow, VariantDefinitionRow,
-        tables,
-    },
+    rows::{NavalCombatDetailsRow, NavalCombatShipRow, VariantDefinitionRow, tables},
 };
 use std::{collections::BTreeMap, io};
 
@@ -23,27 +20,10 @@ struct VariantContext<'a> {
     escape: EscapeContext<'a>,
 }
 
+/// What the escape section reads beyond the member's own row.
 struct EscapeContext<'a> {
     details: Result<&'a [NavalCombatDetailsRow], String>,
-    trees: Result<MemberTrees<'a>, String>,
-    definitions: Result<&'a [ModifierDefinitionRow], String>,
-}
-
-type MemberTrees<'a> =
-    BTreeMap<(u64, u8, u32), Vec<super::naval_summary_tooltips::NavalTreeUse<'a>>>;
-
-fn member_trees(rows: &[replay::rows::NavalModifierBreakdownRow], combat: u64) -> MemberTrees<'_> {
-    let mut indexed = MemberTrees::new();
-    for tree in super::naval_summary_tooltips::expanded_trees(rows) {
-        let use_ = tree.use_;
-        if use_.combat == combat && use_.battle_slot != u32::MAX {
-            indexed
-                .entry((use_.combat, use_.side, use_.battle_slot))
-                .or_default()
-                .push(tree);
-        }
-    }
-    indexed
+    sources: super::naval_trees::Sources<'a>,
 }
 
 // Localisation keys for naval ship and damage hovers.
@@ -120,28 +100,7 @@ pub(super) fn bind(
                         Err("NavalCombatDetails is incomplete".into())
                     }
                 }),
-            trees: rows::<tables::NavalModifierBreakdowns>(frame)
-                .map_err(|error| error.to_string())
-                .and_then(|read| {
-                    replay::fixed_layout::validate_recording(
-                        frame,
-                        replay::fixed_layout::NAVAL_BREAKDOWNS,
-                    )?;
-                    if read.is_complete() {
-                        Ok(member_trees(read.rows(), id))
-                    } else {
-                        Err("NavalModifierBreakdowns is incomplete".into())
-                    }
-                }),
-            definitions: rows::<tables::ModifierDefinitions>(frame)
-                .map_err(|error| error.to_string())
-                .and_then(|read| {
-                    if read.is_complete() {
-                        Ok(read.rows())
-                    } else {
-                        Err("ModifierDefinitions is incomplete".into())
-                    }
-                }),
+            sources: super::naval_trees::Sources::read(frame, &document.recorded_language)?,
         },
     };
     let icons = &document.icons.combat;
@@ -352,7 +311,7 @@ fn member_tooltip(
     )?;
     let flag = format!("{INLINE_FLAG}{tag}");
     if row.state == 32 && row.live_ship == 0 && row.live_convoy == 0 {
-        // the game starts a sunk member with flag, one space, green
+        // The game starts a sunk member with flag, one space, green
         // SHIP_AND_TYPE, reset, then a newline before sinking status.
         let mut text = format!("{flag} \u{11}G{title}\u{11}!\n");
         if row.sunk_by.is_empty() {
@@ -373,7 +332,7 @@ fn member_tooltip(
                     row.side, row.battle_slot
                 ),
             )?;
-            // the game uses SHIP_SUNK_BY with its executable NAME argument.
+            // The game uses SHIP_SUNK_BY with its executable NAME argument.
             text.push_str(&builtin(
                 icons,
                 loc,
@@ -497,9 +456,10 @@ fn member_tooltip(
     Ok(text)
 }
 
-/// Append stored escape progress, the current escape chance and its source-
-/// order description. Defines come from resolved content; source labels are
-/// stored text rendered only in the recording language.
+/// Append the stored escape progress, the on-demand escape
+/// chance, then its source-order description. Numeric defines come from the
+/// matching content stack; source labels are stored text and only render in
+/// the recording language.
 fn escape_description(
     row: &NavalCombatShipRow,
     icons: &dyn TextIcons,
@@ -511,22 +471,38 @@ fn escape_description(
         .iter()
         .find(|detail| detail.combat == row.combat)
         .ok_or_else(|| format!("naval combat {} has no detail row for escape", row.combat))?;
-    let side = combat
-        .sides
-        .get(row.side as usize)
-        .ok_or_else(|| format!("naval combat {} has no side {}", row.combat, row.side))?;
-    let all_trees = context.escape.trees.as_ref().map_err(Clone::clone)?;
-    let trees = all_trees
-        .get(&(row.combat, row.side, row.battle_slot))
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    let all_definitions = context.escape.definitions.as_ref().map_err(Clone::clone)?;
-    let definitions: BTreeMap<_, _> = all_definitions
-        .iter()
-        .map(|definition| (definition.index, definition))
-        .collect();
     let assets = &context.document.icons.combat;
     let defines = assets.naval_escape_defines.as_ref().map_err(Clone::clone)?;
+    escape_text(
+        row,
+        combat,
+        &context.escape.sources,
+        defines,
+        &assets.naval_escape_screening,
+        icons,
+        loc,
+    )
+}
+
+/// The complete appended state-8 section: progress, chance, base and
+/// duration terms, each key's sources in native order with its screening
+/// line, then the speed and submarine terms.
+fn escape_text(
+    row: &NavalCombatShipRow,
+    combat: &NavalCombatDetailsRow,
+    sources: &super::naval_trees::Sources<'_>,
+    defines: &super::naval_escape::Defines,
+    screening_content: &super::naval_escape::Screening,
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+) -> Result<String, String> {
+    let side_index = usize::from(row.side);
+    let side = combat
+        .sides
+        .get(side_index)
+        .ok_or_else(|| format!("naval combat {} has no side {}", row.combat, row.side))?;
+    let opposing = &combat.sides[1 - side_index];
+    let definitions = sources.definitions()?;
     let keys: &[u32] = if row.live_ship != 0 {
         if row.formation_flags & (1 << 7) != 0 {
             &[0x5c]
@@ -546,19 +522,30 @@ fn escape_description(
     let mut modifiers = 0_i64;
     let mut by_key = Vec::new();
     for &key in keys {
-        if !trees.iter().any(|tree| tree.key == key) {
-            return Err(format!(
-                "side {} slot {} escape key {key:#x} has no NavalModifierBreakdowns source",
-                row.side, row.battle_slot
-            ));
-        }
+        // Source formatting takes the side sum when the member has no live
+        // ship; its text is written below, in order.
+        let side_total = if row.live_ship != 0 {
+            Ok(0)
+        } else {
+            let mut scratch = String::new();
+            sources.side(
+                combat.combat,
+                side,
+                opposing,
+                key,
+                "  ",
+                &mut scratch,
+                icons,
+                loc,
+            )
+        };
         let (total, screening) = super::naval_escape::modifier_value(
             row,
             side,
             key,
-            trees,
-            &assets.naval_escape_screening,
-            &definitions,
+            side_total,
+            screening_content,
+            definitions,
         )?;
         modifiers = modifiers.wrapping_add(total);
         by_key.push((key, screening));
@@ -579,33 +566,6 @@ fn escape_description(
     };
     let parts =
         super::naval_escape::chance(row, combat.duration, modifiers, speed_modifier, defines);
-    escape_text(
-        row,
-        parts,
-        &by_key,
-        trees,
-        &definitions,
-        &context.document.recorded_language,
-        icons,
-        loc,
-    )
-}
-
-/// complete appended state-8 section, in source occurrence order.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Keep captured ship state, escape terms and modifier trees separate from text resources"
-)]
-fn escape_text(
-    row: &NavalCombatShipRow,
-    parts: super::naval_escape::Parts,
-    by_key: &[(u32, i64)],
-    trees: &[super::naval_summary_tooltips::NavalTreeUse<'_>],
-    definitions: &BTreeMap<u32, &ModifierDefinitionRow>,
-    recorded_language: &str,
-    icons: &dyn TextIcons,
-    loc: &Localisation,
-) -> Result<String, String> {
     let mut out = String::new();
     out.push('\n');
     out.push_str(&builtin(
@@ -633,52 +593,20 @@ fn escape_text(
         out.push_str(&line(ESCAPE_SPEED_COMBAT_DURATION, parts.duration)?);
         out.push('\n');
     }
-    for &(key, screening) in by_key {
-        let definition = definitions.get(&key).ok_or_else(|| {
-            format!("escape modifier key {key:#x} has no ModifierDefinitions row")
-        })?;
-        for tree in trees.iter().filter(|tree| tree.key == key) {
-            if row.live_ship != 0
-                && !super::naval_environment::breakdown_visible(
-                    &row.weapon_context,
-                    key,
-                    tree.use_.source_scope,
-                    tree.use_.source_index,
-                )
-                .ok_or_else(|| {
-                    format!(
-                        "side {} slot {} escape support source {}:{} is unavailable",
-                        row.side, row.battle_slot, tree.use_.source_scope, tree.use_.source_index,
-                    )
-                })?
-            {
-                continue;
-            }
-            let scale = if row.live_ship != 0 {
-                super::naval_environment::breakdown_scale(
-                    &row.weapon_context,
-                    tree.use_.source_scope,
-                    tree.use_.source_index,
-                )
-                .ok_or_else(|| {
-                    format!(
-                        "side {} slot {} escape source {}:{} scale is unavailable",
-                        row.side, row.battle_slot, tree.use_.source_scope, tree.use_.source_index,
-                    )
-                })?
-            } else {
-                100_000
-            };
-            out.push_str(&super::naval_summary_tooltips::ship_modifier_breakdown(
-                &tree.nodes,
-                definition,
-                scale,
+    for &(key, screening) in &by_key {
+        if row.live_ship != 0 {
+            sources.ship(row, key, "  ", &mut out, icons, loc)?;
+        } else {
+            sources.side(
+                combat.combat,
+                side,
+                opposing,
+                key,
                 "  ",
-                recorded_language,
+                &mut out,
                 icons,
                 loc,
-                !matches!(tree.use_.source_scope, 12..=15),
-            )?);
+            )?;
         }
         if screening != 0 {
             out.push_str("  ");
@@ -816,7 +744,7 @@ fn criticals_and_damage(
     Ok(())
 }
 
-/// the game appends each of the two ordered air-hit vectors separately.
+/// The game appends each of the two ordered air-hit vectors separately.
 fn air_hits(
     text: &mut String,
     row: &NavalCombatShipRow,

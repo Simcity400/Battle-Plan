@@ -319,7 +319,6 @@ mod tests {
                 speed: [0; 4],
                 maximum_level: 0,
             }),
-            naval: Err("unrelated naval defines are unavailable".into()),
             task_force_terrain: Err("unrelated task-force terrain is unavailable".into()),
         };
         let world = RouteWorld {

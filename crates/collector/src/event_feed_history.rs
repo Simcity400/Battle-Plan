@@ -1,9 +1,12 @@
 //! Owned native observations and pointer-free hourly publications with exact receipts.
 
 use engine::{Memory, allocation, event_feed_sites as native};
-use replay::event_feed_rows::{
-    EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow,
-    EventFeedSource,
+use replay::{
+    event_feed_rows::{
+        EventFeedCause, EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent,
+        EventFeedHistoryRow, EventFeedSource,
+    },
+    rows::Recorded,
 };
 use std::{io, mem::size_of};
 
@@ -257,11 +260,13 @@ impl Store {
         Ok(())
     }
 
+    /// Retain an event. With a proof it stays pending until its native call
+    /// settles; without one it is settled and known at once.
     fn acquire(
         &mut self,
         generation: u64,
-        operands: native::Operands,
-        proof: Proof,
+        event: impl FnOnce(u64) -> EventFeedEvent,
+        proof: Option<Proof>,
     ) -> Result<Ticket, &'static str> {
         if let Err(reason) = self.observation(generation) {
             return Err(self.reject(reason));
@@ -279,36 +284,74 @@ impl Store {
                 .get_or_insert("Event feed acquired count exhausted");
             return Err(self.reject("Event feed acquired count exhausted"));
         };
+        let known = proof.is_none();
+        let Some(settled) = self.counts.settled.checked_add(u64::from(known)) else {
+            self.counts_valid = false;
+            self.retained
+                .get_or_insert("Event feed settlement count exhausted");
+            return Err(self.reject("Event feed settlement count exhausted"));
+        };
         self.advance().map_err(|reason| self.reject(reason))?;
         let ticket = Ticket {
             slot: self.entries.len(),
             sequence: self.next_sequence,
         };
         self.entries.push(Entry {
-            event: event(ticket.sequence, generation, operands),
-            proof: Some(proof),
-            state: State::Pending,
+            event: event(ticket.sequence),
+            proof,
+            state: if known { State::Known } else { State::Pending },
             publication: None,
         });
         self.next_sequence = next;
         self.counts.acquired = acquired;
+        self.counts.settled = settled;
         Ok(ticket)
     }
 
-    /// Retain inputs before the original and its reentrant destruction,
-    /// before the relation replacement is stored.
+    /// An event a provenance hook proved at its own native boundary
+    /// ([`crate::war_provenance`]): settled when acquired.
+    pub(crate) fn known(
+        &mut self,
+        generation: u64,
+        hour: i32,
+        fact: Fact,
+    ) -> Result<(), &'static str> {
+        self.acquire(
+            generation,
+            |sequence| EventFeedEvent {
+                sequence,
+                generation,
+                hour,
+                source: fact.source,
+                actor: country(fact.actor),
+                target: country(fact.target),
+                cause: Recorded::Value(fact.cause),
+            },
+            None,
+        )
+        .map(drop)
+    }
+
+    /// War call observation retains inputs before the original and its reentrant
+    /// destruction before the relation replacement store.
     pub fn war_before(
         &mut self,
         memory: &impl Memory,
         base: usize,
         generation: u64,
         frame: native::WarFrame,
+        cause: EventFeedCause,
     ) -> Result<Ticket, &'static str> {
         self.observation(generation)
             .map_err(|reason| self.reject(reason))?;
         let pending =
             native::war_before(memory, base, frame).map_err(|reason| self.reject(reason))?;
-        self.acquire(generation, pending.operands(), Proof::War(pending))
+        let operands = pending.operands();
+        self.acquire(
+            generation,
+            |sequence| event(sequence, generation, operands, cause),
+            Some(Proof::War(pending)),
+        )
     }
 
     /// Copy actor/FROM before authored dispatch.
@@ -318,12 +361,17 @@ impl Store {
         base: usize,
         generation: u64,
         frame: native::AnnexFrame,
+        cause: EventFeedCause,
     ) -> Result<Ticket, &'static str> {
         self.observation(generation)
             .map_err(|reason| self.reject(reason))?;
         let operands =
             native::annex_before(memory, base, frame).map_err(|reason| self.reject(reason))?;
-        self.acquire(generation, operands, Proof::Annex)
+        self.acquire(
+            generation,
+            |sequence| event(sequence, generation, operands, cause),
+            Some(Proof::Annex),
+        )
     }
 
     fn entry(&self, ticket: &Ticket) -> Option<&Entry> {
@@ -385,9 +433,15 @@ impl Store {
         let entry = &mut self.entries[ticket.slot];
         let published = entry.state == State::PublishedPending;
         let proof = entry.proof.take().unwrap();
+        // Only the operands are proved again; the cause is the entry's own.
+        let cause = entry.event.cause;
         let result = match proof {
-            Proof::War(pending) => native::war_returned(memory, base, pending)
-                .map(|operands| event(ticket.sequence, generation, operands)),
+            Proof::War(pending) => {
+                native::war_returned(memory, base, pending).map(|operands| EventFeedEvent {
+                    cause,
+                    ..event(ticket.sequence, generation, operands, Default::default())
+                })
+            }
             Proof::Annex => Ok(entry.event),
         };
         self.counts.settled += 1;
@@ -677,7 +731,12 @@ fn country(identity: native::CountryIdentity) -> EventFeedCountry {
     }
 }
 
-fn event(sequence: u64, generation: u64, operands: native::Operands) -> EventFeedEvent {
+fn event(
+    sequence: u64,
+    generation: u64,
+    operands: native::Operands,
+    cause: EventFeedCause,
+) -> EventFeedEvent {
     EventFeedEvent {
         sequence,
         generation,
@@ -690,7 +749,16 @@ fn event(sequence: u64, generation: u64, operands: native::Operands) -> EventFee
         },
         actor: country(operands.actor),
         target: country(operands.target),
+        cause: Recorded::Value(cause),
     }
+}
+
+/// An event a provenance hook proved: its kind, countries and cause.
+pub(crate) struct Fact {
+    pub(crate) source: EventFeedSource,
+    pub(crate) actor: native::CountryIdentity,
+    pub(crate) target: native::CountryIdentity,
+    pub(crate) cause: EventFeedCause,
 }
 
 #[cfg(test)]

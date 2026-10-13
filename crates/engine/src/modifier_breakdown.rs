@@ -96,8 +96,40 @@ pub struct Balance {
     pub weekly: Vec<Node>,
 }
 
-/// Rebuilding appends one clone per nonempty static modifier, preserving
-/// the two source-vector orders and each static modifier's script identity.
+/// The inputs of a record's cached +0xC8 tree: its complete +0x50
+/// static-modifier roster (count +0x5C), every occurrence in array order, by
+/// `CStaticModifier` script name (+0x1A8), empty sources included. Rebuilding
+/// clears +0xC8 and passes each to filtered modifier addition in this order,
+/// and source addition pushes a new source to the end and adds it the same way,
+/// so playback derives both cached trees from these names and the content
+/// (`replay::power_balance_derive`). No accumulator, child or getter is read.
+pub fn balance_sources(memory: &impl Memory, record: usize) -> Result<Vec<Vec<u8>>, &'static str> {
+    let sources = record
+        .checked_add(0x50)
+        .and_then(|p| Array::read(memory, p, 8))
+        .ok_or("power balance modifier sources unreadable or invalid")?;
+    let mut names = Vec::new();
+    crate::allocation::reserve_push_batch(&mut names, sources.count as usize)
+        .map_err(|_| "power balance source allocation failed")?;
+    for ordinal in 0..sources.count {
+        let source = sources
+            .element(ordinal, 8)
+            .and_then(|p| read::<u64>(memory, p))
+            .and_then(|p| usize::try_from(p).ok())
+            .filter(|&p| p != 0)
+            .ok_or("power balance static modifier unreadable or null")?;
+        names.push(text(
+            memory,
+            source
+                .checked_add(0x1a8)
+                .ok_or("power balance modifier name address overflow")?,
+        )?);
+    }
+    Ok(names)
+}
+
+/// Rebuilding appends one clone per nonempty static modifier, in +0x50/+0x5C
+/// order. CStaticModifier's script identity is +0x1A8.
 pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balance, &'static str> {
     let sources = record
         .checked_add(0x50)
@@ -390,6 +422,12 @@ mod tests {
             ]
         );
         assert_eq!(captured.weekly[3].value, 22);
+        // The source roster alone reads no accumulator: an unreadable tree
+        // leaves it intact.
+        assert_eq!(balance_sources(&f, record).unwrap(), captured.sources);
+        f.array(record + 0xc8 + CHILDREN, &[0]);
+        assert!(balance(&f, 0, record).is_err());
+        assert_eq!(balance_sources(&f, record).unwrap(), captured.sources);
     }
 
     #[test]

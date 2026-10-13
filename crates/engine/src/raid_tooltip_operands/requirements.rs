@@ -14,66 +14,34 @@ fn map(
     kind: u32,
     sink: &mut Sink<'_>,
 ) -> Result<(), &'static str> {
-    let head = pointer(m, at, 0)?;
-    let count = field::<u64>(m, at, 8)?;
-    if field::<u8>(m, head, 0x19)? != 1 {
-        return Err("raid equipment order sentinel invalid");
-    }
-    let mut node = pointer(m, head, 0)?;
+    let sink = std::cell::RefCell::new(sink);
     let mut previous = 0;
-    // A count witness distinguishes empty maps from missing order data.
-    sink.push(
-        kind,
-        0,
-        i64::try_from(count).map_err(|_| "raid equipment order count overflow")?,
-    )?;
-    for _ in 0..count {
-        if node == head || field::<u8>(m, node, 0x19)? != 0 {
-            return Err("raid equipment order ended early");
-        }
-        let equipment = pointer(m, node, 0x20)?;
-        if equipment <= previous {
-            return Err("raid equipment pointer order invalid");
-        }
-        context::authenticate(m, base, equipment, eq::VTABLE_RVA)?;
-        let token = field::<u32>(m, equipment, eq::TOKEN)?;
-        if token == 0 {
-            return Err("raid equipment order token null");
-        }
-        sink.push(kind, token, 0)?;
-        previous = equipment;
-        let right = pointer(m, node, 0x10)?;
-        let mut steps = 0;
-        if field::<u8>(m, right, 0x19)? == 0 {
-            node = right;
-            loop {
-                let left = pointer(m, node, 0)?;
-                if field::<u8>(m, left, 0x19)? != 0 {
-                    break;
-                }
-                node = left;
-                steps += 1;
-                if steps > count {
-                    return Err("raid equipment order cycle");
-                }
+    db::equipment_map(
+        m,
+        at,
+        "raid tooltip operand unreadable",
+        // A count witness distinguishes empty maps from missing order data.
+        |count| {
+            sink.borrow_mut().push(
+                kind,
+                0,
+                i64::try_from(count).map_err(|_| "raid equipment order count overflow")?,
+            )
+        },
+        |node| {
+            let equipment = pointer(m, node, db::NODE_EQUIPMENT)?;
+            if equipment <= previous {
+                return Err("raid equipment pointer order invalid");
             }
-        } else {
-            let mut parent = pointer(m, node, 8)?;
-            while field::<u8>(m, parent, 0x19)? == 0 && node == pointer(m, parent, 0x10)? {
-                node = parent;
-                parent = pointer(m, node, 8)?;
-                steps += 1;
-                if steps > count {
-                    return Err("raid equipment order parent cycle");
-                }
+            context::authenticate(m, base, equipment, eq::VTABLE_RVA)?;
+            let token = field::<u32>(m, equipment, eq::TOKEN)?;
+            if token == 0 {
+                return Err("raid equipment order token null");
             }
-            node = parent;
-        }
-    }
-    if node != head {
-        return Err("raid equipment order exceeds stored count");
-    }
-    Ok(())
+            previous = equipment;
+            sink.borrow_mut().push(kind, token, 0)
+        },
+    )
 }
 fn subunits(m: &impl Memory, base: usize, sink: &mut Sink<'_>) -> Result<(), &'static str> {
     use crate::csub_unit_definition as subunit;
@@ -133,8 +101,14 @@ pub(super) fn capture(
         }
         sink.raid = definition_key(token);
         sink.ordinal = 0;
-        map(m, base, p + 0xa40, ESSENTIAL_ORDER, sink)?;
-        map(m, base, p + 0xa28, ADDITIONAL_ORDER, sink)?;
+        map(m, base, p + db::ESSENTIAL_EQUIPMENT, ESSENTIAL_ORDER, sink)?;
+        map(
+            m,
+            base,
+            p + db::ADDITIONAL_EQUIPMENT,
+            ADDITIONAL_ORDER,
+            sink,
+        )?;
     }
     Ok(())
 }

@@ -6,19 +6,40 @@ import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar.t
 import { ideaInfo, localisedText, modifierFormat } from '../../dashboard/ideaContent.ts';
 import { ideaTooltip, ideaTooltipSources } from '../../dashboard/ideaTooltip.ts';
 import { int, object, opaqueTag } from '../../dashboard/validation.ts';
-import type { EventFeedItem, EventFeedReply, EventFeedRow, EventFeedWindow } from '../../generated/dashboard';
+import type { EventFeedItem, EventFeedReply, EventFeedRow, EventFeedStrike, EventFeedWindow } from '../../generated/dashboard';
 import { CATEGORIES } from './definition.ts';
 
-const NATIVE_KINDS = new Set(['warDeclared', 'warJoined', 'civilWarWarTransferred', 'annexed']);
+const NATIVE_KINDS = new Set(['warDeclared', 'warJoined', 'civilWarWarTransferred', 'annexed', 'warEnded', 'released',
+  'stateTransferred', 'peaceConferenceStarted', 'nuclearStrike']);
+/** Native events of the event history, which record their cause; strikes have their own ledger. */
+const CAUSED_KINDS = new Set([...NATIVE_KINDS].filter(kind => kind !== 'nuclearStrike'));
 const KINDS = new Set([...NATIVE_KINDS, 'warStarted', 'peace', 'capitulated', 'ceasedToExist', 'factionJoined', 'factionLeft',
   'becameSubject', 'guaranteeGranted', 'rulingPartyChanged', 'lawChanged', 'advisorHired', 'focusCompleted',
   'projectFinished', 'nukesIncreased']);
 const text = (value: unknown): value is string | null => value === null || typeof value === 'string';
+const amount = (value: unknown): value is number | null => value === null || (typeof value === 'number' && Number.isFinite(value));
+/** Only a nuclear strike carries its target and outcome totals. */
+const strike = (row: Record<string, unknown>): boolean => {
+  if (row.kind !== 'nuclearStrike') return row.strike === undefined;
+  const value = row.strike;
+  return object(value) && int(value.province) && value.province >= 0 && (value.state === null || int(value.state))
+    && amount(value.buildingLevels) && amount(value.warSupport) && (value.units === null || (int(value.units) && value.units >= 0))
+    && amount(value.manpowerLost) && amount(value.equipmentLost)
+    && Array.isArray(value.notRecorded) && value.notRecorded.every(reason => typeof reason === 'string');
+};
 const roles = (row: Record<string, unknown>): boolean => {
   if (!NATIVE_KINDS.has(row.kind as string)) return row.participants === undefined || row.participants === null;
   return row.exact === true && row.category === 'warsPeace' && Array.isArray(row.participants)
     && row.participants.length === 2 && row.participants.every(value => value === null || opaqueTag(value))
     && JSON.stringify(row.participants.filter(value => value !== null)) === JSON.stringify(row.tags);
+};
+const cause = (row: Record<string, unknown>): boolean => {
+  const value = row.cause;
+  if (value === undefined || value === null) return true;
+  return CAUSED_KINDS.has(row.kind as string) && object(value) && text(value.how) && text(value.within)
+    && text(value.conference) && text(value.reason) && (value.state === null || (int(value.state) && value.state > 0))
+    && (value.ally === null || opaqueTag(value.ally))
+    && Array.isArray(value.notes) && value.notes.every(note => typeof note === 'string');
 };
 const span = (value: unknown): value is EventFeedWindow => {
   if (!object(value) || !int(value.firstHour) || !int(value.lastHour) || value.firstHour > value.lastHour
@@ -44,7 +65,7 @@ export function validateEventFeedReply(value: unknown): EventFeedReply {
       && row.nameHour <= row.hour && first !== null && last !== null && row.hour >= first && row.hour <= last
       && typeof row.exact === 'boolean' && typeof row.category === 'string' && categories.has(row.category)
       && typeof row.kind === 'string' && KINDS.has(row.kind) && Array.isArray(row.tags)
-      && (NATIVE_KINDS.has(row.kind) || row.tags.length > 0) && row.tags.every(opaqueTag) && roles(row)
+      && (NATIVE_KINDS.has(row.kind) || row.tags.length > 0) && row.tags.every(opaqueTag) && roles(row) && cause(row) && strike(row)
       && (row.item === null || (int(row.item) && row.item >= 0 && items !== null && row.item < items.length))
       && (row.amount === null || (int(row.amount) && row.amount > 0)))
     || new Set(value.rows.map(row => row.id)).size !== value.rows.length
@@ -94,9 +115,24 @@ export function eventWindowCount(window: EventFeedWindow, categories: ReadonlySe
   return CATEGORIES.reduce((sum, category) => sum + (categories.has(category.value) ? window.categoryCounts[category.value] : 0), 0);
 }
 
+/** The countries a row names: its participants and a join's ally. */
+export const eventTags = (event: EventFeedRow): string[] => event.cause?.ally ? [...event.tags, event.cause.ally] : event.tags;
+
+/** A state's name at an hour from the place-names product; null when not recorded. */
+export type StateName = (hour: number, state: number) => string | null;
+const stateNumber: StateName = () => null;
+
 /** Sentence parts retain each country's own flag beside its name. */
 export type SentencePart = { text: string } | { tag: string };
-export function eventSentence(at: FeedEvent): SentencePart[] {
+export function eventSentence(at: FeedEvent, stateName: StateName = stateNumber): SentencePart[] {
+  const parts = actionSentence(at, stateName);
+  const how = at.event.cause?.how;
+  if (!how) return parts;
+  const ally = at.event.kind === 'warJoined' ? at.event.cause?.ally : null;
+  return [...parts, { text: ` through ${how}` }, ...(ally ? [{ text: ', alongside ' }, { tag: ally }] : [])];
+}
+
+function actionSentence(at: FeedEvent, stateName: StateName): SentencePart[] {
   const { event, item } = at;
   const role = (index: number): SentencePart => {
     const tag = event.participants ? event.participants[index] : event.tags[index];
@@ -115,6 +151,11 @@ export function eventSentence(at: FeedEvent): SentencePart[] {
     case 'warJoined': return words(' joined the war against ');
     case 'civilWarWarTransferred': return words(' inherited a war against ');
     case 'annexed': return words(' annexed ');
+    case 'warEnded': return words(' and ', ' were no longer at war');
+    case 'released': return words(' released ');
+    case 'stateTransferred': return event.cause?.state == null ? words(' took a state from ')
+      : words(` took ${stateName(event.hour, event.cause.state) ?? `state ${event.cause.state}`} from `);
+    case 'peaceConferenceStarted': return [{ text: 'A peace conference began between ' }, country, { text: ' and ' }, other];
     case 'warStarted': return counterparts(' became at war with ');
     case 'peace': return counterparts(' was no longer at war with ');
     case 'capitulated': return single(' capitulated');
@@ -130,11 +171,15 @@ export function eventSentence(at: FeedEvent): SentencePart[] {
     case 'projectFinished': return single(` completed special project ${named}`);
     case 'nukesIncreased': return single(event.amount === null ? ' increased its nuclear stockpile (amount not known)'
       : ` increased its nuclear stockpile by ${event.amount.toLocaleString()} ${event.amount === 1 ? 'bomb' : 'bombs'}`);
+    case 'nuclearStrike': {
+      const bomb = item ? named : 'a nuclear bomb of a type not known';
+      return event.strike?.state === null ? single(` dropped ${bomb} on a province without a state`) : words(` dropped ${bomb} on `);
+    }
   }
 }
 
-export function eventDescription(at: FeedEvent, name: (tag: string) => string): string {
-  return eventSentence(at).map(part => 'tag' in part ? name(part.tag) : part.text).join('');
+export function eventDescription(at: FeedEvent, name: (tag: string) => string, stateName?: StateName): string {
+  return eventSentence(at, stateName).map(part => 'tag' in part ? name(part.tag) : part.text).join('');
 }
 
 /** Missing captures and unsupported forms have one explicit presentation adapter. */
@@ -142,18 +187,49 @@ export function notRecorded(reply: EventFeedReply): string[] {
   return reply.unavailable.map(item => `${item.label}: Not recorded — ${item.reason}${item.count === null ? '' : ` (${item.count.toLocaleString()} counted)`}`);
 }
 
+const notFullyRecorded = 'Not fully recorded';
+const total = (value: number | null, unit: (value: number) => string): string => value === null ? notFullyRecorded : unit(value);
+const whole = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+
+/** A strike's target and what the impact did, before authored effects. */
+function strikeRows(strike: EventFeedStrike, hour: number, stateName?: StateName): TooltipRow[] {
+  const rows: TooltipRow[] = [
+    { label: 'State', value: strike.state === null ? 'None' : stateName?.(hour, strike.state) ?? `State ${strike.state} (name not recorded)` },
+    { label: 'Province', value: String(strike.province) },
+    { label: 'Building levels destroyed', value: total(strike.buildingLevels, value => value.toLocaleString(undefined, { maximumFractionDigits: 2 })) },
+    { label: 'War support', value: total(strike.warSupport, value => `${value > 0 ? '+' : ''}${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`) },
+    { label: 'Units hit', value: total(strike.units, whole) },
+    { label: 'Manpower lost', value: total(strike.manpowerLost, whole) },
+    { label: 'Equipment destroyed', value: total(strike.equipmentLost, whole) },
+  ];
+  for (const reason of strike.notRecorded) rows.push({ label: 'Not recorded', value: reason, tone: 'muted' });
+  return rows;
+}
+
 /** An event's day; the feed does not show its hour. */
 const dayOf = (hour: number) => { const date = gameDate(hour); return date ? formatDate(date) : formatDateTime(hour); };
 
-export function eventTooltip(at: FeedEvent, name: (tag: string) => string): TooltipContent[] {
+export function eventTooltip(at: FeedEvent, name: (tag: string) => string, stateName?: StateName): TooltipContent[] {
   const { event, item, reply } = at;
-  const title = eventDescription(at, name);
+  const title = eventDescription(at, name, stateName);
   const rows: TooltipRow[] = [
     { label: 'Date', value: dayOf(event.hour) },
+    ...(event.strike ? strikeRows(event.strike, event.hour, stateName) : []),
   ];
+  const cause = event.cause;
+  if (cause) {
+    rows.push({ label: 'How', value: cause.how ?? 'No observed operation' });
+    if (cause.within) rows.push({ label: 'During', value: cause.within });
+    if (cause.reason) rows.push({ label: 'Hostility reason', value: cause.reason });
+    if (cause.conference) rows.push({ label: 'Peace conference', value: cause.conference });
+    for (const note of cause.notes) rows.push({ label: note });
+  } else if (CAUSED_KINDS.has(event.kind)) {
+    rows.push({ label: 'Cause', value: 'Not recorded in this recording', tone: 'muted' });
+  }
   const note = [event.kind === 'warStarted' ? 'War entry; declaration or joining unknown.' : '',
     event.kind === 'ceasedToExist' ? 'Lost all owned states.' : '',
-    event.kind === 'nukesIncreased' ? 'Stockpile increase.' : ''].filter(Boolean).join(' ');
+    event.kind === 'nukesIncreased' ? 'Stockpile increase.' : '',
+    event.kind === 'nuclearStrike' ? 'Totals cover what the impact did before its scripted on_nuke_drop effects.' : ''].filter(Boolean).join(' ');
   if (item?.idea) return [ideaTooltip({ title, icon: item.icon }, item.idea, ideaTooltipSources(reply, name),
     item.description, rows, note, event.nameHour)];
   if (item?.description) rows.push({ label: item.description });

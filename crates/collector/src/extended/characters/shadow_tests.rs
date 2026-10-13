@@ -26,7 +26,9 @@ fn assert_canonical(current: &Captured, input: &[TableInput; N]) {
             TableInput::SharedComplete(actual) => {
                 assert_eq!(&TableView::Complete((**actual).clone()), expected);
             }
-            TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. } => {
+            TableInput::ComparedEqual(_)
+            | TableInput::ComparedChanges { .. }
+            | TableInput::SliceUpdate { .. } => {
                 panic!("character reuse cannot bypass validation")
             }
         }
@@ -269,9 +271,6 @@ fn character_shadow_empty_rows_strings_and_unselected_dynamic_rows_remain_exact(
         .rows
         .clone_from(&first.characters.rows.rows);
     dynamic.units.rows.outcome = Outcome::Rows { len: 1 };
-    dynamic.units.rows.rows[0].native.experience = i64::MIN;
-    dynamic.trait_experience.rows.outcome = Outcome::Rows { len: 1 };
-    dynamic.trait_experience.rows.rows[0].experience = i64::MAX;
     let result = inputs(&dynamic, &mut shadow, Some(&cached), 1);
     assert_canonical(&dynamic, &result);
     assert!(
@@ -280,12 +279,10 @@ fn character_shadow_empty_rows_strings_and_unselected_dynamic_rows_remain_exact(
             .zip(shared(&result))
             .all(|(a, b)| Arc::ptr_eq(a, &b))
     );
-    for index in [3, 5] {
-        assert!(matches!(
-            &result[index],
-            TableInput::Sampled(TableView::Complete(_))
-        ));
-    }
+    assert!(matches!(
+        &result[3],
+        TableInput::Sampled(TableView::Complete(_))
+    ));
     first.characters.rows.outcome = Outcome::Rows { len: 0 };
     first.leaders.rows.outcome = Outcome::Rows { len: 0 };
     first.advisors.rows.outcome = Outcome::Rows { len: 0 };

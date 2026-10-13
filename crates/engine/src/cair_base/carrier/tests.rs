@@ -313,30 +313,33 @@ fn dense_missing_slot_wrong_base_and_null_never_become_empty() {
     assert_eq!(dense(&memory, &[], &mut rows), (Ok(()), 0, 0));
 }
 
+/// One container span ends at the 0xF8-byte container's end and holds the
+/// capacity word and both signed fuel scalars at their native offsets.
 #[test]
-fn container_fuel_retains_each_independent_signed_scalar_without_pool_reads() {
-    let mut memory = Fixture::new();
+fn the_container_span_holds_capacity_and_both_signed_fuel_scalars() {
+    use crate::cair_base::{CONTAINER_SPAN, container_span_words};
     assert_eq!(
-        container_fuel(&memory, CONTAINER_B),
-        ContainerFuel {
-            demand: Ok(i64::MIN),
-            allocated: Ok(i64::MAX)
-        }
+        ccountry_air_container::COUNTRY + CONTAINER_SPAN,
+        ccountry_air_container::SIZE
     );
-    memory.fault = Some(CONTAINER_B + ccountry_air_container::FUEL_DEMAND_RAW);
-    let fuel = container_fuel(&memory, CONTAINER_B);
-    assert!(fuel.demand.is_err());
-    assert_eq!(fuel.allocated, Ok(i64::MAX));
-    memory.fault = Some(CONTAINER_B + ccountry_air_container::FUEL_ALLOCATED_RAW);
-    let fuel = container_fuel(&memory, CONTAINER_B);
-    assert_eq!(fuel.demand, Ok(i64::MIN));
-    assert!(fuel.allocated.is_err());
-    assert!(
-        !memory
-            .reads
-            .borrow()
-            .iter()
-            .any(|&(at, _)| at == CONTAINER_B + ccountry_air_container::POOLS)
+    let mut span = [0_u8; CONTAINER_SPAN];
+    for (offset, value) in [
+        (ccountry_air_container::CAPACITY_RAW, 100_000_i64),
+        (ccountry_air_container::FUEL_DEMAND_RAW, i64::MIN),
+        (ccountry_air_container::FUEL_ALLOCATED_RAW, i64::MAX),
+    ] {
+        let at = offset - ccountry_air_container::COUNTRY;
+        span[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    assert_eq!(
+        container_span_words(&span),
+        (
+            100_000,
+            ContainerFuel {
+                demand: Ok(i64::MIN),
+                allocated: Ok(i64::MAX)
+            }
+        )
     );
 }
 
@@ -531,7 +534,6 @@ fn short_host_arena_counts_demand_without_hiding_dense_or_fuel_fields() {
         Ok(None)
     );
     assert_eq!((names.len, names.required), (0, text.len()));
-    assert_eq!(container_fuel(&memory, CONTAINER_B).allocated, Ok(i64::MAX));
     let mut rows = [CountryOccurrence::default(); 3];
     assert_eq!(dense(&memory, &memory.indexed(), &mut rows), (Ok(()), 3, 3));
 }
@@ -587,7 +589,10 @@ fn growing_carrier_arenas_publish_first_and_later_mod_sized_suffixes() {
             capture.authenticated_base(source(HOST_HANDLE));
             capture.indexed_header(3);
             capture.indexed_container(9, 2, CONTAINER_B);
-            capture.begin_registration();
+            capture.begin_registration(ContainerFuel {
+                demand: Ok(0),
+                allocated: Ok(0),
+            });
             capture.registration_header(count);
             for _ in 0..count {
                 capture.begin_pool(POOL, Array::default());

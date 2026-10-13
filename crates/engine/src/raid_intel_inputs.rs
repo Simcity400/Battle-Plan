@@ -1,7 +1,14 @@
-//! Target-intel operands. National counterintelligence is computed on demand
-//! from country modifiers and the strategic-operative mission roster. Capture
-//! copies those operands; it does not substitute the agency's transformed cache.
-//! Mission and modifier changes may occur between daily ticks.
+//! Target-intel operands. The game computes national counterintelligence on
+//! demand, using the country modifier and its strategic-operative mission
+//! roster. The collector copies those stored operands, not the rating or the
+//! agency's differently transformed cache. Mission changes and modifier
+//! recalculation can occur between daily ticks. Each country's modifier
+//! accumulator is copied once, when its first key is needed, and both keys are
+//! searched in the copy ([`Accumulator`]). A caller may carry both keys' raw
+//! answers between hours in place of that copy while it certifies the country's
+//! accumulator unchanged ([`Carry`]); the header read before it and the
+//! effective values (from the current modifier definitions) are read as without
+//! a carry.
 
 use crate::{
     Memory, ccountry, ccryptology, cgame_state, cintelligence_agency as agency,
@@ -86,7 +93,157 @@ fn modifier(
     modifier_accumulator::lookup_effective_at(memory, base, accumulator, key).map(|v| v.effective)
 }
 
-/// Nationality lower-bound lookup retaining canonical aliases and the zero tag.
+/// The country keys a walk looks up, by [`Carry`] answer index.
+pub const CRYPTO: usize = 0;
+pub const DEFENSE: usize = 1;
+pub const KEYS: [u32; 2] = [
+    modifier_keys::CRYPTO_STRENGTH,
+    modifier_keys::INTELLIGENCE_AGENCY_DEFENSE,
+];
+
+/// A key's raw answer in a country's accumulator: `None` when the key is
+/// absent (effective zero), else its stored operand.
+pub type RawAnswer = Option<i64>;
+
+/// Raw accumulator answers a caller carries between walks, per country.
+/// Asked once per country, at its first key lookup, right after the
+/// accumulator header read the lookup begins with and in place of the
+/// entries copy that follows it: `held` returns both keys' answers when the
+/// caller certifies the country's accumulator unchanged since it saw this
+/// header. Otherwise the entries are copied and searched as without a carry,
+/// and `read` receives both keys' answers in that copy (when both searches
+/// succeed). Every effective value is derived from the current modifier
+/// definition either way.
+pub trait Carry {
+    fn held(&mut self, country: &ccountry::Country, header: &[u8; 16]) -> Option<[RawAnswer; 2]>;
+    fn read(&mut self, country: &ccountry::Country, header: &[u8; 16], answers: [RawAnswer; 2]);
+}
+
+/// Carries nothing: every accumulator is copied.
+pub struct NoCarry;
+impl Carry for NoCarry {
+    fn held(&mut self, _: &ccountry::Country, _: &[u8; 16]) -> Option<[RawAnswer; 2]> {
+        None
+    }
+    fn read(&mut self, _: &ccountry::Country, _: &[u8; 16], _: [RawAnswer; 2]) {}
+}
+
+/// Country accumulator entries one guarded copy takes; a longer accumulator
+/// is searched by [`modifier`].
+const ACCUMULATOR_ENTRIES: usize = 1024;
+const STRIDE: usize = crate::modifier_entry::STRIDE;
+
+/// What a country's first lookup found; every later lookup reuses it.
+#[derive(Clone, Copy)]
+enum Loaded {
+    /// The header or entries refused; every lookup returns the refusal.
+    Refused(&'static str),
+    /// Longer than the buffer: each key is searched in place.
+    Oversize,
+    /// The [`Carry`] answers.
+    Held([RawAnswer; 2]),
+    /// The entries' byte length, copied into the buffer, and both keys'
+    /// answers in them (`None` when a search refused; each lookup then
+    /// searches again and returns its refusal).
+    Copied(usize, Option<[RawAnswer; 2]>),
+}
+
+/// One country's modifier accumulator (`CCountry+MODIFIER_ACCUMULATOR`), copied
+/// whole on its first lookup and searched locally after, with the value,
+/// failure and failure order of `modifier_accumulator::lookup_effective_at`.
+struct Accumulator<'b> {
+    country: ccountry::Country,
+    entries: &'b mut [u8; ACCUMULATOR_ENTRIES * STRIDE],
+    loaded: Option<Loaded>,
+}
+
+impl<'b> Accumulator<'b> {
+    fn new(
+        country: ccountry::Country,
+        entries: &'b mut [u8; ACCUMULATOR_ENTRIES * STRIDE],
+    ) -> Self {
+        Self {
+            country,
+            entries,
+            loaded: None,
+        }
+    }
+
+    fn address(&self) -> Result<usize, &'static str> {
+        at(self.country.pointer, ccountry::MODIFIER_ACCUMULATOR)
+    }
+
+    /// The header read, then the carry's answers or the entries copy.
+    fn load(
+        &mut self,
+        memory: &impl Memory,
+        carry: &mut impl Carry,
+    ) -> Result<Loaded, &'static str> {
+        // One refusal for an unreadable or invalid header, as `copy` had.
+        const HEADER: &str = "modifier accumulator header unreadable or invalid";
+        let header = read::<[u8; 16]>(memory, self.address()?).ok_or(HEADER)?;
+        let array = Array::from_header(header, STRIDE).ok_or(HEADER)?;
+        let len = array.count as usize * STRIDE;
+        if len > self.entries.len() {
+            return Ok(Loaded::Oversize);
+        }
+        if let Some(answers) = carry.held(&self.country, &header) {
+            return Ok(Loaded::Held(answers));
+        }
+        let entries = &mut self.entries[..len];
+        if !entries.is_empty() && !memory.copy(array.data, entries) {
+            return Err("modifier accumulator entry unreadable");
+        }
+        modifier_accumulator::validate_snapshot(entries)?;
+        let entries = &*entries;
+        let answer = |key| {
+            modifier_accumulator::lookup_snapshot(entries, key)
+                .map(|value| value.present.then_some(value.raw))
+        };
+        let answers = match (answer(KEYS[CRYPTO]), answer(KEYS[DEFENSE])) {
+            (Ok(crypto), Ok(defense)) => Some([crypto, defense]),
+            _ => None,
+        };
+        if let Some(answers) = answers {
+            carry.read(&self.country, &header, answers);
+        }
+        Ok(Loaded::Copied(len, answers))
+    }
+
+    /// The effective value of `KEYS[key]`.
+    fn effective(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        key: usize,
+        carry: &mut impl Carry,
+    ) -> Result<i64, &'static str> {
+        let loaded = match self.loaded {
+            Some(loaded) => loaded,
+            None => {
+                let loaded = self.load(memory, carry).unwrap_or_else(Loaded::Refused);
+                self.loaded = Some(loaded);
+                loaded
+            }
+        };
+        let raw = match loaded {
+            Loaded::Refused(reason) => return Err(reason),
+            Loaded::Oversize => return modifier(memory, base, self.address()?, KEYS[key]),
+            Loaded::Held(answers) | Loaded::Copied(_, Some(answers)) => answers[key],
+            Loaded::Copied(len, None) => {
+                let value = modifier_accumulator::lookup_snapshot(&self.entries[..len], KEYS[key])?;
+                value.present.then_some(value.raw)
+            }
+        };
+        match raw {
+            None => Ok(0),
+            Some(raw) => crate::modifier_definition::effective(memory, base, KEYS[key], raw),
+        }
+    }
+}
+
+/// Exact operative-roster lower-bound, including aliases and the native zero
+/// tag.
 fn has_nationality(
     memory: &impl Memory,
     countries: &ccountry::Reader<'_, impl Memory>,
@@ -249,13 +406,15 @@ pub fn walk_growing(
     game: usize,
     output: &mut Vec<Row>,
     operatives: &mut Vec<Operative>,
+    carry: &mut impl Carry,
 ) -> Walk {
-    walk_buffer(
+    walk_carrying(
         memory,
         base,
         game,
         crate::walk::Buffer::Growing(output),
         crate::walk::Buffer::Growing(operatives),
+        carry,
     )
 }
 
@@ -263,8 +422,19 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game: usize,
+    output: crate::walk::Buffer<'_, Row>,
+    operatives: crate::walk::Buffer<'_, Operative>,
+) -> Walk {
+    walk_carrying(memory, base, game, output, operatives, &mut NoCarry)
+}
+
+fn walk_carrying(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
     mut output: crate::walk::Buffer<'_, Row>,
     mut operatives: crate::walk::Buffer<'_, Operative>,
+    carry: &mut impl Carry,
 ) -> Walk {
     let mut operative_len = 0usize;
     let result = (|| {
@@ -276,10 +446,12 @@ pub fn walk_buffer(
             Some(array(memory, manager, manager::OPERATIVES_DATA, 8)?)
         };
         let mut len = 0usize;
+        let mut entries = [0_u8; ACCUMULATOR_ENTRIES * STRIDE];
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
                 continue;
             };
+            let mut modifiers = Accumulator::new(country, &mut entries);
             let mut row = Row {
                 country: country.id,
                 operatives_start: operative_len,
@@ -292,12 +464,7 @@ pub fn walk_buffer(
                     if pointer(memory, crypto, ccryptology::OWNER_COUNTRY)? != country.pointer {
                         return Err("raid cryptology owner mismatch");
                     }
-                    row.crypto_strength = Some(modifier(
-                        memory,
-                        base,
-                        at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
-                        modifier_keys::CRYPTO_STRENGTH,
-                    )?);
+                    row.crypto_strength = Some(modifiers.effective(memory, base, CRYPTO, carry)?);
                 }
             }
             if let Some(roster) = strategic_roster {
@@ -315,12 +482,7 @@ pub fn walk_buffer(
                         return Err("raid strategic owner mismatch");
                     }
                     row.strategic_present = true;
-                    row.country_defense = modifier(
-                        memory,
-                        base,
-                        at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
-                        modifier_keys::INTELLIGENCE_AGENCY_DEFENSE,
-                    )?;
+                    row.country_defense = modifiers.effective(memory, base, DEFENSE, carry)?;
                     let missions = array(memory, strategic, MISSIONS, 8)?;
                     operatives.ensure(
                         operative_len
@@ -594,6 +756,125 @@ mod tests {
                 reason: "raid counteroperative arena too small"
             }
         );
+    }
+
+    /// Both country keys come from one copy of the country's accumulator,
+    /// with the getter's values; entries out of key order still fail as the
+    /// getter's own read does.
+    #[test]
+    fn both_country_keys_share_one_accumulator_copy() {
+        struct Counted<'a>(&'a Fixture, std::cell::Cell<usize>, usize);
+        impl Memory for Counted<'_> {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                if at == self.2 {
+                    self.1.set(self.1.get() + 1);
+                }
+                self.0.copy(at, out)
+            }
+        }
+        let mut f = Fixture::new(1);
+        let entries = f.country + ccountry::MODIFIER_ACCUMULATOR + 0x20;
+        let counted = Counted(&f, std::cell::Cell::new(0), entries);
+        let mut rows = [Row::default()];
+        let walk = walk(&counted, 0, GAME, &mut rows, &mut [Operative::default(); 2]);
+        assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(
+            (rows[0].country_defense, rows[0].crypto_strength),
+            (-125000, Some(249999))
+        );
+        assert_eq!(counted.1.get(), 1);
+        f.accumulator(
+            f.country + ccountry::MODIFIER_ACCUMULATOR,
+            &[(CRYPTO, 249999), (DEFENSE, -125000)],
+        );
+        assert_eq!(
+            f.run(&mut rows, &mut [Operative::default(); 2]).outcome,
+            Outcome::Unavailable {
+                reason: "modifier accumulator keys not positive and increasing"
+            }
+        );
+    }
+
+    /// A carry holding a country's answers replaces only its entries copy:
+    /// the header is still read first, and the effective values still come
+    /// from the modifier definitions. A copy hands the carry both keys'
+    /// answers with the header it read; a header the carry does not hold is
+    /// copied again.
+    #[test]
+    fn a_held_country_skips_only_its_entries_copy() {
+        struct Counted<'a> {
+            fixture: &'a Fixture,
+            watched: [usize; 2],
+            reads: std::cell::RefCell<Vec<usize>>,
+        }
+        impl Memory for Counted<'_> {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                if self.watched.contains(&at) {
+                    self.reads.borrow_mut().push(at);
+                }
+                self.fixture.copy(at, out)
+            }
+        }
+        #[derive(Default)]
+        struct Holding {
+            held: Option<([u8; 16], [RawAnswer; 2])>,
+            asked: Vec<u32>,
+            read: Vec<([u8; 16], [RawAnswer; 2])>,
+        }
+        impl Carry for Holding {
+            fn held(
+                &mut self,
+                country: &ccountry::Country,
+                header: &[u8; 16],
+            ) -> Option<[RawAnswer; 2]> {
+                self.asked.push(country.id);
+                self.held
+                    .filter(|(held, _)| held == header)
+                    .map(|(_, answers)| answers)
+            }
+            fn read(&mut self, _: &ccountry::Country, header: &[u8; 16], answers: [RawAnswer; 2]) {
+                self.read.push((*header, answers));
+            }
+        }
+        let f = Fixture::new(1);
+        let header = f.country + ccountry::MODIFIER_ACCUMULATOR;
+        let entries = header + 0x20;
+        let counted = Counted {
+            fixture: &f,
+            watched: [header, entries],
+            reads: Default::default(),
+        };
+        let mut carry = Holding::default();
+        let (mut rows, mut operatives) = (Vec::new(), Vec::new());
+        let mut hour = |carry: &mut Holding| {
+            counted.reads.borrow_mut().clear();
+            let walk = walk_growing(&counted, 0, GAME, &mut rows, &mut operatives, carry);
+            assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
+            (
+                rows[0].crypto_strength,
+                rows[0].country_defense,
+                counted.reads.borrow().clone(),
+            )
+        };
+        assert_eq!(
+            hour(&mut carry),
+            (Some(249999), -125000, vec![header, entries])
+        );
+        assert_eq!(carry.asked, [1], "asked once per country");
+        assert_eq!(carry.read.len(), 1);
+        let (seen, answers) = carry.read[0];
+        assert_eq!(answers, [Some(249999), Some(-125000)]);
+        // Held answers stand in for the copy, through the definitions.
+        carry.held = Some((seen, [Some(7), None]));
+        assert_eq!(hour(&mut carry), (Some(7), 0, vec![header]));
+        assert_eq!(carry.read.len(), 1, "nothing read, nothing handed back");
+        // A header it does not hold: copied and handed back again.
+        carry.held = Some(([0; 16], [Some(7), None]));
+        assert_eq!(
+            hour(&mut carry),
+            (Some(249999), -125000, vec![header, entries])
+        );
+        assert_eq!(carry.read.len(), 2);
     }
 
     #[test]

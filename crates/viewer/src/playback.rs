@@ -492,8 +492,9 @@ pub(crate) mod tests {
                         expeditionary_owner: 0,
                         province: 1,
                         template: (2_u64 << 32) | 52,
-                        hit_points: 26_429_000,
-                        organisation: 6_000_001,
+                        // Whole display steps (replay::display), as recorded.
+                        hit_points: 26_420_000,
+                        organisation: 6_000_000,
                         orders_group: (57_u64 << 32) | 53,
                         reveal_skip: 0,
                     }])),
@@ -557,7 +558,6 @@ pub(crate) mod tests {
                         task_force: (2_u64 << 32) | 51,
                         strength: i64::from(hour),
                         organisation: i64::MAX,
-                        experience: i64::MIN,
                         ..Default::default()
                     }])),
                     TableView::Complete(TableRows::NavalCombats(vec![NavalCombatRow {
@@ -599,9 +599,19 @@ pub(crate) mod tests {
                     }])),
                 ];
                 // This fixture exercises the twenty map tables. Other domains,
-                // including singleton tables, are explicitly unavailable.
-                let mut tables = std::array::from_fn(|_| TableView::Unavailable {
-                    reason: "outside the map playback fixture".into(),
+                // including singleton tables, are explicitly unavailable, and a
+                // retired table reads as the decoder refuses it by name.
+                let mut tables = std::array::from_fn(|index| {
+                    let table = TableId::ALL[index];
+                    TableView::Unavailable {
+                        reason: match table.last_change().retired {
+                            Some(retired) => format!(
+                                "{table:?} retired at format {retired}; this recording is format {}",
+                                replay::FORMAT_VERSION
+                            ),
+                            None => "outside the map playback fixture".into(),
+                        },
+                    }
                 });
                 for (table, rows) in tables.iter_mut().zip(map_tables) {
                     *table = rows;
@@ -649,6 +659,25 @@ pub(crate) mod tests {
             reason: "flush failed".into(),
         }));
         Replay::from_records(b"campaign".to_vec(), &[records]).unwrap()
+    }
+
+    /// The fixture with its first block's last section of later entries
+    /// damaged: the block is unreadable, while the next block's keyframes,
+    /// which anchor only to earlier keyframe entries, stay readable.
+    fn corrupt_first_block(replay: &Replay) -> Replay {
+        let first = &replay.index[0];
+        let sections = replay.block_sections(first).unwrap().unwrap();
+        let last = sections
+            .iter()
+            .rposition(|section| matches!(section.section, replay::container::Section::Later(_)))
+            .unwrap();
+        let after: u64 = sections[last + 1..]
+            .iter()
+            .map(|section| section.compressed)
+            .sum();
+        let mut bytes = replay.bytes().to_vec();
+        bytes[(first.offset + first.length - after - 1) as usize] ^= 0x40;
+        Replay::open(bytes).unwrap()
     }
 
     fn assert_seek_matches_shared(playback: &mut Playback, branch: BranchId, hour: Hour) {
@@ -755,11 +784,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_reader_reports_a_corrupt_block_as_the_plain_reader_does() {
-        let replay = fixture();
-        let first = &replay.index[0];
-        let mut bytes = replay.bytes().to_vec();
-        bytes[(first.offset + first.length - 1) as usize] ^= 0x40;
-        let replay = Arc::new(Replay::open(bytes).unwrap());
+        let replay = Arc::new(corrupt_first_block(&fixture()));
         let mut playback = Playback::unloaded(Arc::clone(&replay))
             .unwrap()
             .with_reader(BlockReader::new(
@@ -798,11 +823,7 @@ pub(crate) mod tests {
 
     #[test]
     fn corrupt_blocks_are_cached_and_do_not_hide_the_next_keyframe() {
-        let replay = fixture();
-        let first = &replay.index[0];
-        let mut bytes = replay.bytes().to_vec();
-        bytes[(first.offset + first.length - 1) as usize] ^= 0x40;
-        let mut playback = Playback::new(Replay::open(bytes).unwrap()).unwrap();
+        let mut playback = Playback::new(corrupt_first_block(&fixture())).unwrap();
         for hour in [100, 101, 105, 100] {
             assert_seek_matches_shared(&mut playback, 1, hour);
             assert!(matches!(

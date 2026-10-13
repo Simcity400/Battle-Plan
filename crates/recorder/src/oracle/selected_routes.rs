@@ -1,29 +1,204 @@
-//! Selected-route suffix checks at the exact compared hour.
+//! The selected route's inputs at the exact compared hour.
 //!
-//! Only Army exile truth has an independent text-save counterpart. Pass-local
-//! area labels, graph order, effective commander modifiers and enemy occurrence
-//! order receive internal checks, never a saved-field acceptance count.
+//! Only Army exile truth has an independent text-save counterpart. The
+//! controller and owner area labels and graph and the enemy occurrence order
+//! receive internal checks, never a saved-field acceptance count.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use replay::rows::{DivisionStatusRow, Recorded};
+
 use super::*;
-use replay::rows::{ProvinceAreaInputs, Recorded, SelectedUnitInputs};
 
 pub(super) fn compare(
     frame: &DecodedFrame,
-    saved: &Save,
+    save: &Save,
     geometry: ContentRead<'_, installed_content::province_geometry::ProvinceGeometry>,
     report: &mut Report,
 ) {
-    report.attempt("Provinces selected route consistency", |r| {
+    report.attempt("Provinces selected route areas", |r| {
         areas(frame, geometry, r)
     });
-    report.attempt("DivisionMovement selected route", |r| {
-        units(frame, saved, r)
+    report.attempt("DivisionStatus selected route exile", |r| {
+        exile(frame, save, r)
     });
     report.attempt("CountryWars selected route consistency", |r| {
         enemies(frame, r)
     });
+}
+
+/// Labels are each area's smallest member, so a label is never larger than
+/// its province and names a province labelled by itself; a controller area's
+/// node lives on its label province alone, its representative is a member and
+/// its contacts are other areas' labels. The capture refusing an operand is a
+/// difference. None of it is saved.
+fn areas(
+    frame: &DecodedFrame,
+    geometry: ContentRead<'_, installed_content::province_geometry::ProvinceGeometry>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let rows = frame.complete::<tables::Provinces>()?;
+    let mut labels = BTreeMap::<u32, (u32, u32)>::new();
+    for row in rows {
+        let label = format!("Provinces {}", row.id);
+        let (Some(controller), Some(owner)) = (
+            report.recorded(&row.controller_area, "Provinces.controller_area", &label),
+            report.recorded(&row.owner_area, "Provinces.owner_area", &label),
+        ) else {
+            continue;
+        };
+        let (Some(controller), Some(owner)) = (*controller, *owner) else {
+            report.difference(
+                format!("{label}.areas"),
+                "capture refused",
+                "controller and owner area labels",
+            );
+            continue;
+        };
+        if labels.insert(row.id, (controller, owner)).is_some() {
+            return Err(invalid("duplicate selected-route province identity"));
+        }
+        for (name, area) in [("controller_area", controller), ("owner_area", owner)] {
+            if area > row.id {
+                report.difference(
+                    format!("{label}.{name}"),
+                    area,
+                    "null or the area's smallest member province",
+                );
+            }
+        }
+    }
+    if labels.is_empty() {
+        return Ok(());
+    }
+    let mut members = BTreeMap::<u32, u32>::new();
+    for (&province, &(controller, owner)) in &labels {
+        let label = format!("Provinces {province}");
+        *members.entry(controller).or_default() += 1;
+        for (name, area, index) in [("controller_area", controller, 0), ("owner_area", owner, 1)] {
+            if area == 0 {
+                continue;
+            }
+            let root = labels.get(&area).map(|labels| [labels.0, labels.1][index]);
+            if root != Some(area) {
+                report.difference(format!("{label}.{name} root"), root, Some(area));
+            }
+        }
+    }
+    let content = geometry.as_ref().ok().copied();
+    let mut nodes = 0;
+    for row in rows {
+        let Some(&(controller, _)) = labels.get(&row.id) else {
+            continue;
+        };
+        let label = format!("Provinces {}.area_node", row.id);
+        let Some(node) = report.recorded(&row.area_node, "Provinces.area_node", &label) else {
+            continue;
+        };
+        let root = controller != 0 && controller == row.id;
+        let Some(node) = node else {
+            if root {
+                report.difference(&label, "capture refused", "the area's node");
+            }
+            continue;
+        };
+        if !root {
+            report.difference(
+                &label,
+                "present",
+                "only on its nonnull controller area's label province",
+            );
+            continue;
+        }
+        nodes += 1;
+        match node.first_land {
+            None => report.difference(
+                format!("{label}.first_land"),
+                "capture refused",
+                "the representative province",
+            ),
+            Some(first) => {
+                if labels.get(&first).map(|labels| labels.0) != Some(controller) {
+                    report.difference(
+                        format!("{label}.first_land"),
+                        first,
+                        "a member province of the area",
+                    );
+                }
+                // the move-rejection search indexes its visited set by the representative's
+                // map+238 entry, which playback takes from the content.
+                if let Some(geometry) = content
+                    && !geometry.nonsea_indices.contains_key(&first)
+                {
+                    report.difference(
+                        format!("{label}.first_land nonsea index"),
+                        first,
+                        "a province of the content's nonsea domain",
+                    );
+                }
+            }
+        }
+        match &node.neighbours {
+            None => report.difference(
+                format!("{label}.neighbours"),
+                "capture refused",
+                "the ordered contacts",
+            ),
+            // Occurrences in native order: never sorted or deduplicated, and
+            // not derived from adjacency, which the native contact counts
+            // follow only through each area's history.
+            Some(neighbours) => {
+                for (ordinal, &target) in neighbours.iter().enumerate() {
+                    let root = labels.get(&target).map(|labels| labels.0);
+                    if target == 0 || target == controller || root != Some(target) {
+                        report.difference(
+                            format!("{label}.neighbours[{ordinal}]"),
+                            target,
+                            "another controller area's label",
+                        );
+                    }
+                }
+            }
+        }
+    }
+    let roots = members.keys().filter(|&&area| area != 0).count();
+    if nodes != roots {
+        report.limitation(
+            "controller areas whose node was refused or absent",
+            format!("{} of {roots} areas", roots - nodes.min(roots)),
+        );
+    }
+    if content.is_none() {
+        required_context("verified province geometry", &geometry)?;
+    }
+    report.compared("Provinces selected route areas", labels.len());
+    report.limitation("Controller and owner area labels, representatives and contact order are runtime state without a text-save counterpart; these checks prove the recording consistent, not the native graph. An independent matched-hour native witness remains required", "Provinces selected route areas internal consistency only");
+    Ok(())
+}
+
+/// The division writer calls the unit writer on its
+/// secondary receiver, which saves primary+0x2AE as `exile` only when it is
+/// nonzero; DivisionStatus records that byte's truth.
+fn exile(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
+    let rows = frame.complete::<tables::DivisionStatus>()?;
+    let mut compared = 0;
+    for row in rows {
+        let label = format!("DivisionStatus {:#x}.move_flags exile", row.division);
+        let Some(saved) = save.divisions.get(&row.division) else {
+            report.difference(&label, "present", "saved division");
+            continue;
+        };
+        report.scalar_checks += 1;
+        compared += 1;
+        let recorded = row.move_flags & DivisionStatusRow::MOVE_EXILED != 0;
+        if recorded != saved.presentation.exile {
+            report.difference(&label, recorded, saved.presentation.exile);
+        }
+    }
+    if compared != 0 {
+        report.compared("DivisionStatus exile saved truth", compared);
+    }
+    Ok(())
 }
 
 fn current<'a, T>(
@@ -32,7 +207,7 @@ fn current<'a, T>(
     name: &str,
     label: &str,
     hour: i32,
-    sample_hour: impl FnOnce(&T) -> i32,
+    sample_hour: impl FnOnce(&T) -> replay::rows::PacketHour,
 ) -> Option<&'a T> {
     let value = report.recorded(field, name, label)?;
     let Some(value) = value else {
@@ -44,302 +219,11 @@ fn current<'a, T>(
         return None;
     };
     let captured_hour = sample_hour(value);
-    if captured_hour != hour {
+    if !captured_hour.fresh_at(hour) {
         report.difference(format!("{label}.sample_hour"), captured_hour, hour);
         return None;
     }
     Some(value)
-}
-
-fn required<T>(report: &mut Report, label: &str, value: &Option<T>) {
-    if value.is_none() {
-        report.difference(label, "capture refused", "required native operand");
-    }
-}
-
-fn areas(
-    frame: &DecodedFrame,
-    geometry: ContentRead<'_, installed_content::province_geometry::ProvinceGeometry>,
-    report: &mut Report,
-) -> io::Result<()> {
-    let rows = frame.complete::<tables::Provinces>()?;
-    let content = geometry.as_ref().ok().copied();
-    let mut content_demanded = false;
-    let mut packets = BTreeMap::<u32, &ProvinceAreaInputs>::new();
-    for row in rows {
-        let label = format!("Provinces {}.selected_areas", row.id);
-        let Some(packet) = current(
-            report,
-            &row.selected_areas,
-            "Provinces.selected_areas",
-            &label,
-            frame.hour,
-            |packet| packet.sample_hour,
-        ) else {
-            continue;
-        };
-        if packets.insert(row.id, packet).is_some() {
-            return Err(invalid("duplicate selected-route province identity"));
-        }
-        required(report, &format!("{label}.owner"), &packet.owner);
-        for (name, area) in [
-            ("controller", Some(packet.controller)),
-            ("owner", packet.owner),
-        ] {
-            if area.is_some_and(|area| area > row.id) {
-                report.difference(
-                    format!("{label}.{name} label"),
-                    area,
-                    "null or minimum province ID of the pointer group",
-                );
-            }
-        }
-        if packet.node.is_some() && (packet.controller == 0 || packet.controller != row.id) {
-            report.difference(
-                format!("{label}.node placement"),
-                packet.controller,
-                "one payload at its nonnull controller-area label province",
-            );
-        }
-    }
-
-    let mut nonsea_counts = BTreeSet::new();
-    for (&province, packet) in &packets {
-        let label = format!("Provinces {province}.selected_areas");
-        for (name, area) in [
-            ("controller", Some(packet.controller)),
-            ("owner", packet.owner),
-        ] {
-            let Some(area) = area.filter(|area| *area != 0) else {
-                continue;
-            };
-            match packets.get(&area) {
-                Some(root) => {
-                    let root_label = if name == "controller" {
-                        Some(root.controller)
-                    } else {
-                        root.owner
-                    };
-                    if root_label != Some(area) {
-                        report.difference(format!("{label}.{name} root"), root_label, Some(area));
-                    }
-                }
-                None if rows.binary_search_by_key(&area, |row| row.id).is_ok() => {
-                    report.limitation("selected area label joins an unavailable or historical province suffix; the group cannot be certified", format!("{label}.{name} root {area}"));
-                }
-                None => report.difference(
-                    format!("{label}.{name} root"),
-                    area,
-                    "present province in the authenticated recorded domain",
-                ),
-            }
-        }
-        if packet.controller != province || packet.controller == 0 {
-            continue;
-        }
-        required(report, &format!("{label}.node"), &packet.node);
-        let Some(node) = &packet.node else {
-            continue;
-        };
-        required(
-            report,
-            &format!("{label}.node.first_land"),
-            &node.first_land,
-        );
-        required(
-            report,
-            &format!("{label}.node.nonsea_index"),
-            &node.nonsea_index,
-        );
-        required(
-            report,
-            &format!("{label}.node.nonsea_count"),
-            &node.nonsea_count,
-        );
-        required(
-            report,
-            &format!("{label}.node.land_count"),
-            &node.land_count,
-        );
-        required(
-            report,
-            &format!("{label}.node.neighbours"),
-            &node.neighbours,
-        );
-        if let Some(first) = node.first_land
-            && rows.binary_search_by_key(&first, |row| row.id).is_err()
-        {
-            report.difference(
-                format!("{label}.node.first_land"),
-                first,
-                "present authenticated province identity",
-            );
-        }
-        if let Some(count) = node.nonsea_count {
-            nonsea_counts.insert(count);
-            content_demanded = true;
-        }
-        if node.nonsea_index.is_some_and(|index| index < 0) {
-            report.limitation("route traversal accepts a known negative start nonsea index as native false before demanding neighbours; the same recorded node reached as a neighbour remains unsupported. The oracle has no selected start/target and cannot certify that reach or route result", format!("{label}.node.nonsea_index negative native state"));
-        }
-        if let Some(index) = node.nonsea_index.filter(|index| *index >= 0) {
-            content_demanded = true;
-            // Route traversal sizes its visited bitset from the graphics province table,
-            // rather than the land-only province count used for temporary area records.
-            if let Some(geometry) = content {
-                let count = geometry.nonsea_indices.len();
-                if index as usize >= count {
-                    report.difference(
-                        format!("{label}.node.nonsea_index"),
-                        index,
-                        format!("nonnegative native nonsea index below {count}"),
-                    );
-                } else if let Some(first) = node.first_land
-                    && rows.binary_search_by_key(&first, |row| row.id).is_ok()
-                {
-                    let expected = geometry.nonsea_indices.get(&first).copied();
-                    if expected != Some(index) {
-                        report.difference(
-                            format!("{label}.node.nonsea_index for province {first}"),
-                            Some(index),
-                            expected,
-                        );
-                    }
-                }
-            }
-        }
-        if let Some(neighbours) = &node.neighbours {
-            // Iterate occurrences. Do not sort, deduplicate or derive a graph
-            // from saved province/state ownership; each is a distinct domain.
-            for (ordinal, &target) in neighbours.iter().enumerate() {
-                if target == 0
-                    || packets
-                        .get(&target)
-                        .is_some_and(|root| root.controller != target)
-                {
-                    report.difference(
-                        format!("{label}.node.neighbours[{ordinal}]"),
-                        target,
-                        "nonnull authenticated controller-area root label",
-                    );
-                } else if !packets.contains_key(&target) {
-                    if rows.binary_search_by_key(&target, |row| row.id).is_ok() {
-                        report.limitation("selected area neighbour joins an unavailable or historical province suffix; its graph payload cannot be certified", format!("{label}.node.neighbours[{ordinal}] {target}"));
-                    } else {
-                        report.difference(
-                            format!("{label}.node.neighbours[{ordinal}]"),
-                            target,
-                            "present authenticated controller-area root label",
-                        );
-                    }
-                }
-            }
-        }
-    }
-    if nonsea_counts.len() > 1 {
-        report.difference(
-            "Provinces.selected_areas nonsea_count consistency",
-            nonsea_counts,
-            "one land-only province count in the same capture",
-        );
-    } else if let Some(&count) = nonsea_counts.first()
-        && let Some(geometry) = content
-        && count as usize != geometry.land.len()
-    {
-        report.difference(
-            "Provinces.selected_areas land count",
-            count as usize,
-            geometry.land.len(),
-        );
-    }
-    if !packets.is_empty() {
-        report.limitation("Controller-area and owner-area labels are pointer identities confined to one capture, not saved controller/owner tags. route traversal first-land/nonsea indices, signed land counts and ordered repeated neighbours have no text-save counterpart. Recording joins do not prove the original pointer association, list lifetime, root census completeness or native graph order. An independent matched-hour native witness remains required", "Provinces.selected_areas internal consistency only");
-    }
-    if content_demanded {
-        required_context("verified province geometry", &geometry)?;
-    }
-    Ok(())
-}
-
-fn units(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Result<()> {
-    let rows = frame.complete::<tables::DivisionMovement>()?;
-    let mut seen = BTreeSet::new();
-    let mut compared = 0;
-    for row in rows {
-        if row.division == 0 || !seen.insert(row.division) {
-            return Err(invalid(
-                "null or duplicate selected-route division identity",
-            ));
-        }
-        let label = format!("DivisionMovement {}.selected", row.division);
-        let Some(packet) = current(
-            report,
-            &row.selected,
-            "DivisionMovement.selected",
-            &label,
-            frame.hour,
-            |packet| packet.sample_hour,
-        ) else {
-            continue;
-        };
-        required(report, &format!("{label}.exiled"), &packet.exiled);
-        if let Some(raw) = packet.exiled {
-            if let Some(saved) = saved.divisions.get(&row.division) {
-                report.scalar_checks += 1;
-                if (raw != 0) != saved.presentation.exile {
-                    report.difference(
-                        format!("{label}.exiled saved truth"),
-                        raw != 0,
-                        saved.presentation.exile,
-                    );
-                }
-                compared += 1;
-            } else {
-                report.difference(format!("{label}.saved division"), "present", "absent");
-            }
-        }
-        // Combat selection exits on a nonpositive signed combat count before selecting
-        // a commander, so absence is legitimate for that branch.
-        if row.combat_count as i32 > 0 {
-            retreat(frame, report, &label, packet);
-        }
-        report.limitation("the army writer delegates to the unit writer, which saves exile only when nonzero as Boolean truth. Only zero/nonzero truth is independently compared. The display calculation XORs the raw byte with one; a truth match cannot certify raw nonzero magnitude", format!("{label}.exiled raw byte"));
-        report.limitation("Selected commanders and effective retreat-ban modifiers are current runtime accumulators without text-save counterparts. Saved groups, traits or daily retreat flags cannot certify these values; an independent matched-hour native witness remains required", format!("{label}.commander/retreat internal checks only"));
-    }
-    if compared != 0 {
-        report.compared("DivisionMovement.selected exile saved truth", compared);
-    }
-    Ok(())
-}
-
-fn retreat(frame: &DecodedFrame, report: &mut Report, label: &str, packet: &SelectedUnitInputs) {
-    required(report, &format!("{label}.commander"), &packet.commander);
-    match packet.commander {
-        None => {}
-        Some(false) => {
-            if packet.retreat != [Some(0); 2] {
-                report.difference(
-                    format!("{label}.retreat null commander"),
-                    packet.retreat,
-                    [Some(0); 2],
-                );
-            }
-        }
-        Some(true) => {
-            if let Err(reason) =
-                replay::fixed_layout::validate_recording(frame, replay::fixed_layout::RETREAT_BANS)
-            {
-                report.difference(
-                    format!("{label}.retreat fixed layout"),
-                    reason,
-                    "authenticated recorded modifier names",
-                );
-            }
-            for (ordinal, value) in packet.retreat.iter().enumerate() {
-                required(report, &format!("{label}.retreat[{ordinal}]"), value);
-            }
-        }
-    }
 }
 
 fn enemies(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {

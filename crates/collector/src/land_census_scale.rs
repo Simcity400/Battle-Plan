@@ -69,7 +69,11 @@ fn verify(land: &Captured, count: usize) {
         panic!("complete shared census must produce complete land input rows")
     };
     assert_eq!(rows.len(), count);
-    assert_eq!(rows[count - 1].remaining_grace, 200_000);
+    // The grace the census holds is DivisionStatus's record, never a land copy.
+    assert_eq!(
+        rows[count - 1].remaining_grace,
+        replay::rows::RetiredI64::default()
+    );
     assert_eq!(rows[count - 1].manpower.len(), 2);
     assert_eq!(rows[count - 1].manpower[1].amount, -7);
 }

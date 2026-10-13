@@ -4,22 +4,18 @@ use crate::{
     raw::RawLog,
     read_accounting,
     sampling::qpc,
+    slicing::{SliceFingerprints, SliceSelection},
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
 };
 use engine::allocation::{copy_vec, default_vec, map_slice, owned_vec};
 use engine::raid_tooltip_operands;
 use engine::{
-    Memory, ccountry, ccountry_raid_status, cgame_state, cnuke,
-    cpdx_array::Array,
-    cplayer_status_cache, craid_instance, craid_system,
-    memory::{RecordField, RecordLayout, RecordSources},
-    msvc_string, nproject_breakthrough_node, nproject_cbreakthrough_progress, nproject_cprogram,
-    nproject_cprogram_status, nproject_cproject, nproject_cproject_pool,
-    nproject_cproject_state_machine as machine, nproject_sproject_context,
-    nproject_sproject_history, peace_conference, raid_equipment, raid_facilities, raid_path_memo,
-    raid_speed_inputs, scientist_roster,
-    walk::Outcome,
+    Memory, ccountry, ccountry_raid_status, cgame_state, cnuke, cpdx_array::Array,
+    cplayer_status_cache, craid_instance, craid_system, msvc_string, nproject_breakthrough_node,
+    nproject_cbreakthrough_progress, nproject_cprogram, nproject_cprogram_status,
+    nproject_cproject, nproject_sproject_history, peace_conference, raid_equipment,
+    raid_facilities, raid_path_memo, raid_speed_inputs, scientist_roster, walk::Outcome,
 };
 use replay::{
     frame::TableView,
@@ -61,6 +57,12 @@ pub const TABLES: [TableId; N] = [
     TableId::RaidIntelInputs,
     TableId::RaidTooltipOperands,
 ];
+
+/// Indices of the `projects` sliced family's tables in `TABLES`.
+pub(crate) const FAMILY: [usize; 2] = [1, 2];
+
+/// The daily tables the raw-copy job acquires, in calibration order.
+pub(crate) const RAW: [TableId; 2] = [TableId::ProjectPrograms, TableId::ProjectBreakthroughs];
 
 /// Each rooted walk produces two independently bounded tables.
 /// Its entire cost is attributed once to the anchor named by each group.
@@ -187,13 +189,26 @@ pub struct Captured {
     names: Arena<u8>,
     candidates: Vec<usize>,
     required_candidates: usize,
-    /// Raw-copy split gate for the four daily project tables (0..4).
-    /// Set when an acquisition job returns a valid refresh payload;
-    /// `capture` then skips their typed walks and the decode worker
-    /// fills these rows before the ready handoff. Preserved across `reset`
-    /// (set per refresh, cleared by the worker after decode). Hourly tables
-    /// are never gated by this flag.
+    /// Raw-copy split gate for the daily ProjectPrograms and
+    /// ProjectBreakthroughs. Set when an acquisition job returns a valid
+    /// refresh payload; `capture` then skips their typed walks and the decode
+    /// worker fills these rows before the ready handoff. Preserved across
+    /// `reset` (set per refresh, cleared by the worker after decode). Hourly
+    /// and sliced tables are never gated by this flag.
     pub(crate) raw_mode: bool,
+    /// Which owners the Projects and ProjectHistory rows cover: the
+    /// `projects` sliced family ([`Self::capture_project_family`]).
+    project_selection: SliceSelection,
+    /// This hour's project marks and comparisons.
+    project_changed: crate::slicing::Changed,
+    /// The country link table's words, read once per hour.
+    project_links: Vec<u8>,
+    /// (canonical slot, raw id) for every linked raw id, by slot.
+    project_owners: Vec<(u32, u32)>,
+    /// (native country id, owner raw id) of every country this hour read,
+    /// grouped by country: the country's own id first, then its other raw
+    /// ids ascending.
+    project_read: Vec<(u32, u32)>,
 }
 
 impl Captured {
@@ -202,10 +217,11 @@ impl Captured {
         let outcomes = TABLES.map(|table| super::failed_capture(table, hour, force_full, reason));
         if !self.raw_mode {
             self.programs.fail(outcomes[0]);
-            self.projects.fail(outcomes[1]);
-            self.history.fail(outcomes[2]);
             self.breakthroughs.fail(outcomes[3]);
         }
+        self.projects.fail(outcomes[1]);
+        self.history.fail(outcomes[2]);
+        self.project_selection.reset_daily(hour, force_full);
         self.nukes.fail(outcomes[4]);
         self.raid_countries.fail(outcomes[5]);
         self.raids.fail(outcomes[6]);
@@ -273,7 +289,17 @@ impl Captured {
             candidates: owned_vec(default_vec(capacity.program_candidates)),
             required_candidates: 0,
             raw_mode: false,
+            project_selection: SliceSelection::new(capacity.rows[1] != 0),
+            project_changed: crate::slicing::Changed::default(),
+            project_links: Vec::new(),
+            project_owners: Vec::new(),
+            project_read: Vec::new(),
         }
+    }
+
+    /// The owners whose project rows this frame's read replaced.
+    pub(crate) fn project_selection(&self) -> &SliceSelection {
+        &self.project_selection
     }
 
     /// This hour's torn memo copies and refused raid rows.
@@ -344,6 +370,9 @@ impl Captured {
             + self.raid_type_memo.allocated_bytes()
             + self.names.allocated_bytes()
             + self.candidates.capacity() * size_of::<usize>()
+            + self.project_links.capacity()
+            + self.project_owners.capacity() * size_of::<(u32, u32)>()
+            + self.project_read.capacity() * size_of::<(u32, u32)>()
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -401,9 +430,8 @@ impl Captured {
         grow_vec(&mut self.candidates, capacity.program_candidates);
     }
 
-    /// Worker acquisition grows from original headers while the callback waits.
-    /// Definition/reward/specialization tokens retain their native u32 bits.
-    /// Acquire current rows using the existing staggered project cadence.
+    /// A capture whose project store is new: every country is first seen.
+    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -412,19 +440,46 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
+        self.capture_selected(
+            memory,
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            &mut SliceFingerprints::new(),
+            &crate::country_input_changes::Observer,
+        )
+    }
+
+    /// Worker acquisition grows from original headers while the callback waits.
+    /// Definition/reward/specialization tokens retain their native u32 bits.
+    /// ProjectPrograms and ProjectBreakthroughs follow their daily slot;
+    /// Projects and ProjectHistory read the owners `projects` and
+    /// `changes` select ([`Self::capture_project_family`]).
+    #[allow(clippy::too_many_arguments)] // The capture context, the family's store and its marks.
+    pub(crate) fn capture_selected(
+        &mut self,
+        memory: &impl Memory,
+        roster: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        projects: &mut SliceFingerprints,
+        changes: &dyn crate::country_input_changes::Changes,
+    ) -> [u64; N] {
         self.reset();
         let mut ticks = [0; N];
         let active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
-        let walk = active[1] && !self.raw_mode;
-        if self.raw_mode && active[1] {
+        let walk = active[0] && !self.raw_mode;
+        if self.raw_mode && active[0] {
             // The owned refresh supplies these rows before publication.
         } else if !walk {
             let skipped = Outcome::Unavailable {
                 reason: replay::cadence::SKIPPED_REASON,
             };
             self.programs.outcome = skipped;
-            self.projects.outcome = skipped;
-            self.history.outcome = skipped;
             self.breakthroughs.outcome = skipped;
         } else {
             let begin = qpc();
@@ -434,24 +489,17 @@ impl Captured {
             });
             ticks[0] = elapsed(begin);
             let begin = qpc();
-            capture_pair(
-                &mut self.projects,
-                &mut self.history,
-                |projects, histories| {
-                    let _reads = read_accounting::table(TABLES[1]);
-                    nproject_cproject::walk_with_history_growing(
-                        memory, base, game_state, projects, histories,
-                    )
-                },
-            );
-            ticks[1] = elapsed(begin);
-            let begin = qpc();
             capture_rows(&mut self.breakthroughs, |rows| {
                 let _reads = read_accounting::table(TABLES[3]);
                 nproject_cbreakthrough_progress::walk_growing(memory, base, game_state, rows)
             });
             ticks[3] = elapsed(begin);
         }
+        let begin = qpc();
+        self.capture_project_family(
+            roster, base, game_state, hour, force_full, projects, changes,
+        );
+        ticks[1] = elapsed(begin);
         macro_rules! plain {
             ($field:ident, $index:literal, $module:ident) => {{
                 if active[$index] {
@@ -602,13 +650,24 @@ impl Captured {
         } else {
             let begin = qpc();
             let _reads = read_accounting::table(TABLES[17]);
-            let read = engine::raid_intel_inputs::walk_growing(
-                memory,
-                base,
-                game_state,
-                &mut self.raid_intel.rows,
-                &mut self.counteroperatives.first,
-            );
+            let mut carry = super::raid_intel_carry::begin();
+            let (rows, operatives) = (&mut self.raid_intel.rows, &mut self.counteroperatives.first);
+            let read = match carry.as_mut() {
+                Some(carry) => engine::raid_intel_inputs::walk_growing(
+                    memory, base, game_state, rows, operatives, carry,
+                ),
+                None => engine::raid_intel_inputs::walk_growing(
+                    memory,
+                    base,
+                    game_state,
+                    rows,
+                    operatives,
+                    &mut engine::raid_intel_inputs::NoCarry,
+                ),
+            };
+            if let Some(carry) = carry {
+                carry.finish(!matches!(read.outcome, Outcome::Unavailable { .. }));
+            }
             self.raid_intel.outcome = read.outcome;
             self.counteroperatives.required = read.operatives;
             self.counteroperatives.len = read.operatives.min(self.counteroperatives.first.len());
@@ -1059,6 +1118,227 @@ impl Captured {
 
 fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
+}
+
+impl Captured {
+    /// Projects and ProjectHistory, the `projects` sliced family: every
+    /// country at the daily boundary, whose pool pass advances every project,
+    /// and on a full
+    /// hour; in between the new and unpublished countries and those a hooked
+    /// project writer marked ([`crate::country_input_changes`]). A row's
+    /// owner is its project's stored owner tag (`CProject+0x1C`), any raw id
+    /// linking to the pool's country, so a read country selects, and the
+    /// census keeps alive, every raw id its link table entries name. A read
+    /// of an unmarked owner compares a digest of its projects' identity and
+    /// lifecycle (definition, program reference, started and completed) with
+    /// its last read; the state machine and the reward history, which the
+    /// daily pass advances, are left out.
+    #[allow(clippy::too_many_arguments)]
+    fn capture_project_family(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        store: &mut SliceFingerprints,
+        changes: &dyn crate::country_input_changes::Changes,
+    ) {
+        use crate::country_input_changes::{self as family, Table};
+        let _reads = read_accounting::table(TABLES[1]);
+        self.project_selection.reset_daily(hour, force_full);
+        crate::slicing::select_changed(
+            &mut self.project_selection,
+            store,
+            &mut self.project_changed,
+            |visit| changes.take(Table::Projects, visit),
+            0,
+            changes.every(Table::Projects),
+        );
+        self.project_read.clear();
+        let fail = |captured: &mut Self, reason| {
+            captured.projects.outcome = Outcome::Unavailable { reason };
+            captured.history.outcome = Outcome::Unavailable { reason };
+        };
+        match self.select_project_owners(memory, base, game_state, store) {
+            Err(reason) => fail(self, reason),
+            Ok(census) => {
+                if census {
+                    store.finish_scan();
+                    self.project_selection.finish_census(store);
+                }
+                let selection = &self.project_selection;
+                let (projects, histories) = nproject_cproject::walk_with_history_selected(
+                    memory,
+                    base,
+                    game_state,
+                    engine::walk::Buffer::Growing(&mut self.projects.rows),
+                    engine::walk::Buffer::Growing(&mut self.history.rows),
+                    &mut |id| selection.contains(id),
+                );
+                self.projects.outcome = bounded(projects, self.projects.rows.len());
+                self.history.outcome = bounded(histories, self.history.rows.len());
+                self.compare_project_owners(store, changes);
+            }
+        }
+        family::record(
+            Table::Projects,
+            &family::Counts {
+                marked: self.project_changed.marked() as u64,
+                read: self.project_countries().count() as u64,
+                verified: self.project_changed.verified,
+                mismatches: self.project_changed.mismatches,
+                full: !self.project_changed.certified,
+            },
+            None,
+        );
+    }
+
+    /// The hour's census: every raw id linking to each live country is an
+    /// owner the family keeps; a country is read when its native id or any of
+    /// its raw ids is selected, and then all of them are. Ok(false) when a
+    /// census slot could not be read (no owner is known gone).
+    fn select_project_owners(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        store: &mut SliceFingerprints,
+    ) -> Result<bool, &'static str> {
+        let countries = ccountry::Reader::new(memory, base, game_state)?;
+        let links = countries.arrays()[1];
+        let bytes = (links.count as usize)
+            .checked_mul(4)
+            .ok_or("country link table size overflow")?;
+        grow_vec(&mut self.project_links, bytes);
+        if self.project_links.len() < bytes {
+            return Err("country link table allocation failed");
+        }
+        if !engine::read_slice(memory, links.data, &mut self.project_links[..bytes]) {
+            return Err("country link table unreadable");
+        }
+        self.project_owners.clear();
+        engine::allocation::reserve(&mut self.project_owners, links.count as usize)
+            .map_err(|_| "project owner allocation failed")?;
+        for (raw, word) in self.project_links[..bytes]
+            .chunks_exact(4)
+            .enumerate()
+            .skip(1)
+        {
+            let slot = u32::from_le_bytes(word.try_into().unwrap());
+            if slot != 0 {
+                self.project_owners.push((slot, raw as u32));
+            }
+        }
+        self.project_owners.sort_unstable();
+        let mut census = true;
+        for slot in 1..countries.count() {
+            let country = match countries.at(slot) {
+                Ok(Some(country)) => country,
+                Ok(None) => continue,
+                Err(_) => {
+                    census = false;
+                    continue;
+                }
+            };
+            let start = self
+                .project_owners
+                .partition_point(|&(owner, _)| owner < slot);
+            let end = self
+                .project_owners
+                .partition_point(|&(owner, _)| owner <= slot);
+            let raws = &self.project_owners[start..end];
+            // Only a country that owns a state runs the daily pool pass
+            // ([`crate::country_input_changes::drifts`]); its print is
+            // whether it does, checked at the daily boundary, so a change
+            // since the last boundary is read there.
+            let drift = std::cell::OnceCell::new();
+            let drifts = || {
+                *drift.get_or_init(|| crate::country_input_changes::drifts(memory, country.pointer))
+            };
+            let selection = &mut self.project_selection;
+            selection.scan_lazily(store, country.id, drifts);
+            for &(_, raw) in raws {
+                selection.scan_lazily(store, raw, drifts);
+            }
+            if selection.contains(country.id)
+                || raws.iter().any(|&(_, raw)| selection.contains(raw))
+            {
+                selection.select(country.id);
+                engine::allocation::reserve(&mut self.project_read, raws.len() + 1)
+                    .map_err(|_| "project owner allocation failed")?;
+                self.project_read.push((country.id, country.id));
+                for &(_, raw) in raws {
+                    selection.select(raw);
+                    if raw != country.id {
+                        self.project_read.push((country.id, raw));
+                    }
+                }
+            }
+        }
+        Ok(census)
+    }
+
+    /// Each read country's owner raw ids, its own id first.
+    fn project_countries(&self) -> impl Iterator<Item = &[(u32, u32)]> {
+        self.project_read
+            .chunk_by(|first, second| first.0 == second.0)
+    }
+
+    /// Holds each read country's digest, over the rows of all its owner raw
+    /// ids, and compares an unmarked one with its last read: a writer marks
+    /// the country, whichever raw id its projects name. An incomplete read
+    /// holds nothing.
+    fn compare_project_owners(
+        &mut self,
+        store: &mut SliceFingerprints,
+        changes: &dyn crate::country_input_changes::Changes,
+    ) {
+        let (Outcome::Rows { len }, Outcome::Rows { .. }) =
+            (self.projects.outcome, self.history.outcome)
+        else {
+            for country in self
+                .project_read
+                .chunk_by(|first, second| first.0 == second.0)
+            {
+                self.project_changed.unread(store, country[0].0);
+            }
+            return;
+        };
+        // The walk leaves its rows in key order (owner, local id).
+        let rows = &self.projects.rows[..len];
+        for country in self
+            .project_read
+            .chunk_by(|first, second| first.0 == second.0)
+        {
+            let mut digest = crate::slicing::Digest::new();
+            for &(_, owner) in country {
+                let start = rows.partition_point(|row| row.owner < owner);
+                let end = rows.partition_point(|row| row.owner <= owner);
+                digest.u64(u64::from(owner)).u64((end - start) as u64);
+                for row in &rows[start..end] {
+                    digest
+                        .u64(u64::from(row.local_id))
+                        .u64(u64::from(row.definition_id))
+                        .u64(row.program_reference)
+                        .u64(u64::from(row.started))
+                        .u64(u64::from(row.completed));
+                }
+            }
+            if self
+                .project_changed
+                .read(store, country[0].0, digest.finish())
+            {
+                changes.mismatch(
+                    crate::country_input_changes::Table::Projects,
+                    crate::country_input_changes::Mismatch {
+                        country: country[0].0,
+                        field: "Projects (identity and lifecycle)",
+                    },
+                );
+            }
+        }
+    }
 }
 
 mod owned;

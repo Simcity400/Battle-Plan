@@ -15,6 +15,9 @@ struct CountryInputs {
 }
 
 pub(super) struct Scan<'a> {
+    /// The recording's format, which dates its daily tables
+    /// ([`crate::metadata::slot_read`]).
+    pub(crate) format: replay::format::FormatVersion,
     cat: Option<&'a Catalogue>,
     names: StateNames,
     laws: Result<installed_content::occupation_laws::Laws, String>,
@@ -108,6 +111,7 @@ impl<'a> Scan<'a> {
                 installed_content::occupation_laws::read(&cat.content.layers).map_err(|e| e.to_string())
             });
         Self {
+            format: replay::format::FormatVersion::default(),
             cat,
             names,
             laws,
@@ -332,7 +336,7 @@ impl<'a> Scan<'a> {
         }
         let assigned_complete = frame.complete::<tables::StateAssignedManpower>().is_ok();
         let laws_complete = frame.complete::<tables::StateOccupationLaws>().is_ok();
-        let garrisons_read = slot_read(&frame.metrics, TableId::StateGarrisons, hour);
+        let garrisons_read = slot_read(self.format, &frame.metrics, TableId::StateGarrisons, hour);
         self.trend.begin(
             hour,
             countries.clone(),
@@ -681,8 +685,8 @@ impl<'a> Scan<'a> {
         // operand. Compare those operands without copying their strings, then
         // retain only typed identity/link inputs and the latest view identities.
         self.trend
-            .collaboration(frame, hour, &self.countries.identities, links)?;
-        if slot_read(&frame.metrics, TableId::StateResistance, hour) {
+            .collaboration(self.format, frame, hour, &self.countries.identities, links)?;
+        if slot_read(self.format, &frame.metrics, TableId::StateResistance, hour) {
             self.read(frame, hour, states, links)?;
         } else if self.read_hour.is_none() {
             return Ok(());
@@ -803,6 +807,7 @@ pub(in crate::products) fn scan_history(
         TableId::LexicalTokens,
     ];
     let mut scan = Scan::new(cat);
+    scan.format = replay.format;
     // Runtime law bodies read the trigger kit. Decode each block incrementally
     // once rather than seeking its keyframe at every daily read.
     let mut selected = selected.to_vec();

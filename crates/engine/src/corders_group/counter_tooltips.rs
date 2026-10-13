@@ -73,10 +73,13 @@ pub(super) fn direct_leader(memory: &impl Memory, group: usize) -> Result<usize,
         .map_err(|_| "HQ cooldown leader pointer overflow")
 }
 
+/// `registry` is the counter pass's resolver: one walk shares each
+/// reference type's root and header, never a bucket.
 pub(super) fn authenticate_leader(
     memory: &impl Memory,
     base: usize,
     leader: usize,
+    registry: &mut HeaderResolver,
 ) -> Result<Option<u64>, &'static str> {
     if leader == 0 {
         return Ok(None);
@@ -86,21 +89,24 @@ pub(super) fn authenticate_leader(
         return Err("HQ cooldown needs an authenticated army leader");
     }
     let handle = u64::from(reference_type) | (u64::from(id) << 32);
-    if HeaderResolver::default().resolve(memory, base, handle)? != Some(leader) {
+    if registry.resolve(memory, base, handle)? != Some(leader) {
         return Err("HQ cooldown leader registry identity mismatch");
     }
     Ok(Some(handle))
 }
 
+#[cfg(test)]
 pub(super) fn leader_enroute_days(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     group: usize,
 ) -> Result<i32, &'static str> {
+    let mut registry = HeaderResolver::default();
     let pointer = direct_leader(memory, group);
-    let leader = pointer.and_then(|pointer| authenticate_leader(memory, base, pointer));
-    leader_enroute_observed(memory, base, game_state, pointer, leader)
+    let leader =
+        pointer.and_then(|pointer| authenticate_leader(memory, base, pointer, &mut registry));
+    leader_enroute_observed(memory, base, game_state, pointer, leader, &mut registry)
 }
 
 pub(super) fn leader_enroute_observed(
@@ -109,12 +115,12 @@ pub(super) fn leader_enroute_observed(
     game_state: usize,
     pointer: Result<usize, &'static str>,
     observed: Result<Option<u64>, &'static str>,
+    registry: &mut HeaderResolver,
 ) -> Result<i32, &'static str> {
     let leader = pointer?;
     if observed?.is_none() {
         return Ok(0);
     }
-    let mut registry = HeaderResolver::default();
     let mut days = if field::<i32>(memory, leader, COOLDOWN_TYPE)? == 0 {
         0
     } else {

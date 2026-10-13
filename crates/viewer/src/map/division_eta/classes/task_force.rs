@@ -1,17 +1,14 @@
-//! Class-1 fresh counter duration: speed and integration.
-//! Arrival does not enter the task-force speed getter.
+//! Class-1 counter arrival: speed per departure region and duration integration
+//! over the task force's stored ordinary route
+//! (`TaskForceMapMotion.path`). The game's counter searches a fresh route
+//! first; that search's admission inputs are not recorded, so the
+//! viewer walks the stored route and searches no task-force route, including
+//! no prospective one. Arrival does not enter the task-force speed getter.
 
 use super::fresh_search::{Inputs, available};
-use crate::{
-    map::raids::reach::Moves,
-    table_access::{TokenError, TokenKeys},
-};
+use crate::table_access::{TokenError, TokenKeys};
 use engine::cunit::eta_ratio;
-use installed_content::{
-    regions::StrategicRegion,
-    terrain::TerrainDefinitions,
-    unit_path::{CounterRequest, Fact, MoveWorld},
-};
+use installed_content::{regions::StrategicRegion, terrain::TerrainDefinitions, unit_path::Fact};
 use replay::rows::{FreshTaskForceCounterEta, TaskForceMapMotionRow, TaskForceRow};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -98,76 +95,46 @@ impl TerrainSpeedContent {
     }
 }
 
+/// Why no task-force route is searched: its class-1 admission (range and
+/// target access, submarine rules, hostile strength) reads unrecorded inputs.
+pub(super) const ADMISSION_UNRECORDED: &str = "task-force route admission inputs (owner navy range, theatres and nearest-base caches) are not recorded";
+
+/// The counter arrival duration over the task force's stored ordinary route.
 pub(super) fn derive(
     inputs: &Inputs<'_>,
-    moves: &Moves<'_, '_>,
     motion: &TaskForceMapMotionRow,
     ours: bool,
-    local_option: bool,
+    source_region: impl Fn(u32) -> Fact<u32>,
 ) -> Fact<i64> {
     let naval = inputs.naval();
     let motion = naval.motion(motion.task_force)?;
     let force = naval.tf(motion.task_force)?;
-    let target = endpoint(force, motion, ours)?;
-    derive_to(inputs, moves, force.id, target, local_option).and_then(|preview| preview.duration)
+    let route = stored_route(force, motion, ours)?;
+    let profile = naval.fresh(force.id)?;
+    remaining(inputs, force, motion, profile, route, source_region)
 }
 
-pub(super) fn derive_to(
-    inputs: &Inputs<'_>,
-    moves: &Moves<'_, '_>,
-    handle: u64,
-    target: u32,
-    local_option: bool,
-) -> Fact<super::CounterPreview> {
-    let naval = inputs.naval();
-    let motion = naval.motion(handle)?;
-    let force = naval.tf(handle)?;
-    // The profile's exile and strategic bytes are native SEARCH operands.
-    // They cannot be omitted merely because its duration later is zero.
-    let profile = naval.fresh(handle)?;
-    naval.route_identities()?;
-    let strategic = profile
-        .strategic_redeployment
-        .ok_or("fresh naval ETA strategic byte was refused")?
-        != 0;
-    let route = moves.task_force_counter_route(
-        force,
-        profile,
-        target,
-        CounterRequest {
-            strategic,
-            local_option,
-            class: Default::default(),
-        },
-    )?;
-    let duration = if route.is_empty() {
-        Ok(0)
-    } else {
-        remaining(inputs, force, motion, profile, &route, |from| {
-            moves
-                .strategic_region(from)
-                .ok_or_else(|| format!("fresh naval ETA departure {from} has no strategic region"))
-        })
-    };
-    Ok(super::CounterPreview { duration, route })
-}
-
-fn endpoint(force: &TaskForceRow, motion: &TaskForceMapMotionRow, ours: bool) -> Fact<u32> {
+/// The game words the whole route for the viewing country's own task force
+/// and only its next province otherwise. The stored ordinary route supplies
+/// both; the destination needs every stored province.
+fn stored_route<'m>(
+    force: &TaskForceRow,
+    motion: &'m TaskForceMapMotionRow,
+    ours: bool,
+) -> Fact<&'m [u32]> {
     if force.route_count <= 0 {
-        return Err("fresh naval ETA task force has no ordinary route".into());
+        return Err("task force has no ordinary route".into());
     }
-    if ours && motion.path.len() != force.route_count as usize {
-        return Err("fresh naval ETA destination route is incomplete".into());
+    if !ours {
+        return motion
+            .path
+            .get(..1)
+            .ok_or_else(|| "task force next province is not recorded".into());
     }
-    let target = if ours {
-        motion.path.last()
-    } else {
-        motion.path.first()
-    };
-    target
-        .copied()
-        .filter(|&id| id != 0)
-        .ok_or_else(|| "fresh naval ETA ordinary route endpoint is unavailable".into())
+    if motion.path.len() != force.route_count as usize {
+        return Err("task force destination route is incomplete".into());
+    }
+    Ok(&motion.path)
 }
 
 fn speed(
@@ -260,7 +227,7 @@ fn remaining(
     let mut actual_speed = None;
     for &to in route {
         if to == 0 {
-            return Err("fresh naval ETA searched route contains a null province".into());
+            return Err("fresh naval ETA route contains a null province".into());
         }
         if from == to {
             continue;
@@ -469,7 +436,7 @@ mod tests {
 
     fn fresh(selector: i32) -> FreshTaskForceCounterEta {
         FreshTaskForceCounterEta {
-            sample_hour: 20,
+            sample_hour: replay::rows::PacketHour::Stamped(20),
             base_speed: Some(200_000),
             speed_modifier: Some(0),
             terrain_class: Some(selector),
@@ -477,71 +444,44 @@ mod tests {
         }
     }
 
+    /// The arrival walks the stored route: the whole route for the own task
+    /// force, the first province for another country's, each leg at its
+    /// departure region's speed, less the progress already behind it.
     #[test]
-    fn idle_equal_endpoint_search_needs_range_but_not_speed_metadata_or_operands() {
-        use crate::map::raids::{reach::Cells, script::World};
-        let (assets, mut frame) = crate::map::raids::counter_fixture();
-        let mut content = content();
-        content.naval = Ok(installed_content::movement::NavalMovementDefines {
-            range_scale: P,
-            use_home_base: Err("unreached nonpositive-range policy".into()),
-        });
-        let range_keys = [
-            engine::modifier_keys::NAVAL_RANGE,
-            engine::modifier_keys::NAVAL_RANGE_FACTOR,
-            engine::modifier_keys::NAVY_WEATHER_PENALTY,
-            engine::modifier_keys::UNDERWAY_REPLENISHMENT_RANGE_FACTOR,
-        ];
-        metadata(&mut frame, &range_keys);
-        let force = TaskForceRow {
-            id: 7,
-            province: 1,
-            roster_owner: 11,
-            logical_owner: 11,
-            route_count: 0,
-            ..Default::default()
-        };
-        let profile = FreshTaskForceCounterEta {
-            sample_hour: frame.hour,
-            modified_range: Some(0),
-            strategic_redeployment: Some(0),
-            exiled: Some(0),
-            // Base speed, modifier and class selector are deliberately absent.
-            ..Default::default()
-        };
-        put(&mut frame, TableRows::TaskForces(vec![force.clone()]));
+    fn arrival_walks_the_stored_route_to_the_destination_or_the_next_province() {
+        let mut frame = frame();
+        tokens(&mut frame);
+        put(&mut frame, TableRows::TaskForces(vec![force()]));
         put(
             &mut frame,
             TableRows::TaskForceMapMotion(vec![TaskForceMapMotionRow {
-                task_force: 7,
-                fresh: Recorded::Value(Some(profile)),
-                ..Default::default()
+                fresh: Recorded::Value(Some(fresh(700))),
+                ..motion()
             }]),
         );
-        {
-            let inputs = Inputs::new(&frame, &content);
-            let world = World::read(&frame, assets.facts());
-            let cells = Cells::default();
-            let moves = Moves::for_counter(&world, &assets, &cells, &inputs);
-            let preview = derive_to(&inputs, &moves, 7, 1, false).unwrap();
-            assert!(preview.route.is_empty());
-            assert_eq!(preview.duration, Ok(0));
-            // A reached speed call still authenticates its missing own key.
-            assert!(
-                speed(&inputs, &force, &profile, 9)
-                    .unwrap_err()
-                    .contains("naval_speed_factor")
-            );
-        }
-        // The same empty search cannot bypass its genuine range metadata.
-        metadata(&mut frame, &range_keys[1..]);
+        let content = content();
         let inputs = Inputs::new(&frame, &content);
-        let world = World::read(&frame, assets.facts());
-        let cells = Cells::default();
-        let moves = Moves::for_counter(&world, &assets, &cells, &inputs);
-        assert_eq!(
-            derive_to(&inputs, &moves, 7, 1, false).unwrap_err(),
-            "fresh task-force counter ETA refused: navy_max_range (0x8a): definition row missing"
+        let region = |from| Ok(if from == 1 { 9 } else { 10 });
+        // Legs 400000/260000 and 600000/300000 are 153846 and 200000;
+        // progress 100000/260000 is 38461.
+        assert_eq!(derive(&inputs, &motion(), true, region), Ok(315_385));
+        assert_eq!(derive(&inputs, &motion(), false, region), Ok(115_385));
+        // The stored route needs a current fresh speed packet.
+        let mut stale = frame.clone();
+        put(
+            &mut stale,
+            TableRows::TaskForceMapMotion(vec![TaskForceMapMotionRow {
+                fresh: Recorded::Value(Some(FreshTaskForceCounterEta {
+                    sample_hour: replay::rows::PacketHour::Stamped(19),
+                    ..fresh(700)
+                })),
+                ..motion()
+            }]),
+        );
+        assert!(
+            derive(&Inputs::new(&stale, &content), &motion(), true, region)
+                .unwrap_err()
+                .contains("another hour")
         );
     }
 
@@ -552,15 +492,16 @@ mod tests {
             path: vec![2],
             ..motion()
         };
-        assert_eq!(endpoint(&force, &motion, false), Ok(2));
+        assert_eq!(stored_route(&force, &motion, false), Ok(&[2][..]));
         assert!(
-            endpoint(&force, &motion, true)
+            stored_route(&force, &motion, true)
                 .unwrap_err()
                 .contains("incomplete")
         );
+        assert_eq!(stored_route(&force, &self::motion(), true), Ok(&[2, 3][..]));
         for count in [0, -1] {
             assert!(
-                endpoint(
+                stored_route(
                     &TaskForceRow {
                         route_count: count,
                         ..force.clone()
@@ -572,10 +513,10 @@ mod tests {
             );
         }
         assert!(
-            endpoint(
+            stored_route(
                 &force,
                 &TaskForceMapMotionRow {
-                    path: vec![0, 3],
+                    path: vec![],
                     ..motion.clone()
                 },
                 false

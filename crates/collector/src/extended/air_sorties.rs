@@ -499,16 +499,39 @@ impl Sorties {
             *slot = index as u32;
         }
         order.sort_unstable_by_key(|&index| missions[index as usize].pool);
-        let mut previous = None;
-        let mut flags = 0;
-        for &index in order.iter() {
-            let mission = &mut missions[index as usize];
-            if previous != Some(mission.pool) {
-                previous = Some(mission.pool);
-                flags = native::definition_air_flags(memory, base, mission.pool)?
-                    & AIR_MISSION_MAP_FLAGS;
+        // The distinct pools in pool order, gathered up to the first a copy
+        // or identity stopped at; that pool and the rest read as before.
+        let mut start = 0;
+        while start < order.len() {
+            let mut pools = [0_usize; native::DEFINITION_BATCH];
+            let mut count = 0;
+            let mut end = start;
+            while end < order.len() {
+                let pool = missions[order[end] as usize].pool;
+                if count == 0 || pools[count - 1] != pool {
+                    if count == pools.len() {
+                        break;
+                    }
+                    pools[count] = pool;
+                    count += 1;
+                }
+                end += 1;
             }
-            mission.definition_map_flags = flags;
+            let mut flags = [0_u64; native::DEFINITION_BATCH];
+            let read =
+                native::definition_air_flags_gathered(memory, base, &pools[..count], &mut flags);
+            for (flag, &pool) in flags[read..count].iter_mut().zip(&pools[read..count]) {
+                *flag = native::definition_air_flags(memory, base, pool)?;
+            }
+            let mut pool = 0;
+            for &index in &order[start..end] {
+                let mission = &mut missions[index as usize];
+                if mission.pool != pools[pool] {
+                    pool += 1;
+                }
+                mission.definition_map_flags = flags[pool] & AIR_MISSION_MAP_FLAGS;
+            }
+            start = end;
         }
         Ok(())
     }

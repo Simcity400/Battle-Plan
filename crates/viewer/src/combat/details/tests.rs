@@ -358,8 +358,9 @@ const HALF: Condition = Condition {
 fn committed_strength_and_side_attack_use_distinct_native_operands() {
     let row = LandCombatDivisionRow {
         strength_combat_factor: 50_000,
-        scales: [200_000, 50_000, 150_000, 100_000],
-        stat_values: [8_000_000, 6_000_000, 0, 10_000_000, 2_000_000],
+        scales: [200_000, 50_000, 150_000, 100_000].map(replay::rows::Recorded::Value),
+        stat_values: [8_000_000, 6_000_000, 0, 10_000_000, 2_000_000]
+            .map(replay::rows::Recorded::Value),
         ..Default::default()
     };
     let entry = |committed| {
@@ -391,8 +392,9 @@ fn missing_parent_keeps_recorded_row_values_and_truncates_live_defence() {
     let row = LandCombatDivisionRow {
         side: 1,
         strength_combat_factor: 100_000,
-        scales: [99_000, 99_000, 100_000, 100_000],
-        stat_values: [36_958_320, 7_635_582, 833, 23_127_045, 5_736_750],
+        scales: [99_000, 99_000, 100_000, 100_000].map(replay::rows::Recorded::Value),
+        stat_values: [36_958_320, 7_635_582, 833, 23_127_045, 5_736_750]
+            .map(replay::rows::Recorded::Value),
         ..Default::default()
     };
     let mut out = Bindings::default();
@@ -824,6 +826,39 @@ fn a_missing_modifier_row_leaves_the_combat_class_undecided() {
         ),
         Some(true)
     );
+}
+
+#[test]
+fn a_division_listed_twice_on_a_side_keeps_its_first_modifier_row() {
+    use replay::rows::{CombatModifierValue, LandCombatDivisionModifierRow};
+    let row = |combat, side, ordinal, division, id| LandCombatDivisionModifierRow {
+        combat,
+        side,
+        ordinal,
+        division,
+        entries: vec![CombatModifierValue {
+            id,
+            ..Default::default()
+        }],
+    };
+    let rows = [
+        row(4, 0, 0, 70, 1),
+        row(5, 0, 0, 70, 2),
+        row(5, 0, 1, 71, 3),
+        row(5, 0, 2, 70, 4),
+        row(5, 1, 0, 70, 5),
+    ];
+    let members = division_modifiers(&rows, 5);
+    let ids = |side, division| {
+        members
+            .get(&(side, division))
+            .map(|row: &&LandCombatDivisionModifierRow| row.entries[0].id)
+    };
+    assert_eq!(members.len(), 3);
+    assert_eq!(ids(0, 70), Some(2));
+    assert_eq!(ids(0, 71), Some(3));
+    assert_eq!(ids(1, 70), Some(5));
+    assert_eq!(ids(1, 71), None);
 }
 
 #[test]

@@ -794,16 +794,35 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
     let read = walk(&m, 0, GS, &mut buffers, country);
     assert_eq!(read.outcomes.map(|outcome| outcome.len()), [0, 0, 0, 2]);
     assert_eq!(buffers.overrides[0].country, 1);
-    // State 1 alone keeps its controller's origin but not its overrides.
+    // State 1 alone keeps its controller's origin and reads its controller's
+    // overrides, which its building grants read: a country that has just
+    // come to control a state is read with it.
     let one = Selection {
         states: &|state| state == 1,
         countries: &|_| false,
     };
     let read = walk(&m, 0, GS, &mut buffers, one);
-    assert_eq!(read.outcomes.map(|outcome| outcome.len()), [1, 1, 1, 0]);
+    assert_eq!(read.outcomes.map(|outcome| outcome.len()), [1, 1, 1, 2]);
     assert_eq!(
         (buffers.inputs[0].origin, buffers.inputs[0].supply_route),
         (1, 1)
+    );
+    assert_eq!(buffers.read_countries, [1]);
+    // State 2 has no controller: no country is read with it.
+    let read = walk(&m, 0, GS, &mut buffers, only_two);
+    assert_eq!(read.outcomes.map(|outcome| outcome.len()), [1, 0, 0, 0]);
+    assert!(buffers.read_countries.is_empty());
+    // Every state is read for its identity and controller alone: state 1's
+    // unreadable resource pool fails only a walk that selects it.
+    let mut m = fixture();
+    m.0.remove(&(STATE_A + cstate::RESOURCE_POOL));
+    let read = walk(&m, 0, GS, &mut buffers, only_two);
+    assert_eq!(read.outcomes.map(|outcome| outcome.len()), [1, 0, 0, 0]);
+    assert_eq!(
+        walk(&m, 0, GS, &mut buffers, one).outcomes[0],
+        Outcome::Unavailable {
+            reason: "state resource fields unreadable"
+        }
     );
 }
 

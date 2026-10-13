@@ -223,7 +223,12 @@ fn run(memory: &impl Memory, captured: &mut Captured) -> Observation {
         GS,
         captured.buffers(),
         &enabled,
-        &mut SliceFingerprints::new(),
+        Slices {
+            technologies: &mut SliceFingerprints::new(),
+            focus: &mut SliceFingerprints::new(),
+            changes: &crate::country_input_changes::Observer,
+        },
+        None,
     )
 }
 

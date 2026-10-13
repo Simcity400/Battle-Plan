@@ -1,5 +1,8 @@
-//! State-8 member escape speed computed on demand. The replay stores the
-//! mutable speed base and source operands; resolved content supplies NNavy defines.
+//! State-8 member escape speed. The getter computes
+//! this on demand; the replay stores the mutable speed base and the source
+//! operands, while the content stack supplies NNavy defines. A member
+//! without a live ship takes its side's source sum through modifier formatting
+//! ([`super::naval_trees::Sources::side`]).
 use engine::modifier_keys;
 use installed_content::{
     ResolvedLayers,
@@ -25,6 +28,14 @@ pub(super) struct Screening {
 }
 
 impl Screening {
+    /// Test seam: both screening statics without any escape key.
+    #[cfg(test)]
+    pub(super) fn zero() -> Self {
+        Self {
+            values: std::array::from_fn(|_| std::array::from_fn(|_| Ok(0))),
+        }
+    }
+
     pub(super) fn load(layers: &ResolvedLayers) -> Self {
         let requests: Vec<_> = SCREENING_NAMES
             .iter()
@@ -105,13 +116,17 @@ fn pool_flags(row: &NavalCombatShipRow) -> u64 {
         .fold(0_u64, |flags, source| flags | source.weights[1] as u64)
 }
 
-/// Add the source modifier, then screening by display box. Named static
-/// modifier values come from resolved content and recorded definition metadata.
+/// Add a source modifier, then screening by display box. Static modifier
+/// names come from the executable's slots; their values
+/// come from matching authored content and the recorded definition metadata.
+/// A live ship's source modifier is summed over its recorded sources; a
+/// member without one (a convoy, or a ship whose reference no longer
+/// resolves) takes `side_total`, its side's modifier root sum.
 pub(super) fn modifier_value(
     row: &NavalCombatShipRow,
     side: &NavalCombatSideDetails,
     key: u32,
-    trees: &[super::naval_summary_tooltips::NavalTreeUse<'_>],
+    side_total: Result<i64, String>,
     screening: &Screening,
     definitions: &BTreeMap<u32, &ModifierDefinitionRow>,
 ) -> Result<(i64, i64), String> {
@@ -119,22 +134,7 @@ pub(super) fn modifier_value(
         super::naval_environment::modifier(&row.weapon_context, key)
             .ok_or_else(|| format!("state-8 ship modifier {key:#x} source unsupported"))?
     } else {
-        let mut found = false;
-        let mut sum = 0_i64;
-        for tree in trees.iter().filter(|tree| tree.key == key) {
-            found = true;
-            let root = tree
-                .nodes
-                .first()
-                .ok_or("naval escape modifier tree is empty")?;
-            sum = sum.wrapping_add(root.value);
-        }
-        if !found {
-            return Err(format!(
-                "state-8 convoy modifier {key:#x} has no recorded source trees"
-            ));
-        }
-        sum
+        side_total?
     };
     let display_box = super::naval_air_groups::display_box(row, pool_flags(row));
     let mut screening_value = 0;
@@ -341,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn convoy_escape_uses_native_roots_even_when_child_lines_prune_to_zero() {
+    fn convoy_escape_uses_the_side_root_sum() {
         let key = 0x5d;
         let row = NavalCombatShipRow {
             state: 8,
@@ -349,48 +349,10 @@ mod tests {
             detection_state: 1,
             ..Default::default()
         };
-        let trees: Vec<_> = [0, 6, 5, 9]
-            .into_iter()
-            .enumerate()
-            .map(|(order, scope)| replay::rows::NavalModifierBreakdownRow {
-                key,
-                uses: vec![replay::rows::NavalModifierUse {
-                    source_scope: scope,
-                    order: order as u32,
-                    ..Default::default()
-                }],
-                nodes: vec![
-                    replay::rows::ModifierBreakdownNode {
-                        children: 1,
-                        value: (order as i64 + 1) * 1_000,
-                        ..Default::default()
-                    },
-                    replay::rows::ModifierBreakdownNode::default(),
-                ],
-                ..Default::default()
-            })
-            .collect();
-        let uses = super::super::naval_summary_tooltips::expanded_trees(&trees);
         let definition = ModifierDefinitionRow {
             index: key,
             ..Default::default()
         };
-        for tree in &trees {
-            assert_eq!(
-                super::super::naval_summary_tooltips::ship_modifier_breakdown(
-                    &tree.nodes,
-                    &definition,
-                    ONE,
-                    "  ",
-                    "english",
-                    &super::super::binding::NoIcons,
-                    &installed_content::localisation::Localisation::default(),
-                    true,
-                )
-                .unwrap(),
-                ""
-            );
-        }
         let screening = Screening {
             values: std::array::from_fn(|_| std::array::from_fn(|_| Ok(0))),
         };
@@ -398,13 +360,25 @@ mod tests {
             &row,
             &NavalCombatSideDetails::default(),
             key,
-            &uses,
+            Ok(10_000),
             &screening,
             &BTreeMap::from([(key, &definition)]),
         )
         .unwrap();
         assert_eq!((modifier, screen), (10_000, 0));
         assert_eq!(chance(&row, 0, modifier, 0, &defines()).total, 20_000);
+        // Without the side's trees the convoy's modifier refuses.
+        assert!(
+            modifier_value(
+                &row,
+                &NavalCombatSideDetails::default(),
+                key,
+                Err("trees unavailable".into()),
+                &screening,
+                &BTreeMap::from([(key, &definition)]),
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -48,8 +48,15 @@ pub(crate) fn observe_air_wing_name_refusals(count: usize) {
     AIR_WING_NAMES_REFUSED.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
 }
 
-pub(crate) fn observe_air_wing_name_failure(failure: cair_wing::NameFailure) {
-    AIR_WING_NAME_FAILURES[failure.index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+/// One census's worker name failures, by [`cair_wing::NameFailure::index`].
+pub(crate) fn observe_air_wing_name_failures(
+    failures: &[usize; cair_wing::NameFailure::REASONS.len()],
+) {
+    for (total, &count) in AIR_WING_NAME_FAILURES.iter().zip(failures) {
+        if count != 0 {
+            total.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 /// Inline source consumers own their state and validation. Return raw QPC ticks
@@ -287,9 +294,27 @@ pub struct Orders {
     successors: corder_instance::SuccessorLists,
     pub root_outcome: Outcome,
     /// [`Self::walk_roots`] filled `groups` and `root_outcome` in this pass,
-    /// for this pass's [`Self::walk`] only.
+    /// for this pass's [`Self::walk`] only (the single census the tests and
+    /// benches walk; the hourly job walks parts).
+    #[cfg_attr(not(test), allow(dead_code))]
     roots_walked: bool,
     pub ticks: u64,
+    /// This pass's census and plan-walk parts ([`crate::orders_parts`]),
+    /// reused across hours: part 0 is the Orders job's, the rest the
+    /// OrdersPart jobs' while they hold them.
+    parts: [Option<Box<crate::orders_parts::Part>>; crate::orders_parts::MAX_PARTS],
+    /// This pass's part count, set by [`Self::prepare_parts`].
+    part_count: usize,
+    /// This pass's split, which the callback carries from the last stitched
+    /// hour ([`Self::begin_parts`]).
+    split: crate::orders_parts::Split,
+    /// The session's QPC frequency, for sizing the next split.
+    frequency: u64,
+    /// The next hour's split, planned when this pass's parts are stitched
+    /// ([`Self::plan_split`]); one part until then.
+    next_split: crate::orders_parts::Split,
+    /// A failed or refused job failed this pass's census ([`Self::fail`]).
+    failed: bool,
 }
 
 impl Orders {
@@ -313,6 +338,12 @@ impl Orders {
             root_outcome: NOT_WALKED,
             roots_walked: false,
             ticks: 0,
+            parts: [const { None }; crate::orders_parts::MAX_PARTS],
+            part_count: 0,
+            split: crate::orders_parts::Split::default(),
+            frequency: 0,
+            next_split: crate::orders_parts::Split::default(),
+            failed: false,
         }
     }
     #[cfg(test)]
@@ -341,6 +372,9 @@ impl Orders {
         self.root_outcome = NOT_WALKED;
         self.roots_walked = false;
         self.ticks = 0;
+        self.part_count = 0;
+        self.next_split = crate::orders_parts::Split::default();
+        self.failed = false;
     }
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
@@ -348,6 +382,16 @@ impl Orders {
             + self.groups.capacity() * size_of::<corders_group::Root>()
             + self.visits.capacity() * size_of::<corder_instance::Visit>()
             + self.successors.allocated_bytes()
+            + self.parts_allocated_bytes()
+    }
+    /// The parts' storage, their boxes included: the root census job
+    /// prepares it ([`Self::prepare_parts`]).
+    pub(crate) fn parts_allocated_bytes(&self) -> usize {
+        self.parts
+            .iter()
+            .flatten()
+            .map(|part| part.allocated_bytes())
+            .sum()
     }
     fn grow(&mut self, capacities: &mut MapCapacities) {
         capacities.rows[9] = capacities.rows[9].max(self.rows.outcome.len());
@@ -383,6 +427,9 @@ impl Orders {
         self.roots_walked = true;
         self.ticks = elapsed(begin);
     }
+    /// The single census over all groups, as one job walks it; the hourly
+    /// job walks it in parts ([`Self::prepare_parts`]).
+    #[cfg(test)]
     pub fn walk(&mut self, memory: &impl Memory, base: usize) {
         let mut reads = crate::read_accounting::table(TableId::ArmyOrders);
         self.rows.outcome = NOT_WALKED;
@@ -438,6 +485,166 @@ impl Orders {
         self.roots_walked = false;
         self.geometry_len = 0;
         self.ticks = 0;
+        self.failed = true;
+    }
+    /// Before the root census job: this pass's `split`, the one the last
+    /// stitched hour planned, and the session's QPC `frequency`.
+    pub(crate) fn begin_parts(&mut self, split: crate::orders_parts::Split, frequency: u64) {
+        self.split = split;
+        self.frequency = frequency;
+        self.next_split = crate::orders_parts::Split::default();
+    }
+    /// After the root census, on its worker: this pass's parts, each with
+    /// the roots and its range of them under this pass's split. A part that
+    /// cannot be prepared fails the census.
+    pub(crate) fn prepare_parts(&mut self) {
+        let count = self.split.parts();
+        let ranges = self.split.ranges(self.roots());
+        let mut result = Ok(());
+        for (index, range) in ranges.into_iter().enumerate().take(count) {
+            if self.parts[index].is_none() {
+                match engine::allocation::boxed(crate::orders_parts::Part::new()) {
+                    Ok(part) => self.parts[index] = Some(part),
+                    Err(_) => {
+                        result = Err("army order part allocation failed");
+                        break;
+                    }
+                }
+            }
+            let roots = &self.groups[..self.root_outcome.len().min(self.groups.len())];
+            if let Some(part) = self.parts[index].as_deref_mut()
+                && let Err(reason) = part.take_roots(roots, self.root_outcome, range)
+            {
+                result = Err(reason);
+                break;
+            }
+        }
+        match result {
+            Ok(()) => self.part_count = count,
+            Err(reason) => {
+                self.part_count = 0;
+                self.fail(reason);
+            }
+        }
+    }
+    /// The next hour's split: the one this pass's stitch planned, or one
+    /// part when it planned none.
+    pub(crate) fn next_split(&self) -> crate::orders_parts::Split {
+        self.next_split
+    }
+    /// This pass's part count; zero when its parts could not be prepared.
+    pub(crate) fn part_count(&self) -> usize {
+        self.part_count
+    }
+    /// A failed or refused job failed this pass's census.
+    pub(crate) fn failed(&self) -> bool {
+        self.failed
+    }
+    /// Loan part `index` to its OrdersPart job.
+    pub(crate) fn take_part(&mut self, index: usize) -> Option<Box<crate::orders_parts::Part>> {
+        self.parts.get_mut(index)?.take()
+    }
+    /// Its OrdersPart job's part, back.
+    pub(crate) fn return_part(&mut self, index: usize, part: Box<crate::orders_parts::Part>) {
+        self.parts[index] = Some(part);
+    }
+    /// The Orders job: part 0's census and plan walk.
+    pub(crate) fn walk_first_part(&mut self, memory: &impl Memory, base: usize) {
+        if self.part_count == 0 {
+            return;
+        }
+        if let Some(part) = self.parts[0].as_deref_mut() {
+            part.run(memory, base);
+        }
+    }
+    /// The OrdersStitch job: this pass's parts' census, stitched into the
+    /// census one walk over all groups takes, which then holds the rows,
+    /// geometry, visits and census order. Returns the parts' plan-walk
+    /// ticks; a census already failed (a failed or refused job) stays so.
+    pub(crate) fn stitch(&mut self) -> u64 {
+        if self.failed {
+            return 0;
+        }
+        let count = self.part_count;
+        if count == 0 {
+            // No part was prepared: the root census job failed first
+            // (`fail_roots`), and the census refuses those roots as the
+            // single census does.
+            match corder_instance::refuse_census(self.root_outcome, &mut self.successors) {
+                Some(walk) => self.install_census(walk),
+                None => self.fail("army order parts unavailable"),
+            }
+            return 0;
+        }
+        let mut census_ticks = 0;
+        let mut plan_ticks = 0;
+        for part in self.parts[..count].iter().flatten() {
+            census_ticks += part.census_ticks;
+            plan_ticks += part.plan_ticks;
+        }
+        // The views in a fixed array, without allocating: the slots past
+        // this pass's count repeat its first part and are not passed.
+        let views = self
+            .parts
+            .each_ref()
+            .map(|part| part.as_deref()?.census_part());
+        let Some(first) = views[0].filter(|_| views[..count].iter().all(Option::is_some)) else {
+            self.fail("army order part did not run");
+            return 0;
+        };
+        let views = views.map(|view| view.unwrap_or(first));
+        let walk = corder_instance::stitch_census(
+            &views[..count],
+            &mut self.rows.rows,
+            &mut self.geometry,
+            &mut self.visits,
+            &mut self.successors,
+        );
+        self.install_census(walk);
+        self.ticks += census_ticks;
+        plan_ticks
+    }
+    /// The stitched or refused census's outcome and demand, as
+    /// [`Self::walk`] records the single census's.
+    fn install_census(&mut self, walk: corder_instance::Walk) {
+        self.roots_walked = false;
+        self.rows.outcome = walk.outcome;
+        self.root_outcome = walk.root_outcome;
+        self.geometry_len = walk.geometry_len;
+        self.geometry_required = walk.required_geometry;
+        self.groups_required = walk.required_groups;
+        self.visits_required = walk.minimum_visits.max(walk.visited.saturating_mul(2));
+    }
+    /// This pass's parts' plan walks, for the plans' stitch: the first
+    /// [`Self::part_count`] of a fixed array, without allocating (the slots
+    /// past it repeat the first part).
+    pub(crate) fn plan_parts(
+        &self,
+    ) -> Option<[corder_instance::PlanPart<'_>; crate::orders_parts::MAX_PARTS]> {
+        let views = self
+            .parts
+            .each_ref()
+            .map(|part| part.as_deref()?.plan_part());
+        let first = views[0].filter(|_| views[..self.part_count].iter().all(Option::is_some))?;
+        Some(views.map(|view| view.unwrap_or(first)))
+    }
+    /// After this pass's stitch: the next hour's split, from the parts'
+    /// measured census and plan-walk time and the stitched census.
+    pub(crate) fn plan_split(&mut self) {
+        let ticks = self.parts[..self.part_count]
+            .iter()
+            .flatten()
+            .map(|part| part.census_ticks + part.plan_ticks)
+            .sum();
+        self.next_split = match self.rows.outcome {
+            Outcome::Rows { len } => crate::orders_parts::Split::plan(
+                ticks,
+                self.frequency,
+                self.roots(),
+                &self.rows.rows[..len],
+            ),
+            _ => crate::orders_parts::Split::default(),
+        };
     }
     /// The authenticated group roots of the last walk.
     pub fn roots(&self) -> &[corders_group::Root] {
@@ -1771,6 +1978,97 @@ mod tests {
         let (gathers, _) = orders.successor_lists().plan_gathers();
         assert_eq!(counts[plans_index], gathers);
         assert!(gathers.record_calls != 0 && gathers.spans >= u64::from(world.orders) * 7);
+    }
+
+    /// Each hour's order census split is the one the last stitched hour
+    /// planned, whichever pooled frame either hour uses: a frame that served
+    /// an earlier hour starts from the latest plan, not its own. The parts it
+    /// prepares count their boxes.
+    #[test]
+    fn the_next_hour_takes_the_split_the_last_stitched_hour_planned() {
+        use crate::extended::bench_world::{self, Shape};
+        use crate::orders_parts::{MAX_PARTS, Part, Split};
+        let world = bench_world::build(
+            40,
+            Shape {
+                named: true,
+                theatre_links: true,
+            },
+        );
+        let memory = world.slice();
+        let frequency = 10_000_000;
+        // One hour on `orders`, from the callback's `split`, whose parts
+        // measured `millis` of work; returns the split it planned.
+        let hour = |orders: &mut Orders, split: Split, millis: u64| {
+            orders.reset();
+            orders.begin_parts(split, frequency);
+            orders.walk_roots_growing(&memory, world.base);
+            orders.prepare_parts();
+            for index in 0..orders.part_count() {
+                let mut part = orders.take_part(index).unwrap();
+                part.run(&memory, world.base);
+                part.census_ticks = if index == 0 {
+                    frequency * millis / 1_000
+                } else {
+                    0
+                };
+                part.plan_ticks = 0;
+                orders.return_part(index, part);
+            }
+            orders.stitch();
+            assert!(!orders.failed());
+            orders.plan_split();
+            orders.next_split()
+        };
+        let mut frames = [
+            Orders::for_test(&MapCapacities::default()),
+            Orders::for_test(&MapCapacities::default()),
+        ];
+        let split = hour(&mut frames[0], Split::default(), 3);
+        assert_eq!(split.parts(), MAX_PARTS);
+        // The next hour, on the other frame, takes it.
+        let next = hour(&mut frames[1], split, 0);
+        assert_eq!(frames[1].part_count(), MAX_PARTS);
+        assert!(frames[1].parts_allocated_bytes() >= MAX_PARTS * size_of::<Part>());
+        assert_eq!(next.parts(), 1);
+        // The first frame again: the latest plan, not the one it made.
+        hour(&mut frames[0], next, 0);
+        assert_eq!(frames[0].part_count(), 1);
+    }
+
+    /// A pass whose root census job failed before it prepared any part
+    /// refuses its census with the roots' reason, as the single census does,
+    /// rather than failing as a job.
+    #[test]
+    fn failed_roots_without_parts_refuse_the_census_as_the_single_census_does() {
+        struct NoMemory;
+        impl Memory for NoMemory {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                false
+            }
+        }
+        let reason = "orders group identity unreadable";
+        let mut single = Orders::for_test(&MapCapacities::default());
+        single.fail_roots(reason);
+        single.walk(&NoMemory, 0);
+        let mut parted = Orders::for_test(&MapCapacities::default());
+        parted.begin_parts(crate::orders_parts::Split::default(), 10_000_000);
+        parted.fail_roots(reason);
+        assert_eq!(parted.stitch(), 0);
+        assert!(!parted.failed());
+        assert_eq!(parted.rows.outcome, Outcome::Unavailable { reason });
+        let state = |orders: &Orders| {
+            (
+                orders.rows.outcome,
+                orders.root_outcome,
+                orders.geometry_len,
+                orders.geometry_required,
+                orders.groups_required,
+                orders.visits_required,
+                orders.successor_lists().census().len(),
+            )
+        };
+        assert_eq!(state(&parted), state(&single));
     }
 
     #[test]

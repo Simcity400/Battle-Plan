@@ -174,7 +174,7 @@ fn widget_format_keeps_transport_fields_and_native_null_launch_not_recorded() {
         TableId::ReservedCountryNaming,
         ReservedCountryNamingRow {
             launch_sources: Recorded::Value(Some(ReservedLaunchSources {
-                sample_hour: i32::MIN,
+                sample_hour: PacketHour::Host,
                 naval_bases: LaunchNavalBases::NativeNull,
                 owned_states: Some(Vec::new()),
             })),
@@ -301,26 +301,6 @@ fn format99_appends_leave_format98_prefixes_and_values_available() {
             supply_grace_remaining: Recorded::Value(i64::MIN),
             country_ordinal: Recorded::Value(Some(u32::MAX)),
             invalid_orders_reason: Recorded::Value(Some(i32::MIN)),
-            supply: Recorded::Value(Some(UnitSupplyInputs {
-                received: i64::MAX,
-                disruption: i64::MIN,
-                origins: None,
-                ..Default::default()
-            })),
-            attrition_inputs: Recorded::Value(ArmyAttritionInputs {
-                upkeep: Some(i64::MIN),
-                terrain: Some(Some(AttritionTerrain {
-                    name: Some(vec![0xff, 0, b'T']),
-                    attrition: Some(i64::MAX),
-                    equipment: None,
-                })),
-                border: Some(Some(AttritionBorder {
-                    state: None,
-                    country: Some(u32::MAX),
-                    factor: Some(-1),
-                })),
-                ..Default::default()
-            }),
             dig_in_factor: Recorded::Value(Some(i64::MIN)),
             name: Recorded::Value(Some(vec![0xff, 0, b'C'])),
             ..Default::default()
@@ -336,6 +316,7 @@ fn format99_appends_leave_format98_prefixes_and_values_available() {
             border_war_presence: Recorded::Value(Some(0xff)),
             invasion_source_distance: Recorded::Value(Some(i32::MIN)),
             attack: Default::default(),
+            commander_attack: Default::default(),
         },
     );
     check98(
@@ -371,8 +352,22 @@ fn format99_new_tables_have_independent_lifetimes_and_native_cadences() {
     ] {
         assert_eq!(table.last_change().introduced, EFFECT_INPUTS_FORMAT);
         assert!(old.table_refusal(table).unwrap().contains("not recorded"));
+    }
+    for table in [
+        TableId::TimedIdeas,
+        TableId::DecisionRandomItems,
+        TableId::CapturedOperativeReferences,
+        TableId::ReservedCountryNaming,
+    ] {
         assert!(FormatVersion::CURRENT.table_refusal(table).is_none());
     }
+    // The breakdown table retired with the attrition operands.
+    assert!(
+        FormatVersion::CURRENT
+            .table_refusal(TableId::AttritionModifierBreakdowns)
+            .unwrap()
+            .contains("retired")
+    );
     assert_eq!(cadence(TableId::TimedIdeas), Cadence::Hourly);
     assert_eq!(cadence(TableId::DecisionRandomItems), Cadence::Daily(6));
     assert_eq!(
@@ -380,10 +375,6 @@ fn format99_new_tables_have_independent_lifetimes_and_native_cadences() {
         Cadence::Daily(16)
     );
     assert_eq!(cadence(TableId::ReservedCountryNaming), Cadence::Hourly);
-    assert_eq!(
-        cadence(TableId::AttritionModifierBreakdowns),
-        Cadence::Hourly
-    );
     assert_eq!(cadence(TableId::AirWings), Cadence::Hourly);
     assert_eq!(old.fields(TableId::AirWings), 15);
     assert_eq!(old.fields(TableId::AdvisorRoles), 5);

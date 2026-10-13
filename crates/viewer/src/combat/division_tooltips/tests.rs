@@ -1,59 +1,132 @@
 use super::*;
+/// The reinforcement chance arm from the recorded initiative, context keys and
+/// speed share: REINFORCE_CHANCE, the country's 0xFB, the initiative scaled
+/// by both 0x250 keys and the factor, the share times the bonus and the
+/// leader's 0xFB. The country's and commander's 0xFB source fragments are
+/// the parts it omits by name; a recording without the share refuses the
+/// arm, while the rejection arms keep their zero chance and reason.
 #[test]
-fn reserve_hover_prints_cached_sources_in_native_order_and_refuses_other_languages() {
-    use replay::rows::{ModifierBreakdownNode as Node, ModifierDefinitionRow};
-    let mut loc: Localisation = [
-        ("BATTLE_REINFORCE_CHANCE2", "Chance $VALUE$"),
-        ("MODIFIER_BASE_VALUE_PERCENTAGE", "Base"),
+fn the_reserve_chance_arm_sums_the_recorded_operands_and_rejections_keep_their_text() {
+    use replay::rows::LandDivisionModifier;
+    let loc: Localisation = [
+        ("BATTLE_REINFORCE_CHANCE2", "Chance $VALUE|3$ "),
+        ("COMREIC_TOO_MUCH_WIDTH", "Too wide"),
+        ("MODIFIER_BASE_VALUE_PERCENTAGE", "Base $VALUE|3$"),
         ("STAT_ARMY_INITIATIVE", "Initiative"),
-        ("STAT_ARMY_INITIATIVE_DIFF", "$VALUE$"),
-        ("SPEED_REINFORCEMENT_BONUS", "Speed $VAL$"),
+        ("STAT_ARMY_INITIATIVE_DIFF", " $VALUE|3$"),
+        ("SPEED_REINFORCEMENT_BONUS", "Speed $VAL|3$"),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v.to_owned()))
     .collect();
-    loc.language = "english".into();
-    let node = |children, value, name: &[u8]| Node {
-        children,
-        value,
-        name: name.to_vec(),
-    };
-    let nodes = [
-        node(3, 99_000, b"aggregate"),
-        node(0, 5_000, b"First"),
-        node(0, 0, b"Zero"),
-        node(1, 25_000, b"Nested aggregate"),
-        node(0, -1_000, b"Last"),
-    ];
-    let definition = ModifierDefinitionRow {
-        flags: 3,
-        precision: 2,
+    assert_eq!(
+        reinforcement_text(
+            &NoIcons,
+            &loc,
+            &Reinforcement::Rejected("COMREIC_TOO_MUCH_WIDTH")
+        ),
+        Ok(("Chance 0.000 Too wide\n".into(), Vec::new()))
+    );
+    let defines = LandDefines {
+        reinforce: super::super::defines::Reinforce {
+            chance: 2_000,
+            initiative_factor: 25_000,
+            speed_bonus: 1_000,
+            ..Default::default()
+        },
         ..Default::default()
     };
-    let sources = reserve_tree(&nodes, &definition, "english", &NoIcons, &loc).unwrap();
-    let text = reinforcement_text(
-        &NoIcons,
-        &loc,
-        &Reinforcement::Chance {
-            value: 10_000,
-            base: 1,
-            initiative: 2_000,
-            speed: 3_000,
-        },
-        Ok(&(
-            sources,
-            Some(("Commander".into(), "Leader source\n".into())),
-        )),
-    )
-    .unwrap();
+    let present = |raw| LandDivisionModifier { raw, present: 1 };
+    let mut row = LandCombatDivisionRow {
+        role: 2,
+        initiative: 50_000,
+        reinforcement_speed: Recorded::Value(Some(50_000)),
+        ..Default::default()
+    };
+    row.context.country_modifiers[0] = present(5_000);
+    row.context.country_modifiers[2] = present(20_000);
+    row.context.leader_modifier_kind = 1;
+    row.context.leader_modifiers[0] = present(3_000);
+    row.context.leader_modifiers[2] = present(10_000);
+    // A fighting division within the width reaches the chance arm.
+    let condition = Condition {
+        strength: ADVANCE_STRENGTH,
+        organisation: ADVANCE_ORGANISATION,
+        ..Default::default()
+    };
+    let chance = |row: &LandCombatDivisionRow| {
+        reinforcement(row, &condition, Ok((100_000, 0)), Ok(&defines))
+    };
+    // Initiative: 1.2 x 0.5 = 0.6, x 1.1 = 0.66, x 0.25 = 0.165; speed:
+    // 0.5 x 0.01 = 0.005; 0.02 + 0.05 + 0.165 + 0.005 + 0.03 = 0.27.
+    let result = chance(&row).unwrap();
     assert_eq!(
-        text,
-        "Chance 0.10Base\nFirst: \u{11}G+5.00%\u{11}!\nLast: \u{11}R-1.00%\u{11}!\nInitiative0.02\nSpeed 0.03\nCommander: Leader source\n"
+        result,
+        Reinforcement::Chance {
+            value: 27_000,
+            base: 2_000,
+            initiative: 16_500,
+            speed: 500,
+            leader: 3_000,
+        }
     );
-    loc.language = "french".into();
-    let reason = reserve_tree(&nodes, &definition, "english", &NoIcons, &loc).unwrap_err();
-    assert!(reason.contains("reserve reinforcement modifier source") && reason.contains("french"));
+    assert_eq!(
+        reinforcement_text(&NoIcons, &loc, &result),
+        Ok((
+            "Chance 0.270 Base 0.020\nInitiative 0.165\nSpeed 0.005\n".into(),
+            vec![COUNTRY_SOURCES_UNRECORDED, COMMANDER_SOURCES_UNRECORDED]
+        ))
+    );
+    // A leader whose 0xFB is zero shows no commander line.
+    row.context.leader_modifiers[0] = present(0);
+    let result = chance(&row).unwrap();
+    assert_eq!(
+        reinforcement_text(&NoIcons, &loc, &result),
+        Ok((
+            "Chance 0.240 Base 0.020\nInitiative 0.165\nSpeed 0.005\n".into(),
+            vec![COUNTRY_SOURCES_UNRECORDED]
+        ))
+    );
+    // Without a contextual leader neither its 0x250 nor its 0xFB applies,
+    // and a zero term prints no line.
+    row.context.leader_modifier_kind = 0;
+    row.reinforcement_speed = Recorded::Value(Some(0));
+    assert_eq!(
+        chance(&row),
+        Ok(Reinforcement::Chance {
+            value: 22_000,
+            base: 2_000,
+            initiative: 15_000,
+            speed: 0,
+            leader: 0,
+        })
+    );
+    // A recording without the share, or a share refused at capture,
+    // refuses the arm by name.
+    row.reinforcement_speed = Recorded::NotRecorded;
+    let result = chance(&row).unwrap();
+    assert_eq!(
+        reinforcement_text(&NoIcons, &loc, &result),
+        Err(RESERVE_SPEED_UNRECORDED.into())
+    );
+    row.reinforcement_speed = Recorded::Value(None);
+    let result = chance(&row).unwrap();
+    assert_eq!(
+        reinforcement_text(&NoIcons, &loc, &result),
+        Err(RESERVE_SPEED_REFUSED.into())
+    );
+    // The rejection arms need no share.
+    let tired = Condition {
+        organisation: ADVANCE_ORGANISATION - 1,
+        ..condition
+    };
+    row.reinforcement_speed = Recorded::NotRecorded;
+    assert_eq!(
+        reinforcement(&row, &tired, Ok((100_000, 0)), Ok(&defines)),
+        Ok(Reinforcement::Rejected(COMREIC_NOT_FIGHT))
+    );
 }
+
 use crate::combat::binding::NoIcons;
 
 /// Each refused hover part names the key it could not localise, so the
@@ -70,7 +143,7 @@ fn refused_stat_and_reserve_hovers_name_their_key() {
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v.to_owned()))
     .collect();
-    let modifiers = DivisionCombatModifiers::default();
+    let modifiers = LandCombatDivisionModifierRow::default();
     assert_eq!(
         combat_stat(
             &NoIcons,
@@ -88,28 +161,26 @@ Total 0.00
 "
         .into())
     );
+    // A missing top-level key shows its own bytes.
     assert_eq!(
         reinforcement_text(
             &NoIcons,
             &loc,
-            &Reinforcement::Chance {
-                value: 1,
-                base: 1,
-                initiative: 0,
-                speed: 0
-            },
-            Ok(&(String::new(), None)),
+            &Reinforcement::Rejected("COMREIC_NOT_FIGHT")
         ),
-        Ok("Chance 0.00MODIFIER_BASE_VALUE_PERCENTAGE
+        Ok((
+            "Chance 0.00COMREIC_NOT_FIGHT
 "
-        .into())
+            .into(),
+            Vec::new()
+        ))
     );
     let flagged: Localisation = [("BATTLE_REINFORCE_CHANCE2", "@GER")]
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
         .collect();
     assert_eq!(
-            reinforcement_text(&NoIcons, &flagged, &Reinforcement::Rejected("X"), Ok(&(String::new(), None))),
+            reinforcement_text(&NoIcons, &flagged, &Reinforcement::Rejected("X")),
             Err(
                 "localisation BATTLE_REINFORCE_CHANCE2 holds the inline flag 0x12 \"GER\" (an authored `@`), which the viewer does not draw"
                     .into()
@@ -200,7 +271,7 @@ fn the_division_summary_names_its_missing_or_unrenderable_key() {
         .collect()
     };
     let row = LandCombatDivisionRow {
-        scales: [0, 0, 50_000, 100_000],
+        scales: [0, 0, 50_000, 100_000].map(replay::rows::Recorded::Value),
         ..Default::default()
     };
     // A missing top-level key shows its own bytes.
@@ -395,5 +466,123 @@ fn reserve_rejection_precedes_movement_inputs() {
     assert_eq!(
         reinforcement(&row, &condition, Err("width unknown"), Ok(&defines)),
         Err("width unknown".into())
+    );
+}
+
+/// The commander icon hover joins the division row's handle to the
+/// hour's UnitLeaders row (name token +0x20, skill level) and its
+/// UnitLeaderTraits rows in ordinal order; a missing row refuses by name.
+#[test]
+fn the_commander_icon_reads_the_hours_unit_leader_and_its_traits() {
+    use replay::rows::{UnitLeaderRow, UnitLeaderTraitRow};
+    let handle = (7_u64 << 32) | 0x55;
+    let leaders = [
+        UnitLeaderRow {
+            id: 8,
+            reference_type: 0x55,
+            skill_status: 2,
+            skill_level: 1,
+            inherited_text_a: b"other".to_vec(),
+            ..Default::default()
+        },
+        UnitLeaderRow {
+            id: 7,
+            reference_type: 0x55,
+            skill_status: 1,
+            skill_level: 4,
+            inherited_text_a: b"rommel".to_vec(),
+            inherited_text_b: b"Localised cache".to_vec(),
+            ..Default::default()
+        },
+    ];
+    let trait_row = |leader_reference, ordinal, token: &[u8]| UnitLeaderTraitRow {
+        leader_reference,
+        ordinal,
+        token: token.to_vec(),
+        ..Default::default()
+    };
+    let traits = [
+        trait_row(handle, 1, b"panzer_leader"),
+        trait_row((8 << 32) | 0x55, 0, b"unrelated"),
+        trait_row(handle, 0, b"desert_fox"),
+        trait_row(handle, 2, b"desert_fox"),
+    ];
+    let complete: Available<'_, tables::UnitLeaders> = Available::Complete(&leaders);
+    let all_traits: Available<'_, tables::UnitLeaderTraits> = Available::Complete(&traits);
+    let commander = division_commander(handle, Ok(&complete), Ok(&all_traits)).unwrap();
+    assert_eq!(
+        commander,
+        DivisionCommander {
+            name_token: b"rommel",
+            skill: 4,
+            traits: vec![
+                &b"desert_fox"[..],
+                &b"panzer_leader"[..],
+                &b"desert_fox"[..]
+            ],
+        }
+    );
+    let loc: Localisation = [
+        ("COMBAT_OTHER_COMMANDER_DESC", "$NAME$ ($SKILL$)"),
+        ("COMBAT_TRAIT_LIST_HEADER", ": "),
+        ("COMBAT_DETAIL_TRAIT_SEPARATOR", ", "),
+        ("COMBAT_DETAIL_TRAIT_NAME", "$NAME$"),
+        ("DIFFERENT_COMMANDER_DESC", "Not the army's commander"),
+        ("rommel", "Rommel"),
+        ("desert_fox", "Desert Fox"),
+        ("panzer_leader", "Panzer Leader"),
+        ("GER_panzer_leader", "Panzerführer"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .collect();
+    assert_eq!(
+        commander_icon_tooltip(&NoIcons, &loc, Ok("GER"), &commander),
+        Ok((
+            "Rommel (4): Desert Fox, Panzerführer, Desert Fox".into(),
+            Some(Ok("Not the army's commander".into()))
+        ))
+    );
+    // No traits: no list header.
+    let bare = DivisionCommander {
+        traits: Vec::new(),
+        ..commander
+    };
+    assert_eq!(
+        commander_icon_tooltip(&NoIcons, &loc, Ok("GER"), &bare)
+            .unwrap()
+            .0,
+        "Rommel (4)"
+    );
+    // Each missing operand refuses by name.
+    assert_eq!(
+        division_commander((9 << 32) | 0x55, Ok(&complete), Ok(&all_traits)),
+        Err(format!(
+            "the division commander {} has no UnitLeaders row this hour",
+            (9_u64 << 32) | 0x55
+        ))
+    );
+    let null_skill = [UnitLeaderRow {
+        skill_status: 0,
+        ..leaders[1].clone()
+    }];
+    let null_skill: Available<'_, tables::UnitLeaders> = Available::Complete(&null_skill);
+    assert!(
+        division_commander(handle, Ok(&null_skill), Ok(&all_traits))
+            .unwrap_err()
+            .contains("records no skill object")
+    );
+    let truncated: Available<'_, tables::UnitLeaderTraits> = Available::Truncated {
+        rows: &traits,
+        missing: 1,
+    };
+    assert!(
+        division_commander(handle, Ok(&complete), Ok(&truncated))
+            .unwrap_err()
+            .starts_with("UnitLeaderTraits is incomplete or unavailable this hour")
+    );
+    assert_eq!(
+        division_commander(handle, Err("decode failed"), Ok(&all_traits)),
+        Err("UnitLeaders is unreadable (decode failed)".into())
     );
 }

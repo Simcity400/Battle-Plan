@@ -1,8 +1,9 @@
 //! Raw reinforcement movement-speed dependencies.
 //!
 //! The caller passes (ignore_terrain=1, ignore_combat=1); effective route speed
-//! and its organisation/fuel factors are NOT this getter. No displayed speed,
-//! chance, modifier sum, acclimatization fraction or supply ratio is composed.
+//! and its organisation/fuel factors are NOT this getter. The readers here
+//! compose nothing; [`speed`] composes the reinforcement speed share from what
+//! they read.
 
 use crate::combat_sources::{Run, Sources, share};
 use crate::{
@@ -1392,6 +1393,8 @@ pub fn capture_context_buffer(
     infrastructure_shared(memory, base, sources, infrastructure_state, &mut row)?;
     Ok(row)
 }
+
+pub mod speed;
 
 #[cfg(test)]
 mod tests;

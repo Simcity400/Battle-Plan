@@ -1,7 +1,10 @@
 //! Native power mutations and government commits. Writer/caller descriptors
 //! live in engine::politics_sites. No balance fall is turned into a spend.
 //! Hooks never select countries by player/human/AI status.
-use crate::hook::{Hook, Registers, Tap};
+use crate::{
+    hook::{Hook, Registers, Tap},
+    shared_lane::SharedLane,
+};
 use engine::{Memory, allocation, politics_sites as native};
 use replay::rows::{
     GovernmentCause, PowerAction, PowerCause, PowerCurrency, PowerDailyCostKind, PowerObjectKind,
@@ -37,7 +40,8 @@ static OFFERED: AtomicUsize = AtomicUsize::new(0);
 #[allow(clippy::vec_box)]
 static LOGS: Mutex<Vec<Box<[Log]>>> = Mutex::new(Vec::new());
 static UNHOOKED: OnceLock<String> = OnceLock::new();
-static COUNTERS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
+// 11: thread registrations beyond the dedicated lanes, 12: refused shared appends.
+static COUNTERS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
 const FAILURE_NAMES: [&str; 39] = [
     "ideology identity unreadable",
     "module address overflow",
@@ -325,6 +329,9 @@ impl Lane {
 struct Log {
     serial: u64,
     lanes: Box<[Lane]>,
+    // Threads registering after every lane is taken publish here, so a
+    // generation never loses an interval to its writer count.
+    shared: SharedLane<Record>,
     registered: AtomicUsize,
     entries: usize,
     key_stride: usize,
@@ -348,14 +355,26 @@ impl Log {
     fn with_lanes(entries: usize, keys: usize, lanes: usize) -> Self {
         Self::with_lane_requirements(entries, keys, lanes, &[]).unwrap()
     }
+    #[cfg(test)]
     fn with_lane_requirements(
         entries: usize,
         keys: usize,
         lanes: usize,
         required: &[usize],
     ) -> io::Result<Self> {
+        Self::with_shared_requirement(entries, keys, lanes, required, 0)
+    }
+    fn with_shared_requirement(
+        entries: usize,
+        keys: usize,
+        lanes: usize,
+        required: &[usize],
+        shared: usize,
+    ) -> io::Result<Self> {
         let entries = entries.max(1);
         let keys = keys.max(1);
+        // Sized like one more thread's lane, then from observed shared demand.
+        let shared = SharedLane::new(entries.div_ceil(lanes.max(1)).max(shared), keys)?;
         let mut storage = allocation::vec(lanes)?;
         for n in 0..lanes {
             storage.push(Lane::new(
@@ -371,6 +390,7 @@ impl Log {
         Ok(Self {
             serial: LOG_SERIAL.fetch_add(1, Ordering::Relaxed),
             lanes: allocation::boxed_slice(storage)?,
+            shared,
             registered: AtomicUsize::new(0),
             entries,
             key_stride: keys,
@@ -446,9 +466,10 @@ fn lane_index(log: &Log) -> Option<usize> {
                 .map_or(0, |lane| lane as *const Lane as usize),
         ));
         if index >= log.lanes.len() {
+            // This thread publishes through the shared lane; growth offers
+            // a dedicated lane to the next generation.
             REQUIRED_LANES.fetch_max(index + 1, Ordering::Relaxed);
-            COUNTERS[1].fetch_add(1, Ordering::Relaxed);
-            invalidate();
+            COUNTERS[11].fetch_add(1, Ordering::Relaxed);
             None
         } else {
             Some(index)
@@ -500,6 +521,10 @@ pub fn restore_epoch(previous: u64) -> Result<(), &'static str> {
 }
 
 pub fn invalidate() {
+    #[cfg(test)]
+    if !STAGING_OWNER.get() {
+        return;
+    }
     EPOCH.fetch_add(1, Ordering::SeqCst);
 }
 fn failed(reason: &'static str) {
@@ -610,10 +635,17 @@ fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
             .max()
             .unwrap_or(0)
     };
+    let shared = sources
+        .into_iter()
+        .flatten()
+        .map(|log| log.shared.required_entries().max(log.shared.len()))
+        .max()
+        .unwrap_or(0);
     if sources.into_iter().flatten().any(|log| {
         log.entries >= entries
             && log.key_stride >= keys
             && log.lanes.len() >= lanes
+            && log.shared.len() >= shared
             && log
                 .lanes
                 .iter()
@@ -623,7 +655,7 @@ fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
         return Ok(());
     }
     let required = allocation::collect_vec((0..lanes).map(required))?;
-    let fresh = Log::with_lane_requirements(entries, keys, lanes, &required)?;
+    let fresh = Log::with_shared_requirement(entries, keys, lanes, &required, shared)?;
     let fresh = allocation::boxed_slice(allocation::collect_vec([fresh])?)?;
     let pointer = fresh.as_ptr() as usize;
     allocation::reserve_push_batch(&mut logs, 1)?;
@@ -829,10 +861,71 @@ fn append_raw(log: &Log, record: Record, keys: [native::Literal; 3], memory: &im
         return;
     };
     let log = publishing.0;
-    let Some(lane) = cached_lane(log) else {
+    match cached_lane(log) {
+        Some(lane) => append_raw_to_lane(log, lane, record, keys, memory),
+        None => append_raw_shared(log, record, keys, memory),
+    }
+}
+/// A thread without a dedicated lane in this generation. The record takes
+/// its log-wide sequence exactly as a lane record does.
+fn append_raw_shared(
+    log: &Log,
+    mut record: Record,
+    mut keys: [native::Literal; 3],
+    memory: &impl Memory,
+) {
+    let Some(mut slot) = log.shared.reserve() else {
+        // Refused demand is retained for the next generation's shared lane.
+        COUNTERS[1].fetch_add(1, Ordering::Relaxed);
+        COUNTERS[12].fetch_add(1, Ordering::Relaxed);
+        invalidate();
         return;
     };
-    append_raw_to_lane(log, lane, record, keys, memory);
+    if copy_keys(&mut keys, slot.stride(), slot.bytes(), memory).is_err() {
+        return; // The dropped reservation publishes void.
+    }
+    record.sequence =
+        log.base_cursor.load(Ordering::Acquire) + log.cursor.fetch_add(1, Ordering::Relaxed) + 1;
+    record.keys = keys.map(|key| [key.address as u32, key.len as u32]);
+    slot.publish(record);
+}
+/// Copies each literal into this record's key span, rebasing it there.
+/// A literal beyond the stride is dropped and its demand retained.
+#[inline(always)]
+fn copy_keys(
+    keys: &mut [native::Literal; 3],
+    stride: usize,
+    destination: *mut u8,
+    memory: &impl Memory,
+) -> Result<(), ()> {
+    let mut used = 0usize;
+    for key in keys.iter_mut().filter(|key| key.len != 0) {
+        let length = key.len;
+        let Some(end) = used.checked_add(length) else {
+            failed("politics literal extent overflow");
+            return Err(());
+        };
+        if end > stride || end > u32::MAX as usize {
+            REQUIRED_KEYS.fetch_max(end, Ordering::Relaxed);
+            COUNTERS[4].fetch_add(1, Ordering::Relaxed);
+            *key = native::Literal::default();
+            continue;
+        }
+        if length != 0 {
+            let output = unsafe { std::slice::from_raw_parts_mut(destination.add(used), length) };
+            if key.copy(memory, output).is_err() {
+                COUNTERS[4].fetch_add(1, Ordering::Relaxed);
+                *key = native::Literal::default();
+                continue;
+            }
+        }
+        *key = native::Literal {
+            address: used,
+            len: length,
+        };
+        used = end;
+    }
+    Ok(())
 }
 #[cfg(test)]
 #[inline(always)]
@@ -875,37 +968,15 @@ fn append_raw_to_lane(
         return;
     }
     let index = cursor as usize & (lane.slots.len() - 1);
-    let mut used = 0usize;
-    for key in keys.iter_mut().filter(|key| key.len != 0) {
-        let length = key.len;
-        let Some(end) = used.checked_add(length) else {
-            failed("politics literal extent overflow");
-            return;
-        };
-        if end > log.key_stride || end > u32::MAX as usize {
-            REQUIRED_KEYS.fetch_max(end, Ordering::Relaxed);
-            COUNTERS[4].fetch_add(1, Ordering::Relaxed);
-            *key = native::Literal::default();
-            continue;
-        }
-        if length != 0 {
-            let output = unsafe {
-                std::slice::from_raw_parts_mut(
-                    lane.byte_pointer(index, log.key_stride).add(used),
-                    length,
-                )
-            };
-            if key.copy(memory, output).is_err() {
-                COUNTERS[4].fetch_add(1, Ordering::Relaxed);
-                *key = native::Literal::default();
-                continue;
-            }
-        }
-        *key = native::Literal {
-            address: used,
-            len: length,
-        };
-        used = end;
+    if copy_keys(
+        &mut keys,
+        log.key_stride,
+        lane.byte_pointer(index, log.key_stride),
+        memory,
+    )
+    .is_err()
+    {
+        return;
     }
     record.sequence =
         log.base_cursor.load(Ordering::Acquire) + log.cursor.fetch_add(1, Ordering::Relaxed) + 1;
@@ -928,6 +999,7 @@ pub struct Handoff {
     epoch: u64,
     cursor: u64,
     lanes: usize,
+    shared_rejected: u64,
 }
 /// Exchange the interval's upper ring index, without copying
 /// events, scanning countries, resolving identities or touching replay rows.
@@ -1003,11 +1075,13 @@ fn handoff_from_buffer(
         out.cursor = lane.published.load(Ordering::Acquire);
         out.rejected = lane.rejected.load(Ordering::Acquire);
     }
+    let shared_rejected = log.shared.rejected();
     Ok(Handoff {
         log: log as *const Log as usize,
         epoch: EPOCH.load(Ordering::Acquire),
         cursor: log.frontier(),
         lanes: count,
+        shared_rejected,
     })
 }
 impl Handoff {
@@ -1028,8 +1102,11 @@ impl Handoff {
         let log = unsafe { &*(self.log as *const Log) };
         drain_until(
             log,
-            self.epoch,
-            self.cursor,
+            Bound {
+                epoch: self.epoch,
+                cursor: self.cursor,
+                shared_rejected: self.shared_rejected,
+            },
             &cursors[..self.lanes],
             output,
             bytes,
@@ -1059,22 +1136,46 @@ fn drain_from(log: &Log, output: &mut [Event], bytes: &mut [u8]) -> Result<Drain
         .collect();
     drain_until(
         log,
-        EPOCH.load(Ordering::Acquire),
-        log.frontier(),
+        Bound {
+            epoch: EPOCH.load(Ordering::Acquire),
+            cursor: log.frontier(),
+            shared_rejected: log.shared.rejected(),
+        },
         &cursors,
         output,
         bytes,
     )
 }
-fn drain_until(
-    log: &Log,
+/// The sealed interval: its epoch, log-wide frontier and shared refusals.
+#[derive(Clone, Copy)]
+struct Bound {
     epoch: u64,
     cursor: u64,
+    shared_rejected: u64,
+}
+fn drain_until(
+    log: &Log,
+    bound: Bound,
     cursors: &[LaneCursor],
     output: &mut [Event],
     bytes: &mut [u8],
 ) -> Result<Drained, &'static str> {
+    let Bound { epoch, cursor, .. } = bound;
     let first = log.consumed_frontier();
+    // Shared records in log-wide order. One at or below the consumed
+    // frontier belongs to a withdrawn interval; one past the sealed frontier
+    // belongs to the next interval.
+    let shared = log
+        .shared
+        .published(|record| record.sequence)
+        .map_err(|_| "politics drain lane storage allocation failed")?;
+    let release_through = |through: u64| {
+        for &(sequence, index) in &shared {
+            if sequence <= through {
+                log.shared.release(index);
+            }
+        }
+    };
     if log.consumed_epoch.swap(epoch, Ordering::AcqRel) != epoch
         || epoch != EPOCH.load(Ordering::Acquire)
     {
@@ -1087,8 +1188,16 @@ fn drain_until(
             cursor - log.base_cursor.load(Ordering::Acquire),
             Ordering::Release,
         );
+        release_through(cursor);
+        log.shared.advance(bound.shared_rejected);
         return Err("politics observation restarted");
     }
+    release_through(first);
+    let mut shared = shared
+        .iter()
+        .copied()
+        .filter(|&(sequence, _)| sequence > first && sequence <= cursor)
+        .peekable();
     let pending = cursor.wrapping_sub(first) as usize;
     let mut copied = 0;
     let mut used = 0usize;
@@ -1108,8 +1217,9 @@ fn drain_until(
             .filter(|(n, (_, end))| tails[*n] < end.cursor)
             .map(|(n, (lane, _))| {
                 let slot = tails[n] as usize & (lane.slots.len() - 1);
-                (n, unsafe { (*lane.slots[slot].get()).sequence })
+                (Some(n), unsafe { (*lane.slots[slot].get()).sequence })
             })
+            .chain(shared.peek().map(|&(sequence, _)| (None, sequence)))
             .min_by_key(|(_, seq)| *seq);
         let Some((n, sequence)) = next else {
             break;
@@ -1119,9 +1229,20 @@ fn drain_until(
         if sequence != first + copied as u64 + 1 {
             break;
         }
-        let lane = &log.lanes[n];
-        let index = tails[n] as usize & (lane.slots.len() - 1);
-        let mut event = unsafe { (*lane.slots[index].get()).unpack() };
+        let (record, source) = match n {
+            Some(n) => {
+                let lane = &log.lanes[n];
+                let index = tails[n] as usize & (lane.slots.len() - 1);
+                (unsafe { *lane.slots[index].get() }, unsafe {
+                    std::slice::from_raw_parts(
+                        lane.byte_pointer(index, log.key_stride).cast_const(),
+                        log.key_stride,
+                    )
+                })
+            }
+            None => log.shared.record(shared.peek().unwrap().1),
+        };
+        let mut event = record.unpack();
         let count = event
             .identity
             .keys
@@ -1133,21 +1254,19 @@ fn drain_until(
         if keys_required > bytes.len() {
             break;
         }
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                lane.byte_pointer(index, log.key_stride),
-                bytes.as_mut_ptr().add(used),
-                count,
-            );
-        }
+        bytes[used..keys_required].copy_from_slice(&source[..count]);
         for key in &mut event.identity.keys {
             key.address += used;
         }
         output[copied] = event;
         used += count;
         copied += 1;
-        tails[n] += 1;
+        match n {
+            Some(n) => tails[n] += 1,
+            None => log.shared.release(shared.next().unwrap().1),
+        }
     }
+    log.shared.advance(bound.shared_rejected);
     for ((lane, tail), end) in log.lanes.iter().zip(tails).zip(cursors) {
         lane.consumed.store(tail, Ordering::Release);
         if tail == end.cursor {
@@ -1382,8 +1501,114 @@ fn caller_cause(caller: usize) -> PowerCause {
 }
 
 const ENTRY_COUNT: usize = 38;
+/// [`entry_sites`] index of country appearance reset.
+const RESET_COUNTRY_ENTRY: usize = 3;
+/// [`entry_sites`] index of the daily politics update, the first
+/// scope.
+const POLITICS_DAILY_ENTRY: usize = 10;
+/// [`entry_sites`] indices of national focus selection and
+/// cancellation scopes, whose progress argument the country input
+/// family's focus rows follow ([`crate::country_input_changes`]).
+const FOCUS_ENTRY: usize = 36;
+const FOCUS_REFUND_ENTRY: usize = 37;
+
+/// Hook path: the political status family's notifications for an entry this
+/// family patches on its behalf ([`engine::political_status_mutations`]),
+/// with `receiver` its first argument: the country for
+/// `country appearance reset`, the `CPoliticalStatus` for the daily update,
+/// whose guard compares the status's last election after the original.
+fn forwarded_status(
+    index: usize,
+    receiver: usize,
+) -> Option<crate::political_status_changes::Guard<'static>> {
+    use crate::political_status_changes::{Forwarded, forwarded};
+    match index {
+        RESET_COUNTRY_ENTRY => Some(forwarded(Forwarded::ResetCountry, receiver)),
+        POLITICS_DAILY_ENTRY => Some(forwarded(Forwarded::PoliticsDaily, receiver)),
+        _ => None,
+    }
+}
 static ORIGINAL: [AtomicUsize; ENTRY_COUNT] = [const { AtomicUsize::new(0) }; ENTRY_COUNT];
-fn entry_sites() -> Vec<native::HookSite> {
+/// The politics scope entries, in [`native::SCOPES`] order from entry 10:
+/// the detour dispatches on the entry index, never on the scope's name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scope {
+    PoliticsDaily,
+    ImproveRelationDaily,
+    BoostPartyDaily,
+    MioResearchDaily,
+    MioProductionDaily,
+    AddIdea,
+    RemoveIdea,
+    ReplaceIdea,
+    HireAdvisor,
+    ReplaceAdvisor,
+    Decision,
+    TargetedDecision,
+    DecisionTimeout,
+    Diplomacy,
+    ScriptedDiplomacy,
+    LeaderPromotion,
+    LeaderTrait,
+    AbilityCost,
+    CoupCompletion,
+    CivilWar,
+    SetPoliticsEffect,
+    PeaceForceGovernment,
+    SubjectGovernment,
+    ConsoleGovernment,
+    ConsoleSubject,
+    OnAction,
+    Focus,
+    FocusRefund,
+}
+const SCOPE_ORDER: [Scope; native::SCOPES.len()] = [
+    Scope::PoliticsDaily,
+    Scope::ImproveRelationDaily,
+    Scope::BoostPartyDaily,
+    Scope::MioResearchDaily,
+    Scope::MioProductionDaily,
+    Scope::AddIdea,
+    Scope::RemoveIdea,
+    Scope::ReplaceIdea,
+    Scope::HireAdvisor,
+    Scope::ReplaceAdvisor,
+    Scope::Decision,
+    Scope::TargetedDecision,
+    Scope::DecisionTimeout,
+    Scope::Diplomacy,
+    Scope::ScriptedDiplomacy,
+    Scope::LeaderPromotion,
+    Scope::LeaderTrait,
+    Scope::AbilityCost,
+    Scope::CoupCompletion,
+    Scope::CivilWar,
+    Scope::SetPoliticsEffect,
+    Scope::PeaceForceGovernment,
+    Scope::SubjectGovernment,
+    Scope::ConsoleGovernment,
+    Scope::ConsoleSubject,
+    Scope::OnAction,
+    Scope::Focus,
+    Scope::FocusRefund,
+];
+impl Scope {
+    /// The event feed operation the scope starts, if any.
+    fn provenance(self) -> Option<crate::war_provenance::PoliticsScope> {
+        use crate::war_provenance::PoliticsScope;
+        Some(match self {
+            Self::Diplomacy => PoliticsScope::Diplomacy,
+            Self::CivilWar => PoliticsScope::CivilWar,
+            Self::Decision => PoliticsScope::Decision,
+            Self::TargetedDecision => PoliticsScope::TargetedDecision,
+            Self::DecisionTimeout => PoliticsScope::DecisionTimeout,
+            Self::ScriptedDiplomacy => PoliticsScope::ScriptedDiplomacy,
+            Self::OnAction => PoliticsScope::OnAction,
+            _ => return None,
+        })
+    }
+}
+pub(crate) fn entry_sites() -> Vec<native::HookSite> {
     vec![
         native::ADD_POLITICAL_POWER,
         native::ADD_POLITICAL_POWER_NO_DEFICIT,
@@ -1550,7 +1775,7 @@ fn reference_with(
     }
     Some(value)
 }
-fn context_identity(name: &str, a: usize, b: usize, c: usize, mut context: Context) -> Context {
+fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Context) -> Context {
     let mut identity = Identity {
         origin_kind: context.identity.origin_kind,
         flags: context.identity.flags & (1 << 5),
@@ -1558,49 +1783,73 @@ fn context_identity(name: &str, a: usize, b: usize, c: usize, mut context: Conte
         ..Default::default()
     };
     identity.keys[2] = context.identity.keys[2];
-    match name {
-        // The command retains its idea definition and key. Both payment
-        // operations of a replacement retain the replacement origin.
-        "AddIdea" | "RemoveIdea" | "ReplaceIdea" => {
-            let offset = if name == "ReplaceIdea" { 0x38 } else { 0x30 };
+    match scope {
+        // P: command idea pointer +30 (replace's new idea +38), definition key
+        // +18. Both payment operations of a replace retain Replace provenance.
+        Scope::AddIdea | Scope::RemoveIdea | Scope::ReplaceIdea => {
+            let offset = if scope == Scope::ReplaceIdea {
+                0x38
+            } else {
+                0x30
+            };
             if let Some(idea) = at(a, offset).and_then(item_read::<u64>) {
                 identity.keys[0] = key(idea as usize, engine::cidea::TOKEN);
             }
-            identity.action = match name {
-                "AddIdea" => PowerAction::Add,
-                "RemoveIdea" => PowerAction::Remove,
+            identity.action = match scope {
+                Scope::AddIdea => PowerAction::Add,
+                Scope::RemoveIdea => PowerAction::Remove,
                 _ => PowerAction::Replace,
             };
         }
-        // The advisor command retains a typed character reference and slot.
-        "HireAdvisor" | "ReplaceAdvisor" => {
-            let offset = if name == "HireAdvisor" { 0x28 } else { 0x30 };
+        // The native reference retains its {type,id} and slot.
+        Scope::HireAdvisor | Scope::ReplaceAdvisor => {
+            let offset = if scope == Scope::HireAdvisor {
+                0x28
+            } else {
+                0x30
+            };
             identity.set(
                 1,
                 reference(a, offset, engine::ccharacter::REFERENCE_TYPE).map(|r| (r >> 32) as u32),
             );
-            identity.keys[1] = key(a, if name == "HireAdvisor" { 0x38 } else { 0x40 });
-            identity.action = if name == "HireAdvisor" {
+            identity.keys[1] = key(
+                a,
+                if scope == Scope::HireAdvisor {
+                    0x38
+                } else {
+                    0x40
+                },
+            );
+            identity.action = if scope == Scope::HireAdvisor {
                 PowerAction::Add
             } else {
                 PowerAction::Replace
             };
         }
-        // Decision commands retain their original definition and selector
-        // arguments; targeted decisions also supply the receiving status.
-        "Decision" | "TargetedDecision" | "DecisionTimeout" => {
-            let decision = if name == "TargetedDecision" { c } else { a };
+        // Targeted-decision handling receives status, selector, definition;
+        // The command passes its +2C/+30 selector and +38 definition.
+        // Both target handlers retain their original definition/selector args.
+        Scope::Decision | Scope::TargetedDecision | Scope::DecisionTimeout => {
+            let decision = if scope == Scope::TargetedDecision {
+                c
+            } else {
+                a
+            };
             identity.keys[0] = key(decision, engine::cdecision::TOKEN);
-            identity.action = if name == "DecisionTimeout" {
+            identity.action = if scope == Scope::DecisionTimeout {
                 PowerAction::Timeout
             } else {
                 PowerAction::Execute
             };
             identity.origin_kind = PowerOriginKind::Decision;
             identity.keys[2] = identity.keys[0];
-            if name != "Decision" {
-                let selector = if name == "TargetedDecision" { b } else { c };
-                // The selector identifies the target country or target instance.
+            if scope != Scope::Decision {
+                let selector = if scope == Scope::TargetedDecision {
+                    b
+                } else {
+                    c
+                };
+                // Target matching compares selector+8/+C against instance+20/+24.
                 let target = at(selector, 8).and_then(item_read::<i32>);
                 if let Some(target) = target {
                     if target > 0 {
@@ -1616,9 +1865,9 @@ fn context_identity(name: &str, a: usize, b: usize, c: usize, mut context: Conte
                 }
             }
         }
-        // Subclass target layouts differ, so there is no generic target
-        // offset. Scripted actions retain their template and key.
-        "Diplomacy" | "ScriptedDiplomacy" => {
+        // P: base action type +08; subclass target layouts differ, so no
+        // unproved generic target offset. Scripted template/key +78/+10.
+        Scope::Diplomacy | Scope::ScriptedDiplomacy => {
             identity.set(0, at(a, 8).and_then(item_read::<u32>));
             identity.action = PowerAction::Execute;
             // The receiver resolves its own raw target.
@@ -1626,7 +1875,7 @@ fn context_identity(name: &str, a: usize, b: usize, c: usize, mut context: Conte
                 2,
                 at(a, 0x1c).and_then(item_read::<u32>).filter(|id| *id != 0),
             );
-            let scripted = name == "ScriptedDiplomacy"
+            let scripted = scope == Scope::ScriptedDiplomacy
                 || read::<u64>(a)
                     .and_then(|vtable| at(vtable as usize, 0x140))
                     .and_then(item_read::<u64>)
@@ -1635,8 +1884,8 @@ fn context_identity(name: &str, a: usize, b: usize, c: usize, mut context: Conte
                 identity.keys[0] = key(template as usize, 0x10);
             }
         }
-        "Focus" | "FocusRefund" => {
-            let focus = if name == "Focus" {
+        Scope::Focus | Scope::FocusRefund => {
+            let focus = if scope == Scope::Focus {
                 Some(b)
             } else {
                 at(a, 0x10)
@@ -1647,24 +1896,24 @@ fn context_identity(name: &str, a: usize, b: usize, c: usize, mut context: Conte
                 identity.keys[0] = key(focus, engine::cnational_focus::TOKEN);
                 identity.origin_kind = PowerOriginKind::Focus;
                 identity.keys[2] = identity.keys[0];
-                identity.action = if name == "Focus" {
+                identity.action = if scope == Scope::Focus {
                     PowerAction::Start
                 } else {
                     PowerAction::Stop
                 };
             }
         }
-        "LeaderPromotion" | "LeaderTrait" => {
+        Scope::LeaderPromotion | Scope::LeaderTrait => {
             identity.set_reference(reference(a, 0x28, engine::cunit_leader::REFERENCE_TYPE));
             if identity.object_reference().is_some() {
                 identity.object_kind = PowerObjectKind::Leader;
             }
-            identity.action = if name == "LeaderPromotion" {
+            identity.action = if scope == Scope::LeaderPromotion {
                 PowerAction::Promote
             } else {
                 PowerAction::LearnTrait
             };
-            if name == "LeaderTrait"
+            if scope == Scope::LeaderTrait
                 && let Some(definition) = at(a, 0x30).and_then(item_read::<u64>)
             {
                 identity.set(
@@ -1679,17 +1928,17 @@ fn context_identity(name: &str, a: usize, b: usize, c: usize, mut context: Conte
     context.identity = identity;
     context
 }
-fn government_context(name: &str, caller: usize, mut context: Context) -> Context {
-    let cause = match name {
-        "CoupCompletion" => GovernmentCause::CoupCompletion,
-        "CivilWar" => GovernmentCause::CivilWar,
-        "SetPoliticsEffect" => GovernmentCause::SetPoliticsEffect,
-        "PeaceForceGovernment" => GovernmentCause::PeaceForceGovernment,
-        "SubjectGovernment" => GovernmentCause::SubjectGovernment,
-        "ConsoleGovernment" | "ConsoleSubject" => GovernmentCause::Console,
-        // Election notification runs synchronously. Other notifications
-        // are new scopes and inherit no election/coup origin.
-        "OnAction" => {
+fn government_context(scope: Scope, caller: usize, mut context: Context) -> Context {
+    let cause = match scope {
+        Scope::CoupCompletion => GovernmentCause::CoupCompletion,
+        Scope::CivilWar => GovernmentCause::CivilWar,
+        Scope::SetPoliticsEffect => GovernmentCause::SetPoliticsEffect,
+        Scope::PeaceForceGovernment => GovernmentCause::PeaceForceGovernment,
+        Scope::SubjectGovernment => GovernmentCause::SubjectGovernment,
+        Scope::ConsoleGovernment | Scope::ConsoleSubject => GovernmentCause::Console,
+        // The election update invokes on_election synchronously. Other notifications
+        // are new scopes and inherit no election/coup provenance.
+        Scope::OnAction => {
             context.government = if caller == 0xb992de {
                 GovernmentCause::ElectionOnAction
             } else {
@@ -1814,33 +2063,67 @@ unsafe extern "system-unwind" fn entry_body(
     caller: usize,
     _native_rbp: usize,
 ) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::PoliticsCapture);
     let _active = Call::enter();
+    // Covers the original in flight, whether or not this family records;
+    // dropped after it returns.
+    let _status = forwarded_status(index, a);
+    // Country appearance reset rewrites every country input field of its
+    // country, and focus selection and cancellation its focus rows
+    // ([`crate::country_input_changes`]).
+    let _inputs = {
+        use crate::country_input_changes::{Forward, forwarded};
+        match index {
+            RESET_COUNTRY_ENTRY => Some(forwarded(Forward::ResetCountry, a, b)),
+            FOCUS_ENTRY | FOCUS_REFUND_ENTRY => Some(forwarded(Forward::Focus, a, 0)),
+            _ => None,
+        }
+    };
+    // It also clears the country's naval hover tree ([`crate::naval_tree_changes`]).
+    let _naval = (index == RESET_COUNTRY_ENTRY).then(|| crate::naval_tree_changes::forwarded(1, a));
+    // The event feed's operations: how the wars and territory changes inside
+    // these scopes began ([`crate::war_provenance::politics`]).
+    let scope = index.checked_sub(10).map(|scope| SCOPE_ORDER[scope]);
+    let _provenance = scope
+        .and_then(Scope::provenance)
+        .and_then(|scope| crate::war_provenance::politics(scope, caller));
     let original: NativeFunction =
         unsafe { std::mem::transmute(ORIGINAL[index].load(Ordering::Acquire)) };
     if !ENABLED.load(Ordering::Acquire) {
-        return unsafe { original(a, b, c, d, fifth) };
+        return timing.original(|| unsafe { original(a, b, c, d, fifth) });
     }
     let caller = caller.wrapping_sub(base());
     let mut restore = ScopeRestore::new();
     if index < 10 {
-        let result = unsafe { writer(original, [a, b, c, d, fifth], index, caller) };
+        let context = restore.context;
+        let result = unsafe {
+            writer(
+                &timing,
+                original,
+                [a, b, c, d, fifth],
+                index,
+                caller,
+                context,
+            )
+        };
         restore.completed = true;
         return result;
     }
-    let name = native::SCOPES[index - 10].name;
-    let previous = CONTEXT.get();
-    let mut context = context_identity(name, a, b, c, previous);
-    context = government_context(name, caller, context);
-    if name == "PoliticsDaily" {
+    let scope = SCOPE_ORDER[index - 10];
+    // The context ScopeRestore took a moment ago: nothing set it since.
+    let previous = restore.context;
+    let mut context = context_identity(scope, a, b, c, previous);
+    context = government_context(scope, caller, context);
+    if scope == Scope::PoliticsDaily {
         DAILY_HOUR.set(operand_hour());
     }
     CONTEXT.set(context);
-    let result = unsafe { original(a, b, c, d, fifth) };
+    let result = timing.original(|| unsafe { original(a, b, c, d, fifth) });
     if let Some(owner) = DAILY.get() {
         // Only these exact native returns guarantee RDX is the live cost output.
         // Other nested commands in the daily scope have unrelated second arguments.
-        match name {
-            "ImproveRelationDaily" | "BoostPartyDaily" if caller == 0xb9a913 => {
+        match scope {
+            Scope::ImproveRelationDaily | Scope::BoostPartyDaily if caller == 0xb9a913 => {
                 if let Some(cost) = operand::<i64>(b) {
                     let identity = relation_identity(a);
                     component(owner, PowerDailyCostKind::Relation, cost, identity);
@@ -1848,10 +2131,10 @@ unsafe extern "system-unwind" fn entry_body(
                     failed("politics daily relation cost output unreadable");
                 }
             }
-            "MioResearchDaily" if caller == 0xe4f8c9 => {
+            Scope::MioResearchDaily if caller == 0xe4f8c9 => {
                 mio_component(owner, a, operand::<i64>(b), PowerDailyCostKind::MioResearch)
             }
-            "MioProductionDaily" if caller == 0xe4f8e2 => mio_component(
+            Scope::MioProductionDaily if caller == 0xe4f8e2 => mio_component(
                 owner,
                 a,
                 operand::<i64>(b),
@@ -1862,7 +2145,7 @@ unsafe extern "system-unwind" fn entry_body(
     }
     // The ability activation caller supplies the activation charge.
     // Availability, AI and UI callers of the same getter are unrelated.
-    if name == "AbilityCost"
+    if scope == Scope::AbilityCost
         && caller == 0x6dd978
         && let Some(mut pending) = PENDING.get()
         && pending.site == PowerSite::ActivateAbility
@@ -1985,7 +2268,16 @@ pub fn bench_upkeep_identity(record: usize) -> Identity {
     upkeep_identity(record)
 }
 
-unsafe fn writer(original: NativeFunction, args: [usize; 5], index: usize, caller: usize) -> usize {
+/// `context` is the thread's current politics context, which nothing in
+/// this function sets before its original runs ([`government`] only reads it).
+unsafe fn writer(
+    timing: &crate::hook_timing::Span,
+    original: NativeFunction,
+    args: [usize; 5],
+    index: usize,
+    caller: usize,
+    context: Context,
+) -> usize {
     let [a, b, c, d, fifth] = args;
     flush(false);
     let mut previous = PENDING.get();
@@ -2036,9 +2328,9 @@ unsafe fn writer(original: NativeFunction, args: [usize; 5], index: usize, calle
             balance(owner, currency)
         }
     });
-    let mut identity = CONTEXT.get().identity;
-    // The nested ability allocator and release refund belong to their
-    // observed parent, not an outer command.
+    let mut identity = context.identity;
+    // The nested ability allocator and release refund
+    // belong to their observed parent, not an outer command.
     if matches!(caller, 0x6c6d75 | 0x6c7319 | 0x6ddce7 | 0x6de4cf)
         && let Some(parent) = previous.filter(|parent| Some(parent.owner) == owner)
     {
@@ -2147,14 +2439,14 @@ unsafe fn writer(original: NativeFunction, args: [usize; 5], index: usize, calle
     } else {
         PENDING.set(None);
     }
-    let previous_context = CONTEXT.get();
+    let previous_context = context;
     if index == 3 {
         CONTEXT.set(Context {
             government: GovernmentCause::ResetSetup,
             ..previous_context
         });
     }
-    let result = unsafe { original(a, b, c, d, fifth) };
+    let result = timing.original(|| unsafe { original(a, b, c, d, fifth) });
     CONTEXT.set(previous_context);
     let force = matches!(index, 0..=4) || matches!(index, 5 | 6) && result as u8 != 0;
     flush(
@@ -2172,7 +2464,7 @@ unsafe fn writer(original: NativeFunction, args: [usize; 5], index: usize, calle
     result
 }
 
-const TAPS: [native::HookSite; 10] = [
+pub(crate) const TAPS: [native::HookSite; 10] = [
     native::SET_POLITICAL_POWER,
     native::ABILITY_UPKEEP,
     native::SET_RULING_PARTY,
@@ -2185,6 +2477,7 @@ const TAPS: [native::HookSite; 10] = [
     native::PP_SIGNAL_NO_DEFICIT,
 ];
 unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
+    let _timing = crate::hook_timing::enter(crate::hook_timing::Family::PoliticsCaptureTaps);
     let _active = Call::enter();
     if !ENABLED.load(Ordering::Acquire) {
         return;
@@ -2377,6 +2670,9 @@ pub fn status() -> impl serde::Serialize {
         "required_key_bytes": REQUIRED_KEYS.load(Ordering::Relaxed),
         "staging_entries": log().map(|log| log.entries),
         "staging_threads": log().map(|log| log.lanes.len()),
+        "shared_lane_threads": counters[11], "shared_lane_refusals": counters[12],
+        "shared_lane_entries": log().map(|log| log.shared.len()),
+        "required_shared_lane_entries": log().map(|log| log.shared.required_entries()),
         "staging_key_stride": log().map(|log| log.key_stride),
         "observer_timing": "offline and matched live run; no per-detour clock instrumentation",
         "staging_allocation_failures": counters[10],
@@ -2503,6 +2799,16 @@ impl Hooks {
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
+            crate::political_status_changes::set_forward(false);
+            crate::country_input_changes::forwarder(
+                crate::country_input_changes::Forwarder::Politics,
+                false,
+            );
+            crate::naval_tree_changes::forwarder(1, false);
+            crate::event_feed_observer::forwarder(
+                crate::event_feed_observer::Forwarder::Politics,
+                false,
+            );
         }
         invalidate();
         let mut family =
@@ -2520,6 +2826,18 @@ impl Hooks {
             return Ok(false);
         }
         ENABLED.store(enabled && !self.entries.is_empty(), Ordering::SeqCst);
+        // The political status family observes country appearance reset and the
+        // daily politics update through these patches ([`forwarded_status`]).
+        crate::political_status_changes::set_forward(enabled && !self.entries.is_empty());
+        crate::country_input_changes::forwarder(
+            crate::country_input_changes::Forwarder::Politics,
+            enabled && !self.entries.is_empty(),
+        );
+        crate::naval_tree_changes::forwarder(1, enabled && !self.entries.is_empty());
+        crate::event_feed_observer::forwarder(
+            crate::event_feed_observer::Forwarder::Politics,
+            enabled && !self.entries.is_empty(),
+        );
         Ok(true)
     }
     pub fn executable_ranges(&self) -> Vec<Range<usize>> {
@@ -2542,7 +2860,35 @@ pub fn government_mismatch() {
 }
 
 #[cfg(test)]
-pub(crate) static STAGING_TEST: Mutex<()> = Mutex::new(());
+static STAGING_TEST: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+thread_local! {
+    static STAGING_OWNER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// Serialises tests that publish staging or read the observation epoch and
+/// makes this thread the epoch's owner. As with the naval, air-loss and
+/// bombing observers, another test's hourly path (`lost_observer_interval`)
+/// then cannot move the epoch under a politics test. A failing test releases
+/// the lock poisoned; later tests set their own staging, so the poison is
+/// ignored and one failure stays one failure.
+#[cfg(test)]
+pub(crate) struct StagingTest {
+    _serial: std::sync::MutexGuard<'static, ()>,
+}
+#[cfg(test)]
+pub(crate) fn staging_test() -> StagingTest {
+    let serial = STAGING_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    STAGING_OWNER.set(true);
+    StagingTest { _serial: serial }
+}
+#[cfg(test)]
+impl Drop for StagingTest {
+    fn drop(&mut self) {
+        STAGING_OWNER.set(false);
+    }
+}
 /// Owns offline lanes while exercising production publication and handoff.
 #[cfg(test)]
 pub(crate) struct StagingFixture(Log);
@@ -2567,7 +2913,7 @@ pub(crate) fn stage_fixture(
     events: &[Event],
     memory: &impl Memory,
 ) -> (Drained, Vec<Event>, Vec<u8>) {
-    let _guard = STAGING_TEST.lock().unwrap();
+    let _guard = staging_test();
     let log = Log::new(events.len(), 128);
     for event in events {
         append_to(&log, *event, memory);
@@ -2955,9 +3301,29 @@ pub(crate) fn fixture_identities(receiver: usize, kind: usize) -> (Identity, Ide
 mod tests {
     use super::*;
 
+    /// The political status family's forwarded writers are exactly the
+    /// entries patched at country appearance reset and the daily update.
+    #[test]
+    fn forwarded_status_entries_name_their_native_writers() {
+        let sites = entry_sites();
+        assert_eq!(sites[RESET_COUNTRY_ENTRY].rva, 0x6d_61d0);
+        assert_eq!(sites[RESET_COUNTRY_ENTRY].name, native::RESET_COUNTRY.name);
+        assert_eq!(sites[POLITICS_DAILY_ENTRY].rva, 0xb9_90b0);
+        assert_eq!(sites[POLITICS_DAILY_ENTRY].name, "PoliticsDaily");
+        let forwarded = (0..ENTRY_COUNT)
+            .filter(|&index| forwarded_status(index, 0).is_some())
+            .count();
+        assert_eq!(forwarded, 2);
+        // The focus scopes the country input family's focus rows follow.
+        assert_eq!(sites[FOCUS_ENTRY].rva, 0x2d_a9f0);
+        assert_eq!(sites[FOCUS_ENTRY].name, "Focus");
+        assert_eq!(sites[FOCUS_REFUND_ENTRY].rva, 0x2c_e790);
+        assert_eq!(sites[FOCUS_REFUND_ENTRY].name, "FocusRefund");
+    }
+
     #[test]
     fn worker_lane_handoff_grows_original_five_thousand_country_and_mod_sized_domains() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         let memory = engine::memory::SliceMemory {
             base: 0,
             bytes: &[],
@@ -2999,7 +3365,7 @@ mod tests {
 
     #[test]
     fn worker_lane_handoff_sizes_prepared_successor_before_sealing_original_events() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         clear_staging();
         resize_checked(8, 1).unwrap();
         let old = log().unwrap();
@@ -3055,7 +3421,7 @@ mod tests {
 
     #[test]
     fn balance_faults_name_each_native_read_and_withdraw_coverage_without_allocation() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         let memory = engine::memory::SliceMemory {
             base: 0,
             bytes: &[],
@@ -3087,7 +3453,7 @@ mod tests {
 
     #[test]
     fn premature_release_retains_storage_and_counts_refusal() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         let before = LOG.load(Ordering::SeqCst);
         let refusals = COUNTERS[8].load(Ordering::Relaxed);
         ENABLED.store(true, Ordering::SeqCst);
@@ -3114,7 +3480,7 @@ mod tests {
 
     #[test]
     fn failed_staging_replacement_preserves_published_log_and_retention() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         clear_staging();
         resize_checked(16, 1).unwrap();
         let pointer = LOG.load(Ordering::Acquire);
@@ -3127,7 +3493,7 @@ mod tests {
 
     #[test]
     fn resumed_history_epoch_and_staging_growth_preserve_identity_and_keys() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         clear_staging();
         let prior = EPOCH.load(Ordering::Acquire).max(99);
         restore_epoch(prior).unwrap();
@@ -3155,7 +3521,7 @@ mod tests {
 
     #[test]
     fn overflowing_one_lane_does_not_multiply_other_lane_capacity() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         let log = Log::with_lanes(16, 1, 4);
         let memory = engine::memory::SliceMemory {
             base: 0,
@@ -3195,7 +3561,7 @@ mod tests {
 
     #[test]
     fn lane_pressure_retries_growth_without_more_countries_or_keys() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         clear_staging();
         resize_checked(16, 1).unwrap();
         let before = log().unwrap();
@@ -3224,7 +3590,7 @@ mod tests {
 
     #[test]
     fn staging_growth_preserves_5000_country_unsealed_and_already_sealed_records() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         clear_staging();
         resize_checked(8192, 16).unwrap();
         let old = log().unwrap();
@@ -3330,7 +3696,7 @@ mod tests {
 
     #[test]
     fn stale_publisher_routes_during_closure_before_base_and_current_publication() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         let old = Log::new(4, 1);
         let fresh = Log::new(8, 1);
         let memory = engine::memory::SliceMemory {
@@ -3374,7 +3740,7 @@ mod tests {
 
     #[test]
     fn publishing_overlap_defers_growth_without_losing_the_offer_or_epoch() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         clear_staging();
         resize_checked(8, 1).unwrap();
         let old = log().unwrap();
@@ -3395,7 +3761,7 @@ mod tests {
 
     #[test]
     fn prepared_growth_preserves_independent_entry_and_key_floors() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         clear_staging();
         resize_checked(8, 8).unwrap();
         let old = log().unwrap();
@@ -3415,7 +3781,7 @@ mod tests {
 
     #[test]
     fn larger_thread_domain_waits_for_prepared_frame_cursors() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         clear_staging();
         resize_checked(8, 1).unwrap();
         let old = log().unwrap();
@@ -3437,7 +3803,7 @@ mod tests {
 
     #[test]
     fn staging_growth_keeps_real_fault_epoch_refusals() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         clear_staging();
         resize_checked(8, 1).unwrap();
         let old = log().unwrap();
@@ -3492,7 +3858,7 @@ mod tests {
     }
     #[test]
     fn entry_shim_preserves_args_result_and_unwinds_active_and_scope() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         let index = 10
             + native::SCOPES
                 .iter()
@@ -3522,7 +3888,7 @@ mod tests {
     #[test]
     #[ignore = "release per-call production shared dispatcher shim profile; no game"]
     fn politics_shared_call_profile() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         let index = 10
             + native::SCOPES
                 .iter()
@@ -3593,7 +3959,7 @@ mod tests {
 
     #[test]
     fn staging_shortage_retains_events_and_epoch_loss_recovers_past_holes() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         let log = Log::new(2, 1);
         let memory = engine::memory::SliceMemory {
             base: 0,
@@ -3644,7 +4010,7 @@ mod tests {
     }
     #[test]
     fn scoped_keys_are_copied_before_native_deletion_and_never_truncated() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         let mut source = [0u8; 32];
         source[..9].copy_from_slice(b"mod_itemx");
         source[16..24].copy_from_slice(&9u64.to_le_bytes());
@@ -3678,7 +4044,7 @@ mod tests {
 
     #[test]
     fn thread_lanes_merge_in_native_sequence_and_wait_for_unpublished_predecessors() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         let log = Log::with_lanes(16, 1, 2);
         std::thread::scope(|scope| {
             for country in [5001, 5002] {
@@ -3730,8 +4096,11 @@ mod tests {
         assert_eq!(
             drain_until(
                 &log,
-                EPOCH.load(Ordering::Acquire),
-                2,
+                Bound {
+                    epoch: EPOCH.load(Ordering::Acquire),
+                    cursor: 2,
+                    shared_rejected: 0,
+                },
                 &partial,
                 &mut output,
                 &mut bytes
@@ -3744,7 +4113,7 @@ mod tests {
     }
     #[test]
     fn targeted_decision_uses_selector_and_definition_as_distinct_operands() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         let mut definition = vec![0u8; engine::cdecision::TOKEN + 32];
         definition[engine::cdecision::TOKEN..engine::cdecision::TOKEN + 8]
             .copy_from_slice(b"decision");
@@ -3760,7 +4129,7 @@ mod tests {
             selector[8..12].copy_from_slice(&country.to_le_bytes());
             selector[12..16].copy_from_slice(&state.to_le_bytes());
             let identity = context_identity(
-                "TargetedDecision",
+                Scope::TargetedDecision,
                 0,
                 selector.as_ptr() as usize,
                 definition.as_ptr() as usize,
@@ -3780,7 +4149,7 @@ mod tests {
 
     #[test]
     fn ability_cost_only_updates_the_native_activation_charge_caller() {
-        let _guard = STAGING_TEST.lock().unwrap();
+        let _guard = staging_test();
         let index = 10
             + native::SCOPES
                 .iter()
@@ -3804,6 +4173,9 @@ mod tests {
             emitted: false,
         }));
         ENABLED.store(true, Ordering::SeqCst);
+        let family = crate::hook_timing::Family::PoliticsCapture;
+        let _sampled = crate::hook_timing::sample_all();
+        let timed = crate::hook_timing::counts(family);
         let cost = 11i64;
         for caller in [0x6dd977, 0x6dd979, 0] {
             unsafe {
@@ -3833,9 +4205,32 @@ mod tests {
             );
         }
         assert_eq!(PENDING.get().unwrap().requested, Some(-11));
+        let after = crate::hook_timing::counts(family);
+        assert!(after.calls >= timed.calls + 4 && after.sampled >= timed.sampled + 4);
+        assert!(after.original > timed.original);
         ENABLED.store(false, Ordering::SeqCst);
         PENDING.set(None);
         ORIGINAL[index].store(previous, Ordering::Release);
+    }
+
+    /// Each entry's scope is the native scope of that index, and only the
+    /// event feed's seven scopes start an operation.
+    #[test]
+    fn scope_entries_follow_the_native_scope_order() {
+        assert_eq!(SCOPE_ORDER.len(), native::SCOPES.len());
+        for (scope, site) in SCOPE_ORDER.iter().zip(native::SCOPES) {
+            assert_eq!(format!("{scope:?}"), site.name);
+        }
+        let started = SCOPE_ORDER
+            .iter()
+            .filter(|scope| scope.provenance().is_some())
+            .count();
+        assert_eq!(started, 7);
+        assert_eq!(Scope::AddIdea.provenance(), None);
+        assert_eq!(
+            Scope::OnAction.provenance(),
+            Some(crate::war_provenance::PoliticsScope::OnAction)
+        );
     }
 
     #[test]
@@ -3843,16 +4238,221 @@ mod tests {
         assert_eq!(caller_cause(0x71b05e), PowerCause::Decision);
         assert_eq!(caller_cause(0x71b05f), PowerCause::NotIdentified);
         assert_eq!(caller_cause(native::DAILY_CP_CALLER), PowerCause::DailyGain);
-        let console = government_context("ConsoleSubject", 0, Context::default());
+        let console = government_context(Scope::ConsoleSubject, 0, Context::default());
         assert_eq!(
-            government_context("SubjectGovernment", 0, console).government,
+            government_context(Scope::SubjectGovernment, 0, console).government,
             GovernmentCause::Console
         );
-        let context = government_context("OnAction", 0xb992de, Context::default());
+        let context = government_context(Scope::OnAction, 0xb992de, Context::default());
         assert_eq!(context.government, GovernmentCause::ElectionOnAction);
         assert_eq!(
-            government_context("OnAction", 0xb992df, context).government,
+            government_context(Scope::OnAction, 0xb992df, context).government,
             GovernmentCause::NotIdentified
         );
+    }
+
+    #[test]
+    fn writer_threads_beyond_the_lane_count_lose_nothing_in_one_generation() {
+        let _guard = staging_test();
+        let required = REQUIRED_LANES.load(Ordering::Relaxed);
+        let shared_threads = COUNTERS[11].load(Ordering::Relaxed);
+        let log = Log::with_lanes(64, 16, 2);
+        let mut source = [0; 32];
+        source[..6].copy_from_slice(b"shared");
+        source[16..24].copy_from_slice(&6_u64.to_le_bytes());
+        source[24..32].copy_from_slice(&15_u64.to_le_bytes());
+        std::thread::scope(|scope| {
+            for country in 1..=5_u32 {
+                let (log, source) = (&log, &source);
+                scope.spawn(move || {
+                    let memory = engine::memory::SliceMemory {
+                        base: 0x1000,
+                        bytes: source,
+                    };
+                    for _ in 0..4 {
+                        append_to(
+                            log,
+                            Event {
+                                country,
+                                identity: Identity {
+                                    keys: [
+                                        native::Literal {
+                                            address: 0x1000,
+                                            len: 6,
+                                        },
+                                        native::Literal::default(),
+                                        native::Literal::default(),
+                                    ],
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            },
+                            &memory,
+                        );
+                    }
+                });
+            }
+        });
+        // Two threads own the lanes; three publish through the shared lane.
+        assert_eq!(log.registered.load(Ordering::Acquire), 5);
+        assert!(COUNTERS[11].load(Ordering::Relaxed) >= shared_threads + 3);
+        assert!(REQUIRED_LANES.load(Ordering::Relaxed) >= 5);
+        let mut cursors = [LaneCursor::default(); 2];
+        let handoff = handoff_from(&log, &mut cursors).unwrap();
+        assert_eq!(handoff.pending(), 20);
+        let mut output = [Event::default(); 20];
+        let mut bytes = [0; 20 * 16];
+        let drained = handoff.drain(&cursors, &mut output, &mut bytes).unwrap();
+        assert_eq!(drained.copied, 20);
+        assert_eq!(
+            output
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            (1..=20).collect::<Vec<_>>()
+        );
+        for country in 1..=5 {
+            assert_eq!(output.iter().filter(|e| e.country == country).count(), 4);
+        }
+        for event in output {
+            let key = event.identity.keys[0];
+            assert_eq!(&bytes[key.address..key.address + key.len], b"shared");
+        }
+        // Every shared slot is free again for the next interval.
+        assert!(log.shared.published(|r| r.sequence).unwrap().is_empty());
+        assert!(log.shared.reserve().is_some());
+        REQUIRED_LANES.store(required, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn shared_records_merge_by_sequence_and_wait_for_an_unpublished_predecessor() {
+        let _guard = staging_test();
+        let log = Log::with_lanes(8, 1, 1);
+        let memory = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        let shared = |slot: crate::shared_lane::Reservation<'_, Record>, country| {
+            let mut record = fixture_record(&Event {
+                country,
+                ..Default::default()
+            });
+            record.sequence = log.cursor.fetch_add(1, Ordering::Relaxed) + 1;
+            slot.publish(record);
+        };
+        // Reserved first, published last: reservation order is not log order.
+        let early = log.shared.reserve().unwrap();
+        let late = log.shared.reserve().unwrap();
+        shared(late, 1);
+        append_lane(
+            &log,
+            0,
+            Event {
+                country: 2,
+                ..Default::default()
+            },
+            &memory,
+        );
+        let mut early_record = fixture_record(&Event {
+            country: 3,
+            ..Default::default()
+        });
+        early_record.sequence = log.cursor.fetch_add(1, Ordering::Relaxed) + 1;
+        append_lane(
+            &log,
+            0,
+            Event {
+                country: 4,
+                ..Default::default()
+            },
+            &memory,
+        );
+        let mut output = [Event::default(); 4];
+        // Sequence 3 is taken but unpublished: nothing after it is emitted.
+        let drain = drain_from(&log, &mut output, &mut []).unwrap();
+        assert_eq!((drain.copied, drain.pending), (2, 4));
+        assert_eq!([output[0].country, output[1].country], [1, 2]);
+        early.publish(early_record);
+        let drain = drain_from(&log, &mut output, &mut []).unwrap();
+        assert_eq!(drain.copied, 2);
+        assert_eq!([output[0].country, output[1].country], [3, 4]);
+        assert!(log.shared.published(|r| r.sequence).unwrap().is_empty());
+    }
+
+    #[test]
+    fn restarted_interval_withdraws_its_shared_records_and_keeps_later_ones() {
+        let _guard = staging_test();
+        let log = Log::with_lanes(8, 1, 1);
+        let publish = |country| {
+            let slot = log.shared.reserve().unwrap();
+            let mut record = fixture_record(&Event {
+                country,
+                ..Default::default()
+            });
+            record.sequence = log.cursor.fetch_add(1, Ordering::Relaxed) + 1;
+            slot.publish(record);
+        };
+        publish(1);
+        let frontier = log.frontier();
+        publish(2);
+        invalidate();
+        let cursors = [LaneCursor::default()];
+        let mut output = [Event::default(); 2];
+        assert_eq!(
+            drain_until(
+                &log,
+                Bound {
+                    epoch: EPOCH.load(Ordering::Acquire),
+                    cursor: frontier,
+                    shared_rejected: 0,
+                },
+                &cursors,
+                &mut output,
+                &mut [],
+            ),
+            Err("politics observation restarted")
+        );
+        // Only the record past the withdrawn frontier remains.
+        let pending = log.shared.published(|r| r.sequence).unwrap();
+        assert_eq!(pending.iter().map(|&(s, _)| s).collect::<Vec<_>>(), [2]);
+        let drain = drain_from(&log, &mut output, &mut []).unwrap();
+        assert_eq!((drain.copied, output[0].country), (1, 2));
+    }
+
+    #[test]
+    fn exhausted_shared_lane_is_a_named_refusal_that_sizes_the_next_generation() {
+        let _guard = staging_test();
+        clear_staging();
+        resize_checked(4, 1).unwrap();
+        let log = log().unwrap();
+        let capacity = log.shared.len();
+        let overflows = COUNTERS[1].load(Ordering::Relaxed);
+        let refusals = COUNTERS[12].load(Ordering::Relaxed);
+        let held: Vec<_> = (0..capacity)
+            .map(|_| log.shared.reserve().unwrap())
+            .collect();
+        let memory = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            append_raw_shared(
+                log,
+                Record::default(),
+                [native::Literal::default(); 3],
+                &memory,
+            );
+        });
+        assert_eq!(COUNTERS[12].load(Ordering::Relaxed), refusals + 1);
+        assert!(COUNTERS[1].load(Ordering::Relaxed) > overflows);
+        assert!(log.shared.required_entries() > capacity);
+        let status = serde_json::to_value(status()).unwrap();
+        assert!(status["shared_lane_refusals"].as_u64().unwrap() > refusals);
+        drop(held);
+        prepare();
+        assert_ne!(OFFERED.load(Ordering::Acquire), 0);
+        seal_staging();
+        assert!(super::log().unwrap().shared.len() > capacity);
+        clear_staging();
     }
 }

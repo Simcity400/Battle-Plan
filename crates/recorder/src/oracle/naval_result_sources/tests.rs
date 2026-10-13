@@ -552,6 +552,50 @@ fn lost_intervals_and_prerequisite_reads_are_differences() {
     );
 }
 
+/// A reattached collector's first interval is partial. With the recorded
+/// event loss between its previous read and this one it is a named
+/// limitation; with no loss, or a loss between other reads, it remains a
+/// difference.
+#[test]
+fn a_reattach_first_interval_needs_its_recorded_event_loss() {
+    let mut reattached = frame(101, &[], &[], vec![]);
+    *reattached.tables[TableId::NavalResultSources.index()] = TableView::Unavailable {
+        reason: "naval result sources first/branch interval is partial".into(),
+    };
+    let frames = [
+        frame(100, &[], &[], vec![]),
+        reattached,
+        frame(102, &[], &[], vec![]),
+    ];
+    let with = |event_losses: Vec<(Hour, Hour)>| {
+        let mut check = SourceCheck {
+            event_losses,
+            ..SourceCheck::default()
+        };
+        let mut report = Report::default();
+        for frame in &frames {
+            check.observe(frame, &mut report);
+        }
+        check.finish(&mut report);
+        report
+    };
+    let recorded = with(vec![(100, 101)]);
+    assert!(
+        recorded.differences.is_empty(),
+        "{:?}",
+        recorded.differences
+    );
+    assert!(
+        recorded
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("after a recorded event loss"))
+    );
+    for event_losses in [vec![], vec![(99, 100)], vec![(101, 102)]] {
+        has_failure(&with(event_losses), "unavailable_interval");
+    }
+}
+
 #[test]
 fn another_branch_cannot_certify_a_result() {
     let mut other = frame(101, &[], &[(21, 101)], vec![]);

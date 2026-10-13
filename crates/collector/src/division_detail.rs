@@ -45,6 +45,13 @@ impl<'a, M: Memory> CountedMemory<'a, M> {
 
 impl<M: Memory> Memory for CountedMemory<'_, M> {
     #[inline]
+    fn prefetch(&self, address: usize, len: usize) {
+        // Hints acquire no bytes; retain the source adapter's hint handling
+        // without adding acquisition traffic or consuming a guarded read.
+        self.memory.prefetch(address, len);
+    }
+
+    #[inline]
     fn read_scalar<T: engine::memory::Raw>(&self, address: usize) -> Option<T> {
         let value = self.memory.read_scalar::<T>(address)?;
         self.add(std::mem::size_of::<T>() as u64);
@@ -331,6 +338,36 @@ fn install<R>(rows: &mut Vec<R>, outcome: Outcome, captured: &mut CaptureRows<R>
 mod tests {
     use super::*;
     use engine::{carmy, memory::SliceMemory};
+
+    #[test]
+    fn counted_memory_forwards_hints_without_reading_or_charging_bytes() {
+        #[derive(Default)]
+        struct Hints {
+            hints: std::cell::RefCell<Vec<(usize, usize)>>,
+            copies: Cell<usize>,
+        }
+        impl Memory for Hints {
+            fn copy(&self, _: usize, destination: &mut [u8]) -> bool {
+                self.copies.set(self.copies.get() + 1);
+                destination.fill(7);
+                true
+            }
+
+            fn prefetch(&self, address: usize, len: usize) {
+                self.hints.borrow_mut().push((address, len));
+            }
+        }
+        let memory = Hints::default();
+        let counted = CountedMemory::new(&memory);
+        counted.prefetch(0x1000, 0xaa);
+        counted.prefetch(usize::MAX, 8);
+        assert_eq!(*memory.hints.borrow(), [(0x1000, 0xaa), (usize::MAX, 8)]);
+        assert_eq!(memory.copies.get(), 0);
+        assert_eq!(counted.bytes(), 0);
+        assert!(counted.copy(0x1000, &mut [0; 8]));
+        assert_eq!(memory.copies.get(), 1);
+        assert_eq!(counted.bytes(), 8);
+    }
 
     #[test]
     fn recycled_details_size_from_live_rows() {

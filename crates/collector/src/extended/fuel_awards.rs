@@ -1,4 +1,6 @@
-//! Hourly hook handover, assembled into CountryFuel's existing daily suffix.
+//! Hourly hook handover, assembled into CountryFuel's daily suffix: each
+//! country's last 24 applied updates, summed as the Fuel widget shows them
+//! ([`FuelAwardDay`]).
 use crate::{
     fuel_awards::{self, Entry},
     output_log::Drained,
@@ -8,7 +10,10 @@ use engine::allocation::{copy_vec, default_vec, owned_vec, reserve_map};
 use replay::{
     BranchId,
     frame::{TableInput, TableView},
-    rows::{FuelAwardHour, FuelAwardRecipient, FuelAwardWindow, Recorded, TableId, TableRows},
+    rows::{
+        FuelAwardDay, FuelAwardDayRecipient, FuelAwardHour, FuelAwardRecipient, Recorded, Retired,
+        TableId, TableRows,
+    },
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -112,26 +117,28 @@ impl Windows {
                 .get(&row.country)
                 .map(|&(instance, _)| instance);
             let matches = matches!(row.country_instance,Recorded::Value(Some(value)) if Some(value) == instance);
-            let reason = if complete && matches {
+            let mut reason = if complete && matches {
                 None
             } else {
                 self.reason.or(Some(
                     "fuel applied window lacks 24 consecutive updates of this country identity",
                 ))
             };
-            let mut owned = Vec::new();
-            if let Some(hours) = hours {
-                engine::allocation::reserve_exact(&mut owned, hours.len())?;
-                for entry in hours {
-                    owned.push(clone_hour(entry)?);
+            let mut day = FuelAwardDay::default();
+            if let (None, Some(hours)) = (reason, hours) {
+                match sum_day(hours)? {
+                    Some(summed) => day = summed,
+                    None => {
+                        DAY_SUM_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        reason = Some("fuel applied day sum exceeds its native i64");
+                    }
                 }
             }
-            row.awards = Recorded::Value(FuelAwardWindow {
-                country_instance: instance.unwrap_or_default(),
-                continuity_start_hour: history.map(|(start, _)| *start),
-                hours: owned,
-                reason: copy_vec(reason.unwrap_or("").as_bytes())?,
-            });
+            day.country_instance = instance.unwrap_or_default();
+            day.continuity_start_hour = history.map(|(start, _)| *start);
+            day.reason = copy_vec(reason.unwrap_or("").as_bytes())?;
+            row.awards = Recorded::Value(Retired);
+            row.award_day = Recorded::Value(day);
         }
         Ok(())
     }
@@ -329,6 +336,145 @@ impl Windows {
         Ok(())
     }
 }
+/// Days refused because a sum left its native i64.
+static DAY_SUM_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Days refused because a sum left its native i64, for status.
+pub(crate) fn day_sum_refusals() -> u64 {
+    DAY_SUM_REFUSALS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// One receipt of a day: its identity operands, update hour and amount.
+type Receipt<'a> = ((u32, u64, u32, u64, Option<&'a [u8]>, &'a [u8]), i32, i64);
+
+/// What the Fuel widget shows of a country's 24 applied updates: their sums,
+/// each update's own gain converted (`quantity`) and summed, and each
+/// recipient identity's receipts, in the order of kind, reference, owner,
+/// host, name and name reason; None when a sum leaves its native i64. The
+/// caller fills the identity, continuity and reason.
+fn sum_day(hours: &VecDeque<FuelAwardHour>) -> io::Result<Option<FuelAwardDay>> {
+    let mut gains = [0_i128; 4];
+    let mut transfers = [0_i128; 4];
+    let mut received = [0_i128; 3];
+    let (mut own, mut quantity, mut consumed) = (0_i128, 0_i128, 0_i128);
+    let mut receipts: Vec<Receipt<'_>> = Vec::new();
+    engine::allocation::reserve_exact(
+        &mut receipts,
+        hours.iter().map(|entry| entry.recipients.len()).sum(),
+    )?;
+    for entry in hours {
+        for (sum, raw) in gains.iter_mut().zip(entry.gains_raw) {
+            *sum += i128::from(raw);
+        }
+        for (sum, raw) in transfers.iter_mut().zip(entry.transfers_raw) {
+            *sum += i128::from(raw);
+        }
+        for (sum, raw) in received.iter_mut().zip(entry.received_raw) {
+            *sum += i128::from(raw);
+        }
+        own += i128::from(entry.own_gain_raw);
+        quantity += i128::from(engine::fuel_awards::quantity(entry.own_gain_raw));
+        consumed += i128::from(entry.consumed_raw);
+        for part in &entry.recipients {
+            receipts.push((
+                (
+                    part.kind,
+                    part.reference,
+                    part.owner,
+                    part.host,
+                    part.name.as_deref(),
+                    part.name_reason.as_slice(),
+                ),
+                entry.hour,
+                part.amount_raw,
+            ));
+        }
+    }
+    // Unstable: a recipient's first and last hours are its extreme ones.
+    receipts.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    let groups = receipts
+        .iter()
+        .enumerate()
+        .filter(|(index, receipt)| *index == 0 || receipts[index - 1].0 != receipt.0)
+        .count();
+    let mut recipients = Vec::new();
+    engine::allocation::reserve_exact(&mut recipients, groups)?;
+    let mut at = 0;
+    while at < receipts.len() {
+        let identity = receipts[at].0;
+        let end = at + receipts[at..].partition_point(|receipt| receipt.0 == identity);
+        let group = &receipts[at..end];
+        let amount: i128 = group.iter().map(|receipt| i128::from(receipt.2)).sum();
+        let Ok(amount_raw) = i64::try_from(amount) else {
+            return Ok(None);
+        };
+        let (kind, reference, owner, host, name, name_reason) = identity;
+        recipients.push(FuelAwardDayRecipient {
+            kind,
+            reference,
+            owner,
+            host,
+            name: name.map(copy_vec).transpose()?,
+            name_reason: copy_vec(name_reason)?,
+            first_hour: group
+                .iter()
+                .map(|receipt| receipt.1)
+                .min()
+                .unwrap_or_default(),
+            last_hour: group
+                .iter()
+                .map(|receipt| receipt.1)
+                .max()
+                .unwrap_or_default(),
+            amount_raw,
+        });
+        at = end;
+    }
+    let fit = |sum: i128| i64::try_from(sum).ok();
+    let sums = (|| {
+        Some((
+            [
+                fit(gains[0])?,
+                fit(gains[1])?,
+                fit(gains[2])?,
+                fit(gains[3])?,
+            ],
+            fit(own)?,
+            fit(quantity)?,
+            [
+                fit(transfers[0])?,
+                fit(transfers[1])?,
+                fit(transfers[2])?,
+                fit(transfers[3])?,
+            ],
+            fit(consumed)?,
+            [fit(received[0])?, fit(received[1])?, fit(received[2])?],
+        ))
+    })();
+    let Some((
+        gains_raw,
+        own_gain_raw,
+        own_gain_quantity_raw,
+        transfers_raw,
+        consumed_raw,
+        received_raw,
+    )) = sums
+    else {
+        return Ok(None);
+    };
+    Ok(Some(FuelAwardDay {
+        last_hour: hours.back().map_or(0, |last| last.hour),
+        gains_raw,
+        own_gain_raw,
+        own_gain_quantity_raw,
+        transfers_raw,
+        consumed_raw,
+        received_raw,
+        recipients,
+        ..Default::default()
+    }))
+}
+
 fn reserve_history(history: &mut VecDeque<FuelAwardHour>) -> io::Result<()> {
     if history.len() == history.capacity() {
         engine::allocation::allocation_attempt()?;
@@ -343,35 +489,6 @@ fn reserve_history(history: &mut VecDeque<FuelAwardHour>) -> io::Result<()> {
 pub(crate) fn allocation_failure_history_exercise() -> io::Result<()> {
     reserve_history(&mut VecDeque::new())
 }
-fn clone_hour(hour: &FuelAwardHour) -> io::Result<FuelAwardHour> {
-    let mut recipients = Vec::new();
-    engine::allocation::reserve_exact(&mut recipients, hour.recipients.len())?;
-    for row in &hour.recipients {
-        recipients.push(FuelAwardRecipient {
-            kind: row.kind,
-            reference: row.reference,
-            owner: row.owner,
-            host: row.host,
-            amount_raw: row.amount_raw,
-            name: row.name.as_deref().map(copy_vec).transpose()?,
-            name_reason: copy_vec(&row.name_reason)?,
-        });
-    }
-    Ok(FuelAwardHour {
-        hour: hour.hour,
-        gains_raw: hour.gains_raw,
-        own_gain_raw: hour.own_gain_raw,
-        transfers_raw: hour.transfers_raw,
-        consumed_raw: hour.consumed_raw,
-        received_raw: hour.received_raw,
-        recipients,
-        history_index: hour.history_index,
-        remaining_hours: hour.remaining_hours,
-        pending_raw: hour.pending_raw,
-        current_raw: hour.current_raw,
-    })
-}
-
 #[cfg(test)]
 #[path = "fuel_awards/tests.rs"]
 mod tests;

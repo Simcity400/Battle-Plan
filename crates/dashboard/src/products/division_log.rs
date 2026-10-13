@@ -310,6 +310,9 @@ impl Census {
 }
 #[derive(Default)]
 struct Scan {
+    /// The recording's format, which dates its daily tables
+    /// ([`crate::metadata::slot_read`]).
+    format: replay::format::FormatVersion,
     events: Vec<Event>,
     seen: HashSet<u64>,
     /// The last census's divisions, ascending.
@@ -385,7 +388,12 @@ impl Scan {
                 "Country identity unavailable; division events retain unknown countries",
             );
         }
-        if slot_read(&frame.metrics, TableId::DivisionTemplates, hour) {
+        if slot_read(
+            self.format,
+            &frame.metrics,
+            TableId::DivisionTemplates,
+            hour,
+        ) {
             self.template_hour = frame
                 .complete::<tables::DivisionTemplates>()
                 .is_ok()
@@ -580,7 +588,10 @@ fn disposition(row: &DivisionEquipmentDeletionRow) -> (DivisionLogKind, &'static
     (kind, row.event_name())
 }
 fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan> {
-    let mut scan = Scan::default();
+    let mut scan = Scan {
+        format: replay.format,
+        ..Scan::default()
+    };
     crate::blocks::scan_blocks(
         replay,
         replay.index.iter().filter(|block| block.branch == branch),

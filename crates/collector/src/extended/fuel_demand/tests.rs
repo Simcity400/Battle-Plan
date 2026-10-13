@@ -446,7 +446,7 @@ fn cold_and_later_populated_5000_country_capture_grows_air_text_and_weather_from
             5000 * 24
         );
         for (_, pack) in &owned {
-            assert_eq!(pack.hour, hour);
+            assert_eq!(pack.hour, rows::FuelDemandHour::Host);
             assert_eq!(
                 pack.sites
                     .iter()
@@ -466,5 +466,94 @@ fn cold_and_later_populated_5000_country_capture_grows_air_text_and_weather_from
                 &vec![b'x'; name_len]
             );
         }
+        // Attached, each row keeps its pack's header and the parts hold its
+        // lists, which assemble back exactly.
+        let mut input = TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(
+            owned
+                .iter()
+                .map(|(country, pack)| CountryFuelRow {
+                    country: *country,
+                    country_instance: Recorded::Value(pack.country_instance),
+                    ..Default::default()
+                })
+                .collect(),
+        )));
+        let parts = attach(&mut input, &captured).unwrap();
+        let TableView::Complete(TableRows::FuelDemandParts(parts)) = parts else {
+            panic!("fuel demand parts were not split")
+        };
+        assert_eq!(
+            parts.len(),
+            owned
+                .iter()
+                .map(|(_, pack)| pack.divisions.len()
+                    + pack.groups.len()
+                    + pack.fleets.len()
+                    + pack.task_forces.len()
+                    + pack.sites.len()
+                    + pack.contexts.len())
+                .sum::<usize>()
+        );
+        let TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(headers))) = &input
+        else {
+            panic!()
+        };
+        assert!(headers.iter().all(|row| matches!(
+            &row.demand,
+            Recorded::Value(pack) if pack.sites.is_empty() && pack.contexts.is_empty()
+        )));
+        let assembled = rows::with_demand_parts(
+            headers,
+            &TableView::Complete(TableRows::FuelDemandParts(parts)),
+            replay::format::FormatVersion::CURRENT,
+        )
+        .unwrap();
+        for (row, (_, pack)) in assembled.iter().zip(&owned) {
+            assert_eq!(row.demand, Recorded::Value(pack.clone()));
+        }
+        // A truncated read's unread countries' parts are unknown: its packs
+        // stay whole and its parts are refused, by name, for an empty prefix
+        // too; an unavailable read's parts carry its reason.
+        for prefix in [0, 3] {
+            let mut input = TableInput::Sampled(TableView::Truncated {
+                rows: TableRows::CountryFuel(
+                    owned[..prefix]
+                        .iter()
+                        .map(|(country, pack)| CountryFuelRow {
+                            country: *country,
+                            country_instance: Recorded::Value(pack.country_instance),
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+                missing: 1,
+            });
+            let parts = attach(&mut input, &captured).unwrap();
+            assert_eq!(
+                parts,
+                TableView::Unavailable {
+                    reason: TRUNCATED_PARTS.into()
+                }
+            );
+            let TableInput::Sampled(TableView::Truncated {
+                rows: TableRows::CountryFuel(whole),
+                ..
+            }) = &input
+            else {
+                panic!()
+            };
+            for (row, (_, pack)) in whole.iter().zip(&owned) {
+                assert_eq!(row.demand, Recorded::Value(pack.clone()));
+            }
+        }
+        let mut input = TableInput::Sampled(TableView::Unavailable {
+            reason: "fuel walk failed".into(),
+        });
+        assert_eq!(
+            attach(&mut input, &captured).unwrap(),
+            TableView::Unavailable {
+                reason: "fuel walk failed".into()
+            }
+        );
     }
 }

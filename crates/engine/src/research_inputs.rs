@@ -79,6 +79,22 @@ impl Context {
             cost_debug: debug[0],
         })
     }
+
+    /// One value for the globals every input row of a read carries: the cost
+    /// scale and the cost-debug flag, which only the research-cost console
+    /// command writes after load.
+    pub fn digest(&self) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in self
+            .cost_scale_raw
+            .to_le_bytes()
+            .into_iter()
+            .chain([self.cost_debug])
+        {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+        hash
+    }
 }
 
 /// Bonuses fail independently: missing attribution must not discard slot state.
@@ -145,6 +161,14 @@ pub fn walk_country_buffer(
         )
         .ok_or("research slots header invalid")?;
         output.ensure(slots.count as usize)?;
+        let batches = crate::governance_batch::Assignments::gather(
+            memory,
+            slots,
+            output.len().min(slots.count as usize),
+            true,
+        );
+        let batched = batches.view(memory);
+        let memory = &batched;
         let mut len = 0_usize;
         let mut pointers = [0_u8; 64 * 8];
         let mut first = 0;
@@ -346,103 +370,6 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("research input address overflow")
 }
 
-/// Slot pointers read per guarded call while fingerprinting.
-const FINGERPRINT_BATCH: usize = 16;
-/// CTechnology span hashed by the fingerprint: classifier +0x170 and level
-/// +0x174 through the XP boost flag +0x1e8 (see the field notes in
-/// `ctechnology`), with daily progress +0x198 masked out.
-const TECH_SPAN: (usize, usize) = (ctechnology::CLASSIFIER, 0x1f0);
-const TECH_PROGRESS: usize = ctechnology::LIVE_PROGRESS;
-/// CResearchSlot span: handle +0x08 through speed +0x38, with daily banked
-/// idle days +0x20 masked out; they increase by 100000 each idle day.
-const SLOT_SPAN: usize = 0x40;
-
-/// A cheap hash of a country's research assignment state, for deciding which
-/// countries to re-read before their daily slice: the whole slot roster, each
-/// slot's technology, applied days and speed, and each assigned technology's
-/// classifier, level, category bonus, design team, ahead reduction, applied
-/// speed bonus, applied bonus IDs and XP boost. Daily progress and banked idle
-/// days are excluded; they change for every researching country each day and
-/// are refreshed by the daily slice. Modifier sources (ideas, scripts,
-/// scientists, licences and sharing) are not covered either.
-///
-/// Only a trigger: a mismatch schedules a complete read, and an equal value
-/// never replaces a scheduled read. Collisions only delay a re-read to the
-/// country's slice.
-pub fn fingerprint_country(
-    memory: &impl Memory,
-    base: usize,
-    country_pointer: usize,
-) -> Result<u64, &'static str> {
-    let raw = ctechnology_status::copy_status(memory, country_pointer)?;
-    let status = ctechnology_status::decode_status(base, country_pointer, &raw)?;
-    let header = read::<[u8; 16]>(memory, at(status, ctechnology_status::RESEARCH_SLOTS_DATA)?)
-        .ok_or("research slots header unreadable")?;
-    let slots = Array::from_header(header, 8).ok_or("research slots header invalid")?;
-    let mut hash = Fingerprint::new();
-    hash.bytes(&header[..16]);
-    let mut pointers = [0_u8; FINGERPRINT_BATCH * 8];
-    let mut first = 0;
-    while first < slots.count {
-        let count = ((slots.count - first) as usize).min(FINGERPRINT_BATCH);
-        if !read_slice(
-            memory,
-            slots.element(first, 8).ok_or("slot roster overflow")?,
-            &mut pointers[..count * 8],
-        ) {
-            return Err("slot pointers unreadable");
-        }
-        for index in 0..count {
-            let entry = &pointers[index * 8..index * 8 + 8];
-            hash.bytes(entry);
-            let pointer = usize::try_from(u64::from_le_bytes(entry.try_into().unwrap()))
-                .map_err(|_| "research slot address overflow")?;
-            if pointer == 0 {
-                continue;
-            }
-            let mut slot =
-                read::<[u8; SLOT_SPAN]>(memory, pointer).ok_or("research slot unreadable")?;
-            slot[cresearch_slot::BANKED_DAYS..cresearch_slot::BANKED_DAYS + 8].fill(0);
-            hash.bytes(&slot[8..]);
-            let technology = u64::from_le_bytes(
-                slot[cresearch_slot::TECHNOLOGY..cresearch_slot::TECHNOLOGY + 8]
-                    .try_into()
-                    .unwrap(),
-            );
-            if technology == 0 {
-                continue;
-            }
-            let technology =
-                usize::try_from(technology).map_err(|_| "technology address overflow")?;
-            let mut span = [0_u8; TECH_SPAN.1 - TECH_SPAN.0];
-            if !read_slice(memory, at(technology, TECH_SPAN.0)?, &mut span) {
-                return Err("assigned technology unreadable");
-            }
-            let progress = TECH_PROGRESS - TECH_SPAN.0;
-            span[progress..progress + 8].fill(0);
-            hash.bytes(&span);
-        }
-        first += count as u32;
-    }
-    Ok(hash.finish())
-}
-
-/// FNV-1a over the fingerprint's bytes; stable within a process, not persisted.
-struct Fingerprint(u64);
-impl Fingerprint {
-    fn new() -> Self {
-        Self(0xcbf2_9ce4_8422_2325)
-    }
-    fn bytes(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    fn finish(self) -> u64 {
-        self.0
-    }
-}
-
 /// One country roster pass, regardless of how many slots use a bonus. Pointer
 /// pages and identity fields are batched; only selected objects need strings.
 fn resolve_bonuses(
@@ -565,3 +492,6 @@ fn resolve_bonus_roster(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod serial;

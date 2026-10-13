@@ -39,21 +39,26 @@ pub const TIMED_IDEA_VTABLE_RVA: usize = 0x0293_9718;
 pub const LAST_ELECTION: usize = 0xa0;
 /// Ruling-party pointer resolved from serialized party IDs.
 pub const RULING_PARTY: usize = 0xd0;
-/// Election frequency, i32, initialized to 48.
+/// Political status's signed election frequency in months; politics assignment
+/// writes it, and construction and clearing store 48.
 pub const ELECTION_FREQUENCY: usize = 0xe8;
-/// Elections-allowed boolean byte.
+/// Political status's elections byte; politics assignment writes it,
+/// construction stores 1 and clearing stores 0.
 pub const ELECTIONS_ALLOWED: usize = 0xec;
+/// The ruling party pointer through the elections byte: one guarded copy.
+const RULING_SPAN: usize = ELECTIONS_ALLOWED + 1 - RULING_PARTY;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub last_election: i32,
-    pub election_frequency: i32,
-    pub elections_allowed: u8,
     pub capital: i32,
     /// Alternate-capital raw reference preferred unless zero.
     pub original_capital: i32,
     /// None is the engine's null pointer, not a failed ruling-party read.
     pub ruling_party: Option<u32>,
+    /// What `has_elections` tests: the elections byte is nonzero and the
+    /// frequency is positive as a signed dword.
+    pub has_elections: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +100,167 @@ impl TokenWalk {
             required_bytes: 0,
         }
     }
+}
+
+/// One authenticated country's party array, before any party is read: the
+/// country, its political status and the array's data pointer and count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Parties {
+    pub country: u32,
+    pub status: usize,
+    pub data: usize,
+    pub count: u32,
+}
+
+/// A caller's held PartyLeaders rows per country
+/// ([`Reader::party_leaders_carried`]).
+pub trait LeaderCarry {
+    /// Registers an authenticated party array before any party is read: a
+    /// plan token and, when its held rows may be carried, their count.
+    fn plan(&mut self, parties: &Parties) -> (usize, Option<usize>);
+    /// Writes a carryable plan's held rows.
+    fn carry(&mut self, token: usize, rows: &mut [cpolitical_party::LeaderRow]);
+    /// One party of a pool read afresh, before its leader vector is read.
+    fn party(&mut self, token: usize, party: usize);
+    /// One leader's character, before its identity and role map are read.
+    fn character(&mut self, token: usize, character: usize);
+    /// A country read afresh and whole.
+    fn read(&mut self, token: usize, rows: &[cpolitical_party::LeaderRow]);
+}
+
+/// No held rows: every country is read.
+pub struct Fresh;
+impl LeaderCarry for Fresh {
+    fn plan(&mut self, _: &Parties) -> (usize, Option<usize>) {
+        (0, None)
+    }
+    fn carry(&mut self, _: usize, _: &mut [cpolitical_party::LeaderRow]) {}
+    fn party(&mut self, _: usize, _: usize) {}
+    fn character(&mut self, _: usize, _: usize) {}
+    fn read(&mut self, _: usize, _: &[cpolitical_party::LeaderRow]) {}
+}
+
+/// A caller's held PoliticalParties rows per country
+/// ([`Reader::parties_carried`]). A carried row's popularity and ruling flag
+/// are read afresh; its other fields come from the held read.
+pub trait PartyCarry {
+    /// Whether to plan at all; `false` reads every party as before.
+    fn active(&self) -> bool {
+        true
+    }
+    /// Registers an authenticated party array before any party is read: a
+    /// plan token and, when its held rows may be carried, their row count and
+    /// text bytes.
+    fn plan(&mut self, parties: &Parties) -> (usize, Option<(usize, usize)>);
+    /// Whether the held party pointers at `first..` equal `chunk`.
+    fn same_parties(&mut self, token: usize, first: usize, chunk: &[usize]) -> bool;
+    /// Writes a carryable plan's held rows, whose text starts index `text`,
+    /// and their text.
+    fn carry(&mut self, token: usize, rows: &mut [cpolitical_party::Row], text: &mut [u8]);
+    /// One party read afresh, before its fields are read.
+    fn party(&mut self, token: usize, party: usize);
+    /// A country read afresh: its outcome and, when complete, its rows,
+    /// whose text starts index `text`.
+    fn read(&mut self, token: usize, outcome: Outcome, rows: &[cpolitical_party::Row], text: &[u8]);
+}
+
+/// No held rows: every party is read.
+pub struct FreshParties;
+impl PartyCarry for FreshParties {
+    fn active(&self) -> bool {
+        false
+    }
+    fn plan(&mut self, _: &Parties) -> (usize, Option<(usize, usize)>) {
+        (0, None)
+    }
+    fn same_parties(&mut self, _: usize, _: usize, _: &[usize]) -> bool {
+        false
+    }
+    fn carry(&mut self, _: usize, _: &mut [cpolitical_party::Row], _: &mut [u8]) {}
+    fn party(&mut self, _: usize, _: usize) {}
+    fn read(&mut self, _: usize, _: Outcome, _: &[cpolitical_party::Row], _: &[u8]) {}
+}
+
+/// One authenticated country's active-idea array, before any idea is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ideas {
+    pub country: u32,
+    pub status: usize,
+    pub data: usize,
+    pub count: u32,
+}
+
+/// A caller's held ActiveIdeas rows per country ([`Reader::ideas_carried`]).
+/// A row is the slot's `CIdea` definition token, which the idea database
+/// fixes for the session, so an unchanged slot list has unchanged rows.
+pub trait IdeaCarry {
+    /// Whether to plan at all; `false` reads every idea as before.
+    fn active(&self) -> bool {
+        true
+    }
+    /// Registers an authenticated idea array before any idea is read: a plan
+    /// token and, when its held rows may be carried, their row count and
+    /// text bytes.
+    fn plan(&mut self, ideas: &Ideas) -> (usize, Option<(usize, usize)>);
+    /// Whether the held slot pointers at `first..` equal `chunk`.
+    fn same_ideas(&mut self, token: usize, first: usize, chunk: &[usize]) -> bool;
+    /// Writes a carryable plan's held rows, whose text starts index `text`,
+    /// and their text.
+    fn carry(&mut self, token: usize, rows: &mut [IdeaRow], text: &mut [u8]);
+    /// One slot read afresh: its stored pointer, before the idea is read.
+    fn idea(&mut self, token: usize, slot: usize);
+    /// A country read afresh: its outcome and, when complete, its rows,
+    /// whose text starts index `text`.
+    fn read(&mut self, token: usize, outcome: Outcome, rows: &[IdeaRow], text: &[u8]);
+}
+
+/// No held rows: every idea is read.
+pub struct FreshIdeas;
+impl IdeaCarry for FreshIdeas {
+    fn active(&self) -> bool {
+        false
+    }
+    fn plan(&mut self, _: &Ideas) -> (usize, Option<(usize, usize)>) {
+        (0, None)
+    }
+    fn same_ideas(&mut self, _: usize, _: usize, _: &[usize]) -> bool {
+        false
+    }
+    fn carry(&mut self, _: usize, _: &mut [IdeaRow], _: &mut [u8]) {}
+    fn idea(&mut self, _: usize, _: usize) {}
+    fn read(&mut self, _: usize, _: Outcome, _: &[IdeaRow], _: &[u8]) {}
+}
+
+/// Pointers read per guarded copy when a carry compares a pointer array.
+const POINTER_CHUNK: usize = 32;
+
+/// Calls `visit` with each run of up to [`POINTER_CHUNK`] pointers of
+/// `count` at `data`, until it returns `false`; `None` when a run is
+/// unreadable.
+fn visit_pointers(
+    memory: &impl Memory,
+    data: usize,
+    count: u32,
+    mut visit: impl FnMut(usize, &[usize]) -> bool,
+) -> Option<bool> {
+    let mut bytes = [0_u8; POINTER_CHUNK * 8];
+    let mut pointers = [0_usize; POINTER_CHUNK];
+    let mut first = 0_usize;
+    while first < count as usize {
+        let len = (count as usize - first).min(POINTER_CHUNK);
+        let address = data.checked_add(first.checked_mul(8)?)?;
+        if !crate::read_slice(memory, address, &mut bytes[..len * 8]) {
+            return None;
+        }
+        for (pointer, word) in pointers.iter_mut().zip(bytes[..len * 8].chunks_exact(8)) {
+            *pointer = usize::try_from(u64::from_le_bytes(word.try_into().unwrap())).ok()?;
+        }
+        if !visit(first, &pointers[..len]) {
+            return Some(false);
+        }
+        first += len;
+    }
+    Some(true)
 }
 
 /// Authenticates the country/status ownership once for this callback. Individual
@@ -154,24 +320,15 @@ impl<'a, M: Memory> Reader<'a, M> {
     }
 
     pub fn row(&self) -> Result<Row, &'static str> {
-        // Frequency and the flag are adjacent, exact fields (five bytes).
-        let (last_election, fields) = read_pair::<4, 5>(
-            self.memory,
-            self.at(LAST_ELECTION)?,
-            self.at(ELECTION_FREQUENCY),
-            ["last election unreadable", "election fields unreadable"],
-        )?;
-        let last_election = i32::from_le_bytes(last_election);
-        let election_frequency = i32::from_le_bytes(fields[..4].try_into().unwrap());
-        let elections_allowed = fields[4];
-        if elections_allowed > 1 {
-            return Err("elections allowed is not a boolean");
-        }
+        let last_election =
+            read::<i32>(self.memory, self.at(LAST_ELECTION)?).ok_or("last election unreadable")?;
         let capital_address = self
             .country
             .checked_add(ccountry::CAPITAL)
             .ok_or("current capital unreadable")?;
-        let (capitals, pointer) = read_pair::<8, 8>(
+        // The election fields share the ruling pointer's copy: they lie in
+        // the same constructed object, so they add no read and no failure.
+        let (capitals, ruling) = read_pair::<8, RULING_SPAN>(
             self.memory,
             capital_address,
             self.at(RULING_PARTY),
@@ -182,7 +339,14 @@ impl<'a, M: Memory> Reader<'a, M> {
         )?;
         let capital = i32::from_le_bytes(capitals[..4].try_into().unwrap());
         let original_capital = i32::from_le_bytes(capitals[4..].try_into().unwrap());
-        let pointer = usize::try_from(u64::from_le_bytes(pointer))
+        let field = |offset: usize| offset - RULING_PARTY;
+        let frequency = i32::from_le_bytes(
+            ruling[field(ELECTION_FREQUENCY)..field(ELECTION_FREQUENCY) + 4]
+                .try_into()
+                .unwrap(),
+        );
+        let has_elections = ruling[field(ELECTIONS_ALLOWED)] != 0 && frequency > 0;
+        let pointer = usize::try_from(u64::from_le_bytes(ruling[..8].try_into().unwrap()))
             .map_err(|_| "ruling party pointer unreadable")?;
         let ruling_party = if pointer == 0 {
             None
@@ -191,11 +355,10 @@ impl<'a, M: Memory> Reader<'a, M> {
         };
         Ok(Row {
             last_election,
-            election_frequency,
-            elections_allowed,
             capital,
             original_capital,
             ruling_party,
+            has_elections,
         })
     }
 
@@ -217,20 +380,39 @@ impl<'a, M: Memory> Reader<'a, M> {
         tokens: &mut Vec<u8>,
         byte_start: usize,
     ) -> TokenWalk {
-        self.parties_into(
+        self.parties_carried(
+            0,
             crate::walk::Buffer::Growing(output),
             row_start,
             crate::walk::Buffer::Growing(tokens),
             byte_start,
+            &mut FreshParties,
         )
     }
 
     fn parties_into(
         &self,
+        output: crate::walk::Buffer<'_, cpolitical_party::Row>,
+        row_start: usize,
+        tokens: crate::walk::Buffer<'_, u8>,
+        byte_start: usize,
+    ) -> TokenWalk {
+        self.parties_carried(0, output, row_start, tokens, byte_start, &mut FreshParties)
+    }
+
+    /// [`Self::parties_growing`] with `carry` supplying the rows of a party
+    /// array whose held read it proves current: the array header, the ruling
+    /// party, every party pointer and each party's popularity are still
+    /// read, and a carried party's identity, ideology token, tag, names and
+    /// default flag are not.
+    pub fn parties_carried(
+        &self,
+        country: u32,
         mut output: crate::walk::Buffer<'_, cpolitical_party::Row>,
         row_start: usize,
         mut tokens: crate::walk::Buffer<'_, u8>,
         byte_start: usize,
+        carry: &mut impl PartyCarry,
     ) -> TokenWalk {
         let result = (|| {
             let array = Array::read(self.memory, self.at(PARTIES)?, 8)
@@ -243,6 +425,56 @@ impl<'a, M: Memory> Reader<'a, M> {
                     .ok_or("political party row count overflow")?,
             )?;
             let ruling = self.ruling_pointer()?;
+            let (token, held) = if carry.active() {
+                carry.plan(&Parties {
+                    country,
+                    status: self.status,
+                    data,
+                    count,
+                })
+            } else {
+                (0, None)
+            };
+            if let Some((rows, bytes)) = held
+                && rows == count as usize
+                && output.len() >= row_start + rows
+                && visit_pointers(self.memory, data, count, |first, chunk| {
+                    carry.same_parties(token, first, chunk)
+                }) == Some(true)
+                && tokens.ensure(
+                    byte_start
+                        .checked_add(bytes)
+                        .ok_or("politics token bytes overflow")?,
+                )?
+            {
+                let rows = &mut output[row_start..row_start + rows];
+                carry.carry(token, rows, &mut tokens[byte_start..byte_start + bytes]);
+                // Popularity moves daily and the ruling party any hour.
+                let mut found_ruling = ruling == 0;
+                let mut ordinal = 0;
+                let fresh = visit_pointers(self.memory, data, count, |_, chunk| {
+                    for &pointer in chunk {
+                        found_ruling |= pointer == ruling;
+                        let Some(popularity) = pointer
+                            .checked_add(cpolitical_party::POPULARITY)
+                            .and_then(|p| read::<i64>(self.memory, p))
+                        else {
+                            return false;
+                        };
+                        rows[ordinal].popularity = popularity;
+                        rows[ordinal].is_ruling = u8::from(pointer == ruling);
+                        ordinal += 1;
+                    }
+                    true
+                });
+                if fresh != Some(true) {
+                    return Err("political popularity unreadable");
+                }
+                if !found_ruling {
+                    return Err("ruling party is outside native party roster");
+                }
+                return Ok(finish(rows.len(), 0, bytes, bytes));
+            }
             let mut found_ruling = ruling == 0;
             let mut len = 0_usize;
             let mut bytes_len = 0;
@@ -254,6 +486,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                     .filter(|&p| p != 0)
                     .ok_or("political party pointer unreadable or null")?;
                 found_ruling |= pointer == ruling;
+                carry.party(token, pointer);
                 let (id, ideology) = cpolitical_party::identity(self.memory, self.base, pointer)?;
                 let token = ideology
                     .checked_add(cideology_group::TOKEN)
@@ -348,7 +581,14 @@ impl<'a, M: Memory> Reader<'a, M> {
             if !found_ruling {
                 return Err("ruling party is outside native party roster");
             }
-            Ok(finish(len, unread_rows, bytes_len, required_bytes))
+            let walk = finish(len, unread_rows, bytes_len, required_bytes);
+            carry.read(
+                token,
+                walk.outcome,
+                &output[row_start..row_start + len],
+                &tokens[byte_start..byte_start + bytes_len],
+            );
+            Ok(walk)
         })();
         result.unwrap_or_else(TokenWalk::unavailable)
     }
@@ -378,11 +618,36 @@ impl<'a, M: Memory> Reader<'a, M> {
     pub fn party_leaders_buffer(
         &self,
         country: u32,
+        output: crate::walk::Buffer<'_, cpolitical_party::LeaderRow>,
+    ) -> Outcome {
+        self.party_leaders_carried(country, output, &mut Fresh)
+    }
+
+    /// [`Self::party_leaders_buffer`] with `carry` supplying the rows of a
+    /// party array whose held read it proves current: the array header is
+    /// still read, and a carried country's parties, leaders and characters
+    /// are not.
+    pub fn party_leaders_carried(
+        &self,
+        country: u32,
         mut output: crate::walk::Buffer<'_, cpolitical_party::LeaderRow>,
+        carry: &mut impl LeaderCarry,
     ) -> Outcome {
         let result = (|| {
             let parties = Array::read(self.memory, self.at(PARTIES)?, 8)
                 .ok_or("political party array header invalid")?;
+            let (token, carried) = carry.plan(&Parties {
+                country,
+                status: self.status,
+                data: parties.data,
+                count: parties.count,
+            });
+            if let Some(rows) = carried
+                && output.ensure(rows)?
+            {
+                carry.carry(token, &mut output[..rows]);
+                return Ok(Outcome::Rows { len: rows });
+            }
             let leader_vtable = self
                 .base
                 .checked_add(ccountry_leader::VTABLE_RVA)
@@ -396,6 +661,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                     .and_then(|p| usize::try_from(p).ok())
                     .filter(|&p| p != 0)
                     .ok_or("political party pointer unreadable or null")?;
+                carry.party(token, pointer);
                 let (party, _) = cpolitical_party::identity(self.memory, self.base, pointer)?;
                 let leaders = pointer
                     .checked_add(cpolitical_party::COUNTRY_LEADERS)
@@ -432,6 +698,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                     let character = if parent == 0 {
                         None
                     } else {
+                        carry.character(token, parent);
                         Some(ccharacter::identity_header(self.memory, self.base, parent)?)
                     };
                     let role = character
@@ -451,6 +718,9 @@ impl<'a, M: Memory> Reader<'a, M> {
                     };
                     len += 1;
                 }
+            }
+            if unread_rows == 0 {
+                carry.read(token, &output[..len]);
             }
             Ok(if unread_rows == 0 {
                 Outcome::Rows { len }
@@ -479,12 +749,47 @@ impl<'a, M: Memory> Reader<'a, M> {
 
     pub fn ideas_buffer(
         &self,
+        output: crate::walk::Buffer<'_, IdeaRow>,
+        tokens: crate::walk::Buffer<'_, u8>,
+    ) -> TokenWalk {
+        self.ideas_carried(0, output, tokens, &mut FreshIdeas)
+    }
+
+    /// [`Self::ideas_buffer`] with `carry` supplying the rows of an idea
+    /// array whose held read it proves current: the array header and every
+    /// slot pointer are still read, and a carried idea's vtables and token
+    /// are not.
+    pub fn ideas_carried(
+        &self,
+        country: u32,
         mut output: crate::walk::Buffer<'_, IdeaRow>,
         mut tokens: crate::walk::Buffer<'_, u8>,
+        carry: &mut impl IdeaCarry,
     ) -> TokenWalk {
         let result = (|| {
             let array =
                 Array::read(self.memory, self.at(IDEAS)?, 8).ok_or("active idea array invalid")?;
+            let (token, held) = if carry.active() {
+                carry.plan(&Ideas {
+                    country,
+                    status: self.status,
+                    data: array.data,
+                    count: array.count,
+                })
+            } else {
+                (0, None)
+            };
+            if let Some((rows, bytes)) = held
+                && rows == array.count as usize
+                && output.ensure(rows)?
+                && tokens.ensure(bytes)?
+                && visit_pointers(self.memory, array.data, array.count, |first, chunk| {
+                    carry.same_ideas(token, first, chunk)
+                }) == Some(true)
+            {
+                carry.carry(token, &mut output[..rows], &mut tokens[..bytes]);
+                return Ok(finish(rows, 0, bytes, bytes));
+            }
             let mut len = 0_usize;
             let mut bytes_len = 0;
             let mut required_bytes = 0_usize;
@@ -506,6 +811,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                     .and_then(|p| usize::try_from(p).ok())
                     .filter(|&p| p != 0)
                     .ok_or("active idea pointer unreadable or null")?;
+                carry.idea(token, pointer);
                 let vtable =
                     read::<u64>(self.memory, pointer).ok_or("active idea vtable unreadable")?;
                 if vtable == secondary_vtable as u64 {
@@ -542,7 +848,9 @@ impl<'a, M: Memory> Reader<'a, M> {
                 bytes_len += token_len;
                 len += 1;
             }
-            Ok(finish(len, unread_rows, bytes_len, required_bytes))
+            let walk = finish(len, unread_rows, bytes_len, required_bytes);
+            carry.read(token, walk.outcome, &output[..len], &tokens[..bytes_len]);
+            Ok(walk)
         })();
         result.unwrap_or_else(TokenWalk::unavailable)
     }

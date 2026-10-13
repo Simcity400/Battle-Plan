@@ -474,6 +474,9 @@ pub struct EndedExchange {
 /// What one branch recorded of one country, before naming.
 #[derive(Clone, Debug, Default)]
 pub struct Scanned {
+    /// The recording's format, which dates its daily tables
+    /// ([`crate::metadata::slot_read`]).
+    pub(crate) format: replay::format::FormatVersion,
     /// (source, variant) to (hour, delta) events, in scan order.
     pub events: BTreeMap<LeafKey, Vec<(i32, i128)>>,
     pub coverage: Vec<CoverageSpan>,
@@ -675,7 +678,10 @@ pub fn scan(
     cancelled: &AtomicBool,
 ) -> io::Result<Scanned> {
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Equipment losses cancelled");
-    let mut scanned = Scanned::default();
+    let mut scanned = Scanned {
+        format: replay.format,
+        ..Scanned::default()
+    };
     let mut state = State {
         land_source,
         country,
@@ -787,7 +793,7 @@ fn observe(
     tag: &str,
 ) -> io::Result<()> {
     let hour = decoded.hour;
-    scanned.variants.observe(decoded);
+    scanned.variants.observe(scanned.format, decoded);
     let links = decoded.complete::<tables::CountryLinks>().ok();
     let country = decoded
         .complete::<tables::Countries>()
@@ -873,7 +879,7 @@ fn observe(
     }
     let convoys = decoded.complete::<tables::SunkConvoys>();
     scanned.read(LossRecord::SunkConvoys, hour, convoys.is_ok());
-    if slot_read(&decoded.metrics, TableId::SunkConvoys, hour)
+    if slot_read(scanned.format, &decoded.metrics, TableId::SunkConvoys, hour)
         && let Ok(rows) = convoys
     {
         for row in rows.iter().filter(|row| ours(row.owner_country)) {
@@ -893,8 +899,12 @@ fn observe(
     }
     let lend_lease = decoded.complete::<tables::LendLeaseEquipment>();
     scanned.read(LossRecord::LendLease, hour, lend_lease.is_ok());
-    if slot_read(&decoded.metrics, TableId::LendLeaseEquipment, hour)
-        && let Ok(rows) = lend_lease
+    if slot_read(
+        scanned.format,
+        &decoded.metrics,
+        TableId::LendLeaseEquipment,
+        hour,
+    ) && let Ok(rows) = lend_lease
     {
         // The game deletes an ended exchange with its totals: an exchange
         // the last complete read showed and this one does not ended after

@@ -334,6 +334,7 @@ impl Hooks {
 
 /// The prune takes the combat log manager pointer in RCX and returns nothing.
 unsafe extern "system" fn prune(manager: usize) {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::CombatLogPrune);
     let _call = Call::enter();
     if ENABLED.load(Ordering::SeqCst) {
         let _wall = Observation(crate::sampling::qpc());
@@ -341,7 +342,7 @@ unsafe extern "system" fn prune(manager: usize) {
     }
     let original: unsafe extern "system" fn(usize) =
         unsafe { std::mem::transmute(ORIGINAL.load(Ordering::Acquire)) };
-    unsafe { original(manager) };
+    timing.original(|| unsafe { original(manager) });
 }
 
 /// Tests that touch the process-wide log take this first.

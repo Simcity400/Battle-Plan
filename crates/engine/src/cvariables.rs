@@ -65,12 +65,52 @@ pub struct ScopeWalk {
     pub required_bytes: usize,
 }
 
-/// Global, country and state stores are separately allocated; character stores
-/// are embedded and visited for every authenticated roster occurrence. Persistent
-/// effects finish synchronously; daily politics, peace settlement and load workers
-/// finish before the hourly return. All arenas are caller-owned. A truncated
-/// container omits its whole scope; authenticated empty containers remain
-/// explicit complete scope rows.
+/// Bytes of a store's hash header from [`STORAGE`]: the storage pointer, the
+/// entry count, the bucket mask and the probe tail.
+pub const HEADER: usize = 17;
+
+/// One store whose vtable and header were read, before any node is read:
+/// its scope, address, header words and seed (when its word was copied).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Store {
+    pub scope: Scope,
+    pub container: usize,
+    pub header: [u8; HEADER],
+    pub seed: Option<u32>,
+}
+
+/// A caller's held rows per store ([`walk_scopes_carried`]).
+pub trait VariableCarry {
+    /// Registers an authenticated store before any node is read: a plan
+    /// token and, when its held rows may be carried, their entry and
+    /// name-byte counts.
+    fn plan(&mut self, store: &Store) -> (usize, Option<(usize, usize)>);
+    /// Writes a carryable plan's held entries, whose name starts index
+    /// `names`, and their name bytes.
+    fn carry(&mut self, token: usize, entries: &mut [Row], names: &mut [u8]);
+    /// A store read afresh: its outcome and, when complete, its entries in
+    /// native slot order, whose name starts index `names`.
+    fn read(&mut self, token: usize, outcome: Outcome, entries: &[Row], names: &[u8]);
+}
+
+/// No held rows: every store is read.
+pub struct Fresh;
+impl VariableCarry for Fresh {
+    fn plan(&mut self, _: &Store) -> (usize, Option<(usize, usize)>) {
+        (0, None)
+    }
+    fn carry(&mut self, _: usize, _: &mut [Row], _: &mut [u8]) {}
+    fn read(&mut self, _: usize, _: Outcome, _: &[Row], _: &[u8]) {}
+}
+
+/// Construction stores
+/// allocated CVariables pointers at global+980, country+218 and state+7F8;
+/// a character's is embedded at +0xD8, walked for each
+/// authenticated roster occurrence as the ScriptFlags walk visits them.
+/// Persistent effects finish synchronously; daily politics and peace settlement
+/// finish before the hourly return, and game loading joins its load worker before return.
+/// All arenas are caller-owned; a truncated container omits its whole scope,
+/// while empty authenticated containers remain explicit complete scope rows.
 pub fn walk_scopes(
     memory: &impl Memory,
     base: usize,
@@ -111,9 +151,25 @@ pub fn walk_scopes_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    output: crate::walk::Buffer<'_, ScopeRow>,
+    entries: crate::walk::Buffer<'_, Row>,
+    names: crate::walk::Buffer<'_, u8>,
+) -> ScopeWalk {
+    walk_scopes_carried(memory, base, game_state, output, entries, names, &mut Fresh)
+}
+
+/// [`walk_scopes_buffer`] with `carry` supplying the rows of a store whose
+/// held read it proves current: every scope's identity and every store's
+/// vtable, header and seed are still read, and a carried store's nodes and
+/// keys are not.
+pub fn walk_scopes_carried(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
     mut output: crate::walk::Buffer<'_, ScopeRow>,
     mut entries: crate::walk::Buffer<'_, Row>,
     mut names: crate::walk::Buffer<'_, u8>,
+    carry: &mut impl VariableCarry,
 ) -> ScopeWalk {
     let result = (|| {
         let mut len = 0_usize;
@@ -122,32 +178,36 @@ pub fn walk_scopes_buffer(
         let mut required_entries = 0_usize;
         let mut bytes_len = 0_usize;
         let mut required_bytes = 0_usize;
-        let mut scope = |identity, container| -> Result<(), &'static str> {
+        let mut scope = |identity, container, head: Option<Head>| -> Result<(), &'static str> {
             if container == 0 {
                 return Err("script variable scope root is null");
             }
+            let head = head.unwrap_or_else(|| read_head(memory, container));
             output.ensure(
                 len.checked_add(1)
                     .ok_or("variable scope row demand overflow")?,
             )?;
             let can_emit = len < output.len();
-            let entry_limit = if can_emit { entries.len() } else { entries_len };
-            let name_limit = if can_emit { names.len() } else { bytes_len };
+            // A scope the output cannot hold is only measured: no plan, and
+            // empty fixed arenas count its rows and bytes.
             let captured = if can_emit {
-                walk_buffer(
+                store_rows(
                     memory,
                     base,
+                    identity,
                     container,
+                    head,
                     entries.suffix(entries_len),
                     names.suffix(bytes_len),
-                )
+                    carry,
+                )?
             } else {
-                walk(
+                walk_head_buffer(
                     memory,
                     base,
-                    container,
-                    &mut entries[entries_len..entry_limit],
-                    &mut names[bytes_len..name_limit],
+                    head,
+                    crate::walk::Buffer::Fixed(&mut entries[entries_len..entries_len]),
+                    crate::walk::Buffer::Fixed(&mut names[bytes_len..bytes_len]),
                 )
             };
             let (count, omitted) = match captured.outcome {
@@ -178,9 +238,7 @@ pub fn walk_scopes_buffer(
                 scope: identity,
                 entries_start: entries_len,
                 entries_len: count,
-                seed: container
-                    .checked_add(SEED)
-                    .and_then(|address| read::<u32>(memory, address)),
+                seed: head.seed(),
             };
             len += 1;
             entries_len += count;
@@ -190,6 +248,7 @@ pub fn walk_scopes_buffer(
         scope(
             Scope::Global,
             scope_pointer(memory, game_state, cgame_state::GLOBAL_VARIABLES)?,
+            None,
         )?;
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let mut found_country = false;
@@ -199,6 +258,7 @@ pub fn walk_scopes_buffer(
                 scope(
                     Scope::Country(country.id),
                     scope_pointer(memory, country.pointer, ccountry::VARIABLES)?,
+                    None,
                 )?;
             }
         }
@@ -260,20 +320,30 @@ pub fn walk_scopes_buffer(
                 let container = usize::try_from(u64::from_le_bytes(container))
                     .map_err(|_| "variable scope pointer overflow")?;
                 found_state = true;
-                scope(Scope::State(id), container)?;
+                scope(Scope::State(id), container, None)?;
             }
             first += count as u32;
         }
         if !found_state {
             return Err("state table has no readable states");
         }
+        // Each occurrence's identity and its embedded store's words in one
+        // read of the character.
         let mut characters = ccharacter_manager::Roster::read(memory, base, game_state)?.cursor();
-        while let Some(view) = characters.next(memory, [false; 4])? {
-            let (character, id) = view.reference();
+        while let Some(character) = characters.next_occurrence(memory)? {
+            let mut head = Head::default();
+            let (id, copied) = ccharacter::identity_with_spans(
+                memory,
+                base,
+                character,
+                [VTABLE, STORAGE, SEED].map(|offset| ccharacter::VARIABLES + offset),
+                [&mut head.vtable, &mut head.header, &mut head.seed],
+            )?;
             let container = character
                 .checked_add(ccharacter::VARIABLES)
                 .ok_or("character variables address overflow")?;
-            scope(Scope::Character(id), container)?;
+            head.copied = copied;
+            scope(Scope::Character(id), container, Some(head))?;
         }
         Ok(ScopeWalk {
             outcome: if missing == 0 {
@@ -309,6 +379,73 @@ fn scope_pointer(
         .and_then(|address| read::<u64>(memory, address))
         .and_then(|pointer| usize::try_from(pointer).ok())
         .ok_or("script variable scope root unreadable")
+}
+
+/// One emitted scope's rows, as [`walk_scopes_carried`] takes them: an
+/// authenticated store is planned with `carry`, its held rows written when
+/// the plan carries them and `entries`/`names` hold them, and otherwise its
+/// nodes are read and the read reported to `carry`. `entries` and `names`
+/// start at the scope's first row and byte; entry name starts are relative
+/// to `names`.
+#[allow(clippy::too_many_arguments)]
+fn store_rows(
+    memory: &impl Memory,
+    base: usize,
+    scope: Scope,
+    container: usize,
+    head: Head,
+    mut entries: crate::walk::Buffer<'_, Row>,
+    mut names: crate::walk::Buffer<'_, u8>,
+    carry: &mut impl VariableCarry,
+) -> Result<NameWalk, &'static str> {
+    let plan = head
+        .store(base, scope, container)
+        .map(|store| carry.plan(&store));
+    if let Some((token, Some((count, bytes)))) = plan
+        && entries.ensure(count)?
+        && names.ensure(bytes)?
+    {
+        carry.carry(token, &mut entries[..count], &mut names[..bytes]);
+        return Ok(NameWalk {
+            outcome: Outcome::Rows { len: count },
+            bytes_len: bytes,
+            required_bytes: bytes,
+        });
+    }
+    let captured = walk_head_buffer(memory, base, head, entries.suffix(0), names.suffix(0));
+    if let Some((token, _)) = plan {
+        let count = captured.outcome.len();
+        carry.read(
+            token,
+            captured.outcome,
+            &entries[..count],
+            &names[..captured.bytes_len],
+        );
+    }
+    Ok(captured)
+}
+
+/// One store of a scope the caller already proved, read exactly as
+/// [`walk_scopes_carried`] reads a scope it emits: its vtable, header and
+/// seed, then its held rows through `carry` or its nodes. `entries` and
+/// `names` receive its rows from their start (entry name starts relative to
+/// `names`). Returns the rows' outcome and byte count with the store's seed;
+/// `Err` where the walk would fail before reading the store.
+pub fn read_store_carried(
+    memory: &impl Memory,
+    base: usize,
+    scope: Scope,
+    container: usize,
+    entries: crate::walk::Buffer<'_, Row>,
+    names: crate::walk::Buffer<'_, u8>,
+    carry: &mut impl VariableCarry,
+) -> Result<(NameWalk, Option<u32>), &'static str> {
+    if container == 0 {
+        return Err("script variable scope root is null");
+    }
+    let head = read_head(memory, container);
+    let rows = store_rows(memory, base, scope, container, head, entries, names, carry)?;
+    Ok((rows, head.seed()))
 }
 
 /// Reads one authenticated scope into caller-owned rows and a literal-byte arena.
@@ -351,22 +488,85 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     container: usize,
+    output: crate::walk::Buffer<'_, Row>,
+    names: crate::walk::Buffer<'_, u8>,
+) -> NameWalk {
+    walk_head_buffer(memory, base, read_head(memory, container), output, names)
+}
+
+/// The CVariables words a scope consumes, in their original order: the
+/// vtable, the storage header and the seed. One scattered read copies a
+/// prefix of them, so a later failure never hides an earlier word's verdict.
+#[derive(Clone, Copy, Default)]
+struct Head {
+    vtable: [u8; 8],
+    header: [u8; HEADER],
+    seed: [u8; 4],
+    /// Words copied, in order.
+    copied: usize,
+    /// The header address overflowed; nothing after the vtable was read.
+    overflow: bool,
+}
+
+impl Head {
+    /// The scoped-variable random seed's raw word, when copied.
+    fn seed(&self) -> Option<u32> {
+        (self.copied == 3).then(|| u32::from_le_bytes(self.seed))
+    }
+
+    /// The store a carry may certify: its vtable is the CVariables vtable and
+    /// its header was copied, as [`walk_head_buffer`] first requires.
+    fn store(&self, base: usize, scope: Scope, container: usize) -> Option<Store> {
+        let expected = base.checked_add(VTABLE_RVA)?;
+        (self.copied >= 2 && !self.overflow && u64::from_le_bytes(self.vtable) == expected as u64)
+            .then_some(Store {
+                scope,
+                container,
+                header: self.header,
+                seed: self.seed(),
+            })
+    }
+}
+
+fn read_head(memory: &impl Memory, container: usize) -> Head {
+    let mut head = Head::default();
+    // SEED precedes STORAGE, so only the header address can overflow.
+    match container.checked_add(STORAGE) {
+        Some(header) => {
+            head.copied = memory.copy_scattered(
+                [container, header, container + SEED],
+                &mut [&mut head.vtable, &mut head.header, &mut head.seed],
+            );
+        }
+        None => {
+            head.overflow = true;
+            head.copied = usize::from(read_slice(memory, container, &mut head.vtable));
+        }
+    }
+    head
+}
+
+fn walk_head_buffer(
+    memory: &impl Memory,
+    base: usize,
+    head: Head,
     mut output: crate::walk::Buffer<'_, Row>,
     mut names: crate::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     let result = (|| {
-        let at = |offset| {
-            container
-                .checked_add(offset)
-                .ok_or("variables address overflow")
-        };
         let expected = base
             .checked_add(VTABLE_RVA)
             .ok_or("module address overflow")?;
-        if read::<u64>(memory, container) != Some(expected as u64) {
+        if head.copied == 0 || u64::from_le_bytes(head.vtable) != expected as u64 {
             return Err("variables vtable mismatch");
         }
-        let header = read::<[u8; 17]>(memory, at(STORAGE)?).ok_or("variables header unreadable")?;
+        if head.overflow {
+            return Err("variables address overflow");
+        }
+        if head.copied == 1 {
+            return Err("variables header unreadable");
+        }
+        let header = head.header;
         let storage = u64::from_le_bytes(header[..8].try_into().unwrap());
         let storage = usize::try_from(storage).map_err(|_| "variables storage overflow")?;
         let count = u32::from_le_bytes(header[8..12].try_into().unwrap());
@@ -470,26 +670,50 @@ pub fn walk_buffer(
                     .filter(|&p| p != 0)
                     .ok_or("variable name pointer invalid")?
             };
-            if capacity == 15 {
-                if node[variable_hash_node::KEY + name_len] != 0 {
-                    return Err("variable name terminator invalid or unreadable");
-                }
-            } else {
-                let terminator = source
+            let heap = capacity != 15;
+            if !heap && node[variable_hash_node::KEY + name_len] != 0 {
+                return Err("variable name terminator invalid or unreadable");
+            }
+            let terminator = if heap {
+                source
                     .checked_add(name_len)
-                    .ok_or("variable name address overflow")?;
-                if read::<u8>(memory, terminator) != Some(0) {
-                    return Err("variable name terminator invalid or unreadable");
-                }
+                    .ok_or("variable name address overflow")?
+            } else {
+                0
+            };
+            // A heap key's terminator and the payload of a row that fits share
+            // one scattered read. When the arena must grow first, the
+            // terminator's verdict keeps its place ahead of that growth.
+            let gathered = heap && required_bytes <= names.len();
+            if heap && !gathered && read::<u8>(memory, terminator) != Some(0) {
+                return Err("variable name terminator invalid or unreadable");
             }
             names.ensure(required_bytes)?;
-            if len == output.len() || name_len > names.len() - bytes_len {
+            let fits = len < output.len() && name_len <= names.len() - bytes_len;
+            if gathered {
+                let mut end = [1_u8];
+                let payload: &mut [u8] = if fits {
+                    &mut names[bytes_len..bytes_len + name_len]
+                } else {
+                    &mut []
+                };
+                let copied = memory.copy_scattered([terminator, source], &mut [&mut end, payload]);
+                if copied == 0 || end[0] != 0 {
+                    return Err("variable name terminator invalid or unreadable");
+                }
+                if fits && copied != 2 {
+                    return Err("variable name bytes unreadable");
+                }
+            }
+            if !fits {
                 unread_rows += 1;
                 continue;
             }
-            if capacity == 15 {
+            if !heap {
                 names[bytes_len..bytes_len + name_len].copy_from_slice(&node[8..8 + name_len]);
-            } else if !read_slice(memory, source, &mut names[bytes_len..bytes_len + name_len]) {
+            } else if !gathered
+                && !read_slice(memory, source, &mut names[bytes_len..bytes_len + name_len])
+            {
                 return Err("variable name bytes unreadable");
             }
             output[len] = Row {

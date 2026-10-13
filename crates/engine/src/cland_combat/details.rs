@@ -2,7 +2,9 @@ use super::{
     ATTACKER, ATTACKER_BONUS, DEFENDER, DEFENDER_BONUS, Members, PHASE, PROVINCE, Reader,
     STORED_TERRAIN, Source, WIDTH_FACTOR,
 };
+use crate::naval_commander_inputs::SkillDefinition;
 use crate::{Memory, carmy, cland_combatant, cpdx_array::Array, read, walk::Buffer};
+use std::collections::HashMap;
 
 /// A selected commander is shared by a combat side's window, detail and
 /// tactic readers. Selection uses only that side's unit list and is keyed by
@@ -15,6 +17,83 @@ pub struct Commanders {
 }
 
 type Selection = Result<CommanderSource, &'static str>;
+
+/// Reads of a selected commander that depend on that leader alone (or, for
+/// a next skill, on its level and category alone), shared by the combats of
+/// one pass: the pass holds the simulation thread, so a second read of the
+/// same leader would read the same words and fail the same way. Selection,
+/// the HQ modifier block and the country fallback depend on the combat and
+/// stay per combat. A presentation is held only once complete; a failed one
+/// is read again where it fails. Holding is advisory: a result that cannot be
+/// held is read again next time.
+#[derive(Default)]
+pub struct Leaders {
+    presentations: HashMap<usize, crate::naval_commander_inputs::Presentation>,
+    next_skills: HashMap<(i32, i32), Result<SkillDefinition, &'static str>>,
+    /// Parent commander search by general.
+    pub(crate) parents: HashMap<usize, Result<usize, &'static str>>,
+    /// Each general's preferred tactic identity.
+    pub(crate) preferred: HashMap<usize, Result<i32, &'static str>>,
+}
+
+impl Leaders {
+    /// `read`'s result for `key`, held for the pass.
+    pub(crate) fn shared<K: Eq + std::hash::Hash, V: Copy>(
+        held: &mut HashMap<K, V>,
+        key: K,
+        read: impl FnOnce() -> V,
+    ) -> V {
+        if let Some(&value) = held.get(&key) {
+            return value;
+        }
+        let value = read();
+        if crate::allocation::advisory(|| crate::allocation::reserve_map(held, 1)).is_ok() {
+            held.insert(key, value);
+        }
+        value
+    }
+
+    fn presentation(
+        &mut self,
+        leader: usize,
+        read: impl FnOnce() -> Result<crate::naval_commander_inputs::Presentation, &'static str>,
+    ) -> Result<crate::naval_commander_inputs::Presentation, &'static str> {
+        if let Some(Ok(copy)) = self.presentations.get(&leader).map(|held| held.copied()) {
+            return Ok(copy);
+        }
+        let presentation = read()?;
+        let held = crate::allocation::advisory(|| {
+            crate::allocation::reserve_map(&mut self.presentations, 1)?;
+            presentation.copied()
+        });
+        if let Ok(held) = held {
+            self.presentations.insert(leader, held);
+        }
+        Ok(presentation)
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        self.presentations.capacity()
+            * size_of::<(usize, crate::naval_commander_inputs::Presentation)>()
+            + self
+                .presentations
+                .values()
+                .map(|held| held.allocated_bytes())
+                .sum::<usize>()
+            + self.next_skills.capacity()
+                * size_of::<((i32, i32), Result<SkillDefinition, &'static str>)>()
+            + self.parents.capacity() * size_of::<(usize, Result<usize, &'static str>)>()
+            + self.preferred.capacity() * size_of::<(usize, Result<i32, &'static str>)>()
+    }
+
+    /// Forget every held read: a new pass reads afresh.
+    pub fn clear(&mut self) {
+        self.presentations.clear();
+        self.next_skills.clear();
+        self.parents.clear();
+        self.preferred.clear();
+    }
+}
 
 /// A span of one of the caller's [`DetailArenas`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +255,10 @@ pub fn commander_sources(
     ])
 }
 
+/// The leader modifier keys copied and described after the commander's skill
+/// line, in order: 0x5F, then 0x60.
+pub const SKILL_HOVER_KEYS: [u32; 2] = [0x5f, 0x60];
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SideDetails {
     pub committed_start: usize,
@@ -200,8 +283,22 @@ pub struct SideDetails {
     pub commander_skill: i32,
     pub commander_category: i32,
     pub commander_country: u32,
-    /// Raw CUnitLeader experience for L4c's commander skill tooltip.
+    /// Raw CUnitLeader experience (+0xE68), which the skill hover divides.
     pub commander_experience: i64,
+    /// The selected commander's next skill level, which the experience ratio
+    /// looks up at level + 1. This and the next two are optional hover inputs:
+    /// `None` without a selected commander, or when their read failed, which
+    /// [`Self::side_input_refusals`] names; a failure never drops the row.
+    pub next_skill: Option<crate::naval_commander_inputs::SkillDefinition>,
+    /// The live `LEADER_TRAITS_XP_SHOW`, which the portrait's learning-trait
+    /// rows must exceed.
+    pub learning_threshold: Option<i64>,
+    /// Raw keys 0x5F and 0x60 of the leader modifier block described after the
+    /// skill line; zero when absent.
+    pub skill_modifiers: Option<[i64; 2]>,
+    /// Why the next level, the floor and the leader block, in that order,
+    /// could not be read.
+    pub side_input_refusals: [Option<&'static str>; 3],
     /// The raw saved name at CUnitLeader+0x20 (a localisation key or literal);
     /// the localised +0x40 copy is the recording client's cache.
     pub commander_name_token: Span,
@@ -353,6 +450,28 @@ pub fn read_details(
     commanders: &mut Commanders,
     arenas: &mut DetailArenas<'_>,
 ) -> Result<DetailsRow, &'static str> {
+    read_details_sharing(
+        memory,
+        base,
+        source,
+        members,
+        commanders,
+        &mut Leaders::default(),
+        arenas,
+    )
+}
+
+/// [`read_details`] sharing each selected leader's leader-only reads with
+/// the pass's other combats through `leaders`.
+pub fn read_details_sharing(
+    memory: &impl Memory,
+    base: usize,
+    source: Source,
+    members: &Members<'_>,
+    commanders: &mut Commanders,
+    leaders: &mut Leaders,
+    arenas: &mut DetailArenas<'_>,
+) -> Result<DetailsRow, &'static str> {
     let reader = Reader {
         memory,
         base,
@@ -418,7 +537,9 @@ pub fn read_details(
         let pointer = reader.pointer(source.pointer, offset)?;
         let side = &mut row.sides[index];
         let units = [attackers, defenders][index];
-        reader.commander(pointer, members, commanders, index, units, side, arenas)?;
+        reader.commander(
+            pointer, members, commanders, leaders, index, units, side, arenas,
+        )?;
         for (which, vector_offset) in [cland_combatant::COMMITTED, cland_combatant::RESERVES]
             .into_iter()
             .enumerate()
@@ -592,12 +713,59 @@ impl<M: Memory> Reader<'_, M> {
         Ok(selected)
     }
 
+    /// Keys 0x5F and 0x60 of the selected leader's block described after the
+    /// skill line. The skill hover picks the first of the side's units (+0x20)
+    /// that fails separate-HQ eligibility, else the first, and passes no unit
+    /// when the side has none or the deployed-HQ feature is off. Unit modifier
+    /// selection takes the separate-HQ block (+0x4C8) only for an eligible
+    /// unit, so that block is taken exactly when every unit is eligible
+    /// (eligibility itself requires the feature). The values are the raw words,
+    /// zero for an absent key, as the accumulator copy receives them through
+    /// effective modifier lookup, whose metadata branch the description applies
+    /// again.
+    fn skill_modifiers(
+        &self,
+        members: &Members<'_>,
+        side: usize,
+        units: Array,
+        leader: usize,
+    ) -> Result<[i64; 2], &'static str> {
+        use crate::carmy_leader::{
+            MODIFIER_ACCUMULATOR, MOVEMENT_MODIFIER, SEPARATE_HQ_MOVEMENT_MODIFIER,
+        };
+        let mut separate = units.count != 0;
+        for index in 0..units.count {
+            let (unit, _) = self.participant(members, side, units, index)?;
+            if !crate::carmy_leader::separate_hq_order(self.memory, self.base, unit)? {
+                separate = false;
+                break;
+            }
+        }
+        let block = if separate {
+            SEPARATE_HQ_MOVEMENT_MODIFIER
+        } else {
+            MOVEMENT_MODIFIER
+        };
+        let accumulator = leader
+            .checked_add(block + MODIFIER_ACCUMULATOR)
+            .ok_or("land commander modifier address overflow")?;
+        let mut values = [crate::modifier_accumulator::Value::default(); 2];
+        crate::modifier_accumulator::lookup_many_at(
+            self.memory,
+            accumulator,
+            &SKILL_HOVER_KEYS,
+            &mut values,
+        )?;
+        Ok(values.map(|value| value.raw))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn commander(
         &self,
         side: usize,
         members: &Members<'_>,
         commanders: &mut Commanders,
+        leaders: &mut Leaders,
         index: usize,
         units: Array,
         row: &mut SideDetails,
@@ -626,8 +794,40 @@ impl<M: Memory> Reader<'_, M> {
         // Preserve it without canonical-slot substitution.
         row.commander_country = self.field(selected, 0x120)?;
         row.commander_experience = self.field(selected, cunit_leader::EXPERIENCE)?;
-        // Both name and description are ordinary MSVC strings, including empty
-        // strings. Preserve their stored lengths.
+        // The skill hover's ratio divides by the next level's requirement, and
+        // the portrait's learning rows compare with the live display floor.
+        // These hover inputs are optional: a failed read refuses only its part,
+        // by name, and the row and the later reads stand.
+        let refused = &mut row.side_input_refusals;
+        row.next_skill = Leaders::shared(
+            &mut leaders.next_skills,
+            (commander.skill, commander.category),
+            || {
+                crate::naval_commander_inputs::capture_next_skill(
+                    self.memory,
+                    self.base,
+                    commander.skill,
+                    commander.category,
+                )
+            },
+        )
+        .inspect_err(|reason| refused[0] = Some(*reason))
+        .ok();
+        row.learning_threshold = self
+            .field(
+                self.base,
+                crate::naval_commander_inputs::LEARNING_THRESHOLD_RVA,
+            )
+            .inspect_err(|reason| refused[1] = Some(*reason))
+            .ok();
+        row.skill_modifiers = self
+            .skill_modifiers(members, index, units, selected)
+            .inspect_err(|reason| refused[2] = Some(*reason))
+            .ok();
+        // The selected commander's +0x20 name is stored as an ordinary MSVC
+        // string and passed to text rendering, which takes any length, empty
+        // included; +0x80 is the same kind of string. Both keep the game's own
+        // length.
         for (offset, unreadable, errors, span) in [
             (
                 cunit_leader::TOKEN,
@@ -651,8 +851,9 @@ impl<M: Memory> Reader<'_, M> {
         if (commander.category as u32) < 2 {
             row.commander_formation = self.field(selected, carmy_leader::FORMATION_REFERENCE)?;
         }
-        row.presentation =
-            crate::naval_commander_inputs::capture_presentation(self.memory, self.base, selected)?;
+        row.presentation = leaders.presentation(selected, || {
+            crate::naval_commander_inputs::capture_presentation(self.memory, self.base, selected)
+        })?;
         // Every vector is sized by its live count alone; entries that do not
         // fit the caller's arenas are still authenticated and counted.
         let traits = self.array(selected, cunit_leader::TRAIT_DATA, 8)?;

@@ -208,51 +208,14 @@ impl SnapshotArena {
         key: u32,
     ) -> Result<SnapshotObservation, &'static str> {
         validate_keys(&[key], 1)?;
-        let mut slot = (!self.index.is_empty()).then(|| self.index_slot(address));
-        let existing = slot.and_then(|slot| self.index[slot].checked_sub(1));
-        let node = if let Some(node) = existing {
-            node
-        } else {
-            self.required.nodes = self.required.nodes.max(self.nodes.len().saturating_add(1));
-            if self.nodes.len() == self.capacity.nodes && self.worker_growth {
-                let count = crate::allocation::add(self.nodes.len(), 1)
-                    .map_err(|_| "modifier snapshot allocation failed")?;
-                let capacity = self
-                    .capacity
-                    .nodes
-                    .checked_mul(2)
-                    .ok_or("modifier snapshot demand overflow")?
-                    .max(count);
-                let slots = capacity
-                    .checked_mul(2)
-                    .and_then(usize::checked_next_power_of_two)
-                    .ok_or("modifier snapshot demand overflow")?;
-                let additional = capacity - self.nodes.len();
-                crate::allocation::reserve_exact(&mut self.nodes, additional)
-                    .map_err(|_| "modifier snapshot allocation failed")?;
-                self.index = crate::allocation::filled(slots, 0)
-                    .map_err(|_| "modifier snapshot allocation failed")?;
-                self.capacity.nodes = capacity;
-                for node in 0..self.nodes.len() {
-                    let at = self.index_slot(self.nodes[node].address);
-                    self.index[at] = node + 1;
-                }
-                slot = Some(self.index_slot(address));
+        let node = match self.existing(address) {
+            Some(node) => node,
+            None => {
+                let node = self.insert(address)?;
+                let result = self.capture_node(memory, node);
+                self.nodes[node].result = result;
+                node
             }
-            if self.nodes.len() == self.capacity.nodes {
-                return Err(SNAPSHOT_NODE_CAPACITY);
-            }
-            let node = self.nodes.len();
-            self.nodes.push(SnapshotNode {
-                address,
-                start: self.entries.len(),
-                len: 0,
-                result: Err("modifier snapshot incomplete"),
-            });
-            self.index[slot.expect("nonzero modifier snapshot node capacity")] = node + 1;
-            let result = self.capture_node(memory, node);
-            self.nodes[node].result = result;
-            node
         };
         self.nodes[node].result?;
         Ok(SnapshotObservation {
@@ -260,6 +223,102 @@ impl SnapshotArena {
             key,
             generation: self.generation,
         })
+    }
+
+    fn existing(&self, address: usize) -> Option<usize> {
+        if self.index.is_empty() {
+            return None;
+        }
+        self.index[self.index_slot(address)].checked_sub(1)
+    }
+
+    /// A new incomplete node for `address`, which has none.
+    fn insert(&mut self, address: usize) -> Result<usize, &'static str> {
+        let mut slot = (!self.index.is_empty()).then(|| self.index_slot(address));
+        self.required.nodes = self.required.nodes.max(self.nodes.len().saturating_add(1));
+        if self.nodes.len() == self.capacity.nodes && self.worker_growth {
+            let count = crate::allocation::add(self.nodes.len(), 1)
+                .map_err(|_| "modifier snapshot allocation failed")?;
+            let capacity = self
+                .capacity
+                .nodes
+                .checked_mul(2)
+                .ok_or("modifier snapshot demand overflow")?
+                .max(count);
+            let slots = capacity
+                .checked_mul(2)
+                .and_then(usize::checked_next_power_of_two)
+                .ok_or("modifier snapshot demand overflow")?;
+            let additional = capacity - self.nodes.len();
+            crate::allocation::reserve_exact(&mut self.nodes, additional)
+                .map_err(|_| "modifier snapshot allocation failed")?;
+            self.index = crate::allocation::filled(slots, 0)
+                .map_err(|_| "modifier snapshot allocation failed")?;
+            self.capacity.nodes = capacity;
+            for node in 0..self.nodes.len() {
+                let at = self.index_slot(self.nodes[node].address);
+                self.index[at] = node + 1;
+            }
+            slot = Some(self.index_slot(address));
+        }
+        if self.nodes.len() == self.capacity.nodes {
+            return Err(SNAPSHOT_NODE_CAPACITY);
+        }
+        let node = self.nodes.len();
+        self.nodes.push(SnapshotNode {
+            address,
+            start: self.entries.len(),
+            len: 0,
+            result: Err("modifier snapshot incomplete"),
+        });
+        self.index[slot.expect("nonzero modifier snapshot node capacity")] = node + 1;
+        Ok(node)
+    }
+
+    /// Serve `address` from `entries`, a complete observation of its array
+    /// that an earlier capture made and a certificate keeps: later lookups
+    /// read nothing for it. An address this capture already observed keeps
+    /// its observation; a capacity refusal leaves it to be read.
+    pub fn hold(&mut self, address: usize, entries: &[[u8; 16]]) {
+        if self.existing(address).is_some()
+            || (!self.worker_growth
+                && entries.len() > self.capacity.entries.saturating_sub(self.entries.len()))
+            || crate::allocation::reserve(&mut self.entries, entries.len()).is_err()
+        {
+            return;
+        }
+        let Ok(node) = self.insert(address) else {
+            return;
+        };
+        self.nodes[node].start = self.entries.len();
+        self.nodes[node].len = entries.len();
+        self.nodes[node].result = Ok(());
+        self.entries.extend_from_slice(entries);
+        self.required.entries = self.required.entries.saturating_add(entries.len());
+        if self.worker_growth {
+            self.capacity.entries = self.capacity.entries.max(self.entries.len());
+        }
+    }
+
+    /// Observe `address`'s complete array as a lookup there would (once per
+    /// capture; a later lookup is served from it) and return its entries;
+    /// `None` when the observation failed or was refused for capacity.
+    pub fn observe(&mut self, memory: &impl Memory, address: usize) -> Option<&[[u8; 16]]> {
+        if self.existing(address).is_none() {
+            let node = self.insert(address).ok()?;
+            let result = self.capture_node(memory, node);
+            self.nodes[node].result = result;
+        }
+        self.observed(address)
+    }
+
+    /// The complete entries this capture observed at `address`, for a later
+    /// capture to [`Self::hold`].
+    pub fn observed(&self, address: usize) -> Option<&[[u8; 16]]> {
+        let node = &self.nodes[self.existing(address)?];
+        node.result
+            .ok()
+            .map(|()| &self.entries[node.start..node.start + node.len])
     }
 
     /// Read only an address already observed in this arena. No native access,
@@ -393,6 +452,19 @@ pub fn lookup_many_at(
     sorted_keys: &[u32],
     output: &mut [Value],
 ) -> Result<(), &'static str> {
+    lookup_many_at_keeping(memory, address, sorted_keys, output, &mut |_| {})
+}
+
+/// [`lookup_many_at`], offering each batch of entries it read completely to
+/// `keep`, in source order, before validating them: the same reads, results
+/// and failures.
+pub fn lookup_many_at_keeping(
+    memory: &impl Memory,
+    address: usize,
+    sorted_keys: &[u32],
+    output: &mut [Value],
+    keep: &mut impl FnMut(&[u8]),
+) -> Result<(), &'static str> {
     validate_keys(sorted_keys, output.len())?;
     output.fill(Value::default());
     if sorted_keys.is_empty() {
@@ -420,6 +492,7 @@ pub fn lookup_many_at(
             &SNAPSHOT_LAYOUT,
             &mut bytes[..count * modifier_entry::STRIDE],
         );
+        keep(&bytes[..completed * modifier_entry::STRIDE]);
         // Only complete entries may affect keys or output. Validate their
         // ordered prefix before reporting a later batch fault, including when
         // all requested keys were already found in an earlier batch.

@@ -70,8 +70,6 @@ pub struct Assets {
     pub(crate) naval_name_defines: Result<[i64; 2], String>,
     /// Authored division name groups, which render the recorded selection.
     pub(crate) division_names: installed_content::division_names::Database,
-    /// Commander skill costs for the land hovers.
-    pub(super) tooltips: super::tooltips::Content,
     /// Authored leader traits and advisor ranks for the commander hovers.
     pub(super) commander_tooltips: super::commander_tooltips::Content,
     /// The content's tactic registry: triggers, weights, effects and
@@ -546,7 +544,6 @@ pub(crate) struct CombatContent {
     tactics: super::tactics::Content,
     division_names: installed_content::division_names::Database,
     commander_tooltips: super::commander_tooltips::Content,
-    tooltips: super::tooltips::Content,
     /// The tooltip placement and timing defines, or why they are unreadable.
     tooltip_defines: Result<super::tooltip_painter::TooltipDefines, String>,
     warnings: Vec<String>,
@@ -595,7 +592,6 @@ impl CombatContent {
             tactics,
             division_names,
             commander_tooltips,
-            tooltips,
             tooltip_defines,
             warnings,
         })
@@ -688,7 +684,6 @@ impl Assets {
             tactics,
             division_names,
             commander_tooltips,
-            tooltips,
             tooltip_defines,
             ..
         } = content;
@@ -1036,7 +1031,6 @@ impl Assets {
                 .map(|values| [values[0], values[1]])
                 .map_err(|error| error.to_string()),
             division_names,
-            tooltips,
             commander_tooltips,
             tactics,
             tooltip_defines,

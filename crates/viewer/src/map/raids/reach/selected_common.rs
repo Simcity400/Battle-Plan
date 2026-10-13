@@ -6,6 +6,7 @@ use super::*;
 use crate::map::tables::{Available, rows};
 use installed_content::unit_path::{
     CommonClass, CommonCombat, CommonMoveText, CommonMoveWorld, CommonUnit, NativeArmyOccupant,
+    selected_transport as transport,
 };
 use replay::frame::DecodedFrame;
 
@@ -14,7 +15,6 @@ use replay::frame::DecodedFrame;
 pub(crate) struct CommonCells<'a> {
     frame: &'a DecodedFrame,
     wars: Mutex<BTreeMap<Country, crate::map::directed_wars::Owner<'a>>>,
-    retreat_layout: OnceLock<Fact<()>>,
 }
 
 impl<'a> CommonCells<'a> {
@@ -22,10 +22,16 @@ impl<'a> CommonCells<'a> {
         Self {
             frame,
             wars: Default::default(),
-            retreat_layout: Default::default(),
         }
     }
 }
+
+/// The transport admission's later admission operands (the real-template coastal test, the
+/// transfer, convoy weights and stock, access and the sea route) and the
+/// interception risk retired with the selected transport preview
+/// (`DivisionMovement.transport`, the transport tables); its early naval-base
+/// branches are answered from the naval-base census.
+const TRANSPORT_RETIRED: &str = "the selected transport preview is retired: transport admission past the naval-base checks, convoys and risk are not recorded";
 
 impl<'w, 'a> Moves<'w, 'a> {
     fn selected_railway(
@@ -58,15 +64,36 @@ impl<'w, 'a> Moves<'w, 'a> {
         Ok(Some((row, inputs)))
     }
 
-    /// Use actual-location mode. A non-base target or a selection already at
-    /// the target has no transport fragment and demands no risk producer.
+    /// The selected transport line's actual-location mode over what is recorded. A target without
+    /// a naval base, a selection with no army or railway gun, or one whose
+    /// units all stand in the target's controller area without a naval base
+    /// has no transport fragment; the transport admission's naval-base rejections are exact.
+    /// Its later operands (the coastal template, transfer, convoys, access,
+    /// sea route) and the risk belonged to the retired selected transport
+    /// preview, so reaching one refuses the fragment by name.
     pub(crate) fn selected_transport_message(
         &self,
         selected: &[crate::map::unit_selection::Unit],
         target: u32,
         content: &impl CommonMoveText,
-    ) -> Fact<installed_content::unit_path::selected_transport::Outputs> {
-        self.transport_message(selected, target, content)
+    ) -> Fact<transport::Outputs> {
+        let selection: Vec<_> = selected
+            .iter()
+            .map(|unit| match *unit {
+                crate::map::unit_selection::Unit::Division(handle) => transport::Unit::Army(handle),
+                crate::map::unit_selection::Unit::RailwayGun(handle) => {
+                    transport::Unit::RailwayGun(handle)
+                }
+                crate::map::unit_selection::Unit::TaskForce(_) => transport::Unit::Other,
+            })
+            .collect();
+        transport::message(
+            &selection,
+            target,
+            false,
+            &mut PartialTransport { moves: self },
+            content,
+        )
     }
 
     fn common_owner<T>(
@@ -90,10 +117,6 @@ impl<'w, 'a> Moves<'w, 'a> {
 
     fn common_discloses_raw(&self, receiver_raw: u32, target_raw: u32) -> Fact<bool> {
         self.common_discloses_access(receiver_raw, target_raw, false)
-    }
-
-    pub(super) fn common_transport_access(&self, receiver_raw: u32, target_raw: u32) -> Fact<bool> {
-        self.common_discloses_access(receiver_raw, target_raw, true)
     }
 
     fn common_discloses_access(
@@ -124,9 +147,10 @@ impl<'w, 'a> Moves<'w, 'a> {
             )
             .map_err(str::to_owned);
         }
-        // Read the relation and war bytes directly, without a signed-positive
-        // receiver gate. Transport uses mode 1/flag 0: hourly RelationLinks supplies
-        // the sparse pointer census before faction/subject checks. Keep this access policy.
+        // F3A90 -> F3B00 reads +2E8/+49 directly: no signed-positive
+        // F3A00 gate. Access callers pass mode1/flag0: hourly RelationLinks
+        // is the genuine sparse +2A0 pointer census (access-roster writers), before
+        // faction/subject; no alternate access lookup is selected.
         if self.common_owner(receiver, |owner| owner.pointer_active_slot(target))? {
             return Ok(false);
         }
@@ -154,7 +178,7 @@ impl<'w, 'a> Moves<'w, 'a> {
                 .require("ReservedCountryNaming.reverse_visibility")?
                 .as_ref()
                 .ok_or("transport actual-zero subject access refused")?;
-            if packet.sample_hour != hour {
+            if !packet.sample_hour.fresh_at(hour) {
                 return Err("transport actual-zero subject access stale".into());
             }
             let cell = packet
@@ -332,8 +356,8 @@ impl<'w, 'a> Moves<'w, 'a> {
                 naval_transfer: movement.naval_transfer != 0,
                 strength: row.hit_points,
                 organisation: row.organisation,
-                // A full-combat adapter must also bind current native commander
-                // bans. Daily DivisionRetreatBans cannot certify same-hour changes.
+                // A full-combat adapter must also bind the commander bans
+                // (DivisionRetreatBans).
                 ..Default::default()
             },
             row.logical_owner,
@@ -358,40 +382,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         };
         let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;
         Mover { graph, world: self }.selected_move_message(&unit, target, text, content)
-    }
-    fn common_area(&self, province: u32) -> Fact<&'a replay::rows::ProvinceAreaInputs> {
-        let packet = self
-            .province(province)?
-            .selected_areas
-            .require("Provinces.selected_areas")?
-            .as_ref()
-            .ok_or("selected province area acquisition refused")?;
-        if packet.sample_hour != self.world.frame().hour {
-            return Err("selected province area identities are stale".into());
-        }
-        Ok(packet)
-    }
-    fn common_area_node(&self, label: u32) -> Fact<&'a replay::rows::SelectedAreaNode> {
-        let packet = self.common_area(label)?;
-        if label == 0 || packet.controller != label {
-            return Err("selected area dictionary root identity differs".into());
-        }
-        packet
-            .node
-            .as_ref()
-            .ok_or_else(|| "selected area graph acquisition refused".into())
-    }
-    fn common_selected_unit(&self, handle: u64) -> Fact<&'a replay::rows::SelectedUnitInputs> {
-        let packet = self
-            .movement(handle)?
-            .selected
-            .require("DivisionMovement.selected")?
-            .as_ref()
-            .ok_or("selected army route/commander inputs capture refused")?;
-        if packet.sample_hour != self.world.frame().hour {
-            return Err("selected army route/commander inputs are stale".into());
-        }
-        Ok(packet)
     }
     fn common_land_kind(&self, combat: CommonCombat) -> Fact<()> {
         let rows = self.table::<tables::LandCombatDetails>()?;
@@ -418,6 +408,72 @@ impl<'w, 'a> Moves<'w, 'a> {
             .binary_search_by_key(&handle, |row| row.gun)
             .map_err(|_| "selected railway gun has no current counter row")?;
         Ok(&rows[at])
+    }
+
+    /// `Provinces.controller_area`: the label of the province's `+0xD0`
+    /// controller area, zero for null.
+    fn common_controller_area(&self, province: u32) -> Fact<u32> {
+        self.province(province)?
+            .controller_area
+            .require("Provinces.controller_area")?
+            .ok_or_else(|| format!("province {province} controller-area capture refused"))
+    }
+
+    /// The node recorded on the row of the area's label province.
+    fn common_area_node(&self, label: u32) -> Fact<&'a replay::rows::ControllerAreaNode> {
+        if label == 0 || self.common_controller_area(label)? != label {
+            return Err(format!(
+                "selected area {label} is not the controller area of its label province"
+            ));
+        }
+        self.province(label)?
+            .area_node
+            .require("Provinces.area_node")?
+            .as_ref()
+            .ok_or_else(|| format!("selected area {label} graph capture refused"))
+    }
+
+    /// `controller area+0x3C`: the provinces linking to the area, which the
+    /// capture checked against it, counted once an hour.
+    fn common_area_land_count(&self, label: u32) -> Fact<i32> {
+        let counts = get(&self.cells.area_members, || {
+            let mut counts = BTreeMap::<u32, i32>::new();
+            for (&province, row) in &self.world.provinces {
+                let area = row
+                    .controller_area
+                    .require("Provinces.controller_area")?
+                    .ok_or_else(|| {
+                        format!("province {province} controller-area capture refused")
+                    })?;
+                let count = counts.entry(area).or_default();
+                *count = count.wrapping_add(1);
+            }
+            Ok(counts)
+        })?;
+        counts
+            .get(&label)
+            .copied()
+            .ok_or_else(|| format!("selected area {label} has no member province"))
+    }
+
+    /// The transport admission through its naval-base branches. A later operand belonged to
+    /// the retired selected transport preview and refuses the admission.
+    fn partial_transport_admission(
+        &self,
+        unit: transport::Unit,
+        source: u32,
+        target: u32,
+    ) -> Fact<transport::Admission> {
+        transport::admit(
+            unit,
+            source,
+            &mut PartialAdmission {
+                moves: self,
+                source,
+                target,
+            },
+        )
+        .map_err(str::to_owned)
     }
 
     pub(crate) fn common_railway_message(
@@ -473,57 +529,63 @@ impl CommonMoveWorld for Moves<'_, '_> {
     fn province_state(&self, province: u32) -> Fact<Option<u32>> {
         self.state_of(province)
     }
+    /// `province+0xD0` equality, null included, through the labels.
     fn controller_area_equal(&self, from: u32, to: u32) -> Fact<bool> {
-        Ok(self.common_area(from)?.controller == self.common_area(to)?.controller)
+        Ok(self.common_controller_area(from)? == self.common_controller_area(to)?)
     }
+    /// `province+0xD8` equality (the owner-area gate's first test), through the labels.
     fn owner_area_equal(&self, from: u32, to: u32) -> Fact<bool> {
-        let first = self
-            .common_area(from)?
-            .owner
-            .ok_or("selected source area-owner capture refused")?;
-        let second = self
-            .common_area(to)?
-            .owner
-            .ok_or("selected target area-owner capture refused")?;
-        Ok(first == second)
+        let area = |province: u32| -> Fact<u32> {
+            self.province(province)?
+                .owner_area
+                .require("Provinces.owner_area")?
+                .ok_or_else(|| format!("province {province} owner-area capture refused"))
+        };
+        Ok(area(from)? == area(to)?)
     }
     fn controller_area(&self, province: u32) -> Fact<u32> {
-        Ok(self.common_area(province)?.controller)
+        self.common_controller_area(province)
     }
     fn area_node(&self, label: u32) -> Fact<installed_content::unit_path::AreaNode> {
         let node = self.common_area_node(label)?;
+        let first_land = node
+            .first_land
+            .ok_or_else(|| format!("selected area {label} representative capture refused"));
+        // map+238[first land] is static map content.
+        let nonsea_index = first_land.clone().and_then(|first| {
+            self.assets
+                .geometry
+                .nonsea_indices
+                .get(&first)
+                .copied()
+                .ok_or_else(|| format!("selected area representative {first} has no nonsea index"))
+        });
         Ok(installed_content::unit_path::AreaNode {
             label,
-            first_land_province: node
-                .first_land
-                .ok_or_else(|| "selected area first-land identity refused".into()),
-            nonsea_index: node
-                .nonsea_index
-                .ok_or_else(|| "selected area nonsea index refused".into()),
-            land_count: node
-                .land_count
-                .ok_or_else(|| "selected area signed land count refused".into()),
+            first_land_province: first_land,
+            nonsea_index,
+            land_count: self.common_area_land_count(label),
             neighbors: node
                 .neighbours
                 .clone()
-                .ok_or_else(|| "selected area ordered adjacency capture refused".into()),
+                .ok_or_else(|| format!("selected area {label} contact capture refused")),
         })
     }
     fn area_nonsea_count(&self, label: u32) -> Fact<u32> {
-        // The recorded area count bounds temporary area storage. Visited identities
-        // use the map's area domain.
-        self.common_area_node(label)?
-            .nonsea_count
-            .ok_or("selected area temporary domain refused")?;
+        // the move-rejection search's visited identity domain is map+234: the
+        // content's nonsea index count, demanded with the start node.
+        self.common_area_node(label)?;
         u32::try_from(self.assets.geometry.nonsea_indices.len())
             .map_err(|_| "selected area nonsea domain exceeds native u32".into())
     }
     fn unit_exiled_raw(&self, unit: &CommonUnit<'_>) -> Fact<u8> {
         match unit.class {
-            CommonClass::Army => self
-                .common_selected_unit(unit.handle)?
-                .exiled
-                .ok_or_else(|| "selected army raw exile capture refused".into()),
+            // The movement caller passes the exile byte (+0x2AE) as the
+            // owner-area gate's boolean parameter, which that gate negates by toggling its zero/one value.
+            // It is a C++ bool, so DivisionStatus's nonzero bit is the raw byte.
+            CommonClass::Army => Ok(u8::from(
+                self.move_flags(unit.handle)? & DivisionStatusRow::MOVE_EXILED != 0,
+            )),
             CommonClass::RailwayGun => Ok(self.common_gun(unit.handle)?.exiled),
         }
     }
@@ -734,7 +796,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
             .require("RailwayGunCounterInputs.fresh")?
             .as_ref()
             .ok_or("selected railway orders-group capture refused")?;
-        if packet.sample_hour != self.world.frame().hour {
+        if !packet.sample_hour.fresh_at(self.world.frame().hour) {
             return Err("selected railway orders-group sample is stale".into());
         }
         packet
@@ -752,7 +814,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
             .require("CountryWars.ordered")?
             .as_ref()
             .ok_or("selected ordered diplomacy enemy capture refused")?;
-        if packet.sample_hour != self.world.frame().hour {
+        if !packet.sample_hour.fresh_at(self.world.frame().hour) {
             return Err("selected ordered diplomacy enemy sample is stale".into());
         }
         Ok(packet.entries.clone())
@@ -769,7 +831,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
         let values = row
             .runtime_scalars
             .require("SimulationFeatures.runtime_scalars")?;
-        if values.sample_hour != common.frame.hour {
+        if !values.sample_hour.fresh_at(common.frame.hour) {
             return Err("selected movement threshold sample is stale".into());
         }
         values
@@ -788,7 +850,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
         let values = row
             .runtime_scalars
             .require("SimulationFeatures.runtime_scalars")?;
-        if values.sample_hour != common.frame.hour {
+        if !values.sample_hour.fresh_at(common.frame.hour) {
             return Err("selected movement threshold sample is stale".into());
         }
         values
@@ -815,37 +877,20 @@ impl CommonMoveWorld for Moves<'_, '_> {
             }
         }
     }
+    /// The retreat-ban lookup's selected commander keys 0x297 (defending) and 0x298
+    /// (attacking), which it reads live: DivisionRetreatBans holds them at
+    /// the frame's hour.
     fn unit_retreat_ban(&self, unit: &CommonUnit<'_>, attacking: bool) -> Fact<bool> {
         // Railway returns zero without reading group or leader.
         if unit.class == CommonClass::RailwayGun {
             return Ok(false);
         }
-        let packet = self.common_selected_unit(unit.handle)?;
-        if !packet
-            .commander
-            .ok_or("selected commander stat-context capture refused")?
-        {
-            return Ok(false);
-        }
-        let common = self.common.ok_or("selected common frame context missing")?;
-        common
-            .retreat_layout
-            .get_or_init(|| {
-                replay::fixed_layout::validate_recording(
-                    common.frame,
-                    replay::fixed_layout::RETREAT_BANS,
-                )
-            })
-            .as_ref()
-            .map_err(Clone::clone)?;
-        packet.retreat[usize::from(attacking)]
-            .map(|value| value > 0)
-            .ok_or_else(|| {
-                format!(
-                    "selected same-hour {} retreat modifier capture refused",
-                    if attacking { "attacking" } else { "defending" }
-                )
-            })
+        let ban = if attacking {
+            DivisionRetreatBanRow::ATTACKING
+        } else {
+            DivisionRetreatBanRow::DEFENDING
+        };
+        Ok(self.retreat_bans(unit.handle)? & ban != 0)
     }
     fn railway_retreat_edge(&self, source: u32, target: u32) -> Fact<bool> {
         let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;
@@ -910,9 +955,21 @@ impl CommonMoveWorld for Moves<'_, '_> {
         text: &mut String,
         content: &impl CommonMoveText,
     ) -> Fact<bool> {
-        let admission =
-            self.transport_admission(unit.class, unit.handle, unit.army.location, target)?;
-        self.transport_reason(admission, text, content)
+        let candidate = match unit.class {
+            CommonClass::Army => transport::Unit::Army(unit.handle),
+            CommonClass::RailwayGun => transport::Unit::RailwayGun(unit.handle),
+        };
+        let admission = self.partial_transport_admission(candidate, unit.army.location, target)?;
+        if let Some(reason) = admission.reason {
+            text.push_str(&match reason {
+                transport::Reason::NotEnough {
+                    available,
+                    required,
+                } => content.transport_stock(available, required)?,
+                reason => content.plain(reason.key())?,
+            });
+        }
+        Ok(admission.allowed)
     }
     fn railway_cooldown(&self, province: u32) -> Fact<Option<i32>> {
         let rows = self.table::<tables::RailCooldowns>()?;
@@ -1060,6 +1117,98 @@ impl CommonMoveText for CommonText<'_> {
             key,
             &[("VAL", installed_content::localisation::Argument::Text(&value))],
         )
+    }
+}
+
+/// The selected transport line's message operands over what is recorded: the naval-base census,
+/// actual locations, controller areas and the transport admission's naval-base branches; the
+/// later admission operands, weights and risk refuse by [`TRANSPORT_RETIRED`].
+struct PartialTransport<'m, 'w, 'a> {
+    moves: &'m Moves<'w, 'a>,
+}
+
+impl transport::MessageInputs for PartialTransport<'_, '_, '_> {
+    fn target_base(&mut self, target: u32) -> Fact<bool> {
+        self.moves.has_naval_base(target)
+    }
+    fn source(&mut self, unit: transport::Unit) -> Fact<u32> {
+        match unit {
+            transport::Unit::Army(handle) => Ok(self
+                .moves
+                .division(handle)?
+                .ok_or("selected transport division actual location missing")?
+                .province),
+            transport::Unit::RailwayGun(handle) => Ok(self.moves.common_gun(handle)?.province),
+            transport::Unit::Other => Err("selected transport source of a non-candidate".into()),
+        }
+    }
+    fn same_area(&mut self, source: u32, target: u32) -> Fact<bool> {
+        self.moves.controller_area_equal(source, target)
+    }
+    fn source_base(&mut self, source: u32) -> Fact<bool> {
+        self.moves.has_naval_base(source)
+    }
+    fn admission(
+        &mut self,
+        unit: transport::Unit,
+        source: u32,
+        target: u32,
+    ) -> Fact<transport::Admission> {
+        self.moves.partial_transport_admission(unit, source, target)
+    }
+    fn weight(&mut self, _: transport::Unit) -> Fact<i64> {
+        Err(TRANSPORT_RETIRED.into())
+    }
+    fn risk(&mut self, _: transport::Unit, _: u32, _: u32, _: i32) -> Fact<i64> {
+        Err(TRANSPORT_RETIRED.into())
+    }
+}
+
+/// The transport admission's inputs: its naval-base branches read the census and content;
+/// every later branch belonged to the retired selected transport preview.
+struct PartialAdmission<'m, 'w, 'a> {
+    moves: &'m Moves<'w, 'a>,
+    source: u32,
+    target: u32,
+}
+
+impl transport::AdmissionInputs for PartialAdmission<'_, '_, '_> {
+    fn target_base(&mut self) -> transport::Fact<bool> {
+        self.moves
+            .has_naval_base(self.target)
+            .map_err(|_| "selected transport target naval-base census unavailable")
+    }
+    fn source_land(&mut self) -> transport::Fact<bool> {
+        self.moves
+            .assets
+            .moves
+            .as_ref()
+            .map_err(|_| "selected transport source content graph unavailable")?
+            .selected_land(self.source)
+            .map_err(|_| "selected transport source province/terrain unavailable")
+    }
+    fn source_base(&mut self) -> transport::Fact<bool> {
+        self.moves
+            .has_naval_base(self.source)
+            .map_err(|_| "selected transport source naval-base census unavailable")
+    }
+    fn coastal_special_template(&mut self) -> transport::Fact<bool> {
+        Err(TRANSPORT_RETIRED)
+    }
+    fn transfer(&mut self) -> transport::Fact<Option<transport::Transfer>> {
+        Err(TRANSPORT_RETIRED)
+    }
+    fn weight(&mut self) -> transport::Fact<i64> {
+        Err(TRANSPORT_RETIRED)
+    }
+    fn available_convoys(&mut self) -> transport::Fact<i32> {
+        Err(TRANSPORT_RETIRED)
+    }
+    fn military_access(&mut self) -> transport::Fact<bool> {
+        Err(TRANSPORT_RETIRED)
+    }
+    fn sea_route(&mut self) -> transport::Fact<bool> {
+        Err(TRANSPORT_RETIRED)
     }
 }
 

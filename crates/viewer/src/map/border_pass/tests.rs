@@ -89,6 +89,7 @@ fn region(id: u32, provinces: &[u32]) -> (u32, StrategicRegion) {
             naval_terrain: None,
             static_modifiers: false,
             static_modifier_names: Vec::new(),
+            ..Default::default()
         },
     )
 }

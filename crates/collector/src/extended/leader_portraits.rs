@@ -269,8 +269,8 @@ mod tests {
                 false,
             )
             .unwrap();
-        let mut scratch = crate::projection::ProjectionScratch::default();
-        let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
+        let scratch = crate::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
         assert!(matches!(
             capture.table_inputs(Some(&mut projection))[0],
             TableInput::ComparedEqual(_)

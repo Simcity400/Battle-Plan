@@ -37,9 +37,13 @@ pub struct DivisionLandInputsRow {
     pub division: u64,
     /// Raw contributor references and signed amounts, in native order.
     pub manpower: Vec<DivisionManpowerContributor>,
-    pub received_supply: i64,
-    pub maximum_grace: i64,
-    pub remaining_grace: i64,
+    /// Retired copies of `DivisionStatus.supply_ratio`, `supply_grace_maximum` and
+    /// `supply_grace_remaining`: both tables took them from the same hour's DivisionSeed
+    /// (division+0x40/+0x600/+0x610), so a division's DivisionStatus row is their record.
+    pub received_supply: RetiredI64,
+    pub maximum_grace: RetiredI64,
+    pub remaining_grace: RetiredI64,
+    /// `division+0x2F8` is nonzero: the division is in a naval transfer.
     pub naval_transfer: bool,
 }
 typed_codec!(
@@ -83,16 +87,16 @@ pub struct LandCombatResultsRow {
     pub end_hour: i32,
     /// Attacker then defender. Same reference conventions as LandCombatSides.
     pub sides: [LandResultSide; 2],
-    /// FinalizeCombat's winning branches: bit0 attacker, bit1 defender.
-    /// Equal progress with both outcome bits clear awards the defender.
+    /// Combat finalization's winning branches: bit0 attacker, bit1 defender. Equal
+    /// progress with both outcome bits clear awards the defender.
     pub winners: u8,
     pub border_war: bool,
     /// Border-war forced end flags +F1..F3 and the two native participation
     /// predicates queried by its finalizer (255 means not queried).
     pub border_end_flags: [u8; 3],
     pub border_terminating: [u8; 2],
-    /// Winner selected by CheckRoundTermination's leader on-actions, when
-    /// dispatched. Participants are copied before its subsequent retreat.
+    /// Winner selected by round termination's leader on-actions, when dispatched.
+    /// Participants are copied before its subsequent retreat.
     pub on_action_winners: Option<u8>,
     /// Exact post-finalizer end-history projection, distinct from pre-retreat
     /// `sides`. Zero denotes the native null country reference.
@@ -100,7 +104,7 @@ pub struct LandCombatResultsRow {
     /// Exact raw-tag strings used for saved history, independent of canonical
     /// country-link aliases or later country-slot reuse.
     pub history_tags: [Vec<u8>; 2],
-    /// Attacker then defender, after FinalizeCombat's pending-damage flush.
+    /// Attacker then defender, after combat finalization's pending-damage flush.
     pub losses: [LandSideLosses; 2],
 }
 typed_codec!(

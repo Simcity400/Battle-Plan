@@ -1,5 +1,9 @@
 //! World-tension acquisition: the CWorldThreat manager word, its ordered
-//! contribution vector and its per-country aggregate cache.
+//! contribution vector and its per-country aggregate cache, read every hour.
+//! An hour whose tension domain is quiet ([`crate::world_input_changes`]:
+//! The world tension total update, which every source writer ends in, did not
+//! run since the held read) reads nothing: the acquisition worker plans the
+//! hour against the held read and the decode worker publishes it.
 //!
 //! The hourly game speed is not a table here: it is already read
 //! by the authenticated clock read in the same guarded batch as the hour, so it
@@ -8,6 +12,7 @@
 //!
 //! Worker-owned capture growth and replay conversion allocate.
 
+use crate::world_input_changes::{self as changes, Changes, Domain, Held, Plan};
 use crate::{
     raw::RawLog,
     read_accounting,
@@ -21,6 +26,7 @@ use replay::{
     frame::TableView,
     rows::{self, TableId, tables},
 };
+use std::sync::Mutex;
 
 pub const N: usize = 3;
 pub const TABLES: [TableId; N] = [
@@ -72,6 +78,52 @@ impl Capacities {
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[2], rows(slots.saturating_add(1), 1));
+    }
+}
+
+/// The three tables' latest complete read and its reason bytes.
+pub(crate) struct Tension {
+    manager: Vec<cworld_threat::ManagerRow>,
+    sources: Vec<cthreat_source::Row>,
+    aggregates: Vec<cworld_threat::AggregateRow>,
+    reasons: Vec<u8>,
+}
+
+impl Tension {
+    pub(crate) const fn new() -> Self {
+        Self {
+            manager: Vec::new(),
+            sources: Vec::new(),
+            aggregates: Vec::new(),
+            reasons: Vec::new(),
+        }
+    }
+}
+
+/// The held read. The acquisition worker plans each hour against it; the
+/// single FIFO decode worker publishes or replaces it in hour order.
+static HELD: Mutex<Held<Tension>> = Mutex::new(Held::new(Tension::new()));
+
+/// Where a job plans and publishes its hours: the hooks' domain and the held
+/// read, or a test's own.
+#[derive(Clone, Copy)]
+pub(crate) struct Observed {
+    pub(crate) changes: &'static dyn Changes,
+    pub(crate) held: &'static Mutex<Held<Tension>>,
+}
+
+impl Default for Observed {
+    fn default() -> Self {
+        Self {
+            changes: &changes::Observer,
+            held: &HELD,
+        }
+    }
+}
+
+impl std::fmt::Debug for Observed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Observed")
     }
 }
 
@@ -344,7 +396,7 @@ fn elapsed(begin: i64) -> u64 {
 //
 // The acquisition worker copies raw bytes only: manager pointer, manager header
 // (vtable, total, both array headers), per-source pointers with head and
-// reason strings and per-aggregate words. No row is decoded during acquisition.
+// reason strings and the aggregate cache in one span. No row is decoded during acquisition.
 // The single FIFO decode worker replays the `cworld_threat::Reader` walk against the
 // recorded spans (`crate::raw::Recorded`), so rows, ordinals, arenas,
 // truncation and failure reasons are identical by construction (see
@@ -370,6 +422,9 @@ pub(crate) struct SessionJob {
     active: bool,
     // Fixed mode exists for callback-capacity and fault fixtures only.
     worker_growth: bool,
+    /// This hour against the held read: a carried hour copies nothing.
+    plan: Plan,
+    pub(crate) observed: Observed,
 }
 
 impl SessionJob {
@@ -379,6 +434,8 @@ impl SessionJob {
             game_state: 0,
             active: false,
             worker_growth: true,
+            plan: Plan::READ,
+            observed: Observed::default(),
         }
     }
 
@@ -391,6 +448,7 @@ impl SessionJob {
         self.log.clear();
         self.game_state = 0;
         self.active = false;
+        self.plan = Plan::READ;
     }
 
     pub fn grow_for_next(&self) -> bool {
@@ -561,14 +619,11 @@ fn copy_pass(memory: &impl engine::Memory, base: usize, game_state: usize, log: 
             return;
         }
     }
-    for slot in 0..aggregates.count {
-        let addr = aggregates
-            .data
-            .checked_add((slot as usize).saturating_mul(8));
-        let _ = sspan(log, memory, addr, 8, M_AGGREGATES);
-        if log.overflowed {
-            return;
-        }
+    // One span for the contiguous cache: the walk fails the whole table at
+    // any unreadable slot, as it does when this span fails.
+    let len = (aggregates.count as usize).saturating_mul(cworld_threat::AGGREGATE_STRIDE);
+    if len != 0 {
+        let _ = sspan(log, memory, Some(aggregates.data), len, M_AGGREGATES);
     }
 }
 
@@ -593,11 +648,23 @@ pub(crate) fn copy_session_refresh(
         return SessionCopyReport::default();
     }
     let started = qpc();
+    let Observed { changes, held } = first.observed;
+    first.plan = held.try_lock().map_or(Plan::READ, |held| {
+        held.plan(Domain::Tension, changes, ctx.force_full)
+    });
+    first.game_state = ctx.game_state;
+    if first.plan.carry {
+        return SessionCopyReport {
+            raw_ok: true,
+            copy_ticks: [elapsed(started), 0, 0],
+            raw_bytes: [0; 3],
+        };
+    }
     if first.worker_growth {
         first.log.enable_worker_growth();
     }
-    first.game_state = ctx.game_state;
     copy_pass(memory, ctx.base, ctx.game_state, &mut first.log);
+    first.plan = first.plan.read(Domain::Tension, changes);
     let mut ticks = [0u64; 3];
     ticks[0] = elapsed(started);
     let raw_ok = !first.log.overflowed;
@@ -639,15 +706,97 @@ impl Captured {
             return;
         }
         let started = qpc();
-        let recorded = crate::raw::Recorded::build(&job.log);
-        let walked = self.pass(&recorded, base, job.game_state, job.worker_growth);
-        self.manager.outcome = walked.tables[0];
-        self.sources.outcome = walked.tables[1];
-        self.aggregates.outcome = walked.tables[2];
-        self.reason_bytes.len = walked.bytes_len;
-        self.reason_bytes.required = walked.required_bytes;
+        if job.plan.carry {
+            self.install_held(job.observed.held, job.plan);
+        } else {
+            let recorded = crate::raw::Recorded::build(&job.log);
+            let walked = self.pass(&recorded, base, job.game_state, job.worker_growth);
+            self.manager.outcome = walked.tables[0];
+            self.sources.outcome = walked.tables[1];
+            self.aggregates.outcome = walked.tables[2];
+            self.reason_bytes.len = walked.bytes_len;
+            self.reason_bytes.required = walked.required_bytes;
+            self.hold(job.observed, job.plan);
+        }
         decode_ticks[0] += elapsed(started);
         self.raw_mode = false;
+    }
+
+    /// A carried hour publishes the held read, when it is still the one the
+    /// worker planned against (a failed decode in between forgot it).
+    fn install_held(&mut self, held: &Mutex<Held<Tension>>, plan: Plan) {
+        let Some(held) = held.lock().ok().filter(|held| held.holds(plan)) else {
+            self.fail_session_capture("held world tension read no longer held");
+            return;
+        };
+        let tension = held.carried(Domain::Tension);
+        let grown = (|| {
+            use engine::walk::Buffer::Growing;
+            Growing(&mut self.manager.rows).ensure(tension.manager.len())?;
+            Growing(&mut self.sources.rows).ensure(tension.sources.len())?;
+            Growing(&mut self.aggregates.rows).ensure(tension.aggregates.len())?;
+            Growing(&mut self.reason_bytes.first).ensure(tension.reasons.len())?;
+            Ok::<(), &'static str>(())
+        })();
+        if let Err(reason) = grown {
+            self.fail_session_capture(reason);
+            return;
+        }
+        let rows = |len| Outcome::Rows { len };
+        self.manager.rows[..tension.manager.len()].copy_from_slice(&tension.manager);
+        self.sources.rows[..tension.sources.len()].copy_from_slice(&tension.sources);
+        self.aggregates.rows[..tension.aggregates.len()].copy_from_slice(&tension.aggregates);
+        self.reason_bytes.first[..tension.reasons.len()].copy_from_slice(&tension.reasons);
+        self.manager.outcome = rows(tension.manager.len());
+        self.sources.outcome = rows(tension.sources.len());
+        self.aggregates.outcome = rows(tension.aggregates.len());
+        self.reason_bytes.len = tension.reasons.len();
+        self.reason_bytes.required = tension.reasons.len();
+    }
+
+    /// After a decoded read: compare it on the domain's comparison hour and
+    /// hold it when the worker saw the token stand still across its copy.
+    fn hold(&self, observed: Observed, plan: Plan) {
+        let Ok(mut held) = observed.held.lock() else {
+            return;
+        };
+        let read = match self.outcomes() {
+            [
+                Outcome::Rows { len: manager },
+                Outcome::Rows { len: sources },
+                Outcome::Rows { len: aggregates },
+            ] => Some((
+                &self.manager.rows[..manager],
+                &self.sources.rows[..sources],
+                &self.aggregates.rows[..aggregates],
+                &self.reason_bytes.first[..self.reason_bytes.len],
+            )),
+            _ => None,
+        };
+        held.settle(
+            Domain::Tension,
+            observed.changes,
+            plan,
+            read.is_some(),
+            |tension| {
+                read.is_some_and(|read| {
+                    (
+                        &tension.manager[..],
+                        &tension.sources[..],
+                        &tension.aggregates[..],
+                        &tension.reasons[..],
+                    ) != read
+                })
+            },
+            |tension| {
+                read.is_some_and(|(manager, sources, aggregates, reasons)| {
+                    changes::assign(&mut tension.manager, manager)
+                        && changes::assign(&mut tension.sources, sources)
+                        && changes::assign(&mut tension.aggregates, aggregates)
+                        && changes::assign(&mut tension.reasons, reasons)
+                })
+            },
+        );
     }
 }
 

@@ -10,18 +10,16 @@ use crate::{
     raw::RawLog,
     read_accounting,
     sampling::qpc,
-    spooling::{table, table_iter, unavailable},
+    spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
 use engine::{
-    Memory, allocation, cace, cair_base, cair_region_combat_data,
+    Memory, allocation, cace, cair_base,
     cair_regional_mission::{self, WingIdentity},
     cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state, cloop_history,
     cpdx_array::Array,
     cprovince, cstate, cstrategic_air_manager, cstrategic_navy_manager, equipment_entry,
-    map_air_base_reference,
-    memory::{RecordLayout, RecordSources},
-    msvc_string, sair_wing_combat_data, sdamage_entry,
+    map_air_base_reference, msvc_string,
     walk::{Buffer, Outcome},
 };
 use replay::{
@@ -35,31 +33,30 @@ use super::{
     air_sorties::{self, Sorties},
 };
 
-#[path = "transport_air.rs"]
-mod transport_air;
-
-pub(crate) fn transport_status() -> impl serde::Serialize {
-    transport_air::status()
-}
-
 pub(crate) struct MissionSources<'a, C> {
     pub parent: Outcome,
     pub histories: &'a mut [air_histories::Staging],
     pub changes: &'a C,
-    pub transport_regions: Result<&'a [rows::TransportSpottingRegion], &'static str>,
-    pub transport_guard: Result<(), &'static str>,
-    pub transport_admission: Result<(), &'static str>,
+    /// Held registrations and what certifies them; `None` reads every
+    /// country air object afresh.
+    pub carry: Option<MissionCarry<'a>>,
 }
 
-pub const N: usize = 17;
+/// The AirRegionalMissions walk's held registrations ([`MissionStore`]), the
+/// notifications that certify them and the hour's sampled check.
+pub(crate) struct MissionCarry<'a> {
+    pub store: &'a mut MissionStore,
+    pub changes: &'a dyn crate::mission_changes::Changes,
+    pub check: crate::sampled_verify::Check,
+}
+
+pub const N: usize = 15;
 /// The tables `Capacities::rows` sizes; the sortie tables size themselves.
-pub const SIZED: usize = 11;
+pub const SIZED: usize = 9;
 pub const TABLES: [TableId; N] = [
     TableId::WingEquipment,
     TableId::AirBases,
     TableId::WingCumulative,
-    TableId::AirRegionHistory,
-    TableId::AirRegionDamage,
     TableId::AirAces,
     TableId::AirStatistics,
     TableId::AirRegionalMissions,
@@ -74,15 +71,13 @@ pub const TABLES: [TableId; N] = [
     TableId::RaidAirScores,
 ];
 
-/// The regional source walk is charged to history. Owned wing acquisition is charged to
-/// WingEquipment, excluding separately charged naval-membership reads. Typed
-/// fallback extension times exclude the enclosing map census.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("regional air history and damage", 3, &[3, 4])];
+/// Owned wing acquisition is charged to WingEquipment, excluding separately
+/// charged naval-membership reads. Typed fallback extension times exclude the
+/// enclosing map census.
+pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
-    /// History/damage capacities count native entries, before off-thread grouping.
     /// Witnesses count probed base handles.
     pub rows: [usize; SIZED],
     pub ace_names: usize,
@@ -91,8 +86,6 @@ pub struct Capacities {
     pub sorties: air_sorties::Capacities,
     /// RaidAirScores rows, region roster and strategic-air countries.
     pub scores: ScoreCapacities,
-    /// Physical roots, regional headers, mission occurrences, factors and entries.
-    pub(crate) transport: [usize; 5],
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -134,8 +127,8 @@ impl Capacities {
                 .ok_or("air mission sizing country count overflow")?;
             Ok(())
         })?;
+        self.rows[5] = self.rows[5].max(missions);
         self.rows[7] = self.rows[7].max(missions);
-        self.rows[9] = self.rows[9].max(missions);
         self.scores.countries = self.scores.countries.max(countries);
         self.scores.rows = self.scores.rows.max(countries);
         let wings = crate::country_scale::table_demand::rows(cair_wing::walk(
@@ -148,24 +141,18 @@ impl Capacities {
             .checked_mul(2)
             .ok_or("air reference sizing count overflow")?;
         self.wings = self.wings.max(wings).max(missions);
-        self.rows[8] = self.rows[8].max(handles);
-        // Naval-patrol missions reach task-force combat occurrences. Every
+        self.rows[6] = self.rows[6].max(handles);
+        // Task-force combat census reaches native task-force combat occurrences. Every
         // task-force roster occurrence is an independent upper bound.
         let task_forces = engine::cfleet::walk(memory, base, state, &mut [], &mut [], &mut []);
-        self.rows[10] = self.rows[10].max(crate::country_scale::table_demand::rows(
+        self.rows[8] = self.rows[8].max(crate::country_scale::table_demand::rows(
             task_forces.task_forces,
         )?);
         Ok(())
     }
 
-    pub(crate) fn raise_for_transport(&mut self, demand: [usize; 5]) {
-        for (capacity, count) in self.transport.iter_mut().zip(demand) {
-            *capacity = (*capacity).max(count);
-        }
-    }
-
     pub(crate) fn raise_for_names(&mut self, demand: crate::country_scale::AceNamesDemand) {
-        self.rows[5] = self.rows[5].max(demand.aces);
+        self.rows[3] = self.rows[3].max(demand.aces);
         self.ace_names = self.ace_names.max(demand.ace_bytes);
     }
 
@@ -188,20 +175,111 @@ pub struct WingSource<'a> {
     pub row: &'a cair_wing::Row,
 }
 
+/// RaidAirScores, captured in their own job with the attachment's held table
+/// ([`engine::raid_air_scores::Held`]) and then installed in the frame's
+/// pack ([`Captured::install_scores`]). The walk reads only the game state
+/// and the hour, so it leaves in the first burst.
+pub(crate) struct ScorePart {
+    rows: CaptureRows<engine::raid_air_scores::Row>,
+    /// The walk's region and country demand, which sizes the held table.
+    demand: [usize; 2],
+    ticks: u64,
+}
+
+impl ScorePart {
+    /// Empty storage, which the walk grows on its worker.
+    pub(crate) fn vacant() -> Self {
+        Self {
+            rows: CaptureRows::new(0),
+            demand: [0; 2],
+            ticks: 0,
+        }
+    }
+
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.rows.allocated_bytes()
+    }
+
+    /// The hour's walk: phase-hour regions read, every other pair carried
+    /// from `held` while its premises and the clear token stand. `capacity`
+    /// is the pack's held-table capacity. Returns the worker ticks, also kept
+    /// for the install.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        capacity: [usize; 2],
+        held: &mut engine::raid_air_scores::Held,
+    ) -> u64 {
+        self.rows.reset();
+        self.demand = [0; 2];
+        self.ticks = 0;
+        if !replay::cadence::should_walk(TableId::RaidAirScores, hour, force_full) {
+            self.rows.outcome = SKIPPED;
+            held.invalidate();
+            return 0;
+        }
+        let begin = qpc();
+        let _reads = read_accounting::table(TableId::RaidAirScores);
+        if force_full {
+            held.invalidate();
+        }
+        // Taken before the walk reads a pair.
+        held.certify(crate::raid_changes::air_clear_token());
+        // Only a raised capacity allocates, on this pool worker.
+        let [regions, countries] = capacity;
+        if held.grow(regions, countries, self.rows.rows.len()).is_err() {
+            self.rows.fail(Outcome::Unavailable {
+                reason: "collector allocation failed",
+            });
+            return 0;
+        }
+        let walked = engine::raid_air_scores::walk_growing(
+            memory,
+            base,
+            game_state,
+            hour,
+            held,
+            &mut self.rows.rows,
+        );
+        self.demand = [walked.regions, walked.countries];
+        self.rows.outcome = bounded(walked.outcome, self.rows.rows.len());
+        self.ticks = elapsed(begin);
+        self.ticks
+    }
+
+    /// The job did not complete: the table fails, as the Late capture fails
+    /// it.
+    pub(crate) fn fail(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.rows.reset();
+        self.demand = [0; 2];
+        self.ticks = 0;
+        self.rows.fail(failed(
+            replay::cadence::should_walk(TableId::RaidAirScores, hour, force_full),
+            reason,
+        ));
+    }
+}
+
 pub struct Captured {
-    transport: transport_air::Captured,
     equipment: CaptureRows<rows::WingEquipmentRow>,
     bases: CaptureRows<cair_base::Row>,
     carrier: carrier::Bases,
     cumulative: CaptureRows<cair_wing::CumulativeRow>,
-    history: CaptureRows<sair_wing_combat_data::Row>,
-    damage: CaptureRows<sdamage_entry::Row>,
     aces: CaptureRows<cace::Row>,
     statistics: CaptureRows<cloop_history::Row>,
     scores: CaptureRows<engine::raid_air_scores::Row>,
     /// Held-table sizes: this pack's capacities, then the last walk's demand.
     score_capacity: [usize; 2],
     score_demand: [usize; 2],
+    /// This hour's RaidAirScores were captured by their own job
+    /// ([`Self::install_scores`]); the Late capture keeps them, and its
+    /// worker ticks.
+    scores_early: Option<u64>,
     names: Arena<u8>,
     /// This hour's complete wing census by mission address. Acquisition
     /// context only: pointers never reach the replay.
@@ -221,6 +299,9 @@ pub struct Captured {
     /// The registrations' and combats' ticks once the AirMissions job, or
     /// the Late job without it, captured them this hour.
     missions: Option<[u64; 2]>,
+    /// The joins of the registered missions (AirReferenceWitnesses, the
+    /// sortie inputs, NavalMineLevels) and their ticks, captured with them.
+    joins: Option<[u64; 3]>,
     wing_ticks: [u64; 2],
     /// Game-thread time installing the owned census, charged to
     /// AirRegionalMissions, which joins it.
@@ -238,12 +319,6 @@ pub struct Captured {
     /// the decode worker fills those rows (plus the fog registrations) before
     /// the ready handoff. Preserved across `reset`, cleared by the worker.
     pub(crate) bases_raw_mode: bool,
-    /// Raw-copy split gate for the shared history/damage payload
-    /// (copy/decode split). Set by the callback on scheduled hours with a valid
-    /// raw payload; `capture` then skips the typed regional walk and the
-    /// decode worker fills both row sets before the ready handoff. Preserved
-    /// across `reset`, cleared by the worker.
-    pub(crate) history_raw_mode: bool,
 }
 
 const NO_WING_SOURCE: Outcome = Outcome::Unavailable {
@@ -268,28 +343,29 @@ impl Captured {
     /// and so do the AirMissions job's registrations and combats.
     pub(crate) fn fail_late_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.prepare_hour(hour, force_full);
-        self.scores.fail(failed(self.active[16], reason));
+        // Scores captured by their own job keep that job's outcome.
+        if self.scores_early.take().is_none() {
+            self.scores.fail(failed(self.active[14], reason));
+        }
         self.equipment.fail(failed(self.active[0], reason));
         self.cumulative.fail(failed(self.active[2], reason));
         if self.missions.is_none() {
             self.fail_missions_rows(reason);
         }
-        self.references.fail(failed(self.active[8], reason));
-        self.sorties.fail(
-            failed(self.active[10], reason),
-            failed(self.active[14], reason),
-        );
-        self.mines.fail(failed(self.active[9], reason));
+        if self.joins.is_none() {
+            self.references.fail(failed(self.active[6], reason));
+            self.sorties.fail(
+                failed(self.active[8], reason),
+                failed(self.active[12], reason),
+            );
+            self.mines.fail(failed(self.active[7], reason));
+        }
         if !self.bases_raw_mode {
             self.bases.fail(failed(self.active[1], reason));
-            self.aces.fail(failed(self.active[5], reason));
-        }
-        if !self.history_raw_mode {
-            self.history.fail(failed(self.active[3], reason));
-            self.damage.fail(failed(self.active[4], reason));
+            self.aces.fail(failed(self.active[3], reason));
         }
         if !self.stats_raw_mode {
-            self.statistics.fail(failed(self.active[6], reason));
+            self.statistics.fail(failed(self.active[4], reason));
         }
     }
 
@@ -311,52 +387,40 @@ impl Captured {
                 regions: 0,
                 countries: 0,
             },
-            transport: [0; 5],
         })
     }
 
     pub fn with_capacities(capacity: &Capacities) -> Self {
-        let mut captured = Self {
-            transport: transport_air::Captured::new(
-                capacity.scores.countries.max(capacity.transport[0]),
-                capacity.rows[7].max(capacity.transport[1]),
-                capacity.wings.max(capacity.transport[2]),
-                capacity.scores.rows.max(capacity.transport[3]),
-            ),
+        Self {
             equipment: CaptureRows::new(capacity.rows[0]),
             bases: CaptureRows::new(capacity.rows[1]),
             carrier: carrier::Bases::new(capacity.rows[1]),
             cumulative: CaptureRows::new(capacity.rows[2]),
-            history: CaptureRows::new(capacity.rows[3]),
-            damage: CaptureRows::new(capacity.rows[4]),
-            aces: CaptureRows::new(capacity.rows[5]),
-            statistics: CaptureRows::new(capacity.rows[6]),
+            aces: CaptureRows::new(capacity.rows[3]),
+            statistics: CaptureRows::new(capacity.rows[4]),
             scores: CaptureRows::new(capacity.scores.rows),
             score_capacity: [capacity.scores.regions, capacity.scores.countries],
             score_demand: [0; 2],
+            scores_early: None,
             names: Arena::new(capacity.ace_names),
             identities: Arena::new(capacity.wings),
             identity_outcome: NO_WING_SOURCE,
             identities_owned: false,
-            registrations: CaptureRows::new(capacity.rows[7]),
+            registrations: CaptureRows::new(capacity.rows[5]),
             registration_failure: Default::default(),
             handles: allocation::owned_vec(allocation::filled(capacity.wings.saturating_mul(2), 0)),
-            references: CaptureRows::new(capacity.rows[8]),
+            references: CaptureRows::new(capacity.rows[6]),
             sorties: Sorties::with_capacities(&capacity.sorties),
-            mines: CaptureRows::new(capacity.rows[9]),
-            patrol_combats: CaptureRows::new(capacity.rows[10]),
+            mines: CaptureRows::new(capacity.rows[7]),
+            patrol_combats: CaptureRows::new(capacity.rows[8]),
             missions: None,
+            joins: None,
             wing_ticks: [0; 2],
             identity_ticks: 0,
             active: [true; N],
             stats_raw_mode: false,
             bases_raw_mode: false,
-            history_raw_mode: false,
-        };
-        captured
-            .transport
-            .prepare_normalization(capacity.transport[4]);
-        captured
+        }
     }
 
     /// Reset before the shared map walk. `capture` deliberately preserves the
@@ -368,8 +432,6 @@ impl Captured {
         self.carrier.reset();
         self.cumulative.reset();
         self.cumulative.outcome = NO_WING_SOURCE;
-        self.history.reset();
-        self.damage.reset();
         self.aces.reset();
         self.statistics.reset();
         self.scores.reset();
@@ -384,15 +446,15 @@ impl Captured {
     }
 
     fn reset_missions(&mut self) {
-        self.transport.reset();
         self.registrations.reset();
         self.registration_failure = Default::default();
         self.patrol_combats.reset();
         self.missions = None;
+        self.joins = None;
         self.reset_joins();
     }
 
-    /// The Late job's joins of the registered missions.
+    /// The joins of the registered missions.
     fn reset_joins(&mut self) {
         self.references.reset();
         self.sorties.reset();
@@ -400,13 +462,10 @@ impl Captured {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.transport.allocated_bytes()
-            + self.equipment.allocated_bytes()
+        self.equipment.allocated_bytes()
             + self.bases.allocated_bytes()
             + self.carrier.bytes()
             + self.cumulative.allocated_bytes()
-            + self.history.allocated_bytes()
-            + self.damage.allocated_bytes()
             + self.aces.allocated_bytes()
             + self.statistics.allocated_bytes()
             + self.scores.allocated_bytes()
@@ -426,10 +485,8 @@ impl Captured {
         crate::table_capture::grow_vec(&mut self.carrier.rows, capacity.rows[1]);
         self.carrier.grow();
         self.cumulative.grow(&mut capacity.rows[2]);
-        self.history.grow(&mut capacity.rows[3]);
-        self.damage.grow(&mut capacity.rows[4]);
-        self.aces.grow(&mut capacity.rows[5]);
-        self.statistics.grow(&mut capacity.rows[6]);
+        self.aces.grow(&mut capacity.rows[3]);
+        self.statistics.grow(&mut capacity.rows[4]);
         self.scores.grow(&mut capacity.scores.rows);
         let scores = &mut capacity.scores;
         crate::table_capture::grow_capacity(&mut scores.regions, self.score_demand[0]);
@@ -440,25 +497,17 @@ impl Captured {
         // One pool base per registration plus one transfer base per wing.
         crate::table_capture::grow_vec(
             &mut self.handles,
-            capacity.wings.saturating_mul(2).max(capacity.rows[8]),
+            capacity.wings.saturating_mul(2).max(capacity.rows[6]),
         );
-        self.registrations.grow(&mut capacity.rows[7]);
-        self.references.grow(&mut capacity.rows[8]);
+        self.registrations.grow(&mut capacity.rows[5]);
+        self.references.grow(&mut capacity.rows[6]);
         self.sorties.grow(&mut capacity.sorties);
-        self.mines.grow(&mut capacity.rows[9]);
-        self.patrol_combats.grow(&mut capacity.rows[10]);
-        self.transport.prepare(
-            capacity.scores.countries.max(capacity.transport[0]),
-            capacity.rows[7].max(capacity.transport[1]),
-            capacity.wings.max(capacity.transport[2]),
-            capacity.scores.rows.max(capacity.transport[3]),
-        );
-        self.transport.prepare_normalization(capacity.transport[4]);
+        self.mines.grow(&mut capacity.rows[7]);
+        self.patrol_combats.grow(&mut capacity.rows[8]);
     }
 
     /// Freeze the requested tables before contexts and shared map callbacks.
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
-        self.transport.set_hour(hour);
         self.active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
     }
 
@@ -467,10 +516,10 @@ impl Captured {
         self.missions.is_some()
     }
 
-    /// The AirMissions job, before the Late job, which joins what it
-    /// leaves: the registered missions, then the naval-patrol combats, whose
-    /// regions and every registered mission region open the hour's history
-    /// parts ([`air_histories::supply`]).
+    /// The AirMissions job, before the Late job: the registered missions,
+    /// then the naval-patrol combats, whose regions and every registered
+    /// mission region open the hour's history parts
+    /// ([`air_histories::supply`]).
     /// `parent` is the map census the typed visitor supplied the wing
     /// identities in, when it did.
     pub(crate) fn capture_missions(
@@ -484,9 +533,7 @@ impl Captured {
             parent,
             histories,
             changes,
-            transport_regions,
-            transport_guard,
-            transport_admission,
+            carry,
         } = sources;
         if !self.identities_owned {
             self.identity_outcome = require_parent(parent, self.identity_outcome);
@@ -495,43 +542,41 @@ impl Captured {
         self.registration_failure = Default::default();
         self.patrol_combats.reset();
         let begin = qpc();
-        self.registrations.outcome = if !self.active[7] {
+        self.registrations.outcome = if !self.active[5] {
             SKIPPED
         } else if let Outcome::Rows { len } = self.identity_outcome {
             let _reads = read_accounting::table(TableId::AirRegionalMissions);
             let identities = &mut self.identities.first[..len];
             identities.sort_unstable_by_key(|wing| wing.mission_pointer);
-            let original = if transport_admission.is_ok() {
-                let mut observer = self.transport.observer_growing(
-                    memory,
-                    base,
-                    game_state,
-                    transport_regions,
-                    transport_guard,
-                );
-                cair_regional_mission::walk_with_transport_growing(
+            // The strict registrations alone: the retired selected transport
+            // preview's root, factor, wing and normalization words are not read.
+            let original = match carry {
+                Some(MissionCarry {
+                    store,
+                    changes,
+                    check,
+                }) => {
+                    let mut reuse = MissionReuse::begin(store, changes, check);
+                    let walked = cair_regional_mission::walk_carried(
+                        memory,
+                        base,
+                        game_state,
+                        identities,
+                        Buffer::Growing(&mut self.registrations.rows),
+                        &mut self.registration_failure,
+                        &mut reuse,
+                    );
+                    reuse.finish(matches!(walked, Outcome::Rows { .. }));
+                    walked
+                }
+                None => cair_regional_mission::walk_with_diagnostic_growing(
                     memory,
                     base,
                     game_state,
                     identities,
                     &mut self.registrations.rows,
                     &mut self.registration_failure,
-                    &mut observer,
-                )
-            } else {
-                // Preserve the original strict product without acquiring any
-                // transport root/factor/wing/normalization words. Its already
-                // copied numerical census still establishes capacity demand.
-                let outcome = cair_regional_mission::walk_with_diagnostic_growing(
-                    memory,
-                    base,
-                    game_state,
-                    identities,
-                    &mut self.registrations.rows,
-                    &mut self.registration_failure,
-                );
-                self.transport.denied(len, outcome);
-                outcome
+                ),
             };
             bounded(original, self.registrations.rows.len())
         } else {
@@ -539,7 +584,6 @@ impl Captured {
                 reason: "registered missions lack the complete wing census",
             }
         };
-        self.transport.finish(self.registrations.outcome);
         let registered_ticks = elapsed(begin).saturating_add(self.identity_ticks);
         let begin = qpc();
         let (wings, registered) = joins(
@@ -561,7 +605,7 @@ impl Captured {
             )
         };
         self.patrol_combats.outcome = match regions {
-            _ if !self.active[15] => SKIPPED,
+            _ if !self.active[13] => SKIPPED,
             Ok((outcome, _)) => outcome,
             Err(reason) => Outcome::Unavailable { reason },
         };
@@ -580,6 +624,87 @@ impl Captured {
         self.missions = Some([registered_ticks, elapsed(begin)]);
     }
 
+    /// The AirMissions job, after its missions: their joins, which need
+    /// nothing else, so the Late job keeps them.
+    pub(crate) fn join_missions(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
+        self.joins = Some(self.capture_joins(memory, base, game_state));
+    }
+
+    /// The joins of the registered missions with the wing census: the base
+    /// witnesses, the sortie inputs over them and the mine levels. Ticks of
+    /// [references, sorties, mines].
+    fn capture_joins(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> [u64; 3] {
+        self.reset_joins();
+        let mut ticks = [0; 3];
+        let (wings, registered) = joins(
+            &mut self.identities,
+            self.identity_outcome,
+            &self.registrations,
+        );
+        let begin = qpc();
+        self.references.outcome = if !self.active[6] {
+            SKIPPED
+        } else {
+            let _reads = read_accounting::table(TableId::AirReferenceWitnesses);
+            capture_references_buffer(
+                memory,
+                base,
+                game_state,
+                wings,
+                registered,
+                Buffer::Growing(&mut self.handles),
+                Buffer::Growing(&mut self.references.rows),
+            )
+            .unwrap_or_else(|reason| Outcome::Unavailable { reason })
+        };
+        ticks[0] = elapsed(begin);
+        let begin = qpc();
+        if !self.active[8] {
+            self.sorties.fail(SKIPPED, SKIPPED);
+        } else if let Outcome::Rows { len } = self.references.outcome {
+            let _reads = read_accounting::table(TableId::AirMissionInputs);
+            match registered_wings(wings, registered) {
+                Ok(missions) => self.sorties.capture_growing(
+                    memory,
+                    base,
+                    game_state,
+                    self.active[12],
+                    missions,
+                    &self.references.rows[..len],
+                ),
+                Err(reason) => self.sorties.fail(
+                    Outcome::Unavailable { reason },
+                    failed(self.active[12], reason),
+                ),
+            }
+        } else {
+            let reason = "air sortie inputs lack the complete base witnesses";
+            self.sorties.fail(
+                Outcome::Unavailable { reason },
+                failed(self.active[12], reason),
+            );
+        }
+        ticks[1] = elapsed(begin);
+        let begin = qpc();
+        self.mines.outcome = if !self.active[7] {
+            SKIPPED
+        } else {
+            let _reads = read_accounting::table(TableId::NavalMineLevels);
+            capture_mines_buffer(
+                memory,
+                base,
+                game_state,
+                wings,
+                registered,
+                Buffer::Growing(&mut self.handles),
+                Buffer::Growing(&mut self.mines.rows),
+            )
+            .unwrap_or_else(|reason| Outcome::Unavailable { reason })
+        };
+        ticks[2] = elapsed(begin);
+        ticks
+    }
+
     /// The AirMissions job was interrupted: publish its tables unavailable;
     /// the history parts have no regions. Nothing is read again.
     pub(crate) fn fail_missions(
@@ -587,7 +712,6 @@ impl Captured {
         reason: &'static str,
         histories: &mut [air_histories::Staging],
     ) {
-        self.transport.fail();
         self.fail_missions_rows(reason);
         self.missions = Some([0; 2]);
         air_histories::supply(
@@ -598,23 +722,10 @@ impl Captured {
         );
     }
 
-    pub(crate) fn transport_air_packet(
-        &self,
-        hour: i32,
-    ) -> std::io::Result<Option<rows::TransportAirInputs>> {
-        self.transport.packet(hour)
-    }
-
-    /// A failed original numerical-region loan association withdraws only
-    /// the optional transport graph; the strict air tables keep their result.
-    pub(crate) fn refuse_transport_regions(&mut self) {
-        self.transport.fail();
-    }
-
     fn fail_missions_rows(&mut self, reason: &'static str) {
         self.registration_failure = Default::default();
-        self.registrations.fail(failed(self.active[7], reason));
-        self.patrol_combats.fail(failed(self.active[15], reason));
+        self.registrations.fail(failed(self.active[5], reason));
+        self.patrol_combats.fail(failed(self.active[13], reason));
     }
 
     /// Initialize the extension rows immediately before the shared map walk.
@@ -775,19 +886,18 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
-        scores: &mut engine::raid_air_scores::Held,
+        scores: Option<&mut engine::raid_air_scores::Held>,
     ) -> [u64; N] {
         self.prepare_hour(hour, force_full);
         self.bases.reset();
         self.carrier.reset();
-        self.history.reset();
-        self.damage.reset();
         self.aces.reset();
         self.statistics.reset();
-        self.scores.reset();
-        self.score_demand = [0; 2];
+        if self.scores_early.is_none() {
+            self.scores.reset();
+            self.score_demand = [0; 2];
+        }
         self.names.reset();
-        self.reset_joins();
         let mut ticks = [0; N];
         ticks[0] = self.wing_ticks[0];
         ticks[2] = self.wing_ticks[1];
@@ -800,23 +910,6 @@ impl Captured {
             ticks[1] = elapsed(begin);
         }
         if !self.active[3] {
-            self.history.outcome = SKIPPED;
-            self.damage.outcome = SKIPPED;
-        } else if !self.history_raw_mode {
-            let _reads = read_accounting::table(TableId::AirRegionHistory);
-            let begin = qpc();
-            let first = cair_region_combat_data::walk_world(
-                memory,
-                base,
-                game_state,
-                &mut self.history.rows,
-                &mut self.damage.rows,
-            );
-            self.history.outcome = bounded(first.records, self.history.rows.len());
-            self.damage.outcome = bounded(first.damage, self.damage.rows.len());
-            ticks[3] = elapsed(begin);
-        }
-        if !self.active[5] {
             self.aces.outcome = SKIPPED;
         } else if !self.bases_raw_mode {
             let _reads = read_accounting::table(TableId::AirAces);
@@ -831,9 +924,9 @@ impl Captured {
             self.aces.outcome = names_outcome(first, &self.aces.rows, &self.names.first);
             self.names.len = first.bytes_len;
             self.names.required = first.required_bytes;
-            ticks[5] = elapsed(begin);
+            ticks[3] = elapsed(begin);
         }
-        if !self.active[6] {
+        if !self.active[4] {
             self.statistics.outcome = SKIPPED;
         } else if !self.stats_raw_mode {
             let begin = qpc();
@@ -841,108 +934,55 @@ impl Captured {
                 let _reads = read_accounting::table(TableId::AirStatistics);
                 cloop_history::walk(memory, base, game_state, rows)
             });
-            ticks[6] = elapsed(begin);
+            ticks[4] = elapsed(begin);
         }
-        [ticks[7], ticks[15]] = self.missions.unwrap_or_default();
-        let (wings, registered) = joins(
-            &mut self.identities,
-            self.identity_outcome,
-            &self.registrations,
-        );
-        let begin = qpc();
-        self.references.outcome = if !self.active[8] {
-            SKIPPED
-        } else {
-            let _reads = read_accounting::table(TableId::AirReferenceWitnesses);
-            capture_references_buffer(
-                memory,
-                base,
-                game_state,
-                wings,
-                registered,
-                Buffer::Growing(&mut self.handles),
-                Buffer::Growing(&mut self.references.rows),
-            )
-            .unwrap_or_else(|reason| Outcome::Unavailable { reason })
+        [ticks[5], ticks[13]] = self.missions.unwrap_or_default();
+        let join_ticks = match self.joins {
+            Some(ticks) => ticks,
+            None => self.capture_joins(memory, base, game_state),
         };
-        ticks[8] = elapsed(begin);
-        let begin = qpc();
-        if !self.active[10] {
-            self.sorties.fail(SKIPPED, SKIPPED);
-        } else if let Outcome::Rows { len } = self.references.outcome {
-            let _reads = read_accounting::table(TableId::AirMissionInputs);
-            match registered_wings(wings, registered) {
-                Ok(missions) => self.sorties.capture_growing(
+        [ticks[6], ticks[8], ticks[7]] = join_ticks;
+        ticks[14] = match self.scores_early.take() {
+            Some(ticks) => ticks,
+            None => {
+                let mut part = ScorePart::vacant();
+                self.swap_scores(&mut part);
+                let mut fresh = engine::raid_air_scores::Held::default();
+                let ticks = part.capture(
                     memory,
                     base,
                     game_state,
-                    self.active[14],
-                    missions,
-                    &self.references.rows[..len],
-                ),
-                Err(reason) => self.sorties.fail(
-                    Outcome::Unavailable { reason },
-                    failed(self.active[14], reason),
-                ),
+                    hour,
+                    force_full,
+                    self.score_capacity,
+                    scores.unwrap_or(&mut fresh),
+                );
+                self.swap_scores(&mut part);
+                ticks
             }
-        } else {
-            let reason = "air sortie inputs lack the complete base witnesses";
-            self.sorties.fail(
-                Outcome::Unavailable { reason },
-                failed(self.active[14], reason),
-            );
-        }
-        ticks[10] = elapsed(begin);
-        let begin = qpc();
-        self.mines.outcome = if !self.active[9] {
-            SKIPPED
-        } else {
-            let _reads = read_accounting::table(TableId::NavalMineLevels);
-            capture_mines_buffer(
-                memory,
-                base,
-                game_state,
-                wings,
-                registered,
-                Buffer::Growing(&mut self.handles),
-                Buffer::Growing(&mut self.mines.rows),
-            )
-            .unwrap_or_else(|reason| Outcome::Unavailable { reason })
         };
-        ticks[9] = elapsed(begin);
-        if !self.active[16] {
-            self.scores.outcome = SKIPPED;
-            scores.invalidate();
-        } else {
-            let begin = qpc();
-            let _reads = read_accounting::table(TableId::RaidAirScores);
-            if force_full {
-                scores.invalidate();
-            }
-            // Only a raised capacity allocates, on this pool worker.
-            let [regions, countries] = self.score_capacity;
-            if scores
-                .grow(regions, countries, self.scores.rows.len())
-                .is_err()
-            {
-                self.scores.fail(Outcome::Unavailable {
-                    reason: "collector allocation failed",
-                });
-                return ticks;
-            }
-            let walked = engine::raid_air_scores::walk_growing(
-                memory,
-                base,
-                game_state,
-                hour,
-                scores,
-                &mut self.scores.rows,
-            );
-            self.score_demand = [walked.regions, walked.countries];
-            self.scores.outcome = bounded(walked.outcome, self.scores.rows.len());
-            ticks[16] = elapsed(begin);
-        }
         ticks
+    }
+
+    /// The pack's held-table capacities, which the ScoresRails job sizes the
+    /// held table by.
+    pub(crate) fn score_capacity(&self) -> [usize; 2] {
+        self.score_capacity
+    }
+
+    /// Exchanges this pack's RaidAirScores with `part`'s.
+    fn swap_scores(&mut self, part: &mut ScorePart) {
+        std::mem::swap(&mut self.scores, &mut part.rows);
+        std::mem::swap(&mut self.score_demand, &mut part.demand);
+    }
+
+    /// The hour's RaidAirScores, captured by the ScoresRails job: they
+    /// replace this pack's, which `part` takes back as its storage, and the
+    /// Late capture keeps them.
+    pub(crate) fn install_scores(&mut self, part: &mut ScorePart) {
+        let ticks = part.ticks;
+        self.swap_scores(part);
+        self.scores_early = Some(ticks);
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -951,8 +991,6 @@ impl Captured {
             self.equipment.outcome,
             self.bases.outcome,
             self.cumulative.outcome,
-            self.history.outcome,
-            self.damage.outcome,
             self.aces.outcome,
             self.statistics.outcome,
             self.registrations.outcome,
@@ -989,10 +1027,8 @@ impl Captured {
                     experience: r.experience,
                 }
             }),
-            history_table(outcomes[3], &self.history.rows),
-            damage_table(outcomes[4], &self.damage.rows),
-            self.ace_table(outcomes[5]),
-            table::<tables::AirStatistics, _>(outcomes[6], &self.statistics.rows, |r| {
+            self.ace_table(outcomes[3]),
+            table::<tables::AirStatistics, _>(outcomes[4], &self.statistics.rows, |r| {
                 rows::AirStatisticsRow {
                     country: r.country,
                     region: r.region,
@@ -1003,25 +1039,25 @@ impl Captured {
             }),
             self.registration_table(),
             air_reference_witness::table_view(
-                outcomes[8],
-                &self.references.rows[..outcomes[8].len().min(self.references.rows.len())],
+                outcomes[6],
+                &self.references.rows[..outcomes[6].len().min(self.references.rows.len())],
                 match outcomes[1] {
                     Outcome::Rows { len } => self.bases.rows.get(..len),
                     _ => None,
                 },
             ),
-            table::<tables::NavalMineLevels, _>(outcomes[9], &self.mines.rows, Clone::clone),
+            table::<tables::NavalMineLevels, _>(outcomes[7], &self.mines.rows, Clone::clone),
             missions,
             containers,
             modifiers,
             special_bases,
             metadata,
             table::<tables::AirNavalPatrolCombats, _>(
-                outcomes[15],
+                outcomes[13],
                 &self.patrol_combats.rows,
                 Clone::clone,
             ),
-            table::<tables::RaidAirScores, _>(outcomes[16], &self.scores.rows, |r| {
+            table::<tables::RaidAirScores, _>(outcomes[14], &self.scores.rows, |r| {
                 rows::RaidAirScoreRow {
                     country: r.country,
                     region: r.region,
@@ -1274,31 +1310,48 @@ fn capture_references_buffer(
     }
     let probes = &mut handles[..required];
     probes.sort_unstable();
+    // The distinct handles, in order.
+    let (mut distinct, mut previous, mut next) = (0, 0, 0);
+    while next < probes.len() {
+        let handle = probes[next];
+        next += 1;
+        if handle != previous {
+            previous = handle;
+            probes[distinct] = handle;
+            distinct += 1;
+        }
+    }
     let mut len = 0usize;
     let mut unread_rows = 0_u32;
-    let mut previous = 0;
-    for &handle in probes.iter() {
-        if handle == previous {
-            continue;
-        }
-        previous = handle;
-        output.ensure(len.checked_add(1).ok_or("air reference count overflow")?)?;
-        let reference = map_air_base_reference::read_base(memory, base, game_state, handle)?;
-        let witness = BaseWitness {
-            handle,
-            base: reference,
-            ..Default::default()
-        };
-        match output.get_mut(len) {
-            Some(slot) => {
-                *slot = witness;
-                len += 1;
+    let mut pass = map_air_base_reference::Pass::new(base);
+    let mut gathered = [None; map_air_base_reference::BASE_BATCH];
+    for chunk in probes[..distinct].chunks(map_air_base_reference::BASE_BATCH) {
+        // Gathered up to the first handle a copy or check stopped at; that
+        // handle and the rest read as before.
+        let read = pass.read_bases(memory, game_state, chunk, &mut gathered);
+        for (index, &handle) in chunk.iter().enumerate() {
+            output.ensure(len.checked_add(1).ok_or("air reference count overflow")?)?;
+            let reference = if index < read {
+                gathered[index]
+            } else {
+                pass.read_base(memory, game_state, handle)?
+            };
+            let witness = BaseWitness {
+                handle,
+                base: reference,
+                ..Default::default()
+            };
+            match output.get_mut(len) {
+                Some(slot) => {
+                    *slot = witness;
+                    len += 1;
+                }
+                None => unread_rows = unread_rows.saturating_add(1),
             }
-            None => unread_rows = unread_rows.saturating_add(1),
         }
     }
     air_reference_witness::capture_hosts(&mut output[..len], |handle| {
-        map_air_base_reference::read_host_owner(memory, base, handle)
+        pass.read_host_owner(memory, handle)
     })?;
     Ok(if unread_rows == 0 {
         Outcome::Rows { len }
@@ -1555,6 +1608,40 @@ fn read_equipment(
     read_equipment_buffer(memory, base, source, engine::walk::Buffer::Fixed(output), 0).0
 }
 
+/// [`read_equipment_buffer`] with `reuse` carrying the rows of a wing whose
+/// held read it proves current ([`WingStore`]): a carried wing's pool,
+/// entries and variants are not read.
+fn read_equipment_carried(
+    memory: &impl Memory,
+    base: usize,
+    source: &WingSource<'_>,
+    mut output: engine::walk::Buffer<'_, rows::WingEquipmentRow>,
+    start: usize,
+    reuse: Option<&mut WingReuse<'_>>,
+) -> (Outcome, usize) {
+    let Some(reuse) = reuse else {
+        return read_equipment_buffer(memory, base, source, output, start);
+    };
+    let plan = reuse.plan(source.pointer, source.row.id);
+    if let Some(rows) = plan.carry_rows()
+        && let Some(end) = start.checked_add(rows)
+        && output.ensure(end) == Ok(true)
+    {
+        let carried = reuse.carry(&plan);
+        for (destination, row) in output[start..end].iter_mut().zip(carried) {
+            *destination = rows::WingEquipmentRow {
+                wing: source.row.id,
+                ..*row
+            };
+        }
+        return (Outcome::Rows { len: rows }, rows);
+    }
+    let (outcome, required) = read_equipment_buffer(memory, base, source, output.suffix(0), start);
+    let read = output.get(start..start + outcome.len()).unwrap_or_default();
+    reuse.read(&plan, outcome, read);
+    (outcome, required)
+}
+
 fn read_equipment_buffer(
     memory: &impl Memory,
     base: usize,
@@ -1642,90 +1729,6 @@ fn valid_names(outcome: Outcome, rows: &[cace::Row], bytes: &[u8], len: usize) -
         })
 }
 
-/// A partial native entry stream cannot name the exact count of missing grouped
-/// parents, and its last parent may be partial. Keep that hour unavailable with
-/// a specific capacity reason; raw capture truncation still grows the pool.
-fn grouped_source<R>(outcome: Outcome, rows: &[R]) -> Result<&[R], TableView> {
-    if allocation::capture_stopped() {
-        return Err(unavailable(""));
-    }
-    match bounded(outcome, rows.len()) {
-        Outcome::Rows { len } => Ok(&rows[..len]),
-        Outcome::Truncated { len, unread_rows } => Err(unavailable(&format!(
-            "air regional entry capacity: {len} captured, {unread_rows} omitted; grouped table incomplete"
-        ))),
-        Outcome::Unavailable { reason } => Err(unavailable(reason)),
-    }
-}
-
-fn history_table(outcome: Outcome, captured: &[sair_wing_combat_data::Row]) -> TableView {
-    let captured = match grouped_source(outcome, captured) {
-        Ok(rows) => rows,
-        Err(table) => return table,
-    };
-    let chunks =
-        || captured.chunk_by(|a, b| (a.key.country, a.key.region) == (b.key.country, b.key.region));
-    // The shared table helper rejects a repeated outer parent separated by a
-    // different parent. Native duplicate children within a parent remain exact.
-    table_iter::<tables::AirRegionHistory, _>(
-        Outcome::Rows {
-            len: chunks().count(),
-        },
-        chunks(),
-        |group| rows::AirRegionHistoryRow {
-            country: group[0].key.country,
-            region: group[0].key.region,
-            entries: allocation::owned_vec(allocation::collect_vec(group.iter().map(|row| {
-                rows::AirHistoryEntry {
-                    side: row.key.side,
-                    date: row.key.date,
-                    wing_id: row.key.wing_id,
-                    classification: row.key.classification,
-                    region_owner: row.region_owner,
-                    planes: row.planes,
-                    mission_mask: row.mission_mask,
-                    selection: row.selection,
-                    copied: row.copied,
-                    attributed_country: row.attributed_country,
-                }
-            }))),
-        },
-    )
-}
-
-fn damage_table(outcome: Outcome, captured: &[sdamage_entry::Row]) -> TableView {
-    let captured = match grouped_source(outcome, captured) {
-        Ok(rows) => rows,
-        Err(table) => return table,
-    };
-    let chunks = || {
-        captured.chunk_by(|a, b| {
-            (a.record.country, a.record.region) == (b.record.country, b.record.region)
-        })
-    };
-    table_iter::<tables::AirRegionDamage, _>(
-        Outcome::Rows {
-            len: chunks().count(),
-        },
-        chunks(),
-        |group| rows::AirRegionDamageRow {
-            country: group[0].record.country,
-            region: group[0].record.region,
-            entries: allocation::owned_vec(allocation::collect_vec(group.iter().map(|row| {
-                rows::AirDamageEntry {
-                    side: row.record.side,
-                    date: row.record.date,
-                    wing_id: row.record.wing_id,
-                    classification: row.record.classification,
-                    channel: row.channel,
-                    cause: row.cause,
-                    amount: row.amount,
-                }
-            }))),
-        },
-    )
-}
-
 /// One complete source census, independent of the bounded map projection.
 /// All transient addresses stay owned opaque scalars and are consumed only
 /// during acquisition; the worker installs value rows without memory reads.
@@ -1735,14 +1738,27 @@ pub(crate) struct WingMembershipRead {
     pub error: Option<&'static str>,
 }
 
+mod mission_store;
+mod registration_reuse;
+mod registration_store;
 mod wing;
+mod wing_store;
+pub(crate) use mission_store::{MissionReuse, MissionStore};
+#[cfg(test)]
+pub(crate) use registration_reuse::DecodedCounts;
+pub(crate) use registration_reuse::DecodedRegistrations;
+pub(crate) use registration_store::{
+    Counts as RegistrationCounts, Difference as RegistrationDifference, RegistrationStore,
+};
 #[cfg(test)]
 use wing::WING_PACK_N;
 #[cfg(test)]
 pub(crate) use wing::copy_air_refresh;
 pub(crate) use wing::{
-    AirWingCopyContext, AirWingCopyReport, AirWingJob, copy_air_refresh_growing, decode_air_payload,
+    AirWingCopyContext, AirWingCopyReport, AirWingJob, WING_PARTS, copy_air_refresh_growing,
+    decode_air_payload, part_starts, retained_store_bytes,
 };
+pub(crate) use wing_store::{WingReuse, WingStore};
 
 mod stats;
 #[cfg(test)]
@@ -1763,19 +1779,18 @@ use super::fog;
 pub(crate) use bases::copy_air_bases_refresh;
 pub(crate) use bases::{
     AIR_BASES_N, AirBasesCopyContext, AirBasesCopyReport, AirBasesJob, AirBasesMemo,
-    AirBasesMemoContext, AirBasesMemoReport, air_bases_memo_memory, copy_air_bases_refresh_growing,
+    AirBasesMemoContext, AirBasesMemoReport, HeldSegment, air_bases_memo_memory,
+    copy_air_bases_refresh_growing,
 };
 #[cfg(test)]
-use bases::{AIR_REGISTRATIONS_MASK, bases_pool_u32, bspan, copy_air_bases_pass, resolve_link};
+use bases::{
+    AIR_REGISTRATIONS_MASK, CarryRun, bases_pool_u32, bspan, copy_air_bases_pass, resolve_link,
+};
 
-mod history;
 #[cfg(test)]
-use history::acquire_air_history_pass;
+mod registration_bench;
 #[cfg(test)]
-pub(crate) use history::copy_air_history_refresh;
-pub(crate) use history::{
-    AirHistoryCopyContext, AirHistoryCopyReport, AirHistoryJob, copy_air_history_refresh_growing,
-};
+mod registration_store_tests;
 
 #[cfg(test)]
 mod tests;
@@ -1811,13 +1826,6 @@ mod air_bases_memo_tests;
 #[cfg(test)]
 pub(crate) mod air_bases_test_kit;
 
-/// Shared synthetic address space for the history/damage copy/decode
-/// harness: one owner with two region slots (one null), three records with
-/// damage vectors on two of them. Mirrors the engine region-combat fixture
-/// shapes.
-#[cfg(test)]
-pub(crate) mod air_history_test_kit;
-
 #[cfg(test)]
 #[path = "air_mission_scale_tests.rs"]
 mod mission_scale_tests;
@@ -1825,3 +1833,11 @@ mod mission_scale_tests;
 #[cfg(test)]
 #[path = "air/sizing_tests.rs"]
 mod sizing_tests;
+
+#[cfg(test)]
+#[path = "air/wing_store_tests.rs"]
+mod wing_store_tests;
+
+#[cfg(test)]
+#[path = "air/mission_store_tests.rs"]
+mod mission_store_tests;

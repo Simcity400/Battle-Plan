@@ -99,6 +99,8 @@ Dependent lookups/draws retain element and subtree refusals for undefined reads,
 
 Map readers share definition rows, raster loading, geometry and adjacencies. Resolve file names/dimensions from the stack; record positions, authored IDs and terrain ordinals are distinct. Map area uses raster cells without physical-area calibration.
 
+[weather/temperature.rs](src/weather/temperature.rs) resolves what playback's temperature pass reads: `common/weather.txt`'s temperature settings, window and terrain modifiers, each province record's activity, neighbours, terrain and last-listing strategic region, and each region template's weather periods ([regions.rs](src/regions.rs)).
+
 World interfaces supply recorded movement/raid facts. Missing admission inputs stay unknown; do not infer port sea access or runtime caches from nearby assets. [raids/target.rs](src/raids/target.rs) shares target/name joins. The [raid tooltip contract](../viewer/src/map/raids/tooltips/README.md) owns consumer and capture rules.
 
 [Selected movement searches](src/unit_path/selected.rs) use recorded current-hour world operands and preserve native neighbour order and caller-specific admission. Missing runtime facts remain refusals.
@@ -124,7 +126,7 @@ Technology description catalogues retain every indexed declaration in native ord
 3. Preserve order, defaults, redefinitions and required operands; propagate diagnostics and uncertain suffixes through lookups.
 4. Add synthetic regressions for changed behaviour, layered replacements and reached mod forms. Reuse helpers (`test-support` exposes cross-crate fixtures) and update affected consumers together.
 
-[Selected transport](src/unit_path/selected/transport.rs) preserves early returns, per-occurrence rounding and independent output buffers. [Saved transfer inputs](src/save/counter_inputs.rs) keep source province and ordered combat references separate from the target. [Mission cache reads](src/save/naval_missions/spotting_cache.rs) use recorded lexical keys and the authenticated physical-country projection; omission constrains only the nonpositive writer branch. Air pools require their saved definition token. Orders-group and plan names distinguish an omitted key from emitted empty first-NUL text.
+[Selected transport](src/unit_path/selected/transport.rs) preserves early returns, per-occurrence rounding and independent output buffers; its message law asks for each operand only when a native branch reaches it. [Saved transfer inputs](src/save/counter_inputs.rs) keep source province and ordered combat references separate from the target. [Mission cache reads](src/save/naval_missions/spotting_cache.rs) use recorded lexical keys and the authenticated physical-country projection; omission constrains only the nonpositive writer branch. Air pools require their saved definition token. Orders-group and plan names distinguish an omitted key from emitted empty first-NUL text.
 
 ## Checking changes
 

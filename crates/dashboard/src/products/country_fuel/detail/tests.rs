@@ -32,7 +32,7 @@ fn recipient_history_follows_native_aliases_without_crossing_reset_boundaries() 
         .map(|hour| {
             let mut frame = fuel_frame(hour, (hour - first) % DAY_HOURS == 0, 9001, (1, 2, 3, 4));
             let mut own = award_row(hour);
-            if let Recorded::Value(window) = &mut own.awards {
+            if let Recorded::Value(window) = &mut own.award_day {
                 window.continuity_start_hour = Some(if hour < first + 2 * DAY_HOURS {
                     first - DAY_HOURS + 1
                 } else {
@@ -129,20 +129,16 @@ fn exact_recipient_history_preserves_zero_corrections_names_gaps_and_reset_lifet
     let mut summary = ScannedFuel::default();
     for hour in [1000, 1024, 1048, 1072, 1096] {
         let mut row = award_row(hour);
-        let Recorded::Value(window) = &mut row.awards else {
+        let Recorded::Value(window) = &mut row.award_day else {
             panic!()
         };
         if hour == 1024 {
-            for entry in &mut window.hours {
-                entry.recipients.clear();
-                entry.received_raw = [0; 3];
-            }
+            window.recipients.clear();
+            window.received_raw = [0; 3];
         }
         if hour == 1048 {
-            for entry in &mut window.hours {
-                for part in &mut entry.recipients {
-                    part.name = Some(b"renamed".to_vec());
-                }
+            for part in &mut window.recipients {
+                part.name = Some(b"renamed".to_vec());
             }
         }
         if hour == 1072 {

@@ -82,7 +82,9 @@ fn synthetic_site(code: &TestCode, offset: usize, indirect: bool) -> (usize, [u8
 
 #[test]
 fn call_spans_validate_boundaries_and_ignore_the_unowned_neighbour() {
-    let _guard = FAMILY_TEST.lock().unwrap();
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let code = TestCode::new();
     let (site, bytes) = synthetic_site(&code, 0, false);
     let callback = target as *const () as usize;
@@ -126,7 +128,9 @@ fn call_spans_validate_boundaries_and_ignore_the_unowned_neighbour() {
 
 #[test]
 fn nine_member_family_is_atomic_and_partial_ownership_never_claims_foreign_bytes() {
-    let _guard = FAMILY_TEST.lock().unwrap();
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let code = TestCode::new();
     let mut hooks = Vec::new();
     for index in 0..9 {
@@ -211,7 +215,9 @@ fn nine_member_family_is_atomic_and_partial_ownership_never_claims_foreign_bytes
 
 #[test]
 fn restored_verification_failure_retains_ownership_through_retry_and_rollback() {
-    let _guard = FAMILY_TEST.lock().unwrap();
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for rollback in [false, true] {
         let code = TestCode::new();
         let (site, bytes) = code.stub(0, target as *const () as usize);
@@ -247,7 +253,9 @@ fn restored_verification_failure_retains_ownership_through_retry_and_rollback() 
 
 #[test]
 fn indirect_target_and_buried_return_survive_until_the_counted_call_finishes() {
-    let _guard = FAMILY_TEST.lock().unwrap();
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let site = hook_indirect_site as *const () as usize;
     let bytes = snapshot(site);
     let mut hook = unsafe {
@@ -297,7 +305,9 @@ fn indirect_target_and_buried_return_survive_until_the_counted_call_finishes() {
 
 #[test]
 fn relay_and_stub_ips_refuse_restoration_even_before_the_counter_increments() {
-    let _guard = FAMILY_TEST.lock().unwrap();
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let code = TestCode::new();
     let (site, bytes) = synthetic_site(&code, 0, true);
     let stub = hook_indirect_ip_stub as *const () as usize;

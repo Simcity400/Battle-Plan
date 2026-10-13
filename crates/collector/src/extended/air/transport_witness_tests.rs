@@ -48,11 +48,11 @@ fn idle_pool_with_retained_region_is_probed_once_with_or_without_registration() 
             ),
             Ok(Outcome::Rows { len: 2 })
         );
-        assert_eq!(
-            memory.0.get(),
-            2,
-            "one pool probe plus one override, no duplicate registered idle demand"
-        );
+        // Two handles, the pool base and the override: a duplicate idle
+        // demand for the registered wing would need a third scratch slot and
+        // truncate. The pass reads the base registry's root once
+        // (`map_air_base_reference::Pass`); it is null, so neither resolves.
+        assert_eq!(memory.0.get(), 1, "one registry root read for both probes");
         assert_eq!(
             output.map(|row| row.handle),
             [wings[0].air_base, wings[0].base_override]

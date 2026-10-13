@@ -64,9 +64,18 @@ impl RocketProduced {
         }
     }
 
-    pub fn observe(&mut self, frame: &DecodedFrame) -> io::Result<()> {
+    pub fn observe(
+        &mut self,
+        format: replay::format::FormatVersion,
+        frame: &DecodedFrame,
+    ) -> io::Result<()> {
         let hour = frame.hour;
-        let read = slot_read(&frame.metrics, TableId::RocketProductionOutput, hour);
+        let read = slot_read(
+            format,
+            &frame.metrics,
+            TableId::RocketProductionOutput,
+            hour,
+        );
         let (Ok(countries), Ok(links), Ok(output)) = (
             frame.complete::<tables::Countries>(),
             frame.complete::<tables::CountryLinks>(),

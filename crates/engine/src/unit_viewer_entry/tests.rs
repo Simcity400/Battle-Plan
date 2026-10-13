@@ -595,6 +595,88 @@ fn shared_division_census_avoids_roster_reads_and_keeps_bounds_and_faults() {
     );
 }
 
+/// With the shared division census, each authenticated division's viewer
+/// entries are hinted from its gathered header before they are read, and the
+/// guarded copies are exactly those of a memory that drops the hints.
+#[test]
+fn shared_division_viewer_entries_are_hinted_before_their_reads() {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Touch {
+        Copy(usize, usize),
+        Hint(usize, usize),
+    }
+    struct Traced<'a> {
+        memory: SliceMemory<'a>,
+        log: std::cell::RefCell<Vec<Touch>>,
+        hints: bool,
+    }
+    impl Memory for Traced<'_> {
+        fn copy(&self, address: usize, out: &mut [u8]) -> bool {
+            self.log.borrow_mut().push(Touch::Copy(address, out.len()));
+            self.memory.copy(address, out)
+        }
+        fn prefetch(&self, address: usize, len: usize) {
+            if self.hints {
+                self.log.borrow_mut().push(Touch::Hint(address, len));
+            }
+        }
+    }
+    let bytes = fixture();
+    let header: [u8; 16] = bytes
+        [DIVISION + cunit::VIEWER_DATA - BASE..DIVISION + cunit::VIEWER_DATA - BASE + 16]
+        .try_into()
+        .unwrap();
+    let viewers = Array::from_header(header, STRIDE).unwrap();
+    assert!(
+        viewers.count != 0,
+        "the fixture division has viewer entries"
+    );
+    let span = viewers.count.min(ENTRY_BATCH as u32) as usize * STRIDE;
+    let run = |hints: bool| {
+        let memory = Traced {
+            memory: SliceMemory {
+                base: BASE,
+                bytes: &bytes,
+            },
+            log: Default::default(),
+            hints,
+        };
+        let mut output = vec![Row::default(); 8];
+        let outcome = walk_with_divisions(
+            &memory,
+            0,
+            BASE,
+            &mut output,
+            Some(DivisionSources {
+                entries: &[DivisionSource {
+                    pointer: DIVISION,
+                    canonical: 1,
+                }],
+                outcome: Outcome::Rows { len: 1 },
+            }),
+        );
+        (outcome, output, memory.log.into_inner())
+    };
+    let (outcome, rows, log) = run(true);
+    let (plain_outcome, plain_rows, plain_log) = run(false);
+    assert_eq!((outcome, &rows), (plain_outcome, &plain_rows));
+    let copies: Vec<_> = log
+        .iter()
+        .filter(|touch| matches!(touch, Touch::Copy(..)))
+        .copied()
+        .collect();
+    assert_eq!(copies, plain_log);
+    let hint = log
+        .iter()
+        .position(|&touch| touch == Touch::Hint(viewers.data, span))
+        .expect("the division's viewer entries are hinted");
+    let read = log
+        .iter()
+        .position(|&touch| touch == Touch::Copy(viewers.data, span))
+        .expect("the division's viewer entries are read");
+    assert!(hint < read);
+}
+
 #[test]
 fn shared_division_batches_preserve_entry_fault_after_capacity_and_partial_headers() {
     struct Fault<'a> {
@@ -664,5 +746,230 @@ fn shared_division_batches_preserve_entry_fault_after_capacity_and_partial_heade
             ),
             Outcome::Unavailable { reason }
         );
+    }
+}
+
+/// [`fixture`] with `count` more divisions after it, division `i` holding
+/// `i % 40` viewer entries (some beyond one entry block), and the shared
+/// census of those divisions.
+fn scale_fixture(count: usize) -> (Vec<u8>, Vec<DivisionSource>) {
+    const UNIT: usize = cunit::VIEWER_COUNT + 4;
+    let mut bytes = fixture();
+    let start = BASE + bytes.len();
+    let entries = start + count * UNIT;
+    let total: usize = (0..count).map(|i| i % 40).sum();
+    bytes.resize(bytes.len() + count * UNIT + total * STRIDE, 0);
+    let mut next = entries;
+    let mut sources = Vec::with_capacity(count);
+    for i in 0..count {
+        let unit = start + i * UNIT;
+        let viewers = i % 40;
+        put(&mut bytes, unit, &(carmy::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            unit + cunit::HANDLE,
+            &(((i as u64 + 1) << 32) | 3).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            unit + cunit::VIEWER_DATA,
+            &(next as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            unit + cunit::VIEWER_DATA + 8,
+            &(viewers as u32).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            unit + cunit::VIEWER_COUNT,
+            &(viewers as u32).to_le_bytes(),
+        );
+        for entry in 0..viewers {
+            let at = next + entry * STRIDE;
+            put(&mut bytes, at + VIEWER, &((i + entry) as u32).to_le_bytes());
+            put(&mut bytes, at + LEVEL, &[(entry % 7) as u8]);
+        }
+        next += viewers * STRIDE;
+        sources.push(DivisionSource {
+            pointer: unit,
+            canonical: 1,
+        });
+    }
+    (bytes, sources)
+}
+
+/// The batched walk over the shared census in `memory`, then the serial
+/// reference over `serial_memory` (each its own source, so a one-shot fault
+/// meets each walk): each division read alone, its header and then each of
+/// its entry blocks. The fixture's fleets and railway guns hold no viewer
+/// entries.
+fn batched_and_serial(
+    memory: &impl Memory,
+    serial_memory: &impl Memory,
+    sources: &[DivisionSource],
+    rows: usize,
+) -> [(Outcome, Vec<Row>); 2] {
+    let mut batched = vec![Row::default(); rows];
+    let new = walk_with_divisions(
+        memory,
+        0,
+        BASE,
+        &mut batched,
+        Some(DivisionSources {
+            entries: sources,
+            outcome: Outcome::Rows { len: sources.len() },
+        }),
+    );
+    let mut serial = vec![Row::default(); rows];
+    let reader = Reader {
+        memory: serial_memory,
+        base: 0,
+    };
+    let mut counter = Counter {
+        len: 0,
+        unread_rows: 0,
+    };
+    let old = sources
+        .iter()
+        .try_for_each(|source| {
+            reader.unit(
+                source.pointer,
+                carmy::VTABLE_RVA,
+                &mut Buffer::Fixed(&mut serial),
+                &mut counter,
+            )
+        })
+        .map_or_else(
+            |reason| Outcome::Unavailable { reason },
+            |()| counter.outcome(),
+        );
+    [(new, batched), (old, serial)]
+}
+
+/// On healthy memory, 5,000 shared-census divisions give the serial rows and
+/// outcome, truncated or not, with their first entry blocks read sixteen
+/// divisions to a guarded scatter instead of one copy each: the walk's
+/// single copies are the later blocks and the census and roster reads.
+#[test]
+fn batched_first_blocks_match_the_serial_walk_at_scale() {
+    use crate::memory::{CountedMemory, ReadCounts};
+    const COUNT: usize = 5_000;
+    let (bytes, sources) = scale_fixture(COUNT);
+    let rows: usize = (0..COUNT).map(|i| i % 40).sum();
+    let memory = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let [batched, serial] = batched_and_serial(&memory, &memory, &sources, rows);
+    assert_eq!(batched.0, Outcome::Rows { len: rows });
+    assert_eq!(batched, serial);
+    let [batched, serial] = batched_and_serial(&memory, &memory, &sources, rows - 50);
+    assert_eq!(batched, serial);
+    assert!(matches!(
+        batched.0,
+        Outcome::Truncated {
+            unread_rows: 50,
+            ..
+        }
+    ));
+    let counted = CountedMemory::new(memory);
+    let prior = ReadCounts::take_current();
+    let mut output = vec![Row::default(); rows];
+    walk_with_divisions(
+        &counted,
+        0,
+        BASE,
+        &mut output,
+        Some(DivisionSources {
+            entries: &sources,
+            outcome: Outcome::Rows { len: COUNT },
+        }),
+    );
+    let reads = ReadCounts::take_current();
+    prior.add_current();
+    let later_blocks = (0..COUNT).filter(|i| i % 40 > ENTRY_BATCH).count() as u64;
+    assert!(reads.copy_calls < later_blocks + 64, "{reads:?}");
+}
+
+/// The faults the equality tests place in [`scale_fixture`]: a division's
+/// first entry block, a division's second block and a division's header.
+fn scale_fault_sites(bytes: &[u8], sources: &[DivisionSource]) -> [std::ops::Range<usize>; 3] {
+    let entries = |i: usize| {
+        let at = sources[i].pointer + cunit::VIEWER_DATA - BASE;
+        u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize
+    };
+    let first = entries(37) + 3 * STRIDE;
+    let second = entries(75) + (ENTRY_BATCH + 1) * STRIDE;
+    let header = sources[90].pointer + cunit::VIEWER_DATA;
+    [first..first + 4, second..second + 4, header..header + 16]
+}
+
+/// A persistent fault gives the serial walk's result: a scatter it breaks
+/// leaves the rest of its group to their own reads, counted once; a fault
+/// the scatter never meets (a later block, a header) counts nothing.
+#[test]
+fn a_persistent_viewer_fault_gives_the_serial_result() {
+    use crate::batch_fallback::{Batch, Faulty, count};
+    let (bytes, sources) = scale_fixture(200);
+    let rows: usize = (0..200).map(|i| i % 40).sum();
+    for (site, (range, counted)) in scale_fault_sites(&bytes, &sources)
+        .into_iter()
+        .zip([1, 0, 0])
+        .enumerate()
+    {
+        let before = count(Batch::UnitIntel);
+        let memory = Faulty::new(
+            SliceMemory {
+                base: BASE,
+                bytes: &bytes,
+            },
+            vec![range],
+            false,
+        );
+        let [batched, serial] = batched_and_serial(&memory, &memory, &sources, rows);
+        assert_eq!(batched, serial, "site {site}");
+        assert!(
+            matches!(batched.0, Outcome::Unavailable { .. }),
+            "site {site}"
+        );
+        assert_eq!(count(Batch::UnitIntel) - before, counted, "site {site}");
+    }
+}
+
+/// A one-shot fault never refuses more than the serial walk: a first block
+/// whose scatter it broke is read again at its division's turn.
+#[test]
+fn a_one_shot_viewer_fault_refuses_no_more_than_the_serial_walk() {
+    use crate::batch_fallback::Faulty;
+    let (bytes, sources) = scale_fixture(200);
+    let rows: usize = (0..200).map(|i| i % 40).sum();
+    let healthy = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let [expected, _] = batched_and_serial(&healthy, &healthy, &sources, rows);
+    for (site, range) in scale_fault_sites(&bytes, &sources).into_iter().enumerate() {
+        let once = || {
+            Faulty::new(
+                SliceMemory {
+                    base: BASE,
+                    bytes: &bytes,
+                },
+                vec![range.clone()],
+                true,
+            )
+        };
+        let [batched, serial] = batched_and_serial(&once(), &once(), &sources, rows);
+        assert!(
+            matches!(serial.0, Outcome::Unavailable { .. }),
+            "site {site}"
+        );
+        if site == 0 {
+            // Read again after the scatter consumed the fault.
+            assert_eq!(batched, expected);
+        } else {
+            assert_eq!(batched, serial, "site {site}");
+        }
     }
 }

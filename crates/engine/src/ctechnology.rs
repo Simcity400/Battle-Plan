@@ -4,7 +4,24 @@
 
 /// CTechnology vtable.
 pub const VTABLE_RVA: usize = 0x0295_e2b8;
-/// Technology handle, u32; distinct from the template database index.
+/// The technology's listener subobject, whose vtable [`LISTENER_VTABLE_RVA`]
+/// maps slot 2 (`+0x10`) to observer propagation on the owning technology
+/// (`this - 0x10`).
+pub const LISTENER: usize = 0x10;
+/// The technology listener vtable at [`LISTENER`], the technology's second
+/// vtable.
+pub const LISTENER_VTABLE_RVA: usize = 0x0295_e308;
+/// The listeners classifier propagation notifies after a classifier change
+/// (pointer array, count `+0x24`): dependency-list rebuilding registers each
+/// technology's [`LISTENER`] with the technologies of its template's `+0x308`,
+/// `+0x338` and `+0x320` lists, so a listener need not be a dependent (`+0xB0`,
+/// from the template's `+0x350`).
+pub const LISTENERS: usize = 0x18;
+/// The listener container dependency-list rebuilding appends to instead of
+/// [`LISTENERS`] while it is set (pointer, null otherwise).
+pub const PENDING_LISTENERS: usize = 0x30;
+/// CTechnology u32 technology handle; Serialization copies template +0x3c,
+/// distinct from its database index at +0x38.
 pub const DEFINITION_INDEX: usize = 0x08;
 /// CTechnology owner CTechnologyStatus*.
 pub const STATUS: usize = 0x158;

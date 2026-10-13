@@ -534,3 +534,159 @@ fn growing_civil_wars_capture_5000_native_rosters_and_same_hour_expansion() {
         (1, 1_023, 1_023)
     );
 }
+
+/// Forwards every read and records each hinted address.
+struct Hinted<'a> {
+    memory: crate::memory::SliceMemory<'a>,
+    hints: std::cell::RefCell<Vec<usize>>,
+}
+
+impl Memory for Hinted<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.memory.copy(address, destination)
+    }
+
+    fn prefetch(&self, address: usize, _len: usize) {
+        self.hints.borrow_mut().push(address);
+    }
+}
+
+fn counter_walk(memory: &impl Memory, world: &World) -> (Outcome, Vec<CounterInputsRow>) {
+    let mut rows = vec![CounterInputsRow::default(); 40];
+    let (mut states, mut leaders) = (vec![0; 4_000], vec![0; 4_000]);
+    let (mut neighbors, mut policies) = (vec![0; 4_000], vec![0; 4_000]);
+    let mut rosters = CounterRosters {
+        states: Buffer::Fixed(&mut states),
+        leaders: Buffer::Fixed(&mut leaders),
+        state_len: 0,
+        leader_len: 0,
+        required: Default::default(),
+    };
+    let mut effects = EffectRosters {
+        neighbors: Buffer::Fixed(&mut neighbors),
+        policies: Buffer::Fixed(&mut policies),
+        neighbor_len: 0,
+        policy_len: 0,
+        required: Default::default(),
+    };
+    let outcome = crate::ccountry::walk_counter_inputs_with_effect_rosters(
+        memory,
+        world.module,
+        world.game_state(),
+        &mut rows,
+        &mut rosters,
+        &mut effects,
+    );
+    (outcome, rows)
+}
+
+/// The counter walk hints each country's independent fields before reading
+/// them, so their cache misses overlap; the rows are those of an unhinted
+/// walk.
+#[test]
+fn the_counter_walk_hints_each_countrys_fields_before_reading_them() {
+    let (world, _) = fixture(40);
+    let hinted = Hinted {
+        memory: world.memory(),
+        hints: Default::default(),
+    };
+    assert_eq!(
+        counter_walk(&hinted, &world),
+        counter_walk(&world.memory(), &world)
+    );
+    let hints = hinted.hints.into_inner();
+    for country in 1..=40 {
+        let object = world.object(country);
+        for offset in [
+            crate::ccountry::PRIDE_OF_THE_FLEET,
+            OWNED_STATES,
+            CONTROLLED_STATES,
+            crate::ccountry::DIVISIONS,
+            CORE_STATES,
+            crate::ccountry::CHARACTERS,
+            NEIGHBORS,
+            crate::ccountry::PRODUCTION_STATUS,
+        ] {
+            assert!(hints.contains(&(object + offset)), "{country} +{offset:#x}");
+        }
+    }
+}
+
+/// Forwards every read and counts guarded calls: one per copy and one per
+/// scattered batch.
+struct Guarded<'a> {
+    memory: crate::memory::SliceMemory<'a>,
+    guards: std::cell::Cell<usize>,
+}
+
+impl Memory for Guarded<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.guards.set(self.guards.get() + 1);
+        self.memory.copy(address, destination)
+    }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.guards.set(self.guards.get() + 1);
+        for (index, (address, destination)) in addresses.into_iter().zip(destinations).enumerate() {
+            if !destination.is_empty() && (address == 0 || !self.memory.copy(address, destination))
+            {
+                return index;
+            }
+        }
+        N
+    }
+}
+
+/// A page of leaders costs one guarded batch of their identities, where a
+/// read per leader took one guarded call each (60 here); the handles keep
+/// their native order and nulls.
+#[test]
+fn a_page_of_leaders_reads_their_identities_in_one_guarded_batch() {
+    let (mut world, leader_objects) = fixture(1);
+    let characters = world.object(1) + crate::ccountry::CHARACTERS;
+    let characters = read::<u64>(&world.memory(), characters).unwrap() as usize;
+    let list = world.alloc(60 * 8);
+    for slot in 0..60 {
+        let pointer = if slot % 7 == 3 { 0 } else { leader_objects[0] };
+        world.u64(list + slot * 8, pointer as u64);
+    }
+    world.array(characters + LEADERS[0], list, 60);
+    let counted = Guarded {
+        memory: world.memory(),
+        guards: Default::default(),
+    };
+    let mut rows = [CounterInputsRow::default(); 1];
+    let (mut states, mut leaders) = ([0; 16], [0; 70]);
+    let mut rosters = CounterRosters {
+        states: Buffer::Fixed(&mut states),
+        leaders: Buffer::Fixed(&mut leaders),
+        state_len: 0,
+        leader_len: 0,
+        required: Default::default(),
+    };
+    assert_eq!(
+        walk_counter_inputs_with_rosters(
+            &counted,
+            world.module,
+            world.game_state(),
+            &mut rows,
+            &mut rosters,
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    let handle = (1_u64 << 32) | 4713;
+    let army = rows[0].leader_rosters.unwrap()[0];
+    let expected: Vec<u64> = (0..60)
+        .map(|slot| if slot % 7 == 3 { 0 } else { handle })
+        .collect();
+    assert_eq!(
+        &rosters.leaders[army.start..army.start + army.count],
+        expected
+    );
+    let guards = counted.guards.get();
+    assert!(guards < 60, "{guards} guarded calls");
+}

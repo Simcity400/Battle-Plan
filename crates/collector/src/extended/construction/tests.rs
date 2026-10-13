@@ -117,6 +117,8 @@ fn building_handoff_consumes_its_report_without_live_retry_and_retains_growth() 
 
 #[test]
 fn construction_rest_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
+    // Sizes from the process-wide country hints; hold them at a fresh attachment's values.
+    let _hint = crate::country_scale::hint_guard();
     use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
     static LOCAL: Tracker = Tracker::new();
     let mut job = ConstructionRestJob::default();
@@ -516,7 +518,7 @@ fn occupied_roster_split_copy_preserves_settings_on_short_arena_and_native_failu
             );
             let mut work = super::super::country_counters::RosterWork::default();
             split.observe_occupied(&mut work).unwrap();
-            let status = serde_json::to_value(work.status()).unwrap();
+            let status = serde_json::to_value(work.status().unwrap()).unwrap();
             assert_eq!(status["refused"], u64::from(failure || storage == 0));
             assert_eq!(status["occupied_required"], 1);
         }

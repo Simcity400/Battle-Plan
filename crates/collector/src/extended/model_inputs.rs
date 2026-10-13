@@ -1,6 +1,7 @@
-//! Daily inputs of the 3D land-model selectors that the game computes on demand
+//! Inputs of the 3D land-model selectors that the game computes on demand
 //! while drawing: country-local sub-unit clones whose requirements differ from
-//! their global definition, and every country's equipment rosters.
+//! their global definition, every hour (a country no hooked writer touched is
+//! carried, [`local_store`]), and every country's equipment rosters, daily.
 use crate::{
     sampling::qpc,
     spooling::{table, unavailable},
@@ -106,6 +107,7 @@ impl Captured {
         self.requirements.grow(&mut capacity.requirements);
         self.rosters.grow(&mut capacity.rosters);
     }
+    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -113,6 +115,21 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
+    ) -> [u64; N] {
+        self.capture_carried(memory, base, game_state, hour, force_full, None)
+    }
+
+    /// One hour's tables. With `store`, CountryLocalSubunits carries each
+    /// country the store and the local sub-unit family certify; without it
+    /// every country is read.
+    pub fn capture_carried(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        store: Option<&mut LocalStore>,
     ) -> [u64; N] {
         self.reset();
         let skipped = Outcome::Unavailable {
@@ -122,13 +139,25 @@ impl Captured {
         if should_walk(TABLES[0], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[0]);
             let started = qpc();
-            let walk = cdeployment_status::walk_local_subunits_growing(
-                memory,
-                base,
-                game_state,
-                &mut self.local.rows,
-                &mut self.requirements.first,
-            );
+            let walk = match store {
+                Some(store) if crate::local_subunit_changes::CARRY => local_store::capture(
+                    memory,
+                    base,
+                    game_state,
+                    store,
+                    &crate::local_subunit_changes::Observer,
+                    crate::sampled_verify::current_burned_in(crate::local_subunit_changes::VERIFY),
+                    &mut self.local.rows,
+                    &mut self.requirements.first,
+                ),
+                _ => cdeployment_status::walk_local_subunits_growing(
+                    memory,
+                    base,
+                    game_state,
+                    &mut self.local.rows,
+                    &mut self.requirements.first,
+                ),
+            };
             self.local.outcome = walk.outcome;
             self.required_local_rows = walk.required_rows;
             self.requirements.len = walk.requirements_len;
@@ -201,13 +230,17 @@ impl Captured {
     }
 }
 
+mod local_store;
+pub(crate) use local_store::LocalStore;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use replay::rows::TableRows;
 
+    /// CountryLocalSubunits walks every hour; the rosters only on their slot.
     #[test]
-    fn each_table_walks_only_on_its_own_daily_slot() {
+    fn each_table_walks_on_its_own_cadence() {
         let memory = engine::memory::SliceMemory {
             base: 0,
             bytes: &[],
@@ -226,6 +259,7 @@ mod tests {
                     "{table:?} {hour}"
                 );
             }
+            assert!(should_walk(TableId::CountryLocalSubunits, hour, false));
         }
     }
 

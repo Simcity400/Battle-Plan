@@ -174,6 +174,11 @@ fn build_in(countries: u32, mut bytes: Vec<u8>, hubs: bool) -> World {
         ] {
             heap.vtable(at, rva);
         }
+        // The physical navy pass authenticates each navy's manager backlink.
+        heap.u64(
+            navy + engine::country_naval_movement_inputs::MANAGER,
+            heap.ptr(manager),
+        );
         heap.u32(navy + cstrategic_navy::OWNER, slot);
         // Presence map: mask 31, probe 2, each escort region in its hashed slot.
         let entries = heap.alloc((32 + 2 + 2) * 0x28);
@@ -325,6 +330,11 @@ fn build_in(countries: u32, mut bytes: Vec<u8>, hubs: bool) -> World {
                 ledgers.push(data);
             }
         }
+        // Naval mission registration registers each filed mission once in the navy's set.
+        heap.pointers(
+            navy + cstrategic_navy::REGISTERED_MISSIONS,
+            &[mission(ESCORTING), mission(RAIDER), mission(STRIKE)],
+        );
         fleets.push(fleet);
         tasks.push(own);
     }
@@ -412,189 +422,31 @@ impl Memory for TransportMemory<'_> {
     }
 }
 
-fn transport_world(null_registrations: bool) -> World {
+#[test]
+fn a_null_registration_refuses_the_strict_ledgers_after_one_read() {
     let mut world = build(1);
-    let manager = world.pointer(GAME_STATE + cgame_state::STRATEGIC_NAVY_MANAGER) - world.base;
-    let navies = world.pointer(manager + cstrategic_navy_manager::NAVIES) - world.base;
-    let navy = world.pointer(navies + 8) - world.base;
-    world.put(
-        navy + engine::country_naval_movement_inputs::MANAGER,
-        (world.base + manager) as u64,
-    );
-    // The old fleet census needs no registry proof. Transport authenticates
-    // the same receivers against a synthetic type-specific registry too.
-    let registry = 0x4000;
-    let buckets = 0x5000;
-    world.put(
-        creference_registry::LOW_ROOTS_RVA + 61 * 8,
-        (world.base + registry) as u64,
-    );
-    world.put(
-        registry + creference_registry::ENTRIES,
-        (world.base + buckets) as u64,
-    );
-    world.bytes[registry + creference_registry::COUNT..registry + creference_registry::COUNT + 4]
-        .copy_from_slice(&5_u32.to_le_bytes());
-    world.bytes[registry + creference_registry::MASK..registry + creference_registry::MASK + 4]
-        .copy_from_slice(&7_u32.to_le_bytes());
-    world.bytes[registry + creference_registry::OVERFLOW_DISTANCE] = 5;
-    let homes: Vec<_> = (0..5)
-        .map(|index| {
-            let hash = task_handle(1, index)
-                .rotate_left(32)
-                .wrapping_mul(creference_registry::HASH_MULTIPLIER);
-            (((hash >> 32) as u32 ^ hash as u32) & 7) as usize
-        })
-        .collect();
-    for (index, (placed, distance)) in robin_hood(&homes, 13).into_iter().enumerate() {
-        let task = world.tasks[1][index];
-        world.bytes[task + cunit::CLASS..task + cunit::CLASS + 4]
-            .copy_from_slice(&1_u32.to_le_bytes());
-        let entry = buckets + placed * bucket::STRIDE;
-        world.bytes[entry + bucket::DISTANCE] = distance;
-        world.put(entry + 8, task_handle(1, index));
-        world.put(
-            entry + 16,
-            (world.base + task + ctask_force::SECONDARY_BASE) as u64,
-        );
-    }
-    world.bytes[buckets + 13 * bucket::STRIDE + bucket::DISTANCE] = 255;
-    if null_registrations {
-        let outer = world.pointer(navy + cstrategic_navy::REGION_MISSIONS) - world.base;
-        for region in escort_regions(1) {
-            let header = outer + region as usize * cstrategic_navy::REGION_MISSIONS_STRIDE;
-            let data = world.pointer(header) - world.base;
-            let count =
-                u32::from_le_bytes(world.bytes[header + 12..header + 16].try_into().unwrap());
-            for index in 0..count as usize {
-                world.put(data + index * 8, 0);
-            }
+    let navy = {
+        let manager = world.pointer(GAME_STATE + cgame_state::STRATEGIC_NAVY_MANAGER) - world.base;
+        let navies = world.pointer(manager + cstrategic_navy_manager::NAVIES) - world.base;
+        world.pointer(navies + 8) - world.base
+    };
+    let outer = world.pointer(navy + cstrategic_navy::REGION_MISSIONS) - world.base;
+    for region in escort_regions(1) {
+        let header = outer + region as usize * cstrategic_navy::REGION_MISSIONS_STRIDE;
+        let data = world.pointer(header) - world.base;
+        let count = u32::from_le_bytes(world.bytes[header + 12..header + 16].try_into().unwrap());
+        for index in 0..count as usize {
+            world.put(data + index * 8, 0);
         }
     }
-    world
-}
-
-fn capture_transport(
-    world: &World,
-    capacity: Capacities,
-    fail_once: Option<usize>,
-) -> (
-    Captured,
-    replay::rows::TransportMissionInputs,
-    Vec<(usize, usize)>,
-) {
-    let mut captured = Captured::with_capacities(&capacity);
-    let (packet, reads) = capture_transport_in(&mut captured, world, fail_once);
-    (captured, packet, reads)
-}
-
-fn capture_transport_in(
-    captured: &mut Captured,
-    world: &World,
-    fail_once: Option<usize>,
-) -> (replay::rows::TransportMissionInputs, Vec<(usize, usize)>) {
-    use super::super::{
-        country_naval_movement_inputs as movement, transport_mission_shared as transport,
-    };
     let memory = TransportMemory {
-        world,
+        world: &world,
         reads: Default::default(),
-        fail_once,
+        fail_once: None,
         failed: Default::default(),
     };
-    let mut holder = movement::Captured::new(movement::Capacities {
-        navies: 2,
-        ..Default::default()
-    });
-    let mut movement = movement::Shared::new(Default::default());
-    let mut reader = holder.begin(
-        &memory,
-        world.base,
-        world.game_state,
-        Some(71),
-        &mut movement,
-    );
-    let mut shared = transport::Shared::new(transport::Capacities {
-        navies: 2,
-        ledgers: 3,
-        occurrences: 5,
-        receivers: 5,
-        access_modes: 0,
-        ..Default::default()
-    });
-    captured.capture_with_transport(
-        &memory,
-        world.base,
-        world.game_state,
-        71,
-        true,
-        None,
-        &mut holder,
-        &mut shared,
-    );
-    assert!(
-        captured
-            .census
-            .first
-            .iter()
-            .all(|member| member.task == 0 && member.mission_header.is_none())
-    );
-    assert!(captured.scratch.iter().all(|pointer| *pointer == 0));
-    shared.finish();
-    let packet = shared.projection().unwrap().unwrap();
-    captured.transport.retire();
-    holder.finish(
-        &memory,
-        world.base,
-        world.game_state,
-        movement::OwnerCensus {
-            owners: std::iter::empty(),
-            failure: None,
-        },
-        &mut movement,
-        &reader,
-    );
-    reader.clear();
-    drop(reader);
-    let reads = memory.reads.into_inner();
-    (packet, reads)
-}
-
-#[test]
-fn transport_receiver_growth_uses_full_original_occurrence_demand() {
-    let world = transport_world(false);
-    let mut capacity = Capacities {
-        receivers: 1,
-        ..fixture_capacities(&world)
-    };
-    let (mut captured, packet, _) = capture_transport(&world, capacity, None);
-    assert!(
-        packet.navies.unwrap()[1]
-            .ledgers
-            .as_ref()
-            .unwrap()
-            .iter()
-            .any(|ledger| ledger.occurrences.is_none())
-    );
-    assert_eq!(captured.entries.required, 5);
-    captured.grow(&mut capacity);
-    assert!(capacity.receivers >= 5);
-    let (packet, _) = capture_transport_in(&mut captured, &world, None);
-    assert!(
-        packet.navies.unwrap()[1]
-            .ledgers
-            .as_ref()
-            .unwrap()
-            .iter()
-            .all(|ledger| ledger.occurrences.is_some())
-    );
-    assert_eq!(captured.transport.controls.len, 3);
-}
-
-#[test]
-fn transport_nullable_ledger_uses_original_pass_and_keeps_strict_null_refusal() {
-    let world = transport_world(true);
-    let (captured, packet, reads) = capture_transport(&world, fixture_capacities(&world), None);
+    let mut captured = Captured::with_capacities(&fixture_capacities(&world));
+    captured.capture(&memory, world.base, world.game_state, 71, true, None);
     assert!(matches!(
         captured.ledgers.outcome,
         Outcome::Unavailable {
@@ -605,94 +457,162 @@ fn transport_nullable_ledger_uses_original_pass_and_keeps_strict_null_refusal() 
         captured.task_forces.outcome,
         Outcome::Rows { len: 4 }
     ));
-    let navies = packet.navies.unwrap();
-    assert_eq!(navies.len(), 2);
-    assert!(!navies[0].present);
-    let ledgers = navies[1].ledgers.as_ref().unwrap();
-    assert_eq!(ledgers[0].occurrences, Some(vec![0, 0]));
-    assert_eq!(ledgers[2].occurrences, Some(vec![0]));
-    assert_eq!(packet.receivers, Some(Vec::new()));
-    for index in 0..2 {
-        assert_eq!(
-            reads
-                .iter()
-                .filter(|&&(at, _)| at == world.base + world.ledgers[1] + index * 8)
-                .count(),
-            1
-        );
-    }
-}
-
-#[test]
-fn transport_raw_ledgers_survive_old_stat_and_weather_failures() {
-    for weather in [false, true] {
-        let mut world = transport_world(true);
-        if weather {
-            world.put(GAME_STATE + cgame_state::WEATHER_MANAGER, 0);
-        } else {
-            world.put(world.tasks[1][STRIKE] + cunit::STAT_BLOCK, 0);
-        }
-        let (captured, packet, _) = capture_transport(&world, fixture_capacities(&world), None);
-        assert!(matches!(
-            captured.task_forces.outcome,
-            Outcome::Unavailable { .. }
-        ));
-        assert!(
-            packet.navies.unwrap()[1]
-                .ledgers
-                .as_ref()
-                .unwrap()
-                .iter()
-                .all(|ledger| ledger.occurrences.is_some())
-        );
-        assert_eq!(packet.receivers, Some(Vec::new()));
-    }
-}
-
-#[test]
-fn transport_lost_original_header_attempt_coverage_never_reprobes() {
-    let world = transport_world(false);
-    let capacity = Capacities {
-        census: 0,
-        ..fixture_capacities(&world)
-    };
-    let (_, packet, reads) = capture_transport(&world, capacity, None);
-    assert!(
-        packet.navies.unwrap()[1]
-            .ledgers
-            .as_ref()
-            .unwrap()
+    let reads = memory.reads.into_inner();
+    assert_eq!(
+        reads
             .iter()
-            .all(|ledger| ledger.occurrences.is_none())
+            .filter(|&&(at, _)| at == world.base + world.ledgers[1])
+            .count(),
+        1
     );
-    for index in [STRIKE, RAIDER, ESCORTING] {
-        let mission = world.base + world.tasks[1][index] + ctask_force::NAVAL_MISSION;
-        assert_eq!(reads.iter().filter(|&&(at, _)| at == mission).count(), 1);
+}
+
+/// The offset of country `slot`'s navy.
+fn navy_of(world: &World, slot: u32) -> usize {
+    let manager = world.pointer(GAME_STATE + cgame_state::STRATEGIC_NAVY_MANAGER) - world.base;
+    let navies = world.pointer(manager + cstrategic_navy_manager::NAVIES) - world.base;
+    world.pointer(navies + slot as usize * 8) - world.base
+}
+
+/// The address of a navy's region ledger headers.
+fn region_headers(world: &World, slot: u32) -> usize {
+    world.pointer(navy_of(world, slot) + cstrategic_navy::REGION_MISSIONS)
+}
+
+/// Zeroes a navy's registered-mission count and, with `ledgers`, every
+/// region ledger count, as the reset does.
+fn empty_navy(world: &mut World, slot: u32, ledgers: bool) {
+    let navy = navy_of(world, slot);
+    let count = navy + cstrategic_navy::REGISTERED_MISSIONS + 12;
+    world.bytes[count..count + 4].fill(0);
+    if ledgers {
+        let headers = region_headers(world, slot) - world.base;
+        for region in 0..=REGIONS as usize {
+            let count = headers + region * cstrategic_navy::REGION_MISSIONS_STRIDE + 12;
+            world.bytes[count..count + 4].fill(0);
+        }
     }
 }
 
+fn ledger_read(
+    world: &World,
+    skip: LedgerSkip,
+) -> (
+    Vec<NavalMissionLedgerRow>,
+    LedgerCounts,
+    Vec<(usize, usize)>,
+) {
+    let memory = TransportMemory {
+        world,
+        reads: Default::default(),
+        fail_once: None,
+        failed: Default::default(),
+    };
+    let mut captured = Captured::with_capacities(&fixture_capacities(world));
+    captured.capture_skipping(&memory, world.base, world.game_state, 71, skip);
+    let views = captured.tables();
+    let ledgers = rows::<tables::NavalMissionLedgers>(&views[1]).to_vec();
+    (ledgers, captured.ledger_counts(), memory.reads.into_inner())
+}
+
+/// A navy whose registered-mission set is empty has every region ledger
+/// Empty  (append, remove and reset write both),
+/// so outside its sampled slice its region headers are not read, and the
+/// ledgers are those of a read of every navy.
 #[test]
-fn transport_failed_original_header_is_not_healed_by_second_read() {
-    let world = transport_world(false);
-    let mission = world.base + world.tasks[1][STRIKE] + ctask_force::NAVAL_MISSION;
-    let (_, packet, reads) = capture_transport(&world, fixture_capacities(&world), Some(mission));
-    assert!(
-        packet.navies.unwrap()[1].ledgers.as_ref().unwrap()[1]
-            .occurrences
-            .is_none()
+fn a_navy_without_registered_missions_reads_no_region_header_outside_its_slice() {
+    use crate::sampled_verify::Check;
+    let mut world = build(3);
+    empty_navy(&mut world, 2, true);
+    let headers = region_headers(&world, 2);
+    let reads_headers = |reads: &[(usize, usize)]| reads.iter().any(|&(at, _)| at == headers);
+    let (all, counts, reads) = ledger_read(&world, LedgerSkip::NEVER);
+    assert!(reads_headers(&reads));
+    assert_eq!(counts.read, 3);
+    assert!(all.iter().all(|row| row.owner != 2) && !all.is_empty());
+    // Hour 71 samples slot 23: navy 2 is skipped.
+    let skip = LedgerSkip {
+        enabled: true,
+        check: Check::Slice { hour: 71 },
+    };
+    let (ledgers, counts, reads) = ledger_read(&world, skip);
+    assert_eq!(ledgers, all);
+    assert!(!reads_headers(&reads));
+    assert_eq!(
+        counts,
+        LedgerCounts {
+            skipped: 1,
+            read: 2,
+            verified: 0,
+            mismatches: 0,
+        }
     );
-    assert_eq!(reads.iter().filter(|&&(at, _)| at == mission).count(), 1);
+    // Its slice, and verify mode, read it and compare an empty ledger.
+    for check in [Check::Slice { hour: 26 }, Check::Every] {
+        let skip = LedgerSkip {
+            enabled: true,
+            check,
+        };
+        let (ledgers, counts, reads) = ledger_read(&world, skip);
+        assert_eq!(ledgers, all);
+        assert!(reads_headers(&reads));
+        assert_eq!(
+            counts,
+            LedgerCounts {
+                skipped: 0,
+                read: 3,
+                verified: 1,
+                mismatches: 0,
+            }
+        );
+    }
+}
+
+/// A skippable navy whose ledgers still file missions is a missed writer:
+/// read in its slice, it publishes the fresh ledgers, counts a mismatch and
+/// stops every later skip.
+#[test]
+fn a_filed_ledger_behind_an_empty_registered_set_is_a_published_mismatch() {
+    use crate::sampled_verify::Check;
+    let mut world = build(3);
+    let (all, _, _) = ledger_read(&world, LedgerSkip::NEVER);
+    assert!(all.iter().any(|row| row.owner == 3));
+    empty_navy(&mut world, 3, false);
+    for check in [Check::Slice { hour: 3 }, Check::Every] {
+        let skip = LedgerSkip {
+            enabled: true,
+            check,
+        };
+        let (ledgers, counts, _) = ledger_read(&world, skip);
+        assert_eq!(ledgers, all);
+        assert_eq!(
+            counts,
+            LedgerCounts {
+                skipped: 0,
+                read: 3,
+                verified: 1,
+                mismatches: 1,
+            }
+        );
+    }
+    crate::navy_ledger_changes::record(LedgerCounts {
+        skipped: 0,
+        read: 3,
+        verified: 1,
+        mismatches: 1,
+    });
+    assert!(!LedgerSkip::current().enabled);
 }
 
 #[test]
-fn transport_native_empty_manager_does_not_heal_missing_strict_country_navy() {
-    let mut world = transport_world(false);
+fn an_empty_manager_does_not_heal_a_missing_strict_country_navy() {
+    let mut world = build(1);
     let capacity = fixture_capacities(&world);
     let manager = world.pointer(GAME_STATE + cgame_state::STRATEGIC_NAVY_MANAGER) - world.base;
     world.put(manager + cstrategic_navy_manager::NAVIES, 0);
     world.put(manager + cstrategic_navy_manager::NAVIES + 8, 0);
-    let (captured, packet, _) = capture_transport(&world, capacity, None);
-    assert_eq!(packet.navies, Some(Vec::new()));
+    let mut captured = Captured::with_capacities(&capacity);
+    captured.capture(&world.slice(), world.base, world.game_state, 71, true, None);
     assert!(matches!(
         captured.ledgers.outcome,
         Outcome::Unavailable {
@@ -890,6 +810,38 @@ fn an_off_hour_reads_its_slice_and_countries_whose_commanders_changed() {
     // The hourly tables are complete every hour.
     assert_eq!(rows::<tables::NavalMissionTaskForces>(&views[0]).len(), 120);
     assert_eq!(rows::<tables::NavalMissionLedgers>(&views[1]).len(), 90);
+}
+
+/// A modifier rebuild the naval tree family observed (its certificate moved)
+/// is read within the hour, outside the country's slice; the daily slice
+/// alone left it up to a day old. An unobservable certificate reads the
+/// country every hour.
+#[test]
+fn a_moved_certificate_is_read_within_the_hour() {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let world = build(30);
+    let mut captured = Captured::with_capacities(&fixture_capacities(&world));
+    captured.sequence = |_| Some((1, SEQUENCE.load(std::sync::atomic::Ordering::Relaxed)));
+    let mut fingerprints = SliceFingerprints::new();
+    capture(&mut captured, &world, 0, true, &mut fingerprints);
+    let owners = |views: &[TableView; N]| {
+        rows::<tables::NavalMissionCountries>(&views[2])
+            .iter()
+            .map(|row| row.country)
+            .collect::<Vec<_>>()
+    };
+    let views = capture(&mut captured, &world, 5, false, &mut fingerprints);
+    assert_eq!(owners(&views), [5, 29]);
+    // Every receiver's tree was rebuilt: every country is read at hour 6.
+    SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let views = capture(&mut captured, &world, 6, false, &mut fingerprints);
+    assert_eq!(owners(&views), (1..=30).collect::<Vec<_>>());
+    let views = capture(&mut captured, &world, 7, false, &mut fingerprints);
+    assert_eq!(owners(&views), [7]);
+    // Unobserved: every country, every hour.
+    captured.sequence = |_| None;
+    let views = capture(&mut captured, &world, 8, false, &mut fingerprints);
+    assert_eq!(owners(&views), (1..=30).collect::<Vec<_>>());
 }
 
 #[test]
@@ -1287,28 +1239,30 @@ fn worker_capture_sizes_every_naval_mission_arena_before_first_publication_at_fi
 }
 
 #[test]
-fn denied_transport_admission_grows_strict_missions_on_first_and_later_publications() {
-    use super::super::packs::{NavalMissionLoan, OrdinaryPacks};
+fn ordinary_strict_missions_grow_on_first_and_later_publications() {
+    use super::super::{Capacities, Captured, NavalMissionLoan, OrdinaryPart};
 
-    let mut packs = OrdinaryPacks::spare().expect("cold ordinary worker");
+    // The navy part alone: the physical pass and the ledgers that borrow it.
+    let mut owner = Captured::with_capacities(&Capacities::default());
+    let countries =
+        std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let mut loan = NavalMissionLoan {
         force_full: true,
         fingerprints: Some(Box::new(SliceFingerprints::new())),
     };
     for (hour, count) in [5_000, 6_000].into_iter().enumerate() {
         let world = build_world(count, true);
-        packs.capture_with_transport_admission(
-            &world.slice(),
-            world.base,
-            world.game_state,
-            None,
-            (hour as i32, &mut loan),
-            Ok(()),
-            Err("synthetic transport entry unavailable"),
-            Ok(()),
-        );
+        let (base, state, hour) = (world.base, world.game_state, hour as i32);
+        let mut parts = owner.take_ordinary_parts(&countries, base, state, hour, Ok(()), loan);
+        let request = owner.take_ordinary_request(&countries, base, state, hour);
+        for part in &mut parts {
+            if matches!(part.part, OrdinaryPart::Navies(_)) {
+                part.part.capture(&world.slice(), base, state, hour, Ok(()));
+            }
+        }
+        loan = owner.restore_ordinary_request(request, None, parts.map(|part| (part, None)));
         let count = count as usize;
-        let captured = &packs.naval_mission_inputs;
+        let captured = &owner.naval_mission_inputs;
         assert_eq!(
             captured.outcomes(),
             [
@@ -1338,14 +1292,6 @@ fn denied_transport_admission_grows_strict_missions_on_first_and_later_publicati
         assert_eq!(
             rows::<tables::NavalMissionCommanders>(&tables[3]).len(),
             count * 5
-        );
-        assert!(
-            packs
-                .country_appearance
-                .transport_missions_mut()
-                .projection()
-                .unwrap()
-                .is_none()
         );
     }
 }

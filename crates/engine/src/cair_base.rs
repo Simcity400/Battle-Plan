@@ -13,12 +13,14 @@ use crate::{
 mod carrier;
 mod carrier_capture;
 mod demand;
+mod reuse;
 use crate::cair_wing_pool::fuel;
 pub use carrier_capture::{
     CarrierAceSlot, CarrierBase, CarrierBuffers, CarrierCapture, CarrierCountryTerms,
     CarrierDemand, CarrierForecastSlot, CarrierIndexedCertificate, CarrierLengths, CarrierPool,
     CarrierPoolFuel, CarrierRegistration, ContainerFuel, CountryOccurrence, GrowingCarrierBuffers,
 };
+pub use reuse::{HeldBase, RegistrationReuse, WalkedBase};
 
 /// Off-thread host-name storage hint for one independently authenticated base
 /// row. A fresh reference resolver is scoped to this hint only; capture must
@@ -121,6 +123,177 @@ const CONTAINER_FIELD: [RecordField; 1] = [RecordField {
 }];
 const CONTAINER_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&CONTAINER_FIELD, 8).expect("valid record layout");
+
+/// Containers a base's dense list may name for the walk to read only their
+/// slot words ([`dense_plan`]); a longer list takes the full slot scan. A
+/// bound on this shortcut only, never on what a walk records.
+pub const DENSE_BOUND: usize = 64;
+
+/// Why a base takes the full slot scan instead of its dense list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum DenseRefusal {
+    /// The dense header `+0x48` or its entries did not read or are invalid.
+    Header = 0,
+    /// The list names more containers than the slot vector has slots.
+    LongerThanSlots = 1,
+    /// More than [`DENSE_BOUND`] listed containers.
+    OverBound = 2,
+    /// A null entry, or a container listed twice.
+    Entry = 3,
+    /// A listed container's identity or span did not read or authenticate.
+    Container = 4,
+    /// A listed container's country names no country slot.
+    Country = 5,
+    /// A listed container's slot lies beyond the slot vector.
+    SlotRange = 6,
+    /// Two listed containers name one slot.
+    SharedSlot = 7,
+    /// A listed container is not at the slot its country names.
+    Stale = 8,
+}
+
+impl DenseRefusal {
+    pub const COUNT: usize = 9;
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::Header,
+        Self::LongerThanSlots,
+        Self::OverBound,
+        Self::Entry,
+        Self::Container,
+        Self::Country,
+        Self::SlotRange,
+        Self::SharedSlot,
+        Self::Stale,
+    ];
+
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::Header => "dense container list unreadable or invalid",
+            Self::LongerThanSlots => "dense container list longer than the slot vector",
+            Self::OverBound => "dense container list beyond the fast-path bound",
+            Self::Entry => "dense container list entry null or listed twice",
+            Self::Container => "listed container identity or span unreadable",
+            Self::Country => "listed container country names no country slot",
+            Self::SlotRange => "listed container slot beyond the slot vector",
+            Self::SharedSlot => "two listed containers name one slot",
+            Self::Stale => "listed container is not at the slot its country names",
+        }
+    }
+}
+
+/// One listed container and the `+0x30` slot it occupies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DenseEntry {
+    pub slot: u32,
+    pub container: usize,
+}
+
+/// How the registration walk finds each base's occupied container slots.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SlotMode<'a> {
+    /// Read only the slot words a base's dense list names ([`dense_plan`]);
+    /// a base whose list does not prove its slots reads every chunk.
+    pub dense: bool,
+    /// Bases (by handle) that read every chunk regardless.
+    pub full: &'a [u64],
+}
+
+/// The occupied slots of one base's country-container vector (`+0x30`) from its
+/// dense registered-container list (`+0x48`), sorted by slot, when the list
+/// proves them; every other slot is then null.
+///
+/// At run time only container creation (which stores the new container at its
+/// country's canonical slot and appends it to `+0x48`) and country-access
+/// removal (which nulls the slot and erases every occurrence from `+0x48`)
+/// write the slots; the save reader rebuilds both. So the listed containers are
+/// the occupied slots, each at the slot its own country reference (`+0xB0`)
+/// names in the country link table. Each listed container's identity and span
+/// are the exact reads the slot loop makes, its slot comes from that link
+/// entry, and its slot word must hold it. Any other result refuses, and the
+/// base takes the full scan, whose outcome and reasons are the original walk's.
+pub fn dense_plan(
+    memory: &impl Memory,
+    image: usize,
+    base: usize,
+    containers: Array,
+    [countries, links]: [Array; 2],
+    entries: &mut [DenseEntry; DENSE_BOUND],
+) -> Result<usize, DenseRefusal> {
+    use DenseRefusal as Refusal;
+    let dense = base
+        .checked_add(REGISTERED_CONTAINERS)
+        .and_then(|at| Array::read(memory, at, 8))
+        .ok_or(Refusal::Header)?;
+    if dense.count > containers.count {
+        return Err(Refusal::LongerThanSlots);
+    }
+    let len = dense.count as usize;
+    if len > DENSE_BOUND {
+        return Err(Refusal::OverBound);
+    }
+    let mut bytes = [0_u8; DENSE_BOUND * 8];
+    if len != 0 && !read_slice(memory, dense.data, &mut bytes[..len * 8]) {
+        return Err(Refusal::Header);
+    }
+    let expected = image
+        .checked_add(ccountry_air_container::VTABLE_RVA)
+        .ok_or(Refusal::Container)? as u64;
+    for index in 0..len {
+        let word = u64::from_le_bytes(bytes[index * 8..index * 8 + 8].try_into().unwrap());
+        let container = usize::try_from(word)
+            .ok()
+            .filter(|&pointer| pointer != 0)
+            .ok_or(Refusal::Entry)?;
+        if entries[..index]
+            .iter()
+            .any(|entry| entry.container == container)
+        {
+            return Err(Refusal::Entry);
+        }
+        if read::<u64>(memory, container) != Some(expected) {
+            return Err(Refusal::Container);
+        }
+        let mut span = [0_u8; CONTAINER_SPAN];
+        if !container
+            .checked_add(ccountry_air_container::COUNTRY)
+            .is_some_and(|at| read_slice(memory, at, &mut span))
+        {
+            return Err(Refusal::Container);
+        }
+        let country = u32::from_le_bytes(span[..4].try_into().unwrap());
+        // Container creation files a zero id at slot zero and any other id at
+        // its link entry, which is zero for an id not yet linked.
+        let slot = if country == 0 {
+            0
+        } else {
+            if country >= links.count {
+                return Err(Refusal::Country);
+            }
+            let entry = links
+                .element(country, 4)
+                .and_then(|at| read::<u32>(memory, at))
+                .ok_or(Refusal::Country)?;
+            if entry >= countries.count {
+                return Err(Refusal::Country);
+            }
+            entry
+        };
+        if slot >= containers.count {
+            return Err(Refusal::SlotRange);
+        }
+        if entries[..index].iter().any(|entry| entry.slot == slot) {
+            return Err(Refusal::SharedSlot);
+        }
+        let at = containers.element(slot, 8).ok_or(Refusal::SlotRange)?;
+        if read::<u64>(memory, at) != Some(container as u64) {
+            return Err(Refusal::Stale);
+        }
+        entries[index] = DenseEntry { slot, container };
+    }
+    entries[..len].sort_unstable_by_key(|entry| entry.slot);
+    Ok(len)
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -324,6 +497,7 @@ impl<M: Memory> Reader<'_, M> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn registration<O: Memory>(
         &self,
         observed: RegistrationBase,
@@ -332,6 +506,8 @@ impl<M: Memory> Reader<'_, M> {
         buffers: &mut RegistrationBuffers<'_>,
         state: &mut RegistrationState,
         carrier: &mut Option<&mut CarrierCapture<'_, O>>,
+        slots: SlotMode<'_>,
+        mut reuse: Option<&mut (dyn RegistrationReuse + '_)>,
     ) -> Result<(), &'static str> {
         let RegistrationBase {
             pointer: base,
@@ -340,10 +516,31 @@ impl<M: Memory> Reader<'_, M> {
         let containers = self
             .array(base, COUNTRY_CONTAINERS)
             .map_err(|_| "air base container table unreadable or invalid")?;
+        state.last_slots = containers.count;
         state.required_indexed = state.required_indexed.max(containers.count as usize);
         if let Some(carrier) = carrier.as_deref_mut() {
             carrier.indexed_header(containers.count);
         }
+        // A base whose dense list proves its occupied slots reads none of its
+        // slot vector beyond the plan's slot words: the listed containers are
+        // the occupied slots, every other one is null ([`dense_plan`]).
+        let planned = (slots.dense && !slots.full.contains(&base_handle))
+            .then(|| {
+                dense_plan(
+                    self.memory,
+                    self.base,
+                    base,
+                    containers,
+                    countries.arrays(),
+                    &mut state.scratch.plan,
+                )
+                .ok()
+            })
+            .flatten();
+        if planned.is_some() {
+            state.dense_bases += 1;
+        }
+        state.last_plan = planned;
         // Pool and wing pointers with their fixed fields are gathered in
         // 64-row batches instead of one guarded read per object; every pool
         // and wing is still validated and staged in native pool then wing
@@ -369,9 +566,12 @@ impl<M: Memory> Reader<'_, M> {
             wing_pointers,
             wing_records,
             wing_pointer_bytes,
+            plan,
         } = &mut state.scratch;
+        let mut next_planned = 0;
         // The country-slot vector is copied in strided 64-slot chunks, one
-        // guarded round each, matching the raw acquisition's chunk takes. Each
+        // guarded round each, matching the raw acquisition's chunk takes; a
+        // planned base's chunk is laid out from its plan instead. Each
         // container is still completed before the next copied slot is
         // examined, and the first uncopied slot fails at its own position, so
         // a later pointer fault cannot hide an earlier container failure or
@@ -379,17 +579,41 @@ impl<M: Memory> Reader<'_, M> {
         let mut chunk_first = 0;
         while chunk_first < containers.count {
             let chunk = ((containers.count - chunk_first) as usize).min(BATCH);
-            let copied = match containers.element(chunk_first, 8) {
-                Some(base) => self.memory.copy_records(
-                    RecordSources::Strided {
-                        base,
-                        stride: 8,
-                        count: chunk,
-                    },
-                    &CONTAINER_LAYOUT,
-                    &mut container_bytes[..chunk * 8],
-                ),
-                None => 0,
+            let copied = match planned {
+                Some(len) => {
+                    // A chunk naming no listed container is null throughout.
+                    let end = chunk_first + chunk as u32;
+                    let first = next_planned;
+                    while plan[..len]
+                        .get(next_planned)
+                        .is_some_and(|entry| entry.slot < end)
+                    {
+                        next_planned += 1;
+                    }
+                    if first == next_planned {
+                        chunk_first = end;
+                        continue;
+                    }
+                    container_bytes[..chunk * 8].fill(0);
+                    for entry in &plan[first..next_planned] {
+                        let at = (entry.slot - chunk_first) as usize * 8;
+                        container_bytes[at..at + 8]
+                            .copy_from_slice(&(entry.container as u64).to_le_bytes());
+                    }
+                    chunk
+                }
+                None => match containers.element(chunk_first, 8) {
+                    Some(base) => self.memory.copy_records(
+                        RecordSources::Strided {
+                            base,
+                            stride: 8,
+                            count: chunk,
+                        },
+                        &CONTAINER_LAYOUT,
+                        &mut container_bytes[..chunk * 8],
+                    ),
+                    None => 0,
+                },
             };
             for index in 0..chunk {
                 let slot = chunk_first + index as u32;
@@ -408,8 +632,9 @@ impl<M: Memory> Reader<'_, M> {
                     continue;
                 }
                 self.vtable(container, ccountry_air_container::VTABLE_RVA)?;
-                // One span holds the country reference and the capacity word tested by
-                // the pool-admission gate.
+                // One span holds the country reference (+0xB0), the capacity
+                // word (+0xD0) the country-pool registration gate tests and the
+                // fuel scalars the carrier observer records.
                 let mut span = [0u8; CONTAINER_SPAN];
                 if !container
                     .checked_add(ccountry_air_container::COUNTRY)
@@ -418,13 +643,15 @@ impl<M: Memory> Reader<'_, M> {
                     return Err("air base container country unreadable");
                 }
                 let country = u32::from_le_bytes(span[..4].try_into().unwrap());
-                let capacity_raw =
-                    i64::from_le_bytes(span[CONTAINER_SPAN - 8..].try_into().unwrap());
-                // Creation installs a container at its resolved country ordinal, so
-                // reference and ordinal must still agree. At reserved slot zero, callers
-                // short-circuit a zero id without consulting links. Its reference must be
-                // zero or unlinked; a resolving positive country cannot occupy that slot.
-                // Record the raw reference as stored on every accepted path.
+                let (capacity_raw, fuel) = container_span_words(&span);
+                // Container creation installs the container at the ordinal its
+                // own country reference resolves to, so the two must still
+                // agree. At reserved slot zero the callers short-circuit an id
+                // of zero to that ordinal without consulting the link table, so
+                // the reference there must be zero or not yet linked; one that
+                // does resolve names a country whose own slot is positive and
+                // cannot be filed here. The raw reference is recorded as stored
+                // on every accepted path.
                 if slot == 0 {
                     // Only a readable zero link entry is an unlinked id; an
                     // unreadable or out-of-range entry stays a fault rather than
@@ -439,7 +666,7 @@ impl<M: Memory> Reader<'_, M> {
                 }
                 if let Some(carrier) = carrier.as_deref_mut() {
                     carrier.indexed_container(country, slot, container);
-                    carrier.begin_registration();
+                    carrier.begin_registration(fuel);
                 }
                 let pools = self
                     .array(container, ccountry_air_container::POOLS)
@@ -600,6 +827,9 @@ impl<M: Memory> Reader<'_, M> {
                     wings_len,
                 };
                 state.len += 1;
+                if let Some(reuse) = reuse.as_deref_mut() {
+                    reuse.container(country);
+                }
                 if let Some(carrier) = carrier.as_deref_mut() {
                     carrier.finish_registration(Some(wings_len));
                 }
@@ -613,10 +843,27 @@ impl<M: Memory> Reader<'_, M> {
     }
 }
 
-/// Bytes from the container's country reference to the end of its capacity
-/// word, read as one span.
+/// Bytes from the container's country reference (`+0xB0`) to the end of its
+/// allocated fuel word, the end of the 0xF8-byte container, read as one
+/// span: the country, the capacity word (`+0xD0`), and the fuel demand
+/// (`+0xE0`) and allocation (`+0xF0`) the carrier observer records.
 pub const CONTAINER_SPAN: usize =
-    ccountry_air_container::CAPACITY_RAW + 8 - ccountry_air_container::COUNTRY;
+    ccountry_air_container::FUEL_ALLOCATED_RAW + 8 - ccountry_air_container::COUNTRY;
+
+/// The capacity word and both fuel scalars of one container span.
+pub fn container_span_words(span: &[u8; CONTAINER_SPAN]) -> (i64, ContainerFuel) {
+    let word = |offset: usize| {
+        let at = offset - ccountry_air_container::COUNTRY;
+        i64::from_le_bytes(span[at..at + 8].try_into().unwrap())
+    };
+    (
+        word(ccountry_air_container::CAPACITY_RAW),
+        ContainerFuel {
+            demand: Ok(word(ccountry_air_container::FUEL_DEMAND_RAW)),
+            allocated: Ok(word(ccountry_air_container::FUEL_ALLOCATED_RAW)),
+        },
+    )
+}
 
 /// One country's registered pool membership at one base, in native order.
 ///
@@ -663,6 +910,10 @@ pub struct RegistrationWalk {
     pub required_bases: usize,
     pub required_indexed: usize,
     pub required_pools: usize,
+    /// Bases whose dense list proved their occupied slots ([`SlotMode`]).
+    pub dense_bases: usize,
+    /// State bases whose earlier output was appended ([`RegistrationReuse`]).
+    pub reused_bases: usize,
 }
 
 #[derive(Default)]
@@ -673,6 +924,11 @@ struct RegistrationState {
     required_wings: usize,
     required_indexed: usize,
     required_pools: usize,
+    dense_bases: usize,
+    reused_bases: usize,
+    /// The slot count and plan length of the base last begun.
+    last_slots: u32,
+    last_plan: Option<usize>,
     scratch: RegistrationScratch,
 }
 
@@ -687,6 +943,8 @@ struct RegistrationScratch {
     wing_pointers: [usize; BATCH],
     wing_records: [u8; BATCH * WING_RECORD_BYTES],
     wing_pointer_bytes: [u8; BATCH * 8],
+    /// The current base's listed containers ([`dense_plan`]).
+    plan: [DenseEntry; DENSE_BOUND],
 }
 
 impl Default for RegistrationScratch {
@@ -699,6 +957,7 @@ impl Default for RegistrationScratch {
             wing_pointers: [0; BATCH],
             wing_records: [0; BATCH * WING_RECORD_BYTES],
             wing_pointer_bytes: [0; BATCH * 8],
+            plan: [DenseEntry::default(); DENSE_BOUND],
         }
     }
 }
@@ -750,7 +1009,24 @@ pub fn walk_registrations<M: Memory>(
     game_state: usize,
     buffers: RegistrationBuffers<'_>,
 ) -> RegistrationWalk {
-    walk_registrations_inner::<M, M>(memory, base, game_state, buffers, &[], None)
+    walk_registrations_planned(memory, base, game_state, buffers, SlotMode::default(), None)
+}
+
+/// [`walk_registrations`] finding each base's occupied slots as `slots`
+/// says. A base its dense list proves reads only its listed containers' slot
+/// words; the rows, wings and outcome are those of the full scan. With
+/// `reuse`, a state base whose subtree it says this memory holds as an earlier
+/// walk read it appends that walk's output instead of walking it again
+/// ([`RegistrationReuse`]), and each state base walked is reported to it.
+pub fn walk_registrations_planned<M: Memory>(
+    memory: &M,
+    base: usize,
+    game_state: usize,
+    buffers: RegistrationBuffers<'_>,
+    slots: SlotMode<'_>,
+    reuse: Option<&mut (dyn RegistrationReuse + '_)>,
+) -> RegistrationWalk {
+    walk_registrations_inner::<M, M>(memory, base, game_state, buffers, &[], None, slots, reuse)
 }
 
 /// Feeds the fixed optional observer at the existing read/authentication
@@ -766,9 +1042,46 @@ pub fn walk_registrations_with_carrier<M: Memory, O: Memory>(
     base_rows: &[Row],
     carrier: &mut CarrierCapture<'_, O>,
 ) -> RegistrationWalk {
-    walk_registrations_inner(memory, base, game_state, buffers, base_rows, Some(carrier))
+    walk_registrations_with_carrier_planned(
+        memory,
+        base,
+        game_state,
+        buffers,
+        base_rows,
+        carrier,
+        SlotMode::default(),
+        None,
+    )
 }
 
+/// [`walk_registrations_with_carrier`] finding each base's occupied slots as
+/// `slots` says, appending earlier outputs `reuse` offers
+/// ([`walk_registrations_planned`]). The observer sees the same containers in
+/// the same order; it observes no state base.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_registrations_with_carrier_planned<M: Memory, O: Memory>(
+    memory: &M,
+    base: usize,
+    game_state: usize,
+    buffers: RegistrationBuffers<'_>,
+    base_rows: &[Row],
+    carrier: &mut CarrierCapture<'_, O>,
+    slots: SlotMode<'_>,
+    reuse: Option<&mut (dyn RegistrationReuse + '_)>,
+) -> RegistrationWalk {
+    walk_registrations_inner(
+        memory,
+        base,
+        game_state,
+        buffers,
+        base_rows,
+        Some(carrier),
+        slots,
+        reuse,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn walk_registrations_inner<M: Memory, O: Memory>(
     memory: &M,
     base: usize,
@@ -776,6 +1089,8 @@ fn walk_registrations_inner<M: Memory, O: Memory>(
     mut buffers: RegistrationBuffers<'_>,
     base_rows: &[Row],
     mut carrier: Option<&mut CarrierCapture<'_, O>>,
+    slots: SlotMode<'_>,
+    mut reuse: Option<&mut (dyn RegistrationReuse + '_)>,
 ) -> RegistrationWalk {
     let mut state = RegistrationState::default();
     let mut required_links = 0;
@@ -834,14 +1149,63 @@ fn walk_registrations_inner<M: Memory, O: Memory>(
                         carrier.authenticated_base(source);
                     }
                 }
+                let observed = RegistrationBase { handle, pointer };
+                // A state base's output depends on its subtree and the
+                // country tables alone; the carrier observes none of it.
+                let Some(reuse) = reuse.as_deref_mut().filter(|_| indexed) else {
+                    reader.registration(
+                        observed,
+                        &countries,
+                        &mut resolved,
+                        &mut buffers,
+                        &mut state,
+                        &mut carrier,
+                        slots,
+                        None,
+                    )?;
+                    continue;
+                };
+                if reader.reuse_registration(
+                    observed,
+                    &countries,
+                    &mut resolved,
+                    &mut buffers,
+                    &mut state,
+                    slots,
+                    reuse,
+                ) {
+                    continue;
+                }
+                reuse.begin(handle, pointer);
+                let before = (
+                    state.len,
+                    state.unread_rows,
+                    state.wings_len,
+                    state.required_pools,
+                    state.required_wings,
+                );
                 reader.registration(
-                    RegistrationBase { handle, pointer },
+                    observed,
                     &countries,
                     &mut resolved,
                     &mut buffers,
                     &mut state,
                     &mut carrier,
+                    slots,
+                    Some(&mut *reuse),
                 )?;
+                if state.unread_rows == before.1 {
+                    reuse.walked(WalkedBase {
+                        slots: state.last_slots,
+                        sought_plan: slots.dense && !slots.full.contains(&handle),
+                        plan: state.last_plan.map(|len| &state.scratch.plan[..len]),
+                        rows: &buffers.registrations[before.0..state.len],
+                        wings_start: before.2,
+                        wings: &buffers.wings[before.2..state.wings_len],
+                        pools: state.required_pools - before.3,
+                        required_wings: state.required_wings - before.4,
+                    });
+                }
             }
         }
         Ok(if state.unread_rows == 0 {
@@ -864,6 +1228,8 @@ fn walk_registrations_inner<M: Memory, O: Memory>(
         required_bases: base_ordinal,
         required_indexed: state.required_indexed,
         required_pools: state.required_pools,
+        dense_bases: state.dense_bases,
+        reused_bases: state.reused_bases,
     }
 }
 

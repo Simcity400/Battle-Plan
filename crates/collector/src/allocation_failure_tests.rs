@@ -183,6 +183,24 @@ fn observed_allocations(output: &Output) -> usize {
         .unwrap()
 }
 
+/// An unwinding callback drains every job its batch accepted, finished or
+/// cancelled before it starts, whether a terminal allocation failure came
+/// before the unwind or during the drain
+/// (`acquisition_jobs::batch_drain_tests`).
+#[test]
+fn a_terminal_failure_never_skips_the_callbacks_drain() {
+    for mode in ["batch-drain-terminal", "batch-drain-midway"] {
+        let output = child(mode, "raw", usize::MAX);
+        successful(&output, mode, "raw", usize::MAX);
+        let case = mode.trim_start_matches("batch-drain-");
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains(&format!("collector-batch-drain-{case}=ok")),
+            "{mode} did not reach its drain checks"
+        );
+    }
+}
+
 #[test]
 fn persistent_null_allocator_survives_prepared_buffers() {
     for name in ["raw", "decode", "extended", "spool", "encode", "status"] {
@@ -299,6 +317,8 @@ fn allocation_safety_child() {
             .unwrap();
         }
         "raw-advisory" => raw_advisory_and_details().unwrap(),
+        "batch-drain-terminal" => crate::acquisition_jobs::batch_drain_tests::exercise("terminal"),
+        "batch-drain-midway" => crate::acquisition_jobs::batch_drain_tests::exercise("midway"),
         "null" => prepared_buffers_null(phase, ordinal).unwrap(),
         "concurrent-watermark" => allocation::concurrent_watermark_exercise().unwrap(),
         #[cfg(feature = "alloc-fault-injection")]
@@ -568,7 +588,6 @@ struct Exercise {
     callback_calls: usize,
     last_attempted_hour: i32,
     attempted_hour_committed: bool,
-    executor_matched: bool,
     conversion_matched: bool,
     publication_intact: bool,
     admitted_after_failure: bool,
@@ -632,10 +651,6 @@ fn validate(outcome: &Exercise, failed: bool) {
     assert!(
         !outcome.incomplete_published,
         "failed decode did not publish a complete frame"
-    );
-    assert!(
-        outcome.executor_matched,
-        "inline and worker ETA paths completed or stopped cleanly"
     );
     assert!(
         outcome.conversion_matched,
@@ -727,16 +742,6 @@ fn exercise_pipeline(
     } else {
         None
     };
-    let mut eta_inline = if matches!(phase, Phase::Callback | Phase::Acquisition) {
-        Some(crate::extended::division_eta_inputs::allocation_failure_route_exercise(0))
-    } else {
-        None
-    };
-    let mut eta_worker = if matches!(phase, Phase::Callback | Phase::Acquisition) {
-        Some(crate::extended::division_eta_inputs::allocation_failure_route_exercise(1))
-    } else {
-        None
-    };
     let mut lexical_zero = (phase == Phase::Decode).then(|| {
         crate::extended::lexical::lexical_test_kit::allocation_failure_decode_exercise(0, 0)
     });
@@ -770,7 +775,6 @@ fn exercise_pipeline(
     REACHED.store(false, Ordering::Relaxed);
     FAIL_PUBLICATION.set(fail_publication);
     let mut original_calls = 0;
-    let mut executor_matched = true;
     let mut conversion_matched = true;
     let mut callback_calls = 0;
     let mut last_attempted_hour = 21;
@@ -830,16 +834,6 @@ fn exercise_pipeline(
                                 },
                                 &mut divisions,
                             );
-                            if !allocation::failed()
-                                && let Some(route) = eta_inline.take()
-                            {
-                                executor_matched &= route();
-                            }
-                            if !allocation::failed()
-                                && let Some(route) = eta_worker.take()
-                            {
-                                executor_matched &= route();
-                            }
                         }
                         Phase::Raw => {
                             let _scope = allocation::enter(Phase::Raw);
@@ -1004,8 +998,6 @@ fn exercise_pipeline(
     {
         let _scope = allocation::enter(Phase::Teardown);
         drop(status_probe);
-        drop(eta_inline);
-        drop(eta_worker);
         drop(lexical_zero);
         drop(lexical_short);
         drop(roster);
@@ -1048,7 +1040,6 @@ fn exercise_pipeline(
         callback_calls,
         last_attempted_hour,
         attempted_hour_committed,
-        executor_matched,
         conversion_matched,
         publication_intact,
         admitted_after_failure,

@@ -1083,6 +1083,7 @@ fn draw_land_action_fixture_with(
         defines: CounterDefines::VANILLA,
         supply_grace: Err("not needed".into()),
         dig_in_factor: Err("unused in fixture".into()),
+        attrition: Err("unused in fixture".into()),
         ability_comms_scaling: Err("unused in fixture".into()),
         ability_no_hq_scaling: Err("unused in fixture".into()),
         comms_max_distance: Err("not needed".into()),
@@ -2139,7 +2140,7 @@ fn a_moving_guns_destination_is_enemy_only_when_its_controller_is_at_war() {
                 .map(|(country, receiver_slot, active)| CountryCounterInputRow {
                     country,
                     directed_wars: Recorded::Value(Some(DirectedWars {
-                        sample_hour: frame.hour,
+                        sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
                         receiver_raw_id: country as i32,
                         receiver_slot,
                         matrix_count: 4,
@@ -2163,8 +2164,30 @@ fn a_moving_guns_destination_is_enemy_only_when_its_controller_is_at_war() {
             (4, Ok(false))
         ])
     );
+    // Without a recorded packet (current recordings store none) the cells
+    // derive from the hour's WarRelations: 100 is at war with 200 only.
     *frame.tables[TableId::CountryCounterInputs.index()] = TableView::Unavailable {
         reason: "directed observations incomplete".into(),
+    };
+    let inputs = gun_inputs(&frame, &links, Ok(&subunit_keys()));
+    assert_eq!(
+        inputs.destination_enemy,
+        BTreeMap::from([
+            (1, Ok(true)),
+            (2, Ok(false)),
+            (3, Ok(false)),
+            (4, Ok(false))
+        ])
+    );
+    // The derived answer follows WarRelations, not the absent packet.
+    *frame.tables[TableId::WarRelations.index()] =
+        TableView::Complete(TableRows::WarRelations(Vec::<WarRelationRow>::new()));
+    let inputs = gun_inputs(&frame, &links, Ok(&subunit_keys()));
+    assert_eq!(inputs.destination_enemy[&1], Ok(false));
+    // Without the hour's WarRelations the derivation refuses by name, while
+    // an uncontrolled destination still needs no war operand.
+    *frame.tables[TableId::WarRelations.index()] = TableView::Unavailable {
+        reason: "war relations incomplete".into(),
     };
     let inputs = gun_inputs(&frame, &links, Ok(&subunit_keys()));
     assert_eq!(

@@ -1,9 +1,13 @@
-//! Additional air-base inventory inputs within the existing registration
-//! observation. No additional base, country, pool or wing roster is walked.
-//! The owner supplies indexed-container certificates and copied pool headers.
-//! Dense countries, retained host bytes and each fuel scalar fail independently
-//! of the capacity and membership row. Scratch and output are caller-owned;
-//! fixed acquisition does not allocate and workers grow from original headers.
+//! Additional air-base inventory inputs for carrier aircraft availability.
+//!
+//! These helpers run inside the existing registration observation. They do not
+//! walk another base, country, pool or wing roster. The registration owner
+//! supplies its exact indexed-container certificates and copied pool header;
+//! dense countries and retained host bytes fail independently of the existing
+//! capacity/membership row. Both fuel scalars come from the registration walk's
+//! own container span ([`super::container_span_words`]). All scratch and output
+//! storage is caller-owned. Fixed acquisition does not allocate; worker arenas
+//! grow from their original native headers.
 
 use crate::{
     Memory, cair_wing_pool, ccountry, ccountry_air_container, cname_group_member,
@@ -128,24 +132,14 @@ fn country_slot<M: Memory>(
     }
 }
 
-/// Both fuel scalars are consumed even without pools or active wings.
-/// Results fail independently; read the second even if the first fails.
-/// The caller supplies its authenticated container pointer.
+/// The carrier fuel calculation consumes both scalars even when no pool or
+/// active wing exists. The registration walk reads them in its one container
+/// span with the country and capacity words ([`super::container_span_words`]);
+/// an unobserved container keeps each as a failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContainerFuel {
     pub demand: Result<i64, &'static str>,
     pub allocated: Result<i64, &'static str>,
-}
-
-pub(crate) fn container_fuel(memory: &impl Memory, container: usize) -> ContainerFuel {
-    ContainerFuel {
-        demand: field(memory, container, ccountry_air_container::FUEL_DEMAND_RAW),
-        allocated: field(
-            memory,
-            container,
-            ccountry_air_container::FUEL_ALLOCATED_RAW,
-        ),
-    }
 }
 
 /// Authenticated subtype identity. The pointer is transient query context for

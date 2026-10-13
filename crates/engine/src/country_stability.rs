@@ -4,8 +4,8 @@
 //! and never calls a game function.
 //!
 //! Stability combines base, war and ruling-party terms, propaganda penalty,
-//! effective modifier and cached coastal contribution before loaded bounds.
-//! War support combines base, offensive/defensive war terms, tension,
+//! effective modifier and cached coastal contribution before loaded bounds. War
+//! support combines base, offensive/defensive war terms, tension,
 //! bombing/interception/hero/convoy/propaganda terms and its effective modifier
 //! before loaded bounds. Maximum command power applies effective flat and
 //! multiplicative terms to its loaded base.
@@ -19,16 +19,43 @@
 //! display text. Only children with tracked values and sources with tracked
 //! keys participate so empty signatures cannot shift bounds.
 //!
-//! Supported sources are ideas, the ruling party's first country leader, its
-//! ideology group, appointed advisors, bound named statics, enabled dynamic
-//! modifiers in constant/evaluated order, and scaled stability/war-support statics.
-//! Other source kinds remain unpaired. Operands include owned war relations,
-//! interception-ring sum, loaded defines, active language and tracked modifier
-//! queries through `modifier_definition::keys_by_names_at`. `raid_launch_inputs`
-//! independently supplies maximum-power modifiers and allocated power in hourly
-//! CountryCommandPower; consumers join the same frame. Tooltip-only ideas,
-//! all-zero dynamic modifiers and zero-valued faction children cannot shift
-//! pairing. Fixtures cover ambiguity, drift, truncation, short reads and fingerprint.
+//! The tree: filtered modifier addition appends exactly one clone (a modifier
+//! child clone) per non-empty source to the country accumulator's children
+//! (CCountry +0x5b8 +0x18), in call order, during country modifier
+//! recalculation; a clone keeps only the source's entries, display string,
+//! category mask and depth, and its token is reset. For `good` keys the child's
+//! entry equals its contribution to the root. The reader therefore replays the
+//! source walk in that order for the kinds whose layout is proven and pairs
+//! each child with a source whose nonzero entries are exactly equal (and, where
+//! the child copies the source's display string, whose display text is equal).
+//! A child is paired only when the leftmost and rightmost order-preserving
+//! assignments agree; anything else stays unpaired and keeps its display text.
+//! Only children with a tracked value and sources with a tracked key take part:
+//! the others could only pair with each other and would move the assignments'
+//! bounds.
+//!
+//! Source kinds replayed here (the others, which stay unpaired, are faction,
+//! difficulty setting items, balance of power, decisions and missions,
+//! operations, focus, autonomy, buildings, technologies, doctrines,
+//! intelligence agency, the difficulty static, abilities and hosted exiles):
+//! ideas (`CPoliticalStatus` +0x50), the ruling party's first country leader,
+//! its ideology group, appointed advisors (`CCountryCharacters` +0x58), the
+//! bound named statics, enabled dynamic modifiers (constant part, then
+//! evaluated part) and the scaled stability and war-support statics (scaled
+//! static copies).
+//!
+//! The copied inputs also include war predicates over owned war relations, the
+//! interception ring sum, loaded defines, active language and tracked modifier
+//! getter values resolved through `modifier_definition::keys_by_names_at`.
+//! `raid_launch_inputs` alone reads `max_command_power`,
+//! `max_command_power_mult` and allocated command power (+0x1f8) into hourly
+//! CountryCommandPower; consumers join that row at the same frame.
+//! `add_command_power` and the top bar subtract allocated power from the
+//! maximum (see `ccountry`). Tooltip-only ideas, all-zero dynamic modifiers and
+//! zero-valued faction children cannot shift pairing because they have no
+//! tracked values. Synthetic fixtures cover pairing, ambiguity, drift,
+//! truncation and short reads; live capture and real-country pairing coverage
+//! remain unverified.
 
 use crate::{
     Memory, cadvisor, ccharacter, ccountry, ccountry_characters, ccountry_leader,
@@ -36,16 +63,34 @@ use crate::{
     cmodifier,
     cpdx_array::Array,
     cpolitical_party, cpolitical_status, crelation, cstatic_modifier, cwar_relation, cworld_threat,
-    dynamic_modifier_entry, localization_root_layout, modifier_accumulator, modifier_definition,
-    modifier_entry,
+    dynamic_modifier_entry, localization_root_layout,
+    memory::{RecordField, RecordLayout, RecordSources},
+    modifier_accumulator, modifier_definition, modifier_entry,
     msvc_string::Descriptor,
     read, read_slice,
     walk::{Buffer, Outcome},
 };
 
-/// Recorded modifier names match replay `CountryStabilityInputRow::KEY_NAMES`
-/// order. Resolve each index through [`modifier_definition::keys_by_names_at`].
-/// These are good percentage keys except maximum command power, a good numeric key.
+mod batched;
+mod observed;
+pub use observed::Memo;
+use observed::Observed;
+
+// Test-only phase labels add no live instrumentation.
+macro_rules! phase {
+    ($phase:ident) => {
+        #[cfg(test)]
+        $crate::country_stability::tests::set_phase(
+            $crate::country_stability::tests::Phase::$phase,
+        );
+    };
+}
+
+/// The modifier script names whose totals and tree lines are recorded; the
+/// replay's `CountryStabilityInputRow::KEY_NAMES` lists the same names in the
+/// same order. Each is resolved to its key index by name
+/// ([`modifier_definition::keys_by_names_at`]). They are registered with flags
+/// 3 (percentage, good) or 2 (max_command_power: number, good).
 pub const KEY_NAMES: [&[u8]; TRACKED] = [
     b"stability_factor",
     b"party_popularity_stability_factor",
@@ -107,8 +152,6 @@ pub const STATIC_NAME: usize = 0x1a8;
 /// Diplomacy word tested by mode-1 war predicates on the counterpart;
 /// only values below one admit the war.
 pub const DIPLOMACY_HOSTING: usize = 0x1a8;
-/// Diplomacy word tested first by mode-0 war queries, used only in fingerprint.
-pub const DIPLOMACY_WAR_COUNTER: usize = 0xa4;
 
 /// Interception-ring layout: data pointer +8, signed size +0x20, signed
 /// head +0x24 and wrapped byte +0x28. Each slot points to an i64 row pointer;
@@ -293,12 +336,8 @@ impl Keys {
         modifier_definition::table(memory, base).map(|table| table == self.table)
     }
 
-    /// Registered keys ascending, without repeats, for one accumulator census.
-    fn sorted(&self) -> ([u32; TRACKED], usize) {
-        Self::ascending(self.keys.iter().flatten())
-    }
-
-    /// [`Self::sorted`] for the keys whose totals are recorded ([`TOTALS`]).
+    /// The keys whose totals are recorded ([`TOTALS`]), ascending without
+    /// repeats, for one accumulator census.
     fn sorted_totals(&self) -> ([u32; TRACKED], usize) {
         Self::ascending(self.keys[..TOTALS].iter().flatten())
     }
@@ -371,6 +410,38 @@ impl Context {
             operands,
             statics,
         })
+    }
+
+    /// One value for the globals that decide every row of a read: the tracked
+    /// keys, their definition table header and operands, the defines, the
+    /// active language and the bound statics. Rows read under equal digests
+    /// differ only by their countries' own fields. World tension is left out:
+    /// daily tension decay moves it every day, a drift each row takes up at its
+    /// country's read.
+    pub fn digest(&self) -> u64 {
+        let mut digest = Signature::new();
+        for (index, key) in self.keys.keys.iter().enumerate() {
+            digest.add(index as u32, key.map_or(-1, i64::from));
+        }
+        digest.add(1, self.keys.table.data as i64);
+        digest.add(2, i64::from(self.keys.table.count));
+        for define in self.defines {
+            digest.add(3, define);
+        }
+        digest.add(4, self.language.len() as i64);
+        for byte in &self.language {
+            digest.add(5, i64::from(*byte));
+        }
+        for operands in self.operands {
+            let operands = operands.unwrap_or_default();
+            digest.add(6, i64::from(operands.flags));
+            digest.add(7, i64::from(operands.selector));
+            digest.add(8, i64::from(operands.eligibility_flags));
+        }
+        for address in self.statics {
+            digest.add(9, address as i64);
+        }
+        digest.digest
     }
 }
 
@@ -459,6 +530,8 @@ struct Candidate {
 
 /// Preallocated per-walk storage; allocated off the game thread.
 pub struct Scratch {
+    observations: Memo,
+    batch_fallbacks: u64,
     children: Vec<Child>,
     candidates: Vec<Candidate>,
     values: Vec<(u32, i64)>,
@@ -481,6 +554,8 @@ const NONE: u32 = u32::MAX;
 impl Scratch {
     pub fn with_demand(demand: Demand) -> std::io::Result<Self> {
         Ok(Self {
+            observations: Memo::default(),
+            batch_fallbacks: 0,
             children: crate::allocation::default_vec(demand.children)?,
             candidates: crate::allocation::default_vec(demand.candidates)?,
             values: crate::allocation::default_vec(demand.values)?,
@@ -497,6 +572,8 @@ impl Scratch {
     /// An allocation-free placeholder; worker walks grow from original headers.
     pub fn vacant() -> Self {
         Self {
+            observations: Memo::default(),
+            batch_fallbacks: 0,
             children: Vec::new(),
             candidates: Vec::new(),
             values: Vec::new(),
@@ -506,10 +583,17 @@ impl Scratch {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.children.capacity() * size_of::<Child>()
+        self.observations.allocated_bytes()
+            + self.children.capacity() * size_of::<Child>()
             + self.candidates.capacity() * size_of::<Candidate>()
             + self.values.capacity() * size_of::<(u32, i64)>()
             + (self.forward.capacity() + self.backward.capacity()) * size_of::<u32>()
+    }
+
+    /// Failed speculative batches in the latest country's walk, including a
+    /// refused country. Each yields once to its original per-object reads.
+    pub fn batch_fallbacks(&self) -> u64 {
+        self.batch_fallbacks
     }
 }
 
@@ -544,6 +628,7 @@ pub fn walk_country<M: Memory>(
     bytes: &mut [u8],
 ) -> Result<CountryWalk, &'static str> {
     walk_country_buffers(
+        &mut Memo::default(),
         memory,
         base,
         countries,
@@ -575,6 +660,40 @@ pub fn walk_country_growing<M: Memory>(
     byte_start: usize,
 ) -> Result<CountryWalk, &'static str> {
     walk_country_buffers(
+        &mut Memo::default(),
+        memory,
+        base,
+        countries,
+        country,
+        context,
+        scratch,
+        input,
+        Buffer::Growing(lines),
+        Buffer::Growing(bytes),
+        line_start,
+        byte_start,
+    )
+}
+
+/// Worker append with shared static observations of this hour only.
+/// Reset `memo` before a new hour's Context, even when its globals compare equal.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_country_growing_memo<M: Memory>(
+    memory: &M,
+    base: usize,
+    countries: &ccountry::Reader<'_, M>,
+    country: ccountry::Country,
+    context: &Context,
+    memo: &mut Memo,
+    scratch: &mut Scratch,
+    input: &mut InputRow,
+    lines: &mut Vec<LineRow>,
+    bytes: &mut Vec<u8>,
+    line_start: usize,
+    byte_start: usize,
+) -> Result<CountryWalk, &'static str> {
+    walk_country_buffers(
+        memo,
         memory,
         base,
         countries,
@@ -591,6 +710,7 @@ pub fn walk_country_growing<M: Memory>(
 
 #[allow(clippy::too_many_arguments)]
 fn walk_country_buffers<M: Memory>(
+    memo: &mut Memo,
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
@@ -603,16 +723,29 @@ fn walk_country_buffers<M: Memory>(
     line_start: usize,
     byte_start: usize,
 ) -> Result<CountryWalk, &'static str> {
+    // Keep the input acquisitions separate: read_children must reobserve its
+    // header so the existing changed-tree consistency check remains reachable.
+    scratch.batch_fallbacks = 0;
     *input = inputs(memory, base, countries, country, context)?;
-    let children = read_children(memory, base, country.pointer, context, scratch)?;
-    if children != input.children as usize {
-        return Err("country modifier tree changed during the walk");
-    }
-    let candidates = candidates(memory, base, country, context, scratch)?;
-    pair(memory, scratch, children, candidates)?;
-    emit(
-        memory, country.id, context, scratch, children, lines, bytes, line_start, byte_start,
-    )
+    // The original acquisitions still run in place. Filtered modifier addition
+    // clones each child's own entries and text; pairing reuses those exact
+    // observations without another copy.
+    let mut observations = std::mem::take(&mut scratch.observations);
+    let memory = Observed::new(memory, &mut observations, memo);
+    let result = (|| {
+        let children = read_children(&memory, base, country.pointer, context, scratch)?;
+        if children != input.children as usize {
+            return Err("country modifier tree changed during the walk");
+        }
+        let candidates = candidates(&memory, base, country, context, scratch)?;
+        pair(&memory, scratch, children, candidates)?;
+        emit(
+            &memory, country.id, context, scratch, children, lines, bytes, line_start, byte_start,
+        )
+    })();
+    scratch.batch_fallbacks = memory.fallbacks();
+    scratch.observations = observations;
+    result
 }
 
 /// Exact emitted line/text demand follows appended modifier clones in source
@@ -683,6 +816,7 @@ fn inputs<M: Memory>(
     country: ccountry::Country,
     context: &Context,
 ) -> Result<InputRow, &'static str> {
+    phase!(Fields);
     let c = country.pointer;
     let mut bases = [0_u8; 16];
     let mut penalties = [0_u8; 40];
@@ -702,6 +836,7 @@ fn inputs<M: Memory>(
     }
     let children = Array::from_header(children, 8).ok_or("country modifier children invalid")?;
     let (at_war, offensive_war, defensive_war) = war_flags(memory, base, countries, country)?;
+    phase!(Totals);
     let mut totals = [None; TOTALS];
     let (sorted, len) = context.keys.sorted_totals();
     let mut values = [modifier_accumulator::Value::default(); TRACKED];
@@ -745,136 +880,10 @@ fn inputs<M: Memory>(
     })
 }
 
-/// A change fingerprint for the sliced family: the bases, stored penalty and
-/// coastal terms, ruling party popularity, the war counter word, the tree's
-/// child header and the tracked keys' raw root entries. It only adds reads.
-pub fn fingerprint_country(
-    memory: &impl Memory,
-    base: usize,
-    country: usize,
-    keys: &Keys,
-) -> Result<u64, &'static str> {
-    let mut bases = [0_u8; 16];
-    let mut penalties = [0_u8; 40];
-    let mut coastal = [0_u8; 8];
-    let mut children = [0_u8; 16];
-    let mut diplomacy = [0_u8; 8];
-    if memory.copy_scattered(
-        [
-            at(country, ccountry::STABILITY)?,
-            at(country, PROPAGANDA_STABILITY_PENALTY)?,
-            at(country, COASTAL_PROTECTION_STABILITY)?,
-            at(country, MODIFIER_CHILDREN)?,
-            at(country, ccountry::DIPLOMACY_STATUS)?,
-        ],
-        &mut [
-            &mut bases,
-            &mut penalties,
-            &mut coastal,
-            &mut children,
-            &mut diplomacy,
-        ],
-    ) != 5
-    {
-        return Err("country stability fingerprint unreadable");
-    }
-    let diplomacy = pointer_from(&diplomacy)?;
-    let war = read::<i32>(memory, at(diplomacy, DIPLOMACY_WAR_COUNTER)?)
-        .ok_or("country war counter unreadable")?;
-    let (sorted, len) = keys.sorted();
-    let mut values = [modifier_accumulator::Value::default(); TRACKED];
-    modifier_accumulator::lookup_many_at(
-        memory,
-        at(country, ccountry::MODIFIER_ACCUMULATOR)?,
-        &sorted[..len],
-        &mut values[..len],
-    )?;
-    let mut digest = Signature::new();
-    for chunk in [&bases[..], &penalties, &coastal, &children[8..]] {
-        for word in chunk.chunks_exact(8) {
-            digest.add(0, i64_at(word, 0));
-        }
-    }
-    digest.add(1, i64::from(war));
-    digest.add(2, popularity(memory, base, country)?);
-    for (key, value) in sorted[..len].iter().zip(&values[..len]) {
-        digest.add(*key, if value.present { value.raw } else { i64::MIN });
-    }
-    sources(memory, base, country, &mut digest)?;
-    Ok(digest.digest)
-}
-
-/// The identities of the replayed sources: a swap between two sources with the
-/// same tracked values (a law or spirit replaced by one with other untracked
-/// effects) keeps the totals and the tree size, so the objects themselves are
-/// covered: the active ideas, the ruling party and its first leader, the
-/// appointed advisors and each dynamic modifier entry's definition, scope and
-/// enabled state (an entry replaced in place keeps the array header).
-fn sources(
-    memory: &impl Memory,
-    base: usize,
-    country: usize,
-    digest: &mut Signature,
-) -> Result<(), &'static str> {
-    let mut object = |tag: u32, address: usize| digest.add(tag, address as i64);
-    let status = pointer(memory, at(country, ccountry::POLITICAL_STATUS)?)?;
-    let ideas = Array::read(memory, at(status, cpolitical_status::IDEAS)?, 8)
-        .ok_or("active idea array invalid")?;
-    object(3, ideas.count as usize);
-    pointer_pages(memory, ideas, |idea| {
-        object(4, idea);
-        Ok(())
-    })?;
-    let party = pointer(memory, at(status, cpolitical_status::RULING_PARTY)?)?;
-    object(5, party);
-    let leaders = Array::read(memory, at(party, cpolitical_party::COUNTRY_LEADERS)?, 8)
-        .ok_or("ruling party leaders invalid")?;
-    if leaders.count != 0 {
-        object(6, pointer(memory, leaders.data)?);
-    }
-    let characters = read::<u64>(memory, at(country, ccountry::CHARACTERS)?)
-        .ok_or("country characters pointer unreadable")?;
-    if characters != 0 {
-        let characters = usize::try_from(characters).map_err(|_| "country characters overflow")?;
-        let advisors = Array::read(
-            memory,
-            at(characters, ccountry_characters::APPOINTED_ADVISORS)?,
-            8,
-        )
-        .ok_or("appointed advisor array invalid")?;
-        object(7, advisors.count as usize);
-        pointer_pages(memory, advisors, |advisor| {
-            object(8, advisor);
-            Ok(())
-        })?;
-    }
-    let entries = Array::read(
-        memory,
-        at(
-            at(country, ccountry::DYNAMIC_MODIFIERS)?,
-            cdynamic_modifier_container::ENTRIES,
-        )?,
-        dynamic_modifier_entry::STRIDE,
-    )
-    .ok_or("dynamic modifier entries invalid")?;
-    object(9, entries.count as usize);
-    for index in 0..entries.count {
-        let entry = entries
-            .element(index, dynamic_modifier_entry::STRIDE)
-            .ok_or("dynamic modifier entry overflow")?;
-        let header = dynamic_modifier_entry::header(memory, base, entry)?;
-        digest.add(10, header.definition as i64);
-        digest.add(
-            11,
-            (i64::from(header.scope_country) << 32) | i64::from(header.scope_state as u32),
-        );
-        digest.add(12, i64::from(header.enabled));
-    }
-    Ok(())
-}
-
-/// Authenticated ruling-party popularity selected through country political status.
+/// Ruling-party popularity reached through country political status +0xf90,
+/// ruling party +0xd0 and popularity +0x88, with authenticated ownership.
 fn popularity(memory: &impl Memory, base: usize, country: usize) -> Result<i64, &'static str> {
+    phase!(Popularity);
     let status = pointer(memory, at(country, ccountry::POLITICAL_STATUS)?)?;
     let head = read::<[u8; 8]>(memory, status).ok_or("political status unreadable")?;
     if u64::from_le_bytes(head) != at(base, cpolitical_status::VTABLE_RVA)? as u64 {
@@ -897,6 +906,7 @@ fn war_flags<M: Memory>(
     countries: &ccountry::Reader<'_, M>,
     country: ccountry::Country,
 ) -> Result<(bool, bool, bool), &'static str> {
+    phase!(Wars);
     let diplomacy = pointer(memory, at(country.pointer, ccountry::DIPLOMACY_STATUS)?)?;
     let mut head = [0_u8; 8];
     let mut owned = [0_u8; 16];
@@ -965,6 +975,7 @@ fn war_flags<M: Memory>(
 
 /// Interception-ring sum for the country's air-statistics object, read passively.
 fn interception(memory: &impl Memory, country: usize) -> Result<i64, &'static str> {
+    phase!(Interception);
     let stats = pointer(memory, at(country, AIR_STATISTICS)?)?;
     let ring = pointer(memory, at(stats, RING)?)?;
     let header = read::<[u8; 0x29]>(memory, ring).ok_or("interception ring unreadable")?;
@@ -998,12 +1009,13 @@ fn interception(memory: &impl Memory, country: usize) -> Result<i64, &'static st
 /// Copies every child's header, display and entries: nonzero-entry
 /// signature, display digest and tracked values.
 fn read_children(
-    memory: &impl Memory,
+    memory: &Observed<'_, impl Memory>,
     base: usize,
     country: usize,
     context: &Context,
     scratch: &mut Scratch,
 ) -> Result<usize, &'static str> {
+    phase!(Children);
     let children = Array::read(memory, at(country, MODIFIER_CHILDREN)?, 8)
         .ok_or("country modifier children unreadable")?;
     let count = children.count as usize;
@@ -1017,22 +1029,21 @@ fn read_children(
     }
     let vtable = at(base, cmodifier::VTABLE_RVA)? as u64;
     let mut index = 0;
-    pointer_pages(memory, children, |child| {
-        let mut head = [0_u8; 8];
-        let mut accumulator = [0_u8; 16];
-        let mut display = [0_u8; 32];
-        if memory.copy_scattered(
-            [
-                child,
-                at(child, cmodifier::ACCUMULATOR)?,
-                at(child, cmodifier::DISPLAY_NAME)?,
-            ],
-            &mut [&mut head, &mut accumulator, &mut display],
-        ) != 3
-        {
-            return Err("country modifier child unreadable");
-        }
-        if u64::from_le_bytes(head) != vtable {
+    // Each page's child heads (vtable, accumulator header, display string
+    // header) in one guarded gather instead of one scattered copy per
+    // child. Children are processed in order, so a child whose head did not
+    // read refuses where the per-child copy did, after every earlier child.
+    let mut heads = [0_u8; 64 * CHILD_HEAD_BYTES];
+    pointer_pages_gathered(memory, children, &mut heads, vtable, |child, head| {
+        phase!(Children);
+        // The per-child copy's own address checks, in its order.
+        at(child, cmodifier::ACCUMULATOR)?;
+        let address = at(child, cmodifier::DISPLAY_NAME)?;
+        let head = head.ok_or("country modifier child unreadable")?;
+        let vtable_word: [u8; 8] = head[..8].try_into().unwrap();
+        let accumulator: [u8; 16] = head[8..24].try_into().unwrap();
+        let display: [u8; 32] = head[24..56].try_into().unwrap();
+        if u64::from_le_bytes(vtable_word) != vtable {
             return Err("country modifier child vtable mismatch");
         }
         let entries = Array::from_header(accumulator, modifier_entry::STRIDE)
@@ -1045,7 +1056,6 @@ fn read_children(
                 }
             }
         })?;
-        let address = at(child, cmodifier::DISPLAY_NAME)?;
         let display = display_digest(memory, address, display)?;
         scratch.children[index] = Child {
             pointer: child,
@@ -1059,6 +1069,93 @@ fn read_children(
         Ok(())
     })?;
     Ok(index)
+}
+
+/// A child's gathered head: vtable, accumulator header and display string
+/// header, as the per-child scattered copy read them.
+const CHILD_HEAD_BYTES: usize = 56;
+const CHILD_HEAD: [RecordField; 3] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: cmodifier::ACCUMULATOR,
+        destination_offset: 8,
+        len: 16,
+    },
+    RecordField {
+        source_offset: cmodifier::DISPLAY_NAME,
+        destination_offset: 24,
+        len: 32,
+    },
+];
+const CHILD_HEAD_LAYOUT: RecordLayout<'static> =
+    match RecordLayout::new(&CHILD_HEAD, CHILD_HEAD_BYTES) {
+        Some(layout) => layout,
+        None => panic!("child head layout"),
+    };
+
+/// [`pointer_pages`] that also gathers each page's child heads
+/// ([`CHILD_HEAD`]) in one guarded call: `visit` gets each child with its
+/// head, `None` from the first child whose head did not read whole.
+fn pointer_pages_gathered(
+    memory: &Observed<'_, impl Memory>,
+    array: Array,
+    heads: &mut [u8; 64 * CHILD_HEAD_BYTES],
+    vtable: u64,
+    mut visit: impl FnMut(usize, Option<&[u8]>) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    let mut bytes = [0; 64 * 8];
+    let mut pointers = [0_usize; 64];
+    let mut first = 0;
+    while first < array.count {
+        phase!(Children);
+        let count = (array.count - first).min(64) as usize;
+        if !read_slice(
+            memory,
+            array.element(first, 8).ok_or("pointer page overflow")?,
+            &mut bytes[..count * 8],
+        ) {
+            return Err("country stability pointers unreadable");
+        }
+        // Pointers are validated in order before any head is read, as the
+        // per-child walk validated each before its copy.
+        let mut valid = 0;
+        let mut invalid = None;
+        for (target, p) in pointers.iter_mut().zip(bytes[..count * 8].chunks_exact(8)) {
+            match pointer_from(p) {
+                Ok(pointer) => {
+                    *target = pointer;
+                    valid += 1;
+                }
+                Err(reason) => {
+                    invalid = Some(reason);
+                    break;
+                }
+            }
+        }
+        phase!(ChildHeads);
+        let fields = memory.copy_records(
+            RecordSources::Pointers(&pointers[..valid]),
+            &CHILD_HEAD_LAYOUT,
+            &mut heads[..valid * CHILD_HEAD_BYTES],
+        );
+        let complete = fields / CHILD_HEAD.len();
+        phase!(Children);
+        batched::children(memory, &pointers[..valid], heads, complete, vtable);
+        for (slot, &child) in pointers[..valid].iter().enumerate() {
+            let head = (slot < complete)
+                .then(|| &heads[slot * CHILD_HEAD_BYTES..(slot + 1) * CHILD_HEAD_BYTES]);
+            visit(child, head)?;
+        }
+        if let Some(reason) = invalid {
+            return Err(reason);
+        }
+        first += count as u32;
+    }
+    Ok(())
 }
 
 /// A validated string's length and digest, streamed without a text-size cap.
@@ -1162,7 +1259,7 @@ fn signature(
 
 /// The replayed sources in modifier-rebuild order.
 fn candidates(
-    memory: &impl Memory,
+    memory: &Observed<'_, impl Memory>,
     base: usize,
     country: ccountry::Country,
     context: &Context,
@@ -1176,30 +1273,55 @@ fn candidates(
         values_len: 0,
     };
     let c = country.pointer;
+    phase!(Ideas);
     // 1-3: ideas, the ruling party's first country leader, its ideology group.
     let status = pointer(memory, at(c, ccountry::POLITICAL_STATUS)?)?;
     let ideas = Array::read(memory, at(status, cpolitical_status::IDEAS)?, 8)
         .ok_or("active idea array invalid")?;
     let primary = at(base, cidea::VTABLE_RVA)? as u64;
     let secondary = at(base, cidea::SECONDARY_VTABLE_RVA)? as u64;
-    pointer_pages(memory, ideas, |idea| {
-        let vtable = read::<u64>(memory, idea).ok_or("active idea vtable unreadable")?;
-        let object = if vtable == secondary {
-            idea.checked_sub(cidea::SECONDARY_BASE)
-                .ok_or("active idea primary underflow")?
-        } else if vtable == primary {
-            idea
-        } else {
-            return Err("active idea vtable mismatch");
-        };
-        if read::<u64>(memory, object) != Some(primary) {
-            return Err("active idea primary vtable mismatch");
+    batched::pointer_pages(memory, ideas, |pointers| {
+        batched::objects(memory, pointers, 8, IDEA_MODIFIER, false);
+        // CIdea can be reached through its secondary base. Authenticate its
+        // own primary vptr before selecting the source payload's allocation.
+        let mut modifiers = [0; 64];
+        let mut len = 0;
+        for &idea in pointers {
+            let object = match read::<u64>(&memory.prepared(), idea) {
+                Some(word) if word == secondary => idea.checked_sub(cidea::SECONDARY_BASE),
+                Some(word) if word == primary => Some(idea),
+                _ => None,
+            };
+            if let Some(object) = object
+                && read::<u64>(&memory.prepared(), object) == Some(primary)
+                && let Some(modifier) = idea.checked_add(IDEA_MODIFIER)
+            {
+                modifiers[len] = modifier;
+                len += 1;
+            }
         }
-        // Add the idea's own modifier pointer with a built display label.
-        list.source(memory, at(idea, IDEA_MODIFIER)?, Kind::Idea, false)?
-            .identity(at(object, cidea::TOKEN)?, 0, 0);
+        batched::sources(memory, &modifiers[..len], false, false);
+        for &idea in pointers {
+            let vtable = read::<u64>(memory, idea).ok_or("active idea vtable unreadable")?;
+            let object = if vtable == secondary {
+                idea.checked_sub(cidea::SECONDARY_BASE)
+                    .ok_or("active idea primary underflow")?
+            } else if vtable == primary {
+                idea
+            } else {
+                return Err("active idea vtable mismatch");
+            };
+            if read::<u64>(memory, object) != Some(primary) {
+                return Err("active idea primary vtable mismatch");
+            }
+            // Political modifier rebuilding adds the array's own pointer +
+            // 0x68, with a built label.
+            list.source(memory, at(idea, IDEA_MODIFIER)?, Kind::Idea, false)?
+                .identity(at(object, cidea::TOKEN)?, 0, 0);
+        }
         Ok(())
     })?;
+    phase!(Leader);
     let party = pointer(memory, at(status, cpolitical_status::RULING_PARTY)?)?;
     let mut leaders = [0_u8; 16];
     let mut group = [0_u8; 8];
@@ -1214,6 +1336,72 @@ fn candidates(
         return Err("ruling party unreadable");
     }
     let leaders = Array::from_header(leaders, 8).ok_or("ruling party leaders invalid")?;
+    // Political modifier rebuilding reaches both objects from this party. Their
+    // checks remain in leader/ideology order; only their individually owned
+    // fields are gathered.
+    let group_pointer = pointer_from(&group).ok();
+    let leader_pointer = if leaders.count != 0 {
+        memory.gather([(leaders.data, 8)], false);
+        pointer(&memory.prepared(), leaders.data).ok()
+    } else {
+        None
+    };
+    memory.gather(
+        leader_pointer
+            .into_iter()
+            .flat_map(|leader| {
+                let source = leader.checked_add(LEADER_MODIFIER);
+                [
+                    Some((leader, 16)),
+                    source
+                        .and_then(|m| m.checked_add(cmodifier::ACCUMULATOR))
+                        .map(|p| (p, 16)),
+                    source
+                        .and_then(|m| m.checked_add(cmodifier::DISPLAY_NAME))
+                        .map(|p| (p, 32)),
+                ]
+                .into_iter()
+                .flatten()
+            })
+            .chain(group_pointer.into_iter().flat_map(|group| {
+                let source = group.checked_add(IDEOLOGY_GROUP_MODIFIER);
+                [
+                    Some((group, 8)),
+                    source
+                        .and_then(|m| m.checked_add(cmodifier::ACCUMULATOR))
+                        .map(|p| (p, 16)),
+                    source
+                        .and_then(|m| m.checked_add(cmodifier::DISPLAY_NAME))
+                        .map(|p| (p, 32)),
+                ]
+                .into_iter()
+                .flatten()
+            })),
+        false,
+    );
+    let mut modifiers = [0; 2];
+    let mut len = 0;
+    if let Some(leader) = leader_pointer
+        && let Some(head) = read::<[u8; 16]>(&memory.prepared(), leader)
+        && u64::from_le_bytes(head[..8].try_into().unwrap())
+            == at(base, ccountry_leader::VTABLE_RVA)? as u64
+        && let Ok(character) = pointer_from(&head[8..])
+    {
+        memory.gather([(character, 16)], false);
+        if let Some(modifier) = leader.checked_add(LEADER_MODIFIER) {
+            modifiers[len] = modifier;
+            len += 1;
+        }
+    }
+    if let Some(group) = group_pointer
+        && read::<u64>(&memory.prepared(), group)
+            == Some(at(base, cideology_group::VTABLE_RVA)? as u64)
+        && let Some(modifier) = group.checked_add(IDEOLOGY_GROUP_MODIFIER)
+    {
+        modifiers[len] = modifier;
+        len += 1;
+    }
+    batched::sources(memory, &modifiers[..len], true, false);
     if leaders.count != 0 {
         // Select the first element only when count is nonzero.
         let leader = pointer(memory, leaders.data)?;
@@ -1233,6 +1421,7 @@ fn candidates(
         )?
         .id(character, 0);
     }
+    phase!(Ideology);
     let group = pointer_from(&group)?;
     if read::<u64>(memory, group) != Some(at(base, cideology_group::VTABLE_RVA)? as u64) {
         return Err("ruling ideology group vtable mismatch");
@@ -1244,6 +1433,7 @@ fn candidates(
         true,
     )?
     .identity(at(group, cideology_group::TOKEN)?, 0, 0);
+    phase!(Advisors);
     // 8: appointed advisors, after faction, difficulty and balance-of-power
     // sources this reader does not replay.
     let object = read::<u64>(memory, at(c, ccountry::CHARACTERS)?)
@@ -1264,17 +1454,36 @@ fn candidates(
         )
         .ok_or("appointed advisor array invalid")?;
         let vtable = at(base, cadvisor::VTABLE_RVA)? as u64;
-        pointer_pages(memory, advisors, |advisor| {
-            let mut head = [0_u8; 24];
-            if !read_slice(memory, advisor, &mut head)
-                || u64::from_le_bytes(head[..8].try_into().unwrap()) != vtable
-            {
-                return Err("appointed advisor unreadable or vtable mismatch");
+        batched::pointer_pages(memory, advisors, |pointers| {
+            batched::objects(memory, pointers, 24, ADVISOR_MODIFIER, true);
+            let mut modifiers = [0; 64];
+            let mut characters = [0; 64];
+            let mut len = 0;
+            for &advisor in pointers {
+                if let Some(head) = read::<[u8; 24]>(&memory.prepared(), advisor)
+                    && u64::from_le_bytes(head[..8].try_into().unwrap()) == vtable
+                    && let Ok(character) = pointer_from(&head[cadvisor::CHARACTER..24])
+                    && let Some(modifier) = advisor.checked_add(ADVISOR_MODIFIER)
+                {
+                    characters[len] = character;
+                    modifiers[len] = modifier;
+                    len += 1;
+                }
             }
-            let character =
-                character_id(memory, base, pointer_from(&head[cadvisor::CHARACTER..24])?)?;
-            list.source(memory, at(advisor, ADVISOR_MODIFIER)?, Kind::Advisor, true)?
-                .identity(at(advisor, cadvisor::IDEA_TOKEN)?, character, 0);
+            memory.gather(characters[..len].iter().map(|&p| (p, 16)), false);
+            batched::sources(memory, &modifiers[..len], true, false);
+            for &advisor in pointers {
+                let mut head = [0_u8; 24];
+                if !read_slice(memory, advisor, &mut head)
+                    || u64::from_le_bytes(head[..8].try_into().unwrap()) != vtable
+                {
+                    return Err("appointed advisor unreadable or vtable mismatch");
+                }
+                let character =
+                    character_id(memory, base, pointer_from(&head[cadvisor::CHARACTER..24])?)?;
+                list.source(memory, at(advisor, ADVISOR_MODIFIER)?, Kind::Advisor, true)?
+                    .identity(at(advisor, cadvisor::IDEA_TOKEN)?, character, 0);
+            }
             Ok(())
         })?;
     }
@@ -1287,6 +1496,7 @@ fn candidates(
     for phase in [1, 2] {
         list.statics(memory, context, phase)?;
     }
+    phase!(Dynamic);
     // 28: enabled dynamic modifiers, the constant part then the values.
     let container = at(c, ccountry::DYNAMIC_MODIFIERS)?;
     let entries = Array::read(
@@ -1295,27 +1505,78 @@ fn candidates(
         dynamic_modifier_entry::STRIDE,
     )
     .ok_or("dynamic modifier entries invalid")?;
-    for index in 0..entries.count {
-        let entry = entries
-            .element(index, dynamic_modifier_entry::STRIDE)
-            .ok_or("dynamic modifier entry overflow")?;
-        let header = dynamic_modifier_entry::header(memory, base, entry)?;
-        if header.enabled == 0 {
-            continue;
+    for first in (0..entries.count).step_by(64) {
+        let count = (entries.count - first).min(64);
+        // Dynamic modifier serialization owns each 56-byte header; value
+        // recalculation reaches enabled definitions.
+        memory.gather(
+            (first..first + count).filter_map(|index| {
+                entries
+                    .element(index, dynamic_modifier_entry::STRIDE)
+                    .map(|p| (p, 56))
+            }),
+            false,
+        );
+        let mut definitions = [0; 64];
+        let mut len = 0;
+        for index in first..first + count {
+            if let Some(entry) = entries.element(index, dynamic_modifier_entry::STRIDE)
+                && let Ok(header) = dynamic_modifier_entry::header(&memory.prepared(), base, entry)
+                && header.enabled != 0
+            {
+                definitions[len] = header.definition;
+                len += 1;
+            }
         }
-        let definition = header.definition;
-        cdynamic_modifier::token(memory, base, definition)?;
-        let id = at(definition, cdynamic_modifier::ID)?;
-        let scope = (header.scope_country, i64::from(header.scope_state));
-        list.source(
-            memory,
-            at(definition, DYNAMIC_CONSTANT)?,
-            Kind::DynamicModifier,
-            true,
-        )?
-        .identity(id, scope.0, scope.1);
-        list.values(memory, definition, header.values)?
+        memory.gather(
+            definitions[..len].iter().flat_map(|&definition| {
+                [
+                    (0, 8),
+                    (cdynamic_modifier::ID, 32),
+                    (cdynamic_modifier::VALUE_COUNT, 4),
+                    (DYNAMIC_VALUE_ROWS, 8),
+                    (DYNAMIC_CONSTANT + cmodifier::ACCUMULATOR, 16),
+                    (DYNAMIC_CONSTANT + cmodifier::DISPLAY_NAME, 32),
+                ]
+                .into_iter()
+                .filter_map(move |(offset, len)| definition.checked_add(offset).map(|p| (p, len)))
+            }),
+            false,
+        );
+        let mut modifiers = [0; 64];
+        let mut valid = 0;
+        for &definition in &definitions[..len] {
+            if read::<u64>(&memory.prepared(), definition)
+                == Some(at(base, cdynamic_modifier::VTABLE_RVA)? as u64)
+                && let Some(modifier) = definition.checked_add(DYNAMIC_CONSTANT)
+            {
+                modifiers[valid] = modifier;
+                valid += 1;
+            }
+        }
+        batched::sources(memory, &modifiers[..valid], true, false);
+        for index in first..first + count {
+            let entry = entries
+                .element(index, dynamic_modifier_entry::STRIDE)
+                .ok_or("dynamic modifier entry overflow")?;
+            let header = dynamic_modifier_entry::header(memory, base, entry)?;
+            if header.enabled == 0 {
+                continue;
+            }
+            let definition = header.definition;
+            cdynamic_modifier::token(memory, base, definition)?;
+            let id = at(definition, cdynamic_modifier::ID)?;
+            let scope = (header.scope_country, i64::from(header.scope_state));
+            list.source(
+                memory,
+                at(definition, DYNAMIC_CONSTANT)?,
+                Kind::DynamicModifier,
+                true,
+            )?
             .identity(id, scope.0, scope.1);
+            list.values(memory, definition, header.values)?
+                .identity(id, scope.0, scope.1);
+        }
     }
     // 29-31: the scaled war support and stability statics.
     list.statics(memory, context, 3)?;
@@ -1390,11 +1651,30 @@ impl Builder<'_> {
 
     fn statics(
         &mut self,
-        memory: &impl Memory,
+        memory: &Observed<'_, impl Memory>,
         context: &Context,
         phase: u8,
     ) -> Result<(), &'static str> {
+        let mut modifiers = [0; STATIC_SLOTS.len()];
+        let mut len = 0;
         for (slot, address) in STATIC_SLOTS.iter().zip(context.statics) {
+            if slot.phase == phase && address != 0 {
+                modifiers[len] = address;
+                len += 1;
+            }
+        }
+        if phase == 3 {
+            phase!(ScaledStatics);
+        } else {
+            phase!(Statics);
+        }
+        batched::sources(memory, &modifiers[..len], true, true);
+        for (slot, address) in STATIC_SLOTS.iter().zip(context.statics) {
+            if slot.scaled {
+                phase!(ScaledStatics);
+            } else {
+                phase!(Statics);
+            }
             if slot.phase != phase || address == 0 {
                 continue;
             }
@@ -1403,7 +1683,7 @@ impl Builder<'_> {
             } else {
                 Kind::Static
             };
-            let candidate = self.source(memory, address, kind, true)?;
+            let candidate = self.source(&memory.shared(), address, kind, true)?;
             candidate.scaled = slot.scaled;
             candidate.identity = Some(at(address, STATIC_NAME)?);
         }
@@ -1598,12 +1878,14 @@ fn pair(
     children: usize,
     candidates: usize,
 ) -> Result<(), &'static str> {
+    phase!(Matching);
     let Scratch {
         children: child_rows,
         candidates: sources,
         values,
         forward,
         backward,
+        ..
     } = scratch;
     // Only children with lines and candidates with tracked keys participate.
     // Empty signatures could match each other and shift bounds across real
@@ -1643,7 +1925,7 @@ fn pair(
 
 #[allow(clippy::too_many_arguments)]
 fn emit(
-    memory: &impl Memory,
+    memory: &Observed<'_, impl Memory>,
     country: u32,
     context: &Context,
     scratch: &Scratch,
@@ -1653,6 +1935,7 @@ fn emit(
     line_start: usize,
     byte_start: usize,
 ) -> Result<CountryWalk, &'static str> {
+    phase!(Emission);
     let wanted = scratch.children[..children]
         .iter()
         .try_fold(0_u32, |total, child| {
@@ -1688,6 +1971,9 @@ fn emit(
             None => (Kind::Unpaired, None, 0, 0),
         };
         let identity = match identity_address {
+            Some(address) if matches!(kind, Kind::Static | Kind::StaticScaled) => {
+                arena.copy(&memory.shared(), address)?
+            }
             Some(address) => arena.copy(memory, address)?,
             None => Span::default(),
         };

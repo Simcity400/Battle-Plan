@@ -29,8 +29,6 @@ mod counter;
 mod invasion;
 mod selected;
 pub use counter::{CounterClass, CounterRequest};
-pub use selected::naval_search as selected_naval_search;
-pub use selected::risk as selected_transport_risk;
 pub use selected::transport as selected_transport;
 pub use selected::{
     AreaNode, CommonClass, CommonCombat, CommonMoveText, CommonMoveWorld, CommonUnit,

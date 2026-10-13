@@ -1,0 +1,277 @@
+//! Naval hover source trees ([`NavalModifierTreeRow`]): which source a
+//! combat, side or ship reaches, and the recorded identity its trees are
+//! filed under.
+//!
+//! Side modifier aggregation walks sources in [`SideSource`] order: the first primary
+//! country's tree (`country+0x5B8`), the combat region's weather (`region weather+0x58`,
+//! omitted outside the live region array), the combat province's terrain (`terrain
+//! type+0xB8`) and a commander (`naval leader+0x418`): the side's own for positioning
+//! (0x1B2), the opposing side's for the early-defender key (0x5A). The 0x1B3 screening
+//! correction passes null province and commander, so it reads the country alone. A
+//! convoy's escape key (0x5D) walks its side's sources for that key. A ship's escape keys
+//! (0x5C, 0x5B, 0x59) and a carrier's sortie keys (0x24, 0x1B6) walk its ship modifier
+//! sources; the recorded `NavalCombatShips.weapon_context.sources` are those sources in
+//! native order, and scopes 0-15 carry a tree ([`ship_source`]).
+//!
+//! The collector files each reached tree under the identities below and the
+//! viewer joins the same identities, so neither depends on a runtime address.
+//! A country's and a commander's trees are carried while no hooked writer
+//! touches them (`naval_tree_changes`); every other kind is read each hour a
+//! live combat reaches it.
+pub use engine::naval_modifier_trees::{KEYS, Kind, SideSource};
+
+use crate::rows::{
+    ModifierBreakdownNode, NavalCombatSideDetails, NavalModifierTreeRow, NavalShipModifierSource,
+    NavalShipWeaponContext,
+};
+
+/// A source's recorded identity: its kind, owner and sub-key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Owner {
+    pub kind: Kind,
+    pub owner: u64,
+    pub sub: u32,
+}
+
+impl Owner {
+    pub const fn new(kind: Kind, owner: u64, sub: u32) -> Self {
+        Self { kind, owner, sub }
+    }
+
+    /// The [`NavalModifierTreeRow`] key.
+    pub const fn key(self) -> u128 {
+        (self.kind as u8 as u128) << 96 | (self.owner as u128) << 32 | self.sub as u128
+    }
+}
+
+/// The identity of one recorded modifier source of a ship, or `None` for a scope that
+/// carries no tree (the adjusters, pool, defines and relation scopes 16-32, which the
+/// ship formatter omits for these keys). The join is the collector's own
+/// ([`engine::naval_modifier_trees::ship_owner`]).
+pub fn ship_source(
+    ship: u64,
+    context: &NavalShipWeaponContext,
+    source: &NavalShipModifierSource,
+) -> Option<Owner> {
+    engine::naval_modifier_trees::ship_owner(
+        source.scope,
+        source.index,
+        source.selector,
+        source.reference,
+        ship,
+        context.task_force,
+        context.country,
+        context.commander,
+        context.ship_class,
+        context.subunit,
+    )
+    .map(|(kind, owner, sub)| Owner::new(kind, owner, sub))
+}
+
+/// The identity of a side source, or `None` when aggregation skips it: a side without a
+/// primary country, or without the commander it would read. Weather and terrain are filed
+/// under the combat; whether the region is live is the capture's to decide (an absent row
+/// prints nothing).
+pub fn side_source(
+    combat: u64,
+    side: &NavalCombatSideDetails,
+    opposing: &NavalCombatSideDetails,
+    source: SideSource,
+) -> Option<Owner> {
+    engine::naval_modifier_trees::side_owner(
+        source,
+        combat,
+        side.summary.countries.first().copied(),
+        side.commander,
+        opposing.commander,
+    )
+    .map(|(kind, owner, sub)| Owner::new(kind, owner, sub))
+}
+
+/// The sources side aggregation visits for one key, in order: country only for the 0x1B3
+/// correction; otherwise country, weather, terrain and the own commander, or the opposing
+/// commander for 0x5A.
+pub fn side_sources(key: u32) -> &'static [SideSource] {
+    match key {
+        0x1b3 => &[SideSource::Country],
+        0x5a => &[
+            SideSource::Country,
+            SideSource::Weather,
+            SideSource::Terrain,
+            SideSource::OpposingCommander,
+        ],
+        _ => &[
+            SideSource::Country,
+            SideSource::Weather,
+            SideSource::Terrain,
+            SideSource::Commander,
+        ],
+    }
+}
+
+/// The hour's complete NavalModifierTrees rows, in key order.
+#[derive(Clone, Copy)]
+pub struct Trees<'a> {
+    rows: &'a [NavalModifierTreeRow],
+}
+
+/// What a reached source holds for one key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tree<'a> {
+    /// The pruned preorder ([`crate::rows::NavalModifierKeyTree`]).
+    Nodes(&'a [ModifierBreakdownNode]),
+    /// No row or no tree for the key: nothing prints and the root is zero.
+    Empty,
+}
+
+impl<'a> Tree<'a> {
+    /// The root's value, which the native sums read.
+    pub fn root(self) -> i64 {
+        match self {
+            Self::Nodes(nodes) => nodes.first().map_or(0, |node| node.value),
+            Self::Empty => 0,
+        }
+    }
+
+    pub fn nodes(self) -> &'a [ModifierBreakdownNode] {
+        match self {
+            Self::Nodes(nodes) => nodes,
+            Self::Empty => &[],
+        }
+    }
+}
+
+impl<'a> Trees<'a> {
+    /// `None` when the rows are not in strictly ascending key order.
+    pub fn new(rows: &'a [NavalModifierTreeRow]) -> Option<Self> {
+        rows.windows(2)
+            .all(|pair| pair[0].key() < pair[1].key())
+            .then_some(Self { rows })
+    }
+
+    pub fn row(&self, owner: Owner) -> Option<&'a NavalModifierTreeRow> {
+        let key = owner.key();
+        self.rows
+            .binary_search_by_key(&key, NavalModifierTreeRow::key)
+            .ok()
+            .map(|index| &self.rows[index])
+    }
+
+    /// A reached source's tree for `key`.
+    pub fn tree(&self, owner: Owner, key: u32) -> Tree<'a> {
+        self.row(owner)
+            .and_then(|row| row.trees.iter().find(|tree| tree.key == key))
+            .map_or(Tree::Empty, |tree| Tree::Nodes(&tree.nodes))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rows::{NavalCombatSummaryInputs, NavalModifierKeyTree};
+
+    fn side(country: Option<u32>, commander: u64) -> NavalCombatSideDetails {
+        NavalCombatSideDetails {
+            commander,
+            summary: NavalCombatSummaryInputs {
+                countries: country.into_iter().collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ship_sources_join_their_recorded_owners() {
+        let context = NavalShipWeaponContext {
+            task_force: 77,
+            country: 5,
+            commander: 99,
+            ship_class: 3,
+            subunit: 12,
+            ..Default::default()
+        };
+        let source = |scope, index, selector, reference| NavalShipModifierSource {
+            scope,
+            index,
+            selector,
+            reference,
+            ..Default::default()
+        };
+        assert_eq!(
+            ship_source(41, &context, &source(0, 0, 0, 0)),
+            Some(Owner::new(Kind::Country, 5, 0))
+        );
+        assert_eq!(
+            ship_source(41, &context, &source(4, 2, 0x2a, 0)),
+            Some(Owner::new(Kind::Doctrine, 77, 0x2a))
+        );
+        assert_eq!(
+            ship_source(41, &context, &source(5, 0, 0, 0)),
+            Some(Owner::new(Kind::Terrain, 77, 3))
+        );
+        assert_eq!(
+            ship_source(41, &context, &source(10, 0, 12, 0)),
+            Some(Owner::new(Kind::CommanderClass, 99, 12))
+        );
+        assert_eq!(
+            ship_source(41, &context, &source(11, 4, 0, 0)),
+            Some(Owner::new(Kind::Critical, 41, 4))
+        );
+        assert_eq!(
+            ship_source(41, &context, &source(14, 1, 0, 0x55)),
+            Some(Owner::new(Kind::Support2, 0x55, 0))
+        );
+        for scope in [16, 20, 24, 27, 31, 32] {
+            assert_eq!(ship_source(41, &context, &source(scope, 0, 0, 0)), None);
+        }
+    }
+
+    #[test]
+    fn side_sources_skip_an_empty_side_and_a_missing_commander() {
+        let own = side(Some(7), 0);
+        let opposing = side(Some(8), 66);
+        assert_eq!(
+            side_source(1, &side(None, 5), &opposing, SideSource::Country),
+            None
+        );
+        assert_eq!(
+            side_source(1, &own, &opposing, SideSource::Country),
+            Some(Owner::new(Kind::Country, 7, 0))
+        );
+        assert_eq!(side_source(1, &own, &opposing, SideSource::Commander), None);
+        assert_eq!(
+            side_source(1, &own, &opposing, SideSource::OpposingCommander),
+            Some(Owner::new(Kind::Commander, 66, 0))
+        );
+        assert_eq!(
+            side_source(1, &own, &opposing, SideSource::Weather),
+            Some(Owner::new(Kind::SideWeather, 1, 0))
+        );
+        assert_eq!(side_sources(0x1b3), &[SideSource::Country]);
+        assert_eq!(side_sources(0x5a)[3], SideSource::OpposingCommander);
+    }
+
+    #[test]
+    fn a_reached_source_without_a_tree_is_empty_with_a_zero_root() {
+        let owner = Owner::new(Kind::Commander, 66, 0);
+        let rows = [NavalModifierTreeRow {
+            kind: owner.kind as u8,
+            owner: owner.owner,
+            sub: owner.sub,
+            trees: vec![NavalModifierKeyTree {
+                key: 0x1b2,
+                nodes: vec![ModifierBreakdownNode {
+                    children: 0,
+                    value: 5_000,
+                    name: b"Trait".to_vec(),
+                }],
+            }],
+        }];
+        let trees = Trees::new(&rows).unwrap();
+        assert_eq!(trees.tree(owner, 0x1b2).root(), 5_000);
+        assert_eq!(trees.tree(owner, 0x5a), Tree::Empty);
+        assert_eq!(trees.tree(Owner::new(Kind::Country, 1, 0), 0x1b2).root(), 0);
+        assert_eq!(rows[0].key(), owner.key());
+    }
+}

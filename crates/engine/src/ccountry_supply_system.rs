@@ -467,6 +467,7 @@ pub fn walk_trains(
         crate::walk::Buffer::Fixed(entries),
         crate::walk::Buffer::Fixed(access),
         crate::walk::Buffer::Fixed(runs),
+        None,
     )
 }
 
@@ -487,9 +488,41 @@ pub fn walk_trains_growing(
         crate::walk::Buffer::Growing(entries),
         crate::walk::Buffer::Growing(access),
         crate::walk::Buffer::Growing(runs),
+        None,
     )
 }
 
+/// [`walk_trains_growing`] for the countries `select` admits by native
+/// country id: an unselected slot's supply objects are not read, and it is
+/// neither a row nor an unread row. A selected country's row equals the
+/// whole walk's.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_trains_selected_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    output: &mut Vec<TrainRow>,
+    entries: &mut Vec<crate::supply_train_entry::Row>,
+    access: &mut Vec<u8>,
+    runs: &mut Vec<[u32; 2]>,
+    select: &dyn Fn(u32) -> bool,
+) -> TrainReport {
+    walk_trains_buffer(
+        memory,
+        base,
+        state,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(entries),
+        crate::walk::Buffer::Growing(access),
+        crate::walk::Buffer::Growing(runs),
+        Some(select),
+    )
+}
+
+/// `select`, when present, admits countries by native id before their supply
+/// objects are read ([`walk_trains_selected_growing`]); without it every
+/// slot is read and checked.
+#[allow(clippy::too_many_arguments)]
 pub fn walk_trains_buffer(
     memory: &impl Memory,
     base: usize,
@@ -498,6 +531,7 @@ pub fn walk_trains_buffer(
     mut entries: crate::walk::Buffer<'_, crate::supply_train_entry::Row>,
     mut access: crate::walk::Buffer<'_, u8>,
     mut runs: crate::walk::Buffer<'_, [u32; 2]>,
+    select: Option<&dyn Fn(u32) -> bool>,
 ) -> TrainReport {
     let mut used_entries = 0;
     let mut required_entries = 0_usize;
@@ -523,6 +557,13 @@ pub fn walk_trains_buffer(
         let mut total = 0;
         let mut bytes = [0; 64 * 12];
         for slot in 1..systems.count() {
+            if let Some(select) = select
+                && !systems
+                    .country(slot)?
+                    .is_some_and(|country| select(country.id))
+            {
+                continue;
+            }
             let Some(system) = systems.at(slot)? else {
                 continue;
             };

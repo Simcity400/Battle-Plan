@@ -8,6 +8,7 @@ pub struct MovementPacket {
     pub(super) paths: Vec<u32>,
     pub(super) combats: MovementCombats,
     combat_references: Vec<cunit::MapCombatReference>,
+    combat_identities: cunit::MapCombatIdentityMemo,
     sample_hour: Option<i32>,
     required_combat_references: usize,
     /// Pooled staging for one division's route bytes; holds no row data.
@@ -24,6 +25,7 @@ impl MovementPacket {
             paths,
             combats: MovementCombats::try_new(unit_capacity)?,
             combat_references: Vec::new(),
+            combat_identities: cunit::MapCombatIdentityMemo::default(),
             sample_hour: None,
             required_combat_references: 0,
             route_bytes: crate::allocation::vec(bytes)?,
@@ -43,6 +45,7 @@ impl MovementPacket {
             paths: Vec::new(),
             combats: MovementCombats::default(),
             combat_references: Vec::new(),
+            combat_identities: cunit::MapCombatIdentityMemo::default(),
             sample_hour: None,
             required_combat_references: 0,
             route_bytes: Vec::new(),
@@ -71,6 +74,7 @@ impl MovementPacket {
         self.paths.clear();
         self.combats.clear();
         self.combat_references.clear();
+        self.combat_identities.clear();
         self.sample_hour = None;
         self.required_combat_references = 0;
         self.result = MovementWalk {
@@ -96,11 +100,13 @@ impl MovementPacket {
             + self.paths.capacity() * std::mem::size_of::<u32>()
             + self.combats.allocated_bytes()
             + self.combat_references.capacity() * size_of::<cunit::MapCombatReference>()
+            + self.combat_identities.allocated_bytes()
             + self.route_bytes.capacity()
     }
     pub fn reserve_combat_references(&mut self, capacity: usize) -> std::io::Result<()> {
         let additional = capacity.saturating_sub(self.combat_references.len());
-        crate::allocation::reserve_exact(&mut self.combat_references, additional)
+        crate::allocation::reserve_exact(&mut self.combat_references, additional)?;
+        self.combat_identities.reserve(capacity)
     }
     pub fn combat_references_required(&self) -> usize {
         self.required_combat_references
@@ -123,22 +129,15 @@ impl MovementPacket {
         }
         self.combat_references.get(start..start.checked_add(count)?)
     }
-    pub fn refuse_selected_retreat(&mut self) -> [u64; 2] {
-        let mut refused = [0; 2];
-        for row in &mut self.units {
-            if row.selected_commander == Some(true) {
-                for (index, value) in row.selected_retreat.iter_mut().enumerate() {
-                    refused[index] += u64::from(value.take().is_some());
-                }
-            }
-        }
-        refused
-    }
-    pub fn units_for_selected(&self) -> &[MovementRow] {
-        &self.units[..self.result.outcome.len()]
-    }
     pub fn outcome(&self) -> MovementWalk {
         self.result
+    }
+    /// Rows with an ordinary route whose base speed was refused.
+    pub fn base_speed_refusals(&self) -> usize {
+        self.units[..self.result.outcome.len()]
+            .iter()
+            .filter(|row| (row.path_total as i32) > 0 && row.base_speed.is_none())
+            .count()
     }
     /// Independent current-pass suffix refusals; established row coverage is
     /// reported by outcome(), so unavailable prefixes add no false refusals.
@@ -201,6 +200,27 @@ pub(super) fn movement_route_prefixes(
     Ok(())
 }
 
+const MOVEMENT_AHEAD: usize = 4;
+
+/// Addresses come only from owned census controls. The hourly movement step
+/// walks the two u32 routes and the eight-byte combat pointers. Hint later
+/// divisions without moving a payload copy, a capacity gate, or a header
+/// recheck.
+fn prefetch_movement_seed(memory: &impl Memory, seed: &DivisionSeed) {
+    for header in [seed.ordinary_route, seed.alternate_route] {
+        if let Some(route) = header.and_then(|header| Array::from_header(header, 4))
+            && route.count != 0
+        {
+            memory.prefetch(route.data, route.count as usize * 4);
+        }
+    }
+    if let Some(combat) = seed.combat.and_then(|header| Array::from_header(header, 8))
+        && combat.count != 0
+    {
+        memory.prefetch(combat.data, combat.count as usize * 8);
+    }
+}
+
 /// Acquire exact admitted routes and dependent inputs from the shared census.
 /// `geometry` is initialized for this current pass and belongs to this worker;
 /// only the immutable fixed division seeds are shared between workers.
@@ -247,7 +267,6 @@ pub fn capture_movement_inputs_with_combat_references(
 ) -> MovementWalk {
     packet.clear();
     packet.sample_hour = sample_hour;
-    let mut registry = crate::creference_registry::HeaderResolver::default();
     let mut paths_len = 0;
     let mut required_paths = 0usize;
     let result = (|| {
@@ -273,12 +292,35 @@ pub fn capture_movement_inputs_with_combat_references(
         geometry
             .ready()
             .map_err(|_| "division movement root invalid")?;
+        for seed in seeds.iter().take(MOVEMENT_AHEAD) {
+            prefetch_movement_seed(memory, seed);
+        }
         let mut len = 0usize;
         let mut missing = match source_outcome {
             Outcome::Truncated { unread_rows, .. } => unread_rows,
             _ => 0,
         };
-        for seed in seeds {
+        let mut province_batch = crate::cprovince::IdentityBatch::default();
+        for (ordinal, seed) in seeds.iter().enumerate() {
+            if ordinal.is_multiple_of(32) {
+                let mut pointers = [0_usize; 64];
+                let mut count = 0;
+                for pending in &seeds[ordinal..(ordinal + 32).min(seeds.len())] {
+                    for pointer in [pending.movement_target, pending.movement_source]
+                        .into_iter()
+                        .flatten()
+                    {
+                        if pointer != 0 {
+                            pointers[count] = pointer;
+                            count += 1;
+                        }
+                    }
+                }
+                geometry.stage_province_ids(memory, &pointers[..count], &mut province_batch);
+            }
+            if let Some(pending) = seeds.get(ordinal + MOVEMENT_AHEAD) {
+                prefetch_movement_seed(memory, pending);
+            }
             let expected = base
                 .checked_add(VTABLE_RVA)
                 .ok_or("module address overflow")?;
@@ -395,10 +437,12 @@ pub fn capture_movement_inputs_with_combat_references(
                 )?;
             }
             let target_pointer = movement_seed_value(seed.movement_target)?;
-            let target = geometry.acquire_province_id(memory, target_pointer)?;
+            let target =
+                geometry.acquire_province_id_batched(memory, target_pointer, &province_batch)?;
             let transfer = movement_seed_value(seed.naval_transfer_membership)? != 0;
             let source_pointer = movement_seed_value(seed.movement_source)?;
-            let source = geometry.acquire_province_id(memory, source_pointer)?;
+            let source =
+                geometry.acquire_province_id_batched(memory, source_pointer, &province_batch)?;
             let retreat = movement_seed_value(seed.retreat)?;
             let strategic_redeployment = movement_seed_value(seed.strategic_redeployment)?;
             let entity = movement_seed_value(seed.map_entity)?;
@@ -441,7 +485,7 @@ pub fn capture_movement_inputs_with_combat_references(
                             seed.combat.expect("validated same source header"),
                             first_combat,
                             &mut packet.combat_references[start..],
-                            &mut registry,
+                            &mut packet.combat_identities,
                         ) {
                             Ok(count) => combat_references = Some((start, count)),
                             Err(reason) => {
@@ -460,10 +504,6 @@ pub fn capture_movement_inputs_with_combat_references(
             packet.units.push(MovementRow {
                 combat_references,
                 combat_references_failure,
-                selected_exiled: None,
-                selected_commander: None,
-                selected_retreat: [None; 2],
-                selected_retreat_failures: [None; 2],
                 division: seed.division,
                 source,
                 target,
@@ -484,6 +524,7 @@ pub fn capture_movement_inputs_with_combat_references(
                 alternate_total: alternate.count,
                 withdrawal: None,
                 movement_priority: None,
+                base_speed: None,
             });
             paths_len += needed;
             len += 1;
@@ -502,30 +543,33 @@ pub fn capture_movement_inputs_with_combat_references(
     // suffix. The admitted rows retain census order with capacity gaps, so
     // stream the same authenticated seeds without retaining another pointer
     // arena or allocating. A refusal neither erases a row nor skips its peer.
+    // The two style fields come from the seed's batched gather, read once at
+    // this boundary with their own field-local outcomes; this pass rereads
+    // neither.
+    let mut speeds = SpeedBatch::new();
     let mut index = 0;
-    for seed in seeds {
-        let Some(row) = packet.units[..outcome.len()].get_mut(index) else {
+    for (ordinal, seed) in seeds.iter().enumerate() {
+        let Some(row) = packet.units[..outcome.len()].get(index) else {
             break;
         };
         if row.division != seed.division {
             continue;
         }
-        if sample_hour.is_some() {
-            row.selected_exiled = seed.exiled;
-            let (context, values) = if row.combat_count as i32 > 0 {
-                crate::carmy_leader::current_retreat_inputs(memory, base, seed)
-            } else {
-                (None, [Err("selected retreat not demanded"); 2])
-            };
-            row.selected_commander = context;
-            row.selected_retreat = values.map(Result::ok);
-            row.selected_retreat_failures = values.map(Result::err);
+        if index.is_multiple_of(64) {
+            speeds.capture(
+                memory,
+                &seeds[ordinal..],
+                &packet.units[index..(index + 64).min(outcome.len())],
+            );
         }
-        row.withdrawal = cunit::read_withdrawal(memory, seed.pointer);
-        row.movement_priority = seed
-            .pointer
-            .checked_add(cunit::MOVEMENT_PRIORITY)
-            .and_then(|at| read(memory, at));
+        let row = &mut packet.units[index];
+        row.withdrawal = seed.withdrawal;
+        row.movement_priority = seed.movement_priority;
+        // Only a division with an ordinary route moves (path_total is the
+        // route's signed count, as the movement gate tests it).
+        if (row.path_total as i32) > 0 {
+            row.base_speed = speeds.read(memory, base, seed).ok();
+        }
         index += 1;
     }
     packet.result = MovementWalk {
@@ -534,6 +578,127 @@ pub fn capture_movement_inputs_with_combat_references(
         required_paths,
     };
     packet.result
+}
+
+const SPEED_FIELDS: [crate::memory::RecordField; 2] = [
+    crate::memory::RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    crate::memory::RecordField {
+        source_offset: crate::csub_unit_definition::MAXIMUM_SPEED,
+        destination_offset: 8,
+        len: 8,
+    },
+];
+const SPEED_LAYOUT: crate::memory::RecordLayout<'static> =
+    crate::memory::RecordLayout::new(&SPEED_FIELDS, 16).expect("valid movement speed layout");
+
+/// The movement-speed calculation starts from the same signed +0x290. Gather
+/// only admitted ordinary movers, after the complete route prefix; missing rows
+/// and stationary rows supply no speed read.
+struct SpeedBatch {
+    pointers: [usize; 64],
+    bytes: [u8; 64 * 16],
+    complete: [bool; 64],
+    len: usize,
+}
+
+impl SpeedBatch {
+    fn new() -> Self {
+        Self {
+            pointers: [0; 64],
+            bytes: [0; 64 * 16],
+            complete: [false; 64],
+            len: 0,
+        }
+    }
+
+    fn capture(&mut self, memory: &impl Memory, seeds: &[DivisionSeed], rows: &[MovementRow]) {
+        self.len = 0;
+        let mut row = 0;
+        for seed in seeds {
+            if row == rows.len() {
+                break;
+            }
+            if seed.division != rows[row].division {
+                continue;
+            }
+            if rows[row].path_total as i32 > 0
+                && let Some(pointer) = seed.stat_block.filter(|&at| at != 0)
+                && !self.pointers[..self.len].contains(&pointer)
+            {
+                self.pointers[self.len] = pointer;
+                self.len += 1;
+            }
+            row += 1;
+        }
+        crate::memory::gather_records_once(
+            memory,
+            &self.pointers[..self.len],
+            &SPEED_LAYOUT,
+            &mut self.bytes[..self.len * 16],
+            &mut self.complete,
+            crate::batch_fallback::Batch::DivisionMovementSpeed,
+        );
+    }
+
+    fn read(
+        &self,
+        memory: &impl Memory,
+        base: usize,
+        seed: &DivisionSeed,
+    ) -> Result<i64, &'static str> {
+        let pointer = movement_seed_value(seed.stat_block)?;
+        if let Some(row) = self.pointers[..self.len]
+            .iter()
+            .position(|&at| at == pointer)
+            && self.complete[row]
+        {
+            let bytes = &self.bytes[row * 16..][..16];
+            let expected = base
+                .checked_add(crate::csub_unit_definition::VTABLE_RVA)
+                .ok_or("module address overflow")? as u64;
+            if u64::from_le_bytes(bytes[..8].try_into().unwrap()) != expected {
+                return Err("division stat block identity mismatch");
+            }
+            return Ok(i64::from_le_bytes(bytes[8..].try_into().unwrap()));
+        }
+        movement_base_speed(memory, base, seed)
+    }
+}
+
+/// The division's raw signed fixed5 maximum speed. No field caches the current
+/// speed: the movement-speed calculation starts from +0x290 in the division's
+/// +0x138 stat block. The hourly step adds vslot 0xD8's result to the unit's
+/// +0x240 without storing the speed, and the division view recomputes it. One
+/// gather reads the stat block's vtable and speed; the speed is kept only when
+/// the vtable authenticates the sub-unit definition.
+fn movement_base_speed(
+    memory: &impl Memory,
+    base: usize,
+    seed: &DivisionSeed,
+) -> Result<i64, &'static str> {
+    let stat = movement_seed_value(seed.stat_block)?;
+    if stat == 0 {
+        return Err("division stat block null");
+    }
+    let speed_at = stat
+        .checked_add(crate::csub_unit_definition::MAXIMUM_SPEED)
+        .ok_or("division stat block address overflow")?;
+    let expected = base
+        .checked_add(crate::csub_unit_definition::VTABLE_RVA)
+        .ok_or("module address overflow")? as u64;
+    let mut vtable = [0; 8];
+    let mut speed = [0; 8];
+    if memory.copy_scattered([stat, speed_at], &mut [&mut vtable, &mut speed]) != 2 {
+        return Err("division stat block unreadable");
+    }
+    if u64::from_le_bytes(vtable) != expected {
+        return Err("division stat block identity mismatch");
+    }
+    Ok(i64::from_le_bytes(speed))
 }
 
 /// Pure projection from owned inputs. This function has no native-memory,
@@ -776,10 +941,6 @@ fn walk_movement_internal(
             output[len] = MovementRow {
                 combat_references: None,
                 combat_references_failure: None,
-                selected_exiled: None,
-                selected_commander: None,
-                selected_retreat: [None; 2],
-                selected_retreat_failures: [None; 2],
                 division: source.division,
                 source: source_province,
                 target,
@@ -800,6 +961,7 @@ fn walk_movement_internal(
                 alternate_total: alternate.count,
                 withdrawal: None,
                 movement_priority: None,
+                base_speed: None,
             };
             paths_len += path_len + alternate_len;
             len += 1;
@@ -830,6 +992,17 @@ fn walk_movement_internal(
             .pointer
             .checked_add(cunit::MOVEMENT_PRIORITY)
             .and_then(|at| read(memory, at));
+        if (row.path_total as i32) > 0 {
+            let seed = DivisionSeed {
+                stat_block: source
+                    .pointer
+                    .checked_add(cunit::STAT_BLOCK)
+                    .and_then(|at| read::<u64>(memory, at))
+                    .map(|pointer| pointer as usize),
+                ..Default::default()
+            };
+            row.base_speed = movement_base_speed(memory, base, &seed).ok();
+        }
         index += 1;
     }
     MovementWalk {

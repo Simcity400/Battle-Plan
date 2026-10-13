@@ -716,6 +716,25 @@ impl<const N: usize> RawLog<N> {
         self.worker_growth
     }
 
+    /// Whether `spans` more spans and `bytes` more pool bytes fit the
+    /// storage this log already holds, without growing it or marking
+    /// overflow. A batched take admits its worst case up front; when that
+    /// does not fit, its caller takes the batch's requests one by one, so
+    /// the log overflows only where those requests would.
+    pub(crate) fn fits(&self, spans: usize, bytes: usize) -> bool {
+        !self.overflowed
+            && self
+                .spans
+                .len()
+                .checked_add(spans)
+                .is_some_and(|needed| needed <= self.spans.capacity())
+            && self
+                .bytes
+                .len()
+                .checked_add(bytes)
+                .is_some_and(|end| end <= self.bytes.capacity() && end <= u32::MAX as usize)
+    }
+
     fn ensure_storage(&mut self, spans: usize, end: usize) -> bool {
         let needed_spans = self.spans.len().checked_add(spans);
         let span_short = needed_spans.is_none_or(|needed| needed > self.spans.capacity());
@@ -915,6 +934,36 @@ impl<const N: usize> RawLog<N> {
         self.has_bulk |= bulk;
         self.raw_bytes[lowest_table(mask)] += len as u64;
         Some(start)
+    }
+
+    /// Append observations held from an earlier refresh of sources the
+    /// caller proved unchanged since, as that refresh recorded them: each of
+    /// `spans` is a successful read whose bytes start at its `start` in
+    /// `bytes`. Nothing is read, and no raw byte is counted. False, with
+    /// overflow and the size to grow to marked, when storage cannot hold
+    /// them.
+    pub fn splice(&mut self, spans: &[Span], bytes: &[u8]) -> bool {
+        if self.overflowed || !self.allow_unplanned_operation() {
+            return false;
+        }
+        let base = self.bytes.len();
+        let Some(end) = base.checked_add(bytes.len()) else {
+            self.overflowed = true;
+            return false;
+        };
+        if !self.ensure_storage(spans.len(), end) {
+            return false;
+        }
+        self.bytes.extend_from_slice(bytes);
+        for span in spans {
+            debug_assert!(span.ok && span.start as usize + span.len as usize <= bytes.len());
+            self.spans.push(Span {
+                start: (base + span.start as usize) as u32,
+                ..*span
+            });
+            self.has_bulk |= span.bulk;
+        }
+        true
     }
 
     /// Record one observation that a batched gather already made, exactly as
@@ -1260,6 +1309,7 @@ impl<const N: usize> RawLog<N> {
     /// Record `row` lands at `start + row * stride`; each completed nonempty
     /// field is its own exact span and the first failed field is recorded.
     /// Nothing after that failure is read. Returns the completed field count.
+    #[cfg(test)]
     pub fn take_records(
         &mut self,
         memory: &impl Memory,

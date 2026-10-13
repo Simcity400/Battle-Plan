@@ -1,22 +1,22 @@
-//! The ETA walk, replayed from recorded operands with no memory access.
+//! Movement timing replayed from recorded operands with no memory access.
 //!
-//! Per-pair operands are leg-aligned vectors on the `DivisionEtaInputs` row.
-//! The duration and speed evaluators are the engine's own pure functions.
-//! The recording stores these operands, not a second independently acquired
-//! duration, so replay alone cannot certify capture equivalence to the game.
+//! Progress follows the native first-edge fraction. Arrival times are estimates: the
+//! native walk over each division's recorded route with every edge at one speed, the
+//! native land speed of its recorded stat-block base speed ([`estimated_speed`]). The
+//! game evaluates each edge with its own terrain, infrastructure, weather, river, supply,
+//! air, organisation and fuel terms, which the recording does not hold, so an estimate
+//! drifts from the game wherever those terms apply.
 
-use crate::rows::{DivisionEtaInputsRow, DivisionMovementRow, RailwayGunCounterInputRow};
-use engine::carmy::{MovementSpeedInputs, NormalEdgeOperands, PreparedNormalSpeed};
+use crate::rows::{DivisionMovementRow, RailwayGunCounterInputRow, Recorded};
 use engine::cunit::{EtaInputs, EtaLeg, EtaSpeed, eta_remaining};
 
-/// The progress divisor comes from the first route edge. The same
-/// edge-distance rule drives this and the ETA walk: a sea-to-land embark
-/// override, the first directed adjacency, or 100000 when matching content
-/// confirms no adjacency exists. Refuse missing operands rather than
-/// interpreting a later leg as the first edge; the ETA walk skips self edges.
-pub fn movement_progress(
+const MOVEMENT_ONE: i64 = 100_000;
+
+/// Movement progress for a division (class 0): its numerator over the first route edge.
+/// Zero for an empty route; None where the route, location or matching content cannot
+/// decide the edge.
+pub fn division_progress(
     movement: &DivisionMovementRow,
-    inputs: Option<&DivisionEtaInputsRow>,
     location: Option<u32>,
     province: impl Fn(u32) -> Option<ProvinceOperands>,
     distance: impl Fn(u32, u32) -> Option<i64>,
@@ -26,9 +26,8 @@ pub fn movement_progress(
         return movement.path.is_empty().then_some(0);
     }
     let first = *movement.path.first()?;
-    let inputs = inputs.filter(|row| row.division == movement.division)?;
     unit_progress(
-        inputs.class,
+        0,
         movement.numerator,
         location?,
         first,
@@ -166,219 +165,136 @@ pub fn railway_gun_first_edge(
     eta_remaining(&input, legs).ok().map(|pair| pair.0)
 }
 
-/// Recompute `(next_remaining, destination_remaining)` for one moving division.
-///
-/// `location` is `Divisions.province`, the walk's start. `province` and
-/// `state_infra` resolve this same hour's rows; a missing one is a refusal.
-/// The caller validates the weather census before `snow` follows the native
-/// predicate, where a province without a weather record has no snow. `None`
-/// means the row cannot be derived exactly.
-///
-/// `distance` reads matching authored geometry. A known missing adjacency
-/// returns the native 100000 fallback; unavailable geometry and missing
-/// province operands refuse the row because the edge cost cannot be decided.
-/// `crossing_kind` resolves the matching directed edge for a normal-speed
-/// leg; a known clear/no-edge route returns zero, while unavailable geometry
-/// returns `None` and refuses derivation.
-#[allow(clippy::too_many_arguments)]
-pub fn derive(
-    inputs: &DivisionEtaInputsRow,
+/// The speed an estimate assumes on every edge: the land tail of Movement-speed
+/// calculation applied to the stat-block base speed alone, floored at 1 km/h (100000) and
+/// then scaled by the content's movement scale with the native wrapping product. With no
+/// destination and full organisation and fuel the game computes the same value; otherwise
+/// the unrecorded edge modifier, organisation and fuel factors make it differ.
+pub fn estimated_speed(base_speed: i64, defines: &Defines) -> i64 {
+    base_speed
+        .max(MOVEMENT_ONE)
+        .wrapping_mul(defines.outer_scale)
+        / MOVEMENT_ONE
+}
+
+/// Estimated `(next_remaining, destination_remaining)` for one division, in
+/// native signed fixed5 hours: [`eta_remaining`] over the recorded route from
+/// `location` (`Divisions.province`), every edge and the first-edge progress
+/// at [`estimated_speed`]. Each edge distance follows the native rule for
+/// class 0 over matching content ([`edge_distance`]); self edges emit no leg.
+/// The caller rounds hours as the game does ([`engine::cunit::eta_hours`]).
+pub fn estimate(
     movement: &DivisionMovementRow,
     location: u32,
     province: impl Fn(u32) -> Option<ProvinceOperands>,
-    state_infra: impl Fn(u32) -> Option<i64>,
-    snow: impl Fn(u32) -> bool,
     distance: impl Fn(u32, u32) -> Option<i64>,
-    crossing_kind: impl Fn(u32, u32) -> Option<u8>,
     defines: &Defines,
-) -> Option<(i64, i64)> {
+) -> Result<(i64, i64), String> {
     if location == 0 {
-        return None;
+        return Err("the division's location is not recorded".into());
     }
-    // A route the recorder's arena truncated cannot be walked.
+    // A route the recorder's arena truncated cannot be measured.
     if movement.path.len() != movement.path_total as usize {
-        return None;
+        return Err("the division's recorded route is truncated".into());
     }
     if movement.path.is_empty() {
-        return Some((0, 0)); // cunit.rs:889-891
+        return Ok((0, 0));
     }
-    let mut legs: Vec<EtaLeg> = Vec::with_capacity(movement.path.len());
+    walk(
+        movement,
+        location,
+        &movement.path,
+        movement.numerator,
+        province,
+        distance,
+        defines,
+    )
+}
+
+/// The estimated duration of a prospective route (`route` excludes the division's
+/// location and ends at its target), as the counter preview words it: every edge at
+/// [`estimated_speed`], and the division's first-edge progress subtracted only when the
+/// route starts with the division's own recorded first edge. Zero for an empty route,
+/// which needs no speed.
+pub fn estimate_route(
+    movement: &DivisionMovementRow,
+    location: u32,
+    route: &[u32],
+    province: impl Fn(u32) -> Option<ProvinceOperands>,
+    distance: impl Fn(u32, u32) -> Option<i64>,
+    defines: &Defines,
+) -> Result<i64, String> {
+    if location == 0 {
+        return Err("the division's location is not recorded".into());
+    }
+    if route.is_empty() {
+        return Ok(0);
+    }
+    let numerator = if route.first() == movement.path.first() {
+        movement.numerator
+    } else {
+        0
+    };
+    walk(
+        movement, location, route, numerator, province, distance, defines,
+    )
+    .map(|(_, destination)| destination)
+}
+
+/// [`eta_remaining`] over `route` from `location` at the division's
+/// estimated speed, subtracting `numerator` of progress.
+fn walk(
+    movement: &DivisionMovementRow,
+    location: u32,
+    route: &[u32],
+    numerator: i64,
+    province: impl Fn(u32) -> Option<ProvinceOperands>,
+    distance: impl Fn(u32, u32) -> Option<i64>,
+    defines: &Defines,
+) -> Result<(i64, i64), String> {
+    let base_speed = match movement.base_speed {
+        Recorded::NotRecorded => {
+            return Err("DivisionMovement.base_speed is not recorded in this format".into());
+        }
+        Recorded::Value(None) => return Err("the division's base speed was refused".into()),
+        Recorded::Value(Some(speed)) => speed,
+    };
+    let path_total =
+        u32::try_from(route.len()).map_err(|_| "the route exceeds the native count".to_owned())?;
+    let speed = estimated_speed(base_speed, defines);
+    let mut legs = Vec::with_capacity(route.len());
     let mut next_leg_count = 0;
     let mut from = location;
-    for (index, &to) in movement.path.iter().enumerate() {
+    for (index, &to) in route.iter().enumerate() {
         if to == 0 {
-            return None; // cunit.rs:632-635
+            return Err("the division's route holds a null province".into());
         }
         if from != to {
-            // Self edges emit no leg, so the leg vectors advance only here.
-            let leg = legs.len();
-            let length = edge_distance(inputs.class, from, to, &province, &distance, defines)?;
-            let speed = edge_speed(
-                inputs,
-                movement,
-                defines,
-                &province,
-                &state_infra,
-                &snow,
-                &crossing_kind,
-                location,
-                from,
-                to,
-                leg,
-            )?;
+            let length = edge_distance(0, from, to, &province, &distance, defines)
+                .ok_or_else(|| format!("route edge {from}->{to} has no content geometry"))?;
             legs.push(EtaLeg {
                 distance: length,
                 speed: EtaSpeed::Fixed(speed),
             });
             if index == 0 {
-                next_leg_count = 1; // cunit.rs:659-661
-            }
-            // `is_zero` only short-circuits a proof that the speed is positive
-            // (carmy.rs:1600-1610), so the evaluated value decides identically.
-            if speed == 0 {
-                break; // cunit.rs:663-666
+                next_leg_count = 1;
             }
         }
         from = to;
     }
     let input = EtaInputs {
-        division: inputs.division,
-        next: movement.path[0],
-        destination: movement.path[movement.path.len() - 1],
-        path_total: movement.path_total,
+        division: movement.division,
+        next: route[0],
+        destination: route[route.len() - 1],
+        path_total,
         leg_start: 0,
         leg_len: legs.len(),
         next_leg_count,
-        numerator: movement.numerator,
-        // Recorded directly, including the native null-destination branch
-        // this call alone can take.
-        current_speed: EtaSpeed::Fixed(inputs.current_speed),
+        numerator,
+        current_speed: EtaSpeed::Fixed(speed),
         normal: None,
     };
-    eta_remaining(&input, &legs).ok()
-}
-
-/// One leg's speed, in the native branch order of
-/// `movement_speed_inputs_internal` (carmy.rs:2395-2504).
-#[allow(clippy::too_many_arguments)]
-fn edge_speed(
-    inputs: &DivisionEtaInputsRow,
-    movement: &DivisionMovementRow,
-    defines: &Defines,
-    province: impl Fn(u32) -> Option<ProvinceOperands>,
-    state_infra: impl Fn(u32) -> Option<i64>,
-    snow: impl Fn(u32) -> bool,
-    crossing_kind: impl Fn(u32, u32) -> Option<u8>,
-    location: u32,
-    from: u32,
-    to: u32,
-    leg: usize,
-) -> Option<i64> {
-    // A branch vector may be empty only when no leg took it. An evaluated
-    // branch requires its recorded operand, including an explicitly recorded zero.
-    let recorded = |values: &[i64]| values.get(leg).copied();
-    let source = province(from)?;
-    let target = province(to)?;
-    if movement.naval_transfer != 0
-        || source.terrain_flags & 1 == 0
-        || target.terrain_flags & 1 == 0
-    {
-        return Some(
-            MovementSpeedInputs::Scaled {
-                speed: recorded(&inputs.leg_transport_speed)?,
-                scale: defines.transport_scale,
-            }
-            .evaluate(),
-        );
-    }
-    if invasion_branch(inputs.class, movement, location, &province)? {
-        return Some(defines.invasion_speed);
-    }
-    if movement.strategic_redeployment != 0 {
-        // Rail movement is blocked when the country 0x1ea, current-state 0x1ea,
-        // or friendly current-state 0x1eb effective modifier is nonzero. These are
-        // shared simulation operands; the collector's branch result is not a replay field.
-        let country = inputs.rail_country_modifier?;
-        let blocked = country != 0
-            || inputs.rail_state_modifier.is_some_and(|value| value != 0)
-            || inputs
-                .rail_friendly_state_modifier
-                .is_some_and(|value| value != 0);
-        if !blocked {
-            return Some(
-                MovementSpeedInputs::Scaled {
-                    speed: recorded(&inputs.leg_rail_speed)?,
-                    scale: defines.outer_scale,
-                }
-                .evaluate(),
-            );
-        }
-    }
-    // normal_movement_edge, carmy.rs:3030-3147. The sub-unit and leader terrain
-    // terms are already composed into terrain_speed.
-    let mut additive = inputs
-        .terrain_speed
-        .iter()
-        .find(|entry| entry.terrain == target.terrain_index)?
-        .modifier;
-    if target.fort_positive {
-        additive = additive.wrapping_add(inputs.fort_penalty);
-    }
-    if snow(to) {
-        additive = additive.wrapping_add(inputs.snow_penalty);
-    }
-    if target.state != 0 {
-        additive = additive.wrapping_add(state_infra(target.state)?);
-    }
-    let crossing = crossing_kind(from, to)?;
-    let river = if (1..=3).contains(&crossing) {
-        Some((
-            recorded(&inputs.leg_river_combined)?.wrapping_add(inputs.river_leader),
-            inputs.river_adjustment,
-            match crossing {
-                2 => defines.river_crossing_two,
-                3 => defines.river_crossing_three,
-                _ => 0,
-            },
-        ))
-    } else {
-        None
-    };
-    Some(
-        PreparedNormalSpeed {
-            modifier: inputs.speed_modifier,
-            base_speed: inputs.speed_base,
-            organisation: inputs.speed_org,
-            fuel: inputs.speed_fuel,
-            outer_scale: defines.outer_scale,
-        }
-        .evaluate(NormalEdgeOperands { additive, river }),
-    )
-}
-
-/// `movement_land_inputs` (carmy.rs) tests the division's original province
-/// and first stored route province, even while evaluating a later land leg.
-/// Transport wins before this predicate, so the first sea-to-land leg itself
-/// uses transport speed. The terrain flags are reconstructed from matching
-/// content; the collector does not serialize its computed branch result.
-fn invasion_branch(
-    class: u32,
-    movement: &DivisionMovementRow,
-    location: u32,
-    province: &impl Fn(u32) -> Option<ProvinceOperands>,
-) -> Option<bool> {
-    if movement.path_total == 0 || class != 0 {
-        return Some(false);
-    }
-    let first = *movement.path.first()?;
-    if first == 0 {
-        return Some(false);
-    }
-    let source = province(location)?;
-    if source.terrain_flags & 3 != 0 {
-        return Some(false);
-    }
-    Some(province(first)?.terrain_flags & 1 != 0)
+    eta_remaining(&input, &legs).map_err(str::to_owned)
 }
 
 #[cfg(test)]

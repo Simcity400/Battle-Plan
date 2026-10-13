@@ -632,7 +632,7 @@ pub(crate) fn decode_air_stats_payload(
     job: &AirStatsJob,
     decode_ticks: &mut [u64; AIR_STATS_N],
 ) {
-    captured.active[6] = job.active;
+    captured.active[4] = job.active;
     if !job.active {
         captured.fail_air_stats_capture(replay::cadence::SKIPPED_REASON);
         return;

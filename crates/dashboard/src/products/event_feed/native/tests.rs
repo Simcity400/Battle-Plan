@@ -68,6 +68,7 @@ fn event(sequence: u64, source: EventFeedSource, hour: i32) -> EventFeedEvent {
         source,
         actor: identity(0),
         target: identity(1),
+        cause: Recorded::Value(NativeCause::default()),
     }
 }
 fn pack(events: Vec<EventFeedEvent>) -> EventFeedHistoryRow {
@@ -475,4 +476,131 @@ fn registered_history_loads_later_publication_without_using_the_later_country_in
             Some("synthetic / country 1".into())
         ])
     );
+}
+
+/// A recorded cause reaches the row in words with its ally's exact
+/// occurrence-hour tag; an older recording's event keeps its row without one,
+/// and an ally without a witness stays unnamed and is counted.
+#[test]
+fn recorded_causes_name_their_route_ally_and_operands() {
+    let frames = BTreeMap::from([(105, frame(105, 3))]);
+    let mut join = event(1, EventFeedSource::Join, 105);
+    join.cause = Recorded::Value(NativeCause {
+        route: EventFeedRoute::CallAlly,
+        within: EventFeedRoute::DiplomaticCommand,
+        ally: Some(identity(2)),
+        reason: Some(2),
+        flags: 1,
+        ..Default::default()
+    });
+    let mut transfer = event(2, EventFeedSource::StateTransfer, 105);
+    transfer.cause = Recorded::Value(NativeCause {
+        route: EventFeedRoute::StateAnnex,
+        within: EventFeedRoute::PeaceAnnex,
+        conference: Some(0x0000_0007_0000_0031),
+        state: Some(64),
+        flags: 1,
+        ..Default::default()
+    });
+    let mut unwitnessed = event(3, EventFeedSource::Join, 105);
+    unwitnessed.cause = Recorded::Value(NativeCause {
+        route: EventFeedRoute::AddToWarEffect,
+        ally: Some(identity(9)),
+        ..Default::default()
+    });
+    let older = EventFeedEvent {
+        cause: Recorded::NotRecorded,
+        ..event(4, EventFeedSource::Annex, 105)
+    };
+    let mut builder = Builder::new(100, 130);
+    append(
+        &mut builder,
+        &pack(vec![join, transfer, unwitnessed, older]),
+        &frames,
+    )
+    .unwrap();
+    let rows = &builder.feed.rows;
+    assert_eq!(
+        rows.iter().map(|row| row.kind).collect::<Vec<_>>(),
+        [
+            EventFeedKind::WarJoined,
+            EventFeedKind::StateTransferred,
+            EventFeedKind::WarJoined,
+            EventFeedKind::Annexed
+        ]
+    );
+    assert_eq!(
+        rows[0].cause,
+        Some(EventFeedCause {
+            how: Some("a call to arms".into()),
+            within: Some("a diplomatic action".into()),
+            conference: None,
+            state: None,
+            ally: Some("synthetic / country 2".into()),
+            reason: Some("ally".into()),
+            notes: vec!["against every enemy of the ally's side".into()],
+        })
+    );
+    let transfer = rows[1].cause.as_ref().unwrap();
+    assert_eq!(
+        (
+            transfer.how.as_deref(),
+            transfer.state,
+            transfer.conference.as_deref()
+        ),
+        (Some("an annexation"), Some(64), Some("30064771121"))
+    );
+    // A state transfer's first byte is SetOwner's, not a truce or troops.
+    assert!(transfer.notes.is_empty());
+    assert_eq!(rows[2].cause.as_ref().unwrap().ally, None);
+    assert_eq!(rows[3].cause, None);
+    assert!(
+        builder
+            .feed
+            .unavailable
+            .iter()
+            .any(|item| item.reason.contains("The ally of event 3"))
+    );
+}
+
+#[test]
+fn every_route_but_none_has_words() {
+    for route in EventFeedRoute::ALL {
+        assert_eq!(
+            route_words(route).is_none(),
+            route == EventFeedRoute::None,
+            "{route:?}"
+        );
+    }
+}
+
+/// A partial interval ending at a recorded event loss names the detached
+/// recorder as its reason; any other partial interval keeps the generic one.
+#[test]
+fn a_partial_interval_after_a_recorded_event_loss_names_the_detached_recorder() {
+    let reason = |partial: &EventFeedHistoryRow, event_losses: Vec<(i32, i32)>| {
+        let mut builder = Builder::new(100, 130);
+        Projection {
+            event_losses,
+            ..Projection::default()
+        }
+        .append_named(&mut builder, partial, |_| None, &AtomicBool::new(false))
+        .unwrap();
+        builder.feed.unavailable[0].reason.clone()
+    };
+    let mut partial = pack(Vec::new());
+    partial.coverage = EventFeedCoverage::Partial;
+    let lost = reason(&partial, vec![(119, 120)]);
+    assert!(lost.contains("recorder was detached"), "{lost}");
+    assert!(lost.contains("between 119 and 120"), "{lost}");
+    for other in [vec![], vec![(120, 121)]] {
+        let generic = reason(&partial, other);
+        assert!(generic.contains("not fully observed"), "{generic}");
+    }
+    // An independent failure of the resumed interval is kept beside the loss.
+    partial.coverage = EventFeedCoverage::Unavailable;
+    partial.failure = Some(b"Event feed acquired events unsettled".to_vec());
+    let both = reason(&partial, vec![(119, 120)]);
+    assert!(both.contains("recorder was detached"), "{both}");
+    assert!(both.contains("acquired events unsettled"), "{both}");
 }

@@ -1,16 +1,27 @@
-//! The arrival line a moving unit shows, from its fresh counter query.
+//! The arrival line a moving unit shows on its map counter.
 //!
-//! Map-counter wording uses the moving-hours or moving-days-and-hours localisation keys.
-//! Foreign units use the nonplayer pair and the next province. Fresh inputs must match
-//! the displayed hour, with independent transport, normal, railway and naval refusals.
-//! First-edge progress is subtracted only when the searched edge matches the stored
-//! ordinary first edge.
+//! The game words it from one ceiling at two sites. The division-view tooltip
+//! integrates remaining time over the stored route and writes
+//! `UNIT_VIEW_MOVE_HOURS` or `UNIT_VIEW_MOVE_DAYS_HOURS`.
+//! The counter tooltip builder writes the same sentence on the **map
+//! counter** as `UNIT_MOVING_HOURS` / `UNIT_MOVING_DAYS_HOURS`, and switches to the
+//! `_NONPLAYER` pair over the **next** province for a unit the viewing player does not own
+//! (`ccountry_tag::same_country` against the idler's country). The viewer has no division view,
+//! so its counter hover carries the line, in the counter tooltip's own wording.
 //!
-//! The viewer uses its explicit default route policy. A game's retained duration cache
-//! can differ from a fresh query during its five-unit-update lifetime.
-//! [`engine::cunit::eta_hours`] is narrowed to i32. The legacy `arrival` helper omits
-//! nonpositive hours; [`map_arrival`] formats every reached query result. Signed days
-//! below one use total hours; other results use days and the hours remainder.
+//! On a counter cache miss the game searches a new route, then integrates its
+//! duration. The viewer words a division's
+//! arrival estimate instead ([`super::division_eta`]): the walk over its stored route with
+//! every edge at its recorded base speed, which drifts from the game wherever per-edge speed
+//! terms apply. A railway gun keeps the fresh native query with its current-hour operands, and
+//! a task force walks its stored route at its native per-region speeds. The native interface's
+//! retained duration cache and route option are local presentation state the viewer does not
+//! read or capture.
+//!
+//! Both sites use [`engine::cunit::eta_hours`], narrowed to i32.
+//! The division view's legacy `arrival` test helper omits nonpositive hours. The map
+//! counter's [`map_arrival`] formats every reached duration: signed days<1
+//! uses total hours, otherwise days and the hours remainder.
 
 use engine::cunit::eta_hours;
 

@@ -107,7 +107,6 @@ pub(super) fn capture(
                 authenticate(memory, base, province, cprovince::VTABLE_RVA)?;
                 field::<u64>(memory, province, cprovince::STATE, None).map(|p| p as usize)
             },
-            None,
         )
     };
     match acquire() {
@@ -127,7 +126,6 @@ pub(super) fn read_inputs(
     owner: usize,
     roster: impl FnOnce() -> Result<u32, &'static str>,
     current_state: impl FnOnce() -> Result<usize, &'static str>,
-    memo: Option<&std::cell::RefCell<MovementStateModifiers>>,
 ) -> Result<StrategicRedeploymentInputs, StrategicActionFailure> {
     let country_modifier = movement_address(owner, ccountry::MODIFIER_ACCUMULATOR)
         .and_then(|at| {
@@ -152,18 +150,10 @@ pub(super) fn read_inputs(
     }
     let roster = roster().map_err(|_| StrategicActionFailure::StateModifier)?;
     let query = |key| {
-        let acquire = || {
-            authenticate(memory, base, state, crate::cstate::VTABLE_RVA)?;
-            let accumulator =
-                crate::cstate::country_modifier_accumulator(memory, game_state, state, roster)?;
-            crate::modifier_accumulator::requested_effective_at(memory, base, accumulator, key)
-        };
-        match memo {
-            Some(memo) => memo
-                .borrow_mut()
-                .get_with(base, game_state, state, roster, key, acquire),
-            None => acquire(),
-        }
+        authenticate(memory, base, state, crate::cstate::VTABLE_RVA)?;
+        let accumulator =
+            crate::cstate::country_modifier_accumulator(memory, game_state, state, roster)?;
+        crate::modifier_accumulator::requested_effective_at(memory, base, accumulator, key)
     };
     let state_modifier = query(keys::DISABLE_STRATEGIC_REDEPLOYMENT)
         .map_err(|_| StrategicActionFailure::StateModifier)?;

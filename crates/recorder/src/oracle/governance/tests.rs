@@ -1565,3 +1565,57 @@ fn research_serializer_keeps_repeated_occurrences_order_and_exact_active_filter(
             .any(|difference| difference.contains("serializer_required_occurrence[1]"))
     );
 }
+
+#[test]
+fn has_elections_compares_both_saved_operands_and_skips_older_recordings() {
+    let (mut frame, mut pack, country) = fixture();
+    let differences = |frame: &DecodedFrame, pack: &saved::Pack| {
+        let mut report = Report::default();
+        compare_politics(
+            frame,
+            pack,
+            &BTreeMap::from([(country.id, &country)]),
+            &mut report,
+        )
+        .unwrap();
+        report
+            .differences
+            .into_iter()
+            .filter(|line| line.contains("has_elections"))
+            .collect::<Vec<_>>()
+    };
+    let rows = |has_elections| {
+        TableView::Complete(TableRows::Politics(vec![replay::rows::PoliticsRow {
+            country: country.id,
+            has_elections,
+            ..Default::default()
+        }]))
+    };
+    for (allowed, frequency, recorded, differs) in [
+        (true, 48, true, false),
+        (true, 0, false, false),
+        (false, 48, false, false),
+        (true, 0, true, true),
+        (false, 48, true, true),
+    ] {
+        pack.countries.get_mut(b"AAA".as_slice()).unwrap().politics = Some(saved::Politics {
+            parties: BTreeMap::new(),
+            leaders: BTreeMap::new(),
+            names: BTreeMap::new(),
+            ideas: Vec::new(),
+            timed_ideas: Vec::new(),
+            ruling_party: None,
+            last_election: None,
+            election_frequency: Some(frequency),
+            elections_allowed: Some(allowed),
+        });
+        *frame.tables[TableId::Politics.index()] = rows(Recorded::Value(recorded));
+        assert_eq!(
+            !differences(&frame, &pack).is_empty(),
+            differs,
+            "{allowed} {frequency} {recorded}"
+        );
+        *frame.tables[TableId::Politics.index()] = rows(Recorded::NotRecorded);
+        assert!(differences(&frame, &pack).is_empty());
+    }
+}

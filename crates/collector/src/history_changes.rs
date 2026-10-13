@@ -18,12 +18,14 @@ use std::{
 
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
-static READS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 static SCENARIO_REFUSALS: [AtomicU64; engine::air_kamikaze::SCENARIO_REFUSALS.len()] =
     [const { AtomicU64::new(0) }; engine::air_kamikaze::SCENARIO_REFUSALS.len()];
 /// Hours that copied every held history afresh, by cause: an invalidation,
 /// a larger watch table, or the hour before failing or being dropped.
 static RESTARTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+static SAMPLED: crate::sampled_verify::Sampled =
+    crate::sampled_verify::Sampled::burned_in(&["held air histories differ from a fresh copy"]);
 
 /// One observation domain: the watched receivers and each writer site's
 /// calls. Its table is cleared only on an invalidation: a clear starts an
@@ -213,11 +215,13 @@ pub(crate) fn record_scenario_refusals(
     }
 }
 
-/// A verify read disagreed with the followed histories: reuse is disabled
-/// for the attachment.
-pub fn mismatch() {
-    READS[5].fetch_add(1, Ordering::Relaxed);
-    WATCHES.registry.poison();
+/// One hour's sampled comparison ([`crate::sampled_verify`]): `verified`
+/// carried countries copied afresh, `mismatches` of them differing from the
+/// followed histories. A mismatch disables reuse for the attachment.
+pub fn sampled(verified: u64, mismatches: u64) {
+    if SAMPLED.record(verified, mismatches, 0) {
+        WATCHES.registry.poison();
+    }
 }
 
 pub fn status() -> impl serde::Serialize {
@@ -244,7 +248,10 @@ pub fn status() -> impl serde::Serialize {
         "advanced_histories": reads[2],
         "refreshed_histories": reads[3],
         "quiet_hours": reads[4],
-        "mismatches": reads[5],
+        "sampled_verified": SAMPLED.verified(),
+        "sampled_mismatches": SAMPLED.mismatches(),
+        "last_mismatch": SAMPLED.last_mismatch(),
+        "slice": SAMPLED.slice(),
         "scenario_refusals": crate::status::map(engine::air_kamikaze::SCENARIO_REFUSALS.into_iter()
             .zip(SCENARIO_REFUSALS.iter().map(|count| count.load(Ordering::Relaxed)))),
         "events": events,
@@ -254,7 +261,7 @@ pub fn status() -> impl serde::Serialize {
             "table_install": restarts[1],
             "failed_hour": restarts[2],
         },
-        "scope": "cumulative since attach; a quiet hour reuses every country's histories and an observed advance is applied without a read; a restart is an hour that copied every held history afresh: after a load, gap, recovery or attach, a larger watch table, or an hour whose part or AirMissions job failed or that was dropped before decoding"
+        "scope": "cumulative since attach; a quiet hour reuses every country's histories and an observed advance is applied without a read; every hour also copies the carried countries of its slice (one in rotation_hours by index within their part; every carried country in verify mode), compares them with the followed histories, publishes the fresh copies and disables reuse at the first mismatch (sampled_*); a restart is an hour that copied every held history afresh: after a load, gap, recovery or attach, a larger watch table, or an hour whose part or AirMissions job failed or that was dropped before decoding"
     })
 }
 
@@ -286,13 +293,14 @@ impl Hooks {
         if !enabled {
             WATCHES.registry.set_enabled(false);
         }
-        for hook in &mut self.hooks {
-            if !hook
-                .set_enabled(enabled)
-                .map_err(|_| "native hook state change failed")?
-            {
-                return Ok(false);
-            }
+        // One census and suspension for the whole family, shared with the
+        // other families in a runtime round (`hook::shared`): a thread at any
+        // of its sites, or in a tap, holds every site back until the next
+        // attempt.
+        if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
+            .map_err(|_| "native hook state change failed")?
+        {
+            return Ok(false);
         }
         WATCHES
             .registry
@@ -313,17 +321,19 @@ impl Drop for Hooks {
 }
 
 unsafe extern "system" fn region_history(air: usize, region: i32) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::HistoryChanges);
     let _notification = WATCHES.notify(air, 0);
     let original: unsafe extern "system" fn(usize, i32) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };
-    unsafe { original(air, region) }
+    timing.original(|| unsafe { original(air, region) })
 }
 /// The receiver is the embedded history storage; the history itself is registered.
 unsafe extern "system" fn advance(windows: usize) {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::HistoryChanges);
     let _notification = WATCHES.notify(windows.wrapping_sub(8), 1);
     let original: unsafe extern "system" fn(usize) =
         unsafe { std::mem::transmute(ORIGINAL[1].load(Ordering::Acquire)) };
-    unsafe { original(windows) }
+    timing.original(|| unsafe { original(windows) })
 }
 
 #[cfg(test)]
@@ -343,5 +353,40 @@ mod tests {
         // A clear starts an epoch: no site certificate survives it.
         watches.registry.boundary(true);
         assert_ne!(watches.site(1).unwrap().0, before.0);
+    }
+
+    /// Release: air history construction for 1,500 registered strategic-air receivers
+    /// through the detour, minus the native call.
+    #[test]
+    #[ignore = "release per-call detour cost; run with --release --ignored --nocapture --test-threads=1"]
+    fn hook_cost_history_changes() {
+        const RECEIVERS: usize = 1500;
+        unsafe extern "system" fn native(air: usize, region: i32) -> usize {
+            air.wrapping_add(region as usize)
+        }
+        let receivers: Vec<u64> = vec![0; RECEIVERS * 0x40];
+        let air = |index: usize| receivers.as_ptr() as usize + index * 0x200;
+        WATCHES.offer(RECEIVERS);
+        WATCHES.registry.boundary(false);
+        WATCHES.registry.set_enabled(true);
+        for index in 0..RECEIVERS {
+            assert!(WATCHES.registry.sequence(air(index)).is_some());
+        }
+        ORIGINAL[0].store(native as *const () as usize, Ordering::Release);
+        let hooked = crate::hook_timing::per_call_ns(RECEIVERS, || {
+            for index in 0..RECEIVERS {
+                std::hint::black_box(unsafe { region_history(air(index), 7) });
+            }
+        });
+        let plain = crate::hook_timing::per_call_ns(RECEIVERS, || {
+            for index in 0..RECEIVERS {
+                std::hint::black_box(unsafe { native(air(index), 7) });
+            }
+        });
+        WATCHES.registry.set_enabled(false);
+        println!(
+            "hook_cost history_changes registered receiver: detour {:.1} ns/call (hooked {hooked:.1}, native {plain:.1})",
+            hooked - plain
+        );
     }
 }

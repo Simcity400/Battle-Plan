@@ -10,7 +10,9 @@
 //! into the previous complete rows and records each owner's read hour in
 //! SliceReads ([`read_hour`]); consumers use that hour, never the frame's hour.
 //! Rows carry no hour, so an owner's unchanged rows stay unchanged when it is
-//! read again. Register a new sliced table here: implement [`SlicedRow`] for
+//! read again. A [`SliceUpdate`] describes the same merge as an update of the
+//! encoder's shared baseline, which the encoder writes and commits without
+//! materialising the merged table. Register a new sliced table here: implement [`SlicedRow`] for
 //! its row and add its variant to the dispatch below.
 //!
 //! TechnologyDefinitions is the one keyed table: it has no owner and no
@@ -19,17 +21,20 @@
 //! hour reads every roster and replaces the table.
 
 use crate::rows::{
-    AceRangeInputRow, AirCountryRelationRow, AirNavalPatrolHistoryRow, CombatLogEquipmentRow,
-    CountryBuildingResourceRow, CountryStabilityInputRow, CountryStabilityLineRow,
-    DivisionRetreatBanRow, NavalMissionCommanderRow, NavalMissionCountryRow, RaidAirSiteRow,
-    RaidCountryInputRow, RelationOpinionRow, RelationTupleRow, ResearchAppliedBonusRow,
-    ResearchInputRow, ResearchModifierRow, ResearchTechnologyRow, SliceReadRow, StateCoreRow,
-    StateDynamicModifierRow, StateResourceInputRow, StateResourceRow, StockpileArchetypeRow,
-    TableId, TableRows,
+    AirCountryRelationRow, AirNavalPatrolHistoryRow, AvailableAdvisorRow, CombatLogEquipmentRow,
+    CompletedFocusRow, CountryBuildingResourceRow, CountryStabilityInputRow,
+    CountryStabilityLineRow, FocusRow, NavalMissionCommanderRow, NavalMissionCountryRow,
+    ProjectHistoryRow, ProjectRow, RaidAirSiteRow, RelationOpinionRow, RelationTupleRow,
+    ResearchAppliedBonusRow, ResearchInputRow, ResearchModifierRow, ResearchTechnologyRow,
+    SliceReadRow, StateCoreRow, StateDynamicModifierRow, StateResourceInputRow, StateResourceRow,
+    SupplyNodeRow, TableId, TableRows, TrainInventoryRow,
 };
 use crate::{codec::invalid_static as invalid, rows::RowCodec};
 use engine::allocation;
 use std::io;
+
+mod update;
+pub use update::SliceUpdate;
 
 pub trait SlicedRow: RowCodec {
     /// The slice owner: a native country ID, canonical country slot or native
@@ -57,14 +62,21 @@ sliced_by!(
     CountryStabilityLineRow,
     CombatLogEquipmentRow,
     NavalMissionCountryRow,
-    NavalMissionCommanderRow
+    NavalMissionCommanderRow,
+    // The supply companion's native country ID, whose node and vertex
+    // rows and inventory are read together.
+    SupplyNodeRow,
+    TrainInventoryRow,
+    AvailableAdvisorRow,
+    // A country's focus state and completed roster, read together.
+    FocusRow,
+    CompletedFocusRow
 );
+// A project's stored owner tag: a raw id of its country.
+sliced_by!(owner: ProjectRow, ProjectHistoryRow);
 // Canonical country slots: the raid launch family keys its rows by slot.
 sliced_by!(
-    canonical_slot: RaidCountryInputRow,
-    StockpileArchetypeRow,
-    RaidAirSiteRow,
-    AceRangeInputRow
+    canonical_slot: RaidAirSiteRow
 );
 // Canonical country slots, held in the row's `country` field.
 sliced_by!(country: AirCountryRelationRow, AirNavalPatrolHistoryRow);
@@ -80,12 +92,6 @@ macro_rules! sliced_by_owner_country {
     )+};
 }
 sliced_by_owner_country!(RelationOpinionRow, RelationTupleRow);
-// The canonical slot of a division's roster owner.
-impl SlicedRow for DivisionRetreatBanRow {
-    fn owner(&self) -> u32 {
-        self.owner
-    }
-}
 
 macro_rules! dispatch {
     ($previous:expr, $fresh:expr, |$old:ident, $new:ident| $body:expr) => {
@@ -109,20 +115,8 @@ macro_rules! dispatch {
                 TableRows::AirNavalPatrolHistories($old),
                 TableRows::AirNavalPatrolHistories($new),
             ) => Ok(TableRows::AirNavalPatrolHistories($body?)),
-            (TableRows::RaidCountryInputs($old), TableRows::RaidCountryInputs($new)) => {
-                Ok(TableRows::RaidCountryInputs($body?))
-            }
-            (TableRows::DivisionRetreatBans($old), TableRows::DivisionRetreatBans($new)) => {
-                Ok(TableRows::DivisionRetreatBans($body?))
-            }
-            (TableRows::StockpileArchetypes($old), TableRows::StockpileArchetypes($new)) => {
-                Ok(TableRows::StockpileArchetypes($body?))
-            }
             (TableRows::RaidAirSites($old), TableRows::RaidAirSites($new)) => {
                 Ok(TableRows::RaidAirSites($body?))
-            }
-            (TableRows::AceRangeInputs($old), TableRows::AceRangeInputs($new)) => {
-                Ok(TableRows::AceRangeInputs($body?))
             }
             (TableRows::StateResourceInputs($old), TableRows::StateResourceInputs($new)) => {
                 Ok(TableRows::StateResourceInputs($body?))
@@ -160,6 +154,25 @@ macro_rules! dispatch {
             }
             (TableRows::NavalMissionCommanders($old), TableRows::NavalMissionCommanders($new)) => {
                 Ok(TableRows::NavalMissionCommanders($body?))
+            }
+            (TableRows::SupplyNodes($old), TableRows::SupplyNodes($new)) => {
+                Ok(TableRows::SupplyNodes($body?))
+            }
+            (TableRows::TrainInventory($old), TableRows::TrainInventory($new)) => {
+                Ok(TableRows::TrainInventory($body?))
+            }
+            (TableRows::AvailableAdvisors($old), TableRows::AvailableAdvisors($new)) => {
+                Ok(TableRows::AvailableAdvisors($body?))
+            }
+            (TableRows::Focus($old), TableRows::Focus($new)) => Ok(TableRows::Focus($body?)),
+            (TableRows::Projects($old), TableRows::Projects($new)) => {
+                Ok(TableRows::Projects($body?))
+            }
+            (TableRows::ProjectHistory($old), TableRows::ProjectHistory($new)) => {
+                Ok(TableRows::ProjectHistory($body?))
+            }
+            (TableRows::CompletedFocuses($old), TableRows::CompletedFocuses($new)) => {
+                Ok(TableRows::CompletedFocuses($body?))
             }
             _ => Err(invalid("cannot merge different sliced table types")),
         }
@@ -289,11 +302,7 @@ pub fn try_owners(rows: &TableRows) -> io::Result<Vec<u32>> {
         TableRows::ResearchModifiers(rows) => collect(rows),
         TableRows::AirCountryRelations(rows) => collect(rows),
         TableRows::AirNavalPatrolHistories(rows) => collect(rows),
-        TableRows::RaidCountryInputs(rows) => collect(rows),
-        TableRows::StockpileArchetypes(rows) => collect(rows),
-        TableRows::DivisionRetreatBans(rows) => collect(rows),
         TableRows::RaidAirSites(rows) => collect(rows),
-        TableRows::AceRangeInputs(rows) => collect(rows),
         TableRows::StateResourceInputs(rows) => collect(rows),
         TableRows::StateResources(rows) => collect(rows),
         TableRows::StateDynamicModifiers(rows) => collect(rows),
@@ -305,6 +314,13 @@ pub fn try_owners(rows: &TableRows) -> io::Result<Vec<u32>> {
         TableRows::CountryStabilityLines(rows) => collect(rows),
         TableRows::NavalMissionCountries(rows) => collect(rows),
         TableRows::NavalMissionCommanders(rows) => collect(rows),
+        TableRows::SupplyNodes(rows) => collect(rows),
+        TableRows::TrainInventory(rows) => collect(rows),
+        TableRows::AvailableAdvisors(rows) => collect(rows),
+        TableRows::Focus(rows) => collect(rows),
+        TableRows::CompletedFocuses(rows) => collect(rows),
+        TableRows::Projects(rows) => collect(rows),
+        TableRows::ProjectHistory(rows) => collect(rows),
         _ => Ok(Vec::new()),
     }
 }
@@ -524,6 +540,161 @@ mod tests {
         marks
     }
 
+    /// The daily panel families merge by their country: a node row and the
+    /// node-less vertex rows of its parent chains leave and arrive together,
+    /// as do a country's inventory and its available advisors.
+    #[test]
+    fn supply_trains_and_advisor_pools_merge_by_country() {
+        let expected = [(1, 25), (2, 24), (3, 25)];
+        assert_eq!(
+            merged_marks(
+                TableRows::SupplyNodes,
+                |rows| match rows {
+                    TableRows::SupplyNodes(rows) => rows,
+                    _ => unreachable!(),
+                },
+                |owner, part, hour| SupplyNodeRow {
+                    country: owner,
+                    index: if part == 0 {
+                        0
+                    } else {
+                        SupplyNodeRow::VERTEX | 7
+                    },
+                    parent: hour,
+                    ..Default::default()
+                },
+                |row| row.parent,
+                2,
+            ),
+            expected,
+            "SupplyNodes"
+        );
+        assert_eq!(
+            merged_marks(
+                TableRows::TrainInventory,
+                |rows| match rows {
+                    TableRows::TrainInventory(rows) => rows,
+                    _ => unreachable!(),
+                },
+                |owner, _, hour| TrainInventoryRow {
+                    country: owner,
+                    node_count: hour as u32,
+                    ..Default::default()
+                },
+                |row| row.node_count as i32,
+                1,
+            ),
+            expected,
+            "TrainInventory"
+        );
+        assert_eq!(
+            merged_marks(
+                TableRows::AvailableAdvisors,
+                |rows| match rows {
+                    TableRows::AvailableAdvisors(rows) => rows,
+                    _ => unreachable!(),
+                },
+                |owner, part, hour| AvailableAdvisorRow {
+                    country: owner,
+                    ordinal: part,
+                    character: hour as u32,
+                    ..Default::default()
+                },
+                |row| row.character as i32,
+                2,
+            ),
+            expected,
+            "AvailableAdvisors"
+        );
+    }
+
+    /// A country's projects and their histories merge by their owner tag.
+    #[test]
+    fn project_tables_merge_by_owner() {
+        let expected = [(1, 25), (2, 24), (3, 25)];
+        assert_eq!(
+            merged_marks(
+                TableRows::Projects,
+                |rows| match rows {
+                    TableRows::Projects(rows) => rows,
+                    _ => unreachable!(),
+                },
+                |owner, part, hour| ProjectRow {
+                    owner,
+                    local_id: part + 1,
+                    definition_id: hour as u32,
+                    ..Default::default()
+                },
+                |row| row.definition_id as i32,
+                2,
+            ),
+            expected,
+            "Projects"
+        );
+        assert_eq!(
+            merged_marks(
+                TableRows::ProjectHistory,
+                |rows| match rows {
+                    TableRows::ProjectHistory(rows) => rows,
+                    _ => unreachable!(),
+                },
+                |owner, part, hour| ProjectHistoryRow {
+                    owner,
+                    project: 1,
+                    ordinal: part,
+                    date: hour,
+                    ..Default::default()
+                },
+                |row| row.date,
+                2,
+            ),
+            expected,
+            "ProjectHistory"
+        );
+    }
+
+    /// A country's focus state and its completed roster merge by country.
+    #[test]
+    fn focus_tables_merge_by_country() {
+        let expected = [(1, 25), (2, 24), (3, 25)];
+        assert_eq!(
+            merged_marks(
+                TableRows::Focus,
+                |rows| match rows {
+                    TableRows::Focus(rows) => rows,
+                    _ => unreachable!(),
+                },
+                |owner, _, hour| FocusRow {
+                    country: owner,
+                    completed_count: hour,
+                    ..Default::default()
+                },
+                |row| row.completed_count,
+                1,
+            ),
+            expected,
+            "Focus"
+        );
+        assert_eq!(
+            merged_marks(
+                TableRows::CompletedFocuses,
+                |rows| match rows {
+                    TableRows::CompletedFocuses(rows) => rows,
+                    _ => unreachable!(),
+                },
+                |owner, part, hour| CompletedFocusRow {
+                    country: owner,
+                    ordinal: part,
+                    token: hour.to_le_bytes().to_vec(),
+                },
+                |row| i32::from_le_bytes(row.token[..4].try_into().unwrap()),
+                2,
+            ),
+            expected,
+            "CompletedFocuses"
+        );
+    }
+
     #[test]
     fn every_raid_family_merges_by_its_owner() {
         let expected = [(1, 25), (2, 24), (3, 25)];
@@ -548,38 +719,11 @@ mod tests {
                 );
             };
         }
-        // The launch family's hour source, marked by its reservation list.
-        assert_eq!(
-            merged_marks(
-                TableRows::RaidCountryInputs,
-                |rows| match rows {
-                    TableRows::RaidCountryInputs(rows) => rows,
-                    _ => unreachable!(),
-                },
-                |owner, _, hour| RaidCountryInputRow {
-                    canonical_slot: owner,
-                    convoy_reservations: vec![hour as u32],
-                    ..Default::default()
-                },
-                |row| row.convoy_reservations[0] as i32,
-                1,
-            ),
-            expected,
-            "RaidCountryInputs"
-        );
         family!(RaidAirSites, 2, base, |owner, part, hour| RaidAirSiteRow {
             canonical_slot: owner,
             ordinal: part,
             base: hour as u64,
             ..Default::default()
-        });
-        family!(AceRangeInputs, 2, range, |owner, part, hour| {
-            AceRangeInputRow {
-                canonical_slot: owner,
-                ace: u64::from(part) << 32 | 0x77,
-                range: i64::from(hour),
-                ..Default::default()
-            }
         });
         family!(StateResourceInputs, 1, gate, |owner, part, hour| {
             StateResourceInputRow {

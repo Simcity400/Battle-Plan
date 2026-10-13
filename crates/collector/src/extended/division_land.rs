@@ -9,7 +9,7 @@ use engine::{
 };
 use replay::{
     frame::TableView,
-    rows::{DivisionLandInputsRow, DivisionManpowerContributor, tables},
+    rows::{DivisionLandInputsRow, DivisionManpowerContributor, RetiredI64, tables},
 };
 
 pub struct Captured {
@@ -120,9 +120,10 @@ impl Captured {
         table::<tables::DivisionLandInputs, _>(self.rows.outcome, &self.rows.rows, |r| {
             DivisionLandInputsRow {
                 division: r.division,
-                received_supply: r.received_supply,
-                maximum_grace: r.maximum_grace,
-                remaining_grace: r.remaining_grace,
+                // DivisionStatus records the division's supply ratio and grace.
+                received_supply: RetiredI64::default(),
+                maximum_grace: RetiredI64::default(),
+                remaining_grace: RetiredI64::default(),
                 naval_transfer: r.naval_transfer,
                 manpower: allocation::owned_vec(allocation::map_slice(
                     &self.contributors[r.start..r.start + r.len],

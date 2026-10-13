@@ -94,10 +94,8 @@ fn land_division_comparison_uses_authenticated_alias_representatives_and_keeps_d
         let document = document(&text);
         assert_eq!(country_items(&document, &captured).unwrap().len(), 1);
         let saved = land::read_projected_divisions(&document, &captured).unwrap();
-        let mut row = DivisionLandInputsRow {
+        let row = DivisionLandInputsRow {
             division: (7_u64 << 32) | 51,
-            maximum_grace: 200_000,
-            remaining_grace: 0,
             ..Default::default()
         };
         *captured.tables[TableId::DivisionLandInputs.index()] =
@@ -106,12 +104,16 @@ fn land_division_comparison_uses_authenticated_alias_representatives_and_keeps_d
         land::compare_divisions(&captured, &saved, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
 
-        row.remaining_grace = 1;
+        // An unsaved division differs by itself and in the census.
+        let unsaved = DivisionLandInputsRow {
+            division: (8_u64 << 32) | 51,
+            ..Default::default()
+        };
         *captured.tables[TableId::DivisionLandInputs.index()] =
-            TableView::Complete(TableRows::DivisionLandInputs(vec![row]));
+            TableView::Complete(TableRows::DivisionLandInputs(vec![row, unsaved]));
         let mut report = Report::default();
         land::compare_divisions(&captured, &saved, &mut report).unwrap();
-        assert_eq!(report.differences.len(), 1);
+        assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
         if copies == 2 {
             assert!(land::read(document.items(), land::Comparison::Divisions).is_err());
         }
@@ -249,7 +251,9 @@ fn projected_full_oracle_scopes_canonical_censuses_and_refuses_uncaptured_reserv
                 raid_graph: Err("fixture has no raid graph".into()),
                 leader_traits: Err("fixture has no leader traits".into()),
                 sub_units: Err("fixture has no sub-units".into()),
+                essential_caps: Err("fixture has no sub-units".into()),
                 intelligence: Err("fixture has no agency upgrades".into()),
+                temperature: Err("fixture has no temperature content".into()),
             },
             &mut full,
         );

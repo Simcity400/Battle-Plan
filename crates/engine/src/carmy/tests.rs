@@ -121,19 +121,15 @@ fn seeded_icons_reuse_identity_and_exact_standard_template_alias() {
     p64(&mut bytes, A1 + STANDARD_TEMPLATE, T1 as u64);
     p64(&mut bytes, T1 + 8, source.template);
     bytes[A1 + SEPARATE_COUNTER] = 255;
-    let mut seeds = [DivisionSeed {
-        pointer: A1,
-        division: source.division,
-        ..Default::default()
-    }];
-    capture_division_seeds(
-        &crate::memory::SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        &mut seeds,
-    );
-    let seed = seeds[0];
+    let seed_of = |bytes: &[u8]| {
+        let mut seeds = [DivisionSeed {
+            pointer: A1,
+            division: source.division,
+            ..Default::default()
+        }];
+        capture_division_seeds(&crate::memory::SliceMemory { base: 0, bytes }, &mut seeds);
+        seeds[0]
+    };
     const ALTERNATE: usize = T1 + 0x100;
     p64(
         &mut bytes,
@@ -141,8 +137,12 @@ fn seeded_icons_reuse_identity_and_exact_standard_template_alias() {
         creferenced_division_template::VTABLE_RVA as u64,
     );
     p64(&mut bytes, ALTERNATE + 8, handle(23, 52));
-    for (pointer, calls_saved) in [(0, 8), (T1, 10), (ALTERNATE, 8)] {
+    // The seed also carries the separate-counter byte and the alternate
+    // pointer: two reads fewer than the identity and template reuse alone.
+    for (pointer, calls_saved) in [(0, 10), (T1, 12), (ALTERNATE, 10)] {
         p64(&mut bytes, A1 + FAKE_INTEL_TEMPLATE, pointer as u64);
+        // Seeded at the boundary the inputs are read at.
+        let seed = seed_of(&bytes);
         let memory = crate::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
@@ -157,6 +157,7 @@ fn seeded_icons_reuse_identity_and_exact_standard_template_alias() {
         assert_eq!(scalar.calls() - owned.calls(), calls_saved);
         assert_eq!(expected.separate_counter, 255);
     }
+    let seed = seed_of(&bytes);
     let memory = crate::memory::SliceMemory {
         base: 0,
         bytes: &bytes,
@@ -235,9 +236,10 @@ fn owned_normal_speed_preserves_native_products_and_safe_zero_guard() {
         organisation: Some((50_000, -40_000)),
         fuel: Some((50_000, 20_000)),
         outer_scale: 50_000,
-        bounded: false,
+        // Inside the positive-scale proof the zero guard is answered without
+        // evaluating; the flag is the producer's, not derived here.
+        bounded: true,
     };
-    common.bounded = common.bounded();
     let edge = NormalEdgeOperands {
         additive: 10_000,
         river: Some((50_000, -10_000, -20_000)),
@@ -246,12 +248,12 @@ fn owned_normal_speed_preserves_native_products_and_safe_zero_guard() {
     // Native modifiers: common 56000, edge -25000; speed 310000,
     // organisation 248000, fuel 148800, outer scale 74400.
     assert_eq!(inputs.evaluate(), 74_400);
-    assert!(common.bounded && edge.bounded());
+    assert!(edge.bounded());
     assert!(!inputs.is_zero());
     for scale in [0, i64::MIN] {
         common.outer_scale = scale;
-        common.bounded = common.bounded();
-        assert!(!common.bounded);
+        // Outside the proof the guard falls back to exact native evaluation.
+        common.bounded = false;
         let inputs = MovementSpeedInputs::Normal { common, edge };
         assert_eq!(inputs.evaluate(), 0);
         assert_eq!(inputs.is_zero(), inputs.evaluate() == 0);
@@ -287,21 +289,20 @@ fn owned_normal_nonzero_proof_covers_extreme_allowed_operands() {
                             organisation,
                             fuel,
                             outer_scale: scale,
-                            bounded: false,
+                            bounded: true,
                         };
-                        common.bounded = common.bounded();
                         let edge = NormalEdgeOperands {
                             additive: sign * 100_000_000,
                             river: Some((sign * 1_000_000, -1_000_000, sign * 1_000_000)),
                         };
-                        assert!(common.bounded && edge.bounded());
+                        assert!(edge.bounded());
                         let inputs = MovementSpeedInputs::Normal { common, edge };
                         assert!(!inputs.is_zero());
+                        // The shortcut is sound only if exact evaluation agrees.
                         assert!(inputs.evaluate() > 0);
                         common.modifier.additive = i64::MAX;
-                        common.bounded = common.bounded();
+                        common.bounded = false;
                         let inputs = MovementSpeedInputs::Normal { common, edge };
-                        assert!(!common.bounded);
                         assert_eq!(inputs.is_zero(), inputs.evaluate() == 0);
                     }
                 }
@@ -944,12 +945,14 @@ fn presentation_scalar_batches_preserve_success_trace_and_early_guards() {
     );
     assert_eq!(actual, expected);
     // Status gathers fixed seeds, the country's modifier snapshot and the
-    // stat block's maxima and exfiltration byte once each, then the independent
-    // supply-footer scalar spans in one additional gather.
+    // stat block's maxima and exfiltration byte once each, then the supply
+    // footer's scalar spans and origin header in one additional gather. The
+    // fixture's empty origin vector reads no rows and needs no witness.
     assert_eq!(packed.batches.get(), 4);
     for (offset, width) in [
         (crate::cunit_supply_inputs::ASKED, 8),
         (crate::cunit_supply_inputs::RECEIVED, 16),
+        (crate::cunit_supply_inputs::ORIGINS, 16),
         (crate::cunit_supply_inputs::FROM_STATE, 12),
         (crate::cunit_supply_inputs::DIVISION_DEMAND, 12),
         (crate::cunit_supply_inputs::AIRPLANE_DEMAND, 12),
@@ -963,9 +966,13 @@ fn presentation_scalar_batches_preserve_success_trace_and_early_guards() {
                 .filter(|&&(address, len)| address == A1 + offset && len == width)
                 .count(),
             1,
-            "each supply-footer span is acquired once"
+            "supply-footer span {offset:#x} is acquired once"
         );
     }
+    assert_eq!(
+        actual[0].supply.map(|supply| supply.origins_len),
+        Some(Ok(0))
+    );
     assert_eq!(
         packed
             .reads
@@ -1159,58 +1166,6 @@ fn presentation_fixture() -> PresentationMemory {
     }
 }
 
-#[test]
-fn transport_callback_keeps_raw_keys_per_edge_and_native_outer_scale() {
-    let mut memory = presentation_fixture();
-    memory
-        .globals
-        .insert(0x0331_efe0, 33_333_i64.to_le_bytes().to_vec());
-    let mut keys = Vec::new();
-    for (owner, region, flags, transfer) in
-        [(2_u32, 0x18000_usize, 0_u8, 0_u64), (3, 0x18100, 1, 1)]
-    {
-        p32(&mut memory.bytes, A1 + crate::cunit::LOGICAL_OWNER, owner);
-        p64(
-            &mut memory.bytes,
-            P1 + cprovince::STRATEGIC_REGION,
-            region as u64,
-        );
-        memory.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] = flags;
-        p64(
-            &mut memory.bytes,
-            A1 + carmy::NAVAL_TRANSFER_MEMBERSHIP,
-            transfer,
-        );
-        let speed = super::effective_movement_speed_with_transport(
-            &memory,
-            0,
-            GS,
-            A1,
-            P1,
-            0,
-            |owner, region| {
-                keys.push((owner, region));
-                Ok(100_001)
-            },
-        );
-        assert_eq!(speed, Ok(33_333));
-    }
-    assert_eq!(keys, [(2, 0x18000), (3, 0x18100)]);
-    assert_eq!(
-        super::effective_movement_speed_with_transport(&memory, 0, GS, A1, P1, 0, |_, _| Err(
-            "transport source changed"
-        )),
-        Err("transport source changed")
-    );
-    p64(&mut memory.bytes, A1, 0);
-    assert!(
-        super::effective_movement_speed_with_transport(&memory, 0, GS, A1, P1, 0, |_, _| panic!(
-            "bad army must not reuse transport"
-        ))
-        .is_err()
-    );
-}
-
 fn normal_route_fixture() -> PresentationMemory {
     let mut memory = presentation_fixture();
     memory.bytes.resize(0x30000, 0);
@@ -1288,306 +1243,8 @@ fn normal_route_fixture() -> PresentationMemory {
     memory
 }
 
-fn strategic_route_fixture() -> PresentationMemory {
-    let mut memory = normal_route_fixture();
-    memory.bytes[A1 + carmy::STRATEGIC_REDEPLOYMENT] = 1;
-    p64(
-        &mut memory.bytes,
-        GS + crate::cgame_state::RAIL_MANAGER,
-        0x22000,
-    );
-    p64(
-        &mut memory.bytes,
-        0x22000,
-        crate::crailway_manager::VTABLE_RVA as u64,
-    );
-    array(&mut memory.bytes, 0x22008, 0x22800, 4);
-    for (rva, value) in [
-        (0x0331_cf40, 500_000_i64),
-        (0x0331_cfd0, 0),
-        (0x0331_d068, 100_000),
-        (0x0331_d0e8, 0),
-    ] {
-        memory.globals.insert(rva, value.to_le_bytes().to_vec());
-    }
-    memory
-        .globals
-        .insert(0x0331_bfe0, 1_i32.to_le_bytes().to_vec());
-    memory
-}
-
-struct SeededSpeedGeometry<'a, M> {
-    memory: &'a M,
-    packet: cprovince::GeometryPacket,
-}
-impl<'a, M: crate::Memory> SeededSpeedGeometry<'a, M> {
-    fn new(memory: &'a M) -> Self {
-        let mut packet =
-            cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
-                provinces: 8,
-                neighbour_entries: 8,
-            });
-        packet.begin(memory, 0, GS).unwrap();
-        Self { memory, packet }
-    }
-}
-impl<M: crate::Memory> super::MovementGeometry for SeededSpeedGeometry<'_, M> {
-    fn province_id(&mut self, pointer: usize) -> Result<u32, &'static str> {
-        self.packet.acquire_province_id(self.memory, pointer)
-    }
-    fn route_pointer(&mut self, id: u32) -> Result<usize, &'static str> {
-        self.packet.acquire_route_pointer(self.memory, id)
-    }
-    fn definition(&mut self, id: u32) -> Result<usize, &'static str> {
-        self.packet.acquire_definition(self.memory, id)
-    }
-    fn flags(&mut self, id: u32) -> Result<u8, &'static str> {
-        self.packet.acquire_flags(self.memory, id)
-    }
-    fn crossing(&mut self, from: u32, to: u32) -> Result<Option<u8>, &'static str> {
-        self.packet.acquire_crossing(self.memory, from, to)
-    }
-}
-fn speed_seed(memory: &impl crate::Memory) -> super::DivisionSeed {
-    let mut seeds = [super::DivisionSeed {
-        pointer: A1,
-        division: handle(9, 9000),
-        ..Default::default()
-    }];
-    super::capture_division_seeds(memory, &mut seeds);
-    seeds[0]
-}
-
 #[test]
-fn eta_inputs_compose_the_speed_graph_and_one_entry_per_route_leg() {
-    let memory = normal_route_fixture();
-    let seed = speed_seed(&memory);
-    let mut geometry = cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
-        provinces: 8,
-        neighbour_entries: 8,
-    });
-    geometry.begin(&memory, 0, GS).unwrap();
-    let mut statics = cprovince::StaticGeometry::default();
-    let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
-    let walk = super::capture_eta_inputs(
-        &memory,
-        0,
-        GS,
-        &[seed],
-        0..1,
-        Outcome::Rows { len: 1 },
-        4,
-        16,
-        16,
-        &mut geometry,
-        &mut statics,
-        &mut packet,
-    );
-    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
-    let row = packet.rows()[0];
-    assert_eq!(row.division, seed.division);
-    assert_eq!((row.leg_start, row.leg_len), (0, 2));
-    // Neither distance nor crossing kind is stored; matching map content
-    // supplies both when replay evaluates the admitted legs.
-    let legs = packet.legs();
-    assert_eq!(packet.leg_count(), 2);
-    assert_eq!(
-        (legs.river, legs.transport, legs.rail),
-        ([0, 0].as_slice(), [0, 0].as_slice(), [0, 0].as_slice())
-    );
-    assert!(!row.any_river && !row.any_transport && !row.any_rail);
-    // The attribution counts this walk's admitted rows and recorded legs,
-    // and the geometry memo answered some lookups without reading.
-    let counters = packet.counters();
-    assert_eq!(
-        (counters.walks, counters.divisions, counters.legs),
-        (1, 1, 2)
-    );
-    assert!(counters.geometry_hits > 0 && counters.geometry_misses > 0);
-    // Adjuster entry +0x20 plus terrain +0x188, one entry per distinct
-    // native terrain index the route touches.
-    assert_eq!(packet.terrain(), [(1, 10_000), (2, -12_346)]);
-    assert_eq!((row.terrain_start, row.terrain_len), (0, 2));
-    assert_eq!(
-        row.current_speed,
-        super::effective_movement_speed(&memory, 0, GS, A1, P1, 0x18200).unwrap()
-    );
-    assert_eq!(row.speed_base, 400_003);
-
-    // A stationary division produces no row at all, and a failed census
-    // never becomes an empty table.
-    let mut stationary = seed;
-    stationary.ordinary_route = Some([0; 16]);
-    let walk = super::capture_eta_inputs(
-        &memory,
-        0,
-        GS,
-        &[stationary],
-        0..1,
-        Outcome::Rows { len: 1 },
-        4,
-        16,
-        16,
-        &mut geometry,
-        &mut statics,
-        &mut packet,
-    );
-    assert_eq!(walk.outcome, Outcome::Rows { len: 0 });
-    assert!(packet.rows().is_empty());
-    let unavailable = Outcome::Unavailable { reason: "census" };
-    assert_eq!(
-        super::capture_eta_inputs(
-            &memory,
-            0,
-            GS,
-            &[],
-            0..0,
-            unavailable,
-            4,
-            16,
-            16,
-            &mut geometry,
-            &mut statics,
-            &mut packet,
-        )
-        .outcome,
-        unavailable
-    );
-    // The index is the database's i32 count, not a byte: a mod's 300th
-    // category (KaiserreduX declares 1,581) is captured as it stands.
-    let mut memory = normal_route_fixture();
-    p32(&mut memory.bytes, 0x17400 + 0x88, 300);
-    // The sub-unit's adjuster array holds one entry per category, the
-    // 300th at element 299.
-    const ADJUSTERS: usize = 0x30000;
-    memory.bytes.resize(ADJUSTERS + 300 * 0x28, 0);
-    memory.bytes.copy_within(0x16000..0x16028, ADJUSTERS);
-    memory
-        .bytes
-        .copy_within(0x16028..0x16050, ADJUSTERS + 299 * 0x28);
-    array(&mut memory.bytes, 0x11000 + 0x3f8, ADJUSTERS, 300);
-    let mut geometry = cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
-        provinces: 8,
-        neighbour_entries: 8,
-    });
-    geometry.begin(&memory, 0, GS).unwrap();
-    let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
-    let walk = super::capture_eta_inputs(
-        &memory,
-        0,
-        GS,
-        &[speed_seed(&memory)],
-        0..1,
-        Outcome::Rows { len: 1 },
-        4,
-        16,
-        16,
-        &mut geometry,
-        &mut cprovince::StaticGeometry::default(),
-        &mut packet,
-    );
-    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(packet.terrain(), [(1, 10_000), (300, -12_346)]);
-}
-/// Two moving divisions of different armies cost one composed graph each:
-/// releasing an army never re-reads the branches it just acquired.
-#[test]
-fn eta_inputs_read_each_division_graph_once() {
-    let mut source = normal_route_fixture();
-    // Exercise the proved ordinary scale; exceptional scales separately
-    // test the exact per-edge overflow fallback.
-    source.globals.insert(
-        super::OUTER_SCALE_RVA,
-        super::MOVEMENT_ONE.to_le_bytes().to_vec(),
-    );
-    let state = 0x28000;
-    p64(&mut source.bytes, P1 + cprovince::STATE, state as u64);
-    p64(&mut source.bytes, state, crate::cstate::VTABLE_RVA as u64);
-    p32(&mut source.bytes, state + crate::cstate::CONTROLLER, 3);
-    p64(
-        &mut source.bytes,
-        state + crate::cstate::COUNTRY_MODIFIERS,
-        0x29000,
-    );
-    let army = source.bytes[A1..A1 + 0x700].to_vec();
-    source.bytes[A2..A2 + 0x700].copy_from_slice(&army);
-    p64(
-        &mut source.bytes,
-        A2 + crate::cunit::HANDLE,
-        handle(10, 9000),
-    );
-    let memory = ObservedMovementMemory {
-        source: &source,
-        reads: Default::default(),
-        fault: None,
-    };
-    let mut seeds = [
-        super::DivisionSeed {
-            pointer: A1,
-            division: handle(9, 9000),
-            ..Default::default()
-        },
-        super::DivisionSeed {
-            pointer: A2,
-            division: handle(10, 9000),
-            ..Default::default()
-        },
-    ];
-    super::capture_division_seeds(&memory, &mut seeds);
-    let mut geometry = cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
-        provinces: 8,
-        neighbour_entries: 8,
-    });
-    geometry.begin(&memory, 0, GS).unwrap();
-    let mut statics = cprovince::StaticGeometry::default();
-    let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
-    memory.reads.borrow_mut().clear();
-    let walk = super::capture_eta_inputs(
-        &memory,
-        0,
-        GS,
-        &seeds,
-        0..2,
-        Outcome::Rows { len: 2 },
-        4,
-        16,
-        16,
-        &mut geometry,
-        &mut statics,
-        &mut packet,
-    );
-    assert_eq!(walk.outcome, Outcome::Rows { len: 2 });
-    let reads = memory.reads.borrow();
-    for army in [A1, A2] {
-        let fuel = reads
-            .iter()
-            .filter(|&&at| at == army + carmy::FUEL_CANDIDATE)
-            .count();
-        assert_eq!(fuel, 1, "army {army:#x} composed its speed graph once");
-    }
-    assert_eq!(
-        (
-            packet.counters().state_modifier_requests,
-            packet.counters().state_modifier_hits
-        ),
-        (4, 2)
-    );
-    assert_eq!(
-        reads
-            .iter()
-            .filter(|&&at| at == state + crate::cstate::COUNTRY_MODIFIERS)
-            .count(),
-        2
-    );
-    // The first normal edge and its ETA leg share their terrain result;
-    // distinct terrain on the second leg still has its own acquisition.
-    for entry in [0x16000, 0x16028] {
-        assert_eq!(reads.iter().filter(|&&at| at == entry + 0x20).count(), 2);
-    }
-}
-
-#[test]
-fn eta_state_query_memo_preserves_raw_owners_failures_collisions_and_new_captures() {
+fn state_movement_modifier_keeps_raw_values_for_aliased_owners_and_fails_each_read() {
     let mut source = normal_route_fixture();
     let state = 0x28000;
     p64(&mut source.bytes, state, crate::cstate::VTABLE_RVA as u64);
@@ -1607,7 +1264,7 @@ fn eta_state_query_memo_preserves_raw_owners_failures_collisions_and_new_capture
         p64(&mut source.bytes, 0x2a008 + index * 16, value as u64);
     }
     let observed = ScalarBatchMemory::new(&source);
-    let mut memo = super::MovementStateModifiers::new(4).unwrap();
+    // Raw owner 1 aliases owner 3's country; neither selects an override.
     for (owner, key, expected) in [
         (3, 0x2b, i64::MIN),
         (1, 0x2b, i64::MIN),
@@ -1619,138 +1276,71 @@ fn eta_state_query_memo_preserves_raw_owners_failures_collisions_and_new_capture
             Ok(expected)
         );
         let direct = observed.reads.borrow().clone();
-        observed.reads.borrow_mut().clear();
-        memo.clear();
-        assert_eq!(memo.get(&observed, 0, GS, state, owner, key), Ok(expected));
-        assert_eq!(*observed.reads.borrow(), direct);
-        observed.reads.borrow_mut().clear();
-        assert_eq!(memo.get(&observed, 0, GS, state, owner, key), Ok(expected));
-        assert!(observed.reads.borrow().is_empty());
-        assert_eq!((memo.requests, memo.hits), (2, 1));
-        // Every original fault on a cold query retains its exact read
-        // prefix and reason. No failed result is installed in the memo.
+        assert!(!direct.is_empty());
         for &(fault, _) in &direct {
-            memo.clear();
             observed.fault.set(Some(fault));
-            observed.reads.borrow_mut().clear();
-            let expected = crate::cstate::movement_modifier(&observed, 0, GS, state, owner, key);
-            assert!(expected.is_err());
-            let prefix = observed.reads.borrow().clone();
-            for _ in 0..2 {
-                observed.reads.borrow_mut().clear();
-                assert_eq!(memo.get(&observed, 0, GS, state, owner, key), expected);
-                assert_eq!(*observed.reads.borrow(), prefix);
-            }
-            assert_eq!(memo.hits, 0);
+            assert!(crate::cstate::movement_modifier(&observed, 0, GS, state, owner, key).is_err());
         }
         observed.fault.set(None);
     }
-    // One cell forces replacement: every changed raw owner, key, state,
-    // module, and game root must miss, even for aliased native countries.
-    let mut one = super::MovementStateModifiers::new(1).unwrap();
-    for (base, game, object, owner, key) in [
-        (0, GS, state, 3, 0x2b),
-        (0, GS, state, 1, 0x2b),
-        (0, GS, state, 3, 0x1e7),
-        (0, GS, state, 3, 0x2b),
-        (1, GS, state, 3, 0x2b),
-        (0, 0, state, 3, 0x2b),
-        (0, GS, 0, 3, 0x2b),
-    ] {
-        observed.reads.borrow_mut().clear();
-        let expected = crate::cstate::movement_modifier(&observed, base, game, object, owner, key);
-        let direct = observed.reads.borrow().clone();
-        observed.reads.borrow_mut().clear();
-        assert_eq!(one.get(&observed, base, game, object, owner, key), expected);
-        assert_eq!(*observed.reads.borrow(), direct);
-    }
-    assert_eq!(one.hits, 0);
-    drop(observed);
-    p64(&mut source.bytes, 0x2a008, (-73_i64) as u64);
-    one.clear();
-    assert_eq!(one.get(&source, 0, GS, state, 3, 0x2b), Ok(-73));
-    let mut vacant = super::MovementStateModifiers::new(0).unwrap();
-    assert_eq!(vacant.allocated_bytes(), 0);
-    assert_eq!(vacant.get(&source, 0, GS, state, 3, 0x2b), Ok(-73));
-    assert_eq!(vacant.allocated_bytes(), 0);
-    vacant.reserve(3).unwrap();
-    assert!(vacant.allocated_bytes() >= 3 * size_of::<Option<super::MovementStateModifier>>());
-    assert_eq!(vacant.get(&source, 0, GS, state, 3, 0x2b), Ok(-73));
-    assert_eq!(vacant.hits, 0);
 }
 
 #[test]
-fn the_static_map_memo_reuses_primary_inputs_until_the_session_changes() {
+fn the_static_map_memo_reuses_provinces_until_the_session_changes() {
     let mut memory = normal_route_fixture();
-    // Province 1 neighbours province 2, while the session memo retains
-    // only province properties needed to acquire ETA operands.
-    let neighbour = 0x1e000;
-    array(
-        &mut memory.bytes,
-        0x12000 + crate::province_definition::NEIGHBOURS,
-        neighbour,
-        1,
-    );
-    p32(
-        &mut memory.bytes,
-        neighbour + crate::province_neighbour::PROVINCE_ID,
-        2,
-    );
-    let seed = speed_seed(&memory);
     let mut statics = cprovince::StaticGeometry::default();
-    let walk = |memory: &PresentationMemory,
-                statics: &mut cprovince::StaticGeometry,
-                packet: &mut super::EtaInputPacket| {
-        let mut geometry =
-            cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
-                provinces: 8,
-                neighbour_entries: 8,
-            });
-        geometry.enable_growth();
-        geometry.begin(memory, 0, GS).unwrap();
-        super::capture_eta_inputs(
-            memory,
-            0,
-            GS,
-            &[seed],
-            0..1,
-            Outcome::Rows { len: 1 },
-            4,
-            16,
-            16,
-            &mut geometry,
-            statics,
-            packet,
-        )
-    };
-    let mut cold = super::EtaInputPacket::new(4, 16, 16).unwrap();
+    assert!(statics.begin(&memory, 0, GS));
+    let cold: Vec<_> = (1..=3)
+        .map(|id| statics.province(&memory, 0, id).unwrap())
+        .collect();
     assert_eq!(
-        walk(&memory, &mut statics, &mut cold).outcome,
-        Outcome::Rows { len: 1 }
+        cold.iter()
+            .map(|province| (province.pointer, province.definition, province.terrain))
+            .collect::<Vec<_>>(),
+        [
+            (P1, 0x12000, 0x17000),
+            (0x18200, 0x18600, 0x17000),
+            (0x18400, 0x18700, 0x17400)
+        ]
     );
-    assert_eq!(cold.leg_count(), 2);
-    // A cold walk reads each distinct province once; repeated lookups
-    // inside the same route are already hits.
-    assert!(cold.counters().static_misses > 0);
-    // The next hour reuses immutable provinces while the route's live
-    // acquisition still produces the same number of admitted legs.
-    let mut warm = super::EtaInputPacket::new(4, 16, 16).unwrap();
-    walk(&memory, &mut statics, &mut warm);
-    assert_eq!(cold.outcome(), warm.outcome());
-    assert_eq!(cold.rows(), warm.rows());
-    assert_eq!(cold.terrain(), warm.terrain());
-    assert_eq!(cold.leg_count(), warm.leg_count());
-    assert!(warm.counters().static_hits > 0);
-    assert!(warm.counters().static_misses < cold.counters().static_misses);
+    // Repeated lookups inside the same walk are already hits.
+    assert_eq!(statics.province(&memory, 0, 1), Ok(cold[0]));
+    assert_eq!(
+        statics.counters(),
+        cprovince::StaticCounters {
+            hits: 1,
+            misses: 3,
+            cleared: 1,
+        }
+    );
+    // The next hour reuses immutable provinces without reading them again.
+    assert!(statics.begin(&memory, 0, GS));
+    let warm = ObservedMovementMemory {
+        source: &memory,
+        reads: Default::default(),
+        fault: None,
+    };
+    for id in 1..=3 {
+        assert_eq!(statics.province(&warm, 0, id), Ok(cold[id as usize - 1]));
+    }
+    assert!(warm.reads.borrow().is_empty());
+    assert_eq!(
+        statics.counters(),
+        cprovince::StaticCounters {
+            hits: 3,
+            misses: 0,
+            cleared: 0,
+        }
+    );
     // A reload changes the play session, which clears the whole memo.
     memory.globals.insert(
         crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA,
         8_i64.to_le_bytes().to_vec(),
     );
-    let mut reloaded = super::EtaInputPacket::new(4, 16, 16).unwrap();
-    walk(&memory, &mut statics, &mut reloaded);
-    assert_eq!(reloaded.counters().static_cleared, 1);
-    assert_eq!(reloaded.leg_count(), warm.leg_count());
+    assert!(statics.begin(&memory, 0, GS));
+    assert_eq!(statics.counters().cleared, 1);
+    assert_eq!(statics.province(&memory, 0, 1), Ok(cold[0]));
+    assert_eq!(statics.counters().misses, 1);
 }
 
 #[test]
@@ -1834,2335 +1424,10 @@ fn adjacency_reload_refreshes_crossings_absence_and_reallocated_arrays() {
 }
 
 #[test]
-fn contiguous_ranges_concatenate_into_the_unsplit_rows() {
-    // The stop fixture zeroes the outer scale, so its route scan ends at
-    // the first leg; both censuses must survive the same cuts.
-    let mut stopped = normal_route_fixture();
-    stopped
-        .globals
-        .insert(0x0331_d688, 0_i64.to_le_bytes().to_vec());
-    for memory in [normal_route_fixture(), stopped, strategic_route_fixture()] {
-        let moving = speed_seed(&memory);
-        let mut stationary = moving;
-        stationary.ordinary_route = Some([0; 16]);
-        let seeds: Vec<_> = (0..8).flat_map(|_| [moving, stationary]).collect();
-        // Ranges own separate arenas, so rebase each row onto the running
-        // concatenation exactly as the table conversion does.
-        let walk = |spans: &[std::ops::Range<usize>]| {
-            let (mut rows, mut terrain) = (Vec::new(), Vec::new());
-            let (mut river, mut transport, mut rail) = (Vec::new(), Vec::new(), Vec::new());
-            let mut leg_count = 0;
-            for span in spans {
-                let mut geometry =
-                    cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
-                        provinces: 8,
-                        neighbour_entries: 8,
-                    });
-                geometry.begin(&memory, 0, GS).unwrap();
-                let mut statics = cprovince::StaticGeometry::default();
-                let mut packet = super::EtaInputPacket::new(64, 128, 256).unwrap();
-                let walk = super::capture_eta_inputs(
-                    &memory,
-                    0,
-                    GS,
-                    &seeds,
-                    span.clone(),
-                    Outcome::Rows { len: seeds.len() },
-                    64,
-                    128,
-                    256,
-                    &mut geometry,
-                    &mut statics,
-                    &mut packet,
-                );
-                assert!(matches!(walk.outcome, Outcome::Rows { .. }), "{walk:?}");
-                for row in packet.rows() {
-                    let mut row = *row;
-                    row.terrain_start += terrain.len();
-                    row.leg_start += leg_count;
-                    rows.push(row);
-                }
-                terrain.extend_from_slice(packet.terrain());
-                leg_count += packet.leg_count();
-                let legs = packet.legs();
-                river.extend_from_slice(legs.river);
-                transport.extend_from_slice(legs.transport);
-                rail.extend_from_slice(legs.rail);
-            }
-            (rows, terrain, leg_count, river, transport, rail)
-        };
-        let single = walk(std::slice::from_ref(&(0..seeds.len())));
-        assert_eq!(single.0.len(), 8);
-        for ranges in [1_usize, 3, 8] {
-            let mut spans = Vec::new();
-            let mut start = 0;
-            for part in 0..ranges {
-                let end = seeds.len() * (part + 1) / ranges;
-                spans.push(start..end);
-                start = end;
-            }
-            assert_eq!(walk(&spans), single, "{ranges} ranges");
-        }
-        // A range that cannot read its own seeds fails alone; the ranges
-        // beside it still produce their rows, and the caller denies the
-        // table because one of them is unavailable.
-        let mut corrupt = seeds.clone();
-        corrupt[9].primary_vtable = Some(1);
-        let range = |span: std::ops::Range<usize>| {
-            let mut geometry =
-                cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
-                    provinces: 8,
-                    neighbour_entries: 8,
-                });
-            geometry.begin(&memory, 0, GS).unwrap();
-            let mut statics = cprovince::StaticGeometry::default();
-            let mut packet = super::EtaInputPacket::new(64, 128, 256).unwrap();
-            super::capture_eta_inputs(
-                &memory,
-                0,
-                GS,
-                &corrupt,
-                span,
-                Outcome::Rows { len: corrupt.len() },
-                64,
-                128,
-                256,
-                &mut geometry,
-                &mut statics,
-                &mut packet,
-            )
-            .outcome
-        };
-        assert_eq!(range(0..8), Outcome::Rows { len: 4 });
-        assert!(matches!(range(8..16), Outcome::Unavailable { .. }));
-    }
-}
-
-#[test]
-fn the_route_scan_stops_where_the_native_walk_stops() {
-    let capture = |memory: &PresentationMemory, packet: &mut super::EtaInputPacket| {
-        let seed = speed_seed(memory);
-        let mut geometry =
-            cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
-                provinces: 8,
-                neighbour_entries: 8,
-            });
-        geometry.enable_growth();
-        geometry.begin(memory, 0, GS).unwrap();
-        let mut statics = cprovince::StaticGeometry::default();
-        super::capture_eta_inputs(
-            memory,
-            0,
-            GS,
-            &[seed],
-            0..1,
-            Outcome::Rows { len: 1 },
-            4,
-            16,
-            16,
-            &mut geometry,
-            &mut statics,
-            packet,
-        )
-    };
-    // The second leg's terrain is the null slot, so reading that leg
-    // fails. The native walk reaches it, so the table is denied.
-    let mut memory = normal_route_fixture();
-    p32(&mut memory.bytes, 0x17400 + 0x88, 0);
-    let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
-    assert!(matches!(
-        capture(&memory, &mut packet).outcome,
-        Outcome::Unavailable { .. }
-    ));
-    // A zero outer scale zeroes the first leg's speed, so the native walk
-    // never evaluates the second and neither does the scan: the same
-    // unreadable tail now costs nothing.
-    memory
-        .globals
-        .insert(0x0331_d688, 0_i64.to_le_bytes().to_vec());
-    assert_eq!(
-        capture(&memory, &mut packet).outcome,
-        Outcome::Rows { len: 1 }
-    );
-    let row = packet.rows()[0];
-    assert_eq!(row.leg_len, 1);
-    assert_eq!(packet.leg_count(), 1);
-    assert_eq!(packet.terrain(), [(1, 10_000)]);
-    // A readable tail past the stop is still not recorded.
-    let mut memory = normal_route_fixture();
-    memory
-        .globals
-        .insert(0x0331_d688, 0_i64.to_le_bytes().to_vec());
-    assert_eq!(
-        capture(&memory, &mut packet).outcome,
-        Outcome::Rows { len: 1 }
-    );
-    assert_eq!(packet.rows()[0].leg_len, 1);
-}
-
-#[test]
-fn normal_scale_zero_proof_preserves_wrapping_boundaries() {
-    assert_eq!(super::normal_speed_zero_from_scale(0), Some(true));
-    for scale in [-100_000_i64, -99_999, -1, 1, 99_999, 100_000] {
-        assert_eq!(super::normal_speed_zero_from_scale(scale), Some(false));
-        for speed in [100_000, 100_001, i64::MAX / 100_000] {
-            assert_ne!(super::movement_product(speed, scale), 0);
-        }
-    }
-    for scale in [i64::MIN, -100_001, 100_001, 1_i64 << 59, i64::MAX] {
-        assert_eq!(super::normal_speed_zero_from_scale(scale), None);
-    }
-    assert_eq!(super::movement_product(100_000, 1_i64 << 59), 0);
-}
-
-#[test]
-fn eta_normal_wrapping_zero_skips_first_and_later_unreadable_tails() {
-    for first in [true, false] {
-        let mut source = normal_route_fixture();
-        source
-            .globals
-            .insert(super::OUTER_SCALE_RVA, (1_i64 << 59).to_le_bytes().to_vec());
-        let fault = if first {
-            // The first speed is floored at 100000, whose final scaled
-            // product wraps to zero despite the nonzero outer scale.
-            p64(&mut source.bytes, 0x11000 + 0x290, 0);
-            0x17400 + crate::cterrain_type::DATABASE_INDEX
-        } else {
-            // Keep the first edge moving; the second terrain penalty
-            // floors that edge at 100000. Only the third leg is unreadable.
-            p64(&mut source.bytes, 0x16028 + 0x20, (-10_000_000_i64) as u64);
-            array(
-                &mut source.bytes,
-                GS + crate::cgame_state::PROVINCES,
-                PROVINCES,
-                5,
-            );
-            p64(&mut source.bytes, PROVINCES + 4 * 8, 0x18800);
-            p64(&mut source.bytes, 0x18800, cprovince::VTABLE_RVA as u64);
-            p32(&mut source.bytes, 0x18800 + cprovince::ID, 4);
-            p64(&mut source.bytes, 0x18800 + cprovince::DEFINITION, 0x18900);
-            p32(
-                &mut source.bytes,
-                0x18900 + crate::province_definition::ID,
-                4,
-            );
-            source.bytes[0x18900 + crate::province_definition::TERRAIN_FLAGS] = 1;
-            p64(
-                &mut source.bytes,
-                0x18900 + crate::province_definition::TERRAIN,
-                0x17800,
-            );
-            array(
-                &mut source.bytes,
-                A1 + crate::cunit::ORDINARY_ROUTE_DATA,
-                0x1f000,
-                3,
-            );
-            p32(&mut source.bytes, 0x1f008, 4);
-            0x17800 + crate::cterrain_type::DATABASE_INDEX
-        };
-        let first_speed = super::effective_movement_speed(&source, 0, GS, A1, P1, 0x18200).unwrap();
-        assert_eq!(first_speed == 0, first);
-        if !first {
-            assert_eq!(
-                super::effective_movement_speed(&source, 0, GS, A1, 0x18200, 0x18400),
-                Ok(0)
-            );
-        }
-        let memory = ObservedMovementMemory {
-            source: &source,
-            reads: Default::default(),
-            fault: Some(fault),
-        };
-        let seed = speed_seed(&memory);
-        let mut geometry =
-            cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
-                provinces: 8,
-                neighbour_entries: 8,
-            });
-        geometry.begin(&memory, 0, GS).unwrap();
-        let mut statics = cprovince::StaticGeometry::default();
-        let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
-        let walk = super::capture_eta_inputs(
-            &memory,
-            0,
-            GS,
-            &[seed],
-            0..1,
-            Outcome::Rows { len: 1 },
-            4,
-            16,
-            16,
-            &mut geometry,
-            &mut statics,
-            &mut packet,
-        );
-        assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
-        assert_eq!(packet.rows()[0].leg_len, if first { 1 } else { 2 });
-        assert!(!memory.reads.borrow().contains(&fault));
-    }
-}
-
-#[test]
-fn eta_transport_does_not_require_unconsumed_land_or_rail_inputs() {
-    for speed in [0_i64, 600_000] {
-        let mut source = normal_route_fixture();
-        p64(&mut source.bytes, A1 + super::NAVAL_TRANSFER_MEMBERSHIP, 1);
-        for province in [P1, 0x18200] {
-            p64(
-                &mut source.bytes,
-                province + cprovince::STRATEGIC_REGION,
-                0x28000,
-            );
-        }
-        p64(
-            &mut source.bytes,
-            0x28000,
-            crate::cstrategic_region::VTABLE_RVA as u64,
-        );
-        p32(&mut source.bytes, 0x28000 + crate::cstrategic_region::ID, 1);
-        p32(
-            &mut source.bytes,
-            0x28000 + crate::cstrategic_region::RUNTIME_SLOT,
-            1,
-        );
-        array(
-            &mut source.bytes,
-            GS + crate::cgame_state::STRATEGIC_REGIONS,
-            0x28800,
-            2,
-        );
-        p64(&mut source.bytes, 0x28808, 0x28000);
-        source.globals.insert(
-            crate::cnaval_unit_transfer::BASE_SPEED_RVA,
-            speed.to_le_bytes().to_vec(),
-        );
-        source.globals.insert(
-            crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
-            0_u32.to_le_bytes().to_vec(),
-        );
-        let fault = P1 + cprovince::STATE;
-        let memory = ObservedMovementMemory {
-            source: &source,
-            reads: Default::default(),
-            fault: Some(fault),
-        };
-        let mut seed = speed_seed(&memory);
-        seed.expeditionary_owner = None;
-        seed.roster_owner = None;
-        seed.strategic_redeployment = None;
-        seed.stat_block = None;
-        seed.organisation = None;
-        let mut geometry =
-            cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
-                provinces: 8,
-                neighbour_entries: 8,
-            });
-        geometry.begin(&memory, 0, GS).unwrap();
-        let mut statics = cprovince::StaticGeometry::default();
-        let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
-        let walk = super::capture_eta_inputs(
-            &memory,
-            0,
-            GS,
-            &[seed],
-            0..1,
-            Outcome::Rows { len: 1 },
-            4,
-            16,
-            16,
-            &mut geometry,
-            &mut statics,
-            &mut packet,
-        );
-        assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
-        let row = packet.rows()[0];
-        assert_eq!(row.leg_len, if speed == 0 { 1 } else { 2 });
-        assert!(row.any_transport);
-        assert!(!row.any_rail);
-        assert!(!memory.reads.borrow().contains(&fault));
-    }
-}
-
-#[test]
-fn eta_rail_graph_and_scan_share_directed_queries_and_refresh_each_capture() {
-    let mut source = strategic_route_fixture();
-    array(
-        &mut source.bytes,
-        A1 + crate::cunit::ORDINARY_ROUTE_DATA,
-        0x1f000,
-        4,
-    );
-    for (index, id) in [2, 1, 2, 1].into_iter().enumerate() {
-        p32(&mut source.bytes, 0x1f000 + index * 4, id);
-    }
-    let army = source.bytes[A1..A1 + 0x700].to_vec();
-    source.bytes[A2..A2 + 0x700].copy_from_slice(&army);
-    p64(
-        &mut source.bytes,
-        A2 + crate::cunit::HANDLE,
-        handle(10, 9000),
-    );
-    let mut seeds = [
-        super::DivisionSeed {
-            pointer: A1,
-            division: handle(9, 9000),
-            ..Default::default()
-        },
-        super::DivisionSeed {
-            pointer: A2,
-            division: handle(10, 9000),
-            ..Default::default()
-        },
-    ];
-    super::capture_division_seeds(&source, &mut seeds);
-    let mut expected_outputs = [None, None];
-    for capacity in [16, 1, 0] {
-        let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
-        packet.rail = crate::crailway_manager::MovementSpeeds::new(capacity);
-        let mut geometry =
-            cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
-                provinces: 8,
-                neighbour_entries: 8,
-            });
-        let mut statics = cprovince::StaticGeometry::default();
-        for (capture, (raw_speed, scaled_speed)) in [(500_003_i64, 500_018_i64), (700_009, 700_030)]
-            .into_iter()
-            .enumerate()
-        {
-            source
-                .globals
-                .insert(0x0331_cf40, raw_speed.to_le_bytes().to_vec());
-            let observed = ScalarBatchMemory::new(&source);
-            geometry.begin(&observed, 0, GS).unwrap();
-            observed.reads.borrow_mut().clear();
-            let walk = super::capture_eta_inputs(
-                &observed,
-                0,
-                GS,
-                &seeds,
-                0..2,
-                Outcome::Rows { len: 2 },
-                4,
-                16,
-                16,
-                &mut geometry,
-                &mut statics,
-                &mut packet,
-            );
-            assert_eq!(walk.outcome, Outcome::Rows { len: 2 });
-            for (index, row) in packet.rows().iter().enumerate() {
-                assert_eq!(row.division, seeds[index].division);
-                assert_eq!((row.leg_start, row.leg_len), (index * 4, 4));
-                assert_eq!(row.current_speed, scaled_speed);
-                assert!(row.any_rail && !row.any_transport && !row.any_river);
-                assert_eq!(row.rail_country_modifier, Some(0));
-                assert!(row.rail_state_modifier.is_none_or(|value| value == 0));
-                assert!(
-                    row.rail_friendly_state_modifier
-                        .is_none_or(|value| value == 0)
-                );
-            }
-            let legs = packet.legs();
-            assert_eq!(legs.rail, [raw_speed; 8]);
-            let output = (
-                packet.rows().to_vec(),
-                packet.terrain().to_vec(),
-                packet.leg_count(),
-                legs.river.to_vec(),
-                legs.transport.to_vec(),
-                legs.rail.to_vec(),
-            );
-            if let Some(expected) = &expected_outputs[capture] {
-                assert_eq!(&output, expected);
-            } else {
-                expected_outputs[capture] = Some(output);
-            }
-            // Current roots and defines are now shared across different
-            // directed edges as well. Vacant storage retains direct reads;
-            // every admitted memo reacquires these markers once per hour.
-            for address in [GS + crate::cgame_state::RAIL_MANAGER, 0x0331_cf40] {
-                assert_eq!(
-                    observed
-                        .reads
-                        .borrow()
-                        .iter()
-                        .filter(|&&(at, _)| at == address)
-                        .count(),
-                    1,
-                    "capacity={capacity} capture={capture} marker={address:#x}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn seeded_rail_reuse_keeps_fault_order_independent_gates_and_self_edges() {
-    let source = strategic_route_fixture();
-    let run = |source: &PresentationMemory,
-               fault: Option<usize>,
-               memo: Option<&mut crate::crailway_manager::MovementSpeeds>,
-               from: usize,
-               to: usize| {
-        let seed = speed_seed(source);
-        let observed = ScalarBatchMemory::new(source);
-        let mut geometry = SeededSpeedGeometry::new(&observed);
-        observed.reads.borrow_mut().clear();
-        observed.fault.set(fault);
-        let value = super::movement_speed_inputs_seeded_in_pass(
-            &observed,
-            0,
-            GS,
-            &mut super::MovementSharedInputs {
-                seed: &seed,
-                route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[2, 3]),
-                geometry: &mut geometry,
-                rail_speeds: memo,
-                state_modifiers: None,
-                category_contributions: None,
-                supply_templates: None,
-                air_prefixes: None,
-            },
-            from,
-            to,
-            &mut super::NormalMovementContext::default(),
-            |_, _| unreachable!("strategic fixture must not select transport"),
-        );
-        (value, observed.reads.take())
-    };
-    let (direct, direct_reads) = run(&source, None, None, P1, 0x18200);
-    assert!(direct.is_ok());
-    let mut memo = crate::crailway_manager::MovementSpeeds::new(1);
-    let (cold, cold_reads) = run(&source, None, Some(&mut memo), P1, 0x18200);
-    assert_eq!(cold, direct);
-    assert_eq!(cold_reads, direct_reads);
-    let (warm, warm_reads) = run(&source, None, Some(&mut memo), P1, 0x18200);
-    assert_eq!(warm, direct);
-    assert!(!warm_reads.contains(&(GS + crate::cgame_state::RAIL_MANAGER, 8)));
-    assert!(!warm_reads.contains(&(0x0331_cf40, 8)));
-    assert!(warm_reads.contains(&(super::OUTER_SCALE_RVA, 8)));
-
-    // A new context must still authenticate this graph before the rail hit;
-    // the independent outer scale must still be read after that hit.
-    for address in [
-        P1 + cprovince::STATE,
-        C1 + ccountry::MODIFIER_ACCUMULATOR,
-        super::OUTER_SCALE_RVA,
-    ] {
-        let (expected, direct_prefix) = run(&source, Some(address), None, P1, 0x18200);
-        let (actual, prefix) = run(&source, Some(address), Some(&mut memo), P1, 0x18200);
-        assert!(expected.is_err(), "fault={address:#x}");
-        assert_eq!(actual, expected);
-        assert!(!prefix.contains(&(GS + crate::cgame_state::RAIL_MANAGER, 8)));
-        if address == super::OUTER_SCALE_RVA {
-            assert_eq!(prefix.last(), Some(&(address, 8)));
-            assert!(direct_prefix.contains(&(GS + crate::cgame_state::RAIL_MANAGER, 8)));
-        } else {
-            assert_eq!(prefix, direct_prefix);
-        }
-    }
-
-    // Existing railway fixtures cover every low-level fault. These two
-    // late query failures verify graph integration and no failed admission,
-    // with both vacant and bounded storage, without duplicating that matrix.
-    for address in [GS + crate::cgame_state::RAIL_MANAGER, 0x0331_bfe0] {
-        let (expected, prefix) = run(&source, Some(address), None, P1, 0x18200);
-        assert!(expected.is_err());
-        for capacity in [0, 1] {
-            let mut failed = crate::crailway_manager::MovementSpeeds::new(capacity);
-            for _ in 0..2 {
-                let (actual, reads) = run(&source, Some(address), Some(&mut failed), P1, 0x18200);
-                assert_eq!(actual, expected);
-                assert_eq!(reads, prefix);
-            }
-        }
-    }
-
-    // The route scan omits self edges. They must therefore stay direct in
-    // the graph and leave a bounded slot free for a real directed edge.
-    let mut self_edges = crate::crailway_manager::MovementSpeeds::new(1);
-    let (same, same_reads) = run(&source, None, None, P1, P1);
-    assert!(same.is_ok());
-    for _ in 0..2 {
-        let (actual, reads) = run(&source, None, Some(&mut self_edges), P1, P1);
-        assert_eq!(actual, same);
-        assert_eq!(reads, same_reads);
-    }
-    let (actual, reads) = run(&source, None, Some(&mut self_edges), P1, 0x18200);
-    assert_eq!(actual, direct);
-    assert_eq!(reads, direct_reads);
-    let (actual, reads) = run(&source, None, Some(&mut self_edges), P1, 0x18200);
-    assert_eq!(actual, direct);
-    assert!(!reads.contains(&(GS + crate::cgame_state::RAIL_MANAGER, 8)));
-
-    // A retained edge result cannot override a freshly blocked rail branch.
-    let mut blocked = strategic_route_fixture();
-    array(
-        &mut blocked.bytes,
-        C1 + ccountry::MODIFIER_ACCUMULATOR,
-        0x1c000,
-        2,
-    );
-    p32(&mut blocked.bytes, 0x1c010, 0x1ea);
-    p64(&mut blocked.bytes, 0x1c018, 1);
-    let (expected, direct_reads) = run(&blocked, None, None, P1, 0x18200);
-    let (actual, reads) = run(&blocked, None, Some(&mut memo), P1, 0x18200);
-    assert!(expected.is_ok());
-    assert_eq!(actual, expected);
-    assert_eq!(reads, direct_reads);
-    assert!(!reads.contains(&(GS + crate::cgame_state::RAIL_MANAGER, 8)));
-}
-
-#[test]
-fn seeded_speed_matches_normal_transport_invasion_and_rail_branches() {
-    for branch in 0..4 {
-        let mut memory = normal_route_fixture();
-        let (from, to) = if branch == 2 {
-            (0x18200, 0x18400)
-        } else {
-            (P1, 0x18200)
-        };
-        match branch {
-            1 => p64(&mut memory.bytes, A1 + carmy::NAVAL_TRANSFER_MEMBERSHIP, 1),
-            2 => {
-                memory.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] = 0;
-                memory
-                    .globals
-                    .insert(0x0331_ead8, 123_457_i64.to_le_bytes().to_vec());
-            }
-            3 => memory = strategic_route_fixture(),
-            _ => {}
-        }
-        let expected =
-            super::effective_movement_speed_with_transport(&memory, 0, GS, A1, from, to, |_, _| {
-                Ok(200_007)
-            })
-            .unwrap();
-        let mut seed = speed_seed(&memory);
-        if branch != 0 {
-            // These branches must remain independent of the normal stat graph.
-            seed.stat_block = None;
-            seed.organisation = None;
-        }
-        let mut geometry = SeededSpeedGeometry::new(&memory);
-
-        let mut context = super::NormalMovementContext::default();
-        let inputs = super::movement_speed_inputs_seeded_in_pass(
-            &memory,
-            0,
-            GS,
-            &mut super::MovementSharedInputs {
-                seed: &seed,
-                route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[2, 3]),
-                geometry: &mut geometry,
-                rail_speeds: None,
-                state_modifiers: None,
-                category_contributions: None,
-                supply_templates: None,
-                air_prefixes: None,
-            },
-            from,
-            to,
-            &mut context,
-            |_, _| Ok(200_007),
-        )
-        .unwrap();
-        assert_eq!(inputs.evaluate(), expected, "branch {branch}");
-        assert_eq!(context.normal.is_some(), branch == 0);
-    }
-}
-
-#[test]
-fn seeded_normal_speed_uses_owned_fields_without_retrying_live_faults() {
-    let memory = normal_route_fixture();
-    let seed = speed_seed(&memory);
-    let expected = super::effective_movement_speed(&memory, 0, GS, A1, P1, 0x18200).unwrap();
-    for offset in [
-        crate::cunit::STAT_BLOCK,
-        carmy::ORGANISATION,
-        crate::cunit::ORDINARY_ROUTE_DATA,
-    ] {
-        let observed = ObservedMovementMemory {
-            source: &memory,
-            reads: Default::default(),
-            fault: Some(A1 + offset),
-        };
-        let mut geometry = SeededSpeedGeometry::new(&memory);
-
-        let inputs = super::movement_speed_inputs_seeded_in_pass(
-            &observed,
-            0,
-            GS,
-            &mut super::MovementSharedInputs {
-                seed: &seed,
-                route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[2, 3]),
-                geometry: &mut geometry,
-                rail_speeds: None,
-                state_modifiers: None,
-                category_contributions: None,
-                supply_templates: None,
-                air_prefixes: None,
-            },
-            P1,
-            0x18200,
-            &mut super::NormalMovementContext::default(),
-            |_, _| unreachable!(),
-        )
-        .unwrap();
-        assert_eq!(inputs.evaluate(), expected);
-
-        assert!(!observed.reads.borrow().contains(&(A1 + offset)));
-    }
-    let mut seed = seed;
-    seed.stat_block = None;
-    let mut geometry = SeededSpeedGeometry::new(&memory);
-
-    assert_eq!(
-        super::movement_speed_inputs_seeded_in_pass(
-            &memory,
-            0,
-            GS,
-            &mut super::MovementSharedInputs {
-                seed: &seed,
-                route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[2, 3]),
-                geometry: &mut geometry,
-                rail_speeds: None,
-                state_modifiers: None,
-                category_contributions: None,
-                supply_templates: None,
-                air_prefixes: None,
-            },
-            P1,
-            0x18200,
-            &mut super::NormalMovementContext::default(),
-            |_, _| unreachable!(),
-        ),
-        Err("division presentation field unreadable")
-    );
-}
-
-#[test]
-fn seeded_zero_speed_preserves_nullable_and_id_zero_ordinary_tail_predicates() {
-    for tail_id in [3_u32, 0] {
-        let mut memory = normal_route_fixture();
-        if tail_id == 3 {
-            p64(&mut memory.bytes, PROVINCES + 3 * 8, 0);
-        } else {
-            p64(&mut memory.bytes, PROVINCES, 0x18400);
-            p32(&mut memory.bytes, 0x18400 + cprovince::ID, 0);
-            p32(
-                &mut memory.bytes,
-                0x18700 + crate::province_definition::ID,
-                0,
-            );
-            p32(&mut memory.bytes, 0x1f004, 0);
-        }
-        memory
-            .globals
-            .insert(0x0331_d688, 0_i64.to_le_bytes().to_vec());
-        assert_eq!(
-            super::effective_movement_speed(&memory, 0, GS, A1, P1, 0x18200),
-            Ok(0)
-        );
-        let seed = speed_seed(&memory);
-        let mut geometry = SeededSpeedGeometry::new(&memory);
-
-        let mut context = super::NormalMovementContext::default();
-        let inputs = super::movement_speed_inputs_seeded_in_pass(
-            &memory,
-            0,
-            GS,
-            &mut super::MovementSharedInputs {
-                seed: &seed,
-                route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[2, tail_id]),
-                geometry: &mut geometry,
-                rail_speeds: None,
-                state_modifiers: None,
-                category_contributions: None,
-                supply_templates: None,
-                air_prefixes: None,
-            },
-            P1,
-            0x18200,
-            &mut context,
-            |_, _| unreachable!(),
-        )
-        .unwrap();
-        assert!(inputs.is_zero());
-        assert_eq!(inputs.evaluate(), 0);
-    }
-}
-
-#[test]
-fn normal_context_matches_uncached_route_and_is_fresh_in_each_pass() {
-    let mut memory = normal_route_fixture();
-    for expected in [[362_522, 306_655], [375_023, 319_155]] {
-        let mut context = super::NormalMovementContext::default();
-        for ((from, to), expected) in [(P1, 0x18200), (0x18200, 0x18400)]
-            .into_iter()
-            .zip(expected)
-        {
-            let direct = super::effective_movement_speed(&memory, 0, GS, A1, from, to);
-            let shared = super::effective_movement_speed_in_pass(
-                &memory,
-                0,
-                GS,
-                A1,
-                from,
-                to,
-                &mut context,
-                |_, _| panic!("ordinary edge selected transport"),
-            );
-            assert_eq!(direct, Ok(expected));
-            assert_eq!(shared, direct);
-            assert!(context.normal.is_some());
-        }
-        assert!(context.normal.is_some());
-        // The independent next pass must acquire the changed common term.
-        p64(&mut memory.bytes, 0x1c008, 15_001);
-    }
-}
-
-#[test]
-fn normal_context_switches_armies_before_the_next_first_read() {
-    let mut memory = normal_route_fixture();
-    p64(&mut memory.bytes, A2 + carmy::NAVAL_TRANSFER_MEMBERSHIP, 1);
-    let mut context = super::NormalMovementContext::default();
-    assert_eq!(
-        super::effective_movement_speed_in_pass(
-            &memory,
-            0,
-            GS,
-            A1,
-            P1,
-            0x18200,
-            &mut context,
-            |_, _| unreachable!()
-        ),
-        Ok(362_522)
-    );
-    let observed = ObservedMovementMemory {
-        source: &memory,
-        reads: Default::default(),
-        fault: Some(A1),
-    };
-    assert_eq!(
-        super::effective_movement_speed_in_pass(
-            &observed,
-            0,
-            GS,
-            A2,
-            P1,
-            0x18200,
-            &mut context,
-            |_, _| Err("transport acquisition failed")
-        ),
-        Err("transport acquisition failed")
-    );
-    assert_eq!(observed.reads.borrow()[0], A2);
-    assert!(!observed.reads.borrow().contains(&A1));
-    assert_eq!(context.army, A2);
-    assert!(context.normal.is_none());
-}
-
-#[test]
-fn branch_context_reuses_first_army_inputs_across_route_edges() {
-    let memory = normal_route_fixture();
-    let observed = ObservedMovementMemory {
-        source: &memory,
-        reads: Default::default(),
-        fault: None,
-    };
-    let edges = [(P1, 0x18200), (0x18200, 0x18400), (P1, 0x18200)];
-    for _ in 0..2 {
-        for (from, to) in edges {
-            assert!(super::effective_movement_speed(&observed, 0, GS, A1, from, to).is_ok());
-        }
-    }
-    let direct_reads = observed.reads.replace(Vec::new());
-    let mut context = super::NormalMovementContext::default();
-    for _ in 0..2 {
-        for (from, to) in edges {
-            assert_eq!(
-                super::effective_movement_speed_in_pass(
-                    &observed,
-                    0,
-                    GS,
-                    A1,
-                    from,
-                    to,
-                    &mut context,
-                    |_, _| unreachable!()
-                ),
-                super::effective_movement_speed(&memory, 0, GS, A1, from, to)
-            );
-        }
-    }
-    let shared_reads = observed.reads.borrow();
-    let membership = A1 + carmy::NAVAL_TRANSFER_MEMBERSHIP;
-    assert_eq!(direct_reads.iter().filter(|&&p| p == membership).count(), 6);
-    assert_eq!(shared_reads.iter().filter(|&&p| p == membership).count(), 1);
-    assert!(shared_reads.len() < direct_reads.len());
-    // Destination identity remains independently read on every route/current
-    // edge, even though the army-level decision graph is shared.
-    assert!(shared_reads.iter().filter(|&&p| p == 0x18400).count() >= 2);
-}
-
-#[test]
-fn branch_context_invasion_stays_lazy_and_retains_its_first_constant() {
-    let mut memory = normal_route_fixture();
-    memory.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] = 0;
-    p64(&mut memory.bytes, A1 + crate::cunit::STAT_BLOCK, u64::MAX);
-    memory
-        .globals
-        .insert(0x0331_ead8, 123_457_i64.to_le_bytes().to_vec());
-    let mut context = super::NormalMovementContext::default();
-    // Invasion selection uses the actual location/first route province,
-    // independently of the two hypothetical land provinces supplied here.
-    for _ in 0..2 {
-        assert_eq!(
-            super::effective_movement_speed_in_pass(
-                &memory,
-                0,
-                GS,
-                A1,
-                0x18200,
-                0x18400,
-                &mut context,
-                |_, _| panic!("invasion must not acquire transport")
-            ),
-            super::effective_movement_speed(&memory, 0, GS, A1, 0x18200, 0x18400)
-        );
-    }
-    assert_eq!(context.invasion_speed, Some(Ok(123_457)));
-    assert!(context.roots.is_none());
-    assert!(context.rail.is_none());
-    assert!(context.normal.is_none());
-}
-
-#[test]
-fn branch_context_blocked_rail_keeps_its_first_branch_operands() {
-    let mut memory = normal_route_fixture();
-    memory.bytes[A1 + carmy::STRATEGIC_REDEPLOYMENT] = 1;
-    array(
-        &mut memory.bytes,
-        C1 + ccountry::MODIFIER_ACCUMULATOR,
-        0x1c000,
-        2,
-    );
-    p32(&mut memory.bytes, 0x1c010, 0x1ea);
-    p64(&mut memory.bytes, 0x1c018, 1);
-    let mut context = super::NormalMovementContext::default();
-    let direct = super::effective_movement_speed(&memory, 0, GS, A1, P1, 0x18200);
-    assert!(direct.is_ok());
-    assert_eq!(
-        super::effective_movement_speed_in_pass(
-            &memory,
-            0,
-            GS,
-            A1,
-            P1,
-            0x18200,
-            &mut context,
-            |_, _| unreachable!()
-        ),
-        direct
-    );
-    let rail = context
-        .rail
-        .expect("strategic branch must initialize selector")
-        .expect("strategic controls must be available");
-    assert!(rail.blocked());
-    assert!(rail.state.is_none());
-    assert!(rail.friendly_state.is_none());
-}
-
-#[test]
-fn branch_context_transport_fault_does_not_initialize_later_or_land_stages() {
-    let mut memory = normal_route_fixture();
-    p64(&mut memory.bytes, A1 + carmy::NAVAL_TRANSFER_MEMBERSHIP, 1);
-    p64(&mut memory.bytes, P1 + cprovince::STRATEGIC_REGION, 0x21000);
-    p64(&mut memory.bytes, A1 + crate::cunit::LOCATION, u64::MAX);
-    let mut context = super::NormalMovementContext::default();
-    assert_eq!(
-        super::effective_movement_speed_in_pass(
-            &memory,
-            0,
-            GS,
-            A1,
-            P1,
-            0x18200,
-            &mut context,
-            |owner, region| {
-                assert_eq!((owner, region), (3, 0x21000));
-                Err("transport source fault")
-            }
-        ),
-        Err("transport source fault")
-    );
-    assert_eq!(context.transport_owner, Some(Ok(3)));
-    assert!(context.transport_scale.is_none());
-    assert!(context.land.is_none());
-    assert!(context.roots.is_none());
-    assert!(context.normal.is_none());
-    // Even membership-selected transport cannot skip edge authentication
-    // on the next request merely because army-level keys are cached.
-    p64(&mut memory.bytes, 0x18200, 0);
-    assert!(
-        super::effective_movement_speed_in_pass(
-            &memory,
-            0,
-            GS,
-            A1,
-            P1,
-            0x18200,
-            &mut context,
-            |_, _| panic!("bad destination must fail before transport callback")
-        )
-        .is_err()
-    );
-    assert_eq!(context.transport_owner, Some(Ok(3)));
-}
-
-#[test]
-fn normal_context_is_lazy_and_keeps_mixed_transport_edges_independent() {
-    let mut memory = normal_route_fixture();
-    let mut context = super::NormalMovementContext::default();
-    // A transport edge cannot depend on an unreadable normal stat object.
-    p64(&mut memory.bytes, A1 + crate::cunit::STAT_BLOCK, u64::MAX);
-    memory.bytes[0x18600 + crate::province_definition::TERRAIN_FLAGS] = 0;
-    p64(&mut memory.bytes, P1 + cprovince::STRATEGIC_REGION, 0x21000);
-    assert_eq!(
-        super::effective_movement_speed_in_pass(
-            &memory,
-            0,
-            GS,
-            A1,
-            P1,
-            0x18200,
-            &mut context,
-            |owner, region| {
-                assert_eq!((owner, region), (3, 0x21000));
-                Ok(200_007)
-            }
-        ),
-        Ok(66_668)
-    );
-    assert!(context.normal.is_none());
-    memory.bytes[0x18600 + crate::province_definition::TERRAIN_FLAGS] = 1;
-    p64(&mut memory.bytes, P1 + cprovince::STRATEGIC_REGION, 0);
-    assert!(
-        super::effective_movement_speed_in_pass(
-            &memory,
-            0,
-            GS,
-            A1,
-            P1,
-            0x18200,
-            &mut context,
-            |_, _| panic!("normal edge selected transport")
-        )
-        .is_err()
-    );
-    assert!(matches!(context.normal, Some(Err(_))));
-    p64(&mut memory.bytes, A1 + crate::cunit::STAT_BLOCK, 0x11000);
-    assert!(
-        super::effective_movement_speed_in_pass(
-            &memory,
-            0,
-            GS,
-            A1,
-            P1,
-            0x18200,
-            &mut context,
-            |_, _| unreachable!(),
-        )
-        .is_err()
-    );
-    // A new pass may acquire the restored getter; this pass retains failure.
-    context = super::NormalMovementContext::default();
-    assert_eq!(
-        super::effective_movement_speed_in_pass(
-            &memory,
-            0,
-            GS,
-            A1,
-            P1,
-            0x18200,
-            &mut context,
-            |_, _| unreachable!()
-        ),
-        Ok(362_522)
-    );
-    memory.bytes[0x18700 + crate::province_definition::TERRAIN_FLAGS] = 0;
-    p64(
-        &mut memory.bytes,
-        0x18200 + cprovince::STRATEGIC_REGION,
-        0x22000,
-    );
-    assert_eq!(
-        super::effective_movement_speed_in_pass(
-            &memory,
-            0,
-            GS,
-            A1,
-            0x18200,
-            0x18400,
-            &mut context,
-            |owner, region| {
-                assert_eq!((owner, region), (3, 0x22000));
-                Ok(300_009)
-            }
-        ),
-        Ok(100_001)
-    );
-    assert!(context.normal.is_some());
-}
-
-#[test]
-fn native_speed_without_destination_preserves_fuel_scale_and_minimum() {
-    let mut memory = presentation_fixture();
-    memory.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] = 1;
-    p64(&mut memory.bytes, 0x11000 + 0x290, 400_000);
-    p64(&mut memory.bytes, 0x11000 + 0x120, 100_000);
-    p64(&mut memory.bytes, A1 + carmy::FUEL_CANDIDATE, 50_000);
-    for (rva, value) in [
-        (0x0331_cec0, 50_000_i64),
-        (0x0331_97d0, 100_000),
-        (0x0331_9f90, 25_000),
-        (0x0331_d688, 100_000),
-    ] {
-        memory.globals.insert(rva, value.to_le_bytes().to_vec());
-    }
-    assert_eq!(
-        super::effective_movement_speed(&memory, 0, GS, A1, P1, 0),
-        Ok(250_000)
-    );
-    assert_eq!(
-        super::effective_movement_speed_with_transport(&memory, 0, GS, A1, P1, 0, |_, _| panic!(
-            "normal branch must not consult transport cache"
-        )),
-        Ok(250_000)
-    );
-    p64(&mut memory.bytes, 0x11000 + 0x290, 0);
-    assert_eq!(
-        super::effective_movement_speed(&memory, 0, GS, A1, P1, 0),
-        Ok(100_000)
-    );
-    memory
-        .globals
-        .insert(0x0331_d688, 25_001_i64.to_le_bytes().to_vec());
-    assert_eq!(
-        super::effective_movement_speed(&memory, 0, GS, A1, P1, 0),
-        Ok(25_001)
-    );
-    p64(&mut memory.bytes, 0x11000, 0);
-    assert!(super::effective_movement_speed(&memory, 0, GS, A1, P1, 0).is_err());
-}
-
-#[test]
-fn category_contribution_keeps_cold_order_duplicates_failures_and_capture_bounds() {
-    const SELECTED: usize = 0x1a000;
-    const CATEGORIES: usize = 0x25000;
-    const CATEGORY: usize = 0x25200;
-    let mut source = normal_route_fixture();
-    source.bytes[SELECTED + 0x5a8] = 4;
-    p32(&mut source.bytes, SELECTED + 0x5d8, 0x2b);
-    array(&mut source.bytes, SELECTED + 0x508, CATEGORIES, 2);
-    p64(&mut source.bytes, CATEGORIES, CATEGORY as u64);
-    p64(&mut source.bytes, CATEGORIES + 8, CATEGORY as u64);
-    p32(&mut source.bytes, CATEGORY + 0x60, 0x2b);
-    let accumulator = C1 + ccountry::MODIFIER_ACCUMULATOR;
-    let mut packet = super::EtaInputPacket::new(1, 0, 0).unwrap();
-    {
-        let observed = ScalarBatchMemory::new(&source);
-        fn read(
-            memory: &ScalarBatchMemory<'_>,
-            memo: Option<&std::cell::RefCell<super::MovementCategoryContributions>>,
-        ) -> Result<i64, &'static str> {
-            let accumulator = C1 + ccountry::MODIFIER_ACCUMULATOR;
-            super::movement_category_contribution(
-                memory,
-                0,
-                SELECTED,
-                accumulator,
-                accumulator,
-                1,
-                memo,
-            )
-        }
-        let modifier_reads = [
-            (accumulator, 16),
-            (0x1c000, 16),
-            (crate::modifier_definition::TABLE_RVA, 8),
-            (
-                0x1d000 + 0x2b * crate::modifier_definition::STRIDE + 0x68,
-                4,
-            ),
-            (
-                0x1d000 + 0x2b * crate::modifier_definition::STRIDE + 0x60,
-                4,
-            ),
-        ];
-        let mut expected_reads = vec![(SELECTED + 0x5a8, 1)];
-        // Leader and country alias one accumulator, but their absent 0x2c
-        // queries remain separate and precede the selected-token read.
-        for _ in 0..2 {
-            expected_reads.extend([(accumulator, 16), (0x1c000, 16)]);
-        }
-        expected_reads.push((SELECTED + 0x5d8, 4));
-        expected_reads.extend(modifier_reads);
-        expected_reads.push((SELECTED + 0x508, 16));
-        for slot in [CATEGORIES, CATEGORIES + 8] {
-            expected_reads.extend([(slot, 8), (CATEGORY + 0x60, 4)]);
-            expected_reads.extend(modifier_reads);
-        }
-        let allocated = packet.allocated_bytes();
-        assert_eq!(
-            read(&observed, Some(&packet.category_contributions)),
-            Ok(30_003)
-        );
-        assert_eq!(*observed.reads.borrow(), expected_reads);
-        observed.reads.borrow_mut().clear();
-        assert_eq!(
-            read(&observed, Some(&packet.category_contributions)),
-            Ok(30_003)
-        );
-        assert!(observed.reads.borrow().is_empty());
-        assert_eq!(packet.allocated_bytes(), allocated);
-        // Every cold failure stays at its original interleaved position;
-        // repeated category pointers/tokens must not hide it or be merged.
-        for &(fault, _) in &expected_reads {
-            packet.clear();
-            observed.fault.set(Some(fault));
-            observed.reads.borrow_mut().clear();
-            let expected = read(&observed, None);
-            assert!(expected.is_err());
-            let prefix = observed.reads.borrow().clone();
-            for _ in 0..2 {
-                observed.reads.borrow_mut().clear();
-                assert_eq!(
-                    read(&observed, Some(&packet.category_contributions)),
-                    expected
-                );
-                assert_eq!(*observed.reads.borrow(), prefix);
-                let memo = packet.category_contributions.borrow();
-                assert!(
-                    memo.entries
-                        .iter()
-                        .all(|entry| entry.generation != memo.generation)
-                );
-            }
-        }
-        observed.fault.set(None);
-        let mut bounded = super::EtaInputPacket::new(0, 0, 0).unwrap();
-        for (rows, slots) in [(0, 0), (1, 1), (3, 4), (5, 8), (8, 8)] {
-            bounded.reserve(rows, 0, 0).unwrap();
-            bounded.clear();
-            assert_eq!(bounded.category_contributions.borrow().entries.len(), slots);
-            let allocated = bounded.allocated_bytes();
-            for attempt in 0..2 {
-                observed.reads.borrow_mut().clear();
-                assert_eq!(
-                    read(&observed, Some(&bounded.category_contributions)),
-                    Ok(30_003)
-                );
-                if rows == 0 || attempt == 0 {
-                    assert_eq!(*observed.reads.borrow(), expected_reads);
-                } else {
-                    assert!(observed.reads.borrow().is_empty());
-                }
-                assert_eq!(bounded.allocated_bytes(), allocated);
-            }
-        }
-    }
-    // A new capture must reacquire changed values and keep wrapping adds.
-    p64(&mut source.bytes, 0x1c008, i64::MAX as u64);
-    packet.clear();
-    let observed = ScalarBatchMemory::new(&source);
-    assert_eq!(
-        super::movement_category_contribution(
-            &observed,
-            0,
-            SELECTED,
-            accumulator,
-            accumulator,
-            1,
-            Some(&packet.category_contributions),
-        ),
-        Ok(i64::MAX - 2)
-    );
-    assert!(observed.reads.borrow().contains(&(accumulator, 16)));
-    assert!(
-        observed
-            .reads
-            .borrow()
-            .contains(&(crate::modifier_definition::TABLE_RVA, 8))
-    );
-}
-
-#[test]
-fn category_direct_map_collisions_keep_full_keys_successes_and_faults() {
-    const SELECTED: usize = 0x1a000;
-    const OTHER_SELECTED: usize = 0x25000;
-    const OTHER_COUNTRY: usize = 0x26000;
-    const OTHER_LEADER: usize = 0x26200;
-    const OTHER_BASE: usize = 0x100000;
-    let mut source = normal_route_fixture();
-    for selected in [SELECTED, OTHER_SELECTED] {
-        source.bytes[selected + 0x5a8] = 4;
-        p32(&mut source.bytes, selected + 0x5d8, 0x2b);
-    }
-    array(&mut source.bytes, OTHER_COUNTRY, 0x26100, 1);
-    p32(&mut source.bytes, 0x26100, 0x2b);
-    p64(&mut source.bytes, 0x26108, 20_003);
-    array(&mut source.bytes, OTHER_LEADER, 0x26300, 1);
-    p32(&mut source.bytes, 0x26300, 0x2c);
-    p64(&mut source.bytes, 0x26308, 123);
-    source.globals.insert(
-        OTHER_BASE + crate::modifier_definition::TABLE_RVA,
-        0x1d000_u64.to_le_bytes().to_vec(),
-    );
-    let accumulator = C1 + ccountry::MODIFIER_ACCUMULATOR;
-    let original = super::MovementCategoryKey {
-        base: 0,
-        selected: SELECTED,
-        country_accumulator: accumulator,
-        leader_accumulator: accumulator,
-        leader: 1,
-    };
-    let variants = [
-        super::MovementCategoryKey {
-            base: OTHER_BASE,
-            ..original
-        },
-        super::MovementCategoryKey {
-            selected: OTHER_SELECTED,
-            ..original
-        },
-        super::MovementCategoryKey {
-            country_accumulator: OTHER_COUNTRY,
-            ..original
-        },
-        super::MovementCategoryKey {
-            leader_accumulator: OTHER_LEADER,
-            ..original
-        },
-        super::MovementCategoryKey {
-            leader: 0,
-            ..original
-        },
-    ];
-    let observed = ScalarBatchMemory::new(&source);
-    let read =
-        |key: super::MovementCategoryKey,
-         memo: Option<&std::cell::RefCell<super::MovementCategoryContributions>>| {
-            super::movement_category_contribution(
-                &observed,
-                key.base,
-                key.selected,
-                key.country_accumulator,
-                key.leader_accumulator,
-                key.leader,
-                memo,
-            )
-        };
-    assert_eq!(read(original, None), Ok(10_001));
-    let original_reads = observed.reads.borrow().clone();
-    let mut packet = super::EtaInputPacket::new(1, 0, 0).unwrap();
-    // One slot forces collisions independently of the index mixer.
-    assert_eq!(packet.category_contributions.borrow().entries.len(), 1);
-    let allocated = packet.allocated_bytes();
-    for (variant, expected) in variants
-        .into_iter()
-        .zip([10_001, 10_001, 20_003, 10_124, 10_001])
-    {
-        observed.reads.borrow_mut().clear();
-        assert_eq!(read(variant, None), Ok(expected));
-        let variant_reads = observed.reads.borrow().clone();
-        assert!(!variant_reads.is_empty());
-        for &(fault, _) in &variant_reads {
-            packet.clear();
-            observed.fault.set(None);
-            assert_eq!(
-                read(original, Some(&packet.category_contributions)),
-                Ok(10_001)
-            );
-            observed.fault.set(Some(fault));
-            observed.reads.borrow_mut().clear();
-            let failure = read(variant, None);
-            assert!(failure.is_err());
-            let prefix = observed.reads.borrow().clone();
-            for _ in 0..2 {
-                observed.reads.borrow_mut().clear();
-                assert_eq!(read(variant, Some(&packet.category_contributions)), failure);
-                assert_eq!(*observed.reads.borrow(), prefix);
-                observed.reads.borrow_mut().clear();
-                assert_eq!(
-                    read(original, Some(&packet.category_contributions)),
-                    Ok(10_001)
-                );
-                assert!(observed.reads.borrow().is_empty());
-            }
-        }
-        observed.fault.set(None);
-        observed.reads.borrow_mut().clear();
-        assert_eq!(
-            read(variant, Some(&packet.category_contributions)),
-            Ok(expected)
-        );
-        assert_eq!(*observed.reads.borrow(), variant_reads);
-        observed.reads.borrow_mut().clear();
-        assert_eq!(
-            read(variant, Some(&packet.category_contributions)),
-            Ok(expected)
-        );
-        assert!(observed.reads.borrow().is_empty());
-        observed.reads.borrow_mut().clear();
-        assert_eq!(
-            read(original, Some(&packet.category_contributions)),
-            Ok(10_001)
-        );
-        assert_eq!(*observed.reads.borrow(), original_reads);
-        assert_eq!(packet.allocated_bytes(), allocated);
-    }
-    // Changing the slot mask must invalidate entries made under the old mask.
-    packet.reserve(3, 0, 0).unwrap();
-    assert_eq!(packet.category_contributions.borrow().entries.len(), 4);
-    {
-        let memo = packet.category_contributions.borrow();
-        assert!(
-            memo.entries
-                .iter()
-                .all(|entry| entry.generation != memo.generation)
-        );
-    }
-    let allocated = packet.allocated_bytes();
-    observed.reads.borrow_mut().clear();
-    assert_eq!(
-        read(original, Some(&packet.category_contributions)),
-        Ok(10_001)
-    );
-    assert_eq!(*observed.reads.borrow(), original_reads);
-    observed.reads.borrow_mut().clear();
-    assert_eq!(
-        read(original, Some(&packet.category_contributions)),
-        Ok(10_001)
-    );
-    assert!(observed.reads.borrow().is_empty());
-    assert_eq!(packet.allocated_bytes(), allocated);
-}
-
-#[test]
-fn category_generations_reacquire_after_clear_wrap_and_growth() {
-    const SELECTED: usize = 0x1a000;
-    let mut source = normal_route_fixture();
-    p32(&mut source.bytes, SELECTED + 0x5d8, 0x2b);
-    let accumulator = C1 + ccountry::MODIFIER_ACCUMULATOR;
-    let key = super::MovementCategoryKey {
-        base: 0,
-        selected: SELECTED,
-        country_accumulator: accumulator,
-        leader_accumulator: accumulator,
-        leader: 1,
-    };
-    let mut packet = super::EtaInputPacket::new(2, 0, 0).unwrap();
-    let read = |source: &PresentationMemory, packet: &super::EtaInputPacket, expected| {
-        let observed = ScalarBatchMemory::new(source);
-        let acquire = || {
-            super::movement_category_contribution(
-                &observed,
-                key.base,
-                key.selected,
-                key.country_accumulator,
-                key.leader_accumulator,
-                key.leader,
-                Some(&packet.category_contributions),
-            )
-        };
-        let allocated = packet.allocated_bytes();
-        assert_eq!(acquire(), Ok(expected));
-        assert!(!observed.reads.borrow().is_empty());
-        observed.reads.borrow_mut().clear();
-        assert_eq!(acquire(), Ok(expected));
-        assert!(observed.reads.borrow().is_empty());
-        assert_eq!(packet.allocated_bytes(), allocated);
-    };
-    read(&source, &packet, 10_001);
-    let previous = packet.category_contributions.borrow().generation;
-    let tags: Vec<_> = packet
-        .category_contributions
-        .borrow()
-        .entries
-        .iter()
-        .map(|entry| entry.generation)
-        .collect();
-    packet.clear();
-    {
-        let memo = packet.category_contributions.borrow();
-        assert_eq!(memo.generation, previous + 1);
-        // Ordinary reset does not visit or rewrite the slot array.
-        assert!(memo.entries.iter().map(|entry| entry.generation).eq(tags));
-    }
-    p64(&mut source.bytes, 0x1c008, 20_003);
-    read(&source, &packet, 20_003);
-    for grow in [false, true] {
-        {
-            let memo = packet.category_contributions.get_mut();
-            let slot = memo.slot(key).unwrap();
-            memo.generation = u64::MAX;
-            for (index, entry) in memo.entries.iter_mut().enumerate() {
-                // The old generation-one entry would resurrect on wrap
-                // unless every slot tag is invalidated first.
-                *entry = super::MovementCategoryContribution {
-                    key,
-                    value: 77_777,
-                    generation: if index == slot { 1 } else { u64::MAX },
-                };
-            }
-        }
-        if grow {
-            packet.reserve(3, 0, 0).unwrap();
-        } else {
-            packet.clear();
-        }
-        {
-            let memo = packet.category_contributions.borrow();
-            assert_eq!(memo.generation, 1);
-            assert_eq!(memo.entries.len(), if grow { 4 } else { 2 });
-            assert!(memo.entries.iter().all(|entry| entry.generation == 0));
-        }
-        p64(
-            &mut source.bytes,
-            0x1c008,
-            if grow { 40_009 } else { 30_007 },
-        );
-        read(&source, &packet, if grow { 40_009 } else { 30_007 });
-    }
-}
-
-const AIR_TEST_BASE: usize = 0x400000;
-const AIR_TEST_DIPLOMACY: usize = 0x22000;
-const AIR_TEST_RELATIONS: usize = 0x22200;
-const AIR_TEST_FIRST: usize = 0x22400;
-const AIR_TEST_MATCH: usize = 0x22500;
-const AIR_TEST_REGION: usize = 0x23000;
-const AIR_TEST_OTHER_REGION: usize = 0x23200;
-const AIR_TEST_MANAGER: usize = 0x24000;
-const AIR_TEST_COUNTRIES: usize = 0x24200;
-const AIR_TEST_COUNTRY: usize = 0x24400;
-const AIR_TEST_ENTRIES: usize = 0x24800;
-const AIR_TEST_STATS: usize = 0x11000;
-const AIR_TEST_OTHER_STATS: usize = 0x29000;
-const AIR_TEST_SCALE: usize = 0x0331_ddd8;
-
-fn air_prefix_fixture() -> PresentationMemory {
-    let mut source = normal_route_fixture();
-    let bytes = &mut source.bytes;
-    // Nonzero defense reads module-relative defines through a reader
-    // that rejects null bases, so authenticate these objects at one.
-    for owner in [C1, C2] {
-        p64(bytes, owner, (AIR_TEST_BASE + ccountry::VTABLE_RVA) as u64);
-        p64(bytes, owner + 0xf88, AIR_TEST_DIPLOMACY as u64);
-    }
-    p32(bytes, AIR_TEST_DIPLOMACY + 0xa4, 0);
-    array(bytes, AIR_TEST_DIPLOMACY + 0x20, AIR_TEST_RELATIONS, 3);
-    p64(bytes, AIR_TEST_RELATIONS, AIR_TEST_FIRST as u64);
-    p64(bytes, AIR_TEST_RELATIONS + 8, AIR_TEST_MATCH as u64);
-    // The first matching relation must stop before this invalid pointer.
-    p64(bytes, AIR_TEST_RELATIONS + 16, u64::MAX);
-    p32(bytes, AIR_TEST_FIRST + 8, 0x3809);
-    p32(bytes, AIR_TEST_MATCH + 8, 0x380a);
-    p64(
-        bytes,
-        P1 + cprovince::STRATEGIC_REGION,
-        AIR_TEST_REGION as u64,
-    );
-    for region in [AIR_TEST_REGION, AIR_TEST_OTHER_REGION] {
-        p32(bytes, region + 0x60, 0);
-    }
-    p64(
-        bytes,
-        GS + crate::cgame_state::STRATEGIC_AIR_MANAGER,
-        AIR_TEST_MANAGER as u64,
-    );
-    array(bytes, AIR_TEST_MANAGER + 0x30, AIR_TEST_COUNTRIES, 4);
-    for canonical in [1, 2] {
-        p64(
-            bytes,
-            AIR_TEST_COUNTRIES + canonical * 8,
-            AIR_TEST_COUNTRY as u64,
-        );
-    }
-    array(bytes, AIR_TEST_COUNTRY + 0xe0, AIR_TEST_ENTRIES, 2);
-    p64(bytes, AIR_TEST_ENTRIES, 300_000);
-    p64(bytes, AIR_TEST_ENTRIES + 8, 100_000);
-    p64(bytes, AIR_TEST_ENTRIES + 0x18, -30_001_i64 as u64);
-    p64(bytes, AIR_TEST_ENTRIES + 0xa0, 100_000);
-    p64(bytes, AIR_TEST_ENTRIES + 0xa8, 300_000);
-    p64(bytes, AIR_TEST_ENTRIES + 0xb8, 40_003);
-    for (stats, defense) in [(AIR_TEST_STATS, 100_000), (AIR_TEST_OTHER_STATS, 200_000)] {
-        p64(
-            bytes,
-            stats,
-            (AIR_TEST_BASE + crate::csub_unit_definition::VTABLE_RVA) as u64,
-        );
-        p64(
-            bytes,
-            stats + crate::csub_unit_definition::MOVEMENT_AIR_DEFENSE,
-            defense,
-        );
-    }
-    for (rva, value) in [
-        (AIR_TEST_SCALE, 100_007_i64),
-        (
-            crate::csub_unit_definition::AIR_DEFENSE_DENOMINATOR_RVA,
-            100_000,
-        ),
-        (
-            crate::csub_unit_definition::AIR_DEFENSE_REDUCTION_RVA,
-            50_000,
-        ),
-    ] {
-        source
-            .globals
-            .insert(AIR_TEST_BASE + rva, value.to_le_bytes().to_vec());
-    }
-    source
-}
-
-fn air_prefix_key() -> super::MovementAirKey {
-    super::MovementAirKey {
-        base: AIR_TEST_BASE,
-        state: GS,
-        owner_raw: 3,
-        owner_pointer: C1,
-        canonical: 1,
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum AirPrefixTestValue {
-    Active(bool),
-    Region(Option<[i64; 3]>),
-}
-
-fn air_prefix_test_read(
-    memory: &impl crate::Memory,
-    key: super::MovementAirKey,
-    region: Option<usize>,
-    memo: Option<&std::cell::RefCell<super::MovementAirMemo>>,
-) -> Result<AirPrefixTestValue, &'static str> {
-    match region {
-        None => super::movement_air_active(memory, key, memo).map(AirPrefixTestValue::Active),
-        Some(region) => super::movement_air_region(memory, key, region, memo).map(|prefix| {
-            AirPrefixTestValue::Region(prefix.map(|p| [p.fraction, p.impact, p.scale]))
-        }),
-    }
-}
-
-fn air_prefix_active_trace() -> Vec<(usize, usize)> {
-    vec![
-        (C1 + 0xf88, 8),
-        (AIR_TEST_DIPLOMACY + 0xa4, 4),
-        (AIR_TEST_DIPLOMACY + 0x20, 16),
-        (AIR_TEST_RELATIONS, 8),
-        (AIR_TEST_FIRST + 8, 4),
-        (AIR_TEST_RELATIONS + 8, 8),
-        (AIR_TEST_MATCH + 8, 4),
-    ]
-}
-
-fn air_prefix_region_trace() -> Vec<(usize, usize)> {
-    vec![
-        (GS + crate::cgame_state::STRATEGIC_AIR_MANAGER, 8),
-        (AIR_TEST_MANAGER + 0x30, 16),
-        (AIR_TEST_COUNTRIES + 8, 8),
-        (AIR_TEST_REGION + 0x60, 4),
-        (AIR_TEST_COUNTRY + 0xe0, 16),
-        (AIR_TEST_ENTRIES, 8),
-        (AIR_TEST_ENTRIES + 8, 8),
-        (AIR_TEST_ENTRIES + 0x18, 8),
-        (AIR_TEST_BASE + AIR_TEST_SCALE, 8),
-    ]
-}
-
-#[test]
-fn air_prefix_cold_queries_preserve_exact_reads_and_every_failed_prefix() {
-    let source = air_prefix_fixture();
-    for (region, expected, trace) in [
-        (
-            None,
-            AirPrefixTestValue::Active(true),
-            air_prefix_active_trace(),
-        ),
-        (
-            Some(AIR_TEST_REGION),
-            AirPrefixTestValue::Region(Some([25_000, -30_001, 100_007])),
-            air_prefix_region_trace(),
-        ),
-    ] {
-        let observed = ScalarBatchMemory::new(&source);
-        assert_eq!(
-            air_prefix_test_read(&observed, air_prefix_key(), region, None),
-            Ok(expected)
-        );
-        assert_eq!(*observed.reads.borrow(), trace);
-        for capacity in [0, 1, 4] {
-            let memo = std::cell::RefCell::new(super::MovementAirMemo::new(capacity).unwrap());
-            let allocated = memo.borrow().allocated_bytes();
-            for attempt in 0..2 {
-                observed.reads.borrow_mut().clear();
-                let expected = air_prefix_test_read(&source, air_prefix_key(), region, None);
-                assert_eq!(
-                    air_prefix_test_read(&observed, air_prefix_key(), region, Some(&memo)),
-                    expected,
-                );
-                if capacity == 0 || attempt == 0 {
-                    assert_eq!(*observed.reads.borrow(), trace);
-                } else {
-                    assert!(observed.reads.borrow().is_empty());
-                }
-                assert_eq!(memo.borrow().allocated_bytes(), allocated);
-            }
-            for &(fault, _) in &trace {
-                memo.borrow_mut().clear();
-                observed.fault.set(Some(fault));
-                observed.reads.borrow_mut().clear();
-                let expected = air_prefix_test_read(&observed, air_prefix_key(), region, None);
-                assert!(expected.is_err(), "fault {fault:#x}");
-                let prefix = observed.reads.take();
-                let ordinal = trace.iter().position(|&(at, _)| at == fault).unwrap();
-                assert_eq!(prefix, trace[..=ordinal]);
-                for _ in 0..2 {
-                    assert_eq!(
-                        air_prefix_test_read(&observed, air_prefix_key(), region, Some(&memo)),
-                        expected,
-                    );
-                    assert_eq!(observed.reads.take(), prefix);
-                    assert_eq!(memo.borrow().allocated_bytes(), allocated);
-                }
-            }
-            observed.fault.set(None);
-        }
-    }
-}
-
-#[test]
-fn air_prefix_direct_map_collisions_keep_every_identity_and_prior_success() {
-    const OTHER_BASE: usize = 0x100000;
-    const OTHER_STATE: usize = 0x200000;
-    let mut source = air_prefix_fixture();
-    source.globals.insert(
-        OTHER_BASE + AIR_TEST_SCALE,
-        200_009_i64.to_le_bytes().to_vec(),
-    );
-    source.globals.insert(
-        OTHER_STATE + crate::cgame_state::STRATEGIC_AIR_MANAGER,
-        (AIR_TEST_MANAGER as u64).to_le_bytes().to_vec(),
-    );
-    let original = air_prefix_key();
-    let variants = [
-        super::MovementAirKey {
-            base: OTHER_BASE,
-            ..original
-        },
-        super::MovementAirKey {
-            state: OTHER_STATE,
-            ..original
-        },
-        super::MovementAirKey {
-            owner_raw: 1,
-            ..original
-        },
-        super::MovementAirKey {
-            owner_pointer: C2,
-            ..original
-        },
-        super::MovementAirKey {
-            canonical: 2,
-            ..original
-        },
-    ];
-    // Identical results from aliases still require different cold queries.
-    // One slot makes all distinct full keys collide regardless of hashing.
-    for region in [None, Some(AIR_TEST_REGION)] {
-        for (variant, variant_region) in variants.into_iter().map(|key| (key, region)).chain(
-            region
-                .into_iter()
-                .map(|_| (original, Some(AIR_TEST_OTHER_REGION))),
-        ) {
-            let observed = ScalarBatchMemory::new(&source);
-            let memo = std::cell::RefCell::new(super::MovementAirMemo::new(1).unwrap());
-            let allocated = memo.borrow().allocated_bytes();
-            let original_value = air_prefix_test_read(&observed, original, region, None);
-            let original_trace = observed.reads.take();
-            let variant_value = air_prefix_test_read(&observed, variant, variant_region, None);
-            let variant_trace = observed.reads.take();
-            assert!(original_value.is_ok() && variant_value.is_ok());
-            for &(fault, _) in &variant_trace {
-                memo.borrow_mut().clear();
-                observed.fault.set(None);
-                assert_eq!(
-                    air_prefix_test_read(&observed, original, region, Some(&memo)),
-                    original_value
-                );
-                observed.reads.borrow_mut().clear();
-                observed.fault.set(Some(fault));
-                let failure = air_prefix_test_read(&observed, variant, variant_region, None);
-                assert!(failure.is_err());
-                let prefix = observed.reads.take();
-                for _ in 0..2 {
-                    assert_eq!(
-                        air_prefix_test_read(&observed, variant, variant_region, Some(&memo)),
-                        failure
-                    );
-                    assert_eq!(observed.reads.take(), prefix);
-                    assert_eq!(
-                        air_prefix_test_read(&observed, original, region, Some(&memo)),
-                        original_value
-                    );
-                    assert!(observed.reads.borrow().is_empty());
-                }
-            }
-            observed.fault.set(None);
-            observed.reads.borrow_mut().clear();
-            assert_eq!(
-                air_prefix_test_read(&observed, variant, variant_region, Some(&memo)),
-                variant_value
-            );
-            assert_eq!(observed.reads.take(), variant_trace);
-            assert_eq!(
-                air_prefix_test_read(&observed, variant, variant_region, Some(&memo)),
-                variant_value
-            );
-            assert!(observed.reads.borrow().is_empty());
-            assert_eq!(
-                air_prefix_test_read(&observed, original, region, Some(&memo)),
-                original_value
-            );
-            assert_eq!(observed.reads.take(), original_trace);
-            assert_eq!(memo.borrow().allocated_bytes(), allocated);
-        }
-    }
-}
-
-#[test]
-fn air_prefix_clear_and_growth_reacquire_changed_inputs_without_query_allocation() {
-    let mut source = air_prefix_fixture();
-    let memo = std::cell::RefCell::new(super::MovementAirMemo::new(0).unwrap());
-    assert_eq!(memo.borrow().allocated_bytes(), 0);
-    for rows in [0, 1, 3, 5] {
-        memo.borrow_mut().reserve(rows).unwrap();
-        for (active, hostile) in [(false, 0_u64), (true, 300_000)] {
-            memo.borrow_mut().clear();
-            p32(
-                &mut source.bytes,
-                AIR_TEST_DIPLOMACY + 0xa4,
-                u32::from(active),
-            );
-            array(&mut source.bytes, AIR_TEST_DIPLOMACY + 0x20, 0, 0);
-            p64(&mut source.bytes, AIR_TEST_ENTRIES + 8, hostile);
-            let observed = ScalarBatchMemory::new(&source);
-            let allocated = memo.borrow().allocated_bytes();
-            for region in [None, Some(AIR_TEST_REGION)] {
-                let expected = air_prefix_test_read(&source, air_prefix_key(), region, None);
-                for attempt in 0..2 {
-                    assert_eq!(
-                        air_prefix_test_read(&observed, air_prefix_key(), region, Some(&memo)),
-                        expected
-                    );
-                    let reads = observed.reads.take();
-                    assert_eq!(reads.is_empty(), rows != 0 && attempt == 1);
-                    assert_eq!(memo.borrow().allocated_bytes(), allocated);
-                }
-            }
-        }
-    }
-    // Growing storage is itself an invalidation boundary, independent of
-    // clear; the new hash mask must never turn an old tag into a hit.
-    p64(&mut source.bytes, AIR_TEST_ENTRIES + 8, 900_000);
-    memo.borrow_mut().reserve(17).unwrap();
-    let observed = ScalarBatchMemory::new(&source);
-    assert_eq!(
-        air_prefix_test_read(
-            &observed,
-            air_prefix_key(),
-            Some(AIR_TEST_REGION),
-            Some(&memo)
-        ),
-        Ok(AirPrefixTestValue::Region(Some([75_000, -30_001, 100_007]))),
-    );
-    assert_eq!(observed.reads.take(), air_prefix_region_trace());
-}
-
-type AirPrefixFullRead = (Result<[i64; 4], &'static str>, Vec<(usize, usize)>);
-
-fn air_prefix_full_read(
-    source: &PresentationMemory,
-    fault: Option<usize>,
-    memo: Option<&std::cell::RefCell<super::MovementAirMemo>>,
-    stats: usize,
-) -> AirPrefixFullRead {
-    let seed = speed_seed(source);
-    let observed = ScalarBatchMemory::new(source);
-    let mut geometry = SeededSpeedGeometry::new(&observed);
-    observed.reads.borrow_mut().clear();
-    observed.fault.set(fault);
-    let value = super::movement_air_inputs(
-        &observed,
-        AIR_TEST_BASE,
-        GS,
-        A1,
-        stats,
-        P1,
-        Some(&mut super::MovementSharedInputs {
-            seed: &seed,
-            route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[2, 3]),
-            geometry: &mut geometry,
-            rail_speeds: None,
-            state_modifiers: None,
-            category_contributions: None,
-            supply_templates: None,
-            air_prefixes: memo,
-        }),
-    )
-    .map(|air| [air.fraction, air.impact, air.scale, air.defense]);
-    (value, observed.reads.take())
-}
-
-#[test]
-fn air_prefix_warm_hits_keep_owner_region_and_division_defense_reads_fresh() {
-    let source = air_prefix_fixture();
-    let memo = std::cell::RefCell::new(super::MovementAirMemo::new(4).unwrap());
-    let (direct, direct_trace) = air_prefix_full_read(&source, None, None, AIR_TEST_STATS);
-    assert!(direct.is_ok(), "{direct:?}");
-    let mut expected_warm = direct_trace.clone();
-    for prefix in [air_prefix_active_trace(), air_prefix_region_trace()] {
-        let start = expected_warm
-            .windows(prefix.len())
-            .position(|window| window == prefix.as_slice())
-            .expect("direct read must contain the complete memoized prefix");
-        expected_warm.drain(start..start + prefix.len());
-    }
-    assert_eq!(
-        air_prefix_full_read(&source, None, Some(&memo), AIR_TEST_STATS),
-        (direct, direct_trace)
-    );
-    let (warm, warm_trace) = air_prefix_full_read(&source, None, Some(&memo), AIR_TEST_STATS);
-    assert_eq!(warm, direct);
-    // Keep every remaining occurrence and its order, including repeated
-    // canonical-link validation in the authenticated country reader.
-    assert_eq!(warm_trace, expected_warm);
-    assert!(!warm_trace.contains(&(C1 + 0xf88, 8)));
-    assert!(!warm_trace.contains(&(GS + crate::cgame_state::STRATEGIC_AIR_MANAGER, 8)));
-    for (fault, len) in [
-        (GS + crate::cgame_state::COUNTRIES, 16),
-        (GS + crate::cgame_state::COUNTRY_LINKS, 16),
-        (LINKS + 3 * 4, 4),
-        (LINKS + 4, 4),
-        (COUNTRIES + 8, 8),
-        (C1, 8),
-        (C1 + ccountry::ID, 4),
-        (P1 + cprovince::STRATEGIC_REGION, 8),
-        (AIR_TEST_STATS, 8),
-        (
-            AIR_TEST_STATS + crate::csub_unit_definition::MOVEMENT_AIR_DEFENSE,
-            8,
-        ),
-        (
-            AIR_TEST_BASE + crate::csub_unit_definition::AIR_DEFENSE_DENOMINATOR_RVA,
-            8,
-        ),
-        (
-            AIR_TEST_BASE + crate::csub_unit_definition::AIR_DEFENSE_REDUCTION_RVA,
-            8,
-        ),
-    ] {
-        assert!(warm_trace.contains(&(fault, len)), "fresh read {fault:#x}");
-        let (expected, _) = air_prefix_full_read(&source, Some(fault), None, AIR_TEST_STATS);
-        let (actual, trace) =
-            air_prefix_full_read(&source, Some(fault), Some(&memo), AIR_TEST_STATS);
-        assert!(expected.is_err(), "fault {fault:#x}");
-        assert_eq!(actual, expected, "fault {fault:#x}");
-        let ordinal = warm_trace
-            .iter()
-            .position(|&read| read == (fault, len))
-            .unwrap();
-        assert_eq!(trace, warm_trace[..=ordinal], "fault {fault:#x}");
-    }
-    let (other, trace) = air_prefix_full_read(&source, None, Some(&memo), AIR_TEST_OTHER_STATS);
-    assert_eq!(
-        other,
-        air_prefix_full_read(&source, None, None, AIR_TEST_OTHER_STATS).0
-    );
-    assert_ne!(other.unwrap()[3], direct.unwrap()[3]);
-    assert!(trace.contains(&(AIR_TEST_OTHER_STATS, 8)));
-    assert!(trace.contains(&(
-        AIR_TEST_OTHER_STATS + crate::csub_unit_definition::MOVEMENT_AIR_DEFENSE,
-        8
-    )));
-    assert!(!trace.contains(&(AIR_TEST_ENTRIES, 8)));
-}
-
-#[test]
-fn air_prefix_default_branches_keep_location_reads_and_skip_defense() {
-    for branch in 0..3 {
-        let mut source = air_prefix_fixture();
-        match branch {
-            0 => array(&mut source.bytes, AIR_TEST_DIPLOMACY + 0x20, 0, 0),
-            1 => p64(&mut source.bytes, P1 + cprovince::STRATEGIC_REGION, 0),
-            _ => p64(&mut source.bytes, AIR_TEST_ENTRIES + 8, 0),
-        }
-        let memo = std::cell::RefCell::new(super::MovementAirMemo::new(4).unwrap());
-        for _ in 0..2 {
-            let (actual, trace) =
-                air_prefix_full_read(&source, Some(AIR_TEST_STATS), Some(&memo), AIR_TEST_STATS);
-            assert_eq!(actual, Ok([0; 4]));
-            assert!(trace.contains(&(P1 + cprovince::STRATEGIC_REGION, 8)));
-            assert!(!trace.contains(&(AIR_TEST_STATS, 8)));
-            if branch != 2 {
-                assert!(!trace.contains(&(GS + crate::cgame_state::STRATEGIC_AIR_MANAGER, 8)));
-            }
-        }
-        let fault = P1 + cprovince::STRATEGIC_REGION;
-        let (expected, _) = air_prefix_full_read(&source, Some(fault), None, AIR_TEST_STATS);
-        let (actual, trace) =
-            air_prefix_full_read(&source, Some(fault), Some(&memo), AIR_TEST_STATS);
-        assert!(expected.is_err());
-        assert_eq!(actual, expected);
-        assert_eq!(trace.last(), Some(&(fault, 8)));
-    }
-}
-
-#[test]
-fn category_hits_keep_prior_authentication_and_later_air_supply_failures() {
-    use crate::{carmy_leader as leader, cunit_leader};
-    const LEADER: usize = 0x23000;
-    const SELECTED: usize = 0x1a000;
-    let mut source = normal_route_fixture();
-    p64(&mut source.bytes, A1 + carmy::ORDERS_GROUP, G1 as u64);
-    p64(&mut source.bytes, G1 + corders_group::LEADER, LEADER as u64);
-    p64(&mut source.bytes, LEADER, leader::VTABLE_RVA as u64);
-    p32(
-        &mut source.bytes,
-        LEADER + cunit_leader::TYPE,
-        cunit_leader::REFERENCE_TYPE,
-    );
-    array(
-        &mut source.bytes,
-        LEADER + leader::MOVEMENT_TERRAIN_DATA,
-        0x24000,
-        2,
-    );
-    p32(&mut source.bytes, SELECTED + 0x5d8, 0x2b);
-    source.bytes[A1 + 0x2ae] = 0;
-    source.bytes[A1 + 0x2e] = 1;
-    source.globals.insert(
-        crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
-        0_u32.to_le_bytes().to_vec(),
-    );
-    source
-        .globals
-        .insert(0x0331_94e0, 100_000_i64.to_le_bytes().to_vec());
-    source
-        .globals
-        .insert(0x0331_9394, 2_i32.to_le_bytes().to_vec());
-    let seed = speed_seed(&source);
-    let packet = super::EtaInputPacket::new(1, 0, 0).unwrap();
-    let run = |fault: Option<usize>, cached: bool| {
-        let observed = ScalarBatchMemory::new(&source);
-        observed.fault.set(fault);
-        let mut geometry = SeededSpeedGeometry::new(&observed);
-        let value = super::movement_speed_inputs_seeded_in_pass(
-            &observed,
-            0,
-            GS,
-            &mut super::MovementSharedInputs {
-                seed: &seed,
-                route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[2, 3]),
-                geometry: &mut geometry,
-                rail_speeds: None,
-                state_modifiers: None,
-                category_contributions: cached.then_some(&packet.category_contributions),
-                supply_templates: None,
-                air_prefixes: None,
-            },
-            P1,
-            0x18200,
-            &mut super::NormalMovementContext::default(),
-            |_, _| unreachable!(),
-        );
-        (value, observed.reads.into_inner())
-    };
-    let (cold, _) = run(None, true);
-    assert!(cold.is_ok());
-    {
-        let memo = packet.category_contributions.borrow();
-        assert_eq!(
-            memo.entries
-                .iter()
-                .filter(|entry| entry.generation == memo.generation)
-                .count(),
-            1
-        );
-    }
-    let (warm, reads) = run(None, true);
-    assert_eq!(warm, cold);
-    assert!(!reads.contains(&(SELECTED + 0x5a8, 1)));
-    for (fault, before) in [
-        (C1, true),
-        (G1, true),
-        (LEADER, true),
-        (T1, true),
-        (SELECTED, true),
-        (C1 + ccountry::DIPLOMACY_STATUS, false),
-        (A1 + 0x600, false),
-    ] {
-        let (direct, direct_reads) = run(Some(fault), false);
-        let (cached, cached_reads) = run(Some(fault), true);
-        assert!(direct.is_err(), "fault {fault:x}");
-        assert_eq!(cached, direct, "fault {fault:x}");
-        assert_eq!(cached_reads.last().unwrap().0, fault);
-        if before {
-            assert_eq!(cached_reads, direct_reads);
-        } else {
-            assert!(direct_reads.contains(&(SELECTED + 0x5a8, 1)));
-            assert!(!cached_reads.contains(&(SELECTED + 0x5a8, 1)));
-        }
-        {
-            let memo = packet.category_contributions.borrow();
-            assert_eq!(
-                memo.entries
-                    .iter()
-                    .filter(|entry| entry.generation == memo.generation)
-                    .count(),
-                1
-            );
-        }
-    }
-}
-
-#[test]
-fn supply_template_reuse_keeps_ordered_aliases_faults_wrapping_and_capacity() {
-    const TEMPLATE: usize = 0x17000;
-    const ALIAS: usize = 0x17200;
-    const UNITS: usize = 0x19000;
-    let mut source = presentation_fixture();
-    array(&mut source.bytes, TEMPLATE + 0xc0, UNITS, 3);
-    array(&mut source.bytes, ALIAS + 0xc0, UNITS, 3);
-    for (index, unit) in [0x1a000, 0x1b000, 0x1a000].into_iter().enumerate() {
-        p64(&mut source.bytes, UNITS + index * 16, unit);
-    }
-    source.bytes[0x1a000 + 0x5b7] = 1;
-    let expected_reads = [
-        (TEMPLATE + 0xc0, 16),
-        (UNITS, 8),
-        (UNITS + 8, 4),
-        (0x1a000 + 0x5b7, 1),
-        (UNITS + 16, 8),
-        (UNITS + 24, 4),
-        (0x1b000 + 0x5b7, 1),
-        (UNITS + 32, 8),
-        (UNITS + 40, 4),
-        (0x1a000 + 0x5b7, 1),
-    ];
-    let mut packet = super::EtaInputPacket::new(2, 0, 0).unwrap();
-    let allocated = packet.allocated_bytes();
-    for (counts, expected) in [
-        ([10_i32, 30, 10], 40_000),
-        ([i32::MAX, 0, i32::MAX], 100_000),
-        ([i32::MIN, -1, i32::MIN], 0),
-        ([1, -2, 1], 0),
-        ([-3, 2, -3], 150_000),
-    ] {
-        for (index, count) in counts.into_iter().enumerate() {
-            p32(&mut source.bytes, UNITS + index * 16 + 8, count as u32);
-        }
-        // A new capture must see changed counts, even at the same pointer.
-        packet.clear();
-        let observed = ScalarBatchMemory::new(&source);
-        let memo = Some(&packet.supply_templates);
-        assert_eq!(
-            super::movement_supply_template_ratio(&observed, TEMPLATE, memo),
-            Ok(expected)
-        );
-        assert_eq!(*observed.reads.borrow(), expected_reads);
-        observed.reads.borrow_mut().clear();
-        assert_eq!(
-            super::movement_supply_template_ratio(&observed, TEMPLATE, memo),
-            Ok(expected)
-        );
-        assert!(observed.reads.borrow().is_empty());
-        // Equal array pointers do not merge independently named templates.
-        assert_eq!(
-            super::movement_supply_template_ratio(&observed, ALIAS, memo),
-            Ok(expected)
-        );
-        let mut alias_reads = expected_reads;
-        alias_reads[0].0 = ALIAS + 0xc0;
-        assert_eq!(*observed.reads.borrow(), alias_reads);
-        assert_eq!(packet.allocated_bytes(), allocated);
-    }
-
-    let observed = ScalarBatchMemory::new(&source);
-    for (fault, _) in expected_reads {
-        packet.clear();
-        observed.fault.set(Some(fault));
-        observed.reads.borrow_mut().clear();
-        let expected = super::movement_supply_template_ratio(&observed, TEMPLATE, None);
-        assert!(expected.is_err());
-        let prefix = observed.reads.borrow().clone();
-        for _ in 0..2 {
-            observed.reads.borrow_mut().clear();
-            assert_eq!(
-                super::movement_supply_template_ratio(
-                    &observed,
-                    TEMPLATE,
-                    Some(&packet.supply_templates),
-                ),
-                expected
-            );
-            assert_eq!(*observed.reads.borrow(), prefix);
-            assert!(packet.supply_templates.borrow().is_empty());
-        }
-    }
-    observed.fault.set(None);
-    for rows in [0, 1] {
-        let mut packet = super::EtaInputPacket::new(rows, 0, 0).unwrap();
-        let templates = packet.supply_templates.get_mut();
-        for key in 1..=templates.capacity() {
-            templates.insert(key, 0);
-        }
-        let allocated = packet.allocated_bytes();
-        observed.reads.borrow_mut().clear();
-        assert_eq!(
-            super::movement_supply_template_ratio(
-                &observed,
-                TEMPLATE,
-                Some(&packet.supply_templates),
-            ),
-            Ok(150_000)
-        );
-        assert_eq!(*observed.reads.borrow(), expected_reads);
-        assert_eq!(packet.allocated_bytes(), allocated);
-        assert!(!packet.supply_templates.borrow().contains_key(&TEMPLATE));
-    }
-    let mut vacant = super::EtaInputPacket::new(0, 0, 0).unwrap();
-    assert_eq!(vacant.supply_templates.borrow().capacity(), 0);
-    vacant.reserve(4, 0, 0).unwrap();
-    assert!(vacant.supply_templates.borrow().capacity() >= 4);
-    let allocated = vacant.allocated_bytes();
-    assert_eq!(
-        super::movement_supply_template_ratio(&observed, TEMPLATE, Some(&vacant.supply_templates),),
-        Ok(150_000)
-    );
-    assert_eq!(vacant.allocated_bytes(), allocated);
-}
-
-#[test]
-fn supply_template_hits_keep_division_gates_and_later_modifier_faults_fresh() {
-    let mut source = normal_route_fixture();
-    array(&mut source.bytes, T1 + 0xc0, 0x22000, 1);
-    p64(&mut source.bytes, 0x22000, 0x23000);
-    p32(&mut source.bytes, 0x22008, 2);
-    source.bytes[0x23000 + 0x5b7] = 1;
-    p32(&mut source.bytes, A1 + 0x498, 1);
-    source
-        .globals
-        .insert(0x0331_9394, 2_i32.to_le_bytes().to_vec());
-    let seed = speed_seed(&source);
-    let observed = ScalarBatchMemory::new(&source);
-    let mut geometry = SeededSpeedGeometry::new(&source);
-    let packet = super::EtaInputPacket::new(1, 0, 0).unwrap();
-    let mut shared = super::MovementSharedInputs {
-        seed: &seed,
-        route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[]),
-        geometry: &mut geometry,
-        rail_speeds: None,
-        state_modifiers: None,
-        category_contributions: None,
-        supply_templates: Some(&packet.supply_templates),
-        air_prefixes: Some(&packet.air_prefixes),
-    };
-    let prefix = [(A1 + 0x600, 8), (A1 + 0x498, 4), (0x0331_9394, 4)];
-    assert_eq!(
-        super::movement_supply_penalty(&observed, 0, A1, 0, 0, Some(&mut shared)),
-        Ok(50_000)
-    );
-    assert_eq!(observed.reads.borrow().len(), prefix.len() + 4);
-    observed.reads.borrow_mut().clear();
-    assert_eq!(
-        super::movement_supply_penalty(&observed, 0, A1, 0, 0, Some(&mut shared)),
-        Ok(50_000)
-    );
-    assert_eq!(*observed.reads.borrow(), prefix);
-    for (index, &(fault, _)) in prefix.iter().enumerate() {
-        observed.fault.set(Some(fault));
-        observed.reads.borrow_mut().clear();
-        assert!(super::movement_supply_penalty(&observed, 0, A1, 0, 0, Some(&mut shared)).is_err());
-        assert_eq!(*observed.reads.borrow(), prefix[..=index]);
-    }
-    observed.fault.set(Some(0x24000));
-    observed.reads.borrow_mut().clear();
-    assert!(
-        super::movement_supply_penalty(&observed, 0, A1, 0x24000, 0, Some(&mut shared)).is_err()
-    );
-    assert_eq!(
-        *observed.reads.borrow(),
-        [prefix[0], prefix[1], prefix[2], (0x24000, 16)]
-    );
-    let transferring = super::DivisionSeed {
-        naval_transfer_membership: Some(1),
-        ..seed
-    };
-    shared.seed = &transferring;
-    observed.reads.borrow_mut().clear();
-    assert_eq!(
-        super::movement_supply_penalty(&observed, 0, A1, 0, 0, Some(&mut shared)),
-        Ok(0)
-    );
-    assert!(observed.reads.borrow().is_empty());
-    let null_template = super::DivisionSeed {
-        standard_template: Some(0),
-        ..seed
-    };
-    shared.seed = &null_template;
-    assert_eq!(
-        super::movement_supply_penalty(&observed, 0, A1, 0, 0, Some(&mut shared)),
-        Err("movement supply template is null")
-    );
-    assert_eq!(*observed.reads.borrow(), prefix);
-}
-
-#[test]
-fn native_acclimatization_keeps_first_strict_maximum_and_signed_rounding() {
-    let mut memory = presentation_fixture();
-    let object = A1 + carmy::ACCLIMATIZATION;
-    array(&mut memory.bytes, object + 8, 0x17000, 2);
-    p64(&mut memory.bytes, object + 0x20, 0x18000);
-    p64(&mut memory.bytes, object + 0x38, 100_000);
-    for (at, category) in [(0x17000, 0x18000), (0x17010, 0x18100)] {
-        p64(&mut memory.bytes, at, category);
-        p64(&mut memory.bytes, at + 8, 50_001);
-    }
-    p64(&mut memory.bytes, 0x18000 + 0x30, 50_001);
-    assert_eq!(super::movement_acclimatization(&memory, A1), Ok(74_999));
-    p64(&mut memory.bytes, object + 0x20, 0x18100);
-    assert_eq!(super::movement_acclimatization(&memory, A1), Ok(100_000));
-    p64(&mut memory.bytes, object + 0x20, 0x18000);
-    p64(&mut memory.bytes, 0x18000 + 0x30, (-1_i64) as u64);
-    assert_eq!(super::movement_acclimatization(&memory, A1), Ok(100_000));
-}
-
-#[test]
 fn native_speed_products_do_not_cancel_scale_or_use_wider_multiplication() {
     assert_eq!(super::movement_product(100_001, -50_001), -50_001);
     assert_eq!(super::movement_product(i64::MAX, 100_000), -1);
     assert_eq!(super::movement_product(i64::MIN, -1), i64::MIN / 100_000);
-    assert!(super::movement_fraction(1_i64 << 58, -1).is_err());
-    assert_eq!(super::movement_fraction(1, 0), Ok(0xffff_ffff));
 }
 
 fn presentation_source() -> [crate::cequipment_variant_pool::DivisionSource; 1] {
@@ -4382,7 +1647,7 @@ fn movement_records_the_map_entity_bit_and_fails_closed_on_its_read() {
 }
 
 #[test]
-fn optional_arrow_styles_preserve_all_movement_rows_and_read_after_the_prefix() {
+fn optional_arrow_styles_preserve_all_movement_rows_and_read_once_without_retry() {
     let (mut source, sources) = movement_combat_fixture();
     for (index, pointer) in [A1, A2, A3].into_iter().enumerate() {
         source.bytes[pointer + crate::cunit::WITHDRAWAL] = 0xfe - index as u8;
@@ -4410,7 +1675,7 @@ fn optional_arrow_styles_preserve_all_movement_rows_and_read_after_the_prefix() 
     let mut baseline = [super::MovementRow::default(); 3];
     let healthy = ScalarBatchMemory::new(&source);
     assert_eq!(
-        run(&healthy, &mut baseline, true).outcome,
+        run(&healthy, &mut baseline, false).outcome,
         Outcome::Rows { len: 3 }
     );
     let tail = [A1, A2, A3]
@@ -4422,6 +1687,7 @@ fn optional_arrow_styles_preserve_all_movement_rows_and_read_after_the_prefix() 
             ]
         })
         .collect::<Vec<_>>();
+    // The reference walk reads the styles after its whole prefix.
     assert!(healthy.reads.borrow().ends_with(&tail));
     for owned in [false, true] {
         let memory = ScalarBatchMemory::new(&source);
@@ -4431,7 +1697,24 @@ fn optional_arrow_styles_preserve_all_movement_rows_and_read_after_the_prefix() 
             Outcome::Rows { len: 3 }
         );
         assert_eq!(rows, baseline);
-        assert!(memory.reads.borrow().ends_with(&tail));
+        if owned {
+            // The owned pass takes both from the seed's gather: each is read
+            // once there, never again after the prefix.
+            for &(address, len) in &tail {
+                assert_eq!(
+                    memory
+                        .reads
+                        .borrow()
+                        .iter()
+                        .filter(|&&read| read == (address, len))
+                        .count(),
+                    1
+                );
+            }
+            assert!(!memory.reads.borrow().ends_with(&tail));
+        } else {
+            assert!(memory.reads.borrow().ends_with(&tail));
+        }
         for fault in [
             A1 + crate::cunit::WITHDRAWAL,
             A1 + crate::cunit::MOVEMENT_PRIORITY,
@@ -4471,6 +1754,82 @@ fn optional_arrow_styles_preserve_all_movement_rows_and_read_after_the_prefix() 
             }
         }
     }
+}
+
+/// The owned movement pass publishes each division's arrow styles from its
+/// seed, refusal included, and reads neither field itself.
+#[test]
+fn owned_movement_takes_both_arrow_styles_from_the_seed_without_reading_them() {
+    let (mut source, sources) = movement_combat_fixture();
+    for (index, pointer) in [A1, A2, A3].into_iter().enumerate() {
+        source.bytes[pointer + crate::cunit::WITHDRAWAL] = 0x10 + index as u8;
+        p32(
+            &mut source.bytes,
+            pointer + crate::cunit::MOVEMENT_PRIORITY,
+            7 + index as u32,
+        );
+    }
+    let mut seeds: Vec<_> = sources
+        .iter()
+        .map(|source| super::DivisionSeed {
+            pointer: source.pointer,
+            division: source.division,
+            ..super::DivisionSeed::default()
+        })
+        .collect();
+    super::capture_division_seeds(&source, &mut seeds);
+    assert_eq!(
+        seeds
+            .iter()
+            .map(|seed| (seed.withdrawal, seed.movement_priority))
+            .collect::<Vec<_>>(),
+        [
+            (Some(0x10), Some(7)),
+            (Some(0x11), Some(8)),
+            (Some(0x12), Some(9))
+        ]
+    );
+    // A seed's own outcome stands: a refused field stays refused, and the
+    // pass never reads the division to repair it.
+    seeds[1].withdrawal = None;
+    seeds[2].movement_priority = Some(-3);
+    let memory = ScalarBatchMemory::new(&source);
+    let mut geometry = crate::cprovince::GeometryPacket::with_capacities(
+        crate::cprovince::GeometryCapacities::default(),
+    );
+    geometry.enable_growth();
+    geometry.begin(&memory, 0, GS).unwrap();
+    let mut packet = super::MovementPacket::new(sources.len(), 0);
+    super::capture_movement_inputs(
+        &memory,
+        0,
+        GS,
+        &seeds,
+        Outcome::Rows { len: sources.len() },
+        sources.len(),
+        0,
+        &mut geometry,
+        &mut packet,
+    );
+    let mut rows = [super::MovementRow::default(); 3];
+    assert_eq!(
+        super::project_movement(&packet, &mut rows, &mut []).outcome,
+        Outcome::Rows { len: 3 }
+    );
+    assert!(!memory.reads.borrow().iter().any(|&(address, _)| {
+        [A1, A2, A3].into_iter().any(|pointer| {
+            address == pointer + crate::cunit::WITHDRAWAL
+                || address == pointer + crate::cunit::MOVEMENT_PRIORITY
+        })
+    }));
+    assert_eq!(
+        rows.map(|row| (row.withdrawal, row.movement_priority)),
+        [
+            (Some(0x10), Some(7)),
+            (None, Some(8)),
+            (Some(0x12), Some(-3))
+        ]
+    );
 }
 
 #[test]
@@ -4755,12 +2114,21 @@ fn movement_combat_hits_do_not_hide_later_first_pointer_failure() {
         assert!(matches!(actual_walk.outcome, Outcome::Unavailable { .. }));
         assert_eq!(actual[0].combat_role, 1);
         assert!(!owned.reads.borrow().contains(&(0x19020, 8)));
-        for memory in [&direct, &owned] {
+        // A failed prefix reads no style field: the reference walk none, the
+        // owned pass none beyond the seed's one gather of each.
+        for (memory, gathered) in [(&direct, 0), (&owned, 1)] {
             for pointer in [A1, A2, A3] {
-                assert!(!memory.reads.borrow().iter().any(|&(address, _)| {
-                    address == pointer + crate::cunit::WITHDRAWAL
-                        || address == pointer + crate::cunit::MOVEMENT_PRIORITY
-                }));
+                for field in [crate::cunit::WITHDRAWAL, crate::cunit::MOVEMENT_PRIORITY] {
+                    assert_eq!(
+                        memory
+                            .reads
+                            .borrow()
+                            .iter()
+                            .filter(|&&(address, _)| address == pointer + field)
+                            .count(),
+                        gathered
+                    );
+                }
             }
         }
     }
@@ -4861,7 +2229,257 @@ fn owned_movement_admits_later_short_route_and_ignores_private_status_fault() {
     );
 }
 
+#[test]
+fn only_moving_divisions_read_their_authenticated_stat_block_base_speed() {
+    use crate::csub_unit_definition as stats;
+    const STATIONARY: usize = 0x19000;
+    const STATS: usize = 0x11000;
+    const FOREIGN_STATS: usize = 0x1b000;
+    const STATIONARY_STATS: usize = 0x1c000;
+    const SPEED: i64 = -412_345;
+    let mut source = shared_geometry_fixture();
+    // A1 moves with the fixture's authenticated stat block. The raw signed
+    // value is kept without clamping or scaling.
+    p64(
+        &mut source.bytes,
+        STATS + stats::MAXIMUM_SPEED,
+        SPEED as u64,
+    );
+    let army = source.bytes[A1..A1 + 0x700].to_vec();
+    // A2 moves on a block of another class, A3 moves without a block and the
+    // fourth division has no ordinary route.
+    for (at, id, stat) in [
+        (A2, 10, FOREIGN_STATS),
+        (A3, 11, 0),
+        (STATIONARY, 12, STATIONARY_STATS),
+    ] {
+        source.bytes[at..at + 0x700].copy_from_slice(&army);
+        p64(&mut source.bytes, at + cunit::HANDLE, handle(id, 9000));
+        p64(&mut source.bytes, at + cunit::MAP_ENTITY, 0);
+        p64(&mut source.bytes, at + cunit::STAT_BLOCK, stat as u64);
+    }
+    p64(
+        &mut source.bytes,
+        FOREIGN_STATS,
+        stats::NULL_VTABLE_RVA as u64,
+    );
+    p64(&mut source.bytes, FOREIGN_STATS + stats::MAXIMUM_SPEED, 7);
+    p64(
+        &mut source.bytes,
+        STATIONARY_STATS,
+        stats::VTABLE_RVA as u64,
+    );
+    p64(
+        &mut source.bytes,
+        STATIONARY_STATS + stats::MAXIMUM_SPEED,
+        9,
+    );
+    array(
+        &mut source.bytes,
+        STATIONARY + cunit::ORDINARY_ROUTE_DATA,
+        0,
+        0,
+    );
+    let sources = [(A1, 9), (A2, 10), (A3, 11), (STATIONARY, 12)].map(|(pointer, id)| {
+        crate::cequipment_variant_pool::DivisionSource {
+            pointer,
+            division: handle(id, 9000),
+            ..presentation_source()[0]
+        }
+    });
+    // An unreadable stat pointer refuses like a null one.
+    for fault in [None, Some(A3 + cunit::STAT_BLOCK)] {
+        let memory = ObservedMovementMemory {
+            source: &source,
+            reads: Default::default(),
+            fault,
+        };
+        let mut seeds = sources.map(|source| super::DivisionSeed {
+            pointer: source.pointer,
+            division: source.division,
+            ..super::DivisionSeed::default()
+        });
+        super::capture_division_seeds(&memory, &mut seeds);
+        assert_eq!(seeds[2].stat_block, fault.is_none().then_some(0));
+        let mut geometry =
+            cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities::default());
+        geometry.enable_growth();
+        geometry.begin(&memory, 0, GS).unwrap();
+        let mut packet = super::MovementPacket::new(sources.len(), 16);
+        super::capture_movement_inputs(
+            &memory,
+            0,
+            GS,
+            &seeds,
+            Outcome::Rows { len: sources.len() },
+            sources.len(),
+            16,
+            &mut geometry,
+            &mut packet,
+        );
+        let mut rows = [super::MovementRow::default(); 4];
+        let mut paths = [0; 16];
+        let owned = super::project_movement(&packet, &mut rows, &mut paths);
+        assert_eq!(owned.outcome, Outcome::Rows { len: 4 });
+        assert_eq!(
+            rows.map(|row| (row.path_total, row.base_speed)),
+            [(2, Some(SPEED)), (2, None), (2, None), (0, None)]
+        );
+        // The stationary row's None is outside demand, not a refusal.
+        assert_eq!(packet.base_speed_refusals(), 2);
+        let reads = memory.reads.borrow();
+        for at in [STATS, STATS + stats::MAXIMUM_SPEED] {
+            assert!(reads.contains(&at));
+        }
+        assert!(
+            reads.iter().all(
+                |&at| !(STATIONARY_STATS..=STATIONARY_STATS + stats::MAXIMUM_SPEED).contains(&at)
+            ),
+            "a stationary division never reads its stat block"
+        );
+        drop(reads);
+        // The reference walk reads its own stat pointer and agrees.
+        let mut expected = [super::MovementRow::default(); 4];
+        let mut expected_paths = [0; 16];
+        let direct = super::walk_movement(
+            &memory,
+            0,
+            GS,
+            &sources,
+            Outcome::Rows { len: sources.len() },
+            &mut expected,
+            &mut expected_paths,
+        );
+        assert_eq!((direct, expected, expected_paths), (owned, rows, paths));
+    }
+}
+
+#[test]
+fn presentation_demand_sizes_names_and_origins_without_selected_transport_members() {
+    use crate::{carmy_combat_inputs, cname_group_member, cunit_supply_inputs, msvc_string};
+    const MEMBER: usize = 0x1d000;
+    const ORIGINS: usize = 0x1e000;
+    let mut memory = presentation_fixture();
+    p64(
+        &mut memory.bytes,
+        A1 + carmy_combat_inputs::NAME_GROUP_MEMBER,
+        MEMBER as u64,
+    );
+    p64(
+        &mut memory.bytes,
+        MEMBER,
+        cname_group_member::VTABLE_RVA as u64,
+    );
+    let name = MEMBER + cname_group_member::CACHED_NAME;
+    memory.bytes[name..name + 10].copy_from_slice(b"exact name");
+    p64(&mut memory.bytes, name + 16, 10);
+    p64(&mut memory.bytes, name + 24, 15);
+    array(
+        &mut memory.bytes,
+        A1 + cunit_supply_inputs::ORIGINS,
+        ORIGINS,
+        2,
+    );
+    array(
+        &mut memory.bytes,
+        A3 + cunit_supply_inputs::ORIGINS,
+        ORIGINS,
+        3,
+    );
+    // The fixture template's zero-id handle refused the retired selected
+    // transport member sizing; nothing sizes those members any more, so the
+    // census completes without a failure.
+    let demand = super::presentation_demand(&memory, 0, GS).unwrap();
+    assert_eq!(
+        (demand.rows, demand.cached_name_text, demand.supply_origins),
+        (3, 10, 5)
+    );
+    assert_eq!(demand.failure, None);
+    // Every division's supply-footer origin header sizes the status arena.
+    struct Recording<'a> {
+        source: &'a PresentationMemory,
+        reads: std::cell::RefCell<Vec<usize>>,
+    }
+    impl crate::Memory for Recording<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push(address);
+            self.source.copy(address, output)
+        }
+    }
+    let recording = Recording {
+        source: &memory,
+        reads: Default::default(),
+    };
+    super::presentation_demand(&recording, 0, GS).unwrap();
+    for unit in [A1, A2, A3] {
+        assert!(
+            recording
+                .reads
+                .borrow()
+                .contains(&(unit + cunit_supply_inputs::ORIGINS))
+        );
+    }
+
+    // A selecting header that changes after it was sized discards the hint.
+    struct Changing<'a> {
+        source: &'a PresentationMemory,
+        header: usize,
+        len: usize,
+        /// Reads that still see the stored header.
+        stable: usize,
+        byte: usize,
+        reads: std::cell::Cell<usize>,
+    }
+    impl crate::Memory for Changing<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if !self.source.copy(address, output) {
+                return false;
+            }
+            if address == self.header && output.len() == self.len {
+                self.reads.set(self.reads.get() + 1);
+                if self.reads.get() > self.stable {
+                    output[self.byte] ^= 1;
+                }
+            }
+            true
+        }
+    }
+    for (header, len, stable, byte, reason) in [
+        // The sizing read sees the stored length; the check after the
+        // census sees a longer one.
+        (
+            name,
+            msvc_string::STRIDE,
+            1,
+            16,
+            "division presentation demand string header changed",
+        ),
+        // origin_demand reads its header twice; the check after the census
+        // sees a grown capacity.
+        (
+            A1 + cunit_supply_inputs::ORIGINS,
+            16,
+            2,
+            12,
+            "division presentation demand selecting header changed",
+        ),
+    ] {
+        let changing = Changing {
+            source: &memory,
+            header,
+            len,
+            stable,
+            byte,
+            reads: std::cell::Cell::new(0),
+        };
+        assert_eq!(super::presentation_demand(&changing, 0, GS), Err(reason));
+        assert!(changing.reads.get() > stable);
+    }
+}
+
 mod status_batches;
+
+mod read_ahead;
 
 #[path = "tests/border_index/tests.rs"]
 mod border_index;
@@ -5093,8 +2711,8 @@ fn movement_routes_are_whole_and_keep_whole_row_capacity() {
 }
 
 #[test]
-fn division_status_keeps_the_model_number_and_acclimatization_and_fails_only_that_field() {
-    use crate::{acclimatization_category, acclimatization_data, acclimatization_entry::Entry};
+fn division_status_keeps_the_model_number_and_camouflage_and_fails_only_that_field() {
+    use crate::{acclimatization_category, acclimatization_data};
     let mut memory = presentation_fixture();
     p32(
         &mut memory.bytes,
@@ -5102,29 +2720,37 @@ fn division_status_keeps_the_model_number_and_acclimatization_and_fails_only_tha
         0x1ff,
     );
     let object = A1 + carmy::ACCLIMATIZATION;
+    // Three entries: a winner, a later weaker one and a negative weight.
     array(
         &mut memory.bytes,
         object + acclimatization_data::DATA,
         0x16000,
-        2,
+        3,
     );
+    // Half of a 150 maximum is 75.
     p64(
         &mut memory.bytes,
         object + acclimatization_data::MAXIMUM,
-        250_000,
+        15_000_000,
     );
-    for (index, (category, token, weight)) in [(0x16100_usize, 7_u32, 90_000_i64), (0x16200, 8, -1)]
-        .into_iter()
-        .enumerate()
-    {
+    memory.globals.insert(
+        acclimatization_data::CAMO_SHOW_AT_RVA,
+        50_000_i64.to_le_bytes().to_vec(),
+    );
+    let entry = |memory: &mut PresentationMemory, index: usize, category: usize, weight: i64| {
         p64(&mut memory.bytes, 0x16000 + index * 16, category as u64);
         p64(&mut memory.bytes, 0x16008 + index * 16, weight as u64);
+    };
+    for (category, token) in [(0x16100_usize, 7_u32), (0x16200, 8)] {
         p32(
             &mut memory.bytes,
             category + acclimatization_category::TOKEN,
             token,
         );
     }
+    entry(&mut memory, 0, 0x16100, 9_000_000);
+    entry(&mut memory, 1, 0x16200, 8_000_000);
+    entry(&mut memory, 2, 0x16200, -1);
     // The registry lists both categories, in a different order.
     memory.globals.insert(
         acclimatization_category::REGISTRY_RVA,
@@ -5146,6 +2772,12 @@ fn division_status_keeps_the_model_number_and_acclimatization_and_fails_only_tha
             packet,
         )
     };
+    let shown = |category| {
+        Some(super::Camouflage {
+            category: Some(category),
+        })
+    };
+    let none = Some(super::Camouflage { category: None });
     let mut packet = super::StatusPacket::new(1).unwrap();
     let mut rows = [super::StatusRow::default(); 1];
     assert_eq!(
@@ -5153,84 +2785,183 @@ fn division_status_keeps_the_model_number_and_acclimatization_and_fails_only_tha
         Outcome::Rows { len: 1 }
     );
     assert_eq!(
-        (rows[0].model_number, rows[0].acclimatization_maximum),
-        (0x1ff, Some(250_000))
+        (rows[0].model_number, rows[0].camouflage),
+        (0x1ff, shown(7))
     );
-    assert_eq!(
-        packet.acclimatization(&rows[0]),
-        Some(
-            &[
-                Entry {
-                    category: 7,
-                    weight: 90_000
-                },
-                Entry {
-                    category: 8,
-                    weight: -1
-                },
-            ][..]
-        )
-    );
-    let field_failed = |rows: &[super::StatusRow; 1], packet: &super::StatusPacket| {
-        rows[0].model_number == 0x1ff
-            && rows[0].acclimatization_maximum.is_none()
-            && packet.acclimatization(&rows[0]) == Some(&[][..])
+    let camouflage = |memory: &PresentationMemory, packet: &mut super::StatusPacket| {
+        let mut rows = [super::StatusRow::default(); 1];
+        assert_eq!(capture(memory, packet, &mut rows), Outcome::Rows { len: 1 });
+        assert_eq!(rows[0].model_number, 0x1ff);
+        rows[0].camouflage
     };
-    // Packets too small for the entries or the registry fail only the
-    // field, and ask for room.
-    for (capacities, required) in [
-        (
-            super::StatusCapacities {
-                acclimatization: 1,
-                acclimatization_categories: 2,
-                modifiers: crate::modifier_accumulator::SnapshotCapacity {
-                    nodes: 1,
-                    entries: 1,
-                },
-                ..super::StatusCapacities::new(1)
-            },
-            (2, 2),
-        ),
-        (
-            super::StatusCapacities {
-                acclimatization: 2,
-                acclimatization_categories: 1,
-                modifiers: crate::modifier_accumulator::SnapshotCapacity {
-                    nodes: 1,
-                    entries: 1,
-                },
-                ..super::StatusCapacities::new(1)
-            },
-            (2, 2),
-        ),
-    ] {
-        let mut small = super::StatusPacket::with_capacities(capacities).unwrap();
-        assert_eq!(
-            capture(&memory, &mut small, &mut rows),
-            Outcome::Rows { len: 1 }
-        );
-        assert!(field_failed(&rows, &small));
-        let needed = small.required_capacities();
-        assert_eq!(
-            (needed.acclimatization, needed.acclimatization_categories),
-            required
-        );
+    // A tie keeps the first category; a stronger later entry wins.
+    entry(&mut memory, 1, 0x16200, 9_000_000);
+    assert_eq!(camouflage(&memory, &mut packet), shown(7));
+    entry(&mut memory, 1, 0x16200, 9_000_001);
+    assert_eq!(camouflage(&memory, &mut packet), shown(8));
+    // A winner below the threshold shows nothing, nor do zero weights; the
+    // category registry is not needed for either.
+    entry(&mut memory, 0, 0x16100, 7_499_999);
+    entry(&mut memory, 1, 0x16200, 7_000_000);
+    let mut unread = super::StatusPacket::with_capacities(super::StatusCapacities {
+        modifiers: crate::modifier_accumulator::SnapshotCapacity {
+            nodes: 1,
+            entries: 1,
+        },
+        ..super::StatusCapacities::new(1)
+    })
+    .unwrap();
+    assert_eq!(camouflage(&memory, &mut unread), none);
+    entry(&mut memory, 0, 0x16100, 7_500_000);
+    assert_eq!(camouflage(&memory, &mut packet), shown(7));
+    for weight in [0, -1] {
+        entry(&mut memory, 0, 0x16100, weight);
+        entry(&mut memory, 1, 0x16200, weight);
+        assert_eq!(camouflage(&memory, &mut unread), none);
     }
-    // An entry whose category is not registered is not a category.
-    p64(&mut memory.bytes, 0x16010, 0x16300);
-    assert_eq!(
-        capture(&memory, &mut packet, &mut rows),
-        Outcome::Rows { len: 1 }
-    );
-    assert!(field_failed(&rows, &packet));
-    p64(&mut memory.bytes, 0x16010, 0x16200);
+    // The camouflage decision reads only the winner's category: an unregistered
+    // loser is no refusal, and a null winner shows nothing.
+    entry(&mut memory, 0, 0x16100, 9_000_000);
+    entry(&mut memory, 1, 0x16300, 1);
+    assert_eq!(camouflage(&memory, &mut packet), shown(7));
+    entry(&mut memory, 0, 0, 9_000_000);
+    assert_eq!(camouflage(&memory, &mut unread), none);
+    // An unregistered winner is not a category.
+    entry(&mut memory, 0, 0x16300, 9_000_000);
+    assert_eq!(camouflage(&memory, &mut packet), None);
+    entry(&mut memory, 0, 0x16100, 9_000_000);
+    // A packet too small for the registry fails only the field and asks
+    // for room.
+    let mut small = super::StatusPacket::with_capacities(super::StatusCapacities {
+        acclimatization_categories: 1,
+        modifiers: crate::modifier_accumulator::SnapshotCapacity {
+            nodes: 1,
+            entries: 1,
+        },
+        ..super::StatusCapacities::new(1)
+    })
+    .unwrap();
+    assert_eq!(camouflage(&memory, &mut small), None);
+    assert_eq!(small.required_capacities().acclimatization_categories, 2);
+    // An unreadable define refuses only a winner it would decide.
+    let define = memory
+        .globals
+        .remove(&acclimatization_data::CAMO_SHOW_AT_RVA)
+        .unwrap();
+    assert_eq!(camouflage(&memory, &mut packet), None);
+    entry(&mut memory, 0, 0x16100, 0);
+    entry(&mut memory, 1, 0x16200, 0);
+    assert_eq!(camouflage(&memory, &mut packet), none);
+    memory
+        .globals
+        .insert(acclimatization_data::CAMO_SHOW_AT_RVA, define);
+    entry(&mut memory, 0, 0x16100, 9_000_000);
+    assert_eq!(camouflage(&memory, &mut packet), shown(7));
     // An unauthenticated object is not an empty acclimatization.
     p64(&mut memory.bytes, object, 0);
-    assert_eq!(
-        capture(&memory, &mut packet, &mut rows),
-        Outcome::Rows { len: 1 }
+    assert_eq!(camouflage(&memory, &mut packet), None);
+}
+
+/// The recorded camouflage equals the full-weight decision a consumer makes
+/// from every entry, maximum and define, for synthetic divisions with ties,
+/// zero, negative and below-threshold weights.
+#[test]
+fn division_status_camouflage_equals_the_full_weight_decision() {
+    use crate::{acclimatization_category, acclimatization_data};
+    let mut memory = presentation_fixture();
+    memory.bytes.resize(0x40000, 0);
+    let object = A1 + carmy::ACCLIMATIZATION;
+    memory.globals.insert(
+        acclimatization_category::REGISTRY_RVA,
+        0x30000_u64.to_le_bytes().to_vec(),
     );
-    assert!(field_failed(&rows, &packet));
+    array(&mut memory.bytes, 0x30000, 0x30100, 4);
+    for index in 0..4 {
+        let category = 0x31000 + index * 0x40;
+        p64(&mut memory.bytes, 0x30100 + index * 8, category as u64);
+        p32(
+            &mut memory.bytes,
+            category + acclimatization_category::TOKEN,
+            index as u32 + 1,
+        );
+    }
+    let weights = [
+        0_i64,
+        1,
+        -1,
+        49_999,
+        50_000,
+        50_001,
+        100_000,
+        i64::MAX,
+        i64::MIN,
+    ];
+    let mut seed = 0x9e37_79b9_u64;
+    let mut next = |bound: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % bound as u64) as usize
+    };
+    for _ in 0..2_000 {
+        let count = next(6);
+        let maximum = [0_i64, 100_000, 10_000_000, -10_000_000, i64::MAX][next(5)];
+        let show_at = [0_i64, 50_000, 100_000, 75_000, -50_000][next(5)];
+        memory.globals.insert(
+            acclimatization_data::CAMO_SHOW_AT_RVA,
+            show_at.to_le_bytes().to_vec(),
+        );
+        array(
+            &mut memory.bytes,
+            object + acclimatization_data::DATA,
+            0x32000,
+            count as u32,
+        );
+        p64(
+            &mut memory.bytes,
+            object + acclimatization_data::MAXIMUM,
+            maximum as u64,
+        );
+        let mut entries = Vec::new();
+        for index in 0..count {
+            let category = next(4);
+            let weight = weights[next(weights.len())];
+            p64(
+                &mut memory.bytes,
+                0x32000 + index * 16,
+                (0x31000 + category * 0x40) as u64,
+            );
+            p64(&mut memory.bytes, 0x32008 + index * 16, weight as u64);
+            entries.push((category as u32 + 1, weight));
+        }
+        // The full-weight decision: the first of the greatest positive
+        // weights, shown at maximum * show_at / 100000 or above.
+        let highest = entries.iter().map(|entry| entry.1).max().filter(|w| *w > 0);
+        let expected = highest.and_then(|highest| {
+            let first = entries.iter().find(|entry| entry.1 == highest)?;
+            (i128::from(highest) >= i128::from(maximum.wrapping_mul(show_at)) / 100_000)
+                .then_some(first.0)
+        });
+        let mut packet = super::StatusPacket::new(1).unwrap();
+        let mut rows = [super::StatusRow::default(); 1];
+        assert_eq!(
+            super::status_test_capture(
+                &memory,
+                0,
+                GS,
+                &presentation_source(),
+                Outcome::Rows { len: 1 },
+                &mut rows,
+                &mut packet,
+            ),
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(
+            rows[0].camouflage,
+            Some(super::Camouflage { category: expected }),
+            "{entries:?} maximum {maximum} show_at {show_at}"
+        );
+    }
 }
 
 #[test]
@@ -5291,6 +3022,7 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
         &groups,
         &mut batched,
         &crate::modifier_definition::DefinitionMemo::default(),
+        &mut |_| None,
     );
     for (group, batched) in groups.into_iter().zip(batched) {
         assert_eq!(
@@ -5328,7 +3060,7 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
         );
         (outcome, rows[0].move_flags)
     };
-    // The daily bans read, for the owners `owner` maps.
+    // The bans read, for the owners `owner` maps.
     type Owner<'o> = &'o dyn Fn(u32) -> Result<Option<u32>, &'static str>;
     let seeds_of = |memory: &PresentationMemory| {
         let mut seeds: Vec<_> = presentation_source()
@@ -5345,8 +3077,15 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
     let read = |memory: &PresentationMemory, seeds: &[super::DivisionSeed], owner: Owner<'_>| {
         let mut packet = super::StatusPacket::new(1).unwrap();
         let mut rows = [super::RetreatBanRow::default(); 1];
-        let outcome =
-            packet.retreat_bans(memory, 0, seeds, Outcome::Rows { len: 1 }, owner, &mut rows);
+        let outcome = packet.retreat_bans(
+            memory,
+            0,
+            seeds,
+            Outcome::Rows { len: 1 },
+            owner,
+            &mut rows,
+            &mut |_| None,
+        );
         (outcome, rows[0])
     };
     let bans =
@@ -5427,6 +3166,43 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
         bans(&memory, &|_| Ok(Some(3))).0,
         Outcome::Unavailable { .. }
     ));
+    // A held commander is not read again: its held bans answer although
+    // the leader no longer reads, and the walk reports them per group.
+    let seeds = seeds_of(&memory);
+    let mut packet = super::StatusPacket::new(1).unwrap();
+    let mut rows = [super::RetreatBanRow::default(); 1];
+    let mut asked = Vec::new();
+    let outcome = packet.retreat_bans(
+        &memory,
+        0,
+        &seeds,
+        Outcome::Rows { len: 1 },
+        &|_| Ok(Some(3)),
+        &mut rows,
+        &mut |leader| {
+            asked.push(leader);
+            Some(carmy_leader::RetreatBans {
+                leader,
+                ordinary: carmy_leader::RETREAT_BANNED_ATTACKING,
+                alternate: carmy_leader::RETREAT_BANNED_ATTACKING,
+            })
+        },
+    );
+    assert_eq!(asked, [LEADER]);
+    assert_eq!(
+        (outcome, rows[0].bans),
+        (
+            Outcome::Rows { len: 1 },
+            carmy_leader::RETREAT_BANNED_ATTACKING
+        )
+    );
+    assert_eq!(
+        packet
+            .commander_bans()
+            .map(|bans| bans.map(|bans| bans.map(|bans| bans.leader)))
+            .collect::<Vec<_>>(),
+        [Ok(Some(LEADER))]
+    );
 }
 
 #[test]
@@ -6129,7 +3905,7 @@ fn movement_rejects_a_null_next_province() {
 #[test]
 fn division_seed_descriptors_preserve_original_prefix_and_append_names_and_grace() {
     use super::*;
-    assert_eq!(DIVISION_SEED_STRIDE, 336);
+    assert_eq!(DIVISION_SEED_STRIDE, 350);
     assert_eq!(
         DIVISION_SEED_FIELDS.map(|field| (
             field.source_offset,
@@ -6173,97 +3949,120 @@ fn division_seed_descriptors_preserve_original_prefix_and_append_names_and_grace
             (MAXIMUM_SUPPLY_GRACE, 296, 8),
             (REMAINING_SUPPLY_GRACE, 304, 8),
             (MANPOWER_VALUES, 312, 24),
+            (cunit::MOVEMENT_PRIORITY, 336, 4),
+            (cunit::WITHDRAWAL, 340, 1),
+            (FAKE_INTEL_TEMPLATE, 341, 8),
+            (SEPARATE_COUNTER, 349, 1),
         ]
     );
 }
 
+/// The census gathers the counter icon's separate-counter byte and alternate
+/// template pointer with the seed, so the icon inputs read neither field of a
+/// seeded division; a field the gather failed is not read again.
 #[test]
-fn packet_capacity_failure_preserves_existing_storage() {
+fn seeded_icon_inputs_read_no_division_field() {
+    use super::*;
+    let base = 0;
+    const POINTER: usize = 0x100;
+    let pointer = POINTER;
+    let division: u64 = 51 | (9 << 32);
+    let mut bytes = vec![0_u8; 0x800];
+    bytes[pointer..pointer + 8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[pointer + SECONDARY_BASE..pointer + SECONDARY_BASE + 8]
+        .copy_from_slice(&(SECONDARY_VTABLE_RVA as u64).to_le_bytes());
+    bytes[pointer + cunit::HANDLE..pointer + cunit::HANDLE + 8]
+        .copy_from_slice(&division.to_le_bytes());
+    bytes[pointer + cunit::ROSTER_OWNER..pointer + cunit::ROSTER_OWNER + 4]
+        .copy_from_slice(&25_u32.to_le_bytes());
+    bytes[pointer + SEPARATE_COUNTER] = 7;
+    let memory = crate::memory::SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let mut seeds = [DivisionSeed {
+        pointer,
+        division,
+        ..Default::default()
+    }];
+    capture_division_seeds(&memory, &mut seeds);
     assert_eq!(
-        super::StatusPacket::new(usize::MAX).err().unwrap().kind(),
-        std::io::ErrorKind::OutOfMemory,
+        (seeds[0].separate_counter, seeds[0].alternate_template),
+        (Some(7), Some(0))
     );
-    let mut packet = super::EtaInputPacket::new(1, 2, 3).unwrap();
-    let capacity = packet.allocated_bytes();
-    assert_eq!(
-        packet.reserve(usize::MAX, 2, 3).unwrap_err().kind(),
-        std::io::ErrorKind::OutOfMemory,
-    );
-    assert_eq!(packet.allocated_bytes(), capacity);
-    assert!(packet.rows().is_empty());
-    assert_eq!(super::EtaInputPacket::vacant().allocated_bytes(), 0);
-    assert_eq!(super::StatusPacket::vacant().allocated_bytes(), 0);
-}
-
-#[test]
-fn eta_route_staging_preserves_the_previous_capacity_trace() {
-    let mut previous = Vec::<u32>::with_capacity(3);
-    let mut packet = super::EtaInputPacket::new(1, 1, 3).unwrap();
-    assert_eq!(packet.route.capacity(), previous.capacity());
-    previous.push(1);
-    packet.route.push(1);
-    for legs in [1, 7, 5, 19] {
-        if previous.capacity() < legs {
-            previous.reserve_exact(legs - previous.len());
+    let source = crate::cequipment_variant_pool::DivisionSource {
+        pointer,
+        division,
+        country: 25,
+        template: 0,
+    };
+    // A memory holding only the division's identity: the seeded fields are
+    // never read from it.
+    let mut identity = vec![0_u8; 0x800];
+    identity[..0x100 + cunit::ROSTER_OWNER + 4]
+        .copy_from_slice(&bytes[..0x100 + cunit::ROSTER_OWNER + 4]);
+    struct Unread<'a>(crate::memory::SliceMemory<'a>);
+    impl Memory for Unread<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let fields = [
+                (POINTER + SEPARATE_COUNTER, 1),
+                (POINTER + FAKE_INTEL_TEMPLATE, 8),
+            ];
+            if fields
+                .iter()
+                .any(|&(at, len)| address < at + len && at < address + output.len())
+            {
+                return false;
+            }
+            self.0.copy(address, output)
         }
-        packet.reserve(1, 1, legs).unwrap();
-        assert_eq!(packet.route.capacity(), previous.capacity());
+    }
+    let unread = Unread(crate::memory::SliceMemory {
+        base: 0,
+        bytes: &identity,
+    });
+    assert_eq!(
+        read_icon_inputs(&unread, base, source, Some(&seeds[0])),
+        Ok(IconInputsRow {
+            division,
+            separate_counter: 7,
+            alternate_template: 0,
+        })
+    );
+    // A field the gather failed stays failed: it is not read again, even
+    // from memory that now holds it.
+    for (failed, reason) in [
+        (
+            DivisionSeed {
+                separate_counter: None,
+                ..seeds[0]
+            },
+            "army separate-counter byte unreadable",
+        ),
+        (
+            DivisionSeed {
+                alternate_template: None,
+                ..seeds[0]
+            },
+            "army alternate template pointer unreadable",
+        ),
+    ] {
+        let counted = crate::read_census::ReadCensus::new(&memory);
+        assert_eq!(
+            read_icon_inputs(&counted, base, source, Some(&failed)),
+            Err(reason)
+        );
+        assert_eq!(counted.calls(), 0);
     }
 }
 
 #[test]
-fn eta_route_staging_uses_the_admitted_arena_capacity() {
-    let memory = normal_route_fixture();
-    let seed = speed_seed(&memory);
-    let mut geometry = cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
-        provinces: 8,
-        neighbour_entries: 8,
-    });
-    geometry.begin(&memory, 0, GS).unwrap();
-    let mut statics = cprovince::StaticGeometry::default();
-    let mut packet = super::EtaInputPacket::new(1, 16, 2).unwrap();
-    let route_pointer = packet.route.as_ptr();
-    let route_capacity = packet.route.capacity();
-    let walk = super::capture_eta_inputs(
-        &memory,
-        0,
-        GS,
-        &[seed],
-        0..1,
-        Outcome::Rows { len: 1 },
-        1,
-        16,
-        2,
-        &mut geometry,
-        &mut statics,
-        &mut packet,
-    );
-    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(packet.route.as_ptr(), route_pointer);
-    assert_eq!(packet.route.capacity(), route_capacity);
-    let walk = super::capture_eta_inputs(
-        &memory,
-        0,
-        GS,
-        &[seed],
-        0..1,
-        Outcome::Rows { len: 1 },
-        1,
-        16,
-        1,
-        &mut geometry,
-        &mut statics,
-        &mut packet,
-    );
+fn status_packet_capacity_failure_is_out_of_memory_and_vacancy_allocates_nothing() {
     assert_eq!(
-        walk.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
+        super::StatusPacket::new(usize::MAX).err().unwrap().kind(),
+        std::io::ErrorKind::OutOfMemory,
     );
-    assert_eq!(packet.route.as_ptr(), route_pointer);
-    assert_eq!(packet.route.capacity(), route_capacity);
+    assert_eq!(super::StatusPacket::vacant().allocated_bytes(), 0);
 }
 
 #[test]
@@ -6367,3 +4166,60 @@ fn strategic_action_owned_movement_matches_direct_and_withholds_only_the_glyph()
 }
 
 mod unit_combat_reference_tests;
+
+/// Divisions of one climate share their active category's factor: a pass
+/// reads it once, and a refused read keeps no slot.
+#[test]
+fn a_pass_reads_each_acclimatization_category_factor_once() {
+    use super::*;
+    use crate::acclimatization_data as data;
+    struct Reads(Vec<u8>, std::cell::RefCell<Vec<usize>>);
+    impl Memory for Reads {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.1.borrow_mut().push(address);
+            crate::memory::SliceMemory {
+                base: CATEGORY,
+                bytes: &self.0,
+            }
+            .copy(address, output)
+        }
+    }
+    const CATEGORY: usize = 0x1000;
+    let mut bytes = vec![0_u8; 0x40];
+    bytes[data::CATEGORY_FACTOR..data::CATEGORY_FACTOR + 8]
+        .copy_from_slice(&50_000_i64.to_le_bytes());
+    let memory = Reads(bytes, Default::default());
+    let division = |active: usize| {
+        let mut object = [0_u8; 0x40];
+        object[data::ACTIVE..data::ACTIVE + 8].copy_from_slice(&(active as u64).to_le_bytes());
+        object[data::MAXIMUM..data::MAXIMUM + 8].copy_from_slice(&100_i64.to_le_bytes());
+        object
+    };
+    let mut factors = CategoryFactors::default();
+    for _ in 0..3 {
+        assert_eq!(
+            weather_factor(
+                &memory,
+                &division(CATEGORY),
+                Some((CATEGORY as u64, 50)),
+                &mut factors
+            ),
+            Ok(75_000)
+        );
+    }
+    assert_eq!(*memory.1.borrow(), [CATEGORY + data::CATEGORY_FACTOR]);
+    let unreadable = 0x9000;
+    for _ in 0..2 {
+        assert!(
+            weather_factor(
+                &memory,
+                &division(unreadable),
+                Some((unreadable as u64, 50)),
+                &mut factors
+            )
+            .is_err()
+        );
+    }
+    assert_eq!(memory.1.borrow().len(), 3);
+    assert_eq!(factors.len, 1);
+}

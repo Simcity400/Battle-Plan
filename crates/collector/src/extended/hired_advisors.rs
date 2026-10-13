@@ -1,11 +1,20 @@
-//! Each country's appointed advisors in native order, with the advisor's
-//! character, idea token and slot, daily in its own slot (the advisor roles
-//! are read every hour, so also at that slot); each country's active-character
-//! records (CountryCharacters) and retired ones (CountryRetiredCharacters),
-//! hourly, in one walk; and the character manager's advisor idea-token set
-//! (AdvisorTokens), hourly.
+//! The per-country character object (CCountryCharacters at CCountry
+//! +0xff0): each country's appointed advisors (+0x58) in native order, with
+//! the advisor's character, idea token and slot, hourly, since `has_idea`
+//! triggers read them (a quiet hour publishes the latest complete walk,
+//! [`appointed`]); each country's
+//! active-character records (+0x10, CountryCharacters) and retired ones
+//! (+0x28, CountryRetiredCharacters), hourly, in one walk (a quiet hour
+//! publishes the latest complete walk, [`records`]); the character
+//! manager's advisor idea-token set (AdvisorTokens), hourly; and each
+//! country's available advisors (+0x40, AvailableAdvisors), the sliced
+//! `available_advisors` family: read once a game day per country, at its
+//! owner slice, and for a new country or one whose last read was not
+//! published at the next hour (owner decision 2026-10-11: only panels read
+//! the pools).
 use crate::{
     sampling::qpc,
+    slicing::{SliceFingerprints, SliceSelection},
     spooling::{table, table_iter, unavailable},
     table_capture::{Arena, CaptureRows},
 };
@@ -90,10 +99,23 @@ pub struct Captured {
     retired: CaptureRows<native::ActiveRow>,
     available: CaptureRows<native::Row>,
     available_bytes: Arena<u8>,
+    /// Which countries this hour's AvailableAdvisors rows cover.
+    available_selection: SliceSelection,
 }
 
 impl Captured {
+    /// The countries whose AvailableAdvisors rows this frame's read replaced.
+    pub(crate) fn available_selection(&self) -> &SliceSelection {
+        &self.available_selection
+    }
+
+    /// Start a frame's selection at its hour; the job resets it again.
+    pub(crate) fn reset_selection(&mut self, hour: i32, force_full: bool) {
+        self.available_selection.reset(hour, force_full);
+    }
+
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.available_selection.reset(hour, force_full);
         self.rows
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
         self.active
@@ -128,6 +150,8 @@ impl Captured {
             retired: CaptureRows::new(capacity.retired),
             available: CaptureRows::new(capacity.available),
             available_bytes: Arena::new(capacity.available_bytes),
+            // Owner storage grows on the worker from the countries it scans.
+            available_selection: SliceSelection::new(false),
         }
     }
     pub fn reset(&mut self) {
@@ -162,6 +186,7 @@ impl Captured {
         self.available.grow(&mut capacity.available);
         self.available_bytes.grow(&mut capacity.available_bytes);
     }
+    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -170,18 +195,78 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
+        self.capture_carried(memory, base, game_state, hour, force_full, None, None)
+    }
+
+    /// `store` carries the AvailableAdvisors rows of untouched pools and an
+    /// untouched AdvisorTokens table ([`AdvisorStore`]); without it both are
+    /// read. `fingerprints` is the `available_advisors` family's store: with
+    /// it the hour reads its country slice and the countries it selects
+    /// early; without it every country is read.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_carried(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        store: Option<&mut AdvisorStore>,
+        fingerprints: Option<&mut SliceFingerprints>,
+    ) -> [u64; N] {
+        let check =
+            crate::sampled_verify::Check::burned_in(hour, crate::advisor_pool_changes::VERIFY);
+        self.capture_with(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            store.map(|store| (store, &crate::advisor_pool_changes::Observer as _, check)),
+            fingerprints,
+        )
+    }
+
+    /// One capture, carrying through `reuse` when present.
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
+    fn capture_with(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        mut reuse: Option<(
+            &mut AdvisorStore,
+            &dyn crate::advisor_pool_changes::Changes,
+            crate::sampled_verify::Check,
+        )>,
+        fingerprints: Option<&mut SliceFingerprints>,
+    ) -> [u64; N] {
         self.reset();
         let mut ticks = [0; N];
         if should_walk(TABLES[0], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[0]);
             let started = qpc();
-            let walk = native::walk_growing(
-                memory,
-                base,
-                game_state,
-                &mut self.rows.rows,
-                &mut self.bytes.first,
-            );
+            let walk = match reuse.as_mut() {
+                Some((store, _, _)) if appointed::CARRY => appointed::capture(
+                    memory,
+                    base,
+                    game_state,
+                    store.appointed(),
+                    &appointed::Observer,
+                    crate::sampled_verify::Check::burned_in(hour, appointed::VERIFY),
+                    &mut self.rows.rows,
+                    &mut self.bytes.first,
+                ),
+                _ => native::walk_growing(
+                    memory,
+                    base,
+                    game_state,
+                    &mut self.rows.rows,
+                    &mut self.bytes.first,
+                ),
+            };
             self.rows.outcome = walk.outcome;
             self.bytes.len = walk.bytes_len;
             self.bytes.required = walk.required_bytes;
@@ -198,21 +283,33 @@ impl Captured {
         if active || retired {
             let _reads = crate::read_accounting::table(TABLES[1]);
             let started = qpc();
-            let [active_outcome, retired_outcome] = native::walk_records_buffer(
-                memory,
-                base,
-                game_state,
-                if active {
-                    engine::walk::Buffer::Growing(&mut self.active.rows)
-                } else {
-                    engine::walk::Buffer::Fixed(&mut [])
-                },
-                if retired {
-                    engine::walk::Buffer::Growing(&mut self.retired.rows)
-                } else {
-                    engine::walk::Buffer::Fixed(&mut [])
-                },
-            );
+            let [active_outcome, retired_outcome] = match reuse.as_mut() {
+                Some((store, _, _)) if records::CARRY && active && retired => records::capture(
+                    memory,
+                    base,
+                    game_state,
+                    store.records(),
+                    &appointed::Observer,
+                    crate::sampled_verify::Check::burned_in(hour, records::VERIFY),
+                    &mut self.active.rows,
+                    &mut self.retired.rows,
+                ),
+                _ => native::walk_records_buffer(
+                    memory,
+                    base,
+                    game_state,
+                    if active {
+                        engine::walk::Buffer::Growing(&mut self.active.rows)
+                    } else {
+                        engine::walk::Buffer::Fixed(&mut [])
+                    },
+                    if retired {
+                        engine::walk::Buffer::Growing(&mut self.retired.rows)
+                    } else {
+                        engine::walk::Buffer::Fixed(&mut [])
+                    },
+                ),
+            };
             self.active.outcome = active_outcome;
             self.retired.outcome = retired_outcome;
             ticks[1] = qpc().saturating_sub(started).max(0) as u64;
@@ -227,13 +324,28 @@ impl Captured {
         if should_walk(TABLES[2], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[2]);
             let started = qpc();
-            let walk = advisor_tokens::walk_growing(
-                memory,
-                base,
-                game_state,
-                &mut self.tokens.rows,
-                &mut self.token_bytes.first,
-            );
+            let walk = match reuse.as_mut() {
+                Some((store, changes, check)) => {
+                    let mut carry = TokenReuse::begin(store, *changes, *check);
+                    let walk = advisor_tokens::walk_carried(
+                        memory,
+                        base,
+                        game_state,
+                        &mut self.tokens.rows,
+                        &mut self.token_bytes.first,
+                        &mut carry,
+                    );
+                    carry.finish(matches!(walk.outcome, Outcome::Rows { .. }));
+                    walk
+                }
+                None => advisor_tokens::walk_growing(
+                    memory,
+                    base,
+                    game_state,
+                    &mut self.tokens.rows,
+                    &mut self.token_bytes.first,
+                ),
+            };
             self.tokens.outcome = walk.outcome;
             self.token_bytes.len = walk.bytes_len;
             self.token_bytes.required = walk.required_bytes;
@@ -246,13 +358,45 @@ impl Captured {
         if should_walk(TABLES[4], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[4]);
             let started = qpc();
-            let walk = native::walk_available_growing(
+            crate::slicing::scan_countries(
                 memory,
                 base,
                 game_state,
-                &mut self.available.rows,
-                &mut self.available_bytes.first,
+                hour,
+                force_full,
+                &mut self.available_selection,
+                fingerprints,
             );
+            let selection = &self.available_selection;
+            let select = |country: u32| selection.contains(country);
+            let walk = match reuse {
+                Some((store, changes, check)) => {
+                    let mut carry = PoolReuse::begin(store, changes, check, hour);
+                    let walk = native::walk_available_carried(
+                        memory,
+                        base,
+                        game_state,
+                        &mut self.available.rows,
+                        &mut self.available_bytes.first,
+                        &mut carry,
+                        &select,
+                    );
+                    carry.finish(
+                        matches!(walk.outcome, Outcome::Rows { .. }),
+                        selection.scanned as usize,
+                    );
+                    walk
+                }
+                None => native::walk_available_carried(
+                    memory,
+                    base,
+                    game_state,
+                    &mut self.available.rows,
+                    &mut self.available_bytes.first,
+                    &mut native::Fresh,
+                    &select,
+                ),
+            };
             self.available.outcome = walk.outcome;
             self.available_bytes.len = walk.bytes_len;
             self.available_bytes.required = walk.required_bytes;
@@ -376,13 +520,25 @@ impl Captured {
     }
 }
 
+mod advisor_store;
+mod appointed;
+mod records;
+pub(crate) use advisor_store::AdvisorStore;
+use advisor_store::{PoolReuse, TokenReuse};
+#[cfg(test)]
+#[path = "hired_advisors/advisor_store_tests.rs"]
+mod advisor_store_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use replay::rows::TableRows;
 
+    /// HiredAdvisors, which `has_idea` triggers read, is read every hour
+    /// (here unreadable rather than skipped), as are the advisor roles it
+    /// names.
     #[test]
-    fn walks_only_on_its_daily_slot_or_a_full_hour() {
+    fn appointed_advisors_walk_every_hour() {
         let memory = engine::memory::SliceMemory {
             base: 0,
             bytes: &[],
@@ -390,23 +546,18 @@ mod tests {
         let mut captured = Captured::with_capacities(&Capacities::default());
         for hour in 0..24 {
             captured.capture(&memory, 0, 0x1000, hour, false);
-            assert!(matches!(
-                captured.outcomes()[4],
-                Outcome::Unavailable { reason } if reason != SKIPPED_REASON
-            ));
-            let skipped = captured.outcomes()[0]
-                == Outcome::Unavailable {
-                    reason: SKIPPED_REASON,
-                };
-            assert_eq!(skipped, !should_walk(TABLES[0], hour, false), "{hour}");
-            // The advisor roles it names are hourly, so read at its slot too.
+            for index in [0, 4] {
+                assert!(
+                    matches!(
+                        captured.outcomes()[index],
+                        Outcome::Unavailable { reason } if reason != SKIPPED_REASON
+                    ),
+                    "{hour}"
+                );
+            }
+            assert!(should_walk(TABLES[0], hour, false));
             assert!(should_walk(TableId::AdvisorRoles, hour, false));
         }
-        captured.capture(&memory, 0, 0x1000, 3, true);
-        assert!(matches!(
-            captured.outcomes()[0],
-            Outcome::Unavailable { reason } if reason != SKIPPED_REASON
-        ));
     }
 
     #[test]
@@ -547,16 +698,14 @@ mod tests {
                 },
             ]
         );
-        // A failed job hides both tables and keeps the hourly one unskipped.
-        let off_slot = (0..24)
-            .find(|&hour| !should_walk(TABLES[0], hour, false))
-            .unwrap();
-        captured.fail_capture(off_slot, false, "job failed");
+        // A failed job hides every table, none skipped: all are hourly or
+        // sliced.
+        captured.fail_capture(5, false, "job failed");
         assert_eq!(
             captured.outcomes(),
             [
                 Outcome::Unavailable {
-                    reason: SKIPPED_REASON
+                    reason: "job failed"
                 },
                 Outcome::Unavailable {
                     reason: "job failed"
@@ -637,7 +786,7 @@ mod tests {
     }
 
     #[test]
-    fn available_advisors_are_lean_hourly_rows_sized_for_5000_countries() {
+    fn available_advisors_are_lean_rows_sized_for_5000_countries() {
         let mut capacity = Capacities::default();
         capacity.raise_for_available_advisors(5_000, 20_000);
         assert!(capacity.available >= 5_000);

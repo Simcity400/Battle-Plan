@@ -31,6 +31,9 @@ impl TraceMemory {
         let mut memory = Self::default();
         for (offset, bytes) in [
             (LAST_ELECTION, (-400_i32).to_le_bytes().to_vec()),
+            // The ruling pointer's copy spans the fields up to the elections
+            // byte; the fields between them are readable zeros.
+            (RULING_PARTY, vec![0; RULING_SPAN]),
             (ELECTION_FREQUENCY, vec![48, 0, 0, 0, 1]),
             (RULING_PARTY, ruling.to_le_bytes().to_vec()),
         ] {
@@ -262,14 +265,6 @@ fn idea_capacity_still_validates_tokens_without_reading_omitted_heap_payloads() 
 fn scalar_row(reader: &Reader<'_, impl Memory>) -> Result<Row, &'static str> {
     let last_election =
         read::<i32>(reader.memory, reader.at(LAST_ELECTION)?).ok_or("last election unreadable")?;
-    // Frequency and the flag are adjacent, exact fields (five bytes).
-    let fields = read::<[u8; 5]>(reader.memory, reader.at(ELECTION_FREQUENCY)?)
-        .ok_or("election fields unreadable")?;
-    let election_frequency = i32::from_le_bytes(fields[..4].try_into().unwrap());
-    let elections_allowed = fields[4];
-    if elections_allowed > 1 {
-        return Err("elections allowed is not a boolean");
-    }
     let capitals = reader
         .country
         .checked_add(ccountry::CAPITAL)
@@ -281,7 +276,11 @@ fn scalar_row(reader: &Reader<'_, impl Memory>) -> Result<Row, &'static str> {
             ]
         })
         .ok_or("current capital unreadable")?;
-    let pointer = reader.ruling_pointer()?;
+    let ruling = read::<[u8; RULING_SPAN]>(reader.memory, reader.at(RULING_PARTY)?)
+        .ok_or("ruling party pointer unreadable")?;
+    let frequency = i32::from_le_bytes(ruling[0x18..0x1c].try_into().unwrap());
+    let has_elections = ruling[0x1c] != 0 && frequency > 0;
+    let pointer = u64::from_le_bytes(ruling[..8].try_into().unwrap()) as usize;
     let ruling_party = if pointer == 0 {
         None
     } else {
@@ -289,11 +288,10 @@ fn scalar_row(reader: &Reader<'_, impl Memory>) -> Result<Row, &'static str> {
     };
     Ok(Row {
         last_election,
-        election_frequency,
-        elections_allowed,
         capital: capitals[0],
         original_capital: capitals[1],
         ruling_party,
+        has_elections,
     })
 }
 
@@ -332,20 +330,18 @@ fn compare(
 fn expected(ruling_party: Option<u32>) -> Result<Row, &'static str> {
     Ok(Row {
         last_election: -400,
-        election_frequency: 48,
-        elections_allowed: 1,
         capital: -17,
         original_capital: 0,
         ruling_party,
+        has_elections: true,
     })
 }
 
-fn ordinary_reads() -> [(usize, usize); 7] {
+fn ordinary_reads() -> [(usize, usize); 6] {
     [
         (STATUS + LAST_ELECTION, 4),
-        (STATUS + ELECTION_FREQUENCY, 5),
         (COUNTRY_POINTER + ccountry::CAPITAL, 8),
-        (STATUS + RULING_PARTY, 8),
+        (STATUS + RULING_PARTY, RULING_SPAN),
         (PARTY, 12),
         (PARTY + cpolitical_party::IDEOLOGY_GROUP, 8),
         (IDEOLOGY, 12),
@@ -371,12 +367,11 @@ fn politics_pairs_preserve_every_fault_ordinal_and_partial_field() {
         status: STATUS,
     };
     assert_eq!(reader.row(), expected(Some(33)));
-    assert_eq!(memory.scatters.get(), 2);
+    assert_eq!(memory.scatters.get(), 1);
     memory.reads.borrow_mut().clear();
     memory.scatters.set(0);
     for (ordinal, reason) in [
         "last election unreadable",
-        "election fields unreadable",
         "current capital unreadable",
         "ruling party pointer unreadable",
         "political party identity unreadable",
@@ -401,18 +396,31 @@ fn politics_pairs_preserve_every_fault_ordinal_and_partial_field() {
 }
 
 #[test]
-fn politics_pairs_keep_boolean_null_and_identity_validation_stops() {
+fn politics_pairs_test_elections_as_has_elections_does() {
+    // The elections predicate: a nonzero byte, not only 1, and a positive
+    // signed frequency; a byte the old reader refused as not boolean is true.
     let reads = ordinary_reads();
-    let mut memory = TraceMemory::fixture(STATUS, COUNTRY_POINTER, PARTY as u64);
-    memory.put(STATUS + ELECTIONS_ALLOWED, &[2]);
-    compare(
-        &memory,
-        BASE,
-        STATUS,
-        COUNTRY_POINTER,
-        Err("elections allowed is not a boolean"),
-        &reads[..2],
-    );
+    for (frequency, byte, has_elections) in [
+        (48, 1, true),
+        (48, 2, true),
+        (1, 0xff, true),
+        (48, 0, false),
+        (0, 1, false),
+        (-1, 1, false),
+        (i32::MIN, 1, false),
+    ] {
+        let mut memory = TraceMemory::fixture(STATUS, COUNTRY_POINTER, PARTY as u64);
+        memory.put(STATUS + ELECTION_FREQUENCY, &frequency.to_le_bytes());
+        memory.put(STATUS + ELECTIONS_ALLOWED, &[byte]);
+        let mut row = expected(Some(33)).unwrap();
+        row.has_elections = has_elections;
+        compare(&memory, BASE, STATUS, COUNTRY_POINTER, Ok(row), &reads);
+    }
+}
+
+#[test]
+fn politics_pairs_keep_null_and_identity_validation_stops() {
+    let reads = ordinary_reads();
     let memory = TraceMemory::fixture(STATUS, COUNTRY_POINTER, 0);
     compare(
         &memory,
@@ -420,32 +428,32 @@ fn politics_pairs_keep_boolean_null_and_identity_validation_stops() {
         STATUS,
         COUNTRY_POINTER,
         expected(None),
-        &reads[..4],
+        &reads[..3],
     );
     for (address, bytes, reason, count) in [
         (
             PARTY,
             0_u64.to_le_bytes().to_vec(),
             "political party vtable mismatch",
-            5,
+            4,
         ),
         (
             PARTY + cpolitical_party::IDEOLOGY_GROUP,
             0_u64.to_le_bytes().to_vec(),
             "political party ideology pointer unreadable or null",
-            6,
+            5,
         ),
         (
             IDEOLOGY,
             0_u64.to_le_bytes().to_vec(),
             "political party ideology vtable mismatch",
-            7,
+            6,
         ),
         (
             IDEOLOGY + cideology_group::ID,
             34_u32.to_le_bytes().to_vec(),
             "political party and ideology ids differ",
-            7,
+            6,
         ),
     ] {
         let mut memory = TraceMemory::fixture(STATUS, COUNTRY_POINTER, PARTY as u64);
@@ -466,12 +474,15 @@ fn politics_pairs_keep_boolean_null_and_identity_validation_stops() {
         STATUS,
         COUNTRY_POINTER,
         Err("module address overflow"),
-        &reads[..4],
+        &reads[..3],
     );
 }
 
 #[test]
 fn politics_pairs_keep_address_overflow_and_earlier_fault_priority() {
+    // The ruling party lies above the last election, so its address can
+    // overflow after the capital was read; the pair's scalar fallback still
+    // reads the capital once and reports its fault first.
     for (status, reason, observed) in [
         (
             usize::MAX - LAST_ELECTION + 1,
@@ -480,19 +491,19 @@ fn politics_pairs_keep_address_overflow_and_earlier_fault_priority() {
         ),
         (usize::MAX - LAST_ELECTION, "last election unreadable", 0),
         (
-            usize::MAX - ELECTION_FREQUENCY + 1,
+            usize::MAX - RULING_PARTY + 1,
             "political status address overflow",
-            1,
+            2,
         ),
         (
-            usize::MAX - ELECTION_FREQUENCY,
-            "election fields unreadable",
-            1,
+            usize::MAX - RULING_PARTY,
+            "ruling party pointer unreadable",
+            2,
         ),
         (
-            usize::MAX - ELECTION_FREQUENCY - 4,
-            "election fields unreadable",
-            1,
+            usize::MAX - ELECTIONS_ALLOWED,
+            "ruling party pointer unreadable",
+            2,
         ),
     ] {
         let mut memory = TraceMemory::fixture(status, COUNTRY_POINTER, 0);
@@ -500,23 +511,29 @@ fn politics_pairs_keep_address_overflow_and_earlier_fault_priority() {
             .checked_add(LAST_ELECTION)
             .map(|address| (address, 4))
             .into_iter()
+            .chain([(COUNTRY_POINTER + ccountry::CAPITAL, 8)])
             .take(observed)
             .collect();
         compare(&memory, BASE, status, COUNTRY_POINTER, Err(reason), &prefix);
         if observed != 0 {
-            memory.fault = Some((0, 0));
-            compare(
-                &memory,
-                BASE,
-                status,
-                COUNTRY_POINTER,
-                Err("last election unreadable"),
-                &prefix,
-            );
+            for (ordinal, reason) in ["last election unreadable", "current capital unreadable"]
+                .into_iter()
+                .enumerate()
+            {
+                memory.fault = Some((ordinal, 0));
+                compare(
+                    &memory,
+                    BASE,
+                    status,
+                    COUNTRY_POINTER,
+                    Err(reason),
+                    &prefix[..=ordinal],
+                );
+            }
         }
     }
     // Range ending at usize::MAX is valid; ending past it is not.
-    let status = usize::MAX - ELECTION_FREQUENCY - 5;
+    let status = usize::MAX - ELECTIONS_ALLOWED - 1;
     let memory = TraceMemory::fixture(status, COUNTRY_POINTER, 0);
     compare(
         &memory,
@@ -526,9 +543,8 @@ fn politics_pairs_keep_address_overflow_and_earlier_fault_priority() {
         expected(None),
         &[
             (status + LAST_ELECTION, 4),
-            (status + ELECTION_FREQUENCY, 5),
             (COUNTRY_POINTER + ccountry::CAPITAL, 8),
-            (status + RULING_PARTY, 8),
+            (status + RULING_PARTY, RULING_SPAN),
         ],
     );
     for country in [
@@ -543,7 +559,7 @@ fn politics_pairs_keep_address_overflow_and_earlier_fault_priority() {
             STATUS,
             country,
             Err("current capital unreadable"),
-            &ordinary_reads()[..2],
+            &ordinary_reads()[..1],
         );
     }
     let country = usize::MAX - ccountry::CAPITAL - 8;
@@ -556,52 +572,8 @@ fn politics_pairs_keep_address_overflow_and_earlier_fault_priority() {
         expected(None),
         &[
             (STATUS + LAST_ELECTION, 4),
-            (STATUS + ELECTION_FREQUENCY, 5),
             (country + ccountry::CAPITAL, 8),
-            (STATUS + RULING_PARTY, 8),
+            (STATUS + RULING_PARTY, RULING_SPAN),
         ],
     );
-}
-
-#[test]
-fn politics_pairs_late_overflow_fallback_observes_first_field_once() {
-    // The ruling offset is below the already-successful election offset;
-    // its overflow is unreachable through row(), but the shared helper's
-    // scalar fallback must retain the same rule for either field layout.
-    for fault in [None, Some((0, 0)), Some((0, 3))] {
-        for second_len in [5, 8] {
-            let mut memory = TraceMemory {
-                fault,
-                ..TraceMemory::default()
-            };
-            memory.put(0x100, &(-17_i32).to_le_bytes());
-            let outcome = if second_len == 5 {
-                read_pair::<4, 5>(
-                    &memory,
-                    0x100,
-                    Err("late overflow"),
-                    ["first fault", "second fault"],
-                )
-                .map(|_| ())
-            } else {
-                read_pair::<4, 8>(
-                    &memory,
-                    0x100,
-                    Err("late overflow"),
-                    ["first fault", "second fault"],
-                )
-                .map(|_| ())
-            };
-            assert_eq!(
-                outcome,
-                Err(if fault.is_some() {
-                    "first fault"
-                } else {
-                    "late overflow"
-                })
-            );
-            assert_eq!(&*memory.reads.borrow(), &[(0x100, 4)]);
-            assert_eq!(memory.scatters.get(), 0);
-        }
-    }
 }

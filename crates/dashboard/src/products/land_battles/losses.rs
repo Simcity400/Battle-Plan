@@ -198,9 +198,14 @@ impl Census {
         })
     }
     pub(super) fn observe_losses(&mut self, frame: &DecodedFrame) {
-        let progress = slot_read(&frame.metrics, TableId::LandCombatProgress, frame.hour)
-            .then(|| frame.complete::<tables::LandCombatProgress>().ok())
-            .flatten();
+        let progress = slot_read(
+            self.format,
+            &frame.metrics,
+            TableId::LandCombatProgress,
+            frame.hour,
+        )
+        .then(|| frame.complete::<tables::LandCombatProgress>().ok())
+        .flatten();
         let by_combat: HashMap<_, _> = progress
             .into_iter()
             .flatten()
@@ -256,7 +261,12 @@ impl Census {
         }
     }
     pub(super) fn observe_results(&mut self, frame: &DecodedFrame, labels: bool) {
-        if !slot_read(&frame.metrics, TableId::LandCombatResults, frame.hour) {
+        if !slot_read(
+            self.format,
+            &frame.metrics,
+            TableId::LandCombatResults,
+            frame.hour,
+        ) {
             return;
         }
         let Ok(results) = frame.complete::<tables::LandCombatResults>() else {

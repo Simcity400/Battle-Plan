@@ -840,11 +840,72 @@ fn the_portrait_hover_names_what_it_lacks() {
                 b"rommel",
                 b"rommel_desc",
                 (1, 4),
-                Some((&learning, 0, Err("the viewing country has no Countries row"))),
+                Some((Learning::Raw(&learning, 0), Err("the viewing country has no Countries row"))),
                 false
             ),
             Err("desert_fox's name needs its country's TAG_desert_fox key, but the viewing country has no Countries row".into())
         );
+}
+
+/// A land side's recorded learning rows are the ones the game shows: the
+/// viewing country's commander lists them under the heading, another
+/// country's commander shows none, and an unresolved country decides only
+/// when there is a row. A recording without the side inputs refuses the
+/// viewing country's commander by name.
+#[test]
+fn the_land_portrait_lists_the_recorded_rows_and_refuses_only_without_them() {
+    let loc: Localisation = [
+        ("HEADER", "$KEY$\n"),
+        ("rommel", "Rommel"),
+        ("cc_leader", "General"),
+        ("trait_engineer", "Engineer"),
+        ("LEARNING_TRAITS_TITLE", "Learning Traits:"),
+        ("LEARNING_TRAITS", "$NAME$ ($PERC|%0H$ done)"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+    .collect();
+    let shown = [LandCombatLearningProgress {
+        token: b"trait_engineer".to_vec(),
+        // 57.999%, stored at the printed precision as capture stores it.
+        progress: 57_000,
+        ..Default::default()
+    }];
+    let tag: Result<&str, &str> = Ok("GER");
+    let portrait = |own: Result<bool, String>,
+                    learning: Result<&[LandCombatLearningProgress], &str>| {
+        land_portrait(&NoIcons, &loc, b"rommel", (1, 4), own, learning, tag, false)
+    };
+    assert_eq!(
+        portrait(Ok(false), Ok(&shown[..])),
+        Ok("General Rommel\n".into())
+    );
+    assert_eq!(
+        portrait(Ok(true), Ok(&shown[..])),
+        Ok("General Rommel\n\nLearning Traits:\nEngineer (\u{11}H57%\u{11}! done)\n".into())
+    );
+    assert_eq!(
+        portrait(Ok(true), Ok(&[][..])),
+        Ok("General Rommel\n".into())
+    );
+    assert_eq!(
+        portrait(Err("no link".into()), Ok(&[][..])),
+        Ok("General Rommel\n".into())
+    );
+    assert!(
+        portrait(Err("no link".into()), Ok(&shown[..]))
+            .unwrap_err()
+            .ends_with("is unknown: no link")
+    );
+    // Without the rows, the viewing country's commander refuses with the
+    // reason the binder names (not recorded, or the live floor unread).
+    for reason in [LAND_LEARNING_UNRECORDED, LAND_LEARNING_UNREAD] {
+        assert_eq!(portrait(Ok(true), Err(reason)), Err(reason.to_owned()));
+        assert_eq!(
+            portrait(Ok(false), Err(reason)),
+            Ok("General Rommel\n".into())
+        );
+    }
 }
 
 #[test]
@@ -1122,7 +1183,6 @@ fn naval_bind_uses_live_and_result_grid_paths_and_skips_null_commanders() {
                     loc: &loc,
                     commanders: &commanders,
                     windows: &windows,
-                    land_defines: Err("unused"),
                     modifier_names: &cache,
                 },
                 &frame,
@@ -1170,7 +1230,7 @@ fn naval_bind_uses_live_and_result_grid_paths_and_skips_null_commanders() {
     }
 }
 
-/// the game resolves the lexer's current token against the
+/// The game resolves the lexer's current token against the
 /// country-leader traits: a quoted name is token 0xF,
 /// no trait's, so the field is null and the game falls back to the
 /// specialist; a bare name that is a trait is shown; one the traits do

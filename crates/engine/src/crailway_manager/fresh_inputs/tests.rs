@@ -99,6 +99,7 @@ impl Fixture {
                 count: 1,
             }),
             selection: None,
+            carried: false,
         }
     }
 }

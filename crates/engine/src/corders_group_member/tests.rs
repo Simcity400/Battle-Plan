@@ -113,7 +113,7 @@ fn packet(queries: &[(usize, usize)]) -> MembershipPacket {
 }
 
 #[test]
-fn packet_batches_member_queries_and_preserves_per_query_links() {
+fn packet_batches_member_queries_and_reads_each_group_link_once() {
     let mut source = Fixture::new();
     source.assigned(OWN, group::PRIMARY_ORDER_DATA, 128);
     for index in 0..3 {
@@ -135,10 +135,12 @@ fn packet_batches_member_queries_and_preserves_per_query_links() {
         assert_eq!(memory.count(address), 1);
     }
     assert_eq!(memory.count(OWN + group::SECONDARY_ORDER_DATA), 0);
+    // The own group comes from the query (the seed's copy of the link) and
+    // the group's parent link is read once for all three of its queries.
     for index in 0..3 {
-        assert_eq!(memory.count(MEMBER + index * 0x100 + GROUP), 1);
+        assert_eq!(memory.count(MEMBER + index * 0x100 + GROUP), 0);
     }
-    assert_eq!(memory.count(OWN + group::PARENT), 3);
+    assert_eq!(memory.count(OWN + group::PARENT), 1);
     for address in [
         OWN + group::PRIMARY_ORDER_DATA,
         ORDER + order::ASSIGNED_MEMBER_DATA,
@@ -463,8 +465,14 @@ fn packet_matches_scalar_branch_and_static_fault_outcomes() {
             let mut inputs = packet(&[(MEMBER, OWN)]);
             inputs.acquire(&source, 0);
             assert_eq!(inputs.outcome(0), expected);
-            let addresses: std::collections::BTreeSet<_> =
-                direct.reads.borrow().iter().map(|&(at, _)| at).collect();
+            // The packet takes the member's group link from its query.
+            let addresses: std::collections::BTreeSet<_> = direct
+                .reads
+                .borrow()
+                .iter()
+                .map(|&(at, _)| at)
+                .filter(|&at| at != MEMBER + GROUP)
+                .collect();
             for address in addresses {
                 let direct = Trace {
                     fault: Some(address),

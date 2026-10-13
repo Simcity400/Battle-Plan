@@ -86,6 +86,12 @@ pub struct Orders<'a> {
     pub rows: &'a [order::Row],
     pub source: Outcome,
     pub geometry: &'a [u32],
+    /// This pass's complete plan walk's [`order::PlanOrder::rows`], or
+    /// empty: each census order's plan and census row, checked before use.
+    pub plan_rows: &'a [u32],
+    /// The census's order ([`order::SuccessorLists::census`]), or empty for
+    /// table order.
+    pub census: &'a [u32],
 }
 /// Each source has its own verdict; a healthy geometry prefix cannot certify
 /// missing assigned host ownership or a truncated primary list.
@@ -595,19 +601,21 @@ impl Prepared {
             memory,
             prepared: self,
         };
-        for visit in orders.visits.iter().filter(|visit| visit.pointer != 0) {
+        for (ordinal, (_, visit)) in order::census_orders(orders.visits, orders.census).enumerate()
+        {
             let Some(group) = orders.roots.get(visit.owner) else {
                 continue;
             };
             let key = (u128::from(group.handle) << 32) | u128::from(visit.instance());
-            let Ok(row_index) = orders.rows.binary_search_by_key(&key, |row| row.key()) else {
+            let guess = orders.plan_rows.get(ordinal).copied();
+            let Ok(row_index) = order::keyed_row(orders.rows, guess, key, |row| row.key()) else {
                 continue;
             };
             let row = &orders.rows[row_index];
             if !matches!(row.order_type, order::TYPE_INVASION | order::TYPE_PARADROP) {
                 continue;
             }
-            let Ok(plan_index) = plans.binary_search_by_key(&key, |plan| plan.key()) else {
+            let Ok(plan_index) = order::keyed_row(plans, guess, key, |plan| plan.key()) else {
                 continue;
             };
             self.count(|work| work.route_demand += 1);
@@ -671,23 +679,10 @@ impl Prepared {
             if self.groups.windows(2).any(|pair| pair[0].0 == pair[1].0) {
                 return Err("execution group census aliases a pointer");
             }
-            for (index, visit) in orders
-                .visits
-                .iter()
-                .enumerate()
-                .filter(|(_, visit)| visit.pointer != 0)
-            {
-                let group = orders
-                    .roots
-                    .get(visit.owner)
-                    .ok_or("execution order owner missing")?;
-                if self.visits.len() == self.capacity.orders {
-                    return Err("execution visit census count mismatch");
-                }
-                self.visits.push((
-                    (u128::from(group.handle) << 32) | u128::from(visit.instance()),
-                    index,
-                ));
+            // At their plan rows the keys are already sorted, and the sort
+            // below only confirms it in one pass.
+            if !self.index_visits(orders, true)? {
+                self.index_visits(orders, false)?;
             }
             if self.visits.len() != orders.source.len() {
                 return Err("execution visit census count mismatch");
@@ -699,6 +694,52 @@ impl Prepared {
             Ok(())
         })();
         self.index_error = result.err();
+    }
+    /// Indexes each census order's key and visit, at its
+    /// [`Orders::plan_rows`] place when `placed` and those place every order
+    /// once, else in census order; `Ok(false)` when the placement did not.
+    /// The entries, their failures and their order once sorted are the same.
+    fn index_visits(&mut self, orders: Orders<'_>, placed: bool) -> Result<bool, &'static str> {
+        // Above every key: a group handle and an instance fill 96 bits.
+        const UNPLACED: (u128, usize) = (u128::MAX, usize::MAX);
+        self.visits.clear();
+        let placed = placed
+            && orders.plan_rows.len() == orders.source.len()
+            && orders.source.len() <= self.capacity.orders;
+        if placed {
+            self.visits.resize(orders.source.len(), UNPLACED);
+        }
+        let mut count = 0;
+        for (index, visit) in order::census_orders(orders.visits, orders.census) {
+            let group = orders
+                .roots
+                .get(visit.owner)
+                .ok_or("execution order owner missing")?;
+            if count == self.capacity.orders {
+                return Err("execution visit census count mismatch");
+            }
+            let entry = (
+                (u128::from(group.handle) << 32) | u128::from(visit.instance()),
+                index,
+            );
+            if !placed {
+                self.visits.push(entry);
+            } else {
+                match orders
+                    .plan_rows
+                    .get(count)
+                    .and_then(|&row| self.visits.get_mut(row as usize))
+                {
+                    Some(slot) if *slot == UNPLACED => *slot = entry,
+                    _ => return Ok(false),
+                }
+            }
+            count += 1;
+        }
+        if placed && count != orders.source.len() {
+            return Err("execution visit census count mismatch");
+        }
+        Ok(true)
     }
     #[allow(clippy::too_many_arguments)]
     fn preparation(

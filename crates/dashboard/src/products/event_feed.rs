@@ -29,6 +29,8 @@ mod diplomacy;
 
 mod native;
 
+mod nuclear;
+
 pub struct EventFeed;
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -57,6 +59,10 @@ pub enum EventFeedKind {
     WarJoined,
     CivilWarWarTransferred,
     Annexed,
+    WarEnded,
+    Released,
+    StateTransferred,
+    PeaceConferenceStarted,
     Peace,
     Capitulated,
     CeasedToExist,
@@ -70,6 +76,7 @@ pub enum EventFeedKind {
     FocusCompleted,
     ProjectFinished,
     NukesIncreased,
+    NuclearStrike,
 }
 impl EventFeedKind {
     fn category(self) -> EventFeedCategory {
@@ -80,9 +87,14 @@ impl EventFeedKind {
             | WarJoined
             | CivilWarWarTransferred
             | Annexed
+            | WarEnded
+            | Released
+            | StateTransferred
+            | PeaceConferenceStarted
             | Peace
             | Capitulated
-            | CeasedToExist => EventFeedCategory::WarsPeace,
+            | CeasedToExist
+            | NuclearStrike => EventFeedCategory::WarsPeace,
             FactionJoined | FactionLeft | BecameSubject | GuaranteeGranted => {
                 EventFeedCategory::Diplomacy
             }
@@ -112,6 +124,57 @@ pub struct EventFeedRow {
     pub participants: Option<[Option<String>; 2]>,
     pub item: Option<u32>,
     pub amount: Option<u32>,
+    /// A native event's recorded cause; absent when the recording holds none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cause: Option<EventFeedCause>,
+    /// A nuclear strike's target and outcome; participants are its launcher
+    /// and the owner of the struck state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub strike: Option<EventFeedStrike>,
+}
+
+/// What caused a native event, in words, from the operations the collector
+/// observed running when it happened. Each absent fact was not observed.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedCause {
+    /// The native operation the event happened in.
+    pub how: Option<String>,
+    /// The operation that one ran inside.
+    pub within: Option<String>,
+    /// The peace conference starting or applying, as its PeaceConferences
+    /// reference in decimal.
+    pub conference: Option<String>,
+    /// A state whose owner changed.
+    pub state: Option<u32>,
+    /// A join's ally, the exact occurrence-hour identity.
+    pub ally: Option<String>,
+    /// A join's hostility reason.
+    pub reason: Option<String>,
+    /// The native operands that change what the event means.
+    pub notes: Vec<String>,
+}
+
+/// One recorded impact's target and outcome totals. A total is null when its
+/// part was not fully recorded; `not_recorded` names why.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedStrike {
+    pub province: u32,
+    /// Null for a province without a state.
+    pub state: Option<u32>,
+    /// Healthy building levels destroyed, in whole levels.
+    pub building_levels: Option<f64>,
+    /// The state owner's war support change, in percentage points.
+    pub war_support: Option<f64>,
+    /// Units the strike's damage calls reached.
+    pub units: Option<u32>,
+    pub manpower_lost: Option<f64>,
+    /// Net equipment destroyed in division and air wing pools.
+    pub equipment_lost: Option<f64>,
+    pub not_recorded: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
@@ -231,9 +294,48 @@ struct Feed {
 }
 struct Builder {
     feed: Feed,
+    /// Every recorded native war end of the branch, by its hour and the two
+    /// countries' tags, so a derived peace row the native row already shows
+    /// is not repeated ([`peace_fallback`]).
+    war_ends: BTreeSet<(i32, String, String)>,
     item_keys: BTreeMap<(Option<String>, Option<String>), Vec<u32>>,
     unavailable_keys: BTreeMap<UnavailableKey, (usize, Vec<String>)>,
 }
+/// A derived peace row's focal country and the counterparties no recorded
+/// native war end covers. The derived row is first observed at `hour`, the
+/// first read without the pair at war, so the relation ended between the
+/// read of `hour - 1` and that of `hour`; a native end of the same pair dated
+/// either hour (events drain with the hourly read, `EventFeedHistoryRow`
+/// dates them no later than it) is the same ending, shown exactly.
+fn peace_fallback(
+    war_ends: &BTreeSet<(i32, String, String)>,
+    hour: i32,
+    tags: Vec<String>,
+) -> Vec<String> {
+    let mut tags = tags.into_iter();
+    let Some(focal) = tags.next() else {
+        return Vec::new();
+    };
+    let covered = |other: &String| {
+        [hour.checked_sub(1), Some(hour)]
+            .into_iter()
+            .flatten()
+            .any(|at| war_ends.contains(&war_end_key(at, &focal, other)))
+    };
+    let others: Vec<String> = tags.filter(|other| !covered(other)).collect();
+    std::iter::once(focal).chain(others).collect()
+}
+
+/// A war end's key: its hour and the two tags in order.
+fn war_end_key(hour: i32, first: &str, second: &str) -> (i32, String, String) {
+    let (low, high) = if first <= second {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    (hour, low.to_owned(), high.to_owned())
+}
+
 struct RowDate {
     hour: i32,
     read_hour: i32,
@@ -253,6 +355,7 @@ impl RowDate {
 impl Builder {
     fn new(first: i32, last: i32) -> Self {
         Self {
+            war_ends: BTreeSet::new(),
             feed: Feed {
                 first,
                 last,
@@ -313,6 +416,8 @@ impl Builder {
             participants: None,
             item,
             amount,
+            cause: None,
+            strike: None,
         });
     }
     fn unavailable(
@@ -466,9 +571,12 @@ fn build(
         .warnings
         .extend(groups.warnings.iter().cloned());
     builder.unavailable("warDeclarationOrJoin", "War declaration or join", "WarRelations supplies the pair becoming at war. Declarations and joins require the native event history; refused intervals cannot distinguish those actions.", None);
-    builder.unavailable("peaceOutcome", "Peace outcome", "A witnessed WarRelations removal records that the pair is no longer at war; the treaty, annexation or release cause is not recorded.", None);
-    builder.unavailable("annexationCause", "Annexation or release", "CountryCounterInputs supplies owned-state existence. Its transitions have no cause; only a captured native annexation identifies that action and its roles.", None);
-    builder.unavailable("nuclearDrops", "Nuclear drops", "Nukes records stockpile and queued ready count; launches, drops and targets are not recorded.", None);
+    // Recordings since EVENT_CAUSE_FORMAT record each war's end, release
+    // and state owner change with its cause in the native history.
+    if replay.format.version() < replay::rows::compatibility::EVENT_CAUSE_FORMAT {
+        builder.unavailable("peaceOutcome", "Peace outcome", "A witnessed WarRelations removal records that the pair is no longer at war; the treaty, annexation or release cause is not recorded.", None);
+        builder.unavailable("annexationCause", "Annexation or release", "CountryCounterInputs supplies owned-state existence. Its transitions have no cause; only a captured native annexation identifies that action and its roles.", None);
+    }
     for (id, kind, label) in [
         (TableId::WarRelations, "warStarted", "Wars and peace"),
         (TableId::Capitulation, "capitulated", "Capitulations"),
@@ -517,9 +625,16 @@ fn build(
     for moment in &diplomacy.moments {
         check_cancel(cancelled)?;
         use EventFeedKind::*;
+        let mut tags = moment.tags.clone();
         let kind = match moment.kind {
             "warStarted" => WarStarted,
-            "peace" => Peace,
+            "peace" => {
+                tags = peace_fallback(&builder.war_ends, moment.hour, tags);
+                if tags.len() < 2 {
+                    continue;
+                }
+                Peace
+            }
             "capitulated" => Capitulated,
             "ceasedToExist" => CeasedToExist,
             "factionJoined" => FactionJoined,
@@ -558,7 +673,7 @@ fn build(
                 name_hour: moment.name_hour,
                 exact: moment.exact,
             },
-            moment.tags.clone(),
+            tags,
             item,
             None,
         );
@@ -939,6 +1054,18 @@ fn build(
             }
         }
     }
+    // Each native type's recorded spelling and name, independent of the stockpile.
+    let mut nuke_items = BTreeMap::new();
+    let icon = nuke_art.as_ref().ok().cloned().flatten().flatten();
+    for info in country_nukes::native_type_info(&nukes, |token| {
+        let content = catalogue.as_ref()?;
+        content.localisation.get(token)?;
+        content.localised(token, catalogue::View::Plain)
+    }) {
+        let item = builder.item(plain_item(info.token, info.name, icon.clone(), None))?;
+        nuke_items.insert(info.ordinal, item);
+    }
+    nuclear::scan(&replay, branch, &mut builder, &nuke_items, cancelled)?;
     if let Some(content) = &politics {
         let (modifier_keys, text_keys) = idea_history::effect_keys(
             builder
@@ -1328,6 +1455,8 @@ impl Product for EventFeed {
             EventFeedCategory::decl(),
             EventFeedKind::decl(),
             EventFeedRow::decl(),
+            EventFeedCause::decl(),
+            EventFeedStrike::decl(),
             EventFeedItem::decl(),
             EventFeedWindow::decl(),
             EventFeedCounts::decl(),

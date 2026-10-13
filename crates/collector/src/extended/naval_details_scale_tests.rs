@@ -1,5 +1,5 @@
 use super::*;
-use engine::{Memory, naval_ship_modifier_breakdown as breakdown};
+use engine::naval_combat_demand as breakdown;
 use std::{
     hint::black_box,
     time::{Duration, Instant},
@@ -15,47 +15,87 @@ fn percentiles(mut values: Vec<Duration>) -> (Duration, Duration, Duration) {
 }
 
 #[test]
-fn naval_tree_stack_headroom_refusal_is_counted_in_status() {
-    use engine::naval_ship_modifier_breakdown::STACK_HEADROOM;
-    let mut work = BreakdownWork::default();
-    work.observe(BreakdownStatus {
-        outcome: Outcome::Unavailable {
-            reason: STACK_HEADROOM,
-        },
-        required: [0; 5],
-        capacity: [0; 5],
-    })
-    .unwrap();
-    let status = serde_json::to_value(work.status()).unwrap();
-    assert_eq!(status["hours"], 1);
-    assert_eq!(status["available_hours"], 0);
-    assert_eq!(status["refused_hours"], 1);
-    assert_eq!(status["refusals"], serde_json::json!({STACK_HEADROOM: 1}));
-}
-
-#[test]
-fn naval_empty_hour_keeps_all_tables_complete_without_tree_storage() {
+fn naval_empty_hour_keeps_all_tables_complete_without_storage() {
     let memory = Fixture::new(0);
     let mut captured = Captured::with_capacities(&Capacities::default());
     assert_eq!(captured.allocated_bytes(), 0);
     captured.capture(&memory, IMAGE, STATE);
     assert_eq!(captured.outcomes(), [Outcome::Rows { len: 0 }; N]);
-    assert_eq!(captured.breakdown_requests.len, 0);
-    assert_eq!(captured.breakdown_nodes.len, 0);
-    assert_eq!(
-        captured.breakdown_requests.allocated_bytes()
-            + captured.breakdown_roots.allocated_bytes()
-            + captured.breakdown_nodes.allocated_bytes()
-            + captured.breakdown_text.allocated_bytes()
-            + captured.breakdown_depth.allocated_bytes(),
-        0
-    );
     assert!(
         captured
             .tables()
             .iter()
             .all(|view| matches!(view, TableView::Complete(_)))
     );
+}
+
+/// A source recording every single (unbatched) copy; batched reads go to
+/// the fixture unrecorded.
+struct Singles<'a> {
+    source: &'a Fixture,
+    singles: std::cell::RefCell<Vec<(usize, usize)>>,
+}
+
+impl Memory for Singles<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.singles.borrow_mut().push((address, destination.len()));
+        self.source.copy(address, destination)
+    }
+
+    fn copy_scattered<const K: usize>(
+        &self,
+        addresses: [usize; K],
+        destinations: &mut [&mut [u8]; K],
+    ) -> usize {
+        self.source.copy_scattered(addresses, destinations)
+    }
+
+    fn copy_scattered_prefetched<const K: usize>(
+        &self,
+        addresses: [usize; K],
+        destinations: &mut [&mut [u8]; K],
+    ) -> usize {
+        self.source
+            .copy_scattered_prefetched(addresses, destinations)
+    }
+
+    fn copy_records(
+        &self,
+        sources: engine::memory::RecordSources<'_>,
+        layout: &engine::memory::RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        self.source.copy_records(sources, layout, destination)
+    }
+}
+
+/// A live combat ship's fixed fields, which its detail row and weapon
+/// context read, come from one gather: none is read alone.
+#[test]
+fn combat_ship_fields_are_read_in_one_gather() {
+    let fixture = Fixture::new(1);
+    let memory = Singles {
+        source: &fixture,
+        singles: Default::default(),
+    };
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    captured.capture(&memory, IMAGE, STATE);
+    assert_eq!(
+        captured.ships.outcome,
+        Outcome::Rows {
+            len: SHIPS_PER_COMBAT
+        }
+    );
+    let singles = memory.singles.borrow();
+    for ordinal in 0..SHIPS_PER_COMBAT {
+        let ship = BODIES + 0xc000 + ordinal * 0xa00;
+        for (offset, len) in [(0x270, 8), (0x628, 8), (engine::cship::STRENGTH, 8)] {
+            assert!(
+                !singles.contains(&(ship + offset, len)),
+                "ship {ordinal} +{offset:#x} read alone"
+            );
+        }
+    }
 }
 
 #[test]
@@ -75,18 +115,12 @@ fn cold_defaults_capture_the_first_live_shape_before_publication() {
     assert_eq!(captured.ships.outcome, Outcome::Rows { len: 90 });
     assert_eq!(captured.dense_bases.outcome, Outcome::Rows { len: 12 });
     assert_eq!(captured.dense_wings.len, 12);
-    assert_eq!(
-        captured.breakdown_status().required,
-        [161, 40, 2008, 17_952, 4]
-    );
     captured.grow(&mut capacities);
     let prepared = Captured::with_capacities(&capacities);
     assert!(prepared.details.rows.len() >= captured.details.rows.len());
     assert!(prepared.ships.rows.len() >= captured.ships.rows.len());
     assert!(prepared.dense_bases.rows.len() >= captured.dense_bases.rows.len());
     assert!(prepared.dense_wings.first.len() >= captured.dense_wings.first.len());
-    assert!(prepared.breakdown_nodes.first.len() >= captured.breakdown_nodes.first.len());
-    assert!(prepared.breakdown_text.first.len() >= captured.breakdown_text.first.len());
 }
 
 #[test]
@@ -157,80 +191,22 @@ fn cold_and_later_terrain_names_keep_mod_heap_bytes_in_publication() {
 #[test]
 fn naval_live_headers_presize_attach_and_combat_growth_before_capture() {
     let mut capacities = Capacities::default();
-    assert_eq!(capacities.breakdown_requests, 0);
+    assert_eq!(capacities.details, 0);
     for combats in [1, 66, 71] {
         let memory = Fixture::new(combats);
         let demand = breakdown::demand(&memory, IMAGE, STATE).unwrap();
         assert_eq!(demand.rows, combats);
         let old = capacities;
-        capacities.raise_for_live_breakdowns(demand);
+        capacities.raise_for_live_details(demand);
         let mut captured = Captured::with_capacities(&old);
         captured.try_grow_hint(&capacities).unwrap();
         captured.capture(&memory, IMAGE, STATE);
         assert_eq!(captured.details.outcome, Outcome::Rows { len: combats });
-        let status = captured.breakdown_status();
-        assert!(
-            matches!(status.outcome, Outcome::Rows { .. }),
-            "{:?}",
-            status.outcome
-        );
-        for (required, bound) in status.required.into_iter().zip([
-            demand.requests,
-            demand.roots,
-            demand.nodes,
-            demand.text,
-            demand.depth,
-        ]) {
-            assert!(
-                required <= bound,
-                "native demand {required} exceeds header bound {bound}"
-            );
-        }
+        assert!(captured.ships.rows.len() <= capacities.ships.max(captured.ships.rows.len()));
         let retained = capacities;
-        capacities.raise_for_live_breakdowns(Default::default());
+        capacities.raise_for_live_details(Default::default());
         assert!(capacities == retained);
     }
-}
-
-#[test]
-fn naval_live_headers_presize_broad_deep_carrier_and_escape_trees_at_attach() {
-    let memory = live_shape();
-    let demand = breakdown::demand(&memory, IMAGE, STATE).unwrap();
-    let mut capacities = crate::extended::Capacities::default();
-    capacities.naval_details.raise_for_live_breakdowns(demand);
-    let mut captured = crate::extended::Captured::with_capacities(&Default::default());
-    captured
-        .naval_details
-        .try_grow_hint(&capacities.naval_details)
-        .unwrap();
-    let countries =
-        std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
-    let mut request = captured.take_ordinary_request(
-        &countries,
-        IMAGE,
-        STATE,
-        0,
-        Ok(()),
-        crate::extended::NavalMissionLoan::default(),
-    );
-    request.packs.naval_details.capture(&memory, IMAGE, STATE);
-    captured.restore_ordinary_request(request, None);
-    let status = captured.naval_details.breakdown_status();
-    assert_eq!(status.required, [161, 40, 2008, 17_952, 4]);
-    assert!(
-        matches!(status.outcome, Outcome::Rows { .. }),
-        "{:?}",
-        status.outcome
-    );
-    assert!(matches!(
-        captured.naval_details.breakdown_table(),
-        TableView::Complete(rows::TableRows::NavalModifierBreakdowns(_))
-    ));
-    let mut work = BreakdownWork::default();
-    work.observe(status).unwrap();
-    let json = serde_json::to_value(work.status()).unwrap();
-    assert_eq!(json["available_hours"], 1);
-    assert_eq!(json["refused_hours"], 0);
 }
 
 #[test]
@@ -245,20 +221,12 @@ fn naval_live_header_bounds_scale_from_actual_combat_demand() {
         memory.array(STATE + engine::cgame_state::COMBATS + 8, roster, combats);
         let demand = breakdown::demand(&memory, IMAGE, STATE).unwrap();
         assert_eq!(demand.rows, combats);
-        assert_eq!(demand.requests, one.requests * combats);
         assert_eq!(demand.ships, one.ships * combats);
         assert_eq!(demand.planes, one.planes * combats);
-        // The repeated combat shares native roots; topology is counted once.
-        assert_eq!(
-            (demand.roots, demand.nodes, demand.text),
-            (one.roots, one.nodes, one.text)
-        );
         let mut capacities = Capacities::default();
-        capacities.raise_for_live_breakdowns(demand);
+        capacities.raise_for_live_details(demand);
         assert!(capacities.details >= combats);
-        assert!(capacities.breakdown_requests >= demand.requests);
-        assert!(capacities.breakdown_nodes >= demand.nodes);
-        assert!(capacities.breakdown_text >= demand.text);
+        assert!(capacities.ships >= demand.ships);
     }
 }
 
@@ -268,296 +236,11 @@ fn naval_hint_reserve_failure_keeps_existing_lengths() {
     let mut captured = Captured::with_capacities(&capacities);
     let mut hint = capacities;
     hint.details += 1;
-    hint.breakdown_text = usize::MAX;
+    hint.dense_wings = usize::MAX;
     assert!(captured.try_grow_hint(&hint).is_err());
     assert_eq!(captured.details.rows.len(), capacities.details);
-    assert!(captured.breakdown_text.first.is_empty());
+    assert!(captured.dense_wings.first.is_empty());
     captured.try_grow_hint(&capacities).unwrap();
-}
-
-#[test]
-fn naval_shared_country_roots_walk_once_across_combat_side_and_ship_uses() {
-    struct Counted {
-        memory: Fixture,
-        visits: std::cell::Cell<[u32; COUNTRY_COUNT]>,
-    }
-    impl Memory for Counted {
-        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            for slot in 0..COUNTRY_COUNT {
-                let root =
-                    COUNTRY_BASE + slot * COUNTRY_STRIDE + engine::ccountry::MODIFIER_ACCUMULATOR;
-                if address == root + 0x18 && destination.len() == 16 {
-                    let mut visits = self.visits.get();
-                    visits[slot] += 1;
-                    self.visits.set(visits);
-                }
-            }
-            self.memory.copy(address, destination)
-        }
-    }
-    let memory = Counted {
-        memory: Fixture::new(20),
-        visits: std::cell::Cell::new([0; COUNTRY_COUNT]),
-    };
-    let mut captured = Captured::with_capacities(&Capacities {
-        breakdown_requests: 20 * 128,
-        breakdown_roots: 20 * 80 + 2100,
-        breakdown_nodes: 20 * 80 + 2100,
-        breakdown_text: 32_000,
-        breakdown_depth: 128,
-        ..Capacities::default()
-    });
-    captured.capture(&memory, IMAGE, STATE);
-    assert!(
-        matches!(captured.breakdown_outcome, Outcome::Rows { .. }),
-        "{:?}",
-        captured.breakdown_outcome
-    );
-    assert_eq!(memory.visits.get(), [1; COUNTRY_COUNT]);
-    let rows = captured.project_breakdowns().unwrap();
-    let country = COUNTRY_BASE + engine::ccountry::MODIFIER_ACCUMULATOR;
-    let shared = rows
-        .iter()
-        .find(|row| row.accumulator == country as u64 && row.key == 0x1b2)
-        .unwrap();
-    assert_eq!(shared.uses.len(), 4);
-    assert_eq!(shared.nodes.len(), TREE_CHILDREN + 1);
-}
-
-#[test]
-fn naval_tree_arenas_grow_before_the_first_publication() {
-    let memory = Fixture::new(1);
-    for request_capacity in [0, 8] {
-        let mut capacities = Capacities {
-            breakdown_requests: request_capacity,
-            ..Capacities::default()
-        };
-        let mut captured = Captured::with_capacities(&capacities);
-        captured.capture(&memory, IMAGE, STATE);
-        assert_eq!(captured.details.outcome, Outcome::Rows { len: 1 });
-        assert_eq!(
-            captured.ships.outcome,
-            Outcome::Rows {
-                len: SHIPS_PER_COMBAT
-            }
-        );
-        assert!(matches!(captured.breakdown_outcome, Outcome::Rows { .. }));
-        assert!(matches!(captured.breakdown_table(), TableView::Complete(_)));
-        assert!(captured.breakdown_requests.first.len() > request_capacity);
-        assert!(captured.breakdown_requests.required > 1);
-        let first_demand = captured.breakdown_status().required;
-        let demand = first_demand[0];
-        captured.grow(&mut capacities);
-        assert!(capacities.breakdown_requests >= demand);
-        assert_eq!(
-            captured.breakdown_requests.first.len(),
-            capacities.breakdown_requests
-        );
-        captured.reset();
-        captured.capture(&memory, IMAGE, STATE);
-        assert_eq!(captured.details.outcome, Outcome::Rows { len: 1 });
-        assert!(
-            matches!(captured.breakdown_table(), TableView::Complete(_)),
-            "tree arenas did not grow to the live fixture demand: {:?}",
-            captured.breakdown_outcome
-        );
-        assert_eq!(captured.breakdown_status().required, first_demand);
-    }
-}
-
-#[test]
-fn naval_tree_live_demand_survives_production_loan_restore_and_growth() {
-    let memory = live_shape();
-    let mut capacities = crate::extended::Capacities::default();
-    let mut captured = crate::extended::Captured::with_capacities(&capacities);
-    let countries =
-        std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
-    let mut work = BreakdownWork::default();
-    let mut first_demand = [0; 5];
-    for hour in 0..2 {
-        captured.reset();
-        let mut request = captured.take_ordinary_request(
-            &countries,
-            IMAGE,
-            STATE,
-            hour,
-            Ok(()),
-            crate::extended::NavalMissionLoan::default(),
-        );
-        request.packs.naval_details.capture(&memory, IMAGE, STATE);
-        captured.restore_ordinary_request(request, None);
-        let naval = &captured.naval_details;
-        assert_eq!(naval.details.outcome, Outcome::Rows { len: 3 });
-        assert_eq!(naval.ships.outcome, Outcome::Rows { len: 90 });
-        assert_eq!(naval.dense_bases.outcome, Outcome::Rows { len: 12 });
-        assert_eq!(naval.dense_wings.len, 12);
-        assert!(
-            naval.planes.first[..naval.planes.len]
-                .iter()
-                .all(|plane| plane.efficiency.source == 3
-                    && plane.efficiency.pool_type_flags & 0x400 != 0)
-        );
-        let status = naval.breakdown_status();
-        work.observe(status).unwrap();
-        if hour == 0 {
-            assert!(matches!(status.outcome, Outcome::Rows { .. }));
-            assert_eq!(status.required, [161, 40, 2008, 17_952, 4]);
-            first_demand = status.required;
-            assert!(matches!(naval.breakdown_table(), TableView::Complete(_)));
-            eprintln!("naval live-shape first-hour demand: {:?}", first_demand);
-            // Spool-side growth adopts the first worker's complete storage.
-            captured.grow(&mut capacities);
-            continue;
-        }
-        assert_eq!(status.required, first_demand);
-        for (capacity, first) in status.capacity.into_iter().zip(first_demand) {
-            assert!(
-                capacity >= first,
-                "growth missed census {capacity} < {first}"
-            );
-        }
-        let TableView::Complete(rows::TableRows::NavalModifierBreakdowns(trees)) =
-            naval.breakdown_table()
-        else {
-            panic!("second-hour table must be complete: {:?}", status.outcome);
-        };
-        let used: std::collections::BTreeSet<_> = trees
-            .iter()
-            .filter(|tree| !tree.uses.is_empty())
-            .map(|tree| tree.key)
-            .collect();
-        for key in engine::naval_ship_modifier_breakdown::KEYS {
-            assert!(used.contains(&key), "missing hover key {key:#x}");
-        }
-        assert!(trees.iter().any(|tree| tree.nodes.len() > 200));
-        let json = serde_json::to_value(work.status()).unwrap();
-        assert_eq!(json["hours"], 2);
-        assert_eq!(json["available_hours"], 2);
-        assert_eq!(json["refused_hours"], 0);
-        assert_eq!(json["refusals"], serde_json::json!({}));
-        eprintln!("naval live-shape complete on hour 2: {json}");
-    }
-}
-
-#[test]
-fn naval_tree_later_demand_rise_grows_all_arenas_before_publication() {
-    use engine::naval_ship_modifier_breakdown::KEYS;
-    let mut low = live_shape();
-    // Keep the existing three-combat storage, but expose only the first combat.
-    low.0.u32(STATE + engine::cgame_state::COMBATS + 8 + 12, 1);
-    let mut high = live_shape();
-    let mut parent = COUNTRY_BASE + engine::ccountry::MODIFIER_ACCUMULATOR;
-    for _ in 0..3 {
-        parent = high.0.pointer(high.0.pointer(parent + 0x18)) + 0x10;
-    }
-    // Retain four more levels under a synthetic four-level country tree. The
-    // rise therefore exceeds depth as well as requests, roots, nodes and text.
-    for _ in 0..4 {
-        let children = high.0.allocate(8 + 0xc0 + KEYS.len() * 16);
-        let child = children + 8;
-        high.0.array(parent + 0x18, children, 1);
-        high.0.u64(children, (child - 0x10) as u64);
-        high.0.array(child, child + 0xc0, KEYS.len());
-        high.0.inline(child + 0x48, b"late doctrine");
-        for (index, key) in KEYS.into_iter().enumerate() {
-            high.0.u32(child + 0xc0 + index * 16, key);
-            high.0.u64(child + 0xc0 + index * 16 + 8, 2_000);
-        }
-        parent = child;
-    }
-    let mut capacities = crate::extended::Capacities::default();
-    let mut captured = crate::extended::Captured::with_capacities(&capacities);
-    let countries =
-        std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
-    let capture_hour = |captured: &mut crate::extended::Captured, memory: &LiveShape| {
-        captured.reset();
-        let mut request = captured.take_ordinary_request(
-            &countries,
-            IMAGE,
-            STATE,
-            0,
-            Ok(()),
-            crate::extended::NavalMissionLoan::default(),
-        );
-        request.packs.naval_details.capture(memory, IMAGE, STATE);
-        captured.restore_ordinary_request(request, None);
-    };
-    // Establish the initial population from empty production storage, before
-    // checking the later rise and complete publication of every hour.
-    capture_hour(&mut captured, &low);
-    assert!(matches!(
-        captured.naval_details.breakdown_outcome,
-        Outcome::Rows { .. }
-    ));
-    captured.grow(&mut capacities);
-    let mut work = BreakdownWork::default();
-    let mut rise_demand = [0; 5];
-    let initial_demand = captured.naval_details.breakdown_status().required;
-    let mut retained_capacity = captured.naval_details.breakdown_status().capacity;
-    for (hour, memory) in [&low, &high, &high, &low, &high].into_iter().enumerate() {
-        capture_hour(&mut captured, memory);
-        let naval = &captured.naval_details;
-        let status = naval.breakdown_status();
-        work.observe(status).unwrap();
-        assert_eq!(
-            naval.details.outcome,
-            Outcome::Rows {
-                len: if hour == 0 || hour == 3 { 1 } else { 3 }
-            }
-        );
-        if hour == 1 {
-            assert!(matches!(status.outcome, Outcome::Rows { .. }));
-            for (index, (required, previous)) in
-                status.required.into_iter().zip(initial_demand).enumerate()
-            {
-                assert!(
-                    required > previous,
-                    "arena {index} did not exceed earlier full demand: {required} <= {previous}"
-                );
-            }
-            assert!(matches!(naval.breakdown_table(), TableView::Complete(_)));
-            rise_demand = status.required;
-        } else {
-            assert!(
-                matches!(
-                    naval.breakdown_table(),
-                    TableView::Complete(rows::TableRows::NavalModifierBreakdowns(_))
-                ),
-                "hour N+{hour}: {:?}",
-                status.outcome
-            );
-            if hour == 2 || hour == 4 {
-                assert_eq!(status.required, rise_demand);
-            }
-            if hour >= 3 {
-                assert_eq!(status.capacity, retained_capacity);
-            }
-            if hour == 3 {
-                for (fallen, risen) in status.required.into_iter().zip(rise_demand) {
-                    assert!(fallen < risen, "demand did not fall: {fallen} >= {risen}");
-                }
-            }
-        }
-        // Same spool-side grow-before-recycle ordering as runtime. A previous
-        // complete hour must neither latch growth nor clear this hour's demand.
-        captured.grow(&mut capacities);
-        if hour == 2 {
-            retained_capacity = captured.naval_details.breakdown_status().capacity;
-        } else if hour >= 3 {
-            assert_eq!(
-                captured.naval_details.breakdown_status().capacity,
-                retained_capacity
-            );
-        }
-    }
-    let status = serde_json::to_value(work.status()).unwrap();
-    assert_eq!(status["hours"], 5);
-    assert_eq!(status["available_hours"], 5);
-    assert_eq!(status["refused_hours"], 0);
-    assert_eq!(status["refusals"], serde_json::json!({}));
-    eprintln!(
-        "later naval tree rise demand {rise_demand:?}; retained capacity {retained_capacity:?}"
-    );
 }
 
 #[test]
@@ -634,23 +317,22 @@ fn naval_window_operand_scale_bench() {
                     side_units: combats * 2,
                     weapon_sources: combats * SHIPS_PER_COMBAT * 12,
                     weapon_terms: 16_384,
-                    breakdown_requests: combats * 128,
-                    breakdown_roots: combats * 80 + 2100,
-                    breakdown_nodes: combats * 80 + 2100,
-                    breakdown_text: 32_000,
-                    breakdown_depth: 128,
                     ..Capacities::default()
                 })
             };
             let mut block = Vec::with_capacity(256);
             let mut projection = Vec::with_capacity(256);
+            let mut ships = Vec::with_capacity(256);
             let mut allocated = None;
             for pass in 0..320 {
                 memory.advance(combats, hour, pass);
                 let began = Instant::now();
                 captured.reset();
-                black_box(captured.capture(&memory, IMAGE, STATE));
+                let ticks = black_box(captured.capture(&memory, IMAGE, STATE));
                 let elapsed = began.elapsed();
+                // NavalCombatShips' share of the capture's charged ticks.
+                let charged = ticks.iter().sum::<u64>().max(1);
+                let ship_share = elapsed.mul_f64(ticks[1] as f64 / charged as f64);
                 assert_eq!(captured.details.outcome, Outcome::Rows { len: combats });
                 assert_eq!(
                     captured.ships.outcome,
@@ -659,20 +341,11 @@ fn naval_window_operand_scale_bench() {
                     }
                 );
                 assert_eq!(captured.planes.len, combats * 4);
-                assert!(
-                    matches!(captured.breakdown_outcome, Outcome::Rows { len }
-                    if if combats == 0 { len == 0 } else { len > COUNTRY_COUNT }),
-                    "tree capture refused the fixture: {:?}",
-                    captured.outcomes()
-                );
                 if pass == 64 {
                     allocated = Some(captured.allocated_bytes());
                 }
                 if pass >= 64 {
                     assert_eq!(Some(captured.allocated_bytes()), allocated);
-                }
-                if pass == 0 {
-                    assert!(matches!(captured.breakdown_table(), TableView::Complete(_)));
                 }
                 let began_projection = Instant::now();
                 black_box(captured.tables());
@@ -680,6 +353,7 @@ fn naval_window_operand_scale_bench() {
                 if pass >= 64 {
                     block.push(elapsed);
                     projection.push(projected);
+                    ships.push(ship_share);
                 }
             }
             if combats == 0 {
@@ -687,17 +361,204 @@ fn naval_window_operand_scale_bench() {
             }
             let (b50, b95, bmax) = percentiles(block);
             let (p50, p95, pmax) = percentiles(projection);
+            let (s50, _, _) = percentiles(ships);
             let ms = |d: Duration| d.as_secs_f64() * 1000.0;
             eprintln!(
-                "NAVAL_BENCH combats={combats} hour={} block={:.6}/{:.6}/{:.6} projection={:.6}/{:.6}/{:.6} arena_mib={:.3}",
+                "NAVAL_BENCH combats={combats} hour={} block={:.6}/{:.6}/{:.6} ships_median={:.6} projection={:.6}/{:.6}/{:.6} arena_mib={:.3}",
                 hour.name(),
                 ms(b50),
                 ms(b95),
                 ms(bmax),
+                ms(s50),
                 ms(p50),
                 ms(p95),
                 ms(pmax),
                 captured.allocated_bytes() as f64 / 1048576.0
+            );
+        }
+    }
+}
+
+/// Doctrine nodes per task force in the bench's doctrine configurations,
+/// about a late-war navy's.
+const DOCTRINE_NODES: usize = 30;
+
+/// A task force's doctrine sources, walked for its first ship of the
+/// capture, are re-emitted for its later ships in the same rows and order:
+/// the capture with the memo equals the capture without it.
+#[test]
+fn doctrine_sources_reemitted_equal_the_walks() {
+    let capture = |sources: bool| {
+        super::SOURCE_MEMO_OFF.set(!sources);
+        let memory = Fixture::live_sized(2)
+            .with_doctrines(DOCTRINE_NODES)
+            .with_locations();
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        captured.capture(&memory, IMAGE, STATE);
+        super::SOURCE_MEMO_OFF.set(false);
+        assert_eq!(
+            captured.ships.outcome,
+            Outcome::Rows {
+                len: 2 * SHIPS_PER_COMBAT
+            }
+        );
+        (
+            captured.weapon_sources.first[..captured.weapon_sources.len].to_vec(),
+            captured.weapon_terms.first[..captured.weapon_terms.len].to_vec(),
+            captured.ships.rows[..2 * SHIPS_PER_COMBAT]
+                .iter()
+                .map(|row| row.weapon_context.clone())
+                .collect::<Vec<_>>(),
+        )
+    };
+    let walked = capture(false);
+    assert!(
+        walked.0.iter().filter(|source| source.scope == 4).count()
+            >= 2 * SHIPS_PER_COMBAT * DOCTRINE_NODES
+    );
+    for scope in [5, 6, 7, 8, 20] {
+        assert_eq!(
+            walked
+                .0
+                .iter()
+                .filter(|source| source.scope == scope)
+                .count(),
+            2 * SHIPS_PER_COMBAT,
+            "scope {scope}"
+        );
+    }
+    assert_eq!(capture(true), walked);
+}
+
+/// A task force's location terms are read by its first ship of the
+/// capture and served to its later ships: the location's controller word is
+/// read alone once per task force rather than once per ship, and the fuel
+/// defines once per capture.
+#[test]
+fn location_terms_are_read_once_per_task_force() {
+    let fixture = Fixture::live_sized(2).with_locations();
+    let memory = Singles {
+        source: &fixture,
+        singles: Default::default(),
+    };
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    captured.capture(&memory, IMAGE, STATE);
+    assert_eq!(
+        captured.ships.outcome,
+        Outcome::Rows {
+            len: 2 * SHIPS_PER_COMBAT
+        }
+    );
+    let controller = (BODIES + 0xb00 + 0x188, 4);
+    let reads = memory
+        .singles
+        .borrow()
+        .iter()
+        .filter(|&&read| read == controller)
+        .count();
+    assert!(
+        reads < SHIPS_PER_COMBAT,
+        "{reads} reads of the location's controller for {} ships",
+        2 * SHIPS_PER_COMBAT
+    );
+    // The fuel defines, module globals: once per capture, not per ship.
+    let defines = memory
+        .singles
+        .borrow()
+        .iter()
+        .filter(|&&read| read == (IMAGE + 0x0331_bea0, 8))
+        .count();
+    assert!(
+        defines < SHIPS_PER_COMBAT,
+        "{defines} reads of the fuel defines"
+    );
+}
+
+/// NavalCombatShips with live-sized weapon-context accumulators
+/// ([`LIVE_ENTRIES`]) in a typical hour, with and without the capture's
+/// metadata memo: the median block and the ships' share in ms, and the
+/// weapon terms captured. Run with
+/// `cargo test --release -p collector naval_live_accumulator_bench -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn naval_live_accumulator_bench() {
+    // (live-sized accumulators, metadata memo, live ships)
+    for combats in [20, 40] {
+        // (live-sized accumulators, metadata memo, live ships, doctrine nodes
+        // per task force, source memo)
+        for (live, memo, ships_live, doctrines, sources) in [
+            (true, false, true, 0, true),
+            (true, true, true, 0, true),
+            (false, true, true, 0, true),
+            (false, true, false, 0, true),
+            (true, true, true, DOCTRINE_NODES, false),
+            (true, true, true, DOCTRINE_NODES, true),
+        ] {
+            let located = doctrines != 0;
+            super::TERM_MEMO_OFF.set(!memo);
+            super::SOURCE_MEMO_OFF.set(!sources);
+            let mut memory = if live {
+                Fixture::live_sized(combats)
+            } else {
+                Fixture::new(combats)
+            };
+            if !ships_live {
+                memory = memory.without_live_ships(combats);
+            }
+            if doctrines != 0 {
+                memory = memory.with_doctrines(doctrines);
+            }
+            if located {
+                memory = memory.with_locations();
+            }
+            let mut captured = Captured::with_capacities(&Capacities {
+                details: combats,
+                ships: combats * SHIPS_PER_COMBAT,
+                planes: combats * 4,
+                side_units: combats * 2,
+                weapon_sources: combats * SHIPS_PER_COMBAT * 12,
+                weapon_terms: combats * SHIPS_PER_COMBAT * 256,
+                ..Capacities::default()
+            });
+            let mut block = Vec::with_capacity(256);
+            let mut ships = Vec::with_capacity(256);
+            for pass in 0..320 {
+                memory.advance(combats, Hour::Typical, pass);
+                let began = Instant::now();
+                captured.reset();
+                let ticks = black_box(captured.capture(&memory, IMAGE, STATE));
+                let elapsed = began.elapsed();
+                assert_eq!(
+                    captured.ships.outcome,
+                    Outcome::Rows {
+                        len: combats * SHIPS_PER_COMBAT
+                    }
+                );
+                let charged = ticks.iter().sum::<u64>().max(1);
+                if pass >= 64 {
+                    block.push(elapsed);
+                    ships.push(elapsed.mul_f64(ticks[1] as f64 / charged as f64));
+                }
+            }
+            super::TERM_MEMO_OFF.set(false);
+            super::SOURCE_MEMO_OFF.set(false);
+            // Sources and the terms they own (a shared span counts once), by scope.
+            let mut scopes = std::collections::BTreeMap::<u8, (usize, usize)>::new();
+            let mut owned = std::collections::BTreeSet::new();
+            for source in &captured.weapon_sources.first[..captured.weapon_sources.len] {
+                let entry = scopes.entry(source.scope).or_default();
+                entry.0 += 1;
+                if source.terms[1] != 0 && owned.insert(source.terms[0]) {
+                    entry.1 += source.terms[1];
+                }
+            }
+            eprintln!("NAVAL_LIVE combats={combats} sources and owned terms by scope: {scopes:?}");
+            let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+            eprintln!(
+                "NAVAL_LIVE combats={combats} live_sized={live} memo={memo} live_ships={ships_live} doctrine_nodes={doctrines} source_memo={sources} block={:.3} ships={:.3} terms={}",
+                ms(percentiles(block).0),
+                ms(percentiles(ships).0),
+                captured.weapon_terms.len
             );
         }
     }

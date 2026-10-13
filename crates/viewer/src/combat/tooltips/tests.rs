@@ -309,7 +309,7 @@ fn recorded_tactics_find_their_registry_effects() {
         Ok(50_000)
     );
     assert_eq!(registry.effects(1, b"PHASES"), Ok(Effects::default()));
-    // the game reads any text: an unbound reference is its own text
+    // The game reads any text: an unbound reference is its own text
     // (0), and 'e' is a digit to it.
     assert_eq!(registry.effects(3, b"tactic_b"), Ok(Effects::default()));
     assert_eq!(
@@ -500,29 +500,114 @@ fn refused_hovers_name_their_reason() {
             .starts_with("the recorded tactic kind 3")
     );
     let loc = entries(&[]);
-    assert!(skill_tooltip(&NoIcons, &loc, 3, 0, None, true, Ok(())).is_err());
+    let inputs = LandCombatSideInputs::default();
+    let definitions = super::super::modifier_text::Definitions::from_parts(&[], &[], None);
+    // A missing top-level key shows its own bytes. Without the
+    // keys' recorded definitions the offence and defence lines alone refuse,
+    // by name, and the skill line stands.
+    let (text, lines) =
+        skill_tooltip(&NoIcons, &loc, 3, Ok(&inputs), false, Ok(&definitions)).unwrap();
+    assert!(text.contains("LEADER_SKILL_DESC"));
     assert!(
-        skill_tooltip(&NoIcons, &loc, 3, 0, Some(Some(0)), true, Ok(()))
+        lines
             .unwrap()
-            .contains("LEADER_SKILL_WITH_PROGRESS")
+            .ends_with("modifier definition 95 has no recorded definition row")
     );
-    // A missing top-level key shows its own bytes.
-    assert!(
-        skill_tooltip(&NoIcons, &loc, 3, 0, Some(None), false, Ok(()))
-            .unwrap()
-            .contains("LEADER_SKILL_DESC")
+    let refusal = super::super::modifier_text::Refusal::Tables("no definitions".into());
+    assert_eq!(
+        skill_tooltip(&NoIcons, &loc, 3, Ok(&inputs), true, Err(&refusal)),
+        Ok((
+            "LEADER_SKILL_AT_CAP\n".into(),
+            Some("the skill hover's offence and defence lines: no definitions".into())
+        ))
+    );
+}
+
+/// The skill hover: the viewing country's commander gets the
+/// recorded progress, or the at-cap arm when the next level is missing or
+/// invalid; every commander's hover then lists the leader block's keys 0x5F
+/// and 0x60, skipping a zero one, after a newline. A missing operand refuses
+/// only the part it feeds.
+#[test]
+fn skill_hover_prints_the_recorded_progress_and_offence_and_defence() {
+    let loc = loc(&[
+        ("LEADER_SKILL_DESC", "Skill $S$"),
+        ("LEADER_SKILL_AT_CAP", "Capped $SKILL$"),
+        ("LEADER_SKILL_WITH_PROGRESS", "Skill $SKILL$ $PROGRESS|%0$"),
+        ("SYN_ATTACK", "Attack"),
+        ("SYN_DEFENCE", "Defence"),
+    ]);
+    let rows = [0x5f, 0x60].map(|index| replay::rows::ModifierDefinitionRow {
+        index,
+        name_key: if index == 0x5f {
+            b"SYN_ATTACK".to_vec()
+        } else {
+            b"SYN_DEFENCE".to_vec()
+        },
+        flags: 0b11,
+        category_mask: 1,
+        precision: 0,
+        ..Default::default()
+    });
+    let definitions = super::super::modifier_text::Definitions::from_parts(&rows, &[], None);
+    let mut inputs = LandCombatSideInputs {
+        // 432.098625%, at the printed precision.
+        skill_progress: 432_000,
+        skill_modifiers: Some([15_000, 0]),
+        ..Default::default()
+    };
+    let skill = |inputs: Result<&LandCombatSideInputs, &str>, ours, level| {
+        skill_tooltip(&NoIcons, &loc, level, inputs, ours, Ok(&definitions))
+    };
+    assert_eq!(
+        skill(Ok(&inputs), true, 3),
+        Ok(("Skill 3 432%\nAttack: \u{11}G+15%\u{11}!".into(), None))
     );
     assert_eq!(
-        skill_tooltip(
-            &NoIcons,
-            &loc,
-            3,
-            0,
-            Some(None),
-            true,
-            Err("x is registered")
-        ),
-        Err("the content's leader skill levels are unknown: x is registered".into())
+        skill(Ok(&inputs), false, 3),
+        Ok(("Skill 3\nAttack: \u{11}G+15%\u{11}!".into(), None))
+    );
+    inputs.skill_progress = LandCombatSideInputs::NO_PROGRESS;
+    inputs.skill_modifiers = Some([15_000, -5_000]);
+    assert_eq!(
+        skill(Ok(&inputs), true, 9),
+        Ok((
+            "Capped 9\nAttack: \u{11}G+15%\u{11}!\nDefence: \u{11}R-5%\u{11}!".into(),
+            None
+        ))
+    );
+    // Nothing to describe leaves the skill line and its newline.
+    inputs.skill_modifiers = Some([0, 0]);
+    assert_eq!(skill(Ok(&inputs), false, 9), Ok(("Skill 9\n".into(), None)));
+    // An unread leader block refuses only the lines; an unread next level
+    // refuses the viewing country's skill line, which needs it, and no other.
+    inputs.skill_modifiers = None;
+    assert_eq!(
+        skill(Ok(&inputs), false, 9),
+        Ok(("Skill 9\n".into(), Some(SKILL_LINES_UNREAD.into())))
+    );
+    inputs.skill_progress = LandCombatSideInputs::UNREAD_PROGRESS;
+    assert_eq!(
+        skill(Ok(&inputs), true, 9),
+        Err(SKILL_PROGRESS_UNREAD.into())
+    );
+    assert_eq!(
+        skill(Ok(&inputs), false, 9),
+        Ok(("Skill 9\n".into(), Some(SKILL_LINES_UNREAD.into())))
+    );
+    // A recording without the side inputs: another country's commander keeps
+    // its skill line; the viewing country's needs the progress.
+    let missing = "LandCombatDetails.side_inputs not recorded";
+    assert_eq!(
+        skill(Err(missing), false, 4),
+        Ok((
+            "Skill 4\n".into(),
+            Some(format!("{SKILL_LINES_UNRECORDED}: {missing}"))
+        ))
+    );
+    assert_eq!(
+        skill(Err(missing), true, 4),
+        Err(format!("{SKILL_PROGRESS_UNRECORDED}: {missing}"))
     );
 }
 
@@ -759,13 +844,18 @@ fn organisation_effects_follow_active_tactics_and_validate_damage_sums() {
     assert!(organisation_effects(&content, &detail, Some(&sides)).is_err());
 }
 
+/// The CAS hover rebuilt from the recorded operands: our planes,
+/// the opponent's air damage, committed condition and kills, and from its
+/// CAS inputs the prevented lanes and the anti-air effectiveness calculation
+/// derives from its stored cache.
 #[test]
-fn cas_reports_the_opponents_air_defence_against_our_planes() {
+fn cas_reports_the_opponents_air_defence_and_prevented_damage_against_our_planes() {
     let loc = loc(&[
         ("ATTACKING", "attacking"),
+        ("DEFENDING", "defending"),
         (
             "LAND_COMBAT_CAS_INFO_TOOLTIP",
-            "$NUM$ $SIDE$ $STR|1$/$STR_MAX|1$ $ORG|1$/$ORG_MAX|1$ $KILL$ $STR_PREVENT|1$ $ORG_PREVENT|1$ $AA_EFFECTIVENESS|%0$",
+            "$NUM$ $SIDE$ $STR|1$/$STR_MAX|1$ $ORG|1$/$ORG_MAX|1$ $KILL$ $STR_PREVENT|0$ $ORG_PREVENT|0$ $AA_EFFECTIVENESS|%1$",
         ),
         ("LAND_COMBAT_CAS_INFO_TOOLTIP_DETAIL", "max $MAX_PLANES$"),
     ]);
@@ -775,7 +865,7 @@ fn cas_reports_the_opponents_air_defence_against_our_planes() {
     };
     let opponent = LandCombatSideDetails {
         committed: vec![7],
-        damage: [120_000, 350_000, 0, 0, 10_000, 20_000],
+        damage: [120_000, 350_000],
         air_kills: 3,
         ..Default::default()
     };
@@ -789,39 +879,76 @@ fn cas_reports_the_opponents_air_defence_against_our_planes() {
     )]);
     let defines = super::super::defines::LandDefines {
         air_superiority: [62_500_000, 75_000],
-        anti_air: [75_000, 70_000],
+        anti_air: [75_000, 30_000],
         planes_per_width: 300_000,
         ..Default::default()
-    };
-    let cas = || Cas {
-        own: &own,
-        opponent: &opponent,
-        attacking: true,
     };
     let gap = |unit: u64| {
         format!(
             "division {unit}'s condition is unknown: the DivisionStatus table has no row for it"
         )
     };
-    // No anti-air: zero effectiveness; the width of 40 fits 120 planes.
+    // The prevented lanes in whole units, as the `|R0` display step stores
+    // them.
+    let cas = |anti_air: i64, attacking: bool| Cas {
+        own: &own,
+        opponent: &opponent,
+        opponent_cas: (anti_air, [100_000, 200_000]),
+        attacking,
+    };
+    // No anti-air: zero effectiveness (the game's zero arm); the width of 40
+    // fits 120 planes.
     assert_eq!(
         cas_tooltip(
             &NoIcons,
             &loc,
-            cas(),
+            cas(0, true),
             &conditions,
             &gap,
             Ok(4_000_000),
             &defines
         ),
         Ok((
-            "150 attacking 1.2/9.0 3.5/60.0 3 0.1 0.2 0%".into(),
+            "150 attacking 1.2/9.0 3.5/60.0 3 1 2 0.0%".into(),
             Ok("max 120".into())
         ))
     );
+    // An anti-air cache of 100: the game's defence (about 0.46) times the
+    // 0.75 reduction factor passes the 30% maximum, which caps it.
+    assert_eq!(
+        cas_tooltip(
+            &NoIcons,
+            &loc,
+            cas(10_000_000, false),
+            &conditions,
+            &gap,
+            Err("unknown width".into()),
+            &defines
+        ),
+        Ok((
+            "150 defending 1.2/9.0 3.5/60.0 3 1 2 30.0%".into(),
+            Err("unknown width".into())
+        ))
+    );
+    // Below the cap the product stands: 0.46 x 0.75 truncated.
+    let uncapped = super::super::defines::LandDefines {
+        anti_air: [75_000, 100_000],
+        ..defines.clone()
+    };
+    let effectiveness = anti_air_effectiveness(10_000_000, &uncapped).unwrap();
+    assert!((34_000..35_000).contains(&effectiveness), "{effectiveness}");
+    assert_eq!(anti_air_effectiveness(0, &uncapped), Ok(0));
     // The refusal names the opposing division and the table that lacks it.
     assert_eq!(
-        cas_tooltip(&NoIcons, &loc, cas(), &Conditions::new(), &gap, Ok(0), &defines),
+        cas_tooltip(
+            &NoIcons,
+            &loc,
+            cas(0, true),
+            &Conditions::new(),
+            &gap,
+            Ok(0),
+            &defines
+        ),
         Err("opposing committed division 7's condition is unknown: the DivisionStatus table has no row for it".into())
     );
     // A missing executable key shows its own bytes.
@@ -829,7 +956,15 @@ fn cas_reports_the_opponents_air_defence_against_our_planes() {
         .into_iter()
         .collect();
     assert_eq!(
-        cas_tooltip(&NoIcons, &bare, cas(), &conditions, &gap, Ok(0), &defines),
+        cas_tooltip(
+            &NoIcons,
+            &bare,
+            cas(0, true),
+            &conditions,
+            &gap,
+            Ok(0),
+            &defines
+        ),
         Ok((
             "LAND_COMBAT_CAS_INFO_TOOLTIP".into(),
             Ok("LAND_COMBAT_CAS_INFO_TOOLTIP_DETAIL".into())

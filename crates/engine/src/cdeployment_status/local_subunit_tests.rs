@@ -202,3 +202,88 @@ fn growing_local_subunits_capture_5000_countries_with_mod_sized_requirements() {
     assert_eq!(later.outcome, Outcome::Rows { len: COUNT });
     assert_eq!(later.requirements_len, COUNT * 512);
 }
+
+/// A held row the walk publishes in place of a country's clones.
+fn held_row() -> (LocalSubunitRow, LocalRequirement) {
+    (
+        LocalSubunitRow {
+            country: 1,
+            token: 9,
+            requirements: crate::creferenced_division_template::Span { start: 0, len: 1 },
+        },
+        LocalRequirement {
+            archetype_token: 72,
+            amount_raw: 7,
+        },
+    )
+}
+
+/// A carried country publishes its held rows without reading its deployment
+/// status; a confirmed one publishes them only while its status and clone
+/// header are the expected ones, and is read otherwise.
+#[test]
+fn selected_walks_carry_confirm_or_read_each_country() {
+    let mut memory = fixture();
+    let (row, requirement) = held_row();
+    let held = HeldLocalSubunits {
+        rows: &[row],
+        requirements: &[requirement],
+    };
+    let walk = |memory: &Fixture, selection: LocalSelection<'_>| {
+        let (mut rows, mut requirements, mut visits) = (Vec::new(), Vec::new(), Vec::new());
+        let walk = walk_local_subunits_selected_growing(
+            memory,
+            0,
+            0x1000,
+            &mut rows,
+            &mut requirements,
+            |_| selection,
+            |visit| visits.push(visit),
+        );
+        assert_eq!(
+            walk.outcome,
+            Outcome::Rows {
+                len: rows.len().min(1)
+            }
+        );
+        (rows, requirements, visits)
+    };
+    let (rows, _, visits) = walk(&memory, LocalSelection::Read);
+    assert_eq!(rows[0].token, 5);
+    let current = visits[0].deployment.unwrap();
+    assert_eq!(
+        current,
+        Deployment {
+            status: 0x3800,
+            clones: Array {
+                data: 0x3a00,
+                count: 2
+            }
+        }
+    );
+    assert!(visits[0].read);
+    let (rows, requirements, visits) = walk(
+        &memory,
+        LocalSelection::Confirm {
+            deployment: current,
+            held,
+        },
+    );
+    assert_eq!((rows[0].token, requirements[0].amount_raw), (9, 7));
+    assert!(!visits[0].read && visits[0].rows == (0..1));
+    // An appended clone moves the header: the country is read again.
+    memory.array(0x3800 + LOCAL_SUBUNITS, 0x3a00, 1);
+    let (rows, _, visits) = walk(
+        &memory,
+        LocalSelection::Confirm {
+            deployment: current,
+            held,
+        },
+    );
+    assert!(rows.is_empty() && visits[0].read);
+    // Carried, even an unreadable status is not read.
+    memory.word(0x3000 + ccountry::DEPLOYMENT_MANAGER, 0);
+    let (rows, _, visits) = walk(&memory, LocalSelection::Carry(held));
+    assert_eq!(rows[0].token, 9);
+    assert!(visits[0].deployment.is_none() && !visits[0].read);
+}

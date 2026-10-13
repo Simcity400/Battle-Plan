@@ -183,7 +183,8 @@ fn pack_of(row: &CountryFuelRow, hour: i32) -> Result<&FuelDemandRead, String> {
     let replay::rows::Recorded::Value(pack) = &row.demand else {
         return Err("Individual current fuel consumption was not recorded".into());
     };
-    if pack.hour != hour
+    // A pack read with its row was read at the row's read hour, `hour`.
+    if pack.hour.at(hour) != hour
         || pack.country_instance.is_none()
         || !matches!(row.country_instance, replay::rows::Recorded::Value(instance) if instance == pack.country_instance)
     {

@@ -19,9 +19,9 @@ pub struct TaskForceMapMotionRow {
     pub withdrawal: Recorded<Option<u8>>,
     /// Movement-target pointer presence, encoded 0/1; None is a local read refusal.
     pub naval_transfer: Recorded<Option<u8>>,
-    /// Ordered CUnit combat-vector roots: first full reference, then first
-    /// reached native virtual-type-2 reference. Zero proves absence; None is
-    /// a local read/authentication refusal. Per-unit order is not saved.
+    /// Ordered unit combat-vector roots: first full reference, then first reached native
+    /// virtual-type-2 reference. Zero proves absence; None is a local read/authentication
+    /// refusal. Per-unit order is not saved.
     pub combat_links: Recorded<Option<[u64; 2]>>,
     /// Counter ETA and range operands acquired at this frame's hour. None is
     /// outside the ordinary-route/target-null native demand or a missing clock;
@@ -30,14 +30,14 @@ pub struct TaskForceMapMotionRow {
 }
 opaque_value!(Option<[u64; 2]>);
 /// Current simulation context for a freshly searched task-force counter route.
-/// Require `sample_hour == frame.hour`; never carry these through another hour.
+/// Require `sample_hour.fresh_at(frame.hour)`; never carry these through another hour.
 /// All speeds/ranges are native signed fixed5. `speed_modifier` is the
 /// unclamped common actual-location plus fuel-deficit value, before departure
 /// terrain. `modified_range` precedes playback's content distance scale
 /// and guarded half. Raw simulation bytes are not booleans.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FreshTaskForceCounterEta {
-    pub sample_hour: i32,
+    pub sample_hour: PacketHour,
     pub base_speed: Option<i64>,
     pub speed_modifier: Option<i64>,
     pub terrain_class: Option<i32>,
@@ -46,7 +46,7 @@ pub struct FreshTaskForceCounterEta {
     pub strategic_redeployment: Option<u8>,
 }
 value_struct!(FreshTaskForceCounterEta {
-    sample_hour: i32, base_speed: Option<i64>, speed_modifier: Option<i64>,
+    sample_hour: PacketHour, base_speed: Option<i64>, speed_modifier: Option<i64>,
     terrain_class: Option<i32>, modified_range: Option<i64>, exiled: Option<u8>,
     strategic_redeployment: Option<u8>,
 });
@@ -220,11 +220,11 @@ pub struct NavalProvinceCombatRow {
     pub kinds: Vec<u8>,
 }
 impl NavalProvinceCombatRow {
-    /// A `CLandCombat` entry.
+    /// A `land combat` entry.
     pub const LAND: u8 = 0;
-    /// A `CLandBorderWarCombat` entry.
+    /// A `border war combat` entry.
     pub const BORDER_WAR: u8 = 1;
-    /// A `CNavalCombat` entry.
+    /// A `naval combat` entry.
     pub const NAVAL: u8 = 2;
 }
 typed_codec!(NavalProvinceCombatRow, 32, |row| row.province as u128, |key| Self { province: key as u32, ..Default::default() },
@@ -281,11 +281,18 @@ pub struct WeatherRegionRow {
     pub blizzard: u8,
     pub sandstorm: u8,
     pub arctic_water: u8,
-    /// Fresh target-region effective attack and breakthrough values.
-    pub attack: Recorded<WeatherRegionAttackInputs>,
+    /// The effective region attack and breakthrough values recordings
+    /// through format 101 captured ([`WeatherRegionAttackInputs`]); current
+    /// writers leave it empty ([`Witnessed`]) and record [`Self::combat`].
+    pub attack: Recorded<Witnessed<WeatherRegionAttackInputs>>,
+    /// The region weather modifier's raw `army_attack_factor` and
+    /// `breakthrough_factor` entries ([`RegionCombatWeather`]), which the
+    /// selected army's attack list scales by acclimatization. None is a read
+    /// refusal; older formats use NotRecorded.
+    pub combat: Recorded<Option<RegionCombatWeather>>,
 }
 typed_codec!(WeatherRegionRow, 32, |row| row.id as u128, |key| Self { id: key as u32, ..Default::default() },
- { 0 => (max_snow): I64, 1 => (light_rain): U8, 2 => (heavy_rain): U8, 3 => (snow): U8, 4 => (blizzard): U8, 5 => (sandstorm): U8, 6 => (arctic_water): U8, 7 => (attack): Opaque }, |_row| Ok(()));
+ { 0 => (max_snow): I64, 1 => (light_rain): U8, 2 => (heavy_rain): U8, 3 => (snow): U8, 4 => (blizzard): U8, 5 => (sandstorm): U8, 6 => (arctic_water): U8, 7 => (attack): Opaque, 8 => (combat): Opaque }, |_row| Ok(()));
 
 /// Live display boundary, carried only by WeatherProvinces slot zero.
 /// These cells are excluded from dirty updates and rebuilt separately.
@@ -307,17 +314,13 @@ value_struct!(WeatherDisplay { width: u32, height: u32, refresh_interval: i64,
     refresh_identity: u64, edges: Vec<u8> });
 opaque_value!(Option<WeatherDisplay>);
 
-/// WeatherProvinces: stored snow (winter grading, movement snow, combat
-/// terrain), permanent snow (set at load and added to movement snow), and
-/// the manager's two per-province display bytes averaged by the snow/mud
-/// map texture. The political province tooltip reads full fixed5 temperature
-/// and the raw mud byte. Display mud cannot substitute: raw and custom mud
-/// are ORed before writing it. The tooltip also reads held local hour and
-/// night from the manager's dense day-night array (i32 and fixed5 i64).
-/// Weather suspension skips their writer, so these hourly stored values
-/// remain authoritative after a seek or suspended reset. A newly allocated
-/// row starts with local_hour zero; neither field is written to text saves.
-/// A weather reset preserves existing day-night rows.
+/// WeatherProvinces: the snow word province weather+0x40 holds (winter grading, movement
+/// snow, combat terrain), its permanent snow +0x30 (set at load; movement snow adds it)
+/// and the two display bytes the weather manager keeps for the province at +0x310/+0x328,
+/// which the snow/mud map texture averages. The political province tooltip reads the full
+/// fixed5 temperature +0x118 ([`ProvinceTemperature`]) and raw mud byte +0x130. Display
+/// mud cannot substitute: the weather display ORs raw and custom mud before writing that
+/// byte. The province's day/night record is [`DayNightClock`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct WeatherProvinceRow {
     pub id: u32,
@@ -326,15 +329,234 @@ pub struct WeatherProvinceRow {
     pub display_snow: u8,
     pub display_mud: u8,
     pub raw_mud: Recorded<u8>,
-    pub temperature: Recorded<i64>,
-    pub local_hour: Recorded<i32>,
-    pub night_factor: Recorded<i64>,
+    pub temperature: ProvinceTemperature,
+    pub clock: DayNightClock,
     /// Slot zero: Some(live boundary), None on an independent guarded refusal.
     /// Other native slots: known None. Historical NotRecorded is distinct.
     pub display: Recorded<Option<WeatherDisplay>>,
+    /// Slot zero: the hourly temperature pass's inputs since the rows'
+    /// anchor, None when the collector could not read the hour whole. Other
+    /// native slots: known None. Recordings before format 102 hold none.
+    pub temperature_pass: Recorded<Option<TemperaturePass>>,
 }
 typed_codec!(WeatherProvinceRow, 32, |row| row.id as u128, |key| Self { id: key as u32, ..Default::default() },
- { 0 => (snow): I64, 1 => (permanent_snow): I64, 2 => (display_snow): U8, 3 => (display_mud): U8, 4 => (temperature): I64, 5 => (raw_mud): U8, 6 => (local_hour): I32, 7 => (night_factor): I64, 8 => (display): Opaque }, |_row| Ok(()));
+{ 0 => (snow): I64, 1 => (permanent_snow): I64, 2 => (display_snow): U8, 3 => (display_mud): U8, 4 => (temperature.temperature): I64, 5 => (raw_mud): U8, 6 => (clock.local_hour): I32, 7 => (clock.night_factor): I64, 8 => (display): Opaque, 9 => (clock.source): U8, 10 => (temperature.drift): I64, 11 => (temperature.staged): I64, 12 => (temperature.working): I64, 13 => (temperature_pass): Opaque },
+|row| {
+   row.clock.canonical().map_err(invalid)?;
+   row.temperature.record().map(|_| ()).map_err(invalid)
+});
+
+/// A province record's temperature words, `province weather` +0x118 (committed
+/// temperature), +0x128 (committed drift), +0x160 (staged temperature) and +0x170
+/// (working drift).
+///
+/// From format 102 a row holds the record's words at its frame's anchor
+/// ([`TemperaturePass::anchor`]): +0x118 and +0x128 in fields 4 and 10, and
+/// the staged words as their wrapping differences from those two in fields
+/// 11 and 12, zero after every commit. The hour's temperature is the hourly
+/// pass's ([`crate::temperature`]) from the anchor through the recorded
+/// hours. Formats 93 to 101 recorded +0x118 at the row's hour in field 4
+/// alone; earlier formats none. Format-102 captures written before the
+/// anchored words share the version but not the layout, so their blocks read
+/// as malformed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ProvinceTemperature {
+    temperature: Recorded<i64>,
+    drift: Recorded<i64>,
+    staged: Recorded<i64>,
+    working: Recorded<i64>,
+}
+
+/// What a [`ProvinceTemperature`] establishes about its record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemperatureRecord {
+    /// The record's words at the frame's anchor.
+    Anchored(crate::temperature::State),
+    /// The temperature the record held at the row's hour (formats 93 to 101).
+    AtHour(i64),
+    NotRecorded,
+}
+
+impl ProvinceTemperature {
+    /// A record's words at its frame's anchor.
+    pub const fn anchored(state: crate::temperature::State) -> Self {
+        Self {
+            temperature: Recorded::Value(state.temperature),
+            drift: Recorded::Value(state.drift),
+            staged: Recorded::Value(state.staged.wrapping_sub(state.temperature)),
+            working: Recorded::Value(state.working.wrapping_sub(state.drift)),
+        }
+    }
+
+    /// A temperature recorded at the row's hour (formats 93 to 101).
+    pub const fn historical(temperature: i64) -> Self {
+        Self {
+            temperature: Recorded::Value(temperature),
+            drift: Recorded::NotRecorded,
+            staged: Recorded::NotRecorded,
+            working: Recorded::NotRecorded,
+        }
+    }
+
+    /// Recordings before format 93.
+    pub const NOT_RECORDED: Self = Self {
+        temperature: Recorded::NotRecorded,
+        drift: Recorded::NotRecorded,
+        staged: Recorded::NotRecorded,
+        working: Recorded::NotRecorded,
+    };
+
+    /// The stored words in their only encodings: all four, field 4 alone, or none.
+    pub fn record(&self) -> Result<TemperatureRecord, &'static str> {
+        use Recorded::{NotRecorded, Value};
+        match (self.temperature, self.drift, self.staged, self.working) {
+            (Value(temperature), Value(drift), Value(staged), Value(working)) => {
+                Ok(TemperatureRecord::Anchored(crate::temperature::State {
+                    temperature,
+                    drift,
+                    staged: staged.wrapping_add(temperature),
+                    working: working.wrapping_add(drift),
+                }))
+            }
+            (Value(temperature), NotRecorded, NotRecorded, NotRecorded) => {
+                Ok(TemperatureRecord::AtHour(temperature))
+            }
+            (NotRecorded, NotRecorded, NotRecorded, NotRecorded) => {
+                Ok(TemperatureRecord::NotRecorded)
+            }
+            _ => Err("WeatherProvinces temperature words are malformed"),
+        }
+    }
+}
+
+/// What the hourly temperature pass read since a frame's anchor, carried by
+/// WeatherProvinces slot zero. The rows hold every record's words read at `anchor`, after
+/// that hour's update, with the update cursor `weather manager+0x58` then. `hours` has
+/// one entry for each later hour through the frame's: the seed `+0x308` after the hourly
+/// weather update added a synchronized 31-bit random integer, when both suspension gates
+/// were clear and the cursor and records moved as one ordinary pass moves them, or None
+/// for an hour whose suspended manager moved nothing. The collector starts a new anchor
+/// at any other hour and every two `KEYFRAME_INTERVAL`s of hours. `anchor_seed` is the
+/// anchor hour's own seed when the hour before proves that hour's ordinary pass, which
+/// lets an anchor be compared with its derivation; `checksum` is
+/// [`crate::temperature::checksum`] of every record's +0x118 read at the frame's hour.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TemperaturePass {
+    pub anchor: i32,
+    pub cursor: i32,
+    pub anchor_seed: Option<u32>,
+    pub hours: Vec<Option<u32>>,
+    pub checksum: u64,
+}
+value_struct!(TemperaturePass { anchor: i32, cursor: i32, anchor_seed: Option<u32>,
+    hours: Vec<Option<u32>>, checksum: u64 });
+opaque_value!(Option<TemperaturePass>);
+
+/// The clock a province slot's day/night record holds at the boundary: the manager's
+/// dense array +0x370 (stride 0x330), local hour +0x260 (i32) and night factor +0x240
+/// (fixed5), which the getters return to the province tooltip, land combat and air
+/// spotting. Neither is written to text saves.
+///
+/// The hourly weather update runs the day/night update whenever it finds both suspension
+/// gates (+0x349/+0x34A) clear, and that writes every slot from 1 as a function of the
+/// date and the content ([`crate::day_night`]). Such a row records only that the update
+/// ran ([`ClockState::Updated`]). Slot 0, which no update writes, every slot of a
+/// suspended manager (the console weather toggle, which keeps the existing rows) and a
+/// row whose gates were not read record the clock they hold ([`ClockState::Held`]). A
+/// newly allocated record holds hour 0 and night 100000 until its first update.
+///
+/// Format 102 adds the source word (field 9); fields 6 and 7 then hold a
+/// held row's clock and zero for an updated one. Format 101 recorded every
+/// row's clock in fields 6 and 7, which read as held; earlier formats none.
+/// The default is [`Self::UPDATED`], whose words are all zero.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DayNightClock {
+    local_hour: Recorded<i32>,
+    night_factor: Recorded<i64>,
+    source: Recorded<u8>,
+}
+
+/// What a [`DayNightClock`] establishes about the record at its row's hour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockState {
+    /// The native writer updated the record at this hour: derive the clock
+    /// from the hour and the content ([`crate::day_night::ProvinceClock`]).
+    Updated,
+    /// The record holds this clock, which no hour determines.
+    Held(crate::day_night::Clock),
+    /// Recordings before format 101 hold neither.
+    NotRecorded,
+}
+
+impl DayNightClock {
+    const UPDATED_SOURCE: u8 = 0;
+    const HELD_SOURCE: u8 = 1;
+
+    /// A record the native writer updated at the row's hour.
+    pub const UPDATED: Self = Self {
+        local_hour: Recorded::Value(0),
+        night_factor: Recorded::Value(0),
+        source: Recorded::Value(Self::UPDATED_SOURCE),
+    };
+
+    /// A record holding `clock`, which no update at the row's hour wrote.
+    pub const fn held(clock: crate::day_night::Clock) -> Self {
+        Self {
+            local_hour: Recorded::Value(clock.local_hour),
+            night_factor: Recorded::Value(clock.night_factor),
+            source: Recorded::Value(Self::HELD_SOURCE),
+        }
+    }
+
+    /// Format 101's recorded clock, which every row held in fields 6 and 7.
+    pub const fn historical(clock: crate::day_night::Clock) -> Self {
+        Self {
+            local_hour: Recorded::Value(clock.local_hour),
+            night_factor: Recorded::Value(clock.night_factor),
+            source: Recorded::NotRecorded,
+        }
+    }
+
+    /// Recordings before format 101.
+    pub const NOT_RECORDED: Self = Self {
+        local_hour: Recorded::NotRecorded,
+        night_factor: Recorded::NotRecorded,
+        source: Recorded::NotRecorded,
+    };
+
+    /// The record of province slot `province`. Slot 0 is never updated (the day/night
+    /// pass starts at 1), so an updated slot 0 is refused.
+    pub fn state(&self, province: u32) -> Result<ClockState, &'static str> {
+        match self.canonical()? {
+            ClockState::Updated if province == 0 => {
+                Err("WeatherProvinces slot 0 records an update no native writer makes")
+            }
+            state => Ok(state),
+        }
+    }
+
+    /// The stored words in their only encodings: an updated record carries
+    /// no clock words, and the source is updated (0) or held (1).
+    pub fn canonical(&self) -> Result<ClockState, &'static str> {
+        match (self.source, self.local_hour, self.night_factor) {
+            (Recorded::Value(Self::UPDATED_SOURCE), Recorded::Value(0), Recorded::Value(0)) => {
+                Ok(ClockState::Updated)
+            }
+            (
+                Recorded::Value(Self::HELD_SOURCE) | Recorded::NotRecorded,
+                Recorded::Value(local_hour),
+                Recorded::Value(night_factor),
+            ) => Ok(ClockState::Held(crate::day_night::Clock {
+                local_hour,
+                night_factor,
+            })),
+            (Recorded::NotRecorded, Recorded::NotRecorded, Recorded::NotRecorded) => {
+                Ok(ClockState::NotRecorded)
+            }
+            _ => Err("WeatherProvinces day/night clock is malformed"),
+        }
+    }
+}
 
 #[cfg(test)]
 #[path = "naval_weather/tests.rs"]

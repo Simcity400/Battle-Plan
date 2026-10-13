@@ -38,13 +38,18 @@ fn weather_display_boundary_deltas_keep_zero_bytes_and_refresh_identity() {
 
 #[test]
 fn temperature_and_raw_mud_deltas_keep_extreme_native_words() {
+    let words = |temperature| crate::temperature::State {
+        temperature,
+        staged: temperature,
+        ..Default::default()
+    };
     let before = WeatherProvinceRow {
         id: 13_413,
-        temperature: crate::rows::Recorded::Value(i64::MIN),
+        temperature: ProvinceTemperature::anchored(words(i64::MIN)),
         ..Default::default()
     };
     let after = WeatherProvinceRow {
-        temperature: crate::rows::Recorded::Value(i64::MAX),
+        temperature: ProvinceTemperature::anchored(words(i64::MAX)),
         raw_mud: crate::rows::Recorded::Value(255),
         ..before.clone()
     };
@@ -64,16 +69,20 @@ fn temperature_and_raw_mud_deltas_keep_extreme_native_words() {
 
 #[test]
 fn held_clock_deltas_preserve_zero_hour_and_full_signed_native_words() {
+    let held = |local_hour, night_factor| {
+        DayNightClock::held(crate::day_night::Clock {
+            local_hour,
+            night_factor,
+        })
+    };
     let before = WeatherProvinceRow {
         id: 13_413,
-        local_hour: i32::MIN.into(),
-        night_factor: i64::MAX.into(),
+        clock: held(i32::MIN, i64::MAX),
         ..Default::default()
     };
     for (hour, night) in [(0, 0), (i32::MAX, i64::MIN)] {
         let after = WeatherProvinceRow {
-            local_hour: hour.into(),
-            night_factor: night.into(),
+            clock: held(hour, night),
             ..before.clone()
         };
         let delta = after.delta(Some(&before)).unwrap().unwrap();
@@ -88,7 +97,131 @@ fn held_clock_deltas_preserve_zero_hour_and_full_signed_native_words() {
             WeatherProvinceRow::decode_fields(after.key(), &mut Decoder::new(&bytes)).unwrap(),
             after
         );
+        assert_eq!(
+            after.clock.state(after.id),
+            Ok(ClockState::Held(crate::day_night::Clock {
+                local_hour: hour,
+                night_factor: night
+            }))
+        );
     }
+}
+
+#[test]
+fn updated_clocks_store_nothing_that_changes_with_the_hour() {
+    let held = WeatherProvinceRow {
+        id: 4,
+        clock: DayNightClock::held(crate::day_night::Clock {
+            local_hour: 13,
+            night_factor: 42_000,
+        }),
+        ..Default::default()
+    };
+    let updated = WeatherProvinceRow {
+        clock: DayNightClock::UPDATED,
+        ..held.clone()
+    };
+    assert_eq!(updated.clock.state(4), Ok(ClockState::Updated));
+    // Resuming the update clears the held words and sets the source.
+    let delta = updated.delta(Some(&held)).unwrap().unwrap();
+    assert_eq!(delta.mask, (1 << 6) | (1 << 7) | (1 << 9));
+    assert_eq!(
+        WeatherProvinceRow::apply_delta(&delta, Some(held)).unwrap(),
+        updated
+    );
+    // The next updated hour is the same row.
+    assert_eq!(updated.delta(Some(&updated)).unwrap(), None);
+    let mut bytes = Vec::new();
+    updated.encode_fields(&mut bytes).unwrap();
+    assert_eq!(
+        WeatherProvinceRow::decode_fields(updated.key(), &mut Decoder::new(&bytes)).unwrap(),
+        updated
+    );
+}
+
+#[test]
+fn malformed_clocks_and_an_updated_slot_zero_are_refused() {
+    let slot_zero = WeatherProvinceRow {
+        id: 0,
+        clock: DayNightClock::UPDATED,
+        ..Default::default()
+    };
+    assert!(slot_zero.clock.state(0).is_err());
+    assert_eq!(slot_zero.clock.state(1), Ok(ClockState::Updated));
+    assert_eq!(WeatherProvinceRow::default().clock, DayNightClock::UPDATED);
+    // Source words other than updated (0) and held (1), and updated rows
+    // carrying clock words, are not canonical.
+    for (source, hour, night) in [(2, 0, 0), (0, 1, 0), (0, 0, 1)] {
+        let clock = DayNightClock {
+            local_hour: Recorded::Value(hour),
+            night_factor: Recorded::Value(night),
+            source: Recorded::Value(source),
+        };
+        assert!(clock.state(1).is_err(), "{source} {hour} {night}");
+        let row = WeatherProvinceRow {
+            id: 1,
+            clock,
+            ..Default::default()
+        };
+        assert!(row.delta(None).is_err(), "{source} {hour} {night}");
+        assert!(encode_row(&row, 0, &mut Vec::new()).is_err());
+    }
+    let partial = DayNightClock {
+        local_hour: Recorded::Value(1),
+        night_factor: Recorded::NotRecorded,
+        source: Recorded::NotRecorded,
+    };
+    assert!(partial.state(1).is_err());
+}
+
+#[test]
+fn format_101_clocks_decode_as_held_recorded_values() {
+    let table = TableId::WeatherProvinces;
+    let historical =
+        crate::format::FormatVersion::read(crate::rows::compatibility::POLITICAL_FORMAT).unwrap();
+    assert_eq!(historical.fields(table), 9);
+    assert_eq!(crate::format::FormatVersion::CURRENT.fields(table), 14);
+    let row = WeatherProvinceRow {
+        id: 9,
+        clock: DayNightClock::held(crate::day_night::Clock {
+            local_hour: 17,
+            night_factor: 61_234,
+        }),
+        display: Recorded::Value(None),
+        ..Default::default()
+    };
+    let mut bytes = Vec::new();
+    row.encode_fields(&mut bytes).unwrap();
+    // The format-101 layout is the current one's first nine fields.
+    let mut scan = Decoder::new(&bytes);
+    for kind in &WeatherProvinceRow::SCHEMA[..9] {
+        kind.decode(&mut scan).unwrap();
+    }
+    let mut input = Decoder::new(&bytes[..bytes.len() - scan.remaining()]);
+    input.format = crate::rows::compatibility::POLITICAL_FORMAT;
+    input.recorded_fields = 9;
+    let decoded = WeatherProvinceRow::decode_fields(row.key(), &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(decoded.not_recorded_fields(), 0b11111 << 9);
+    // Its temperature is the one the record held at the row's hour.
+    assert_eq!(
+        decoded.temperature.record(),
+        Ok(TemperatureRecord::AtHour(0))
+    );
+    assert_eq!(
+        decoded.clock.state(9),
+        Ok(ClockState::Held(crate::day_night::Clock {
+            local_hour: 17,
+            night_factor: 61_234
+        }))
+    );
+    assert_eq!(
+        decoded.clock,
+        DayNightClock::historical(crate::day_night::Clock {
+            local_hour: 17,
+            night_factor: 61_234
+        })
+    );
 }
 
 #[test]
@@ -187,4 +320,68 @@ fn historical_naval_prefixes_remain_readable_without_result_sources() {
             .table_refusal(TableId::NavalResultSources)
             .is_none()
     );
+}
+
+#[test]
+fn temperature_words_store_staged_offsets_and_refuse_partial_records() {
+    let state = crate::temperature::State {
+        temperature: i64::MAX,
+        drift: -600_000,
+        staged: i64::MIN,
+        working: -600_000,
+    };
+    let anchored = ProvinceTemperature::anchored(state);
+    assert_eq!(anchored.record(), Ok(TemperatureRecord::Anchored(state)));
+    // A committed record's staged words equal its committed ones: zero offsets.
+    let row = WeatherProvinceRow {
+        temperature: anchored,
+        ..Default::default()
+    };
+    let mut fields = Vec::new();
+    row.encode_fields(&mut fields).unwrap();
+    assert_eq!(
+        WeatherProvinceRow::decode_fields(row.key(), &mut Decoder::new(&fields)).unwrap(),
+        row
+    );
+    assert_eq!(
+        ProvinceTemperature::historical(7).record(),
+        Ok(TemperatureRecord::AtHour(7))
+    );
+    assert_eq!(
+        ProvinceTemperature::NOT_RECORDED.record(),
+        Ok(TemperatureRecord::NotRecorded)
+    );
+    let partial = ProvinceTemperature {
+        drift: Recorded::NotRecorded,
+        ..anchored
+    };
+    assert!(partial.record().is_err());
+    assert!(
+        WeatherProvinceRow {
+            temperature: partial,
+            ..Default::default()
+        }
+        .encode_fields(&mut Vec::new())
+        .is_err()
+    );
+}
+
+#[test]
+fn the_temperature_pass_rides_slot_zero_with_its_checksum_last() {
+    let pass = TemperaturePass {
+        anchor: 43_808_760,
+        cursor: 583,
+        anchor_seed: Some(9),
+        hours: vec![Some(u32::MAX), None],
+        checksum: 0x0123_4567_89ab_cdef,
+    };
+    let row = WeatherProvinceRow {
+        temperature_pass: Recorded::Value(Some(pass.clone())),
+        ..Default::default()
+    };
+    let mut fields = Vec::new();
+    row.encode_fields(&mut fields).unwrap();
+    assert!(fields.ends_with(&0x0123_4567_89ab_cdef_u64.to_le_bytes()));
+    let decoded = WeatherProvinceRow::decode_fields(row.key(), &mut Decoder::new(&fields)).unwrap();
+    assert_eq!(decoded.temperature_pass, Recorded::Value(Some(pass)));
 }

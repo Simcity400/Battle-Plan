@@ -815,10 +815,15 @@ fn apply_auxiliary(sample: &mut Snapshot, aux: &Auxiliary) {
     }
 }
 
-fn date_theatres(frame: &DecodedFrame, known: bool, last_read: &mut Option<i32>) {
+fn date_theatres(
+    format: replay::format::FormatVersion,
+    frame: &DecodedFrame,
+    known: bool,
+    last_read: &mut Option<i32>,
+) {
     if !known {
         *last_read = None;
-    } else if crate::metadata::slot_read(&frame.metrics, TableId::AirTheatres, frame.hour) {
+    } else if crate::metadata::slot_read(format, &frame.metrics, TableId::AirTheatres, frame.hour) {
         *last_read = Some(frame.hour);
     }
 }
@@ -826,7 +831,12 @@ fn date_theatres(frame: &DecodedFrame, known: bool, last_read: &mut Option<i32>)
 #[cfg(test)]
 fn dated_auxiliary(frame: &DecodedFrame, last_read: &mut Option<i32>) -> Auxiliary {
     let mut result = auxiliary(frame);
-    date_theatres(frame, result.theatres_known, last_read);
+    date_theatres(
+        replay::format::FormatVersion::CURRENT,
+        frame,
+        result.theatres_known,
+        last_read,
+    );
     result.theatre_read = *last_read;
     result
 }
@@ -837,7 +847,12 @@ struct AuxiliaryRead {
     value: Arc<Auxiliary>,
 }
 impl AuxiliaryRead {
-    fn read(&mut self, frame: &DecodedFrame, last_read: &mut Option<i32>) -> Arc<Auxiliary> {
+    fn read(
+        &mut self,
+        format: replay::format::FormatVersion,
+        frame: &DecodedFrame,
+        last_read: &mut Option<i32>,
+    ) -> Arc<Auxiliary> {
         let tables = [
             TableId::AirWings,
             TableId::AirTheatres,
@@ -865,7 +880,7 @@ impl AuxiliaryRead {
                 .map(|table| frame.tables[table.index()].identity())
                 .collect();
         }
-        date_theatres(frame, self.value.theatres_known, last_read);
+        date_theatres(format, frame, self.value.theatres_known, last_read);
         if self.value.theatre_read != *last_read {
             Arc::make_mut(&mut self.value).theatre_read = *last_read;
         }
@@ -875,6 +890,9 @@ impl AuxiliaryRead {
 
 #[derive(Default)]
 pub(super) struct DayReads {
+    /// The recording's format, which dates its daily tables
+    /// ([`crate::metadata::slot_read`]).
+    format: replay::format::FormatVersion,
     scores: ScoreRead,
     regions: HashSet<u32>,
     countries: BTreeSet<String>,
@@ -968,7 +986,9 @@ impl DayReads {
             return None;
         }
         let previous = Arc::clone(&self.auxiliary.value);
-        let aux = self.auxiliary.read(decoded, &mut self.theatre_read);
+        let aux = self
+            .auxiliary
+            .read(self.format, decoded, &mut self.theatre_read);
         if !Arc::ptr_eq(&previous, &aux) {
             self.regions.extend(aux.wings.keys());
             self.theatres.extend(aux.theatre_names.clone());
@@ -1020,7 +1040,10 @@ pub(super) fn partial_day(
     }) {
         let frames = replay.read_block_selected(block, DAY_TABLES)?;
         let mut decoder = day_decoder(DAY_TABLES);
-        let mut reads = DayReads::default();
+        let mut reads = DayReads {
+            format: replay.format,
+            ..DayReads::default()
+        };
         let final_hour = frames
             .iter()
             .rfind(|frame| frame.hour <= last && frame.hour >= first)
@@ -1177,6 +1200,7 @@ pub(super) fn extend_days_anchored(
     }
     let mut segments = Vec::new();
     let mut reads = DayReads {
+        format: replay.format,
         theatre_read: cache.theatre_read,
         previous_hour: cache
             .segments
@@ -1344,7 +1368,10 @@ pub(super) fn scan_window_measured(
     let mut samples = Vec::new();
     let mut sides = Vec::new();
     let mut indices = HashMap::new();
-    let mut reads = DayReads::default();
+    let mut reads = DayReads {
+        format: replay.format,
+        ..DayReads::default()
+    };
     // Include the preceding daily slot to date carried theatre membership.
     let read_first = first.saturating_sub(DAY_HOURS);
     crate::blocks::scan_blocks(
@@ -1605,7 +1632,11 @@ mod index_tests {
             }
             let encoded = encoder.encode(frame.clone(), offset == 0).unwrap();
             let decoded = decoder.advance(&encoded).unwrap();
-            let value = reads.read(decoded, &mut last_read);
+            let value = reads.read(
+                replay::format::FormatVersion::CURRENT,
+                decoded,
+                &mut last_read,
+            );
             assert!(*value == dated_auxiliary(decoded, &mut last_read));
             if let Some(previous) = previous {
                 assert_eq!(Arc::ptr_eq(&previous, &value), offset == 1);

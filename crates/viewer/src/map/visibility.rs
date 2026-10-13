@@ -775,7 +775,7 @@ fn reverse_zero_shared(
         }
         Recorded::Value(Some(packet)) => packet,
     };
-    if packet.sample_hour != frame.hour {
+    if !packet.sample_hour.fresh_at(frame.hour) {
         return Err("ReservedCountryNaming.reverse_visibility sample hour mismatch");
     }
     let cell = packet
@@ -973,7 +973,7 @@ pub(crate) fn event_shared(
             }
             Recorded::Value(Some(packet)) => packet,
         };
-        if packet.sample_hour != frame.hour {
+        if !packet.sample_hour.fresh_at(frame.hour) {
             return Err("ReservedCountryNaming.reverse_visibility sample hour mismatch");
         }
         let cell = packet

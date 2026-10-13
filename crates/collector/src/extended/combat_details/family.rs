@@ -973,15 +973,6 @@ fn every_worker_combat_destination_grows_before_first_and_later_publication_at_5
         );
         assert_eq!(captured.detail_text.len, captured.detail_text.required);
         assert_eq!(captured.air_counts.len, captured.air_counts.required);
-        assert_eq!(
-            captured.reinforcement_modifiers.len,
-            captured.reinforcement_modifiers.required
-        );
-        assert_eq!(captured.supply_terms.len, captured.supply_terms.required);
-        assert_eq!(
-            captured.acclimatization.len,
-            captured.acclimatization.required
-        );
     }
 }
 
@@ -1034,19 +1025,13 @@ struct Observed {
 
 fn demand(captured: &Captured) -> Vec<usize> {
     vec![
-        captured.division_commanders.required,
         captured.rosters.required,
         captured.members.required,
         captured.modifiers.required,
         captured.width_terms.required,
         captured.exile_tags.required,
         captured.division_names.required,
-        captured.commander_names.required,
         captured.country_tags.required,
-        captured.reinforcement_modifiers.required,
-        captured.supply_terms.required,
-        captured.acclimatization.required,
-        captured.transport_terms.required,
         captured.air_counts.required,
         captured.detail_text.required,
         captured.commander_traits.required,
@@ -1054,7 +1039,6 @@ fn demand(captured: &Captured) -> Vec<usize> {
         captured.learning_traits.required,
         captured.required_census,
         captured.required_census_participants,
-        captured.required_commander_keys,
     ]
 }
 
@@ -1163,15 +1147,23 @@ fn family_walk_publishes_the_reference_tables() {
     assert_eq!(rows(&one.tables[0]), shape.combats);
     assert_eq!(rows(&one.tables[1]), shape.combats * shape.divisions);
     assert_eq!(rows(&one.tables[2]), shape.combats * 2);
+    // LandCombatDivisionModifiers holds a row a member.
+    assert_eq!(rows(&one.tables[4]), shape.combats * shape.divisions);
     let TableView::Complete(replay::rows::TableRows::LandCombatDivisions(divisions)) =
         &one.tables[1]
     else {
         unreachable!()
     };
-    let commanded = divisions
-        .iter()
-        .filter(|row| row.commander_inputs.is_some())
-        .count();
+    // Commanded divisions keep their commander handle; the retired
+    // commander hover inputs and reinforcement operands are tombstones, and
+    // only a reserve carries a speed share, composed or refused.
+    let commanded = divisions.iter().filter(|row| row.commander != 0).count();
+    assert!(divisions.iter().all(|row| {
+        row.commander_inputs == Retired
+            && row.reinforcement == Retired
+            && (row.role == 2 || row.reinforcement_speed == Recorded::Value(None))
+            && matches!(row.reinforcement_speed, Recorded::Value(_))
+    }));
     assert_eq!(
         commanded,
         (0..shape.combats * shape.divisions)
@@ -1200,110 +1192,24 @@ fn family_walk_publishes_the_reference_tables() {
     else {
         unreachable!()
     };
-    assert!(
-        sides
+    assert!(sides.iter().all(|side| side.divisions == Retired));
+    let TableView::Complete(replay::rows::TableRows::LandCombatDivisionModifiers(members)) =
+        &one.tables[4]
+    else {
+        unreachable!()
+    };
+    assert!(members.iter().any(|member| !member.entries.is_empty()));
+    // One row a member, keyed as its LandCombatDivisions row.
+    assert_eq!(
+        members
             .iter()
-            .any(|side| side.divisions.iter().any(|d| !d.entries.is_empty()))
-    );
-}
-
-#[test]
-fn reserve_breakdown_sources_preserve_reads_rows_and_pool_bytes() {
-    fn original(
-        world: &World,
-        captured: &Captured,
-    ) -> Vec<replay::rows::ReserveModifierBreakdownRow> {
-        let countries = ccountry::Reader::new(world, 0, GAME).unwrap();
-        let mut sources = std::collections::BTreeMap::new();
-        for row in &captured.divisions.rows[..captured.divisions.outcome.len()] {
-            if row.role != 2 {
-                continue;
-            }
-            let owners = engine::read::<[u8; 8]>(world, row.pointer + cunit::ROSTER_OWNER).unwrap();
-            let own = u32::from_le_bytes(owners[..4].try_into().unwrap());
-            let expeditionary = u32::from_le_bytes(owners[4..].try_into().unwrap());
-            let owner = if expeditionary as i32 > 0 {
-                expeditionary
-            } else {
-                own
-            };
-            if let std::collections::btree_map::Entry::Vacant(entry) =
-                sources.entry((0, owner as u64))
-            {
-                let country = countries.resolve(owner).unwrap();
-                entry.insert(country.pointer + ccountry::MODIFIER_ACCUMULATOR);
-            }
-            let kind = row.context.leader_modifier_kind;
-            if kind != 0
-                && let std::collections::btree_map::Entry::Vacant(entry) =
-                    sources.entry((kind, row.stats.commander))
-            {
-                let accumulator = engine::carmy_leader::movement_accumulator(world, 0, row.pointer)
-                    .unwrap()
-                    .unwrap();
-                entry.insert(accumulator);
-            }
-        }
-        let mut rows = Vec::new();
-        for ((kind, owner), address) in sources {
-            rows.push(replay::rows::ReserveModifierBreakdownRow {
-                kind,
-                owner,
-                nodes: engine::modifier_breakdown::tree(
-                    world,
-                    0,
-                    address,
-                    engine::modifier_keys::LAND_REINFORCE_RATE,
-                )
-                .unwrap(),
-            });
-        }
-        rows
-    }
-
-    let mut shape = Shape::small();
-    shape.owners = 6;
-    let built = world(&shape);
-    let mut captured = Captured::with_capacities(&roomy());
-    let (outcomes, _) = captured.pass(&built.world, 0, GAME);
-    captured.divisions.outcome = outcomes[1];
-    assert!(matches!(outcomes[1], Outcome::Rows { .. }));
-    let before = captured.allocated_bytes();
-    *built.world.log.lock().unwrap() = Some(Vec::new());
-    captured.capture_breakdowns(&built.world, 0, GAME);
-    let current_reads = built.world.log.lock().unwrap().take().unwrap();
-    *built.world.log.lock().unwrap() = Some(Vec::new());
-    let reference = original(&built.world, &captured);
-    let original_reads = built.world.log.lock().unwrap().take().unwrap();
-    assert_eq!(current_reads, original_reads);
-    assert_eq!(captured.breakdowns, reference);
-    assert!(
-        !reference.len().is_power_of_two(),
-        "fixture must cover amortized headroom"
-    );
-    assert_eq!(captured.breakdowns.capacity(), reference.capacity());
-    let requests = captured.divisions.rows[..outcomes[1].len()]
-        .iter()
-        .filter(|row| row.role == 2)
-        .map(|row| 1 + usize::from(row.context.leader_modifier_kind != 0))
-        .sum::<usize>();
-    assert!(
-        requests > reference.len(),
-        "fixture must include repeated sources"
-    );
-    let retained = reference.capacity() * size_of::<replay::rows::ReserveModifierBreakdownRow>()
-        + reference
+            .map(|member| (member.combat, member.side, member.ordinal, member.division))
+            .collect::<Vec<_>>(),
+        divisions
             .iter()
-            .map(|row| {
-                row.nodes.capacity() * size_of::<engine::modifier_breakdown::Node>()
-                    + row
-                        .nodes
-                        .iter()
-                        .map(|node| node.name.capacity())
-                        .sum::<usize>()
-            })
-            .sum::<usize>();
-    assert_eq!(captured.allocated_bytes(), before + retained);
+            .map(|row| (row.combat, row.side, row.ordinal, row.division))
+            .collect::<Vec<_>>()
+    );
 }
 
 fn reason(outcome: Outcome) -> &'static str {
@@ -1580,9 +1486,7 @@ fn border_war_hooks_after_neighbouring_text(reference: bool) {
     assert!(!commanded.is_empty());
     for side in commanded {
         assert_eq!(side.commander_name_token, name);
-        assert_eq!(side.commander_description_token, description);
         assert_eq!(side.traits[0].token, trait_token);
-        assert_eq!(side.learning_traits[0].token, trait_token);
     }
 }
 
@@ -1647,9 +1551,11 @@ fn selected_commander_texts_keep_native_length_and_grow() {
         .filter(|side| side.commander != 0)
         .collect();
     assert!(!commanded.is_empty());
-    assert!(commanded.iter().all(
-        |side| side.commander_name_token == long && side.commander_description_token.is_empty()
-    ));
+    assert!(
+        commanded
+            .iter()
+            .all(|side| side.commander_name_token == long)
+    );
 
     // An empty name is a valid text, not a failure.
     for &leader in &leaders {

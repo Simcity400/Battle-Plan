@@ -2,6 +2,12 @@ use super::*;
 use engine::allocation;
 
 pub(crate) const WING_PACK_N: usize = 2;
+/// Most parts the AirWing census is walked in: the pool runs no more jobs at
+/// once.
+pub(crate) const WING_PARTS: usize = crate::acquisition::MAX_WORKERS;
+/// Wings, plus one per owner with a strategic-air entry, that one census
+/// part is sized for.
+const PART_COST: u64 = 384;
 
 #[derive(Debug)]
 pub(crate) struct AirWingJob {
@@ -13,6 +19,9 @@ pub(crate) struct AirWingJob {
     pub(crate) transport: cair_wing::transport_operands::Scratch,
     pub(crate) transport_ticks: u64,
     pub(crate) transport_raw_bytes: u64,
+    /// This pass's own sources and memberships. A split census joins only
+    /// what each part built from them on its worker: its identities and
+    /// naval memberships.
     pub(super) sources: Vec<cair_wing::Source>,
     pub(super) identities: Vec<WingIdentity>,
     pub(super) identity_outcome: Outcome,
@@ -40,7 +49,64 @@ pub(crate) struct AirWingJob {
     pub(crate) game_score_ticks: [u64; 2],
     pub(super) raw_bytes: [u64; WING_PACK_N],
     pub(super) capacity_charge: crate::raw_memory::Charge,
+    /// Held WingEquipment rows ([`super::WingStore`]), lent by the game
+    /// thread for one pass and taken back at the join; absent reads every
+    /// wing's equipment afresh. A later part of a split census keeps its own.
+    pub(crate) wing_store: Option<Box<super::WingStore>>,
+    /// What certifies the store's carry: the hooks' domain.
+    pub(crate) carry_changes: CarryChanges,
+    /// The owner slots this pass walks: every slot, or one part of a census
+    /// split by owner range. Set by the callback before each loan.
+    pub(crate) slots: std::ops::Range<u32>,
+    /// Whether this pass is one part of a split census, which the callback
+    /// joins and finishes ([`Self::join_parts`]).
+    pub(crate) split: bool,
+    /// The census walk as it ended, before the finish.
+    pub(crate) census: cair_wing::GameScoreWalk,
+    pub(crate) equipment_required: usize,
+    pub(crate) cumulative_required: usize,
+    pub(crate) membership_len: usize,
+    pub(crate) name_failure_reasons: [usize; cair_wing::NameFailure::REASONS.len()],
+    /// The WingEquipment carry counts and planned wings of this pass.
+    pub(crate) carry: (crate::wing_changes::Counts, usize),
+    /// Each owner with a strategic-air entry and the cost (wings and such
+    /// owners) walked before it in this pass, and the pass's whole cost:
+    /// what the next hour's parts are sized by ([`part_starts`]).
+    pub(crate) owner_costs: Vec<(u32, u32)>,
+    pub(crate) cost: u32,
 }
+
+/// The domain whose certificates carry WingEquipment rows
+/// ([`crate::wing_changes`]): the hooks' own, or a test's.
+#[derive(Clone, Copy)]
+pub(crate) struct CarryChanges(pub(crate) &'static dyn crate::wing_changes::Changes);
+
+impl Default for CarryChanges {
+    fn default() -> Self {
+        Self(&crate::wing_changes::Observer)
+    }
+}
+
+impl std::fmt::Debug for CarryChanges {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CarryChanges").finish_non_exhaustive()
+    }
+}
+
+const IDENTITIES_UNALLOCATED: Outcome = Outcome::Unavailable {
+    reason: "air wing identity allocation failed",
+};
+
+const NO_CENSUS: cair_wing::GameScoreWalk = cair_wing::GameScoreWalk {
+    shared: cair_wing::SharedWalk {
+        map: NO_WING_SOURCE,
+        sources: NO_WING_SOURCE,
+        naval: NO_WING_SOURCE,
+    },
+    score: NO_WING_SOURCE,
+    ended: false,
+    row_fallbacks: 0,
+};
 
 impl Default for AirWingJob {
     fn default() -> Self {
@@ -80,6 +146,18 @@ impl Default for AirWingJob {
             game_score_ticks: [0; 2],
             raw_bytes: [0; 2],
             capacity_charge: Default::default(),
+            wing_store: None,
+            carry_changes: CarryChanges::default(),
+            slots: cair_wing::EVERY_OWNER,
+            split: false,
+            census: NO_CENSUS,
+            equipment_required: 0,
+            cumulative_required: 0,
+            membership_len: 0,
+            name_failure_reasons: [0; cair_wing::NameFailure::REASONS.len()],
+            carry: Default::default(),
+            owner_costs: Vec::new(),
+            cost: 0,
         }
     }
 }
@@ -105,6 +183,14 @@ impl AirWingJob {
         job.update_capacity_charge();
         job
     }
+    /// A later part of a split census: its worker grows its storage, and its
+    /// WingEquipment store stays with it.
+    pub(crate) fn part() -> Self {
+        Self {
+            wing_store: cfg!(feature = "wing_changes").then(|| Box::new(super::WingStore::new())),
+            ..Default::default()
+        }
+    }
     pub(crate) fn update_capacity_charge(&mut self) {
         use crate::raw_memory::{Capacity, vector_bytes};
         self.capacity_charge.set(Capacity {
@@ -115,6 +201,7 @@ impl AirWingJob {
                 + vector_bytes(&self.names)
                 + self.game_score.allocated_bytes() as u64,
             auxiliary_vectors: vector_bytes(&self.sources)
+                + vector_bytes(&self.owner_costs)
                 + vector_bytes(&self.identities)
                 + vector_bytes(&self.naval_memberships)
                 + self.transport.allocated_bytes() as u64,
@@ -157,6 +244,14 @@ impl AirWingJob {
         self.game_score_ticks = [0; 2];
         self.raw_bytes = [0; 2];
         self.game_score.begin(false);
+        self.census = NO_CENSUS;
+        self.equipment_required = 0;
+        self.cumulative_required = 0;
+        self.membership_len = 0;
+        self.name_failure_reasons = [0; cair_wing::NameFailure::REASONS.len()];
+        self.carry = Default::default();
+        self.owner_costs.clear();
+        self.cost = 0;
     }
     pub fn grow_for_next(&self) -> bool {
         self.transport.required_map_capacity > 0
@@ -296,6 +391,16 @@ impl<M: Memory> Memory for WingMemory<'_, M> {
         }
         completed
     }
+    fn copy_records(
+        &self,
+        sources: engine::memory::RecordSources<'_>,
+        layout: &engine::memory::RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        let completed = self.inner.copy_records(sources, layout, destination);
+        self.count(layout.completed_bytes(completed));
+        completed
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -305,6 +410,23 @@ pub(crate) struct AirWingCopyReport {
     pub raw_bytes: [u64; WING_PACK_N],
     pub transport_ticks: u64,
     pub game_score_ticks: [u64; 2],
+}
+
+impl AirWingCopyReport {
+    /// Adds a later census part's worker costs.
+    pub(crate) fn add(&mut self, part: &AirWingCopyReport) {
+        self.raw_ok &= part.raw_ok;
+        for (ours, theirs) in self.copy_ticks.iter_mut().zip(part.copy_ticks) {
+            *ours += theirs;
+        }
+        for (ours, theirs) in self.raw_bytes.iter_mut().zip(part.raw_bytes) {
+            *ours += theirs;
+        }
+        self.transport_ticks += part.transport_ticks;
+        for (ours, theirs) in self.game_score_ticks.iter_mut().zip(part.game_score_ticks) {
+            *ours += theirs;
+        }
+    }
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AirWingCopyContext {
@@ -333,7 +455,7 @@ impl Captured {
 
     /// Complete a failed statistics job after its typed walk was gated.
     pub(crate) fn fail_air_stats_capture(&mut self, reason: &'static str) {
-        self.statistics.outcome = failed(self.active[6], reason);
+        self.statistics.outcome = failed(self.active[4], reason);
         self.stats_raw_mode = false;
     }
 }
@@ -344,6 +466,22 @@ fn copy_air_pass(
     ctx: AirWingCopyContext,
     growing: bool,
 ) {
+    walk_air_part(job, memory, ctx, growing);
+    if !job.split {
+        job.finish_census(&mut []);
+    }
+}
+
+/// Walks this job's owner slots of the shared census. A part of a split
+/// census grows every projection, so it admits each of its wings as the
+/// serial walk would until a projection fails ([`AirWingJob::absorb`]).
+fn walk_air_part(
+    job: &mut AirWingJob,
+    memory: &impl Memory,
+    ctx: AirWingCopyContext,
+    growing: bool,
+) {
+    debug_assert!(growing || !job.split, "only growing parts join");
     let mut reads = read_accounting::table(TableId::WingEquipment);
     job.clear();
     job.growing = growing;
@@ -358,6 +496,10 @@ fn copy_air_pass(
     job.required = job.limits;
     job.game_score_enabled = ctx.game_score;
     job.game_score.begin(ctx.game_score);
+    // The score projection rides this census: a worker pass grows its wing,
+    // country and first-site storage from the acquired headers, so ordinary
+    // growth never truncates it, whichever frame last lent the storage.
+    job.game_score.set_growing(growing);
     let naval_limit = if job.theatres_active {
         ctx.naval_limit
     } else {
@@ -376,6 +518,15 @@ fn copy_air_pass(
     };
     let mut equipment = Outcome::Rows { len: 0 };
     let mut equipment_required = 0_usize;
+    let mut store = job.wing_store.take();
+    let changes = job.carry_changes.0;
+    let mut reuse = store.as_deref_mut().map(|store| {
+        super::WingReuse::begin(
+            store,
+            changes,
+            crate::sampled_verify::Check::burned_in(ctx.hour, crate::wing_changes::VERIFY),
+        )
+    });
     let mut cumulative = if job.cumulative_active {
         Outcome::Rows { len: 0 }
     } else {
@@ -384,6 +535,9 @@ fn copy_air_pass(
     let mut source_len = 0;
     let mut membership_len = 0;
     let mut membership_ticks = 0;
+    let mut cumulative_required = 0;
+    let cost = std::cell::Cell::new(0_u32);
+    let slots = job.slots.clone();
     let mut transport =
         cair_wing::transport_operands::Pass::new(ctx.base, ctx.limits[0], &mut job.transport);
     let score_ticks = std::cell::Cell::new([0_u64; 2]);
@@ -404,18 +558,21 @@ fn copy_air_pass(
         &source,
         ctx.base,
         ctx.game_state,
+        slots,
         map_rows,
         sources,
         naval_limit,
         None,
         score_limit,
         |pointer, pool, row, admitted| {
+            cost.set(cost.get().saturating_add(1));
             if admitted.map {
                 map_len += 1;
                 row.name = if growing {
                     match cair_wing::capture_name_growing(
                         &source,
                         pointer,
+                        admitted.name_header,
                         &mut job.names,
                         &mut job.names_len,
                         &mut job.names_required,
@@ -423,7 +580,7 @@ fn copy_air_pass(
                         Ok(span) => Some(span),
                         Err(failure) => {
                             job.name_failures = job.name_failures.saturating_add(1);
-                            crate::map_capture::observe_air_wing_name_failure(failure);
+                            job.name_failure_reasons[failure.index()] += 1;
                             None
                         }
                     }
@@ -434,7 +591,7 @@ fn copy_air_pass(
                         required: job.names_required,
                         failures: job.name_failures,
                     };
-                    let value = names.capture(&source, pointer);
+                    let value = names.capture(&source, pointer, admitted.name_header);
                     job.names_len = names.used;
                     job.names_required = names.required;
                     job.name_failures = names.failures;
@@ -457,10 +614,15 @@ fn copy_air_pass(
                 } else {
                     engine::walk::Buffer::Fixed(&mut job.equipment[..ctx.limits[1]])
                 };
-                let (next, required) =
-                    read_equipment_buffer(&source, ctx.base, &wing, output, equipment.len());
+                let (next, required) = read_equipment_carried(
+                    &source,
+                    ctx.base,
+                    &wing,
+                    output,
+                    equipment.len(),
+                    reuse.as_mut(),
+                );
                 equipment_required = equipment_required.saturating_add(required);
-                job.required[1] = job.required[1].max(equipment_required);
                 equipment = append(equipment, next);
             }
             if admitted.sources && !matches!(cumulative, Outcome::Unavailable { .. }) {
@@ -472,7 +634,7 @@ fn copy_air_pass(
                     engine::walk::Buffer::Fixed(&mut job.cumulative[..ctx.limits[2]])
                 };
                 let required = cumulative.len().saturating_add(1);
-                job.required[2] = job.required[2].max(required);
+                cumulative_required = required;
                 let next = if let Err(reason) = output.ensure(required) {
                     Outcome::Unavailable { reason }
                 } else if let Some(destination) = output.get_mut(cumulative.len()) {
@@ -528,6 +690,13 @@ fn copy_air_pass(
             source.mask.set(3);
         },
         |slot, entry| {
+            if entry.is_some() {
+                // Advisory: a missed owner only sizes the next hour's parts.
+                if allocation::advisory(|| allocation::reserve(&mut job.owner_costs, 1)).is_ok() {
+                    job.owner_costs.push((slot, cost.get()));
+                }
+                cost.set(cost.get().saturating_add(1));
+            }
             if !ctx.game_score {
                 return;
             }
@@ -541,36 +710,57 @@ fn copy_air_pass(
             source.mask.set(3);
         },
     );
-    crate::map_capture::observe_air_wing_name_refusals(job.name_failures);
-    score.borrow_mut().finish(walked.score);
-    job.map_outcome = walked.shared.map;
-    job.source_outcome = walked.shared.sources;
-    job.naval_outcome = if job.theatres_active {
-        walked.shared.naval
-    } else {
-        SKIPPED
-    };
-    job.equipment_outcome = require_parent(walked.shared.sources, equipment);
-    job.cumulative_outcome = if job.cumulative_active {
-        require_parent(walked.shared.sources, cumulative)
-    } else {
-        SKIPPED
-    };
+    job.census = walked;
+    job.equipment_outcome = equipment;
+    job.cumulative_outcome = cumulative;
+    job.equipment_required = equipment_required;
+    job.cumulative_required = cumulative_required;
+    if let Some(reuse) = reuse {
+        reuse.settle();
+    }
+    job.carry = store
+        .as_deref()
+        .map(super::WingStore::tally)
+        .unwrap_or_default();
+    job.wing_store = store;
     job.source_len = source_len;
+    job.membership_len = membership_len;
     job.membership_ticks = membership_ticks;
     job.raw_bytes = source.bytes.get();
     job.transport_raw_bytes = source.transport_bytes.get();
     job.acquired = true;
     job.game_score_ticks = score_ticks.get();
+    job.cost = cost.get();
     if growing {
-        job.required[0] = job.required[0].max(job.map_outcome.len());
-        job.required_memberships = job.required_memberships.max(membership_len);
-        let len = job.source_outcome.len();
-        job.identity_outcome = if crate::table_capture::grow_vec(&mut job.identities, len) {
-            let mut outcome = job.source_outcome;
+        job.project();
+    }
+}
+
+impl AirWingJob {
+    /// The callback's join of a split census: `parts`, the census parts of
+    /// the owner slots after this one's in slot order, then the finish.
+    /// Copies without allocating once this job holds the storage of the
+    /// last joined census (its frame grants and grown vectors).
+    pub(crate) fn join_parts(&mut self, parts: &mut [AirWingJob]) -> Result<(), &'static str> {
+        let joined = parts.iter().try_for_each(|part| self.absorb(part));
+        if joined.is_ok() {
+            self.finish_census(parts);
+        }
+        // The join's growth, or a failed join's, is this job's storage.
+        self.update_capacity_charge();
+        joined
+    }
+
+    /// This part's own mission identities and naval memberships, built from
+    /// its sources and memberships on its worker; a split census joins them.
+    fn project(&mut self) {
+        let sources = self.census.shared.sources;
+        let len = sources.len();
+        self.identity_outcome = if crate::table_capture::grow_vec(&mut self.identities, len) {
+            let mut outcome = sources;
             if matches!(outcome, Outcome::Rows { .. }) {
                 for (destination, source) in
-                    job.identities[..len].iter_mut().zip(&job.sources[..len])
+                    self.identities[..len].iter_mut().zip(&self.sources[..len])
                 {
                     match WingIdentity::new(source.pointer, source.pool, &source.row) {
                         Ok(identity) => *destination = identity,
@@ -583,17 +773,19 @@ fn copy_air_pass(
             }
             outcome
         } else {
-            Outcome::Unavailable {
-                reason: "air wing identity allocation failed",
-            }
+            IDENTITIES_UNALLOCATED
         };
-        if job.theatres_active {
-            let len = job.source_len;
-            let mut outcome = job.naval_outcome;
-            if crate::table_capture::grow_vec(&mut job.naval_memberships, len) {
-                for (destination, original) in job.naval_memberships[..len]
+        if !self.theatres_active {
+            self.naval_membership_outcome = SKIPPED;
+            return;
+        }
+        let len = self.source_len;
+        self.naval_membership_outcome =
+            if crate::table_capture::grow_vec(&mut self.naval_memberships, len) {
+                let mut outcome = self.census.shared.naval;
+                for (destination, original) in self.naval_memberships[..len]
                     .iter_mut()
-                    .zip(&job.memberships[..len])
+                    .zip(&self.memberships[..len])
                 {
                     *destination = original.value;
                     if let Some(reason) = original.error {
@@ -601,16 +793,291 @@ fn copy_air_pass(
                         break;
                     }
                 }
-                job.naval_membership_outcome = outcome;
+                outcome
             } else {
-                job.naval_membership_outcome = Outcome::Unavailable {
+                Outcome::Unavailable {
                     reason: "air wing naval membership allocation failed",
-                };
+                }
+            };
+    }
+
+    /// Joins `part` as one walk of both would have left the census. The
+    /// serial walk stops where a part ended, so nothing after it joins. In a
+    /// growing pass the map, source and naval projections admit every wing
+    /// until they fail together, after which the serial walk reads only
+    /// game-score leaves and owners: a later part's census rows, names,
+    /// identities, equipment, cumulative rows, naval memberships and carry
+    /// counts then join no outcome and stay out, as do those of a dependent
+    /// table that failed. Each part's own first identity or membership
+    /// refusal leads its projection, so the first in slot order is the
+    /// census's.
+    fn absorb(&mut self, part: &AirWingJob) -> Result<(), &'static str> {
+        if self.census.ended {
+            return Ok(());
+        }
+        if !matches!(self.census.shared.map, Outcome::Unavailable { .. }) {
+            self.absorb_census(part)?;
+        }
+        if self.game_score_enabled {
+            self.game_score
+                .absorb(&part.game_score, part.slots.start as usize)?;
+        }
+        let (ours, theirs) = (self.census, part.census);
+        self.census = cair_wing::GameScoreWalk {
+            shared: cair_wing::SharedWalk {
+                map: append(ours.shared.map, theirs.shared.map),
+                sources: append(ours.shared.sources, theirs.shared.sources),
+                naval: append(ours.shared.naval, theirs.shared.naval),
+            },
+            score: append(ours.score, theirs.score),
+            ended: theirs.ended,
+            row_fallbacks: ours.row_fallbacks.saturating_add(theirs.row_fallbacks),
+        };
+        Ok(())
+    }
+
+    fn absorb_census(&mut self, part: &AirWingJob) -> Result<(), &'static str> {
+        let names = self.names_len;
+        join(
+            &mut self.names,
+            names,
+            &part.names[..part.names_len],
+            |&byte| byte,
+        )?;
+        self.names_len += part.names_len;
+        self.names_required = self.names_required.saturating_add(part.names_required);
+        self.name_failures = self.name_failures.saturating_add(part.name_failures);
+        for (ours, theirs) in self
+            .name_failure_reasons
+            .iter_mut()
+            .zip(part.name_failure_reasons)
+        {
+            *ours += theirs;
+        }
+        self.transport.failures += part.transport.failures;
+        self.transport_raw_bytes += part.transport_raw_bytes;
+        let rebase = |row: &cair_wing::Row| cair_wing::Row {
+            name: row.name.map(|(start, len)| (start + names, len)),
+            ..*row
+        };
+        join(
+            &mut self.map_rows,
+            self.census.shared.map.len(),
+            &part.map_rows[..part.census.shared.map.len()],
+            rebase,
+        )?;
+        if !matches!(self.identity_outcome, Outcome::Unavailable { .. }) {
+            join(
+                &mut self.identities,
+                self.identity_outcome.len(),
+                &part.identities[..part.identity_outcome.len()],
+                |&identity| identity,
+            )?;
+            self.identity_outcome = append(self.identity_outcome, part.identity_outcome);
+        }
+        if !matches!(self.equipment_outcome, Outcome::Unavailable { .. }) {
+            join(
+                &mut self.equipment,
+                self.equipment_outcome.len(),
+                &part.equipment[..part.equipment_outcome.len()],
+                Clone::clone,
+            )?;
+            self.equipment_outcome = append(self.equipment_outcome, part.equipment_outcome);
+            self.equipment_required = self
+                .equipment_required
+                .saturating_add(part.equipment_required);
+            self.carry.0.add(&part.carry.0);
+            self.carry.1 += part.carry.1;
+        }
+        if self.cumulative_active && !matches!(self.cumulative_outcome, Outcome::Unavailable { .. })
+        {
+            let len = self.cumulative_outcome.len();
+            join(
+                &mut self.cumulative,
+                len,
+                &part.cumulative[..part.cumulative_outcome.len()],
+                |&row| row,
+            )?;
+            if part.cumulative_required != 0 {
+                self.cumulative_required = len + part.cumulative_required;
             }
+            self.cumulative_outcome = append(self.cumulative_outcome, part.cumulative_outcome);
+        }
+        if self.theatres_active {
+            // Each part's memberships stay with it; their demand is the
+            // census's.
+            self.membership_len += part.membership_len;
+        }
+        if self.theatres_active
+            && !matches!(self.naval_membership_outcome, Outcome::Unavailable { .. })
+        {
+            let len = self.naval_membership_outcome.len();
+            // Shorter than its outcome only after a membership storage
+            // refusal, which the consumer truncates to the outcome too.
+            let joined = part
+                .naval_membership_outcome
+                .len()
+                .min(part.naval_memberships.len());
+            join(
+                &mut self.naval_memberships,
+                len,
+                &part.naval_memberships[..joined],
+                |&membership| membership,
+            )?;
+            self.naval_membership_outcome =
+                append(self.naval_membership_outcome, part.naval_membership_outcome);
+        }
+        Ok(())
+    }
+
+    /// Completes the census from its walk: the game-score, AirWings, source,
+    /// naval and dependent outcomes and every part's WingEquipment store.
+    fn finish_census(&mut self, parts: &mut [AirWingJob]) {
+        crate::map_capture::observe_air_wing_name_failures(&self.name_failure_reasons);
+        crate::map_capture::observe_air_wing_name_refusals(self.name_failures);
+        let walked = self.census;
+        self.game_score.finish(walked.score);
+        self.map_outcome = walked.shared.map;
+        self.source_outcome = walked.shared.sources;
+        self.naval_outcome = if self.theatres_active {
+            walked.shared.naval
         } else {
-            job.naval_membership_outcome = SKIPPED;
+            SKIPPED
+        };
+        self.equipment_outcome = require_parent(walked.shared.sources, self.equipment_outcome);
+        let complete = matches!(self.equipment_outcome, Outcome::Rows { .. });
+        let stores = std::iter::once(&mut self.wing_store)
+            .chain(parts.iter_mut().map(|part| &mut part.wing_store))
+            .filter_map(|store| store.as_deref_mut());
+        let mut carried = false;
+        for store in stores {
+            store.conclude(complete);
+            carried = true;
+        }
+        if carried {
+            let (counts, wings) = self.carry;
+            crate::wing_changes::record(&counts, complete.then_some(wings));
+        }
+        self.cumulative_outcome = if self.cumulative_active {
+            require_parent(walked.shared.sources, self.cumulative_outcome)
+        } else {
+            SKIPPED
+        };
+        self.required[1] = self.required[1].max(self.equipment_required);
+        self.required[2] = self.required[2].max(self.cumulative_required);
+        if self.growing {
+            self.required[0] = self.required[0].max(self.map_outcome.len());
+            self.required_memberships = self.required_memberships.max(self.membership_len);
+            // Identities exist only for a complete source census: a later
+            // part's census refusal is the joined identities' outcome.
+            if !matches!(self.source_outcome, Outcome::Rows { .. })
+                && self.identity_outcome != IDENTITIES_UNALLOCATED
+            {
+                self.identity_outcome = self.source_outcome;
+            }
         }
     }
+}
+
+/// The callback's account of the WingEquipment stores after the join: the
+/// first job's and every part's, idle ones included, each forgotten when the
+/// acquisition `failed`. Returns the bytes they retain.
+pub(crate) fn retained_store_bytes(
+    census: Option<&mut super::WingStore>,
+    parts: &mut [AirWingJob],
+    failed: bool,
+) -> u64 {
+    let stores = census.into_iter().chain(
+        parts
+            .iter_mut()
+            .filter_map(|part| part.wing_store.as_deref_mut()),
+    );
+    let mut bytes = 0;
+    for store in stores {
+        if failed {
+            store.forget();
+        }
+        bytes += store.allocated_bytes() as u64;
+    }
+    bytes
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// Test seam: how many more of the join's growths succeed before one is
+    /// refused, as a refused allocation is.
+    static JOIN_GROWTHS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Copies `rows`, converted, after the first `len` of `destination`.
+fn join<T: Default, U>(
+    destination: &mut Vec<T>,
+    len: usize,
+    rows: &[U],
+    convert: impl Fn(&U) -> T,
+) -> Result<(), &'static str> {
+    let end = len
+        .checked_add(rows.len())
+        .ok_or("air wing census join overflow")?;
+    #[cfg(test)]
+    if destination.len() < end
+        && JOIN_GROWTHS.with(|left| {
+            let refused = left.get() == Some(0);
+            left.set(left.get().and_then(|left| left.checked_sub(1)));
+            refused
+        })
+    {
+        return Err("capture buffer allocation failed");
+    }
+    Buffer::Growing(destination).ensure(end)?;
+    for (destination, row) in destination[len..end].iter_mut().zip(rows) {
+        *destination = convert(row);
+    }
+    Ok(())
+}
+
+/// Where the next hour's census parts start, after the first: one part per
+/// [`PART_COST`] of the wings and owners this hour's joined `census` and its
+/// `parts` walked, each from the owner holding its share's first unit. None
+/// when the census did not visit every wing.
+pub(crate) fn part_starts(
+    census: &AirWingJob,
+    parts: &[AirWingJob],
+) -> Option<([u32; WING_PARTS - 1], usize)> {
+    if !matches!(census.map_outcome, Outcome::Rows { .. }) {
+        return None;
+    }
+    let jobs = || std::iter::once(census).chain(parts);
+    let total: u64 = jobs().map(|job| u64::from(job.cost)).sum();
+    let count = total.div_ceil(PART_COST).clamp(1, WING_PARTS as u64);
+    let mut starts = [0; WING_PARTS - 1];
+    let mut filled = 0;
+    let mut start = |slot: u32| {
+        if slot > 0 && (filled == 0 || slot > starts[filled - 1]) {
+            starts[filled] = slot;
+            filled += 1;
+        }
+    };
+    let (mut part, mut offset, mut holder) = (1, 0, None);
+    for job in jobs() {
+        for &(slot, before) in &job.owner_costs {
+            // The owner before this one holds every unit up to here.
+            while part < count && offset + u64::from(before) > total * part / count {
+                if let Some(slot) = holder {
+                    start(slot);
+                }
+                part += 1;
+            }
+            holder = Some(slot);
+        }
+        offset += u64::from(job.cost);
+    }
+    for _ in part..count {
+        if let Some(slot) = holder {
+            start(slot);
+        }
+    }
+    Some((starts, filled))
 }
 
 #[cfg(test)]
@@ -739,5 +1206,7 @@ pub(crate) fn decode_air_payload(
     decode_ticks[0] += elapsed(started);
 }
 
+#[cfg(test)]
+mod split_tests;
 #[cfg(test)]
 mod transport_tests;

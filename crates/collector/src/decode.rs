@@ -43,14 +43,11 @@
 
 use crate::{
     extended::{
-        air::{
-            AirBasesJob, AirBasesMemo, AirBasesMemoContext, AirHistoryJob, AirStatsJob, AirWingJob,
-        },
+        air::{AirBasesJob, AirBasesMemo, AirBasesMemoContext, AirStatsJob, AirWingJob},
         characters::{CharactersJob, PART_MASKS as CHARACTER_MASKS, PARTS as CHARACTER_PARTS},
         construction::ConstructionRestJob,
         economy::EconomyRestJob,
         fog::{IntelJob, RadarJob},
-        governance::FocusJob,
         intel::{CapitulationJob, RelationsJob},
         lexical::LexicalJob,
         naval_history::{NavalJob, SunkJob, SupremacyJob},
@@ -65,6 +62,7 @@ use crate::{
 use replay::rows::TableId;
 
 use crossbeam_queue::ArrayQueue;
+use std::cell::UnsafeCell;
 use std::sync::{
     Mutex,
     atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering},
@@ -75,34 +73,24 @@ mod pools;
 pub(crate) use diagnostics::*;
 pub use pools::*;
 
-/// Focus pair in calibration/report order: [focus, completed]. Both refresh
-/// on daily slot 19. The single copy pass is charged to the focus slot.
-pub const FOCUS: [TableId; 2] = [TableId::Focus, TableId::CompletedFocuses];
-
 /// Relations family in calibration/report order: [opinions, tuples]. The
 /// payload freezes each table's activity selected by replay cadence.
 pub const RELATIONS: [TableId; 2] = [TableId::RelationOpinions, TableId::RelationTuples];
 
 /// Characters family in calibration/report order: [characters, leaders,
-/// advisors, units, traits, experience]. Cadence selects the active tables.
+/// advisors, units, traits]. Cadence selects the active tables.
 /// ActiveAbilities is separate.
-pub const CHARACTERS: [TableId; 6] = [
+pub const CHARACTERS: [TableId; 5] = [
     TableId::Characters,
     TableId::CountryLeaderRoles,
     TableId::AdvisorRoles,
     TableId::UnitLeaders,
     TableId::UnitLeaderTraits,
-    TableId::UnitLeaderTraitExperience,
 ];
 
-/// Projects family in calibration/report order: [programs, projects,
-/// history, breakthroughs]. Hourly project tables stay game-side typed.
-pub const PROJECTS: [TableId; 4] = [
-    TableId::ProjectPrograms,
-    TableId::Projects,
-    TableId::ProjectHistory,
-    TableId::ProjectBreakthroughs,
-];
+/// The raw-copied project tables in calibration/report order: [programs,
+/// breakthroughs]. Sliced and hourly project tables stay game-side typed.
+pub const PROJECTS: [TableId; 2] = crate::extended::projects::RAW;
 
 /// Lexical family: the global token dictionary.
 pub const LEXICAL: [TableId; 1] = [TableId::LexicalTokens];
@@ -154,7 +142,6 @@ pub const AIR_BASES: [TableId; 3] = [
 
 /// Shared daily slot-7 history payload in calibration/report order: [history,
 /// damage]. The single regional walk is charged to the history slot.
-pub const AIR_HISTORY: [TableId; 2] = [TableId::AirRegionHistory, TableId::AirRegionDamage];
 /// Daily slot-23 supremacy table in calibration/report order: [supremacy].
 pub const SUPREMACY: [TableId; 1] = [TableId::NavalSupremacy];
 
@@ -225,8 +212,9 @@ pub const CONSTRUCTION_REST: [TableId; 10] = [
 
 /// Economy mixed rest in calibration/report order: [fuel, experience,
 /// supply, hubs, disrupted, foreign, definitions, resources, exchanges,
-/// purchases, fuel consumers]. Supply stays hourly, the three resource tables
-/// refresh on slot 10, and the seven remaining tables on slot 17. The supply shared traversal is anchor-charged to the hubs slot; the
+/// purchases, fuel consumers, fuel demand parts]. Supply stays hourly, the
+/// three resource tables refresh on slot 10, and the eight remaining tables
+/// on slot 17; the demand parts are split from the fuel walk's packs. The supply shared traversal is anchor-charged to the hubs slot; the
 /// resource dictionary to the definitions slot and the shared fuel walk to the
 /// fuel slot, matching the read-group convention.
 pub const ECONOMY_REST: [TableId; crate::extended::economy::N] = [
@@ -241,6 +229,22 @@ pub const ECONOMY_REST: [TableId; crate::extended::economy::N] = [
     TableId::ResourceExchanges,
     TableId::PurchaseContracts,
     TableId::CountryFuelConsumers,
+    TableId::FuelDemandParts,
+];
+/// [`ECONOMY_REST`]'s names, for the calibration status's positional arrays.
+pub const ECONOMY_REST_NAMES: [&str; crate::extended::economy::N] = [
+    "CountryFuel",
+    "CountryExperience",
+    "ProvinceSupply",
+    "HubMotorization",
+    "DisruptedSupply",
+    "ForeignHomebases",
+    "ResourceDefinitions",
+    "CountryResources",
+    "ResourceExchanges",
+    "PurchaseContracts",
+    "CountryFuelConsumers",
+    "FuelDemandParts",
 ];
 
 /// Hourly weather family in calibration/report order: [regions, provinces].
@@ -268,7 +272,6 @@ pub struct DecodeJob {
     pub projects_refresh: bool,
     pub lexical_refresh: bool,
     pub divisions_refresh: bool,
-    pub focus_refresh: bool,
     pub air_wing_refresh: bool,
     pub air_stats_refresh: bool,
     pub naval_refresh: bool,
@@ -278,7 +281,6 @@ pub struct DecodeJob {
     pub construction_rest_refresh: bool,
     pub economy_rest_refresh: bool,
     pub air_bases_refresh: bool,
-    pub air_history_refresh: bool,
     pub supremacy_refresh: bool,
     pub sunk_refresh: bool,
     pub radar_refresh: bool,
@@ -292,7 +294,6 @@ pub struct DecodeJob {
     pub projects_payload: Option<ProjectsJob>,
     pub lexical_payload: Option<LexicalJob>,
     pub divisions_payload: Option<DivisionsJob>,
-    pub focus_payload: Option<FocusJob>,
     pub air_wing_payload: Option<AirWingJob>,
     pub air_stats_payload: Option<AirStatsJob>,
     pub naval_payload: Option<NavalJob>,
@@ -302,7 +303,6 @@ pub struct DecodeJob {
     pub construction_rest_payload: Option<ConstructionRestJob>,
     pub economy_rest_payload: Option<EconomyRestJob>,
     pub air_bases_payload: Option<AirBasesJob>,
-    pub air_history_payload: Option<AirHistoryJob>,
     pub supremacy_payload: Option<SupremacyJob>,
     pub sunk_payload: Option<SunkJob>,
     pub radar_payload: Option<RadarJob>,
@@ -313,48 +313,30 @@ pub struct DecodeJob {
 static RELATIONS_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static RELATIONS_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static RELATIONS_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static CHARACTERS_COPY_NS: [AtomicU64; 6] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static CHARACTERS_DECODE_NS: [AtomicU64; 6] = [
-    AtomicU64::new(0),
+static CHARACTERS_COPY_NS: [AtomicU64; 5] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
-static CHARACTERS_RAW_BYTES: [AtomicU64; 6] = [
-    AtomicU64::new(0),
+static CHARACTERS_DECODE_NS: [AtomicU64; 5] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
-static PROJECTS_COPY_NS: [AtomicU64; 4] = [
+static CHARACTERS_RAW_BYTES: [AtomicU64; 5] = [
     AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static PROJECTS_DECODE_NS: [AtomicU64; 4] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
-static PROJECTS_RAW_BYTES: [AtomicU64; 4] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
+static PROJECTS_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static PROJECTS_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static PROJECTS_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static LEXICAL_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
 static LEXICAL_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
 static LEXICAL_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
@@ -383,9 +365,6 @@ static DIVISIONS_RAW_BYTES: [AtomicU64; 6] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
-static FOCUS_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static FOCUS_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static FOCUS_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static AIR_WING_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static AIR_WING_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static AIR_WING_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
@@ -513,9 +492,6 @@ static AIR_BASES_DECODE_NS: [AtomicU64; 3] =
     [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 static AIR_BASES_RAW_BYTES: [AtomicU64; 3] =
     [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
-static AIR_HISTORY_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static AIR_HISTORY_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static AIR_HISTORY_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static SUPREMACY_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
 static SUPREMACY_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
 static SUPREMACY_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
@@ -595,7 +571,7 @@ pub fn next_seq() -> u64 {
     SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
-const PAYLOADS_PER_FRAME: usize = 21 + CHARACTER_PARTS;
+const PAYLOADS_PER_FRAME: usize = 19 + CHARACTER_PARTS;
 // Each family stages one owned payload or retires its failed staging object;
 // each independent character part owns a separate payload.
 // The worker takes each queued frame before draining retirement, so that frame's
@@ -612,7 +588,6 @@ enum RetiredPayload {
     Projects(ProjectsJob),
     Lexical(LexicalJob),
     Divisions(DivisionsJob),
-    Focus(FocusJob),
     AirWing(AirWingJob),
     AirStats(AirStatsJob),
     Naval(NavalJob),
@@ -622,7 +597,6 @@ enum RetiredPayload {
     ConstructionRest(ConstructionRestJob),
     EconomyRest(EconomyRestJob),
     AirBases(AirBasesJob),
-    AirHistory(AirHistoryJob),
     Supremacy(SupremacyJob),
     Sunk(SunkJob),
     Radar(RadarJob),
@@ -682,9 +656,6 @@ impl Drop for PayloadPools {
         if let Ok(mut pool) = DIVISIONS_JOB_POOL.lock() {
             *pool = Vec::new();
         }
-        if let Ok(mut pool) = FOCUS_JOB_POOL.lock() {
-            *pool = Vec::new();
-        }
 
         if let Ok(mut pool) = AIR_WING_JOB_POOL.lock() {
             *pool = Vec::new();
@@ -711,9 +682,6 @@ impl Drop for PayloadPools {
             *pool = Vec::new();
         }
         if let Ok(mut pool) = AIR_BASES_JOB_POOL.lock() {
-            *pool = Vec::new();
-        }
-        if let Ok(mut pool) = AIR_HISTORY_JOB_POOL.lock() {
             *pool = Vec::new();
         }
 
@@ -759,7 +727,6 @@ pub fn prepare_payload_pools(game_score: bool) -> PayloadPools {
         release_projects_job(ProjectsJob::new());
         release_lexical_job(LexicalJob::new());
         release_divisions_job(DivisionsJob::new_worker());
-        release_focus_job(FocusJob::new());
         release_air_wing_job(AirWingJob::with_game_score(game_score));
         release_air_stats_job(AirStatsJob::new());
         release_naval_job(NavalJob::new());
@@ -769,7 +736,6 @@ pub fn prepare_payload_pools(game_score: bool) -> PayloadPools {
         release_construction_rest_job(ConstructionRestJob::new());
         release_economy_rest_job(EconomyRestJob::new());
         release_air_bases_job(AirBasesJob::new());
-        release_air_history_job(AirHistoryJob::new());
         release_supremacy_job(SupremacyJob::new());
         release_sunk_job(SunkJob::new());
         release_radar_job(RadarJob::new());
@@ -811,7 +777,6 @@ fn reclaim_payloads() {
             RetiredPayload::Projects(job) => release_projects_job(job),
             RetiredPayload::Lexical(job) => release_lexical_job(job),
             RetiredPayload::Divisions(job) => release_divisions_job(job),
-            RetiredPayload::Focus(job) => release_focus_job(job),
             RetiredPayload::AirWing(job) => release_air_wing_job(job),
             RetiredPayload::AirStats(job) => release_air_stats_job(job),
             RetiredPayload::Naval(job) => release_naval_job(job),
@@ -821,7 +786,6 @@ fn reclaim_payloads() {
             RetiredPayload::ConstructionRest(job) => release_construction_rest_job(job),
             RetiredPayload::EconomyRest(job) => release_economy_rest_job(job),
             RetiredPayload::AirBases(job) => release_air_bases_job(job),
-            RetiredPayload::AirHistory(job) => release_air_history_job(job),
             RetiredPayload::Supremacy(job) => release_supremacy_job(job),
             RetiredPayload::Sunk(job) => release_sunk_job(job),
             RetiredPayload::Radar(job) => release_radar_job(job),
@@ -835,28 +799,123 @@ fn reclaim_payloads() {
 /// Enqueue a frame for decode (or ordered forwarding for skip hours).
 /// The loader starts the worker before enabling the hook. A full queue returns the job for
 /// the existing gap path and counts the drop on the existing counters.
+#[cfg(test)]
 pub fn enqueue(shared: &Shared, job: DecodeJob) -> Option<DecodeJob> {
     if crate::allocation::failed() {
         return Some(job);
     }
     match shared.decode_queue.push(job) {
         Ok(()) => {
-            JOBS.fetch_add(1, Ordering::Relaxed);
-            // Decode-queue depth high-water for live backlog visibility.
-            // Records the deepest observed FIFO occupancy (bounded by BUFFERS).
-            let depth = shared.decode_queue.len() as u64;
-            QUEUE_HIGH_WATER.fetch_max(depth, Ordering::Relaxed);
+            enqueued(shared);
             None
         }
         Err(job) => {
-            crate::equipment_destruction::lost_drain();
-            crate::naval_result_sources::lost_drain();
-            crate::air_losses::lost_drain();
-            crate::building_bombing::lost_drain();
-            crate::land_events::fail("land frame decode queue full");
-            DROPS.fetch_add(1, Ordering::Relaxed);
+            refused();
             Some(job)
         }
+    }
+}
+
+/// `enqueue` for the hour's job, filled in place in its reserved slot. A full
+/// queue or a failed allocation retires the job's payloads to their pools for
+/// the existing gap path and returns false.
+pub fn enqueue_reserved(shared: &Shared, mut reserved: Reserved<'_>) -> bool {
+    if crate::allocation::failed() {
+        recycle_payloads(reserved.job());
+        return false;
+    }
+    match reserved.publish() {
+        Ok(()) => {
+            enqueued(shared);
+            true
+        }
+        Err(mut reserved) => {
+            refused();
+            recycle_payloads(reserved.job());
+            false
+        }
+    }
+}
+
+fn enqueued(shared: &Shared) {
+    JOBS.fetch_add(1, Ordering::Relaxed);
+    // Decode-queue depth high-water for live backlog visibility.
+    // Records the deepest observed FIFO occupancy (bounded by BUFFERS).
+    let depth = shared.decode_queue.len() as u64;
+    QUEUE_HIGH_WATER.fetch_max(depth, Ordering::Relaxed);
+}
+
+fn refused() {
+    crate::equipment_destruction::lost_drain();
+    crate::naval_result_sources::lost_drain();
+    crate::air_losses::lost_drain();
+    crate::building_bombing::lost_drain();
+    crate::nuclear_strikes::lost_drain();
+    crate::land_events::fail("land frame decode queue full");
+    DROPS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Return an unqueued job's payloads to their pools.
+fn recycle_payloads(job: &mut DecodeJob) {
+    if let Some(payload) = job.relations_payload.take() {
+        recycle_relations_job(payload);
+    }
+    for payload in job.characters_payload.iter_mut().filter_map(Option::take) {
+        recycle_characters_job(payload);
+    }
+    if let Some(payload) = job.projects_payload.take() {
+        recycle_projects_job(payload);
+    }
+    if let Some(payload) = job.lexical_payload.take() {
+        recycle_lexical_job(payload);
+    }
+    if let Some(payload) = job.divisions_payload.take() {
+        recycle_divisions_job(payload);
+    }
+    if let Some(payload) = job.air_wing_payload.take() {
+        recycle_air_wing_job(payload);
+    }
+    if let Some(payload) = job.air_stats_payload.take() {
+        recycle_air_stats_job(payload);
+    }
+    if let Some(payload) = job.naval_payload.take() {
+        recycle_naval_job(payload);
+    }
+    if let Some(payload) = job.players_payload.take() {
+        recycle_players_job(payload);
+    }
+    if let Some(payload) = job.session_payload.take() {
+        recycle_session_job(payload);
+    }
+    if let Some(payload) = job.production_rest_payload.take() {
+        recycle_production_rest_job(payload);
+    }
+    if let Some(payload) = job.construction_rest_payload.take() {
+        recycle_construction_rest_job(payload);
+    }
+    if let Some(payload) = job.economy_rest_payload.take() {
+        recycle_economy_rest_job(payload);
+    }
+    if let Some(payload) = job.air_bases_payload.take() {
+        recycle_air_bases_job(payload);
+    }
+    if let Some(payload) = job.supremacy_payload.take() {
+        recycle_supremacy_job(payload);
+    }
+    if let Some(payload) = job.sunk_payload.take() {
+        recycle_sunk_job(payload);
+    }
+    if let Some(payload) = job.radar_payload.take() {
+        recycle_radar_job(payload);
+    }
+    if let Some(payload) = job.intel_payload.take() {
+        recycle_intel_job(payload);
+    }
+    if let Some(payload) = job.weather_payload.take() {
+        recycle_weather_job(payload);
+    }
+    if let Some(payload) = job.capitulation_payload.take() {
+        recycle_capitulation_job(payload);
     }
 }
 
@@ -933,10 +992,6 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     if let Some(payload) = job.divisions_payload.take() {
         release_divisions_job(payload);
     }
-    if let Some(payload) = job.focus_payload.take() {
-        release_focus_job(payload);
-    }
-
     if let Some(payload) = job.air_wing_payload.take() {
         release_air_wing_job(payload);
     }
@@ -964,9 +1019,6 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     if let Some(payload) = job.air_bases_payload.take() {
         release_air_bases_job(payload);
     }
-    if let Some(payload) = job.air_history_payload.take() {
-        release_air_history_job(payload);
-    }
 
     if let Some(payload) = job.supremacy_payload.take() {
         release_supremacy_job(payload);
@@ -986,13 +1038,15 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     if let Some(payload) = job.capitulation_payload.take() {
         release_capitulation_job(payload);
     }
-    publish_ready(
+    if publish_ready(
         &shared.ready,
         job.index,
         &shared.completed[job.index],
         job.game_elapsed,
         crate::allocation::failed,
-    );
+    ) {
+        shared.wake_spool();
+    }
     crate::allocation::attempted_hour(None);
 }
 
@@ -1057,6 +1111,7 @@ pub fn start_worker() -> Result<(), &'static str> {
     *slot = Some(
         std::thread::Builder::new()
             .name("hoi4-decode".into())
+            .stack_size(crate::runtime::BACKGROUND_STACK_BYTES)
             .spawn(|| {
                 WORKER_ID.store(
                     unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
@@ -1111,12 +1166,6 @@ fn fail_missing_payloads(frame: &mut sampling::Captured, job: &DecodeJob) {
             .install_failed_division_counts(MISSING_PAYLOAD_REASON);
         frame.extended.fail_division_details(MISSING_PAYLOAD_REASON);
         frame.extended.set_divisions_raw_mode(false);
-    }
-    if job.focus_refresh && job.focus_payload.is_none() {
-        frame
-            .extended
-            .focus_pilot()
-            .fail_focus_capture(true, MISSING_PAYLOAD_REASON);
     }
     if job.air_stats_refresh && job.air_stats_payload.is_none() {
         frame
@@ -1177,12 +1226,6 @@ fn fail_missing_payloads(frame: &mut sampling::Captured, job: &DecodeJob) {
             .extended
             .radar_pilot()
             .fail_registrations_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.air_history_refresh && job.air_history_payload.is_none() {
-        frame
-            .extended
-            .air_history_pilot()
-            .fail_air_history_capture(MISSING_PAYLOAD_REASON);
     }
     if job.supremacy_refresh && job.supremacy_payload.is_none() {
         frame
@@ -1262,7 +1305,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
             continue;
         };
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
-        let mut decode_ticks = [0; 6];
+        let mut decode_ticks = [0; 5];
         let characters = frame.extended.characters_pilot();
         let before_bytes = characters.allocated_bytes();
         characters.decode_characters_payload(shared.base, payload, &mut decode_ticks);
@@ -1282,7 +1325,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
         && let Some(payload) = job.projects_payload.as_ref()
     {
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
-        let mut decode_ticks = [0; 4];
+        let mut decode_ticks = [0; PROJECTS.len()];
         frame.extended.projects_pilot().decode_projects_payload(
             shared.base,
             payload,
@@ -1341,23 +1384,6 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
-    if job.focus_refresh
-        && let Some(payload) = job.focus_payload.as_ref()
-    {
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
-        let mut decode_ticks = [0; 2];
-        frame
-            .extended
-            .focus_pilot()
-            .decode_focus_payload(shared.base, payload, &mut decode_ticks);
-        for (total, ticks) in FOCUS_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
-    }
-
     if job.air_wing_refresh
         && let Some(payload) = job.air_wing_payload.as_mut()
     {
@@ -1545,23 +1571,6 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
-    if job.air_history_refresh
-        && let Some(payload) = job.air_history_payload.as_ref()
-    {
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
-        let mut decode_ticks = [0; 2];
-        frame
-            .extended
-            .air_history_pilot()
-            .decode_air_history_payload(payload, &mut decode_ticks);
-        for (total, ticks) in AIR_HISTORY_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
-    }
-
     if job.supremacy_refresh
         && let Some(payload) = job.supremacy_payload.as_ref()
     {
@@ -1632,9 +1641,15 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     {
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 2];
+        let mut tracker = shared
+            .weather_temperature
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         frame.extended.weather_pilot().decode_weather_payload(
             shared.base,
             payload,
+            job.hour,
+            &mut tracker,
             &mut decode_ticks,
         );
         for (total, ticks) in WEATHER_DECODE_NS.iter().zip(decode_ticks) {
@@ -1673,7 +1688,8 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
 /// join it, then synchronously decode any remaining FIFO items in order and
 /// hand them to the spool ready queue before the existing spool drain runs.
 /// The spool thread is still consuming, so handoffs make progress.
-pub fn detach_drain() -> Result<(), &'static str> {
+/// `drained` receives the count of queued jobs decoded so far, after each.
+pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
     STOP.store(true, Ordering::Release);
     let (worker, mut error) = match WORKER.lock() {
         Ok(mut slot) => (slot.take(), None),
@@ -1689,6 +1705,7 @@ pub fn detach_drain() -> Result<(), &'static str> {
         crate::naval_result_sources::lost_drain();
         crate::air_losses::lost_drain();
         crate::building_bombing::lost_drain();
+        crate::nuclear_strikes::lost_drain();
         crate::land_events::fail("land decode worker panicked");
         error = Some("decode worker panicked; its in-flight frame may be incomplete");
     }
@@ -1703,8 +1720,11 @@ pub fn detach_drain() -> Result<(), &'static str> {
     // race or retain references into worker/ready-queue storage.
     let mut air_bases_memo = AirBasesMemo::default();
     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut count = 0;
         while let Some(job) = shared.decode_queue.pop() {
             process_owned_job(shared, job, &mut air_bases_memo);
+            count += 1;
+            drained(count);
         }
     }))
     .is_err()
@@ -1713,6 +1733,7 @@ pub fn detach_drain() -> Result<(), &'static str> {
         crate::naval_result_sources::lost_drain();
         crate::air_losses::lost_drain();
         crate::building_bombing::lost_drain();
+        crate::nuclear_strikes::lost_drain();
         crate::land_events::fail("land decode detach drain panicked");
         error = Some("decode detach drain panicked; queued frames remain incomplete");
     }
@@ -1775,15 +1796,6 @@ pub fn calibration() -> Calibration {
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
         divisions_raw_bytes: DIVISIONS_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        focus_copy_ns: FOCUS_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        focus_decode_ns: FOCUS_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        focus_raw_bytes: FOCUS_RAW_BYTES
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
         air_wing_copy_ns: AIR_WING_COPY_NS
@@ -1867,15 +1879,6 @@ pub fn calibration() -> Calibration {
         air_bases_raw_bytes: AIR_BASES_RAW_BYTES
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
-        air_history_copy_ns: AIR_HISTORY_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        air_history_decode_ns: AIR_HISTORY_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        air_history_raw_bytes: AIR_HISTORY_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
         supremacy_copy_ns: SUPREMACY_COPY_NS
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
@@ -1945,12 +1948,12 @@ pub struct Calibration {
     pub relations_copy_ns: [u64; 2],
     pub relations_decode_ns: [u64; 2],
     pub relations_raw_bytes: [u64; 2],
-    pub characters_copy_ns: [u64; 6],
-    pub characters_decode_ns: [u64; 6],
-    pub characters_raw_bytes: [u64; 6],
-    pub projects_copy_ns: [u64; 4],
-    pub projects_decode_ns: [u64; 4],
-    pub projects_raw_bytes: [u64; 4],
+    pub characters_copy_ns: [u64; 5],
+    pub characters_decode_ns: [u64; 5],
+    pub characters_raw_bytes: [u64; 5],
+    pub projects_copy_ns: [u64; 2],
+    pub projects_decode_ns: [u64; 2],
+    pub projects_raw_bytes: [u64; 2],
     pub lexical_copy_ns: [u64; 1],
     pub lexical_decode_ns: [u64; 1],
     pub lexical_raw_bytes: [u64; 1],
@@ -1958,9 +1961,6 @@ pub struct Calibration {
     pub divisions_decode_ns: [u64; 6],
     pub division_presentation_decode_ns: [u64; 2],
     pub divisions_raw_bytes: [u64; 6],
-    pub focus_copy_ns: [u64; 2],
-    pub focus_decode_ns: [u64; 2],
-    pub focus_raw_bytes: [u64; 2],
     pub air_wing_copy_ns: [u64; 2],
     pub air_wing_decode_ns: [u64; 2],
     pub air_wing_raw_bytes: [u64; 2],
@@ -1988,9 +1988,6 @@ pub struct Calibration {
     pub air_bases_copy_ns: [u64; 3],
     pub air_bases_decode_ns: [u64; 3],
     pub air_bases_raw_bytes: [u64; 3],
-    pub air_history_copy_ns: [u64; 2],
-    pub air_history_decode_ns: [u64; 2],
-    pub air_history_raw_bytes: [u64; 2],
     pub supremacy_copy_ns: [u64; 1],
     pub supremacy_decode_ns: [u64; 1],
     pub supremacy_raw_bytes: [u64; 1],
@@ -2051,7 +2048,7 @@ impl Calibration {
             "characters_copy_ns": self.characters_copy_ns,
             "characters_decode_ns": self.characters_decode_ns,
             "characters_raw_bytes": self.characters_raw_bytes,
-            "characters_tables": ["Characters", "CountryLeaderRoles", "AdvisorRoles", "UnitLeaders", "UnitLeaderTraits", "UnitLeaderTraitExperience"],
+            "characters_tables": ["Characters", "CountryLeaderRoles", "AdvisorRoles", "UnitLeaders", "UnitLeaderTraits"],
             "projects_copy_ns": self.projects_copy_ns,
             "projects_decode_ns": self.projects_decode_ns,
             "projects_raw_bytes": self.projects_raw_bytes,
@@ -2066,10 +2063,6 @@ impl Calibration {
             "division_presentation_tables": ["DivisionMovement", "DivisionStatus"],
             "divisions_raw_bytes": self.divisions_raw_bytes,
             "divisions_tables": ["Divisions", "DivisionEquipment", "ArmyUpgradeGroups", "ArmyUpgradeRequests", "ArmyUpgradeDeliveries", "ArmyUpgradeProduced"],
-            "focus_copy_ns": self.focus_copy_ns,
-            "focus_decode_ns": self.focus_decode_ns,
-            "focus_raw_bytes": self.focus_raw_bytes,
-            "focus_tables": ["Focus", "CompletedFocuses"],
             "air_wing_copy_ns": self.air_wing_copy_ns,
             "air_wing_decode_ns": self.air_wing_decode_ns,
             "air_wing_raw_bytes": self.air_wing_raw_bytes,
@@ -2101,15 +2094,11 @@ impl Calibration {
             "economy_rest_copy_ns": self.economy_rest_copy_ns,
             "economy_rest_decode_ns": self.economy_rest_decode_ns,
             "economy_rest_raw_bytes": self.economy_rest_raw_bytes,
-            "economy_rest_tables": ["CountryFuel", "CountryExperience", "ProvinceSupply", "HubMotorization", "DisruptedSupply", "ForeignHomebases", "ResourceDefinitions", "CountryResources", "ResourceExchanges", "PurchaseContracts", "CountryFuelConsumers"],
+            "economy_rest_tables": ECONOMY_REST_NAMES,
             "air_bases_copy_ns": self.air_bases_copy_ns,
             "air_bases_decode_ns": self.air_bases_decode_ns,
             "air_bases_raw_bytes": self.air_bases_raw_bytes,
             "air_bases_tables": ["AirBases", "AirBaseRegistrations", "AirAces"],
-            "air_history_copy_ns": self.air_history_copy_ns,
-            "air_history_decode_ns": self.air_history_decode_ns,
-            "air_history_raw_bytes": self.air_history_raw_bytes,
-            "air_history_tables": ["AirRegionHistory", "AirRegionDamage"],
             "supremacy_copy_ns": self.supremacy_copy_ns,
             "supremacy_decode_ns": self.supremacy_decode_ns,
             "supremacy_raw_bytes": self.supremacy_raw_bytes,
@@ -2147,8 +2136,129 @@ pub fn calibration_json() -> impl serde::Serialize {
     }))
 }
 
-/// Bounded raw FIFO type shared with sampling's pool (indices only).
-pub type DecodeQueue = ArrayQueue<DecodeJob>;
+/// The bounded decode FIFO. Each job is filled in place in a preallocated
+/// slot and only slot numbers move through the queues, so the game thread
+/// never moves a job (tens of KiB) through its stack. A slot belongs to one
+/// side at a time: free, reserved by its producer, ready, or held by the
+/// consumer while it moves the job out.
+pub struct DecodeQueue {
+    jobs: Box<[UnsafeCell<DecodeJob>]>,
+    free: ArrayQueue<usize>,
+    ready: ArrayQueue<usize>,
+}
+
+// SAFETY: a slot's job is accessed only by the side holding its number.
+unsafe impl Sync for DecodeQueue {}
+
+impl DecodeQueue {
+    fn new(capacity: usize) -> Self {
+        let free = ArrayQueue::new(capacity);
+        for slot in 0..capacity {
+            free.push(slot).expect("decode slot fits its free list");
+        }
+        Self {
+            jobs: (0..capacity)
+                .map(|_| UnsafeCell::new(DecodeJob::default()))
+                .collect(),
+            free,
+            ready: ArrayQueue::new(capacity),
+        }
+    }
+
+    /// A vacant slot to fill in place. The hourly body holds one only while it
+    /// owns a buffer, and every queued job holds another buffer, so one is free.
+    pub fn reserve(&self) -> Option<Reserved<'_>> {
+        self.free.pop().map(|slot| Reserved { queue: self, slot })
+    }
+
+    /// By value, like the queue it replaced; the hourly body fills a reservation.
+    #[cfg(test)]
+    #[allow(clippy::result_large_err)]
+    pub fn push(&self, job: DecodeJob) -> Result<(), DecodeJob> {
+        let Some(mut reserved) = self.reserve() else {
+            return Err(job);
+        };
+        *reserved.job() = job;
+        reserved
+            .publish()
+            .map_err(|mut reserved| std::mem::take(reserved.job()))
+    }
+
+    pub fn pop(&self) -> Option<DecodeJob> {
+        let slot = self.ready.pop()?;
+        // SAFETY: popping the slot's number from `ready` hands it to this consumer.
+        let job = std::mem::take(unsafe { &mut *self.jobs[slot].get() });
+        self.free
+            .push(slot)
+            .expect("decode slot returns to its free list");
+        Some(job)
+    }
+
+    pub fn len(&self) -> usize {
+        self.ready.len()
+    }
+
+    #[cfg(test)]
+    pub fn capacity(&self) -> usize {
+        self.ready.capacity()
+    }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.ready.is_empty()
+    }
+}
+
+/// A producer's slot. Dropped unpublished, it returns vacant: payloads it
+/// still holds are dropped, like the locals they replace.
+pub struct Reserved<'a> {
+    queue: &'a DecodeQueue,
+    slot: usize,
+}
+
+impl Reserved<'_> {
+    pub fn job(&mut self) -> &mut DecodeJob {
+        // SAFETY: this reservation holds the slot's number.
+        unsafe { &mut *self.queue.jobs[self.slot].get() }
+    }
+
+    /// Hand the job to the consumer; a full queue returns the reservation.
+    fn publish(self) -> Result<(), Self> {
+        if self.queue.ready.push(self.slot).is_err() {
+            return Err(self);
+        }
+        std::mem::forget(self);
+        Ok(())
+    }
+}
+
+impl Drop for Reserved<'_> {
+    fn drop(&mut self) {
+        let job = self.job();
+        // Field by field: no vacant job is built on this stack.
+        job.relations_payload = None;
+        job.characters_payload = [const { None }; CHARACTER_PARTS];
+        job.projects_payload = None;
+        job.lexical_payload = None;
+        job.divisions_payload = None;
+        job.air_wing_payload = None;
+        job.air_stats_payload = None;
+        job.naval_payload = None;
+        job.players_payload = None;
+        job.session_payload = None;
+        job.production_rest_payload = None;
+        job.construction_rest_payload = None;
+        job.economy_rest_payload = None;
+        job.air_bases_payload = None;
+        job.supremacy_payload = None;
+        job.sunk_payload = None;
+        job.radar_payload = None;
+        job.intel_payload = None;
+        job.weather_payload = None;
+        job.capitulation_payload = None;
+        let _ = self.queue.free.push(self.slot);
+    }
+}
 
 pub fn new_queue() -> DecodeQueue {
     DecodeQueue::new(BUFFERS)
@@ -2178,9 +2288,6 @@ pub(crate) fn reset_calibration_for_test() {
         .chain(DIVISIONS_DECODE_NS.iter())
         .chain(DIVISION_PRESENTATION_DECODE_NS.iter())
         .chain(DIVISIONS_RAW_BYTES.iter())
-        .chain(FOCUS_COPY_NS.iter())
-        .chain(FOCUS_DECODE_NS.iter())
-        .chain(FOCUS_RAW_BYTES.iter())
         .chain(AIR_WING_COPY_NS.iter())
         .chain(AIR_WING_DECODE_NS.iter())
         .chain(AIR_WING_RAW_BYTES.iter())
@@ -2209,9 +2316,6 @@ pub(crate) fn reset_calibration_for_test() {
         .chain(AIR_BASES_DECODE_NS.iter())
         .chain(AIR_BASES_MEMO.iter())
         .chain(AIR_BASES_RAW_BYTES.iter())
-        .chain(AIR_HISTORY_COPY_NS.iter())
-        .chain(AIR_HISTORY_DECODE_NS.iter())
-        .chain(AIR_HISTORY_RAW_BYTES.iter())
         .chain(SUPREMACY_COPY_NS.iter())
         .chain(SUPREMACY_DECODE_NS.iter())
         .chain(SUPREMACY_RAW_BYTES.iter())

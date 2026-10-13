@@ -173,6 +173,7 @@ fn scalar_details(
             pointer,
             &Members::none(),
             &mut Commanders::default(),
+            &mut Leaders::default(),
             index,
             [attackers, defenders][index],
             side,
@@ -754,6 +755,12 @@ impl Memory for DetailMemory<'_> {
             destination.copy_from_slice(&0x11000_u64.to_le_bytes());
             return true;
         }
+        if address == BASE + crate::naval_commander_inputs::LEARNING_THRESHOLD_RVA
+            && destination.len() == 8
+        {
+            destination.copy_from_slice(&5_000_i64.to_le_bytes());
+            return true;
+        }
         self.fixture.memory().copy(address, destination)
     }
 }
@@ -1066,6 +1073,20 @@ fn commander_fixture() -> Fixture {
     fixture.array(LEADER + cunit_leader::TRAIT_EXPERIENCE_DATA, 0xf000, 1);
     fixture.u64(0xf000, TRAIT as u64);
     fixture.u64(0xf008, 321000);
+    // The ordinary leader block (+0x408, accumulator +0x10) the skill hover
+    // describes: keys 0x5F and 0x60 among others, sorted.
+    fixture.array(
+        LEADER + carmy_leader::MOVEMENT_MODIFIER + carmy_leader::MODIFIER_ACCUMULATOR,
+        0x11400,
+        3,
+    );
+    for (entry, (key, value)) in [(0x2b_u32, 7_i64), (0x5f, -12_345), (0x60, 67_891)]
+        .into_iter()
+        .enumerate()
+    {
+        fixture.u32(0x11400 + entry * 16, key);
+        fixture.u64(0x11400 + entry * 16 + 8, value as u64);
+    }
     fixture
 }
 
@@ -1438,6 +1459,27 @@ fn commander_selection_preserves_equal_skill_category_tie_and_hourly_traits() {
     assert_eq!(side.learning_traits.len, 1);
     assert_eq!(learning.required_experience, 3);
     assert_eq!(learning.experience, 321000);
+    // The skill and portrait hovers' operands: the next level (index 0, the
+    // null object, past the one-level vector), the live learning floor, and
+    // the ordinary block's keys, since the deployed-HQ feature is off.
+    assert_eq!(
+        side.next_skill.map(|next| (next.present, next.valid)),
+        Some((1, 0))
+    );
+    assert_eq!(side.learning_threshold, Some(5_000));
+    assert_eq!(side.skill_modifiers, Some([-12_345, 67_891]));
+    assert_eq!(side.side_input_refusals, [None; 3]);
+    // The defender has no commander and reads none of them.
+    let defender = &row.sides[1];
+    assert_eq!(
+        (
+            defender.next_skill,
+            defender.learning_threshold,
+            defender.skill_modifiers
+        ),
+        (None, None, None)
+    );
+    assert_eq!(defender.side_input_refusals, [None; 3]);
     eprintln!(
         "land details synthetic one combat / three units / two commanders / one assigned and learning trait: {} copies, {} bytes",
         memory.copies.get(),
@@ -1445,9 +1487,78 @@ fn commander_selection_preserves_equal_skill_category_tie_and_hourly_traits() {
     );
 }
 
-/// Commander name and description retain arbitrary stored MSVC-string
-/// lengths, including empty strings. Short arenas retain full demand;
-/// invalid storage reports the field by name.
+/// One pass's combats share a selected leader's leader-only reads (here its
+/// next skill and presentation): a second combat under the same leader reads
+/// fewer words and records the same row, and a new pass reads them again.
+#[test]
+fn a_pass_reads_a_shared_leaders_own_inputs_once() {
+    let fixture = commander_fixture();
+    let memory = DetailMemory {
+        fixture: &fixture,
+        copies: 0.into(),
+        bytes: 0.into(),
+    };
+    let read = |leaders: &mut Leaders| {
+        let mut arenas = Arenas::new();
+        let before = memory.copies.get();
+        let row = read_details_sharing(
+            &memory,
+            BASE,
+            detail_source(),
+            &Members::none(),
+            &mut Commanders::default(),
+            leaders,
+            &mut arenas.view(),
+        )
+        .unwrap();
+        (row, memory.copies.get() - before)
+    };
+    let mut leaders = Leaders::default();
+    let (first, fresh) = read(&mut leaders);
+    let (second, shared) = read(&mut leaders);
+    assert_eq!(second, first);
+    assert!(shared < fresh, "{shared} copies, {fresh} afresh");
+    leaders.clear();
+    assert_eq!(read(&mut leaders), (first, fresh));
+}
+
+/// The skill hover's next level, the learning floor and the leader block are
+/// optional hover inputs: when they cannot be read (here the module's skill
+/// database, floor and feature flags are not mapped) each refuses by name,
+/// and the row, the commander and the reads after them stand.
+#[test]
+fn unreadable_optional_side_inputs_refuse_only_themselves() {
+    let fixture = commander_fixture();
+    let mut arenas = Arenas::new();
+    let mut view = arenas.view();
+    let row = read_details(
+        &fixture.memory(),
+        BASE,
+        detail_source(),
+        &Members::none(),
+        &mut Commanders::default(),
+        &mut view,
+    )
+    .unwrap();
+    let side = &row.sides[0];
+    assert_eq!(side.commander >> 32, 42);
+    assert_eq!(
+        (
+            side.next_skill,
+            side.learning_threshold,
+            side.skill_modifiers
+        ),
+        (None, None, None)
+    );
+    assert!(side.side_input_refusals.iter().all(Option::is_some));
+    assert_eq!(side.commander_formation, (19 << 32) | 4721);
+    assert_eq!(side.learning_traits.len, 1);
+}
+
+/// The selected commander's +0x20 name is stored as an ordinary MSVC string and
+/// text rendering takes any length, empty included; +0x80 is the same kind of
+/// string. Both keep the game's length in the text arena, count into its demand
+/// when they do not fit, and name their field when invalid.
 #[test]
 fn selected_commander_texts_keep_native_length_and_name_their_field() {
     use crate::cunit_leader::{DESCRIPTION_TOKEN, TOKEN};
@@ -1867,48 +1978,6 @@ fn country_sets_refuse_broken_links_and_keep_what_the_game_stored() {
     assert!(refused(
         &|f| f.u32(DEFEND + cland_combatant::COUNTRIES + 0x10, 1)
     ));
-}
-
-#[test]
-fn progress_preserves_integer_division_and_complement() {
-    for (a, d, expected) in [
-        (0, 0, 50_000),
-        (1, 2, 33_333),
-        (2, 1, 66_666),
-        (-1, 10, 0),
-        (10, -1, 100_000),
-        (i64::MAX, 0, 100_000),
-        (i64::MAX, 1, 50_000),
-    ] {
-        assert_eq!(progress_from_organisation(a, d), Some(expected));
-    }
-}
-
-#[test]
-fn shared_census_progress_includes_all_units_and_selects_first_live_map_entity() {
-    let mut fixture = Fixture::new();
-    fixture.u64(UNIT_A + carmy::ORGANISATION, 1);
-    fixture.u64(UNIT_B + carmy::ORGANISATION, 2);
-    fixture.u64(UNIT_C + carmy::ORGANISATION, 6);
-    fixture.u64(UNIT_A + cunit::MAP_ENTITY, 1);
-    fixture.u64(UNIT_A + cunit::LOCATION, PROVINCE_OBJECT as u64);
-    let mut rows = [Row::default(); 2];
-    let mut participants = [0; 8];
-    let mut progress = Vec::new();
-    let captured = walk_with(
-        &fixture.memory(),
-        BASE,
-        STATE,
-        &mut rows,
-        &mut participants,
-        |source| progress.push(read_progress(&fixture.memory(), BASE, source).unwrap()),
-    );
-    assert_eq!(captured.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(progress[0].attacker_progress, 33_333);
-    assert_eq!(progress[0].defender_progress, 66_667);
-    assert_eq!(progress[0].direction_attacker, 1);
-    assert_eq!(progress[0].direction_province, 1);
-    assert_eq!(&participants[..3], &[u64::MAX - 4, 1, 62]);
 }
 
 #[test]

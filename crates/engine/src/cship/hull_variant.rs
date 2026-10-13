@@ -70,13 +70,17 @@ pub struct HullVariantInputs {
 
 /// One consecutive selected-source observation within this stopped capture.
 /// Both healthy and failed fields remain frozen while this exact key repeats;
-/// a different key begins the next observation. No allocator or global cache.
+/// a different key begins the next observation. A worker also keeps every
+/// packet whose six fields all succeeded, keyed by the same exact source, so
+/// a variant seen earlier in the capture is not acquired again; refused or
+/// partial packets never enter that map. No global cache.
 #[derive(Default)]
 pub(super) struct Memo {
     last: Option<(Key, Option<HullVariantInputs>)>,
+    complete: crate::combat_sources::Map<Key, HullVariantInputs>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct Key {
     base: usize,
     pointer: usize,
@@ -98,6 +102,15 @@ impl Key {
 }
 
 impl Memo {
+    pub(super) fn reset(&mut self) {
+        self.last = None;
+        self.complete.clear();
+    }
+
+    pub(super) fn allocated_bytes(&self) -> usize {
+        self.complete.capacity() * std::mem::size_of::<(Key, HullVariantInputs)>()
+    }
+
     /// A successful different/null model source breaks adjacency even when
     /// no optional tuple is requested for that row. This performs no reads.
     pub(super) fn retain_source(&mut self, base: usize, source: Option<&SelectedModelVariant>) {
@@ -119,9 +132,10 @@ impl Memo {
 /// Definition/DB faults withhold only the ordinal; every raw term is independent.
 ///
 /// At most14 fixed guarded spans/101 bytes per nonnull selection, without
-/// retries, allocation or a definition walk. Consecutive same-key observations
-/// retain their completed/failed packet without reading again. Reset ModelMemo
-/// at every capture; a different key replaces the last observation. The caller
+/// retries or a definition walk. Consecutive same-key observations retain
+/// their completed/failed packet without reading again, and a worker reuses
+/// any earlier complete packet of the same key. Reset ModelMemo at every
+/// capture; a different key replaces the last observation. The caller
 /// admits this separately from the old budget. Empty selection has no reads.
 /// A registered variant can reference the native null CType: its exact
 /// singleton yields ordinal-1 (12 spans/70 bytes), never recorded Equipment[0].
@@ -132,17 +146,36 @@ pub fn read_hull_variant(
     memo: &mut ModelMemo,
 ) -> Option<HullVariantInputs> {
     let key = Key::new(base, source);
-    if let Some((_, packet)) = memo
-        .hull_variant
-        .last
-        .as_ref()
-        .filter(|(saved, _)| *saved == key)
-    {
+    let state = &mut memo.hull_variant;
+    if let Some((_, packet)) = state.last.as_ref().filter(|(saved, _)| *saved == key) {
         return *packet;
     }
-    let packet = acquire(memory, base, source);
-    memo.hull_variant.last = Some((key, packet));
+    let packet = match state.complete.get(&key) {
+        Some(packet) => Some(*packet),
+        None => {
+            let packet = acquire(memory, base, source);
+            if let Some(complete) = packet.filter(complete)
+                && memo.growing
+                // An allocation failure is already terminal for the capture;
+                // it only forgoes this reuse.
+                && crate::allocation::reserve_map(&mut state.complete, 1).is_ok()
+            {
+                state.complete.insert(key, complete);
+            }
+            packet
+        }
+    };
+    state.last = Some((key, packet));
     packet
+}
+
+fn complete(packet: &HullVariantInputs) -> bool {
+    packet.definition_index.is_some()
+        && packet.module_count.is_some()
+        && packet.upgrade_level_sum.is_some()
+        && packet.module_priority_sum.is_some()
+        && packet.version.is_some()
+        && packet.organisation_marker.is_some()
 }
 
 fn acquire(

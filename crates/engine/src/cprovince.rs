@@ -6,6 +6,9 @@ use crate::{
     walk::Outcome,
 };
 
+mod identity_batch;
+pub use identity_batch::IdentityBatch;
+
 /// Per-province native arrays in original order; ranges address caller-owned handles.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct UnitOrderRow {
@@ -50,7 +53,9 @@ pub fn walk_unit_order_with_land(
         state,
         crate::walk::Buffer::Fixed(output),
         crate::walk::Buffer::Fixed(handles),
+        |_| None,
         land,
+        None,
     )
 }
 
@@ -64,23 +69,123 @@ pub fn walk_unit_order_growing_with_land(
     handles: &mut Vec<u64>,
     land: impl FnMut(u32, u64) -> Result<(), &'static str>,
 ) -> UnitOrderWalk {
+    walk_unit_order_growing_with_known(memory, base, state, output, handles, |_| None, land)
+}
+
+/// A division the caller's census authenticated at this same boundary: a
+/// CArmy (both vtables) of class zero listed in a country's division roster,
+/// with its full handle and its `CUnit+0x1F0` location, read in the census's
+/// batched gather. The walk takes such an occupant's class-zero identity and
+/// backlink from here instead of reading the unit and its registry entry: the
+/// roster that lists the division proves it is live, as the registry join does.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct KnownUnit {
+    pub handle: u64,
+    pub location: usize,
+}
+
+/// [`walk_unit_order_growing_with_land`], taking each occupant `known`
+/// returns from the caller's census. The other occupants (task forces,
+/// railway guns, a division the census did not hold) are authenticated as
+/// before; every row, handle, demand and refusal is the plain walk's over the
+/// same memory.
+pub fn walk_unit_order_growing_with_known(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    output: &mut Vec<UnitOrderRow>,
+    handles: &mut Vec<u64>,
+    known: impl Fn(usize) -> Option<KnownUnit>,
+    land: impl FnMut(u32, u64) -> Result<(), &'static str>,
+) -> UnitOrderWalk {
     unit_order(
         memory,
         base,
         state,
         crate::walk::Buffer::Growing(output),
         crate::walk::Buffer::Growing(handles),
+        known,
         land,
+        None,
     )
 }
 
+/// The rows of the `listed` provinces only, in list order: the plain walk's
+/// row, handles, demand and `land` visits for each, with every other
+/// province neither read nor rowed. `listed` holds ascending province ids
+/// inside the array's census; the array header is read as always and only
+/// the listed slots after it.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_unit_order_listed(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    listed: &[u32],
+    output: &mut Vec<UnitOrderRow>,
+    handles: &mut Vec<u64>,
+    known: impl Fn(usize) -> Option<KnownUnit>,
+    land: impl FnMut(u32, u64) -> Result<(), &'static str>,
+) -> UnitOrderWalk {
+    unit_order(
+        memory,
+        base,
+        state,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(handles),
+        known,
+        land,
+        Some(listed),
+    )
+}
+
+/// The province array header [`walk_unit_order`] reads first: its data
+/// pointer, capacity and count.
+pub fn unit_order_header(memory: &impl Memory, state: usize) -> Option<[u8; 16]> {
+    crate::read::<[u8; 16]>(memory, state.checked_add(cgame_state::PROVINCES)?)
+}
+
+/// Every slot pointer of the province array `header` describes, ids 1 and
+/// up, into `slots`, in guarded copies of up to 512 slots.
+pub fn unit_order_slots(
+    memory: &impl Memory,
+    header: [u8; 16],
+    slots: &mut Vec<usize>,
+) -> Result<(), &'static str> {
+    const CHUNK: usize = 512;
+    slots.clear();
+    let provinces = Array::from_header(header, 8)
+        .filter(|a| a.count > 1)
+        .ok_or("province order census invalid")?;
+    crate::allocation::reserve(slots, provinces.count as usize - 1)
+        .map_err(|_| "province order slot allocation failed")?;
+    let mut bytes = [0u8; CHUNK * 8];
+    for first in (1..provinces.count).step_by(CHUNK) {
+        let n = ((provinces.count - first) as usize).min(CHUNK);
+        let at = provinces
+            .element(first, 8)
+            .ok_or("province order slot unreadable")?;
+        if !crate::read_slice(memory, at, &mut bytes[..n * 8]) {
+            return Err("province order slot unreadable");
+        }
+        slots.extend(
+            bytes[..n * 8]
+                .chunks_exact(8)
+                .map(|word| u64::from_le_bytes(word.try_into().unwrap()) as usize),
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn unit_order(
     memory: &impl Memory,
     base: usize,
     state: usize,
     mut output: crate::walk::Buffer<'_, UnitOrderRow>,
     mut handles: crate::walk::Buffer<'_, u64>,
+    known: impl Fn(usize) -> Option<KnownUnit>,
     mut land: impl FnMut(u32, u64) -> Result<(), &'static str>,
+    listed: Option<&[u32]>,
 ) -> UnitOrderWalk {
     let mut used = 0usize;
     let mut required = 0usize;
@@ -93,7 +198,8 @@ fn unit_order(
         let provinces = Array::from_header(header, 8)
             .filter(|a| a.count > 1)
             .ok_or("province order census invalid")?;
-        output.ensure((provinces.count - 1) as usize)?;
+        let total = listed.map_or((provinces.count - 1) as usize, <[u32]>::len);
+        output.ensure(total)?;
         let mut len = 0_usize;
         let mut missing = 0u32;
         let vtable = base
@@ -104,23 +210,40 @@ fn unit_order(
         let mut pointers = [0usize; BATCH_ROWS];
         let mut fields = [0u8; BATCH_ROWS * UNIT_ORDER_ROW_BYTES];
         let mut unit_pointers = [0u8; BATCH_ROWS * 8];
-        let mut index = 1;
-        while index < provinces.count {
-            // Keep each slot pointer as its own ordered observation without
-            // constructing scattered addresses and destinations for the batch.
-            let n = ((provinces.count - index) as usize).min(BATCH_ROWS);
-            if memory.copy_records(
-                RecordSources::Strided {
-                    base: provinces
-                        .element(index, 8)
-                        .ok_or("province order slot unreadable")?,
-                    stride: 8,
-                    count: n,
-                },
-                &POINTER_LAYOUT,
-                &mut pointer_bytes[..n * 8],
-            ) != n
-            {
+        let mut ids = [0u32; BATCH_ROWS];
+        let mut slots = [0usize; BATCH_ROWS];
+        let mut done = 0;
+        while done < total {
+            let n = (total - done).min(BATCH_ROWS);
+            // Every slot is its own ordered observation; consecutive slots
+            // need no scattered addresses.
+            let sources = match listed {
+                None => {
+                    for (slot, id) in ids[..n].iter_mut().enumerate() {
+                        *id = (done + slot + 1) as u32;
+                    }
+                    RecordSources::Strided {
+                        base: provinces
+                            .element(ids[0], 8)
+                            .ok_or("province order slot unreadable")?,
+                        stride: 8,
+                        count: n,
+                    }
+                }
+                Some(list) => {
+                    ids[..n].copy_from_slice(&list[done..done + n]);
+                    for (slot, &id) in slots[..n].iter_mut().zip(&ids[..n]) {
+                        if id == 0 || id >= provinces.count {
+                            return Err("province order listed province outside census");
+                        }
+                        *slot = provinces
+                            .element(id, 8)
+                            .ok_or("province order slot unreadable")?;
+                    }
+                    RecordSources::Pointers(&slots[..n])
+                }
+            };
+            if memory.copy_records(sources, &POINTER_LAYOUT, &mut pointer_bytes[..n * 8]) != n {
                 return Err("province order slot unreadable");
             }
             for (pointer, bytes) in pointers[..n].iter_mut().zip(pointer_bytes.chunks_exact(8)) {
@@ -142,10 +265,9 @@ fn unit_order(
                     "province order header unreadable"
                 });
             }
-            let first = index;
-            index += n as u32;
+            done += n;
             for slot in 0..n {
-                let province = first + slot as u32;
+                let province = ids[slot];
                 let pointer = pointers[slot];
                 let row = &fields[slot * UNIT_ORDER_ROW_BYTES..][..UNIT_ORDER_ROW_BYTES];
                 if u64::from_le_bytes(row[..8].try_into().unwrap()) != vtable
@@ -205,11 +327,14 @@ fn unit_order(
                         }
                         // Hint each admitted occurrence once, in groups of four
                         // within this already-copied chunk. Later unit-object misses
-                        // can overlap the preceding serial registry lookup.
+                        // can overlap the preceding serial registry lookup. A
+                        // census division needs neither its object nor a hint.
                         for pending in unit_pointers[..n * 8].chunks(4 * 8) {
-                            for bytes in pending.chunks_exact(8) {
+                            let mut census = [None; 4];
+                            for (slot, bytes) in pending.chunks_exact(8).enumerate() {
                                 let unit = u64::from_le_bytes(bytes.try_into().unwrap()) as usize;
-                                if unit != 0 {
+                                census[slot] = known(unit);
+                                if unit != 0 && census[slot].is_none() {
                                     crate::prefetch::span(unit, 32);
                                     if let Some(backlink) = unit.checked_add(crate::cunit::LOCATION)
                                     {
@@ -217,20 +342,33 @@ fn unit_order(
                                     }
                                 }
                             }
-                            for bytes in pending.chunks_exact(8) {
+                            for (slot, bytes) in pending.chunks_exact(8).enumerate() {
                                 let unit = u64::from_le_bytes(bytes.try_into().unwrap()) as usize;
-                                let (handle, class) = crate::cunit::counter_identity(
-                                    memory,
-                                    base,
-                                    unit,
-                                    &mut registry,
-                                )?;
+                                let (handle, class, location) = match census[slot] {
+                                    Some(KnownUnit { handle, location }) => {
+                                        (handle, 0, Some(location))
+                                    }
+                                    None => {
+                                        let (handle, class) = crate::cunit::counter_identity(
+                                            memory,
+                                            base,
+                                            unit,
+                                            &mut registry,
+                                        )?;
+                                        (handle, class, None)
+                                    }
+                                };
                                 if (lane == 1 && class != 1)
-                                    || crate::read::<u64>(
-                                        memory,
-                                        unit.checked_add(crate::cunit::LOCATION)
-                                            .ok_or("province unit backlink overflow")?,
-                                    ) != Some(pointer as u64)
+                                    || match location {
+                                        Some(location) => location != pointer,
+                                        None => {
+                                            crate::read::<u64>(
+                                                memory,
+                                                unit.checked_add(crate::cunit::LOCATION)
+                                                    .ok_or("province unit backlink overflow")?,
+                                            ) != Some(pointer as u64)
+                                        }
+                                    }
                                 {
                                     return Err("province unit roster backlink mismatch");
                                 }
@@ -583,13 +721,25 @@ pub struct Row {
     /// Nonzero when the province building fort sum is positive; this is the
     /// movement graph's complete demand.
     pub fort_positive: u8,
-    /// Exact original building scan result; pointer never leaves acquisition.
-    pub attack_fort_sum: Option<i32>,
-    pub attack_state: Option<usize>,
     /// Province movement-access gates, the `MOVE_*` bits.
     pub move_gate: u8,
     /// Raw province_definition [`crate::province_definition::PORT_SEA`]; static.
     pub port_sea: i32,
+    /// For a province whose fort sum is positive and whose controller is
+    /// positive: its state's effective `land_bunker_effectiveness_factor` for
+    /// the controller (the state country modifier added to the controller's own
+    /// for the selected army's attack list), zero for a null state. `None`
+    /// elsewhere and for a fortified province's own read refusal.
+    pub fort_bunker: Option<i64>,
+    /// The label of [`CONTROLLER_AREA`]'s area (its smallest member province),
+    /// zero for null; set by the collector's area step
+    /// ([`crate::controller_areas::Store`]), None when it refused.
+    pub controller_area: Option<u32>,
+    /// The label of [`OWNER_AREA`]'s area, likewise.
+    pub owner_area: Option<u32>,
+    /// On the province whose id labels its controller area: the area's index
+    /// in [`Capture::area_nodes`].
+    pub area_node: Option<u32>,
 }
 
 impl Row {
@@ -637,6 +787,15 @@ pub struct Capture {
     pub conflicts: Vec<ConflictRow>,
     pub groups: Vec<u64>,
     pub conflict_walk: ConflictWalk,
+    /// Each row's area pointers, in row order; they never leave the collector.
+    pub areas: Vec<crate::controller_areas::Pointers>,
+    /// The hour's controller-area nodes ([`Row::area_node`]).
+    pub area_nodes: crate::controller_areas::Output,
+    /// The area family's held capture while the callback lends it to the job.
+    pub area_store: Option<Box<crate::controller_areas::Store>>,
+    /// The held Provinces rows ([`carry`]) while the callback lends them to
+    /// the job.
+    pub province_store: Option<Box<carry::RowStore>>,
 }
 
 impl Capture {
@@ -650,6 +809,10 @@ impl Capture {
             conflicts: crate::allocation::filled(conflicts, ConflictRow::default())?,
             groups: crate::allocation::filled(groups, 0)?,
             conflict_walk: ConflictWalk::default(),
+            areas: crate::allocation::filled(rows, crate::controller_areas::Pointers::default())?,
+            area_nodes: crate::controller_areas::Output::default(),
+            area_store: None,
+            province_store: None,
         })
     }
 
@@ -663,19 +826,23 @@ impl Capture {
         self.rows.capacity() * size_of::<Row>()
             + self.conflicts.capacity() * size_of::<ConflictRow>()
             + self.groups.capacity() * size_of::<u64>()
+            + self.areas.capacity() * size_of::<crate::controller_areas::Pointers>()
+            + self.area_nodes.allocated_bytes()
     }
 
     /// One province walk filling both outputs.
     pub fn walk(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-        let (outcome, conflicts) = walk_with_conflicts(
+        let (outcome, conflicts) = walk_with_conflicts_buffer(
             memory,
             base,
             game_state,
-            &mut self.rows,
-            ConflictOutput {
-                rows: &mut self.conflicts,
-                groups: &mut self.groups,
+            crate::walk::Buffer::Fixed(&mut self.rows),
+            ConflictBuffers {
+                rows: crate::walk::Buffer::Fixed(&mut self.conflicts),
+                groups: crate::walk::Buffer::Fixed(&mut self.groups),
             },
+            crate::walk::Buffer::Fixed(&mut self.areas),
+            None,
         );
         self.conflict_walk = conflicts;
         outcome
@@ -696,9 +863,76 @@ impl Capture {
                 rows: crate::walk::Buffer::Growing(&mut self.conflicts),
                 groups: crate::walk::Buffer::Growing(&mut self.groups),
             },
+            crate::walk::Buffer::Growing(&mut self.areas),
+            None,
         );
         self.conflict_walk = conflicts;
         outcome
+    }
+
+    /// [`Self::walk_growing`] carrying the rows of [`Self::province_store`]
+    /// ([`carry`]) the hour's territory `take` certifies; `covers` is the
+    /// sampled slice by province id and `verify` reads and compares every
+    /// province. Without a store it is [`Self::walk_growing`].
+    pub fn walk_carrying(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        take: Option<[u64; 2]>,
+        covers: &dyn Fn(u64) -> bool,
+        verify: bool,
+    ) -> Outcome {
+        let Self {
+            rows,
+            conflicts,
+            groups,
+            conflict_walk,
+            areas,
+            province_store,
+            ..
+        } = self;
+        let mut hour = province_store.as_deref_mut().map(|store| carry::Hour {
+            store,
+            take,
+            covers,
+            verify,
+        });
+        let (outcome, walk) = walk_with_conflicts_buffer(
+            memory,
+            base,
+            game_state,
+            crate::walk::Buffer::Growing(rows),
+            ConflictBuffers {
+                rows: crate::walk::Buffer::Growing(conflicts),
+                groups: crate::walk::Buffer::Growing(groups),
+            },
+            crate::walk::Buffer::Growing(areas),
+            hour.as_mut(),
+        );
+        *conflict_walk = walk;
+        outcome
+    }
+
+    /// Reads again the area pointers the latest [`Self::walk_carrying`] took
+    /// from its store for the carried rows `keep` selects (by province id):
+    /// the area step compares fresh pointers.
+    pub fn refresh_carried_areas(
+        &mut self,
+        memory: &impl Memory,
+        keep: &dyn Fn(u32) -> bool,
+    ) -> Result<(), &'static str> {
+        match self.province_store.as_deref_mut() {
+            Some(store) => store.refresh_areas(memory, &self.rows, &mut self.areas, keep),
+            None => Ok(()),
+        }
+    }
+
+    /// The rows of the latest walk whose area pointers came from the store.
+    pub fn carried_rows(&self) -> usize {
+        self.province_store
+            .as_deref()
+            .map_or(0, carry::RowStore::carried_rows)
     }
 }
 
@@ -1062,19 +1296,7 @@ impl ProvinceBatch {
     }
 
     fn read(&mut self, memory: &impl Memory, array: Array, first: u32, capacity: usize) {
-        self.len = ((array.count - first) as usize).min(BATCH_ROWS);
-        self.pointer_count = memory
-            .copy_records(
-                RecordSources::Strided {
-                    base: array.element(first, 8).unwrap_or(0),
-                    stride: 8,
-                    count: self.len,
-                },
-                &POINTER_LAYOUT,
-                &mut self.pointers.as_flattened_mut()[..self.len * 8],
-            )
-            .min(self.len);
-
+        self.read_pointers(memory, array, first);
         // Only rows that fit may have their bodies read. Null holes use no row
         // capacity; roots beyond capacity remain checked for honest truncation.
         let mut remaining = capacity;
@@ -1142,6 +1364,41 @@ impl ProvinceBatch {
         );
     }
 
+    /// The batch's slot pointers from `first`.
+    fn read_pointers(&mut self, memory: &impl Memory, array: Array, first: u32) {
+        self.len = ((array.count - first) as usize).min(BATCH_ROWS);
+        self.pointer_count = memory
+            .copy_records(
+                RecordSources::Strided {
+                    base: array.element(first, 8).unwrap_or(0),
+                    stride: 8,
+                    count: self.len,
+                },
+                &POINTER_LAYOUT,
+                &mut self.pointers.as_flattened_mut()[..self.len * 8],
+            )
+            .min(self.len);
+    }
+
+    /// The dense fields of the provinces at `bodies`, in order: body `n`'s
+    /// at field `n * FIELDS_PER_ROW`, as [`Self::row_body`] reads them.
+    fn read_bodies(&mut self, memory: &impl Memory, bodies: &[usize]) {
+        if bodies.is_empty() {
+            self.field_count = BATCH_ROWS * FIELDS_PER_ROW;
+            return;
+        }
+        let copied = memory.copy_records(
+            RecordSources::Pointers(bodies),
+            &DENSE_LAYOUT,
+            &mut self.fields.as_flattened_mut()[..bodies.len() * FIELD_RECORD_BYTES],
+        );
+        self.field_count = if copied == bodies.len() * FIELDS_PER_ROW {
+            BATCH_ROWS * FIELDS_PER_ROW
+        } else {
+            copied
+        };
+    }
+
     fn pointer(&self, slot: usize) -> usize {
         // The pinned target is x64; the full native pointer width is retained.
         u64::from_le_bytes(self.pointers[slot]) as usize
@@ -1155,11 +1412,24 @@ impl ProvinceBatch {
         slot: usize,
         states: &mut StateCache,
     ) -> Result<Row, &'static str> {
-        let pointer = self.pointer(slot);
+        self.row_body(memory, base, index, self.pointer(slot), slot, states)
+    }
+
+    /// The row of the province at `pointer` in slot `index`, from its fields
+    /// at body `body`.
+    fn row_body(
+        &self,
+        memory: &impl Memory,
+        base: usize,
+        index: u32,
+        pointer: usize,
+        body: usize,
+        states: &mut StateCache,
+    ) -> Result<Row, &'static str> {
         let vtable = base
             .checked_add(VTABLE_RVA)
             .ok_or("module address overflow")?;
-        let first = slot * FIELDS_PER_ROW;
+        let first = body * FIELDS_PER_ROW;
         if self.field_count <= first || u64::from_le_bytes(self.fields[first]) != vtable as u64 {
             return Err("province vtable mismatch");
         }
@@ -1178,7 +1448,6 @@ impl ProvinceBatch {
         }
         complete(2, STATE, "province state unreadable")?;
         let state = u64::from_le_bytes(self.fields[first + 2]);
-        let attack_state = usize::try_from(state).ok();
         complete(3, CONTROLLER, "province controller unreadable")?;
         let controller = u32::from_le_bytes(self.fields[first + 3][..4].try_into().unwrap());
         let (state, owner) = if state == 0 {
@@ -1198,7 +1467,6 @@ impl ProvinceBatch {
             owner,
             controller,
             victory_points,
-            attack_state,
             ..Row::default()
         })
     }
@@ -1212,6 +1480,9 @@ struct MovementFields {
     fort_sum: i32,
     move_gate: u8,
     port_sea: i32,
+    definition: usize,
+    controller_area: usize,
+    owner_area: usize,
 }
 
 /// Distinct building templates are a handful map-wide, so a
@@ -1260,13 +1531,14 @@ const MOVEMENT_FIELDS: [RecordField; 4] = [
         destination_offset: 24,
         len: 8,
     },
+    // CONTROLLER_AREA and OWNER_AREA are adjacent pointers: one exact span.
     RecordField {
-        source_offset: OWNER_AREA,
+        source_offset: CONTROLLER_AREA,
         destination_offset: 32,
-        len: 8,
+        len: 16,
     },
 ];
-const MOVEMENT_BYTES: usize = 40;
+const MOVEMENT_BYTES: usize = 48;
 const MOVEMENT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&MOVEMENT_FIELDS, MOVEMENT_BYTES).expect("valid record layout");
 const DEFINITION_FIELDS: [RecordField; 3] = [
@@ -1422,6 +1694,7 @@ impl MovementBatch {
         let mut buildings = [Array { data: 0, count: 0 }; BATCH_ROWS];
         let mut definitions = [0_usize; BATCH_ROWS];
         let mut gates = [(false, false); BATCH_ROWS];
+        let mut areas = [(0_usize, 0_usize); BATCH_ROWS];
         for (slot, record) in raw[..count * MOVEMENT_BYTES]
             .chunks_exact(MOVEMENT_BYTES)
             .enumerate()
@@ -1434,7 +1707,8 @@ impl MovementBatch {
             buildings[slot] = Array::from_header(record[8..24].try_into().unwrap(), 8)
                 .ok_or("province building array invalid")?;
             let word = |at: usize| u64::from_le_bytes(record[at..at + 8].try_into().unwrap());
-            gates[slot] = (word(24) != 0, word(32) == 0);
+            gates[slot] = (word(24) != 0, word(40) == 0);
+            areas[slot] = (word(32) as usize, word(40) as usize);
         }
         if memory.copy_records(
             RecordSources::Pointers(&definitions[..count]),
@@ -1455,6 +1729,9 @@ impl MovementBatch {
                 move_gate: (u8::from(flags & 3 == 1 && null_area) * Row::MOVE_NULL_OWNER_AREA)
                     | (u8::from(conflict) * Row::MOVE_BORDER_CONFLICT),
                 port_sea: i32::from_le_bytes(record[20..24].try_into().unwrap()),
+                definition: definitions[slot],
+                controller_area: areas[slot].0,
+                owner_area: areas[slot].1,
             };
         }
         for (slot, fields) in output[..count].iter_mut().enumerate() {
@@ -1508,15 +1785,21 @@ pub fn walk_with_conflicts(
             rows: crate::walk::Buffer::Fixed(conflicts.rows),
             groups: crate::walk::Buffer::Fixed(conflicts.groups),
         },
+        crate::walk::Buffer::Fixed(&mut []),
+        None,
     )
 }
 
+/// `areas` receives each row's [`crate::controller_areas::Pointers`] when it
+/// can hold them; a shorter buffer leaves the rows' areas unrecorded.
 fn walk_with_conflicts_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     output: crate::walk::Buffer<'_, Row>,
     mut conflicts: ConflictBuffers<'_>,
+    mut areas: crate::walk::Buffer<'_, crate::controller_areas::Pointers>,
+    carry: Option<&mut carry::Hour<'_>>,
 ) -> (Outcome, ConflictWalk) {
     let mut conflict = ConflictState::default();
     let outcome = walk_rows(
@@ -1524,8 +1807,10 @@ fn walk_with_conflicts_buffer(
         base,
         game_state,
         output,
+        &mut areas,
         &mut conflicts,
         &mut conflict,
+        carry,
     );
     let walk = match (outcome, conflict.failure) {
         (Outcome::Unavailable { reason }, _) | (_, Some(reason)) => ConflictWalk {
@@ -1750,13 +2035,53 @@ fn border_conflict_groups(
     Ok(admitted)
 }
 
+/// [`Row::fort_bunker`]: the state bunker term for the province's state
+/// (`+0xC0`) and the controller the raw reference resolves to, queried with
+/// that country's own id as state country modifier lookup takes it.
+fn fort_bunker<'a, M: Memory>(
+    memory: &'a M,
+    base: usize,
+    game_state: usize,
+    province: usize,
+    controller: u32,
+    countries: &mut Option<Result<crate::ccountry::Reader<'a, M>, &'static str>>,
+) -> Option<i64> {
+    let state = province
+        .checked_add(STATE)
+        .and_then(|address| crate::read::<u64>(memory, address))
+        .and_then(|state| usize::try_from(state).ok())?;
+    if state == 0 {
+        return Some(0);
+    }
+    let countries = countries
+        .get_or_insert_with(|| crate::ccountry::Reader::new(memory, base, game_state))
+        .as_ref()
+        .ok()?;
+    let country = match countries.link(controller).ok()? {
+        None => countries.reserved().ok()?,
+        Some(slot) => countries.read_at(slot).ok()??,
+    };
+    crate::cstate::movement_modifier(
+        memory,
+        base,
+        game_state,
+        state,
+        country.id,
+        crate::modifier_keys::LAND_BUNKER_EFFECTIVENESS_FACTOR,
+    )
+    .ok()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn walk_rows(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     mut output: crate::walk::Buffer<'_, Row>,
+    areas: &mut crate::walk::Buffer<'_, crate::controller_areas::Pointers>,
     conflicts: &mut ConflictBuffers<'_>,
     conflict: &mut ConflictState,
+    carry: Option<&mut carry::Hour<'_>>,
 ) -> Outcome {
     let Some(array) = game_state
         .checked_add(cgame_state::PROVINCES)
@@ -1776,6 +2101,7 @@ fn walk_rows(
     if let Err(reason) = output
         .ensure(required)
         .and_then(|_| conflicts.rows.ensure(required))
+        .and_then(|_| areas.ensure(required))
     {
         return Outcome::Unavailable { reason };
     }
@@ -1785,8 +2111,50 @@ fn walk_rows(
         Ok(states) => states,
         Err(reason) => return Outcome::Unavailable { reason },
     };
+    match carry {
+        None => read_rows(
+            memory,
+            base,
+            game_state,
+            array,
+            &mut output[..],
+            &mut areas[..],
+            conflicts,
+            conflict,
+            &mut states,
+        ),
+        Some(hour) => carry::walk(
+            hour,
+            memory,
+            base,
+            game_state,
+            array,
+            &mut output[..],
+            &mut areas[..],
+            conflicts,
+            conflict,
+            &mut states,
+        ),
+    }
+}
+
+/// Every province of `array` read afresh, in bounded batches.
+#[allow(clippy::too_many_arguments)]
+fn read_rows(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    array: Array,
+    output: &mut [Row],
+    areas: &mut [crate::controller_areas::Pointers],
+    conflicts: &mut ConflictBuffers<'_>,
+    conflict: &mut ConflictState,
+    states: &mut StateCache,
+) -> Outcome {
     let mut batch = ProvinceBatch::new();
     let mut movement = MovementBatch::new();
+    // The country census, read once for the walk's first fortified province.
+    let mut countries = None;
     let mut pointers = [0_usize; BATCH_ROWS];
     let mut ids = [0_u32; BATCH_ROWS];
     let mut fields = [MovementFields::default(); BATCH_ROWS];
@@ -1805,7 +2173,7 @@ fn walk_rows(
                 unread_rows += 1;
                 continue;
             }
-            match batch.row(memory, base, first + slot as u32, slot, &mut states) {
+            match batch.row(memory, base, first + slot as u32, slot, states) {
                 Ok(row) => {
                     output[len] = row;
                     pointers[staged] = batch.pointer(slot);
@@ -1828,15 +2196,35 @@ fn walk_rows(
         {
             return Outcome::Unavailable { reason };
         }
-        for ((row, fields), &pointer) in output[admitted..len]
+        for (index, ((row, fields), &pointer)) in output[admitted..len]
             .iter_mut()
             .zip(&fields[..staged])
             .zip(&pointers[..staged])
+            .enumerate()
         {
             row.fort_positive = u8::from(fields.fort_sum > 0);
-            row.attack_fort_sum = Some(fields.fort_sum);
+            row.fort_bunker = if fields.fort_sum > 0 && (row.controller as i32) > 0 {
+                fort_bunker(
+                    memory,
+                    base,
+                    game_state,
+                    pointer,
+                    row.controller,
+                    &mut countries,
+                )
+            } else {
+                None
+            };
             row.move_gate = fields.move_gate;
             row.port_sea = fields.port_sea;
+            if let Some(slot) = areas.get_mut(admitted + index) {
+                *slot = crate::controller_areas::Pointers {
+                    province: pointer,
+                    definition: fields.definition,
+                    controller: fields.controller_area,
+                    owner: fields.owner_area,
+                };
+            }
             if fields.move_gate & Row::MOVE_BORDER_CONFLICT != 0 {
                 conflict.record(memory, base, pointer, row.id, conflicts);
             }
@@ -1948,29 +2336,6 @@ impl GeometryPacket {
         Ok(packet)
     }
 
-    /// Temporary off-thread sizing hints do not latch frame allocation failure.
-    pub(crate) fn try_advisory(capacities: GeometryCapacities) -> std::io::Result<Self> {
-        let mut packet = Self::vacant();
-        packet
-            .slots
-            .try_reserve(capacities.provinces)
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
-        packet
-            .indices
-            .try_reserve(capacities.provinces)
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
-        packet
-            .provinces
-            .try_reserve_exact(capacities.provinces)
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
-        packet
-            .neighbours
-            .try_reserve_exact(capacities.neighbour_entries)
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
-        packet.capacities = capacities;
-        Ok(packet)
-    }
-
     #[cfg(test)]
     pub fn with_capacities(capacities: GeometryCapacities) -> Self {
         Self::try_with_capacities(capacities).unwrap()
@@ -2044,10 +2409,6 @@ impl GeometryPacket {
         self.root.map(|root| root.count as usize)
     }
 
-    pub(crate) fn province_root(&self) -> Result<Array, &'static str> {
-        self.root
-    }
-
     pub fn overflowed(&self) -> bool {
         self.required.provinces > self.capacities.provinces
             || self.required.neighbour_entries > self.capacities.neighbour_entries
@@ -2102,6 +2463,15 @@ impl GeometryPacket {
     }
 
     fn slot(&mut self, memory: &impl Memory, id: u32) -> Result<usize, &'static str> {
+        self.slot_from_batch(memory, id, None)
+    }
+
+    fn slot_from_batch(
+        &mut self,
+        memory: &impl Memory,
+        id: u32,
+        batch: Option<&IdentityBatch>,
+    ) -> Result<usize, &'static str> {
         if let Some(value) = self.slots.get(&id) {
             self.counters.hits = self.counters.hits.saturating_add(1);
             return *value;
@@ -2118,13 +2488,18 @@ impl GeometryPacket {
         if self.slots.len() == self.capacities.provinces {
             return Err("unit geometry province capacity exhausted");
         }
-        let value = self.root.and_then(|array| {
-            array
-                .element(id, 8)
-                .and_then(|address| crate::read::<u64>(memory, address))
-                .map(|pointer| pointer as usize)
-                .ok_or("unit geometry province outside census or unreadable")
-        });
+        let value = batch
+            .and_then(|batch| batch.slot(id))
+            .map(Ok)
+            .unwrap_or_else(|| {
+                self.root.and_then(|array| {
+                    array
+                        .element(id, 8)
+                        .and_then(|address| crate::read::<u64>(memory, address))
+                        .map(|pointer| pointer as usize)
+                        .ok_or("unit geometry province outside census or unreadable")
+                })
+            });
         self.slots.insert(id, value);
         value
     }
@@ -2160,6 +2535,17 @@ impl GeometryPacket {
         allow_zero: bool,
         known_slot: Option<u32>,
     ) -> Result<(u32, usize), &'static str> {
+        self.identity_from_batch(memory, pointer, allow_zero, known_slot, None)
+    }
+
+    fn identity_from_batch(
+        &mut self,
+        memory: &impl Memory,
+        pointer: usize,
+        allow_zero: bool,
+        known_slot: Option<u32>,
+        batch: Option<&IdentityBatch>,
+    ) -> Result<(u32, usize), &'static str> {
         self.root?;
         let index = self.index(pointer)?;
         // These checks already succeeded against owned observations this pass.
@@ -2179,10 +2565,17 @@ impl GeometryPacket {
             // A new province's vtable and id are one guarded call. The id is
             // consulted only after the vtable passes, as a single read would be.
             let (mut vtable, mut id) = ([0_u8; 8], [0_u8; 4]);
-            let read = memory.copy_scattered_prefetched(
-                [pointer, pointer.checked_add(ID).unwrap_or(0)],
-                &mut [&mut vtable, &mut id],
-            );
+            let read = match batch.and_then(|batch| batch.identity(pointer)) {
+                Some((table, value)) => {
+                    vtable.copy_from_slice(&table.to_le_bytes());
+                    id.copy_from_slice(&value.to_le_bytes());
+                    2
+                }
+                None => memory.copy_scattered_prefetched(
+                    [pointer, pointer.checked_add(ID).unwrap_or(0)],
+                    &mut [&mut vtable, &mut id],
+                ),
+            };
             let unreadable = "unit geometry field unreadable";
             let vtable = if read > 0 {
                 Ok(u64::from_le_bytes(vtable))
@@ -2225,11 +2618,30 @@ impl GeometryPacket {
         // A matching ID authenticates the successful slot observation already
         // held by the caller. A different ID must still read its own backlink
         // before the caller can report the requested-ID mismatch.
-        if known_slot != Some(id) && self.slot(memory, id)? != pointer {
+        if known_slot != Some(id) && self.slot_from_batch(memory, id, batch)? != pointer {
             return Err("unit geometry province differs from census");
         }
         self.provinces[index].authenticated_id = Some(id);
         Ok((id, index))
+    }
+
+    /// Hint a seed-selected identity before its acquisition. Successful
+    /// identities already held by this begin() need no native bytes again. The
+    /// hourly movement step uses CProvince+0xA4 for route identities; these
+    /// hints acquire neither that id nor its vtable and consume no guard page.
+    pub fn prefetch_province_id(&self, memory: &impl Memory, pointer: usize) {
+        if pointer == 0
+            || self
+                .indices
+                .get(&pointer)
+                .is_some_and(|&index| self.provinces[index].authenticated_id.is_some())
+        {
+            return;
+        }
+        memory.prefetch(pointer, 8);
+        if let Some(id) = pointer.checked_add(ID) {
+            memory.prefetch(id, 4);
+        }
     }
 
     /// Null is the native absent-province value; every nonnull pointer retains
@@ -2243,6 +2655,48 @@ impl GeometryPacket {
             return Ok(0);
         }
         self.identity(memory, pointer, false, None)
+            .map(|(id, _)| id)
+    }
+
+    /// Stage only previously unobserved pointer identities and uncached slots.
+    /// The batch never inserts into the exact pass-local memos itself.
+    pub fn stage_province_ids(
+        &self,
+        memory: &impl Memory,
+        selected: &[usize],
+        batch: &mut IdentityBatch,
+    ) {
+        let mut pointers = [0_usize; 64];
+        let mut len = 0;
+        for &pointer in selected {
+            if pointer != 0
+                && !pointers[..len].contains(&pointer)
+                && self.indices.get(&pointer).is_none_or(|&index| {
+                    let province = &self.provinces[index];
+                    province.vtable.is_none() && province.id.is_none()
+                })
+            {
+                pointers[len] = pointer;
+                len += 1;
+            }
+        }
+        if let Ok(root) = self.root {
+            batch.capture(memory, self.base, root, &pointers[..len], |id| {
+                !self.slots.contains_key(&id)
+            });
+        }
+    }
+
+    pub fn acquire_province_id_batched(
+        &mut self,
+        memory: &impl Memory,
+        pointer: usize,
+        batch: &IdentityBatch,
+    ) -> Result<u32, &'static str> {
+        if pointer == 0 {
+            return Ok(0);
+        }
+        self.identity_from_batch(memory, pointer, false, None, Some(batch))
             .map(|(id, _)| id)
     }
 
@@ -2316,14 +2770,6 @@ impl GeometryPacket {
         }
         self.provinces[index].validated_definition = Some(definition);
         Ok((index, definition))
-    }
-
-    /// Retire only this append's native controls after all original borrowers join.
-    /// Existing geometry results, faults, counters and growth demand survive.
-    pub fn retire_attack_terrain(&mut self) {
-        for province in &mut self.provinces {
-            province.fields.terrain = None;
-        }
     }
 
     /// Current-pass exact definition selector, including observed null terrain.
@@ -2458,6 +2904,7 @@ impl GeometryPacket {
     }
 }
 
+pub mod carry;
 pub(crate) mod static_geometry;
 pub use static_geometry::{
     StaticCounters, StaticEdge, StaticGeometry, StaticGeometryKey, StaticProvince,

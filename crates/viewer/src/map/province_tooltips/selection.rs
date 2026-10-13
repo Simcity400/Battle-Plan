@@ -4,12 +4,11 @@ mod movement;
 mod travel;
 
 use super::{Arg, Context, Localisation, Tooltip, localise, units};
-use crate::map::{directed_wars::Owner, division_eta::CounterQueries, unit_selection::Unit};
+use crate::map::{division_eta::CounterQueries, unit_selection::Unit};
 use replay::{
     frame::DecodedFrame,
     rows::{Recorded, tables},
 };
-use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Class {
@@ -422,23 +421,7 @@ pub(super) fn build(context: &Context<'_>, selected: &[Unit], nato: bool) -> Too
         );
     }
     statuses_then_attack(&mut out, context.frame, class, &members, loc, |out| {
-        let mut owners = BTreeMap::new();
-        super::selected_attack::append(
-            out,
-            context,
-            &members,
-            &travel.route,
-            &queries,
-            |raw_owner, target_slot| {
-                let owner = owners
-                    .entry(raw_owner)
-                    .or_insert_with(|| Owner::new(context.frame, raw_owner));
-                owner
-                    .as_ref()
-                    .map_err(Clone::clone)?
-                    .pointer_active_slot(target_slot)
-            },
-        );
+        super::selected_attack::append(out, context, &members, &travel.route, &queries);
     });
     // The native click/control and strategic-keyboard hints describe unavailable actions.
     out

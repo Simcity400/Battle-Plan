@@ -22,8 +22,12 @@ fn frame(hour: i32, keyframe: bool) -> Frame {
         hour,
         keyframe,
         metrics: Metrics::default(),
-        tables: std::array::from_fn(|_| TableUpdate::Unavailable {
-            reason: "fixture has no tables".into(),
+        tables: std::array::from_fn(|index| TableUpdate::Unavailable {
+            // A retired table decodes with its catalogued refusal.
+            reason: match crate::frame::current_absence(crate::rows::TableId::ALL[index]) {
+                Some(crate::frame::TableView::Unavailable { reason }) => reason,
+                _ => "fixture has no tables".into(),
+            },
         }),
     }
 }
@@ -161,6 +165,12 @@ fn control_and_context_bounds_match_encoded_fields() {
                 reason: "synthetic \u{03bb} failure".into(),
                 failed_hour: present.then_some(-7),
             },
+            ControlRecord::EventLoss {
+                session: 3,
+                branch: 7,
+                after_hour: -8,
+                hour: -7,
+            },
         ];
         for control in controls {
             let expected = control.encoded_bytes().unwrap();
@@ -273,6 +283,39 @@ fn partial_capture_control_roundtrips_and_prevents_later_frames() {
     let recovered = recover_prefix(&bytes);
     assert_eq!(recovered.records, records);
     assert!(recovered.damage.is_none());
+}
+
+/// An event loss names its branch's context and two ordered reads; older
+/// formats never held one.
+#[test]
+fn event_loss_control_needs_its_branch_context_and_ordered_reads() {
+    let loss = |branch, after_hour, hour| ControlRecord::EventLoss {
+        session: 3,
+        branch,
+        after_hour,
+        hour,
+    };
+    let encoded = encode_record(&Record::Control(loss(7, 11, 12))).unwrap();
+    assert_eq!(encoded[RECORD_HEADER_BYTES], 8);
+    let mut segment = valid_segment();
+    segment.extend_from_slice(&encoded);
+    let recovered = recover_prefix(&segment);
+    assert!(recovered.damage.is_none());
+    assert_eq!(recovered.records[3], Record::Control(loss(7, 11, 12)));
+
+    let mut other = valid_segment();
+    other.extend_from_slice(&encode_record(&Record::Control(loss(8, 11, 12))).unwrap());
+    assert!(recover_prefix(&other).damage.is_some());
+    assert!(encode_record(&Record::Control(loss(7, 12, 12))).is_err());
+    // Tag, session, branch, then the reads: a later first read is refused.
+    let mut reversed = encoded[RECORD_HEADER_BYTES..].to_vec();
+    reversed[17..21].copy_from_slice(&13_i32.to_le_bytes());
+    assert!(Record::decode(&mut Decoder::new(&reversed)).is_err());
+
+    let older = FormatVersion::read(crate::rows::compatibility::EVENT_LOSS_FORMAT - 1).unwrap();
+    let error =
+        ControlRecord::decode_version(&mut Decoder::new(&encoded[RECORD_HEADER_BYTES..]), older);
+    assert!(error.is_err());
 }
 
 #[test]
@@ -1218,4 +1261,46 @@ fn every_record_flushes_and_pause_timeout_and_detach_sync() {
         .unwrap();
     assert_eq!(shared.borrow().syncs, 3);
     assert!(spool.append(&Record::Frame(frame(12, false))).is_err());
+}
+
+#[test]
+fn periodic_syncs_reuse_one_persistent_durability_thread() {
+    let directory = std::env::temp_dir().join(format!(
+        "battle-plan-durability-worker-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&directory);
+    let mut spool = SegmentedSpool::new(FileBackend::new(&directory).unwrap());
+    spool.start_segment(&[branch()], &frame(10, true)).unwrap();
+    for hour in 11..14 {
+        spool.last_sync = Instant::now() - SYNC_INTERVAL;
+        spool.append(&Record::Frame(frame(hour, false))).unwrap();
+        let requested = spool.background_sync_work().unwrap().requested;
+        assert_eq!(requested, u64::from((hour - 10) as u32));
+        // Writes continue while the request runs; an idle poll collects it.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while spool.background_sync_work().unwrap().completed < requested {
+            assert!(
+                Instant::now() < deadline,
+                "durability request never finished"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+            spool.sync_if_due().unwrap();
+        }
+    }
+    let work = spool.background_sync_work().unwrap();
+    assert_eq!((work.requested, work.completed, work.threads), (3, 3, 1));
+    assert!(!work.pending);
+    // A request still in flight at close is finished before the forced barrier.
+    spool.last_sync = Instant::now() - SYNC_INTERVAL;
+    spool.append(&Record::Frame(frame(14, false))).unwrap();
+    spool.finish_segment().unwrap();
+    let bytes = fs::read(directory.join("spool.0000.h4s")).unwrap();
+    let recovered = recover_prefix(&bytes);
+    assert!(recovered.damage.is_none());
+    assert!(matches!(
+        recovered.records.last(),
+        Some(Record::Frame(Frame { hour: 14, .. }))
+    ));
+    fs::remove_dir_all(directory).unwrap();
 }

@@ -41,12 +41,14 @@ fn task_force_supply_suffix_keeps_signed_inputs_and_independent_origin_refusal()
         supply: None.into(),
         ..Default::default()
     };
+    // Amounts as capture stores them, at the footer's display step; the
+    // sentinel words stay exact.
     let pack = UnitSupplyInputs {
         asked: i64::MIN,
         received: i64::MAX,
-        from_state: -1,
+        from_state: -1_000,
         air_drops: 0,
-        disruption: -7,
+        disruption: -7_000,
         division_demand: UnitSupplyDemand {
             count: i32::MIN,
             value: i64::MAX,
@@ -57,7 +59,7 @@ fn task_force_supply_suffix_keeps_signed_inputs_and_independent_origin_refusal()
         },
         ship_demand: UnitSupplyDemand {
             count: i32::MAX,
-            value: -1,
+            value: -1_000,
         },
         origins: Some(vec![
             UnitSupplyOrigin {

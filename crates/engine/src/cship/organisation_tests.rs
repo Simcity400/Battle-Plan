@@ -515,10 +515,10 @@ fn organisation_shared_selectors_remove_complete_scans_without_replacing_ship_te
     let warm = (census.calls(), census.spans(), census.bytes());
     // Keep the pre-existing country/doctrine/support/metadata memos warm;
     // this isolates just the four new successful-source slots.
-    memo.terrain = None;
-    memo.terrain_class = None;
+    memo.terrain = Recent::default();
+    memo.terrain_class = Recent::default();
     memo.fleet = None;
-    memo.leader_class = None;
+    memo.leader_class = Recent::default();
     census.reset();
     assert_eq!(
         read_maximum_organisation_memo(&census, IMAGE, SHIP, &mut memo),
@@ -556,10 +556,10 @@ fn organisation_shared_selectors_remove_complete_scans_without_replacing_ship_te
         Ok(expected)
     );
     let warm = (census.calls(), census.spans(), census.bytes());
-    memo.terrain = None;
-    memo.terrain_class = None;
+    memo.terrain = Recent::default();
+    memo.terrain_class = Recent::default();
     memo.fleet = None;
-    memo.leader_class = None;
+    memo.leader_class = Recent::default();
     census.reset();
     assert_eq!(
         read_maximum_organisation_memo(&snapshot, IMAGE, SHIP, &mut memo),
@@ -584,8 +584,8 @@ fn organisation_shared_selectors_remove_complete_scans_without_replacing_ship_te
         read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo),
         Ok(expected)
     );
-    assert_eq!(memo.terrain_class, Some((TERRAIN, 8, [0; 4])));
-    assert_eq!(memo.leader_class, Some((LEADER, 1, [0; 4])));
+    assert_eq!(memo.terrain_class.get(&(TERRAIN, 8)), Some([0; 4]));
+    assert_eq!(memo.leader_class.get(&(LEADER, 1)), Some([0; 4]));
 
     f.word(TASK + ctask_force::FLEET, 0);
     f.word(TASK + cunit::LOCATION, 0);
@@ -609,6 +609,51 @@ fn organisation_shared_selectors_remove_complete_scans_without_replacing_ship_te
     assert_eq!(memo.fleet, Some((FLEET, Some(LEADER), [-1111, 0, 0, 0])));
 }
 
+/// A task force's ships alternate classes and subunits. Within a capture a
+/// ship after a different one reads no terrain-class, commander-class or
+/// pride-ship source again: each is kept by its own selector, not as the
+/// last ship's.
+#[test]
+fn organisation_memo_keeps_recent_selectors_across_alternating_ships() {
+    use super::gathered::FaultAt;
+    const OTHER_SHIP: usize = 0xa000;
+    let mut f = shared_sources_fixture();
+    for offset in 0..SIZE {
+        let byte = f.bytes[&(SHIP + offset)];
+        f.bytes.insert(OTHER_SHIP + offset, byte);
+    }
+    f.word(OTHER_SHIP + HANDLE, (43 << 32) | 51);
+    f.dword(OTHER_SHIP + CLASS_DATABASE_ID, 8);
+    f.dword(OTHER_SHIP + 0x60c, 1);
+    let trace = FaultAt::new(&f, None);
+    let mut memo = OrganisationMemo::default();
+    let first = read_maximum_organisation_memo(&trace, IMAGE, SHIP, &mut memo);
+    assert!(first.is_ok());
+    assert_eq!(
+        read_maximum_organisation_memo(&trace, IMAGE, OTHER_SHIP, &mut memo),
+        maximum_organisation(&f, IMAGE, OTHER_SHIP)
+    );
+    trace.reads.borrow_mut().clear();
+    assert_eq!(
+        read_maximum_organisation_memo(&trace, IMAGE, SHIP, &mut memo),
+        first
+    );
+    for (name, source) in [
+        ("pride ship", COUNTRY + 0x250),
+        ("terrain class table", TERRAIN + 0x1b8),
+        ("commander class array", LEADER + 0x148),
+    ] {
+        assert!(
+            !trace
+                .reads
+                .borrow()
+                .iter()
+                .any(|&(address, len)| (address..address + len).contains(&source)),
+            "{name} read again"
+        );
+    }
+}
+
 #[test]
 fn organisation_shared_sources_never_cache_failed_terrain_fleet_or_class_observations() {
     for failed in [
@@ -628,11 +673,11 @@ fn organisation_shared_sources_never_cache_failed_terrain_fleet_or_class_observa
             expected
         );
         match failed {
-            p if p == TERRAIN_SOURCE + 0x130 => assert!(memo.terrain.is_none()),
-            p if p == TERRAIN_BUCKET + 8 => assert!(memo.terrain_class.is_none()),
+            p if p == TERRAIN_SOURCE + 0x130 => assert!(memo.terrain.is_empty()),
+            p if p == TERRAIN_BUCKET + 8 => assert!(memo.terrain_class.is_empty()),
             FLEET => assert!(memo.fleet.is_none()),
             p if p == LEADER + 0x418 => assert!(memo.fleet.is_none()),
-            _ => assert!(memo.leader_class.is_none()),
+            _ => assert!(memo.leader_class.is_empty()),
         }
         f.bytes.insert(failed, original);
         assert_eq!(
@@ -649,7 +694,7 @@ fn organisation_shared_sources_never_cache_failed_terrain_fleet_or_class_observa
         read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo),
         Err("naval commander class order invalid"),
     );
-    assert!(memo.leader_class.is_none());
+    assert!(memo.leader_class.is_empty());
 }
 
 #[test]
@@ -1230,8 +1275,6 @@ fn rejects_unreadable_sources_bad_identity_and_doctrine_cycles() {
     );
 }
 
-mod strike;
-
 #[test]
 fn organisation_arrays_use_original_counts_above_former_limits() {
     let mut f = fixture();
@@ -1282,5 +1325,89 @@ fn organisation_doctrine_uses_native_map_size_and_deep_successors() {
     assert_eq!(
         maximum_organisation(&f, IMAGE, SHIP),
         Err("ship organisation doctrine size mismatch")
+    );
+}
+
+/// The organisation reader through gathered ship, task-force, province and
+/// game-singleton fields ([`ShipFields`]) computes the direct reader's
+/// maximum, and for a fault at the first or last byte of any read either
+/// makes its exact failure, never reading a failed span again, in fewer
+/// guarded calls.
+#[test]
+fn gathered_organisation_reads_equal_the_direct_reader_at_every_fault() {
+    use super::gathered::FaultAt;
+    use crate::read_census::ReadCensus;
+    fn through_fields(memory: &impl Memory) -> Result<i64, &'static str> {
+        let mut fields = ShipFields::new(IMAGE);
+        fields.visit(memory, SHIP);
+        maximum_organisation(&fields.memory(memory), IMAGE, SHIP)
+    }
+    for (name, f) in [
+        ("country and doctrine", fixture()),
+        ("support", support_fixture()),
+        ("province and fleet", shared_sources_fixture()),
+        ("weather and criticals", weather_fixture()),
+    ] {
+        let direct = FaultAt::new(&f, None);
+        let expected = maximum_organisation(&direct, IMAGE, SHIP);
+        assert!(expected.is_ok(), "{name}");
+        let gathered = FaultAt::new(&f, None);
+        assert_eq!(through_fields(&gathered), expected, "{name}");
+        let mut edges = direct.edges();
+        edges.extend(gathered.edges());
+        edges.sort_unstable();
+        edges.dedup();
+        for fault in edges {
+            let direct = FaultAt::new(&f, Some(fault));
+            let gathered = FaultAt::new(&f, Some(fault));
+            assert_eq!(
+                through_fields(&gathered),
+                maximum_organisation(&direct, IMAGE, SHIP),
+                "{name}: fault at {fault:#x}"
+            );
+            assert!(!gathered.retried(), "{name}: fault at {fault:#x}");
+        }
+        let direct = ReadCensus::new(&f);
+        assert_eq!(maximum_organisation(&direct, IMAGE, SHIP), expected);
+        let gathered = ReadCensus::new(&f);
+        assert_eq!(through_fields(&gathered), expected);
+        assert!(
+            gathered.calls() < direct.calls(),
+            "{name}: {} guarded calls, {} directly",
+            gathered.calls(),
+            direct.calls()
+        );
+    }
+}
+
+/// Task forces of a fleet share their headquarters: a second task force with
+/// the same influence reads its list but not its commander again.
+#[test]
+fn organisation_memo_shares_an_influence_across_task_forces() {
+    use super::gathered::FaultAt;
+    const OTHER_TASK: usize = 0x22000;
+    let mut f = support_fixture();
+    f.put(OTHER_TASK, &[0; 0x900]);
+    f.word(OTHER_TASK, (IMAGE + ctask_force::VTABLE_RVA) as u64);
+    f.dword(OTHER_TASK + cunit::ROSTER_OWNER, 1);
+    f.word(OTHER_TASK + 0x640, 0x8000);
+    f.array(OTHER_TASK + 0x728, 0x12000, 1);
+    let mut memo = OrganisationMemo::default();
+    let first = read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo);
+    assert!(first.is_ok());
+    f.word(SHIP + TASK_FORCE, OTHER_TASK as u64);
+    let trace = FaultAt::new(&f, None);
+    assert_eq!(
+        read_maximum_organisation_memo(&trace, IMAGE, SHIP, &mut memo),
+        maximum_organisation(&f, IMAGE, SHIP)
+    );
+    assert_eq!(memo.support, Some((OTHER_TASK, [12, 16, 20, 24])));
+    assert!(
+        !trace
+            .reads
+            .borrow()
+            .iter()
+            .any(|&(address, _)| address == 0x17000 || address == 0x18000),
+        "the commander was read again"
     );
 }

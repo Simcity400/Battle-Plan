@@ -6,7 +6,7 @@
 
 use crate::{
     sampling::qpc,
-    spooling::{table, unavailable},
+    spooling::{table_iter, unavailable},
     table_capture::Arena,
 };
 use engine::{
@@ -60,7 +60,9 @@ impl Capacities {
     }
 }
 
-pub struct Captured {
+/// One slot range's capture: the whole capture's arenas when it is not
+/// split.
+pub struct Part {
     countries: Arena<native::Country>,
     lines: Arena<native::Line>,
     efficiencies: Arena<i64>,
@@ -70,10 +72,13 @@ pub struct Captured {
     text: Arena<u8>,
     stack: Arena<tree::Frame>,
     archetypes: Arena<usize>,
+    /// The reads each country's accumulator walks repeat across its keys
+    /// ([`tree::RepeatCache`]), kept for reuse of its storage.
+    repeats: tree::RepeatCache,
     context: Option<native::Context>,
     outcome: Outcome,
 }
-impl Captured {
+impl Part {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             countries: Arena::new(capacity.countries),
@@ -85,6 +90,7 @@ impl Captured {
             text: Arena::new(capacity.text),
             stack: Arena::new(capacity.stack),
             archetypes: Arena::new(capacity.stack),
+            repeats: tree::RepeatCache::default(),
             context: None,
             outcome: Outcome::Unavailable {
                 reason: "clock unavailable",
@@ -127,6 +133,7 @@ impl Captured {
             + self.text.allocated_bytes()
             + self.stack.allocated_bytes()
             + self.archetypes.allocated_bytes()
+            + self.repeats.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.countries.grow(&mut capacity.countries);
@@ -144,13 +151,18 @@ impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, full: bool, reason: &'static str) {
         self.outcome = super::failed_capture(TABLES[0], hour, full, reason);
     }
-    pub fn capture(
+    /// The capture of census slots `slots`, with `provided` defines when
+    /// the capture is split ([`native::capture_growing_slots`]).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
         hour: i32,
         full: bool,
+        slots: std::ops::Range<u32>,
+        provided: Option<Result<native::Context, &'static str>>,
     ) -> [u64; N] {
         self.reset();
         if !should_walk(TABLES[0], hour, full) {
@@ -179,7 +191,15 @@ impl Captured {
                 archetypes: &mut self.archetypes.first,
                 archetype_required: 0,
             };
-            let result = native::capture_growing(memory, base, state, &mut context, &mut inputs);
+            let result = native::capture_growing_slots(
+                memory,
+                base,
+                state,
+                slots,
+                provided,
+                &mut context,
+                &mut inputs,
+            );
             self.countries.len = inputs.country_len;
             self.countries.required = inputs.country_required;
             self.lines.len = inputs.line_len;
@@ -210,6 +230,7 @@ impl Captured {
                 text_required: 0,
                 stack: engine::walk::Buffer::Growing(&mut self.stack.first),
                 stack_required: 0,
+                repeats: Some(&mut self.repeats),
             };
             let result = tree::capture(memory, base, &mut trees);
             self.requests.len = trees.request_len;
@@ -233,27 +254,9 @@ impl Captured {
         };
         [qpc().saturating_sub(started).max(0) as u64, 0]
     }
-    pub fn outcomes(&self) -> [Outcome; N] {
-        match self.outcome {
-            Outcome::Rows { .. } => [
-                Outcome::Rows {
-                    len: self.countries.len,
-                },
-                Outcome::Rows {
-                    len: self.lines.len,
-                },
-            ],
-            failure => [failure; N],
-        }
-    }
-    pub fn tables(&self) -> [TableView; N] {
-        let Some(context) = self.context else {
-            let reason = match self.outcome {
-                Outcome::Unavailable { reason } => reason,
-                _ => "production modifier context absent",
-            };
-            return [unavailable(reason), unavailable(reason)];
-        };
+    /// This part's span checks: every node name, root node range and line
+    /// efficiency range inside its arenas, and every country's roots present.
+    fn invalid(&self) -> Option<&'static str> {
         let span = |start: usize, len: usize| start.checked_add(len);
         let roots = &self.roots.first[..self.roots.len];
         let nodes = &self.nodes.first[..self.nodes.len];
@@ -269,90 +272,456 @@ impl Captured {
                     .is_none_or(|end| end > self.efficiencies.len)
             })
         {
-            return [
-                unavailable("production modifier arena span invalid"),
-                unavailable("production modifier arena span invalid"),
-            ];
+            return Some("production modifier arena span invalid");
         }
-        let source = &self.countries.first[..self.countries.len];
-        if source.iter().any(|country| {
-            native::KEYS.iter().any(|key| {
-                roots
-                    .binary_search_by_key(&(country.accumulator, *key), |root| {
-                        (root.accumulator, root.key)
-                    })
-                    .is_err()
+        if self.countries.first[..self.countries.len]
+            .iter()
+            .any(|country| {
+                native::KEYS
+                    .iter()
+                    .any(|key| self.root(country.accumulator, *key).is_none())
             })
-        }) {
-            return [
-                unavailable("production modifier source request missing"),
-                unavailable("production modifier source request missing"),
-            ];
+        {
+            return Some("production modifier source request missing");
         }
-        let outcomes = self.outcomes();
-        [
-            table::<tables::CountryProductionModifiers, _>(outcomes[0], source, |country| {
-                let trees = owned_vec(collect_vec(native::KEYS.iter().map(|key| {
-                    let root = &roots[roots
-                        .binary_search_by_key(&(country.accumulator, *key), |root| {
-                            (root.accumulator, root.key)
-                        })
-                        .unwrap()];
-                    rows::ProductionModifierTree {
-                        key: *key,
-                        failure: owned_vec(copy_vec(root.failure.unwrap_or_default().as_bytes())),
-                        nodes: owned_vec(collect_vec(
-                            nodes[root.nodes[0]..root.nodes[0] + root.nodes[1]]
-                                .iter()
-                                .map(|node| rows::ModifierBreakdownNode {
-                                    children: node.children,
-                                    value: node.value,
-                                    name: owned_vec(copy_vec(
-                                        &text[node.name[0]..node.name[0] + node.name[1]],
-                                    )),
-                                }),
-                        )),
-                    }
-                })));
-                rows::CountryProductionModifiersRow {
-                    country: country.country,
-                    power_raw: country.power_raw,
-                    base_start: context.start,
-                    base_cap: context.cap,
-                    gain_raw: context.gain,
-                    balance_raw: context.balance,
-                    factory_speed: context.factory_speed,
-                    retention: context.retention,
-                    conversion_raw: context.conversion,
-                    trees,
+        None
+    }
+    /// The root of (`accumulator`, `key`): roots are sorted within a part.
+    fn root(&self, accumulator: usize, key: u32) -> Option<&tree::Root> {
+        let roots = &self.roots.first[..self.roots.len];
+        roots
+            .binary_search_by_key(&(accumulator, key), |root| (root.accumulator, root.key))
+            .ok()
+            .map(|index| &roots[index])
+    }
+    fn country_row(
+        &self,
+        context: native::Context,
+        country: &native::Country,
+    ) -> rows::CountryProductionModifiersRow {
+        let nodes = &self.nodes.first[..self.nodes.len];
+        let text = &self.text.first[..self.text.len];
+        let trees = owned_vec(collect_vec(native::KEYS.iter().map(|key| {
+            let root = self.root(country.accumulator, *key).unwrap();
+            rows::ProductionModifierTree {
+                key: *key,
+                failure: owned_vec(copy_vec(root.failure.unwrap_or_default().as_bytes())),
+                nodes: owned_vec(collect_vec(
+                    nodes[root.nodes[0]..root.nodes[0] + root.nodes[1]]
+                        .iter()
+                        .map(|node| rows::ModifierBreakdownNode {
+                            children: node.children,
+                            value: node.value,
+                            name: owned_vec(copy_vec(
+                                &text[node.name[0]..node.name[0] + node.name[1]],
+                            )),
+                        }),
+                )),
+            }
+        })));
+        rows::CountryProductionModifiersRow {
+            country: country.country,
+            power_raw: country.power_raw,
+            base_start: context.start,
+            base_cap: context.cap,
+            gain_raw: context.gain,
+            balance_raw: context.balance,
+            factory_speed: context.factory_speed,
+            retention: context.retention,
+            conversion_raw: context.conversion,
+            trees,
+        }
+    }
+    fn line_row(&self, line: &native::Line) -> rows::ProductionLineModifiersRow {
+        rows::ProductionLineModifiersRow {
+            line: line.handle,
+            country: line.country,
+            variant: line.variant,
+            organisation: line.organisation,
+            kind: line.kind,
+            active_factories: line.active_factories,
+            resource_penalty_raw: line.resource_penalty,
+            organisation_dirty: line.organisation_dirty,
+            conversion: replay::rows::RetiredBool::default(),
+            licensed: line.licensed,
+            bonuses: line.bonuses,
+            conversion_output: line.conversion_output,
+            refit_output: line.refit_output,
+            naval_efficiency: line.naval_efficiency,
+            naval_output: line.naval_output,
+            factory_efficiencies: owned_vec(copy_vec(
+                &self.efficiencies.first
+                    [line.efficiencies[0]..line.efficiencies[0] + line.efficiencies[1]],
+            )),
+        }
+    }
+}
+
+/// Parts a slot hour's capture is split into, the first included.
+pub const MAX_PARTS: usize = 4;
+/// Fewer countries with lines than this are not split.
+const SPLIT_COUNTRIES: usize = 16;
+
+/// The daily production modifiers: one capture, or on a slot hour up to
+/// [`MAX_PARTS`] captures of consecutive census slot ranges, the first in
+/// the ProductionDaily job and each other in its own job, joined in slot
+/// order. Their tables walk the parts in slot order: each part's rows are the
+/// whole walk's for its slots and each country's roots are in its own part,
+/// so the tables are the whole walk's, and the first part that failed fails
+/// them with the reason the whole walk would have met first.
+pub struct Captured {
+    first: Part,
+    /// The other parts, allocated off the game thread by `grow`.
+    extra: [Option<Box<Part>>; MAX_PARTS - 1],
+    /// Parts of this hour's capture, set by [`Self::prepare_parts`] and taken
+    /// by the capture, which resets it.
+    prepared: usize,
+    /// Parts in use: the prepared split from its preparation, and the
+    /// capture's from the capture on.
+    split: usize,
+    starts: [u32; MAX_PARTS - 1],
+    /// The defines read once for every part of a split capture.
+    provided: Option<Result<native::Context, &'static str>>,
+}
+
+impl Captured {
+    pub fn with_capacities(capacity: &Capacities) -> Self {
+        Self::of(Part::with_capacities(capacity))
+    }
+    pub(crate) fn vacant() -> Self {
+        Self::of(Part::vacant())
+    }
+    fn of(first: Part) -> Self {
+        Self {
+            first,
+            extra: [const { None }; MAX_PARTS - 1],
+            prepared: 1,
+            split: 1,
+            starts: [0; MAX_PARTS - 1],
+            provided: None,
+        }
+    }
+    pub fn reset(&mut self) {
+        self.first.reset();
+        self.unsplit();
+    }
+    /// No split prepared or in use.
+    fn unsplit(&mut self) {
+        self.split = 1;
+        self.prepared = 1;
+        self.provided = None;
+    }
+    pub fn allocated_bytes(&self) -> usize {
+        self.first.allocated_bytes()
+            + self
+                .extra
+                .iter()
+                .flatten()
+                .map(|part| size_of::<Part>() + part.allocated_bytes())
+                .sum::<usize>()
+    }
+    /// Grows the first part; the other parts are allocated empty here, off
+    /// the game thread, and grow on their workers.
+    pub fn grow(&mut self, capacity: &mut Capacities) {
+        self.first.grow(capacity);
+        for extra in &mut self.extra {
+            if extra.is_none() && !crate::allocation::failed() {
+                *extra = Some(Box::new(Part::vacant()));
+            }
+        }
+    }
+    pub(crate) fn fail_capture(&mut self, hour: i32, full: bool, reason: &'static str) {
+        self.first.fail_capture(hour, full, reason);
+        self.unsplit();
+    }
+    /// The first part's capture: the whole census, or its slot range of a
+    /// split capture.
+    pub fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        hour: i32,
+        full: bool,
+    ) -> [u64; N] {
+        self.split = std::mem::replace(&mut self.prepared, 1);
+        let provided = self.provided.take();
+        let slots = self.slots(0);
+        self.first
+            .capture(memory, base, state, hour, full, slots, provided)
+    }
+    /// Census slots of part `part` of this hour's split.
+    fn slots(&self, part: usize) -> std::ops::Range<u32> {
+        let first = if part == 0 { 1 } else { self.starts[part - 1] };
+        let end = if part + 1 < self.split {
+            self.starts[part]
+        } else {
+            u32::MAX
+        };
+        first..end
+    }
+    /// On the game thread before a slot hour's dispatch: splits the census
+    /// at `starts` (the previous slot hour's balance, [`Self::next_starts`])
+    /// into as many parts as are allocated, reading the defines once when it
+    /// splits. Returns the parts, the first included.
+    pub(crate) fn prepare_parts(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        starts: &[u32],
+    ) -> usize {
+        let allocated = 1 + self.extra.iter().take_while(|part| part.is_some()).count();
+        let parts = (starts.len() + 1).min(allocated).min(MAX_PARTS);
+        self.starts[..parts - 1].copy_from_slice(&starts[..parts - 1]);
+        self.prepared = parts;
+        self.split = parts;
+        self.provided = (parts > 1).then(|| native::Context::read(memory, base));
+        parts
+    }
+    /// Loans part `part` (1..) of the prepared split, with its slots and the
+    /// defines.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn take_part(
+        &mut self,
+        part: usize,
+    ) -> (
+        Box<Part>,
+        std::ops::Range<u32>,
+        Option<Result<native::Context, &'static str>>,
+    ) {
+        let slots = self.slots(part);
+        let boxed = self.extra[part - 1]
+            .take()
+            .expect("prepared part allocated");
+        (boxed, slots, self.provided)
+    }
+    /// Returns part `part`; a part whose job failed fails its tables as a
+    /// failed Slow did.
+    pub(crate) fn restore_part(
+        &mut self,
+        part: usize,
+        mut boxed: Box<Part>,
+        completed: bool,
+        hour: i32,
+        full: bool,
+    ) {
+        if !completed {
+            boxed.fail_capture(hour, full, "slow acquisition failed");
+        }
+        self.extra[part - 1] = Some(boxed);
+    }
+    /// This hour's parts in slot order; a part not returned ends them.
+    fn parts(&self) -> impl Iterator<Item = &Part> + Clone {
+        std::iter::once(&self.first).chain(
+            self.extra[..self.split - 1]
+                .iter()
+                .map_while(|part| part.as_deref()),
+        )
+    }
+    /// The parts' combined outcome: the first failure in slot order, else
+    /// every part's rows.
+    fn combined(&self) -> Result<[usize; N], &'static str> {
+        let returned = self.parts().count();
+        let mut lens = [0; N];
+        for part in self.parts() {
+            match part.outcome {
+                Outcome::Rows { .. } => {
+                    lens[0] += part.countries.len;
+                    lens[1] += part.lines.len;
                 }
-            }),
-            table::<tables::ProductionLineModifiers, _>(
-                outcomes[1],
-                &self.lines.first[..self.lines.len],
-                |line| rows::ProductionLineModifiersRow {
-                    line: line.handle,
-                    country: line.country,
-                    variant: line.variant,
-                    organisation: line.organisation,
-                    kind: line.kind,
-                    active_factories: line.active_factories,
-                    resource_penalty_raw: line.resource_penalty,
-                    organisation_dirty: line.organisation_dirty,
-                    conversion: line.conversion,
-                    licensed: line.licensed,
-                    bonuses: line.bonuses,
-                    conversion_output: line.conversion_output,
-                    refit_output: line.refit_output,
-                    naval_efficiency: line.naval_efficiency,
-                    naval_output: line.naval_output,
-                    factory_efficiencies: owned_vec(copy_vec(
-                        &self.efficiencies.first
-                            [line.efficiencies[0]..line.efficiencies[0] + line.efficiencies[1]],
-                    )),
-                },
+                Outcome::Unavailable { reason } => return Err(reason),
+                Outcome::Truncated { .. } => return Err("production modifier part truncated"),
+            }
+        }
+        if returned != self.split {
+            return Err("slow acquisition failed");
+        }
+        Ok(lens)
+    }
+    /// The next slot hour's split of a complete capture: starts at the
+    /// countries that balance countries and lines across [`MAX_PARTS`]
+    /// parts; `previous` otherwise.
+    pub(crate) fn next_starts(
+        &self,
+        previous: ([u32; MAX_PARTS - 1], usize),
+    ) -> ([u32; MAX_PARTS - 1], usize) {
+        let Ok(lens) = self.combined() else {
+            return previous;
+        };
+        if lens[0] < SPLIT_COUNTRIES {
+            return ([0; MAX_PARTS - 1], 0);
+        }
+        let total = lens[0] + lens[1];
+        let mut starts = [0; MAX_PARTS - 1];
+        let (mut split, mut walked) = (0, 0);
+        for part in self.parts() {
+            let lines = &part.lines.first[..part.lines.len];
+            let mut line = 0;
+            for country in &part.countries.first[..part.countries.len] {
+                if split < MAX_PARTS - 1 && walked * MAX_PARTS >= total * (split + 1) {
+                    starts[split] = country.slot;
+                    split += 1;
+                }
+                walked += 1;
+                while lines
+                    .get(line)
+                    .is_some_and(|row| row.country == country.country)
+                {
+                    walked += 1;
+                    line += 1;
+                }
+            }
+        }
+        (starts, split)
+    }
+    pub fn outcomes(&self) -> [Outcome; N] {
+        match self.combined() {
+            Ok(lens) => lens.map(|len| Outcome::Rows { len }),
+            Err(reason) => [Outcome::Unavailable { reason }; N],
+        }
+    }
+    pub fn tables(&self) -> [TableView; N] {
+        let lens = match self.combined() {
+            Ok(lens) => lens,
+            Err(reason) => return [unavailable(reason), unavailable(reason)],
+        };
+        // The defines of the first part that read them; a capture without a
+        // country with lines published the default with no rows.
+        let Some(context) = self
+            .parts()
+            .find(|part| part.requests.len != 0)
+            .unwrap_or(&self.first)
+            .context
+        else {
+            return [
+                unavailable("production modifier context absent"),
+                unavailable("production modifier context absent"),
+            ];
+        };
+        if let Some(reason) = self.parts().find_map(Part::invalid) {
+            return [unavailable(reason), unavailable(reason)];
+        }
+        let parts = self.parts();
+        [
+            table_iter::<tables::CountryProductionModifiers, _>(
+                Outcome::Rows { len: lens[0] },
+                parts.clone().flat_map(|part| {
+                    part.countries.first[..part.countries.len]
+                        .iter()
+                        .map(move |country| (part, country))
+                }),
+                |(part, country)| part.country_row(context, country),
+            ),
+            table_iter::<tables::ProductionLineModifiers, _>(
+                Outcome::Rows { len: lens[1] },
+                parts.flat_map(|part| {
+                    part.lines.first[..part.lines.len]
+                        .iter()
+                        .map(move |line| (part, line))
+                }),
+                |(part, line)| part.line_row(line),
             ),
         ]
+    }
+}
+
+/// Parts as a capture leaves them, for the lifecycle tests: the native walk
+/// is the engine's to test, and these fill a part with the rows it would
+/// publish.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// A complete part of `countries` (id, accumulator, lines), each line
+    /// with one factory efficiency and each country with a one-node tree
+    /// per key, read under `context`; no country gives the default context,
+    /// as a capture without a country with lines does.
+    pub(crate) fn part(countries: &[(u32, usize, usize)], context: native::Context) -> Part {
+        let lines: usize = countries.iter().map(|&(_, _, lines)| lines).sum();
+        let mut capacity = Capacities {
+            lines,
+            efficiencies: lines,
+            nodes: 1,
+            text: 1,
+            ..Default::default()
+        };
+        capacity.raise_for_countries(countries.len());
+        let mut part = Part::with_capacities(&capacity);
+        part.context = Some(if countries.is_empty() {
+            native::Context::default()
+        } else {
+            context
+        });
+        part.outcome = Outcome::Rows { len: lines };
+        let mut roots = Vec::new();
+        let mut line = 0;
+        for (index, &(country, accumulator, count)) in countries.iter().enumerate() {
+            part.countries.first[index] = native::Country {
+                country,
+                accumulator,
+                power_raw: i64::from(country),
+                slot: country,
+            };
+            for ordinal in 0..count {
+                part.lines.first[line] = native::Line {
+                    handle: (u64::from(country) << 8) | ordinal as u64,
+                    country,
+                    efficiencies: [line, 1],
+                    ..Default::default()
+                };
+                part.efficiencies.first[line] = -i64::from(country);
+                line += 1;
+            }
+            for key in native::KEYS {
+                roots.push(tree::Root {
+                    accumulator,
+                    key,
+                    nodes: [0, 1],
+                    failure: None,
+                });
+            }
+        }
+        roots.sort_by_key(|root| (root.accumulator, root.key));
+        part.roots.first[..roots.len()].copy_from_slice(&roots);
+        part.roots.len = roots.len();
+        part.requests.len = roots.len();
+        part.countries.len = countries.len();
+        part.lines.len = lines;
+        part.efficiencies.len = lines;
+        part.nodes.first[0] = tree::RawNode {
+            children: 0,
+            value: 7,
+            name: [0, 1],
+        };
+        part.nodes.len = 1;
+        part.text.first[0] = b'k';
+        part.text.len = 1;
+        part
+    }
+
+    /// A failed part, as a capture that met `reason` leaves it.
+    pub(crate) fn failed(reason: &'static str) -> Part {
+        let mut part = Part::vacant();
+        part.outcome = Outcome::Unavailable { reason };
+        part
+    }
+
+    impl Captured {
+        /// The whole capture of `part`.
+        pub(crate) fn whole(part: Part) -> Self {
+            Self::of(part)
+        }
+        /// The first part's capture as [`Captured::capture`] leaves it, with
+        /// `part` in place of the native walk's rows.
+        pub(crate) fn captured_as(&mut self, part: Part) {
+            self.split = std::mem::replace(&mut self.prepared, 1);
+            self.provided = None;
+            self.first = part;
+        }
+        /// The prepared split's part slots.
+        pub(crate) fn prepared_slots(&self) -> Vec<std::ops::Range<u32>> {
+            (0..self.split).map(|part| self.slots(part)).collect()
+        }
     }
 }
 
@@ -382,13 +751,13 @@ mod tests {
         let mut capacity = Capacities::default();
         capacity.raise_for_countries(5001);
         let mut captured = Captured::with_capacities(&capacity);
-        assert!(captured.countries.first.len() >= 5000);
-        assert!(captured.requests.first.len() >= 5000 * native::KEYS.len());
-        captured.efficiencies.required = captured.efficiencies.first.len() + 1;
-        captured.archetypes.required = captured.archetypes.first.len() + 1;
+        assert!(captured.first.countries.first.len() >= 5000);
+        assert!(captured.first.requests.first.len() >= 5000 * native::KEYS.len());
+        captured.first.efficiencies.required = captured.first.efficiencies.first.len() + 1;
+        captured.first.archetypes.required = captured.first.archetypes.first.len() + 1;
         captured.grow(&mut capacity);
-        assert!(captured.efficiencies.first.len() >= captured.efficiencies.required);
-        assert!(captured.stack.first.len() >= captured.archetypes.required);
+        assert!(captured.first.efficiencies.first.len() >= captured.first.efficiencies.required);
+        assert!(captured.first.stack.first.len() >= captured.first.archetypes.required);
     }
     #[test]
     fn failed_root_preserves_independent_native_sources_and_negative_factory_entries() {
@@ -402,33 +771,34 @@ mod tests {
         };
         capacity.raise_for_countries(2);
         let mut captured = Captured::with_capacities(&capacity);
-        captured.context = Some(native::Context::default());
-        captured.outcome = Outcome::Rows { len: 1 };
-        captured.countries.first[0] = native::Country {
+        captured.first.context = Some(native::Context::default());
+        captured.first.outcome = Outcome::Rows { len: 1 };
+        captured.first.countries.first[0] = native::Country {
             country: 9,
             accumulator: 123,
             power_raw: -20,
+            slot: 1,
         };
-        captured.countries.len = 1;
-        captured.lines.first[0] = native::Line {
+        captured.first.countries.len = 1;
+        captured.first.lines.first[0] = native::Line {
             handle: 22,
             country: 9,
             efficiencies: [0, 2],
             ..Default::default()
         };
-        captured.lines.len = 1;
-        captured.efficiencies.first[..2].copy_from_slice(&[-123, 456]);
-        captured.efficiencies.len = 2;
-        captured.nodes.first[0] = tree::RawNode {
+        captured.first.lines.len = 1;
+        captured.first.efficiencies.first[..2].copy_from_slice(&[-123, 456]);
+        captured.first.efficiencies.len = 2;
+        captured.first.nodes.first[0] = tree::RawNode {
             children: 0,
             value: -7,
             name: [0, 3],
         };
-        captured.nodes.len = 1;
-        captured.text.first[..3].copy_from_slice(&[0xff, 0, b'k']);
-        captured.text.len = 3;
+        captured.first.nodes.len = 1;
+        captured.first.text.first[..3].copy_from_slice(&[0xff, 0, b'k']);
+        captured.first.text.len = 3;
         for (index, key) in native::KEYS.into_iter().enumerate() {
-            captured.roots.first[index] = tree::Root {
+            captured.first.roots.first[index] = tree::Root {
                 accumulator: 123,
                 key,
                 nodes: if index == 0 { [0, 0] } else { [0, 1] },
@@ -439,7 +809,7 @@ mod tests {
                 },
             };
         }
-        captured.roots.len = native::KEYS.len();
+        captured.first.roots.len = native::KEYS.len();
         let [countries, lines] = captured.tables();
         let TableView::Complete(TableRows::CountryProductionModifiers(countries)) = countries
         else {
@@ -452,5 +822,47 @@ mod tests {
             panic!("missing line projection");
         };
         assert_eq!(lines[0].factory_efficiencies, [-123, 456]);
+    }
+
+    /// The tables of a capture split in two are the whole capture's though
+    /// the parts' accumulators interleave (each part's roots are searched in
+    /// its own run); a failed later part fails both tables with its reason,
+    /// and a complete capture balances the next split over its countries.
+    #[test]
+    fn split_parts_publish_the_whole_capture_s_tables_in_slot_order() {
+        let countries = [(1, 900), (2, 100), (3, 500), (4, 300)];
+        let part_of = |countries: &[(u32, usize)]| {
+            test_support::part(
+                &countries
+                    .iter()
+                    .map(|&(id, at)| (id, at, 1))
+                    .collect::<Vec<_>>(),
+                native::Context::default(),
+            )
+        };
+        let whole = Captured::of(part_of(&countries));
+        let mut split = Captured::of(part_of(&countries[..2]));
+        split.extra[0] = Some(Box::new(part_of(&countries[2..])));
+        split.split = 2;
+        assert_eq!(split.outcomes(), whole.outcomes());
+        assert_eq!(split.tables(), whole.tables());
+        assert!(matches!(whole.tables()[0], TableView::Complete(_)));
+        split.extra[0]
+            .as_mut()
+            .unwrap()
+            .fail_capture(8, false, "slow acquisition failed");
+        let refused = Outcome::Unavailable {
+            reason: "slow acquisition failed",
+        };
+        assert_eq!(split.outcomes(), [refused; N]);
+        assert_eq!(split.next_starts(([7, 0, 0], 1)), ([7, 0, 0], 1));
+        // Twenty countries split in four, each start a later country's slot.
+        let many: Vec<_> = (1..=20).map(|id| (id, 1_000 + id as usize)).collect();
+        let (starts, parts) = Captured::of(part_of(&many)).next_starts(([0; 3], 0));
+        assert_eq!(parts, MAX_PARTS - 1);
+        assert!(starts.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(starts[0] > 1 && starts[2] <= 20);
+        // Too few countries are not split.
+        assert_eq!(whole.next_starts(([7, 0, 0], 1)), ([0; 3], 0));
     }
 }

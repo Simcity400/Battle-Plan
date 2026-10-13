@@ -15,3 +15,7 @@ zstd = "0.13"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# Process CPU time for the pack bench.
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }

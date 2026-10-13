@@ -6,6 +6,8 @@
 //! census; every use verifies its order against the current native keys.
 //! Portrait acquisition may retain owned descriptors certified current by its
 //! native mutation observer; this is distinct from carrying an older sample.
+//! Each table's ordering scratch has its own lock, so clones of one
+//! projection can convert disjoint tables on the spool thread and its helper.
 
 use crate::spooling::{table, unavailable};
 use engine::walk::Outcome;
@@ -14,6 +16,7 @@ use replay::{
     frame::{FrameEncoder, TABLE_COUNT, TableInput, TableView},
     rows::{RowCodec, TableRows, TableSchema},
 };
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 #[derive(Default)]
 struct Ordering {
@@ -27,22 +30,53 @@ struct Ordering {
 }
 
 pub(crate) struct ProjectionScratch {
-    tables: [Ordering; TABLE_COUNT],
+    tables: [Mutex<Ordering>; TABLE_COUNT],
 }
 
 impl Default for ProjectionScratch {
     fn default() -> Self {
         Self {
-            tables: std::array::from_fn(|_| Ordering::default()),
+            tables: std::array::from_fn(|_| Mutex::default()),
         }
     }
 }
 
+/// Counters copied out of one table's scratch for status.
+#[derive(Clone, Copy)]
+struct OrderingStatus {
+    compared: u64,
+    reused: u64,
+    converted: u64,
+    updated: u64,
+    updated_rows: u64,
+    sorted: u64,
+    capacity_bytes: usize,
+}
+
 impl ProjectionScratch {
+    fn table(&self, table: replay::rows::TableId) -> MutexGuard<'_, Ordering> {
+        self.tables[table.index()]
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn ordering_status(&self, table: replay::rows::TableId) -> OrderingStatus {
+        let order = self.table(table);
+        OrderingStatus {
+            compared: order.compared,
+            reused: order.reused,
+            converted: order.converted,
+            updated: order.updated,
+            updated_rows: order.updated_rows,
+            sorted: order.sorted,
+            capacity_bytes: order.indices.capacity() * std::mem::size_of::<usize>(),
+        }
+    }
+
     pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
         crate::status::status!({
             "scope": "current complete native payload compared with encoder baseline; cumulative conversion decisions including later failed writes",
-            "tables": crate::status::sequence(replay::rows::TableId::ALL.into_iter().zip(&self.tables).filter(|(_, order)| order.compared != 0 || order.converted != 0).map(|(table, order)| crate::status::status!({
+            "tables": crate::status::sequence(replay::rows::TableId::ALL.into_iter().map(|table| (table, self.ordering_status(table))).filter(|(_, order)| order.compared != 0 || order.converted != 0).map(|(table, order)| crate::status::status!({
                 "table": crate::status::DebugValue(table),
                 "compared": order.compared,
                 "reused": order.reused,
@@ -50,18 +84,21 @@ impl ProjectionScratch {
                 "updated": order.updated,
                 "updated_rows": order.updated_rows,
                 "sorted": order.sorted,
-                "ordering_capacity_bytes": order.indices.capacity() * std::mem::size_of::<usize>(),
+                "ordering_capacity_bytes": order.capacity_bytes,
             }))),
         })
     }
 }
 
+/// One hour's comparison context. Clones share the encoder borrow and the
+/// per-table scratch locks, so another thread can project other tables.
+#[derive(Clone, Copy)]
 pub(crate) struct Projection<'a> {
     encoder: &'a FrameEncoder,
     branch: BranchId,
     hour: Hour,
     force: bool,
-    scratch: &'a mut ProjectionScratch,
+    scratch: &'a ProjectionScratch,
 }
 
 impl<'a> Projection<'a> {
@@ -70,7 +107,7 @@ impl<'a> Projection<'a> {
         branch: BranchId,
         hour: Hour,
         force: bool,
-        scratch: &'a mut ProjectionScratch,
+        scratch: &'a ProjectionScratch,
     ) -> Self {
         Self {
             encoder,
@@ -99,7 +136,8 @@ impl<'a> Projection<'a> {
             }
             _ => {}
         }
-        let order = &mut self.scratch.tables[S::ID.index()];
+        let mut order = self.scratch.table(S::ID);
+        let order = &mut *order;
         let natural = source.windows(2).all(|rows| key(&rows[0]) < key(&rows[1]));
         if !natural {
             if order.indices.len() != source.len() {
@@ -210,8 +248,10 @@ impl<'a> Projection<'a> {
     }
 }
 
-/// `key` must be the replay key and `equal` must compare every replay field.
-/// All source and arena checks are performed before calling this function.
+/// `key` must be the replay key and `equal` must compare every replay field,
+/// a field with a display step ([`replay::display`]) at that step, since the
+/// baseline holds it rounded. All source and arena checks are performed before
+/// calling this function. Converted rows are rounded to their display steps.
 pub(crate) fn project_table<S: TableSchema, T>(
     projection: Option<&mut Projection<'_>>,
     outcome: Outcome,
@@ -220,6 +260,7 @@ pub(crate) fn project_table<S: TableSchema, T>(
     equal: impl Fn(&T, &S::Row) -> bool,
     convert: impl Fn(&T) -> S::Row,
 ) -> TableInput {
+    let convert = |native: &T| displayed::<S>(convert(native));
     match projection {
         Some(projection) => projection.table::<S, _>(outcome, source, key, equal, convert),
         None => table::<S, _>(outcome, source, convert).into(),
@@ -240,9 +281,16 @@ pub(crate) fn scalar_table<S: TableSchema, T>(
         outcome,
         source,
         key,
-        |native, previous| convert(native) == *previous,
+        |native, previous| displayed::<S>(convert(native)) == *previous,
         &convert,
     )
+}
+
+/// `row` with its fields rounded to their display steps, as the baseline
+/// holds them.
+fn displayed<S: TableSchema>(mut row: S::Row) -> S::Row {
+    row.round_to_display();
+    row
 }
 
 #[cfg(test)]
@@ -338,7 +386,7 @@ mod tests {
             let actual: DecodedFrame = projected_decoder.apply(&actual).unwrap();
             assert_eq!(actual, ordinary_decoder.apply(&expected).unwrap());
         }
-        assert_eq!(scratch.tables[TableId::States.index()].reused, 5);
+        assert_eq!(scratch.ordering_status(TableId::States).reused, 5);
     }
 
     #[test]
@@ -428,11 +476,7 @@ mod tests {
         for (branch, hour, force) in [(1, 2, false), (2, 1, false), (1, 1, true)] {
             let current = scalar_table::<tables::States, _>(
                 Some(&mut Projection::new(
-                    &encoder,
-                    branch,
-                    hour,
-                    force,
-                    &mut scratch,
+                    &encoder, branch, hour, force, &scratch,
                 )),
                 outcome,
                 &rows,

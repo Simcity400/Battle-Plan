@@ -103,7 +103,38 @@ impl Context {
             ahead_factor,
         })
     }
+
+    /// One value for the defines every modifier row of a read may carry.
+    pub fn digest(&self) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        for value in [
+            self.minimum,
+            self.license,
+            self.sharing_maximum,
+            self.ahead_factor,
+        ] {
+            for byte in value.to_le_bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        hash
+    }
 }
+
+// Technology-category and research-modifier fixed operands of each assigned technology.
+const TECHNOLOGY_FIELDS: [crate::memory::RecordField; 4] =
+    crate::memory::packed_fields([(0x190, 24), (0x1e8, 12), (0x68, 16), (0x110, 64)]);
+const TECHNOLOGY_LAYOUT: crate::memory::RecordLayout<'static> =
+    crate::memory::RecordLayout::new(&TECHNOLOGY_FIELDS, 116).unwrap();
+// Research modifier calculation: contribution and CIdea link are the two qwords at +0x38.
+const IDEA_FIELDS: [crate::memory::RecordField; 1] = crate::memory::packed_fields([(0x38, 16)]);
+const IDEA_LAYOUT: crate::memory::RecordLayout<'static> =
+    crate::memory::RecordLayout::new(&IDEA_FIELDS, 16).unwrap();
+// Research modifier calculation: each script record names a source whose +0x30
+// is its contribution.
+const SCRIPT_FIELDS: [crate::memory::RecordField; 1] = crate::memory::packed_fields([(0x30, 8)]);
+const SCRIPT_LAYOUT: crate::memory::RecordLayout<'static> =
+    crate::memory::RecordLayout::new(&SCRIPT_FIELDS, 8).unwrap();
 
 struct Output<'a> {
     rows: crate::walk::Buffer<'a, Row>,
@@ -284,9 +315,29 @@ pub fn walk_country_buffer<M: Memory>(
             Text::default(),
         )?;
         let mut witnesses = sharing::Witnesses::default();
-        // Licence and scientist contexts are lazy: no linked equipment/categories, no read.
+        // Licence and scientist contexts are lazy: no linked
+        // equipment/categories, no read.
         let mut licenses = None;
         let mut scientist = None;
+        let technology_pointers = crate::allocation::advisory(|| {
+            let mut pointers = Vec::new();
+            crate::allocation::reserve_exact(&mut pointers, inputs.len()).ok()?;
+            pointers.extend(
+                inputs
+                    .iter()
+                    .filter(|r| r.slot.technology_present != 0)
+                    .map(|r| r.technology_pointer),
+            );
+            Some(pointers)
+        })
+        .unwrap_or_default();
+        let technology_batch = crate::governance_batch::Records::gather(
+            memory,
+            crate::batch_fallback::Batch::GovernanceModifierTechnologies,
+            crate::memory::RecordSources::Pointers(&technology_pointers),
+            &TECHNOLOGY_LAYOUT,
+        );
+        let technology_memory = technology_batch.view(memory);
         for input in inputs.iter().filter(|r| r.slot.technology_present != 0) {
             if input.status_pointer != status {
                 return Err("research modifier owner changed");
@@ -304,9 +355,11 @@ pub fn walk_country_buffer<M: Memory>(
             let mut xp = [0; 12];
             let mut equipment = [0; 16];
             let mut lists = [0; 64];
-            // Research uses category sum +0x190, design-team sum +0x1a0 and XP flag +0x1e8.
-            // Tooltip sources are ideas +0x110, scripts +0x128 and scientist categories +0x140.
-            if memory.copy_scattered_prefetched(
+            // Technology category lookup: +190 category sum, +1a0 design-team
+            // sum, +1e8 XP flag.
+            // Research modifier calculation: +110 ideas, +128 scripted sources,
+            // +140 scientist categories.
+            if technology_memory.copy_scattered_prefetched(
                 [
                     at(tech, 0x190)?,
                     at(tech, 0x1e8)?,
@@ -350,14 +403,34 @@ pub fn walk_country_buffer<M: Memory>(
             let ideas = array(&lists[..16], 8)?;
             let scripts = array(&lists[24..40], 40)?;
             let categories = array(&lists[48..64], 4)?;
-            pointer_pages(memory, ideas, |pointer| {
-                // Idea contribution at +0x38 and idea pointer at +0x40.
-                let bytes = read::<[u8; 16]>(memory, at(pointer, 0x38)?)
+            let idea_pointers = crate::governance_batch::Records::gather(
+                memory,
+                crate::batch_fallback::Batch::GovernanceModifierIdeas,
+                crate::memory::RecordSources::Strided {
+                    base: ideas.data,
+                    stride: 8,
+                    count: ideas.count as usize,
+                },
+                &crate::governance_batch::POINTER_LAYOUT,
+            );
+            let idea_targets = idea_pointers.targets(0);
+            let idea_batch = crate::governance_batch::Records::gather(
+                memory,
+                crate::batch_fallback::Batch::GovernanceModifierIdeas,
+                crate::memory::RecordSources::Pointers(&idea_targets),
+                &IDEA_LAYOUT,
+            );
+            let idea_pointer_memory = idea_pointers.view(memory);
+            let idea_memory = idea_batch.view(&idea_pointer_memory);
+            pointer_pages(&idea_memory, ideas, |pointer| {
+                // Research modifier idea contribution +38 and CIdea* +40.
+                let bytes = read::<[u8; 16]>(&idea_memory, at(pointer, 0x38)?)
                     .ok_or("research idea contribution unreadable")?;
                 let raw = i64_at(&bytes, 0);
                 if raw != 0 {
                     let idea = pointer_from(&bytes[8..])?;
-                    if read::<u64>(memory, idea) != Some(at(base, crate::cidea::VTABLE_RVA)? as u64)
+                    if read::<u64>(&idea_memory, idea)
+                        != Some(at(base, crate::cidea::VTABLE_RVA)? as u64)
                     {
                         return Err("research idea identity mismatch");
                     }
@@ -367,18 +440,38 @@ pub fn walk_country_buffer<M: Memory>(
                         0,
                         0,
                         0,
-                        text(memory, at(idea, crate::cidea::TOKEN)?, growing)?,
+                        text(&idea_memory, at(idea, crate::cidea::TOKEN)?, growing)?,
                     )?;
                 }
                 Ok(())
             })?;
-            // Walk the original scripted-source count.
+            let script_pointers = crate::governance_batch::Records::gather(
+                memory,
+                crate::batch_fallback::Batch::GovernanceModifierScripts,
+                crate::memory::RecordSources::Strided {
+                    base: scripts.data,
+                    stride: 40,
+                    count: scripts.count as usize,
+                },
+                &crate::governance_batch::POINTER_LAYOUT,
+            );
+            let script_targets = script_pointers.targets(0);
+            let script_batch = crate::governance_batch::Records::gather(
+                memory,
+                crate::batch_fallback::Batch::GovernanceModifierScripts,
+                crate::memory::RecordSources::Pointers(&script_targets),
+                &SCRIPT_LAYOUT,
+            );
+            let script_pointer_memory = script_pointers.view(memory);
+            let script_memory = script_batch.view(&script_pointer_memory);
+            // Research modifier calculation walks the original scripted-source
+            // count.
             for index in 0..scripts.count {
                 let entry = scripts
                     .element(index, 40)
                     .ok_or("research script address overflow")?;
-                let source = pointer(memory, entry)?;
-                let raw = read::<i64>(memory, at(source, 0x30)?)
+                let source = pointer(&script_memory, entry)?;
+                let raw = read::<i64>(&script_memory, at(source, 0x30)?)
                     .ok_or("research script contribution unreadable")?;
                 if raw != 0 {
                     out.push(
@@ -387,7 +480,7 @@ pub fn walk_country_buffer<M: Memory>(
                         0,
                         0,
                         0,
-                        text(memory, at(entry, 8)?, growing)?,
+                        text(&script_memory, at(entry, 8)?, growing)?,
                     )?;
                 }
             }
@@ -398,7 +491,8 @@ pub fn walk_country_buffer<M: Memory>(
                 let roster = match licenses {
                     Some(roster) => roster,
                     None => {
-                        // Production +0x190 embeds the industrial status; +0x20 holds licensed variants.
+                        // Production +0x190 embeds the industrial status; +0x20
+                        // holds licensed variants.
                         let production =
                             pointer(memory, at(country.pointer, ccountry::PRODUCTION_STATUS)?)?;
                         let roster = array_at(memory, at(production, 0x1b0)?, 8)?;
@@ -773,3 +867,6 @@ fn pointer_pages(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod serial;

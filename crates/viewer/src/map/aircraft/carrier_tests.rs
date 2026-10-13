@@ -83,7 +83,6 @@ fn movement() -> MovementContent {
             river_crossing_three: 0,
         },
         rail: Err("unrelated railway defines are unavailable".into()),
-        naval: Err("unrelated naval defines are unavailable".into()),
         task_force_terrain: Err("unrelated task-force terrain is unavailable".into()),
     }
 }

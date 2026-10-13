@@ -25,7 +25,7 @@ pub fn current(
         .require("RelationLinks.transport_subject")?
         .as_ref()
         .ok_or("transport subject owner coverage refused")?;
-    if certificate.sample_hour != hour {
+    if !certificate.sample_hour.fresh_at(hour) {
         return Err("transport subject owner coverage stale".into());
     }
     if !certificate.complete_owner
@@ -42,7 +42,7 @@ pub fn current(
         .require("RelationLinks.transport_subject")?
         .as_ref()
         .ok_or("transport subject status capture refused")?;
-    if packet.sample_hour != hour {
+    if !packet.sample_hour.fresh_at(hour) {
         return Err("transport subject status stale".into());
     }
     if packet.complete_owner {
@@ -95,7 +95,7 @@ mod tests {
             country: 11,
             target_index: 1,
             transport_subject: Recorded::Value(Some(TransportSubjectAccess {
-                sample_hour: 7,
+                sample_hour: crate::rows::PacketHour::Stamped(7),
                 complete_owner: true,
                 ..Default::default()
             })),
@@ -151,7 +151,7 @@ mod tests {
             transport_subject: Recorded::Value(None),
         };
         let packet = TransportSubjectAccess {
-            sample_hour: i32::MIN,
+            sample_hour: crate::rows::PacketHour::Host,
             target_raw: Some(u32::MAX),
             subject: Some(ZeroSubjectInputs {
                 relation_type: Some(engine::csubject_relation::TYPE_VALUE),
@@ -163,7 +163,7 @@ mod tests {
             None,
             Some(packet),
             Some(TransportSubjectAccess {
-                sample_hour: i32::MAX,
+                sample_hour: crate::rows::PacketHour::Host,
                 complete_owner: true,
                 ..Default::default()
             }),
@@ -210,12 +210,12 @@ mod tests {
             DecodedFrame, FrameDecoder, FrameEncoder, Metrics, TableUpdate, TableView,
         };
         use crate::rows::TableRows;
-        let row = |hour, subject| RelationLinkRow {
+        let row = |_hour: i32, subject| RelationLinkRow {
             country: 11,
             target_index: 2,
             links: 8,
             transport_subject: Recorded::Value(Some(TransportSubjectAccess {
-                sample_hour: hour,
+                sample_hour: crate::rows::PacketHour::Host,
                 target_raw: Some(22),
                 subject,
                 ..Default::default()
@@ -305,7 +305,7 @@ mod tests {
             country: 11,
             target_index: 1,
             transport_subject: Recorded::Value(Some(TransportSubjectAccess {
-                sample_hour: 7,
+                sample_hour: crate::rows::PacketHour::Stamped(7),
                 complete_owner: true,
                 ..Default::default()
             })),
@@ -322,7 +322,7 @@ mod tests {
         ];
         assert!(current(&rows, 11, 1, 2, 7).unwrap_err().contains("refused"));
         rows[1].transport_subject = Recorded::Value(Some(TransportSubjectAccess {
-            sample_hour: 6,
+            sample_hour: crate::rows::PacketHour::Stamped(6),
             target_raw: Some(22),
             subject: Some(ZeroSubjectInputs::default()),
             ..Default::default()

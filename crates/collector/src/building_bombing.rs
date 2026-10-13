@@ -81,6 +81,10 @@ pub fn mark_stranded() {
 pub fn capacity() -> usize {
     LEDGER.demand()
 }
+/// The latest building census, which also sizes the nuclear strike ledger.
+pub fn buildings() -> usize {
+    BUILDINGS.load(Ordering::Acquire)
+}
 pub fn presize(events: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {
@@ -210,6 +214,7 @@ unsafe extern "system" fn before(
     caller: usize,
     observation: *mut Observation,
 ) -> usize {
+    let _timing = crate::hook_timing::enter(crate::hook_timing::Family::BuildingBombing);
     let started = qpc();
     LEDGER.enter();
     unsafe {
@@ -275,6 +280,7 @@ unsafe extern "system" fn before(
     token
 }
 unsafe extern "system" fn after(token: usize, observation: *const Observation, returned: usize) {
+    let _timing = crate::hook_timing::enter_return(crate::hook_timing::Family::BuildingBombing);
     let started = qpc();
     if token != 0 {
         let observation = unsafe { &*observation };

@@ -19,8 +19,10 @@ pub(super) fn compare(
     );
     complete::<tables::RocketProductionOutput>(frame)?;
     let selected = [TableId::RocketProductionOutput];
-    let mut previous = BTreeMap::new();
-    let mut compared = 0;
+    let mut check = Continuity {
+        event_losses: replay.event_losses(frame.branch).collect(),
+        ..Continuity::default()
+    };
     for block in replay
         .index
         .iter()
@@ -31,24 +33,48 @@ pub(super) fn compare(
             if encoded.hour > frame.hour {
                 break;
             }
-            let decoded = decoder.advance(&encoded)?;
-            if !daily_read(
-                decoded.hour,
-                &decoded.metrics,
-                TableId::RocketProductionOutput,
-            ) {
-                continue;
-            }
-            let Ok(rows) = complete::<tables::RocketProductionOutput>(decoded) else {
-                previous.clear();
-                continue;
-            };
-            check_rows(&mut previous, rows)?;
-            compared += rows.len();
+            check.observe(decoder.advance(&encoded)?)?;
         }
     }
-    report.compared("RocketProductionOutput continuity", compared);
+    report.compared("RocketProductionOutput continuity", check.compared);
     Ok(())
+}
+
+/// Branch continuity of the recorded rocket output, from its daily reads.
+#[derive(Default)]
+struct Continuity {
+    previous: BTreeMap<(u32, u64), RocketProductionOutputRow>,
+    /// The hour of the frame `previous` was read at.
+    read: Option<i32>,
+    /// The branch's recorded event losses, as the reads each lies between.
+    event_losses: Vec<(i32, i32)>,
+    compared: usize,
+}
+
+impl Continuity {
+    fn observe(&mut self, frame: &DecodedFrame) -> io::Result<()> {
+        // A recorded event loss since the previous read restarted the
+        // writer observation: the counts start again after it, as they do
+        // at the branch's start, and never cross it.
+        if self.read.is_some_and(|read| {
+            self.event_losses
+                .iter()
+                .any(|&(_, lost)| read < lost && lost <= frame.hour)
+        }) {
+            self.previous.clear();
+        }
+        if !daily_read(frame.hour, &frame.metrics, TableId::RocketProductionOutput) {
+            return Ok(());
+        }
+        self.read = Some(frame.hour);
+        let Ok(rows) = complete::<tables::RocketProductionOutput>(frame) else {
+            self.previous.clear();
+            return Ok(());
+        };
+        check_rows(&mut self.previous, rows)?;
+        self.compared += rows.len();
+        Ok(())
+    }
 }
 
 fn check_rows(
@@ -165,5 +191,54 @@ mod tests {
         assert!(check_rows(&mut previous, &[world.clone(), design.clone()]).is_err());
         check_rows(&mut previous, &[world.clone(), scope.clone(), design]).unwrap();
         assert!(check_rows(&mut previous, &[world, scope]).is_err());
+    }
+
+    /// Output restarted after a recorded event loss starts its continuity
+    /// again there, even when the restart is first read later; the same
+    /// restart without a recorded loss stays a failure.
+    #[test]
+    fn a_recorded_event_loss_restarts_rocket_continuity_and_nothing_else_does() {
+        let rows = |since_hour: i32, ticks: u64| {
+            let scope = |country| RocketProductionOutputRow {
+                country,
+                since_hour,
+                ..Default::default()
+            };
+            let design = RocketProductionOutputRow {
+                since_hour,
+                ticks,
+                ..design()
+            };
+            vec![scope(0), scope(5001), design]
+        };
+        let frame = |hour: i32, read: Option<Vec<RocketProductionOutputRow>>| {
+            let mut frame = crate::test_support::frame(
+                read.clone()
+                    .map(replay::rows::TableRows::RocketProductionOutput),
+            );
+            frame.hour = hour;
+            if read.is_some() {
+                frame.metrics.table_ns[TableId::RocketProductionOutput.index()] = 1;
+            }
+            frame
+        };
+        let frames = [
+            frame(100, Some(rows(90, 3))),
+            frame(101, None),
+            frame(102, Some(rows(101, 1))),
+        ];
+        let run = |event_losses: Vec<(i32, i32)>| {
+            let mut check = Continuity {
+                event_losses,
+                ..Continuity::default()
+            };
+            for frame in &frames {
+                check.observe(frame)?;
+            }
+            Ok::<_, io::Error>(check.compared)
+        };
+        assert!(run(Vec::new()).is_err());
+        assert!(run(vec![(102, 103)]).is_err());
+        assert_eq!(run(vec![(100, 101)]).unwrap(), 6);
     }
 }

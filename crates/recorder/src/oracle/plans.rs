@@ -464,13 +464,13 @@ fn group_plans(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Re
         );
     }
     report.compared("OrdersGroupPlans", rows.len());
-    report.limitation("save color is quantized RGB and omits alpha; the four raw 32-bit CColor components are not independently compared by this oracle. Primary roots are checked as an ordered subsequence of the serialized order graphs led by the first saved instance. The saved virtual_fallback orders are not compared with any recorded list (UNVERIFIED until W2)", "OrdersGroupPlans");
+    report.limitation("save color is quantized RGB and omits alpha; the four raw 32-bit colour components are not independently compared by this oracle. Primary roots are checked as an ordered subsequence of the serialized order graphs led by the first saved instance. The saved virtual_fallback orders are not compared with any recorded list (UNVERIFIED until W2)", "OrdersGroupPlans");
     Ok(())
 }
 fn fronts(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::Fronts>()?;
     // The game writes root_front for any nonnull binding, including one
-    // whose CFront was destroyed before its order; only live theatre fronts
+    // whose front was destroyed before its order; only live theatre fronts
     // have sections, so only those bindings require a Fronts row.
     let required: BTreeSet<_> = save
         .plans
@@ -552,7 +552,7 @@ fn invasions(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
         );
     }
     report.limitation("invasion preparation's operands are live getter inputs the order serializer does not write: the target (the first path province's state controller), the country, relation and leader modifier terms, and whether the leader term counts (the HQ provider's root order) are not compared; the invasion census and the accumulated preparation are", "InvasionPreparations");
-    report.limitation("invasion routing's path-cost operands are runtime state the save never writes: the route unit's logical owner remains InvasionPreparations.unit_owner, while its owner's slot-0 war-pointer presence and retired byte and directed targets now come from shared CountryCounterInputs.zero_war/co_belligerents. Those runtime operands are not compared; the published InvasionPreparations zero_* and co_belligerents prefix fields remain legacy evidence. The roster fallback unit is compared as CountryCounterInputs.first_division", "InvasionPreparations.unit_owner and legacy zero_war_present/zero_war_retired/zero_co_belligerent/co_belligerents; CountryCounterInputs.zero_war/co_belligerents");
+    report.limitation("invasion routing's path-cost operands are runtime state the save never writes: the route unit's logical owner remains InvasionPreparations.unit_owner, while its owner's slot-0 war-pointer presence and retired byte and directed targets now come from shared CountryCounterInputs.zero_war/co_belligerents. Those runtime operands are not compared. The roster fallback unit is compared as CountryCounterInputs.first_division", "InvasionPreparations.unit_owner; CountryCounterInputs.zero_war/co_belligerents");
     Ok(())
 }
 

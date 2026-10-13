@@ -14,8 +14,20 @@ use std::{
 const WATCHES: usize = 65536;
 static REVISIONS: Revisions<WATCHES> = Revisions::new();
 static EPOCH: AtomicU64 = AtomicU64::new(1);
+/// Moved by every writer: guards a walk's fresh reads of unwatched holders.
 static REVISION: AtomicU64 = AtomicU64::new(0);
+/// Moved only by writers of a watched holder. The holder constructor and
+/// two destructors also run every hour for holders no
+/// Capture watches  (division construction,
+/// ship construction, leader UI items such as
+/// leader UI item construction). A quiet certificate covers only
+/// holders watched when it was taken, and a watch is never removed during an
+/// attachment, so no other writer can change what it certifies. A writer
+/// that looked its holder up before the capture registered it is still
+/// active when the capture checks `ACTIVE`, which then certifies nothing.
+static WATCHED_REVISION: AtomicU64 = AtomicU64::new(0);
 static PLANNED_PARTS: AtomicU64 = AtomicU64::new(0);
+static QUIET_PARTS: AtomicU64 = AtomicU64::new(0);
 static WORK: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static POISONED: AtomicBool = AtomicBool::new(false);
@@ -23,6 +35,9 @@ pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
 static EVENTS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
+    "reused portrait entries differ from a fresh read",
+]);
 
 struct Slot {
     address: AtomicUsize,
@@ -93,40 +108,48 @@ impl Mutation {
     fn enter(array: usize, site: usize) -> Self {
         ACTIVE.fetch_add(1, Ordering::SeqCst);
         let sequence = REVISIONS.sequence(array, false);
-        increment(&REVISION);
-        if let Some(sequence) = sequence {
-            increment(sequence);
-        }
+        note(sequence);
         EVENTS[site].fetch_add(1, Ordering::Relaxed);
         Self(sequence)
     }
 }
 impl Drop for Mutation {
     fn drop(&mut self) {
-        if let Some(sequence) = self.0 {
-            increment(sequence);
-        }
-        increment(&REVISION);
+        note(self.0);
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// One writer boundary of a holder: `sequence` is its watch, `None` for a
+/// holder no capture watches.
+fn note(sequence: Option<&AtomicU64>) {
+    increment(&REVISION);
+    if let Some(sequence) = sequence {
+        increment(&WATCHED_REVISION);
+        increment(sequence);
     }
 }
 
 pub struct Observer;
 impl Observer {
-    /// Whole-domain certificate for a prepared unchanged-result pass. Native
-    /// roots, identities, country readability and headers are still read fresh.
-    pub fn quiet_revision(&self) -> Option<(u64, u64)> {
+    fn domain(revision: &AtomicU64) -> Option<(u64, u64)> {
         if !ENABLED.load(Ordering::SeqCst) || POISONED.load(Ordering::SeqCst) {
             return None;
         }
         let epoch = EPOCH.load(Ordering::SeqCst);
-        let revision = REVISION.load(Ordering::SeqCst);
+        let revision = revision.load(Ordering::SeqCst);
         (ACTIVE.load(Ordering::SeqCst) == 0).then_some((epoch, revision))
     }
 }
 
 pub fn record_planned_part() {
     PLANNED_PARTS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A share carried whole from a quiet domain and an unchanged census,
+/// without its prepared program's reads.
+pub fn record_quiet_part() {
+    QUIET_PARTS.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn record_work(planned: bool, ticks: u64) {
@@ -136,7 +159,10 @@ pub fn record_work(planned: bool, ticks: u64) {
 }
 impl Changes for Observer {
     fn quiet_revision(&self) -> Option<(u64, u64)> {
-        Observer::quiet_revision(self)
+        Observer::domain(&WATCHED_REVISION)
+    }
+    fn any_revision(&self) -> Option<(u64, u64)> {
+        Observer::domain(&REVISION)
     }
     fn revision(&self, array: usize) -> Option<(u64, u64)> {
         if !ENABLED.load(Ordering::SeqCst) || POISONED.load(Ordering::SeqCst) {
@@ -170,6 +196,15 @@ pub fn record(counts: Counts) {
     }
 }
 
+/// One share's sampled comparison ([`crate::sampled_verify`]): `verified`
+/// reusable characters read afresh, `mismatches` of them differing. A
+/// mismatch permanently disables reuse for this attachment.
+pub fn sampled(verified: u64, mismatches: u64) {
+    if SAMPLED.record(verified, mismatches, 0) {
+        POISONED.store(true, Ordering::SeqCst);
+    }
+}
+
 pub fn status() -> impl serde::Serialize {
     let counts = COUNTS.each_ref().map(|v| v.load(Ordering::Relaxed));
     let event_counts = EVENTS.each_ref().map(|value| value.load(Ordering::Relaxed));
@@ -183,9 +218,14 @@ pub fn status() -> impl serde::Serialize {
         "configured": cfg!(feature = "portrait_changes"),
         "verify": cfg!(feature = "portrait_verify"),
         "poisoned": POISONED.load(Ordering::SeqCst),
+        "sampled_verified": SAMPLED.verified(),
+        "sampled_mismatches": SAMPLED.mismatches(),
+        "last_mismatch": SAMPLED.last_mismatch(),
+        "slice": SAMPLED.slice(),
         "reused_characters": counts[0], "reused_entries": counts[1],
         "read_characters": counts[2], "verified_entries": counts[3], "mismatches": counts[4],
         "planned_parts": PLANNED_PARTS.load(Ordering::Relaxed),
+        "quiet_parts": QUIET_PARTS.load(Ordering::Relaxed),
         "work": {
             "planned_calls": WORK[0].load(Ordering::Relaxed),
             "planned_ticks": WORK[1].load(Ordering::Relaxed),
@@ -194,7 +234,7 @@ pub fn status() -> impl serde::Serialize {
             "scope": "QPC ticks for complete part acquisition, including certification, source reads and row work; not game-thread pause"
         },
         "events": events,
-        "scope": "cumulative acquisition observations since attach; verify mode reads all descriptors and compares would-be hits; pooled buffers have independent baselines; bounded watch exhaustion disables reuse for that address"
+        "scope": "cumulative acquisition observations since attach; a quiet part (quiet_parts, also counted in planned_parts) repeats a census share with no writer of a watched holder since its last complete capture and reads nothing; before each share's capture the reusable characters of the hour's slice (one in rotation_hours by character id) are read afresh and compared (sampled_*), and a mismatch disables reuse; verify mode instead reads all descriptors and compares would-be hits (verified_entries, mismatches); pooled buffers have independent baselines; bounded watch exhaustion disables reuse for that address"
     })
 }
 
@@ -230,13 +270,14 @@ impl Hooks {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
         }
-        for hook in &mut self.hooks {
-            if !hook
-                .set_enabled(enabled)
-                .map_err(|_| "native hook state change failed")?
-            {
-                return Ok(false);
-            }
+        // One census and suspension for the whole family, shared with the
+        // other families in a runtime round (`hook::shared`): a thread at any
+        // of its sites, or in a tap, holds every site back until the next
+        // attempt.
+        if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
+            .map_err(|_| "native hook state change failed")?
+        {
+            return Ok(false);
         }
         ENABLED.store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
         Ok(true)
@@ -247,45 +288,67 @@ impl Hooks {
 }
 
 unsafe extern "system" fn assign(array: usize, result: usize, key: usize, value: usize) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::PortraitChanges);
     let _mutation = Mutation::enter(array, 0);
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };
-    unsafe { original(array, result, key, value) }
+    timing.original(|| unsafe { original(array, result, key, value) })
 }
 unsafe extern "system" fn copy(holder: usize, source: usize) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::PortraitChanges);
     let _mutation = Mutation::enter(holder.wrapping_add(8), 1);
     let original: unsafe extern "system" fn(usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[1].load(Ordering::Acquire)) };
-    unsafe { original(holder, source) }
+    timing.original(|| unsafe { original(holder, source) })
 }
 unsafe extern "system" fn construct(holder: usize) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::PortraitChanges);
     let _mutation = Mutation::enter(holder.wrapping_add(8), 2);
     let original: unsafe extern "system" fn(usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[2].load(Ordering::Acquire)) };
-    unsafe { original(holder) }
+    timing.original(|| unsafe { original(holder) })
 }
 unsafe extern "system" fn copy_construct(holder: usize, source: usize) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::PortraitChanges);
     let _mutation = Mutation::enter(holder.wrapping_add(8), 3);
     let original: unsafe extern "system" fn(usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[3].load(Ordering::Acquire)) };
-    unsafe { original(holder, source) }
+    timing.original(|| unsafe { original(holder, source) })
 }
 unsafe extern "system" fn destroy(holder: usize) {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::PortraitChanges);
     let _mutation = Mutation::enter(holder.wrapping_add(8), 4);
     let original: unsafe extern "system" fn(usize) =
         unsafe { std::mem::transmute(ORIGINAL[4].load(Ordering::Acquire)) };
-    unsafe { original(holder) }
+    timing.original(|| unsafe { original(holder) })
 }
 unsafe extern "system" fn insert(array: usize, at: i32, source: usize, count: i32) {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::PortraitChanges);
     let _mutation = Mutation::enter(array, 5);
     let original: unsafe extern "system" fn(usize, i32, usize, i32) =
         unsafe { std::mem::transmute(ORIGINAL[5].load(Ordering::Acquire)) };
-    unsafe { original(array, at, source, count) }
+    timing.original(|| unsafe { original(array, at, source, count) })
 }
 
 #[cfg(test)]
 mod revision_tests {
     use super::*;
+
+    /// Army, ship and UI holders, which no capture watches, move only the
+    /// revision a walk guards its fresh reads with; a watched holder's writer
+    /// moves the quiet revision and its own sequence too.
+    #[test]
+    fn unwatched_holder_writers_leave_the_quiet_revision_still() {
+        let (watched, unwatched) = (0x7ff0_1234_5680, 0x7ff0_6543_2180);
+        let sequence = REVISIONS.sequence(watched, true).unwrap();
+        let revisions =
+            || [&REVISION, &WATCHED_REVISION, sequence].map(|value| value.load(Ordering::SeqCst));
+        let [any, quiet, own] = revisions();
+        note(REVISIONS.sequence(unwatched, false));
+        assert_eq!(revisions(), [any + 1, quiet, own]);
+        note(REVISIONS.sequence(watched, false));
+        assert_eq!(revisions(), [any + 2, quiet + 1, own + 1]);
+    }
 
     #[test]
     fn exact_watches_survive_collisions_and_refuse_overflow_without_aliasing() {

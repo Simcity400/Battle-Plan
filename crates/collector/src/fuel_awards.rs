@@ -2,11 +2,11 @@
 //! no game function is called and no storage grows on a native callback.
 use crate::{
     hook::{Hook, Registers, Tap},
-    output_log::{Drained, Log},
+    output_log::{Call, Drained, Log, raise},
 };
 use engine::{Memory, fuel_awards as native, memory::LiveMemory};
 use std::{
-    cell::{Cell, UnsafeCell},
+    cell::{Cell, RefCell, UnsafeCell},
     ops::Range,
     sync::{
         Mutex, OnceLock,
@@ -21,9 +21,13 @@ static UNHOOKED: OnceLock<&'static str> = OnceLock::new();
 static REFUSAL: OnceLock<&'static str> = OnceLock::new();
 static CENSUS_LAST_REFUSAL: Mutex<Option<&'static str>> = Mutex::new(None);
 static COUNTERS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
-// Ownership locks belong to sizing and the hourly consumer. Callbacks publish
-// into unconsumed slots through a stable pointer, without taking either lock.
-static CURRENT: Mutex<Option<Box<Buffer>>> = Mutex::new(None);
+// The live buffer and its sealed predecessor belong to the hourly drain and
+// boundary installation. Callbacks publish into unconsumed slots through a
+// stable pointer, without taking any lock.
+static CURRENT: Mutex<Domains> = Mutex::new(Domains {
+    current: None,
+    retired: None,
+});
 static LIVE: AtomicPtr<Buffer> = AtomicPtr::new(std::ptr::null_mut());
 static NAME_STRIDE: AtomicUsize = AtomicUsize::new(0);
 static CURRENT_ENTRIES: AtomicUsize = AtomicUsize::new(0);
@@ -58,10 +62,19 @@ static SETTLED_CAUSES: [AtomicU64; SETTLED_NAMES.len()] =
     [const { AtomicU64::new(0) }; SETTLED_NAMES.len()];
 static FIRST_APPEND_REFUSAL: AtomicUsize = AtomicUsize::new(0);
 static LOST_DRAINS: AtomicU64 = AtomicU64::new(0);
-static STORAGE: Mutex<Storage> = Mutex::new(Storage {
-    offered: None,
-    retired: None,
-});
+static DRAIN_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static FIRST_DRAIN_REFUSAL: OnceLock<&'static str> = OnceLock::new();
+// Sizing hands storage to the boundary through atomics only: the prepared
+// successor moves by swap with its shape published beside it, and consumed
+// predecessors return through a lock-free release list. The drain and
+// boundary installation never share a lock with spool sizing.
+static SIZING: Mutex<()> = Mutex::new(());
+static OFFERED: AtomicPtr<Buffer> = AtomicPtr::new(std::ptr::null_mut());
+static OFFERED_ENTRIES: AtomicUsize = AtomicUsize::new(0);
+static OFFERED_NAMES: AtomicUsize = AtomicUsize::new(0);
+static OFFERED_STRIDE: AtomicUsize = AtomicUsize::new(0);
+static CURRENT_STRIDE: AtomicUsize = AtomicUsize::new(0);
+static DISPOSED: AtomicPtr<Buffer> = AtomicPtr::new(std::ptr::null_mut());
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Entry {
@@ -90,6 +103,7 @@ struct Buffer {
     stride: usize,
     publishers: AtomicUsize,
     next: AtomicPtr<Buffer>,
+    disposed: AtomicPtr<Buffer>,
     base: AtomicU64,
     cursor: AtomicU64,
     lost: AtomicU64,
@@ -138,6 +152,7 @@ impl Buffer {
             stride,
             publishers: AtomicUsize::new(0),
             next: AtomicPtr::new(std::ptr::null_mut()),
+            disposed: AtomicPtr::new(std::ptr::null_mut()),
             base: AtomicU64::new(0),
             cursor: AtomicU64::new(0),
             lost: AtomicU64::new(0),
@@ -179,8 +194,8 @@ fn successor(buffer: &Buffer) -> Option<&Buffer> {
     next.cursor.fetch_max(frontier, Ordering::Release);
     Some(next)
 }
-struct Storage {
-    offered: Option<Box<Buffer>>,
+struct Domains {
+    current: Option<Box<Buffer>>,
     retired: Option<Box<Buffer>>,
 }
 #[derive(Clone, Copy)]
@@ -188,11 +203,56 @@ struct Pending {
     root: u64,
     epoch: u64,
     started: native::Started,
+    /// Where the root's start found its country, in the world and hour of
+    /// `stamp`: its settle and air recipients take it ([`held`]).
+    located: native::Located,
+    stamp: Stamp,
     received: [i64; 3],
     refused: bool,
     cause: Option<usize>,
 }
-thread_local! { static PENDING: Cell<Option<Pending>> = const { Cell::new(None) }; }
+thread_local! {
+    static PENDING: Cell<Option<Pending>> = const { Cell::new(None) };
+    /// The registry headers the pending root's unit recipients share, reset
+    /// at each root's start.
+    static REGISTRY: RefCell<native::Registry> = RefCell::new(native::Registry::default());
+}
+
+/// The world generation and hourly boundary a located root belongs to.
+type Stamp = (u64, u64);
+/// Hourly boundaries seen ([`boundary`]).
+static HOURS: AtomicU64 = AtomicU64::new(0);
+/// Calls that took their root's located country or registry headers: the
+/// settle, the air recipients and the unit recipients.
+static HELD: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+
+/// Game thread, at each hourly boundary: nothing located before it is taken
+/// after it.
+pub fn boundary() {
+    HOURS.fetch_add(1, Ordering::Relaxed);
+}
+
+fn stamp() -> Stamp {
+    (
+        crate::world_lifetime::generation(),
+        HOURS.load(Ordering::Relaxed),
+    )
+}
+
+/// The pending root's located country, for the calls of the same fuel update
+/// invocation (`engine::fuel_awards::start_held`), which writes no country
+/// object, id, link or slot and registers no reference. Only a root still
+/// standing is taken: one already refused (a reset of its status, a nested
+/// award, a lost receipt) or from another log epoch is read afresh, as is
+/// one from another world generation or from before an admitted recording
+/// callback's boundary (the stamp).
+fn held(pending: &Pending) -> Option<native::Located> {
+    (!pending.refused
+        && pending.epoch == LOG.epoch.load(Ordering::SeqCst)
+        && pending.stamp == stamp()
+        && !crate::world_lifetime::invalidating())
+    .then_some(pending.located)
+}
 
 /// Off-thread live census and allocation. Two passes leave room for an hour
 /// still waiting in a short drain; these are capacities, never population caps.
@@ -239,103 +299,116 @@ fn refuse_census(reason: &'static str) {
 }
 
 fn offer(entries: usize, names: usize) {
-    let (entries, names) = {
-        let Ok(storage) = STORAGE.lock() else { return };
-        let entries = entries.max(ENTRY_DEMAND.load(Ordering::Acquire));
-        let names = names.max(NAME_DEMAND.load(Ordering::Acquire));
-        if entries == 0 && names == 0 {
-            return;
-        }
-        let enough = |b: &Buffer| {
-            b.entries.len() >= entries
-                && b.names.len() >= names
-                && b.stride >= NAME_STRIDE.load(Ordering::Acquire)
-        };
-        if (CURRENT_ENTRIES.load(Ordering::Acquire) >= entries
-            && CURRENT_NAMES.load(Ordering::Acquire) >= names
-            && unsafe { LIVE.load(Ordering::SeqCst).as_ref() }
-                .is_some_and(|b| b.stride >= NAME_STRIDE.load(Ordering::Acquire)))
-            || storage.offered.as_deref().is_some_and(enough)
-        {
-            return;
-        }
-        // Independent entry/name pressure must preserve both pending offers.
-        let mut entry_capacity = CURRENT_ENTRIES
-            .load(Ordering::Acquire)
-            .max(storage.offered.as_ref().map_or(0, |b| b.entries.len()));
-        let mut name_capacity = CURRENT_NAMES
-            .load(Ordering::Acquire)
-            .max(storage.offered.as_ref().map_or(0, |b| b.names.len()));
-        crate::table_capture::grow_capacity(&mut entry_capacity, entries);
-        crate::table_capture::grow_capacity(&mut name_capacity, names);
-        (entry_capacity, name_capacity)
+    // Only sizing callers serialise here; the drain never waits on this lock.
+    let Ok(sizing) = SIZING.lock() else { return };
+    let entries = entries.max(ENTRY_DEMAND.load(Ordering::Acquire));
+    let names = names.max(NAME_DEMAND.load(Ordering::Acquire));
+    if entries == 0 && names == 0 {
+        return;
+    }
+    let stride = NAME_STRIDE.load(Ordering::Acquire);
+    let fits = |slots: &AtomicUsize, bytes: &AtomicUsize, width: &AtomicUsize| {
+        slots.load(Ordering::Acquire) >= entries
+            && bytes.load(Ordering::Acquire) >= names
+            && width.load(Ordering::Acquire) >= stride
     };
+    // The latest offer is either still pending or already live.
+    if fits(&CURRENT_ENTRIES, &CURRENT_NAMES, &CURRENT_STRIDE)
+        || fits(&OFFERED_ENTRIES, &OFFERED_NAMES, &OFFERED_STRIDE)
+    {
+        return;
+    }
+    // Independent entry/name pressure must preserve both pending offers.
+    let mut entry_capacity = CURRENT_ENTRIES
+        .load(Ordering::Acquire)
+        .max(OFFERED_ENTRIES.load(Ordering::Acquire));
+    let mut name_capacity = CURRENT_NAMES
+        .load(Ordering::Acquire)
+        .max(OFFERED_NAMES.load(Ordering::Acquire));
+    crate::table_capture::grow_capacity(&mut entry_capacity, entries);
+    crate::table_capture::grow_capacity(&mut name_capacity, names);
     // Allocation and displaced offers are entirely worker-owned.
-    let allocated = Buffer::with_stride(
-        entries,
-        names,
-        NAME_STRIDE.load(Ordering::Acquire),
-        Default::default(),
-    );
-    match allocated {
-        Ok(buffer) => {
-            let Ok(mut storage) = STORAGE.lock() else {
-                return;
-            };
-            if (CURRENT_ENTRIES.load(Ordering::Acquire) >= entries
-                && CURRENT_NAMES.load(Ordering::Acquire) >= names
-                && unsafe { LIVE.load(Ordering::SeqCst).as_ref() }
-                    .is_some_and(|b| b.stride >= NAME_STRIDE.load(Ordering::Acquire)))
-                || storage.offered.as_deref().is_some_and(|b| {
-                    b.entries.len() >= entries
-                        && b.names.len() >= names
-                        && b.stride >= NAME_STRIDE.load(Ordering::Acquire)
-                })
-            {
-                return;
-            }
-            let Ok(buffer) = engine::allocation::boxed(buffer) else {
-                drop(storage);
-                refuse_census("fuel observation allocation failed");
-                return;
-            };
-            let old = storage.offered.replace(buffer);
-            drop(storage);
-            drop(old);
-        }
-        Err(_) => {
-            refuse_census("fuel observation allocation failed");
+    let Ok(buffer) = Buffer::with_stride(entry_capacity, name_capacity, stride, Default::default())
+        .and_then(engine::allocation::boxed)
+    else {
+        drop(sizing);
+        refuse_census("fuel observation allocation failed");
+        return;
+    };
+    let shape = (buffer.entries.len(), buffer.names.len(), buffer.stride);
+    let displaced = OFFERED.swap(Box::into_raw(buffer), Ordering::AcqRel);
+    OFFERED_ENTRIES.store(shape.0, Ordering::Release);
+    OFFERED_NAMES.store(shape.1, Ordering::Release);
+    OFFERED_STRIDE.store(shape.2, Ordering::Release);
+    drop(sizing);
+    if !displaced.is_null() {
+        // Never live: the boundary takes an offer only through the same swap.
+        drop(unsafe { Box::from_raw(displaced) });
+    }
+}
+/// Consumed predecessors and superseded offers wait here for the spool. Only
+/// the boundary pushes, under its own lock; release takes the whole list.
+fn dispose(buffer: Box<Buffer>) {
+    let node = Box::into_raw(buffer);
+    let mut head = DISPOSED.load(Ordering::Acquire);
+    loop {
+        unsafe { (*node).disposed.store(head, Ordering::Relaxed) };
+        match DISPOSED.compare_exchange_weak(head, node, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return,
+            Err(current) => head = current,
         }
     }
 }
-/// Empty game-thread boundary only; old storage is freed by collect off-thread.
+fn release_disposed() {
+    let mut node = DISPOSED.swap(std::ptr::null_mut(), Ordering::AcqRel);
+    while !node.is_null() {
+        let buffer = unsafe { Box::from_raw(node) };
+        node = buffer.disposed.load(Ordering::Relaxed);
+        drop(buffer);
+    }
+}
+/// Hourly boundary after the drain, on the same worker; replaced storage is
+/// freed by collect off-thread.
 pub fn install_offered() {
-    let Ok(mut current) = CURRENT.try_lock() else {
+    let Ok(mut domains) = CURRENT.try_lock() else {
         return;
     };
-    let Ok(mut storage) = STORAGE.try_lock() else {
-        return;
-    };
-    if storage.retired.is_some()
+    retire_consumed(&mut domains);
+    if domains.retired.is_some()
         || LOG.active.load(Ordering::SeqCst) != 0
         || LOG.cursor.load(Ordering::SeqCst) != LOG.consumed.load(Ordering::Relaxed)
     {
         return;
     }
-    install_prepared(&mut current, &mut storage);
+    install_prepared(&mut domains);
 }
-fn install_prepared(current: &mut Option<Box<Buffer>>, storage: &mut Storage) {
-    let Some(offered) = storage.offered.as_mut() else {
+/// A sealed predecessor whose receipts are all consumed, with no callback
+/// inside the log, is unreachable by every publisher.
+fn retire_consumed(domains: &mut Domains) {
+    if LOG.active.load(Ordering::SeqCst) == 0
+        && domains.retired.as_ref().is_some_and(|buffer| {
+            LOG.consumed.load(Ordering::Acquire) >= buffer.cursor.load(Ordering::Acquire)
+        })
+        && let Some(retired) = domains.retired.take()
+    {
+        dispose(retired);
+    }
+}
+fn install_prepared(domains: &mut Domains) {
+    let pointer = OFFERED.swap(std::ptr::null_mut(), Ordering::AcqRel);
+    if pointer.is_null() {
         return;
-    };
-    let pointer = &mut **offered as *mut Buffer;
-    if let Some(old) = current.as_ref() {
+    }
+    let offered = unsafe { Box::from_raw(pointer) };
+    if let Some(old) = domains.current.as_ref() {
         old.next.store(pointer, Ordering::Release);
         if old
             .publishers
             .compare_exchange(0, usize::MAX, Ordering::AcqRel, Ordering::Relaxed)
             .is_err()
         {
+            // Unsealed, so no publisher follows next.
+            return_offer(offered);
             return;
         }
         // An old publisher can finish between the quiet/empty check and seal,
@@ -347,24 +420,32 @@ fn install_prepared(current: &mut Option<Box<Buffer>>, storage: &mut Storage) {
         offered.base.store(frontier, Ordering::Release);
         offered.cursor.store(frontier, Ordering::Release);
     }
-    let offered = storage.offered.take().unwrap();
     let capacity = offered.entries.len();
     CURRENT_ENTRIES.store(capacity, Ordering::Release);
     CURRENT_NAMES.store(offered.names.len(), Ordering::Release);
+    CURRENT_STRIDE.store(offered.stride, Ordering::Release);
     LIVE.store(pointer, Ordering::SeqCst);
-    storage.retired = current.replace(offered);
+    domains.retired = domains.current.replace(offered);
     LOG.capacity.store(capacity, Ordering::Release);
 }
+/// Sizing grows every offer from the largest prepared shape, so an offer it
+/// made while the boundary held this one is at least as large in each part.
+fn return_offer(offered: Box<Buffer>) {
+    let pointer = Box::into_raw(offered);
+    if OFFERED
+        .compare_exchange(
+            std::ptr::null_mut(),
+            pointer,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        dispose(unsafe { Box::from_raw(pointer) });
+    }
+}
 pub fn collect() {
-    let retired = STORAGE.lock().ok().and_then(|mut storage| {
-        (LOG.active.load(Ordering::SeqCst) == 0
-            && storage.retired.as_ref().is_none_or(|buffer| {
-                LOG.consumed.load(Ordering::Acquire) >= buffer.cursor.load(Ordering::Acquire)
-            }))
-        .then(|| storage.retired.take())
-        .flatten()
-    });
-    drop(retired);
+    release_disposed();
     // Captured shortfalls are independent of a readable population census.
     offer(0, 0);
 }
@@ -378,13 +459,17 @@ pub fn release() -> Result<(), &'static str> {
     if LOG.enabled.load(Ordering::SeqCst) || active() != 0 {
         return Err("fuel storage release before callback quiescence");
     }
-    let (current, buffers) = {
-        let mut current = CURRENT.lock().unwrap_or_else(|error| error.into_inner());
-        let mut storage = STORAGE.lock().unwrap_or_else(|error| error.into_inner());
+    let (current, retired, offered) = {
+        let mut domains = CURRENT.lock().unwrap_or_else(|error| error.into_inner());
+        let sizing = SIZING.lock().unwrap_or_else(|error| error.into_inner());
         LIVE.store(std::ptr::null_mut(), Ordering::SeqCst);
         LOG.capacity.store(0, Ordering::Release);
         CURRENT_ENTRIES.store(0, Ordering::Release);
         CURRENT_NAMES.store(0, Ordering::Release);
+        CURRENT_STRIDE.store(0, Ordering::Release);
+        OFFERED_ENTRIES.store(0, Ordering::Release);
+        OFFERED_NAMES.store(0, Ordering::Release);
+        OFFERED_STRIDE.store(0, Ordering::Release);
         ENTRY_ATTEMPTS.store(0, Ordering::SeqCst);
         ENTRY_CONSUMED.store(0, Ordering::Relaxed);
         NAME_ATTEMPTS.store(0, Ordering::SeqCst);
@@ -394,19 +479,18 @@ pub fn release() -> Result<(), &'static str> {
         NAME_STRIDE.store(0, Ordering::Release);
         LOG.consumed
             .store(LOG.cursor.load(Ordering::SeqCst), Ordering::Relaxed);
+        let offered = OFFERED.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        drop(sizing);
         (
-            current.take(),
-            std::mem::replace(
-                &mut *storage,
-                Storage {
-                    offered: None,
-                    retired: None,
-                },
-            ),
+            domains.current.take(),
+            domains.retired.take(),
+            (!offered.is_null()).then(|| unsafe { Box::from_raw(offered) }),
         )
     };
     drop(current);
-    drop(buffers);
+    drop(retired);
+    drop(offered);
+    release_disposed();
     Ok(())
 }
 
@@ -437,27 +521,41 @@ fn refuse_append(entry: Entry, absent: bool) {
     // like an observed complete interval. Diagnostics use only atomics here.
     LOG.invalidate();
 }
-fn append(entry: Entry, name: Option<native::StoredName>, memory: &impl Memory) -> bool {
-    let _call = LOG.enter();
-    // Each observed award writer emits its native award once.
+/// Within the callback's `_call`, which keeps the log active.
+fn append(
+    _call: &Call<'_>,
+    entry: Entry,
+    name: Option<native::StoredName>,
+    memory: &impl Memory,
+) -> bool {
+    // Land fuel receipt writer, naval fuel receipt writer and hourly air fuel update write each native award once.
     // Rejected receipts still belong to the full observed interval demand.
     let attempted = ENTRY_ATTEMPTS
         .fetch_add(1, Ordering::SeqCst)
         .wrapping_add(1);
-    ENTRY_DEMAND.fetch_max(
+    raise(
+        &ENTRY_DEMAND,
         attempted_since(attempted, &ENTRY_CONSUMED),
         Ordering::Release,
     );
-    let bytes = name.as_ref().map_or(0, native::StoredName::byte_len) as u64;
-    let attempted = NAME_ATTEMPTS
-        .fetch_add(bytes, Ordering::SeqCst)
-        .wrapping_add(bytes);
-    NAME_DEMAND.fetch_max(
+    // A receipt without a name adds no bytes but still refreshes the demand:
+    // a named callback may have added its bytes and not yet raised it.
+    let attempted = match &name {
+        Some(name) => {
+            let bytes = name.byte_len() as u64;
+            NAME_ATTEMPTS
+                .fetch_add(bytes, Ordering::SeqCst)
+                .wrapping_add(bytes)
+        }
+        None => NAME_ATTEMPTS.load(Ordering::SeqCst),
+    };
+    raise(
+        &NAME_DEMAND,
         attempted_since(attempted, &NAME_CONSUMED),
         Ordering::Release,
     );
     if let Some(name) = &name {
-        NAME_STRIDE.fetch_max(name.byte_len(), Ordering::Release);
+        raise(&NAME_STRIDE, name.byte_len(), Ordering::Release);
     }
     let Some(buffer) = (unsafe { LIVE.load(Ordering::SeqCst).as_ref() }).and_then(publishing)
     else {
@@ -470,8 +568,9 @@ fn append(entry: Entry, name: Option<native::StoredName>, memory: &impl Memory) 
     }
     retained
 }
-fn append_root(pending: Pending, settled: native::Settled, memory: &impl Memory) {
+fn append_root(call: &Call<'_>, pending: Pending, settled: native::Settled, memory: &impl Memory) {
     let retained = append(
+        call,
         Entry {
             root: pending.root,
             country: pending.started.country,
@@ -506,7 +605,8 @@ fn append_buffer(
                 .max(buffer.base.load(Ordering::Acquire)),
         )
         .saturating_add(1);
-    buffer.entries_required.fetch_max(
+    raise(
+        &buffer.entries_required,
         usize::try_from(pending).unwrap_or(usize::MAX),
         Ordering::Relaxed,
     );
@@ -552,11 +652,69 @@ fn append_buffer(
     true
 }
 
+/// The taps in [`Hooks::new`]'s order: BEGIN, END, the five land receipt
+/// writes, the naval and air receipts and the reset.
+#[cfg(feature = "callback_profile")]
+const TAG_NAMES: [&str; 10] = [
+    "begin", "end", "land_0", "land_1", "land_2", "land_3", "land_4", "naval", "air", "reset",
+];
+/// Diagnostic cost of every [`observe`] call by tag (`callback_profile`):
+/// calls and TSC ticks, every call timed rather than one in 64.
+#[cfg(feature = "callback_profile")]
+static TAG_COST: [[AtomicU64; 2]; TAG_NAMES.len()] =
+    [const { [const { AtomicU64::new(0) }; 2] }; TAG_NAMES.len()];
+#[cfg(feature = "callback_profile")]
+struct TagTimer {
+    tag: usize,
+    start: u64,
+}
+#[cfg(feature = "callback_profile")]
+impl TagTimer {
+    fn new(tag: usize) -> Self {
+        // SAFETY: RDTSC has no preconditions on x86-64.
+        let start = unsafe { core::arch::x86_64::_rdtsc() };
+        Self { tag, start }
+    }
+}
+#[cfg(feature = "callback_profile")]
+impl Drop for TagTimer {
+    fn drop(&mut self) {
+        // SAFETY: as above.
+        let ticks = unsafe { core::arch::x86_64::_rdtsc() }.saturating_sub(self.start);
+        if let Some([calls, total]) = TAG_COST.get(self.tag) {
+            calls.fetch_add(1, Ordering::Relaxed);
+            total.fetch_add(ticks, Ordering::Relaxed);
+        }
+    }
+}
+/// `{tag: [calls, ns]}` of every [`observe`] call since attach
+/// (`callback_profile`); ticks convert with the hook timer's TSC rate.
+#[cfg(feature = "callback_profile")]
+pub(crate) fn tag_profile() -> impl serde::Serialize {
+    let hz = crate::hook_timing::tsc_hz().unwrap_or(0);
+    crate::status::map(
+        TAG_NAMES
+            .into_iter()
+            .zip(&TAG_COST)
+            .map(move |(name, [calls, ticks])| {
+                let ticks = u128::from(ticks.load(Ordering::Relaxed));
+                let ns = ticks
+                    .saturating_mul(1_000_000_000)
+                    .checked_div(u128::from(hz))
+                    .map_or(u64::MAX, |ns| u64::try_from(ns).unwrap_or(u64::MAX));
+                (name, [calls.load(Ordering::Relaxed), ns])
+            }),
+    )
+}
+
 unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
+    let _timing = crate::hook_timing::enter(crate::hook_timing::Family::FuelAwards);
+    #[cfg(feature = "callback_profile")]
+    let _tag = TagTimer::new(tag);
     if !LOG.enabled.load(Ordering::SeqCst) {
         return;
     }
-    let _call = LOG.enter();
+    let call = LOG.enter();
     let memory = unsafe { LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     if tag == 9 {
@@ -573,6 +731,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         // pointer still invalidates its previously authenticated local history.
         if status == 0
             || !append(
+                &call,
                 Entry {
                     reset: true,
                     started: native::Started {
@@ -596,12 +755,15 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         return;
     }
     if tag == 0 {
-        match native::start(&memory, base, registers.rsi) {
-            Ok(started) => {
+        match native::start_held(&memory, base, registers.rsi, None) {
+            Ok((started, located, _)) => {
+                REGISTRY.with(|registry| *registry.borrow_mut() = native::Registry::default());
                 let old = PENDING.replace(Some(Pending {
                     root: ROOT.fetch_add(1, Ordering::Relaxed),
                     epoch: LOG.epoch.load(Ordering::SeqCst),
                     started,
+                    located,
+                    stamp: stamp(),
                     received: [0; 3],
                     refused: false,
                     cause: None,
@@ -633,9 +795,22 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         pending.refused = true;
         pending.cause.get_or_insert(0);
     }
+    let located = held(&pending);
     if tag == 1 {
         PENDING.set(None);
-        let settled = native::settle(&memory, base, pending.started, registers.rbx);
+        let settled = native::settle_held(
+            &memory,
+            base,
+            pending.started,
+            registers.rbx,
+            located.as_ref(),
+        )
+        .map(|(settled, taken)| {
+            if taken {
+                HELD[0].fetch_add(1, Ordering::Relaxed);
+            }
+            settled
+        });
         if let Err(reason) = &settled {
             pending.cause.get_or_insert(6);
             let _ = REFUSAL.set(reason);
@@ -650,7 +825,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         if pending.refused {
             let _ = REFUSAL.set(SETTLED_NAMES[pending.cause.unwrap_or(4)]);
         }
-        append_root(pending, settled.unwrap_or_default(), &memory);
+        append_root(&call, pending, settled.unwrap_or_default(), &memory);
         return;
     }
     let (kind, pointer, amount) = match tag {
@@ -666,16 +841,27 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
     };
     pending.received[kind as usize] = pending.received[kind as usize].wrapping_add(amount);
     let recipient = if kind == 1 {
-        native::air(
+        native::air_held(
             &memory,
             base,
             pointer,
             registers.rdx,
             pending.started.country,
+            located.as_ref().map(|located| &located.country),
         )
+    } else if located.is_some() {
+        REGISTRY.with(|registry| {
+            native::unit_with(&memory, base, pointer, kind, &mut registry.borrow_mut())
+        })
     } else {
-        native::unit(&memory, base, pointer, kind)
-    };
+        native::unit(&memory, base, pointer, kind).map(|recipient| (recipient, false))
+    }
+    .map(|(recipient, taken)| {
+        if taken {
+            HELD[if kind == 1 { 1 } else { 2 }].fetch_add(1, Ordering::Relaxed);
+        }
+        recipient
+    });
     match recipient {
         Ok(recipient) => {
             let name = (kind != 1).then(|| native::stored_name(&memory, pointer, kind));
@@ -685,6 +871,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                 None => (None, None),
             };
             if !append(
+                &call,
                 Entry {
                     root: pending.root,
                     country: pending.started.country,
@@ -737,14 +924,25 @@ fn drain_buffers(
     entries: engine::walk::Buffer<'_, Entry>,
     names: engine::walk::Buffer<'_, u8>,
 ) -> Result<(Drained, usize, usize), &'static str> {
-    let Ok(current) = CURRENT.try_lock() else {
+    let result = drain_domains(entries, names);
+    if let Err(reason) = result {
+        let _ = FIRST_DRAIN_REFUSAL.set(reason);
+        DRAIN_REFUSALS.fetch_add(1, Ordering::Relaxed);
+    }
+    result
+}
+fn drain_domains(
+    entries: engine::walk::Buffer<'_, Entry>,
+    names: engine::walk::Buffer<'_, u8>,
+) -> Result<(Drained, usize, usize), &'static str> {
+    // Shared only with boundary installation (the same worker) and detach;
+    // spool sizing and capacity reads never take it.
+    let Ok(domains) = CURRENT.try_lock() else {
+        COUNTERS[6].fetch_add(1, Ordering::Relaxed);
         return Err("fuel observation storage busy");
     };
-    let Some(buffer) = current.as_ref() else {
+    let Some(buffer) = domains.current.as_deref() else {
         return Err("fuel observation storage absent");
-    };
-    let Ok(storage) = STORAGE.try_lock() else {
-        return Err("fuel observation sizing storage busy");
     };
     // Snapshot before the drain: a later rejected callback belongs to the next
     // interval and its pressure cannot be cleared by this handover.
@@ -753,7 +951,7 @@ fn drain_buffers(
     let result = handover_buffers(
         &LOG,
         buffer,
-        storage.retired.as_deref(),
+        domains.retired.as_deref(),
         entries,
         names,
         UNHOOKED.get().copied().or_else(|| {
@@ -918,23 +1116,16 @@ fn handover_buffers(
 #[cfg(test)]
 #[path = "fuel_awards/tests.rs"]
 mod tests;
+/// Lock-free, so the spool's per-pass size reads never contend with a drain.
 pub fn capacities() -> (usize, usize) {
-    STORAGE
-        .lock()
-        .ok()
-        .map(|s| {
-            let current = (
-                CURRENT_ENTRIES.load(Ordering::Acquire),
-                CURRENT_NAMES.load(Ordering::Acquire),
-            );
-            let offered = s
-                .offered
-                .as_ref()
-                .map(|b| (b.entries.len(), b.names.len()))
-                .unwrap_or_default();
-            (current.0.max(offered.0), current.1.max(offered.1))
-        })
-        .unwrap_or_default()
+    (
+        CURRENT_ENTRIES
+            .load(Ordering::Acquire)
+            .max(OFFERED_ENTRIES.load(Ordering::Acquire)),
+        CURRENT_NAMES
+            .load(Ordering::Acquire)
+            .max(OFFERED_NAMES.load(Ordering::Acquire)),
+    )
 }
 pub fn status() -> crate::status::Object<impl crate::status::Fields> {
     let append_refusal = append_reason(FIRST_APPEND_REFUSAL.load(Ordering::Acquire));
@@ -957,7 +1148,14 @@ pub fn status() -> crate::status::Object<impl crate::status::Fields> {
         "storage_absent_refusals": COUNTERS[11].load(Ordering::Relaxed),
         "overflow_intervals": COUNTERS[10].load(Ordering::Relaxed),
         "lost_worker_drains": LOST_DRAINS.load(Ordering::Relaxed),
-        "busy_refusals": COUNTERS[6].load(Ordering::Relaxed) })
+        "drain_refusals": DRAIN_REFUSALS.load(Ordering::Relaxed),
+        "first_drain_refusal": FIRST_DRAIN_REFUSAL.get().copied(),
+        "day_sum_refusals": crate::extended::fuel_awards::day_sum_refusals(),
+        "busy_refusals": COUNTERS[6].load(Ordering::Relaxed),
+        "held_settles": HELD[0].load(Ordering::Relaxed),
+        "held_air_recipients": HELD[1].load(Ordering::Relaxed),
+        "held_unit_recipients": HELD[2].load(Ordering::Relaxed),
+        "held_scope": "calls that left out a read because they took their UpdateFuel invocation's country, located by its start (settles of the same status, which read only the payload and their own fields; air recipients consuming that country), or a registry header an earlier unit recipient of the invocation read; their other reads, values and refusals are a fresh read's" })
 }
 
 pub struct Hooks {

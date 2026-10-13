@@ -1,4 +1,5 @@
 use super::*;
+use engine::carmy;
 use std::collections::BTreeSet;
 
 #[test]
@@ -7,19 +8,8 @@ fn final_worker_loan_preserves_mod_sized_storage_without_callback_allocation() {
     captured.divisions = Divisions::new(5_000);
     let source_storage = captured.divisions.first.as_ptr();
     let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
-    let mut provinces = vec![engine::cprovince::Row::default(); 12_003];
-    let province_storage = provinces.as_ptr();
     crate::allocation_failure_tests::with_allocations_denied(|| {
-        let request = captured.take_final_inputs_request(
-            &countries,
-            0,
-            0,
-            41,
-            true,
-            &mut provinces,
-            Outcome::Rows { len: 12_003 },
-        );
-        assert_eq!(provinces.capacity(), 0);
+        let request = captured.take_final_inputs_request(&countries, 0, 0, 41, true);
         assert_eq!(captured.divisions.first.capacity(), 0);
         assert_eq!(captured.economy.allocated_bytes(), 0);
         assert_eq!(captured.characters.allocated_bytes(), 0);
@@ -27,10 +17,8 @@ fn final_worker_loan_preserves_mod_sized_storage_without_callback_allocation() {
             request,
             FinalInputsReport::default(),
             Some("final worker admission failed"),
-            &mut provinces,
         );
     });
-    assert_eq!(provinces.as_ptr(), province_storage);
     assert_eq!(captured.divisions.first.as_ptr(), source_storage);
     assert_eq!(
         captured.new_divisions.outcomes(),
@@ -51,7 +39,7 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
     let order_storage = orders.geometry.as_ptr();
     let division_storage = captured.divisions.first.as_ptr();
     let box_bytes = [
-        size_of::<OrdinaryPacks>(),
+        size_of::<OrdinaryPacks>() + OrdinaryPart::spare_box_bytes(),
         size_of::<SlowPacks>(),
         size_of::<LatePacks>(),
         size_of::<GatedPacks>(),
@@ -59,13 +47,23 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
         size_of::<RaidStatePacks>(),
         size_of::<RaidLaunchPacks>(),
         size_of::<RaidTargetPacks>(),
+        size_of::<ScoresRailsParts>(),
+        size_of::<StabilityPacks>(),
+        size_of::<WarOverviewPacks>(),
+        size_of::<ProductionDailyPacks>(),
     ];
     let assert_vacant = |captured: &Captured| {
         // The boxes remain reusable; none of their parked packs owns a
         // second row, arena, hash or source allocation.
         assert_eq!(
             [
-                captured.ordinary_spare.as_ref().unwrap().allocated_bytes(),
+                captured.ordinary_spare.as_ref().unwrap().allocated_bytes()
+                    + captured
+                        .ordinary_part_spares
+                        .iter()
+                        .flatten()
+                        .map(OrdinaryPart::allocated_bytes)
+                        .sum::<usize>(),
                 captured.slow_spare.as_ref().unwrap().allocated_bytes(),
                 captured.late_spare.as_ref().unwrap().allocated_bytes(),
                 captured.gated_spare.as_ref().unwrap().allocated_bytes(),
@@ -83,6 +81,22 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
                     .allocated_bytes(),
                 captured
                     .raid_targets_spare
+                    .as_ref()
+                    .unwrap()
+                    .allocated_bytes(),
+                captured
+                    .scores_rails_spare
+                    .as_ref()
+                    .unwrap()
+                    .allocated_bytes(),
+                captured.stability_spare.as_ref().unwrap().allocated_bytes(),
+                captured
+                    .war_overview_spare
+                    .as_ref()
+                    .unwrap()
+                    .allocated_bytes(),
+                captured
+                    .production_daily_spare
                     .as_ref()
                     .unwrap()
                     .allocated_bytes(),
@@ -106,7 +120,7 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
     for completed in [true, false, true] {
         captured.drop_and_reset();
         let ordinary_box = std::ptr::from_ref(&**captured.ordinary_spare.as_ref().unwrap());
-        let request = captured.take_ordinary_request(
+        let parts = captured.take_ordinary_parts(
             &countries,
             11,
             0x1000,
@@ -114,13 +128,23 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
             Ok(()),
             crate::extended::NavalMissionLoan::default(),
         );
+        assert!(captured.ordinary_part_spares.iter().all(Option::is_none));
+        let request = captured.take_ordinary_request(&countries, 11, 0x1000, 0);
         assert_eq!(std::ptr::from_ref(&*request.packs), ordinary_box);
+        let part_bytes = parts
+            .iter()
+            .map(|part| part.allocated_bytes())
+            .sum::<usize>();
         assert_eq!(
-            captured.allocated_bytes() + request.allocated_bytes(),
+            captured.allocated_bytes() + request.allocated_bytes() + part_bytes,
             bytes
         );
-        removed[0] = request.allocated_bytes() - box_bytes[0];
-        captured.restore_ordinary_request(request, (!completed).then_some("fixture failure"));
+        removed[0] = request.allocated_bytes() + part_bytes - box_bytes[0];
+        captured.restore_ordinary_request(
+            request,
+            (!completed).then_some("fixture failure"),
+            parts.map(|part| (part, None)),
+        );
         assert_eq!(
             std::ptr::from_ref(&**captured.ordinary_spare.as_ref().unwrap()),
             ordinary_box
@@ -145,13 +169,50 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
         assert_eq!(captured.allocated_bytes(), bytes);
         assert_vacant(&captured);
 
+        let stability_box = std::ptr::from_ref(&**captured.stability_spare.as_ref().unwrap());
+        let request = captured.take_stability_request(&countries, 11, 0x1000, 9, false, None);
+        assert_eq!(std::ptr::from_ref(&*request.packs), stability_box);
+        assert_eq!(
+            captured.allocated_bytes() + request.packs.allocated_bytes(),
+            bytes
+        );
+        captured.restore_stability_request(request, completed);
+        assert_eq!(
+            std::ptr::from_ref(&**captured.stability_spare.as_ref().unwrap()),
+            stability_box
+        );
+        assert_eq!(captured.allocated_bytes(), bytes);
+        assert_vacant(&captured);
+
+        let war_overview_box = std::ptr::from_ref(&**captured.war_overview_spare.as_ref().unwrap());
+        let request = captured.take_war_overview_request(&countries, 11, 0x1000, 9, false);
+        assert_eq!(std::ptr::from_ref(&*request.packs), war_overview_box);
+        assert_eq!(
+            captured.allocated_bytes() + request.packs.allocated_bytes(),
+            bytes
+        );
+        captured.restore_war_overview_request(request, completed);
+        assert_eq!(
+            std::ptr::from_ref(&**captured.war_overview_spare.as_ref().unwrap()),
+            war_overview_box
+        );
+        assert_eq!(captured.allocated_bytes(), bytes);
+        assert_vacant(&captured);
+
         captured.fog.radar_raw_mode = true;
         captured.fog.intel_raw_mode = true;
         captured.fog.registrations_raw_mode = true;
         captured.projects.raw_mode = true;
         captured.construction.rest_raw_mode = true;
         let gated_box = std::ptr::from_ref(&**captured.gated_spare.as_ref().unwrap());
-        let request = captured.take_gated_request(11, 0x1000, 9, false);
+        let request = captured.take_gated_request(
+            11,
+            0x1000,
+            9,
+            false,
+            Box::new(crate::slicing::SliceFingerprints::new()),
+            None,
+        );
         assert_eq!(std::ptr::from_ref(&*request.packs), gated_box);
         assert_eq!(
             captured.allocated_bytes() + request.packs.allocated_bytes(),
@@ -181,13 +242,7 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
 
         let missions_box = std::ptr::from_ref(&**captured.missions_spare.as_ref().unwrap());
         captured.air.stats_raw_mode = true;
-        let request = captured.take_air_missions_request(
-            &countries,
-            11,
-            0x1000,
-            0,
-            Err("test transport source not supplied"),
-        );
+        let request = captured.take_air_missions_request(&countries, 11, 0x1000, None);
         assert_eq!(std::ptr::from_ref(&*request.pack), missions_box);
         assert!(request.pack.stats_raw_mode && !captured.air.stats_raw_mode);
         assert_eq!(request.histories.len(), air_histories::PARTS);
@@ -204,16 +259,8 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
         captured.air_root = Some(Outcome::Rows { len: 7 });
         let order_bytes = orders.allocated_bytes();
         let late_box = std::ptr::from_ref(&**captured.late_spare.as_ref().unwrap());
-        let request = captured.take_late_request(
-            &countries,
-            &mut orders,
-            true,
-            11,
-            0x1000,
-            9,
-            false,
-            Box::default(),
-        );
+        let request =
+            captured.take_late_request(&countries, &mut orders, true, 11, 0x1000, 9, false);
         assert_eq!(std::ptr::from_ref(&*request.packs), late_box);
         assert_eq!(
             captured.allocated_bytes()
@@ -224,15 +271,14 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
         );
         // These two auxiliary placeholders were already vacant before
         // this change; only the four late table packs lose duplicates.
-        removed[2] = request.packs.allocated_bytes()
-            - box_bytes[2]
-            - request.packs.divisions.allocated_bytes()
-            - request.packs.orders.allocated_bytes();
+        removed[2] =
+            request.packs.allocated_bytes() - box_bytes[2] - request.packs.orders.allocated_bytes();
         assert!(request.packs.air.stats_raw_mode);
         assert!(request.packs.naval_history.raw_mode);
         assert_eq!(request.packs.air_root, Some(Outcome::Rows { len: 7 }));
         assert_eq!(request.packs.orders.geometry.as_ptr(), order_storage);
-        assert_eq!(request.packs.divisions.first.as_ptr(), division_storage);
+        // The division sources stay in the frame for the final borrowers.
+        assert_eq!(captured.divisions.first.as_ptr(), division_storage);
         assert!(!captured.air.stats_raw_mode);
         assert!(!captured.naval_history.raw_mode);
         assert_eq!(captured.air_root, None);
@@ -274,16 +320,8 @@ fn late_handoff_retains_only_the_current_input_lease() {
             Outcome::Rows { len: 1 },
         ));
         captured.install_unit_inputs(Some(Arc::clone(&inputs)));
-        let request = captured.take_late_request(
-            &countries,
-            &mut orders,
-            true,
-            11,
-            0x1000,
-            9,
-            false,
-            Box::default(),
-        );
+        let request =
+            captured.take_late_request(&countries, &mut orders, true, 11, 0x1000, 9, false);
         assert!(Arc::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
         assert_eq!(request.inputs.as_ref().unwrap().seeds()[0].pointer, pointer);
         assert_eq!(Arc::strong_count(&inputs), 3);
@@ -297,12 +335,12 @@ fn late_handoff_retains_only_the_current_input_lease() {
 #[test]
 fn presentation_handoff_restores_storage_and_exact_source_leases() {
     let mut capacity = Capacities::default();
-    capacity.division_presentation.raise_for_attrition(
-        engine::attrition_modifier_breakdown::Demand {
+    capacity
+        .division_presentation
+        .raise_for_census(carmy::PresentationDemand {
             rows: 1,
             ..Default::default()
-        },
-    );
+        });
     let mut captured = Captured::with_capacities(&capacity);
     let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let inputs = Arc::new(UnitInputs::fixture(
@@ -317,11 +355,11 @@ fn presentation_handoff_restores_storage_and_exact_source_leases() {
     let presentation_bytes = captured.division_presentation.allocated_bytes();
     assert!(presentation_bytes > 0);
     let report = division_presentation::CaptureReport {
-        ticks: [89, 97, 5, 101, 103],
+        ticks: [89, 97, 5, 103],
     };
     captured.install_unit_inputs(Some(Arc::clone(&inputs)));
     captured.presentation_report = Some(report);
-    let request = captured.take_presentation_request(&countries, 11, 0x1000, 0, true, None);
+    let request = captured.take_presentation_request(&countries, 11, 0x1000, 0, None);
     assert!(captured.presentation_report.is_none());
     assert_eq!(captured.division_presentation.allocated_bytes(), 0);
     assert_eq!(captured.allocated_bytes() + presentation_bytes, bytes);
@@ -353,72 +391,27 @@ fn presentation_handoff_restores_storage_and_exact_source_leases() {
     assert_eq!(Arc::strong_count(&inputs), 1);
 }
 
+/// The retired division ETA inputs and attrition breakdowns are neither
+/// scheduled, acquired, sized nor reported by any pack or the division group.
 #[test]
-fn eta_input_handoff_restores_storage_leases_and_a_terminal_failure() {
-    let mut capacity = Capacities::default();
-    capacity
-        .division_eta_inputs
-        .raise_for_fresh_map(1, 0)
-        .unwrap();
-    let mut captured = Captured::with_capacities(&capacity);
-    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
-    let inputs = Arc::new(UnitInputs::fixture(
-        vec![carmy::DivisionSeed {
-            pointer: 0x1234,
-            handle: Some(7),
-            ..Default::default()
-        }],
-        Outcome::Rows { len: 1 },
-    ));
-    let bytes = captured.allocated_bytes();
-    let owned = captured.division_eta_inputs.allocated_bytes();
-    let vacant = division_eta_inputs::RangeCaptured::vacant().allocated_bytes();
-    assert!(owned > vacant);
-    for failure in [
-        crate::acquisition::Failure::Panicked,
-        crate::acquisition::Failure::Stopped,
+fn retired_division_tables_are_never_scheduled() {
+    for retired in [
+        TableId::DivisionEtaInputs,
+        TableId::AttritionModifierBreakdowns,
     ] {
-        captured.install_unit_inputs(Some(Arc::clone(&inputs)));
-        // Stable worker ownership does not depend on census size.
-        assert!(captured.plan_eta_input_ranges() >= 1);
-        let request =
-            captured.take_eta_inputs_request(0, &countries, 11, 0x1000, 7, false, Box::default());
-        let lent = captured.division_eta_inputs.allocated_bytes();
-        assert!(lent < owned);
-        assert_eq!(captured.allocated_bytes() + owned, bytes + lent);
-        assert_eq!(request.context.span, (0, 1));
-        assert_eq!(
-            (request.context.base, request.context.game_state),
-            (11, 0x1000)
+        assert!(!TABLES.contains(&retired), "{retired:?}");
+        assert!(!DIVISION_SOURCE_TABLES.contains(&retired), "{retired:?}");
+        assert!(
+            !read_groups()
+                .any(|(_, anchor, members)| anchor == retired || members.contains(&retired)),
+            "{retired:?}"
         );
-        assert!(Arc::ptr_eq(&request.countries, &countries));
-        assert!(Arc::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
-        assert_eq!(Arc::strong_count(&countries), 2);
-        assert_eq!(Arc::strong_count(&inputs), 3);
-        captured.restore_eta_inputs_request(request, Err(failure));
-        assert_eq!(captured.allocated_bytes(), bytes);
-        assert_eq!(captured.division_eta_inputs.allocated_bytes(), owned);
-        assert_eq!(Arc::strong_count(&countries), 1);
-        assert_eq!(Arc::strong_count(&inputs), 2);
-        // The terminal failure is consumed once, without a live retry.
-        let report = captured.acquire_eta_inputs();
-        assert_eq!(report.ticks, [0]);
-        assert!(captured.eta_inputs_report.is_none());
-        assert_eq!(
-            captured.division_eta_inputs.outcomes(),
-            [Outcome::Unavailable {
-                reason: match failure {
-                    crate::acquisition::Failure::Panicked =>
-                        "division ETA input acquisition panicked",
-                    crate::acquisition::Failure::Stopped =>
-                        "division ETA input acquisition stopped before reading",
-                },
-            }]
-        );
-        captured.drop_and_reset();
-        assert!(captured.eta_inputs_report.is_none());
-        assert_eq!(Arc::strong_count(&inputs), 1);
     }
+    assert!(!PACK_NAMES.contains(&"division_eta_inputs"));
+    assert!(
+        !division_presentation::PHASE_NAMES.contains(&"attack"),
+        "the presentation pass has no selected-attack phase"
+    );
 }
 
 #[test]
@@ -450,7 +443,7 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
     let inputs = Arc::new(UnitInputs::empty_rows());
     let presentation_bytes = captured.division_presentation.allocated_bytes();
     let report = division_presentation::CaptureReport {
-        ticks: [113, 227, 5, 331, 449],
+        ticks: [113, 227, 5, 449],
     };
     for failure in [
         None,
@@ -459,7 +452,7 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
     ] {
         captured.drop_and_reset();
         captured.install_unit_inputs(Some(Arc::clone(&inputs)));
-        let request = captured.take_presentation_request(&countries, 11, 0x1000, 0, true, None);
+        let request = captured.take_presentation_request(&countries, 11, 0x1000, 0, None);
         let context = request.context;
         captured.restore_presentation_request(request, failure.map_or(Ok(report), Err));
         let expected_outcomes = captured.division_presentation.outcomes();
@@ -523,7 +516,6 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
             &memory,
             context,
             unit_sources(&captured.unit_inputs),
-            None,
         );
         assert!(memory.presentation.get() > before);
     }
@@ -534,10 +526,10 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
     use engine::memory::{CountedMemory, SliceMemory};
     use replay::frame::TableView;
 
+    // The template tables belong to the Countries job, not the Slow pack.
     let slow = [
         peace_bids::TABLES.as_slice(),
         map_names::TABLES.as_slice(),
-        division_templates::TABLES.as_slice(),
         visibility::TABLES.as_slice(),
         faction_theatres::TABLES.as_slice(),
     ]
@@ -577,6 +569,14 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
         );
         request.packs.ticks.fill(17);
         captured.restore_slow_request(request, false);
+        let mut request =
+            captured.take_stability_request(&countries, 11, 0x1000, hour, force_full, None);
+        request.packs.ticks.fill(18);
+        captured.restore_stability_request(request, false);
+        let mut request =
+            captured.take_war_overview_request(&countries, 11, 0x1000, hour, force_full);
+        request.packs.ticks.fill(20);
+        captured.restore_war_overview_request(request, false);
         let state = RaidStateStores::new();
         let mut request =
             captured.take_raid_state_request(&countries, 11, 0x1000, hour, force_full, state);
@@ -591,9 +591,24 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
             captured.take_raid_targets_request(&countries, 11, 0x1000, hour, force_full);
         request.packs.ticks.fill(22);
         captured.restore_raid_targets_request(request, false);
-        let mut request = captured.take_gated_request(11, 0x1000, hour, force_full);
+        let mut request = captured.take_gated_request(
+            11,
+            0x1000,
+            hour,
+            force_full,
+            Box::new(crate::slicing::SliceFingerprints::new()),
+            None,
+        );
         request.packs.ticks.fill(23);
         captured.restore_gated_request(request, false);
+        let request = captured.take_character_inputs_request(
+            11,
+            0x1000,
+            hour,
+            force_full,
+            Default::default(),
+        );
+        captured.restore_character_inputs_request(request, None);
         let mut request = captured.take_late_request(
             &countries,
             &mut orders,
@@ -602,7 +617,6 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
             0x1000,
             hour,
             force_full,
-            Box::default(),
         );
         request.packs.ticks.fill(31);
         captured.restore_late_request(request, false, &mut orders);
@@ -632,17 +646,30 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
                 &mut tables,
                 &mut crate::spooling::SpoolConversion {
                     variables_baseline: None,
-                    template_names_baseline: None,
                     variables_scratch: &mut Default::default(),
                     characters: None,
                     lexical: None,
                     intel: None,
                     projection: None,
+                    helper: None,
                 },
+                false,
             );
             for (ids, reason) in [
                 (&slow, "slow acquisition failed"),
+                (
+                    &country_stability::TABLES.to_vec(),
+                    "stability acquisition failed",
+                ),
+                (
+                    &war_overview::TABLES.to_vec(),
+                    "war overview acquisition failed",
+                ),
                 (&gated, "gated acquisition failed"),
+                (
+                    &character_inputs::TABLES.to_vec(),
+                    "character inputs acquisition failed",
+                ),
                 (&late, "late acquisition failed"),
                 (
                     &raid_target_statuses::TABLES.to_vec(),
@@ -715,7 +742,14 @@ fn failed_pack_jobs_preserve_separately_acquired_tables_and_raw_gates() {
         .construction
         .restore_buildings(buildings, Err("independent building result"));
     let before = captured.outcomes();
-    let request = captured.take_gated_request(11, 0x1000, 1, true);
+    let request = captured.take_gated_request(
+        11,
+        0x1000,
+        1,
+        true,
+        Box::new(crate::slicing::SliceFingerprints::new()),
+        None,
+    );
     captured.restore_gated_request(request, false);
     let after = captured.outcomes();
     for id in [
@@ -724,10 +758,20 @@ fn failed_pack_jobs_preserve_separately_acquired_tables_and_raw_gates() {
         TableId::AirBaseRegistrations,
     ]
     .into_iter()
-    .chain(projects::TABLES[..4].iter().copied())
+    .chain(projects::RAW)
     .chain(construction::TABLES)
     {
         assert_eq!(after[id.index()], before[id.index()], "{id:?}");
+    }
+    // The sliced project tables are this job's own read.
+    for id in [TableId::Projects, TableId::ProjectHistory] {
+        assert_eq!(
+            after[id.index()],
+            Outcome::Unavailable {
+                reason: "gated acquisition failed"
+            },
+            "{id:?}"
+        );
     }
     assert!(
         captured.fog.radar_raw_mode
@@ -737,10 +781,8 @@ fn failed_pack_jobs_preserve_separately_acquired_tables_and_raw_gates() {
     assert!(captured.projects.raw_mode && captured.construction.rest_raw_mode);
 
     captured.air.fail_air_bases_capture(raw_failure);
-    captured.air.fail_air_history_capture(raw_failure);
     captured.air.fail_air_stats_capture(raw_failure);
     captured.air.bases_raw_mode = true;
-    captured.air.history_raw_mode = true;
     captured.air.stats_raw_mode = true;
     captured.naval_history.fail_naval_capture(raw_failure);
     captured.naval_history.fail_supremacy_capture(raw_failure);
@@ -749,22 +791,11 @@ fn failed_pack_jobs_preserve_separately_acquired_tables_and_raw_gates() {
     captured.naval_history.supremacy_raw_mode = true;
     captured.naval_history.sunk_raw_mode = true;
     let before = captured.outcomes();
-    let request = captured.take_late_request(
-        &countries,
-        &mut orders,
-        true,
-        11,
-        0x1000,
-        1,
-        true,
-        Box::default(),
-    );
+    let request = captured.take_late_request(&countries, &mut orders, true, 11, 0x1000, 1, true);
     captured.restore_late_request(request, false, &mut orders);
     let after = captured.outcomes();
     for id in [
         TableId::AirBases,
-        TableId::AirRegionHistory,
-        TableId::AirRegionDamage,
         TableId::AirAces,
         TableId::AirStatistics,
         TableId::NavalSupremacy,
@@ -776,9 +807,7 @@ fn failed_pack_jobs_preserve_separately_acquired_tables_and_raw_gates() {
     {
         assert_eq!(after[id.index()], before[id.index()], "{id:?}");
     }
-    assert!(
-        captured.air.bases_raw_mode && captured.air.history_raw_mode && captured.air.stats_raw_mode
-    );
+    assert!(captured.air.bases_raw_mode && captured.air.stats_raw_mode);
     assert!(
         captured.naval_history.raw_mode
             && captured.naval_history.supremacy_raw_mode
@@ -792,13 +821,7 @@ fn a_refused_air_missions_job_fails_its_tables_without_allocating() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     captured.prepare_hour(0, true);
     let before = captured.allocated_bytes();
-    let mut request = captured.take_air_missions_request(
-        &countries,
-        11,
-        0x1000,
-        0,
-        Err("test transport source not supplied"),
-    );
+    let mut request = captured.take_air_missions_request(&countries, 11, 0x1000, None);
     // The pool refused it: the callback fails it instead of running it.
     request.refuse();
     captured.restore_air_missions_request(request, true);
@@ -811,6 +834,133 @@ fn a_refused_air_missions_job_fails_its_tables_without_allocating() {
             "{table:?}"
         );
     }
+}
+
+/// A failed Ordinary family holds no counter-walk census, wherever it
+/// failed: the task-force part panicked, another part stopped after it
+/// completed, or the family was refused admission. A family that returns
+/// without a failure keeps them.
+#[test]
+fn ordinary_terminal_failures_forget_the_counter_censuses() {
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+    for (family, task_forces, other) in [
+        (None, None, None),
+        (None, Some("acquisition worker panicked"), None),
+        (
+            None,
+            None,
+            Some("acquisition worker stopped before completion"),
+        ),
+        (Some("ordinary worker admission failed"), None, None),
+    ] {
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        let units = Arc::new(UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }));
+        captured.install_unit_inputs(Some(Arc::clone(&units)));
+        captured
+            .naval_counters
+            .hold_census(engine::ctask_force::HeldCensus::default());
+        let parts = captured.take_ordinary_parts(
+            &countries,
+            11,
+            0x1000,
+            1,
+            Ok(()),
+            crate::extended::NavalMissionLoan::default(),
+        );
+        let request = captured.take_ordinary_request(&countries, 11, 0x1000, 1);
+        captured.restore_ordinary_request(
+            request,
+            family,
+            parts.map(|part| {
+                let failure = match part.part {
+                    OrdinaryPart::TaskForces(_) => task_forces,
+                    OrdinaryPart::Combat(_) => other,
+                    _ => None,
+                };
+                (part, failure)
+            }),
+        );
+        let failed = family.or(task_forces).or(other);
+        assert_eq!(captured.ordinary_failure, failed);
+        assert_eq!(
+            captured.naval_counters.held_censuses(),
+            usize::from(failed.is_none()),
+            "{failed:?}"
+        );
+        captured.drop_and_reset();
+        assert_eq!(
+            captured.naval_counters.held_censuses(),
+            usize::from(failed.is_none()),
+            "the per-hour reset keeps what the family held: {failed:?}"
+        );
+    }
+}
+
+/// A completed Ordinary family keeps its counter censuses through the
+/// assembly that consumes its completion marker and the per-hour reset; a
+/// second assembly call, which finds no marker and fails the family, forgets
+/// them, as does an hour whose family never supplied its marker.
+#[test]
+fn ordinary_terminal_missing_marker_forgets_the_counter_censuses() {
+    struct NoRead;
+    impl Memory for NoRead {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            false
+        }
+    }
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    let units = Arc::new(UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }));
+    captured.install_unit_inputs(Some(Arc::clone(&units)));
+    captured
+        .naval_counters
+        .hold_census(engine::ctask_force::HeldCensus::default());
+    let parts = captured.take_ordinary_parts(
+        &countries,
+        11,
+        0x1000,
+        1,
+        Ok(()),
+        crate::extended::NavalMissionLoan::default(),
+    );
+    let request = captured.take_ordinary_request(&countries, 11, 0x1000, 1);
+    captured.restore_ordinary_request(request, None, parts.map(|part| (part, None)));
+    assert_eq!(captured.ordinary_failure, None);
+    assert_eq!(captured.naval_counters.held_censuses(), 1);
+    captured.capture_tables(&NoRead, 11, 0x1000, 1, false);
+    assert_eq!(captured.ordinary_failure, None);
+    assert_eq!(
+        captured.naval_counters.held_censuses(),
+        1,
+        "reused next hour"
+    );
+    // The marker was consumed: a second assembly call fails the family.
+    captured.capture_tables(&NoRead, 11, 0x1000, 1, false);
+    assert_eq!(
+        captured.ordinary_failure,
+        Some("ordinary acquisition not supplied")
+    );
+    assert_eq!(captured.naval_counters.held_censuses(), 0);
+    captured.drop_and_reset();
+    assert_eq!(captured.naval_counters.held_censuses(), 0);
+    // An hour whose family never returned its marker.
+    captured
+        .naval_counters
+        .hold_census(engine::ctask_force::HeldCensus::default());
+    captured.capture_tables(&NoRead, 11, 0x1000, 2, false);
+    assert_eq!(
+        captured.ordinary_failure,
+        Some("ordinary acquisition not supplied")
+    );
+    assert_eq!(captured.naval_counters.held_censuses(), 0);
+    captured.drop_and_reset();
+    assert_eq!(captured.naval_counters.held_censuses(), 0);
+    // The test-only failure setter forgets them too.
+    captured
+        .naval_counters
+        .hold_census(engine::ctask_force::HeldCensus::default());
+    captured.set_ordinary_failure(Some("ordinary worker admission failed"));
+    assert_eq!(captured.naval_counters.held_censuses(), 0);
 }
 
 #[test]
@@ -837,7 +987,7 @@ fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
         let units = Arc::new(UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }));
         captured.install_unit_inputs(Some(Arc::clone(&units)));
         let before = captured.allocated_bytes();
-        let mut request = captured.take_ordinary_request(
+        let mut parts = captured.take_ordinary_parts(
             &countries,
             11,
             0x1000,
@@ -845,24 +995,37 @@ fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
             Err("fixture layout refusal"),
             crate::extended::NavalMissionLoan::default(),
         );
+        let request = captured.take_ordinary_request(&countries, 11, 0x1000, 1);
         assert_eq!(request.hour, 1);
-        assert_eq!(request.fresh_modifier_guard, Err("fixture layout refusal"));
-        assert!(Arc::ptr_eq(request.unit_inputs.as_ref().unwrap(), &units));
-        assert_eq!(Arc::strong_count(&units), 3);
-        request.packs.ticks[TableId::LandCombatDetails.index()] = 71;
-        let owned = request.allocated_bytes();
+        assert!(
+            parts
+                .iter()
+                .all(|part| part.fresh_modifier_guard == Err("fixture layout refusal"))
+        );
+        let owned = request.allocated_bytes()
+            + parts
+                .iter()
+                .map(|part| part.allocated_bytes())
+                .sum::<usize>();
+        // One refused or failed part refuses the whole family, as the single
+        // Ordinary job did; the others completed.
         if reason == "ordinary worker admission failed" {
-            request.fail(reason);
-            captured.restore_ordinary_request(request, None);
-        } else {
-            captured.restore_ordinary_request(request, Some(reason));
+            parts[0].fail(reason);
         }
-        assert_eq!(Arc::strong_count(&units), 2);
+        let failure = (reason != "ordinary worker admission failed").then_some(reason);
+        captured.restore_ordinary_request(
+            request,
+            None,
+            parts.map(|part| {
+                let failed = matches!(part.part, OrdinaryPart::Combat(_));
+                (part, failure.filter(|_| failed))
+            }),
+        );
         assert_eq!(captured.allocated_bytes(), before);
         let memory = Reads::default();
         let ticks = captured.capture_tables(&memory, 11, 0x1000, 1, false);
         assert_eq!(memory.combat.get(), 0, "terminal work must not retry");
-        for &id in OrdinaryPacks::TABLES
+        for &id in super::ORDINARY_TABLES
             .iter()
             .flat_map(|tables| tables.iter())
         {
@@ -882,7 +1045,7 @@ fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
         captured.drop_and_reset();
         assert!(captured.ordinary_failure.is_none());
         assert_eq!(Arc::strong_count(&units), 1);
-        let mut request = captured.take_ordinary_request(
+        let mut parts = captured.take_ordinary_parts(
             &countries,
             11,
             0x1000,
@@ -890,121 +1053,27 @@ fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
             Ok(()),
             crate::extended::NavalMissionLoan::default(),
         );
-        assert!(request.unit_inputs.is_none());
-        assert_eq!(request.allocated_bytes(), owned);
-        request.packs.capture(
-            &memory,
-            11,
-            0x1000,
-            request.unit_inputs.as_deref(),
-            (request.hour, &mut request.naval_missions),
-            request.fresh_modifier_guard,
+        let mut request = captured.take_ordinary_request(&countries, 11, 0x1000, 2);
+        assert_eq!(
+            request.allocated_bytes()
+                + parts
+                    .iter()
+                    .map(|part| part.allocated_bytes())
+                    .sum::<usize>(),
+            owned
         );
+        for part in &mut parts {
+            part.part
+                .capture(&memory, 11, 0x1000, part.hour, part.fresh_modifier_guard);
+        }
+        request.packs.capture_at(&memory, 11, 0x1000, request.hour);
         assert!(
             memory.combat.get() > 0,
             "control must exercise the native reader"
         );
-        captured.restore_ordinary_request(request, None);
+        captured.restore_ordinary_request(request, None, parts.map(|part| (part, None)));
         assert_eq!(Arc::strong_count(&countries), 1);
     }
-}
-
-#[test]
-fn transport_admission_withholds_current_mission_packet_and_retains_original_outcomes_and_demand() {
-    struct RefusedReads;
-    impl Memory for RefusedReads {
-        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            false
-        }
-    }
-    let (base, state, hour) = (11, 0x1000, 9);
-    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
-    let clock = engine::cgame_state::Clock {
-        game_state: state as u64,
-        hour,
-        tick_busy: 1,
-        play_time: 0,
-        play_session_started_at: 7,
-        seed: 0,
-        campaign_id: engine::capture_text::Owned::default(),
-        speed: 0,
-    };
-    let mut capture = Captured::with_capacities(&Capacities::default());
-    let prior = capture.country_appearance.transport_missions_mut();
-    prior.begin(hour - 1, Ok(0));
-    prior.finish();
-    assert!(prior.projection().unwrap().is_some());
-    prior.retain_required(transport_mission_shared::Capacities {
-        navies: 5000,
-        ledgers: 6000,
-        occurrences: 9000,
-        receivers: 7000,
-        access_modes: 10000,
-        ..Default::default()
-    });
-    let required = prior.required();
-    let mut request = {
-        let _scope = crate::transport_admission::Scope::enter_fixture(base, state, Some(clock));
-        capture.take_ordinary_request(
-            &countries,
-            base,
-            state,
-            hour,
-            Ok(()),
-            NavalMissionLoan::default(),
-        )
-    };
-    let admission = request.transport_admission.check(base, state, hour);
-    assert!(admission.is_err());
-    request.packs.capture_with_transport_admission(
-        &RefusedReads,
-        base,
-        state,
-        None,
-        (hour, &mut request.naval_missions),
-        Ok(()),
-        admission,
-        Ok(()),
-    );
-    let packet = request.packs.country_appearance.transport_missions_mut();
-    assert!(
-        packet.projection().unwrap().is_none(),
-        "busy entry cannot revive a prior packet"
-    );
-    assert!(
-        packet.required() == required,
-        "refused boundary preserves complete observed growth demand"
-    );
-
-    let mut reference = Captured::with_capacities(&Capacities::default());
-    let mut expected = reference.take_ordinary_request(
-        &countries,
-        base,
-        state,
-        hour,
-        Ok(()),
-        NavalMissionLoan::default(),
-    );
-    expected.packs.capture(
-        &RefusedReads,
-        base,
-        state,
-        None,
-        (hour, &mut expected.naval_missions),
-        Ok(()),
-    );
-    assert_eq!(
-        request.packs.country_appearance.outcomes(),
-        expected.packs.country_appearance.outcomes()
-    );
-    assert_eq!(
-        request.packs.naval_counters.outcomes(),
-        expected.packs.naval_counters.outcomes()
-    );
-    assert_eq!(
-        request.packs.naval_mission_inputs.outcomes(),
-        expected.packs.naval_mission_inputs.outcomes()
-    );
 }
 
 #[test]
@@ -1069,78 +1138,6 @@ fn unpublished_raid_slices_are_read_again_at_the_next_hour() {
 }
 
 #[test]
-fn unpublished_retreat_ban_reads_are_read_again_at_the_next_hour() {
-    use crate::slicing::{SliceFingerprints, SliceSelection};
-    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
-    let memory = engine::memory::SliceMemory {
-        base: 0,
-        bytes: &[],
-    };
-    let (hour, force_full) = (7, false);
-    // Owner 7 (in this hour's slice) was seen, unchanged, before this hour.
-    let seen = |store: &mut SliceFingerprints| {
-        let mut selection = SliceSelection::for_test(0, true, &[]);
-        selection.scan(store, 7, Some(1));
-        store.finish_scan();
-    };
-    let unseen_next_hour = |store: &mut SliceFingerprints| {
-        let mut next = SliceSelection::for_test(hour + 1, false, &[]);
-        next.scan(store, 7, Some(1));
-        next.contains(7)
-    };
-    let inputs = Arc::new(UnitInputs::empty_rows());
-    let truncated = Outcome::Truncated {
-        len: 0,
-        unread_rows: 1,
-    };
-    // A completed job whose bans read was unavailable (an empty image),
-    // truncated or published; then a failed job.
-    for (bans, completed, again) in [
-        (None, true, true),
-        (Some(truncated), true, true),
-        (Some(Outcome::Rows { len: 0 }), true, false),
-        (None, false, true),
-    ] {
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        captured.prepare_hour(hour, force_full);
-        captured.install_unit_inputs(Some(Arc::clone(&inputs)));
-        let mut store = Box::new(SliceFingerprints::new());
-        seen(&mut store);
-        let mut request = captured.take_presentation_request(
-            &countries,
-            11,
-            0x1000,
-            hour,
-            force_full,
-            Some(store),
-        );
-        let report = if completed {
-            let context = request.context;
-            let report = request.captured.capture_owned(
-                &memory,
-                context,
-                unit_sources(&request.inputs),
-                request.store.as_deref_mut(),
-            );
-            if let Some(outcome) = bans {
-                request.captured.test_set_bans_outcome(outcome);
-            }
-            Ok(report)
-        } else {
-            Err(crate::acquisition::Failure::Panicked)
-        };
-        let mut store = captured
-            .restore_presentation_request(request, report)
-            .unwrap();
-        assert_eq!(
-            unseen_next_hour(&mut store),
-            again,
-            "bans {bans:?}, completed {completed}"
-        );
-    }
-}
-
-#[test]
 fn research_handoff_maps_failures_scatters_ticks_and_survives_a_governance_failure() {
     let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let (hour, force_full) = (7, false);
@@ -1172,6 +1169,10 @@ fn research_handoff_maps_failures_scatters_ticks_and_survives_a_governance_failu
             hour,
             force_full,
             Box::new(crate::slicing::SliceFingerprints::new()),
+            Box::new(crate::slicing::SliceFingerprints::new()),
+            None,
+            None,
+            None,
         );
         // Governance fails; its restore must not reach the loaned research rows.
         let _technologies = captured
@@ -1316,7 +1317,6 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
         Some(crate::acquisition::Failure::Stopped),
     ] {
         let mut captured = Captured::with_capacities(&capacity);
-        captured.governance.focus_raw_mode = true;
         captured.governance_report = Some(governance::CaptureReport::default());
         let bytes = captured.allocated_bytes();
         let governance_bytes = captured.governance.allocated_bytes();
@@ -1328,6 +1328,10 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
             1,
             failure.is_none(),
             Box::new(crate::slicing::SliceFingerprints::new()),
+            Box::new(crate::slicing::SliceFingerprints::new()),
+            None,
+            None,
+            None,
         );
         assert!(captured.governance_report.is_none());
         assert_eq!(captured.governance.allocated_bytes(), 0);
@@ -1337,7 +1341,6 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
         );
         assert_eq!(request.captured.allocated_bytes(), governance_bytes);
         assert!(request.allocated_bytes() > governance_bytes);
-        assert!(request.captured.focus_raw_mode);
         assert!(Arc::ptr_eq(&request.countries, &countries));
         assert_eq!(Arc::strong_count(&countries), 2);
         assert_eq!(
@@ -1366,7 +1369,14 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
         // Gated borrows the rest of construction while the allocating
         // building buffers are still on their worker. Restore that pack
         // before restoring the worker-only families.
-        let gated = captured.take_gated_request(11, 0x1000, 1, context.force_full);
+        let gated = captured.take_gated_request(
+            11,
+            0x1000,
+            1,
+            context.force_full,
+            Box::new(crate::slicing::SliceFingerprints::new()),
+            None,
+        );
         captured.restore_gated_request(gated, false);
         let _technologies =
             captured.restore_governance_request(request, failure.map_or(Ok(report), Err));
@@ -1378,7 +1388,6 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
         }
         assert_eq!(Arc::strong_count(&countries), 1);
         assert_eq!(captured.allocated_bytes(), bytes);
-        assert!(captured.governance.focus_raw_mode);
         let expected_outcomes = captured.governance.outcomes();
         let memory = Reads {
             total: std::cell::Cell::new(0),
@@ -1456,6 +1465,9 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
                 ..context
             },
             &mut crate::slicing::SliceFingerprints::new(),
+            &mut crate::slicing::SliceFingerprints::new(),
+            None,
+            None,
         );
         assert!(memory.governance.get() > 0);
         captured.drop_and_reset();
@@ -1490,7 +1502,7 @@ fn intel_residual_handoff_preserves_terminal_results_without_repeating_live_read
             hour: 1,
             force_full: true,
         };
-        let request = captured.take_intel_residual_request(&countries, context);
+        let request = captured.take_intel_residual_request(&countries, context, None, None);
         assert_eq!(captured.intel.allocated_bytes(), 0);
         assert_eq!(captured.allocated_bytes() + family_bytes, bytes);
         assert_eq!(request.captured.allocated_bytes(), family_bytes);
@@ -1504,7 +1516,9 @@ fn intel_residual_handoff_preserves_terminal_results_without_repeating_live_read
                 }
             }),
         };
-        captured.restore_intel_residual_request(request, failure.map_or(Ok(original), Err));
+        let (flags, variables) =
+            captured.restore_intel_residual_request(request, failure.map_or(Ok(original), Err));
+        assert!(flags.is_none() && variables.is_none());
         assert_eq!(Arc::strong_count(&countries), 1);
         assert_eq!(captured.allocated_bytes(), bytes);
         let outcomes = captured.intel.outcomes();
@@ -1554,7 +1568,7 @@ fn ship_model_parts_restore_part_zero_first_sum_ticks_and_match_the_unsplit_walk
             len: ships as usize,
         });
         let request =
-            captured.take_ship_models_request(&countries, 11, 0x1000, 77, ShipCensus::vacant());
+            captured.take_ship_models_request(&countries, 11, 0x1000, ShipCensus::vacant());
         let _census = captured.restore_ship_models_request(request, Ok(()));
         captured
     };
@@ -1562,7 +1576,7 @@ fn ship_model_parts_restore_part_zero_first_sum_ticks_and_match_the_unsplit_walk
     let mut reference = walked(3);
     reference
         .ship_models
-        .capture_owned(&Faulty, ship_models::CaptureContext::legacy(11));
+        .capture_owned(&Faulty, ship_models::CaptureContext::new(11));
     let expected = reference.ship_models.outcomes();
     assert!(matches!(expected[0], Outcome::Unavailable { .. }));
     for (ships, parts, stop) in [
@@ -1579,13 +1593,8 @@ fn ship_model_parts_restore_part_zero_first_sum_ticks_and_match_the_unsplit_walk
         for (index, request) in requests.into_iter().flatten().enumerate() {
             assert_eq!(request.part, index);
             assert_eq!(
-                (
-                    request.context.base,
-                    request.context.game_state,
-                    request.context.hour
-                ),
-                (11, 0x1000, 77),
-                "each detail part retains the original census request key"
+                request.context.base, 11,
+                "each detail part retains the original census request base"
             );
             let mut request = request;
             let report = if stop == Some(index) {
@@ -1610,8 +1619,7 @@ fn ship_model_parts_restore_part_zero_first_sum_ticks_and_match_the_unsplit_walk
     }
     // A failed census lends no part.
     let mut captured = walked(3);
-    let request =
-        captured.take_ship_models_request(&countries, 11, 0x1000, 77, ShipCensus::vacant());
+    let request = captured.take_ship_models_request(&countries, 11, 0x1000, ShipCensus::vacant());
     let _census =
         captured.restore_ship_models_request(request, Err(crate::acquisition::Failure::Panicked));
     assert!(
@@ -1636,8 +1644,7 @@ fn ship_models_late_terminal_handoff_is_unavailable_until_new_sources() {
     captured
         .ship_models
         .finish_sources(Outcome::Rows { len: 0 });
-    let request =
-        captured.take_ship_models_request(&countries, 11, 0x1000, 77, ShipCensus::vacant());
+    let request = captured.take_ship_models_request(&countries, 11, 0x1000, ShipCensus::vacant());
     let family_bytes = request.captured.allocated_bytes();
     assert_eq!(captured.ship_models.allocated_bytes(), 0);
     let census =
@@ -1726,7 +1733,9 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
         captured.character_portraits_report = Some(character_portraits::CaptureReport::default());
         captured.province_unit_order_report = Some(province_unit_order::CaptureReport::default());
         let supply: Vec<_> = (0..supply_trains::PARTS)
-            .map(|part| captured.take_supply_trains_request(&countries, 11, 0x1000, part))
+            .map(|part| {
+                captured.take_supply_trains_request(&countries, 11, 0x1000, 0, false, part, None)
+            })
             .collect();
         assert!(captured.supply_trains_report.is_none());
         assert_eq!(captured.supply_trains.allocated_bytes(), 0);
@@ -1759,7 +1768,14 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
             captured.allocated_bytes() + supply_bytes + portrait_bytes,
             bytes
         );
-        let province_order = captured.take_province_unit_order_request(11, 0x1000);
+        let census = Arc::new(crate::division_census::UnitInputs::empty_rows());
+        let province_order = captured.take_province_unit_order_request(
+            11,
+            0x1000,
+            Some(Arc::clone(&census)),
+            Some(province_unit_order::owned_tests::held_store()),
+        );
+        assert_eq!(Arc::strong_count(&census), 2);
         assert!(captured.province_unit_order_report.is_none());
         assert_eq!(captured.province_unit_order.allocated_bytes(), 0);
         assert_eq!(
@@ -1814,10 +1830,16 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
             );
         }
         assert_eq!(Arc::strong_count(&countries), 1);
-        captured.restore_province_unit_order_request(
-            province_order,
-            province_order_failure.map_or(Ok(province_order_report), Err),
-        );
+        // A failed job forgets the held walk its take consumed marks for.
+        let store = captured
+            .restore_province_unit_order_request(
+                province_order,
+                province_order_failure.map_or(Ok(province_order_report), Err),
+            )
+            .unwrap();
+        assert_eq!(store.holds(), province_order_failure.is_none());
+        // The join releases the census lease, so the next hour can reuse it.
+        assert_eq!(Arc::strong_count(&census), 1);
         assert_eq!(captured.allocated_bytes(), bytes);
         let outcomes = captured.outcomes();
         for (index, outcome) in outcomes.into_iter().enumerate() {
@@ -2022,13 +2044,26 @@ fn peace_settlement_packs_are_registered_without_inventing_empty_data() {
 
 #[test]
 fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership() {
-    // BorderConflicts is the Provinces walk's second output, set by the core spool.
-    assert_eq!(N, replay::frame::TABLE_COUNT - 21);
+    // BorderConflicts is the Provinces walk's second output, set by the core
+    // spool. Retired tables are not recorded, so no pack produces them.
+    let current = replay::format::FormatVersion::CURRENT.version();
+    let retired = TableId::ALL
+        .into_iter()
+        .filter(|table| !table.last_change().present(current))
+        .count();
+    // Four inputs, six hover-only, oracle-only and wargoal tables and the nine
+    // selected-transport split tables.
+    assert_eq!(retired, 19);
+    assert_eq!(N, replay::frame::TABLE_COUNT - 21 - retired);
     let actual: BTreeSet<_> = TABLES.into_iter().collect();
     assert_eq!(actual.len(), N);
     let expected: BTreeSet<_> = TableId::ALL
         .into_iter()
-        .filter(|table| table.index() >= 20 && *table != TableId::BorderConflicts)
+        .filter(|table| {
+            table.index() >= 20
+                && *table != TableId::BorderConflicts
+                && table.last_change().present(current)
+        })
         .collect();
     assert_eq!(actual, expected);
     for (name, anchor, members) in read_groups() {
@@ -2161,24 +2196,148 @@ fn the_slow_job_stores_travel_with_it_and_always_return() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     for completed in [true, false] {
+        // Owner 9 (in hour 9's slice) and owner 7 were seen, unchanged,
+        // before this hour.
+        let mut available = Box::new(crate::slicing::SliceFingerprints::new());
+        let mut seen = crate::slicing::SliceSelection::for_test(0, true, &[]);
+        seen.scan(&mut available, 7, Some(0));
+        seen.scan(&mut available, 9, Some(0));
+        available.finish_scan();
         let stores = SlowStores {
-            stability: Some(Box::new(crate::slicing::SliceFingerprints::new())),
+            available: Some(available),
+            advisors: None,
+            local_subunits: None,
         };
+        // The callback starts each frame's selections at its hour.
+        captured.prepare_hour(9, false);
         let request = captured.take_slow_request(&countries, 11, 0x1000, 9, false, stores);
-        assert!(request.stores.stability.is_some());
+        assert!(request.stores.available.is_some());
         // Nothing was read: the unpublished reads are invalidated or the
         // failed job's stores forgotten, and the stores come back either way.
-        let stores = captured.restore_slow_request(request, completed);
-        assert!(stores.stability.is_some());
-        assert!(!matches!(
-            captured.country_stability.outcomes()[0],
-            Outcome::Rows { .. }
-        ));
+        let mut stores = captured.restore_slow_request(request, completed);
+        assert_eq!(captured.hired_advisors.available_selection().hour, 9);
+        // The unpublished slice is read again at the next hour, outside its
+        // own slice. After a completed job an owner of another slice still
+        // waits for its slice; a failed job forgets the store (its scan may
+        // have stopped part-way), so every country is read again at once.
+        let available = stores.available.as_mut().expect("the store returns");
+        let mut next = crate::slicing::SliceSelection::for_test(10, false, &[]);
+        next.scan(available, 9, Some(0));
+        next.scan(available, 7, Some(0));
+        available.finish_scan();
+        assert!(next.contains(9), "completed {completed}");
+        assert_eq!(next.contains(7), !completed, "completed {completed}");
     }
     let request =
         captured.take_slow_request(&countries, 11, 0x1000, 9, false, SlowStores::default());
     let stores = captured.restore_slow_request(request, true);
-    assert!(stores.stability.is_none());
+    assert!(stores.available.is_none());
+}
+
+#[test]
+fn the_stability_tables_are_their_own_job_and_its_store_always_returns() {
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+    let (hour, force_full) = (9, false);
+    for completed in [true, false] {
+        // Owner 9 (in hour 9's slice) and owner 7 were seen, unchanged,
+        // before this hour.
+        let mut store = Box::new(crate::slicing::SliceFingerprints::new());
+        let mut seen = crate::slicing::SliceSelection::for_test(0, true, &[]);
+        seen.scan(&mut store, 7, Some(0));
+        seen.scan(&mut store, 9, Some(0));
+        store.finish_scan();
+        captured.prepare_hour(hour, force_full);
+        // The Slow job no longer carries the stability pack: its failure
+        // leaves the stability tables to their own job, and theirs leaves
+        // Slow's tables as Slow left them.
+        let slow = captured.take_slow_request(
+            &countries,
+            11,
+            0x1000,
+            hour,
+            force_full,
+            SlowStores::default(),
+        );
+        let stability =
+            captured.take_stability_request(&countries, 11, 0x1000, hour, force_full, Some(store));
+        assert!(stability.store.is_some());
+        captured.restore_slow_request(slow, false);
+        // Nothing was read: the unpublished read is invalidated or the
+        // failed job's store forgotten, and the store comes back either way.
+        let mut store = captured
+            .restore_stability_request(stability, completed)
+            .expect("the store returns");
+        assert_eq!(captured.country_stability.selection().hour, hour);
+        let outcomes = captured.outcomes();
+        for &table in &country_stability::TABLES {
+            let failed = |reason| failed_capture(table, hour, force_full, reason);
+            assert!(!matches!(outcomes[table.index()], Outcome::Rows { .. }));
+            assert_ne!(outcomes[table.index()], failed("slow acquisition failed"));
+            assert_eq!(
+                outcomes[table.index()] == failed("stability acquisition failed"),
+                !completed,
+                "{table:?}"
+            );
+        }
+        for &table in &peace_bids::TABLES {
+            assert_eq!(
+                outcomes[table.index()],
+                failed_capture(table, hour, force_full, "slow acquisition failed")
+            );
+        }
+        // The unpublished slice is read again at the next hour; a failed job
+        // forgets the store, so every country is read again at once.
+        let mut next = crate::slicing::SliceSelection::for_test(hour + 1, false, &[]);
+        next.scan(&mut store, 9, Some(0));
+        next.scan(&mut store, 7, Some(0));
+        store.finish_scan();
+        assert!(next.contains(9), "completed {completed}");
+        assert_eq!(next.contains(7), !completed, "completed {completed}");
+    }
+    // Without a store the job reads only the hour's slice and returns none.
+    let request = captured.take_stability_request(&countries, 11, 0x1000, 9, false, None);
+    assert!(captured.restore_stability_request(request, true).is_none());
+}
+
+#[test]
+fn the_war_overview_is_its_own_job_and_fails_apart_from_slow() {
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+    let (hour, force_full) = (9, false);
+    for completed in [true, false] {
+        captured.prepare_hour(hour, force_full);
+        // The Slow job no longer carries the war overview: its failure
+        // leaves the overview's tables to their own job, and theirs leaves
+        // Slow's tables as Slow left them.
+        let slow = captured.take_slow_request(
+            &countries,
+            11,
+            0x1000,
+            hour,
+            force_full,
+            SlowStores::default(),
+        );
+        let overview = captured.take_war_overview_request(&countries, 11, 0x1000, hour, force_full);
+        captured.restore_slow_request(slow, false);
+        captured.restore_war_overview_request(overview, completed);
+        let outcomes = captured.outcomes();
+        for &table in &war_overview::TABLES {
+            let failed = |reason| failed_capture(table, hour, force_full, reason);
+            assert_ne!(outcomes[table.index()], failed("slow acquisition failed"));
+            assert_eq!(
+                outcomes[table.index()] == failed("war overview acquisition failed"),
+                !completed,
+                "{table:?}"
+            );
+        }
+        for &table in &peace_bids::TABLES {
+            assert_eq!(
+                outcomes[table.index()],
+                failed_capture(table, hour, force_full, "slow acquisition failed")
+            );
+        }
+    }
 }
 
 #[test]
@@ -2197,15 +2356,6 @@ fn modifier_header_verdict_travels_with_the_slow_pack_and_returns() {
 }
 
 #[test]
-fn focus_pilot_handoff_reaches_the_governance_pack() {
-    let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.focus_pilot().focus_raw_mode = true;
-    assert!(captured.governance.focus_raw_mode);
-    captured.focus_pilot().focus_raw_mode = false;
-    assert!(!captured.governance.focus_raw_mode);
-}
-
-#[test]
 fn relations_pilot_handoff_reaches_the_intel_pack() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     captured.relations_pilot().relations_raw_mode = true;
@@ -2217,9 +2367,9 @@ fn relations_pilot_handoff_reaches_the_intel_pack() {
 #[test]
 fn characters_pilot_handoff_reaches_the_characters_pack() {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.characters_pilot().raw_active = [true; 6];
+    captured.characters_pilot().raw_active = [true; 5];
     assert!(captured.characters.raw_active.iter().any(|&active| active));
-    captured.characters_pilot().raw_active = [false; 6];
+    captured.characters_pilot().raw_active = [false; 5];
     assert!(!captured.characters.raw_active.iter().any(|&active| active));
 }
 
@@ -2482,7 +2632,9 @@ fn country_naming_terminal_loan_restores_original_buffers_and_never_retries_nati
             &mut rows,
             &mut links,
             (hour, true),
+            None,
         );
+        let mut templates = captured.take_templates_request(&countries, base, state, (hour, true));
         assert!(request.has_naming());
         let reason = if rejected {
             "country naming worker admission failed"
@@ -2493,11 +2645,13 @@ fn country_naming_terminal_loan_restores_original_buffers_and_never_retries_nati
             let report = request.fail_naming(reason);
             assert_eq!(report.countries, Outcome::Unavailable { reason });
             assert_eq!(report.links.result, Outcome::Unavailable { reason });
+            let _ = templates.fail(reason);
             None
         } else {
             Some(reason)
         };
         captured.restore_countries_request(request, &mut rows, &mut links, failure);
+        captured.restore_templates_request(templates, failure);
         assert_eq!(rows.as_ptr(), row_storage);
         assert_eq!(links.as_ptr(), link_storage);
         assert_eq!(captured.allocated_bytes(), retained_bytes);
@@ -2568,11 +2722,6 @@ fn ordinary_terminal_outcomes_return_original_naval_store_and_forget_unpublished
     let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     for refused_before_completion in [false, true] {
         let mut captured = Captured::with_capacities(&Capacities::default());
-        let transport = captured.country_appearance.transport_missions_mut();
-        transport.begin(hour, Ok(7));
-        transport.ledger(1, 11, Err("synthetic original occurrence refusal"));
-        transport.receiver(replay::rows::TransportMissionReceiver::default());
-        let pressure = transport.required();
         let mut fingerprints = Box::new(SliceFingerprints::new());
         let mut prior = SliceSelection::new(true);
         prior.reset(hour, false);
@@ -2585,7 +2734,7 @@ fn ordinary_terminal_outcomes_return_original_naval_store_and_forget_unpublished
             "control must establish unchanged outside-slice owner"
         );
         let original_store = std::ptr::from_ref(&*fingerprints);
-        let mut request = captured.take_ordinary_request(
+        let parts = captured.take_ordinary_parts(
             &countries,
             11,
             0x1000,
@@ -2596,33 +2745,15 @@ fn ordinary_terminal_outcomes_return_original_naval_store_and_forget_unpublished
                 fingerprints: Some(fingerprints),
             },
         );
+        let mut request = captured.take_ordinary_request(&countries, 11, 0x1000, hour);
         let reason = if refused_before_completion {
             request.fail("ordinary worker admission failed");
             None
         } else {
             Some("ordinary worker stopped before completion")
         };
-        let mut returned = captured.restore_ordinary_request(request, reason);
-        let transport = captured.country_appearance.transport_missions_mut();
-        assert!(
-            transport.projection().unwrap().is_none(),
-            "terminal failure cannot publish the packet"
-        );
-        let retained = transport.required();
-        assert_eq!(
-            (
-                retained.navies,
-                retained.ledgers,
-                retained.occurrences,
-                retained.receivers
-            ),
-            (
-                pressure.navies,
-                pressure.ledgers,
-                pressure.occurrences,
-                pressure.receivers
-            )
-        );
+        let mut returned =
+            captured.restore_ordinary_request(request, reason, parts.map(|part| (part, None)));
         assert_eq!(
             std::ptr::from_ref(&**returned.fingerprints.as_ref().unwrap()),
             original_store
@@ -2635,7 +2766,7 @@ fn ordinary_terminal_outcomes_return_original_naval_store_and_forget_unpublished
             next.contains(owner),
             "terminal failure must invalidate unchanged-owner freshness"
         );
-        for &id in OrdinaryPacks::TABLES
+        for &id in super::ORDINARY_TABLES
             .iter()
             .flat_map(|tables| tables.iter())
         {
@@ -2644,5 +2775,588 @@ fn ordinary_terminal_outcomes_return_original_naval_store_and_forget_unpublished
                 Outcome::Unavailable { .. }
             ));
         }
+    }
+}
+
+/// Characters, intel and character portraits convert on the helpers, the
+/// first two with the spool caches lent to their lane; the ETA pair shares a
+/// lane, and packs needing other spool caches stay on the spool thread.
+#[test]
+fn cached_and_unsynchronised_packs_convert_on_their_helper_lanes() {
+    let lane = |name: &str| {
+        super::HELPER_LANES[super::PACK_NAMES
+            .iter()
+            .position(|pack| *pack == name)
+            .unwrap()]
+    };
+    assert_eq!(lane("characters"), Some(1));
+    assert_eq!(lane("character_portraits"), Some(1));
+    assert_eq!(lane("intel"), Some(0));
+    assert_eq!(lane("division_presentation"), Some(0));
+    assert_eq!(lane("country_appearance"), Some(1));
+    assert_eq!(lane("lexical"), None);
+    assert_eq!(lane("division_templates"), None);
+}
+
+/// RaidAirScores and the shared rail tables come from their own first-burst
+/// job: a Late failure keeps that job's outcomes, and only the job's own
+/// failure fails them, rereading every score pair at the next hour.
+#[test]
+fn scores_and_rails_keep_their_own_job_outcome_through_a_late_failure() {
+    use engine::memory::SliceMemory;
+    let tables = [
+        TableId::RaidAirScores,
+        TableId::RailCooldowns,
+        TableId::RailEdges,
+    ];
+    for completed in [true, false] {
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+        captured.prepare_hour(1, true);
+        let mut orders = Orders::vacant();
+        let mut request = captured.take_scores_rails_request(
+            &countries,
+            0,
+            0x1000,
+            1,
+            true,
+            Box::default(),
+            None,
+        );
+        // An empty world: each walk fails with its own reason.
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        let parts = &mut *request.parts;
+        parts.scores.capture(
+            &memory,
+            0,
+            0x1000,
+            1,
+            true,
+            request.score_capacity,
+            &mut request.air_scores,
+        );
+        parts.rails.capture(&memory, 0, 0x1000, 1, None);
+        let (_scores, store) = captured.restore_scores_rails_request(request, completed);
+        assert!(store.is_none());
+        let installed = captured.outcomes();
+        for id in tables {
+            let outcome = installed[id.index()];
+            assert!(matches!(outcome, Outcome::Unavailable { .. }), "{id:?}");
+            assert_eq!(
+                outcome
+                    == Outcome::Unavailable {
+                        reason: "scores and rails acquisition failed"
+                    },
+                !completed,
+                "{id:?}"
+            );
+        }
+        let request =
+            captured.take_late_request(&countries, &mut orders, true, 11, 0x1000, 1, true);
+        captured.restore_late_request(request, false, &mut orders);
+        let after = captured.outcomes();
+        for id in tables {
+            assert_eq!(after[id.index()], installed[id.index()], "{id:?}");
+        }
+        // Another TableId the Late job owns still fails with it.
+        assert_eq!(
+            after[TableId::AirReferenceWitnesses.index()],
+            Outcome::Unavailable {
+                reason: "late acquisition failed"
+            }
+        );
+    }
+}
+
+/// ArmyIconInputs come from their own job right after the division sources
+/// join: a Late failure keeps that job's outcome, and only the job's own
+/// failure fails the rows.
+#[test]
+fn army_icons_keep_their_own_job_outcome_through_a_late_failure() {
+    use engine::memory::SliceMemory;
+    for completed in [true, false] {
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+        captured.prepare_hour(1, true);
+        let mut orders = Orders::vacant();
+        let mut request = captured.take_army_icons_request(0);
+        request.ticks = request.icons.capture(
+            &SliceMemory {
+                base: 0,
+                bytes: &[],
+            },
+            0,
+            request.divisions.sources(),
+            None,
+        );
+        let captured_outcome = request.icons.outcomes()[0];
+        captured.restore_army_icons_request(request, completed);
+        let installed = captured.outcomes()[TableId::ArmyIconInputs.index()];
+        let failed = Outcome::Unavailable {
+            reason: "army icon acquisition failed",
+        };
+        assert_eq!(installed, if completed { captured_outcome } else { failed });
+        let request =
+            captured.take_late_request(&countries, &mut orders, true, 11, 0x1000, 1, true);
+        captured.restore_late_request(request, false, &mut orders);
+        assert_eq!(
+            captured.outcomes()[TableId::ArmyIconInputs.index()],
+            installed
+        );
+    }
+}
+
+/// The daily production tables, split from Slow: a failed job on their slot
+/// refuses them as a failed Slow did, a second assembly neither reruns nor
+/// changes them, and off their slot they are skipped without a read or an
+/// allocation, Slow's refusal keeping them skipped.
+#[test]
+fn the_daily_production_tables_keep_slows_refusals_and_skip_off_their_slot() {
+    use engine::memory::CountedMemory;
+    use replay::cadence::SKIPPED_REASON;
+    struct NoRead;
+    impl Memory for NoRead {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            false
+        }
+    }
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+    let outcomes = |captured: &Captured| -> Vec<Outcome> {
+        captured
+            .industrial_organisations
+            .outcomes()
+            .into_iter()
+            .chain(captured.production_modifiers.outcomes())
+            .collect()
+    };
+    let refused = |captured: &Captured, reason: &'static str| {
+        for outcome in outcomes(captured) {
+            assert_eq!(outcome, Outcome::Unavailable { reason }, "{reason}");
+        }
+    };
+    const SLOT: i32 = 8;
+    assert!(ProductionDailyPacks::due(SLOT, false));
+    // A failed job on its slot, then a second assembly.
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    let request = captured.take_production_daily_request(&countries, 11, 0x1000, SLOT, false);
+    captured.restore_production_daily_request(request, false);
+    captured.capture_tables(&NoRead, 11, 0x1000, SLOT, false);
+    refused(&captured, "slow acquisition failed");
+    captured.capture_tables(&NoRead, 11, 0x1000, SLOT, false);
+    refused(&captured, "slow acquisition failed");
+    // Off the slot, twice, with and without Slow's refusal.
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    let memory = CountedMemory::new(NoRead);
+    for refusal in [None, Some("slow acquisition failed")] {
+        captured.slow_refusal = refusal;
+        let before = (
+            captured.industrial_organisations.allocated_bytes(),
+            captured.production_modifiers.allocated_bytes(),
+        );
+        for _ in 0..2 {
+            let reads = crate::read_accounting::Capture::new();
+            captured.capture_tables(&memory, 11, 0x1000, SLOT + 1, false);
+            let reads = reads.finish();
+            for table in industrial_organisations::TABLES
+                .into_iter()
+                .chain(production_modifiers::TABLES)
+            {
+                assert_eq!(
+                    reads[table.index()],
+                    engine::memory::ReadCounts::ZERO,
+                    "{table:?}"
+                );
+            }
+            refused(&captured, SKIPPED_REASON);
+            assert_eq!(
+                (
+                    captured.industrial_organisations.allocated_bytes(),
+                    captured.production_modifiers.allocated_bytes(),
+                ),
+                before
+            );
+        }
+    }
+}
+
+/// Every combination of a completed, failed and missing Slow job and
+/// ProductionDaily job, on the slot and on a full hour, through the real
+/// take, restore and non-test missing-job paths: Slow's failure or absence
+/// refuses the daily production tables with Slow's reason though their own
+/// job completed; their own failure or absence refuses them with the reason
+/// a failed or missing Slow recorded; with both complete they publish their
+/// own capture, as on a frame reused after a refused hour.
+#[test]
+fn the_daily_production_tables_follow_slow_and_their_own_job_through_assembly() {
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Job {
+        Completed,
+        Failed,
+        Missing,
+    }
+    struct NoRead;
+    impl Memory for NoRead {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            false
+        }
+    }
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+    let outcomes = |captured: &Captured| -> Vec<Outcome> {
+        captured
+            .industrial_organisations
+            .outcomes()
+            .into_iter()
+            .chain(captured.production_modifiers.outcomes())
+            .collect()
+    };
+    // One hour: Slow's and the daily job's joins, then the assembly twice.
+    let hour_of = |captured: &mut Captured, slow: Job, daily: Job, hour: i32, full: bool| {
+        match slow {
+            Job::Missing => captured.fail_missing_slow(hour, full),
+            done => {
+                let request = captured.take_slow_request(
+                    &countries,
+                    11,
+                    0x1000,
+                    hour,
+                    full,
+                    SlowStores::default(),
+                );
+                let _ = captured.restore_slow_request(request, done == Job::Completed);
+            }
+        }
+        if daily != Job::Missing {
+            let mut request =
+                captured.take_production_daily_request(&countries, 11, 0x1000, hour, full);
+            request.packs.capture(&NoRead, 11, 0x1000, hour, full);
+            captured.restore_production_daily_request(request, daily == Job::Completed);
+        }
+        let mut ticks = [0; TABLE_COUNT];
+        captured.assemble_production_daily(&NoRead, 11, 0x1000, hour, full, &mut ticks, false);
+        let first = outcomes(captured);
+        captured.assemble_production_daily(&NoRead, 11, 0x1000, hour, full, &mut ticks, false);
+        assert_eq!(outcomes(captured), first, "a second assembly changed them");
+        first
+    };
+    let refused = |reason: &'static str| vec![Outcome::Unavailable { reason }; 4];
+    for (hour, full) in [(8, false), (3, true)] {
+        assert!(ProductionDailyPacks::due(hour, full));
+        let healthy = hour_of(
+            &mut Captured::with_capacities(&Capacities::default()),
+            Job::Completed,
+            Job::Completed,
+            hour,
+            full,
+        );
+        for reason in ["slow acquisition failed", "slow acquisition not supplied"] {
+            assert_ne!(healthy, refused(reason), "{hour} {full}");
+        }
+        for slow in [Job::Completed, Job::Failed, Job::Missing] {
+            for daily in [Job::Completed, Job::Failed, Job::Missing] {
+                let expected = match (slow, daily) {
+                    (Job::Failed, _) | (Job::Completed, Job::Failed) => {
+                        refused("slow acquisition failed")
+                    }
+                    (Job::Missing, _) | (Job::Completed, Job::Missing) => {
+                        refused("slow acquisition not supplied")
+                    }
+                    (Job::Completed, Job::Completed) => healthy.clone(),
+                };
+                let mut captured = Captured::with_capacities(&Capacities::default());
+                assert_eq!(
+                    hour_of(&mut captured, slow, daily, hour, full),
+                    expected,
+                    "{slow:?} {daily:?} {hour} {full}"
+                );
+                // The frame reused after the reset that starts every hour:
+                // a healthy hour publishes its own capture.
+                captured.reset();
+                assert_eq!(
+                    hour_of(&mut captured, Job::Completed, Job::Completed, hour, full),
+                    healthy,
+                    "after {slow:?} {daily:?} {hour} {full}"
+                );
+            }
+        }
+    }
+}
+
+/// A split production modifier capture through its real lifecycle (the
+/// split prepared, its parts loaned and the first loaned with the
+/// ProductionDaily job, each returned, then the assembly): its tables are
+/// the whole capture's at 5,000 countries with unequal lines and an idle
+/// range; a failed or missing part refuses both tables with Slow's failure
+/// reason, the first failure in slot order winning; a first range without a
+/// country with lines takes the next range's defines; a second assembly
+/// changes nothing; and a reset after a preparation or a failed hour leaves
+/// no split behind.
+#[test]
+fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
+    use production_modifiers::{Captured as Modifiers, test_support};
+    struct NoRead;
+    impl Memory for NoRead {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            false
+        }
+    }
+    #[derive(Clone, Copy, PartialEq)]
+    enum Returned {
+        Completed,
+        Failed,
+        Missing,
+    }
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+    let context = engine::production_modifiers::Context {
+        start: 17,
+        cap: 93,
+        gain: -5,
+        ..Default::default()
+    };
+    // 5,000 countries, every seventh with three lines, 2,000..2,600 idle.
+    let rows: Vec<(u32, usize, usize)> = (1..=5_000_u32)
+        .filter(|id| !(2_000..2_600).contains(id))
+        .map(|id| {
+            (
+                id,
+                0x10_0000 - id as usize * 16,
+                if id % 7 == 0 { 3 } else { 1 },
+            )
+        })
+        .collect();
+    let range = |first: u32, end: u32| -> Vec<(u32, usize, usize)> {
+        rows.iter()
+            .copied()
+            .filter(|&(id, _, _)| first <= id && id < end)
+            .collect()
+    };
+    let starts = [1_200, 2_000, 2_600];
+    let bounds = [1, 1_200, 2_000, 2_600, u32::MAX];
+    let tables = |modifiers: &Modifiers| (modifiers.outcomes(), modifiers.tables());
+    let whole = tables(&Modifiers::whole(test_support::part(&rows, context)));
+    // One slot hour: the split, its loans and returns, and two assemblies.
+    let hour = |captured: &mut Captured,
+                parts: [Option<production_modifiers::Part>; 4],
+                returned: [Returned; 4],
+                daily: bool| {
+        captured
+            .production_modifiers
+            .grow(&mut production_modifiers::Capacities::default());
+        assert_eq!(
+            captured.prepare_production_modifier_parts(&NoRead, 11, &starts),
+            4
+        );
+        assert_eq!(
+            captured.production_modifiers.prepared_slots(),
+            bounds
+                .windows(2)
+                .map(|pair| pair[0]..pair[1])
+                .collect::<Vec<_>>()
+        );
+        let [first, rest @ ..] = parts;
+        let mut loans: Vec<_> = (1..4)
+            .map(|part| {
+                captured.take_production_modifier_part(part, &countries, 11, 0x1000, 8, false)
+            })
+            .collect();
+        for (loan, part) in loans.iter_mut().zip(rest) {
+            *loan.captured = part.unwrap();
+        }
+        let mut request = captured.take_production_daily_request(&countries, 11, 0x1000, 8, false);
+        request
+            .packs
+            .production_modifiers
+            .captured_as(first.unwrap());
+        captured.restore_production_daily_request(request, daily);
+        for (loan, returned) in loans.into_iter().zip(&returned[1..]) {
+            if *returned != Returned::Missing {
+                captured.restore_production_modifier_part(
+                    loan,
+                    *returned == Returned::Completed,
+                    0,
+                );
+            }
+        }
+        let mut ticks = [0; TABLE_COUNT];
+        captured.assemble_production_daily(&NoRead, 11, 0x1000, 8, false, &mut ticks, false);
+        let first = tables(&captured.production_modifiers);
+        captured.assemble_production_daily(&NoRead, 11, 0x1000, 8, false, &mut ticks, false);
+        assert_eq!(tables(&captured.production_modifiers), first);
+        first
+    };
+    let split = |bounds: &[u32]| -> [Option<production_modifiers::Part>; 4] {
+        std::array::from_fn(|part| {
+            Some(test_support::part(
+                &range(bounds[part], bounds[part + 1]),
+                context,
+            ))
+        })
+    };
+    let all = [Returned::Completed; 4];
+    let refused = |reason: &'static str| {
+        (
+            [Outcome::Unavailable { reason }; production_modifiers::N],
+            [
+                crate::spooling::unavailable(reason),
+                crate::spooling::unavailable(reason),
+            ],
+        )
+    };
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    assert_eq!(hour(&mut captured, split(&bounds), all, true), whole);
+    for returned in [Returned::Failed, Returned::Missing] {
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        let mut parts = all;
+        parts[2] = returned;
+        assert_eq!(
+            hour(&mut captured, split(&bounds), parts, true),
+            refused("slow acquisition failed")
+        );
+    }
+    // Two parts fail with their own reasons: the earlier one's is published.
+    let mut parts = split(&bounds);
+    parts[1] = Some(test_support::failed("second range's failure"));
+    parts[3] = Some(test_support::failed("fourth range's failure"));
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    assert_eq!(
+        hour(&mut captured, parts, all, true),
+        refused("second range's failure")
+    );
+    // A first range without a country with lines: the next range's defines.
+    let mut parts = split(&bounds);
+    parts[0] = Some(test_support::part(&[], context));
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    assert_eq!(
+        hour(&mut captured, parts, all, true),
+        tables(&Modifiers::whole(test_support::part(
+            &range(1_200, u32::MAX),
+            context
+        )))
+    );
+    // A failed ProductionDaily job refuses them, and a reset leaves no split.
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    assert_eq!(
+        hour(&mut captured, split(&bounds), all, false),
+        refused("slow acquisition failed")
+    );
+    captured.reset();
+    assert_eq!(
+        captured.prepare_production_modifier_parts(&NoRead, 11, &[]),
+        1
+    );
+    captured.reset();
+    let mut ticks = [0; TABLE_COUNT];
+    captured.assemble_production_daily(&NoRead, 11, 0x1000, 9, false, &mut ticks, false);
+    assert_eq!(
+        captured.production_modifiers.outcomes(),
+        [Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON
+        }; production_modifiers::N]
+    );
+    // A reset after a preparation: the next slot hour's whole capture.
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    captured
+        .production_modifiers
+        .grow(&mut production_modifiers::Capacities::default());
+    assert_eq!(
+        captured.prepare_production_modifier_parts(&NoRead, 11, &starts),
+        4
+    );
+    captured.reset();
+    let mut request = captured.take_production_daily_request(&countries, 11, 0x1000, 8, false);
+    request
+        .packs
+        .production_modifiers
+        .captured_as(test_support::part(&rows, context));
+    captured.restore_production_daily_request(request, true);
+    let mut ticks = [0; TABLE_COUNT];
+    captured.assemble_production_daily(&NoRead, 11, 0x1000, 8, false, &mut ticks, false);
+    assert_eq!(tables(&captured.production_modifiers), whole);
+    // One slot hour split at `starts`, every part complete: the daily job
+    // either captured and returned (`captured` true) or returned failed
+    // without running, as a refused or stopped job is.
+    let hour_at = |captured: &mut Captured, starts: &[u32], captured_first: bool, daily: bool| {
+        captured
+            .production_modifiers
+            .grow(&mut production_modifiers::Capacities::default());
+        let parts = captured.prepare_production_modifier_parts(&NoRead, 11, starts);
+        assert_eq!(parts, starts.len() + 1);
+        let bounds: Vec<u32> = std::iter::once(1)
+            .chain(starts.iter().copied())
+            .chain(std::iter::once(u32::MAX))
+            .collect();
+        let slots: Vec<_> = bounds.windows(2).map(|pair| pair[0]..pair[1]).collect();
+        assert_eq!(captured.production_modifiers.prepared_slots(), slots);
+        let loans: Vec<_> = (1..parts)
+            .map(|part| {
+                let mut loan =
+                    captured.take_production_modifier_part(part, &countries, 11, 0x1000, 8, false);
+                assert_eq!(loan.slots, slots[part]);
+                *loan.captured =
+                    test_support::part(&range(slots[part].start, slots[part].end), context);
+                loan
+            })
+            .collect();
+        let mut request = captured.take_production_daily_request(&countries, 11, 0x1000, 8, false);
+        if captured_first {
+            request
+                .packs
+                .production_modifiers
+                .captured_as(test_support::part(&range(1, slots[0].end), context));
+        }
+        captured.restore_production_daily_request(request, daily);
+        for loan in loans {
+            captured.restore_production_modifier_part(loan, true, 0);
+        }
+        let mut ticks = [0; TABLE_COUNT];
+        captured.assemble_production_daily(&NoRead, 11, 0x1000, 8, false, &mut ticks, false);
+        tables(&captured.production_modifiers)
+    };
+    // A daily job refused before its capture: the failure, not a reset,
+    // clears the pending split, so the next slot hour on the same frame is
+    // the whole capture.
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    assert_eq!(
+        hour_at(&mut captured, &starts, false, false),
+        refused("slow acquisition failed")
+    );
+    assert_eq!(
+        captured.production_modifiers.prepared_slots(),
+        std::iter::once(1..u32::MAX).collect::<Vec<_>>()
+    );
+    let mut request = captured.take_production_daily_request(&countries, 11, 0x1000, 8, false);
+    request
+        .packs
+        .production_modifiers
+        .captured_as(test_support::part(&rows, context));
+    captured.restore_production_daily_request(request, true);
+    let mut ticks = [0; TABLE_COUNT];
+    captured.assemble_production_daily(&NoRead, 11, 0x1000, 8, false, &mut ticks, false);
+    assert_eq!(tables(&captured.production_modifiers), whole);
+    // And the off-slot hour after it skips them without a split.
+    captured.reset();
+    captured.assemble_production_daily(&NoRead, 11, 0x1000, 9, false, &mut ticks, false);
+    assert_eq!(
+        captured.production_modifiers.outcomes(),
+        [Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON
+        }; production_modifiers::N]
+    );
+    assert_eq!(
+        captured.production_modifiers.prepared_slots(),
+        std::iter::once(1..u32::MAX).collect::<Vec<_>>()
+    );
+    // Four parts, then two, then one, on the same frame: each split's own
+    // ranges and the whole capture's tables.
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    for starts in [&starts[..], &[2_600][..], &[][..]] {
+        assert_eq!(
+            hour_at(&mut captured, starts, true, true),
+            whole,
+            "{starts:?}"
+        );
+        captured.reset();
     }
 }

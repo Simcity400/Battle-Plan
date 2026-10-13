@@ -9,24 +9,36 @@ debug = 0
 [profile.test]
 debug = 0
 
-# Tests leave replay unoptimised: test binaries of the crates above it wait for its library, which
-# builds in about 22 s unoptimised and 206 s at opt-level 2, and its 2,000-hour fault acceptance test
-# still finishes in under a minute. Dev builds keep replay optimised for interactive loading.
+# Replay stays optimised in dev (interactive loading) and in tests. `[profile.test]` inherits every
+# `[profile.dev.package.*]` override, so this level applies to tests too. Unoptimised, replay's
+# library builds in about 25 s instead of 100-170 s (110 s at opt-level 1), but its 2,000-hour fault
+# acceptance test takes about 130 s instead of 13 s and dashboard's suite more than doubles; the
+# workspace dependency features keep it to one test build per worktree.
 [profile.dev.package.replay]
 opt-level = 2
 
-# The engine and collector scale tests run up to 5,000 countries in the default suite.
-# Engine takes about 70 s unoptimised and 6 s optimised; dev optimises it too, so dev and
-# test share it. Collector uses opt-level 1: its test binary builds in about 200 s instead of
-# 330 s and its tests finish in under a minute; unoptimised, one test overflows its stack.
+# The engine scale tests run up to 5,000 countries in the default suite. Engine takes about 70 s
+# unoptimised and 6 s optimised; dev optimises it too, so dev and test share it.
 [profile.dev.package.engine]
 opt-level = 2
 
 [profile.test.package.engine]
 opt-level = 2
 
+# Collector's test binary builds unoptimised in about 90 s (190 CPU-s) instead of 350 s (1,900 CPU-s)
+# at opt-level 1, and recompiles after an edit to widely used code in minutes less. Its suite takes
+# about 85 s instead of 36 s. Unoptimised frames are large (`sampling::acquire` needs 8 MiB), so the
+# test binary gives its threads 32 MiB stacks (`TEST_THREAD_STACK` in src/lib.rs).
 [profile.test.package.collector]
-opt-level = 1
+opt-level = 0
+
+# Release settings with incremental compilation, for iterating on throughput: after a one-line
+# collector edit, recorder+collector rebuild in about 20 s (35 CPU-s) instead of 110 s (460 CPU-s).
+# Incremental crates use more codegen units, so its code can differ in speed from release; smoke,
+# checkpoints and reported benchmark results use `--release`.
+[profile.release-incremental]
+inherits = "release"
+incremental = true
 
 # Dashboard cold loads parse the verified content catalogue and compact replay
 # projections. Keep those CPU paths representative during interactive UI work.

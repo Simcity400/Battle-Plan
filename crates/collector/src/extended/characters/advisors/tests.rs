@@ -10,7 +10,7 @@ struct Observer {
     epoch: u64,
     clock: u64,
     changed: BTreeMap<usize, u64>,
-    verify: bool,
+    check: Check,
     enabled: bool,
 }
 impl Observer {
@@ -36,8 +36,8 @@ impl Changes for Observer {
         self.enabled
             .then_some((self.epoch, *self.changed.get(&map).unwrap_or(&0)))
     }
-    fn verify(&self) -> bool {
-        self.verify
+    fn check(&self) -> Check {
+        self.check
     }
 }
 fn context() -> CharactersCopyContext {
@@ -46,8 +46,8 @@ fn context() -> CharactersCopyContext {
         base: IMAGE,
         game_state: ADDRESS,
         active: PART_MASKS[2],
-        trait_rows: [0; 2],
-        trait_bytes: [0; 2],
+        trait_rows: 0,
+        trait_bytes: 0,
     }
 }
 fn cache_for(bytes: &[u8]) -> Cache {
@@ -190,8 +190,8 @@ fn unregistered_maps_cannot_use_a_control_only_certificate() {
         fn revision(&self, _map: usize) -> Option<(u64, u64)> {
             None
         }
-        fn verify(&self) -> bool {
-            false
+        fn check(&self) -> Check {
+            Check::Nothing
         }
     }
     let mut bytes = super::super::tests::section_fixture();
@@ -884,7 +884,7 @@ fn verification_detects_an_unobserved_in_place_write_and_returns_fresh_data() {
     let mut bytes = kit::mapped_fixture();
     let mut cache = Section::with_capacity(8, 512, 8);
     let mut observer = Observer::new();
-    observer.verify = true;
+    observer.check = Check::Every;
     cache.capture(&kit::memory(&bytes), context(), &observer);
     literal(
         &mut bytes,
@@ -898,6 +898,52 @@ fn verification_detects_an_unobserved_in_place_write_and_returns_fresh_data() {
     assert!(!cache.valid);
     cache.capture(&kit::memory(&bytes), context(), &observer);
     assert_eq!(cache.counts.verified, 0);
+}
+#[test]
+fn sampled_hours_find_an_unobserved_in_place_write_within_one_rotation() {
+    let mut bytes = kit::mapped_fixture();
+    let mut cache = Section::with_capacity(8, 512, 8);
+    let mut observer = Observer::new();
+    cache.capture(&kit::memory(&bytes), context(), &observer);
+    // Any 24 consecutive hours compare each held character once.
+    let mut compared = 0;
+    for hour in 0..24 {
+        observer.check = Check::Slice { hour };
+        cache.capture(&kit::memory(&bytes), context(), &observer);
+        assert_fresh(&cache, &bytes);
+        assert_eq!(cache.counts.mismatches, 0);
+        compared += cache.counts.verified;
+    }
+    assert_eq!(compared, cache.characters as u64);
+    literal(
+        &mut bytes,
+        kit::ADV_ROLE + cadvisor::IDEA_TOKEN,
+        b"unobserved",
+    );
+    let id = u32::from_le_bytes(
+        bytes[CHARACTERS[0] + ccharacter::ID..][..4]
+            .try_into()
+            .unwrap(),
+    );
+    let published = |cache: &Section| {
+        cache.current.bytes[..cache.result.bytes_len]
+            .windows(10)
+            .any(|window| window == b"unobserved")
+    };
+    for hour in 0..24 {
+        observer.check = Check::Slice { hour };
+        cache.capture(&kit::memory(&bytes), context(), &observer);
+        if hour as u32 == id % 24 {
+            assert_eq!(cache.counts.mismatches, 1);
+            assert!(published(&cache), "the fresh rows are published");
+            assert_fresh(&cache, &bytes);
+            assert!(!cache.valid);
+            return;
+        }
+        assert_eq!(cache.counts.mismatches, 0);
+        assert!(!published(&cache), "hour {hour} carries the held rows");
+    }
+    panic!("not caught within one rotation");
 }
 #[test]
 fn truncation_and_unwatched_entries_stay_fresh_and_grow_off_capture() {
@@ -1028,8 +1074,17 @@ fn tooltip_storage_grows_from_exact_demand_at_5000_countries() {
     );
 }
 
-#[test]
-fn worker_cache_grows_5000_unique_advisor_definitions_numeric_and_tooltip_arenas() {
+/// `count` historical characters with one advisor role each; every role
+/// shares one numeric cache (`numeric`) and one tooltip key set (`tooltip`).
+struct ManyAdvisors {
+    bytes: Vec<u8>,
+    first_role: usize,
+    first_character: usize,
+    numeric: usize,
+    tooltip: usize,
+}
+
+fn many_advisors(count: usize) -> ManyAdvisors {
     use super::super::tests::MANAGER;
     use engine::{ccharacter_manager, character_advisor_node, msvc_tree_node as node};
     fn alloc(bytes: &mut Vec<u8>, len: usize) -> usize {
@@ -1038,7 +1093,7 @@ fn worker_cache_grows_5000_unique_advisor_definitions_numeric_and_tooltip_arenas
         at
     }
     let mut bytes = kit::mapped_fixture();
-    let roster = alloc(&mut bytes, 5_000 * 8);
+    let roster = alloc(&mut bytes, count * 8);
     pointer(
         &mut bytes,
         MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
@@ -1048,7 +1103,7 @@ fn worker_cache_grows_5000_unique_advisor_definitions_numeric_and_tooltip_arenas
         put(
             &mut bytes,
             MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS + offset,
-            5_000_u32.to_le_bytes(),
+            (count as u32).to_le_bytes(),
         );
     }
     for offset in [0, 8, 12] {
@@ -1066,7 +1121,7 @@ fn worker_cache_grows_5000_unique_advisor_definitions_numeric_and_tooltip_arenas
     literal(&mut bytes, tooltip + 8, b"key");
     let mut first_role = 0;
     let mut first_character = 0;
-    for index in 0..5_000 {
+    for index in 0..count {
         let character = alloc(&mut bytes, 0x120);
         let head = alloc(&mut bytes, 32);
         let entry = alloc(&mut bytes, character_advisor_node::SIZE);
@@ -1133,11 +1188,28 @@ fn worker_cache_grows_5000_unique_advisor_definitions_numeric_and_tooltip_arenas
             1_u32.to_le_bytes(),
         );
     }
+    ManyAdvisors {
+        bytes,
+        first_role,
+        first_character,
+        numeric,
+        tooltip,
+    }
+}
+
+#[test]
+fn worker_cache_grows_5000_unique_advisor_definitions_numeric_and_tooltip_arenas() {
+    let ManyAdvisors {
+        mut bytes,
+        first_role,
+        first_character,
+        ..
+    } = many_advisors(5_000);
     let mut cache = Cache::with_modifier_demand(cadvisor::ModifierDemand::default());
     cache.sections = std::array::from_fn(|_| Section::with_capacity(0, 0, 0));
     let mut captured = Captured::with_capacities(&Capacities {
-        rows: [0; 6],
-        bytes: [0; 6],
+        rows: [0; 5],
+        bytes: [0; 5],
     });
     let mut observer = Observer::new();
     for enlarged in [false, true] {
@@ -1174,4 +1246,286 @@ fn worker_cache_grows_5000_unique_advisor_definitions_numeric_and_tooltip_arenas
         assert_eq!(captured.advisors_table(), expected);
         captured.reset();
     }
+}
+
+/// Counts reads overlapping fixture `ranges` and serves every read.
+struct Counting<'a> {
+    bytes: &'a [u8],
+    ranges: Vec<std::ops::Range<usize>>,
+    reads: std::sync::atomic::AtomicUsize,
+}
+impl<'a> Counting<'a> {
+    fn new(bytes: &'a [u8], ranges: Vec<std::ops::Range<usize>>) -> Self {
+        Self {
+            bytes,
+            ranges,
+            reads: Default::default(),
+        }
+    }
+    fn reads(&self) -> usize {
+        self.reads.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+impl Memory for Counting<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        let start = address.wrapping_sub(ADDRESS);
+        let end = start.saturating_add(output.len());
+        if self
+            .ranges
+            .iter()
+            .any(|range| start < range.end && range.start < end)
+        {
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        kit::memory(self.bytes).copy(address, output)
+    }
+}
+
+/// The published modifier cache of the fixture's first advisor role.
+fn first_role_entries(cache: &Cache) -> Vec<replay::rows::CachedModifier> {
+    let mut captured = Captured::with_capacities(&fixture_capacities());
+    cache.decode(&mut captured);
+    let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
+        panic!("complete advisor roles");
+    };
+    rows[0]
+        .modifier_cache
+        .require("AdvisorRoles.modifier_cache")
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .entries
+        .clone()
+}
+
+/// The section fixture with a two-entry numeric cache on its first role.
+fn two_entry_cache() -> (Vec<u8>, std::ops::Range<usize>) {
+    use super::super::tests::array;
+    let mut bytes = super::super::tests::section_fixture();
+    let data = 0x8a00;
+    array(
+        &mut bytes,
+        kit::ADV_ROLE + cadvisor::MODIFIER_ENTRIES,
+        data,
+        2,
+    );
+    put(&mut bytes, data, 7_u32.to_le_bytes());
+    put(&mut bytes, data + 8, (-5_i64).to_le_bytes());
+    put(&mut bytes, data + 16, 8_u32.to_le_bytes());
+    put(&mut bytes, data + 24, 9_i64.to_le_bytes());
+    (bytes, data..data + 32)
+}
+
+fn entry(definition: u32, value: i64) -> replay::rows::CachedModifier {
+    replay::rows::CachedModifier { definition, value }
+}
+
+#[test]
+fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
+    use crate::character_changes::Watches;
+    static WATCHES: Watches = Watches::new();
+    WATCHES.enable(64);
+    let (mut bytes, data) = two_entry_cache();
+    let role = kit::ADV_ROLE;
+    // The role's accumulator header, entries and tooltip key table.
+    let watched = || {
+        vec![
+            role + cadvisor::MODIFIER_ENTRIES..role + cadvisor::MODIFIER_ENTRIES + 16,
+            data.clone(),
+            role + cadvisor::TOOLTIP_KEYS..role + cadvisor::TOOLTIP_KEYS + 24,
+        ]
+    };
+    let observer = Observer::new();
+    let mut cache = cache_for(&bytes);
+    cache.modifiers.roles = RoleObservation::with(&WATCHES, Some(Check::Nothing));
+    // The first hour reads and holds every role.
+    cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
+    let roles = cache.result.outcome.len() as u64;
+    assert!(roles >= 1);
+    assert_eq!(
+        (
+            cache.modifiers.role_counts.reused,
+            cache.modifiers.role_counts.read
+        ),
+        (0, roles)
+    );
+    assert_outer_fresh(&cache, &bytes);
+    cache.prepare();
+    // A quiet hour carries every role without reading its cache or keys.
+    let quiet = Counting::new(&bytes, watched());
+    cache.capture_growing(&quiet, context(), &observer, None);
+    assert_eq!(quiet.reads(), 0, "a carried role is not read");
+    assert_eq!(
+        (
+            cache.modifiers.role_counts.reused,
+            cache.modifiers.role_counts.read
+        ),
+        (roles, 0)
+    );
+    assert_outer_fresh(&cache, &bytes);
+    assert_eq!(first_role_entries(&cache), [entry(7, -5), entry(8, 9)]);
+    // No native writer changes the cache outside the hooked rebuild, so a
+    // write no hook saw stays unread: the held entries are published.
+    put(&mut bytes, data.start + 8, (-1_i64).to_le_bytes());
+    cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
+    assert_eq!(first_role_entries(&cache), [entry(7, -5), entry(8, 9)]);
+    // A trait-addition effect rebuilds the cache through the hooked
+    // advisor modifier rebuild on the role's character: that role alone is read afresh.
+    drop(WATCHES.notify(
+        Some(ADDRESS + CHARACTERS[0]),
+        engine::character_role_mutations::ADVISOR_MODIFIERS,
+    ));
+    let rebuilt = Counting::new(&bytes, watched());
+    cache.capture_growing(&rebuilt, context(), &observer, None);
+    assert!(rebuilt.reads() > 0);
+    assert_eq!(cache.modifiers.role_counts.read, 1);
+    assert_eq!(cache.modifiers.role_counts.reused, roles - 1);
+    assert_outer_fresh(&cache, &bytes);
+    assert_eq!(first_role_entries(&cache), [entry(7, -1), entry(8, 9)]);
+    // A load, gap or recovery starts an epoch: every role is read.
+    WATCHES.boundary(true);
+    cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
+    assert_eq!(
+        (
+            cache.modifiers.role_counts.reused,
+            cache.modifiers.role_counts.read
+        ),
+        (0, roles)
+    );
+    assert_outer_fresh(&cache, &bytes);
+}
+
+#[test]
+fn verify_mode_reads_held_advisor_modifiers_and_poisons_on_an_unobserved_write() {
+    use crate::character_changes::Watches;
+    static WATCHES: Watches = Watches::new();
+    WATCHES.enable(64);
+    let (mut bytes, data) = two_entry_cache();
+    let observer = Observer::new();
+    let mut cache = cache_for(&bytes);
+    cache.modifiers.roles = RoleObservation::with(&WATCHES, Some(Check::Every));
+    cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
+    let roles = cache.result.outcome.len() as u64;
+    cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
+    let counts = cache.modifiers.role_counts;
+    assert_eq!(
+        (counts.reused, counts.read, counts.verified),
+        (0, roles, roles)
+    );
+    assert_eq!(counts.mismatches, 0);
+    assert!(!WATCHES.poisoned());
+    put(&mut bytes, data.start + 8, (-1_i64).to_le_bytes());
+    cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
+    // The fresh read is published and reuse is disabled.
+    assert_outer_fresh(&cache, &bytes);
+    assert_eq!(first_role_entries(&cache), [entry(7, -1), entry(8, 9)]);
+    assert_eq!(cache.modifiers.role_counts.mismatches, 1);
+    assert!(WATCHES.poisoned());
+}
+
+#[test]
+fn sampled_hours_read_held_advisor_modifiers_and_find_an_unobserved_write_within_one_rotation() {
+    use crate::character_changes::Watches;
+    static WATCHES: Watches = Watches::new();
+    WATCHES.enable(64);
+    let (mut bytes, data) = two_entry_cache();
+    let observer = Observer::new();
+    let mut cache = cache_for(&bytes);
+    let capture = |cache: &mut Cache, bytes: &[u8], check| {
+        cache.modifiers.roles = RoleObservation::with(&WATCHES, Some(check));
+        cache.capture_growing(&kit::memory(bytes), context(), &observer, None);
+        cache.modifiers.role_counts
+    };
+    capture(&mut cache, &bytes, Check::Nothing);
+    let roles = cache.result.outcome.len() as u64;
+    // Any 24 consecutive hours read each held role once.
+    let mut compared = 0;
+    for hour in 0..24 {
+        let counts = capture(&mut cache, &bytes, Check::Slice { hour });
+        assert_eq!((counts.read, counts.mismatches), (counts.verified, 0));
+        compared += counts.verified;
+    }
+    assert_eq!(compared, roles);
+    // A write no hook observed, in the first character's role.
+    put(&mut bytes, data.start + 8, (-1_i64).to_le_bytes());
+    let id = u32::from_le_bytes(
+        bytes[CHARACTERS[0] + ccharacter::ID..][..4]
+            .try_into()
+            .unwrap(),
+    );
+    for hour in 0..24 {
+        let counts = capture(&mut cache, &bytes, Check::Slice { hour });
+        if hour as u32 == id % 24 {
+            assert_eq!(counts.mismatches, 1);
+            assert_eq!(first_role_entries(&cache), [entry(7, -1), entry(8, 9)]);
+            assert!(WATCHES.poisoned());
+            return;
+        }
+        assert_eq!(
+            first_role_entries(&cache),
+            [entry(7, -5), entry(8, 9)],
+            "hour {hour} carries the held entries"
+        );
+    }
+    panic!("not found within one rotation");
+}
+
+#[test]
+fn quiet_hours_carry_5000_advisor_modifier_caches_and_read_only_a_rebuilt_role() {
+    use crate::character_changes::Watches;
+    static WATCHES: Watches = Watches::new();
+    let ManyAdvisors {
+        bytes,
+        first_character,
+        numeric,
+        tooltip,
+        ..
+    } = many_advisors(5_000);
+    WATCHES.enable(5_000);
+    let observer = Observer::new();
+    let mut cache = Cache::with_modifier_demand(cadvisor::ModifierDemand::default());
+    cache.sections = std::array::from_fn(|_| Section::with_capacity(0, 0, 0));
+    cache.modifiers.roles = RoleObservation::with(&WATCHES, Some(Check::Nothing));
+    let mut captured = Captured::with_capacities(&Capacities {
+        rows: [0; 5],
+        bytes: [0; 5],
+    });
+    cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
+    assert_eq!(cache.result.outcome, Outcome::Rows { len: 5_000 });
+    assert_eq!(cache.modifiers.role_counts.read, 5_000);
+    cache.decode(&mut captured);
+    let expected = captured.advisors_table();
+    captured.reset();
+    cache.prepare();
+    let watched = || vec![numeric..numeric + 16, tooltip..tooltip + 0x28];
+    let quiet = Counting::new(&bytes, watched());
+    cache.capture_growing(&quiet, context(), &observer, None);
+    assert_eq!(quiet.reads(), 0);
+    assert_eq!(
+        (
+            cache.modifiers.role_counts.reused,
+            cache.modifiers.role_counts.read
+        ),
+        (5_000, 0)
+    );
+    cache.decode(&mut captured);
+    assert_eq!(captured.advisors_table(), expected);
+    captured.reset();
+    drop(WATCHES.notify(
+        Some(ADDRESS + first_character),
+        engine::character_role_mutations::ADVISOR_MODIFIERS,
+    ));
+    let rebuilt = Counting::new(&bytes, watched());
+    cache.capture_growing(&rebuilt, context(), &observer, None);
+    assert!(rebuilt.reads() > 0, "the rebuilt role is read");
+    assert_eq!(
+        (
+            cache.modifiers.role_counts.reused,
+            cache.modifiers.role_counts.read
+        ),
+        (4_999, 1)
+    );
+    cache.decode(&mut captured);
+    assert_eq!(captured.advisors_table(), expected);
 }

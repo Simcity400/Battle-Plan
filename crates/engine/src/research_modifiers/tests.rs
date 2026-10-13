@@ -143,6 +143,21 @@ impl Memory for Fixture {
         }
         N
     }
+    fn copy_records(
+        &self,
+        sources: crate::memory::RecordSources<'_>,
+        layout: &crate::memory::RecordLayout<'_>,
+        out: &mut [u8],
+    ) -> usize {
+        struct Fields<'a>(&'a Fixture);
+        impl Memory for Fields<'_> {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                self.0.field(at, out)
+            }
+        }
+        self.calls.set(self.calls.get() + 1);
+        Fields(self).copy_records(sources, layout, out)
+    }
 }
 
 fn capture_growing(f: &Fixture, rows: &mut Vec<Row>) -> Outcome {
@@ -387,7 +402,7 @@ fn active_operands_are_exact_and_idle_avoids_country_dependencies() {
 }
 
 #[test]
-fn unbonused_slots_add_one_guard_each_and_share_country_reads() {
+fn unbonused_slots_share_one_guard_for_all_technology_operands() {
     let f = Fixture::new();
     let mut rows = vec![Row::default(); 64];
     assert!(matches!(
@@ -402,7 +417,7 @@ fn unbonused_slots_add_one_guard_each_and_share_country_reads() {
         f.capture(&[f.input(), second], &mut rows),
         Outcome::Rows { .. }
     ));
-    assert_eq!(f.calls.get(), 7);
+    assert_eq!(f.calls.get(), 6);
 }
 
 #[test]
@@ -993,4 +1008,184 @@ fn sharing_witnesses_retain_five_thousand_original_country_references() {
             .iter()
             .all(|row| row.kind == Kind::SharingMissingMember)
     );
+}
+
+fn batch_inputs(
+    world: &crate::governance_batch::test_kit::World,
+    id: u32,
+) -> Vec<research_inputs::Row> {
+    let mut inputs = vec![research_inputs::Row::default(); 3];
+    let mut bonuses = vec![research_inputs::BonusRow::default(); 2];
+    assert_eq!(
+        research_inputs::walk_country(
+            world,
+            0,
+            crate::governance_batch::test_kit::World::country(id),
+            id,
+            research_inputs::Context::read(world, 0),
+            &mut inputs,
+            &mut bonuses
+        )
+        .0,
+        Outcome::Rows { len: 3 }
+    );
+    inputs
+}
+fn batch_capture(
+    memory: &crate::governance_batch::test_kit::Trace<'_, crate::governance_batch::test_kit::World>,
+    id: u32,
+    inputs: &[research_inputs::Row],
+    serial: bool,
+) -> (Outcome, Vec<Row>) {
+    use crate::governance_batch::test_kit::{GAME, World};
+    let countries = ccountry::Reader::new(memory, 0, GAME).unwrap();
+    let country = ccountry::Country {
+        pointer: World::country(id),
+        id,
+        canonical_slot: id,
+    };
+    let context = Context::read(memory.source, 0);
+    memory.clear(); // The shared country/global context is charged once per job.
+    let mut rows = vec![Row::default(); 64];
+    let outcome = if serial {
+        super::serial::walk_country_buffer(
+            memory,
+            0,
+            &countries,
+            country,
+            context,
+            inputs,
+            crate::walk::Buffer::Fixed(&mut rows),
+        )
+    } else {
+        walk_country(memory, 0, &countries, country, context, inputs, &mut rows)
+    };
+    rows.truncate(outcome.len());
+    (outcome, rows)
+}
+#[test]
+fn governance_batch_modifiers_serial_census_and_5000_country_equality() {
+    use crate::governance_batch::test_kit::{Trace, World};
+    let world = World::new(5_000);
+    let before = Trace::new(&world, "ResearchModifiers serial");
+    let after = Trace::new(&world, "ResearchModifiers batch");
+    for id in 1..=5_000 {
+        let inputs = batch_inputs(&world, id);
+        let old = batch_capture(&before, id, &inputs, true);
+        let new = batch_capture(&after, id, &inputs, false);
+        assert!(matches!(old.0, Outcome::Rows { len } if len > 0));
+        assert_eq!(new, old);
+        assert_eq!((before.count(), after.count()), (10, 9));
+        assert!(after.fallbacks.witnesses().is_empty());
+    }
+    println!("ResearchModifiers: 10 -> 9 guarded calls/country; 5000 countries");
+}
+fn batch_source_world() -> crate::governance_batch::test_kit::World {
+    use crate::governance_batch::test_kit::{TECH, World};
+    let mut world = World::new(1);
+    let country = World::country(1);
+    world.array(country + TECH + 0x110, country + 0x7000, 2);
+    world.array(country + TECH + 0x128, country + 0x7500, 2);
+    for i in 0..2 {
+        let contribution = country + 0x7100 + i * 0x100;
+        let idea = country + 0x7300 + i * 0x100;
+        world.pointer(country + 0x7000 + i * 8, contribution);
+        world.put(contribution + 0x38, (-7_001_i64).to_le_bytes());
+        world.pointer(contribution + 0x40, idea);
+        world.put(idea, (crate::cidea::VTABLE_RVA as u64).to_le_bytes());
+        world.text(idea + crate::cidea::TOKEN, b"mod_idea");
+        let script = country + 0x7500 + i * 40;
+        let source = country + 0x7600 + i * 0x100;
+        world.pointer(script, source);
+        world.text(script + 8, b"mod_script");
+        world.put(source + 0x30, 9_003_i64.to_le_bytes());
+    }
+    world
+}
+#[test]
+fn governance_batch_modifier_sources_and_faults_keep_serial_rows_and_reasons() {
+    use crate::governance_batch::test_kit::{TECH, Trace, World, addresses, never_harsher};
+    let world = batch_source_world();
+    let inputs = batch_inputs(&world, 1);
+    let before = Trace::new(&world, "ResearchModifiers sources serial");
+    let after = Trace::new(&world, "ResearchModifiers sources batch");
+    let old = batch_capture(&before, 1, &inputs, true);
+    let new = batch_capture(&after, 1, &inputs, false);
+    assert!(matches!(old.0, Outcome::Rows { len } if len > 20));
+    assert_eq!(new, old);
+    assert_eq!((before.count(), after.count()), (23, 19));
+    println!(
+        "ResearchModifiers with two idea and script sources: {} -> {} guarded calls/country",
+        before.count(),
+        after.count()
+    );
+    // Technology category lookup reads category +0x190; research modifier
+    // calculation reads idea contributions +0x38/+0x40 and scripted
+    // contributions +0x30. Fault pointers and contributions separately: both
+    // gathers must increment their shared key.
+    let country = World::country(1);
+    for (offset, reader) in [
+        (TECH + 0x190, "modifier_technologies"),
+        (0x7000, "modifier_ideas"),
+        (0x7100 + 0x38, "modifier_ideas"),
+        (0x7500, "modifier_scripts"),
+        (0x7600 + 0x30, "modifier_scripts"),
+    ] {
+        for once in [false, true] {
+            let before = Trace::fault(&world, "Modifiers serial", country + offset, once);
+            let after = Trace::fault(&world, "Modifiers batch", country + offset, once);
+            let old = batch_capture(&before, 1, &inputs, true);
+            let new = batch_capture(&after, 1, &inputs, false);
+            if once {
+                never_harsher(old.0, new.0);
+            } else {
+                assert_eq!(new, old);
+            }
+            assert_eq!(
+                &*after.fallbacks.witnesses(),
+                &[reader],
+                "{reader}, once={once}"
+            );
+        }
+    }
+    for address in addresses(&before) {
+        for once in [false, true] {
+            let before = Trace::fault(&world, "ResearchModifiers serial", address, once);
+            let after = Trace::fault(&world, "ResearchModifiers batch", address, once);
+            let old = batch_capture(&before, 1, &inputs, true);
+            let new = batch_capture(&after, 1, &inputs, false);
+            if once {
+                never_harsher(old.0, new.0);
+            } else {
+                assert_eq!(new, old, "persistent {address:#x}");
+            }
+            assert!(
+                after
+                    .fallbacks
+                    .witnesses()
+                    .iter()
+                    .filter(|&&r| r == "modifier_technologies")
+                    .count()
+                    <= 1
+            );
+            assert!(
+                after
+                    .fallbacks
+                    .witnesses()
+                    .iter()
+                    .filter(|&&r| r == "modifier_ideas")
+                    .count()
+                    <= 2
+            );
+            assert!(
+                after
+                    .fallbacks
+                    .witnesses()
+                    .iter()
+                    .filter(|&&r| r == "modifier_scripts")
+                    .count()
+                    <= 2
+            );
+        }
+    }
 }

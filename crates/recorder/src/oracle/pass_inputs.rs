@@ -158,7 +158,7 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
                 None => r.difference(&supply_label, "capture refused", "native supply inputs"),
                 Some(supply) => {
                     r.limitation(
-                        "the task force save writer and the unit save writer establish no save path for this CSupplyConsumer footer pack; asked/received, state/air-drop receipts, demand pairs, disruption and ordered origins require matched native memory and hovers",
+                        "the task force save writer and the unit save writer establish no save path for this supply-consumer footer pack, stored at the footer's display step; asked/received, state/air-drop receipts, demand pairs, disruption and ordered origins require matched native memory and hovers",
                         &supply_label,
                     );
                     if supply.origins.is_none() {
@@ -192,7 +192,7 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
                     );
                     if text.len() != name.len() {
                         r.limitation(
-                            "CUnit name text serialization stops at the first NUL; captured suffix bytes are not save-comparable",
+                            "unit writer name text serialization stops at the first NUL; captured suffix bytes are not save-comparable",
                             &name_label,
                         );
                     }
@@ -285,7 +285,7 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
     }
     r.compared("TaskForceCounterInputs", rows.len());
     r.limitation("the running-away byte is not written by the mission or task-force writer; is_in_regions is saved only as truth, and detached_activity values outside 1..4 are omitted like 0", "TaskForceCounterInputs running_away, is_in_regions byte value, detached_activity outside 1..4");
-    r.limitation("the task force writer does not save the CSupplyConsumer received-supply ratio; compare it against paused memory", "TaskForceCounterInputs.received_supply_ratio");
+    r.limitation("the task force writer does not save the supply-consumer received-supply ratio; compare it against paused memory", "TaskForceCounterInputs.received_supply_ratio");
     Ok(())
 }
 
@@ -310,7 +310,7 @@ fn task_force_port(
         r.difference(&label, "capture refused", "native port mission packet");
         return;
     };
-    eq(r, &format!("{label}.sample_hour"), packet.sample_hour, hour);
+    r.packet_fresh(&label, packet.sample_hour, hour);
     match &packet.searching {
         None => r.difference(
             format!("{label}.searching"),
@@ -668,13 +668,7 @@ fn task_force_fresh(frame: &DecodedFrame, save: &Save, report: &mut Report) -> i
             );
             continue;
         };
-        eq(
-            report,
-            &format!("{label}.sample_hour"),
-            packet.sample_hour,
-            frame.hour,
-        );
-        if packet.sample_hour != frame.hour {
+        if !report.packet_fresh(&label, packet.sample_hour, frame.hour) {
             continue;
         }
         for (name, missing) in [
@@ -765,7 +759,7 @@ fn fleets(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
         saved.len(),
     );
     r.compared("FleetCounterInputs", rows.len());
-    r.limitation("the game saves the CColor as quantized RGB without alpha; the four raw f32 component words are not independently compared", "FleetCounterInputs red, green, blue, alpha");
+    r.limitation("the game saves the colour as quantized RGB without alpha; the four raw f32 component words are not independently compared", "FleetCounterInputs red, green, blue, alpha");
     Ok(())
 }
 

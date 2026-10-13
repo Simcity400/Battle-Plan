@@ -30,140 +30,6 @@ pub(crate) fn task_force_eta_guard(layout: Option<&Layout>) -> Result<(), &'stat
     }
 }
 
-pub(crate) fn transport_modifier_guard(layout: Option<&Layout>) -> Result<(), &'static str> {
-    let Some(Ok(report)) = layout else {
-        return Err("selected transport modifier layout unverified");
-    };
-    let family = replay::fixed_layout::TRANSPORT_RISK;
-    if report.failure(family.keys, family.tokens).is_some() {
-        Err("selected transport modifier layout mismatch")
-    } else {
-        Ok(())
-    }
-}
-
-pub(crate) fn transport_air_guard(layout: Option<&Layout>) -> Result<(), &'static str> {
-    let Some(Ok(report)) = layout else {
-        return Err("selected transport air modifier layout unverified");
-    };
-    let family = replay::fixed_layout::TRANSPORT_AIR;
-    if report.failure(family.keys, family.tokens).is_some() {
-        Err("selected transport air modifier layout mismatch")
-    } else {
-        Ok(())
-    }
-}
-
-/// Fixed scalar slots use the attachment's existing full built-in witness.
-/// No second modifier census or country-wide capture is introduced.
-pub(crate) fn attack_guard(layout: Option<&Layout>) -> Result<(), &'static str> {
-    let Some(Ok(report)) = layout else {
-        return Err("selected attack modifier layout unverified");
-    };
-    let keys = [
-        engine::modifier_keys::ARMY_ATTACK_FACTOR,
-        engine::modifier_keys::LAND_NIGHT_ATTACK,
-        engine::modifier_keys::BREAKTHROUGH_FACTOR,
-        engine::modifier_keys::LAND_BUNKER_EFFECTIVENESS_FACTOR,
-    ];
-    if report.failure(&keys, &[]).is_some() {
-        Err("selected attack modifier layout mismatch")
-    } else {
-        Ok(())
-    }
-}
-
-pub(crate) fn province_attack(
-    mut value: replay::rows::ProvinceAttackInputs,
-    layout: Option<&Layout>,
-) -> replay::rows::ProvinceAttackInputs {
-    if attack_guard(layout).is_err() {
-        value.land_bunker_effectiveness_factor = None;
-    }
-    value
-}
-
-/// Clear only fixed-slot numeric suffixes after carry/slice assembly. These
-/// country/weather producers supply sampled rows; recovery may supply
-/// SharedComplete. Provinces mask before their exact current comparison, so
-/// their certified comparison tokens already include the absent fixed scalar.
-/// No carried numeric suffix can bypass this final recovery masking.
-pub(crate) fn mask_attack(
-    tables: &mut [TableInput; TABLE_COUNT],
-    layout: Option<&Layout>,
-) -> io::Result<()> {
-    use replay::rows::{Recorded, TableId, TableRows};
-    if attack_guard(layout).is_ok() {
-        return Ok(());
-    }
-    for table in [
-        TableId::CountryCounterInputs,
-        TableId::ReservedCountryNaming,
-        TableId::Provinces,
-        TableId::WeatherRegions,
-    ] {
-        let input = &mut tables[table.index()];
-        if let TableInput::SharedComplete(rows) = input {
-            *input = TableInput::Sampled(TableView::Complete(rows.try_clone()?));
-        }
-        let rows = match input {
-            TableInput::Sampled(TableView::Complete(rows) | TableView::Truncated { rows, .. }) => {
-                rows
-            }
-            TableInput::Sampled(TableView::Unavailable { .. }) => continue,
-            TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. }
-                if table == TableId::Provinces =>
-            {
-                continue;
-            }
-            _ => {
-                return Err(io::Error::other(
-                    "selected attack guard received unexpected comparison input",
-                ));
-            }
-        };
-        match rows {
-            TableRows::CountryCounterInputs(rows) => {
-                for row in rows {
-                    if let Recorded::Value(value) = &mut row.attack {
-                        value.land_night_attack = None;
-                        value.land_bunker_effectiveness_factor = None;
-                    }
-                }
-            }
-            TableRows::ReservedCountryNaming(rows) => {
-                for row in rows {
-                    if let Recorded::Value(Some(value)) = &mut row.attack {
-                        value.land_night_attack = None;
-                        value.land_bunker_effectiveness_factor = None;
-                    }
-                }
-            }
-            TableRows::Provinces(rows) => {
-                for row in rows {
-                    if let Recorded::Value(value) = &mut row.attack {
-                        value.land_bunker_effectiveness_factor = None;
-                    }
-                }
-            }
-            TableRows::WeatherRegions(rows) => {
-                for row in rows {
-                    if let Recorded::Value(value) = &mut row.attack {
-                        value.attack = None;
-                        value.breakthrough = None;
-                    }
-                }
-            }
-            _ => {
-                return Err(io::Error::other(
-                    "selected attack guard received wrong table rows",
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 #[derive(Clone, Copy)]
 enum Refusal {
     Failure(engine::fixed_layout::Failure),
@@ -253,7 +119,7 @@ mod tests {
         modifier_keys,
     };
     use replay::{
-        fixed_layout::{MOVEMENT, RESEARCH_IDLE},
+        fixed_layout::RESEARCH_IDLE,
         frame::{DecodedFrame, FrameDecoder, FrameEncoder, FrameInput, Metrics},
         rows::{TableId, TableRows},
     };
@@ -334,42 +200,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn transport_modifier_guard_preserves_stored_motion_prefix() {
-        assert!(transport_modifier_guard(None).is_err());
-        assert_eq!(transport_modifier_guard(Some(&Ok(valid()))), Ok(()));
-        for &key in replay::fixed_layout::TRANSPORT_RISK.keys {
-            let layout = Ok(mismatched(key as usize));
-            assert_eq!(
-                transport_modifier_guard(Some(&layout)),
-                Err("selected transport modifier layout mismatch")
-            );
-            let mut input = inputs();
-            apply(&mut input, &layout).unwrap();
-            assert!(untouched(&input, TableId::TaskForceMapMotion));
-        }
-    }
-
-    #[test]
-    fn transport_air_guard_has_its_own_complete_key_domain() {
-        assert!(transport_air_guard(None).is_err());
-        assert!(transport_air_guard(Some(&Err("fixture interrupted lexer"))).is_err());
-        assert_eq!(transport_air_guard(Some(&Ok(valid()))), Ok(()));
-        for &key in replay::fixed_layout::TRANSPORT_AIR.keys {
-            let layout = Ok(mismatched(key as usize));
-            assert_eq!(
-                transport_air_guard(Some(&layout)),
-                Err("selected transport air modifier layout mismatch")
-            );
-        }
-        let layout = Ok(mismatched(
-            engine::modifier_keys::SPOTTING_CHANCE_AGAINST as usize,
-        ));
-        // The attachment's full built-in layout is one indivisible witness;
-        // a mismatch elsewhere refuses every family that uses modifier keys.
-        assert!(transport_air_guard(Some(&layout)).is_err());
-    }
-
     /// Every fixed-key family's tables are refused naming `text`; no other
     /// table is touched.
     fn assert_key_families_refused(input: &[TableInput; TABLE_COUNT], text: &str) {
@@ -428,9 +258,13 @@ mod tests {
         };
         let encoded = FrameEncoder::new().encode_input(frame, true).unwrap();
         let frame: DecodedFrame = FrameDecoder::new().apply(&encoded).unwrap();
+        let family = FAMILIES
+            .iter()
+            .find(|family| !family.keys.is_empty() && !family.tables.is_empty())
+            .unwrap();
         assert!(matches!(
-            &*frame.tables[TableId::DivisionEtaInputs.index()],
-            TableView::Unavailable { reason } if reason.contains(&format!("{} refused: army_speed_factor", MOVEMENT.name))
+            &*frame.tables[family.tables[0].index()],
+            TableView::Unavailable { reason } if reason.contains(&format!("{} refused: army_speed_factor", family.name))
         ));
         let status = serde_json::to_value(status(Some(&report))).unwrap();
         assert_eq!(status["state"], "refused");
@@ -545,67 +379,5 @@ mod tests {
             serde_json::to_value(status(None)).unwrap()["state"],
             "unverified"
         );
-    }
-
-    // PRIVATE UNRUN: append INSIDE collector/fixed_layout.rs existing tests module.
-
-    #[test]
-    fn attack_guard_refuses_absent_interrupted_and_mismatched_layout_without_masking_fort_sum() {
-        let value = replay::rows::ProvinceAttackInputs {
-            sample_hour: -17,
-            fort_sum: Some(3),
-            land_bunker_effectiveness_factor: Some(i64::MIN),
-        };
-        let interrupted: Layout = Err("fixture lexer changed during witness");
-        let bad: Layout = Ok(mismatched(modifier_keys::LAND_NIGHT_ATTACK as usize));
-        assert_eq!(attack_guard(Some(&Ok(valid()))), Ok(()));
-        assert_eq!(province_attack(value, Some(&Ok(valid()))), value);
-        for layout in [None, Some(&interrupted), Some(&bad)] {
-            assert!(attack_guard(layout).is_err());
-            assert_eq!(
-                province_attack(value, layout),
-                replay::rows::ProvinceAttackInputs {
-                    sample_hour: -17,
-                    fort_sum: Some(3),
-                    land_bunker_effectiveness_factor: None,
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn failed_attack_guard_preserves_truncated_prefix_rows_and_unread_count() {
-        use replay::rows::{CountryAttackInputs, CountryCounterInputRow, Recorded};
-        let original = CountryCounterInputRow {
-            country: 3,
-            owned_state_count: -23,
-            controlled_state_count: 17,
-            attack: Recorded::Value(CountryAttackInputs {
-                sample_hour: 81,
-                land_night_attack: Some(i64::MIN),
-                land_bunker_effectiveness_factor: Some(i64::MAX),
-            }),
-            ..Default::default()
-        };
-        let mut input = inputs();
-        input[TableId::CountryCounterInputs.index()] = TableInput::Sampled(TableView::Truncated {
-            rows: TableRows::CountryCounterInputs(vec![original.clone()]),
-            missing: 7,
-        });
-        mask_attack(&mut input, None).unwrap();
-        let TableInput::Sampled(TableView::Truncated {
-            rows: TableRows::CountryCounterInputs(rows),
-            missing,
-        }) = &input[TableId::CountryCounterInputs.index()]
-        else {
-            panic!("partial prefix retained")
-        };
-        assert_eq!(*missing, 7);
-        let mut expected = original;
-        expected.attack = Recorded::Value(CountryAttackInputs {
-            sample_hour: 81,
-            ..Default::default()
-        });
-        assert_eq!(rows, &[expected]);
     }
 }

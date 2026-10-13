@@ -10,12 +10,19 @@ fn thermal_identifier_notes_reach_province_content_warnings() {
             ranges: Default::default(),
             notes: vec!["fixture modifier: unsupported identifier field (1 modifier)".into()],
         }),
-        clock: Err("unused".into()),
+        pass: Err("unread".into()),
+        derived: Default::default(),
         units: Err("unused".into()),
         border: Err("unused".into()),
+        air_log_timeout: Err("unused".into()),
     };
     assert!(content.warnings().iter().any(|warning| warning ==
         "fixture modifier: unsupported identifier field (1 modifier)"));
+    assert!(
+        content.warnings().iter().any(|warning| warning.contains(
+            "Province temperatures cannot be derived from the recorded content (unread)"
+        ))
+    );
 }
 
 #[test]

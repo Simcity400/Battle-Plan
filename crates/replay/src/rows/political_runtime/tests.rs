@@ -1,5 +1,5 @@
 use super::*;
-use crate::rows::compatibility::EFFECT_INPUTS_FORMAT;
+use crate::rows::compatibility::{EFFECT_INPUTS_FORMAT, POLITICAL_FORMAT};
 
 #[test]
 fn historical_weather_keeps_its_prefix_without_inventing_a_stored_clock() {
@@ -10,11 +10,19 @@ fn historical_weather_keeps_its_prefix_without_inventing_a_stored_clock() {
         permanent_snow: i64::MAX,
         display_snow: 255,
         display_mud: 254,
-        temperature: Recorded::Value(-1),
+        temperature: ProvinceTemperature::anchored(crate::temperature::State {
+            temperature: -1,
+            drift: 5,
+            staged: -1,
+            working: 5,
+        }),
         raw_mud: Recorded::Value(253),
-        local_hour: Recorded::Value(0),
-        night_factor: Recorded::Value(100_000),
+        clock: DayNightClock::held(crate::day_night::Clock {
+            local_hour: 0,
+            night_factor: 100_000,
+        }),
         display: Recorded::Value(None),
+        temperature_pass: Recorded::Value(None),
     };
     // Independently authored published six-field snapshot: fixed-width little
     // endian snow, permanent snow, two display bytes, temperature and raw mud.
@@ -27,10 +35,12 @@ fn historical_weather_keeps_its_prefix_without_inventing_a_stored_clock() {
     let mut current = Vec::new();
     row.encode_fields(&mut current).unwrap();
     assert!(current.starts_with(&prefix));
+    // The published temperature is the one the record held at the row's hour.
     let expected = WeatherProvinceRow {
-        local_hour: Recorded::NotRecorded,
-        night_factor: Recorded::NotRecorded,
+        temperature: ProvinceTemperature::historical(-1),
+        clock: DayNightClock::NOT_RECORDED,
         display: Recorded::NotRecorded,
+        temperature_pass: Recorded::NotRecorded,
         ..row.clone()
     };
     for version in [93, EFFECT_INPUTS_FORMAT] {
@@ -42,10 +52,12 @@ fn historical_weather_keeps_its_prefix_without_inventing_a_stored_clock() {
         let historical = WeatherProvinceRow::decode_fields(row.key(), &mut input).unwrap();
         input.finish().unwrap();
         assert_eq!(historical, expected);
+        assert_eq!(historical.not_recorded_fields(), 0xff << 6);
         assert_eq!(
-            historical.not_recorded_fields(),
-            (1 << 6) | (1 << 7) | (1 << 8)
+            historical.temperature.record(),
+            Ok(TemperatureRecord::AtHour(-1))
         );
+        assert_eq!(historical.clock.state(7), Ok(ClockState::NotRecorded));
         assert!(historical.encode_fields(&mut Vec::new()).is_err());
         assert!(historical.delta(None).is_err());
     }
@@ -72,8 +84,29 @@ fn historical_weather_keeps_its_prefix_without_inventing_a_stored_clock() {
     );
 }
 
+/// A row's field bytes with the listed Opaque fields' payloads replaced, as
+/// an older writer stored them.
+fn with_payloads(row: &[u8], schema: &[Kind], payloads: &[(usize, &[u8])]) -> Vec<u8> {
+    let mut input = Decoder::new(row);
+    let mut out = Vec::new();
+    for (index, kind) in schema.iter().enumerate() {
+        let start = row.len() - input.remaining();
+        kind.decode(&mut input).unwrap();
+        let end = row.len() - input.remaining();
+        match payloads.iter().find(|(at, _)| *at == index) {
+            Some((_, payload)) => {
+                out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                out.extend_from_slice(payload);
+            }
+            None => out.extend_from_slice(&row[start..end]),
+        }
+    }
+    input.finish().unwrap();
+    out
+}
+
 #[test]
-fn province_attack_keeps_legacy_bytes_and_distinguishes_exact_zero_from_absence() {
+fn province_attack_operands_of_format_101_decode_and_current_rows_store_none() {
     let table = TableId::Provinces;
     let row = ProvinceRow {
         id: 7,
@@ -84,13 +117,12 @@ fn province_attack_keeps_legacy_bytes_and_distinguishes_exact_zero_from_absence(
         fort_positive: 0,
         move_gate: u8::MAX,
         port_sea: i32::MIN,
-        attack: ProvinceAttackInputs {
-            sample_hour: -17,
-            fort_sum: Some(0),
-            land_bunker_effectiveness_factor: None,
-        }
-        .into(),
+        attack: Default::default(),
         selected_areas: Default::default(),
+        fort_bunker: Recorded::Value(None),
+        controller_area: Default::default(),
+        owner_area: Default::default(),
+        area_node: Default::default(),
     };
     // Independently authored seven-field wire prefix from the published row.
     let mut prefix = Vec::new();
@@ -112,89 +144,242 @@ fn province_attack_keeps_legacy_bytes_and_distinguishes_exact_zero_from_absence(
         ProvinceRow {
             attack: Recorded::NotRecorded,
             selected_areas: Recorded::NotRecorded,
+            fort_bunker: Recorded::NotRecorded,
+            controller_area: Recorded::NotRecorded,
+            owner_area: Recorded::NotRecorded,
+            area_node: Recorded::NotRecorded,
             ..row.clone()
         }
     );
-    assert_eq!(historical.recorded_fields_bytes().unwrap(), prefix.len());
-    assert_eq!(historical.not_recorded_fields(), (1 << 7) | (1 << 8));
-    assert!(historical.encode_fields(&mut Vec::new()).is_err());
+    assert_eq!(historical.not_recorded_fields(), 0b1_1111_1000_0000);
 
+    // The current row stores no witnessed attack operands: an empty payload.
     let mut current = Vec::new();
     row.encode_fields(&mut current).unwrap();
     assert!(current.starts_with(&prefix));
+    assert_eq!(
+        &current[prefix.len()..prefix.len() + 4],
+        &0_u32.to_le_bytes()
+    );
     let mut input = Decoder::new(&current);
     assert_eq!(
         ProvinceRow::decode_fields(row.key(), &mut input).unwrap(),
         row
     );
     input.finish().unwrap();
-    let refused = ProvinceRow {
-        attack: ProvinceAttackInputs {
-            fort_sum: None,
-            ..*row.attack.require("attack").unwrap()
+
+    // Format 101 stored the read hour, the fort sum and the state factor
+    // there; they decode as the witnessed operands that answer for it. It
+    // had no fort bunker or area fields: those decode as not recorded.
+    let mut payload = 1000_i32.to_le_bytes().to_vec();
+    payload.extend_from_slice(&[1, 3, 0, 0, 0, 1]);
+    payload.extend_from_slice(&(-25_000_i64).to_le_bytes());
+    let full = with_payloads(&current, ProvinceRow::SCHEMA, &[(7, &payload)]);
+    let format = FormatVersion::read(POLITICAL_FORMAT).unwrap();
+    assert_eq!(format.fields(table), 9);
+    let mut scan = Decoder::new(&full);
+    for kind in &ProvinceRow::SCHEMA[..format.fields(table)] {
+        kind.decode(&mut scan).unwrap();
+    }
+    let legacy = full[..full.len() - scan.remaining()].to_vec();
+    let mut input = Decoder::new(&legacy);
+    input.format = format.version();
+    input.recorded_fields = format.fields(table);
+    assert_eq!(
+        ProvinceRow::decode_fields(row.key(), &mut input).unwrap(),
+        ProvinceRow {
+            attack: Recorded::Value(Witnessed(Some(ProvinceAttackInputs {
+                sample_hour: PacketHour::Stamped(1000),
+                fort_sum: Some(3),
+                land_bunker_effectiveness_factor: Some(-25_000),
+            }))),
+            fort_bunker: Recorded::NotRecorded,
+            controller_area: Recorded::NotRecorded,
+            owner_area: Recorded::NotRecorded,
+            area_node: Recorded::NotRecorded,
+            ..row.clone()
         }
-        .into(),
-        ..row.clone()
-    };
-    let delta = refused.delta(Some(&row)).unwrap().unwrap();
-    assert_eq!(delta.mask, 1 << 7);
-    assert_eq!(delta.apply(Some(row)).unwrap(), refused);
+    );
+    input.finish().unwrap();
+    // The same bytes are not a current row.
+    assert!(ProvinceRow::decode_fields(row.key(), &mut Decoder::new(&legacy)).is_err());
 }
 
 #[test]
-fn raw_country_observed_zero_survives_current_codec_and_is_missing_in_published_prefix() {
+fn retired_reserved_packets_are_discarded_and_later_fields_still_decode() {
     let row = ReservedCountryNamingRow {
-        raw_country_observations: Some(RawCountryObservations {
-            sample_hour: -17,
-            entries: vec![RawCountryObservation {
-                raw: 777,
-                mapping: RawCountryMapping::Observed {
-                    canonical_slot: 0,
-                    country_id: 0,
-                },
-                tag: RawCountryTag::Bytes(vec![0, 0xff]),
-            }],
-        })
-        .into(),
+        tag: b"RSV".to_vec(),
+        faction: Recorded::Value(Some(0)),
+        land_theatre_count: Recorded::Value(Some(u32::MAX)),
         ..Default::default()
     };
     let mut current = Vec::new();
     row.encode_fields(&mut current).unwrap();
     let mut input = Decoder::new(&current);
+    assert_eq!(
+        ReservedCountryNamingRow::decode_fields(row.key(), &mut input).unwrap(),
+        row
+    );
+    input.finish().unwrap();
+    // Movement, raw observations and the transport mission packet held whole
+    // packets at format 101, which are discarded; Country0's attack scalars
+    // decode as its witnessed operands.
+    let mut attack = vec![1];
+    attack.extend_from_slice(&1000_i32.to_le_bytes());
+    attack.push(1);
+    attack.extend_from_slice(&(-20_000_i64).to_le_bytes());
+    attack.push(0);
+    let legacy = with_payloads(
+        &current,
+        ReservedCountryNamingRow::SCHEMA,
+        &[
+            (15, &[1, 2, 3]),
+            (20, &attack),
+            (21, &[1, 9]),
+            (22, &[1, 0, 0, 0, 0, 1, 7]),
+        ],
+    );
+    let format = FormatVersion::read(POLITICAL_FORMAT).unwrap();
+    let mut input = Decoder::new(&legacy);
+    input.format = format.version();
+    input.recorded_fields = format.fields(TableId::ReservedCountryNaming);
     let decoded = ReservedCountryNamingRow::decode_fields(row.key(), &mut input).unwrap();
     input.finish().unwrap();
-    assert_eq!(decoded, row);
-    let packet = decoded
-        .raw_country_observations
-        .require("raw country")
-        .unwrap()
-        .as_ref()
-        .unwrap();
+    assert_eq!(decoded.tag, row.tag);
+    assert_eq!(decoded.faction, row.faction);
+    assert_eq!(decoded.land_theatre_count, row.land_theatre_count);
+    for field in [
+        &decoded.movement,
+        &decoded.raw_country_observations,
+        &decoded.transport_mission_inputs,
+    ] {
+        assert_eq!(*field, Recorded::Value(Retired));
+    }
     assert_eq!(
-        packet.entry(-17, 777).unwrap().mapping,
-        RawCountryMapping::Observed {
-            canonical_slot: 0,
-            country_id: 0
-        }
+        decoded.attack,
+        Recorded::Value(Witnessed(Some(Some(CountryAttackInputs {
+            sample_hour: PacketHour::Stamped(1000),
+            land_night_attack: Some(-20_000),
+            land_bunker_effectiveness_factor: None,
+        }))))
     );
-    assert!(packet.entry(-17, 778).is_err());
-    assert!(packet.entry(-16, 777).is_err());
+}
 
-    let format = FormatVersion::read(EFFECT_INPUTS_FORMAT).unwrap();
-    let fields = format.fields(TableId::ReservedCountryNaming);
-    assert_eq!(fields, 13);
-    let mut scan = Decoder::new(&current);
-    for kind in &ReservedCountryNamingRow::SCHEMA[..fields] {
+/// `row`'s current bytes as format 101 stored them, with the listed Opaque
+/// payloads restored, decoded at that format. Every listed field must be a
+/// catalogued retirement.
+fn decode_format_101_payloads<T: RowCodec + Fields + std::fmt::Debug>(
+    table: TableId,
+    row: &T,
+    payloads: &[(usize, &[u8])],
+) -> T {
+    let mut current = Vec::new();
+    row.encode_fields(&mut current).unwrap();
+    for &(index, _) in payloads {
+        assert!(
+            compatibility::RETIRED_FIELDS
+                .iter()
+                .any(|field| field.table == table && field.index == index),
+            "{table:?} field {index} is not catalogued as retired"
+        );
+    }
+    let full = with_payloads(&current, T::SCHEMA, payloads);
+    // A current reader cannot take those bytes: the tombstones store none.
+    assert!(T::decode_fields(row.key(), &mut Decoder::new(&full)).is_err());
+    let format = FormatVersion::read(POLITICAL_FORMAT).unwrap();
+    let fields = format.fields(table);
+    let mut scan = Decoder::new(&full);
+    for kind in &T::SCHEMA[..fields] {
         kind.decode(&mut scan).unwrap();
     }
-    let mut input = Decoder::new(&current[..current.len() - scan.remaining()]);
+    let legacy = &full[..full.len() - scan.remaining()];
+    let mut input = Decoder::new(legacy);
     input.format = format.version();
     input.recorded_fields = fields;
-    let historical = ReservedCountryNamingRow::decode_fields(row.key(), &mut input).unwrap();
+    let decoded = T::decode_fields(row.key(), &mut input).unwrap();
     input.finish().unwrap();
-    assert_eq!(historical.raw_country_observations, Recorded::NotRecorded);
-    assert_eq!(historical.attack, Recorded::NotRecorded);
-    assert!(historical.encode_fields(&mut Vec::new()).is_err());
+    decoded
+}
+
+#[test]
+fn retired_selected_transport_and_route_previews_discard_format_101_payloads() {
+    let province = decode_format_101_payloads(
+        TableId::Provinces,
+        &ProvinceRow {
+            id: 17,
+            controller: 3,
+            ..Default::default()
+        },
+        &[(8, &[1, 17, 0, 0, 0, 1, 3, 0, 0, 0, 0])],
+    );
+    assert_eq!(province.controller, 3);
+    assert_eq!(province.selected_areas, Recorded::Value(Retired));
+
+    let movement = decode_format_101_payloads(
+        TableId::DivisionMovement,
+        &DivisionMovementRow {
+            division: u64::MAX,
+            source: 7,
+            ..Default::default()
+        },
+        &[
+            (20, &[1, 0xfe, 1, 1]),
+            (21, &[1, 1, 9, 0, 0, 0, 0, 0, 0, 0, 0]),
+        ],
+    );
+    assert_eq!(movement.source, 7);
+    assert_eq!(movement.selected, Recorded::Value(Retired));
+    assert_eq!(movement.transport, Recorded::Value(Retired));
+
+    let appearance = decode_format_101_payloads(
+        TableId::CountryAppearance,
+        &CountryAppearanceRow {
+            country: 7,
+            red: 1,
+            ..Default::default()
+        },
+        &[(21, &[1, 0, 0, 0, 0, 1, 2, 0, 0, 0])],
+    );
+    assert_eq!(appearance.red, 1);
+    assert_eq!(appearance.transport_convoys, Recorded::Value(Retired));
+
+    let counters = decode_format_101_payloads(
+        TableId::CountryCounterInputs,
+        &CountryCounterInputRow {
+            country: 7,
+            first_division: u64::MAX,
+            forward_visibility: Recorded::Value(None),
+            ..Default::default()
+        },
+        &[(13, &[1, 41, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0])],
+    );
+    assert_eq!(counters.first_division, u64::MAX);
+    assert_eq!(counters.movement, Recorded::Value(Retired));
+
+    let gun = decode_format_101_payloads(
+        TableId::RailwayGunCounterInputs,
+        &RailwayGunCounterInputRow {
+            gun: u64::MAX,
+            province: 7,
+            ..Default::default()
+        },
+        &[(29, &[1, 0, 0, 0, 0, 1, 2])],
+    );
+    assert_eq!(gun.province, 7);
+    assert_eq!(gun.transport, Recorded::Value(Retired));
+
+    let registration = decode_format_101_payloads(
+        TableId::AirBaseRegistrations,
+        &AirBaseRegistrationRow {
+            base: 7,
+            slot: 1,
+            capacity_raw: -1,
+            ..Default::default()
+        },
+        &[(3, &[1, 1, 0, 0, 0, 1, 3, 0, 0, 0])],
+    );
+    assert_eq!(registration.capacity_raw, -1);
+    assert_eq!(registration.transport_planes, Recorded::Value(Retired));
 }
 
 #[test]
@@ -247,19 +432,6 @@ fn selected_routes_published_prefixes_never_invent_current_inputs_in_snapshots_o
 
     let province = ProvinceRow {
         id: 17,
-        selected_areas: Some(ProvinceAreaInputs {
-            sample_hour: i32::MAX,
-            controller: 17,
-            owner: Some(0),
-            node: Some(SelectedAreaNode {
-                first_land: Some(17),
-                nonsea_index: Some(0),
-                nonsea_count: Some(1),
-                land_count: Some(1),
-                neighbours: Some(vec![29, 29]),
-            }),
-        })
-        .into(),
         ..Default::default()
     };
     historical(
@@ -269,19 +441,17 @@ fn selected_routes_published_prefixes_never_invent_current_inputs_in_snapshots_o
         &ProvinceRow {
             attack: Recorded::NotRecorded,
             selected_areas: Recorded::NotRecorded,
+            fort_bunker: Recorded::NotRecorded,
+            controller_area: Recorded::NotRecorded,
+            owner_area: Recorded::NotRecorded,
+            area_node: Recorded::NotRecorded,
             ..province.clone()
         },
     );
 
     let movement = DivisionMovementRow {
         division: u64::MAX,
-        selected: Some(SelectedUnitInputs {
-            sample_hour: i32::MIN,
-            exiled: Some(u8::MAX),
-            commander: Some(false),
-            retreat: [Some(0), Some(0)],
-        })
-        .into(),
+        source: 7,
         ..Default::default()
     };
     historical(
@@ -296,6 +466,7 @@ fn selected_routes_published_prefixes_never_invent_current_inputs_in_snapshots_o
             combat_references: Recorded::NotRecorded,
             selected: Recorded::NotRecorded,
             transport: Recorded::NotRecorded,
+            base_speed: Recorded::NotRecorded,
             ..movement.clone()
         },
     );
@@ -306,7 +477,7 @@ fn selected_routes_published_prefixes_never_invent_current_inputs_in_snapshots_o
         enemies_read: 1,
         enemies: vec![29, 11, 29],
         ordered: Some(OrderedEnemyInputs {
-            sample_hour: i32::MAX,
+            sample_hour: PacketHour::Host,
             entries: vec![29, 0, 11, 29],
         })
         .into(),

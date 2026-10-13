@@ -56,6 +56,49 @@ fn forward_land_and_carrier_air_share_the_native_group_rule() {
 }
 
 #[test]
+fn only_a_linked_carrier_below_full_sortie_efficiency_reaches_its_member_sources() {
+    let mut plane = NavalCombatPlane {
+        wings: [vec![], vec![7]],
+        efficiency: replay::rows::NavalCombatAirEfficiency {
+            source: 3,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let detail = replay::rows::NavalCombatDetailsRow::default();
+    let joins = super::super::naval_air_groups::CarrierJoins::new(None, None, None, None);
+    let rows: [replay::rows::NavalModifierTreeRow; 0] = [];
+    let trees = super::super::naval_trees::Sources::from_parts(Ok(&rows), &[], "english");
+    let content = super::super::naval_air_groups::Content::default();
+    let loc = installed_content::localisation::Localisation::default();
+    let breakdown = |plane: &NavalCombatPlane, efficiency| {
+        sortie_member_breakdown(
+            plane,
+            efficiency,
+            &detail,
+            0,
+            &joins,
+            &trees,
+            &content,
+            &super::super::binding::NoIcons,
+            &loc,
+        )
+    };
+    // Without a linked member the game has no member section: the prefix
+    // is complete from the plane's own recorded factors.
+    assert_eq!(breakdown(&plane, 40_000), Ok(String::new()));
+    plane.carrier_member_present = 1;
+    // At ONE, the game appends no efficiency text at all.
+    assert_eq!(breakdown(&plane, 100_000), Ok(String::new()));
+    // Below ONE it reads the linked member's sources: an unresolved host
+    // refuses by that name, never as an unrecorded breakdown.
+    assert_eq!(
+        breakdown(&plane, 40_000),
+        Err("linked carrier member is unavailable".into())
+    );
+}
+
+#[test]
 fn air_count_uses_current_over_max_and_native_side_colour_order() {
     assert_eq!(
         air_count_label(0, "AAA", 120, 120, false),

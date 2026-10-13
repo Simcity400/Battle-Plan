@@ -16,7 +16,13 @@ use crate::{
 
 /// Viewer-entry stride.
 pub const STRIDE: usize = 24;
-/// Country key, u32 at +0, compared with the resolved country ordinal.
+/// Viewer entries copied per guarded read of one unit's vector.
+const ENTRY_BATCH: usize = 32;
+/// Shared-census divisions whose first entry blocks are read in one guarded
+/// scatter.
+const GROUP: usize = 16;
+/// Unit viewer-level entry country key, u32; intel lookup compares entry+0
+/// against the resolver's ordinal at +4.
 pub const VIEWER: usize = 0x00;
 /// Decay accumulator, i64 at +8, incremented by a per-class rate and reset by upsert.
 pub const TIMER: usize = 0x08;
@@ -277,6 +283,7 @@ impl<M: Memory> Reader<'_, M> {
             RecordLayout::new(&FIELDS, 32).expect("valid record layout");
         let mut pointers = [0; BATCH];
         let mut bytes = [0; BATCH * 32];
+        let mut blocks = [[0; ENTRY_BATCH * STRIDE]; GROUP];
         for chunk in sources.chunks(BATCH) {
             for (pointer, source) in pointers.iter_mut().zip(chunk) {
                 *pointer = source.pointer;
@@ -286,23 +293,86 @@ impl<M: Memory> Reader<'_, M> {
                 &LAYOUT,
                 &mut bytes,
             );
-            for (index, source) in chunk.iter().enumerate() {
-                if source.pointer == 0 {
-                    return Err(DIVISIONS.member);
+            // Each authenticated division's first entry block, hinted here
+            // from the gathered headers so their misses overlap, then read
+            // sixteen divisions to a scatter ([`Self::first_blocks`]) and
+            // served to `unit_fields` at each division's turn.
+            let expected = self.base.checked_add(carmy::VTABLE_RVA).map(|v| v as u64);
+            for record in bytes[..(completed / 3).min(chunk.len()) * 32].chunks_exact(32) {
+                if Some(u64::from_le_bytes(record[..8].try_into().unwrap())) != expected {
+                    continue;
                 }
-                let first = index * 32;
-                self.unit_fields(
-                    bytes[first..first + 8].try_into().unwrap(),
-                    bytes[first + 8..first + 16].try_into().unwrap(),
-                    bytes[first + 16..first + 32].try_into().unwrap(),
-                    completed.saturating_sub(index * 3).min(3),
-                    carmy::VTABLE_RVA,
-                    output,
-                    counter,
-                )?;
+                if let Some(viewers) =
+                    Array::from_header(record[16..32].try_into().unwrap(), STRIDE)
+                {
+                    let len = (viewers.count as usize).min(ENTRY_BATCH) * STRIDE;
+                    if len != 0 {
+                        self.memory.prefetch(viewers.data, len);
+                    }
+                }
+            }
+            for (group, sources) in chunk.chunks(GROUP).enumerate() {
+                let start = group * GROUP;
+                let read = self.first_blocks(
+                    &bytes[start * 32..(start + sources.len()) * 32],
+                    completed.saturating_sub(start * 3),
+                    &mut blocks,
+                );
+                for (index, source) in sources.iter().enumerate() {
+                    if source.pointer == 0 {
+                        return Err(DIVISIONS.member);
+                    }
+                    let first = (start + index) * 32;
+                    self.unit_fields(
+                        bytes[first..first + 8].try_into().unwrap(),
+                        bytes[first + 8..first + 16].try_into().unwrap(),
+                        bytes[first + 16..first + 32].try_into().unwrap(),
+                        completed.saturating_sub((start + index) * 3).min(3),
+                        carmy::VTABLE_RVA,
+                        read[index].map(|len| &blocks[index][..len]),
+                        output,
+                        counter,
+                    )?;
+                }
             }
         }
         Ok(())
+    }
+
+    /// The first entry block of each division of one group whose gathered
+    /// `records` (vtable, handle, header; `completed` fields of them) admit
+    /// one, read in one guarded scatter into `blocks`: each division's block
+    /// length when its block read. A block that did not read is read again
+    /// by [`Self::unit_fields`] at its turn, as the serial walk reads it.
+    fn first_blocks(
+        &self,
+        records: &[u8],
+        completed: usize,
+        blocks: &mut [[u8; ENTRY_BATCH * STRIDE]; GROUP],
+    ) -> [Option<usize>; GROUP] {
+        let expected = self.base.checked_add(carmy::VTABLE_RVA).map(|v| v as u64);
+        let mut addresses = [0; GROUP];
+        let mut lens = [0; GROUP];
+        for (index, record) in records.chunks_exact(32).enumerate() {
+            if completed < (index + 1) * 3
+                || Some(u64::from_le_bytes(record[..8].try_into().unwrap())) != expected
+            {
+                continue;
+            }
+            if let Some(viewers) = Array::from_header(record[16..32].try_into().unwrap(), STRIDE) {
+                addresses[index] = viewers.data;
+                lens[index] = (viewers.count as usize).min(ENTRY_BATCH) * STRIDE;
+            }
+        }
+        let mut destinations = blocks.each_mut().map(|block| &mut block[..]);
+        for (destination, &len) in destinations.iter_mut().zip(&lens) {
+            *destination = &mut std::mem::take(destination)[..len];
+        }
+        let read = self.memory.copy_scattered(addresses, &mut destinations);
+        if lens[read.min(GROUP)..].iter().any(|&len| len != 0) {
+            crate::batch_fallback::record(crate::batch_fallback::Batch::UnitIntel);
+        }
+        std::array::from_fn(|index| (index < read && lens[index] != 0).then_some(lens[index]))
     }
 
     fn unit(
@@ -322,7 +392,9 @@ impl<M: Memory> Reader<'_, M> {
                 .map(|offset| unit.checked_add(offset).unwrap_or(0)),
             &mut [&mut primary, &mut handle, &mut header],
         );
-        self.unit_fields(primary, handle, header, complete, vtable, output, counter)
+        self.unit_fields(
+            primary, handle, header, complete, vtable, None, output, counter,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -333,6 +405,7 @@ impl<M: Memory> Reader<'_, M> {
         header: [u8; 16],
         complete: usize,
         vtable: usize,
+        first_block: Option<&[u8]>,
         output: &mut Buffer<'_, Row>,
         counter: &mut Counter,
     ) -> Result<(), &'static str> {
@@ -359,19 +432,23 @@ impl<M: Memory> Reader<'_, M> {
                 .checked_add(viewers.count as usize)
                 .ok_or("unit viewer demand overflow")?,
         )?;
-        const ENTRIES: usize = 32;
-        let mut bytes = [0; ENTRIES * STRIDE];
-        for batch in 0..(viewers.count as usize).div_ceil(ENTRIES).max(1) {
-            let first = batch * ENTRIES;
-            let count = (viewers.count as usize - first).min(ENTRIES);
+        let mut bytes = [0; ENTRY_BATCH * STRIDE];
+        for batch in 0..(viewers.count as usize).div_ceil(ENTRY_BATCH).max(1) {
+            let first = batch * ENTRY_BATCH;
+            let count = (viewers.count as usize - first).min(ENTRY_BATCH);
             if count == 0 {
                 break;
             }
-            let address = viewers
-                .element(first as u32, STRIDE)
-                .ok_or("unit viewer entry address overflow")?;
-            if !read_slice(self.memory, address, &mut bytes[..count * STRIDE]) {
-                return Err("unit viewer entry block unreadable");
+            match first_block.filter(|block| first == 0 && block.len() == count * STRIDE) {
+                Some(block) => bytes[..block.len()].copy_from_slice(block),
+                None => {
+                    let address = viewers
+                        .element(first as u32, STRIDE)
+                        .ok_or("unit viewer entry address overflow")?;
+                    if !read_slice(self.memory, address, &mut bytes[..count * STRIDE]) {
+                        return Err("unit viewer entry block unreadable");
+                    }
+                }
             }
             for (index, entry) in bytes[..count * STRIDE].chunks_exact(STRIDE).enumerate() {
                 if counter.len == output.len() {

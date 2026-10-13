@@ -70,9 +70,7 @@ use super::*;
 impl Capacities {
     pub(crate) fn fixture() -> Self {
         Self {
-            rows: [
-                8192, 2048, 4096, 8192, 16_384, 1024, 2048, 4096, 1024, 64, 64,
-            ],
+            rows: [8192, 2048, 4096, 1024, 2048, 4096, 1024, 64, 64],
             ace_names: 65_536,
             wings: 8192,
             sorties: air_sorties::Capacities {
@@ -87,7 +85,6 @@ impl Capacities {
                 regions: 0,
                 countries: 0,
             },
-            transport: [0; 5],
         }
     }
 }
@@ -98,18 +95,6 @@ impl AirStatsJob {
             log: RawLog::new(1 << 16, 4 << 20),
             ..Self::default()
         }
-    }
-}
-
-impl AirHistoryJob {
-    pub(crate) fn fixture() -> Self {
-        let mut job = Self {
-            history: vec![Default::default(); 8192],
-            damage: vec![Default::default(); 16_384],
-            ..Self::default()
-        };
-        job.update_capacity_charge();
-        job
     }
 }
 
@@ -168,7 +153,6 @@ fn growing_air_raw_jobs_and_decode_publish_complete_mod_populations_from_cold_st
         log: RawLog::new(0, 0),
         ..Default::default()
     };
-    let mut history = AirHistoryJob::default();
     for count in [5_000_usize, 12_000] {
         let bytes = stats_test_kit::mod_fixture(count);
         let report = copy_air_stats_refresh_growing(
@@ -194,7 +178,6 @@ fn growing_air_raw_jobs_and_decode_publish_complete_mod_populations_from_cold_st
                 game_state: air_bases_test_kit::GAME_STATE,
                 hour: 0,
                 force_full: true,
-                transport_admission: Default::default(),
             },
             &mut bases,
         );
@@ -206,44 +189,6 @@ fn growing_air_raw_jobs_and_decode_publish_complete_mod_populations_from_cold_st
         assert_eq!(captured.bases.outcome, Outcome::Rows { len: count + 2 });
         assert_eq!(captured.aces.outcome, Outcome::Rows { len: count });
         assert_eq!(captured.names.len, captured.names.required);
-
-        let bytes = air_history_test_kit::mod_fixture(count);
-        let mut direct_history = Vec::new();
-        let mut direct_damage = Vec::new();
-        let direct = cair_region_combat_data::walk_world_growing(
-            &air_history_test_kit::memory(&bytes),
-            air_history_test_kit::BASE,
-            air_history_test_kit::GAME_STATE,
-            &mut direct_history,
-            &mut direct_damage,
-        );
-        let report = copy_air_history_refresh_growing(
-            &air_history_test_kit::memory(&bytes),
-            AirHistoryCopyContext {
-                base: air_history_test_kit::BASE,
-                game_state: air_history_test_kit::GAME_STATE,
-                hour: 0,
-                force_full: true,
-                history_limit: 0,
-                damage_limit: 0,
-            },
-            &mut history,
-        );
-        assert!(report.raw_ok);
-        captured.history.rows.truncate(0);
-        captured.damage.rows.truncate(0);
-        captured.decode_air_history_payload(&history, &mut [0; 2]);
-        assert_eq!(captured.history.outcome, direct.records);
-        assert_eq!(captured.damage.outcome, direct.damage);
-        assert_eq!(
-            &captured.history.rows[..direct.records.len()],
-            &direct_history[..direct.records.len()]
-        );
-        assert_eq!(
-            &captured.damage.rows[..direct.damage.len()],
-            &direct_damage[..direct.damage.len()]
-        );
-        assert_eq!(captured.history.outcome, Outcome::Rows { len: count + 1 });
     }
 }
 
@@ -588,6 +533,8 @@ fn registration_failures_name_the_country_and_region_and_do_not_survive_reset() 
 
 #[test]
 fn air_bases_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
+    // Sizes from the process-wide country hints; hold them at a fresh attachment's values.
+    let _hint = crate::country_scale::hint_guard();
     use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
     static LOCAL: Tracker = Tracker::new();
     let mut job = AirBasesJob::default();
@@ -652,68 +599,9 @@ fn small() -> (Capacities, Captured) {
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
-        transport: [0; 5],
     };
     let captured = Captured::with_capacities(&capacity);
     (capacity, captured)
-}
-
-#[test]
-fn live_transport_headers_admit_all_regions_on_the_first_air_capture() {
-    use engine::{
-        cair_regional_mission::TransportObserver, cpdx_array::Array,
-        cstrategic_air::SlotObservation,
-    };
-    let mut capacity = Capacities::default();
-    capacity.raise_for_transport([5001, 15000, 0, 0, 0]);
-    let mut captured = Captured::with_capacities(&capacity);
-    captured.transport.set_hour(7);
-    let memory = engine::memory::SliceMemory {
-        base: 0,
-        bytes: &[],
-    };
-    let mut observer = captured.transport.observer(
-        &memory,
-        0,
-        0,
-        Err("unreached regions"),
-        Err("unreached modifiers"),
-    );
-    observer.slot(SlotObservation::Domain(5001));
-    observer.slot(SlotObservation::Slot {
-        slot: 0,
-        root: None,
-    });
-    for slot in 1..=5000 {
-        observer.slot(SlotObservation::Slot {
-            slot,
-            root: Some(engine::cstrategic_air::Root {
-                address: 0x1000,
-                country: slot,
-                canonical_slot: slot,
-            }),
-        });
-        observer.root(
-            slot,
-            0x1000,
-            Ok(Array {
-                data: 0x2000,
-                count: 3,
-            }),
-        );
-        for region in 0..3 {
-            observer.region(slot, region, Ok(Array::default()));
-        }
-    }
-    captured.transport.finish(Outcome::Rows { len: 0 });
-    let packet = captured.transport.packet(7).unwrap().unwrap();
-    let countries = packet.countries.unwrap();
-    assert_eq!(countries.len(), 5001);
-    assert!(countries[1..].iter().all(|country| {
-        country.regions.as_ref().is_some_and(|regions| {
-            regions.len() == 3 && regions.iter().all(|region| region.missions == Some(vec![]))
-        })
-    }));
 }
 
 fn complete<S: TableSchema>(table: &TableView) -> &[S::Row] {
@@ -783,98 +671,6 @@ fn equipment_capture_preserves_full_handles_order_and_exact_capacity() {
 }
 
 #[test]
-fn grouped_children_preserve_duplicate_coordinates_order_and_full_damage_amounts() {
-    let key = sair_wing_combat_data::Key {
-        country: u32::MAX,
-        region: 0,
-        side: 1,
-        date: i32::MIN,
-        wing_id: 0,
-        classification: u8::MAX,
-    };
-    let history = [
-        sair_wing_combat_data::Row {
-            key,
-            planes: i32::MAX,
-            selection: 1,
-            ..Default::default()
-        },
-        sair_wing_combat_data::Row {
-            key,
-            planes: i32::MIN,
-            selection: 2,
-            ..Default::default()
-        },
-    ];
-    let view = history_table(Outcome::Rows { len: 2 }, &history);
-    let groups = complete::<tables::AirRegionHistory>(&view);
-    assert_eq!(groups.len(), 1);
-    assert_eq!((groups[0].country, groups[0].region), (u32::MAX, 0));
-    assert_eq!(
-        groups[0]
-            .entries
-            .iter()
-            .map(|entry| (entry.planes, entry.selection))
-            .collect::<Vec<_>>(),
-        [(i32::MAX, 1), (i32::MIN, 2)]
-    );
-    let damage = [
-        sdamage_entry::Row {
-            record: key,
-            channel: 1,
-            cause: u32::MAX,
-            amount: i64::MIN,
-        },
-        sdamage_entry::Row {
-            record: key,
-            channel: 1,
-            cause: u32::MAX,
-            amount: i64::MAX,
-        },
-    ];
-    let view = damage_table(Outcome::Rows { len: 2 }, &damage);
-    let groups = complete::<tables::AirRegionDamage>(&view);
-    assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].entries[0].amount, i64::MIN);
-    assert_eq!(groups[0].entries[1].amount, i64::MAX);
-    assert_eq!(groups[0].entries[0].cause, u32::MAX);
-}
-
-#[test]
-fn incomplete_group_and_repeated_outer_parent_are_never_complete_rows() {
-    let first = sair_wing_combat_data::Row::default();
-    let mut other = first;
-    other.key.region = 3;
-    assert!(matches!(
-        history_table(Outcome::Rows { len: 3 }, &[first, other, first]),
-        TableView::Unavailable { .. }
-    ));
-    assert!(matches!(
-        history_table(
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 4
-            },
-            &[first]
-        ),
-        TableView::Unavailable { .. }
-    ));
-    assert!(matches!(
-        history_table(Outcome::Rows { len: 2 }, &[first]),
-        TableView::Unavailable { .. }
-    ));
-    assert!(matches!(
-        damage_table(
-            Outcome::Unavailable {
-                reason: "late root unreadable"
-            },
-            &[]
-        ),
-        TableView::Unavailable { .. }
-    ));
-}
-
-#[test]
 fn ace_bytes_and_native_widths_survive_conversion_but_invalid_ranges_refuse() {
     let (_, mut captured) = small();
     captured.equipment.outcome = Outcome::Rows { len: 1 };
@@ -920,7 +716,7 @@ fn ace_bytes_and_native_widths_survive_conversion_but_invalid_ranges_refuse() {
         complete::<tables::WingCumulative>(&views[2])[0].experience,
         i64::MAX
     );
-    let ace = &complete::<tables::AirAces>(&views[5])[0];
+    let ace = &complete::<tables::AirAces>(&views[3])[0];
     assert_eq!(ace.name, [0xff, 0, b'a']);
     assert_eq!(ace.death.as_ref().unwrap().killer_ace, u64::MAX - 2);
     for range in [
@@ -999,9 +795,9 @@ fn source_failure_never_certifies_a_prefix_and_capacity_counts_remain_exact() {
 }
 
 #[test]
-fn growth_counts_native_entries_and_retains_primary_capacity() {
+fn growth_counts_unread_rows_and_retains_primary_capacity() {
     let (mut capacity, mut captured) = small();
-    captured.history.outcome = Outcome::Truncated {
+    captured.aces.outcome = Outcome::Truncated {
         len: 3,
         unread_rows: 60,
     };
@@ -1009,7 +805,7 @@ fn growth_counts_native_entries_and_retains_primary_capacity() {
     captured.grow(&mut capacity);
     assert!(capacity.rows[3] >= 63);
     assert!(capacity.ace_names >= 100);
-    assert_eq!(captured.history.rows.len(), capacity.rows[3]);
+    assert_eq!(captured.aces.rows.len(), capacity.rows[3]);
     let before = captured.allocated_bytes();
     captured.reset();
     captured.grow(&mut capacity);
@@ -1090,8 +886,6 @@ fn wing_daily_private_fields_and_capacities_do_not_gate_hourly_equipment() {
                 if cumulative { 2 } else { 0 },
                 0,
                 0,
-                0,
-                0,
                 4096,
                 1024,
                 64,
@@ -1101,7 +895,6 @@ fn wing_daily_private_fields_and_capacities_do_not_gate_hourly_equipment() {
             wings: 8192,
             sorties: Default::default(),
             scores: Default::default(),
-            transport: [0; 5],
         });
         decode_air_payload(&mut captured, &job, &mut [0; WING_PACK_N]);
         assert_eq!(captured.equipment.outcome, job.equipment_outcome);
@@ -1115,7 +908,7 @@ fn wing_daily_private_fields_and_capacities_do_not_gate_hourly_equipment() {
 }
 
 #[test]
-fn daily_statistics_and_history_skip_reads_and_capacity_preflight() {
+fn daily_statistics_skip_reads_and_capacity_preflight() {
     struct NoReads;
     impl Memory for NoReads {
         fn copy(&self, address: usize, _: &mut [u8]) -> bool {
@@ -1123,7 +916,6 @@ fn daily_statistics_and_history_skip_reads_and_capacity_preflight() {
         }
     }
     let mut stats = AirStatsJob::default();
-    let mut history = AirHistoryJob::default();
     let mut captured = Captured::with_capacities(&Capacities::fixture());
     for hour in 0..24 {
         captured.prepare_hour(hour, false);
@@ -1144,29 +936,6 @@ fn daily_statistics_and_history_skip_reads_and_capacity_preflight() {
             let mut ticks = [0];
             decode_air_stats_payload(&mut captured, 0, &stats, &mut ticks);
             assert_eq!((captured.statistics.outcome, ticks), (SKIPPED, [0]));
-        }
-        if hour != 7 {
-            let report = copy_air_history_refresh(
-                &NoReads,
-                AirHistoryCopyContext {
-                    base: 0,
-                    game_state: 1,
-                    hour,
-                    force_full: false,
-                    history_limit: usize::MAX,
-                    damage_limit: usize::MAX,
-                },
-                &mut history,
-            );
-            assert!(!report.raw_ok && !history.grow_for_next());
-            assert_eq!((report.copy_ticks, report.raw_bytes), ([0; 2], [0; 2]));
-            captured.fail_air_history_capture("worker failed");
-            let mut ticks = [0; 2];
-            captured.decode_air_history_payload(&history, &mut ticks);
-            assert_eq!(
-                (captured.history.outcome, captured.damage.outcome, ticks),
-                (SKIPPED, SKIPPED, [0; 2])
-            );
         }
     }
 }
@@ -1218,14 +987,11 @@ fn wing_truncation_matrix_matches_direct_with_same_caps() {
     let memory = kit::memory(&bytes);
     for (equipment, cumulative) in [(0, 0), (1, 1), (2, 1), (3, 2), (4, 3), (8192, 4096)] {
         let capacity = Capacities {
-            rows: [
-                equipment, 2048, cumulative, 8192, 16384, 1024, 2048, 4096, 1024, 64, 0,
-            ],
+            rows: [equipment, 2048, cumulative, 1024, 2048, 4096, 1024, 64, 0],
             ace_names: 65536,
             wings: 8192,
             sorties: Default::default(),
             scores: Default::default(),
-            transport: [0; 5],
         };
         let direct = kit::direct_with(&memory, &capacity);
         let (split, report, _) = kit::split_with(&memory, &capacity);
@@ -1237,12 +1003,11 @@ fn wing_truncation_matrix_matches_direct_with_same_caps() {
     }
     // Exact-fit arm pins Rows with all rows present.
     let capacity = Capacities {
-        rows: [3, 2048, 2, 8192, 16384, 1024, 2048, 4096, 1024, 64, 0],
+        rows: [3, 2048, 2, 1024, 2048, 4096, 1024, 64, 0],
         ace_names: 65536,
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
-        transport: [0; 5],
     };
     let (split, _, _) = kit::split_with(&memory, &capacity);
     assert_eq!(split.equipment_outcome, Outcome::Rows { len: 3 });
@@ -1490,12 +1255,11 @@ fn stats_truncation_matrix_matches_direct_with_same_caps() {
     let memory = kit::memory(&bytes);
     for rows in [0, 1, 2, 64] {
         let capacities = Capacities {
-            rows: [8192, 2048, 4096, 8192, 16384, 1024, rows, 4096, 1024, 64, 0],
+            rows: [8192, 2048, 4096, 1024, rows, 4096, 1024, 64, 0],
             ace_names: 65536,
             wings: 8192,
             sorties: Default::default(),
             scores: Default::default(),
-            transport: [0; 5],
         };
         let direct = kit::direct(&memory, &capacities);
         let (split, report, _) = kit::split(&memory, &capacities);
@@ -1503,12 +1267,11 @@ fn stats_truncation_matrix_matches_direct_with_same_caps() {
         kit::assert_matches_direct(&split, &direct);
     }
     let capacities = Capacities {
-        rows: [8192, 2048, 4096, 8192, 16384, 1024, 2, 4096, 1024, 64, 0],
+        rows: [8192, 2048, 4096, 1024, 2, 4096, 1024, 64, 0],
         ace_names: 65536,
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
-        transport: [0; 5],
     };
     let (split, _, _) = kit::split(&memory, &capacities);
     assert_eq!(split.outcome, Outcome::Rows { len: 2 });
@@ -2327,13 +2090,11 @@ fn air_bases_staging_overflow_falls_back_to_typed_walk() {
         force_full: true,
         base: kit::BASE,
         game_state: kit::GAME_STATE,
-        transport_admission: Default::default(),
     };
     let mut tiny = AirBasesJob {
         log: crate::raw::RawLog::new(1, 1),
         carrier: super::carrier::Job::default(),
         game_state: 0,
-        transport_context: None,
         registration_demand: None,
         aces_active: false,
         census: Vec::new(),
@@ -2342,6 +2103,14 @@ fn air_bases_staging_overflow_falls_back_to_typed_walk() {
         required_census: 0,
         required_links: 0,
         capacity_charge: crate::raw_memory::Charge::default(),
+        slot_run: Default::default(),
+        slot_full: Vec::new(),
+        slot_report: Default::default(),
+        carry: Default::default(),
+        registration_store: None,
+        registration_work: Default::default(),
+        reached: Default::default(),
+        segments: Vec::new(),
     };
     let report = super::copy_air_bases_refresh(&memory, ctx, &mut tiny);
     assert!(!report.raw_ok);
@@ -2355,6 +2124,8 @@ fn air_bases_staging_overflow_falls_back_to_typed_walk() {
 /// growth the owned payload decodes exactly like the typed walks.
 #[test]
 fn air_bases_census_grows_once_to_five_thousand_countries() {
+    // Sizes from the process-wide country hints; hold them at a fresh attachment's values.
+    let _hint = crate::country_scale::hint_guard();
     use crate::extended::fog;
     use engine::{
         cair_base, ccountry, ccountry_air_container, cgame_state, cstrategic_air_manager,
@@ -2456,7 +2227,6 @@ fn air_bases_census_grows_once_to_five_thousand_countries() {
         force_full: false,
         base: 0,
         game_state: GAME,
-        transport_admission: Default::default(),
     };
     let mut job = AirBasesJob::fixture();
     assert!(job.census.capacity() < COUNTRIES as usize - 1);
@@ -2522,6 +2292,280 @@ fn kit_memory(bytes: &[u8]) -> engine::memory::SliceMemory<'_> {
     engine::memory::SliceMemory { base: 0, bytes }
 }
 
+/// Every guarded copy's first address over a flat fixture.
+struct SlotReads<'a> {
+    inner: engine::memory::SliceMemory<'a>,
+    reads: std::cell::RefCell<Vec<usize>>,
+}
+
+impl engine::Memory for SlotReads<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.reads.borrow_mut().push(address);
+        self.inner.copy(address, output)
+    }
+}
+
+const SPARSE_GAME: usize = 0x10000;
+const SPARSE_SLOTS: usize = 0x70000;
+const SPARSE_COUNTRIES: u32 = 5_001;
+const SPARSE_HANDLE: u64 = (0x43_u64 << 32) | engine::cair_base::TYPE as u64;
+
+/// 5,001 countries; one host base whose country-container vector holds
+/// containers at slots 1, 2600 and 5000, its dense list naming them in that
+/// order, and optionally one more container at `stray`, which the list
+/// lacks.
+fn sparse_slot_world(stray: Option<u32>) -> Vec<u8> {
+    use engine::{ccountry, ccountry_air_container, cgame_state, cstrategic_air_manager};
+    const MANAGER: usize = 0x20000;
+    const HOSTS: usize = 0x21000;
+    const HOST: usize = 0x22000;
+    const DENSE: usize = 0x23000;
+    const TABLE: usize = 0x30000;
+    const LINKS: usize = 0x40000;
+    const OBJECTS: usize = 0x50000;
+    const CONTAINERS: usize = 0x100000;
+    let put32 = |bytes: &mut Vec<u8>, at: usize, value: u32| {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    };
+    let put64 = |bytes: &mut Vec<u8>, at: usize, value: u64| {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    };
+    let header = |bytes: &mut Vec<u8>, at: usize, data: usize, count: u32| {
+        put64(bytes, at, data as u64);
+        put32(bytes, at + 8, count);
+        put32(bytes, at + 12, count);
+    };
+    let mut bytes = vec![0; CONTAINERS + 4 * 0x100];
+    let game = SPARSE_GAME;
+    header(
+        &mut bytes,
+        game + cgame_state::COUNTRIES,
+        TABLE,
+        SPARSE_COUNTRIES,
+    );
+    header(
+        &mut bytes,
+        game + cgame_state::COUNTRY_LINKS,
+        LINKS,
+        SPARSE_COUNTRIES,
+    );
+    put64(
+        &mut bytes,
+        game + cgame_state::STRATEGIC_AIR_MANAGER,
+        MANAGER as u64,
+    );
+    put64(
+        &mut bytes,
+        MANAGER,
+        cstrategic_air_manager::VTABLE_RVA as u64,
+    );
+    header(
+        &mut bytes,
+        MANAGER + cstrategic_air_manager::STATELESS_AIR_BASES,
+        HOSTS,
+        1,
+    );
+    put64(&mut bytes, HOSTS, HOST as u64);
+    put64(&mut bytes, HOST, engine::cair_base::VTABLE_RVA as u64);
+    put64(&mut bytes, HOST + engine::cair_base::HANDLE, SPARSE_HANDLE);
+    put64(
+        &mut bytes,
+        HOST + engine::cair_base::HOST_REFERENCE,
+        (3 << 32) | 51,
+    );
+    header(
+        &mut bytes,
+        HOST + engine::cair_base::COUNTRY_CONTAINERS,
+        SPARSE_SLOTS,
+        SPARSE_COUNTRIES,
+    );
+    header(
+        &mut bytes,
+        HOST + engine::cair_base::REGISTERED_CONTAINERS,
+        DENSE,
+        3,
+    );
+    for slot in 1..SPARSE_COUNTRIES {
+        let object = OBJECTS + slot as usize * 16;
+        put64(&mut bytes, TABLE + slot as usize * 8, object as u64);
+        put32(&mut bytes, LINKS + slot as usize * 4, slot);
+        put64(&mut bytes, object, ccountry::VTABLE_RVA as u64);
+        put32(&mut bytes, object + ccountry::ID, slot);
+    }
+    let occupied = [1_u32, 2600, 5000];
+    for (index, slot) in occupied.into_iter().chain(stray).enumerate() {
+        let container = CONTAINERS + index * 0x100;
+        put64(
+            &mut bytes,
+            container,
+            ccountry_air_container::VTABLE_RVA as u64,
+        );
+        put32(
+            &mut bytes,
+            container + ccountry_air_container::COUNTRY,
+            slot,
+        );
+        put64(
+            &mut bytes,
+            container + ccountry_air_container::CAPACITY_RAW,
+            u64::from(slot),
+        );
+        put64(
+            &mut bytes,
+            SPARSE_SLOTS + slot as usize * 8,
+            container as u64,
+        );
+        if index < occupied.len() {
+            put64(&mut bytes, DENSE + index * 8, container as u64);
+        }
+    }
+    bytes
+}
+
+/// One accepted acquisition of `bytes` under `run`, after the census grows
+/// to the fixture's countries: the job and the second pass's live reads.
+fn sparse_slot_copy(
+    bytes: &[u8],
+    run: crate::air_base_changes::SlotRun,
+) -> (AirBasesJob, Vec<usize>) {
+    let memory = SlotReads {
+        inner: kit_memory(bytes),
+        reads: Default::default(),
+    };
+    let ctx = AirBasesCopyContext {
+        hour: 0,
+        force_full: false,
+        base: 0,
+        game_state: SPARSE_GAME,
+    };
+    let mut job = AirBasesJob::fixture();
+    job.slot_run = run;
+    if !copy_air_bases_refresh(&memory, ctx, &mut job).raw_ok {
+        assert!(job.grow_for_next());
+        job.grow();
+        job.clear();
+    }
+    memory.reads.borrow_mut().clear();
+    assert!(copy_air_bases_refresh(&memory, ctx, &mut job).raw_ok);
+    (job, memory.reads.into_inner())
+}
+
+/// The owned replay of `job`'s registrations, and the direct full walk.
+fn sparse_slot_decode(
+    bytes: &[u8],
+    job: &AirBasesJob,
+) -> (
+    crate::extended::fog::RegistrationsSnapshot,
+    crate::extended::fog::RegistrationsSnapshot,
+) {
+    use crate::extended::fog;
+    let rows = 8;
+    let mut owned = fog::Captured::with_capacities(&fog::Capacities {
+        rows: [0, 0, 0, 0, 0, rows, 0],
+        radar_provinces: 0,
+        area_provinces: 0,
+        wings: 1,
+    });
+    let mut ticks = [0; AIR_BASES_N];
+    owned.registrations_raw_mode = true;
+    owned.decode_registrations_payload(0, job, &mut ticks);
+    let direct =
+        fog::Captured::collect_registrations_direct(rows, 1, &kit_memory(bytes), 0, SPARSE_GAME);
+    (owned.registrations_snapshot(), direct)
+}
+
+/// The distinct addresses of live reads of the slot vector, in order.
+fn slot_vector_reads(reads: &[usize]) -> Vec<usize> {
+    let vector = SPARSE_SLOTS..SPARSE_SLOTS + SPARSE_COUNTRIES as usize * 8;
+    let mut reads: Vec<usize> = reads
+        .iter()
+        .copied()
+        .filter(|at| vector.contains(at))
+        .collect();
+    reads.sort_unstable();
+    reads.dedup();
+    reads
+}
+
+/// A mod-sized base with a handful of containers: its dense list proves
+/// their slots, so the acquisition reads only their slot words, and the
+/// replay, laying the slots out from the same plan, publishes the full
+/// scan's rows.
+#[test]
+fn a_five_thousand_slot_base_copies_only_its_listed_slot_words_and_decodes_the_full_scan() {
+    let _hint = crate::country_scale::hint_guard();
+    use crate::{air_base_changes::SlotRun, sampled_verify::Check};
+    let bytes = sparse_slot_world(None);
+    let (full, full_reads) = sparse_slot_copy(&bytes, SlotRun::default());
+    assert_eq!(full.slot_report.full, 1);
+    assert!(slot_vector_reads(&full_reads).len() > 3);
+    let (decoded, direct) = sparse_slot_decode(&bytes, &full);
+    assert_eq!(direct.outcome, Outcome::Rows { len: 3 });
+    assert_eq!(
+        (decoded.outcome, &decoded.rows),
+        (direct.outcome, &direct.rows)
+    );
+
+    let dense = SlotRun {
+        dense: true,
+        check: Check::Nothing,
+    };
+    let (job, reads) = sparse_slot_copy(&bytes, dense);
+    assert_eq!((job.slot_report.dense, job.slot_report.full), (1, 0));
+    assert_eq!(
+        slot_vector_reads(&reads),
+        [1, 2600, 5000].map(|slot: usize| SPARSE_SLOTS + slot * 8)
+    );
+    let (decoded, direct) = sparse_slot_decode(&bytes, &job);
+    assert_eq!(
+        (decoded.outcome, &decoded.rows, &decoded.wings),
+        (direct.outcome, &direct.rows, &direct.wings)
+    );
+}
+
+/// A container the dense list lacks, whether it shares a listed container's
+/// chunk or not: the plan reads neither, so only the hour's comparison sees
+/// it, which records the base from the full scan (the replay too) and counts
+/// the difference.
+#[test]
+fn a_container_the_dense_list_lacks_is_seen_by_the_comparison_alone() {
+    let _hint = crate::country_scale::hint_guard();
+    use crate::{air_base_changes::SlotRun, sampled_verify::Check};
+    let unchecked = SlotRun {
+        dense: true,
+        check: Check::Nothing,
+    };
+    let compared = SlotRun {
+        dense: true,
+        check: Check::Every,
+    };
+    // Slot 2 shares slot 1's chunk; slot 4000 lies in a chunk no listed
+    // container names.
+    for stray in [2, 4000] {
+        let bytes = sparse_slot_world(Some(stray));
+        let (job, _) = sparse_slot_copy(&bytes, unchecked);
+        assert_eq!(job.slot_report.mismatches, 0);
+        let (missed, direct) = sparse_slot_decode(&bytes, &job);
+        assert_eq!(direct.outcome, Outcome::Rows { len: 4 });
+        assert_eq!(missed.outcome, Outcome::Rows { len: 3 });
+        let (job, _) = sparse_slot_copy(&bytes, compared);
+        assert_eq!(
+            (
+                job.slot_report.verified,
+                job.slot_report.mismatches,
+                job.slot_report.full
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(job.slot_full, [SPARSE_HANDLE]);
+        let (decoded, direct) = sparse_slot_decode(&bytes, &job);
+        assert_eq!(
+            (decoded.outcome, &decoded.rows, &decoded.wings),
+            (direct.outcome, &direct.rows, &direct.wings)
+        );
+    }
+}
+
 #[test]
 fn air_raw_job_constructors_wait_for_live_demand() {
     let bases = AirBasesJob::new();
@@ -2574,414 +2618,6 @@ fn air_bases_copy_sizes_cover_documented_read_set() {
             "missing size {required} in {sizes:?}"
         );
     }
-}
-
-#[test]
-fn air_history_and_damage_share_slot_7() {
-    use replay::rows::TableId;
-    for table in [TableId::AirRegionHistory, TableId::AirRegionDamage] {
-        assert!(replay::cadence::is_staggered(table), "{table:?}");
-        for hour in -24_i32..48 {
-            assert_eq!(
-                replay::cadence::is_refresh(table, hour),
-                hour.rem_euclid(24) == 7,
-                "{table:?} at {hour}"
-            );
-        }
-    }
-}
-
-#[test]
-fn air_history_split_copy_matches_direct_walk() {
-    use super::air_history_test_kit as kit;
-    use engine::memory::{CountedMemory, ReadCounts};
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let direct = kit::direct(&memory);
-    let memory = CountedMemory::new(memory);
-    let capture = read_accounting::Capture::new();
-    let (split, report, mut job) = kit::split(&memory);
-    let counts = capture.finish();
-    assert!(report.raw_ok);
-    kit::assert_matches_direct(&split, &direct);
-    // Three records across two sides plus three damage entries.
-    assert_eq!(split.history_outcome, Outcome::Rows { len: 3 });
-    assert_eq!(split.damage_outcome, Outcome::Rows { len: 3 });
-    assert_eq!(split.history[0].key.wing_id, 0x1111);
-    assert_eq!(split.history[0].region_owner, 7);
-    assert_eq!(split.damage[0].cause, 5);
-    assert_eq!(split.damage[0].amount, 1000);
-    assert_eq!(split.damage[2].channel, 1);
-    let anchor = TableId::AirRegionHistory;
-    let mut expected = read_accounting::ZERO;
-    // 220 scalar bytes, 153 bytes in six leaf gathers and 88 bytes in
-    // four root batches. AirRegionDamage shares this actual native anchor.
-    expected[anchor.index()] = ReadCounts {
-        copy_calls: 20,
-        scattered_calls: 6,
-        record_calls: 4,
-        plan_calls: 0,
-        spans: 45,
-        bytes: 461,
-    };
-    assert_eq!(counts, expected);
-    let mut refreshes = 0;
-    for hour in 0..24 {
-        if replay::cadence::is_refresh(anchor, hour) {
-            refreshes += 1;
-            continue;
-        }
-        let capture = read_accounting::Capture::new();
-        let skipped = copy_air_history_refresh(
-            &memory,
-            AirHistoryCopyContext {
-                base: kit::BASE,
-                game_state: kit::GAME_STATE,
-                hour,
-                force_full: false,
-                history_limit: usize::MAX,
-                damage_limit: usize::MAX,
-            },
-            &mut job,
-        );
-        assert_eq!(capture.finish(), read_accounting::ZERO);
-        assert!(!skipped.raw_ok && !job.grow_for_next());
-        assert_eq!((skipped.copy_ticks, skipped.raw_bytes), ([0; 2], [0; 2]));
-    }
-    assert_eq!(refreshes, 1);
-    let measured = counts[anchor.index()];
-    let per_refresh = [
-        measured.copy_calls,
-        measured.scattered_calls,
-        measured.record_calls,
-        measured.plan_calls,
-        measured.spans,
-        measured.bytes,
-    ];
-    println!(
-        "daily_fixture cohort=air_history_split_copy_matches_direct_walk anchor={anchor:?} counters=[copy,scattered,records,plans,spans,bytes] per_refresh={per_refresh:?} before_24h={:?} after_24h={per_refresh:?} basis=unchanged_refresh_x_24_legacy_hourly_vs_1_daily",
-        per_refresh.map(|value| value * 24)
-    );
-}
-
-#[test]
-fn air_history_truncation_matrix_matches_direct_with_same_caps() {
-    // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
-    // copy→decode against the SAME memory with the SAME pooled caps,
-    // asserting identical outcome (incl. len/unread) and identical rows.
-    use super::air_history_test_kit as kit;
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    for (history, damage) in [(0, 0), (1, 1), (2, 1), (3, 3), (64, 64)] {
-        let direct = kit::direct_with(&memory, history, damage);
-        let (split, report, _) = kit::split_with(&memory, history, damage);
-        assert!(report.raw_ok, "history={history} damage={damage}");
-        kit::assert_matches_direct(&split, &direct);
-    }
-    let direct = kit::direct_with(&memory, 3, 3);
-    assert_eq!(direct.history_outcome, Outcome::Rows { len: 3 });
-    assert_eq!(direct.damage_outcome, Outcome::Rows { len: 3 });
-}
-
-#[test]
-fn air_history_split_copy_matches_direct_walk_on_fault_matrix() {
-    // Every fault arm asserts identical admitted rows/outcomes plus per-slot
-    // attribution: record faults block both slots (the typed walk fails
-    // both tables), damage-only faults block damage while history stays
-    // Rows (the typed walk keeps records).
-    use super::air_history_test_kit as kit;
-    use engine::memory::SliceMemory;
-    struct Fault<'a> {
-        memory: SliceMemory<'a>,
-        fault: std::ops::Range<usize>,
-    }
-    impl engine::Memory for Fault<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            let Some(end) = address.checked_add(output.len()) else {
-                return false;
-            };
-            if address < self.fault.end && end > self.fault.start {
-                return false;
-            }
-            self.memory.copy(address, output)
-        }
-    }
-    for fault in [
-        kit::GAME_STATE + engine::cgame_state::COUNTRIES,
-        kit::MANAGER,
-        kit::R0,
-        kit::R0 + engine::cair_region_combat_data::OWNER,
-        kit::REC0,
-        // Damage-scoped faults: history still decodes identical Rows.
-        kit::REC0 + engine::sair_wing_combat_data::FIRST_DAMAGE,
-        kit::E0,
-        kit::E0 + engine::sdamage_entry::AMOUNT,
-    ] {
-        let bytes = kit::fixture();
-        let memory = Fault {
-            memory: SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            },
-            fault: fault..fault + 1,
-        };
-        let direct = kit::direct(&memory);
-        let (split, report, _) = kit::split(&memory);
-        assert!(report.raw_ok, "fault={fault:x}");
-        kit::assert_matches_direct(&split, &direct);
-    }
-}
-
-#[test]
-fn air_history_staging_overflow_falls_back_to_typed_walk() {
-    use super::air_history_test_kit as kit;
-    use super::{AirHistoryCopyContext, AirHistoryJob};
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let ctx = AirHistoryCopyContext {
-        hour: 0,
-        force_full: true,
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-
-        history_limit: 8192,
-        damage_limit: 16_384,
-    };
-    let mut tiny = AirHistoryJob::default();
-    let report = super::copy_air_history_refresh(&memory, ctx, &mut tiny);
-    assert!(!report.raw_ok);
-}
-
-#[test]
-fn air_history_constructor_waits_for_original_headers() {
-    let job = AirHistoryJob::new();
-    assert!(job.history.is_empty());
-    assert!(job.damage.is_empty());
-}
-
-#[test]
-fn air_history_seed_covers_full_country_by_region_null_pointer_census() {
-    use super::air_history_test_kit as kit;
-    use engine::cstrategic_air;
-    fn put32(bytes: &mut [u8], at: usize, value: u32) {
-        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
-    }
-    fn put64(bytes: &mut [u8], at: usize, value: usize) {
-        bytes[at..at + 8].copy_from_slice(&(value as u64).to_le_bytes());
-    }
-    fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
-        put64(bytes, at, data);
-        put32(bytes, at + 8, count);
-        put32(bytes, at + 12, count);
-    }
-    let mut bytes = kit::fixture();
-    bytes.resize(0xa0000, 0);
-    header(
-        &mut bytes,
-        kit::GAME_STATE + cgame_state::COUNTRIES,
-        0x40000,
-        440,
-    );
-    header(
-        &mut bytes,
-        kit::GAME_STATE + cgame_state::COUNTRY_LINKS,
-        0x41000,
-        440,
-    );
-    header(
-        &mut bytes,
-        kit::MANAGER + cstrategic_air_manager::COUNTRY_AIR,
-        0x42000,
-        440,
-    );
-    for slot in 1..440_usize {
-        let country = 0x50000 + slot * 16;
-        let air = 0x60000 + slot * 512;
-        put64(&mut bytes, 0x40000 + slot * 8, country);
-        put32(&mut bytes, 0x41000 + slot * 4, slot as u32);
-        put64(&mut bytes, country, ccountry::VTABLE_RVA);
-        put32(&mut bytes, country + ccountry::ID, slot as u32);
-        put64(&mut bytes, 0x42000 + slot * 8, air);
-        put64(&mut bytes, air, cstrategic_air::VTABLE_RVA);
-        put32(&mut bytes, air + cstrategic_air::COUNTRY, slot as u32);
-        // Shared zero bytes deliberately still require every observation.
-        header(
-            &mut bytes,
-            air + cstrategic_air::REGION_COMBAT,
-            0x43000,
-            512,
-        );
-    }
-    let mut job = AirHistoryJob::fixture();
-    acquire_air_history_pass(
-        &mut job,
-        &kit::memory(&bytes),
-        kit::BASE,
-        kit::GAME_STATE,
-        0,
-        0,
-    );
-    assert_eq!(job.history_result, Outcome::Rows { len: 0 });
-    assert_eq!(job.damage_result, Outcome::Rows { len: 0 });
-    assert!(job.raw_bytes[0] >= (439 * 512 * 8) as u64);
-    assert!(job.acquired);
-    assert!(!job.grow_for_next());
-}
-
-#[test]
-fn air_history_copy_sizes_cover_documented_read_set() {
-    // S3: every Memory::copy size the shared copy pass issues, recorded
-    // through the real pass. Census words (4/8), array headers (16),
-    // root identity (8/4/16), record head (26) with attribution (4) and
-    // copied byte (1), damage headers (16) with entries (12/8).
-    use super::air_history_test_kit as kit;
-    use engine::Memory;
-    use std::collections::BTreeSet;
-    struct Recorder<'a> {
-        inner: engine::memory::SliceMemory<'a>,
-        sizes: std::cell::RefCell<BTreeSet<usize>>,
-    }
-    impl Memory for Recorder<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.sizes.borrow_mut().insert(output.len());
-            self.inner.copy(address, output)
-        }
-    }
-    let bytes = kit::fixture();
-    let memory = Recorder {
-        inner: kit::memory(&bytes),
-        sizes: std::cell::RefCell::new(BTreeSet::new()),
-    };
-    let (_split, report, _) = kit::split(&memory);
-    assert!(report.raw_ok);
-    let sizes = memory.sizes.borrow().clone();
-    for required in [1, 4, 8, 12, 16, 26] {
-        assert!(
-            sizes.contains(&required),
-            "missing size {required} in {sizes:?}"
-        );
-    }
-}
-
-#[test]
-fn air_history_preflights_both_buffers_before_source_reads() {
-    struct Unread;
-    impl Memory for Unread {
-        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            panic!("preflight must not read");
-        }
-    }
-    for short_history in [false, true] {
-        let mut job = AirHistoryJob::fixture();
-        if short_history {
-            job.history.clear();
-        } else {
-            job.damage.clear();
-        }
-        let report = copy_air_history_refresh(
-            &Unread,
-            AirHistoryCopyContext {
-                hour: 0,
-                force_full: true,
-                base: 0,
-                game_state: 0x1000,
-                history_limit: 8192,
-                damage_limit: 16_384,
-            },
-            &mut job,
-        );
-        assert!(!report.raw_ok && !job.acquired);
-        assert!(job.grow_for_next());
-        job.grow();
-        assert!(job.has_storage());
-        assert!(!job.grow_for_next());
-    }
-}
-
-#[test]
-fn air_history_owned_walk_preserves_exact_read_order_and_fault_prefix_without_retry() {
-    use super::air_history_test_kit as kit;
-    struct Observed<'a> {
-        inner: engine::memory::SliceMemory<'a>,
-        fault: usize,
-        calls: std::cell::RefCell<Vec<(usize, usize)>>,
-    }
-    impl Memory for Observed<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.calls.borrow_mut().push((address, output.len()));
-            if address <= self.fault && self.fault < address.saturating_add(output.len()) {
-                return false;
-            }
-            self.inner.copy(address, output)
-        }
-    }
-    let bytes = kit::fixture();
-    for fault in [
-        usize::MAX,
-        kit::R0 + cair_region_combat_data::OWNER,
-        kit::REC0 + sair_wing_combat_data::ATTRIBUTED_COUNTRY,
-        kit::E0 + sdamage_entry::AMOUNT,
-    ] {
-        let memory = Observed {
-            inner: kit::memory(&bytes),
-            fault,
-            calls: Default::default(),
-        };
-        let expected = kit::direct(&memory);
-        let calls = std::mem::take(&mut *memory.calls.borrow_mut());
-        let mut job = AirHistoryJob::fixture();
-        acquire_air_history_pass(&mut job, &memory, kit::BASE, kit::GAME_STATE, 8192, 16_384);
-        assert!(job.acquired);
-        assert_eq!(job.history_result, expected.history_outcome);
-        assert_eq!(job.damage_result, expected.damage_outcome);
-        assert_eq!(*memory.calls.borrow(), calls, "fault {fault:x}");
-    }
-}
-
-#[test]
-fn air_history_worker_installs_only_admitted_owned_prefix_before_recycle() {
-    use super::air_history_test_kit as kit;
-    let bytes = kit::fixture();
-    let (_, _, mut job) = kit::split(&kit::memory(&bytes));
-    let mut captured = Captured::with_capacities(&Capacities::fixture());
-    captured.history.rows[4].planes = 123;
-    job.history[4].planes = 456;
-    captured.decode_air_history_payload(&job, &mut [0; 2]);
-    assert_eq!(
-        captured.history.rows[4].planes, 123,
-        "unadmitted tail is not copied"
-    );
-    let first = captured.history.rows[0];
-    job.history[0].planes ^= 7;
-    job.clear();
-    assert_eq!(
-        captured.history.rows[0], first,
-        "recycled storage does not alias frame"
-    );
-}
-
-#[test]
-fn air_history_capacity_charge_follows_owned_payload_growth() {
-    use crate::raw_memory::{Charge, Tracker, vector_bytes};
-    static LOCAL: Tracker = Tracker::new();
-    let mut job = AirHistoryJob {
-        capacity_charge: Charge::empty_on(&LOCAL),
-        required_history: 3,
-        required_damage: 5,
-        ..Default::default()
-    };
-    job.grow();
-    let capacity = LOCAL.snapshot().current;
-    assert_eq!(
-        capacity.payload_vectors,
-        vector_bytes(&job.history) + vector_bytes(&job.damage)
-    );
-    assert_eq!(capacity.auxiliary_vectors, 0);
-    assert_eq!(capacity.index_vectors, 0);
-    job.clear();
-    assert_eq!(LOCAL.snapshot().current, capacity);
-    drop(job);
-    assert_eq!(LOCAL.snapshot().current, Default::default());
 }
 
 #[test]

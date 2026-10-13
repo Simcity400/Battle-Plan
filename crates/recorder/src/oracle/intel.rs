@@ -161,7 +161,7 @@ fn compare_captured_operatives(
         matched += actual.len().min(expected.len());
     }
     report.compared("CapturedOperativeReferences", matched);
-    report.limitation("the game saves the captured reference's stored country, not the resolved CUnitLeader owner; owner and failed reference resolution have no exact save counterpart", "CapturedOperativeReferences.owner");
+    report.limitation("the game saves the captured reference's stored country, not the resolved commander owner; owner and failed reference resolution have no exact save counterpart", "CapturedOperativeReferences.owner");
     Ok(())
 }
 
@@ -1169,8 +1169,8 @@ fn compare_intel_networks(
     Ok(())
 }
 
-/// Compare the country-rooted CCurrentAutonomyStatus serializer, not the
-/// historically stored CSubjectRelation definition in active_relations.
+/// Compare the country-rooted current autonomy serializer, not the
+/// historically stored subject-relation definition in active_relations.
 /// The game emits score, current/adjacent names and the date's
 /// persistent base, independently of its current hour.
 fn compare_autonomy(
@@ -1712,7 +1712,6 @@ fn compare_capitulation(
     countries: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
-    const DATE_SENTINEL: i32 = 0x29c77f8;
     let mut seen = BTreeSet::new();
     let mut matched = 0;
     for actual in complete::<tables::Capitulation>(frame)? {
@@ -1753,34 +1752,6 @@ fn compare_capitulation(
                 &label,
             );
         }
-        equal(
-            report,
-            &format!("{label}.last_surrender_date"),
-            (actual.last_surrender_hour != DATE_SENTINEL).then_some(actual.last_surrender_hour),
-            saved_hour(expected.last_surrender_date)?,
-        );
-        equal(
-            report,
-            &format!("{label}.faction_join_date"),
-            (actual.faction_join_hour != DATE_SENTINEL).then_some(actual.faction_join_hour),
-            saved_hour(expected.faction_join_date)?,
-        );
-        if let Some(legitimacy) = &expected.legitimacy {
-            report.scalar(
-                &label,
-                "legitimacy",
-                Some(actual.legitimacy_raw),
-                Some(legitimacy),
-            );
-        } else {
-            report.limitation("legitimacy is serialized only for a positive exile host; omission cannot verify its native qword", &label);
-        }
-        equal(
-            report,
-            &format!("{label}.exile_army_leaders"),
-            Some(actual.exile_army_leaders),
-            expected.exile_army_leaders,
-        );
     }
     for (tag, country) in report.canonical_countries(&save.countries) {
         if country.diplomacy.is_some() && !seen.contains(tag.as_slice()) {
@@ -2253,7 +2224,7 @@ fn compare_variables(
         }
         if expected.reserved_entries != 0 {
             report.limitation(
-                "scalar random entries use CVariables' reserved metadata name; their native literal keys cannot be distinguished in the save",
+                "scalar random entries use the variable store's reserved metadata name; their native literal keys cannot be distinguished in the save",
                 format!("{label}: {} reserved entries", expected.reserved_entries),
             );
         }
@@ -2791,7 +2762,7 @@ mod tests {
             report
                 .limitations
                 .keys()
-                .any(|reason| reason.contains("resolved CUnitLeader owner"))
+                .any(|reason| reason.contains("resolved commander owner"))
         );
         let mut changed = rows.clone();
         changed[0].operative = 0;

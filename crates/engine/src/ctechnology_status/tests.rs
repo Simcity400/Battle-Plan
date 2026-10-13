@@ -1431,3 +1431,117 @@ fn repeated_handles_survive_dictionary_rehash_without_rereading_templates() {
         );
     }
 }
+
+#[test]
+fn governance_batch_slots_serial_census_and_5000_country_equality() {
+    use crate::governance_batch::test_kit::{Trace, World};
+    let world = World::new(5_000);
+    let before = Trace::new(&world, "ResearchSlots serial");
+    let after = Trace::new(&world, "ResearchSlots batch");
+    for id in 1..=5_000 {
+        let mut old = [cresearch_slot::Row::default(); 3];
+        let mut new = old;
+        let serial = super::serial_slots::walk_slots_buffer(
+            &before,
+            0,
+            World::country(id),
+            id,
+            crate::walk::Buffer::Fixed(&mut old),
+        );
+        let batched = walk_slots(&after, 0, World::country(id), id, &mut new);
+        assert_eq!(serial, Outcome::Rows { len: 3 });
+        assert_eq!(batched, serial);
+        assert_eq!(new, old);
+        assert_eq!((before.count(), after.count()), (13, 7));
+        assert!(after.fallbacks.witnesses().is_empty());
+        before.clear();
+        after.clear();
+    }
+    println!("ResearchSlots: 13 -> 7 guarded calls/country; 5000 countries");
+}
+
+#[test]
+fn governance_batch_slots_persistent_and_one_shot_every_serial_operand() {
+    use crate::governance_batch::test_kit::{
+        SLOT, SLOTS, TECH, TEMPLATE, Trace, World, addresses, never_harsher,
+    };
+    let world = World::new(1);
+    let capture = |memory: &Trace<'_, World>, serial: bool| {
+        let mut rows = [cresearch_slot::Row::default(); 3];
+        let outcome = if serial {
+            super::serial_slots::walk_slots_buffer(
+                memory,
+                0,
+                World::country(1),
+                1,
+                crate::walk::Buffer::Fixed(&mut rows),
+            )
+        } else {
+            walk_slots(memory, 0, World::country(1), 1, &mut rows)
+        };
+        (outcome, rows[..outcome.len()].to_vec())
+    };
+    // Each selected span faults its own gather, which must be counted exactly
+    // once. Equality and upper bounds alone would miss a removed counter hook.
+    let country = World::country(1);
+    for (offset, reader) in [
+        (SLOTS, "slot_pointers"),
+        (SLOT + cresearch_slot::STATUS, "slots"),
+        (
+            TECH + crate::ctechnology::LIVE_PROGRESS,
+            "assigned_technologies",
+        ),
+        (
+            TEMPLATE + crate::ctechnology_template::DATABASE_INDEX,
+            "assigned_templates",
+        ),
+    ] {
+        for once in [false, true] {
+            let before = Trace::fault(&world, "ResearchSlots serial", country + offset, once);
+            let after = Trace::fault(&world, "ResearchSlots batch", country + offset, once);
+            let old = capture(&before, true);
+            let new = capture(&after, false);
+            if once {
+                never_harsher(old.0, new.0);
+            } else {
+                assert_eq!(new, old);
+            }
+            assert_eq!(
+                &*after.fallbacks.witnesses(),
+                &[reader],
+                "{reader}, once={once}"
+            );
+        }
+    }
+    let census = Trace::new(&world, "ResearchSlots serial census");
+    capture(&census, true);
+    for address in addresses(&census) {
+        for once in [false, true] {
+            let before = Trace::fault(&world, "ResearchSlots serial", address, once);
+            let after = Trace::fault(&world, "ResearchSlots batch", address, once);
+            let old = capture(&before, true);
+            let new = capture(&after, false);
+            if once {
+                never_harsher(old.0, new.0);
+            } else {
+                assert_eq!(new, old, "persistent {address:#x}");
+            }
+            for reader in [
+                "slot_pointers",
+                "slots",
+                "assigned_technologies",
+                "assigned_templates",
+            ] {
+                assert!(
+                    after
+                        .fallbacks
+                        .witnesses()
+                        .iter()
+                        .filter(|&&r| r == reader)
+                        .count()
+                        <= 1
+                );
+            }
+        }
+    }
+}

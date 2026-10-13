@@ -38,8 +38,9 @@
 //! tag that another slot now holds is a second country, never joined to it, and a
 //! slot recorded under another tag is another entry.
 //!
-//! The three tables share a daily slot. A read is an hour whose frame timed a
-//! walk of that slot ([`slot_read`]). Values start at a read, are carried over
+//! The three tables are read together every hour (daily, one slot, in older
+//! recordings). A read is an hour whose frame timed a walk of them
+//! ([`slot_read`]). Values start at a read, are carried over
 //! the following recorded hours and end at a gap or at an hour whose tables are
 //! incomplete, so an hour the recording lacks is never given a value.
 
@@ -291,7 +292,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                         open = false;
                         continue;
                     };
-                    if !slot_read(&decoded.metrics, TableId::WorldTension, hour) {
+                    if !slot_read(replay.format, &decoded.metrics, TableId::WorldTension, hour) {
                         if open && let Some(read) = result.reads.last_mut() {
                             read.last_hour = hour;
                         }

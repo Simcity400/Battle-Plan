@@ -421,6 +421,9 @@ pub fn walk_slots_buffer(
         .ok_or("research slots header invalid")?;
         output.ensure(array.count as usize)?;
         let len = output.len().min(array.count as usize);
+        let batches = crate::governance_batch::Assignments::gather(memory, array, len, false);
+        let batched = batches.view(memory);
+        let memory = &batched;
         for (index, row) in output[..len].iter_mut().enumerate() {
             let pointer = read::<u64>(
                 memory,
@@ -458,3 +461,7 @@ pub fn walk_slots_buffer(
 mod border_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "ctechnology_status/serial_slots.rs"]
+mod serial_slots;

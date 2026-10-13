@@ -1,14 +1,21 @@
 //! Stored simulation inputs of the viewer's fog and unit visibility: the DLC
 //! mask, country and occupied-state modifiers, and the relation slots. The
 //! relation pass also records each country's enemy list for the raid gate,
-//! and each country's strategic navy supplies its region access modes.
-//! Each input fails alone, except that one diplomacy pass produces both
-//! RelationLinks and CountryWars; the viewer derives fog per country.
-use super::country_directed_wars as directed;
+//! and each country's strategic navy supplies its region access modes, read
+//! every hour: an hour whose region access domain is quiet
+//! ([`crate::world_input_changes`]: neither the access setter nor the navy
+//! reset ran since the held read) publishes the held read without reading
+//! any navy. Each input fails alone, except that one diplomacy pass produces
+//! both RelationLinks and CountryWars; the viewer derives fog per country.
+//! CountryVisibility carries only an unmarked country's raw modifier entry
+//! under the country input set's held epoch and census identity. The sampled
+//! slice compares that raw entry; effective definition metadata is read hourly.
+mod carry;
 use crate::{
     sampling::qpc,
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
+    world_input_changes::{self as changes, Changes, Domain, Held, Plan},
 };
 use engine::allocation::{copy_vec, owned_vec};
 use engine::{
@@ -23,7 +30,18 @@ use replay::{
         SimulationFeatureRow, StateVisibilityRow, TableId, tables,
     },
 };
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU64, Ordering::Relaxed},
+};
+
+/// The latest complete NavalRegionAccess read, between the Slow job's
+/// captures (one runs at a time).
+static HELD_ACCESS: Mutex<Held<Vec<cstrategic_navy::AccessRow>>> =
+    Mutex::new(Held::new(Vec::new()));
+
+/// Raw country visibility inputs between the Slow job's worker captures.
+static HELD_VISIBILITY: Mutex<carry::Store> = Mutex::new(carry::Store::new());
 
 static RUNTIME_SCALAR_REFUSALS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 pub(crate) fn runtime_scalars_data() -> impl serde::Serialize {
@@ -72,8 +90,6 @@ pub struct Capacities {
     /// Enemy links of every war row.
     war_links: usize,
     naval_access: usize,
-    directed: directed::Capacities,
-    queries: usize,
 }
 impl Capacities {
     /// Advisory live demand at attach and the input-demand cadence.
@@ -103,7 +119,7 @@ impl Capacities {
             cstrategic_navy::access_modes(memory, base, state, &mut []),
         );
         let mut resolver = crelation_status::Resolver::default();
-        let (links, directed) = crelation_status::links_observed_transport_demands(
+        let links = crelation_status::links_observed_transport(
             memory,
             base,
             state,
@@ -113,19 +129,11 @@ impl Capacities {
                 countries: &mut [],
             },
             &mut resolver,
-            Some(crelation_status::DirectedWarOutput {
-                owners: &mut [],
-                cells: &mut [],
-            }),
             0,
-            &[],
         );
         accept(&mut self.links, links.links);
         accept(&mut self.wars, links.wars);
         raise(&mut self.war_links, links.required_countries);
-        raise(&mut self.directed.owners, directed.required_owners);
-        raise(&mut self.directed.cells, directed.required_cells);
-        self.queries = self.queries.max(crate::directed_war_queries::demand());
         failure.map_or(Ok(()), Err)
     }
 
@@ -133,8 +141,6 @@ impl Capacities {
     /// war links start at the same size and grow from observed demand. Never
     /// lowers a capacity.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
-        self.directed.raise_for_countries(slots);
-        self.queries = self.queries.max(slots);
         self.countries = self.countries.max(slots);
         self.links = self.links.max(slots);
         self.wars = self.wars.max(slots);
@@ -153,9 +159,6 @@ struct FeatureInputs {
 }
 
 pub struct Captured {
-    directed: directed::Captured,
-    queries: Arena<engine::directed_war_queries::Demand>,
-    query_admission: Result<(), &'static str>,
     dlc_mask: CaptureRows<FeatureInputs>,
     local_player: CaptureRows<[u32; 2]>,
     countries: CaptureRows<native::CountryRow>,
@@ -174,7 +177,9 @@ pub struct Captured {
 
 impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
-        self.directed.fail(reason);
+        if let Ok(mut held) = HELD_VISIBILITY.try_lock() {
+            held.forget();
+        }
         self.dlc_mask
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
         self.countries
@@ -194,9 +199,6 @@ impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self {
-            directed: directed::Captured::new(Default::default()),
-            queries: Arena::new(0),
-            query_admission: Err("directed war query original callback witness unavailable"),
             dlc_mask: CaptureRows::new(0),
             local_player: CaptureRows::new(0),
             countries: CaptureRows::new(0),
@@ -213,9 +215,6 @@ impl Captured {
 
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
-            directed: directed::Captured::new(capacity.directed),
-            queries: Arena::new(capacity.queries),
-            query_admission: Err("directed war query original callback witness unavailable"),
             dlc_mask: CaptureRows::new(1),
             local_player: CaptureRows::new(1),
             countries: CaptureRows::new(capacity.countries),
@@ -230,8 +229,6 @@ impl Captured {
         }
     }
     pub fn reset(&mut self) {
-        self.directed.reset();
-        self.queries.reset();
         self.weather_suspend_failure = None;
         self.dlc_mask.reset();
         self.local_player.reset();
@@ -247,9 +244,7 @@ impl Captured {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.directed.allocated_bytes()
-            + self.queries.allocated_bytes()
-            + self.local_player.allocated_bytes()
+        self.local_player.allocated_bytes()
             + self.dlc_mask.allocated_bytes()
             + self.countries.allocated_bytes()
             + self.states.allocated_bytes()
@@ -261,12 +256,6 @@ impl Captured {
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         capacity.raise_for_countries(self.slots);
-        self.queries.required = self
-            .queries
-            .required
-            .max(crate::directed_war_queries::demand());
-        self.queries.grow(&mut capacity.queries);
-        self.directed.grow(&mut capacity.directed);
         self.countries.grow(&mut capacity.countries);
         self.states.grow(&mut capacity.states);
         self.links.grow(&mut capacity.links);
@@ -300,6 +289,65 @@ impl Captured {
         force_full: bool,
     ) -> [u64; N] {
         self.capture_storage(memory, base, game_state, hour, force_full, true)
+    }
+
+    /// NavalRegionAccess: the held read on a quiet hour, otherwise every
+    /// navy's access modes.
+    #[allow(clippy::too_many_arguments)]
+    fn capture_naval_access(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        force_full: bool,
+        growing: bool,
+        changes: &impl Changes,
+        held: &Mutex<Held<Vec<cstrategic_navy::AccessRow>>>,
+    ) {
+        let rows = &mut self.naval_access.rows;
+        let mut held = held.try_lock().ok();
+        let plan = held.as_ref().map_or(Plan::READ, |held| {
+            held.plan(Domain::RegionAccess, changes, force_full)
+        });
+        if plan.carry
+            && let Some(held) = &held
+        {
+            let carried = held.carried(Domain::RegionAccess);
+            let ensured = engine::walk::Buffer::for_worker(rows, growing).ensure(carried.len());
+            self.naval_access.outcome = match ensured {
+                Ok(_) if carried.len() <= rows.len() => {
+                    rows[..carried.len()].copy_from_slice(carried);
+                    Outcome::Rows { len: carried.len() }
+                }
+                Ok(_) => Outcome::Truncated {
+                    len: 0,
+                    unread_rows: carried.len() as u32,
+                },
+                Err(reason) => Outcome::Unavailable { reason },
+            };
+            return;
+        }
+        let outcome = cstrategic_navy::access_modes_buffer(
+            memory,
+            base,
+            game_state,
+            engine::walk::Buffer::for_worker(rows, growing),
+        );
+        self.naval_access.outcome = outcome;
+        if let Some(held) = &mut held {
+            let read = match outcome {
+                Outcome::Rows { len } => Some(&rows[..len]),
+                _ => None,
+            };
+            held.settle(
+                Domain::RegionAccess,
+                changes,
+                plan.read(Domain::RegionAccess, changes),
+                read.is_some(),
+                |rows| read.is_some_and(|read| rows[..] != *read),
+                |rows| read.is_some_and(|read| changes::assign(rows, read)),
+            );
+        }
     }
 
     fn capture_storage(
@@ -346,7 +394,7 @@ impl Captured {
                         }
                     }
                     let runtime_scalars = replay::rows::PoliticalRuntimeScalars {
-                        sample_hour: globals.sample_hour,
+                        sample_hour: replay::rows::PacketHour::Host,
                         river_small: values[0],
                         river_large: values[1],
                         night: values[2],
@@ -383,16 +431,29 @@ impl Captured {
                         };
                 }
                 1 => {
-                    (self.countries.outcome, self.slots) = if growing {
-                        native::countries_growing(
+                    let held = (growing && cfg!(feature = "visibility_changes"))
+                        .then(|| HELD_VISIBILITY.try_lock().ok())
+                        .flatten();
+                    (self.countries.outcome, self.slots) = if let Some(mut held) = held {
+                        use crate::country_input_changes::{Changes, Observer, Table};
+                        held.capture(
                             memory,
                             base,
                             game_state,
-                            &mut self.countries.rows,
+                            engine::walk::Buffer::Growing(&mut self.countries.rows),
+                            &Observer,
+                            crate::sampled_verify::current(Observer.every(Table::Visibility)),
+                            force_full,
                         )
+                        .0
                     } else {
-                        native::countries(memory, base, game_state, &mut self.countries.rows)
-                    }
+                        native::countries_buffer(
+                            memory,
+                            base,
+                            game_state,
+                            engine::walk::Buffer::for_worker(&mut self.countries.rows, growing),
+                        )
+                    };
                 }
                 2 => {
                     self.states.outcome = if growing {
@@ -401,18 +462,15 @@ impl Captured {
                         native::states(memory, base, game_state, &mut self.states.rows)
                     }
                 }
-                5 => {
-                    self.naval_access.outcome = cstrategic_navy::access_modes_buffer(
-                        memory,
-                        base,
-                        game_state,
-                        if growing {
-                            engine::walk::Buffer::Growing(&mut self.naval_access.rows)
-                        } else {
-                            engine::walk::Buffer::Fixed(&mut self.naval_access.rows)
-                        },
-                    )
-                }
+                5 => self.capture_naval_access(
+                    memory,
+                    base,
+                    game_state,
+                    force_full,
+                    growing,
+                    &changes::Observer,
+                    &HELD_ACCESS,
+                ),
                 6 => {
                     self.local_player.outcome =
                         match engine::cgame_state::local_player(memory, game_state) {
@@ -424,34 +482,8 @@ impl Captured {
                         };
                 }
                 _ => {
-                    self.directed.begin(hour);
-                    // The callback verdict is copied before dispatch, never
-                    // reconstructed from a worker's TLS. Completed graphics
-                    // and the same world protect these fresh borrowed cells.
-                    let query_world = crate::world_lifetime::token();
-                    if growing
-                        && let Err(reason) = engine::walk::Buffer::Growing(&mut self.queries.first)
-                            .ensure(crate::directed_war_queries::demand())
-                    {
-                        self.directed.fail(reason);
-                        self.links.outcome = Outcome::Unavailable { reason };
-                        self.wars.outcome = Outcome::Unavailable { reason };
-                        ticks[index] = qpc().saturating_sub(started).max(0) as u64;
-                        continue;
-                    }
-                    let requests = crate::directed_war_queries::drain(&mut self.queries.first);
-                    self.queries.required = requests.required;
-                    self.queries.len = if self.query_admission.is_ok() && requests.reason.is_none()
-                    {
-                        requests.len
-                    } else {
-                        if self.query_admission.is_err() && requests.len != 0 {
-                            crate::directed_war_queries::refuse_admission();
-                        }
-                        0
-                    };
-                    let (walk, directed) = if growing {
-                        crelation_status::links_observed_transport_demands_growing(
+                    let walk = if growing {
+                        crelation_status::links_observed_transport_growing(
                             memory,
                             base,
                             game_state,
@@ -461,12 +493,10 @@ impl Captured {
                                 countries: engine::walk::Buffer::Growing(&mut self.war_links.first),
                             },
                             &mut self.resolver,
-                            Some(self.directed.output_growing()),
                             hour,
-                            &self.queries.first[..self.queries.len],
                         )
                     } else {
-                        crelation_status::links_observed_transport_demands(
+                        crelation_status::links_observed_transport(
                             memory,
                             base,
                             game_state,
@@ -476,17 +506,10 @@ impl Captured {
                                 countries: &mut self.war_links.first,
                             },
                             &mut self.resolver,
-                            Some(self.directed.output()),
                             hour,
-                            &self.queries.first[..self.queries.len],
                         )
                     };
                     ORDERED_ENEMY_REFUSALS.fetch_add(u64::from(walk.ordered_refusals), Relaxed);
-                    self.directed.finish(directed);
-                    if self.queries.len != 0 && !crate::world_lifetime::current(query_world) {
-                        self.directed
-                            .fail("directed war query world changed during fresh acquisition");
-                    }
                     self.links.outcome = walk.links;
                     if let Outcome::Rows { len } | Outcome::Truncated { len, .. } = walk.links {
                         for row in &self.links.rows[..len] {
@@ -503,14 +526,6 @@ impl Captured {
             ticks[index] = qpc().saturating_sub(started).max(0) as u64;
         }
         ticks
-    }
-
-    pub(crate) fn directed_wars(&self) -> &directed::Captured {
-        &self.directed
-    }
-
-    pub(crate) fn set_directed_query_admission(&mut self, admission: Result<(), &'static str>) {
-        self.query_admission = admission;
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -561,7 +576,7 @@ impl Captured {
                     transport_subject: replay::rows::Recorded::Value(
                         r.transport_subject.and_then(Result::ok).map(|value| {
                             replay::rows::TransportSubjectAccess {
-                                sample_hour: value.sample_hour,
+                                sample_hour: replay::rows::PacketHour::Host,
                                 complete_owner: value.complete_owner,
                                 target_raw: value.target_raw,
                                 subject: value.subject.map(|subject| {
@@ -616,8 +631,9 @@ impl Captured {
             enemies_read: u8::from(r.enemies_read),
             enemies: owned_vec(copy_vec(span(r.enemies_start, r.enemies_len).unwrap())),
             ordered: replay::rows::Recorded::Value(r.ordered.and_then(|(start, len)| {
+                r.ordered_hour?;
                 Some(replay::rows::OrderedEnemyInputs {
-                    sample_hour: r.ordered_hour?,
+                    sample_hour: replay::rows::PacketHour::Host,
                     entries: owned_vec(copy_vec(span(start, len)?)),
                 })
             })),

@@ -102,6 +102,9 @@ pub struct Country {
     pub accumulator: usize,
     /// Stored powered-factory fraction.
     pub power_raw: i64,
+    /// The country's census slot, pass-local: it places the country in a
+    /// slot range of a capture split into parts ([`capture_growing_slots`]).
+    pub slot: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -391,7 +394,7 @@ pub fn capture(
         archetypes: crate::walk::Buffer::Fixed(&mut *out.archetypes),
         archetype_required: out.archetype_required,
     };
-    let result = capture_buffer(memory, base, state, context, &mut buffer);
+    let result = capture_buffer(memory, base, state, 1..u32::MAX, None, context, &mut buffer);
     out.country_len = buffer.country_len;
     out.country_required = buffer.country_required;
     out.line_len = buffer.line_len;
@@ -411,6 +414,24 @@ pub fn capture_growing(
     context: &mut Option<Context>,
     out: &mut GrowingBuffers<'_>,
 ) -> Result<(), &'static str> {
+    capture_growing_slots(memory, base, state, 1..u32::MAX, None, context, out)
+}
+
+/// [`capture_growing`] over the census slots `slots` only, one part of a
+/// capture split by consecutive slot ranges: each part's rows are the whole
+/// walk's for its slots, in order, and its first failure is the one the whole
+/// walk meets in them. `provided`, when given, is the define context read once
+/// for every part, used at a part's first country with lines in place of
+/// reading it there (the whole walk reads it once, at the first such country).
+pub fn capture_growing_slots(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    slots: std::ops::Range<u32>,
+    provided: Option<Result<Context, &'static str>>,
+    context: &mut Option<Context>,
+    out: &mut GrowingBuffers<'_>,
+) -> Result<(), &'static str> {
     let mut buffer = BuffersBuffer {
         countries: crate::walk::Buffer::Growing(&mut *out.countries),
         country_len: out.country_len,
@@ -427,7 +448,7 @@ pub fn capture_growing(
         archetypes: crate::walk::Buffer::Growing(&mut *out.archetypes),
         archetype_required: out.archetype_required,
     };
-    let result = capture_buffer(memory, base, state, context, &mut buffer);
+    let result = capture_buffer(memory, base, state, slots, provided, context, &mut buffer);
     out.country_len = buffer.country_len;
     out.country_required = buffer.country_required;
     out.line_len = buffer.line_len;
@@ -444,11 +465,13 @@ fn capture_buffer(
     memory: &impl Memory,
     base: usize,
     state: usize,
+    slots: std::ops::Range<u32>,
+    provided: Option<Result<Context, &'static str>>,
     context: &mut Option<Context>,
     out: &mut BuffersBuffer<'_>,
 ) -> Result<(), &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
-    for slot in 1..countries.count() {
+    for slot in slots.start.max(1)..slots.end.min(countries.count()) {
         let Some(country) = countries.at(slot)? else {
             continue;
         };
@@ -460,7 +483,10 @@ fn capture_buffer(
             continue;
         }
         if context.is_none() {
-            *context = Some(Context::read(memory, base)?);
+            *context = Some(match provided {
+                Some(read) => read?,
+                None => Context::read(memory, base)?,
+            });
         }
         let context = context.as_ref().expect("nonempty production context");
         let accumulator = at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?;
@@ -471,6 +497,7 @@ fn capture_buffer(
                 country: country.id,
                 accumulator,
                 power_raw: field(memory, status, 0x3a8)?,
+                slot,
             };
             out.country_len += 1;
         }

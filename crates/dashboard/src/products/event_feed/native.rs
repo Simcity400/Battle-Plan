@@ -1,22 +1,25 @@
 //! Native observations keep action roles and exact occurrence-hour identity witnesses.
 
-use super::{Builder, EventFeedKind, EventFeedRow, check_cancel};
+use super::{Builder, EventFeedCause, EventFeedKind, EventFeedRow, check_cancel};
 use crate::metadata::{link_slots, validate_campaign};
 use replay::{
     container::Replay,
-    event_feed_rows::{EventFeedCountry, EventFeedCoverage, EventFeedHistoryRow, EventFeedSource},
+    event_feed_rows::{
+        EventFeedCause as NativeCause, EventFeedCountry, EventFeedCoverage, EventFeedHistoryRow,
+        EventFeedRoute, EventFeedSource,
+    },
     frame::{DecodedFrame, FrameDecoder},
-    rows::{CountryExperienceGainRow, CountryRow, TableId, tables},
+    rows::{CountryExperienceGainRow, CountryRow, Recorded, TableId, tables},
 };
 use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 
 /// Only the exact occurrence's recorded tables can name a full native actor.
-struct Names {
+pub(super) struct Names {
     slots: std::collections::HashMap<u32, u32>,
     tags: BTreeMap<u32, (u32, u32, String)>,
 }
 impl Names {
-    fn at(frame: &DecodedFrame, branch: u64, hour: i32) -> io::Result<Self> {
+    pub(super) fn at(frame: &DecodedFrame, branch: u64, hour: i32) -> io::Result<Self> {
         if frame.branch != branch || frame.hour != hour {
             return Err(io::Error::other(
                 "No same-branch occurrence-hour country witness",
@@ -87,9 +90,9 @@ impl Names {
         }
         Ok(Self { slots, tags })
     }
-    fn tag(&self, country: EventFeedCountry) -> Option<String> {
-        // The zero country object is excluded from the gain census.
-        // Original-tag buckets and physical IDs do not prove its recorded ID.
+    pub(super) fn tag(&self, country: EventFeedCountry) -> Option<String> {
+        // Country reference zero's null object is excluded from the
+        // gain census. Original-tag buckets/physical IDs do not prove its +C.
         if country.reference == 0 {
             return None;
         }
@@ -102,6 +105,8 @@ impl Names {
 #[derive(Default)]
 pub(super) struct Projection {
     last_sequence: Option<u64>,
+    /// The branch's recorded event losses, as the reads each lies between.
+    event_losses: Vec<(i32, i32)>,
 }
 impl Projection {
     fn append_named<'a>(
@@ -120,11 +125,25 @@ impl Projection {
             return Err(io::Error::other("Native event occurrence sequence differs"));
         }
         if pack.coverage != EventFeedCoverage::Complete {
-            let failure = match pack.failure.as_deref() {
-                Some(bytes) => {
-                    std::str::from_utf8(bytes).unwrap_or("Recorded failure text is not UTF-8")
-                }
-                None => "The counted interval is not fully observed",
+            // A recorded event loss ending at this read names why.
+            let lost = self
+                .event_losses
+                .iter()
+                .find(|&&(_, hour)| hour == pack.read_hour)
+                .map(|&(after, hour)| {
+                    format!(
+                        "{} (between {after} and {hour})",
+                        crate::metadata::EVENT_LOSS_REASON
+                    )
+                });
+            let recorded = pack.failure.as_deref().map(|bytes| {
+                std::str::from_utf8(bytes).unwrap_or("Recorded failure text is not UTF-8")
+            });
+            let failure = match (lost, recorded) {
+                (Some(lost), Some(recorded)) => format!("{lost}; {recorded}"),
+                (Some(lost), None) => lost,
+                (None, Some(recorded)) => recorded.to_owned(),
+                (None, None) => "The counted interval is not fully observed".to_owned(),
             };
             builder.sampled_unavailable("nativeEventCoverage", "Native event coverage",
                 format!("{:?} read at {}: {}; {} outstanding observations. Missing rows do not prove no event occurred.",
@@ -133,12 +152,20 @@ impl Projection {
         for event in &pack.events {
             check_cancel(cancelled)?;
             self.last_sequence = Some(event.sequence);
-            if event.hour < builder.feed.first || event.hour > builder.feed.last {
-                continue;
-            }
             let named = names_at(event.hour);
             let participants = [event.actor, event.target]
                 .map(|country| named.and_then(|names| names.tag(country)));
+            // Every window's derived peace rows defer to the exact native end.
+            if event.source == EventFeedSource::WarEnded
+                && let [Some(first), Some(second)] = &participants
+            {
+                builder
+                    .war_ends
+                    .insert(super::war_end_key(event.hour, first, second));
+            }
+            if event.hour < builder.feed.first || event.hour > builder.feed.last {
+                continue;
+            }
             for (role, tag) in ["actor", "target"].into_iter().zip(&participants) {
                 if tag.is_none() {
                     builder.sampled_unavailable("nativeEventCountry", "Native event country",
@@ -151,6 +178,24 @@ impl Projection {
                 EventFeedSource::Join => EventFeedKind::WarJoined,
                 EventFeedSource::CivilWarWarTransfer => EventFeedKind::CivilWarWarTransferred,
                 EventFeedSource::Annex => EventFeedKind::Annexed,
+                EventFeedSource::WarEnded => EventFeedKind::WarEnded,
+                EventFeedSource::Release => EventFeedKind::Released,
+                EventFeedSource::StateTransfer => EventFeedKind::StateTransferred,
+                EventFeedSource::PeaceConference => EventFeedKind::PeaceConferenceStarted,
+            };
+            let cause = match event.cause {
+                Recorded::Value(cause) => {
+                    let ally = cause
+                        .ally
+                        .map(|ally| named.and_then(|names| names.tag(ally)));
+                    if ally == Some(None) {
+                        builder.sampled_unavailable("nativeEventCountry", "Native event country",
+                            format!("The ally of event {} at {} has no exact country-reference, ID and instance witness.",
+                                event.sequence, event.hour), 1);
+                    }
+                    Some(cause_words(cause, ally.flatten()))
+                }
+                Recorded::NotRecorded => None,
             };
             builder.feed.rows.push(EventFeedRow {
                 id: format!("native:{}:{}", event.generation, event.sequence),
@@ -164,6 +209,8 @@ impl Projection {
                 participants: Some(participants),
                 item: None,
                 amount: None,
+                cause,
+                strike: None,
             });
         }
         Ok(())
@@ -208,6 +255,7 @@ pub(super) fn scan(
         );
         return Ok(());
     }
+    let event_losses: Vec<_> = replay.event_losses(branch).collect();
     let selected = [TableId::Campaign, TableId::EventFeedHistory];
     let mut packs = Vec::new();
     let mut wanted = BTreeMap::<i32, std::collections::BTreeSet<u32>>::new();
@@ -276,14 +324,30 @@ pub(super) fn scan(
                         }
                     };
                     if pack.events.is_empty() {
-                        Projection::default().append_named(builder, pack, |_| None, cancelled)?;
+                        Projection {
+                            event_losses: event_losses.clone(),
+                            ..Projection::default()
+                        }
+                        .append_named(
+                            builder,
+                            pack,
+                            |_| None,
+                            cancelled,
+                        )?;
                         continue;
                     }
                     for event in &pack.events {
-                        wanted
-                            .entry(event.hour)
-                            .or_default()
-                            .extend([event.actor.reference, event.target.reference]);
+                        let ally = match event.cause {
+                            Recorded::Value(NativeCause {
+                                ally: Some(ally), ..
+                            }) => Some(ally.reference),
+                            _ => None,
+                        };
+                        wanted.entry(event.hour).or_default().extend(
+                            [event.actor.reference, event.target.reference]
+                                .into_iter()
+                                .chain(ally),
+                        );
                     }
                     packs.push(replay::rows::RowCodec::try_clone(pack)?);
                 }
@@ -337,7 +401,10 @@ pub(super) fn scan(
             Ok(())
         })?;
     }
-    let mut projection = Projection::default();
+    let mut projection = Projection {
+        event_losses,
+        ..Projection::default()
+    };
     for pack in packs {
         if let Err(error) =
             projection.append_named(builder, &pack, |hour| names.get(&hour), cancelled)
@@ -352,6 +419,125 @@ pub(super) fn scan(
         }
     }
     Ok(())
+}
+
+/// A recorded cause in words. Routes name the native call site
+/// (`EventFeedRoute`); the words say what reaches it.
+fn cause_words(cause: NativeCause, ally: Option<String>) -> EventFeedCause {
+    let notes = [
+        (
+            is_join(cause.route),
+            "against every enemy of the ally's side",
+        ),
+        (is_war_end(cause.route), "with a truce"),
+        (is_annexation(cause.route), "taking over its units"),
+    ];
+    EventFeedCause {
+        how: route_words(cause.route).map(str::to_owned),
+        within: route_words(cause.within).map(str::to_owned),
+        conference: cause.conference.map(|conference| conference.to_string()),
+        state: cause.state,
+        ally,
+        reason: cause.reason.map(|reason| match reason {
+            // War-relation hostility reasons, selected by their parsed tokens.
+            0 => "war".to_owned(),
+            1 => "puppet".to_owned(),
+            2 => "ally".to_owned(),
+            3 => "asked to join".to_owned(),
+            4 => "guarantee".to_owned(),
+            5 => "not applicable".to_owned(),
+            other => format!("native reason {other}"),
+        }),
+        notes: notes
+            .into_iter()
+            .filter(|(route, _)| *route && cause.flags & 1 != 0)
+            .map(|(_, note)| note.to_owned())
+            .collect(),
+    }
+}
+
+fn is_join(route: EventFeedRoute) -> bool {
+    (20..30).contains(&(route as u8))
+}
+
+fn is_war_end(route: EventFeedRoute) -> bool {
+    (30..40).contains(&(route as u8))
+}
+
+/// Annexation routes, whose first byte identifies troop transfer.
+fn is_annexation(route: EventFeedRoute) -> bool {
+    (50..60).contains(&(route as u8))
+}
+
+fn route_words(route: EventFeedRoute) -> Option<&'static str> {
+    use EventFeedRoute::*;
+    Some(match route {
+        None => return Option::None,
+        DiplomaticCommand => "a diplomatic action",
+        DeclareWarEffect => "a declare_war_on effect",
+        CivilWarDeclaration => "a civil war's declaration",
+        GiveGuaranteeEffect => "a give_guarantee effect",
+        GiveMilitaryAccessEffect => "a give_military_access effect",
+        EmbargoEffect => "an embargo effect",
+        GiveMarketAccessEffect => "a market access effect",
+        OfferJoinFaction => "an offer to join a faction",
+        ConsoleDiplomacy
+        | ConsoleCivilWar
+        | ConsoleCivilWarSecond
+        | ConsolePeace
+        | ConsoleAnnex
+        | ConsoleAnnexSecond
+        | ConsoleStateOwner => "a console command",
+        StartCivilWarEffect => "a start_civil_war effect",
+        Coup => "a coup",
+        DeclarationJoin => "its overlord's war declaration",
+        AddToWarEffect => "an add_to_war effect",
+        SubjectJoinsOverlord => "becoming a subject",
+        OverlordJoinsSubject => "gaining a subject",
+        JoinAlly => "a request to join an ally's war",
+        CallAlly => "a call to arms",
+        CivilWarTransferEnd => "a civil war taking over the old country's wars",
+        AnnexEnd | StateAnnex => "an annexation",
+        SubjectOverlordEnd => "becoming the subject of its enemy",
+        SubjectWarsEnd => "a subject relation ending the subject's wars",
+        StatusResetEnd => "a diplomatic status reset",
+        PeaceEnd => "a peace conference",
+        StartPeaceConferenceEffect => "a start_peace_conference effect",
+        WhitePeaceEffect => "a white_peace effect",
+        Surrender => "a capitulation",
+        PeaceProposal => "an accepted peace proposal",
+        PeaceApplication => "a peace conference's outcome",
+        CivilWarAnnex => "a civil war's resolution",
+        Integration => "integration at the lowest autonomy",
+        BorderWarAnnex | BorderWarAnnexSecond | StateBorderWar | StateBorderWarSecond => {
+            "a border war"
+        }
+        PeaceAnnex => "a peace conference annexing a loser left without states",
+        AnnexEffect => "an annex_country effect",
+        TransferStateToAnnex | TransferStateToEffect => "a transfer_state_to effect",
+        TransferStateAnnex | TransferStateEffect => "a transfer_state effect",
+        ReleasePuppetEffect => "a release_puppet effect",
+        ReleasePuppetOnControlledEffect => "a release_puppet_on_controlled effect",
+        ReleaseEffect => "a release effect",
+        ReleaseOnControlledEffect => "a release_on_controlled effect",
+        ReleaseAutonomyEffect => "a release_autonomy effect",
+        ReleaseCommand => "a release command",
+        StateOwnerFix => "the owner and controller consistency fix",
+        SetStateOwnerEffect | SetStateOwnerToEffect => "a state owner effect",
+        StatePeaceWinner => "a peace conference giving a winner its state",
+        StateDaily => "the daily state update",
+        StateRead => "loading a save",
+        StateCivilWar | StateCivilWarSecond | StateCivilWarTransfer => "a civil war",
+        StatePeaceLiberated => "a peace conference liberating a country",
+        StateRelease => "a release",
+        StatePeaceBeneficiary => "a peace conference giving a beneficiary its state",
+        StateImpassable => "an impassable state following its neighbours",
+        StateHistory => "a history owner change",
+        Decision | TargetedDecision => "a decision",
+        DecisionTimeout => "a decision timing out",
+        ScriptedDiplomacy => "a scripted diplomatic action",
+        OnAction => "an on_action",
+    })
 }
 
 #[cfg(test)]

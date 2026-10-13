@@ -191,7 +191,7 @@ pub(crate) fn copy_growing_with_policy<const TERMINAL: bool>(
         return Err(unreadable);
     }
     // Never initialized: only a successful chunk's bytes are read.
-    let mut scratch = [std::mem::MaybeUninit::<u8>::uninit(); 256];
+    let mut scratch = [std::mem::MaybeUninit::<u8>::uninit(); GROWING_CHUNK];
     let mut copied = 0;
     while copied < len {
         let count = (len - copied).min(scratch.len());
@@ -201,17 +201,53 @@ pub(crate) fn copy_growing_with_policy<const TERMINAL: bool>(
             return Err(unreadable);
         };
         let end = start + copied + count;
-        if end > output.len() {
-            let additional = end - output.len();
-            if TERMINAL {
-                crate::allocation::reserve(output, additional).map_err(|_| allocation)?;
-            } else {
-                output.try_reserve(additional).map_err(|_| allocation)?;
-            }
-            output.resize(end, 0);
-        }
+        grow_to::<TERMINAL>(output, end, allocation)?;
         output[start + copied..end].copy_from_slice(chunk);
         copied += count;
+    }
+    Ok(())
+}
+
+/// The chunk [`copy_growing`] acquires and grows the arena by.
+const GROWING_CHUNK: usize = 256;
+
+/// One [`copy_growing`] growth step: the arena's initialized length reaches
+/// `end` exactly.
+fn grow_to<const TERMINAL: bool>(
+    output: &mut Vec<u8>,
+    end: usize,
+    allocation: &'static str,
+) -> Result<(), &'static str> {
+    if end > output.len() {
+        let additional = end - output.len();
+        if TERMINAL {
+            crate::allocation::reserve(output, additional).map_err(|_| allocation)?;
+        } else {
+            output.try_reserve(additional).map_err(|_| allocation)?;
+        }
+        output.resize(end, 0);
+    }
+    Ok(())
+}
+
+/// [`copy_growing`] of bytes already acquired (a held read's): the same
+/// validation, chunks and growth steps, so the arena's initialized length
+/// and failures are those of the fresh copy.
+pub(crate) fn place_growing(
+    bytes: &[u8],
+    output: &mut Vec<u8>,
+    start: usize,
+    unreadable: &'static str,
+    allocation: &'static str,
+) -> Result<(), &'static str> {
+    if start > output.len() || start.checked_add(bytes.len()).is_none() {
+        return Err(unreadable);
+    }
+    for (index, chunk) in bytes.chunks(GROWING_CHUNK).enumerate() {
+        let at = start + index * GROWING_CHUNK;
+        let end = at + chunk.len();
+        grow_to::<true>(output, end, allocation)?;
+        output[at..end].copy_from_slice(chunk);
     }
     Ok(())
 }

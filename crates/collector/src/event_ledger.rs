@@ -231,7 +231,7 @@ impl<T: Event> EventLedger<T> {
             .attempted_calls
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
-        self.required.fetch_max(attempted, Ordering::Release);
+        crate::output_log::raise(&self.required, attempted, Ordering::Release);
     }
     pub fn leave(&self) {
         if self.active.fetch_sub(1, Ordering::SeqCst) == 1 {
@@ -314,7 +314,7 @@ impl<T: Event> EventLedger<T> {
                 .attempted_rows
                 .fetch_add(1, Ordering::Relaxed)
                 .saturating_add(1);
-            self.required.fetch_max(attempted, Ordering::Release);
+            crate::output_log::raise(&self.required, attempted, Ordering::Release);
         }
         if self.poisoned.load(Ordering::SeqCst) {
             return Err("event ledger observation invalidated");

@@ -47,8 +47,59 @@ fn supply_compares_province_census_and_routes_despite_membership_exclusions() {
     nodes(&frame, &membership, &mut report).unwrap();
     assert_eq!(report.compared_tables["SupplyNodes"], 3);
     assert!(report.membership_skips.is_empty());
-    assert_eq!(report.differences.len(), 1);
-    assert!(report.differences[0].contains(".province"));
+    // An id outside the map is the game's null province, which
+    // the walk records as stored: a named limitation, never a difference,
+    // for a node's province (zero included) and for a parent.
+    let null = |report: &Report| {
+        report
+            .limitations
+            .iter()
+            .find(|(reason, _)| reason.contains("null province"))
+            .map(|(_, subjects)| subjects.clone())
+            .unwrap_or_default()
+    };
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(
+        null(&report),
+        [format!("SupplyNodes {country}:2.province 99")]
+    );
+    let TableView::Complete(TableRows::SupplyNodes(rows)) =
+        &mut *frame.tables[TableId::SupplyNodes.index()]
+    else {
+        unreachable!()
+    };
+    rows[2].province = 0;
+    rows[2].parent = 98;
+    // The walk records the null parent's own vertex row.
+    rows.push(SupplyNodeRow {
+        country,
+        index: SupplyNodeRow::VERTEX | 98,
+        province: 98,
+        parent: -1,
+        ..Default::default()
+    });
+    let mut report = Report::default();
+    nodes(&frame, &membership, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(
+        null(&report),
+        [
+            format!("SupplyNodes {country}:2.province 0"),
+            format!("SupplyNodes {country}:2.parent 98"),
+            format!(
+                "SupplyNodes {country}:{}.province 98",
+                SupplyNodeRow::VERTEX | 98
+            ),
+        ]
+    );
+    let TableView::Complete(TableRows::SupplyNodes(rows)) =
+        &mut *frame.tables[TableId::SupplyNodes.index()]
+    else {
+        unreachable!()
+    };
+    rows.pop();
+    rows[2].province = 99;
+    rows[2].parent = -1;
     // A route through the excluded state's province still has to match its
     // captured parent lookup.
     let TableView::Complete(TableRows::SupplyNodes(rows)) =
@@ -454,6 +505,79 @@ fn supply_joins_fail_for_bad_censuses_but_do_not_compare_distinct_save_caches() 
     assert!(
         report.failed_comparisons["SupplyNodes"].contains("native node index census is not dense")
     );
+}
+
+/// TrainInventory is read once a game day per country (owner decision
+/// 2026-10-11): a country's allocations are compared with the saved variants
+/// only when SliceReads dates its read to the oracle hour; a full hour, or a
+/// recording whose SliceReads dates no inventory, compares every country.
+#[test]
+fn only_inventories_read_at_the_oracle_hour_compare_their_saved_variants() {
+    let (mut frame, mut save, _, _) = super::super::tests::fixture();
+    let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
+    let mut second = countries[0].clone();
+    second.id = countries[0].id + 50;
+    second.canonical_slot += 50;
+    second.tag = b"ENG".to_vec();
+    countries.push(second);
+    *frame.tables[TableId::Countries.index()] =
+        TableView::Complete(TableRows::Countries(countries.clone()));
+    save.economy.supply = Some(Default::default());
+    owned_states(&mut frame, &countries, 0);
+    // Every inventory names a variant the save does not hold.
+    *frame.tables[TableId::TrainInventory.index()] =
+        TableView::Complete(TableRows::TrainInventory(
+            countries
+                .iter()
+                .map(|c| TrainInventoryRow {
+                    country: c.id,
+                    allocations: vec![replay::rows::TrainAllocation {
+                        variant: 0xdead_0000_beef,
+                        count: 1,
+                    }],
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    let unsaved = |report: &Report| {
+        report
+            .differences
+            .iter()
+            .filter(|line| line.contains("saved identity"))
+            .count()
+    };
+    let mut report = Report::default();
+    trains(&frame, &save, &mut report).unwrap();
+    assert_eq!(unsaved(&report), 2);
+    // The first country was read at the oracle hour, the second earlier.
+    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(vec![
+        replay::rows::SliceReadRow {
+            table: TableId::TrainInventory.index() as u32,
+            owner: countries[0].id,
+            sample_hour: frame.hour,
+        },
+        replay::rows::SliceReadRow {
+            table: TableId::TrainInventory.index() as u32,
+            owner: countries[1].id,
+            sample_hour: frame.hour - 5,
+        },
+    ]));
+    let mut report = Report::default();
+    trains(&frame, &save, &mut report).unwrap();
+    assert_eq!(unsaved(&report), 1, "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("owner decision 2026-10-11"))
+    );
+    // A forced full hour reads every country.
+    let mut report = Report {
+        forced_full: true,
+        ..Default::default()
+    };
+    trains(&frame, &save, &mut report).unwrap();
+    assert_eq!(unsaved(&report), 2);
 }
 
 #[test]

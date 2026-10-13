@@ -89,7 +89,8 @@ outside it, an absent run cannot establish zero. Gaps and identity changes end
 continuity. Never backfill a missing hour from a later observation.
 
 A held daily value retains its **supplying read hour**. Use `metadata::slot_read`
-and check table completeness; a held table or an unchanged value is not evidence
+with the recording's format (a table is dated at the cadence that format read it
+at) and check table completeness; a held table or an unchanged value is not evidence
 of another successful read. Keep read confirmations separate from numeric
 changes. Carry values only over the coverage allowed by the supplying table.
 Cadence belongs to [replay](../replay/README.md), not a product's private schedule.
@@ -110,7 +111,11 @@ Metadata's country catalogue is an initial observation, not the campaign census.
 Initial selection uses that frame's LocalPlayer, including observer choice,
 joined through CountryLinks; the multiplayer human roster does not identify the
 recording client. A terminal partial marker is separate from branch gaps: an
-unknown failed hour supplies no inferred gap. See
+unknown failed hour supplies no inferred gap. Branch metadata lists recorded
+event losses (`eventLosses`) apart from gaps: the recorded events between their
+two reads are incomplete, and a frame lost at either read is its own gap; the
+event feed names the detached recorder beside any recorded failure of the
+interval one ends. See
 [replay compatibility and recovery](../replay/README.md#compatibility-and-recovery)
 for readable prefixes and field availability. Refuse only dependent fields that
 were not recorded when the rest of an older recording remains usable.

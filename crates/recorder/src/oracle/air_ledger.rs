@@ -54,6 +54,7 @@ pub(super) fn compare_air_losses(
         ))
     })?;
     let mut check = DailyCheck::new(frame.hour)?;
+    check.event_losses = replay.event_losses(frame.branch).collect();
     let mut blocks: Vec<_> = replay
         .index
         .iter()
@@ -88,6 +89,8 @@ struct DailyCheck {
     seen: BTreeSet<(i32, Vec<u8>)>,
     ids: BTreeSet<u64>,
     sums: BTreeMap<(Vec<u8>, u32, u32), [i64; FIELD_COUNT]>,
+    /// The branch's recorded event losses, as the reads each lies between.
+    event_losses: Vec<(i32, i32)>,
 }
 impl DailyCheck {
     fn new(end: i32) -> io::Result<Self> {
@@ -106,6 +109,7 @@ impl DailyCheck {
             seen: BTreeSet::new(),
             ids: BTreeSet::new(),
             sums: BTreeMap::new(),
+            event_losses: Vec::new(),
         })
     }
     fn observe(
@@ -141,6 +145,17 @@ impl DailyCheck {
                     return Err(invalid("air daily roster lacks country witness"));
                 }
             }
+        }
+        // A recorded event loss leaves this window's events unknown; its
+        // saved sums cannot be certified, but the reason is the loss.
+        if let Some(&(after, lost)) = self
+            .event_losses
+            .iter()
+            .find(|&&(_, lost)| lost == frame.hour)
+        {
+            return Err(invalid(format!(
+                "the air day window includes a recorded event loss between the reads of hours {after} and {lost}: the recorder was detached for part of it, so its air losses are incomplete"
+            )));
         }
         // Include the start-midnight drain: a writer after that advance can
         // already target the final previous slot. Slot identity, not hour,
@@ -729,6 +744,32 @@ mod tests {
         let mut check = DailyCheck::new(53).unwrap();
         frame.hour = 26;
         assert!(check.observe(&frame, &regions).is_err());
+    }
+
+    /// A window that includes a recorded event loss stays uncertified and
+    /// says why, even when the interval's table reads complete.
+    #[test]
+    fn a_recorded_event_loss_in_the_window_is_named_and_never_compared() {
+        let regions = region_content();
+        let mut frame = fixture(vec![], vec![]);
+        *frame.tables[TableId::AirDailyRoster.index()] =
+            TableView::Complete(TableRows::AirDailyRoster(vec![
+                replay::rows::AirDailyRosterRow {
+                    country: 4999,
+                    eligible: true,
+                },
+            ]));
+        let mut check = DailyCheck::new(53).unwrap();
+        check.event_losses = vec![(24, 25)];
+        frame.hour = 24;
+        check.observe(&frame, &regions).unwrap();
+        frame.hour = 25;
+        let error = check.observe(&frame, &regions).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("recorded event loss between the reads of hours 24 and 25")
+        );
     }
 
     #[test]

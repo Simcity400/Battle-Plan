@@ -62,7 +62,8 @@ impl MembershipCapacity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MembershipQuery {
     pub member: usize,
-    /// Current-pass CArmy seed observation; the live member link must agree.
+    /// The member's +0x08 group back-pointer (CArmy+0xC0) as the caller's
+    /// seed copied it at this boundary; the packet does not read it again.
     pub own_group: usize,
 }
 
@@ -83,6 +84,8 @@ struct RootSet {
 struct GroupInput {
     pointer: usize,
     result: Result<(), &'static str>,
+    /// The +0x1B8 parent link, read once a pass for every query of the group.
+    parent: Option<Result<usize, &'static str>>,
     roots: [RootSet; 2],
 }
 
@@ -285,19 +288,19 @@ impl MembershipPacket {
         for index in 0..self.queries.len() {
             let query = self.queries[index].query;
             let result = (|| {
-                let own = pointer(memory, query.member, GROUP)?;
-                if own != query.own_group {
-                    return Err("orders membership group changed");
-                }
+                let own = query.own_group;
                 if own == 0 {
                     return Ok(Some(false));
                 }
                 let slot = self.group(memory, base, own)?;
                 self.queries[index].own_slot = Some(slot);
                 self.groups[slot].result?;
-                // This link is observed independently for every query, including
-                // those which subsequently match their own primary root.
-                self.queries[index].parent = Some(pointer(memory, own, group::PARENT)?);
+                // Every query observes the link, including those which then
+                // match their own primary root; a group's queries share one read.
+                let parent = *self.groups[slot]
+                    .parent
+                    .get_or_insert_with(|| pointer(memory, own, group::PARENT));
+                self.queries[index].parent = Some(parent?);
                 Ok(None)
             })();
             self.queries[index].result = match result {
@@ -384,6 +387,7 @@ impl MembershipPacket {
         let mut input = GroupInput {
             pointer: at,
             result: Ok(()),
+            parent: None,
             roots: Default::default(),
         };
         input.result = (|| {

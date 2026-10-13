@@ -131,27 +131,11 @@ impl StaticGeometry {
         self.key.ok_or("static geometry session key unavailable")
     }
 
-    pub(crate) fn province_root(&self) -> Result<Array, &'static str> {
-        self.demand_key()?;
-        self.root.ok_or("static geometry province root invalid")
-    }
-
     /// Prepare immutable province slots outside acquisition. Rekeying clears
     /// their values without discarding this prepared length.
     pub fn reserve_provinces(&mut self, count: usize) -> std::io::Result<()> {
         if self.provinces.len() < count {
             crate::allocation::resize(&mut self.provinces, count, None)?;
-        }
-        Ok(())
-    }
-
-    /// Temporary advisory hint storage must not fire frame-allocation hooks.
-    pub(crate) fn reserve_provinces_advisory(&mut self, count: usize) -> std::io::Result<()> {
-        if self.provinces.len() < count {
-            self.provinces
-                .try_reserve_exact(count - self.provinces.len())
-                .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
-            self.provinces.resize(count, None);
         }
         Ok(())
     }

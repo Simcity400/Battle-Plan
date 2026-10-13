@@ -23,10 +23,12 @@ use crate::{
     cpdx_array::Array,
     creference_registry::ScopedResolver,
     cship, csub_unit_definition, ctask_force, cunit, cweather_manager,
+    memory::{FieldBatch, Raw},
     modifier_accumulator::{self as accumulator, Value},
     modifier_definition::{self as metadata, Operands},
     modifier_keys as keys, naval_mission_inputs as mission, naval_ship_modifier_inputs as naval,
     read,
+    recent::Recent,
 };
 
 const P: i64 = 100_000;
@@ -48,7 +50,83 @@ const RISK_KEYS: [u32; 5] = [
 ];
 const TERM_COUNT: usize = 3 + RISK_KEYS.len();
 const VALUE_COUNT: usize = KEYS.len() + RISK_KEYS.len();
-// Detection reads its separate current-relation accumulator.
+/// Keys a [`HeldCensus`] holds at most.
+pub const CENSUS_KEYS: usize = VALUE_COUNT;
+
+/// A certified receiver's `(epoch, sequence)` certificate.
+pub type Certificate = (u64, u64);
+
+/// A census's identity: accumulator address, receiver and padded sorted keys.
+pub type CensusIdentity = (usize, usize, [u32; VALUE_COUNT]);
+
+/// One sorted-key census (the raw values of the requested keys) of a
+/// certified receiver's accumulator: a roster country's modifier tree
+/// (`CCountry+0x5B8`) or a fleet leader's (`CUnitLeader+0x418`), which the
+/// naval tree family certifies, with the receiver's certificate taken before
+/// the census was read ([`Censuses::certify`]). A capture records every such
+/// census it used ([`Reader::with_censuses`]); a later capture is served one,
+/// without reading the accumulator, while the receiver's certificate is still
+/// that one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeldCensus {
+    pub receiver: usize,
+    pub address: usize,
+    pub keys: [u32; VALUE_COUNT],
+    pub values: [Value; VALUE_COUNT],
+    pub certificate: Certificate,
+}
+
+impl HeldCensus {
+    pub fn identity(&self) -> CensusIdentity {
+        (self.address, self.receiver, self.keys)
+    }
+}
+
+/// The certified receivers' censuses a capture may be served, sorted by
+/// [`HeldCensus::identity`], the receivers' certifier, and the log of the
+/// certified censuses the capture used. `certify` gives a receiver's current
+/// certificate (registering it) or `None` when it cannot be certified; the
+/// reader asks it once per certified census, before serving or reading it.
+pub struct Censuses<'a> {
+    pub held: &'a [HeldCensus],
+    pub certify: &'a dyn Fn(usize) -> Option<Certificate>,
+    pub log: &'a mut Vec<HeldCensus>,
+}
+/// The fields the graph reads of a task force's stat block (vtable, terrain
+/// class, speed and range), of its location province (vtable, strategic
+/// region), that region (vtable, template, id), the template (vtable,
+/// terrain), its fleet (vtable, leader reference) and that leader (vtable,
+/// handle): each object's gathered in one guarded call when the graph reaches
+/// it and served to its unchanged readers ([`cship::GatheredObject`]). A field
+/// a gather could not copy is read alone, as before.
+const STAT_FIELDS: [(usize, usize); 3] = [(0, 8), (8, 4), (0x1a8, 16)];
+const PROVINCE_FIELDS: [(usize, usize); 2] = [(0, 8), (crate::cprovince::STRATEGIC_REGION, 8)];
+const REGION_FIELDS: [(usize, usize); 3] = [
+    (0, 8),
+    (crate::cstrategic_region::TEMPLATE, 8),
+    (crate::cstrategic_region::ID, 4),
+];
+/// The template's terrain pointer (template +0x130).
+const TEMPLATE_FIELDS: [(usize, usize); 2] = [(0, 8), (0x130, 8)];
+const FLEET_FIELDS: [(usize, usize); 2] = [(0, 8), (cfleet::LEADER, 8)];
+const LEADER_FIELDS: [(usize, usize); 1] = [(0, 16)];
+
+/// `pointer`'s `fields` in one guarded call; an incomplete gather is a
+/// bounded fallback ([`crate::batch_fallback`]).
+fn gather<const N: usize>(
+    memory: &impl Memory,
+    pointer: usize,
+    fields: [(usize, usize); N],
+) -> cship::GatheredObject<N> {
+    let gathered = cship::GatheredObject::gather(memory, pointer, fields);
+    if pointer != 0 && !gathered.complete() {
+        crate::batch_fallback::record(crate::batch_fallback::Batch::FreshEtaGathers);
+    }
+    gathered
+}
+
+// Targeted spotting reads this separate current relation accumulator, apart
+// from fleet-leader terms.
 const TARGETED_INDEX: usize = VALUE_COUNT;
 const TARGETED_SPOTTING_KEY: u32 = keys::SPOTTING_CHANCE_AGAINST;
 type Terms = [Result<i64, &'static str>; TERM_COUNT];
@@ -161,6 +239,11 @@ pub(super) struct Reader<'a, M: Memory> {
     state: usize,
     countries: Option<Result<ccountry::Reader<'a, M>, &'static str>>,
     weather: Option<Result<cweather_manager::Reader<'a, M>, &'static str>>,
+    /// Terrain lookup's ocean fallback, content resolved once per capture.
+    ocean: Option<usize>,
+    /// Complete sorted-key censuses by accumulator: task forces share their
+    /// country's, terrain classes', weather regions' and commanders' sources.
+    censuses: Recent<(usize, [u32; VALUE_COUNT]), [Value; VALUE_COUNT], 32>,
     definitions: [Option<Result<Operands, &'static str>>; VALUE_COUNT + 1],
     metadata_root: Option<Result<usize, &'static str>>,
     eligibility: Option<Result<u32, &'static str>>,
@@ -171,6 +254,10 @@ pub(super) struct Reader<'a, M: Memory> {
     speed_class: Result<i32, &'static str>,
     ship_observer: Option<&'a mut dyn OriginalRiskShips>,
     receiver_handle: Option<u64>,
+    /// Certified receivers' censuses: served and logged.
+    certified: Option<Censuses<'a>>,
+    /// The current task force's stat block fields ([`STAT_FIELDS`]).
+    stat_view: cship::GatheredObject<3>,
 }
 
 fn field<T: crate::memory::Raw>(
@@ -195,6 +282,66 @@ fn auth(memory: &impl Memory, base: usize, pointer: usize, rva: usize) -> Result
     Ok(())
 }
 
+/// The roster ship fields both ship walks read: vtable, parent, class and
+/// handle (the risk loan's).
+const ROSTER_SHIP: [(usize, usize); 4] = [
+    (0, 8),
+    (cship::TASK_FORCE, 8),
+    (cship::CLASS_DATABASE_ID, 4),
+    (cship::HANDLE, 8),
+];
+
+/// A roster ship's [`ROSTER_SHIP`] fields in one guarded call, each
+/// consulted where the walk reads it ([`FieldBatch`]); a null or overflowing
+/// ship reads each as [`field`] does.
+struct RosterShip {
+    ship: usize,
+    fields: Option<FieldBatch<4>>,
+}
+
+impl RosterShip {
+    fn gather(memory: &impl Memory, ship: usize) -> Self {
+        let addresses =
+            ROSTER_SHIP.map(|(offset, _)| ship.checked_add(offset).filter(|_| ship != 0));
+        let fields = addresses.iter().all(Option::is_some).then(|| {
+            FieldBatch::gather(
+                memory,
+                std::array::from_fn(|index| (addresses[index].unwrap(), ROSTER_SHIP[index].1)),
+            )
+        });
+        Self { ship, fields }
+    }
+
+    fn get<T: Raw>(&self, memory: &impl Memory, index: usize) -> Result<T, &'static str> {
+        match &self.fields {
+            Some(fields) => fields
+                .get(memory, index)
+                .ok_or("fresh task-force operand unreadable"),
+            None => field(memory, self.ship, ROSTER_SHIP[index].0),
+        }
+    }
+
+    /// The ship is a CShip of `task`'s roster: its vtable, then its parent.
+    fn admit(
+        &self,
+        memory: &impl Memory,
+        base: usize,
+        task: usize,
+        parent_mismatch: &'static str,
+    ) -> Result<(), &'static str> {
+        let expected = base
+            .checked_add(cship::VTABLE_RVA)
+            .ok_or("fresh task-force module overflow")? as u64;
+        if self.get::<u64>(memory, 0)? != expected {
+            return Err("fresh task-force source identity mismatch");
+        }
+        if self.get::<u64>(memory, 1)? != task as u64 {
+            return Err(parent_mismatch);
+        }
+        Ok(())
+    }
+}
+
 fn add(pointer: usize, offset: usize) -> Result<usize, &'static str> {
     pointer
         .checked_add(offset)
@@ -216,6 +363,8 @@ impl<'a, M: Memory> Reader<'a, M> {
             state,
             countries: None,
             weather: None,
+            ocean: None,
+            censuses: Recent::default(),
             definitions: [None; VALUE_COUNT + 1],
             metadata_root: None,
             eligibility: None,
@@ -226,7 +375,17 @@ impl<'a, M: Memory> Reader<'a, M> {
             speed_class: Err("risk original speed class unreached"),
             ship_observer: None,
             receiver_handle: None,
+            certified: None,
+            stat_view: cship::GatheredObject::gather(memory, 0, STAT_FIELDS),
         }
+    }
+
+    /// Serve the certified receivers' censuses in `censuses.held` instead of
+    /// reading them while their certificates hold, and log every certified
+    /// census this capture uses under the certificate taken before it.
+    pub(super) fn with_censuses(mut self, censuses: Censuses<'a>) -> Self {
+        self.certified = Some(censuses);
+        self
     }
 
     pub(super) fn with_modifier_guard(mut self, guard: Result<(), &'static str>) -> Self {
@@ -261,14 +420,15 @@ impl<'a, M: Memory> Reader<'a, M> {
     fn ship_loan(
         &mut self,
         ordinal: u32,
-        pointer: usize,
+        ship: &RosterShip,
         class: Result<u32, &'static str>,
     ) -> Result<(), &'static str> {
         if self.ship_observer.is_none() || self.receiver_handle.is_none() {
             return Ok(());
         }
+        let pointer = ship.ship;
         // The caller already admitted the exact SHIPS pointer and parent.
-        let handle = field::<u64>(self.memory, pointer, 8).and_then(|handle| {
+        let handle = ship.get::<u64>(self.memory, 3).and_then(|handle| {
             if handle >> 32 == 0 || handle as u32 != cship::HANDLE_TYPE {
                 Err("risk original ship full handle unsupported")
             } else {
@@ -391,11 +551,12 @@ impl<'a, M: Memory> Reader<'a, M> {
     /// One sorted accumulator census supplies all demanded keys. Reorder only
     /// the fixed lookup requests, never the native ship/HQ occurrences.
     fn requested_values(
-        &self,
+        &mut self,
         address: usize,
         eta: bool,
         risk: bool,
         country: bool,
+        receiver: Option<usize>,
     ) -> Result<[Value; VALUE_COUNT], &'static str> {
         let mut requests = [(0_u32, 0_usize); VALUE_COUNT];
         let mut len = 0;
@@ -426,13 +587,58 @@ impl<'a, M: Memory> Reader<'a, M> {
         for (key, &(value, _)) in sorted_keys.iter_mut().zip(&requests[..len]) {
             *key = value;
         }
-        let mut sorted = [Value::default(); VALUE_COUNT];
-        accumulator::lookup_many_at(
-            self.memory,
-            address,
-            &sorted_keys[..len],
-            &mut sorted[..len],
-        )?;
+        // A census in this stopped capture reads the same accumulator alike.
+        let sorted = match self.censuses.get(&(address, sorted_keys)) {
+            Some(sorted) => sorted,
+            None => {
+                // The receiver's certificate, taken before its census is
+                // served or read: a writer after it moves it, and the census
+                // is then neither served nor held again.
+                let certificate = match (receiver, self.certified.as_ref()) {
+                    (Some(receiver), Some(certified)) => (certified.certify)(receiver),
+                    _ => None,
+                };
+                let held = receiver
+                    .zip(certificate)
+                    .and_then(|(receiver, certificate)| {
+                        let held = self.certified.as_ref()?.held;
+                        let index = held
+                            .binary_search_by_key(
+                                &(address, receiver, sorted_keys),
+                                HeldCensus::identity,
+                            )
+                            .ok()?;
+                        (held[index].certificate == certificate).then_some(held[index].values)
+                    });
+                let sorted = match held {
+                    Some(values) => values,
+                    None => {
+                        let mut sorted = [Value::default(); VALUE_COUNT];
+                        accumulator::lookup_many_at(
+                            self.memory,
+                            address,
+                            &sorted_keys[..len],
+                            &mut sorted[..len],
+                        )?;
+                        sorted
+                    }
+                };
+                if let Some((receiver, certificate)) = receiver.zip(certificate)
+                    && let Some(certified) = self.certified.as_mut()
+                    && crate::allocation::reserve(certified.log, 1).is_ok()
+                {
+                    certified.log.push(HeldCensus {
+                        receiver,
+                        address,
+                        keys: sorted_keys,
+                        values: sorted,
+                        certificate,
+                    });
+                }
+                self.censuses.insert((address, sorted_keys), sorted);
+                sorted
+            }
+        };
         let mut output = [Value::default(); VALUE_COUNT];
         for (&(_, index), value) in requests[..len].iter().zip(sorted) {
             output[index] = value;
@@ -440,13 +646,15 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(output)
     }
 
+    /// `country`'s modifier-tree census at `address` (`+0x5B8`).
     fn country_values(
-        &self,
+        &mut self,
         address: usize,
+        country: usize,
         eta: bool,
         risk: bool,
     ) -> Result<[Value; VALUE_COUNT], &'static str> {
-        self.requested_values(address, eta, risk, true)
+        self.requested_values(address, eta, risk, true, Some(country))
     }
 
     fn effective_terms(&mut self, values: [Value; VALUE_COUNT], eta: bool, risk: bool) -> Terms {
@@ -466,8 +674,21 @@ impl<'a, M: Memory> Reader<'a, M> {
         })
     }
 
+    /// [`Self::terms`] of a certified receiver's accumulator (a fleet
+    /// leader's modifier tree), served from its held census when given.
+    fn certified_terms(
+        &mut self,
+        address: usize,
+        receiver: usize,
+        eta: bool,
+        risk: bool,
+    ) -> Result<Terms, &'static str> {
+        let values = self.requested_values(address, eta, risk, false, Some(receiver))?;
+        Ok(self.effective_terms(values, eta, risk))
+    }
+
     fn terms(&mut self, address: usize, eta: bool, risk: bool) -> Result<Terms, &'static str> {
-        let values = self.requested_values(address, eta, risk, false)?;
+        let values = self.requested_values(address, eta, risk, false, None)?;
         Ok(self.effective_terms(values, eta, risk))
     }
 
@@ -488,35 +709,41 @@ impl<'a, M: Memory> Reader<'a, M> {
                 self.context.controller = Ok(None);
             }
             if location != 0 {
-                auth(
-                    self.memory,
-                    self.base,
-                    location,
-                    crate::cprovince::VTABLE_RVA,
-                )?;
+                let province = gather(self.memory, location, PROVINCE_FIELDS);
+                let province = province.memory(self.memory);
+                auth(&province, self.base, location, crate::cprovince::VTABLE_RVA)?;
                 if risk && self.full_risk {
                     self.context.location =
-                        field::<u32>(self.memory, location, crate::cprovince::ID).map(Some);
+                        field::<u32>(&province, location, crate::cprovince::ID).map(Some);
                     self.context.controller =
-                        field::<u32>(self.memory, location, crate::cprovince::CONTROLLER).map(Some);
+                        field::<u32>(&province, location, crate::cprovince::CONTROLLER).map(Some);
                 }
                 let region =
-                    field::<u64>(self.memory, location, crate::cprovince::STRATEGIC_REGION)?
-                        as usize;
-                let id = crate::cstrategic_region::id(self.memory, self.base, region)?
+                    field::<u64>(&province, location, crate::cprovince::STRATEGIC_REGION)? as usize;
+                let region_fields = gather(self.memory, region, REGION_FIELDS);
+                let region_memory = region_fields.memory(self.memory);
+                let id = crate::cstrategic_region::id(&region_memory, self.base, region)?
                     .ok_or("fresh task-force location region absent")?;
                 if risk {
                     self.context.region = Ok(Some(id));
                 }
                 let template =
-                    field::<u64>(self.memory, region, crate::cstrategic_region::TEMPLATE)? as usize;
+                    field::<u64>(&region_memory, region, crate::cstrategic_region::TEMPLATE)?
+                        as usize;
+                let template_fields = gather(self.memory, template, TEMPLATE_FIELDS);
+                let template_memory = template_fields.memory(self.memory);
                 auth(
-                    self.memory,
+                    &template_memory,
                     self.base,
                     template,
                     crate::cstrategic_region::TEMPLATE_VTABLE_RVA,
                 )?;
-                let terrain = naval::terrain_from_template(self.memory, self.base, template)?;
+                let terrain = naval::terrain_from_template_kept(
+                    &template_memory,
+                    self.base,
+                    template,
+                    &mut self.ocean,
+                )?;
                 if risk && self.full_risk {
                     self.context.terrain_speed = self.speed_class.and_then(|class| {
                         if class < 0 {
@@ -560,21 +787,30 @@ impl<'a, M: Memory> Reader<'a, M> {
             }
             let fleet = field::<u64>(self.memory, task, ctask_force::FLEET)? as usize;
             if fleet != 0 {
-                auth(self.memory, self.base, fleet, cfleet::VTABLE_RVA)?;
-                let reference = field::<u64>(self.memory, fleet, cfleet::LEADER)?;
+                let fleet_fields = gather(self.memory, fleet, FLEET_FIELDS);
+                let fleet_memory = fleet_fields.memory(self.memory);
+                auth(&fleet_memory, self.base, fleet, cfleet::VTABLE_RVA)?;
+                let reference = field::<u64>(&fleet_memory, fleet, cfleet::LEADER)?;
                 if let Some(leader) = self.references.resolve(self.memory, reference)? {
+                    let leader_fields = gather(self.memory, leader, LEADER_FIELDS);
+                    let leader_memory = leader_fields.memory(self.memory);
                     auth(
-                        self.memory,
+                        &leader_memory,
                         self.base,
                         leader,
                         crate::cnavy_leader::VTABLE_RVA,
                     )?;
-                    if field::<u64>(self.memory, leader, 8)? != reference {
+                    if field::<u64>(&leader_memory, leader, 8)? != reference {
                         return Err("fresh task-force fleet leader reference mismatch");
                     }
                     sum(
                         &mut total,
-                        self.terms(add(leader, mission::LEADER_MODIFIERS)?, eta, risk)?,
+                        self.certified_terms(
+                            add(leader, mission::LEADER_MODIFIERS)?,
+                            leader,
+                            eta,
+                            risk,
+                        )?,
                     );
                 }
             }
@@ -657,13 +893,16 @@ impl<'a, M: Memory> Reader<'a, M> {
             ships,
             "fresh task-force ship pointer unreadable",
             |ordinal, ship| {
-                auth(self.memory, self.base, ship, cship::VTABLE_RVA)?;
-                if field::<u64>(self.memory, ship, cship::TASK_FORCE)? != task as u64 {
-                    return Err("fresh task-force ship parent mismatch");
-                }
-                let class = field::<u32>(self.memory, ship, cship::CLASS_DATABASE_ID);
+                let ship = RosterShip::gather(self.memory, ship);
+                ship.admit(
+                    self.memory,
+                    self.base,
+                    task,
+                    "fresh task-force ship parent mismatch",
+                )?;
+                let class = ship.get::<u32>(self.memory, 2);
                 if risk {
-                    let original = self.ship_loan(ordinal, ship, class);
+                    let original = self.ship_loan(ordinal, &ship, class);
                     sink_result = sink_result.and(original);
                 }
                 let class = class?;
@@ -843,6 +1082,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             roster.and_then(|country| {
                 self.country_values(
                     add(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
+                    country.pointer,
                     eta,
                     risk,
                 )
@@ -935,15 +1175,21 @@ impl<'a, M: Memory> Reader<'a, M> {
         }
     }
 
-    fn stats(&self, task: usize) -> Result<usize, &'static str> {
+    fn stats(&mut self, task: usize) -> Result<usize, &'static str> {
         let stats = field::<u64>(self.memory, task, cunit::STAT_BLOCK)? as usize;
+        self.stat_view = gather(self.memory, stats, STAT_FIELDS);
         auth(
-            self.memory,
+            &self.stat_view.memory(self.memory),
             self.base,
             stats,
             csub_unit_definition::VTABLE_RVA,
         )?;
         Ok(stats)
+    }
+
+    /// A stat block field, from the task force's [`STAT_FIELDS`] gather.
+    fn stat<T: Raw>(&self, stats: usize, offset: usize) -> Result<T, &'static str> {
+        field(&self.stat_view.memory(self.memory), stats, offset)
     }
 
     fn observe_ship_count(&mut self, task: usize) {
@@ -966,13 +1212,16 @@ impl<'a, M: Memory> Reader<'a, M> {
                         ships,
                         "risk original ship pointer unreadable",
                         |ordinal, ship| {
-                            auth(self.memory, self.base, ship, cship::VTABLE_RVA)?;
-                            if field::<u64>(self.memory, ship, cship::TASK_FORCE)? != task as u64 {
-                                return Err("risk original ship parent mismatch");
-                            }
+                            let ship = RosterShip::gather(self.memory, ship);
+                            ship.admit(
+                                self.memory,
+                                self.base,
+                                task,
+                                "risk original ship parent mismatch",
+                            )?;
                             let original = self.ship_loan(
                                 ordinal,
-                                ship,
+                                &ship,
                                 Err("risk ship class query unreached without source terrain"),
                             );
                             sink_result = sink_result.and(original);
@@ -1138,7 +1387,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         }
         let stats = self.stats(task);
         let terrain_class = if self.full_risk {
-            stats.and_then(|stats| field(self.memory, stats, 8))
+            stats.and_then(|stats| self.stat(stats, 8))
         } else {
             Ok(0)
         };
@@ -1146,7 +1395,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         let terms = self.common_inputs(task, false, true).2;
         self.observe_ship_count(task);
         let (base_speed, terrain_class, speed_modifier, detached_activity) = if self.full_risk {
-            let base = stats.and_then(|stats| field(self.memory, stats, 0x1a8));
+            let base = stats.and_then(|stats| self.stat(stats, 0x1a8));
             let fuel = self.fuel(task);
             let speed = terms[0].and_then(|value| {
                 self.deficit(fuel, 0x0331_bd80)
@@ -1213,11 +1462,11 @@ impl<'a, M: Memory> Reader<'a, M> {
         MissionRiskInputs,
     ) {
         let stats = self.stats(task);
-        let base_speed = stats.and_then(|stats| field(self.memory, stats, 0x1a8));
-        let terrain_class = stats.and_then(|stats| field(self.memory, stats, 8));
-        let range_base = self.modifier_guard.and_then(|_| {
-            stats.and_then(|stats| field::<i64>(self.memory, stats, mission::STAT_RANGE))
-        });
+        let base_speed = stats.and_then(|stats| self.stat(stats, 0x1a8));
+        let terrain_class = stats.and_then(|stats| self.stat(stats, 8));
+        let range_base = self
+            .modifier_guard
+            .and_then(|_| stats.and_then(|stats| self.stat::<i64>(stats, mission::STAT_RANGE)));
         let risk_reached = demand == Ok(true) && guard.is_ok();
         self.full_risk = risk_reached;
         self.speed_class = terrain_class;
@@ -1233,7 +1482,8 @@ impl<'a, M: Memory> Reader<'a, M> {
             self.modifier_guard
                 .and(Err("fresh task-force fuel query unreached"))
         };
-        // OUT_OF_FUEL_SPEED_FACTOR / OUT_OF_FUEL_RANGE_FACTOR; read only on the deficit branch.
+        // OUT_OF_FUEL_SPEED_FACTOR / OUT_OF_FUEL_RANGE_FACTOR; read only on the
+        // deficit branch.
         let observed_speed_modifier = terms[0].and_then(|value| {
             self.deficit(fuel, 0x0331_bd80)
                 .map(|deficit| value.wrapping_add(deficit))

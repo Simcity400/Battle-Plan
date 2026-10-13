@@ -47,10 +47,29 @@ static LOG_REQUIRED: AtomicUsize = AtomicUsize::new(0);
 static LOG_SWAPS: AtomicU64 = AtomicU64::new(0);
 static RESIZING: AtomicBool = AtomicBool::new(false);
 
-/// Spool thread: grow from complete attempted-word demand, including records
+/// Runs `body`, or `diverted` when the calling thread is a test thread
+/// outside the land test that owns the process-wide log
+/// ([`test_support::own`]): the parallel suite's other modules reach these
+/// entry points from their own threads (a full decode queue, a dropped
+/// frame, an observer drain), which must not move a land test's epoch,
+/// losses or storage. The owner's own threads ([`test_support::adopt`])
+/// are never diverted or blocked. Outside tests it only runs `body`.
+#[inline(always)]
+fn unless_foreign<T>(diverted: impl FnOnce() -> T, body: impl FnOnce() -> T) -> T {
+    #[cfg(test)]
+    let _entered = match test_support::enter() {
+        Some(entered) => entered,
+        None => return diverted(),
+    };
+    #[cfg(not(test))]
+    let _ = diverted;
+    body()
+}
+
+/// Sizing thread: grow from complete attempted-word demand, including records
 /// that exceeded the old storage. No population or record ceiling is imposed.
 pub fn prepare() {
-    engine::allocation::advisory(prepare_storage);
+    unless_foreign(|| (), || engine::allocation::advisory(prepare_storage));
 }
 
 fn prepare_storage() {
@@ -78,8 +97,13 @@ fn prepare_storage() {
 }
 
 pub(crate) fn presize(words: usize) {
-    LOG_REQUIRED.fetch_max(words, Ordering::Relaxed);
-    prepare();
+    unless_foreign(
+        || (),
+        || {
+            LOG_REQUIRED.fetch_max(words, Ordering::Relaxed);
+            engine::allocation::advisory(prepare_storage);
+        },
+    );
 }
 
 pub(crate) fn capacity() -> usize {
@@ -89,6 +113,9 @@ pub(crate) fn capacity() -> usize {
 /// Sole hourly consumer, after draining: offer installation neither allocates
 /// nor frees. Producers seeing the swap gate refuse and mark a coverage gap.
 pub fn install_offered() {
+    unless_foreign(|| (), install_offered_owned);
+}
+fn install_offered_owned() {
     let Ok(mut swap) = LOG_SWAP.try_lock() else {
         return;
     };
@@ -111,6 +138,9 @@ pub fn install_offered() {
 /// Off-thread after final drain and hook/IP/callback quiescence. Failed detach
 /// retains every current, offered and retired allocation with its charge.
 pub fn release() -> Result<(), &'static str> {
+    unless_foreign(|| Ok(()), release_owned)
+}
+fn release_owned() -> Result<(), &'static str> {
     if ENABLED.load(Ordering::SeqCst)
         || ACTIVE.load(Ordering::SeqCst) != 0
         || PRODUCERS.load(Ordering::SeqCst) != 0
@@ -165,7 +195,7 @@ fn observing() -> bool {
     ENABLED.load(Ordering::Relaxed) && escaped_unwind_reason().is_none()
 }
 pub(crate) fn stop_observation() {
-    ENABLED.store(false, Ordering::SeqCst);
+    unless_foreign(|| (), || ENABLED.store(false, Ordering::SeqCst));
 }
 static BASE: AtomicUsize = AtomicUsize::new(0);
 pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
@@ -332,6 +362,41 @@ static LOSS_REASONS: [AtomicU64; LOSS_NAMES.len()] =
 static UNLISTED_LOSS: OnceLock<&'static str> = OnceLock::new();
 static UNLISTED_LOSSES: AtomicU64 = AtomicU64::new(0);
 static LOST: AtomicU64 = AtomicU64::new(0);
+// This thread's bumps of `LOST` and `LEADER_CALLS`, in test builds only.
+// Both counters are process-wide, and other modules' tests (dropped frames,
+// a full decode queue, observer-boundary drains while a land test enables
+// observation) bump `LOST` from their own threads while the parallel suite
+// runs. A synthetic tap runs its observer body on the calling thread, so a
+// land test measures its own bodies with these.
+#[cfg(test)]
+thread_local! {
+    static THREAD_COUNTS: std::cell::Cell<[u64; 2]> = const { std::cell::Cell::new([0; 2]) };
+    /// This thread's `EPOCH` advances: other modules' drains and losses
+    /// advance the process-wide epoch from their own threads.
+    static THREAD_EPOCHS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Starts a new observation epoch, returning the new value.
+fn advance_epoch() -> u64 {
+    #[cfg(test)]
+    THREAD_EPOCHS.with(|epochs| epochs.set(epochs.get().wrapping_add(1)));
+    EPOCH.fetch_add(1, Ordering::SeqCst) + 1
+}
+/// Count `lost` losses and `leader_calls` resolver calls on this thread too
+/// (test builds only; see `THREAD_COUNTS`).
+#[inline]
+fn count_on_thread(lost: u64, leader_calls: u64) {
+    #[cfg(test)]
+    THREAD_COUNTS.with(|counts| {
+        let [previous_lost, previous_calls] = counts.get();
+        counts.set([
+            previous_lost.wrapping_add(lost),
+            previous_calls.wrapping_add(leader_calls),
+        ]);
+    });
+    #[cfg(not(test))]
+    let _ = (lost, leader_calls);
+}
 static EVENTS: AtomicU64 = AtomicU64::new(0);
 static HOOK_TICKS: AtomicU64 = AtomicU64::new(0);
 static MAX_HOOK_TICKS: AtomicU64 = AtomicU64::new(0);
@@ -440,16 +505,24 @@ thread_local! {static DESTRUCTION:Cell<Destruction>=const{Cell::new(Destruction{
 
 struct Call {
     completed: Cell<bool>,
+    // Drops after Call::drop and records the whole callback.
+    timing: crate::hook_timing::Span,
 }
 impl Call {
     fn enter() -> Self {
+        let timing = crate::hook_timing::enter(crate::hook_timing::Family::LandEvents);
         ACTIVE.fetch_add(1, Ordering::SeqCst);
         Self {
             completed: Cell::new(false),
+            timing,
         }
     }
     fn finish(&self) {
         self.completed.set(true);
+    }
+    /// Run the native original, timed apart from this callback when sampled.
+    fn original<T>(&self, original: impl FnOnce() -> T) -> T {
+        self.timing.original(original)
     }
 }
 struct Restore<T: Copy + 'static> {
@@ -482,6 +555,9 @@ impl Drop for Call {
     }
 }
 pub(crate) fn fail(reason: &'static str) {
+    unless_foreign(|| (), || fail_owned(reason));
+}
+fn fail_owned(reason: &'static str) {
     if let Some(index) = LOSS_NAMES.iter().position(|name| *name == reason) {
         LOSS_REASONS[index].fetch_add(1, Ordering::Relaxed);
     } else {
@@ -489,17 +565,22 @@ pub(crate) fn fail(reason: &'static str) {
         UNLISTED_LOSSES.fetch_add(1, Ordering::Relaxed);
     }
 
+    count_on_thread(1, 0);
     LOST.fetch_add(1, Ordering::Relaxed);
-    EPOCH.fetch_add(1, Ordering::SeqCst);
+    advance_epoch();
 }
 
 /// Independent hourly read failures count observations, never break event spans.
 pub(crate) fn lost_casualty_reads(count: u64) -> u64 {
+    unless_foreign(|| count, || lost_casualty_reads_owned(count))
+}
+fn lost_casualty_reads_owned(count: u64) -> u64 {
     let index = LOSS_NAMES
         .iter()
         .position(|name| *name == "land casualty snapshot read refused")
         .unwrap();
     LOSS_REASONS[index].fetch_add(count, Ordering::Relaxed);
+    count_on_thread(count, 0);
     LOST.fetch_add(count, Ordering::Relaxed)
         .saturating_add(count)
 }
@@ -510,6 +591,12 @@ fn append(size: usize, copy: impl FnOnce(&mut dyn FnMut(u64)) -> Result<(), &'st
     append_at(size, |_, put| copy(put));
 }
 fn append_at(size: usize, copy: impl FnOnce(u64, &mut dyn FnMut(u64)) -> Result<(), &'static str>) {
+    unless_foreign(|| (), || append_owned(size, copy));
+}
+fn append_owned(
+    size: usize,
+    copy: impl FnOnce(u64, &mut dyn FnMut(u64)) -> Result<(), &'static str>,
+) {
     if escaped_unwind_reason().is_some() {
         return;
     }
@@ -593,7 +680,10 @@ pub(crate) fn drain_growing(output: &mut Vec<u64>, hour: i32, invalidating: bool
     drain_buffer(engine::walk::Buffer::Growing(output), hour, invalidating)
 }
 pub(crate) fn lost_drain(hour: i32, reason: &'static str) -> Drain {
-    fail("land observer worker drain lost");
+    unless_foreign(|| diverted_drain(hour), || lost_drain_owned(hour, reason))
+}
+fn lost_drain_owned(hour: i32, reason: &'static str) -> Drain {
+    fail_owned("land observer worker drain lost");
     let first = CONSUMED.load(Ordering::SeqCst);
     Drain {
         epoch: EPOCH.load(Ordering::SeqCst),
@@ -607,9 +697,30 @@ pub(crate) fn lost_drain(hour: i32, reason: &'static str) -> Drain {
         reason,
     }
 }
-fn drain_buffer(mut output: engine::walk::Buffer<'_, u64>, hour: i32, invalidating: bool) -> Drain {
+fn drain_buffer(output: engine::walk::Buffer<'_, u64>, hour: i32, invalidating: bool) -> Drain {
+    unless_foreign(
+        || diverted_drain(hour),
+        || drain_owned(output, hour, invalidating),
+    )
+}
+/// A drain refused to a test thread outside the owning land test.
+#[cfg_attr(not(test), allow(dead_code))]
+fn diverted_drain(hour: i32) -> Drain {
+    Drain {
+        epoch: 0,
+        first: 0,
+        words: 0,
+        required: 0,
+        from_hour: hour,
+        to_hour: hour,
+        complete: false,
+        lost: 0,
+        reason: "land event log owned by another test",
+    }
+}
+fn drain_owned(mut output: engine::walk::Buffer<'_, u64>, hour: i32, invalidating: bool) -> Drain {
     if invalidating {
-        EPOCH.fetch_add(1, Ordering::SeqCst);
+        advance_epoch();
     }
     let end = CURSOR.load(Ordering::SeqCst);
     let first = CONSUMED.swap(end, Ordering::SeqCst);
@@ -644,7 +755,7 @@ fn drain_buffer(mut output: engine::walk::Buffer<'_, u64>, hour: i32, invalidati
         return result;
     }
     if from.checked_add(1) != Some(hour) {
-        result.epoch = EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
+        result.epoch = advance_epoch();
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
         result.reason = "land event hour unavailable or discontinuous";
         return result;
@@ -770,7 +881,7 @@ unsafe extern "system-unwind" fn finalize(combat: usize) {
     observe(combat);
     let original: unsafe extern "system-unwind" fn(usize) =
         unsafe { std::mem::transmute(ORIGINAL[FINALIZE].load(Ordering::Acquire)) };
-    unsafe { original(combat) };
+    _call.original(|| unsafe { original(combat) });
     if observing() {
         let start = crate::sampling::qpc();
         let memory = unsafe { engine::memory::LiveMemory::new() };
@@ -903,7 +1014,7 @@ unsafe extern "system-unwind" fn destroyed(
     }
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[DESTROYED].load(Ordering::Acquire)) };
-    unsafe { original(from, to, army, pool, killer) };
+    _call.original(|| unsafe { original(from, to, army, pool, killer) });
     _call.finish();
 }
 unsafe extern "system-unwind" fn destruction(army: usize, from: usize, to: usize) {
@@ -949,7 +1060,7 @@ unsafe extern "system-unwind" fn destruction(army: usize, from: usize, to: usize
     }
     let original: unsafe extern "system-unwind" fn(usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[DESTRUCTION_ORIGINAL].load(Ordering::Acquire)) };
-    unsafe { original(army, from, to) };
+    _call.original(|| unsafe { original(army, from, to) });
     let start = crate::sampling::qpc();
     if observing() && !DESTRUCTION.get().seen && !DESTRUCTION.get().failed {
         fail("land destruction returned without killer observation");
@@ -1009,7 +1120,7 @@ unsafe extern "system-unwind" fn border_finalize(combat: usize) {
     timing(start);
     let original: unsafe extern "system-unwind" fn(usize) =
         unsafe { std::mem::transmute(ORIGINAL[BORDER_FINALIZE].load(Ordering::Acquire)) };
-    unsafe { original(combat) };
+    _call.original(|| unsafe { original(combat) });
     _call.finish();
 }
 // Single-argument Win64 entries use the free RDX register to retain the
@@ -1070,7 +1181,7 @@ unsafe extern "system-unwind" fn border_terminate(side: usize, caller: usize) ->
     let _call = Call::enter();
     let original: unsafe extern "system-unwind" fn(usize) -> u8 =
         unsafe { std::mem::transmute(ORIGINAL[BORDER_TERMINATE].load(Ordering::Acquire)) };
-    let result = unsafe { original(side) };
+    let result = _call.original(|| unsafe { original(side) });
     let start = crate::sampling::qpc();
     let mut border = BORDER.get();
     if observing() {
@@ -1132,7 +1243,7 @@ unsafe extern "system-unwind" fn dispatch(combat: usize, loser: usize, winner: u
     timing(start);
     let original: unsafe extern "system-unwind" fn(usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[DISPATCH_ORIGINAL].load(Ordering::Acquire)) };
-    unsafe { original(combat, loser, winner) };
+    _call.original(|| unsafe { original(combat, loser, winner) });
     let start = crate::sampling::qpc();
     let observed = DISPATCH.get();
     if observing() {
@@ -1155,15 +1266,16 @@ unsafe extern "system-unwind" fn dispatch(combat: usize, loser: usize, winner: u
 }
 unsafe extern "system-unwind" fn leader_tap(side: usize, caller: usize, target: usize) -> usize {
     let _call = Call::enter();
+    count_on_thread(0, 1);
     LEADER_CALLS.fetch_add(1, Ordering::Relaxed);
-    let result = unsafe { leader_observation(side, caller, target) };
+    let result = unsafe { leader_observation(&_call, side, caller, target) };
     _call.finish();
     result
 }
-unsafe fn leader_observation(side: usize, caller: usize, target: usize) -> usize {
+unsafe fn leader_observation(call: &Call, side: usize, caller: usize, target: usize) -> usize {
     let original: unsafe extern "system-unwind" fn(usize) -> usize =
         unsafe { std::mem::transmute(target) };
-    let result = unsafe { original(side) };
+    let result = call.original(|| unsafe { original(side) });
     let mut observed = DISPATCH.get();
     if observing() && observed.combat != 0 {
         let start = crate::sampling::qpc();
@@ -1277,7 +1389,7 @@ impl Hooks {
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         self.publication_attempted |= enabled;
         ENABLED.store(false, Ordering::SeqCst);
-        EPOCH.fetch_add(1, Ordering::SeqCst);
+        advance_epoch();
         if let Some(reason) = escaped_unwind_reason().filter(|_| enabled) {
             return Err(reason.into());
         }
@@ -1379,7 +1491,84 @@ fn verify_leader_taps(memory: &impl Memory, base: usize) -> Result<[[u8; 16]; 2]
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
-    pub static EXCLUSIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static EXCLUSIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Held (written) by the owning land test; every other thread's entry
+    /// holds it shared for the call, or is diverted while it is owned.
+    static GATE: std::sync::RwLock<()> = std::sync::RwLock::new(());
+    /// The owning land test's generation, zero while none owns the log.
+    static OWNER: AtomicU64 = AtomicU64::new(0);
+    static GENERATIONS: AtomicU64 = AtomicU64::new(0);
+    thread_local! {
+        /// The owning generation this thread belongs to.
+        static OWNED: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// A land test's ownership of the process-wide log: the land fixtures'
+    /// lock and the gate, which other threads' entries finish before it is
+    /// granted and are diverted from while it is held.
+    pub struct Owned {
+        _gate: std::sync::RwLockWriteGuard<'static, ()>,
+        _exclusive: std::sync::MutexGuard<'static, ()>,
+    }
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            OWNER.store(0, Ordering::SeqCst);
+            OWNED.with(|owned| owned.set(0));
+        }
+    }
+
+    /// Owns the land log for this thread and the threads it [`adopt`]s.
+    pub fn own() -> Owned {
+        let exclusive = EXCLUSIVE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let gate = GATE
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = GENERATIONS.fetch_add(1, Ordering::SeqCst) + 1;
+        OWNED.with(|owned| owned.set(generation));
+        OWNER.store(generation, Ordering::SeqCst);
+        Owned {
+            _gate: gate,
+            _exclusive: exclusive,
+        }
+    }
+
+    /// A thread the owning land test started: it reaches the log as the
+    /// owner does.
+    pub fn adopt() {
+        OWNED.with(|owned| owned.set(OWNER.load(Ordering::SeqCst)));
+    }
+
+    /// How the calling thread enters the log: as the owner, sharing the
+    /// gate while no test owns it, or `None` (diverted) while another does.
+    pub(super) enum Entered {
+        Owner,
+        Shared(#[allow(dead_code)] std::sync::RwLockReadGuard<'static, ()>),
+    }
+    pub(super) fn enter() -> Option<Entered> {
+        let owner = OWNER.load(Ordering::SeqCst);
+        if owner != 0 && OWNED.with(Cell::get) == owner {
+            return Some(Entered::Owner);
+        }
+        match GATE.try_read() {
+            Ok(shared) => Some(Entered::Shared(shared)),
+            Err(std::sync::TryLockError::Poisoned(shared)) => {
+                Some(Entered::Shared(shared.into_inner()))
+            }
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
+    }
+
+    /// The land fixtures' ownership, after the process-wide patching test
+    /// lock: these tests publish patches on code pages other modules'
+    /// patching tests share, and a panic in one must not poison the rest.
+    pub fn exclusive() -> (std::sync::MutexGuard<'static, ()>, Owned) {
+        let family = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (family, own())
+    }
     pub fn reset() {
         reset_with_words(1024); // Synthetic fixture storage, no production floor.
     }
@@ -1425,16 +1614,28 @@ pub(crate) mod test_support {
     pub fn disable() {
         ENABLED.store(false, Ordering::SeqCst);
     }
+    /// This thread's losses (`LOST` bumps), which no other test's thread moves.
+    pub fn thread_lost() -> u64 {
+        THREAD_COUNTS.with(|counts| counts.get()[0])
+    }
+    /// This thread's verdict-resolver tap calls (`LEADER_CALLS` bumps).
+    pub fn thread_leader_calls() -> u64 {
+        THREAD_COUNTS.with(|counts| counts.get()[1])
+    }
+    /// This thread's `EPOCH` advances, which no other test's thread moves.
+    pub fn thread_epochs() -> u64 {
+        THREAD_EPOCHS.with(|epochs| epochs.get())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use test_support::{EXCLUSIVE, reset};
+    use test_support::{exclusive, reset};
 
     #[test]
     fn worker_drain_keeps_first_and_later_mod_sized_five_thousand_country_words() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         test_support::reset_with_words(36_000);
         let mut words = Vec::new();
         assert!(!drain_growing(&mut words, 9, true).complete);
@@ -1472,14 +1673,27 @@ mod tests {
     }
     #[test]
     fn read_losses_and_publication_losses_keep_separate_named_counts() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
-        let before = LOST.load(Ordering::Relaxed);
+        let before = test_support::thread_lost();
         crate::allocation_failure_tests::with_allocations_denied(|| {
             refusal("land event field unreadable");
             fail("land frame decode queue full");
         });
-        assert_eq!(LOST.load(Ordering::Relaxed), before + 2);
+        assert_eq!(test_support::thread_lost(), before + 2);
+        // Another thread's loss, like another module's test in the parallel
+        // suite, moves the process-wide count but not this thread's.
+        let global = LOST.load(Ordering::Relaxed);
+        let calls = test_support::thread_leader_calls();
+        std::thread::spawn(|| {
+            test_support::adopt();
+            fail("land frame decode queue full")
+        })
+        .join()
+        .unwrap();
+        assert!(LOST.load(Ordering::Relaxed) > global);
+        assert_eq!(test_support::thread_lost(), before + 2);
+        assert_eq!(test_support::thread_leader_calls(), calls);
         let value = serde_json::to_value(status()).unwrap();
         assert!(
             value["loss_reasons"]["land event field unreadable"]
@@ -1502,7 +1716,7 @@ mod tests {
         use windows_sys::Win32::System::Memory::{
             MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc, VirtualFree,
         };
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         let escaped = TAP_ESCAPED_UNWINDS.load(Ordering::SeqCst);
         assert_eq!(TAP_IN_FLIGHT.load(Ordering::SeqCst), 0);
@@ -1560,7 +1774,7 @@ mod tests {
     }
     #[test]
     fn event_storage_charge_follows_offers_and_quiet_release() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         test_support::disable();
         release().unwrap();
@@ -1595,8 +1809,7 @@ mod tests {
     }
     #[test]
     fn land_restore_retries_original_bytes_pending_verification() {
-        let _guard = EXCLUSIVE.lock().unwrap();
-        let _family_guard = crate::hook::FAMILY_TEST.lock().unwrap();
+        let _guard = exclusive();
         use windows_sys::Win32::System::Memory::{
             MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc, VirtualFree,
         };
@@ -1653,7 +1866,7 @@ mod tests {
     }
     #[test]
     fn verdict_tap_disable_refuses_while_suspended_thread_is_inside_target() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         static ENTERED: AtomicBool = AtomicBool::new(false);
         static RELEASE: AtomicBool = AtomicBool::new(false);
         unsafe extern "system-unwind" fn target(side: usize) -> usize {
@@ -1679,6 +1892,7 @@ mod tests {
         .unwrap();
         assert!(hook.set_enabled(true).unwrap());
         let worker = std::thread::spawn(|| {
+            test_support::adopt();
             let mut vtable = [0usize; 30];
             vtable[29] = target as *const () as usize;
             let mut preserved = [0usize; 8];
@@ -1734,7 +1948,7 @@ mod tests {
     }
     #[test]
     fn refused_detach_stops_land_production() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         let mut retained = false;
         let result = crate::runtime::refuse_land_detach_for_test(|| {
@@ -1746,13 +1960,13 @@ mod tests {
         });
         assert_eq!(result, Err("synthetic land detach refused"));
         assert!(retained);
-        let lost = LOST.load(Ordering::Relaxed);
+        let lost = test_support::thread_lost();
         let required = LOG_REQUIRED.load(Ordering::Relaxed);
         unsafe {
             observe_wipe(0, 0);
         }
         assert!(!ENABLED.load(Ordering::SeqCst));
-        assert_eq!(LOST.load(Ordering::Relaxed), lost);
+        assert_eq!(test_support::thread_lost(), lost);
         assert_eq!(LOG_REQUIRED.load(Ordering::Relaxed), required);
     }
     static IP_ENTERED: AtomicBool = AtomicBool::new(false);
@@ -1776,7 +1990,7 @@ mod tests {
             Diagnostics::Debug::FlushInstructionCache, Memory::VirtualProtect,
             Threading::GetCurrentProcess,
         };
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         let site = land_leader_tap_test_site as *const () as usize;
         let sentinel = unsafe { ptr::read_unaligned(site as *const [u8; 16]) };
         let stub = land_tap_ip_test_stub as *const () as usize;
@@ -1840,6 +2054,7 @@ mod tests {
             assert!(hook.set_enabled(true).unwrap());
             let patched = unsafe { ptr::read_unaligned(site as *const [u8; 16]) };
             let worker = std::thread::spawn(move || {
+                test_support::adopt();
                 let wait: unsafe extern "system" fn() = unsafe { std::mem::transmute(address) };
                 unsafe {
                     wait();
@@ -1866,13 +2081,14 @@ mod tests {
     }
     #[test]
     fn repeated_division_killer_records_use_the_reserved_destruction_entry() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         unsafe extern "system-unwind" fn writer(_: usize, _: usize, _: usize, _: usize, _: usize) {}
         let original = ORIGINAL[DESTROYED].swap(writer as *const () as usize, Ordering::SeqCst);
         let _restore = Restore::new(&DESTRUCTION);
         let mut output = [0; 32];
         drain(&mut output, 10, true);
+        let lost = test_support::thread_lost();
         for _ in 0..2 {
             append_at(10, |entry, put| {
                 DESTRUCTION.set(Destruction {
@@ -1896,7 +2112,7 @@ mod tests {
         ORIGINAL[DESTROYED].store(original, Ordering::SeqCst);
         test_support::disable();
         assert!(observed.complete);
-        assert_eq!(observed.lost, 0);
+        assert_eq!(test_support::thread_lost(), lost);
         assert_eq!(observed.words, 28);
         assert_eq!(&output[10..14], &[4, 6, 0, 0]);
         assert_eq!(&output[24..28], &[4, 6, 14, 0]);
@@ -1904,7 +2120,7 @@ mod tests {
     }
     #[test]
     fn failed_destruction_read_is_counted_once_across_nested_writer() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         unsafe extern "system-unwind" fn writer(_: usize, _: usize, _: usize, _: usize, _: usize) {}
         unsafe extern "system-unwind" fn original(army: usize, from: usize, to: usize) {
@@ -1916,11 +2132,11 @@ mod tests {
         let outer =
             ORIGINAL[DESTRUCTION_ORIGINAL].swap(original as *const () as usize, Ordering::SeqCst);
         let inner = ORIGINAL[DESTROYED].swap(writer as *const () as usize, Ordering::SeqCst);
-        let lost = LOST.load(Ordering::Relaxed);
+        let lost = test_support::thread_lost();
         unsafe {
             destruction(0, 0, 0);
         }
-        assert_eq!(LOST.load(Ordering::Relaxed) - lost, 1);
+        assert_eq!(test_support::thread_lost() - lost, 1);
         assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
         ORIGINAL[DESTRUCTION_ORIGINAL].store(outer, Ordering::SeqCst);
         ORIGINAL[DESTROYED].store(inner, Ordering::SeqCst);
@@ -1929,7 +2145,7 @@ mod tests {
     }
     #[test]
     fn late_enable_verification_failure_withholds_only_land_and_rolls_back_prefix() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         use windows_sys::Win32::System::Memory::{
             MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc, VirtualFree,
         };
@@ -1989,7 +2205,7 @@ mod tests {
     }
     #[test]
     fn terminal_losses_are_read_after_native_pending_damage_flush() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         let world = crate::extended::combat_progress::tests::World::new(1);
         unsafe extern "system-unwind" fn flush(combat: usize) {
@@ -2020,9 +2236,14 @@ mod tests {
         // Only valid synthetic combat/side objects. Missing state/history
         // correctly refuses their independent observations; terminal sampling
         // itself must still read the original's changes into a complete record.
+        let family = crate::hook_timing::Family::LandEvents;
+        let _sampled = crate::hook_timing::sample_all();
+        let timed = crate::hook_timing::counts(family);
         unsafe {
             finalize(world.combat.as_ptr() as usize);
         }
+        let after = crate::hook_timing::counts(family);
+        assert!(after.calls > timed.calls && after.original > timed.original);
         let log = log().unwrap();
         let words = (0..CURSOR.load(Ordering::SeqCst) as usize)
             .map(|n| log.words[n].load(Ordering::Acquire))
@@ -2040,11 +2261,12 @@ mod tests {
     }
     #[test]
     fn wipe_unsupported_class_refusals_are_named_counted_and_keep_interval_unknown() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         let old_base = BASE.swap(0, Ordering::SeqCst);
         let mut output = [0; 8];
         drain(&mut output, 10, true);
+        let lost = test_support::thread_lost();
         let unknown_side = 0u64;
         let land_side = engine::cland_combatant::VTABLE_RVA as u64;
         let unsupported_unit = [engine::carmy::VTABLE_RVA as u64, 1];
@@ -2073,7 +2295,8 @@ mod tests {
         for (reason, _) in &WIPE_UNSUPPORTED_CLASSES[3..] {
             assert_eq!(observed["land_unsupported_classes"][*reason], 1);
         }
-        assert_eq!(interval.lost, 6);
+        assert_eq!(test_support::thread_lost() - lost, 6);
+        assert!(interval.lost >= 6);
         assert!(!interval.complete);
         assert!(
             observed["scope"]
@@ -2084,7 +2307,7 @@ mod tests {
     }
     #[test]
     fn win64_observation_entries_preserve_native_argument_and_return() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         unsafe extern "system" fn commander(side: usize) -> usize {
             side.rotate_left(17)
         }
@@ -2217,11 +2440,11 @@ mod tests {
     }
     #[test]
     fn wipe_observation_bridge_preserves_native_caller_registers_and_flags() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         let enabled = ENABLED.swap(true, Ordering::SeqCst);
         let base = BASE.swap(0, Ordering::SeqCst);
         let clobber = WIPE_TEST_CLOBBER_XMM.swap(true, Ordering::SeqCst);
-        let lost = LOST.load(Ordering::Relaxed);
+        let lost = test_support::thread_lost();
         let site = land_wipe_test_site as *const () as usize;
         let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
             .try_into()
@@ -2249,7 +2472,7 @@ mod tests {
         }
         ORIGINAL[WIPE_ORIGINAL].store(previous, Ordering::SeqCst);
         assert_eq!(
-            LOST.load(Ordering::Relaxed) - lost,
+            test_support::thread_lost() - lost,
             1,
             "refusing observer body ran"
         );
@@ -2263,7 +2486,7 @@ mod tests {
     }
     #[test]
     fn win64_verdict_tap_preserves_argument_return_and_nonvolatile_integer_registers() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         let enabled = ENABLED.swap(true, Ordering::SeqCst);
         unsafe extern "system-unwind" fn commander(side: usize) -> usize {
             side.rotate_left(17)
@@ -2278,7 +2501,7 @@ mod tests {
             Ordering::SeqCst,
         );
         let saved_dispatch = DISPATCH.get();
-        let lost = LOST.load(Ordering::Relaxed);
+        let lost = test_support::thread_lost();
         let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
             .try_into()
             .unwrap();
@@ -2292,7 +2515,7 @@ mod tests {
             )
         }
         .unwrap();
-        let hits = LEADER_CALLS.load(Ordering::Relaxed);
+        let hits = test_support::thread_leader_calls();
         for tapped in [false, true, false] {
             assert!(hook.set_enabled(tapped).unwrap());
             for side in [0, 0x8000_0001_2345_6789, usize::MAX] {
@@ -2333,9 +2556,9 @@ mod tests {
                 }
             }
         }
-        assert_eq!(LEADER_CALLS.load(Ordering::Relaxed) - hits, 6);
+        assert_eq!(test_support::thread_leader_calls() - hits, 6);
         assert_eq!(
-            LOST.load(Ordering::Relaxed) - lost,
+            test_support::thread_lost() - lost,
             6,
             "all tapped observer bodies ran"
         );
@@ -2352,7 +2575,7 @@ mod tests {
     #[test]
     #[ignore = "print-only counted verdict-tap differential bench; owned test-process hook only"]
     fn land_leader_tap_cost() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         unsafe extern "system-unwind" fn native_target(side: usize) -> usize {
             side
         }
@@ -2509,7 +2732,7 @@ mod tests {
     }
     #[test]
     fn verdict_resolver_rust_unwind_retains_the_asm_owned_flight() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         unsafe extern "system-unwind" fn native_unwind(_: usize) -> usize {
             panic!("synthetic resolver unwind");
         }
@@ -2553,7 +2776,7 @@ mod tests {
     }
     #[test]
     fn original_unwind_retains_active_and_restores_nested_tls() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         let enabled = ENABLED.swap(false, Ordering::SeqCst);
         unsafe extern "system-unwind" fn unwind_three(_: usize, _: usize, _: usize) {
@@ -2633,10 +2856,11 @@ mod tests {
     }
     #[test]
     fn append_unwind_releases_producer_and_refuses_interval() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         let mut output = [0; 8];
         drain(&mut output, 10, true);
+        let lost = test_support::thread_lost();
         let result = std::panic::catch_unwind(|| {
             append(4, |put| {
                 put(6);
@@ -2647,7 +2871,8 @@ mod tests {
         assert_eq!(PRODUCERS.load(Ordering::SeqCst), 0);
         let refused = drain(&mut output, 11, false);
         assert!(!refused.complete);
-        assert_eq!(refused.lost, 1);
+        assert_eq!(test_support::thread_lost() - lost, 1);
+        assert!(refused.lost >= 1);
         ENABLED.store(false, Ordering::SeqCst);
     }
     #[test]
@@ -2695,7 +2920,7 @@ mod tests {
     }
     #[test]
     fn dispatched_match_is_consumed_once() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         LAST_DISPATCHED.set((0x1000, 17, 1));
         assert!(take_dispatched(0x1000, 17));
@@ -2704,7 +2929,7 @@ mod tests {
     }
     #[test]
     fn dispatched_pointer_reuse_with_a_different_handle_keeps_fallback() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         LAST_DISPATCHED.set((0x1000, 17, 1));
         assert!(!take_dispatched(0x1000, 18));
@@ -2713,19 +2938,21 @@ mod tests {
     }
     #[test]
     fn failed_dispatch_append_invalidates_the_skip_witness() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         // Dispatch sets the witness before appending its commander record.
-        LAST_DISPATCHED.set((0x1000, 17, EPOCH.load(Ordering::SeqCst)));
+        let epoch = EPOCH.load(Ordering::SeqCst);
+        let lost = test_support::thread_lost();
+        LAST_DISPATCHED.set((0x1000, 17, epoch));
         append(6, |_| Err("failed dispatch append"));
-        assert_eq!(EPOCH.load(Ordering::SeqCst), 2);
-        assert_eq!(LOST.load(Ordering::SeqCst), 1);
+        assert!(EPOCH.load(Ordering::SeqCst) > epoch);
+        assert_eq!(test_support::thread_lost() - lost, 1);
         assert!(!take_dispatched(0x1000, 17));
         ENABLED.store(false, Ordering::SeqCst);
     }
     #[test]
     fn first_gap_read_failure_capacity_and_busy_producer_are_unknown() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         let mut out = [0; 32];
         assert!(!drain(&mut out, 10, false).complete);
@@ -2737,10 +2964,12 @@ mod tests {
             Ok(())
         });
         assert_eq!(drain(&mut out, 12, false).words, 4);
+        let lost = test_support::thread_lost();
         append(4, |_| Err("short native read"));
         let bad = drain(&mut out, 13, false);
         assert!(!bad.complete);
-        assert_eq!(bad.lost, 1);
+        assert_eq!(test_support::thread_lost() - lost, 1);
+        assert!(bad.lost >= 1);
         assert!(drain(&mut out, 14, false).complete);
         assert!(!drain(&mut out, 20, true).complete);
         assert!(drain(&mut out, 21, false).complete);
@@ -2763,7 +2992,7 @@ mod tests {
     }
     #[test]
     fn land_log_growth_exceeds_the_former_ceiling_and_counts_refused_intervals() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         test_support::reset_with_words(0);
         let demand = (1 << 20) + 17; // Regression fixture beyond the removed cap.
         let mut out = vec![0; demand];
@@ -2776,12 +3005,14 @@ mod tests {
         assert_eq!(overflow.reason, "land event log capacity exceeded");
         assert_eq!(LOG_CAPACITY_FAILURES.load(Ordering::SeqCst), 1);
         assert!(overflow.lost > 0);
+        let lost = test_support::thread_lost();
         assert_eq!(overflow.required, demand);
-        let epoch = EPOCH.load(Ordering::SeqCst);
+        // Growth starts no epoch; other modules' tests may on their threads.
+        let epochs = test_support::thread_epochs();
         prepare();
         install_offered();
         assert!(LOG_CAPACITY.load(Ordering::SeqCst) >= demand);
-        assert_eq!(EPOCH.load(Ordering::SeqCst), epoch);
+        assert_eq!(test_support::thread_epochs(), epochs);
         append(demand, |put| {
             for _ in 1..demand {
                 put(7);
@@ -2793,13 +3024,13 @@ mod tests {
         assert_eq!(recovered.words, demand);
         assert_eq!(out[0], demand as u64);
         assert!(out[1..].iter().all(|&word| word == 7));
-        assert_eq!(recovered.lost, overflow.lost);
+        assert_eq!(test_support::thread_lost(), lost);
         ENABLED.store(false, Ordering::SeqCst);
     }
 
     #[test]
     fn live_word_hint_presizes_the_log_and_drains_before_any_event_overflow() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         test_support::reset_with_words(0);
         presize(50_005);
         let prepared = capacity();
@@ -2823,7 +3054,7 @@ mod tests {
 
     #[test]
     fn frame_headroom_never_reenters_land_log_demand() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         test_support::reset_with_words(0);
         let mut capacities = crate::extended::land_events::Capacities { words: 9 };
         let mut frames: [crate::extended::land_events::Captured; 4] = std::array::from_fn(|_| {
@@ -2846,7 +3077,7 @@ mod tests {
 
     #[test]
     fn a_real_producer_overlapping_the_boundary_poisoned_only_that_interval() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         let mut out = [0; 32];
         drain(&mut out, 10, true);
@@ -2854,6 +3085,7 @@ mod tests {
         let release = std::sync::Barrier::new(2);
         std::thread::scope(|scope| {
             let producer = scope.spawn(|| {
+                test_support::adopt();
                 let _call = Call::enter();
                 append(4, |put| {
                     put(6);
@@ -2885,7 +3117,7 @@ mod tests {
     }
     #[test]
     fn resolver_lifetime_at_boundary_does_not_poison_an_interval() {
-        let _guard = EXCLUSIVE.lock().unwrap();
+        let _guard = exclusive();
         reset();
         let mut out = [0; 32];
         drain(&mut out, 10, true);
@@ -2895,5 +3127,55 @@ mod tests {
         assert!(drain(&mut out, 11, false).complete);
         ENABLED.store(false, Ordering::SeqCst);
         _resolver_call.finish();
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::test_support::*;
+    use super::*;
+
+    /// Another module's thread reaching the log while a land test owns it
+    /// (a full decode queue, an observer drain, a sizing hint) leaves the
+    /// owner's interval, epoch and storage alone; a thread the owner adopted
+    /// reaches it as the owner does. Before, the foreign loss advanced the
+    /// epoch and refused the owner's next interval.
+    #[test]
+    fn a_foreign_thread_leaves_an_owned_log_alone() {
+        let _guard = exclusive();
+        reset();
+        let mut out = [0; 32];
+        drain(&mut out, 10, true);
+        let epoch = EPOCH.load(Ordering::SeqCst);
+        let capacity = LOG_CAPACITY.load(Ordering::SeqCst);
+        std::thread::spawn(|| {
+            fail("land frame decode queue full");
+            assert_eq!(lost_casualty_reads(3), 3);
+            let drained = lost_drain(11, "land observer frame not captured");
+            assert!(!drained.complete);
+            assert_eq!(drained.reason, "land event log owned by another test");
+            presize(1 << 16);
+            stop_observation();
+            append_record(&[5]);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(EPOCH.load(Ordering::SeqCst), epoch);
+        assert_eq!(LOG_CAPACITY.load(Ordering::SeqCst), capacity);
+        assert!(ENABLED.load(Ordering::SeqCst));
+        append_record(&[9]);
+        let owned = drain(&mut out, 11, false);
+        assert!(owned.complete);
+        assert_eq!(&out[..owned.words], &[2, 9]);
+        // An adopted thread is the owner's.
+        std::thread::spawn(|| {
+            adopt();
+            fail("land frame decode queue full");
+        })
+        .join()
+        .unwrap();
+        assert_ne!(EPOCH.load(Ordering::SeqCst), epoch);
+        assert!(!drain(&mut out, 12, false).complete);
+        disable();
     }
 }

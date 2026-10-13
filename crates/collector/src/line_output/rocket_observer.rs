@@ -135,6 +135,7 @@ unsafe extern "system-unwind" fn before(
     caller: usize,
     kind: u32,
 ) {
+    let _timing = crate::hook_timing::enter(crate::hook_timing::Family::LineOutput);
     // Initialize the owned frame before any acquisition or fallible observer.
     unsafe {
         pointer.write(Context {
@@ -253,6 +254,7 @@ unsafe extern "system-unwind" fn before(
 }
 
 unsafe extern "system-unwind" fn returned(pointer: *mut Context) -> u8 {
+    let _timing = crate::hook_timing::enter_return(crate::hook_timing::Family::LineOutput);
     let context = unsafe { pointer.read() };
     if context.failed || !context.active {
         return 0;

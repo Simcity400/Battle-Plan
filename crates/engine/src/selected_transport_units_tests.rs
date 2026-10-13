@@ -1,5 +1,5 @@
 use super::*;
-use crate::selected_attack::{StatObservation, TemplateObservation};
+use crate::selected_unit_originals::{StatObservation, TemplateObservation};
 use std::{cell::RefCell, collections::BTreeMap};
 
 const WRAPPER: usize = 0x1000;
@@ -55,6 +55,7 @@ fn original() -> OriginalObservation {
     OriginalObservation {
         division: 1,
         pointer: 0x9000,
+        sample_hour: 0,
         stat: Ok(StatObservation { pointer: STAT }),
         template: Ok(TemplateObservation {
             wrapper: WRAPPER,
@@ -309,7 +310,7 @@ fn transfer_authenticated_identity_survives_independent_status_or_source_refusal
 #[test]
 fn prepared_packet_shortage_never_reads_and_reservation_does_not_shrink_or_keep_native_keys() {
     let memory = Fixture::default();
-    let original = crate::selected_attack::UnitsPacket::vacant();
+    let original = crate::selected_unit_originals::Packet::vacant();
     let seed = crate::carmy::DivisionSeed {
         division: 1,
         pointer: 1,
@@ -408,4 +409,75 @@ fn worker_grouped_members_grow_from_original_header_and_do_not_repeat_aliases() 
         }
         assert!(members.iter().all(|entry| entry.pointer == 0));
     }
+}
+
+/// Weight and transfer first attempts are found by pointer: one probe per
+/// division instead of a scan of every earlier division's entry. Each shared
+/// stat block is read once and all null transfers share one absent entry.
+#[test]
+fn many_unit_weights_and_transfers_are_found_by_pointer_without_scanning() {
+    const UNITS: usize = 3_000;
+    const HOUR: i32 = 11;
+    let mut memory = Fixture::default();
+    let stat = |index: usize| 0x40_0000 + (index / 2) * 0x400;
+    for index in (0..UNITS).step_by(2) {
+        memory.put(stat(index) + WEIGHT, &(index as i64 * 3).to_le_bytes());
+    }
+    let seeds: Vec<_> = (0..UNITS)
+        .map(|index| {
+            let division = ((index as u64 + 1) << 32) | 51;
+            crate::carmy::DivisionSeed {
+                division,
+                pointer: 0x10_0000 + index * 0x100,
+                handle: Some(division),
+                primary_vtable: Some(crate::carmy::VTABLE_RVA as u64),
+                secondary_vtable: Some(crate::carmy::SECONDARY_VTABLE_RVA as u64),
+                class: Some(0),
+                naval_transfer_membership: Some(0),
+                ..Default::default()
+            }
+        })
+        .collect();
+    let observations: Vec<_> = seeds
+        .iter()
+        .enumerate()
+        .map(|(index, seed)| OriginalObservation {
+            division: seed.division,
+            pointer: seed.pointer,
+            sample_hour: HOUR,
+            stat: Ok(StatObservation {
+                pointer: stat(index),
+            }),
+            template: Err("fixture template"),
+        })
+        .collect();
+    let originals = crate::selected_unit_originals::Packet::with_observations(&observations);
+    let mut packet = Packet::try_new(Capacity {
+        rows: UNITS,
+        members: 0,
+    })
+    .unwrap();
+    packet.capture(
+        &memory,
+        0,
+        HOUR,
+        &seeds,
+        crate::walk::Outcome::Rows { len: UNITS },
+        &originals,
+    );
+    assert_eq!(packet.outcome(), crate::walk::Outcome::Rows { len: UNITS });
+    for (index, row) in packet.rows().iter().enumerate() {
+        assert_eq!(row.unit, seeds[index].division);
+        assert_eq!(row.weight, Ok((index / 2 * 2) as i64 * 3));
+        assert_eq!(row.transfer, Ok(Transfer::Absent));
+        assert_eq!(row.coastal, Err("fixture template"));
+    }
+    assert_eq!(packet.probes, 2 * UNITS);
+    let weight_reads = memory
+        .calls
+        .borrow()
+        .iter()
+        .filter(|(address, _)| *address >= 0x40_0000)
+        .count();
+    assert_eq!(weight_reads, UNITS / 2);
 }

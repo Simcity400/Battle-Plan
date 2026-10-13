@@ -1,14 +1,14 @@
 use super::{
-    AIR_BASES_COPY_NS, AIR_BASES_RAW_BYTES, AIR_HISTORY_COPY_NS, AIR_HISTORY_RAW_BYTES,
-    AIR_STATS_COPY_NS, AIR_STATS_RAW_BYTES, AIR_WING_COPY_NS, AIR_WING_RAW_BYTES,
-    CAPITULATION_COPY_NS, CAPITULATION_RAW_BYTES, CHARACTERS_COPY_NS, CHARACTERS_RAW_BYTES,
-    CONSTRUCTION_REST_COPY_NS, CONSTRUCTION_REST_RAW_BYTES, DIVISIONS_COPY_NS, DIVISIONS_RAW_BYTES,
-    ECONOMY_REST_COPY_NS, ECONOMY_REST_RAW_BYTES, FOCUS_COPY_NS, FOCUS_RAW_BYTES, INTEL_COPY_NS,
-    INTEL_RAW_BYTES, LEXICAL_COPY_NS, LEXICAL_RAW_BYTES, NAVAL_COPY_NS, NAVAL_RAW_BYTES, Ordering,
-    PLAYERS_COPY_NS, PLAYERS_RAW_BYTES, PRODUCTION_REST_COPY_NS, PRODUCTION_REST_RAW_BYTES,
-    PROJECTS_COPY_NS, PROJECTS_RAW_BYTES, RADAR_COPY_NS, RADAR_RAW_BYTES, RELATIONS_COPY_NS,
-    RELATIONS_RAW_BYTES, SESSION_COPY_NS, SESSION_RAW_BYTES, SUNK_COPY_NS, SUNK_RAW_BYTES,
-    SUPREMACY_COPY_NS, SUPREMACY_RAW_BYTES, WEATHER_COPY_NS, WEATHER_RAW_BYTES,
+    AIR_BASES_COPY_NS, AIR_BASES_RAW_BYTES, AIR_STATS_COPY_NS, AIR_STATS_RAW_BYTES,
+    AIR_WING_COPY_NS, AIR_WING_RAW_BYTES, CAPITULATION_COPY_NS, CAPITULATION_RAW_BYTES,
+    CHARACTERS_COPY_NS, CHARACTERS_RAW_BYTES, CONSTRUCTION_REST_COPY_NS,
+    CONSTRUCTION_REST_RAW_BYTES, DIVISIONS_COPY_NS, DIVISIONS_RAW_BYTES, ECONOMY_REST_COPY_NS,
+    ECONOMY_REST_RAW_BYTES, INTEL_COPY_NS, INTEL_RAW_BYTES, LEXICAL_COPY_NS, LEXICAL_RAW_BYTES,
+    NAVAL_COPY_NS, NAVAL_RAW_BYTES, Ordering, PLAYERS_COPY_NS, PLAYERS_RAW_BYTES,
+    PRODUCTION_REST_COPY_NS, PRODUCTION_REST_RAW_BYTES, PROJECTS_COPY_NS, PROJECTS_RAW_BYTES,
+    RADAR_COPY_NS, RADAR_RAW_BYTES, RELATIONS_COPY_NS, RELATIONS_RAW_BYTES, SESSION_COPY_NS,
+    SESSION_RAW_BYTES, SUNK_COPY_NS, SUNK_RAW_BYTES, SUPREMACY_COPY_NS, SUPREMACY_RAW_BYTES,
+    WEATHER_COPY_NS, WEATHER_RAW_BYTES,
 };
 
 pub(crate) fn add_relations_copy_ns(table: usize, ns: u64) {
@@ -49,14 +49,6 @@ pub(crate) fn add_divisions_copy_ns(table: usize, ns: u64) {
 
 pub(crate) fn add_divisions_raw_bytes(table: usize, bytes: u64) {
     DIVISIONS_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
-}
-
-pub(crate) fn add_focus_copy_ns(table: usize, ns: u64) {
-    FOCUS_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
-}
-
-pub(crate) fn add_focus_raw_bytes(table: usize, bytes: u64) {
-    FOCUS_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
 }
 
 pub(crate) fn add_air_wing_copy_ns(table: usize, ns: u64) {
@@ -129,14 +121,6 @@ pub(crate) fn add_air_bases_copy_ns(table: usize, ns: u64) {
 
 pub(crate) fn add_air_bases_raw_bytes(table: usize, bytes: u64) {
     AIR_BASES_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
-}
-
-pub(crate) fn add_air_history_copy_ns(table: usize, ns: u64) {
-    AIR_HISTORY_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
-}
-
-pub(crate) fn add_air_history_raw_bytes(table: usize, bytes: u64) {
-    AIR_HISTORY_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
 }
 
 pub(crate) fn add_supremacy_copy_ns(table: usize, ns: u64) {

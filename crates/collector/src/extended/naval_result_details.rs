@@ -1151,6 +1151,16 @@ mod tests {
             (4, 2, 12, 12)
         );
         let trace = memory.reads.borrow().clone();
+        // The healthy capture, which a one-touch fault absorbed by a hit run
+        // leaves unchanged.
+        let healthy = (
+            full.outcomes(),
+            full.results.rows[..2].to_vec(),
+            full.ships.first[..full.ships.len].to_vec(),
+            full.planes.first[..full.planes.len].to_vec(),
+            full.air.first[..full.air.len].to_vec(),
+            full.hits.first[..full.hits.len].to_vec(),
+        );
         for capacity in [0, 1] {
             for fault in (0..trace.len()).map(Some).chain([None]) {
                 let reference = Traced {
@@ -1232,9 +1242,29 @@ mod tests {
                             ),
                             (2, 1, 6, 6)
                         );
-                    } else {
-                        assert!(matches!(grown.outcomes()[0], Outcome::Unavailable { .. }));
+                    } else if matches!(grown.outcomes()[0], Outcome::Unavailable { .. }) {
+                        // The capture stops at the read that met the fault.
                         assert_eq!(*observed.reads.borrow(), trace[..=ordinal]);
+                    } else {
+                        // This test's positional fault is met once. A hit
+                        // run's copy that met it reads its entries again one
+                        // at a time (cfex_member::append_entries) and gives
+                        // the healthy capture: never harsher than the
+                        // per-entry reads, as the relaxed read order allows.
+                        // Lasting faults keep the per-entry result exactly
+                        // (cfex_member::entry_run_tests).
+                        // The result rows have no Debug: compare with `==`.
+                        assert!(
+                            (
+                                grown.outcomes(),
+                                grown.results.rows[..2].to_vec(),
+                                grown.ships.first[..grown.ships.len].to_vec(),
+                                grown.planes.first[..grown.planes.len].to_vec(),
+                                grown.air.first[..grown.air.len].to_vec(),
+                                grown.hits.first[..grown.hits.len].to_vec(),
+                            ) == healthy,
+                            "fault at read {ordinal}"
+                        );
                     }
                 } else {
                     assert!(grown.results.rows[..2] == full.results.rows[..2]);

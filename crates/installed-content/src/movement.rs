@@ -15,7 +15,7 @@ pub(crate) mod adjacency;
 pub(crate) mod bitmap;
 mod geometry;
 pub(crate) mod records;
-mod terrain;
+pub(crate) mod terrain;
 
 use std::{
     collections::{BTreeMap, HashMap},

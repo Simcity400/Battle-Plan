@@ -1,13 +1,13 @@
 //! Registered air missions in flying-aircraft map order. Regional vectors
 //! retain every ordinary occurrence. Sorted active-region IDs also include
-//! carrier combat regions, so a listed region can have no ordinary registrations.
-//! The all-active count includes only ordinary registrations; missed regions
-//! cannot pass as empty.
+//! carrier combat regions, so a listed region can have no ordinary
+//! registrations. The all-active count includes only ordinary registrations;
+//! missed regions cannot pass as empty.
 //!
 //! Registration appends regional and all-active occurrences and inserts the
-//! region ID. Unregistration removes both and erases an ordinarily empty region.
-//! Region changes, loading, teardown and base transfers use those writers;
-//! incompatible targets are unassigned.
+//! region ID. Unregistration removes both and erases an ordinarily empty
+//! region. Region changes, loading, teardown and base transfers use those
+//! writers; incompatible targets are unassigned.
 //!
 //! Carrier refresh separately clears its regional counts and visits hosts in
 //! naval combat. Wings without an assigned region or enabled mask are added
@@ -15,11 +15,32 @@
 //! cleared first, so a special-only region can stay listed after combat ends.
 //! That is a stable empty ordinary vector.
 //!
-//! Reallocation may temporarily zero vector counts. Capture at the hourly entry
-//! joins every read before the trampoline, without retries or waits. Invalid
-//! headers, unreadable entries and count mismatches refuse the census; dependents
-//! retain failure rather than absence. Ownership resolves through the wing
-//! pool, and every country air object is visited independently of local player.
+//! The carrier pass is a separate writer: it clears +0x140's regional counts,
+//! then visits carrier hosts in naval combat. For a wing with no assigned
+//! region or a zero mission mask, it appends the embedded mission to
+//! +0x140[combat region] and inserts that region into +0xC8, without writing
+//! +0x98 or +0xB0. It does not clear +0xC8 first, so a special-only region can
+//! remain listed after its carrier combat ends. This is a stable empty ordinary
+//! vector, not evidence of a missed registration.
+//!
+//! Appending a pointer also temporarily zeroes a vector's count while
+//! reallocating. Capture at the hourly update entry joins every native read
+//! before the trampoline; it does not retry or wait out a writer. Invalid
+//! headers, unreadable entries and count mismatches still refuse the census;
+//! dependents must not treat that failure as absence. The strategic-air hourly
+//! pass calls the carrier refresh. The tag command changes the local player
+//! (+0x520/+0x524), not these registries: region assignment resolves ownership
+//! through the wing's pool, and this census visits every country air object
+//! independently of the local player.
+//!
+//! A caller may carry a country air object's registrations from an earlier read
+//! ([`walk_carried`], [`Carry`]). Every object's headers +0x98..+0xD8 are still
+//! gathered each hour; a carried object's active-region ids, regional vectors
+//! and mission pointers are not read. Each carried registration is still looked
+//! up in this hour's census by its mission pointer and checked as a read one
+//! is; on any disagreement the object is read afresh, so the rows and the
+//! outcome are a fresh walk's. Every run-time writer of the vectors is in
+//! [`crate::regional_mission_mutations`].
 
 use crate::{
     Memory, ccountry,
@@ -97,8 +118,64 @@ pub struct FailureContext {
 
 const BATCH: usize = 64;
 /// +0x98 outer header through the +0xC8 region header, one guarded copy.
-const HEADERS: usize =
+pub const HEADERS: usize =
     cstrategic_air::ACTIVE_MISSION_REGIONS + 16 - cstrategic_air::REGIONAL_MISSIONS;
+
+/// One country air object as the walk gathered it: its address, canonical
+/// slot and the bytes +0x98..+0xD8 (the regional, all-active and
+/// active-region vector headers with their allocators). A held read of the
+/// same object and bytes, which no hooked writer touched since, lists the
+/// same registrations: the carrier pass, the only unhooked writer of the
+/// active-region ids, moves their header whenever it changes them
+/// ([`crate::regional_mission_mutations`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Root {
+    pub address: usize,
+    pub canonical_slot: u32,
+    pub headers: [u8; HEADERS],
+}
+
+/// One registration as an object's regional vectors list it: the region id,
+/// its position in that region's vector and the registered mission pointer.
+/// Acquisition context only: the pointer never reaches the replay.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Registration {
+    pub region: u32,
+    pub ordinal: u32,
+    pub pointer: usize,
+}
+
+/// A caller's held registrations per country air object ([`walk_carried`]).
+pub trait Carry {
+    /// Registers an object after its headers are gathered and before any of
+    /// its active-region ids, regional vectors or mission pointers are read,
+    /// returning a plan token and whether its held registrations may be
+    /// carried.
+    fn plan(&mut self, root: &Root) -> (usize, bool);
+    /// A carryable plan's held registrations, in walk order.
+    fn held(&self, token: usize) -> &[Registration];
+    /// The held registrations agreed with this hour's census and their rows
+    /// were published.
+    fn carried(&mut self, token: usize);
+    /// One registration of a planned object read afresh, in walk order.
+    fn record(&mut self, token: usize, registration: Registration);
+    /// The planned object was read afresh and whole.
+    fn read(&mut self, token: usize);
+}
+
+/// No held registrations: every object is read.
+pub struct Fresh;
+impl Carry for Fresh {
+    fn plan(&mut self, _: &Root) -> (usize, bool) {
+        (0, false)
+    }
+    fn held(&self, _: usize) -> &[Registration] {
+        &[]
+    }
+    fn carried(&mut self, _: usize) {}
+    fn record(&mut self, _: usize, _: Registration) {}
+    fn read(&mut self, _: usize) {}
+}
 
 /// The headers of [`BATCH`] country air objects per gather.
 const HEADER_FIELDS: [RecordField; 1] = [RecordField {
@@ -211,7 +288,7 @@ pub fn walk_with_transport(
     failure: &mut FailureContext,
     observer: &mut impl TransportObserver,
 ) -> Outcome {
-    walk_with_transport_buffer(
+    walk_buffer(
         memory,
         base,
         game_state,
@@ -219,6 +296,7 @@ pub fn walk_with_transport(
         Buffer::Fixed(output),
         failure,
         observer,
+        &mut Fresh,
     )
 }
 
@@ -232,7 +310,7 @@ pub fn walk_with_transport_growing(
     failure: &mut FailureContext,
     observer: &mut impl TransportObserver,
 ) -> Outcome {
-    walk_with_transport_buffer(
+    walk_buffer(
         memory,
         base,
         game_state,
@@ -240,6 +318,7 @@ pub fn walk_with_transport_growing(
         Buffer::Growing(output),
         failure,
         observer,
+        &mut Fresh,
     )
 }
 
@@ -262,7 +341,38 @@ pub fn walk_with_diagnostic_growing(
     )
 }
 
-fn walk_with_transport_buffer(
+/// [`walk_with_diagnostic`] with `carry` supplying the registrations of
+/// objects whose held read it proves current: every object's headers are
+/// still gathered in slot order, and a carried object's active-region ids,
+/// regional vectors and mission pointers are not read. A carried
+/// registration is looked up in `wings` by its mission pointer and checked
+/// as [`root_missions`] checks a read one; on any disagreement the object is
+/// read afresh, so rows, outcome and failure context are a fresh walk's.
+pub fn walk_carried(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    wings: &[WingIdentity],
+    output: Buffer<'_, Row>,
+    failure: &mut FailureContext,
+    carry: &mut impl Carry,
+) -> Outcome {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        wings,
+        output,
+        failure,
+        &mut NoTransport,
+        carry,
+    )
+}
+
+/// One pass; a carried object is not shown to `observer`, so only
+/// [`walk_carried`], without one, carries.
+#[allow(clippy::too_many_arguments)]
+fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -270,6 +380,7 @@ fn walk_with_transport_buffer(
     mut output: Buffer<'_, Row>,
     failure: &mut FailureContext,
     observer: &mut impl TransportObserver,
+    carry: &mut impl Carry,
 ) -> Outcome {
     let observer = std::cell::RefCell::new(observer);
     *failure = FailureContext::default();
@@ -315,7 +426,26 @@ fn walk_with_transport_buffer(
                 failure.country_slot = roots.get(copied).map(|&(_, slot)| slot);
                 return Err("regional mission headers unreadable");
             }
-            for (bytes, &(_, canonical_slot)) in headers.iter().zip(roots) {
+            for (bytes, &(address, canonical_slot)) in headers.iter().zip(roots) {
+                let (token, carryable) = carry.plan(&Root {
+                    address,
+                    canonical_slot,
+                    headers: *bytes,
+                });
+                if carryable
+                    && carried_missions(
+                        &countries,
+                        canonical_slot,
+                        carry.held(token),
+                        wings,
+                        &mut output,
+                        &mut len,
+                        &mut unread_rows,
+                    )
+                {
+                    carry.carried(token);
+                    continue;
+                }
                 root_missions(
                     memory,
                     &countries,
@@ -327,7 +457,10 @@ fn walk_with_transport_buffer(
                     &mut unread_rows,
                     failure,
                     &mut **observer.borrow_mut(),
+                    &mut *carry,
+                    token,
                 )?;
+                carry.read(token);
                 // Active headers were acquired above in the original walk.
                 // Only originally unattempted physical headers are borrowed.
                 let outer = header(
@@ -337,18 +470,7 @@ fn walk_with_transport_buffer(
                 )
                 .expect("strict air root domain validated");
                 if observer.borrow().complete_regions(canonical_slot) {
-                    for region in 0..outer.count {
-                        if observer.borrow().region_attempted(canonical_slot, region) {
-                            continue;
-                        }
-                        let original = outer
-                            .element(region, crate::cpdx_array::STRIDE)
-                            .and_then(|at| Array::read(memory, at, 8))
-                            .ok_or("transport original inactive air region header invalid");
-                        observer
-                            .borrow_mut()
-                            .inactive_region(canonical_slot, region, original);
-                    }
+                    inactive_regions(memory, outer, canonical_slot, &mut **observer.borrow_mut());
                 }
                 *failure = FailureContext::default();
             }
@@ -379,6 +501,66 @@ fn walk_with_transport_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
+const REGION_HEADER_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: 16,
+}];
+const REGION_HEADER_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&REGION_HEADER_FIELDS, 16).expect("air region header layout");
+
+/// Lend every originally unattempted +0x98 region header (stride 0x18, indexed
+/// by region slot during registration) in ascending order. Runs of consecutive
+/// unattempted regions are gathered BATCH headers per record call; a header
+/// that cannot be copied or decoded is that region's own failure and the run
+/// resumes after it, as one read per region would.
+fn inactive_regions(
+    memory: &impl Memory,
+    outer: Array,
+    slot: u32,
+    observer: &mut impl TransportObserver,
+) {
+    const INVALID: &str = "transport original inactive air region header invalid";
+    let mut region = 0;
+    while region < outer.count {
+        if observer.region_attempted(slot, region) {
+            region += 1;
+            continue;
+        }
+        let mut end = region + 1;
+        while end < outer.count
+            && ((end - region) as usize) < BATCH
+            && !observer.region_attempted(slot, end)
+        {
+            end += 1;
+        }
+        let count = (end - region) as usize;
+        let mut headers = [[0_u8; 16]; BATCH];
+        let copied = outer
+            .element(region, crate::cpdx_array::STRIDE)
+            .map_or(0, |first| {
+                memory.copy_records(
+                    RecordSources::Strided {
+                        base: first,
+                        stride: crate::cpdx_array::STRIDE,
+                        count,
+                    },
+                    &REGION_HEADER_LAYOUT,
+                    headers[..count].as_flattened_mut(),
+                )
+            });
+        for (offset, header) in headers[..copied].iter().enumerate() {
+            let original = Array::from_header(*header, 8).ok_or(INVALID);
+            observer.inactive_region(slot, region + offset as u32, original);
+        }
+        region += copied as u32;
+        if copied < count {
+            observer.inactive_region(slot, region, Err(INVALID));
+            region += 1;
+        }
+    }
+}
+
 /// One country air object's registrations from its gathered headers.
 #[allow(clippy::too_many_arguments)]
 fn root_missions<M: Memory>(
@@ -392,6 +574,8 @@ fn root_missions<M: Memory>(
     unread_rows: &mut u32,
     failure: &mut FailureContext,
     observer: &mut impl TransportObserver,
+    carry: &mut impl Carry,
+    token: usize,
 ) -> Result<(), &'static str> {
     failure.country_slot = Some(canonical_slot);
     let (Some(outer), Some(all), Some(regions)) = (
@@ -472,6 +656,14 @@ fn root_missions<M: Memory>(
                     {
                         return Err("registered mission owner or region differs from AirWings");
                     }
+                    carry.record(
+                        token,
+                        Registration {
+                            region,
+                            ordinal: batch + index as u32,
+                            pointer,
+                        },
+                    );
                     if let Some(destination) = output.get_mut(*len) {
                         *destination = Row {
                             wing: wing.wing,
@@ -492,6 +684,53 @@ fn root_missions<M: Memory>(
         return Err("regional and all-active mission counts differ");
     }
     Ok(())
+}
+
+/// A carryable object's held registrations against this hour's census,
+/// each checked as [`root_missions`] checks a read one and published with
+/// its held ordinal, in held order. The held read passed every structural
+/// check on the same gathered headers. `false`, with `len` and
+/// `unread_rows` as they were, on any disagreement or growth failure: the
+/// caller reads the object afresh, and that read's outcome stands.
+fn carried_missions<M: Memory>(
+    countries: &ccountry::Reader<'_, M>,
+    canonical_slot: u32,
+    held: &[Registration],
+    wings: &[WingIdentity],
+    output: &mut Buffer<'_, Row>,
+    len: &mut usize,
+    unread_rows: &mut u32,
+) -> bool {
+    let start = (*len, *unread_rows);
+    let agreed = (|| {
+        output.ensure(len.checked_add(held.len())?).ok()?;
+        for registration in held {
+            let wing = wings
+                .binary_search_by_key(&registration.pointer, |wing| wing.mission_pointer)
+                .ok()
+                .map(|index| &wings[index])?;
+            if wing.region != Some(registration.region)
+                || countries.link(wing.owner).ok()? != Some(canonical_slot)
+            {
+                return None;
+            }
+            match output.get_mut(*len) {
+                Some(destination) => {
+                    *destination = Row {
+                        wing: wing.wing,
+                        ordinal: registration.ordinal,
+                    };
+                    *len += 1;
+                }
+                None => *unread_rows = unread_rows.checked_add(1)?,
+            }
+        }
+        Some(())
+    })();
+    if agreed.is_none() {
+        (*len, *unread_rows) = start;
+    }
+    agreed.is_some()
 }
 
 #[cfg(test)]
@@ -843,6 +1082,191 @@ mod tests {
         assert_eq!(identity.effective_country(), 3);
     }
 
+    /// Holds the one root's registrations, as a store holds a held read's.
+    #[derive(Default)]
+    struct Holding {
+        held: Vec<Registration>,
+        recorded: Vec<Registration>,
+        roots: Vec<Root>,
+        carry: bool,
+        carried: usize,
+        read: usize,
+    }
+    impl Carry for Holding {
+        fn plan(&mut self, root: &Root) -> (usize, bool) {
+            self.roots.push(*root);
+            self.recorded.clear();
+            (7, self.carry)
+        }
+        fn held(&self, token: usize) -> &[Registration] {
+            assert_eq!(token, 7);
+            &self.held
+        }
+        fn carried(&mut self, _: usize) {
+            self.carried += 1;
+        }
+        fn record(&mut self, _: usize, registration: Registration) {
+            self.recorded.push(registration);
+        }
+        fn read(&mut self, _: usize) {
+            self.read += 1;
+        }
+    }
+
+    /// Every guarded read's address range.
+    struct Traced<'a> {
+        bytes: &'a [u8],
+        reads: std::cell::RefCell<Vec<std::ops::Range<usize>>>,
+    }
+    impl Memory for Traced<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads
+                .borrow_mut()
+                .push(address..address + output.len());
+            SliceMemory {
+                base: 0,
+                bytes: self.bytes,
+            }
+            .copy(address, output)
+        }
+    }
+
+    fn carried(
+        bytes: &[u8],
+        wings: &[WingIdentity],
+        output: &mut [Row],
+        carry: &mut Holding,
+    ) -> (Outcome, FailureContext, Vec<std::ops::Range<usize>>) {
+        let memory = Traced {
+            bytes,
+            reads: Default::default(),
+        };
+        let mut failure = FailureContext::default();
+        let outcome = walk_carried(
+            &memory,
+            0,
+            GS,
+            wings,
+            Buffer::Fixed(output),
+            &mut failure,
+            carry,
+        );
+        (outcome, failure, memory.reads.into_inner())
+    }
+
+    /// Whether a read touched the active-region ids, the regional vector
+    /// headers or the mission pointers.
+    fn regional(reads: &[std::ops::Range<usize>]) -> bool {
+        reads.iter().any(|read| {
+            [
+                IDS..IDS + 4,
+                REGIONS..REGIONS + 6 * 0x18,
+                MEMBERS..MEMBERS + 16,
+            ]
+            .iter()
+            .any(|span| read.start < span.end && span.start < read.end)
+        })
+    }
+
+    /// A fresh read records each registration in walk order; carrying them
+    /// back publishes the same rows and outcome without reading the ids, the
+    /// region vectors or the pointers, while the headers are still gathered.
+    #[test]
+    fn carried_registrations_publish_a_fresh_walks_rows_without_regional_reads() {
+        let (bytes, wings) = fixture();
+        let mut carry = Holding::default();
+        let mut fresh = [Row::default(); 2];
+        let (outcome, _, reads) = carried(&bytes, &wings, &mut fresh, &mut carry);
+        assert_eq!(outcome, Outcome::Rows { len: 2 });
+        assert!(regional(&reads));
+        assert_eq!((carry.read, carry.carried), (1, 0));
+        let pointer = |wing: usize| wing + cair_wing::MISSION;
+        assert_eq!(
+            carry.recorded,
+            [
+                Registration {
+                    region: 5,
+                    ordinal: 0,
+                    pointer: pointer(WING_B)
+                },
+                Registration {
+                    region: 5,
+                    ordinal: 1,
+                    pointer: pointer(WING_A)
+                },
+            ]
+        );
+        assert_eq!(
+            carry.roots[0].headers[..],
+            bytes[OWNER + cstrategic_air::REGIONAL_MISSIONS..][..HEADERS]
+        );
+        assert_eq!(
+            (carry.roots[0].address, carry.roots[0].canonical_slot),
+            (OWNER, 1)
+        );
+        carry.held = std::mem::take(&mut carry.recorded);
+        carry.carry = true;
+        for capacity in [2, 1] {
+            let mut rows = [Row::default(); 2];
+            let (outcome, failure, reads) =
+                carried(&bytes, &wings, &mut rows[..capacity], &mut carry);
+            assert_eq!(outcome, capture(&bytes, &wings, &mut fresh[..capacity]));
+            assert_eq!(rows[..capacity], fresh[..capacity]);
+            assert_eq!(failure, FailureContext::default());
+            assert!(!regional(&reads), "{reads:x?}");
+            assert!(reads.iter().any(|read| read.start == OWNER + 0x98));
+        }
+        assert_eq!((carry.read, carry.carried), (1, 2));
+        // A different wing registered at a carried pointer is a later
+        // registration; the census names it, so the row is the census's.
+        let mut renamed = wings;
+        renamed[0].wing = 303;
+        let mut rows = [Row::default(); 2];
+        carried(&bytes, &renamed, &mut rows, &mut carry);
+        capture(&bytes, &renamed, &mut fresh);
+        assert_eq!(rows, fresh);
+        assert_eq!(rows[1].wing, 303);
+    }
+
+    /// A carried registration the census disagrees with is read afresh, so
+    /// the outcome, the reason and the failure context are a fresh walk's.
+    #[test]
+    fn a_census_disagreement_reads_the_carried_object_afresh() {
+        let (bytes, wings) = fixture();
+        let mut carry = Holding::default();
+        carried(&bytes, &wings, &mut [Row::default(); 2], &mut carry);
+        carry.held = std::mem::take(&mut carry.recorded);
+        carry.carry = true;
+        let mut moved = wings;
+        moved[1].region = Some(6);
+        // Owner 2 links to no country slot.
+        let mut foreign = wings;
+        foreign[0].owner = 2;
+        let missing = [wings[0]];
+        for census in [&moved[..], &foreign[..], &missing[..]] {
+            let before = carry.read;
+            let mut rows = [Row::default(); 2];
+            let (outcome, failure, reads) = carried(&bytes, census, &mut rows, &mut carry);
+            let mut expected_failure = FailureContext::default();
+            let expected = walk_with_diagnostic(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                0,
+                GS,
+                census,
+                &mut [Row::default(); 2],
+                &mut expected_failure,
+            );
+            assert!(matches!(expected, Outcome::Unavailable { .. }));
+            assert_eq!((outcome, failure), (expected, expected_failure));
+            assert!(regional(&reads));
+            assert_eq!(carry.read, before);
+        }
+        assert_eq!(carry.carried, 0);
+    }
+
     #[test]
     fn transport_controls_retire_before_original_success_and_failure_returns() {
         #[derive(Default)]
@@ -880,6 +1304,122 @@ mod tests {
             assert_eq!(matches!(result, Outcome::Unavailable { .. }), fail);
             assert_eq!(observer.roots, 1);
             assert!(observer.retired);
+        }
+    }
+
+    #[test]
+    fn inactive_region_headers_are_gathered_in_runs_with_per_region_verdicts() {
+        const OUTER: usize = 0x1_0000;
+        const REGIONS: u32 = 200;
+        /// Counts guarded calls and refuses spans covering `denied`.
+        struct Counted<'a> {
+            bytes: &'a [u8],
+            denied: Option<usize>,
+            calls: std::cell::Cell<usize>,
+        }
+        impl Memory for Counted<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.calls.set(self.calls.get() + 1);
+                !self
+                    .denied
+                    .is_some_and(|at| (address..address + output.len()).contains(&at))
+                    && SliceMemory {
+                        base: 0,
+                        bytes: self.bytes,
+                    }
+                    .copy(address, output)
+            }
+            fn copy_records(
+                &self,
+                sources: RecordSources<'_>,
+                layout: &RecordLayout<'_>,
+                destination: &mut [u8],
+            ) -> usize {
+                // One guarded call, filled with the per-span verdicts.
+                let calls = self.calls.get();
+                let completed = Unbatched(self).copy_records(sources, layout, destination);
+                self.calls.set(calls + 1);
+                completed
+            }
+        }
+        struct Unbatched<'a, 'b>(&'a Counted<'b>);
+        impl Memory for Unbatched<'_, '_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.0.copy(address, output)
+            }
+        }
+        /// Regions 5 and 150 were attempted by the original active walk.
+        #[derive(Default)]
+        struct Observer {
+            seen: Vec<(u32, Result<Array, &'static str>)>,
+        }
+        impl TransportObserver for Observer {
+            fn inactive_region(
+                &mut self,
+                _: u32,
+                region: u32,
+                original: Result<Array, &'static str>,
+            ) {
+                self.seen.push((region, original));
+            }
+            fn region_attempted(&self, _: u32, region: u32) -> bool {
+                region == 5 || region == 150
+            }
+        }
+        let mut bytes = vec![0; OUTER + REGIONS as usize * crate::cpdx_array::STRIDE];
+        for region in 0..REGIONS as usize {
+            let at = OUTER + region * crate::cpdx_array::STRIDE;
+            array(&mut bytes, at, 0x9_0000 + region * 0x100, region as u32 % 3);
+        }
+        // An invalid header (count above capacity) is that region's own refusal.
+        put32(&mut bytes, OUTER + 7 * crate::cpdx_array::STRIDE + 8, 0);
+        let outer = Array {
+            data: OUTER,
+            count: REGIONS,
+        };
+        let expected = |denied: Option<usize>| -> Vec<(u32, Result<Array, &'static str>)> {
+            (0..REGIONS)
+                .filter(|region| *region != 5 && *region != 150)
+                .map(|region| {
+                    let at = OUTER + region as usize * crate::cpdx_array::STRIDE;
+                    let readable = denied.is_none_or(|denied| !(at..at + 16).contains(&denied));
+                    let header = readable
+                        .then(|| {
+                            Array::read(
+                                &SliceMemory {
+                                    base: 0,
+                                    bytes: &bytes,
+                                },
+                                at,
+                                8,
+                            )
+                        })
+                        .flatten()
+                        .ok_or("transport original inactive air region header invalid");
+                    (region, header)
+                })
+                .collect()
+        };
+        for denied in [None, Some(OUTER + 100 * crate::cpdx_array::STRIDE + 9)] {
+            let memory = Counted {
+                bytes: &bytes,
+                denied,
+                calls: std::cell::Cell::new(0),
+            };
+            let mut observer = Observer::default();
+            inactive_regions(&memory, outer, 3, &mut observer);
+            assert_eq!(observer.seen, expected(denied));
+            let refused = |region| {
+                observer
+                    .seen
+                    .iter()
+                    .any(|(at, seen)| *at == region && seen.is_err())
+            };
+            assert!(refused(7) && refused(100) == denied.is_some() && !refused(8));
+            // Runs of at most 64 between the attempted regions: [0, 5),
+            // [6, 70), [70, 134), [134, 150), [151, 200). A refused copy at
+            // 100 resumes after that region instead: [101, 150).
+            assert_eq!(memory.calls.get(), 5);
         }
     }
 }

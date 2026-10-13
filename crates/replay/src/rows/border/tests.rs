@@ -93,7 +93,7 @@ fn division_status_mask_recording_cost() {
                 let mut next = previous.clone();
                 if let Some(stride) = stride {
                     for row in next.iter_mut().skip(hour % stride).step_by(stride) {
-                        row.maximum_organisation += 1;
+                        row.maximum_organisation += 10_000;
                     }
                 }
                 let mut encoded = Vec::new();

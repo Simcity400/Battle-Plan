@@ -10,6 +10,13 @@ fn bytes(slot: u32) -> [u8; STRIDE] {
     bytes[TEMPERATURE..TEMPERATURE + 8]
         .copy_from_slice(&(-9_007_199_254_740_993_i64).to_le_bytes());
     bytes[RAW_MUD] = 7;
+    for (offset, value) in [
+        (DRIFT, i64::MIN + 3),
+        (STAGED_TEMPERATURE, -9_007_199_254_740_993_i64),
+        (WORKING_DRIFT, 600_000),
+    ] {
+        bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
     bytes
 }
 
@@ -34,6 +41,15 @@ fn snow_keeps_its_native_word_and_read_faults_are_named() {
         (rows[0].temperature, rows[0].raw_mud),
         (-9_007_199_254_740_993, 7)
     );
+    // The pass's other words: committed drift, staged temperature, working drift.
+    assert_eq!(
+        (
+            rows[0].drift,
+            rows[0].staged_temperature,
+            rows[0].working_drift
+        ),
+        (i64::MIN + 3, -9_007_199_254_740_993, 600_000)
+    );
     let short = SliceMemory {
         base: 0x1000,
         bytes: &bytes[..SNOW + 7],
@@ -56,7 +72,13 @@ fn snow_keeps_its_native_word_and_read_faults_are_named() {
 #[test]
 fn temperature_and_raw_mud_failures_withhold_the_row_without_narrowing() {
     let bytes = bytes(0);
-    for end in [TEMPERATURE + 7, RAW_MUD] {
+    for end in [
+        TEMPERATURE + 7,
+        RAW_MUD,
+        DRIFT + 7,
+        STAGED_TEMPERATURE,
+        WORKING_DRIFT + 1,
+    ] {
         let memory = SliceMemory {
             base: 0x1000,
             bytes: &bytes[..end],

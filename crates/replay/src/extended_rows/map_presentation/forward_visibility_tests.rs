@@ -34,7 +34,7 @@ fn counter_row() -> CountryCounterInputRow {
         neighbors: Some(vec![0, u32::MAX, 0]).into(),
         co_belligerents: Some(vec![0, 17]).into(),
         zero_war: Some([0, 0]).into(),
-        movement: Some(CountryMovementInputs::default()).into(),
+        movement: Recorded::Value(Retired),
         zero_subject: Some(ZeroSubjectInputs::default()).into(),
         pride_name: Some(vec![0xff, 0, b'P']).into(),
         forward_visibility: Some(complete_inputs()).into(),
@@ -82,7 +82,7 @@ fn delta_round_trip(before: &CountryCounterInputRow, after: &CountryCounterInput
 #[test]
 fn forward_visibility_snapshot_preserves_independent_skips_and_raw_native_bits() {
     assert_eq!(ReverseZeroVisibilityInputs::STRUCT_FIELDS, 4);
-    assert_eq!(CountryCounterInputRow::SCHEMA.len(), 19);
+    assert_eq!(CountryCounterInputRow::SCHEMA.len(), 20);
     assert!(matches!(CountryCounterInputRow::SCHEMA[16], Kind::Opaque));
     let before = counter_row();
     let mut inputs = vec![None, Some(ReverseZeroVisibilityInputs::default())];
@@ -230,7 +230,10 @@ fn forward_visibility_historical_prefixes_keep_original_masks_and_clear_new_suff
         .find(|field| field.name == "forward_visibility")
         .unwrap();
     assert_eq!(field.index, 16);
-    assert_eq!(field.introduced, FORMAT_VERSION);
+    assert_eq!(
+        field.introduced,
+        crate::rows::compatibility::POLITICAL_FORMAT
+    );
     let row = counter_row();
     for (version, expected_fields) in [
         (RECORDER_INPUTS_FORMAT, 9),
@@ -255,6 +258,7 @@ fn forward_visibility_historical_prefixes_keep_original_masks_and_clear_new_suff
         assert_eq!(historical.forward_visibility, Recorded::NotRecorded);
         assert_eq!(historical.attack, Recorded::NotRecorded);
         assert_eq!(historical.directed_wars, Recorded::NotRecorded);
+        assert_eq!(historical.attack_modifiers, Recorded::NotRecorded);
         assert_eq!(historical.recorded_fields_bytes().unwrap(), prefix.len());
         assert_eq!(
             historical.not_recorded_fields(),

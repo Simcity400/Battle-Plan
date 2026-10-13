@@ -6,7 +6,10 @@ use crate::{
 };
 use replay::{
     frame::TableView,
-    rows::{CountryLinkRow, CountryRow, DivisionManpowerContributor, DivisionRow, TableRows},
+    rows::{
+        CountryLinkRow, CountryRow, DivisionManpowerContributor, DivisionRow, DivisionStatusRow,
+        Recorded, TableRows,
+    },
 };
 use std::{hint::black_box, path::PathBuf, time::Instant};
 
@@ -19,12 +22,26 @@ fn defines() -> Defines {
         low_icon: 40_000,
     }
 }
-fn land(division: u64, received_supply: i64, remaining_grace: i64) -> DivisionLandInputsRow {
-    DivisionLandInputsRow {
-        division,
-        received_supply,
+fn supply(received: i64, remaining_grace: i64) -> Supply {
+    Supply {
+        received,
         maximum_grace: 1_000_000,
         remaining_grace,
+        naval_transfer: false,
+    }
+}
+fn land(division: u64) -> DivisionLandInputsRow {
+    DivisionLandInputsRow {
+        division,
+        ..Default::default()
+    }
+}
+fn status(division: u64, received: i64, remaining_grace: i64) -> DivisionStatusRow {
+    DivisionStatusRow {
+        division,
+        supply_ratio: received,
+        supply_grace_maximum: Recorded::Value(1_000_000),
+        supply_grace_remaining: Recorded::Value(remaining_grace),
         ..Default::default()
     }
 }
@@ -54,10 +71,17 @@ fn frame(hour: i32) -> DecodedFrame {
     ]));
     *frame.tables[TableId::DivisionLandInputs.index()] =
         TableView::Complete(TableRows::DivisionLandInputs(vec![
-            land(1, 0, 1_000_000),
-            land(2, 14_999, 0),
-            land(3, 15_000, 0),
-            land(4, 40_000, 0),
+            land(1),
+            land(2),
+            land(3),
+            land(4),
+        ]));
+    *frame.tables[TableId::DivisionStatus.index()] =
+        TableView::Complete(TableRows::DivisionStatus(vec![
+            status(1, 0, 1_000_000),
+            status(2, 14_999, 0),
+            status(3, 15_000, 0),
+            status(4, 40_000, 0),
         ]));
     frame
 }
@@ -188,18 +212,18 @@ fn supply_health_native_icon_gate_frames_and_fixed_arithmetic() {
         (60_000, 0, 0),
         (-1, -1, 3),
     ] {
-        assert_eq!(d.frame(&land(1, received, grace)), expected);
+        assert_eq!(d.frame(&supply(received, grace)), expected);
     }
-    let mut row = land(1, 0, 0);
+    let mut row = supply(0, 0);
     row.naval_transfer = true;
     assert_eq!(d.frame(&row), 0);
     row.naval_transfer = false;
     row.maximum_grace = 0;
     row.remaining_grace = 1_000_000;
     assert_eq!(d.effective(&row), 0);
-    row.received_supply = 100_000;
+    row.received = 100_000;
     assert_eq!(d.frame(&row), 1);
-    row.received_supply = 0;
+    row.received = 0;
     row.maximum_grace = 1;
     for sentinel in [i64::MIN, i64::MIN + 1, i64::MAX] {
         row.remaining_grace = sentinel;
@@ -209,10 +233,10 @@ fn supply_health_native_icon_gate_frames_and_fixed_arithmetic() {
     assert_eq!(d.effective(&row), 0); // native multiplication wraps before division
     let mut odd = d;
     odd.grace = 0;
-    assert_eq!(odd.effective(&land(1, 0, 0)), 100_000);
+    assert_eq!(odd.effective(&supply(0, 0)), 100_000);
     odd = d;
     odd.very_low_icon = 110_000;
-    assert_eq!(odd.frame(&land(1, 100_000, 0)), 3); // native compares substituted one too
+    assert_eq!(odd.frame(&supply(100_000, 0)), 3); // native compares substituted one too
 }
 
 #[test]
@@ -247,7 +271,7 @@ fn supply_health_reads_mod_defines_and_refuses_missing_forms_by_name() {
             low_icon: 52_000
         }
     );
-    assert_eq!(got.frame(&land(1, 50_000, 0)), 2);
+    assert_eq!(got.frame(&supply(50_000, 0)), 2);
     std::fs::write(
         addon.join("common/defines/01_mod.lua"),
         "NDefines.NGraphics.SUPPLY_UNIT_COUNTER_LOW_THRESHOLD={unsupported=1}",
@@ -296,11 +320,7 @@ fn supply_health_counts_owner_not_host_and_missing_rows_break_only_the_owner() {
     assert_eq!(counts(&scan.series[1].runs[0]), [0; 3]);
     f.hour += 1;
     *f.tables[TableId::DivisionLandInputs.index()] = TableView::Truncated {
-        rows: TableRows::DivisionLandInputs(vec![
-            land(2, 14_999, 0),
-            land(3, 15_000, 0),
-            land(4, 40_000, 0),
-        ]),
+        rows: TableRows::DivisionLandInputs(vec![land(2), land(3), land(4)]),
         missing: 1,
     };
     scan.observe(&f, defines()).unwrap();
@@ -316,6 +336,52 @@ fn supply_health_counts_owner_not_host_and_missing_rows_break_only_the_owner() {
     f.hour += 1;
     scan.observe(&f, defines()).unwrap();
     assert_eq!(scan.series[0].runs[1].last_hour, 103);
+}
+
+#[test]
+fn supply_health_classifies_from_division_status_and_needs_its_grace() {
+    // DivisionStatus is the record of the received fraction and grace; the
+    // land inputs supply only naval transfer.
+    let mut f = frame(100);
+    if let TableView::Complete(TableRows::DivisionLandInputs(rows)) =
+        &mut *f.tables[TableId::DivisionLandInputs.index()]
+    {
+        rows[1].naval_transfer = true;
+    }
+    let mut scan = Scan::new(&tags());
+    scan.observe(&f, defines()).unwrap();
+    assert_eq!(counts(&scan.series[0].runs[0]), [0, 2, 2]);
+    // An unavailable status table withholds the hour.
+    f.hour += 1;
+    let complete = f.tables[TableId::DivisionStatus.index()].clone();
+    *f.tables[TableId::DivisionStatus.index()] = TableView::Unavailable {
+        reason: "read failed".into(),
+    };
+    scan.observe(&f, defines()).unwrap();
+    assert_eq!(scan.series[0].runs.len(), 1);
+    assert_eq!(scan.series[0].runs[0].last_hour, 100);
+    // Unrecorded grace cannot classify its division, so the owner breaks.
+    f.hour += 1;
+    f.tables[TableId::DivisionStatus.index()] = complete.clone();
+    if let TableView::Complete(TableRows::DivisionStatus(rows)) =
+        &mut *f.tables[TableId::DivisionStatus.index()]
+    {
+        rows[0].supply_grace_remaining = Recorded::NotRecorded;
+    }
+    scan.observe(&f, defines()).unwrap();
+    assert_eq!(scan.series[0].runs.len(), 1);
+    // A changed status row alone recounts the hour.
+    f.hour += 1;
+    f.tables[TableId::DivisionStatus.index()] = complete;
+    if let TableView::Complete(TableRows::DivisionStatus(rows)) =
+        &mut *f.tables[TableId::DivisionStatus.index()]
+    {
+        rows[3].supply_ratio = 100_000;
+    }
+    scan.observe(&f, defines()).unwrap();
+    assert_eq!(scan.series[0].runs.len(), 2);
+    assert!(scan.series[0].runs[1].starts_segment);
+    assert_eq!(counts(&scan.series[0].runs[1]), [0, 1, 3]);
 }
 
 #[test]
@@ -621,7 +687,7 @@ fn scale_frame(divisions: u64) -> DecodedFrame {
         TableView::Complete(TableRows::DivisionLandInputs(
             (1..=divisions)
                 .map(|i| {
-                    let mut row = land(i, 100_000, 1_000_000);
+                    let mut row = land(i);
                     row.manpower = vec![DivisionManpowerContributor {
                         country: ((i - 1) % 5_000 + 1) as u32,
                         amount: 10_000,
@@ -630,6 +696,11 @@ fn scale_frame(divisions: u64) -> DecodedFrame {
                 })
                 .collect(),
         ));
+    *f.tables[TableId::DivisionStatus.index()] = TableView::Complete(TableRows::DivisionStatus(
+        (1..=divisions)
+            .map(|i| status(i, 100_000, 1_000_000))
+            .collect(),
+    ));
     f
 }
 
@@ -642,12 +713,12 @@ fn supply_health_large_selection_refuses_only_the_measured_reply_budget() {
     // run-count limit. This loop's extent is only the test fixture size.
     for hour in 0..100 {
         f.hour += 1;
-        if let TableView::Complete(TableRows::DivisionLandInputs(rows)) =
-            &mut *f.tables[TableId::DivisionLandInputs.index()]
+        if let TableView::Complete(TableRows::DivisionStatus(rows)) =
+            &mut *f.tables[TableId::DivisionStatus.index()]
         {
             for row in rows {
-                row.received_supply = if hour % 2 == 0 { 0 } else { 100_000 };
-                row.remaining_grace = 0;
+                row.supply_ratio = if hour % 2 == 0 { 0 } else { 100_000 };
+                row.supply_grace_remaining = Recorded::Value(0);
             }
         }
         scan.observe(&f, defines()).unwrap();
@@ -694,8 +765,8 @@ fn supply_health_scale_nine_years() {
     }
     for hour in 0..9 * 365 * 24 {
         f.hour = 1_000_000 + hour;
-        if let TableView::Complete(TableRows::DivisionLandInputs(rows)) =
-            &mut *f.tables[TableId::DivisionLandInputs.index()]
+        if let TableView::Complete(TableRows::DivisionStatus(rows)) =
+            &mut *f.tables[TableId::DivisionStatus.index()]
         {
             let changing: Vec<usize> = if hour == 0 {
                 (0..720).collect()
@@ -720,10 +791,11 @@ fn supply_health_scale_nine_years() {
                     } else {
                         100_000
                     };
-                    grace_changes += usize::from(row.remaining_grace != grace);
-                    received_changes += usize::from(row.received_supply != received);
-                    row.received_supply = received;
-                    row.remaining_grace = grace;
+                    grace_changes +=
+                        usize::from(row.supply_grace_remaining != Recorded::Value(grace));
+                    received_changes += usize::from(row.supply_ratio != received);
+                    row.supply_ratio = received;
+                    row.supply_grace_remaining = Recorded::Value(grace);
                 }
             }
         }
@@ -810,11 +882,11 @@ fn supply_health_scale_nine_years() {
         .map(|i| {
             let mut f = scale_frame(50_000);
             f.hour += i;
-            if let TableView::Complete(TableRows::DivisionLandInputs(rows)) =
-                &mut *f.tables[TableId::DivisionLandInputs.index()]
+            if let TableView::Complete(TableRows::DivisionStatus(rows)) =
+                &mut *f.tables[TableId::DivisionStatus.index()]
             {
                 for row in rows.iter_mut().step_by(20) {
-                    row.remaining_grace -= i64::from(i) * 10_000;
+                    row.supply_grace_remaining = Recorded::Value(1_000_000 - i64::from(i) * 10_000);
                 }
             }
             if let TableView::Complete(TableRows::Divisions(rows)) =

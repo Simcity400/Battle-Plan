@@ -2,8 +2,8 @@ use super::*;
 
 pub(crate) fn character_shadow_fixture(value: u8) -> Captured {
     let capacities = Capacities {
-        rows: [2, 2, 2, 1, 2, 1],
-        bytes: [8, 0, 8, 0, 8, 0],
+        rows: [2, 2, 2, 1, 2],
+        bytes: [8, 0, 8, 0, 8],
     };
     let mut captured = Captured::with_capacities(&capacities);
     for index in 0..2 {
@@ -60,6 +60,5 @@ pub(crate) fn character_shadow_fixture(value: u8) -> Captured {
     captured.advisors.rows.outcome = Outcome::Rows { len: 2 };
     captured.traits.rows.outcome = Outcome::Rows { len: 2 };
     captured.units.rows.outcome = Outcome::Rows { len: 0 };
-    captured.trait_experience.rows.outcome = Outcome::Rows { len: 0 };
     captured
 }

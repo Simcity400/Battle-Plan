@@ -18,8 +18,13 @@ pub const HARD_ATTACK: usize = 0xc8;
 pub const MAXIMUM_ORGANISATION: usize = 0x280;
 /// CSubUnitDefinition cached max strength, i64/100000.
 pub const MAXIMUM_STRENGTH: usize = 0x288;
-/// Cached fixed5 weight. Each selected occurrence is independently rounded
-/// before signed-i32 narrowing. Template/population counts cannot substitute.
+/// Sub-unit definition maximum speed, signed i64 fixed5; division
+/// movement-speed calculation starts from +0x290 in its +0x138 stat block.
+pub const MAXIMUM_SPEED: usize = 0x290;
+/// Raw fixed5 weight consumed from original stat+2B8 by the unit weight getter.
+/// Transport demand rounds each selected occurrence independently before
+/// signed32 narrowing. No derived template/population count substitutes for
+/// this cache.
 pub const TRANSPORT_WEIGHT: usize = 0x2b8;
 /// Coastal-exfiltration byte initialized true and ANDed across grouped
 /// subunits. Active-stat updates retain it in the army block. It permits
@@ -35,34 +40,6 @@ pub fn division_maxima(
     Ok(capture_division_maxima(memory, base, pointer)?.effective())
 }
 
-/// `division_maxima` over a gather whose first field is the vtable at
-/// `pointer` and whose second is the 16 bytes at `MAXIMUM_ORGANISATION`.
-pub(crate) fn division_maxima_gathered<const N: usize>(
-    memory: &impl crate::Memory,
-    base: usize,
-    pointer: usize,
-    fields: &crate::memory::FieldBatch<N>,
-) -> Result<(i64, i64), &'static str> {
-    let vtable = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("division stat block identity mismatch")? as u64;
-    if pointer == 0 || fields.get::<u64>(memory, 0) != Some(vtable) {
-        return Err("division stat block identity mismatch");
-    }
-    let bytes = pointer
-        .checked_add(MAXIMUM_ORGANISATION)
-        .and_then(|_| fields.get::<[u8; 16]>(memory, 1))
-        .ok_or("division maxima unreadable")?;
-    Ok(DivisionMaxima {
-        pointer,
-        organisation: i64::from_le_bytes(bytes[..8].try_into().unwrap()),
-        strength: i64::from_le_bytes(bytes[8..].try_into().unwrap()),
-        // Only the effective maxima leave this path.
-        can_exfiltrate_from_coast: 0,
-    }
-    .effective())
-}
-
 /// Owned exact cached operands. Clamping belongs to projection.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DivisionMaxima {
@@ -73,20 +50,83 @@ pub struct DivisionMaxima {
     pub can_exfiltrate_from_coast: u8,
 }
 
-const MAXIMA_FIELDS: [crate::memory::RecordField; 2] = [
+/// The vtable, then both cached maxima and the exfiltration byte.
+const MAXIMA_FIELDS: [crate::memory::RecordField; 3] = [
+    crate::memory::RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
     crate::memory::RecordField {
         source_offset: MAXIMUM_ORGANISATION,
-        destination_offset: 0,
+        destination_offset: 8,
         len: 16,
     },
     crate::memory::RecordField {
         source_offset: CAN_EXFILTRATE_FROM_COAST,
-        destination_offset: 16,
+        destination_offset: 24,
         len: 1,
     },
 ];
 const MAXIMA_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&MAXIMA_FIELDS, 17).expect("valid maxima layout");
+    crate::memory::RecordLayout::new(&MAXIMA_FIELDS, 25).expect("valid maxima layout");
+
+/// Up to 64 distinct, unheld blocks selected from authenticated census seeds.
+/// Organisation and strength maxima follow the division's +0x138 stat block;
+/// exfiltration eligibility consumes its byte. The status walk still
+/// authenticates each seed before taking its block and inserts it into the
+/// original memo in order.
+pub(crate) struct MaximaBatch {
+    bytes: [u8; 64 * 25],
+    pointers: [usize; 64],
+    complete: [bool; 64],
+    len: usize,
+}
+
+impl MaximaBatch {
+    pub(crate) fn new() -> Self {
+        Self {
+            bytes: [0; 64 * 25],
+            pointers: [0; 64],
+            complete: [false; 64],
+            len: 0,
+        }
+    }
+
+    pub(crate) fn capture(&mut self, memory: &impl crate::Memory, pointers: &[usize]) {
+        self.len = pointers.len();
+        self.pointers[..self.len].copy_from_slice(pointers);
+        crate::memory::gather_records_once(
+            memory,
+            pointers,
+            &MAXIMA_LAYOUT,
+            &mut self.bytes[..self.len * 25],
+            &mut self.complete,
+            crate::batch_fallback::Batch::DivisionMaxima,
+        );
+    }
+
+    pub(crate) fn read(
+        &self,
+        memory: &impl crate::Memory,
+        base: usize,
+        pointer: usize,
+    ) -> Result<DivisionMaxima, &'static str> {
+        if let Some(row) = self.pointers[..self.len]
+            .iter()
+            .position(|&at| at == pointer)
+            && self.complete[row]
+        {
+            return decode_division_maxima(
+                base,
+                pointer,
+                &self.bytes[row * 25..][..25],
+                MAXIMA_FIELDS.len(),
+            );
+        }
+        capture_division_maxima(memory, base, pointer)
+    }
+}
 
 impl DivisionMaxima {
     pub fn effective(self) -> (i64, i64) {
@@ -99,27 +139,42 @@ pub fn capture_division_maxima(
     base: usize,
     pointer: usize,
 ) -> Result<DivisionMaxima, &'static str> {
-    let vtable = base
-        .checked_add(VTABLE_RVA)
-        .ok_or("division stat block identity mismatch")? as u64;
-    if pointer == 0 || crate::read::<u64>(memory, pointer) != Some(vtable) {
+    base.checked_add(VTABLE_RVA)
+        .ok_or("division stat block identity mismatch")?;
+    if pointer == 0 {
         return Err("division stat block identity mismatch");
     }
-    // One guarded copy of both cached spans, as the maxima alone were read.
-    let mut bytes = [0_u8; 17];
-    if memory.copy_records(
+    // One guarded copy of the vtable and both cached spans; the spans are
+    // used only once the vtable authenticates the block.
+    let mut bytes = [0_u8; 25];
+    let copied = memory.copy_records(
         crate::memory::RecordSources::Pointers(&[pointer]),
         &MAXIMA_LAYOUT,
         &mut bytes,
-    ) < MAXIMA_FIELDS.len()
-    {
+    );
+    decode_division_maxima(base, pointer, &bytes, copied)
+}
+
+fn decode_division_maxima(
+    base: usize,
+    pointer: usize,
+    bytes: &[u8],
+    copied: usize,
+) -> Result<DivisionMaxima, &'static str> {
+    let vtable = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("division stat block identity mismatch")? as u64;
+    if copied == 0 || u64::from_le_bytes(bytes[..8].try_into().unwrap()) != vtable {
+        return Err("division stat block identity mismatch");
+    }
+    if copied < MAXIMA_FIELDS.len() {
         return Err("division maxima unreadable");
     }
     Ok(DivisionMaxima {
         pointer,
-        organisation: i64::from_le_bytes(bytes[..8].try_into().unwrap()),
-        strength: i64::from_le_bytes(bytes[8..16].try_into().unwrap()),
-        can_exfiltrate_from_coast: bytes[16],
+        organisation: i64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+        strength: i64::from_le_bytes(bytes[16..24].try_into().unwrap()),
+        can_exfiltrate_from_coast: bytes[24],
     })
 }
 
@@ -265,9 +320,17 @@ pub(crate) fn template_category(
 ) -> Result<i32, &'static str> {
     let bytes = pointer
         .checked_add(CATEGORY)
-        .and_then(|p| crate::read::<[u8; 13]>(memory, p))
+        .and_then(|p| crate::read::<[u8; CATEGORY_LEN]>(memory, p))
         .ok_or("subunit category unreadable")?;
-    let value = if bytes[8] != 0 {
+    Ok(category_of(&bytes))
+}
+
+/// The bytes [`template_category`] reads from `CATEGORY`.
+pub(crate) const CATEGORY_LEN: usize = 13;
+
+/// [`template_category`] of the `CATEGORY_LEN` bytes at `CATEGORY`.
+pub(crate) fn category_of(bytes: &[u8; CATEGORY_LEN]) -> i32 {
+    if bytes[8] != 0 {
         9
     } else if bytes[12] != 0 {
         4
@@ -289,8 +352,7 @@ pub(crate) fn template_category(
             31 => 9,
             _ => 0,
         }
-    };
-    Ok(value)
+    }
 }
 /// CSubUnitDefinition first air-bucket enabled byte.
 pub const AIR_BUCKET_1_ENABLED: usize = 0x5b4;
@@ -710,5 +772,260 @@ mod movement_tests {
         };
         assert!(movement_terrain(&memory, base, stats, terrain).is_err());
         assert!(movement_terrain(&memory, base, 0, terrain).is_err());
+    }
+}
+
+/// The `CUnitAdjuster` vtable of each entry of [`MOVEMENT_TERRAIN_ADJUSTERS`]
+/// and of a terrain's own adjuster.
+pub const UNIT_ADJUSTER_VTABLE_RVA: usize = 0x0277_3a70;
+/// Unit adjuster stride and its attack component (`+0x10`), used by additive
+/// adjustment.
+pub const UNIT_ADJUSTER_STRIDE: usize = 0x28;
+pub const UNIT_ADJUSTER_ATTACK: usize = 0x10;
+/// The attack list's stat-block scalars: night `+0x340`, fort
+/// `+0x368`/`+0x370`, river `+0x390`/`+0x398` and snow `+0x3E0`. One span from
+/// the night term through the terrain array header reads them all.
+pub const ATTACK_NIGHT: usize = 0x340;
+pub const ATTACK_FORT: usize = 0x368;
+pub const ATTACK_RIVER: usize = 0x390;
+pub const ATTACK_SNOW: usize = 0x3e0;
+const ATTACK_SPAN: usize = MOVEMENT_TERRAIN_ADJUSTERS + 16 - ATTACK_NIGHT;
+
+/// A stat block's attack operands: the attack of each terrain adjuster entry in
+/// array order (entry `i` serves terrain database index `i + 1`) and the
+/// scalars, each an exact fixed5 word.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AttackStats {
+    pub terrain: Vec<i64>,
+    pub river: [i64; 2],
+    pub fort: [i64; 2],
+    pub snow: i64,
+    pub night: i64,
+}
+
+/// Reads [`AttackStats`] of an authenticated stat block: one span for the
+/// scalars and the terrain array header, then the entries 32 at a time, each
+/// authenticated as a `CUnitAdjuster`. The entries reuse `terrain`'s storage.
+pub fn capture_attack_stats(
+    memory: &impl crate::Memory,
+    base: usize,
+    stats: usize,
+    terrain: &mut Vec<i64>,
+) -> Result<AttackStats, &'static str> {
+    movement_identity(memory, base, stats)?;
+    let mut span = [0_u8; ATTACK_SPAN];
+    let at = stats
+        .checked_add(ATTACK_NIGHT)
+        .ok_or("stat block address overflow")?;
+    if !crate::read_slice(memory, at, &mut span) {
+        return Err("stat block attack operands unreadable");
+    }
+    let word = |offset: usize| {
+        let at = offset - ATTACK_NIGHT;
+        i64::from_le_bytes(span[at..at + 8].try_into().unwrap())
+    };
+    let header = MOVEMENT_TERRAIN_ADJUSTERS - ATTACK_NIGHT;
+    let array = crate::cpdx_array::Array::from_header(
+        span[header..header + 16].try_into().unwrap(),
+        UNIT_ADJUSTER_STRIDE,
+    )
+    .ok_or("stat block terrain adjuster array invalid")?;
+    let expected = base
+        .checked_add(UNIT_ADJUSTER_VTABLE_RVA)
+        .ok_or("module address overflow")? as u64;
+    terrain.clear();
+    crate::allocation::reserve_exact(terrain, array.count as usize)
+        .map_err(|_| "stat block terrain allocation failed")?;
+    const BATCH: usize = 32;
+    let mut entries = [0_u8; BATCH * UNIT_ADJUSTER_STRIDE];
+    let mut first = 0;
+    while first < array.count {
+        let len = (array.count - first).min(BATCH as u32) as usize;
+        let address = array
+            .element(first, UNIT_ADJUSTER_STRIDE)
+            .ok_or("stat block terrain adjuster address overflow")?;
+        if !crate::read_slice(memory, address, &mut entries[..len * UNIT_ADJUSTER_STRIDE]) {
+            return Err("stat block terrain adjusters unreadable");
+        }
+        for entry in entries[..len * UNIT_ADJUSTER_STRIDE].chunks_exact(UNIT_ADJUSTER_STRIDE) {
+            if u64::from_le_bytes(entry[..8].try_into().unwrap()) != expected {
+                return Err("stat block terrain adjuster identity mismatch");
+            }
+            terrain.push(i64::from_le_bytes(
+                entry[UNIT_ADJUSTER_ATTACK..UNIT_ADJUSTER_ATTACK + 8]
+                    .try_into()
+                    .unwrap(),
+            ));
+        }
+        first += len as u32;
+    }
+    Ok(AttackStats {
+        terrain: std::mem::take(terrain),
+        river: [word(ATTACK_RIVER), word(ATTACK_RIVER + 8)],
+        fort: [word(ATTACK_FORT), word(ATTACK_FORT + 8)],
+        snow: word(ATTACK_SNOW),
+        night: word(ATTACK_NIGHT),
+    })
+}
+
+#[cfg(test)]
+mod attack_tests {
+    use super::*;
+    use crate::memory::SliceMemory;
+
+    const BASE: usize = 0x1000;
+    const STATS: usize = 0x2000;
+    const ENTRIES: usize = 0x3000;
+
+    fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
+        bytes[at - BASE..at - BASE + value.len()].copy_from_slice(value);
+    }
+
+    fn memory(entries: u32) -> Vec<u8> {
+        let mut bytes = vec![0_u8; 0x4000];
+        put(
+            &mut bytes,
+            STATS,
+            &((BASE + VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        for (offset, value) in [
+            (ATTACK_NIGHT, -50_000_i64),
+            (ATTACK_FORT, 1),
+            (ATTACK_FORT + 8, 2),
+            (ATTACK_RIVER, -30_000),
+            (ATTACK_RIVER + 8, i64::MIN),
+            (ATTACK_SNOW, i64::MAX),
+        ] {
+            put(&mut bytes, STATS + offset, &value.to_le_bytes());
+        }
+        let header = STATS + MOVEMENT_TERRAIN_ADJUSTERS;
+        put(&mut bytes, header, &(ENTRIES as u64).to_le_bytes());
+        put(&mut bytes, header + 8, &entries.to_le_bytes());
+        put(&mut bytes, header + 12, &entries.to_le_bytes());
+        for index in 0..entries as usize {
+            let entry = ENTRIES + index * UNIT_ADJUSTER_STRIDE;
+            put(
+                &mut bytes,
+                entry,
+                &((BASE + UNIT_ADJUSTER_VTABLE_RVA) as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                entry + UNIT_ADJUSTER_ATTACK,
+                &(-(index as i64) * 1_000).to_le_bytes(),
+            );
+        }
+        bytes
+    }
+
+    #[test]
+    fn attack_operands_read_every_entry_and_exact_scalars() {
+        // Not a multiple of the batch: the last batch is short.
+        let bytes = memory(35);
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let mut scratch = Vec::new();
+        let stats = capture_attack_stats(&memory, BASE, STATS, &mut scratch).unwrap();
+        assert_eq!(stats.terrain.len(), 35);
+        assert_eq!(stats.terrain[34], -34_000);
+        assert_eq!(stats.river, [-30_000, i64::MIN]);
+        assert_eq!(stats.fort, [1, 2]);
+        assert_eq!((stats.snow, stats.night), (i64::MAX, -50_000));
+    }
+
+    #[test]
+    fn a_foreign_entry_or_block_refuses_the_read() {
+        let mut bytes = memory(3);
+        put(
+            &mut bytes,
+            ENTRIES + UNIT_ADJUSTER_STRIDE,
+            &0_u64.to_le_bytes(),
+        );
+        let memory_view = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        assert!(capture_attack_stats(&memory_view, BASE, STATS, &mut Vec::new()).is_err());
+        let mut bytes = memory(3);
+        put(&mut bytes, STATS, &0_u64.to_le_bytes());
+        let memory_view = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        assert!(capture_attack_stats(&memory_view, BASE, STATS, &mut Vec::new()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod maxima_tests {
+    use super::*;
+    use crate::memory::{Memory, RecordLayout, RecordSources, SliceMemory};
+
+    /// Counts guarded calls: a gather is one call, as it is live.
+    struct Calls<'a>(SliceMemory<'a>, std::cell::Cell<usize>);
+    impl Memory for Calls<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.1.set(self.1.get() + 1);
+            self.0.copy(address, destination)
+        }
+        fn copy_records(
+            &self,
+            sources: RecordSources<'_>,
+            layout: &RecordLayout<'_>,
+            destination: &mut [u8],
+        ) -> usize {
+            self.1.set(self.1.get() + 1);
+            self.0.copy_records(sources, layout, destination)
+        }
+    }
+
+    const STATS: usize = 0x1000;
+
+    fn block() -> Vec<u8> {
+        let mut bytes = vec![0_u8; CAN_EXFILTRATE_FROM_COAST + 1];
+        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[MAXIMUM_ORGANISATION..MAXIMUM_ORGANISATION + 8]
+            .copy_from_slice(&70_000_i64.to_le_bytes());
+        bytes[MAXIMUM_STRENGTH..MAXIMUM_STRENGTH + 8].copy_from_slice(&50_i64.to_le_bytes());
+        bytes[CAN_EXFILTRATE_FROM_COAST] = 1;
+        bytes
+    }
+
+    fn maxima(bytes: &[u8]) -> (Result<DivisionMaxima, &'static str>, usize) {
+        let memory = Calls(SliceMemory { base: STATS, bytes }, Default::default());
+        (capture_division_maxima(&memory, 0, STATS), memory.1.get())
+    }
+
+    /// The vtable and both cached spans are one guarded call; the spans are
+    /// used only once the vtable authenticates the block.
+    #[test]
+    fn maxima_and_their_vtable_are_one_gather() {
+        assert_eq!(
+            maxima(&block()),
+            (
+                Ok(DivisionMaxima {
+                    pointer: STATS,
+                    organisation: 70_000,
+                    strength: 50,
+                    can_exfiltrate_from_coast: 1,
+                }),
+                1
+            )
+        );
+        assert_eq!(maxima(&block()).0.unwrap().effective(), (100, 70_000));
+        let mut wrong = block();
+        wrong[0] ^= 1;
+        assert_eq!(
+            maxima(&wrong).0,
+            Err("division stat block identity mismatch")
+        );
+        assert_eq!(maxima(&[]).0, Err("division stat block identity mismatch"));
+        let short = block();
+        assert_eq!(
+            maxima(&short[..CAN_EXFILTRATE_FROM_COAST]).0,
+            Err("division maxima unreadable")
+        );
     }
 }

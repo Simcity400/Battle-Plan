@@ -477,121 +477,6 @@ fn fresh_capture(image: &EtaFixture, hour: Option<i32>, observation_count: usize
 }
 
 #[test]
-fn transport_suffix_uses_original_stat_and_transfer_without_poisoning_prefix_on_leaf_fault() {
-    use crate::selected_transport_units::Transfer;
-    for fault in [
-        None,
-        Some(SUBUNIT + csub_unit_definition::TRANSPORT_WEIGHT),
-        Some(TRANSFER + cnaval_unit_transfer::SOURCE_PROVINCE),
-    ] {
-        let mut image = eta_fixture();
-        put64(
-            &mut image.memory.bytes,
-            GUN + cunit::NAVAL_TRANSFER_MEMBERSHIP,
-            TRANSFER as u64,
-        );
-        put(
-            &mut image.memory.bytes,
-            TRANSFER + cnaval_unit_transfer::ACTION_STATUS,
-            &0i32.to_le_bytes(),
-        );
-        put(
-            &mut image.memory.bytes,
-            TRANSFER + cnaval_unit_transfer::SOURCE_PROVINCE,
-            &42u32.to_le_bytes(),
-        );
-        put(
-            &mut image.memory.bytes,
-            SUBUNIT + csub_unit_definition::TRANSPORT_WEIGHT,
-            &i64::MIN.to_le_bytes(),
-        );
-        image.memory.fault = fault;
-        let row = fresh_capture(&image, Some(-17), 1);
-        assert_eq!(row.gun, GUN_HANDLE);
-        assert!(row.naval_transfer && !row.transfer_action_status);
-        let packet = row.transport.unwrap();
-        assert_eq!((packet.unit, packet.sample_hour), (GUN_HANDLE, -17));
-        assert_eq!(
-            packet.weight.is_err(),
-            fault == Some(SUBUNIT + csub_unit_definition::TRANSPORT_WEIGHT)
-        );
-        assert_eq!(
-            packet.coastal,
-            Err("selected transport class13 coast predicate unreached")
-        );
-        let Transfer::Present {
-            handle,
-            status,
-            source,
-        } = packet.transfer.unwrap()
-        else {
-            panic!("original nonnull transfer");
-        };
-        assert_eq!((handle, status), (TRANSFER_HANDLE, Ok(0)));
-        assert_eq!(
-            source.is_err(),
-            fault == Some(TRANSFER + cnaval_unit_transfer::SOURCE_PROVINCE)
-        );
-        for address in [
-            SUBUNIT + csub_unit_definition::TRANSPORT_WEIGHT,
-            TRANSFER + cnaval_unit_transfer::SOURCE_PROVINCE,
-        ] {
-            assert_eq!(
-                image
-                    .reads
-                    .borrow()
-                    .iter()
-                    .filter(|(at, _)| *at == address)
-                    .count(),
-                1
-            );
-        }
-    }
-}
-
-#[test]
-fn transport_suffix_does_not_read_unreached_source_or_nonclocked_weight() {
-    use crate::selected_transport_units::Transfer;
-    let mut image = eta_fixture();
-    put64(
-        &mut image.memory.bytes,
-        GUN + cunit::NAVAL_TRANSFER_MEMBERSHIP,
-        TRANSFER as u64,
-    );
-    put(
-        &mut image.memory.bytes,
-        TRANSFER + cnaval_unit_transfer::ACTION_STATUS,
-        &(-3i32).to_le_bytes(),
-    );
-    let row = fresh_capture(&image, Some(23), 1);
-    assert!(row.transfer_action_status);
-    assert!(matches!(
-        row.transport.unwrap().transfer,
-        Ok(Transfer::Present {
-            status: Ok(-3),
-            source: Err(_),
-            ..
-        })
-    ));
-    assert!(
-        !image
-            .reads
-            .borrow()
-            .iter()
-            .any(|(at, _)| *at == TRANSFER + cnaval_unit_transfer::SOURCE_PROVINCE)
-    );
-    let image = eta_fixture();
-    assert!(fresh_capture(&image, None, 1).transport.is_none());
-    assert!(
-        !image
-            .reads
-            .borrow()
-            .iter()
-            .any(|(at, _)| *at == SUBUNIT + csub_unit_definition::TRANSPORT_WEIGHT)
-    );
-}
-
-#[test]
 fn fresh_common_operands_reuse_success_and_failure_without_poisoning_other_fields() {
     for fault in [
         None,
@@ -755,7 +640,6 @@ fn idle_ordinary_route_keeps_fresh_railway_domains_without_first_edge_reads() {
                 fresh: None,
                 fresh_failure: None,
                 fresh_failures: [None; 3],
-                transport: None,
                 ..row
             }
         );
@@ -1536,7 +1420,6 @@ fn captures_the_roster_gun_motion_and_first_combat_without_map_entity_state() {
             fresh_failure: None,
             fresh_failures: [None; 3],
             withdrawal: None,
-            transport: None,
         }
     );
     assert_eq!(paths, [2, 1, 1]);
@@ -1587,8 +1470,8 @@ fn read_calls_per_hour_and_per_gun_are_pinned() {
         "railway gun inputs: standing {standing_hour} calls for one gun, {standing_gun} per \
          further gun; moving in combat {moving_hour}, {moving_gun} per further gun"
     );
-    assert_eq!((standing_hour, standing_gun), (60, 43));
-    assert_eq!((moving_hour, moving_gun), (97, 57));
+    assert_eq!((standing_hour, standing_gun), (57, 40));
+    assert_eq!((moving_hour, moving_gun), (94, 54));
 }
 
 #[test]

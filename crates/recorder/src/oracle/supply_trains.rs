@@ -25,9 +25,14 @@ fn equal<T: PartialEq + std::fmt::Debug>(report: &mut Report, label: &str, actua
         report.difference(label, actual, expected);
     }
 }
-/// Node, parent and route provinces join the verified map census. The save's
+/// Node, parent and route provinces join the verified map census; a node or
+/// parent id outside it is one the game's province getter
+/// resolves as null during province lookup, which the
+/// walk records as stored and this check names as a limitation. The save's
 /// provinces block is sparse (see Save::provinces), so a province missing there
-/// is not evidence of a missing engine province.
+/// is not evidence of a missing engine province. A country's nodes and
+/// inventory come from one read at its daily slice, so the census checks
+/// hold for every country's held rows, whatever its read hour.
 fn nodes(
     frame: &DecodedFrame,
     membership: &save::PartialMapMembership,
@@ -60,11 +65,15 @@ fn nodes(
             *counts.entry(row.country).or_default() += 1;
         }
         let label = format!("SupplyNodes {}:{}", row.country, row.index);
+        // Node creators store unchecked province ids, from a copied record
+        // or the companion's +0xA0 array; the country-local parent walk does
+        // not validate those ids against map membership.
+        const NULL: &str = "a supply node or parent id the game resolves as the null province; no map province joins it";
         if !known(row.province) {
-            report.difference(format!("{label}.province"), row.province, "map province");
+            report.limitation(NULL, format!("{label}.province {}", row.province));
         }
         if row.parent > 0 && !known(row.parent as u32) {
-            return Err(invalid("SupplyNodes parent is not a map province"));
+            report.limitation(NULL, format!("{label}.parent {}", row.parent));
         }
         if row.path.iter().any(|&p| !known(p)) {
             return Err(invalid(
@@ -112,6 +121,11 @@ fn trains(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
         .iter()
         .map(|r| (r.id, r))
         .collect();
+    // A country's allocations are compared with the saved variants only when
+    // its slice was read at the oracle hour; its census membership and
+    // captured fields hold for every country's held read.
+    let current = current_slice_owners(frame, TableId::TrainInventory, report)?;
+    slice_owner_limitation(frame, TableId::TrainInventory, &current, report);
     let systems = save
         .economy
         .supply
@@ -134,7 +148,10 @@ fn trains(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
             save.countries.contains_key(&country.tag),
             true,
         );
-        for allocation in &row.allocations {
+        let read_now = current
+            .as_ref()
+            .is_none_or(|owners| owners.contains(&row.country));
+        for allocation in row.allocations.iter().filter(|_| read_now) {
             if allocation.variant == 0 {
                 continue;
             }
@@ -259,7 +276,7 @@ fn trains(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
             ),
         );
     }
-    report.limitation("allocated train entries are full CEquipmentVariant references with signed i32 counts, not equipment-type tokens or stockpile fixed5 quantities. The game does not serialize this array; its saved truck array cannot validate trains. Allocation counts, order, null/duplicate entries and fleet-cap sum remain unverified by the save. Saved variant identities are checked; VariantDefinitions separately compares definition keys/names on its existing refresh cadence. The scheduler RNG, timetable phase and already spawned trains are not recorded", "TrainInventory allocations; native train fleet");
+    report.limitation("allocated train entries are full equipment variant references with signed i32 counts, not equipment-type tokens or stockpile fixed5 quantities. The game does not serialize this array; its saved truck array cannot validate trains. Allocation counts, order, null/duplicate entries and fleet-cap sum remain unverified by the save. Saved variant identities are checked; VariantDefinitions separately compares definition keys/names on its existing refresh cadence. The scheduler RNG, timetable phase and already spawned trains are not recorded", "TrainInventory allocations; native train fleet");
     Ok(())
 }
 

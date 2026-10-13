@@ -524,6 +524,179 @@ fn train_nodes_preserve_native_identity_values_parent_edges_and_count_raw_read_w
 }
 
 #[test]
+fn unresolved_province_ids_are_recorded_as_the_games_null_province() {
+    use crate::{
+        supply_node::{self as node, ProvinceCheck, ProvinceObservation, ProvinceRole},
+        supply_parent_map,
+    };
+    let observation = |index, province, role, check| ProvinceObservation {
+        country: 1,
+        index,
+        province,
+        role,
+        check,
+    };
+    let walk = |bytes: &[u8], rows: usize| {
+        let mut nodes = vec![node::Row::default(); rows];
+        let mut paths = [0; 3];
+        let report = node::walk(&TrainMemory::new(bytes), 0, GAME, &mut nodes, &mut paths);
+        let mut rows = nodes
+            .iter()
+            .map(|n| (n.index, n.province, n.kind, n.parent))
+            .collect::<Vec<_>>();
+        rows.sort_unstable();
+        (report, rows)
+    };
+    // Province lookup returns null for zero and for ids outside the census, and
+    // the node creators store such a province unchecked. Native readers only
+    // key maps with it, so it is a root without a route, recorded as stored and
+    // observed.
+    for province in [0_u32, 4, u32::MAX] {
+        let mut bytes = train_fixture();
+        put(
+            &mut bytes,
+            0xa000 + 2 * node::STRIDE + node::PROVINCE,
+            &province.to_le_bytes(),
+        );
+        let (report, rows) = walk(&bytes, 3);
+        assert_eq!(report.outcome, Outcome::Rows { len: 3 });
+        let mut expected = vec![(0, 1, 2, -1), (1, 2, 3, 1), (2, province, 4, -1)];
+        expected.sort_unstable();
+        assert_eq!(rows, expected);
+        assert_eq!(report.null_provinces, 1);
+        assert_eq!(
+            report.last_null_province,
+            Some(observation(
+                2,
+                province,
+                ProvinceRole::Node,
+                ProvinceCheck::OutsideCensus
+            ))
+        );
+        assert_eq!(report.refusal, None);
+    }
+    // An empty census slot is the same null province.
+    let mut bytes = train_fixture();
+    put(&mut bytes, 0x18000 + 3 * 8, &0_u64.to_le_bytes());
+    let (report, rows) = walk(&bytes, 3);
+    assert_eq!(report.outcome, Outcome::Rows { len: 3 });
+    assert_eq!(rows, [(0, 1, 2, -1), (1, 2, 3, 1), (2, 3, 4, 2)]);
+    assert_eq!(
+        report.last_null_province,
+        Some(observation(
+            2,
+            3,
+            ProvinceRole::Node,
+            ProvinceCheck::SlotEmpty
+        ))
+    );
+    // The fixture's parent map (keys 2 and 3), rewritten with new parents.
+    let reparent = |bytes: &mut Vec<u8>, of_two: i32, of_three: i32| {
+        bytes[0xb000 - GAME..0xb000 - GAME + 13 * 12].fill(0);
+        let parents = map(
+            bytes.as_mut_slice(),
+            0x6000 + supply_companion::STRIDE + supply_parent_map::HEADER,
+            0xb000,
+            12,
+            0,
+            &[2, 3],
+        );
+        put(bytes.as_mut_slice(), parents[0] + 8, &of_two.to_le_bytes());
+        put(
+            bytes.as_mut_slice(),
+            parents[1] + 8,
+            &of_three.to_le_bytes(),
+        );
+    };
+    // A null parent keys the parent map like any other and becomes a vertex row
+    // of its own, as the parent walk would visit it.
+    let mut bytes = train_fixture();
+    reparent(&mut bytes, 1, 4);
+    let (report, rows) = walk(&bytes, 4);
+    assert_eq!(report.outcome, Outcome::Rows { len: 4 });
+    assert_eq!(
+        rows,
+        [
+            (0, 1, 2, -1),
+            (1, 2, 3, 1),
+            (2, 3, 4, 4),
+            (node::VERTEX | 4, 4, 0, -1)
+        ]
+    );
+    assert_eq!(report.null_provinces, 2);
+    assert_eq!(
+        report.last_null_province,
+        Some(observation(
+            node::VERTEX | 4,
+            4,
+            ProvinceRole::Vertex,
+            ProvinceCheck::OutsideCensus
+        ))
+    );
+    // A province that resolves must be the CProvince with that id, and an
+    // unreadable slot is no native value; each refusal names its check.
+    let mut bytes = train_fixture();
+    put(
+        &mut bytes,
+        0x19000 + 3 * 0x400 + crate::cprovince::ID,
+        &9_u32.to_le_bytes(),
+    );
+    let (report, _) = walk(&bytes, 3);
+    assert_eq!(
+        report.outcome,
+        Outcome::Unavailable {
+            reason: "supply node province identity mismatch"
+        }
+    );
+    assert_eq!(
+        report.refusal,
+        Some(observation(
+            2,
+            3,
+            ProvinceRole::Node,
+            ProvinceCheck::IdentityMismatch
+        ))
+    );
+    reparent(&mut bytes, 3, 2);
+    let (report, _) = walk(&bytes, 3);
+    assert_eq!(
+        report.outcome,
+        Outcome::Unavailable {
+            reason: "supply parent province identity mismatch"
+        }
+    );
+    assert_eq!(
+        report.refusal,
+        Some(observation(
+            1,
+            3,
+            ProvinceRole::Parent,
+            ProvinceCheck::IdentityMismatch
+        ))
+    );
+    let bytes = train_fixture();
+    let mut memory = TrainMemory::new(&bytes);
+    memory.reject = Some(0x18000 + 3 * 8);
+    let mut nodes = [node::Row::default(); 3];
+    let report = node::walk(&memory, 0, GAME, &mut nodes, &mut [0; 3]);
+    assert_eq!(
+        report.outcome,
+        Outcome::Unavailable {
+            reason: "supply node province slot unreadable"
+        }
+    );
+    assert_eq!(
+        report.refusal,
+        Some(observation(
+            2,
+            3,
+            ProvinceRole::Node,
+            ProvinceCheck::SlotUnreadable
+        ))
+    );
+}
+
+#[test]
 fn node_routes_are_acquired_only_after_the_first_positive_parent() {
     use crate::{supply_node as node, supply_route};
     use std::cell::Cell;
@@ -1295,7 +1468,8 @@ fn train_inputs_reject_bad_identity_map_path_and_reference_without_prefix_succes
     assert_eq!(report.required_paths, 3);
     for (at, value) in [
         (0xa000, 99_u32),
-        (0xa000 + node::PROVINCE, 0),
+        // Province 1's object holds another id.
+        (0x19000 + 0x400 + crate::cprovince::ID, 9),
         (0x6320 + 0x34, u32::MAX),
         (0xe000, 99),
     ] {
@@ -1653,6 +1827,188 @@ fn growing_supply_rows_arenas_and_floating_deployments_cover_5000_country_header
         assert!(captured.access > 0 && captured.runs > 0);
         assert!(access.len() >= captured.access && runs.len() >= captured.runs);
     }
+}
+
+/// A walk of selected countries reads exactly their nodes and inventory, each
+/// equal to the whole walk's: 24 slices by native country id cover a
+/// 5,000-country census once (the daily `supply_trains` family).
+#[test]
+fn selected_supply_walks_partition_a_5000_country_census_by_country() {
+    const COUNTRIES: usize = 5000;
+    const NODES: usize = 2;
+    let mut bytes = census(COUNTRIES as u32 + 1);
+    let slots = COUNTRIES + 1;
+    let countries = 0x3000;
+    let links = countries + slots * 8;
+    let systems = links + slots * 4;
+    let companions = systems + slots * 8;
+    let node_list = GAME + bytes.len();
+    let province_table = node_list + NODES * crate::supply_node::STRIDE;
+    let province = province_table + 16;
+    let empty_parents = province + 0x100;
+    bytes.resize(empty_parents + 24 - GAME, 0);
+    header(
+        &mut bytes,
+        GAME + cgame_state::PROVINCES,
+        province_table,
+        2,
+        2,
+    );
+    put(
+        &mut bytes,
+        province_table + 8,
+        &(province as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        province,
+        &(crate::cprovince::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        province + crate::cprovince::ID,
+        &1_u32.to_le_bytes(),
+    );
+    put(&mut bytes, empty_parents + 12, &[255]);
+    for index in 0..NODES {
+        let node = node_list + index * crate::supply_node::STRIDE;
+        put(&mut bytes, node, &(index as u32).to_le_bytes());
+        put(
+            &mut bytes,
+            node + crate::supply_node::PROVINCE,
+            &1_u32.to_le_bytes(),
+        );
+    }
+    for slot in 1..slots {
+        let companion = companions + slot * supply_companion::STRIDE;
+        header(
+            &mut bytes,
+            companion + supply_companion::NODES,
+            node_list,
+            NODES as u32,
+            NODES as u32,
+        );
+        put(
+            &mut bytes,
+            companion + crate::supply_parent_map::HEADER,
+            &(empty_parents as u64).to_le_bytes(),
+        );
+    }
+    let memory = SliceMemory {
+        base: GAME,
+        bytes: &bytes,
+    };
+    let mut whole_nodes = Vec::new();
+    let mut whole_paths = Vec::new();
+    let mut memo = crate::supply_node::ProvinceMemo::default();
+    memo.begin(&memory, 0, GAME);
+    let whole = crate::supply_node::walk_part_growing(
+        &memory,
+        0,
+        GAME,
+        0,
+        1,
+        &mut whole_nodes,
+        &mut whole_paths,
+        &mut memo,
+    );
+    assert_eq!(
+        whole.outcome,
+        Outcome::Rows {
+            len: COUNTRIES * NODES
+        }
+    );
+    whole_nodes.truncate(COUNTRIES * NODES);
+    // A train row's arena offsets depend on the walk; its read values do not.
+    let inventory = |row: &TrainRow, access: &[u8]| {
+        (
+            row.country,
+            row.node_count,
+            row.entries_len,
+            row.access_count,
+            row.runs_len,
+            access[row.values_start..row.values_start + row.values_len].to_vec(),
+            row.allocated_trucks,
+            row.required_trucks_raw,
+            row.required_trains,
+        )
+    };
+    let (mut trains, mut entries, mut access, mut runs) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let report = walk_trains_growing(
+        &memory,
+        0,
+        GAME,
+        &mut trains,
+        &mut entries,
+        &mut access,
+        &mut runs,
+    );
+    assert_eq!(report.outcome, Outcome::Rows { len: COUNTRIES });
+    let whole_trains: Vec<_> = trains[..COUNTRIES]
+        .iter()
+        .map(|row| inventory(row, &access))
+        .collect();
+    let mut read = vec![0_u32; slots];
+    for slice in 0..24_u32 {
+        let select = |country: u32| country % 24 == slice;
+        let mut nodes = Vec::new();
+        let mut paths = Vec::new();
+        let mut memo = crate::supply_node::ProvinceMemo::default();
+        memo.begin(&memory, 0, GAME);
+        let report = crate::supply_node::walk_part_selected_growing(
+            &memory, 0, GAME, 0, 1, &mut nodes, &mut paths, &mut memo, &select,
+        );
+        let expected: Vec<_> = whole_nodes
+            .iter()
+            .filter(|row| select(row.country))
+            .copied()
+            .collect();
+        assert_eq!(
+            report.outcome,
+            Outcome::Rows {
+                len: expected.len()
+            }
+        );
+        assert_eq!(
+            &nodes[..expected.len()],
+            expected.as_slice(),
+            "slice {slice}"
+        );
+        let (mut trains, mut entries, mut access, mut runs) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let report = walk_trains_selected_growing(
+            &memory,
+            0,
+            GAME,
+            &mut trains,
+            &mut entries,
+            &mut access,
+            &mut runs,
+            &select,
+        );
+        let expected: Vec<_> = whole_trains
+            .iter()
+            .filter(|row| select(row.0))
+            .cloned()
+            .collect();
+        assert_eq!(
+            report.outcome,
+            Outcome::Rows {
+                len: expected.len()
+            }
+        );
+        let actual: Vec<_> = trains[..expected.len()]
+            .iter()
+            .map(|row| inventory(row, &access))
+            .collect();
+        assert_eq!(actual, expected, "slice {slice}");
+        for row in &actual {
+            read[row.0 as usize] += 1;
+        }
+    }
+    // Every country is read in exactly one of the day's slices.
+    assert!(read[1..].iter().all(|&count| count == 1));
 }
 
 #[test]

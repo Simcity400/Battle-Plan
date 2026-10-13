@@ -3,32 +3,6 @@ use crate::combat::binding::NoIcons;
 use replay::rows::{LexicalTokenRow, NavalDamageSource};
 
 #[test]
-fn shared_tree_uses_borrow_the_same_decoded_nodes() {
-    let tree = replay::rows::NavalModifierBreakdownRow {
-        accumulator: 17,
-        key: 0x1b2,
-        uses: [1, 2]
-            .into_iter()
-            .map(|combat| replay::rows::NavalModifierUse {
-                combat,
-                order: combat as u32,
-                ..Default::default()
-            })
-            .collect(),
-        nodes: vec![replay::rows::ModifierBreakdownNode::default()],
-    };
-    let expanded = expanded_trees(std::slice::from_ref(&tree));
-    assert_eq!(expanded.len(), 2);
-    assert!(std::ptr::eq(expanded[0].tree, expanded[1].tree));
-    assert!(std::ptr::eq(expanded[0].use_, &tree.uses[0]));
-    assert!(std::ptr::eq(expanded[1].use_, &tree.uses[1]));
-    assert!(std::ptr::eq(
-        expanded[0].nodes.as_ptr(),
-        tree.nodes.as_ptr()
-    ));
-}
-
-#[test]
 fn flag_damage_summary_includes_naval_bomber_weapon_before_box_categories() {
     let loc: Localisation = [
         ("total_damage_dealt", "Total $NUM|0$;"),
@@ -252,7 +226,7 @@ fn torpedo_hover_reports_damage_history_not_current_attack_counter() {
         original_health: 30_000_000,
         ..Default::default()
     };
-    // the game reads the historical matrix's torpedo column,
+    // The game reads the historical matrix's torpedo column,
     // independently of current active-member attack summary.
     assert_eq!(
         weapon_description(&side, &opponent, 2, None, &NoIcons, &loc).unwrap(),
@@ -310,45 +284,81 @@ fn weapon_damage_summary_includes_piercing_in_native_order() {
     );
 }
 
-#[test]
-fn positioning_hover_has_native_heading_terms_and_low_positioning_consequences() {
-    let loc: Localisation = [
+fn tree_row(
+    kind: replay::naval_trees::Kind,
+    owner: u64,
+    key: u32,
+    value: i64,
+    name: &[u8],
+) -> replay::rows::NavalModifierTreeRow {
+    replay::rows::NavalModifierTreeRow {
+        kind: kind as u8,
+        owner,
+        sub: 0,
+        trees: vec![replay::rows::NavalModifierKeyTree {
+            key,
+            nodes: vec![
+                replay::rows::ModifierBreakdownNode {
+                    children: 1,
+                    value,
+                    name: Vec::new(),
+                },
+                replay::rows::ModifierBreakdownNode {
+                    children: 0,
+                    value,
+                    name: name.to_vec(),
+                },
+            ],
+        }],
+    }
+}
+
+fn positioning_side(country: u32, commander: u64) -> NavalCombatSideDetails {
+    let mut side = NavalCombatSideDetails {
+        commander,
+        ..Default::default()
+    };
+    side.summary.countries = vec![country];
+    side
+}
+
+fn positioning_loc() -> Localisation {
+    let mut loc: Localisation = [
         ("POSITIONING_INFO", "Positioning"),
-        ("MODIFIER_BASE_VALUE_PERCENTAGE", "Base $VALUE$"),
-        ("CONVOY_ESCORT_POSITIONING_BONUS", "Escort $VALUE$"),
-        (
-            "POSITIONING_SURFACE_DETECTION_SUPERIORITY",
-            "Detection $NUM$",
-        ),
-        ("POSITIONING_SHIP_RATIO_PENALTY", "Ship $NUM$"),
-        ("POSITIONING_CARRIER_RATIO_PENALTY", "Carrier $NUM$"),
-        ("POSITIONING_RECENTLY_JOINED_SHIPS", "Recent $NUM$"),
-        ("POSITIONING_PENALTY_INFO", "Penalty"),
-        ("BM_ATTACK_VALUE", "Attack $VALUE$"),
-        ("SCREENING_VALUE", "Screen $NUM$"),
-        ("AA_MODIFIER", "AA $NUM$"),
-        ("STAT_NAVY_SUB_VISIBILITY", "Sub "),
-        ("STAT_NAVY_SUB_VISIBILITY_MOD_DIFF", "$VALUE$"),
+        ("MODIFIER_BASE_VALUE_PERCENTAGE", "Base $VALUE|%0$"),
+        ("POSITIONING_PENALTY_INFO", "Penalties"),
     ]
     .into_iter()
-    .map(|(key, text)| (key.to_owned(), text.to_owned()))
+    .map(|(key, value)| (key.to_owned(), value.to_owned()))
     .collect();
-    let terms = super::super::naval_positioning::Terms {
-        value: 50_000,
-        base: 40_000,
-        escort: 10_000,
-        detection: 20_000,
-        ship_ratio: 10_000,
-        carrier_ratio: 5_000,
-        recent_join: 5_000,
-        early_defender: true,
+    loc.language = "english".into();
+    loc
+}
+
+/// The positioning hover lists the side's country, terrain and commander
+/// trees of key 0x1B2 after the base line, and the opposing commander's 0x5A
+/// tree for an early defender; without recorded trees it refuses by name.
+#[test]
+fn positioning_hovers_list_the_side_sources_and_refuse_without_trees() {
+    use replay::naval_trees::Kind;
+    let detail = replay::rows::NavalCombatDetailsRow {
+        combat: 42,
+        sides: [positioning_side(7, 66), positioning_side(8, 77)],
+        ..Default::default()
     };
+    let rows = [
+        tree_row(Kind::Country, 7, 0x1b2, 10_000, b"Naval doctrine"),
+        tree_row(Kind::Commander, 66, 0x1b2, 5_000, b"Superior tactician"),
+        tree_row(Kind::Commander, 77, 0x5a, -20_000, b"Ambusher"),
+    ];
+    let definitions = [0x1b2, 0x5a].map(|index| replay::rows::ModifierDefinitionRow {
+        index,
+        precision: 2,
+        ..Default::default()
+    });
+    let trees = crate::combat::naval_trees::Sources::from_parts(Ok(&rows), &definitions, "english");
     let defines = installed_content::naval_combat_defines::Defines {
-        summary_fixed: {
-            let mut values = [0; 14];
-            values[7] = 20_000;
-            values
-        },
+        summary_fixed: [0; 14],
         summary_integer: [0; 3],
         silhouette_planes: [0; 6],
         screen_cap_reduction_factor: 0,
@@ -358,180 +368,184 @@ fn positioning_hover_has_native_heading_terms_and_low_positioning_consequences()
         selected_sortie_initial_time: 0,
         piercing_thresholds: vec![],
         piercing_critical_values: vec![],
-        positioning_impacts: [40_000, 60_000, 30_000],
+        positioning_impacts: [0; 3],
     };
-    assert_eq!(
-        positioning_description(
-            terms,
-            "Country +0.03\nWeather -0.01\n",
-            &defines,
-            &NoIcons,
-            &loc
-        )
-        .unwrap(),
-        "Positioning\nBase 0.40\nCountry +0.03\nWeather -0.01\nEscort 0.10\nDetection 0.20\nShip -0.10\nCarrier -0.05\nRecent -0.05\n\nPenalty\nAttack -0.20\nScreen -0.10\nAA -0.30\nSub 0.15\n"
+    let terms = crate::combat::naval_positioning::Terms {
+        value: 100_000,
+        base: 100_000,
+        escort: 0,
+        detection: 0,
+        ship_ratio: 0,
+        carrier_ratio: 0,
+        recent_join: 0,
+        early_defender: true,
+    };
+    let loc = positioning_loc();
+    let mut out = Bindings::default();
+    positioning_hover(
+        &mut out,
+        42,
+        "right",
+        1,
+        &detail,
+        Some(terms),
+        &trees,
+        Some(&defines),
+        &NoIcons,
+        &loc,
     );
-
-    // Percentage substitutions truncate. Content precision 1 shows a fixed5
-    // reveal value of 0.22973 as +22.9%, even beside lines at precision 2.
-    let loc: Localisation = [
-        ("POSITIONING_INFO", "Positioning"),
-        ("POSITIONING_PENALTY_INFO", "Penalty"),
-        ("BM_ATTACK_VALUE", "Attack: $VALUE|+=%$"),
-        ("SCREENING_VALUE", "Screening: $NUM|+%$"),
-        ("AA_MODIFIER", "Anti-Air: $NUM|+%$"),
-        ("STAT_NAVY_SUB_VISIBILITY", "Sub Visibility:"),
-        ("STAT_NAVY_SUB_VISIBILITY_MOD_DIFF", " $VALUE|=-1%$"),
-    ]
-    .into_iter()
-    .map(|(key, text)| (key.to_owned(), text.to_owned()))
-    .collect();
-    let defines = installed_content::naval_combat_defines::Defines {
-        positioning_impacts: [50_000, 70_000, 100_000],
-        summary_fixed: {
-            let mut values = [0; 14];
-            values[7] = 50_000;
-            values
-        },
-        ..defines
-    };
-    for (value, expected) in [
-        (
-            87_850,
-            concat!(
-                "Positioning\n\nPenalty\n",
-                "Attack: \u{11}R-6.07%\u{11}!\n",
-                "Screening: \u{11}R-6.07%\u{11}!\n",
-                "Anti-Air: \u{11}R-8.50%\u{11}!\n",
-                "Sub Visibility: \u{11}R+12.1%\u{11}!\n"
-            ),
-        ),
-        (
-            95_000,
-            concat!(
-                "Positioning\n\nPenalty\n",
-                "Attack: \u{11}R-2.50%\u{11}!\n",
-                "Screening: \u{11}R-2.50%\u{11}!\n",
-                "Anti-Air: \u{11}R-3.50%\u{11}!\n",
-                "Sub Visibility: \u{11}R+5.0%\u{11}!\n"
-            ),
-        ),
-        (
-            77_027,
-            concat!(
-                "Positioning\n\nPenalty\n",
-                "Attack: \u{11}R-11.48%\u{11}!\n",
-                "Screening: \u{11}R-11.48%\u{11}!\n",
-                "Anti-Air: \u{11}R-16.08%\u{11}!\n",
-                "Sub Visibility: \u{11}R+22.9%\u{11}!\n"
-            ),
-        ),
+    assert!(out.refused().is_empty(), "{:?}", out.refused());
+    let tooltip = out.values["header_container/right_wnd/stat_positioning"]
+        .tooltip
+        .clone()
+        .expect("positioning hover");
+    // The defender's own commander (77) supplies 0x1B2 nothing; the opposing
+    // commander (66) supplies nothing for 0x5A, so only these lines print.
+    let text = format!("{tooltip:?}");
+    assert!(text.contains("Positioning"), "{text}");
+    assert!(text.contains("Base"), "{text}");
+    assert!(!text.contains("Naval doctrine"), "{text}");
+    assert!(!text.contains("Superior tactician"), "{text}");
+    let mut out = Bindings::default();
+    positioning_hover(
+        &mut out,
+        42,
+        "left",
+        0,
+        &detail,
+        Some(terms),
+        &trees,
+        Some(&defines),
+        &NoIcons,
+        &loc,
+    );
+    let text = format!(
+        "{:?}",
+        out.values["header_container/left_wnd/stat_positioning"].tooltip
+    );
+    assert!(text.contains("Naval doctrine"), "{text}");
+    assert!(text.contains("Superior tactician"), "{text}");
+    // The attacker's early-defender key reads the defender's commander.
+    assert!(text.contains("Ambusher"), "{text}");
+    let missing = crate::combat::naval_trees::Sources::from_parts(
+        Err("the naval source trees are not available this hour (NavalModifierTrees: not recorded at format 101)".into()),
+        &definitions,
+        "english",
+    );
+    let mut out = Bindings::default();
+    positioning_hover(
+        &mut out,
+        42,
+        "left",
+        0,
+        &detail,
+        Some(terms),
+        &missing,
+        Some(&defines),
+        &NoIcons,
+        &loc,
+    );
+    for key in [
+        "header_container/left_wnd/stat_positioning",
+        "header_container/left_wnd/stat_positioning_bg",
     ] {
-        assert_eq!(
-            positioning_description(
-                super::super::naval_positioning::Terms {
-                    value,
-                    base: 0,
-                    escort: 0,
-                    detection: 0,
-                    ship_ratio: 0,
-                    carrier_ratio: 0,
-                    recent_join: 0,
-                    early_defender: false,
-                },
-                "",
-                &defines,
-                &NoIcons,
-                &loc,
-            )
-            .unwrap(),
-            expected
-        );
+        assert!(out.values[key].hover_owned);
+        assert!(out.values[key].tooltip.is_none());
     }
+    assert!(
+        out.refused()
+            .keys()
+            .all(|reason| reason.contains("NavalModifierTrees")),
+        "{:?}",
+        out.refused()
+    );
 }
 
+/// The screen-box description reaches the country's 0x1B3 lines only on its correction
+/// branch; the carrier box and the other screen-box paths add none.
 #[test]
-fn positioning_hover_reads_captured_side_trees_in_native_source_order() {
-    let tree = |scope, key, name: &str| replay::rows::NavalModifierBreakdownRow {
-        uses: vec![replay::rows::NavalModifierUse {
-            combat: 42,
-            side: 1,
-            battle_slot: u32::MAX,
-            source_scope: scope,
-            ..Default::default()
-        }],
-        key,
-        nodes: vec![
-            replay::rows::ModifierBreakdownNode {
-                children: 1,
-                ..Default::default()
-            },
-            replay::rows::ModifierBreakdownNode {
-                value: 20_000,
-                name: name.as_bytes().to_vec(),
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
+fn screen_box_prefixes_the_country_correction_only_on_its_correction_branch() {
+    use replay::naval_trees::Kind;
+    let screening = |capital, country_bonus_applied| Screening {
+        capital,
+        carrier: 0,
+        country_bonus_applied,
     };
-    let sources = [
-        tree(0, 0x1b2, "Country"),
-        tree(6, 0x1b2, "Weather"),
-        tree(5, 0x1b2, "Sea"),
-        tree(9, 0x1b2, "Admiral"),
-        tree(0, 0x5a, "Early defender"),
-    ];
-    let sources = sources.iter().map(test_tree_use).collect::<Vec<_>>();
-    let definitions = [0x1b2, 0x5a].map(|key| replay::rows::ModifierDefinitionRow {
-        index: key,
+    let census = Census::default();
+    let submarines = Census {
+        eligible_submarines: 1,
+        ..Census::default()
+    };
+    let rows = [tree_row(
+        Kind::Country,
+        7,
+        0x1b3,
+        20_000,
+        b"Screening doctrine",
+    )];
+    let definitions = [replay::rows::ModifierDefinitionRow {
+        index: 0x1b3,
         precision: 2,
         ..Default::default()
-    });
-    let mut loc = Localisation::default();
-    loc.language = "english".into();
+    }];
+    let trees = crate::combat::naval_trees::Sources::from_parts(Ok(&rows), &definitions, "english");
+    let side = positioning_side(7, 66);
+    let empty = NavalCombatSideDetails::default();
+    let opposing = positioning_side(8, 0);
+    let loc = positioning_loc();
+    let correction = |carrier, census: &Census, screening: Screening, side| {
+        country_correction(
+            carrier, census, &screening, 42, side, &opposing, &trees, &NoIcons, &loc,
+        )
+    };
+    // A zero uncorrected result with a country and no eligible submarine,
+    // or an applied country bonus, takes the 0x1B3 branch.
+    for text in [
+        correction(false, &census, screening(0, false), &side).unwrap(),
+        correction(false, &submarines, screening(60_000, true), &side).unwrap(),
+    ] {
+        assert!(text.contains("Screening doctrine"), "{text}");
+        assert!(text.ends_with('\n'), "{text}");
+    }
+    // The carrier box has no correction section; the other screen-box
+    // paths never reach it.
     assert_eq!(
-        positioning_sources(
-            42,
-            1,
+        correction(true, &census, screening(0, false), &side),
+        Ok(String::new())
+    );
+    assert_eq!(
+        correction(false, &census, screening(60_000, false), &side),
+        Ok(String::new())
+    );
+    assert_eq!(
+        correction(false, &submarines, screening(0, false), &side),
+        Ok(String::new())
+    );
+    assert_eq!(
+        correction(false, &census, screening(0, false), &empty),
+        Ok(String::new())
+    );
+    // Without recorded trees the reached branch refuses by name.
+    let missing = crate::combat::naval_trees::Sources::from_parts(
+        Err("NavalModifierTrees not recorded".into()),
+        &definitions,
+        "english",
+    );
+    assert!(
+        country_correction(
             false,
-            &sources,
-            &definitions,
-            "english",
-            &NoIcons,
-            &loc
-        )
-        .unwrap(),
-        concat!(
-            "Country: \u{11}R+0.20\u{11}!\n",
-            "Weather: \u{11}R+0.20\u{11}!\n",
-            "Sea: \u{11}R+0.20\u{11}!\n",
-            "Admiral: \u{11}R+0.20\u{11}!\n"
-        )
-    );
-    assert_eq!(
-        positioning_sources(
+            &census,
+            &screening(0, false),
             42,
-            1,
-            true,
-            &sources,
-            &definitions,
-            "english",
+            &side,
+            &opposing,
+            &missing,
             &NoIcons,
             &loc
         )
-        .unwrap(),
-        concat!(
-            "Country: \u{11}R+0.20\u{11}!\n",
-            "Weather: \u{11}R+0.20\u{11}!\n",
-            "Sea: \u{11}R+0.20\u{11}!\n",
-            "Admiral: \u{11}R+0.20\u{11}!\n",
-            "Early defender: \u{11}R+0.20\u{11}!\n"
-        )
+        .unwrap_err()
+        .contains("NavalModifierTrees")
     );
-}
-
-#[test]
-fn screen_hover_keeps_country_correction_before_the_zero_screens_message() {
     let mut loc: Localisation = [
         ("SCREENING_TOOLTIP_SCREEN_BOX", "Screens $NUM$"),
         ("SCREENING_TOOLTIP_NO_SCREENS", "No screens"),
@@ -540,37 +554,6 @@ fn screen_hover_keeps_country_correction_before_the_zero_screens_message() {
     .map(|(key, value)| (key.to_owned(), value.to_owned()))
     .collect();
     loc.language = "english".into();
-    let correction = ship_modifier_breakdown(
-        &[
-            replay::rows::ModifierBreakdownNode {
-                children: 1,
-                ..Default::default()
-            },
-            replay::rows::ModifierBreakdownNode {
-                value: -10_000,
-                name: b"Country".to_vec(),
-                ..Default::default()
-            },
-        ],
-        &replay::rows::ModifierDefinitionRow {
-            index: 0x1b3,
-            precision: 2,
-            ..Default::default()
-        },
-        super::super::fixed::ONE,
-        "",
-        "english",
-        &NoIcons,
-        &loc,
-        true,
-    )
-    .unwrap();
-    let census = Census::default();
-    let screening = Screening {
-        capital: 0,
-        carrier: 0,
-        country_bonus_applied: false,
-    };
     let defines = installed_content::naval_combat_defines::Defines {
         summary_fixed: [0; 14],
         summary_integer: [0; 3],
@@ -587,10 +570,10 @@ fn screen_hover_keeps_country_correction_before_the_zero_screens_message() {
     assert_eq!(
         screening_description(
             false,
-            &census,
-            &screening,
+            &submarines,
+            &screening(0, false),
             &defines,
-            &correction,
+            "",
             Err("not read".into()),
             Err("not read".into()),
             &NoIcons,
@@ -598,7 +581,7 @@ fn screen_hover_keeps_country_correction_before_the_zero_screens_message() {
         )
         .unwrap()
         .0,
-        "Country: \u{11}G-0.10\u{11}!\nScreens 0.00\n\nNo screens"
+        "Screens 0.00\n\nNo screens"
     );
 }
 

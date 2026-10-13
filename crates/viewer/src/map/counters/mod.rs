@@ -1267,6 +1267,9 @@ pub struct CounterContent {
     pub(crate) comms_max_distance: Result<i32, String>,
     /// Scale each division's fresh dig-in bonus by this content define.
     pub(crate) dig_in_factor: Result<i64, String>,
+    /// The defines and terrain attrition the attrition hover's lines read
+    /// (division attrition calculation).
+    pub(crate) attrition: Result<super::counter_tooltips::attrition::Content, String>,
     /// The native active-ability headquarters communication scalings.
     pub(crate) ability_comms_scaling: Result<Vec<i64>, String>,
     pub(crate) ability_no_hq_scaling: Result<i64, String>,
@@ -1368,6 +1371,8 @@ impl CounterContent {
             region_provinces.insert(id, members);
         }
         let (terrain, default_map) = installed_content::terrain::read(layers)?;
+        let attrition = super::counter_tooltips::attrition::Content::read(defines, &terrain)
+            .map_err(|error| error.to_string());
         let mission_content =
             naval_mission_inputs::Content::read(terrain.clone(), regions, defines)
                 .map_err(|error| error.to_string());
@@ -1415,6 +1420,7 @@ impl CounterContent {
             dig_in_factor: defines
                 .fixed5("NMilitary", "DIG_IN_FACTOR")
                 .map_err(|error| error.to_string()),
+            attrition,
             ability_comms_scaling: defines
                 .fixed5_array("NMilitary", "ABILITY_COMMS_SCALING")
                 .map_err(|error| error.to_string()),
@@ -1849,7 +1855,7 @@ pub struct CounterHover {
     pub authored: Option<super::counter_tooltips::gui_authored::Authored>,
     /// The counter's rectangle, in the interface pixels the hit tests use.
     pub rect: [f32; 4],
-    /// Derived fixed5: the representative's whole route for ours, next province otherwise.
+    /// Estimated fixed5: the representative's whole route for ours, next province otherwise.
     pub remaining: Option<i64>,
     /// Whether the viewing country owns the stack, which picks the wording.
     pub ours: bool,
@@ -1886,7 +1892,7 @@ pub struct CounterReport {
     pub task_force_hovers: Vec<super::counter_tooltips::task_force::Hover>,
     /// Explicitly bound political port-item callback controls.
     pub task_force_port_hovers: Vec<super::counter_tooltips::task_force_port::Hover>,
-    /// Which ETA source this hour used; see [`super::division_eta`].
+    /// This hour's arrival estimates and their refusals; see [`super::division_eta`].
     pub eta: super::division_eta::Report,
     pub land_counters: usize,
     /// Railway-gun plates among [`Self::land_counters`].
@@ -2337,7 +2343,9 @@ impl CounterReport {
         self.task_force_port_hovers
             .clone_from(task_force_port_hovers);
         self.faction_pin_hovers.clone_from(faction_pin_hovers);
-        self.eta = *eta;
+        if self.eta != *eta {
+            self.eta.clone_from(eta);
+        }
         self.land_counters = *land_counters;
         self.railway_guns = *railway_guns;
         self.unavailable_railway_guns = *unavailable_railway_guns;
@@ -2943,7 +2951,7 @@ pub(crate) fn prepare_cached(
     )?;
     naval_missions(inputs, &tables.missions, &mut out)?;
     out.report.perspective = Arc::clone(&tables.vision);
-    out.report.eta = tables.movement.eta;
+    out.report.eta = tables.movement.eta.clone();
     Ok(PreparedCounters {
         fixed: out,
         land: prepared_land,

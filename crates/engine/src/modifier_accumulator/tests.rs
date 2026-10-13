@@ -1001,3 +1001,26 @@ fn snapshot_population_demand_excludes_allocator_spare_capacity() {
         assert_eq!(arena.capacity(), demand);
     }
 }
+
+/// An observation held from an earlier capture serves its address without a
+/// read, and the capture reports it as observed for the next one.
+#[test]
+fn held_observations_serve_their_address_without_reading() {
+    let memory = SnapshotMemory::new(70, None);
+    let capacity = SnapshotCapacity {
+        nodes: 2,
+        entries: 140,
+    };
+    let address = 0x1000 + ccountry::MODIFIER_ACCUMULATOR;
+    let mut first = SnapshotArena::new(capacity);
+    let fresh = first.capture(&memory, 0x1000, 70).unwrap();
+    let held = first.observed(address).unwrap().to_vec();
+    assert_eq!(held.len(), 70);
+    let mut second = SnapshotArena::new(capacity);
+    second.hold(address, &held);
+    let calls = memory.calls.get();
+    let served = second.capture(&memory, 0x1000, 70).unwrap();
+    assert_eq!(second.value(served), first.value(fresh));
+    assert_eq!(memory.calls.get(), calls, "the held address reads nothing");
+    assert_eq!(second.observed(address), Some(&held[..]));
+}

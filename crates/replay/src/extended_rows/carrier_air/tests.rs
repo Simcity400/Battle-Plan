@@ -102,7 +102,7 @@ fn carrier_registration_suffix_keeps_empty_pools_and_independent_signed_fuel() {
         capacity_raw: -100_000,
         wings: vec![u64::MAX - 1, u64::MAX - 1],
         carrier: Recorded::Value(None),
-        transport_planes: Recorded::Value(None),
+        transport_planes: Recorded::Value(Retired),
     };
     let after = AirBaseRegistrationRow {
         carrier: Recorded::Value(Some(inputs.clone())),
@@ -133,63 +133,4 @@ fn carrier_registration_suffix_keeps_empty_pools_and_independent_signed_fuel() {
     };
     assert_ne!(changed, after);
     assert_eq!(changed.delta(Some(&after)).unwrap().unwrap().mask, 1 << 2);
-}
-
-#[test]
-fn transport_planes_use_an_independent_delta_and_preserve_historical_absence() {
-    let previous = AirBaseRegistrationRow {
-        base: u64::MAX,
-        slot: u32::MAX,
-        wings: vec![7, 7],
-        carrier: Recorded::Value(None),
-        transport_planes: Recorded::Value(None),
-        ..Default::default()
-    };
-    let key = previous.key();
-    let after = AirBaseRegistrationRow {
-        transport_planes: Recorded::Value(Some(vec![
-            Some(0),
-            Some(i32::MIN),
-            None,
-            Some(i32::MAX),
-        ])),
-        ..previous.clone()
-    };
-    let delta = after.delta(Some(&previous)).unwrap().unwrap();
-    assert_eq!(delta.mask, 1 << 3);
-    assert_eq!(
-        AirBaseRegistrationRow::apply_delta(&delta, Some(previous)).unwrap(),
-        after
-    );
-    assert_eq!(after.try_clone().unwrap(), after);
-    let mut bytes = Vec::new();
-    after.encode_fields(&mut bytes).unwrap();
-    let mut input = Decoder::new(&bytes);
-    assert_eq!(
-        AirBaseRegistrationRow::decode_fields(key, &mut input).unwrap(),
-        after
-    );
-    input.finish().unwrap();
-    for value in [Recorded::Value(None), Recorded::Value(Some(Vec::new()))] {
-        let changed = AirBaseRegistrationRow {
-            transport_planes: value,
-            ..after.clone()
-        };
-        assert_eq!(changed.delta(Some(&after)).unwrap().unwrap().mask, 1 << 3);
-    }
-    // The pre-political format stops before both owner-row suffixes. Neither
-    // historical absence can be mistaken for a failed original observation.
-    let mut prefix = Decoder::new(&bytes);
-    for kind in &AirBaseRegistrationRow::SCHEMA[..2] {
-        kind.decode(&mut prefix).unwrap();
-    }
-    let length = bytes.len() - prefix.remaining();
-    let mut input = Decoder::new(&bytes[..length]);
-    input.format = crate::FORMAT_VERSION - 1;
-    input.recorded_fields = 2;
-    let historical = AirBaseRegistrationRow::decode_fields(key, &mut input).unwrap();
-    input.finish().unwrap();
-    assert_eq!(historical.carrier, Recorded::NotRecorded);
-    assert_eq!(historical.transport_planes, Recorded::NotRecorded);
-    assert_eq!(historical.not_recorded_fields(), (1 << 2) | (1 << 3));
 }

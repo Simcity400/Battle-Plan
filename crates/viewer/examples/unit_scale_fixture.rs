@@ -166,7 +166,6 @@ fn main() -> io::Result<()> {
     companions!(UnitIntel, unit, division_copies);
     companions!(DivisionEquipment, division, division_copies);
     companions!(NewDivisionEquipment, division, division_copies);
-    companions!(DivisionEtaInputs, division, division_copies);
     companions!(ShipModels, ship, ship_copies);
     companions!(WingEquipment, wing, wing_copies);
     companions!(WingCumulative, id, wing_copies);

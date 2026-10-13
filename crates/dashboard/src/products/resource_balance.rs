@@ -24,7 +24,7 @@
 //! value shown at an hour is as of that hour. Values run over the consecutive
 //! hours of the same country identity and end at a gap, an incomplete table or a
 //! change of identity. The resource names come from `ResourceDefinitions`, read
-//! daily and carried: they are content, fixed once loaded.
+//! every hour with the pools: they are content, fixed once loaded.
 //!
 //! The pools and the deals are captured as separate tables with their own
 //! outcomes, so each keeps its own values: an hour whose deal table is missing

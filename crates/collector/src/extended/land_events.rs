@@ -556,7 +556,7 @@ mod tests {
     }
     #[test]
     fn land_event_buffers_grow_past_the_former_cap_and_publish_the_overflow_gap() {
-        let _guard = test_support::EXCLUSIVE.lock().unwrap();
+        let _guard = test_support::own();
         test_support::reset_with_words(0);
         let mut capacities = Capacities::default();
         let mut captured = Captured::with_capacities(&capacities);
@@ -612,7 +612,7 @@ mod tests {
     }
     #[test]
     fn refresh_full_read_keeps_actual_land_drain_epoch_and_events() {
-        let _guard = test_support::EXCLUSIVE.lock().unwrap();
+        let _guard = test_support::own();
         test_support::reset();
         let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
         let mut encoder = replay::frame::FrameEncoder::new();
@@ -663,7 +663,7 @@ mod tests {
     }
     #[test]
     fn actual_land_drain_load_and_gap_invalidate_but_next_hour_recovers() {
-        let _guard = test_support::EXCLUSIVE.lock().unwrap();
+        let _guard = test_support::own();
         test_support::reset();
         let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
         captured.drain(10, true);
@@ -696,7 +696,7 @@ mod tests {
     }
     #[test]
     fn unpublished_actual_land_drain_cannot_be_covered_by_the_next_frame() {
-        let _guard = test_support::EXCLUSIVE.lock().unwrap();
+        let _guard = test_support::own();
         test_support::reset();
         let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
         let mut encoder = replay::frame::FrameEncoder::new();
@@ -786,7 +786,7 @@ mod tests {
     }
     #[test]
     fn terminal_loss_log_overflow_counts_a_gap_without_partial_casualties() {
-        let _guard = test_support::EXCLUSIVE.lock().unwrap();
+        let _guard = test_support::own();
         test_support::reset_with_words(8);
         let mut c = Captured::with_capacities(&Capacities { words: 32 });
         c.drain(10, true);

@@ -150,6 +150,9 @@ pub struct RaidAssets {
     regions: BTreeMap<u32, u32>,
     /// Each template's provinces in native order, including repeated entries.
     region_provinces: BTreeMap<u32, Vec<u32>>,
+    /// The `NGraphics` defines of the province day/night clocks, or why they
+    /// are unread (reported once in [`Self::warnings`]).
+    day_night: Result<replay::day_night::Defines, String>,
     /// The combat assets' already loaded sub-unit database. Transport labels
     /// join authenticated pool indices to this recorded content stack.
     pub(crate) transport_sub_units: Result<installed_content::unit_leader::SubUnits, String>,
@@ -184,23 +187,10 @@ pub struct RaidAssets {
     /// unread.
     pub(crate) script_constants: Result<installed_content::script_constants::Constants, String>,
     pub defines: RaidDefines,
-    pub(crate) transport_exposure:
-        Result<installed_content::unit_path::selected_transport_risk::ExposureDefines, String>,
-    pub(crate) transport_spotting: Result<replay::transport_spotting_graph::Defines, String>,
-    pub(crate) transport_air_defines: Result<replay::transport_spotting_graph::AirDefines, String>,
-    pub(crate) transport_air_factors: Result<Vec<i64>, String>,
-    pub(crate) transport_air_disruption:
-        Result<replay::transport_spotting_graph::DisruptionDefines, String>,
-    pub(crate) transport_air_normalization:
-        Result<replay::transport_air_normalization::Defines, String>,
-    pub(crate) transport_damage: Result<replay::transport_damage_graph::Defines, String>,
-    pub(crate) transport_detection: Result<replay::transport_spotting::Defines, String>,
-    pub(crate) transport_chance:
-        Result<installed_content::unit_path::selected_transport_risk::ChanceDefines, String>,
     pub warnings: Vec<installed_content::Diagnostic>,
 }
 crate::corpus::values::debug_fields!(RaidAssets(this) {
-    glyphs, catalog, triggers, tag_aliases, tooltip, priority, buildings, dlcs, state_provinces, impassable, neighbor_states, terrain, resource_bonuses, geometry, paths, batch, regions, region_provinces, transport_sub_units, combat_minimum_time, naval_combat_min_duration, avoid_enemy, sites, refused_sites, equipment, equipment_groups, equipment_lost, leader_roles, invasion_prepare_days, script_constants, defines, transport_exposure, transport_spotting, transport_air_defines, transport_air_factors, transport_air_disruption, transport_air_normalization, transport_damage, transport_detection, transport_chance, warnings
+    glyphs, catalog, triggers, tag_aliases, tooltip, priority, buildings, dlcs, state_provinces, impassable, neighbor_states, terrain, resource_bonuses, geometry, paths, batch, regions, region_provinces, day_night, transport_sub_units, combat_minimum_time, naval_combat_min_duration, avoid_enemy, sites, refused_sites, equipment, equipment_groups, equipment_lost, leader_roles, invasion_prepare_days, script_constants, defines, warnings
 } {
     moves => this.moves.as_ref().map(|graph| graph.debug_values())
 });
@@ -474,11 +464,21 @@ impl RaidAssets {
             )));
         }
         let mut regions = BTreeMap::new();
-        let region_provinces: BTreeMap<_, _> = installed_content::regions::read(layers)?
-            .regions
+        let database = installed_content::regions::read(layers)?.regions;
+        let region_provinces: BTreeMap<_, _> = database
             .into_iter()
             .map(|(id, region)| (id, region.provinces))
             .collect();
+        let day_night = replay::day_night::Defines::read(
+            |group, name| defines.int32(group, name),
+            |group, name| defines.fixed5(group, name),
+        )
+        .map_err(|error| error.to_string());
+        if let Err(error) = &day_night {
+            warnings.push((installed_content::DiagnosticKind::Refused, format!(
+                "The day/night defines cannot be read ({error}); province clocks the game updated hourly are unknown."
+            )));
+        }
         for (&id, provinces) in &region_provinces {
             for &province in provinces {
                 if regions
@@ -520,6 +520,7 @@ impl RaidAssets {
             source_distances: Default::default(),
             regions,
             region_provinces,
+            day_night,
             transport_sub_units: Err("the shared sub-unit database is not loaded".into()),
             combat_minimum_time: defines.int32("NMilitary", "COMBAT_MINIMUM_TIME")?,
             naval_combat_min_duration: defines
@@ -555,25 +556,6 @@ impl RaidAssets {
             script_constants: installed_content::script_constants::read(layers)
                 .map_err(|error| error.to_string()),
             defines: RaidDefines::read(defines)?,
-            transport_exposure: installed_content::unit_path::selected_transport_risk::ExposureDefines::read(defines)
-                .map_err(|error| error.to_string()),
-            transport_spotting: replay::transport_spotting_graph::Defines::read(|group, name| defines.fixed5(group, name))
-                .map_err(|error| error.to_string()),
-            transport_air_defines: replay::transport_spotting_graph::AirDefines::read(
-                |group, name| defines.fixed5(group, name), |group, name| defines.int32(group, name))
-                .map_err(|error| error.to_string()),
-            transport_air_factors: defines.fixed5_array("NNavy", "AIR_MISSION_SPOTTING_FACTORS")
-                .map_err(|error| error.to_string()),
-            transport_air_disruption: replay::transport_spotting_graph::DisruptionDefines::read(
-                |group, name| defines.fixed5(group, name)).map_err(|error| error.to_string()),
-            transport_air_normalization: replay::transport_air_normalization::Defines::read(
-                |group, name| defines.fixed5(group, name)).map_err(|error| error.to_string()),
-            transport_damage: replay::transport_damage_graph::Defines::read(|group, name| defines.fixed5(group, name))
-                .map_err(|error| error.to_string()),
-            transport_detection: replay::transport_spotting::Defines::read(|group, name| defines.fixed5(group, name))
-                .map_err(|error| error.to_string()),
-            transport_chance: installed_content::unit_path::selected_transport_risk::ChanceDefines::read(defines)
-                .map_err(|error| error.to_string()),
             warnings,
         })
     }
@@ -597,7 +579,32 @@ impl RaidAssets {
             .ok_or_else(|| format!("province {province} has no recorded-content strategic region"))
     }
 
-    /// Content topology shared with naval mission admission.
+    /// The day/night clock written into `province`'s record at date `hour`,
+    /// from its day/night geometry constants.
+    pub(crate) fn updated_clock(
+        &self,
+        province: u32,
+        hour: i32,
+    ) -> Result<replay::day_night::Clock, &'static str> {
+        let defines = self
+            .day_night
+            .as_ref()
+            .map_err(|_| "day/night defines unread from the recorded content")?;
+        let centroid = self
+            .geometry
+            .centroids
+            .get(&province)
+            .ok_or("province has no recorded-content centroid for its day/night clock")?;
+        let operands = replay::day_night::HourOperands::new(hour, defines)?;
+        Ok(replay::day_night::ProvinceClock::new(
+            *centroid,
+            [self.geometry.width, self.geometry.height],
+            defines,
+        )
+        .update(&operands))
+    }
+
+    /// Content topology shared with the game's naval mission admission.
     pub(crate) fn mission_topology(
         &self,
     ) -> Result<(&installed_content::province_graph::ProvinceGraph, &ProvinceGeometry), String> {

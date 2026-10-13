@@ -44,7 +44,7 @@ fn fixture_name(value: TemplateNameValue) -> (DecodedFrame, Save) {
                 template,
                 country: 102,
                 display_name: Recorded::Value(Some(TemplateDisplayName {
-                    sample_hour: 77,
+                    sample_hour: replay::rows::PacketHour::Stamped(77),
                     value,
                 })),
                 ..Default::default()
@@ -163,7 +163,7 @@ fn current_name_refusal_and_stale_sample_fail_saved_operand_acceptance() {
             .any(|field| field.contains("display_name"))
     );
     row.display_name = Recorded::Value(Some(TemplateDisplayName {
-        sample_hour: frame.hour - 1,
+        sample_hour: replay::rows::PacketHour::Stamped(frame.hour - 1),
         value: TemplateNameValue::Changed {
             literal: b"New".to_vec(),
             fallback_key: None,
@@ -190,7 +190,7 @@ fn missing_same_frame_certificate_and_malformed_demand_fail_saved_comparison() {
     assert!(report_name(&frame, &saved).outcome().is_err());
     let mut row = frame.complete::<tables::DivisionTemplateIcons>().unwrap()[0].clone();
     row.display_name = Recorded::Value(Some(TemplateDisplayName {
-        sample_hour: frame.hour,
+        sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
         value: TemplateNameValue::Changed {
             literal: b"New".to_vec(),
             fallback_key: Some(b"inactive".to_vec()),

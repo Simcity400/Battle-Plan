@@ -36,7 +36,6 @@ fn daily_aces_are_excluded_from_hourly_memo_inputs_and_outputs() {
                 game_state: kit::GAME_STATE,
                 hour,
                 force_full: false,
-                transport_admission: Default::default(),
             },
             &mut job,
         );
@@ -100,12 +99,11 @@ fn context(seq: u64) -> AirBasesMemoContext {
 
 fn parts(cap: [usize; 5]) -> (Captured, super::super::fog::Captured) {
     let mut air = Captured::with_capacities(&Capacities {
-        rows: [0, cap[0], 0, 0, 0, cap[1], 0, 4096, 1024, 64, 0],
+        rows: [0, cap[0], 0, cap[1], 0, 4096, 1024, 64, 0],
         ace_names: cap[2],
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
-        transport: [0; 5],
     });
     let mut fog = super::super::fog::Captured::with_capacities(&super::super::fog::Capacities {
         rows: [0, 0, 0, 0, 0, cap[3], 0],

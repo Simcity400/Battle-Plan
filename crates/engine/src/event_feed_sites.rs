@@ -57,7 +57,7 @@ pub enum Source {
 
 /// Preserve the source reference independently of its resolved full native
 /// CCountry ID (+8/+C). The second word is not a generation counter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CountryIdentity {
     pub reference: u32,
     pub id: u32,
@@ -135,7 +135,8 @@ fn state(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
     Ok(state)
 }
 
-fn identity(
+/// The country a raw reference resolves to with its full native ID.
+pub fn identity(
     memory: &impl Memory,
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
@@ -425,6 +426,8 @@ pub fn annex_before(
         target,
     })
 }
+
+pub mod provenance;
 
 #[cfg(test)]
 mod tests;

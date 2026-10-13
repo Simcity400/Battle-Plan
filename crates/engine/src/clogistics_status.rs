@@ -721,6 +721,14 @@ pub const BALANCE_CALLS: [(usize, [u8; 16], usize); 2] = [
     ),
 ];
 
+/// Whether the loop-history value setter stores at all: it writes
+/// `values[index]` only when the signed index is below the signed count at
+/// record+0xC, and returns otherwise. `None` when the count is unreadable.
+pub fn balance_write_stores(memory: &impl Memory, record: usize, archetype: u32) -> Option<bool> {
+    let count = read::<i32>(memory, record.checked_add(0xc)?)?;
+    Some((archetype as i32) < count)
+}
+
 /// Validates the native signed-index store's record identity before the call.
 pub fn balance_identity(
     memory: &impl Memory,

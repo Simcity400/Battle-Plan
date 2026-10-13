@@ -35,16 +35,19 @@ regions={0={region=0 temperature=-90071992547.40993
             permanent_snow: 4_000_000,
             display_snow: 128,
             display_mud: 255,
-            temperature: replay::rows::Recorded::Value(100_000),
+            temperature: replay::rows::ProvinceTemperature::historical(100_000),
             raw_mud: replay::rows::Recorded::Value(7),
-            local_hour: replay::rows::Recorded::Value(0),
-            night_factor: replay::rows::Recorded::Value(100_000),
+            clock: replay::rows::DayNightClock::held(replay::day_night::Clock {
+                local_hour: 0,
+                night_factor: 100_000,
+            }),
             display: replay::rows::Recorded::Value(Some(replay::rows::WeatherDisplay {
                 width: 1,
                 height: 1,
                 edges: vec![2, 3],
                 ..Default::default()
             })),
+            temperature_pass: replay::rows::Recorded::NotRecorded,
         }]));
     *frame.tables[TableId::WeatherRegions.index()] =
         TableView::Complete(TableRows::WeatherRegions(vec![WeatherRegionRow {
@@ -53,12 +56,12 @@ regions={0={region=0 temperature=-90071992547.40993
             ..Default::default()
         }]));
     let mut report = Report::default();
-    compare(&frame, &saved, &mut report).unwrap();
+    compare(&frame, &saved, Err("unused".into()), &mut report).unwrap();
     assert!(report.differences.is_empty());
     assert_eq!(report.scalar_checks, 2);
     assert_eq!(report.limitations.len(), 5);
     assert!(report.limitations.contains_key(
-        "the weather manager writer omits the stored day/night array; these simulation values require a matched native read witness"
+        "the weather manager writer omits the stored day/night array; held clocks require a matched native read witness, and updated clocks are the hour's derivation from content (`recorder derived` compares it with recorded clocks)"
     ));
 
     // Historical absence withholds temperature/mud comparisons and identifies
@@ -67,14 +70,13 @@ regions={0={region=0 temperature=-90071992547.40993
     if let TableView::Complete(TableRows::WeatherProvinces(rows)) =
         &mut *frame.tables[TableId::WeatherProvinces.index()]
     {
-        rows[0].temperature = replay::rows::Recorded::NotRecorded;
+        rows[0].temperature = replay::rows::ProvinceTemperature::NOT_RECORDED;
         rows[0].raw_mud = replay::rows::Recorded::NotRecorded;
-        rows[0].local_hour = replay::rows::Recorded::NotRecorded;
-        rows[0].night_factor = replay::rows::Recorded::NotRecorded;
+        rows[0].clock = replay::rows::DayNightClock::NOT_RECORDED;
         rows[0].display = replay::rows::Recorded::NotRecorded;
     }
     let mut old = Report::default();
-    compare(&frame, &saved, &mut old).unwrap();
+    compare(&frame, &saved, Err("unused".into()), &mut old).unwrap();
     assert!(old.differences.is_empty());
     assert_eq!(old.scalar_checks, 1); // snow remains compared
     assert_eq!(
@@ -86,11 +88,7 @@ regions={0={region=0 temperature=-90071992547.40993
         1
     );
     assert_eq!(
-        old.limitations["WeatherProvinces.local_hour not recorded"].len(),
-        1
-    );
-    assert_eq!(
-        old.limitations["WeatherProvinces.night_factor not recorded"].len(),
+        old.limitations["WeatherProvinces.clock not recorded"].len(),
         1
     );
     assert_eq!(
@@ -115,7 +113,7 @@ regions={0={region=0 temperature=-90071992547.40993
             }
         };
         let mut report = Report::default();
-        assert!(compare(&frame, &saved, &mut report).is_err());
+        assert!(compare(&frame, &saved, Err("unused".into()), &mut report).is_err());
         assert!(report.differences.is_empty());
         assert_eq!(report.scalar_checks, scalar_checks);
         assert_eq!(report.failed_comparisons.len(), 1);
@@ -132,7 +130,7 @@ regions={0={region=0 temperature=-90071992547.40993
     };
     rows[0].snow -= 1;
     let mut report = Report::default();
-    compare(&frame, &saved, &mut report).unwrap();
+    compare(&frame, &saved, Err("unused".into()), &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
 
     let TableView::Complete(TableRows::WeatherProvinces(rows)) =
@@ -140,13 +138,10 @@ regions={0={region=0 temperature=-90071992547.40993
     else {
         unreachable!();
     };
-    *rows[0]
-        .temperature
-        .require_mut("WeatherProvinces.temperature")
-        .unwrap() -= 1;
+    rows[0].temperature = replay::rows::ProvinceTemperature::historical(99_999);
     rows[0].raw_mud = replay::rows::Recorded::Value(0);
     let mut report = Report::default();
-    compare(&frame, &saved, &mut report).unwrap();
+    compare(&frame, &saved, Err("unused".into()), &mut report).unwrap();
     assert_eq!(report.differences.len(), 3);
     for field in ["snow", "temperature", "mud"] {
         assert!(
@@ -163,23 +158,23 @@ regions={0={region=0 temperature=-90071992547.40993
         unreachable!();
     };
     rows[0].snow += 1;
-    rows[0].temperature = replay::rows::Recorded::Value(0);
+    rows[0].temperature = replay::rows::ProvinceTemperature::historical(0);
     rows[0].raw_mud = replay::rows::Recorded::Value(7);
     let expected = &mut saved.weather.provinces.as_mut().unwrap()[0];
     expected.temperature = Some(Decimal::parse(b"0").unwrap());
     let mut report = Report::default();
-    compare(&frame, &saved, &mut report).unwrap();
+    compare(&frame, &saved, Err("unused".into()), &mut report).unwrap();
     assert!(report.differences.is_empty());
     saved.weather.provinces.as_mut().unwrap()[0].temperature = None;
     let mut report = Report::default();
-    compare(&frame, &saved, &mut report).unwrap();
+    compare(&frame, &saved, Err("unused".into()), &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("province 0.temperature"));
 
     *frame.tables[TableId::WeatherRegions.index()] = TableView::Unavailable {
         reason: "region read failed".into(),
     };
-    assert!(compare(&frame, &saved, &mut Report::default()).is_err());
+    assert!(compare(&frame, &saved, Err("unused".into()), &mut Report::default()).is_err());
 }
 
 #[test]
@@ -203,4 +198,89 @@ fn weather_dense_census_includes_zero_and_rejects_duplicates_or_holes() {
     assert!(dense_slot(0, 1, "weather").is_err());
     assert!(dense_slot(1, 0, "weather").is_err());
     assert!(dense_slot(1, 2, "weather").is_err());
+}
+
+#[test]
+fn anchored_temperatures_compare_their_derivation_and_refuse_without_one() {
+    let saved = installed_content::save::parse(
+        br#"HOI4txt
+date=1936.1.1.1 game_unique_id=campaign game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 version=build
+countries={} states={} provinces={}
+weather={
+provinces={0={province=0 snow=0 temperature=1}}
+regions={0={region=0}}
+}"#,
+    )
+    .unwrap();
+    let hour = saved.date.engine_hour().unwrap();
+    let state = replay::temperature::State {
+        temperature: 100_000,
+        ..Default::default()
+    };
+    let pass = |checksum| replay::rows::TemperaturePass {
+        anchor: hour,
+        checksum,
+        ..Default::default()
+    };
+    let frame = |pass| {
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|_| TableView::Unavailable {
+                reason: "outside weather comparison".into(),
+            })
+            .map(Into::into),
+        };
+        *frame.tables[TableId::WeatherProvinces.index()] =
+            TableView::Complete(TableRows::WeatherProvinces(vec![WeatherProvinceRow {
+                temperature: replay::rows::ProvinceTemperature::anchored(state),
+                raw_mud: replay::rows::Recorded::Value(0),
+                temperature_pass: replay::rows::Recorded::Value(pass),
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::WeatherRegions.index()] =
+            TableView::Complete(TableRows::WeatherRegions(vec![WeatherRegionRow::default()]));
+        frame
+    };
+    let content = replay::temperature::Content {
+        provinces: vec![replay::temperature::Province {
+            active: false,
+            neighbours: Vec::new(),
+            region: None,
+            terrain: Ok(None),
+        }],
+        ..Default::default()
+    };
+    let checksum = replay::temperature::checksum([100_000]);
+    let mut report = Report::default();
+    compare(
+        &frame(Some(pass(checksum))),
+        &saved,
+        Ok(&content),
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.scalar_checks, 2);
+    // A refused derivation compares nothing, once, by name.
+    let mut report = Report::default();
+    compare(
+        &frame(Some(pass(checksum ^ 1))),
+        &saved,
+        Ok(&content),
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty());
+    assert_eq!(report.scalar_checks, 1);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("temperature refused") && reason.contains("checksum"))
+    );
+    let mut report = Report::default();
+    compare(&frame(None), &saved, Ok(&content), &mut report).unwrap();
+    assert_eq!(report.scalar_checks, 1);
 }

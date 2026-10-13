@@ -4,6 +4,7 @@ use super::daily_intel::{Home, Loan, Walk};
 use crate::{
     raw::RawLog,
     read_accounting,
+    sampled_verify::Check,
     sampling::qpc,
     slicing::{SliceFingerprints, SliceSelection},
     spooling::{table, unavailable},
@@ -99,6 +100,10 @@ impl OperativeRefusals {
 }
 
 static OPERATIVE_REFUSALS: OperativeRefusals = OperativeRefusals::new();
+/// The intel network write count
+/// ([`crate::country_input_changes::intel_network_writes`]) the last
+/// complete IntelNetworks read saw.
+static NETWORK_RESETS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn operative_capture_diagnostics() -> impl serde::Serialize {
     OPERATIVE_REFUSALS.diagnostics()
@@ -142,6 +147,10 @@ fn operative_storage_outcome(outcome: Outcome, refused: u32) -> Outcome {
 
 mod demand;
 pub(crate) use demand::status as demand_status;
+mod flag_store;
+pub(crate) use flag_store::{FlagReuse, FlagStore};
+mod variable_store;
+pub(crate) use variable_store::{VariableReuse, VariableStore};
 
 pub const N: usize = 18;
 pub const TABLES: [TableId; N] = [
@@ -612,6 +621,21 @@ impl Captured {
         self.country_intel = Loan::new(home.clone());
     }
 
+    /// Hold this frame's CountryIntel loan across a reset off the game
+    /// thread: its buffer goes home only at [`Self::release_country_intel`].
+    pub(crate) fn take_country_intel_loan(&mut self) -> Loan {
+        std::mem::take(&mut self.country_intel)
+    }
+
+    pub(crate) fn restore_country_intel_loan(&mut self, loan: Loan) {
+        self.country_intel = loan;
+    }
+
+    /// Return the CountryIntel buffer this frame borrowed to the shared home.
+    pub(crate) fn release_country_intel(&mut self) {
+        self.country_intel.release();
+    }
+
     fn build(capacity: &Capacities, country_intel: Loan) -> Self {
         Self {
             capitulation: CaptureRows::new(capacity.rows[0]),
@@ -908,18 +932,24 @@ impl Captured {
             },
             true,
             true,
+            None,
+            None,
         );
         report.ticks
     }
 
     /// Acquire the scheduled tables whose buffers belong to this request. The
     /// independently delegated capitulation and relations slots remain intact.
+    /// `flags` carries ScriptFlags rows of untouched managers, `variables`
+    /// ScriptVariables rows of untouched stores.
     pub(crate) fn capture_residual(
         &mut self,
         memory: &impl Memory,
         context: CaptureContext,
+        flags: Option<&mut FlagStore>,
+        variables: Option<&mut VariableStore>,
     ) -> CaptureReport {
-        self.capture_tables(memory, context, true, false)
+        self.capture_tables(memory, context, true, false, flags, variables)
     }
 
     /// Complete only the independently delegated slots after residual capture
@@ -929,7 +959,7 @@ impl Captured {
         memory: &impl Memory,
         context: CaptureContext,
     ) -> CaptureReport {
-        self.capture_tables(memory, context, false, true)
+        self.capture_tables(memory, context, false, true, None, None)
     }
 
     /// A final worker failure preserves independently staged raw tables.
@@ -1007,6 +1037,8 @@ impl Captured {
         context: CaptureContext,
         include_residual: bool,
         include_delegated: bool,
+        flags: Option<&mut FlagStore>,
+        variables: Option<&mut VariableStore>,
     ) -> CaptureReport {
         if include_delegated {
             self.capitulation.reset();
@@ -1023,6 +1055,17 @@ impl Captured {
             force_full,
         } = context;
         let mut active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
+        // The daily intelligence step writes every network. Outside it,
+        // country dynamic reuse destroys that country's networks through
+        // the strategic operative reset, and the console's intel network
+        // growth command sets local strengths. An hour after either, or
+        // with them unobserved, reads the table again.
+        let resets = crate::country_input_changes::intel_network_writes();
+        if include_residual
+            && resets != Some(NETWORK_RESETS.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            active[6] = true;
+        }
         if self.relations_raw_mode {
             active[13] = self.relation_active[0];
             active[14] = self.relation_active[1];
@@ -1175,25 +1218,77 @@ impl Captured {
             );
             plain!(5, cryptology, ccryptology::walk_growing);
             plain!(6, networks, ccountry_intel_network::walk_growing);
+            if let (Some(resets), Outcome::Rows { .. }) = (resets, self.networks.outcome) {
+                NETWORK_RESETS.store(resets, std::sync::atomic::Ordering::SeqCst);
+            }
             if active[7] {
                 let begin = qpc();
                 capture_rows(&mut self.flags, |rows| {
                     let _reads = read_accounting::table(TABLES[7]);
-                    walk_flags_growing(memory, base, state, rows, &mut self.flag_scratch)
+                    let reuse = flags.map(|store| {
+                        FlagReuse::begin(
+                            store,
+                            &crate::flag_changes::Observer,
+                            Check::burned_in(hour, crate::flag_changes::VERIFY),
+                        )
+                    });
+                    walk_flags_growing(memory, base, state, rows, &mut self.flag_scratch, reuse)
                 });
                 ticks[7] = elapsed(begin);
             }
             if active[8] {
                 let begin = qpc();
+                let mut reuse = variables.map(|store| {
+                    VariableReuse::begin(
+                        store,
+                        &crate::variable_changes::Observer,
+                        Check::burned_in(hour, crate::variable_changes::VERIFY),
+                    )
+                });
                 capture_variables(
                     &mut self.variables,
                     &mut self.variable_entries,
                     &mut self.variable_names,
                     |scopes, entries, names| {
                         let _reads = read_accounting::table(TABLES[8]);
-                        cvariables::walk_scopes_growing(memory, base, state, scopes, entries, names)
+                        // A quiet hour publishes the held walk, reading only
+                        // the stores it must.
+                        if let Some(reuse) = reuse.as_mut()
+                            && let Some(walk) =
+                                reuse.quiet_hour(memory, base, state, scopes, entries, names)
+                        {
+                            return walk;
+                        }
+                        let (scopes, entries, names) = (
+                            engine::walk::Buffer::Growing(scopes),
+                            engine::walk::Buffer::Growing(entries),
+                            engine::walk::Buffer::Growing(names),
+                        );
+                        match reuse.as_mut() {
+                            Some(reuse) => cvariables::walk_scopes_carried(
+                                memory, base, state, scopes, entries, names, reuse,
+                            ),
+                            None => cvariables::walk_scopes_buffer(
+                                memory, base, state, scopes, entries, names,
+                            ),
+                        }
                     },
                 );
+                // Rows outside the captured arenas certify nothing either.
+                if let Some(reuse) = reuse {
+                    let complete = matches!(self.variables.outcome, Outcome::Rows { .. });
+                    let len = self.variables.outcome.len();
+                    if complete {
+                        reuse.finish(
+                            true,
+                            &self.variables.rows[..len],
+                            &self.variable_entries.first[..self.variable_entries.len],
+                            &self.variable_names.first[..self.variable_names.len],
+                        );
+                    } else {
+                        reuse.finish(false, &[], &[], &[]);
+                    }
+                }
                 ticks[8] = elapsed(begin);
             }
             if active[9] {
@@ -1408,10 +1503,7 @@ impl Captured {
                     country: r.country,
                     capitulated: r.capitulated,
                     capitulated_hour: r.capitulated_hour,
-                    last_surrender_hour: r.last_surrender_hour,
-                    faction_join_hour: r.faction_join_hour,
-                    legitimacy_raw: r.legitimacy_raw,
-                    exile_army_leaders: r.exile_army_leaders,
+                    ..Default::default()
                 },
             )),
             sample(self.subjects_table(outcomes[1])),
@@ -2112,15 +2204,19 @@ fn walk_flags(
         state,
         engine::walk::Buffer::Fixed(output),
         engine::walk::Buffer::Fixed(scratch),
+        None,
     )
 }
 
+/// `reuse` carries the rows of managers no hooked writer touched since the
+/// held read ([`flag_store`]); without it every manager is read.
 fn walk_flags_growing(
     memory: &impl Memory,
     base: usize,
     state: usize,
     output: &mut Vec<ScopedFlag>,
     scratch: &mut Vec<cscript_flag::Row>,
+    reuse: Option<FlagReuse<'_>>,
 ) -> Outcome {
     walk_flags_buffer(
         memory,
@@ -2128,6 +2224,7 @@ fn walk_flags_growing(
         state,
         engine::walk::Buffer::Growing(output),
         engine::walk::Buffer::Growing(scratch),
+        reuse,
     )
 }
 
@@ -2137,9 +2234,18 @@ fn walk_flags_buffer(
     state: usize,
     mut output: engine::walk::Buffer<'_, ScopedFlag>,
     mut scratch: engine::walk::Buffer<'_, cscript_flag::Row>,
+    mut reuse: Option<FlagReuse<'_>>,
 ) -> Outcome {
+    // A quiet hour publishes the held rows without walking any scope.
+    if let Some(reuse) = reuse.as_mut()
+        && let Some(outcome) = reuse.quiet_hour(memory, base, state, &mut output, |held| {
+            same_countries(memory, base, state, held)
+        })
+    {
+        return outcome;
+    }
     let result = (|| {
-        let mut len = 0;
+        let mut len = 0_usize;
         let mut unread = 0_u32;
         let root = |root, offset| -> Result<usize, &'static str> {
             let manager = pointer(memory, root, offset)?;
@@ -2148,10 +2254,51 @@ fn walk_flags_buffer(
             }
             Ok(manager)
         };
-        let mut scope = |kind, id, manager| -> Result<(), &'static str> {
+        // A character's manager header arrives copied with its identity
+        // (`gathered`); another scope's is read from its manager when the
+        // scope is read afresh, so a carried scope reads neither.
+        // A country scope names its country, which the held walk lists.
+        let mut scope = |kind,
+                         id,
+                         manager: usize,
+                         gathered: Option<Option<[u8; cflag_manager::HEADER]>>,
+                         country: Option<usize>|
+         -> Result<(), &'static str> {
+            if let (Some(reuse), Some(country)) = (reuse.as_mut(), country) {
+                reuse.country(country, id);
+            }
+            let plan = reuse.as_mut().map(|reuse| {
+                let verify = reuse.check.covers(flag_store::key(kind, id));
+                reuse.plan(verify, kind, id, manager)
+            });
+            if let (Some(reuse), Some(plan)) = (reuse.as_mut(), plan.as_ref())
+                && let Some(rows) = plan.carry_rows()
+            {
+                let end = len
+                    .checked_add(rows)
+                    .ok_or("scoped flag row demand overflow")?;
+                let room = if output.is_growing() {
+                    output.ensure(end)?;
+                    true
+                } else {
+                    rows <= (output.len() - len).min(scratch.len())
+                };
+                if room {
+                    for flag in reuse.carry(plan) {
+                        output[len] = ScopedFlag {
+                            scope_kind: kind,
+                            scope_id: id,
+                            flag: *flag,
+                        };
+                        len += 1;
+                    }
+                    return Ok(());
+                }
+            }
+            let head = gathered.unwrap_or_else(|| cflag_manager::read_header(memory, manager));
             let available = (output.len() - len).min(scratch.len());
             let outcome = if output.is_growing() {
-                let read = cflag_manager::walk_buffer(memory, base, manager, scratch.suffix(0));
+                let read = cflag_manager::walk_header_buffer(memory, base, head, scratch.suffix(0));
                 output.ensure(
                     len.checked_add(read.len())
                         .ok_or("scoped flag row demand overflow")?,
@@ -2159,10 +2306,18 @@ fn walk_flags_buffer(
                 read
             } else {
                 bounded(
-                    cflag_manager::walk(memory, base, manager, &mut scratch[..available]),
+                    cflag_manager::walk_header_buffer(
+                        memory,
+                        base,
+                        head,
+                        engine::walk::Buffer::Fixed(&mut scratch[..available]),
+                    ),
                     available,
                 )
             };
+            if let (Some(reuse), Some(plan)) = (reuse.as_mut(), plan.as_ref()) {
+                reuse.read(plan, outcome, &scratch[..outcome.len()]);
+            }
             let count = match outcome {
                 Outcome::Rows { len } => len,
                 Outcome::Truncated { len, unread_rows } => {
@@ -2183,7 +2338,13 @@ fn walk_flags_buffer(
             }
             Ok(())
         };
-        scope(GLOBAL_SCOPE, 0, root(state, cgame_state::GLOBAL_FLAGS)?)?;
+        scope(
+            GLOBAL_SCOPE,
+            0,
+            root(state, cgame_state::GLOBAL_FLAGS)?,
+            None,
+            None,
+        )?;
         let countries = ccountry::Reader::new(memory, base, state)?;
         let mut found_country = false;
         for slot in 1..countries.count() {
@@ -2193,6 +2354,8 @@ fn walk_flags_buffer(
                     COUNTRY_SCOPE,
                     country.id,
                     root(country.pointer, ccountry::FLAG_MANAGER)?,
+                    None,
+                    Some(country.pointer),
                 )?;
             }
         }
@@ -2227,31 +2390,37 @@ fn walk_flags_buffer(
                     continue;
                 }
                 found_state = true;
-                if read::<u64>(memory, at) != Some(state_vtable as u64) {
-                    return Err("state scope vtable mismatch");
-                }
-                let id = at
-                    .checked_add(cstate::ID)
-                    .and_then(|p| read::<u32>(memory, p))
-                    .ok_or("state scope id unreadable")?;
-                if id != first + index as u32 {
-                    return Err("state scope id differs from slot");
-                }
-                scope(STATE_SCOPE, id, root(at, cstate::FLAGS)?)?;
+                let id = first + index as u32;
+                let manager = state_flag_manager(memory, at, state_vtable, id)?;
+                scope(STATE_SCOPE, id, manager, None, None)?;
             }
             first += count as u32;
         }
         if !found_state {
             return Err("state table has no readable states");
         }
-        // Each authenticated roster occurrence's identity, then its manager.
+        // Each authenticated roster occurrence's identity, then its manager,
+        // gathered in one read of the character.
         let mut characters = ccharacter_manager::Roster::read(memory, base, state)?.cursor();
-        while let Some(view) = characters.next(memory, [false; 4])? {
-            let (character, id) = view.reference();
+        while let Some(character) = characters.next_occurrence(memory)? {
+            let mut head = [0; cflag_manager::HEADER];
+            let (id, copied) = ccharacter::identity_with_spans(
+                memory,
+                base,
+                character,
+                [ccharacter::FLAGS, 0, 0],
+                [&mut head, &mut [], &mut []],
+            )?;
             let manager = character
                 .checked_add(ccharacter::FLAGS)
                 .ok_or("character flag manager address overflow")?;
-            scope(CHARACTER_SCOPE, id, manager)?;
+            scope(
+                CHARACTER_SCOPE,
+                id,
+                manager,
+                Some((copied != 0).then_some(head)),
+                None,
+            )?;
         }
         Ok(if unread == 0 {
             Outcome::Rows { len }
@@ -2262,7 +2431,94 @@ fn walk_flags_buffer(
             }
         })
     })();
-    result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
+    let outcome = result.unwrap_or_else(|reason| Outcome::Unavailable { reason });
+    if let Some(reuse) = reuse {
+        let complete = matches!(outcome, Outcome::Rows { .. });
+        let rows = if complete {
+            &output[..outcome.len()]
+        } else {
+            &[]
+        };
+        reuse.finish(complete, rows);
+    }
+    outcome
+}
+
+/// Whether this hour's countries, in the walk's order, are `held`'s. With
+/// the callback's authenticated census it reads nothing.
+fn same_countries(memory: &impl Memory, base: usize, state: usize, held: &[(usize, u32)]) -> bool {
+    let Ok(countries) = ccountry::Reader::new(memory, base, state) else {
+        return false;
+    };
+    let mut held = held.iter();
+    for slot in 1..countries.count() {
+        match countries.at(slot) {
+            Ok(Some(country)) => {
+                if held.next() != Some(&(country.pointer, country.id)) {
+                    return false;
+                }
+            }
+            Ok(None) => {}
+            Err(_) => return false,
+        }
+    }
+    held.next().is_none()
+}
+
+/// A state scope's vtable, id and flag-manager root in one scattered read,
+/// with the sequential reads' failure order and reasons.
+fn state_flag_manager(
+    memory: &impl Memory,
+    state: usize,
+    vtable: usize,
+    slot: u32,
+) -> Result<usize, &'static str> {
+    let manager = |root: Option<[u8; 8]>| {
+        let manager = root
+            .and_then(|root| usize::try_from(u64::from_le_bytes(root)).ok())
+            .ok_or("script scope root unreadable")?;
+        if manager == 0 {
+            return Err("script flag manager root is null");
+        }
+        Ok(manager)
+    };
+    let (Some(id_at), Some(root_at)) = (
+        state.checked_add(cstate::ID),
+        state.checked_add(cstate::FLAGS),
+    ) else {
+        if read::<u64>(memory, state) != Some(vtable as u64) {
+            return Err("state scope vtable mismatch");
+        }
+        let id = state
+            .checked_add(cstate::ID)
+            .and_then(|p| read::<u32>(memory, p))
+            .ok_or("state scope id unreadable")?;
+        if id != slot {
+            return Err("state scope id differs from slot");
+        }
+        return manager(
+            state
+                .checked_add(cstate::FLAGS)
+                .and_then(|p| read::<[u8; 8]>(memory, p)),
+        );
+    };
+    let mut identity = [0; 8];
+    let mut id = [0; 4];
+    let mut root = [0; 8];
+    let completed = memory.copy_scattered(
+        [state, id_at, root_at],
+        &mut [&mut identity, &mut id, &mut root],
+    );
+    if completed == 0 || u64::from_le_bytes(identity) != vtable as u64 {
+        return Err("state scope vtable mismatch");
+    }
+    if completed == 1 {
+        return Err("state scope id unreadable");
+    }
+    if u32::from_le_bytes(id) != slot {
+        return Err("state scope id differs from slot");
+    }
+    manager((completed == 3).then_some(root))
 }
 
 fn pointer(memory: &impl Memory, root: usize, offset: usize) -> Result<usize, &'static str> {
@@ -2279,7 +2535,9 @@ fn pointer(memory: &impl Memory, root: usize, offset: usize) -> Result<usize, &'
 // job's own rows; the decode worker copies them into the pack. One shared
 // store keeps the opinion baseline between refreshes, so a refresh that
 // observed every opinion write since the last one (`crate::opinion_changes`)
-// reads only the statuses a writer changed.
+// reads only the statuses a writer changed. Every owner a drained mark names
+// joins the hour's slice, so a changed opinion reaches the hour it changed
+// in; an hour whose marks are not handed over reads every owner.
 // ===========================================================================
 
 /// Drains the opinion writes observed since `consumed`: see
@@ -2301,12 +2559,21 @@ struct SharedOpinions {
     /// its owner's slice.
     marks: Vec<crelation_status::Mark>,
     required_marks: usize,
-    /// Rows of the verify walk.
+    /// Marks the latest drain found pending, under any epoch: the opinion
+    /// log is offered room for them.
+    required_log: usize,
+    /// Rows of the sampled comparison's full read.
     verify: Vec<crelation_status::OpinionRow>,
     required_verify: usize,
+    /// The owners the sampled comparison read.
+    sampled_owners: Vec<u32>,
     drain: Drain,
-    /// Verify mode: where a comparison's result goes.
-    report: Option<fn(Option<bool>)>,
+    /// Offers the opinion log room for that many marks
+    /// ([`crate::opinion_changes::offer`]).
+    offer: fn(usize),
+    /// Tests: the refreshes' sampled comparison; otherwise the hour's
+    /// ([`crate::sampled_verify::current`]).
+    check: Option<Check>,
     charge: crate::raw_memory::Charge,
 }
 
@@ -2319,11 +2586,13 @@ impl SharedOpinions {
             consumed: default_cursor(),
             marks: Vec::new(),
             required_marks: 0,
+            required_log: 0,
             verify: Vec::new(),
             required_verify: 0,
+            sampled_owners: Vec::new(),
             drain: default_drain(),
-            report: crate::opinion_changes::verify()
-                .then_some(crate::opinion_changes::verified as fn(Option<bool>)),
+            offer: default_offer(),
+            check: None,
             charge: crate::raw_memory::Charge::default(),
         }
     }
@@ -2349,11 +2618,15 @@ impl SharedOpinions {
             return;
         }
         fit(&mut self.marks, self.required_marks);
+        // An hour's marks: those the last drain found, and at least one per
+        // opinion held, as a daily sweep can change each of them.
+        (self.offer)(self.required_log.max(self.baseline.rows()));
         fit(&mut self.verify, self.required_verify);
         self.charge.set(crate::raw_memory::Capacity {
             payload_vectors: (self.baseline.allocated_bytes()
                 + self.marks.capacity() * size_of::<crelation_status::Mark>()
-                + self.verify.capacity() * size_of::<crelation_status::OpinionRow>())
+                + self.verify.capacity() * size_of::<crelation_status::OpinionRow>()
+                + self.sampled_owners.capacity() * size_of::<u32>())
                 as u64,
             ..Default::default()
         });
@@ -2374,6 +2647,17 @@ fn default_cursor() -> u64 {
 #[cfg(not(test))]
 fn default_drain() -> Drain {
     crate::opinion_changes::drain
+}
+
+#[cfg(not(test))]
+fn default_offer() -> fn(usize) {
+    crate::opinion_changes::offer
+}
+
+/// Tests never size the process's opinion log.
+#[cfg(test)]
+fn default_offer() -> fn(usize) {
+    |_| {}
 }
 
 #[cfg(test)]
@@ -2572,23 +2856,29 @@ pub(crate) struct RelationsCopyContext {
     pub epoch: u64,
 }
 
-/// Verify mode: compare an observed walk's opinions with a walk that reads
-/// every status of the same owner slice. A difference poisons the
-/// observation for the rest of the attachment and the reference rows are
-/// kept.
-fn verify_opinions(
+/// This refresh's sampled comparison ([`crate::sampled_verify`]): read the
+/// selected owners `check` covers (a daily rotation, since each owner is read
+/// once a day) in full, with no baseline, and compare each one's rows with
+/// the observed walk's. A difference poisons the observation, drops the
+/// baseline and publishes a full read of the whole selection instead.
+#[allow(clippy::too_many_arguments)]
+fn sample_opinions(
     memory: &impl Memory,
     ctx: RelationsCopyContext,
     shared: &mut SharedOpinions,
     resolver: &mut crelation_status::Resolver,
     rows: &mut Vec<crelation_status::OpinionRow>,
     outcome: Outcome,
-    select: impl Fn(u32) -> bool,
+    check: Check,
+    select: impl Fn(u32) -> bool + Copy,
 ) -> Outcome {
-    let Some(report) = shared.report else {
+    let Outcome::Rows { len } = outcome else {
         return outcome;
     };
     shared.required_verify = rows.len();
+    let owners = std::cell::RefCell::new(std::mem::take(&mut shared.sampled_owners));
+    owners.borrow_mut().clear();
+    let short = std::cell::Cell::new(false);
     let expected = crelation_status::walk_growing_with(
         memory,
         ctx.base,
@@ -2599,23 +2889,78 @@ fn verify_opinions(
         resolver,
         &mut crelation_status::Baseline::default(),
         None,
-        select,
+        |owner| {
+            let sampled = select(owner) && check.covers_daily(u64::from(owner));
+            if sampled {
+                let mut owners = owners.borrow_mut();
+                if engine::allocation::reserve_push_batch(&mut owners, 1).is_ok() {
+                    owners.push(owner);
+                } else {
+                    short.set(true);
+                }
+            }
+            sampled
+        },
     )
     .opinions;
-    let len = expected.len();
-    let agrees = expected == outcome && shared.verify[..len] == rows[..len];
-    report(Some(agrees));
-    if agrees {
+    shared.sampled_owners = owners.into_inner();
+    let (Outcome::Rows { len: fresh }, false) = (expected, short.get()) else {
+        crate::opinion_changes::unverified();
+        return outcome;
+    };
+    let (held, read) = (&rows[..len], &shared.verify[..fresh]);
+    let mismatches = shared
+        .sampled_owners
+        .iter()
+        .filter(|&&owner| {
+            let owned = |row: &&crelation_status::OpinionRow| row.owner_country == owner;
+            !held.iter().filter(owned).eq(read.iter().filter(owned))
+        })
+        .count() as u64;
+    crate::opinion_changes::sampled(shared.sampled_owners.len() as u64, mismatches);
+    if mismatches == 0 {
         return outcome;
     }
     shared.baseline.clear();
-    if rows.len() < len && engine::allocation::resize_default(rows, len).is_err() {
-        return Outcome::Unavailable {
-            reason: "relation verification storage allocation failed",
-        };
-    }
-    rows[..len].copy_from_slice(&shared.verify[..len]);
-    expected
+    crelation_status::walk_growing_with(
+        memory,
+        ctx.base,
+        ctx.game_state,
+        rows,
+        &mut Vec::new(),
+        [true, false],
+        resolver,
+        &mut crelation_status::Baseline::default(),
+        None,
+        select,
+    )
+    .opinions
+}
+
+/// Select every owner a drained opinion or relation mark names, so that this
+/// hour reads its changed opinions and relation tuples. A mark's diplomacy names its owner through the
+/// baseline, or else through the diplomacy's country backlink (an owner the
+/// baseline holds no rows for). False when an owner cannot be named: the hour
+/// then reads every owner.
+fn select_marked(
+    memory: &impl Memory,
+    baseline: &crelation_status::Baseline,
+    marks: &[crelation_status::Mark],
+    selection: &mut SliceSelection,
+) -> bool {
+    marks.iter().all(|mark| {
+        let owner = baseline.owner(mark.diplomacy).or_else(|| {
+            let country = read::<u64>(
+                memory,
+                mark.diplomacy.checked_add(cdiplomacy_status::COUNTRY)?,
+            )?;
+            let country = usize::try_from(country)
+                .ok()
+                .filter(|&country| country != 0)?;
+            read::<u32>(memory, country.checked_add(ccountry::ID)?)
+        });
+        owner.is_some_and(|owner| selection.select(owner))
+    })
 }
 
 /// Scan every live country into this hour's relations selection with a
@@ -2678,6 +3023,13 @@ pub(crate) fn copy_relations_refresh(
     if let (Some(selection), Some(fingerprints)) = (&mut job.selection, &mut job.fingerprints) {
         scan_relation_owners(memory, ctx.base, ctx.game_state, selection, fingerprints);
     }
+    let check = job
+        .shared
+        .as_mut()
+        .and_then(|lent| lent.shared().check)
+        .unwrap_or_else(|| {
+            crate::sampled_verify::current_burned_in(cfg!(feature = "opinion_verify"))
+        });
     // Lent to another job: read every status, as after a load.
     let mut unshared = crelation_status::Baseline::default();
     let (baseline, observation) = match &mut job.shared {
@@ -2687,8 +3039,8 @@ pub(crate) fn copy_relations_refresh(
                 consumed,
                 marks,
                 required_marks,
+                required_log,
                 drain,
-                report,
                 verify,
                 required_verify,
                 ..
@@ -2702,20 +3054,35 @@ pub(crate) fn copy_relations_refresh(
             };
             // Marks from before the baseline's epoch (a load's, say) are
             // never replayed: they are no demand for storage.
-            if drained.is_some_and(|(epoch, _)| baseline.token() == Some((epoch, ctx.epoch))) {
+            let continues =
+                drained.is_some_and(|(epoch, _)| baseline.token() == Some((epoch, ctx.epoch)));
+            if continues {
                 *required_marks = pending;
             }
-            // Verify mode publishes no replay it cannot compare: until its
-            // storage holds this job's rows, the observation hands over no
-            // marks, so the walk reads every selected owner in full.
-            let verifiable = report.is_none() || verify.len() >= lens[0];
-            if report.is_some() {
+            *required_log = pending;
+            // No replay is published without its sampled comparison: until
+            // the comparison's storage holds this job's rows, the observation
+            // hands over no marks, so the walk reads every selected owner in
+            // full.
+            let verifiable = !check.any() || verify.len() >= lens[0];
+            if check.any() {
                 *required_verify = (*required_verify).max(lens[0]);
             }
             let observation = drained.map(|(epoch, count)| crelation_status::Observation {
                 token: (epoch, ctx.epoch),
                 marks: count.filter(|_| verifiable).map(|count| &marks[..count]),
             });
+            // The held rows of an owner outside the hour's read are current
+            // only while every opinion write since its read was handed over
+            // under the observation its baseline continues.
+            if let Some(selection) = &mut job.selection {
+                let marked = observation
+                    .and_then(|observation| observation.marks)
+                    .filter(|_| continues);
+                if !marked.is_some_and(|marks| select_marked(memory, baseline, marks, selection)) {
+                    selection.force_full = true;
+                }
+            }
             (baseline, observation)
         }
         None => {
@@ -2727,8 +3094,8 @@ pub(crate) fn copy_relations_refresh(
     // a full hour: the pack's placeholder selection is a full one.
     let selection = job.selection.as_ref();
     let select = |owner| selection.is_none_or(|selection| selection.contains(owner));
-    // Verify only walks that replayed an owner: a walk that read every
-    // selected owner in full has nothing to compare.
+    // Compare only walks that replayed an owner: a walk that read every
+    // selected owner in full has nothing carried.
     let replayed = baseline.counts().reused_owners;
     let mut walk = crelation_status::walk_growing_with(
         memory,
@@ -2746,14 +3113,15 @@ pub(crate) fn copy_relations_refresh(
     if let Some(lent) = &mut job.shared {
         let shared = lent.shared();
         crate::opinion_changes::record(shared.baseline.counts(), &mut shared.reported);
-        if replayed && shared.report.is_some() {
-            walk.opinions = verify_opinions(
+        if replayed && check.any() {
+            walk.opinions = sample_opinions(
                 memory,
                 ctx,
                 shared,
                 &mut job.resolver,
                 &mut job.opinions,
                 walk.opinions,
+                check,
                 select,
             );
         }
@@ -3118,27 +3486,6 @@ fn copy_capitulation_pass(
         let _ = capspan(
             log,
             memory,
-            diplomacy.checked_add(cdiplomacy_status::LEGITIMACY),
-            12,
-            M_CAPITULATION,
-        );
-        let _ = capspan(
-            log,
-            memory,
-            diplomacy.checked_add(cdiplomacy_status::LAST_SURRENDER_HOUR),
-            4,
-            M_CAPITULATION,
-        );
-        let _ = capspan(
-            log,
-            memory,
-            diplomacy.checked_add(cdiplomacy_status::FACTION_JOIN_HOUR),
-            4,
-            M_CAPITULATION,
-        );
-        let _ = capspan(
-            log,
-            memory,
             diplomacy.checked_add(cdiplomacy_status::CAPITULATED),
             1,
             M_CAPITULATION,
@@ -3265,6 +3612,8 @@ pub(crate) fn intel_shadow_fixture(value: i64) -> Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod flag_store_tests;
+    mod variable_store_tests;
 
     #[test]
     fn intel_catalog_growth_and_refusal_projection_handle_allocator_denial() {
@@ -3394,7 +3743,7 @@ mod tests {
                 hour: raw_modes,
                 force_full: raw_modes == 0,
             };
-            let report = captured.capture_residual(&Unreadable, context);
+            let report = captured.capture_residual(&Unreadable, context, None, None);
             assert_eq!(report.ticks[10], 0, "operations owns the shared read cost");
             for slot in [0, 13, 14] {
                 assert_eq!(captured.outcomes()[slot], before[slot]);
@@ -3459,10 +3808,21 @@ mod tests {
                     hour,
                     force_full: false,
                 },
+                None,
+                None,
             );
             let counts = accounting.finish();
+            // IntelNetworks is read every hour while its writers outside the
+            // daily step go unobserved, as they do without hooks.
+            assert!(crate::country_input_changes::intel_network_writes().is_none());
+            assert_ne!(
+                captured.outcomes()[6],
+                Outcome::Unavailable {
+                    reason: replay::cadence::SKIPPED_REASON
+                }
+            );
             for index in (1..=12).chain(std::iter::once(15)) {
-                if !replay::cadence::should_walk(TABLES[index], hour, false) {
+                if index != 6 && !replay::cadence::should_walk(TABLES[index], hour, false) {
                     assert_eq!(
                         captured.outcomes()[index],
                         Outcome::Unavailable {
@@ -3498,6 +3858,8 @@ mod tests {
                     hour,
                     force_full: false,
                 },
+                None,
+                None,
             );
             // Any outcome but the carried skip means the walk ran.
             captured.outcomes()[15]
@@ -3876,6 +4238,8 @@ mod tests {
                         hour: 0,
                         force_full: true,
                     },
+                    None,
+                    None,
                 );
             } else {
                 let result = cintelligence_agency::walk_with_upgrades(
@@ -4089,10 +4453,6 @@ mod tests {
             country: u32::MAX,
             capitulated: 0xfe,
             capitulated_hour: i32::MIN,
-            last_surrender_hour: i32::MAX,
-            faction_join_hour: -1,
-            legitimacy_raw: i64::MIN,
-            exile_army_leaders: i32::MIN,
         };
         capture.operatives.outcome = Outcome::Rows { len: 1 };
         capture.operatives.rows[0] = coperative_leader::Row {
@@ -4219,7 +4579,7 @@ mod tests {
                 capitulation.capitulated,
                 capitulation.legitimacy_raw
             ),
-            (u32::MAX, 0xfe, i64::MIN)
+            (u32::MAX, 0xfe, replay::rows::RetiredI64::default())
         );
         let operative = &complete::<tables::OperativeMemberships>(&views[4])[0];
         assert_eq!(
@@ -5009,6 +5369,94 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn flag_scopes_read_each_character_and_state_once_with_sequential_verdicts() {
+        use std::cell::RefCell;
+        /// Records each guarded call's first address and refuses spans
+        /// covering `denied`.
+        struct Calls<'a> {
+            bytes: &'a [u8],
+            denied: Option<usize>,
+            calls: RefCell<Vec<usize>>,
+        }
+        impl Calls<'_> {
+            fn span(&self, address: usize, output: &mut [u8]) -> bool {
+                if self
+                    .denied
+                    .is_some_and(|at| (address..address + output.len()).contains(&at))
+                {
+                    return false;
+                }
+                SliceMemory {
+                    base: 0,
+                    bytes: self.bytes,
+                }
+                .copy(address, output)
+            }
+        }
+        impl Memory for Calls<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.calls.borrow_mut().push(address);
+                self.span(address, output)
+            }
+            fn copy_scattered<const N: usize>(
+                &self,
+                addresses: [usize; N],
+                destinations: &mut [&mut [u8]; N],
+            ) -> usize {
+                self.calls.borrow_mut().push(addresses[0]);
+                for (index, (address, output)) in addresses
+                    .into_iter()
+                    .zip(destinations.iter_mut())
+                    .enumerate()
+                {
+                    if !output.is_empty() && !self.span(address, output) {
+                        return index;
+                    }
+                }
+                N
+            }
+        }
+        let bytes = flag_scopes();
+        let walk = |denied| {
+            let memory = Calls {
+                bytes: &bytes,
+                denied,
+                calls: RefCell::default(),
+            };
+            let mut rows = [ScopedFlag::default(); 4];
+            let mut scratch = [cscript_flag::Row::default(); 4];
+            let outcome = walk_flags(&memory, BASE, GAME, &mut rows, &mut scratch);
+            (outcome, memory.calls.into_inner())
+        };
+        let (outcome, calls) = walk(None);
+        assert_eq!(outcome, Outcome::Rows { len: 4 });
+        let within = |start: usize, len: usize| {
+            calls
+                .iter()
+                .filter(|address| (start..start + len).contains(address))
+                .count()
+        };
+        // A character's identity and its embedded manager header share one
+        // read, as do a state's vtable, id and flag root.
+        assert_eq!(within(0x6000, 0x200), 1);
+        assert_eq!(within(0x6200, 0x200), 1);
+        assert_eq!(within(0x8000, 0x1000), 1);
+        for (denied, reason) in [
+            (0x8000, "state scope vtable mismatch"),
+            (0x8000 + cstate::ID, "state scope id unreadable"),
+            (0x8000 + cstate::FLAGS, "script scope root unreadable"),
+            (0x6000, "character identity unreadable"),
+            (0x6200 + ccharacter::FLAGS, "flag manager header unreadable"),
+            (
+                0xb000 + 3 * cscript_flag::STRIDE + cscript_flag::DATE,
+                "script flag fields unreadable",
+            ),
+        ] {
+            assert_eq!(walk(Some(denied)).0, Outcome::Unavailable { reason });
+        }
+    }
+
     /// Shared synthetic address space for the relations job harness.
     /// Three countries in slots 1..3, each with a complete four-slot matrix;
     /// slot zero is the reserved sentinel the walk never reaches.
@@ -5711,11 +6159,11 @@ mod tests {
         })
     }
 
-    fn observed_store(verify: bool) -> &'static OpinionStore {
+    fn observed_store(check: Check) -> &'static OpinionStore {
         let mut shared = SharedOpinions::new();
         shared.drain = test_drain;
         shared.marks = vec![crelation_status::Mark::default(); 8];
-        shared.report = verify.then_some(crate::opinion_changes::verified as fn(Option<bool>));
+        shared.check = Some(check);
         Box::leak(Box::new(std::sync::Mutex::new(OpinionSlot::Home(shared))))
     }
 
@@ -5753,7 +6201,7 @@ mod tests {
     #[test]
     fn relations_jobs_share_one_opinion_store() {
         let bytes = relations_kit::opinionated_fixture();
-        let store = observed_store(false);
+        let store = observed_store(Check::Nothing);
         let [mut first, mut second] = [(); 2].map(|()| RelationsJob {
             store: Some(store),
             ..RelationsJob::new()
@@ -5810,6 +6258,9 @@ mod tests {
         let memory = relations_kit::memory(&bytes);
         let mut pack = relations_kit::intel_captured(16, 16);
         let mut store = Some(Box::new(SliceFingerprints::new()));
+        // Every opinion write is observed (none happens), so the held rows of
+        // owners outside the hour's slice stay current.
+        let opinions = observed_store(Check::Nothing);
         // One hour: begin before the loan, walk while it is out, then the
         // join, the typed capture and the failure path. Returns the owners
         // the hour's published rows came from, and whether they were
@@ -5832,6 +6283,7 @@ mod tests {
                 tuples: vec![crelation_status::TupleRow::default(); rows],
                 selection,
                 fingerprints: store.take(),
+                store: Some(opinions),
                 ..RelationsJob::default()
             };
             let report = match failure {
@@ -5870,13 +6322,17 @@ mod tests {
                     .collect::<std::collections::BTreeSet<u32>>()
             };
             let owners = match payload {
-                Ok(job) => {
+                Ok(mut job) => {
                     assert!(job.selection.is_none() && job.fingerprints.is_none());
                     assert_eq!(pack.relation_opinions.outcome, UNCAPTURED, "no typed walk");
                     assert_eq!(pack.relation_tuples.outcome, UNCAPTURED, "no typed walk");
+                    // Released as decode releases it, which grows the
+                    // shared store.
+                    job.return_opinions();
                     rows(&job.opinions, job.walk.unwrap().opinions)
                 }
-                Err(job) => {
+                Err(mut job) => {
+                    job.return_opinions();
                     assert!(job.selection.is_none() && job.fingerprints.is_none());
                     let reason = failure.expect("accepted workers return their owned payload");
                     // The raw-mode gate kept the typed capture off the
@@ -5902,6 +6358,9 @@ mod tests {
                 .collect::<std::collections::BTreeSet<_>>()
         };
         let one = *all.iter().next().unwrap();
+        // The first hour sized the shared store; the next reads every owner
+        // again while its baseline records them.
+        assert_eq!(hour(&mut pack, &mut store, 2, 16, None).0, all);
         let own = replay::cadence::slice_of(one) as i32 + 24;
         assert_eq!(hour(&mut pack, &mut store, own, 16, None).0, slice(own));
         // An empty seed grows during its original worker walk and publishes
@@ -5943,9 +6402,10 @@ mod tests {
         assert!(pack.relations_selection().contains(one) || !slice(own + 49).contains(&one));
     }
 
-    /// Relations are read once a day, one owner slice per hour: a first scan
-    /// reads every owner (each is new), a later hour reads only its slice,
-    /// and a read left unpublished is read again at the next hour.
+    /// Relations are read one owner slice per hour while every opinion write
+    /// is observed: a first scan reads every owner (each is new), a later
+    /// hour reads only its slice, and a read left unpublished is read again
+    /// at the next hour. Without an observation every hour reads every owner.
     #[test]
     fn a_relations_job_reads_new_owners_then_only_its_hours_slice() {
         let bytes = relations_kit::opinionated_fixture();
@@ -5958,14 +6418,21 @@ mod tests {
             tuple_cap: 16,
             epoch: 0,
         };
-        let mut job = RelationsJob::new();
+        let mut job = RelationsJob {
+            store: Some(observed_store(Check::Nothing)),
+            ..RelationsJob::new()
+        };
+        let mut unobserved = RelationsJob::new();
         let mut store = Some(Box::new(SliceFingerprints::new()));
-        let mut read = |hour: i32, store: &mut Option<Box<SliceFingerprints>>| {
+        let mut read = |hour: i32, store: &mut Option<Box<SliceFingerprints>>, observed: bool| {
+            let job = if observed { &mut job } else { &mut unobserved };
             let mut selection = SliceSelection::new(true);
             selection.reset(hour, false);
             job.selection = Some(selection);
             job.fingerprints = store.take();
-            assert!(copy_relations_refresh(&memory, ctx, &mut job).raw_ok);
+            assert!(copy_relations_refresh(&memory, ctx, job).raw_ok);
+            // Released as decode releases it, which grows the shared store.
+            job.return_opinions();
             *store = job.fingerprints.take();
             let walk = job.walk.unwrap();
             let owners: std::collections::BTreeSet<u32> = job.opinions[..walk.opinions.len()]
@@ -5979,23 +6446,28 @@ mod tests {
                 .collect();
             (owners, job.selection.take().unwrap())
         };
-        let (all, _) = read(1, &mut store);
+        let (all, _) = read(1, &mut store, true);
         assert!(all.len() >= 2, "{all:?}");
+        // The first read sized the shared store; the next reads every owner
+        // again while its baseline records them.
+        assert_eq!(read(2, &mut store, true).0, all);
         let slice = |hour: i32| {
             all.iter()
                 .copied()
                 .filter(|&owner| replay::cadence::slice_of(owner) == hour.rem_euclid(24) as u32)
                 .collect::<std::collections::BTreeSet<_>>()
         };
-        let (owners, unpublished) = read(25, &mut store);
+        let (owners, unpublished) = read(25, &mut store, true);
         assert!(!owners.is_empty());
         assert_eq!(owners, slice(25));
         // Unpublished: the next hour reads its own slice and this one again.
         unpublished.invalidate(store.as_deref_mut().unwrap());
-        let (owners, _) = read(26, &mut store);
+        let (owners, _) = read(26, &mut store, true);
         assert_eq!(owners, &slice(25) | &slice(26));
-        let (owners, _) = read(27, &mut store);
+        let (owners, _) = read(27, &mut store, true);
         assert_eq!(owners, slice(27));
+        let (owners, _) = read(28, &mut store, false);
+        assert_eq!(owners, all);
     }
 
     /// A baseline is replayed until the epoch moves (a load, gap or
@@ -6004,7 +6476,7 @@ mod tests {
     fn relation_baselines_last_until_the_epoch_moves() {
         let bytes = relations_kit::opinionated_fixture();
         let mut job = RelationsJob {
-            store: Some(observed_store(false)),
+            store: Some(observed_store(Check::Nothing)),
             ..RelationsJob::new()
         };
         // Owners, then their rows, get storage; the third refresh records.
@@ -6029,21 +6501,25 @@ mod tests {
     }
 
     /// Observed refreshes re-read the marked statuses; verify mode compares
-    /// each replay with a walk of every status and keeps the reference rows
-    /// when an unobserved write made them differ.
+    /// every replayed owner with a walk of every status and publishes that
+    /// walk when an unobserved write made them differ.
     #[test]
-    fn observed_refreshes_read_marked_statuses_and_verify_catches_a_missed_write() {
+    fn observed_refreshes_read_marked_statuses_and_verify_mode_catches_a_missed_write() {
         let _lock = crate::opinion_changes::test_lock();
         crate::opinion_changes::observe_for_test(true);
         let verified = || {
             let status = serde_json::to_value(crate::opinion_changes::status()).unwrap();
-            ["unverified_refreshes", "verified_refreshes", "mismatches"]
-                .map(|key| status[key].as_u64().unwrap())
+            [
+                "unverified_refreshes",
+                "sampled_verified",
+                "sampled_mismatches",
+            ]
+            .map(|key| status[key].as_u64().unwrap())
         };
         let before = verified();
         let mut bytes = relations_kit::opinionated_fixture();
         let mut job = RelationsJob {
-            store: Some(observed_store(true)),
+            store: Some(observed_store(Check::Every)),
             ..RelationsJob::new()
         };
         let opinion =
@@ -6064,14 +6540,15 @@ mod tests {
         });
         let marked = observed_refresh(&bytes, &mut job, 1);
         assert_eq!(marked.1[1].opinion, 61);
-        // An unmarked write is caught by verify, which keeps the reference.
+        // An unmarked write is caught by verify, which publishes a full read.
         relations_kit::p32(&mut bytes, opinion(1, 3), 62);
         let missed = observed_refresh(&bytes, &mut job, 1);
         assert_eq!(missed.1[1].opinion, 62);
         let delta = |now: [u64; 3]| std::array::from_fn(|index| now[index] - before[index]);
         // The first refresh sizes owners; the next sizes their exact matrices.
-        // Verification then agrees twice and catches the unmarked change.
-        assert_eq!(delta(verified()), [0, 2, 1]);
+        // Three refreshes then compare all three owners; the last finds one
+        // owner's unmarked change.
+        assert_eq!(delta(verified()), [0, 9, 1]);
         // The mismatch poisoned the real observation: a drain now observes
         // nothing, so every refresh reads every status.
         let (mut consumed, mut output, mut required) =
@@ -6086,8 +6563,146 @@ mod tests {
         );
         // The baseline was dropped: the next refresh reads every status.
         assert_eq!(observed_refresh(&bytes, &mut job, 1), missed);
-        assert_eq!(delta(verified()), [0, 2, 1]);
+        assert_eq!(delta(verified()), [0, 9, 1]);
         crate::opinion_changes::observe_for_test(false);
+    }
+
+    /// Each owner is read once a day, so the sampled comparison rotates over
+    /// days: an owner is compared at one refresh in a rotation, an unmarked
+    /// write is caught within one rotation of its refreshes, and that refresh
+    /// publishes a full read.
+    #[test]
+    fn sampled_refreshes_catch_a_missed_write_within_one_rotation() {
+        let _lock = crate::opinion_changes::test_lock();
+        crate::opinion_changes::observe_for_test(true);
+        let sampled = || {
+            let status = serde_json::to_value(crate::opinion_changes::status()).unwrap();
+            ["sampled_verified", "sampled_mismatches"].map(|key| status[key].as_u64().unwrap())
+        };
+        // Owners 1 to 3 are compared on the days a rotation starts.
+        let day = |day: i32| Check::Slice { hour: day * 24 + 2 };
+        let store = observed_store(day(1));
+        let set = |check| LentOpinions::borrow(store).unwrap().shared().check = Some(check);
+        let mut bytes = relations_kit::opinionated_fixture();
+        let mut job = RelationsJob {
+            store: Some(store),
+            ..RelationsJob::new()
+        };
+        let initial = observed_refresh(&bytes, &mut job, 1);
+        for _ in 0..3 {
+            assert_eq!(observed_refresh(&bytes, &mut job, 1), initial);
+        }
+        let before = sampled();
+        // A write no hook marked.
+        relations_kit::p32(
+            &mut bytes,
+            relations_kit::status(1, 3) + crelation_status::OPINION,
+            62,
+        );
+        for at in 2..24 {
+            set(day(at));
+            assert_eq!(
+                observed_refresh(&bytes, &mut job, 1),
+                initial,
+                "day {at} replays the held opinion"
+            );
+        }
+        assert_eq!(sampled(), before, "no owner is compared off its day");
+        set(day(24));
+        let caught = observed_refresh(&bytes, &mut job, 1);
+        assert_eq!(caught.1[1].opinion, 62, "the full read is published");
+        assert_eq!(sampled(), [before[0] + 3, before[1] + 1]);
+        let status = serde_json::to_value(crate::opinion_changes::status()).unwrap();
+        assert_eq!(status["poisoned"], true);
+        assert_eq!(
+            status["last_mismatch"],
+            "replayed opinions differ from a full read"
+        );
+        crate::opinion_changes::observe_for_test(false);
+    }
+
+    /// One sliced refresh at `hour`: the owners it read and its opinion rows.
+    fn sliced_refresh(
+        bytes: &[u8],
+        job: &mut RelationsJob,
+        fingerprints: &mut Option<Box<SliceFingerprints>>,
+        hour: i32,
+    ) -> (Vec<u32>, Vec<crelation_status::OpinionRow>) {
+        let mut selection = SliceSelection::new(true);
+        selection.reset(hour, false);
+        job.selection = Some(selection);
+        job.fingerprints = fingerprints.take();
+        let (outcome, rows) = observed_refresh(bytes, job, 1);
+        assert!(matches!(outcome, Outcome::Rows { .. }), "{outcome:?}");
+        *fingerprints = job.fingerprints.take();
+        let owners = job.selection.take().unwrap().read_owners().collect();
+        (owners, rows)
+    }
+
+    /// A marked opinion write is read in the hour after it, although its
+    /// owner's slice comes later (daily slices held it until then); an hour
+    /// whose marks cannot all be handed over reads every owner.
+    #[test]
+    fn marked_owners_are_read_the_next_hour_outside_their_slice() {
+        let mut bytes = relations_kit::opinionated_fixture();
+        let mut job = RelationsJob {
+            store: Some(observed_store(Check::Nothing)),
+            ..RelationsJob::new()
+        };
+        let mut fingerprints = Some(Box::new(SliceFingerprints::new()));
+        // First sight reads every owner (ids 1 to 3, slices 1 to 3).
+        let (owners, _) = sliced_refresh(&bytes, &mut job, &mut fingerprints, 24);
+        assert_eq!(owners, [1, 2, 3]);
+        // That read sized the shared store; the next reads every owner again
+        // while its baseline records them.
+        let (owners, _) = sliced_refresh(&bytes, &mut job, &mut fingerprints, 25);
+        assert_eq!(owners, [1, 2, 3]);
+        // Hour 29 is no owner's slice: nothing is read.
+        assert!(
+            sliced_refresh(&bytes, &mut job, &mut fingerprints, 29)
+                .0
+                .is_empty()
+        );
+        // Owner 2's opinion of its third target changes, marked by its writer.
+        relations_kit::p32(
+            &mut bytes,
+            relations_kit::status(1, 3) + crelation_status::OPINION,
+            61,
+        );
+        MARKS.with_borrow_mut(|marks| {
+            marks.push(crelation_status::Mark {
+                status: relations_kit::status(1, 3),
+                diplomacy: relations_kit::DIPLOMACY[1],
+            })
+        });
+        let (owners, rows) = sliced_refresh(&bytes, &mut job, &mut fingerprints, 30);
+        assert_eq!(owners, [2]);
+        assert!(
+            rows.iter()
+                .any(|row| row.owner_country == 2 && row.opinion == 61),
+            "{rows:?}"
+        );
+        // More marks than the drain can hand over: every owner is read.
+        MARKS.with_borrow_mut(|marks| {
+            marks.extend(std::iter::repeat_n(
+                crelation_status::Mark {
+                    status: relations_kit::status(0, 2),
+                    diplomacy: relations_kit::DIPLOMACY[0],
+                },
+                9,
+            ))
+        });
+        let (owners, _) = sliced_refresh(&bytes, &mut job, &mut fingerprints, 31);
+        assert_eq!(owners, [1, 2, 3]);
+        // A later mark selects only its own owner again.
+        MARKS.with_borrow_mut(|marks| {
+            marks.push(crelation_status::Mark {
+                status: relations_kit::status(2, 0),
+                diplomacy: relations_kit::DIPLOMACY[2],
+            })
+        });
+        let (owners, _) = sliced_refresh(&bytes, &mut job, &mut fingerprints, 32);
+        assert_eq!(owners, [3]);
     }
 
     #[test]
@@ -6173,26 +6788,6 @@ mod tests {
             &mut bytes,
             CAP_DIPLO + cdiplomacy_status::COUNTRY,
             &(CAP_COUNTRY as u64).to_le_bytes(),
-        );
-        cap_put(
-            &mut bytes,
-            CAP_DIPLO + cdiplomacy_status::LEGITIMACY,
-            &(-125_682_i64).to_le_bytes(),
-        );
-        cap_put(
-            &mut bytes,
-            CAP_DIPLO + cdiplomacy_status::LEGITIMACY + 8,
-            &42_i32.to_le_bytes(),
-        );
-        cap_put(
-            &mut bytes,
-            CAP_DIPLO + cdiplomacy_status::LAST_SURRENDER_HOUR,
-            &(-1_i32).to_le_bytes(),
-        );
-        cap_put(
-            &mut bytes,
-            CAP_DIPLO + cdiplomacy_status::FACTION_JOIN_HOUR,
-            &7_i32.to_le_bytes(),
         );
         cap_put(&mut bytes, CAP_DIPLO + cdiplomacy_status::CAPITULATED, &[1]);
         cap_put(
@@ -6301,7 +6896,7 @@ mod tests {
         assert_eq!(split.capitulation.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.capitulation.rows[0].country, 1);
         assert_eq!(split.capitulation.rows[0].capitulated, 1);
-        assert_eq!(split.capitulation.rows[0].legitimacy_raw, -125_682);
+        assert_eq!(split.capitulation.rows[0].capitulated_hour, i32::MIN);
     }
 
     #[test]
@@ -6425,8 +7020,8 @@ mod tests {
                 );
                 cap_put(
                     &mut bytes,
-                    status + cdiplomacy_status::LEGITIMACY,
-                    &(slot as i64).to_le_bytes(),
+                    status + cdiplomacy_status::CAPITULATED_HOUR,
+                    &(slot as i32).to_le_bytes(),
                 );
             }
             struct Once<'a> {
@@ -6467,8 +7062,8 @@ mod tests {
             assert_eq!(captured.capitulation.outcome, Outcome::Rows { len: count });
             assert_eq!(captured.capitulation.rows[count - 1].country, count as u32);
             assert_eq!(
-                captured.capitulation.rows[count - 1].legitimacy_raw,
-                count as i64
+                captured.capitulation.rows[count - 1].capitulated_hour,
+                count as i32
             );
         }
     }

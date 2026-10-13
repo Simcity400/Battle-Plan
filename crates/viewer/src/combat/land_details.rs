@@ -124,7 +124,7 @@ fn ranged(value: i64) -> bool {
 
 // Current HP as a fraction of maximum HP, clamped
 // to [0, one]; a zero maximum or an out-of-range current HP gives one.
-// the game then truncates to tenths and keeps at least one tenth.
+// The game then truncates to tenths and keeps at least one tenth.
 fn coarse_strength(strength: i64, maximum: i64) -> i64 {
     let fraction = if maximum != 0 && ranged(strength) {
         strength
@@ -148,6 +148,9 @@ pub(crate) enum ScoreGap {
     MaximumStrength(u64),
     /// A committed division without its `LandCombatDivisions` row.
     Member { side: u8, division: u64 },
+    /// A committed division whose `LandCombatDivisions` row holds neither
+    /// its stats and scales nor an older recording's packets of them.
+    Numbers { side: u8, division: u64 },
 }
 
 impl ScoreGap {
@@ -162,6 +165,9 @@ impl ScoreGap {
             ),
             Self::Member { side, division } => format!(
                 "committed division {division} on side {side} has no LandCombatDivisions row"
+            ),
+            Self::Numbers { side, division } => format!(
+                "committed division {division} on side {side} has no stats and scales in its LandCombatDivisions row"
             ),
         }
     }
@@ -183,13 +189,23 @@ fn early_damage(
                 division: id,
             })
     };
+    // A member's stats and scales, which an older recording holds as packets.
+    let numbers = |side: usize, id: u64| -> Result<([i64; 5], [i64; 4]), ScoreGap> {
+        let row = member(side, id)?;
+        row.stat_values()
+            .zip(row.scales())
+            .ok_or(ScoreGap::Numbers {
+                side: side as u8,
+                division: id,
+            })
+    };
     let targets = &detail.sides[1 - firing_side].committed;
     let average = |stat: usize| -> Result<i64, ScoreGap> {
         if targets.is_empty() {
             return Ok(0);
         }
         let sum = targets.iter().try_fold(0_i64, |sum, id| {
-            Ok(sum.wrapping_add(member(1 - firing_side, *id)?.stat_values[stat]))
+            Ok(sum.wrapping_add(numbers(1 - firing_side, *id)?.0[stat]))
         })?;
         Ok(sum.wrapping_mul(100_000) / (targets.len() as i64 * 100_000))
     };
@@ -206,16 +222,13 @@ fn early_damage(
         .iter()
         .rev()
         .try_fold(0_i64, |total, id| {
-            let row = member(firing_side, *id)?;
+            let (stats, scales) = numbers(firing_side, *id)?;
             let soft = fixed_mul(
-                fixed_mul(row.stat_values[3], 10_000),
+                fixed_mul(stats[3], 10_000),
                 100_000_i64.wrapping_sub(hardness),
             );
-            let hard = fixed_mul(fixed_mul(row.stat_values[4], 10_000), hardness);
-            let attack = fixed_mul(
-                soft.wrapping_add(hard),
-                fixed_mul(row.scales[2], row.scales[0]),
-            );
+            let hard = fixed_mul(fixed_mul(stats[4], 10_000), hardness);
+            let attack = fixed_mul(soft.wrapping_add(hard), fixed_mul(scales[2], scales[0]));
             let covered = fixed_mul(
                 fixed_mul(attack.min(defended), defines.avoid_with_defence),
                 1_000,
@@ -427,10 +440,9 @@ pub(crate) fn side_scores<'a>(
             };
             continue;
         }
-        let loss = state
-            .organisation_loss
-            .iter()
-            .fold(0_i64, |sum, value| sum.wrapping_add(*value));
+        // The 24 samples' signed 64-bit sum, with wrapping addition,
+        // recorded as such.
+        let loss = state.organisation_loss_sum;
         let average = comparison_ratio(loss, 2_400_000);
         let average = if average < 1 { 100 } else { average };
         scores[side] = comparison_ratio(organisation, average);
@@ -450,7 +462,7 @@ fn comparison_ratio(value: i64, denominator: i64) -> i64 {
     }
 }
 
-// the game selects one-based frames 1,2,3,4,5 at strict 2x/1.2x
+// The game selects one-based frames 1,2,3,4,5 at strict 2x/1.2x
 // boundaries. Negative offset makes leftward arrows end at the progress edge.
 fn heading(scores: [i64; 2], progress: i64, bar_width: f32, icon_width: f32) -> (u32, f32) {
     let mul = |value: i64, factor: i64| value.wrapping_mul(factor) / 100_000;
@@ -492,7 +504,7 @@ pub(super) fn bind(
         .map(|row| ((row.side, row.division), row))
         .collect();
     for (side, prefix) in ["attacker", "defender"].iter().enumerate() {
-        // the game deliberately truncates, unlike the stat formatter.
+        // The game deliberately truncates, unlike the stat formatter.
         let width = army_width(&detail.sides[side].committed, side as u8, &divisions)
             .map(|width| (width / 100_000).to_string())
             .map_err(|reason| format!("Land combat {id} {prefix} army width is hidden: {reason}."));

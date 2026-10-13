@@ -20,14 +20,6 @@ fn world_invalidation_mov_spans_preserve_the_native_stack_and_operands() {
     );
 }
 
-#[test]
-fn directed_war_query_spans_copy_only_the_native_pointer_load() {
-    for site in engine::directed_war_queries::SITES {
-        assert_eq!(instruction_span(&site.sentinel), Ok(7));
-        assert_eq!(&site.sentinel[3..7], &[0xe8, 2, 0, 0]);
-    }
-}
-
 fn unwind(context: &mut CONTEXT) -> bool {
     let mut aligned = AlignedContext(*context);
     let mut base = 0;
@@ -156,7 +148,9 @@ fn stub(code: &TestCode, aligned: bool) -> (usize, [u8; 16]) {
 
 #[test]
 fn callback_unwinds_to_native_continuation_and_preserves_registers_flags_and_both_parities() {
-    let _guard = FAMILY_TEST.lock().unwrap();
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     SEEN.store(0, Ordering::Relaxed);
     FAILURES.store(0, Ordering::Relaxed);
     for aligned in [false, true] {
@@ -212,7 +206,9 @@ fn set_nonvolatile(context: &mut CONTEXT, values: [u64; 8]) {
 
 #[test]
 fn virtual_unwind_covers_partial_prologue_dynamic_frame_and_every_epilogue_boundary() {
-    let _guard = FAMILY_TEST.lock().unwrap();
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let code = TestCode::new();
     let (site, sentinel) = stub(&code, false);
     let tap = unsafe { Tap::new(site, idle, 0, sentinel) }.unwrap();
@@ -324,7 +320,9 @@ fn virtual_unwind_covers_partial_prologue_dynamic_frame_and_every_epilogue_bound
 
 #[test]
 fn refused_publication_or_unregister_retains_registered_executable_storage() {
-    let _guard = FAMILY_TEST.lock().unwrap();
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for mode in [0, 1, 2] {
         let code = TestCode::new();
         let (site, sentinel) = stub(&code, false);
@@ -364,7 +362,9 @@ fn refused_publication_or_unregister_retains_registered_executable_storage() {
 
 #[test]
 fn registered_ranges_are_adjacent_half_open_and_exclude_metadata_storage() {
-    let _guard = FAMILY_TEST.lock().unwrap();
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let code = TestCode::new();
     let (site, sentinel) = stub(&code, false);
     let tap = unsafe { Tap::new(site, idle, 0, sentinel) }.unwrap();
@@ -420,7 +420,9 @@ fn registered_ranges_are_adjacent_half_open_and_exclude_metadata_storage() {
 
 #[test]
 fn mixed_batch_preflights_all_sites_and_restores_complete_tap_spans_on_flush_failure() {
-    let _guard = FAMILY_TEST.lock().unwrap();
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let code = TestCode::new();
     let (site, sentinel) = stub(&code, false);
     let mut tap = unsafe { Tap::new(site, idle, 0, sentinel) }.unwrap();
@@ -458,7 +460,9 @@ fn mixed_batch_preflights_all_sites_and_restores_complete_tap_spans_on_flush_fai
 
 #[test]
 fn native_epilogue_remains_at_the_call_return_and_moved_tail_target_matches() {
-    let _guard = FAMILY_TEST.lock().unwrap();
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let code = TestCode::new();
     // Synthetic push/sub/epilogue/tail target and padding, not game bytes.
     let mut bytes = [0xcc; 80];
@@ -530,7 +534,9 @@ fn native_epilogue_remains_at_the_call_return_and_moved_tail_target_matches() {
 
 #[test]
 fn copied_load_and_add_preserve_the_native_result_and_branch_flags() {
-    let _guard = FAMILY_TEST.lock().unwrap();
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let code = TestCode::new();
     let mut bytes: Vec<u8> = vec![0x53, 0x57, 0x48, 0x89, 0xcb, 0x48, 0x89, 0xd7];
     let site = code.0 as usize + bytes.len();
@@ -584,7 +590,9 @@ fn generic_tap_retains_the_instruction_tail_until_its_flight_returns() {
         let probe = unsafe { &mut *(tag as *mut Probe) };
         probe.seen = unsafe { &*probe.flight }.load(Ordering::SeqCst);
     }
-    let _guard = FAMILY_TEST.lock().unwrap();
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let code = TestCode::new();
     let (site, sentinel) = stub(&code, false);
     let mut probe = Probe {

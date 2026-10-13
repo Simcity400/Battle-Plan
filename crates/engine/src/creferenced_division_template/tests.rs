@@ -233,6 +233,56 @@ fn daily_rows_keep_names_and_the_category_without_the_model_inputs() {
     }
 }
 
+/// The icon walk reports each template's object, owner and the dictionary's
+/// unit_type as [`walk`] derives it: the stored override, else the category
+/// of the category or priority sub-unit, read with its identity.
+#[test]
+fn icon_rows_carry_the_dictionary_unit_type_owner_and_object() {
+    let mut memory = fixture();
+    let mut daily = [Row::default(); 1];
+    daily_all(&memory, &mut daily);
+    let mut rows = [IconRow::default(); 1];
+    assert_eq!(
+        icons_all(&memory, &mut rows).0.outcome,
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(
+        (rows[0].unit_type, rows[0].unit_type_failure),
+        (daily[0].unit_type, None)
+    );
+    assert_eq!(rows[0].unit_type, 1);
+    assert_eq!((rows[0].owner, rows[0].pointer), (1, 0x5000));
+    memory.put(0x5000 + UNIT_TYPE_OVERRIDE, &123_i32.to_le_bytes());
+    icons_all(&memory, &mut rows);
+    assert_eq!(rows[0].unit_type, 123);
+    // An unreadable category is the row's failure, not the walk's.
+    memory.put(0x5000 + UNIT_TYPE_OVERRIDE, &0_i32.to_le_bytes());
+    memory.0.truncate(0x7000 + subunit::CATEGORY);
+    memory.0.resize(0x7000 + subunit::CATEGORY, 0);
+    let walk = icons_all(&memory, &mut rows).0;
+    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(
+        rows[0].unit_type_failure,
+        Some("subunit category unreadable")
+    );
+}
+
+/// `copy_names_growing` copies a template's literal and key as `walk` does.
+#[test]
+fn names_copy_as_the_full_walk_copies_them() {
+    let memory = fixture();
+    let mut bytes = b"xy".to_vec();
+    let [name, key] = copy_names_growing(&memory, 0x5000, &mut bytes, 2).unwrap();
+    assert_eq!(bytes, b"xyA\0\xfffallback");
+    assert_eq!(
+        (name, key),
+        (Span { start: 2, len: 3 }, Span { start: 5, len: 8 })
+    );
+    let mut daily = [Row::default(); 1];
+    let (_, names) = daily_all(&memory, &mut daily);
+    assert_eq!(names, bytes[2..]);
+}
+
 #[test]
 fn the_representative_falls_back_to_the_priority_unit_and_an_absent_category_stays_absent() {
     let memory = fixture();
@@ -655,4 +705,52 @@ fn full_handle_survives_and_a_wrong_type_word_fails() {
         ),
         Err("division template identity unreadable")
     );
+}
+
+/// Templates sharing a priority unit read its name's header once a walk, and
+/// the named walk takes each literal's header from the gathered record.
+#[test]
+fn a_walk_reads_a_shared_priority_name_once_and_gathers_literal_headers() {
+    let mut memory = fixture();
+    second_template(&mut memory);
+    let (mut rows, mut bytes, mut counts, mut variants, mut names) = (
+        [IconRow::default(); 2],
+        vec![0; 64],
+        vec![Default::default(); 8],
+        vec![0; 8],
+        vec![0; 64],
+    );
+    let walk = walk_icons_with_names(
+        &memory,
+        0,
+        0x1000,
+        &mut rows,
+        &mut bytes,
+        &mut counts,
+        &mut variants,
+        TestSlots::default().slots(),
+        &mut names,
+    );
+    assert_eq!(walk.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(&bytes[..walk.bytes_len], b"infantryinfantry");
+    for row in rows {
+        let literal = row.display_name.unwrap().literal;
+        assert_eq!(
+            names[literal.start..literal.start + literal.len],
+            [b'A', 0, 255]
+        );
+    }
+    let reads = memory.1.borrow();
+    let at = |address: usize| reads.iter().filter(|read| read.0 == address).count();
+    assert_eq!(at(0x7000 + subunit::NAME), 1);
+    // Each literal header is read once, as the gather's field after the icon
+    // span (this memory copies a gather field by field).
+    for template in [0x5000, 0xa000] {
+        assert_eq!(at(template + NAME), 1);
+        let span = reads
+            .iter()
+            .position(|read| *read == (template + ICON_SPAN, ICON_SPAN_END - ICON_SPAN))
+            .unwrap();
+        assert_eq!(reads[span + 1], (template + NAME, msvc_string::STRIDE));
+    }
 }

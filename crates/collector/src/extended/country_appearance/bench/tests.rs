@@ -10,21 +10,22 @@ use std::{hint::black_box, time::Instant};
 
 const STATE: usize = 0x100;
 const DATABASE: usize = 0x800;
-const ARRAYS: usize = 0x1000;
+pub(super) const ARRAYS: usize = 0x1000;
 const COUNTRY_BYTES: usize = 0x1600;
 const DIPLOMACY_BYTES: usize = 0x300;
 const SUBJECTS_PER_COUNTRY: usize = 3;
 
-struct World {
-    bytes: Vec<u8>,
-    origin: usize,
-    module: usize,
-    countries: usize,
+/// Also the carried-row fixture ([`super::store`]).
+pub(super) struct World {
+    pub(super) bytes: Vec<u8>,
+    pub(super) origin: usize,
+    pub(super) module: usize,
+    pub(super) countries: usize,
     subjects: usize,
 }
 
 impl World {
-    fn new(countries: usize, populated: bool) -> Self {
+    pub(super) fn new(countries: usize, populated: bool) -> Self {
         let slots = countries + 1;
         let links = ARRAYS + slots * 8;
         let tags = links + slots * 4;
@@ -126,7 +127,7 @@ impl World {
         }
     }
 
-    fn state(&self) -> usize {
+    pub(super) fn state(&self) -> usize {
         self.origin + STATE
     }
 
@@ -145,7 +146,7 @@ impl World {
         changed
     }
 
-    fn capacities(&self) -> Capacities {
+    pub(super) fn capacities(&self) -> Capacities {
         Capacities {
             rows: self.countries,
             subjects: self.countries * SUBJECTS_PER_COUNTRY,
@@ -154,7 +155,7 @@ impl World {
         }
     }
 
-    fn read(&self, captured: &mut Captured) -> Vec<CountryAppearanceRow> {
+    pub(super) fn read(&self, captured: &mut Captured) -> Vec<CountryAppearanceRow> {
         captured.reset();
         captured.capture(
             &SliceMemory {
@@ -168,10 +169,11 @@ impl World {
     }
 }
 
-fn rows(captured: &Captured) -> Vec<CountryAppearanceRow> {
+pub(super) fn rows(captured: &Captured) -> Vec<CountryAppearanceRow> {
     let [
         TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
         _,
+        ..,
     ] = captured.tables()
     else {
         panic!("complete appearance");

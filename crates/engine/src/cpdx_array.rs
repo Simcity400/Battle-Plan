@@ -117,8 +117,30 @@ pub fn pointers(
     what: &'static str,
     mut each: impl FnMut(u32, usize) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    const BATCH: usize = 64;
+    pointer_pages(memory, array, what, |first, page| {
+        for (index, &pointer) in page.iter().enumerate() {
+            each(first + index as u32, pointer)?;
+        }
+        Ok(())
+    })
+}
+
+/// Pointers per [`pointer_pages`] page.
+pub const POINTER_PAGE: usize = 64;
+
+/// [`pointers`] a page at a time: `each` receives the ordinal of a page's
+/// first element and its copied pointers in order, so a caller can batch
+/// what the page points at. A page whose pointers were not all copied passes
+/// its copied prefix, then fails with `what`.
+pub fn pointer_pages(
+    memory: &impl Memory,
+    array: Array,
+    what: &'static str,
+    mut each: impl FnMut(u32, &[usize]) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    const BATCH: usize = POINTER_PAGE;
     let mut pointers = [[0; 8]; BATCH];
+    let mut page = [0_usize; BATCH];
     for first in (0..array.count).step_by(BATCH) {
         let count = ((array.count - first) as usize).min(BATCH);
         let addresses: [usize; BATCH] = std::array::from_fn(|index| {
@@ -136,10 +158,11 @@ pub fn pointers(
                 &mut bytes[..if index < count { 8 } else { 0 }]
             }),
         );
-        for (index, bytes) in pointers.iter().take(copied.min(count)).enumerate() {
-            let pointer = usize::try_from(u64::from_le_bytes(*bytes)).map_err(|_| what)?;
-            each(first + index as u32, pointer)?;
+        let copied = copied.min(count);
+        for (pointer, bytes) in page.iter_mut().zip(&pointers[..copied]) {
+            *pointer = usize::try_from(u64::from_le_bytes(*bytes)).map_err(|_| what)?;
         }
+        each(first, &page[..copied])?;
         if copied < count {
             return Err(what);
         }

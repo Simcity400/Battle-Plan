@@ -45,7 +45,6 @@ mod intel;
 mod land;
 mod map_inputs;
 mod military;
-mod mission_spotting;
 mod modifier_breakdowns;
 mod modifiers;
 mod naval_history;
@@ -63,9 +62,7 @@ mod relations;
 mod report;
 mod rocket_output;
 mod saved_event_targets;
-mod selected_attack;
 mod selected_routes;
-mod selected_transport;
 mod session;
 mod stability;
 #[cfg(test)]
@@ -82,10 +79,9 @@ use self::relations::{
 };
 
 use self::military::{
-    compare_air_wings, compare_army_orders, compare_combat_progress, compare_division_eta_inputs,
-    compare_division_movement, compare_division_status, compare_division_template_icons,
-    compare_division_templates, compare_divisions, compare_land_combats,
-    compare_naval_combat_sources, compare_naval_combats, compare_naval_units,
+    compare_air_wings, compare_army_orders, compare_division_movement, compare_division_status,
+    compare_division_template_icons, compare_division_templates, compare_divisions,
+    compare_land_combats, compare_naval_combat_sources, compare_naval_combats, compare_naval_units,
 };
 
 #[cfg(test)]
@@ -215,7 +211,7 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
     let save_document = save::SaveDocument::read(&fs::read(&save_path)?)?;
     let hour = matching_hour(save_document.date().engine_hour()?, requested_hour)?;
     let replay = Replay::open(fs::read(&replay_path)?)?;
-    for reason in replay.compatibility_gaps() {
+    for reason in crate::replay_io::compatibility_notes(&replay) {
         println!("Compatibility gap: {reason}");
     }
     if save_document.campaign_id() != replay.campaign_id.as_slice() {
@@ -299,12 +295,22 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
     let defines = installed_content::defines::read(&content.layers);
     let raid_graph = installed_content::province_graph::ProvinceGraph::read(&content.layers);
     let equipment = installed_content::equipment::Database::load_complete(&content.layers);
+    let essential_caps = installed_content::raids::read(&content.layers)
+        .map_err(|error| error.to_string())
+        .and_then(|raids| raids.essential_caps(equipment.as_ref().map_err(ToString::to_string)?));
     let leader_traits = installed_content::leader_traits::read(&content.layers).map(|(traits, _)| traits);
     let sub_units = installed_content::unit_leader::sub_units(&content.layers);
     let regions = installed_content::regions::read(&content.layers);
     let intelligence = installed_content::intelligence::read_agency_upgrades(&content.layers);
+    let temperature = raid_graph
+        .as_ref()
+        .map_err(|error| io::Error::other(error.to_string()))
+        .and_then(|(graph, geometry)| {
+            installed_content::weather::temperature::read_with(&content.layers, graph, geometry)
+        });
     let read_hours = last_read_hours(&replay, frame.branch, hour)?;
-    let mut report = compare_core(
+    let mut report = compare_core_in(
+        replay.format,
         &frame,
         session.sample_boundary,
         &save,
@@ -324,15 +330,14 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
             defines: content_read(&defines),
             raid_graph: content_read(&raid_graph),
             equipment: content_read(&equipment),
+            essential_caps: essential_caps.as_ref().map_err(Clone::clone),
             leader_traits: content_read(&leader_traits),
             sub_units: content_read(&sub_units),
             intelligence: content_read(&intelligence),
+            temperature: content_read(&temperature),
         },
         &mut report,
     );
-    report.attempt("ReservedCountryNaming transport missions", |report| {
-        mission_spotting::compare(&frame, &save_document, report)
-    });
     // The per-line output is checked along the branch, not against the save.
     report.attempt_table(TableId::ProductionLineOutput, |report| {
         production::compare_line_output(&replay, &frame, report)
@@ -478,6 +483,63 @@ fn sampled_states(frame: &DecodedFrame) -> io::Result<impl Fn(u32) -> bool + '_>
     })
 }
 
+/// The raw owners whose rows of the owner-sliced `table` this frame holds as
+/// read at its own hour, or None when every owner's are: a full hour, or a
+/// recording from before the table was sliced, whose SliceReads dates none
+/// of its owners because every frame read it whole. A sliced read records
+/// every owner it covered, with rows or without (`Campaign::merge_sliced_inputs`).
+fn current_slice_owners(
+    frame: &DecodedFrame,
+    table: TableId,
+    report: &Report,
+) -> io::Result<Option<BTreeSet<u32>>> {
+    if report.full_refresh() {
+        return Ok(None);
+    }
+    let id = table.index() as u32;
+    let mut dated = false;
+    let mut current = BTreeSet::new();
+    for read in complete::<tables::SliceReads>(frame)?
+        .iter()
+        .filter(|read| read.table == id)
+    {
+        dated = true;
+        if read.sample_hour == frame.hour {
+            current.insert(read.owner);
+        }
+    }
+    Ok(dated.then_some(current))
+}
+
+/// States that an owner-sliced comparison covered only the owners read at
+/// the oracle hour, with the oldest earlier read among the others.
+fn slice_owner_limitation(
+    frame: &DecodedFrame,
+    table: TableId,
+    current: &Option<BTreeSet<u32>>,
+    report: &mut Report,
+) {
+    let Some(current) = current else {
+        return;
+    };
+    let oldest = complete::<tables::SliceReads>(frame)
+        .ok()
+        .and_then(|reads| {
+            reads
+                .iter()
+                .filter(|row| row.table == table.index() as u32 && row.sample_hour != frame.hour)
+                .map(|row| row.sample_hour)
+                .min()
+        });
+    if oldest.is_some() {
+        report.carried_owners(table, oldest);
+    }
+    report.limitation(
+        "panel-only tables are read once a game day, one owner slice per hour (owner decision 2026-10-11); only the owners read at the oracle hour are compared with the save, and the others hold earlier reads (their hours are in SliceReads)",
+        format!("{table:?}: {} owners read at the oracle hour", current.len()),
+    );
+}
+
 fn complete_table(frame: &DecodedFrame, table: TableId) -> io::Result<&TableRows> {
     match &*frame.tables[table.index()] {
         TableView::Complete(rows) if rows.table() == table => Ok(rows),
@@ -589,7 +651,32 @@ fn boundary_limitation(boundary: SampleBoundary) -> &'static str {
     }
 }
 
+/// [`compare_core_in`] for a recording in the current format.
+#[cfg(test)]
 fn compare_core(
+    frame: &DecodedFrame,
+    boundary: SampleBoundary,
+    save: &Save,
+    membership: ContentRead<'_, save::PartialMapMembership>,
+    equipment: ContentRead<'_, installed_content::equipment::Database>,
+    read_hours: Option<BTreeMap<TableId, Hour>>,
+) -> io::Result<Report> {
+    compare_core_in(
+        replay::format::FormatVersion::CURRENT,
+        frame,
+        boundary,
+        save,
+        membership,
+        equipment,
+        read_hours,
+    )
+}
+
+/// `format` is the recording's: from [`replay::display::DISPLAY_PRECISION_FORMAT`]
+/// its stepped columns hold display precision, and their comparisons round
+/// the save's exact values the same way.
+fn compare_core_in(
+    format: replay::format::FormatVersion,
     frame: &DecodedFrame,
     boundary: SampleBoundary,
     save: &Save,
@@ -600,6 +687,8 @@ fn compare_core(
     validate_identity(frame, save)?;
     let mut report = Report {
         read_hours,
+        display_steps: replay::display::stepped_format(format.version()),
+        format,
         ..Report::default()
     };
     report.record_tables(frame);
@@ -736,7 +825,7 @@ fn required_context<'a, T, E: std::fmt::Display>(
         .map_err(|error| invalid(format!("requires {name}: {error}")))
 }
 
-/// The content's `is_port` building types, whose levels `CNavalBase` sums.
+/// The content's `is_port` building types, whose levels `naval-base cache` sums.
 fn port_types(buildings: &installed_content::buildings::Buildings) -> BTreeSet<Vec<u8>> {
     buildings
         .types
@@ -755,9 +844,14 @@ struct ExtendedContent<'a> {
     defines: ContentRead<'a, installed_content::defines::Defines>,
     raid_graph: ContentRead<'a, projects::RaidGraph>,
     equipment: ContentRead<'a, installed_content::equipment::Database>,
+    /// Each essential archetype's largest raid requirement, by name
+    /// ([`installed_content::raids::Catalog::essential_caps`]).
+    essential_caps: ContentRead<'a, BTreeMap<Vec<u8>, i32>>,
     leader_traits: ContentRead<'a, installed_content::leader_traits::LeaderTraits>,
     sub_units: ContentRead<'a, installed_content::unit_leader::SubUnits>,
     intelligence: ContentRead<'a, installed_content::intelligence::AgencyUpgrades>,
+    /// What the hourly temperature pass reads, which recordings that store only its inputs need.
+    temperature: ContentRead<'a, replay::temperature::Content>,
 }
 
 fn compare_extended(
@@ -776,9 +870,11 @@ fn compare_extended(
         defines,
         raid_graph,
         equipment,
+        essential_caps,
         leader_traits,
         sub_units,
         intelligence,
+        temperature,
     } = content;
     let port_types = buildings.clone().map(port_types);
     report.attempt("reserved country intel sample", |report| {
@@ -799,21 +895,13 @@ fn compare_extended(
         report,
     );
     pass_inputs::compare(frame, save, report);
-    selected_attack::compare(frame, save, buildings.clone(), report);
-    selected_transport::compare(frame, save, report);
     supply_trains::compare(frame, save, &membership, report);
     combat_details::compare(frame, save, report);
-    report.attempt_table(TableId::ReserveModifierBreakdowns, |r| {
-        modifier_breakdowns::reserve(frame, r)
-    });
     report.attempt_table(TableId::PowerBalanceModifierBreakdowns, |r| {
         modifier_breakdowns::balance(frame, &save.governance, r)
     });
     report.attempt_table(TableId::StateFlags, |report| {
         compare_state_flags(frame, save, report)
-    });
-    report.attempt_table(TableId::LandCombatProgress, |report| {
-        compare_combat_progress(frame, save, report)
     });
     report.attempt_table(TableId::DivisionMovement, |report| {
         compare_division_movement(frame, save, report)
@@ -855,15 +943,6 @@ fn compare_extended(
             report,
         )
     });
-    report.attempt_table(TableId::OwnedWargoals, |report| {
-        country_rosters::compare_owned(
-            frame,
-            save,
-            &required_context("country links", &countries)?.links,
-            required_context("lexical dictionary", &tokens)?,
-            report,
-        )
-    });
     report.attempt("politics", |report| {
         politics::compare(
             frame,
@@ -873,16 +952,25 @@ fn compare_extended(
         );
         Ok(())
     });
+    let camo_show_at = defines.clone().and_then(|defines| {
+        defines
+            .fixed5("NGraphics", "ACCLIMATIZATION_CAMO_SHOW_AT")
+            .map_err(|error| error.to_string())
+    });
+    let supply_grace = defines.clone().and_then(|defines| {
+        defines
+            .int32("NMilitary", "SUPPLY_GRACE")
+            .map_err(|error| error.to_string())
+    });
     report.attempt_table(TableId::DivisionStatus, |report| {
         compare_division_status(
             frame,
             save,
             required_context("lexical tokens", &tokens)?,
+            &camo_show_at,
+            &supply_grace,
             report,
         )
-    });
-    report.attempt_table(TableId::DivisionEtaInputs, |report| {
-        compare_division_eta_inputs(frame, save, report)
     });
     report.attempt("movement States", |report| {
         core::compare_railway_infrastructure(
@@ -893,9 +981,6 @@ fn compare_extended(
             required_context("lexical dictionary", &tokens)?,
             report,
         )
-    });
-    report.attempt("movement CountryCounterInputs", |report| {
-        country_rosters::compare_movement(frame, report)
     });
     report.attempt("movement RailCooldowns", |report| {
         naval_history::compare_railway_buildings(
@@ -1246,6 +1331,17 @@ fn compare_extended(
             report,
         )
     });
+    report.attempt_table(TableId::AirRegionCombat, |report| {
+        let timeout = required_context("verified air defines", &defines)?
+            .int32("NGame", "AIR_LOG_TIMEOUT_HOURS")?;
+        air::compare_region_combat(
+            frame,
+            &save.air,
+            &required_context("country links", &countries)?.links,
+            timeout,
+            report,
+        )
+    });
     report.attempt("naval_history", |report| {
         naval_history::compare(
             frame,
@@ -1343,7 +1439,9 @@ fn compare_extended(
             report,
         )
     });
-    report.attempt("weather", |report| weather::compare(frame, save, report));
+    report.attempt("weather", |report| {
+        weather::compare(frame, save, temperature, report)
+    });
     report.attempt("fog", |report| {
         fog::compare(
             frame,
@@ -1358,6 +1456,7 @@ fn compare_extended(
             save,
             required_context("country links", &countries)?,
             required_context("lexical dictionary", &tokens)?,
+            essential_caps.clone(),
             report,
         )
     });
@@ -1388,7 +1487,7 @@ fn tag_text(tag: Option<&[u8]>) -> String {
         .unwrap_or_else(|| "<none>".into())
 }
 
-fn default_game_directory() -> io::Result<PathBuf> {
+pub(crate) fn default_game_directory() -> io::Result<PathBuf> {
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
     for key in [

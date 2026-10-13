@@ -86,20 +86,6 @@ fn run(
     (result, output)
 }
 
-fn with_selected_inputs(mut legacy: super::super::MovementRow) -> super::super::MovementRow {
-    assert_eq!(legacy.selected_exiled, None);
-    assert_eq!(legacy.selected_commander, None);
-    assert_eq!(legacy.selected_retreat, [None; 2]);
-    assert_eq!(legacy.selected_retreat_failures, [None; 2]);
-    // All fixture armies have a zero exile byte and no orders group. Current
-    // hourly capture records that byte and a null commander,
-    // which contributes zero for both retreat modifier keys.
-    legacy.selected_exiled = Some(0);
-    legacy.selected_commander = Some(false);
-    legacy.selected_retreat = [Some(0); 2];
-    legacy
-}
-
 #[test]
 fn movement_reference_growth_preserves_prefixes_order_repeats_and_read_once() {
     let (source, seeds) = reference_fixture();
@@ -125,12 +111,20 @@ fn movement_reference_growth_preserves_prefixes_order_repeats_and_read_once() {
         [Some((0, 2)), Some((2, 2)), None]
     );
     assert!(rows[2].combat_references_failure.is_some());
-    for (mut actual, expected) in rows.into_iter().zip(expected.map(with_selected_inputs)) {
+    for (mut actual, expected) in rows.into_iter().zip(expected) {
         actual.combat_references = None;
         actual.combat_references_failure = None;
         assert_eq!(actual, expected);
     }
     let reads = memory.reads.borrow();
+    assert_eq!(
+        reads
+            .iter()
+            .filter(|&&(at, len)| at == 0x16000 && len == 32)
+            .count(),
+        1,
+        "all admitted divisions share this pass's successful combat identity"
+    );
     for index in 0..3 {
         let vector = 0x19000 + index * 0x10;
         assert_eq!(
@@ -188,7 +182,7 @@ fn movement_optional_registry_failure_preserves_every_established_field() {
     memory.fault.set(Some(registry::HIGH_ROOT_RVA));
     let (walk, rows) = run(&memory, &seeds, &mut packet, Some(9), 3);
     assert_eq!(walk, legacy);
-    for (mut actual, expected) in rows.into_iter().zip(expected.map(with_selected_inputs)) {
+    for (mut actual, expected) in rows.into_iter().zip(expected) {
         assert_eq!(actual.combat_references, None);
         assert!(actual.combat_references_failure.take().is_some());
         assert_eq!(actual, expected);

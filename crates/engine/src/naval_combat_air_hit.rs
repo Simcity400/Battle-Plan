@@ -11,6 +11,14 @@ pub struct Row {
     pub country: u32,
 }
 
+/// The hit's fields [`read`] reads (vtable, variant, count, country), one
+/// record per hit for a run of hits (`cfex_member::append_entries`).
+pub(crate) const RECORD: [crate::memory::RecordField; 1] = [crate::memory::RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: 0x18,
+}];
+
 pub(crate) fn read(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'static str> {
     if field::<u64>(memory, pointer, 0)?
         != base

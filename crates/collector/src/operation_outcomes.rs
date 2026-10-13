@@ -1,6 +1,6 @@
 //! Every successful native operation completion, copied before its caller can
 //! auto-repeat or destroy the instance. Native paths/sites live in engine.
-use crate::hook::Hook;
+use crate::{hook::Hook, shared_lane::SharedLane};
 use engine::{Memory, operation_outcome_sites as native};
 use std::{
     cell::{Cell, UnsafeCell},
@@ -18,14 +18,19 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static EPOCH: AtomicU64 = AtomicU64::new(1);
 pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static LOG: AtomicUsize = AtomicUsize::new(0);
+// A larger generation waiting for the lane boundary to seal the current one.
+static OFFERED: AtomicUsize = AtomicUsize::new(0);
+// Longest description a shared slot could not hold; sizes the next one.
+static SHARED_DESCRIPTION_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static SERIAL: AtomicU64 = AtomicU64::new(1);
 static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[allow(clippy::vec_box)] // Published pointers stay stable through vector growth.
 static LOGS: Mutex<Vec<Box<Log>>> = Mutex::new(Vec::new());
 static UNHOOKED: OnceLock<std::borrow::Cow<'static, str>> = OnceLock::new();
 static REQUIRED_LANES: AtomicUsize = AtomicUsize::new(1);
-static COUNTERS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
-const FAILURE_NAMES: [&str; 34] = [
+// 11: thread registrations beyond the dedicated lanes, 12: refused shared appends.
+static COUNTERS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
+const FAILURE_NAMES: [&str; 36] = [
     "operation completion address overflow",
     "operation completion module overflow",
     "operation completion identity unreadable",
@@ -60,6 +65,8 @@ const FAILURE_NAMES: [&str; 34] = [
     "operation completion description capacity overflow",
     "operation completion description allocation failed",
     "operation completion event sequence exhausted",
+    "operation completion shared lane exhausted",
+    "operation completion sealed staging successor absent",
 ];
 static FAILURES: [AtomicU64; FAILURE_NAMES.len() + 1] =
     [const { AtomicU64::new(0) }; FAILURE_NAMES.len() + 1];
@@ -222,23 +229,53 @@ impl Lane {
 struct Log {
     serial: u64,
     lanes: Box<[Lane]>,
+    // Threads registering after every lane is taken publish here, so a
+    // generation never loses an interval to its writer count.
+    shared: SharedLane<Record>,
     registered: AtomicUsize,
     entries: usize,
     sequence: AtomicU64,
     consumed: AtomicU64,
     consumed_epoch: AtomicU64,
+    // Sealed at the lane boundary that installs `next`; stale callbacks
+    // holding this generation follow it instead of losing a completion.
+    publishers: AtomicUsize,
+    next: AtomicUsize,
 }
 impl Log {
+    #[cfg(test)]
     fn new(
         entries: usize,
         bytes: usize,
         lanes: usize,
         required: &[(usize, usize)],
     ) -> Result<Self, &'static str> {
+        Self::with_shared(entries, bytes, lanes, required, (0, 0))
+    }
+    /// `shared` is the shared lane's (entries, per-slot description bytes)
+    /// demand; the stride starts from the live average description.
+    fn with_shared(
+        entries: usize,
+        bytes: usize,
+        lanes: usize,
+        required: &[(usize, usize)],
+        shared: (usize, usize),
+    ) -> Result<Self, &'static str> {
         let entries = entries.max(1).checked_next_power_of_two().ok_or_else(|| {
             let _ = engine::allocation::oom();
             "operation completion description capacity overflow"
         })?;
+        // One more thread's lane: its records, and one lane's description
+        // bytes spread over them. A longer description keeps its record, is
+        // marked short and raises the next generation's slot.
+        let slots = entries
+            .div_ceil(lanes.max(1))
+            .max(shared.0)
+            .checked_next_power_of_two()
+            .ok_or("operation completion description capacity overflow")?;
+        let stride = shared.1.max(bytes.div_ceil(slots));
+        let shared = SharedLane::new(slots, stride)
+            .map_err(|_| "operation completion description allocation failed")?;
         let mut storage = Vec::new();
         engine::allocation::reserve_exact(&mut storage, lanes)
             .map_err(|_| "operation completion description allocation failed")?;
@@ -256,11 +293,14 @@ impl Log {
         Ok(Self {
             serial: SERIAL.fetch_add(1, Ordering::Relaxed),
             lanes: boxed_slice(storage)?,
+            shared,
             registered: AtomicUsize::new(0),
             entries,
             sequence: AtomicU64::new(0),
             consumed: AtomicU64::new(0),
             consumed_epoch: AtomicU64::new(0),
+            publishers: AtomicUsize::new(0),
+            next: AtomicUsize::new(0),
         })
     }
 }
@@ -331,7 +371,18 @@ fn log() -> Option<&'static Log> {
     let pointer = LOG.load(Ordering::Acquire) as *const Log;
     (!pointer.is_null()).then(|| unsafe { &*pointer })
 }
-fn lane(log: &Log) -> Option<&Lane> {
+fn offered() -> Option<&'static Log> {
+    let pointer = OFFERED.load(Ordering::Acquire) as *const Log;
+    (!pointer.is_null()).then(|| unsafe { &*pointer })
+}
+/// Where this thread publishes: its own lane, or the shared lane once every
+/// lane of the generation is registered.
+#[derive(Clone, Copy)]
+enum Target<'a> {
+    Lane(&'a Lane),
+    Shared,
+}
+fn lane(log: &Log) -> Target<'_> {
     LANE.with(|cache| {
         let pointer = log as *const Log as usize;
         let (old, serial, index) = cache.get();
@@ -340,16 +391,74 @@ fn lane(log: &Log) -> Option<&Lane> {
         } else {
             let index = log.registered.fetch_add(1, Ordering::Relaxed);
             cache.set((pointer, log.serial, index));
+            if index >= log.lanes.len() {
+                // Growth offers a dedicated lane to the next generation.
+                REQUIRED_LANES.fetch_max(index + 1, Ordering::Relaxed);
+                COUNTERS[11].fetch_add(1, Ordering::Relaxed);
+            }
             index
         };
-        if index >= log.lanes.len() {
-            REQUIRED_LANES.fetch_max(index + 1, Ordering::Relaxed);
-            overflow();
-            None
-        } else {
-            Some(&log.lanes[index])
-        }
+        log.lanes.get(index).map_or(Target::Shared, Target::Lane)
     })
+}
+struct Publishing<'a>(&'a Log);
+impl Drop for Publishing<'_> {
+    fn drop(&mut self) {
+        self.0.publishers.fetch_sub(1, Ordering::Release);
+    }
+}
+/// A publication lease on the generation this callback reached; a sealed
+/// one forwards to its prepared successor.
+fn publishing(mut log: &Log) -> Option<Publishing<'_>> {
+    loop {
+        match log
+            .publishers
+            .fetch_update(Ordering::Acquire, Ordering::Relaxed, |count| {
+                count.checked_add(1).filter(|&count| count != usize::MAX)
+            }) {
+            Ok(_) => return Some(Publishing(log)),
+            Err(usize::MAX) => {
+                let next = log.next.load(Ordering::Acquire) as *const Log;
+                if next.is_null() {
+                    failed_reason("operation completion sealed staging successor absent");
+                    return None;
+                }
+                log = unsafe { &*next };
+            }
+            Err(_) => {
+                overflow();
+                return None;
+            }
+        }
+    }
+}
+/// Lane boundary: seal the current generation for this handoff once no
+/// callback is publishing into it, and install the offered successor.
+/// Returns the generation this handoff drains.
+fn seal_offered(log: &'static Log) -> &'static Log {
+    let Some(offered) = offered() else {
+        return log;
+    };
+    offered
+        .consumed_epoch
+        .store(EPOCH.load(Ordering::Acquire), Ordering::Release);
+    log.next
+        .store(offered as *const Log as usize, Ordering::Release);
+    if log
+        .publishers
+        .compare_exchange(0, usize::MAX, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return log;
+    }
+    LOG.store(offered as *const Log as usize, Ordering::Release);
+    let _ = OFFERED.compare_exchange(
+        offered as *const Log as usize,
+        0,
+        Ordering::AcqRel,
+        Ordering::Relaxed,
+    );
+    log
 }
 /// Called before installing hooks, using the exact retained recording history.
 pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
@@ -370,47 +479,67 @@ pub fn resize(entries: usize) {
 }
 /// Live operation-description demand and rejected-byte pressure prepare every
 /// lane off-thread. The completion callback still copies its original
-/// retained descriptor exactly once into admitted storage.
+/// retained completion descriptor exactly once into admitted storage.
+/// A larger generation is offered to the lane boundary, which seals the
+/// current one for its handoff, so growth loses no interval.
 pub fn presize(entries: usize, bytes: usize) {
     if !RUNTIME_ENABLED.load(Ordering::Relaxed) {
         return;
     }
-    let entries = entries.max(log().map_or(1, |old| old.entries));
-    if let Some(old) = log() {
+    let sources = [log(), offered()];
+    let generations = || sources.into_iter().flatten();
+    let entries = entries.max(generations().map(|log| log.entries).max().unwrap_or(1));
+    for log in generations() {
         // A new byte ring is published independently of record storage: old
         // records retain their ring, so byte growth loses no observation epoch.
-        for lane in &old.lanes {
+        for lane in &log.lanes {
             if let Err(reason) = lane.grow_bytes_for(bytes) {
                 count(reason);
             }
         }
     }
-    if log().is_some_and(|old| {
-        old.entries >= entries
-            && old.lanes.len() >= thread_slots()
-            && old
-                .lanes
-                .iter()
-                .all(|lane| lane.records.len() >= lane.required_entries.load(Ordering::Relaxed))
-    }) {
-        return;
-    }
-    invalidate();
-    let fresh = (|| {
-        let mut required = Vec::new();
-        if let Some(old) = log() {
-            engine::allocation::reserve_exact(&mut required, old.lanes.len())
-                .map_err(|_| "operation completion description allocation failed")?;
-            required.extend(old.lanes.iter().map(|lane| {
+    let lanes = thread_slots().max(generations().map(|log| log.lanes.len()).max().unwrap_or(0));
+    let required = |index: usize| {
+        generations()
+            .filter_map(|log| log.lanes.get(index))
+            .map(|lane| {
                 (
                     lane.required_entries
                         .load(Ordering::Relaxed)
                         .max(lane.records.len()),
                     lane.ring().bytes.len(),
                 )
-            }));
-        }
-        boxed(Log::new(entries, bytes, thread_slots(), &required)?)
+            })
+            .fold((0, 0), |a, b| (a.0.max(b.0), a.1.max(b.1)))
+    };
+    let shared = (
+        generations()
+            .map(|log| log.shared.required_entries().max(log.shared.len()))
+            .max()
+            .unwrap_or(0),
+        generations()
+            .map(|log| log.shared.stride())
+            .max()
+            .unwrap_or(0)
+            .max(SHARED_DESCRIPTION_DEMAND.load(Ordering::Relaxed)),
+    );
+    if generations().any(|log| {
+        log.entries >= entries
+            && log.lanes.len() >= lanes
+            && log.shared.len() >= shared.0
+            && log.shared.stride() >= shared.1
+            && log
+                .lanes
+                .iter()
+                .enumerate()
+                .all(|(index, lane)| lane.records.len() >= required(index).0)
+    }) {
+        return;
+    }
+    let fresh = (|| {
+        let required = engine::allocation::collect_vec((0..lanes).map(required))
+            .map_err(|_| "operation completion description allocation failed")?;
+        boxed(Log::with_shared(entries, bytes, lanes, &required, shared)?)
     })();
     let fresh = match fresh {
         Ok(fresh) => fresh,
@@ -428,7 +557,11 @@ pub fn presize(entries: usize, bytes: usize) {
         return;
     }
     retained.push(fresh);
-    LOG.store(pointer, Ordering::Release);
+    if sources[0].is_none() {
+        LOG.store(pointer, Ordering::Release);
+    } else {
+        OFFERED.store(pointer, Ordering::Release);
+    }
 }
 /// # Safety
 /// Hooks are disabled; executable ranges/ACTIVE have quiesced and every worker
@@ -439,6 +572,7 @@ pub unsafe fn release() {
         return;
     }
     LOG.store(0, Ordering::Release);
+    OFFERED.store(0, Ordering::Release);
     LOGS.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
@@ -446,10 +580,59 @@ pub unsafe fn release() {
 
 fn append_observation(
     log: &Log,
-    lane: &Lane,
+    target: Target<'_>,
     observation: native::Observation,
     memory: &impl Memory,
 ) {
+    match target {
+        Target::Lane(lane) => append_to_lane(log, lane, observation, memory),
+        Target::Shared => append_shared(log, observation, memory),
+    }
+}
+/// A thread without a dedicated lane in this generation. The record takes
+/// its log-wide order exactly as a lane record does.
+fn append_shared(log: &Log, observation: native::Observation, memory: &impl Memory) {
+    let Some(mut slot) = log.shared.reserve() else {
+        // Refused demand is retained for the next generation's shared lane.
+        count("operation completion shared lane exhausted");
+        COUNTERS[12].fetch_add(1, Ordering::Relaxed);
+        overflow();
+        return;
+    };
+    let mut event = Event::from_native(observation.row);
+    let length = observation.description_len();
+    event.description_required = length as u64;
+    let (description_error, description_len) = if length > slot.stride() {
+        SHARED_DESCRIPTION_DEMAND.fetch_max(length, Ordering::Relaxed);
+        count("operation completion description byte ring short");
+        (2, 0)
+    } else {
+        let output = unsafe { std::slice::from_raw_parts_mut(slot.bytes(), length) };
+        if let Err(reason) = observation.copy_description(memory, output) {
+            failed_reason(reason);
+            return; // The dropped reservation publishes void.
+        }
+        (0, length)
+    };
+    (event.description_error, event.description_len) = (description_error, description_len);
+    let Ok(sequence) = EVENT_SEQUENCE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+        last.checked_add(1)
+    }) else {
+        failed_reason("operation completion event sequence exhausted");
+        return;
+    };
+    event.sequence = sequence + 1;
+    let order = log.sequence.fetch_add(1, Ordering::Relaxed) + 1;
+    // Shared descriptions stay in their slot; no byte ring is involved.
+    slot.publish(Record {
+        event,
+        order,
+        byte_ring: 0,
+        byte_start: 0,
+        byte_demand: 0,
+    });
+}
+fn append_to_lane(log: &Log, lane: &Lane, observation: native::Observation, memory: &impl Memory) {
     let cursor = unsafe { *lane.write.get() };
     let attempts = unsafe { *lane.attempts.get() }.wrapping_add(1);
     unsafe {
@@ -528,31 +711,38 @@ fn append_observation(
     }
     lane.published.store(cursor + 1, Ordering::Release);
 }
-fn observe_success(log: &Log, lane: &Lane, memory: &impl Memory, base: usize, instance: usize) {
+fn observe_success(
+    log: &Log,
+    target: Target<'_>,
+    memory: &impl Memory,
+    base: usize,
+    instance: usize,
+) {
     match native::observe(memory, base, instance) {
-        Ok(observation) => append_observation(log, lane, observation, memory),
+        Ok(observation) => append_observation(log, target, observation, memory),
         Err(reason) => failed_reason(reason),
     }
 }
 fn observe_return(
     log: &Log,
-    lane: &Lane,
+    target: Target<'_>,
     memory: &impl Memory,
     base: usize,
     instance: usize,
     result: usize,
 ) {
     if result as u8 != 0 {
-        observe_success(log, lane, memory, base, instance);
+        observe_success(log, target, memory, base, instance);
     }
 }
 type NativeFunction = unsafe extern "system-unwind" fn(usize) -> usize;
 unsafe extern "system-unwind" fn completion(instance: usize) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::OperationOutcomes);
     let mut active = Call::enter();
     let original: NativeFunction = unsafe { std::mem::transmute(ORIGINAL.load(Ordering::Acquire)) };
     let generation = crate::world_lifetime::generation();
-    let result = unsafe { original(instance) };
-    // Native AL is the new-completion predicate; preserve full RAX.
+    let result = timing.original(|| unsafe { original(instance) });
+    // P: native AL is the new-completion predicate; preserve full RAX.
     if result as u8 != 0 && ENABLED.load(Ordering::Acquire) {
         if generation != crate::world_lifetime::generation()
             || crate::world_lifetime::invalidating()
@@ -565,11 +755,11 @@ unsafe extern "system-unwind" fn completion(instance: usize) -> usize {
         }
         COUNTERS[0].fetch_add(1, Ordering::Relaxed);
         if let Some(log) = log() {
-            if let Some(lane) = lane(log) {
+            if let Some(lease) = publishing(log) {
                 let memory = unsafe { engine::memory::LiveMemory::new() };
                 observe_return(
-                    log,
-                    lane,
+                    lease.0,
+                    lane(lease.0),
                     &memory,
                     BASE.load(Ordering::Relaxed),
                     instance,
@@ -599,13 +789,14 @@ pub struct Handoff {
     epoch: u64,
     sequence: u64,
     lanes: usize,
+    shared_rejected: u64,
 }
 pub fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::Acquire) {
         return Err("operation completion hooks unavailable");
     }
     let log = log().ok_or("operation completion staging unavailable")?;
-    handoff_buffer(log, engine::walk::Buffer::Growing(cursors))
+    handoff_buffer(seal_offered(log), engine::walk::Buffer::Growing(cursors))
 }
 #[cfg(test)]
 fn handoff_from(log: &Log, cursors: &mut [LaneCursor]) -> Result<Handoff, &'static str> {
@@ -628,11 +819,13 @@ fn handoff_buffer(
         output.cursor = lane.published.load(Ordering::Acquire);
         output.attempts = lane.published_attempts.load(Ordering::Acquire);
     }
+    let shared_rejected = log.shared.rejected();
     Ok(Handoff {
         log: log as *const Log as usize,
         epoch: EPOCH.load(Ordering::Acquire),
         sequence: log.sequence.load(Ordering::Acquire),
         lanes,
+        shared_rejected,
     })
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -664,7 +857,22 @@ impl Handoff {
                     .map_err(|_| "operation completion description demand overflow")?;
             }
         }
+        for (_, index) in self.shared(log)? {
+            bytes =
+                engine::allocation::add(bytes, log.shared.record(index).0.event.description_len)
+                    .map_err(|_| "operation completion description demand overflow")?;
+        }
         Ok(bytes)
+    }
+    /// Published shared records of this interval in log-wide order.
+    fn shared(self, log: &Log) -> Result<Vec<(u64, u64)>, &'static str> {
+        let first = log.consumed.load(Ordering::Acquire);
+        let mut shared = log
+            .shared
+            .published(|record| record.order)
+            .map_err(|_| "operation completion description allocation failed")?;
+        shared.retain(|&(order, _)| order > first && order <= self.sequence);
+        Ok(shared)
     }
     /// Only after the sealed frame (complete or refused) was written. Failed
     /// conversion/encoding/I/O leaves both lane and byte-ring consumption intact.
@@ -705,6 +913,16 @@ impl Handoff {
             lane.consumed_attempts
                 .store(end.attempts, Ordering::Release);
         }
+        // Copied shared records, and any of this sealed interval a refused
+        // frame withdrew, leave with it; later orders stay pending.
+        if let Ok(shared) = log.shared.published(|record| record.order) {
+            for (order, index) in shared {
+                if order <= self.sequence {
+                    log.shared.release(index);
+                }
+            }
+        }
+        log.shared.advance(self.shared_rejected);
         log.consumed.store(self.sequence, Ordering::Release);
         log.consumed_epoch.store(self.epoch, Ordering::Release);
         COUNTERS[2].fetch_add(pending as u64, Ordering::Relaxed);
@@ -765,6 +983,7 @@ impl Handoff {
                 .map(|lane| lane.consumed.load(Ordering::Acquire)),
         )
         .map_err(|_| "operation completion description allocation failed")?;
+        let mut shared = self.shared(log)?.into_iter().peekable();
         let mut copied = 0;
         let mut used = 0_usize;
         while copied < pending {
@@ -776,8 +995,13 @@ impl Handoff {
                 .filter(|(index, (_, end))| tails[*index] < end.cursor)
                 .map(|(index, (lane, _))| {
                     let slot = tails[index] as usize & (lane.records.len() - 1);
-                    (index, unsafe { *lane.records[slot].get() })
+                    (Some(index), unsafe { *lane.records[slot].get() })
                 })
+                .chain(
+                    shared
+                        .peek()
+                        .map(|&(_, index)| (None, log.shared.record(index).0)),
+                )
                 .min_by_key(|(_, record)| record.order);
             let Some((index, record)) = next else {
                 break;
@@ -788,6 +1012,21 @@ impl Handoff {
                 break;
             }
             let mut event = record.event;
+            let Some(index) = index else {
+                // A shared record keeps its description in its own slot.
+                let (_, slot) = shared.next().unwrap();
+                let end = used
+                    .checked_add(event.description_len)
+                    .filter(|end| *end <= bytes.len())
+                    .ok_or("operation completion drain staging short")?;
+                bytes[used..end]
+                    .copy_from_slice(&log.shared.record(slot).1[..event.description_len]);
+                event.description_start = used;
+                used = end;
+                output[copied] = event;
+                copied += 1;
+                continue;
+            };
             let ring = unsafe { &*(record.byte_ring as *const ByteRing) };
             let start = record.byte_start as usize % ring.bytes.len();
             let end = used
@@ -853,6 +1092,7 @@ pub fn status() -> impl serde::Serialize {
                                 .sum::<usize>()
                     })
                     .sum::<usize>()
+                + log.shared.allocated_bytes()
         })
         .sum();
     crate::status::status!({ "runtime_enabled": RUNTIME_ENABLED.load(Ordering::Relaxed),
@@ -865,6 +1105,11 @@ pub fn status() -> impl serde::Serialize {
         "required_description_bytes": log().map_or(0, |log| log.lanes.iter()
             .map(|lane| lane.required_bytes.load(Ordering::Relaxed)).max().unwrap_or(0)),
         "required_thread_lanes": REQUIRED_LANES.load(Ordering::Relaxed),
+        "shared_lane_threads": counters[11], "shared_lane_refusals": counters[12],
+        "shared_lane_entries": log().map_or(0, |log| log.shared.len()),
+        "required_shared_lane_entries": log().map_or(0, |log| log.shared.required_entries()),
+        "shared_lane_description_stride": log().map_or(0, |log| log.shared.stride()),
+        "offered_generation": offered().is_some(),
         "entry_capacity": log().map_or(0, |log| log.entries),
         "description_byte_capacity": log().map_or(0, |log| log.lanes.iter().map(|lane| lane.ring().bytes.len()).sum::<usize>()),
         "refusals": crate::status::sequence(FAILURE_NAMES.iter().enumerate().map(|(index,name)|
@@ -1055,7 +1300,14 @@ mod tests {
         assert_eq!(drain(log).unwrap().0.len(), 0);
     }
     fn complete(log: &Log, fixture: &Fixture, result: usize) {
-        observe_return(log, &log.lanes[0], fixture, BASE, INSTANCE, result);
+        observe_return(
+            log,
+            Target::Lane(&log.lanes[0]),
+            fixture,
+            BASE,
+            INSTANCE,
+            result,
+        );
     }
 
     #[test]
@@ -1595,7 +1847,7 @@ mod tests {
         let before = FAILURES[index].load(Ordering::Relaxed);
         observe_return(
             &log,
-            &log.lanes[0],
+            Target::Lane(&log.lanes[0]),
             &FailTail(Fixture::new(&[0xfd; 60])),
             BASE,
             INSTANCE,
@@ -1620,7 +1872,7 @@ mod tests {
         let lane = &log.lanes[0];
         let ring = lane.byte_ring.load(Ordering::Acquire);
         for _ in 0..4 {
-            observe_return(&log, lane, &fixture, BASE, INSTANCE, 1);
+            observe_return(&log, Target::Lane(lane), &fixture, BASE, INSTANCE, 1);
             assert_eq!(
                 drain(&log),
                 Err("operation completion observation restarted or lost")
@@ -1717,5 +1969,134 @@ mod tests {
         restore_sequence(saved - 1).unwrap();
         complete(&log, &Fixture::new(b"other campaign"), 1);
         assert_eq!(drain(&log).unwrap().0[0].sequence, saved + 2);
+    }
+
+    /// The production callback path after the native original returns.
+    fn complete_through(log: &Log, fixture: &Fixture) {
+        let lease = publishing(log).unwrap();
+        observe_return(lease.0, lane(lease.0), fixture, BASE, INSTANCE, 1);
+    }
+
+    #[test]
+    fn operation_completion_writers_beyond_the_lane_count_lose_nothing_in_one_generation() {
+        let _serial = TEST.lock().unwrap();
+        let required = REQUIRED_LANES.load(Ordering::Relaxed);
+        let shared_threads = COUNTERS[11].load(Ordering::Relaxed);
+        // The generation's only lane is already registered.
+        let log = new_log(8, 32);
+        prime(&log);
+        let epoch = EPOCH.load(Ordering::Acquire);
+        std::thread::scope(|scope| {
+            for owner in 1..=3_u32 {
+                let log = &log;
+                scope.spawn(move || {
+                    let description = format!("thread {owner}");
+                    let fixture = Fixture::new(description.as_bytes());
+                    fixture.identify(owner, owner);
+                    complete_through(log, &fixture);
+                });
+            }
+        });
+        assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
+        assert!(COUNTERS[11].load(Ordering::Relaxed) >= shared_threads + 3);
+        assert!(REQUIRED_LANES.load(Ordering::Relaxed) >= 4);
+        let (events, bytes) = drain(&log).unwrap();
+        let mut owners = events.iter().map(|event| event.owner).collect::<Vec<_>>();
+        owners.sort_unstable();
+        assert_eq!(owners, [1, 2, 3]);
+        for event in &events {
+            assert_eq!(
+                &bytes[event.description_start..event.description_start + event.description_len],
+                format!("thread {}", event.owner).as_bytes()
+            );
+        }
+        assert!(log.shared.published(|r| r.order).unwrap().is_empty());
+        REQUIRED_LANES.store(required, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn operation_completion_shared_slot_short_keeps_its_record_and_sizes_the_next_slot() {
+        let _serial = TEST.lock().unwrap();
+        let log = new_log(2, 4);
+        prime(&log);
+        let long = vec![0xfe; 9];
+        let index = FAILURE_NAMES
+            .iter()
+            .position(|name| *name == "operation completion description byte ring short")
+            .unwrap();
+        let before = FAILURES[index].load(Ordering::Relaxed);
+        observe_return(
+            &log,
+            Target::Shared,
+            &Fixture::new(&long),
+            BASE,
+            INSTANCE,
+            1,
+        );
+        assert_eq!(FAILURES[index].load(Ordering::Relaxed), before + 1);
+        assert!(SHARED_DESCRIPTION_DEMAND.load(Ordering::Relaxed) >= 9);
+        let (events, bytes) = drain(&log).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            (events[0].description_error, events[0].description_required),
+            (2, 9)
+        );
+        assert!(bytes.is_empty());
+        // An exhausted shared lane is a named, counted refusal.
+        let refused = FAILURE_NAMES
+            .iter()
+            .position(|name| *name == "operation completion shared lane exhausted")
+            .unwrap();
+        let refusals = FAILURES[refused].load(Ordering::Relaxed);
+        let held: Vec<_> = (0..log.shared.len())
+            .map(|_| log.shared.reserve().unwrap())
+            .collect();
+        let refused_fixture = Fixture::new(b"x");
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            observe_return(&log, Target::Shared, &refused_fixture, BASE, INSTANCE, 1);
+        });
+        assert_eq!(FAILURES[refused].load(Ordering::Relaxed), refusals + 1);
+        assert!(log.shared.required_entries() > log.shared.len());
+        drop(held);
+    }
+
+    #[test]
+    fn operation_completion_lane_growth_seals_the_generation_without_losing_its_interval() {
+        let _serial = TEST.lock().unwrap();
+        unsafe {
+            release();
+        }
+        let required = REQUIRED_LANES.load(Ordering::Relaxed);
+        presize(8, 64);
+        let old = log().unwrap();
+        old.registered.store(1, Ordering::Relaxed);
+        prime(old);
+        complete(old, &Fixture::new(b"before growth"), 1);
+        let epoch = EPOCH.load(Ordering::Acquire);
+        // A thread registered beyond every lane asks for a dedicated one.
+        REQUIRED_LANES.fetch_max(old.lanes.len() + 1, Ordering::Relaxed);
+        presize(8, 64);
+        assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
+        assert!(std::ptr::eq(log().unwrap(), old));
+        let fresh = offered().unwrap();
+        assert!(fresh.lanes.len() > old.lanes.len());
+        // The lane boundary seals the old generation for its own handoff.
+        let sealed = crate::allocation_failure_tests::with_allocations_denied(|| seal_offered(old));
+        assert!(std::ptr::eq(sealed, old));
+        assert!(std::ptr::eq(log().unwrap(), fresh));
+        assert!(offered().is_none());
+        // A callback still holding the old generation follows its successor.
+        complete_through(old, &Fixture::new(b"after seal"));
+        let (events, bytes) = drain(old).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(bytes, b"before growth");
+        let (events, bytes) = drain(fresh).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(bytes, b"after seal");
+        assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
+        REQUIRED_LANES.store(required, Ordering::Relaxed);
+        unsafe {
+            release();
+        }
     }
 }

@@ -378,21 +378,28 @@ fn observe_totals(
     let division_read = matches!(
         &frame.tables[TableId::Divisions.index()],
         TableUpdate::Snapshot(_) | TableUpdate::Delta { .. } | TableUpdate::Unchanged { .. }
-    ) && slot_read(&decoded.metrics, TableId::Divisions, hour);
+    ) && slot_read(replay.format, &decoded.metrics, TableId::Divisions, hour);
     let template_read = matches!(
         &frame.tables[TableId::DivisionTemplateIcons.index()],
         TableUpdate::Snapshot(_) | TableUpdate::Delta { .. } | TableUpdate::Unchanged { .. }
-    ) && slot_read(&decoded.metrics, TableId::DivisionTemplateIcons, hour);
+    ) && slot_read(
+        replay.format,
+        &decoded.metrics,
+        TableId::DivisionTemplateIcons,
+        hour,
+    );
     if division_read {
         result.strength = true;
         result.divisions = true;
-        result.manpower |= slot_read(&decoded.metrics, TableId::DivisionLandInputs, hour)
-            && matches!(
-                &frame.tables[TableId::DivisionLandInputs.index()],
-                TableUpdate::Snapshot(_)
-                    | TableUpdate::Delta { .. }
-                    | TableUpdate::Unchanged { .. }
-            );
+        result.manpower |= slot_read(
+            replay.format,
+            &decoded.metrics,
+            TableId::DivisionLandInputs,
+            hour,
+        ) && matches!(
+            &frame.tables[TableId::DivisionLandInputs.index()],
+            TableUpdate::Snapshot(_) | TableUpdate::Delta { .. } | TableUpdate::Unchanged { .. }
+        );
         result.battalions |= template_read;
     }
     if replay
@@ -410,7 +417,14 @@ fn observe_totals(
     let census = decoded
         .complete::<tables::DivisionCensus>()
         .ok()
-        .filter(|_| slot_read(&decoded.metrics, TableId::DivisionCensus, hour));
+        .filter(|_| {
+            slot_read(
+                replay.format,
+                &decoded.metrics,
+                TableId::DivisionCensus,
+                hour,
+            )
+        });
     result.inventory_fallback |= division_read && census.is_none();
     let mut counts = HashMap::<u32, Option<i64>>::new();
     let mut invalid = false;
@@ -441,7 +455,12 @@ fn observe_totals(
         let mut total = inventory.map_or_else(Totals::default, |inventory| {
             inventory.totals(slot, composition.is_some())
         });
-        if !slot_read(&decoded.metrics, TableId::DivisionLandInputs, hour) {
+        if !slot_read(
+            replay.format,
+            &decoded.metrics,
+            TableId::DivisionLandInputs,
+            hour,
+        ) {
             total.values[6] = None;
             total.values[7] = None;
         }

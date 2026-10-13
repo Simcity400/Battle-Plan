@@ -332,8 +332,188 @@ fn request(accumulator: usize, key: u32, depth: i32, scale: i64) -> SourceReques
     }
 }
 
-/// Read one admitted class-zero seed without retrying missing fields.
-/// The caller supplies its existing fresh exercise result.
+/// Per-capture memo of the attrition reads whose result depends only on the
+/// listed key, never on the division asking. Each entry keeps the exact result
+/// the first division's read produced, failure included, so later divisions of
+/// the same country, state, province or template read nothing again and can
+/// never retry a failed operand. The caller clears it before every capture:
+/// entries are valid only inside one parked hourly boundary, where the
+/// simulation thread that writes these objects is held. `Memo::default()` is
+/// disabled: every read goes to memory, as without a memo.
+#[derive(Default)]
+pub struct Memo {
+    enabled: bool,
+    /// Effective modifier lookup reads only the accumulator array and the key's
+    /// static definition: (accumulator, key) -> effective value.
+    modifiers: crate::combat_sources::Map<(usize, u32), Field<i64>>,
+    /// Country resolution by raw reference.
+    countries: crate::combat_sources::Map<u32, Field<ccountry::Country>>,
+    /// Mode-zero war-state query by country object.
+    at_war: crate::combat_sources::Map<usize, Field<bool>>,
+    /// The roster state term by (state, roster owner).
+    states: crate::combat_sources::Map<(usize, u32), Field<i64>>,
+    /// State country accumulator by (state, owner).
+    state_roots: crate::combat_sources::Map<(usize, u32), Field<usize>>,
+    /// The weather manager's per-province accumulator by province id.
+    weather: crate::combat_sources::Map<u32, Field<Option<usize>>>,
+    /// Special-forces composition ratio by template object.
+    templates: crate::combat_sources::Map<usize, Field<i64>>,
+    requests: u64,
+    hits: u64,
+}
+
+impl Memo {
+    /// An active, empty memo. Storage grows on the acquiring worker.
+    pub fn new() -> Self {
+        Self {
+            enabled: true,
+            ..Self::default()
+        }
+    }
+
+    /// Forget every entry and count, keeping the storage for the next capture.
+    pub fn clear(&mut self) {
+        self.modifiers.clear();
+        self.countries.clear();
+        self.at_war.clear();
+        self.states.clear();
+        self.state_roots.clear();
+        self.weather.clear();
+        self.templates.clear();
+        self.requests = 0;
+        self.hits = 0;
+    }
+
+    /// Keyed reads requested since the last clear, and how many were answered
+    /// from an earlier division's read.
+    pub fn counts(&self) -> (u64, u64) {
+        (self.requests, self.hits)
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        fn bytes<K, V>(map: &crate::combat_sources::Map<K, V>) -> usize {
+            map.capacity() * (std::mem::size_of::<(K, V)>() + 1)
+        }
+        bytes(&self.modifiers)
+            + bytes(&self.countries)
+            + bytes(&self.at_war)
+            + bytes(&self.states)
+            + bytes(&self.state_roots)
+            + bytes(&self.weather)
+            + bytes(&self.templates)
+    }
+}
+
+fn remember<K: Copy + Eq + std::hash::Hash, V: Copy>(
+    enabled: bool,
+    counts: (&mut u64, &mut u64),
+    map: &mut crate::combat_sources::Map<K, Field<V>>,
+    key: K,
+    read: impl FnOnce() -> Field<V>,
+) -> Field<V> {
+    if !enabled {
+        return read();
+    }
+    *counts.0 += 1;
+    if let Some(&value) = map.get(&key) {
+        *counts.1 += 1;
+        return value;
+    }
+    let value = read();
+    // A refused reservation has already reported terminal allocation failure;
+    // the value itself was read exactly as without the memo.
+    if crate::allocation::reserve_map(map, 1).is_ok() {
+        map.insert(key, value);
+    }
+    value
+}
+
+impl Memo {
+    fn modifier(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        accumulator: usize,
+        key: u32,
+    ) -> Field<i64> {
+        remember(
+            self.enabled,
+            (&mut self.requests, &mut self.hits),
+            &mut self.modifiers,
+            (accumulator, key),
+            || modifier(memory, base, accumulator, key),
+        )
+    }
+
+    fn country(
+        &mut self,
+        raw: u32,
+        read: impl FnOnce() -> Field<ccountry::Country>,
+    ) -> Field<ccountry::Country> {
+        remember(
+            self.enabled,
+            (&mut self.requests, &mut self.hits),
+            &mut self.countries,
+            raw,
+            read,
+        )
+    }
+
+    fn at_war(&mut self, memory: &impl Memory, base: usize, country: usize) -> Field<bool> {
+        remember(
+            self.enabled,
+            (&mut self.requests, &mut self.hits),
+            &mut self.at_war,
+            country,
+            || at_war(memory, base, country),
+        )
+    }
+
+    fn state_root(
+        &mut self,
+        memory: &impl Memory,
+        game_state: usize,
+        state: usize,
+        owner: u32,
+    ) -> Field<usize> {
+        remember(
+            self.enabled,
+            (&mut self.requests, &mut self.hits),
+            &mut self.state_roots,
+            (state, owner),
+            || cstate::country_modifier_accumulator(memory, game_state, state, owner),
+        )
+    }
+
+    fn weather(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        id: u32,
+    ) -> Field<Option<usize>> {
+        remember(
+            self.enabled,
+            (&mut self.requests, &mut self.hits),
+            &mut self.weather,
+            id,
+            || weather_accumulator(memory, base, game_state, id),
+        )
+    }
+
+    fn template_ratio(&mut self, memory: &impl Memory, base: usize, template: usize) -> Field<i64> {
+        remember(
+            self.enabled,
+            (&mut self.requests, &mut self.hits),
+            &mut self.templates,
+            template,
+            || template_ratio(memory, base, template),
+        )
+    }
+}
+
+/// Reads one already admitted class-zero seed. Missing seed fields are never
+/// retried. The caller supplies the existing fresh exercise result.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -353,6 +533,29 @@ pub fn capture_with_acclimatization(
     seed: &carmy::DivisionSeed,
     exercising: Field<u8>,
     fresh: Option<Field<i64>>,
+) -> Inputs {
+    capture_memoized(
+        memory,
+        base,
+        game_state,
+        seed,
+        exercising,
+        fresh,
+        &mut Memo::default(),
+    )
+}
+
+/// [`capture_with_acclimatization`] answering keyed reads from `memo` when an
+/// earlier division of the same capture already made them. Every field is the
+/// one the unmemoized read returns; only repeated native reads are skipped.
+pub fn capture_memoized(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    seed: &carmy::DivisionSeed,
+    exercising: Field<u8>,
+    fresh: Option<Field<i64>>,
+    memo: &mut Memo,
 ) -> Inputs {
     if seed.primary_vtable != base.checked_add(carmy::VTABLE_RVA).map(|p| p as u64)
         || seed.secondary_vtable
@@ -386,11 +589,14 @@ pub fn capture_with_acclimatization(
                     .ok_or("attrition roster owner unavailable")
             }
         });
-    let country = owner.and_then(|raw| countries.as_ref().map_err(|reason| *reason)?.resolve(raw));
+    let country = owner.and_then(|raw| {
+        let countries = countries.as_ref().map_err(|reason| *reason)?;
+        memo.country(raw, || countries.resolve(raw))
+    });
     let country_accumulator =
         country.and_then(|country| at(country.pointer, ccountry::MODIFIER_ACCUMULATOR));
     let upkeep_modifier = country_accumulator.and_then(|root| {
-        modifier(
+        memo.modifier(
             memory,
             base,
             root,
@@ -428,7 +634,7 @@ pub fn capture_with_acclimatization(
         if !moving {
             return Ok(None);
         }
-        terrain(memory, base, seed.pointer, province)
+        terrain(memory, base, seed.pointer, province, memo)
     });
     let state = (|| {
         let state = field::<u64>(memory, province, cprovince::STATE)? as usize;
@@ -445,18 +651,29 @@ pub fn capture_with_acclimatization(
         let roster = seed
             .roster_owner
             .ok_or("attrition roster owner unavailable")?;
-        let root = cstate::country_modifier_accumulator(memory, game_state, state, roster)?;
-        let mut value = modifier(memory, base, root, ATTRITION)?;
-        let controller = field(memory, state, cstate::CONTROLLER)?;
-        if ccountry::movement_friendly(memory, base, game_state, roster, controller)? {
-            value = value.wrapping_add(modifier(memory, base, root, ATTRITION_FOR_CONTROLLER)?);
-        } else if ccountry::movement_enemy(memory, base, game_state, roster, controller)? {
-            value = value.wrapping_add(modifier(memory, base, root, ENEMY_ATTRITION)?);
-        }
-        Ok(Some(value))
+        // Every operand below follows only (state, roster owner).
+        remember(
+            memo.enabled,
+            (&mut memo.requests, &mut memo.hits),
+            &mut memo.states,
+            (state, roster),
+            || {
+                let root = cstate::country_modifier_accumulator(memory, game_state, state, roster)?;
+                let mut value = modifier(memory, base, root, ATTRITION)?;
+                let controller = field(memory, state, cstate::CONTROLLER)?;
+                if ccountry::movement_friendly(memory, base, game_state, roster, controller)? {
+                    value =
+                        value.wrapping_add(modifier(memory, base, root, ATTRITION_FOR_CONTROLLER)?);
+                } else if ccountry::movement_enemy(memory, base, game_state, roster, controller)? {
+                    value = value.wrapping_add(modifier(memory, base, root, ENEMY_ATTRITION)?);
+                }
+                Ok(value)
+            },
+        )
+        .map(Some)
     });
     output.supply = Ok(Supply {
-        penalty: supply_penalty(memory, base, seed, country_accumulator),
+        penalty: supply_penalty(memory, base, seed, country_accumulator, memo),
         attrition_factor: field(memory, base, OUT_OF_SUPPLY_ATTRITION_RVA),
     });
 
@@ -467,8 +684,9 @@ pub fn capture_with_acclimatization(
         let raw = seed
             .logical_owner
             .ok_or("attrition logical owner unavailable")?;
-        let country = countries.as_ref().map_err(|reason| *reason)?.resolve(raw)?;
-        at_war(memory, base, country.pointer)
+        let countries = countries.as_ref().map_err(|reason| *reason)?;
+        let country = memo.country(raw, || countries.resolve(raw))?;
+        memo.at_war(memory, base, country.pointer)
     });
     let moving_root = weather_gate.and_then(|gate| {
         if !gate {
@@ -480,10 +698,10 @@ pub fn capture_with_acclimatization(
         let raw = seed
             .logical_owner
             .ok_or("attrition logical owner unavailable")?;
-        cstate::country_modifier_accumulator(memory, game_state, state, raw).map(Some)
+        memo.state_root(memory, game_state, state, raw).map(Some)
     });
     output.moving_state = moving_root.and_then(|root| {
-        root.map(|root| modifier(memory, base, root, ATTRITION))
+        root.map(|root| memo.modifier(memory, base, root, ATTRITION))
             .transpose()
     });
     output.sources[STATE_SOURCE] = output.moving_state.and_then(|value| {
@@ -501,7 +719,7 @@ pub fn capture_with_acclimatization(
         if !gate {
             return Ok(None);
         }
-        weather_accumulator(
+        memo.weather(
             memory,
             base,
             game_state,
@@ -511,7 +729,7 @@ pub fn capture_with_acclimatization(
     output.weather = weather_root.map(|root| {
         let root = root?;
         let acclimatization = fresh.unwrap_or_else(|| fresh_acclimatization(memory, base, seed));
-        let attrition = modifier(memory, base, root, ATTRITION);
+        let attrition = memo.modifier(memory, base, root, ATTRITION);
         output.sources[WEATHER_SOURCE] =
             attrition.map(|value| (value != 0).then(|| request(root, ATTRITION, -1, ONE)));
         let heat = thermal(
@@ -525,6 +743,7 @@ pub fn capture_with_acclimatization(
             HEAT_ATTRITION_FACTOR,
             HEAT_SOURCE,
             &mut output.sources,
+            memo,
         );
         let winter = thermal(
             memory,
@@ -537,6 +756,7 @@ pub fn capture_with_acclimatization(
             WINTER_ATTRITION_FACTOR,
             WINTER_SOURCE,
             &mut output.sources,
+            memo,
         );
         Some(Weather {
             acclimatization,
@@ -580,7 +800,7 @@ pub fn capture_with_acclimatization(
         }))
     });
     output.country_attrition_modifier =
-        country_accumulator.and_then(|root| modifier(memory, base, root, ATTRITION));
+        country_accumulator.and_then(|root| memo.modifier(memory, base, root, ATTRITION));
     // This formatter call is unconditional, including a zero root value.
     output.sources[COUNTRY_SOURCE] =
         country_accumulator.map(|root| Some(request(root, ATTRITION, 2, ONE)));
@@ -634,6 +854,7 @@ fn terrain(
     base: usize,
     army: usize,
     province: usize,
+    memo: &mut Memo,
 ) -> Field<Option<Terrain>> {
     let definition = carmy::movement_definition(memory, base, province)?;
     let terrain = field::<u64>(memory, definition, crate::province_definition::TERRAIN)? as usize;
@@ -668,7 +889,7 @@ fn terrain(
     })();
     Ok(Some(Terrain {
         name: at(terrain, cterrain_type::NAME),
-        attrition: at(terrain, 0xb8).and_then(|root| modifier(memory, base, root, ATTRITION)),
+        attrition: at(terrain, 0xb8).and_then(|root| memo.modifier(memory, base, root, ATTRITION)),
         equipment,
     }))
 }
@@ -780,9 +1001,11 @@ fn thermal(
     factor_key: u32,
     source: usize,
     sources: &mut [Field<Option<SourceRequest>>; SOURCE_COUNT],
+    memo: &mut Memo,
 ) -> Field<Option<Thermal>> {
     let observed = acclimatization.and_then(|scale| {
-        modifier(memory, base, weather, key).map(|value| (product(value, scale), scale))
+        memo.modifier(memory, base, weather, key)
+            .map(|value| (product(value, scale), scale))
     });
     let (value, scale) = match observed {
         Ok(observed) => observed,
@@ -796,7 +1019,8 @@ fn thermal(
     }
     sources[source] = Ok(Some(request(weather, key, -1, scale)));
     sources[source + 1] = country.map(|country| Some(request(country, factor_key, -1, ONE)));
-    let country_factor = country.and_then(|country| modifier(memory, base, country, factor_key));
+    let country_factor =
+        country.and_then(|country| memo.modifier(memory, base, country, factor_key));
     let leader_root = (|| {
         let group = seed
             .orders_group
@@ -830,7 +1054,7 @@ fn thermal(
     sources[source + 2] =
         leader_root.map(|root| root.map(|root| request(root, factor_key, -1, ONE)));
     let leader_factor = leader_root.and_then(|root| {
-        root.map(|root| modifier(memory, base, root, factor_key))
+        root.map(|root| memo.modifier(memory, base, root, factor_key))
             .transpose()
     });
     Ok(Some(Thermal {
@@ -845,6 +1069,7 @@ fn supply_penalty(
     base: usize,
     seed: &carmy::DivisionSeed,
     country: Field<usize>,
+    memo: &mut Memo,
 ) -> Field<i64> {
     if seed
         .naval_transfer_membership
@@ -884,14 +1109,14 @@ fn supply_penalty(
     if penalty == 0 {
         return Ok(penalty);
     }
-    let ratio = template_ratio(
+    let ratio = memo.template_ratio(
         memory,
         base,
         seed.standard_template
             .ok_or("attrition standard template unavailable")?,
     )?;
     let country = country?;
-    let mut multiplier = ONE.wrapping_add(modifier(
+    let mut multiplier = ONE.wrapping_add(memo.modifier(
         memory,
         base,
         country,
@@ -900,7 +1125,7 @@ fn supply_penalty(
     if ratio > 0 {
         multiplier = multiplier.wrapping_add(product(
             ratio,
-            modifier(
+            memo.modifier(
                 memory,
                 base,
                 country,
@@ -909,7 +1134,7 @@ fn supply_penalty(
         ));
     }
     if let Some(leader) = carmy_leader::movement_accumulator_seeded(memory, base, seed)? {
-        multiplier = multiplier.wrapping_add(modifier(
+        multiplier = multiplier.wrapping_add(memo.modifier(
             memory,
             base,
             leader,
@@ -918,7 +1143,7 @@ fn supply_penalty(
         if ratio > 0 {
             multiplier = multiplier.wrapping_add(product(
                 ratio,
-                modifier(
+                memo.modifier(
                     memory,
                     base,
                     leader,

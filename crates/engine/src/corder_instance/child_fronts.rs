@@ -49,20 +49,43 @@ struct OwnerInputs {
     state: u8,
     child_count: i32,
 }
+/// A plan whose stored child array [`walk_areas`] read, left for
+/// [`walk_groups`] in census visit order: an empty array, whose zero-length
+/// span takes its place in the section arena, or a nonempty type-2 array,
+/// whose owner's army-group operands come from the OOB source. `owner` is
+/// the visit's root index and `array` the header the area phase read.
+#[derive(Clone, Copy, Debug, Default)]
+struct Pending {
+    plan: usize,
+    owner: usize,
+    array: Array,
+}
 #[derive(Default)]
 pub struct Scratch {
     groups: Vec<(usize, u64)>,
     owners: Vec<OwnerInputs>,
+    /// The plans the area phase of this pass left for its group phase.
+    pending: Vec<Pending>,
 }
 impl Scratch {
     pub fn allocated_bytes(&self) -> usize {
         self.groups.capacity() * std::mem::size_of::<(usize, u64)>()
             + self.owners.capacity() * std::mem::size_of::<OwnerInputs>()
+            + self.pending.capacity() * std::mem::size_of::<Pending>()
     }
-    fn begin(&mut self, roots: &[corders_group::Root]) -> Result<(), &'static str> {
+    /// Whether the group phase reads an owner's army-group operands, so it
+    /// needs the OOB source; an empty array needs none.
+    pub fn needs_group_source(&self) -> bool {
+        self.pending.iter().any(|pending| pending.array.count != 0)
+    }
+    fn begin(&mut self, roots: &[corders_group::Root], plans: usize) -> Result<(), &'static str> {
         self.groups.clear();
         self.owners.clear();
+        self.pending.clear();
         crate::allocation::reserve(&mut self.owners, roots.len())
+            .map_err(|_| "child front group inputs allocation failed")?;
+        // At most one pending entry per plan: the area phase never allocates.
+        crate::allocation::reserve(&mut self.pending, plans)
             .map_err(|_| "child front group inputs allocation failed")?;
         // 0 unreached, 1 ordinary, 2 AG/count captured, 3 discriminator failed,
         // 4 count failed. Never retry a refused operand in this held pass.
@@ -123,7 +146,7 @@ impl Scratch {
         Ok(Some(owner.child_count))
     }
 }
-#[derive(Default, Debug)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Walk {
     pub sections: usize,
     pub required_sections: usize,
@@ -236,6 +259,10 @@ fn sections(
 /// `plans` is the core walk's complete sorted result. No previous-hour census is admitted.
 /// `group_source` serves only this pass's owned OOB discriminator and full child
 /// header observations. A missing or failed source never falls back to `memory`.
+///
+/// The walk is [`walk_areas`] then [`walk_groups`] over the same plans and
+/// scratch; the Orders job runs the first and the ChildFronts job, once the
+/// OOB copy is in, the second.
 #[allow(clippy::too_many_arguments)]
 pub fn walk(
     memory: &impl Memory,
@@ -251,25 +278,82 @@ pub fn walk(
     scratch: &mut Scratch,
     group_source: Option<&impl Memory>,
 ) -> Walk {
+    let areas = walk_areas(
+        memory,
+        base,
+        game_state,
+        roots,
+        visits,
+        orders,
+        paths,
+        source,
+        plans,
+        &[],
+        &[],
+        scratch,
+    );
+    walk_groups(
+        memory,
+        base,
+        roots,
+        plans,
+        output,
+        scratch,
+        group_source,
+        areas,
+    )
+}
+
+/// The child-front operands every plan takes from `memory` alone: the first
+/// path province's controller-area count and, above two, the stored child
+/// array's header. Each plan with a front and a path gets its [`Inputs`]; an
+/// empty array's zero-length span and a nonempty type-2 array's owner operands
+/// are left in `scratch` for [`walk_groups`], which must follow over the same
+/// plans and scratch in this same held pass. Reads nothing from the OOB source
+/// and appends no section. Its reads and their failures are those the single
+/// walk makes before an owner's operands, since memory cannot change while the
+/// pass holds the game thread.
+///
+/// `placement` is this pass's complete plan walk's [`super::PlanOrder::rows`]
+/// (or empty): each census order's plan, and census row, is taken from it when
+/// that row holds the order's key, and searched for otherwise.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_areas(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    roots: &[corders_group::Root],
+    visits: &[Visit],
+    orders: &[Row],
+    paths: &[u32],
+    source: Outcome,
+    plans: &mut [PlanRow],
+    placement: &[u32],
+    census: &[u32],
+    scratch: &mut Scratch,
+) -> Walk {
     let mut report = Walk::default();
     for plan in plans.iter_mut() {
         plan.child_fronts = None;
     }
+    // Nothing of an earlier pass is left for this pass's group phase.
+    scratch.pending.clear();
     if source != (Outcome::Rows { len: plans.len() })
         || orders.len() != plans.len()
-        || scratch.begin(roots).is_err()
+        || scratch.begin(roots, plans.len()).is_err()
     {
         report.area_failures = plans.len();
         return report;
     }
     let mut provinces = None;
-    for visit in visits.iter().filter(|v| v.pointer != 0) {
+    for (ordinal, (_, visit)) in super::census_orders(visits, census).enumerate() {
         let Some(root) = roots.get(visit.owner) else {
             report.area_failures += 1;
             continue;
         };
         let key = (u128::from(root.handle) << 32) | u128::from(visit.instance);
-        let Ok(index) = plans.binary_search_by_key(&key, |plan| plan.key()) else {
+        let guess = placement.get(ordinal).copied();
+        let Ok(index) = super::keyed_row(plans, guess, key, |plan| plan.key()) else {
             report.area_failures += 1;
             continue;
         };
@@ -277,7 +361,10 @@ pub fn walk(
         if plan.front_valid == 0 {
             continue;
         }
-        let Ok(order_index) = orders.binary_search_by_key(&key, |order| order.key()) else {
+        // The census rows hold the plans' keys in the same order.
+        let Ok(order_index) =
+            super::keyed_row(orders, Some(index as u32), key, |order| order.key())
+        else {
             report.area_failures += 1;
             continue;
         };
@@ -309,40 +396,21 @@ pub fn walk(
             if let Some(array) = array {
                 inputs.count = Some(array.count);
                 if array.count == 0 {
-                    inputs.sections = Some((report.sections, 0));
-                } else if order.order_type == TYPE_LINE {
-                    match scratch.child_count(group_source, root, visit.owner) {
-                        Ok(Some(count)) => {
-                            inputs.group_child_count = Some(count);
-                            if count > 0 {
-                                let before = report.sections;
-                                match scratch.index(roots).and_then(|()| {
-                                    sections(
-                                        memory,
-                                        base,
-                                        array,
-                                        // The stored group is passed directly to the first-match span scan, so
-                                        // every demanded match is at or before the current index.
-                                        array.count.min(count as u32),
-                                        scratch,
-                                        output,
-                                        &mut report.sections,
-                                    )
-                                }) {
-                                    Ok(span) => inputs.sections = Some(span),
-                                    Err(_) => {
-                                        report.sections = before;
-                                        report.section_failures += 1;
-                                    }
-                                }
-                            } else if count < 0 {
-                                report.section_failures += 1;
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(_) => {
-                            report.section_failures += 1;
-                        }
+                    // The group phase moves this span to its place in the
+                    // arena; an empty span projects the same anywhere.
+                    inputs.sections = Some((0, 0));
+                }
+                // `begin` reserved one entry per plan and each visit names a
+                // distinct plan, so this never grows.
+                if array.count == 0 || order.order_type == TYPE_LINE {
+                    if scratch.pending.len() < scratch.pending.capacity() {
+                        scratch.pending.push(Pending {
+                            plan: index,
+                            owner: visit.owner,
+                            array,
+                        });
+                    } else if array.count != 0 {
+                        report.section_failures += 1;
                     }
                 }
             } else {
@@ -351,6 +419,75 @@ pub fn walk(
         }
         plan.child_fronts = Some(inputs);
     }
+    report
+}
+
+/// The rest of [`walk`] after [`walk_areas`] (`areas` is its report for these
+/// same plans and scratch, in this same held pass): each nonempty type-2
+/// array's owner discriminator and signed army-group child count from
+/// `group_source`, then the demanded stored prefix from `memory`, appended to
+/// `output` in census visit order, and each empty array's zero-length span at
+/// its place among them. Returns the single walk's report.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_groups(
+    memory: &impl Memory,
+    base: usize,
+    roots: &[corders_group::Root],
+    plans: &mut [PlanRow],
+    output: &mut Vec<Section>,
+    scratch: &mut Scratch,
+    group_source: Option<&impl Memory>,
+    areas: Walk,
+) -> Walk {
+    let mut report = areas;
+    for at in 0..scratch.pending.len() {
+        let Pending { plan, owner, array } = scratch.pending[at];
+        let (Some(root), Some(Some(inputs))) = (
+            roots.get(owner),
+            plans.get_mut(plan).map(|row| row.child_fronts.as_mut()),
+        ) else {
+            continue;
+        };
+        if array.count == 0 {
+            inputs.sections = Some((report.sections, 0));
+            continue;
+        }
+        match scratch.child_count(group_source, root, owner) {
+            Ok(Some(count)) => {
+                inputs.group_child_count = Some(count);
+                if count > 0 {
+                    let before = report.sections;
+                    match scratch.index(roots).and_then(|()| {
+                        sections(
+                            memory,
+                            base,
+                            array,
+                            // The child-front group walk passes stored[i].group
+                            // directly to the first-match span scan, so every
+                            // demanded match is at or before i.
+                            array.count.min(count as u32),
+                            scratch,
+                            output,
+                            &mut report.sections,
+                        )
+                    }) {
+                        Ok(span) => inputs.sections = Some(span),
+                        Err(_) => {
+                            report.sections = before;
+                            report.section_failures += 1;
+                        }
+                    }
+                } else if count < 0 {
+                    report.section_failures += 1;
+                }
+            }
+            Ok(None) => {}
+            Err(_) => {
+                report.section_failures += 1;
+            }
+        }
+    }
+    scratch.pending.clear();
     report.required_sections = report.sections;
     report
 }

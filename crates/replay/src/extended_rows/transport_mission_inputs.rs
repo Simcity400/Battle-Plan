@@ -1,49 +1,7 @@
-//! One hourly transport-risk source packet on the reserved singleton.
-//! Capture owns the physical navy census and one receiver dictionary. Viewer
-//! selection, hover targets and route queries never enter this packet.
+//! Value types of the retired TransportSearchRegions and TransportReceivers
+//! tables ([`super::RESERVED_SPLIT_TABLES`]): wire tombstones that keep the
+//! tables' framing. Nothing reads or writes them.
 use super::*;
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct TransportMissionInputs {
-    pub sample_hour: i32,
-    /// Complete physical manager order, including null slot zero when nonempty.
-    /// Empty is an authenticated null/empty manager, which supplies null
-    /// strategic navy for every requested slot. None refuses this domain
-    /// independently of the receiver dictionary.
-    pub navies: Option<Vec<TransportNavy>>,
-    /// Unique increasing full handles, including genuine outside-census
-    /// receivers. No pointer or ordinary motion-row membership is persisted.
-    pub receivers: Option<Vec<TransportMissionReceiver>>,
-    /// Original native strategic-region search graph, independent of navies.
-    pub naval_search: Option<TransportNavalSearch>,
-    /// Same-hour original country and strategic-region spotting observations.
-    pub spotting_context: Option<TransportSpottingContext>,
-    /// Same-hour original physical strategic-air roots and regional headers.
-    pub air: Option<TransportAirInputs>,
-    /// Original ordered SHIPS loans, including genuine fading receivers.
-    pub risk_ships: Option<TransportRiskShips>,
-}
-value_struct!(TransportMissionInputs {
-    sample_hour: i32,
-    navies: Option<Vec<TransportNavy>>,
-    receivers: Option<Vec<TransportMissionReceiver>>,
-    naval_search: Option<TransportNavalSearch>,
-    spotting_context: Option<TransportSpottingContext>,
-    air: Option<TransportAirInputs>,
-    risk_ships: Option<TransportRiskShips>,
-});
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct TransportNavalSearch {
-    pub width: Option<i32>,
-    /// Original physical region roster; None is an authenticated null slot.
-    pub regions: Option<Vec<Option<TransportNavalRegion>>>,
-    /// Exact definition name bytes of authenticated CAdjacencyRule objects.
-    pub rules: Vec<Vec<u8>>,
-}
-value_struct!(TransportNavalSearch {
-    width: Option<i32>, regions: Option<Vec<Option<TransportNavalRegion>>>, rules: Vec<Vec<u8>>,
-});
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TransportNavalRegion {
@@ -61,39 +19,6 @@ pub struct TransportNavalEdge {
     pub rules: Vec<Option<u32>>,
 }
 value_struct!(TransportNavalEdge { to: u32, flags: u8, unrestricted: u8, rules: Vec<Option<u32>> });
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct TransportNavy {
-    pub slot: u32,
-    pub present: bool,
-    /// Original outer region count, including its empty region slots. A
-    /// refused header retains None, never a fabricated zero count.
-    pub region_slots: Option<u32>,
-    /// Sparse nonempty regions in native increasing region order. A known
-    /// empty region is omitted only within a complete original outer domain.
-    pub ledgers: Option<Vec<TransportLedger>>,
-    /// Original hourly +B0 byte array; no carried NavalRegionAccess join.
-    pub access_modes: Option<Vec<u8>>,
-}
-value_struct!(TransportNavy {
-    slot: u32,
-    present: bool,
-    region_slots: Option<u32>,
-    ledgers: Option<Vec<TransportLedger>>,
-    access_modes: Option<Vec<u8>>,
-});
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct TransportLedger {
-    pub region: u32,
-    /// Native order and repeats. Zero means a native null mission or null
-    /// backlink. A nonnull identity/read refusal withholds this whole ledger.
-    pub occurrences: Option<Vec<u64>>,
-}
-value_struct!(TransportLedger {
-    region: u32,
-    occurrences: Option<Vec<u64>>,
-});
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TransportMissionReceiver {
@@ -171,9 +96,3 @@ value_struct!(TransportReceiverRisk {
     location_controller: Option<u32>, detached_activity: Option<i32>, ship_count: Option<i32>,
     targeted_spotting_modifier: Option<i64>, actual_terrain_speed: Option<i64>,
 });
-
-opaque_value!(Option<TransportMissionInputs>);
-
-#[cfg(test)]
-#[path = "transport_mission_inputs_tests.rs"]
-mod tests;

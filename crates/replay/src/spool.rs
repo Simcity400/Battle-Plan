@@ -4,11 +4,12 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Condvar, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 
 use crate::{
-    FORMAT_VERSION,
+    BranchId, FORMAT_VERSION,
     branches::{BranchStart, Gap},
     codec::{Decoder, invalid, invalid_static, put_string},
     format::FormatVersion,
@@ -65,6 +66,22 @@ pub enum ControlRecord {
         reason: String,
         failed_hour: Option<i32>,
     },
+    /// The same process session reattached and continued `branch`: the
+    /// collector was detached for part of the interval between the read of
+    /// `after_hour`, the session's last recorded frame before it detached,
+    /// and the read of `hour`, the reattached session's first observation.
+    /// Every event family's record of that interval is incomplete; events it
+    /// did record there remain observed. The two hours are read anchors, not
+    /// the times the hooks were removed and installed. The frame at
+    /// `hour` may itself be lost, which a gap records separately. A writer
+    /// that retries the record after a failed write can repeat it; the
+    /// replay keeps one.
+    EventLoss {
+        session: u64,
+        branch: BranchId,
+        after_hour: i32,
+        hour: i32,
+    },
 }
 
 impl ControlRecord {
@@ -91,6 +108,7 @@ impl ControlRecord {
                 size_of::<u8>() + usize::from(failed_hour.is_some()) * size_of::<i32>(),
                 Some(reason),
             ),
+            Self::EventLoss { .. } => (size_of::<BranchId>() + 2 * size_of::<i32>(), None),
         };
         engine::allocation::add(
             tagged_session + fields + usize::from(reason.is_some()) * size_of::<u32>(),
@@ -103,7 +121,8 @@ impl ControlRecord {
             Self::Detach { session, .. }
             | Self::ClockWitness { session, .. }
             | Self::GapSummary { session, .. }
-            | Self::Partial { session, .. } => *session,
+            | Self::Partial { session, .. }
+            | Self::EventLoss { session, .. } => *session,
         }
     }
 
@@ -111,6 +130,21 @@ impl ControlRecord {
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
         engine::allocation::reserve(out, self.encoded_bytes()?)?;
         match self {
+            Self::EventLoss {
+                session,
+                branch,
+                after_hour,
+                hour,
+            } => {
+                if after_hour >= hour {
+                    return Err(invalid_static("event loss must end after it begins"));
+                }
+                out.push(8);
+                out.extend_from_slice(&session.to_le_bytes());
+                out.extend_from_slice(&branch.to_le_bytes());
+                out.extend_from_slice(&after_hour.to_le_bytes());
+                out.extend_from_slice(&hour.to_le_bytes());
+            }
             Self::Partial {
                 session,
                 reason,
@@ -184,9 +218,23 @@ impl ControlRecord {
             5 => RecordKind::ClockWitness,
             6 => RecordKind::GapSummary,
             7 => RecordKind::Partial,
+            8 => RecordKind::EventLoss,
             _ => return Err(invalid("unknown control record tag")),
         })?;
         Ok(match tag {
+            8 => {
+                let (session, branch) = (input.u64()?, input.u64()?);
+                let (after_hour, hour) = (input.i32()?, input.i32()?);
+                if after_hour >= hour {
+                    return Err(invalid("event loss must end after it begins"));
+                }
+                Self::EventLoss {
+                    session,
+                    branch,
+                    after_hour,
+                    hour,
+                }
+            }
             7 => {
                 let session = input.u64()?;
                 let reason = input.string()?;
@@ -277,7 +325,7 @@ impl Record {
             // decoding this payload.
             2 => Self::Frame(Frame::decode_version(input, None, format)?),
             3 => Self::Gap(Gap::decode(input)?),
-            tag @ 4..=7 => Self::Control(ControlRecord::decode_tag(tag, input, format)?),
+            tag @ 4..=8 => Self::Control(ControlRecord::decode_tag(tag, input, format)?),
             _ => return Err(invalid("unknown spool record tag")),
         })
     }
@@ -404,6 +452,20 @@ impl SegmentState {
                     return Err(invalid_static("duplicate or invalid partial capture"));
                 }
                 self.partial = true;
+            }
+            Record::Control(ControlRecord::EventLoss {
+                session,
+                branch,
+                after_hour,
+                hour,
+            }) => {
+                self.require_session(*session)?;
+                if self.branch != Some(*branch) {
+                    return Err(invalid_static("event loss lacks matching branch context"));
+                }
+                if after_hour >= hour {
+                    return Err(invalid_static("event loss must end after it begins"));
+                }
             }
             Record::Control(ControlRecord::Detach { session, last_hour }) => {
                 self.require_session(*session)?;
@@ -614,6 +676,9 @@ pub struct BackgroundSyncWork {
     pub total_ns: u64,
     pub max_ns: u64,
     pub pending: bool,
+    /// Durability threads started for the segment: one persistent worker
+    /// serves every periodic request.
+    pub threads: u64,
 }
 
 /// A narrow I/O seam permits fault tests without creating files or spawning processes.
@@ -648,8 +713,124 @@ impl SegmentSink for File {
 pub struct FileSink {
     file: File,
     sync_file: File,
-    pending: Option<std::thread::JoinHandle<(u64, io::Result<()>)>>,
+    worker: Option<DurabilityWorker>,
+    pending: bool,
     work: BackgroundSyncWork,
+}
+
+/// The segment's persistent durability thread. It starts at the first
+/// periodic request and then sleeps between requests, so periodic
+/// synchronization spawns no thread per request. At most one request is in
+/// flight; dropping the sink finishes it and joins the thread.
+struct DurabilityWorker {
+    shared: Arc<DurabilityShared>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct DurabilityShared {
+    state: Mutex<DurabilityState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct DurabilityState {
+    requested: bool,
+    finished: Option<(u64, io::Result<()>)>,
+    stop: bool,
+}
+
+impl DurabilityShared {
+    fn lock(&self) -> std::sync::MutexGuard<'_, DurabilityState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The worker: one sync per request, until stopped with none pending.
+    fn serve(&self, file: File) {
+        let mut state = self.lock();
+        loop {
+            if state.requested {
+                state.requested = false;
+                drop(state);
+                let started = Instant::now();
+                let result = file.sync_all();
+                let elapsed = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+                state = self.lock();
+                state.finished = Some((elapsed, result));
+                self.changed.notify_all();
+            } else if state.stop {
+                return;
+            } else {
+                state = self
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+    }
+}
+
+impl DurabilityWorker {
+    fn start(file: File) -> io::Result<Self> {
+        let shared = Arc::new(DurabilityShared::default());
+        let worker = Arc::clone(&shared);
+        let thread = std::thread::Builder::new()
+            .name("replay-durability".into())
+            .spawn(move || worker.serve(file))?;
+        Ok(Self {
+            shared,
+            thread: Some(thread),
+        })
+    }
+
+    fn request(&self) {
+        let mut state = self.shared.lock();
+        state.requested = true;
+        self.shared.changed.notify_all();
+    }
+
+    /// The in-flight request has neither finished nor lost its thread.
+    fn busy(&self) -> bool {
+        self.shared.lock().finished.is_none()
+            && self
+                .thread
+                .as_ref()
+                .is_some_and(|thread| !thread.is_finished())
+    }
+
+    /// Wait for the in-flight request. A worker that ended without reporting
+    /// one cannot certify durability.
+    fn wait(&self) -> (u64, io::Result<()>) {
+        let mut state = self.shared.lock();
+        loop {
+            if let Some(finished) = state.finished.take() {
+                return finished;
+            }
+            if self
+                .thread
+                .as_ref()
+                .is_none_or(|thread| thread.is_finished())
+            {
+                return (0, Err(io::Error::from(io::ErrorKind::Other)));
+            }
+            state = self
+                .shared
+                .changed
+                .wait_timeout(state, Duration::from_millis(50))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+}
+
+impl Drop for DurabilityWorker {
+    fn drop(&mut self) {
+        self.shared.lock().stop = true;
+        self.shared.changed.notify_all();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -683,16 +864,15 @@ fn independent_sync_file(file: &File) -> io::Result<File> {
 
 impl FileSink {
     fn finish_pending(&mut self) -> io::Result<()> {
-        if let Some(pending) = self.pending.take() {
-            let (elapsed, result) = pending
-                .join()
-                .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
-            self.work.completed += 1;
-            self.work.total_ns = self.work.total_ns.saturating_add(elapsed);
-            self.work.max_ns = self.work.max_ns.max(elapsed);
-            result.map_err(allocation_error)?;
+        if !std::mem::take(&mut self.pending) {
+            return Ok(());
         }
-        Ok(())
+        let worker = self.worker.as_ref().expect("a pending sync has a worker");
+        let (elapsed, result) = worker.wait();
+        self.work.completed += 1;
+        self.work.total_ns = self.work.total_ns.saturating_add(elapsed);
+        self.work.max_ns = self.work.max_ns.max(elapsed);
+        result.map_err(allocation_error)
     }
 }
 
@@ -717,30 +897,23 @@ impl SegmentSink for FileSink {
         if !self.poll_sync()? {
             return Ok(());
         }
-        let file = self.sync_file.try_clone().map_err(allocation_error)?;
-        self.pending = Some(
-            std::thread::Builder::new()
-                .name("replay-durability".into())
-                .spawn(move || {
-                    let started = Instant::now();
-                    let result = file.sync_all();
-                    (
-                        started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
-                        result,
-                    )
-                })
-                .map_err(allocation_error)?,
-        );
+        let worker = match &mut self.worker {
+            Some(worker) => worker,
+            empty => {
+                let file = self.sync_file.try_clone().map_err(allocation_error)?;
+                let worker = DurabilityWorker::start(file).map_err(allocation_error)?;
+                self.work.threads += 1;
+                empty.insert(worker)
+            }
+        };
+        worker.request();
+        self.pending = true;
         self.work.requested += 1;
         Ok(())
     }
 
     fn poll_sync(&mut self) -> io::Result<bool> {
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| !pending.is_finished())
-        {
+        if self.pending && self.worker.as_ref().is_some_and(DurabilityWorker::busy) {
             return Ok(false);
         }
         self.finish_pending()?;
@@ -749,7 +922,7 @@ impl SegmentSink for FileSink {
 
     fn background_sync_work(&self) -> Option<BackgroundSyncWork> {
         Some(BackgroundSyncWork {
-            pending: self.pending.is_some(),
+            pending: self.pending,
             ..self.work
         })
     }
@@ -758,8 +931,10 @@ impl SegmentSink for FileSink {
 impl Drop for FileSink {
     fn drop(&mut self) {
         // The collector DLL must never unload with its worker still running.
-        // Normal close reports failures through sync_all; error cleanup only joins.
+        // Normal close reports failures through sync_all; error cleanup only
+        // finishes the request, and dropping the worker joins its thread.
         let _ = self.finish_pending();
+        self.worker = None;
     }
 }
 
@@ -797,7 +972,8 @@ impl SegmentBackend for FileBackend {
         Ok(FileSink {
             file,
             sync_file,
-            pending: None,
+            worker: None,
+            pending: false,
             work: BackgroundSyncWork::default(),
         })
     }

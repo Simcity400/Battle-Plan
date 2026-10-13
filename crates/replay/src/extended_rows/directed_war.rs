@@ -1,7 +1,7 @@
-//! Shared owned direct-war predicate packet. Null and retired are false;
-//! a missing partial target is unknown. Native producer remains partial until
-//! exhaustive direct/generic slot writers and endpoint lifetime are proved.
-//! This is the exact reviewed R3 admission law moved beside its Value codec.
+//! The sparse direct-war packet recordings through format 101 stored in
+//! `CountryCounterInputs.directed_wars`. Null and retired are false; a missing
+//! partial target is unknown. Current recordings store None and playback
+//! derives every cell from WarRelations ([`crate::directed_war_derive`]).
 
 use super::*;
 
@@ -19,7 +19,7 @@ value_struct!(WarCell {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DirectedWars {
-    pub sample_hour: i32,
+    pub sample_hour: PacketHour,
     pub receiver_raw_id: i32,
     pub receiver_slot: u32,
     pub matrix_count: u32,
@@ -33,7 +33,7 @@ pub struct DirectedWars {
     pub refused_slots: Vec<u32>,
 }
 
-value_struct!(DirectedWars { sample_hour: i32, receiver_raw_id: i32, receiver_slot: u32, matrix_count: u32, complete_active_domain: bool, cells: Vec<WarCell>, refused_slots: Vec<u32> });
+value_struct!(DirectedWars { sample_hour: PacketHour, receiver_raw_id: i32, receiver_slot: u32, matrix_count: u32, complete_active_domain: bool, cells: Vec<WarCell>, refused_slots: Vec<u32> });
 opaque_value!(Option<DirectedWars>);
 
 /// One admitted immutable owner/hour context. Borrowing the packet prevents
@@ -80,7 +80,7 @@ impl DirectedWars {
         receiver_slot: u32,
     ) -> Fact<DirectedWarContext<'_>> {
         self.validate()?;
-        if self.sample_hour != hour {
+        if !self.sample_hour.fresh_at(hour) {
             return Err("directed war sample hour mismatch".into());
         }
         if (self.receiver_raw_id, self.receiver_slot) != (receiver_raw_id, receiver_slot) {
@@ -126,7 +126,7 @@ mod tests {
     };
     fn packet() -> DirectedWars {
         DirectedWars {
-            sample_hour: 100,
+            sample_hour: PacketHour::Host,
             receiver_raw_id: 10,
             receiver_slot: 1,
             matrix_count: 9,
@@ -192,7 +192,15 @@ mod tests {
     #[test]
     fn stale_owner_and_malformed_domains_never_admit() {
         let p = packet();
-        assert!(p.admit(99, 10, 1).is_err());
+        // A host packet was read with its hourly row; only a historical
+        // stamp can name another hour.
+        assert!(p.admit(99, 10, 1).is_ok());
+        let stamped = DirectedWars {
+            sample_hour: PacketHour::Stamped(100),
+            ..packet()
+        };
+        assert!(stamped.admit(100, 10, 1).is_ok());
+        assert!(stamped.admit(99, 10, 1).is_err());
         assert!(p.admit(100, 11, 1).is_err());
         assert!(p.admit(100, 10, 2).is_err());
         let mut p = packet();

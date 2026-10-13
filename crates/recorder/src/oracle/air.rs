@@ -1,9 +1,5 @@
 //! Comparisons for the native extended air tables.
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt::Debug,
-    io,
-};
+use std::{collections::BTreeMap, fmt::Debug, io};
 
 use installed_content::save::air::{self, Pack};
 use replay::{
@@ -76,12 +72,6 @@ pub(super) fn compare(
     });
     complete &= report.attempt("air AirAces", |report| {
         compare_aces(frame, save, links, report)
-    });
-    complete &= report.attempt("air AirRegionHistory", |report| {
-        compare_history(frame, save, links, report)
-    });
-    complete &= report.attempt("air AirRegionDamage", |report| {
-        compare_damage(frame, save, links, report)
     });
     complete &= report.attempt("air AirStatistics", |report| {
         compare_statistics(frame, save, links, report)
@@ -181,7 +171,7 @@ fn compare_cumulative(frame: &DecodedFrame, save: &Pack, report: &mut Report) ->
     }
     extra(report, "wing cumulative", &cumulative);
     report.compared("WingCumulative", matched);
-    report.limitation("wing quantity differences are not evidence of combat losses; accidents, retained regional damage and native annual statistics have distinct meanings", "WingCumulative / AirRegionDamage / AirStatistics");
+    report.limitation("wing quantity differences are not evidence of combat losses; accidents and native annual statistics have distinct meanings", "WingCumulative / AirStatistics");
     Ok(())
 }
 
@@ -349,7 +339,7 @@ fn compare_aces(
                         "omitted: native value must be nonpositive",
                     );
                 } else {
-                    report.limitation("CAce omits every nonpositive killer-country reference; exact omitted reference bits are not serialized", format!("{label}.killer_country"));
+                    report.limitation("ace writer omits every nonpositive killer-country reference; exact omitted reference bits are not serialized", format!("{label}.killer_country"));
                 }
             }
             (None, true) => {}
@@ -367,13 +357,13 @@ fn compare_aces(
                 wing,
             );
         } else {
-            report.limitation("CAce does not serialize its reverse wing reference; an omitted wing ace field also permits an unresolved reference", format!("{label}.assigned_wing"));
+            report.limitation("ace writer does not serialize its reverse wing reference; an omitted wing ace field also permits an unresolved reference", format!("{label}.assigned_wing"));
         }
     }
     extra(report, "air ace", &actual);
     report.compared("AirAces", matched);
-    report.limitation("CAce aircraft-type mask is not compared: the saved modifier definition-to-mask mapping is not implemented/proven", "AirAces.aircraft_type_mask");
-    report.limitation("the raw nonzero gender byte and CGameGui retained portrait pools/culture are not serialized; is_female compares their boolean meaning only, and artwork needs a matched-hour native portrait", "AirAces.presentation.portrait");
+    report.limitation("ace aircraft-type mask is not compared: the saved modifier definition-to-mask mapping is not implemented/proven", "AirAces.aircraft_type_mask");
+    report.limitation("the raw nonzero gender byte and the game interface's retained portrait pools/culture are not serialized; is_female compares their boolean meaning only, and artwork needs a matched-hour native portrait", "AirAces.presentation.portrait");
     report.limitation(
         "saved country tags cannot certify raw country-link alias bits",
         "extended air country references",
@@ -434,196 +424,161 @@ fn ace_names_use_first_nul_and_callsign_stored_length() {
     }
 }
 
-fn record_key(record: &air::CombatRecord) -> (u8, i32, u32, u8) {
-    (
-        record.side,
-        record.date,
-        record.wing_id,
-        u8::from(record.classification),
-    )
-}
-
-fn compare_history(
+/// AirRegionCombat at the frame's hour against the saved `combat_history`
+/// holders: each row derived by the daily prune
+/// ([`replay::air_region_derive::retained`]) with the content's
+/// `NGame.AIR_LOG_TIMEOUT_HOURS`, then every record in native order, own
+/// vector first, with both damage vectors.
+pub(super) fn compare_region_combat(
     frame: &DecodedFrame,
     save: &Pack,
     links: &BTreeMap<u32, &CountryRow>,
+    timeout: i32,
     report: &mut Report,
 ) -> io::Result<()> {
-    let mut histories = unique_checked(complete::<tables::AirRegionHistory>(frame)?.iter().map(
-        |row| {
-            Ok((
-                (
-                    required_country_tag(row.country, links)?.to_vec(),
-                    row.region,
-                ),
-                row,
-            ))
-        },
-    ))?;
+    use replay::{air_region_derive, rows::AirCombatRecord};
+    let rows = complete::<tables::AirRegionCombat>(frame)?;
+    // The daily pass prunes only the countries the game simulates, those
+    // owning a state; another container keeps its last read records.
+    let mut alive = std::collections::BTreeSet::new();
+    for state in complete::<tables::States>(frame)? {
+        if let Some(country) = links.get(&state.owner) {
+            alive.insert(country.canonical_slot);
+        }
+    }
+    let mut actual = unique_checked(rows.iter().map(|row| {
+        Ok((
+            (
+                required_country_tag(row.country, links)?.to_vec(),
+                row.region,
+            ),
+            row,
+        ))
+    }))?;
     let expected = unique(
         save.regions
             .iter()
             .map(|row| ((row.country.clone(), row.region), row)),
         "saved air combat region",
     )?;
-    let mut history_matched = 0;
+    let mut matched = 0;
     for (key, expected) in expected {
         let label = format!("air region {}:{}", String::from_utf8_lossy(&key.0), key.1);
-        if let Some(actual) = histories.remove(&key) {
+        let Some(row) = actual.remove(&key) else {
+            if !expected.entries.is_empty() {
+                missing(report, &label);
+            }
+            continue;
+        };
+        let pruned = links
+            .get(&row.country)
+            .is_some_and(|country| alive.contains(&country.canonical_slot));
+        let (own, foreign): (&[AirCombatRecord], &[AirCombatRecord]) = if pruned {
+            let state = air_region_derive::retained(row, frame.hour, timeout);
+            (state.own, state.foreign)
+        } else {
+            report.limitation(air_region_derive::UNPRUNED_CONTAINER, &label);
+            (&row.own, &row.foreign)
+        };
+        check(
+            report,
+            &format!("{label}.owner"),
+            tag(row.owner, links)?,
+            expected.owner.as_slice(),
+        );
+        let records = own
+            .iter()
+            .map(|record| (0_u8, record))
+            .chain(foreign.iter().map(|record| (1_u8, record)));
+        check(
+            report,
+            &format!("{label}.records"),
+            own.len() + foreign.len(),
+            expected.entries.len(),
+        );
+        for (ordinal, ((side, actual), entry)) in records.zip(&expected.entries).enumerate() {
+            matched += 1;
+            let label = format!("{label}[{ordinal}]");
             check(
                 report,
-                &format!("{label}.history.count"),
-                actual.entries.len(),
-                expected.entries.len(),
-            );
-            for (ordinal, (actual, entry)) in
-                actual.entries.iter().zip(&expected.entries).enumerate()
-            {
-                history_matched += 1;
-                let label = format!("{label}.history[{ordinal}]");
-                check(
-                    report,
-                    &format!("{label}.identity"),
-                    (
-                        actual.side,
-                        actual.date,
-                        actual.wing_id,
-                        actual.classification,
-                    ),
-                    record_key(entry),
-                );
-                check(
-                    report,
-                    &format!("{label}.region_owner"),
-                    tag(actual.region_owner, links)?,
-                    expected.owner.as_slice(),
-                );
-                check(
-                    report,
-                    &format!("{label}.planes"),
-                    actual.planes,
-                    entry.planes,
-                );
-                check(
-                    report,
-                    &format!("{label}.mission_mask"),
-                    actual.mission_mask,
-                    entry.mission_mask,
-                );
-                check(
-                    report,
-                    &format!("{label}.selection"),
-                    actual.selection,
-                    u8::from(entry.selection),
-                );
-                check(
-                    report,
-                    &format!("{label}.copied"),
-                    actual.copied,
-                    u8::from(entry.equipment.allow_zero),
-                );
-                check(
-                    report,
-                    &format!("{label}.attributed_country"),
-                    tag(actual.attributed_country, links)?,
-                    entry.attributed_country.as_slice(),
-                );
-            }
-        } else if !expected.entries.is_empty() {
-            missing(report, format!("{label}.history"));
-        }
-    }
-    extra(report, "air region history", &histories);
-    report.compared("AirRegionHistory", history_matched);
-    report.limitation("regional history captures retained native records, not an event stream or current wing census; recorded high-water counts and original dates are compared without substituting current wing values", "AirRegionHistory");
-    report.limitation("the copied historical equipment pool's entries are serialized but outside the minimum recorded history fields", "AirRegionHistory.equipment");
-    report.limitation("grouped history rows originate from emitted entries; allocation of empty native region holders is not certified", "AirRegionHistory empty holders");
-    Ok(())
-}
-
-fn compare_damage(
-    frame: &DecodedFrame,
-    save: &Pack,
-    links: &BTreeMap<u32, &CountryRow>,
-    report: &mut Report,
-) -> io::Result<()> {
-    let mut damages = unique_checked(complete::<tables::AirRegionDamage>(frame)?.iter().map(
-        |row| {
-            Ok((
+                &format!("{label}.identity"),
+                (side, actual.date, actual.wing_id, actual.classification),
                 (
-                    required_country_tag(row.country, links)?.to_vec(),
-                    row.region,
+                    entry.side,
+                    entry.date,
+                    entry.wing_id,
+                    u8::from(entry.classification),
                 ),
-                row,
-            ))
-        },
-    ))?;
-    let expected = unique(
-        save.regions
-            .iter()
-            .map(|row| ((row.country.clone(), row.region), row)),
-        "saved air combat region",
-    )?;
-    let mut damage_matched = 0;
-    for (key, expected) in expected {
-        let label = format!("air region {}:{}", String::from_utf8_lossy(&key.0), key.1);
-        let mut seen = BTreeSet::new();
-        if expected
-            .entries
-            .iter()
-            .any(|entry| !seen.insert(record_key(entry)))
-        {
-            report.limitation("duplicate native record identities retain their array order, but damage entries lack a parent-record ordinal and cannot certify assignment between duplicate parents", &label);
-        }
-        let expected_damage = expected
-            .entries
-            .iter()
-            .flat_map(|record| {
-                record
-                    .damage
-                    .iter()
-                    .enumerate()
-                    .flat_map(move |(channel, entries)| {
-                        entries
-                            .iter()
-                            .map(move |entry| (record, channel as u8, entry))
-                    })
-            })
-            .collect::<Vec<_>>();
-        if let Some(actual) = damages.remove(&key) {
+            );
             check(
                 report,
-                &format!("{label}.damage.count"),
-                actual.entries.len(),
-                expected_damage.len(),
+                &format!("{label}.planes"),
+                actual.planes,
+                entry.planes,
             );
-            for (ordinal, (actual, (record, channel, entry))) in
-                actual.entries.iter().zip(expected_damage).enumerate()
+            check(
+                report,
+                &format!("{label}.mission_mask"),
+                actual.mission_mask,
+                entry.mission_mask,
+            );
+            check(
+                report,
+                &format!("{label}.selection"),
+                actual.selection,
+                u8::from(entry.selection),
+            );
+            check(
+                report,
+                &format!("{label}.copied"),
+                actual.copied,
+                u8::from(entry.equipment.allow_zero),
+            );
+            check(
+                report,
+                &format!("{label}.attributed_country"),
+                tag(actual.attributed_country, links)?,
+                entry.attributed_country.as_slice(),
+            );
+            for (channel, (recorded, saved)) in [&actual.first_damage, &actual.second_damage]
+                .into_iter()
+                .zip(&entry.damage)
+                .enumerate()
             {
-                damage_matched += 1;
-                let label = format!("{label}.damage[{ordinal}]");
                 check(
                     report,
-                    &format!("{label}.record"),
-                    (
-                        actual.side,
-                        actual.date,
-                        actual.wing_id,
-                        actual.classification,
-                    ),
-                    record_key(record),
+                    &format!("{label}.damage[{channel}].count"),
+                    recorded.len(),
+                    saved.len(),
                 );
-                check(report, &format!("{label}.channel"), actual.channel, channel);
-                check(report, &format!("{label}.cause"), actual.cause, entry.cause);
-                report.scalar(&label, "amount", Some(actual.amount), Some(&entry.amount));
+                for (index, (recorded, saved)) in recorded.iter().zip(saved).enumerate() {
+                    let label = format!("{label}.damage[{channel}][{index}]");
+                    check(
+                        report,
+                        &format!("{label}.cause"),
+                        recorded.cause,
+                        saved.cause,
+                    );
+                    report.scalar(&label, "amount", Some(recorded.amount), Some(&saved.amount));
+                }
             }
-        } else if !expected_damage.is_empty() {
-            missing(report, format!("{label}.damage"));
         }
     }
-    extra(report, "air region damage", &damages);
-    report.compared("AirRegionDamage", damage_matched);
-    report.limitation("grouped damage rows originate from emitted entries; allocation of empty native region holders is not certified", "AirRegionDamage empty holders");
+    // A holder the prune emptied is an empty saved holder, if the save has it.
+    actual.retain(|_, row| {
+        let pruned = links
+            .get(&row.country)
+            .is_some_and(|country| alive.contains(&country.canonical_slot));
+        let state = air_region_derive::retained(row, frame.hour, timeout);
+        !pruned || !state.own.is_empty() || !state.foreign.is_empty()
+    });
+    extra(report, "air region combat", &actual);
+    report.compared("AirRegionCombat", matched);
+    report.limitation("the copied equipment pools of a retained record (+0x60, +0x78) are serialized but not recorded; their allow-zero byte is the recorded copied flag", "AirRegionCombat.equipment");
+    report.limitation(
+        "allocated holders without records have no row; the save's empty holders are not compared",
+        "AirRegionCombat empty holders",
+    );
     Ok(())
 }
 
@@ -696,10 +651,7 @@ mod tests {
     use installed_content::parser;
     use replay::{
         frame::TableView,
-        rows::{
-            AirDamageEntry, AirHistoryEntry, AirRegionDamageRow, AirRegionHistoryRow,
-            AirStatisticsRow, TableId, TableRows, WingCumulativeRow, WingEquipmentRow,
-        },
+        rows::{AirStatisticsRow, TableId, TableRows, WingCumulativeRow, WingEquipmentRow},
     };
 
     fn parsed(text: &[u8]) -> Pack {
@@ -768,9 +720,13 @@ mod tests {
         assert!(compare_equipment(&frame, &save, &mut Report::default()).is_err());
     }
 
+    /// The recorded holder is pruned at the save's hour as the daily pass
+    /// did, then every record and both damage channels compare in order; a
+    /// container without an owned state is compared as last read.
     #[test]
-    fn typed_region_tables_preserve_duplicates_country_aliases_and_damage_order() {
-        let mut save = parsed(br#"strategic_air={GER={combat_history={0={tag="GER" friend={id=0 equipment={allow_zero_entries=no} time=-4 mission=-1 count=9 tag="---" ground_attack=no destination=yes receiver={type=-1 value=-0.00001}} friend={id=0 equipment={allow_zero_entries=no} time=-4 mission=-1 count=11 tag="---" ground_attack=no destination=yes receiver={type=-1 value=2}}}}}}"#);
+    fn region_combat_compares_the_pruned_records_and_both_damage_channels() {
+        use replay::rows::{AirCombatDamage, AirCombatRecord, AirRegionCombatRow, StateRow};
+        let save = parsed(br#"strategic_air={GER={combat_history={4={tag="GER" friend={id=9 equipment={allow_zero_entries=yes} time=43800030 mission=5 count=3 tag="GER" ground_attack=yes destination=no sender={type=2 value=1.5} receiver={type=4 value=2}} enemy={id=10 equipment={allow_zero_entries=no} time=43800031 mission=1 count=2 tag="---" ground_attack=no destination=yes}}}}}"#);
         let germany = CountryRow {
             id: 12,
             canonical_slot: 3,
@@ -778,27 +734,86 @@ mod tests {
             ..Default::default()
         };
         let links = BTreeMap::from([(12, &germany), (112, &germany)]);
-        let entry = AirHistoryEntry {
-            side: 0,
-            date: -4,
-            wing_id: 0,
-            classification: 0,
-            region_owner: 112,
-            planes: 9,
-            mission_mask: u32::MAX,
-            selection: 1,
-            copied: 0,
-            attributed_country: 0,
+        let kept = AirCombatRecord {
+            wing_id: 9,
+            date: 43_800_030,
+            planes: 3,
+            mission_mask: 5,
+            selection: 0,
+            classification: 1,
+            copied: 1,
+            attributed_country: 12,
+            first_damage: vec![AirCombatDamage {
+                cause: 2,
+                amount: 150_000,
+            }],
+            second_damage: vec![AirCombatDamage {
+                cause: 4,
+                amount: 200_000,
+            }],
         };
-        let damage = AirDamageEntry {
-            side: 0,
-            date: -4,
-            wing_id: 0,
-            classification: 0,
-            channel: 1,
-            cause: u32::MAX,
-            amount: -1,
+        let stale = AirCombatRecord {
+            date: 43_800_010,
+            ..kept.clone()
         };
+        let row = AirRegionCombatRow {
+            country: 112,
+            region: 4,
+            owner: 12,
+            own: vec![stale, kept],
+            foreign: vec![AirCombatRecord {
+                wing_id: 10,
+                date: 43_800_031,
+                planes: 2,
+                mission_mask: 1,
+                selection: 1,
+                ..Default::default()
+            }],
+        };
+        let state = StateRow {
+            id: 1,
+            owner: 12,
+            controller: 12,
+            ..Default::default()
+        };
+        let mut frame = frame([
+            TableRows::AirRegionCombat(vec![row.clone()]),
+            TableRows::States(vec![state]),
+        ]);
+        // The pass at hour 43800048 cut records dated before 43800024.
+        frame.hour = 43_800_000 + 24 * 2 + 5;
+        let mut report = Report::default();
+        compare_region_combat(&frame, &save, &links, 24, &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        // A container owning no state was not pruned: the stale record stays.
+        let mut dead = crate::test_support::frame([TableRows::AirRegionCombat(vec![row])]);
+        dead.hour = frame.hour;
+        let mut report = Report::default();
+        compare_region_combat(&dead, &save, &links, 24, &mut report).unwrap();
+        assert!(!report.differences.is_empty());
+        // A damage amount the save does not hold is a difference.
+        let TableView::Complete(TableRows::AirRegionCombat(rows)) =
+            &mut *frame.tables[TableId::AirRegionCombat.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].own[1].second_damage[0].amount += 1;
+        let mut report = Report::default();
+        compare_region_combat(&frame, &save, &links, 24, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].contains("damage[1][0]"));
+    }
+
+    #[test]
+    fn air_statistics_compare_through_country_aliases() {
+        let mut save = Pack::default();
+        let germany = CountryRow {
+            id: 12,
+            canonical_slot: 3,
+            tag: b"GER".to_vec(),
+            ..Default::default()
+        };
+        let links = BTreeMap::from([(12, &germany), (112, &germany)]);
         let mut channels = [0; 24];
         channels[23] = i64::MIN;
         save.statistics.push(air::Statistics {
@@ -808,57 +823,25 @@ mod tests {
             year_window_wrapped: true,
             channels,
         });
-        let mut frame = frame([
-            TableRows::AirRegionHistory(vec![AirRegionHistoryRow {
-                country: 112,
-                region: 0,
-                entries: vec![
-                    entry.clone(),
-                    AirHistoryEntry {
-                        planes: 11,
-                        ..entry
-                    },
-                ],
-            }]),
-            TableRows::AirRegionDamage(vec![AirRegionDamageRow {
-                country: 112,
-                region: 0,
-                entries: vec![
-                    damage.clone(),
-                    AirDamageEntry {
-                        amount: 200_000,
-                        ..damage
-                    },
-                ],
-            }]),
-            TableRows::AirStatistics(vec![AirStatisticsRow {
-                country: 112,
-                region: 0,
-                year_slot: 4,
-                year_window_wrapped: 1,
-                channels,
-            }]),
-        ]);
+        let mut frame = frame([TableRows::AirStatistics(vec![AirStatisticsRow {
+            country: 112,
+            region: 0,
+            year_slot: 4,
+            year_window_wrapped: 1,
+            channels,
+        }])]);
         let mut report = Report::default();
-        compare_history(&frame, &save, &links, &mut report).unwrap();
-        compare_damage(&frame, &save, &links, &mut report).unwrap();
         compare_statistics(&frame, &save, &links, &mut report).unwrap();
-        assert!(report.differences.is_empty());
-        assert!(
-            report
-                .limitations
-                .keys()
-                .any(|reason| reason.contains("duplicate parents"))
-        );
-        let TableView::Complete(TableRows::AirRegionDamage(rows)) =
-            &mut *frame.tables[TableId::AirRegionDamage.index()]
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        let TableView::Complete(TableRows::AirStatistics(rows)) =
+            &mut *frame.tables[TableId::AirStatistics.index()]
         else {
             unreachable!()
         };
-        rows[0].entries.swap(0, 1);
+        rows[0].year_slot = 3;
         let mut report = Report::default();
-        compare_damage(&frame, &save, &links, &mut report).unwrap();
-        assert_eq!(report.differences.len(), 2);
+        compare_statistics(&frame, &save, &links, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
     }
 
     #[test]
@@ -890,24 +873,29 @@ mod tests {
             year_window_wrapped: 1,
             channels,
         }])]);
-        for table in [TableId::WingCumulative, TableId::AirRegionHistory] {
+        *frame.tables[TableId::WingCumulative.index()] = TableView::Unavailable {
+            reason: "guarded copy failed".into(),
+        };
+        // A current recording refuses the retired regional tables by name;
+        // the pack attempts neither, so their refusal fails no group.
+        for table in [TableId::AirRegionHistory, TableId::AirRegionDamage] {
             *frame.tables[table.index()] = TableView::Unavailable {
-                reason: "guarded copy failed".into(),
+                reason: format!(
+                    "{table:?} retired at format {0}; this recording is format {0}",
+                    replay::FORMAT_VERSION
+                ),
             };
         }
         let mut report = Report::default();
         assert!(compare(&frame, &save, &links, &mut report).is_err());
-        assert_eq!(report.failed_comparisons.len(), 2);
-        assert!(report.failed_comparisons.contains_key("air WingCumulative"));
-        assert!(
-            report
-                .failed_comparisons
-                .contains_key("air AirRegionHistory")
+        assert_eq!(
+            report.failed_comparisons.keys().collect::<Vec<_>>(),
+            ["air WingCumulative"]
         );
-        assert_eq!(report.compared_tables.len(), 5);
-        assert!(report.compared_tables.contains_key("WingEquipment"));
-        assert!(report.compared_tables.contains_key("AirRegionDamage"));
-        assert!(report.compared_tables.contains_key("AirStatistics"));
+        assert_eq!(
+            report.compared_tables.keys().collect::<Vec<_>>(),
+            ["AirAces", "AirBases", "AirStatistics", "WingEquipment"]
+        );
         assert_eq!(report.differences.len(), 1);
         assert!(report.differences[0].contains("air statistics GER:23.channel[0]"));
     }

@@ -17,6 +17,9 @@ use engine::{
 use std::sync::Arc;
 
 const BATCH: usize = 64;
+
+#[cfg(test)]
+mod batching_tests;
 pub(crate) use engine::unit_viewer_entry::DivisionSource as Entry;
 
 /// Immutable, callback-local native fields shared by independently bounded
@@ -77,6 +80,27 @@ impl UnitInputs {
     }
 }
 
+/// Most parts the hour's division inputs are walked in.
+pub(crate) const MAX_PARTS: usize = 4;
+/// Census entries a part is sized for: below twice this, one job walks every
+/// country.
+const PART_ENTRIES: usize = 1_500;
+
+/// The storage a joined census needs: its entries and roster slots, with
+/// headroom for an hour's growth.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct JoinCapacity {
+    entries: usize,
+    roster_slots: usize,
+    countries: usize,
+}
+
+/// Parts for a census of `entries`: one per [`PART_ENTRIES`], within
+/// [`MAX_PARTS`].
+pub(crate) fn parts_for(entries: usize) -> usize {
+    (entries / PART_ENTRIES).clamp(1, MAX_PARTS)
+}
+
 #[derive(Debug)]
 pub(crate) struct Census {
     counts: Vec<Option<replay::rows::DivisionCensusRow>>,
@@ -99,6 +123,9 @@ pub(crate) struct Census {
     core_roots: Option<CoreRoots>,
     core_captured: bool,
     growing: bool,
+    /// Per walked country slot, in order: the slot and the census entries
+    /// through it, for splitting the next hour's walk into parts.
+    slot_ends: Vec<(u32, u32)>,
 }
 impl Default for Census {
     fn default() -> Self {
@@ -122,6 +149,7 @@ impl Default for Census {
             core_roots: None,
             core_captured: false,
             growing: false,
+            slot_ends: Vec::new(),
         }
     }
 }
@@ -174,6 +202,7 @@ impl Census {
         self.core_roots = None;
         self.core_captured = false;
         self.growing = false;
+        self.slot_ends.clear();
     }
     pub fn allocated_bytes(&self) -> u64 {
         crate::raw_memory::vector_bytes(&self.counts)
@@ -184,6 +213,7 @@ impl Census {
             })
             + crate::raw_memory::vector_bytes(&self.rows)
             + crate::raw_memory::vector_bytes(&self.sources)
+            + crate::raw_memory::vector_bytes(&self.slot_ends)
     }
     pub fn payload_bytes(&self) -> u64 {
         self.bytes
@@ -320,10 +350,23 @@ impl Census {
         base: usize,
         state: usize,
     ) {
-        self.capture_inputs_mode(memory, base, state, true);
+        self.capture_inputs_mode(memory, base, state, true, None);
     }
     pub(crate) fn capture_inputs(&mut self, memory: &impl Memory, base: usize, state: usize) {
-        self.capture_inputs_mode(memory, base, state, false);
+        self.capture_inputs_mode(memory, base, state, false, None);
+    }
+    /// [`Self::capture_inputs_growing`] over the country slots in `slots`
+    /// only: one part of a census whose parts walk consecutive slot ranges in
+    /// parallel and are joined, in slot order, by [`Self::absorb`]. Its seeds
+    /// are gathered as the whole census gathers them.
+    pub(crate) fn capture_inputs_part(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        slots: (u32, u32),
+    ) {
+        self.capture_inputs_mode(memory, base, state, true, Some(slots));
     }
     fn capture_inputs_mode(
         &mut self,
@@ -331,6 +374,7 @@ impl Census {
         base: usize,
         state: usize,
         growing: bool,
+        slots: Option<(u32, u32)>,
     ) {
         self.clear();
         let counted = crate::division_detail::CountedMemory::new(memory);
@@ -338,7 +382,7 @@ impl Census {
         if growing && self.unit_inputs.is_none() {
             self.unit_inputs = Some(Arc::new(UnitInputs::new(0)));
         }
-        let result = self.capture_inputs_inner(&counted, base, state);
+        let result = self.capture_inputs_inner(&counted, base, state, slots);
         self.bytes = counted.bytes();
         if let Err(reason) = result {
             if matches!(self.census_result, Outcome::Rows { .. }) {
@@ -358,6 +402,150 @@ impl Census {
             }
         }
     }
+    /// Joins `part`, the census of the country slots after this one's, as
+    /// one walk of both would have left it: the census entries, roster slots,
+    /// seeds and per-country counts in slot order, and the demand. A failure
+    /// is the first one in slot order: once this census or `part` failed,
+    /// nothing after it is joined. Both were captured growing, on the same
+    /// boundary.
+    pub(crate) fn absorb(&mut self, part: &mut Census) -> Result<(), &'static str> {
+        if !self.joinable() {
+            return Ok(());
+        }
+        self.required = self.required.saturating_add(part.required);
+        self.required_slots = self.required_slots.saturating_add(part.required_slots);
+        self.bytes = self.bytes.saturating_add(part.bytes);
+        let inputs = self
+            .unit_inputs
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .ok_or("division input packet still leased")?;
+        let part_inputs = part
+            .unit_inputs
+            .as_ref()
+            .ok_or("division input part not captured")?;
+        if part.overflowed
+            || part.row_error.is_some()
+            || !matches!(part.census_result, Outcome::Rows { .. })
+        {
+            // The serial walk fails at the same country with the same state.
+            self.overflowed = part.overflowed;
+            self.census_result = part.census_result;
+            self.row_error = part.row_error;
+            inputs.outcome = part_inputs.outcome;
+            inputs.intel_outcome = part_inputs.intel_outcome;
+            self.core_roots = None;
+            return Ok(());
+        }
+        let offset = self.entries.len() as u32;
+        engine::allocation::reserve(&mut self.entries, part.entries.len())
+            .map_err(|_| "division census allocation failed")?;
+        engine::allocation::reserve(&mut inputs.seeds, part_inputs.seeds.len())
+            .map_err(|_| "division seed allocation failed")?;
+        engine::allocation::reserve(&mut inputs.roster_slots, part_inputs.roster_slots.len())
+            .map_err(|_| "division roster allocation failed")?;
+        self.entries.extend_from_slice(&part.entries);
+        inputs.seeds.extend_from_slice(&part_inputs.seeds);
+        inputs
+            .roster_slots
+            .extend_from_slice(&part_inputs.roster_slots);
+        for (count, theirs) in self.counts.iter_mut().zip(&part.counts) {
+            if theirs.is_some() {
+                *count = theirs.clone();
+            }
+        }
+        self.counts_error = self.counts_error.or(part.counts_error);
+        if engine::allocation::advisory(|| {
+            engine::allocation::reserve(&mut self.slot_ends, part.slot_ends.len())
+        })
+        .is_ok()
+        {
+            self.slot_ends.extend(
+                part.slot_ends
+                    .iter()
+                    .map(|&(slot, end)| (slot, end + offset)),
+            );
+        }
+        self.census_result = Outcome::Rows {
+            len: self.entries.len(),
+        };
+        inputs.outcome = self.census_result;
+        inputs.intel_outcome = Outcome::Rows {
+            len: inputs.roster_slots.len(),
+        };
+        if let (Some(roots), Some(theirs)) = (self.core_roots.as_mut(), part.core_roots) {
+            roots.found |= theirs.found;
+        }
+        Ok(())
+    }
+
+    /// Whether a later part may still join: this census has not failed.
+    pub(crate) fn joinable(&self) -> bool {
+        matches!(self.census_result, Outcome::Rows { .. })
+            && !self.overflowed
+            && self.row_error.is_none()
+    }
+
+    /// The storage the next hour's joined census needs: this one's, doubled.
+    pub(crate) fn join_capacity(&self) -> JoinCapacity {
+        JoinCapacity {
+            entries: self.entries.len().saturating_mul(2),
+            roster_slots: self
+                .unit_inputs
+                .as_ref()
+                .map_or(0, |inputs| inputs.roster_slots.len())
+                .saturating_mul(2),
+            countries: self.slot_ends.len().saturating_mul(2),
+        }
+    }
+
+    /// Worker: reserves `capacity` for the parts [`Self::absorb`] joins
+    /// after this one, so the join copies without allocating unless the
+    /// census more than doubled. Advisory: a join that needs more grows.
+    pub(crate) fn reserve_join(&mut self, capacity: JoinCapacity) {
+        let entries = capacity.entries.saturating_sub(self.entries.len());
+        let countries = capacity.countries.saturating_sub(self.slot_ends.len());
+        let _ = engine::allocation::advisory(|| {
+            engine::allocation::reserve(&mut self.entries, entries)?;
+            engine::allocation::reserve(&mut self.slot_ends, countries)?;
+            if let Some(inputs) = self.unit_inputs.as_mut().and_then(Arc::get_mut) {
+                let seeds = capacity.entries.saturating_sub(inputs.seeds.len());
+                let slots = capacity
+                    .roster_slots
+                    .saturating_sub(inputs.roster_slots.len());
+                engine::allocation::reserve(&mut inputs.seeds, seeds)?;
+                engine::allocation::reserve(&mut inputs.roster_slots, slots)?;
+            }
+            Ok::<(), std::io::Error>(())
+        });
+    }
+
+    /// Where to split the next hour's walk into parts of about equal census
+    /// entries, from this hour's walk: the first slot of each part after the
+    /// first, into `starts`, for [`parts_for`] this census's entries. Returns
+    /// how many it filled: fewer when the countries cannot be split that
+    /// finely, and none for one part.
+    pub(crate) fn part_starts(&self, starts: &mut [u32; MAX_PARTS - 1]) -> usize {
+        let total = self.entries.len() as u64;
+        let parts = parts_for(self.entries.len()) as u64;
+        let mut filled = 0;
+        for part in 1..parts {
+            let target = total * part / parts;
+            let at = self
+                .slot_ends
+                .partition_point(|&(_, end)| u64::from(end) <= target);
+            // The part starts with the country that holds the target entry.
+            if let Some(&(start, _)) = self.slot_ends.get(at)
+                && start > 1
+                && (filled == 0 || start > starts[filled - 1])
+            {
+                starts[filled] = start;
+                filled += 1;
+            }
+        }
+        filled
+    }
+
     /// Consume the retained roots exactly once, without mutating the leased
     /// input packet or walking the country and division censuses again. A
     /// second call preserves the first result, including its failures.
@@ -382,6 +570,7 @@ impl Census {
         memory: &impl Memory,
         base: usize,
         state: usize,
+        slots: Option<(u32, u32)>,
     ) -> Result<(), &'static str> {
         // The engine reader reuses this callback's complete country census
         // when the supplied memory carries it; otherwise it performs the same
@@ -416,7 +605,8 @@ impl Census {
             RecordLayout::new(&POINTER, 8).expect("valid division pointer layout");
         // The daily and hourly country loops dereference every slot without a
         // null test: a non-null slot with another vtable is never legitimate.
-        for slot in 1..reader.count() {
+        let (first_slot, end_slot) = slots.unwrap_or((1, reader.count()));
+        for slot in first_slot.max(1)..end_slot.min(reader.count()) {
             // Keep the census's established reason for an unreadable slot.
             let Some(country) = reader.at(slot).map_err(|reason| match reason {
                 "country pointer unreadable or outside country table" => {
@@ -519,6 +709,16 @@ impl Census {
                     }
                 }
             }
+            // Advisory, and only for the growing worker census: only the next
+            // hour's split reads it.
+            if self.growing
+                && engine::allocation::advisory(|| {
+                    engine::allocation::reserve(&mut self.slot_ends, 1)
+                })
+                .is_ok()
+            {
+                self.slot_ends.push((slot, self.entries.len() as u32));
+            }
         }
         if counting {
             self.overflowed = true;
@@ -613,9 +813,11 @@ impl Census {
             .take(take)
             .enumerate()
         {
-            // Only hint this pass's admitted seeds. Each four-row group is
-            // hinted once before serial projection; no seed field is consumed
-            // and no child value is copied ahead of its validation gates.
+            if index.is_multiple_of(64) {
+                identities.stage_provinces(memory, &inputs.seeds[index..(index + 64).min(take)]);
+            }
+            // Independent template/group hints still acquire no bytes and
+            // cover only admitted seeds; province lookahead is the batch above.
             const LOOKAHEAD: usize = 4;
             if index.is_multiple_of(LOOKAHEAD) {
                 for pending in inputs
@@ -624,19 +826,24 @@ impl Census {
                     .skip(index)
                     .take((take - index).min(LOOKAHEAD))
                 {
-                    if let Some(location) = pending.location.filter(|&pointer| pointer != 0) {
-                        engine::prefetch::span(location, 8);
-                        if let Some(id) = location.checked_add(cprovince::ID) {
-                            engine::prefetch::span(id, 4);
-                        }
-                    }
                     // Both identities occupy the exact vtable/handle pair.
                     for pointer in [pending.standard_template, pending.orders_group]
                         .into_iter()
                         .flatten()
                         .filter(|&pointer| pointer != 0)
                     {
-                        engine::prefetch::span(pointer, 16);
+                        memory.prefetch(pointer, 16);
+                    }
+                    // Division reveal-skip lookup uses +0x234,
+                    // on a different line from the template's identity.
+                    if let Some(skip) = pending
+                        .standard_template
+                        .filter(|&pointer| pointer != 0)
+                        .and_then(|pointer| {
+                            pointer.checked_add(creferenced_division_template::REVEAL_SKIP)
+                        })
+                    {
+                        memory.prefetch(skip, 1);
                     }
                 }
             }
@@ -780,10 +987,49 @@ struct CoreIdentity {
 /// these pointers and their province registry cannot change during this walk.
 /// Null pointers are never inserted. A collision simply replaces a successful
 /// entry after the unchanged native validation; no error or partial read is kept.
+/// A division's province: its vtable and id.
+const PROVINCE_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: cprovince::ID,
+        destination_offset: 8,
+        len: 4,
+    },
+];
+const PROVINCE_IDENTITY: usize = 12;
+const PROVINCE_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&PROVINCE_FIELDS, PROVINCE_IDENTITY).expect("valid province identity layout");
+/// A division's template: its vtable, handle and fog reveal-skip byte.
+const TEMPLATE_FIELDS: [RecordField; 3] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: creferenced_division_template::TYPE,
+        destination_offset: 8,
+        len: 8,
+    },
+    RecordField {
+        source_offset: creferenced_division_template::REVEAL_SKIP,
+        destination_offset: 16,
+        len: 1,
+    },
+];
+const TEMPLATE_IDENTITY: usize = 17;
+const TEMPLATE_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&TEMPLATE_FIELDS, TEMPLATE_IDENTITY).expect("valid template identity layout");
+
 struct CoreIdentities {
     base: usize,
     provinces: Array,
     locations: [CoreIdentity; CORE_IDENTITY_SLOTS],
+    province_batch: cprovince::IdentityBatch,
     templates: [CoreIdentity; CORE_IDENTITY_SLOTS],
     template_skips: [u8; CORE_IDENTITY_SLOTS],
     groups: [CoreIdentity; CORE_IDENTITY_SLOTS],
@@ -795,15 +1041,36 @@ impl CoreIdentities {
             base,
             provinces,
             locations: [CoreIdentity::default(); CORE_IDENTITY_SLOTS],
+            province_batch: cprovince::IdentityBatch::default(),
             templates: [CoreIdentity::default(); CORE_IDENTITY_SLOTS],
             template_skips: [0; CORE_IDENTITY_SLOTS],
             groups: [CoreIdentity::default(); CORE_IDENTITY_SLOTS],
         }
     }
 
+    /// Objects allocated one after another spread like random ones
+    /// (`table_hash`), so a run of templates, groups or provinces does not
+    /// keep evicting itself.
     fn slot(pointer: usize) -> usize {
-        let hash = (pointer >> 4).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        (hash ^ (hash >> 32)) & (CORE_IDENTITY_SLOTS - 1)
+        crate::table_hash::slot((pointer >> 4) as u64, CORE_IDENTITY_SLOTS)
+    }
+
+    fn stage_provinces(&mut self, memory: &impl Memory, seeds: &[carmy::DivisionSeed]) {
+        let mut pointers = [0_usize; 64];
+        let mut len = 0;
+        for seed in seeds {
+            if let Some(pointer) = seed.location.filter(|&at| at != 0)
+                && self.locations[Self::slot(pointer)].pointer != pointer
+                && !pointers[..len].contains(&pointer)
+            {
+                pointers[len] = pointer;
+                len += 1;
+            }
+        }
+        self.province_batch
+            .capture(memory, self.base, self.provinces, &pointers[..len], |_| {
+                true
+            });
     }
 
     fn province(&mut self, memory: &impl Memory, location: usize) -> Result<u32, &'static str> {
@@ -814,25 +1081,46 @@ impl CoreIdentities {
         if self.locations[slot].pointer == location {
             return Ok(self.locations[slot].value as u32);
         }
-        if read::<u64>(memory, location)
-            != self
-                .base
-                .checked_add(cprovince::VTABLE_RVA)
-                .map(|p| p as u64)
+        // The vtable and id in one guarded gather; the id is used only once
+        // the vtable authenticates the province.
+        let mut identity = [0_u8; PROVINCE_IDENTITY];
+        let gathered = match self.province_batch.identity(location) {
+            Some((vtable, id)) => {
+                identity[..8].copy_from_slice(&vtable.to_le_bytes());
+                identity[8..].copy_from_slice(&id.to_le_bytes());
+                PROVINCE_FIELDS.len()
+            }
+            None => memory.copy_records(
+                RecordSources::Pointers(&[location]),
+                &PROVINCE_LAYOUT,
+                &mut identity,
+            ),
+        };
+        if gathered == 0
+            || Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
+                != self
+                    .base
+                    .checked_add(cprovince::VTABLE_RVA)
+                    .map(|p| p as u64)
         {
             return Err("division province vtable mismatch");
         }
-        let id = location
-            .checked_add(cprovince::ID)
-            .and_then(|p| read::<u32>(memory, p))
-            .ok_or("division province id unreadable")?;
+        if gathered < PROVINCE_FIELDS.len() {
+            return Err("division province id unreadable");
+        }
+        let id = u32::from_le_bytes(identity[8..].try_into().unwrap());
         if id == 0 {
             return Err("non-null division province has zero id");
         }
         let registered = self
-            .provinces
-            .element(id, 8)
-            .and_then(|p| read::<u64>(memory, p))
+            .province_batch
+            .slot(id)
+            .map(|pointer| pointer as u64)
+            .or_else(|| {
+                self.provinces
+                    .element(id, 8)
+                    .and_then(|p| read::<u64>(memory, p))
+            })
             .ok_or("division province slot unreadable or out of range")?;
         if registered != location as u64 {
             return Err("division province differs from registered slot");
@@ -858,31 +1146,28 @@ impl CoreIdentities {
             let value = self.templates[slot].value;
             return Ok((value, self.template_skips[slot]));
         }
-        if read::<u64>(memory, template_pointer)
-            != self
-                .base
-                .checked_add(creferenced_division_template::VTABLE_RVA)
-                .map(|p| p as u64)
+        // The vtable, handle and skip byte in one guarded gather; the rest
+        // is used only once the vtable authenticates the template.
+        let mut identity = [0_u8; TEMPLATE_IDENTITY];
+        let gathered = memory.copy_records(
+            RecordSources::Pointers(&[template_pointer]),
+            &TEMPLATE_LAYOUT,
+            &mut identity,
+        );
+        if gathered == 0
+            || Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
+                != self
+                    .base
+                    .checked_add(creferenced_division_template::VTABLE_RVA)
+                    .map(|p| p as u64)
         {
             return Err("division template vtable mismatch");
         }
-        let field = |offset| {
-            template_pointer
-                .checked_add(offset)
-                .ok_or("division template address overflow")
-        };
-        let (mut handle, mut skip) = ([0_u8; 8], [0_u8; 1]);
-        if memory.copy_scattered(
-            [
-                field(creferenced_division_template::TYPE)?,
-                field(creferenced_division_template::REVEAL_SKIP)?,
-            ],
-            &mut [&mut handle, &mut skip],
-        ) != 2
-        {
+        if gathered < TEMPLATE_FIELDS.len() {
             return Err("division template handle unreadable");
         }
-        let handle = u64::from_le_bytes(handle);
+        let handle = u64::from_le_bytes(identity[8..16].try_into().unwrap());
+        let skip = identity[16];
         if handle == 0 {
             return Err("non-null division template has null handle");
         }
@@ -890,8 +1175,8 @@ impl CoreIdentities {
             pointer: template_pointer,
             value: handle,
         };
-        self.template_skips[slot] = skip[0];
-        Ok((handle, skip[0]))
+        self.template_skips[slot] = skip;
+        Ok((handle, skip))
     }
 
     fn group(&mut self, memory: &impl Memory, group: usize) -> Result<u64, &'static str> {

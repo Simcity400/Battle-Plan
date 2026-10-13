@@ -653,6 +653,70 @@ fn naval_graph_preserves_handles_aliases_and_full_signed_scalars() {
     );
 }
 
+/// The census reads each ship, its vtable included, in one guarded call and
+/// its task force's ship roster a page of pointers per call, where it read
+/// each pointer, vtable and field block in a call of its own.
+#[test]
+fn ship_census_reads_a_run_of_ships_in_one_guarded_call_and_its_roster_a_page_per_call() {
+    let calls = |bytes: &[u8], ships: &mut [cship::Row]| {
+        let memory = crate::memory::CountingMemory::new(bytes);
+        let mut fleets = [Row::default(); 1];
+        let mut tasks = [ctask_force::Row::default(); 1];
+        let capture = walk(&memory, 0, GS, &mut fleets, &mut tasks, ships);
+        (capture.ships, memory.calls.get())
+    };
+    let bytes = fixture();
+    let mut ships = [cship::Row::default(); 2];
+    let (read, with_bodies) = calls(&bytes, &mut ships);
+    assert_eq!(read, Outcome::Rows { len: 2 });
+    assert_eq!(
+        ships.map(|ship| ship.roster_ordinal),
+        [0, 1],
+        "roster order is kept"
+    );
+    let (_, roster_only) = calls(&bytes, &mut []);
+    assert_eq!(with_bodies - roster_only, 1, "one call per run of ships");
+    let mut empty = fixture();
+    array(&mut empty, TASK + ctask_force::SHIPS, 0, 0);
+    let (_, no_roster) = calls(&empty, &mut []);
+    assert_eq!(roster_only - no_roster, 1, "one call per roster page");
+
+    // The vtable still decides before the fields: a wrong or unreadable
+    // vtable is a vtable mismatch, an unreadable field after it fails the
+    // ship's fields.
+    struct Faulting<'a> {
+        bytes: &'a [u8],
+        fault: usize,
+    }
+    impl Memory for Faulting<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            !(address..address + destination.len()).contains(&self.fault)
+                && SliceMemory {
+                    base: 0,
+                    bytes: self.bytes,
+                }
+                .copy(address, destination)
+        }
+    }
+    let census = |bytes: &[u8], fault| {
+        let mut fleets = [Row::default(); 1];
+        let mut tasks = [ctask_force::Row::default(); 1];
+        let mut ships = [cship::Row::default(); 2];
+        let memory = Faulting { bytes, fault };
+        walk(&memory, 0, GS, &mut fleets, &mut tasks, &mut ships).ships
+    };
+    let mut wrong = fixture();
+    put64(&mut wrong, SHIP2, 0);
+    let bytes = fixture();
+    for (bytes, fault, reason) in [
+        (&wrong, 0, "ship vtable mismatch"),
+        (&bytes, SHIP2, "ship vtable mismatch"),
+        (&bytes, SHIP2 + cship::TASK_FORCE, "ship fields unreadable"),
+    ] {
+        assert_eq!(census(bytes, fault), Outcome::Unavailable { reason });
+    }
+}
+
 #[test]
 fn naval_capacity_is_independent_and_does_not_hide_descendants() {
     let mut bytes = fixture();
@@ -1590,6 +1654,506 @@ fn growing_task_force_supply_and_port_arenas_capture_five_thousand_countries_bef
             assert_eq!(reads.get(&(pointer + supply::ORIGINS)), Some(&2));
             assert_eq!(reads.get(&(pointer + 0x610)), Some(&1));
             assert_eq!(reads.get(&(pointer + 0x740)), Some(&1));
+        }
+    }
+}
+
+/// One census occurrence's objects in a [`census_world`] slot, for faults.
+#[derive(Clone, Default)]
+struct CensusObjects {
+    fleets: Vec<usize>,
+    tasks: Vec<usize>,
+    ships: Vec<usize>,
+}
+
+const WORLD_PROVINCES: usize = 0x2000;
+const WORLD_PROVINCE: usize = 0x2100;
+const WORLD_HEAP: usize = 0x3000;
+
+fn world_alloc(bytes: &mut Vec<u8>, len: usize) -> usize {
+    let at = bytes.len().next_multiple_of(16);
+    bytes.resize(at + len, 0);
+    at
+}
+
+/// `count` country slots, every seventh empty; slot `s` has `s % 3` fleets,
+/// fleet `f` has `(s + f) % 3` task forces and task force `t` has
+/// `(s + f + t) % 4 + (s % 11 == 0) as usize * 70` ships, so runs of ships
+/// cross task forces, fleets and countries and some task forces alone fill
+/// more than a run. Some fleets are named or based at the shared province.
+fn census_world(count: usize) -> (Vec<u8>, Vec<CensusObjects>) {
+    let countries = WORLD_HEAP;
+    let links = countries + (count + 1) * 8;
+    let mut bytes = vec![0; links + (count + 1) * 4];
+    array(
+        &mut bytes,
+        GS + cgame_state::COUNTRIES,
+        countries,
+        count as u32 + 1,
+    );
+    array(
+        &mut bytes,
+        GS + cgame_state::COUNTRY_LINKS,
+        links,
+        count as u32 + 1,
+    );
+    array(&mut bytes, GS + cgame_state::PROVINCES, WORLD_PROVINCES, 2);
+    put64(&mut bytes, WORLD_PROVINCES + 8, WORLD_PROVINCE as u64);
+    put64(&mut bytes, WORLD_PROVINCE, cprovince::VTABLE_RVA as u64);
+    put32(&mut bytes, WORLD_PROVINCE + cprovince::ID, 1);
+    let mut objects = vec![CensusObjects::default(); count + 1];
+    let mut handle = 0_u64;
+    for (slot, found) in objects.iter_mut().enumerate().skip(1) {
+        if slot % 7 == 0 {
+            continue;
+        }
+        let country = world_alloc(&mut bytes, 0x300);
+        put64(&mut bytes, countries + slot * 8, country as u64);
+        put32(&mut bytes, links + slot * 4, slot as u32);
+        put64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        put32(&mut bytes, country + ccountry::ID, slot as u32);
+        let fleets = slot % 3;
+        let roster = world_alloc(&mut bytes, 8 * fleets.max(1));
+        array(
+            &mut bytes,
+            country + ccountry::FLEETS,
+            roster,
+            fleets as u32,
+        );
+        for f in 0..fleets {
+            let fleet = world_alloc(&mut bytes, 0x140);
+            found.fleets.push(fleet);
+            handle += 1;
+            put64(&mut bytes, roster + f * 8, fleet as u64);
+            put64(&mut bytes, fleet, VTABLE_RVA as u64);
+            put64(&mut bytes, fleet + HANDLE, (handle << 32) | 61);
+            put64(&mut bytes, fleet + OWNER, country as u64);
+            if (slot + f) % 2 == 0 {
+                put64(&mut bytes, fleet + HOME_BASE, WORLD_PROVINCE as u64);
+            }
+            if (slot + f) % 4 != 0 {
+                let name = format!("F{slot}.{f}");
+                let at = fleet + NAME;
+                bytes[at..at + name.len()].copy_from_slice(name.as_bytes());
+                put64(&mut bytes, at + 16, name.len() as u64);
+                put64(&mut bytes, at + 24, 15);
+            }
+            let tasks = (slot + f) % 3;
+            let task_roster = world_alloc(&mut bytes, 8 * tasks.max(1));
+            array(&mut bytes, fleet + TASK_FORCES, task_roster, tasks as u32);
+            for t in 0..tasks {
+                let task = world_alloc(&mut bytes, 0x380);
+                found.tasks.push(task);
+                handle += 1;
+                put64(&mut bytes, task_roster + t * 8, task as u64);
+                put64(&mut bytes, task, ctask_force::VTABLE_RVA as u64);
+                put64(
+                    &mut bytes,
+                    task + ctask_force::SECONDARY_BASE,
+                    ctask_force::SECONDARY_VTABLE_RVA as u64,
+                );
+                put64(&mut bytes, task + cunit::HANDLE, (handle << 32) | 51);
+                put64(&mut bytes, task + ctask_force::FLEET, fleet as u64);
+                put32(&mut bytes, task + cunit::ROSTER_OWNER, slot as u32);
+                put32(&mut bytes, task + cunit::LOGICAL_OWNER, slot as u32);
+                if (slot + t) % 2 == 0 {
+                    put64(&mut bytes, task + cunit::LOCATION, WORLD_PROVINCE as u64);
+                }
+                put32(&mut bytes, task + ctask_force::MISSION, 2);
+                let ships = (slot + f + t) % 4 + usize::from(slot % 11 == 0) * 70;
+                let ship_roster = world_alloc(&mut bytes, 8 * ships.max(1));
+                array(
+                    &mut bytes,
+                    task + ctask_force::SHIPS,
+                    ship_roster,
+                    ships as u32,
+                );
+                for s in 0..ships {
+                    let ship = world_alloc(&mut bytes, 0x730);
+                    found.ships.push(ship);
+                    handle += 1;
+                    put64(&mut bytes, ship_roster + s * 8, ship as u64);
+                    put64(&mut bytes, ship, cship::VTABLE_RVA as u64);
+                    put64(&mut bytes, ship + cship::HANDLE, (handle << 32) | 51);
+                    put64(&mut bytes, ship + cship::STRENGTH, handle * 1_000);
+                    put64(&mut bytes, ship + cship::ORGANISATION, handle * 7);
+                    put64(
+                        &mut bytes,
+                        ship + cship::EXPERIENCE,
+                        (-(handle as i64)) as u64,
+                    );
+                    put32(&mut bytes, ship + cship::CATEGORY, (s % 3) as u32);
+                    put32(&mut bytes, ship + cship::SUNK_CONVOYS, s as u32);
+                    put32(&mut bytes, ship + cship::CLASS_DATABASE_ID, (s % 5) as u32);
+                    put64(&mut bytes, ship + cship::TASK_FORCE, task as u64);
+                }
+            }
+        }
+    }
+    (bytes, objects)
+}
+
+/// The world's bytes; reads touching `fault` fail always, or only the first
+/// in time when `once`.
+struct CensusMemory<'a> {
+    bytes: &'a [u8],
+    fault: Option<usize>,
+    once: bool,
+    failures: std::cell::Cell<usize>,
+}
+
+impl Memory for CensusMemory<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        if let Some(at) = self.fault
+            && address <= at
+            && at - address < output.len()
+            && (!self.once || self.failures.get() == 0)
+        {
+            self.failures.set(self.failures.get() + 1);
+            return false;
+        }
+        SliceMemory {
+            base: 0,
+            bytes: self.bytes,
+        }
+        .copy(address, output)
+    }
+}
+
+/// What a census walk leaves: outcomes, rows, names and visits.
+#[derive(Debug, PartialEq)]
+struct Walked {
+    capture: Capture,
+    fleets: Vec<Row>,
+    tasks: Vec<ctask_force::Row>,
+    ships: Vec<cship::Row>,
+    names: Vec<u8>,
+    visits: Vec<(usize, cship::Row)>,
+}
+
+fn census_walk(memory: &impl Memory, batched: bool) -> Walked {
+    census_walk_in(memory, batched, None)
+}
+
+/// [`census_walk`] into fixed buffers of `capacity` fleet, task-force and
+/// ship rows when given, growing ones otherwise.
+fn census_walk_in(memory: &impl Memory, batched: bool, capacity: Option<[usize; 3]>) -> Walked {
+    let [fleet_rows, task_rows, ship_rows] = capacity.unwrap_or([0; 3]);
+    let mut fleets = vec![Row::default(); fleet_rows];
+    let mut tasks = vec![ctask_force::Row::default(); task_rows];
+    let mut ships = vec![cship::Row::default(); ship_rows];
+    let mut names = Vec::new();
+    let mut visits = Vec::new();
+    let walked = walk_named(
+        memory,
+        0,
+        GS,
+        buffer_of(&mut fleets, capacity.is_some()),
+        buffer_of(&mut tasks, capacity.is_some()),
+        buffer_of(&mut ships, capacity.is_some()),
+        |_| 0,
+        |pointer, row| visits.push((pointer, *row)),
+        Some(&mut names),
+        batched,
+    );
+    let rows = |outcome: Outcome| match outcome {
+        Outcome::Rows { len } | Outcome::Truncated { len, .. } => len,
+        Outcome::Unavailable { .. } => 0,
+    };
+    fleets.truncate(rows(walked.capture.fleets));
+    tasks.truncate(rows(walked.capture.task_forces));
+    ships.truncate(rows(walked.capture.ships));
+    Walked {
+        capture: walked.capture,
+        fleets,
+        tasks,
+        ships,
+        names,
+        visits,
+    }
+}
+
+fn buffer_of<T>(rows: &mut Vec<T>, fixed: bool) -> crate::walk::Buffer<'_, T> {
+    if fixed {
+        crate::walk::Buffer::Fixed(rows.as_mut_slice())
+    } else {
+        crate::walk::Buffer::Growing(rows)
+    }
+}
+
+/// The reads to fault: the province array header and the shared province,
+/// a fleet's vtable and home base, a task force's handle and ship roster,
+/// and ships' vtables, handles, scalars and parents, in runs of several
+/// task forces and inside a task force longer than a run.
+fn census_faults(objects: &[CensusObjects]) -> Vec<usize> {
+    let ship = |slot: usize, index: usize| objects[slot].ships[index];
+    vec![
+        GS + cgame_state::PROVINCES,
+        WORLD_PROVINCE + cprovince::ID,
+        objects[8].fleets[0],
+        objects[8].fleets[1] + HANDLE,
+        objects[4].fleets[0] + OWNER,
+        objects[10].fleets[0] + HOME_BASE,
+        objects[11].fleets[0] + NAME,
+        objects[13].tasks[0] + cunit::HANDLE,
+        objects[16].tasks[0] + ctask_force::SECONDARY_BASE,
+        objects[17].tasks[0] + cunit::ROSTER_OWNER,
+        objects[19].tasks[0] + cunit::LOCATION,
+        objects[20].tasks[0] + ctask_force::FLEET,
+        objects[23].tasks[0] + ctask_force::MISSION,
+        objects[5].tasks[0] + ctask_force::SHIPS,
+        ship(5, 0),
+        ship(10, 1) + cship::HANDLE,
+        ship(11, 3) + cship::STRENGTH,
+        ship(11, 69) + cship::TASK_FORCE,
+        ship(22, 40) + cship::CATEGORY,
+        ship(26, 0) + cship::CLASS_DATABASE_ID,
+    ]
+}
+
+/// On healthy memory the batched census equals the per-ship walk at 5,000
+/// countries: outcomes, rows, names and the ships visited, in order.
+#[test]
+fn batched_ship_census_equals_the_per_ship_walk_at_5000_countries() {
+    let (bytes, _) = census_world(5_000);
+    let memory = CensusMemory {
+        bytes: &bytes,
+        fault: None,
+        once: false,
+        failures: Default::default(),
+    };
+    let serial = census_walk(&memory, false);
+    assert_eq!(
+        serial.capture.ships,
+        Outcome::Rows {
+            len: serial.ships.len()
+        }
+    );
+    assert!(serial.ships.len() > 10 * SHIP_RUN);
+    assert_eq!(serial.visits.len(), serial.ships.len());
+    assert_eq!(census_walk(&memory, true), serial);
+}
+
+/// A lasting fault anywhere gives the per-ship walk's result, and a fault
+/// that clears after its first touch never refuses or withholds more than
+/// the per-ship walk does: the batch's per-ship fallback reads the ship
+/// again.
+#[test]
+fn batched_ship_census_keeps_lasting_faults_and_is_never_harsher_under_one_touch_faults() {
+    let (bytes, objects) = census_world(40);
+    for fault in census_faults(&objects) {
+        let memory = |once| CensusMemory {
+            bytes: &bytes,
+            fault: Some(fault),
+            once,
+            failures: Default::default(),
+        };
+        use crate::batch_fallback::{Batch, count};
+        let (fleet_fallbacks, task_fallbacks) =
+            (count(Batch::FleetGathers), count(Batch::TaskForceGathers));
+        assert_eq!(
+            census_walk(&memory(false), true),
+            census_walk(&memory(false), false),
+            "lasting fault at {fault:#x}"
+        );
+        let inside =
+            |at: &[usize], size: usize| at.iter().any(|&at| at <= fault && fault < at + size);
+        if objects.iter().any(|slot| inside(&slot.fleets, 0x140)) {
+            assert!(
+                count(Batch::FleetGathers) > fleet_fallbacks,
+                "a fleet fault reads its fields alone"
+            );
+        }
+        if objects.iter().any(|slot| inside(&slot.tasks, 0x380)) {
+            assert!(
+                count(Batch::TaskForceGathers) > task_fallbacks,
+                "a task force fault reads its fields alone"
+            );
+        }
+        let fallbacks = count(Batch::ShipRuns);
+        let batched = census_walk(&memory(true), true);
+        let serial = census_walk(&memory(true), false);
+        let tables = |walked: &Walked| {
+            [
+                walked.capture.fleets,
+                walked.capture.task_forces,
+                walked.capture.ships,
+            ]
+        };
+        for (batched_table, serial_table) in tables(&batched).into_iter().zip(tables(&serial)) {
+            assert!(
+                !matches!(batched_table, Outcome::Unavailable { .. })
+                    || matches!(serial_table, Outcome::Unavailable { .. }),
+                "one-touch fault at {fault:#x}: {batched_table:?} where the walk gave {serial_table:?}"
+            );
+            assert!(batched_table.len() >= serial_table.len(), "{fault:#x}");
+        }
+        assert!(batched.visits.len() >= serial.visits.len(), "{fault:#x}");
+        if objects.iter().any(|slot| {
+            slot.ships
+                .iter()
+                .any(|&ship| ship <= fault && fault < ship + 0x730)
+        }) {
+            assert!(
+                count(Batch::ShipRuns) > fallbacks,
+                "a ship fault reads its batch again one ship at a time"
+            );
+        }
+    }
+}
+
+/// A walk-ending failure after ships were queued: the batched census still
+/// reads, emits and visits the queued ships before it, as the per-ship walk
+/// visited them, with a full run and a pending tail before the failure.
+#[test]
+fn ships_queued_before_a_walk_ending_failure_are_visited_as_the_per_ship_walk_visits_them() {
+    let (bytes, objects) = census_world(40);
+    // Slot 11's task forces fill a run and leave a tail; slot 13's fleet
+    // fails the walk after them.
+    for fault in [
+        objects[8].fleets[0],
+        objects[13].fleets[0],
+        objects[34].fleets[0],
+    ] {
+        let memory = |once| CensusMemory {
+            bytes: &bytes,
+            fault: Some(fault),
+            once,
+            failures: Default::default(),
+        };
+        let serial = census_walk(&memory(false), false);
+        assert!(matches!(serial.capture.ships, Outcome::Unavailable { .. }));
+        assert!(!serial.visits.is_empty());
+        assert_eq!(census_walk(&memory(false), true), serial, "{fault:#x}");
+    }
+}
+
+/// Fixed row buffers of any size, including none, part of a run, one short
+/// of a run, a run, one past it, a cut inside a task force and the whole
+/// census, give the per-ship walk's outcomes (with their unread rows), rows,
+/// names and visits.
+#[test]
+fn batched_census_into_fixed_buffers_equals_the_per_ship_walk() {
+    let (bytes, _) = census_world(40);
+    let memory = CensusMemory {
+        bytes: &bytes,
+        fault: None,
+        once: false,
+        failures: Default::default(),
+    };
+    let whole = census_walk(&memory, false);
+    let (fleets, tasks, ships) = (whole.fleets.len(), whole.tasks.len(), whole.ships.len());
+    assert!(ships > 3 * SHIP_RUN);
+    for ship_rows in [
+        0,
+        1,
+        17,
+        SHIP_RUN - 1,
+        SHIP_RUN,
+        SHIP_RUN + 1,
+        150,
+        ships - 1,
+        ships,
+    ] {
+        for (fleet_rows, task_rows) in [(fleets, tasks), (0, 0), (3, 7), (fleets - 1, tasks - 1)] {
+            let capacity = Some([fleet_rows, task_rows, ship_rows]);
+            let serial = census_walk_in(&memory, false, capacity);
+            assert_eq!(
+                census_walk_in(&memory, true, capacity),
+                serial,
+                "{fleet_rows} fleets, {task_rows} task forces, {ship_rows} ships"
+            );
+        }
+    }
+}
+
+/// The census's memory, recording the first address of every scattered
+/// copy: a ship read alone after its run's copy stopped early.
+struct Scattered<'a> {
+    inner: CensusMemory<'a>,
+    first: std::cell::RefCell<Vec<usize>>,
+}
+
+impl Memory for Scattered<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.inner.copy(address, output)
+    }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.first.borrow_mut().push(addresses[0]);
+        for (done, (address, destination)) in addresses
+            .into_iter()
+            .zip(destinations.iter_mut())
+            .enumerate()
+        {
+            if destination.is_empty() {
+                continue;
+            }
+            if address == 0 || !self.inner.copy(address, destination) {
+                return done;
+            }
+        }
+        N
+    }
+}
+
+/// After a run's copy stops at a ship, each of the run's remaining eligible
+/// ships is read alone at most once: under a lasting fault only the failing
+/// ship (the Ships table then stops, and no later ship is read or visited),
+/// under a fault that clears every remaining ship of that run, once.
+#[test]
+fn a_short_run_reads_each_remaining_ship_alone_at_most_once() {
+    let (bytes, objects) = census_world(40);
+    let ships: Vec<usize> = objects
+        .iter()
+        .flat_map(|slot| slot.ships.iter().copied())
+        .collect();
+    let failing = objects[11].ships[3];
+    for once in [false, true] {
+        let memory = Scattered {
+            inner: CensusMemory {
+                bytes: &bytes,
+                fault: Some(failing + cship::STRENGTH),
+                once,
+                failures: Default::default(),
+            },
+            first: Default::default(),
+        };
+        let walked = census_walk(&memory, true);
+        let alone: Vec<usize> = memory
+            .first
+            .borrow()
+            .iter()
+            .copied()
+            .filter(|at| ships.contains(at))
+            .collect();
+        let mut distinct = alone.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), alone.len(), "each ship at most once");
+        assert_eq!(alone.first(), Some(&failing));
+        let position = ships.iter().position(|&ship| ship == failing).unwrap();
+        if once {
+            // The rest of the failing ship's run, each once, nothing after it.
+            assert!(alone.len() <= SHIP_RUN);
+            assert!(alone.iter().all(|at| {
+                let index = ships.iter().position(|ship| ship == at).unwrap();
+                index >= position && index < position + SHIP_RUN
+            }));
+            assert!(matches!(walked.capture.ships, Outcome::Rows { .. }));
+        } else {
+            assert_eq!(alone, vec![failing]);
+            assert_eq!(walked.visits.len(), position);
+            assert_eq!(
+                walked.capture.ships,
+                Outcome::Unavailable {
+                    reason: "ship fields unreadable"
+                }
+            );
         }
     }
 }

@@ -154,6 +154,212 @@ fn border_marker_witnesses_compare_stored_country_state_and_event_strings() {
     );
 }
 
+/// The CAS hover's operands, recorded once in the side inputs, compare with
+/// the saved side: the anti-air cache exactly and the prevented lanes at
+/// their display step, each written only when positive.
+#[test]
+fn cas_operands_compare_anti_air_exactly_and_prevented_damage_at_its_step() {
+    use replay::rows::{LandCombatDetailsRow, LandCombatSideInputs};
+    let (mut frame, mut save, ..) = super::super::tests::fixture();
+    let combat = (7_u64 << 32) | 62;
+    let mut details = save::combat_details::LandDetails::default();
+    for side in &mut details.sides {
+        side.organisation_loss_count = Some(0);
+    }
+    details.sides[0].anti_air = Some(Decimal::parse(b"12.34567").unwrap());
+    // 2.5 shows as 2 (`|R0`); 0.75 shows as 0.
+    details.sides[0].damage[4] = Some(Decimal::parse(b"2.5").unwrap());
+    details.sides[0].damage[5] = Some(Decimal::parse(b"0.75").unwrap());
+    save.land_combats.insert(
+        combat,
+        save::LandCombat {
+            id: combat,
+            province: 2,
+            details,
+            day: 0,
+            duration: 0,
+            attackers: Vec::new(),
+            defenders: Vec::new(),
+        },
+    );
+    let run = |frame: &mut DecodedFrame, save: &Save, sides: [LandCombatSideInputs; 2]| {
+        *frame.tables[TableId::LandCombatDetails.index()] =
+            TableView::Complete(TableRows::LandCombatDetails(vec![LandCombatDetailsRow {
+                combat,
+                province: 2,
+                border_war: Recorded::Value(None),
+                side_inputs: Recorded::Value(sides),
+                ..Default::default()
+            }]));
+        let mut report = Report {
+            display_steps: true,
+            ..Default::default()
+        };
+        land(frame, save, &mut report).unwrap();
+        report
+    };
+    let recorded = LandCombatSideInputs {
+        anti_air_attack: 1_234_567,
+        prevented_damage: [200_000, 0],
+        ..Default::default()
+    };
+    let report = run(
+        &mut frame,
+        &save,
+        [recorded.clone(), LandCombatSideInputs::default()],
+    );
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .display_compared
+            .contains_key("LandCombatDetails.side_inputs.prevented_damage")
+    );
+    // A stepped anti-air cache or a prevented lane a step off is a difference,
+    // as is a positive lane the save omits (the defender's side).
+    for sides in [
+        [
+            LandCombatSideInputs {
+                anti_air_attack: 1_200_000,
+                ..recorded.clone()
+            },
+            LandCombatSideInputs::default(),
+        ],
+        [
+            LandCombatSideInputs {
+                prevented_damage: [300_000, 0],
+                ..recorded.clone()
+            },
+            LandCombatSideInputs::default(),
+        ],
+    ] {
+        let report = run(&mut frame, &save, sides);
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    }
+    let report = run(
+        &mut frame,
+        &save,
+        [
+            recorded,
+            LandCombatSideInputs {
+                prevented_damage: [0, 100_000],
+                ..Default::default()
+            },
+        ],
+    );
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    assert!(report.differences[0].contains("prevented_damage_org positive-field presence"));
+}
+
+/// The reserve speed share is composed for every reserve and no
+/// other division, so it sits exactly on the save's reserves: a committed
+/// division holding one, or a reserve missing one without a capture
+/// refusal, is a difference; a refused share is a named limitation.
+#[test]
+fn reserve_speed_shares_sit_exactly_on_the_saved_reserves() {
+    use replay::rows::LandCombatDivisionRow;
+    let (mut frame, mut save, ..) = super::super::tests::fixture();
+    let combat = (7_u64 << 32) | 62;
+    let (committed, reserve) = (0x9000_0001_u64, 0x9000_0002_u64);
+    let mut details = save::combat_details::LandDetails::default();
+    details.sides[0].committed = vec![committed];
+    details.sides[0].reserves = vec![reserve];
+    save.land_combats.insert(
+        combat,
+        save::LandCombat {
+            id: combat,
+            province: 2,
+            details,
+            day: 0,
+            duration: 0,
+            attackers: vec![committed, reserve],
+            defenders: Vec::new(),
+        },
+    );
+    for id in [committed, reserve] {
+        save.divisions.insert(
+            id,
+            save::Division {
+                id,
+                roster_owner: b"SOV".to_vec(),
+                logical_owner: b"SOV".to_vec(),
+                expeditionary_owner: None,
+                province: Some(2),
+                template: None,
+                alternate_template: None,
+                separate_counter: false,
+                hit_points: Decimal::parse(b"1").unwrap(),
+                organisation: Decimal::parse(b"1").unwrap(),
+                country_intel: Vec::new(),
+                presentation: Default::default(),
+            },
+        );
+    }
+    let run = |frame: &mut DecodedFrame, shares: [Recorded<Option<i64>>; 2]| {
+        let [first, second] = shares;
+        *frame.tables[TableId::LandCombatDivisions.index()] =
+            TableView::Complete(TableRows::LandCombatDivisions(vec![
+                LandCombatDivisionRow {
+                    combat,
+                    side: 0,
+                    ordinal: 0,
+                    role: 1,
+                    province: 2,
+                    division: committed,
+                    reinforcement_speed: first,
+                    ..Default::default()
+                },
+                LandCombatDivisionRow {
+                    combat,
+                    side: 0,
+                    ordinal: 1,
+                    role: 2,
+                    province: 2,
+                    division: reserve,
+                    reinforcement_speed: second,
+                    ..Default::default()
+                },
+            ]));
+        let mut report = Report::default();
+        divisions(frame, &save, &mut report).unwrap();
+        report
+    };
+    let shares = |report: &Report| {
+        report
+            .differences
+            .iter()
+            .filter(|difference| difference.contains("reserve speed share"))
+            .count()
+    };
+    let report = run(
+        &mut frame,
+        [Recorded::Value(None), Recorded::Value(Some(150_000))],
+    );
+    assert_eq!(shares(&report), 0, "{:?}", report.differences);
+    let report = run(
+        &mut frame,
+        [Recorded::Value(Some(0)), Recorded::Value(Some(0))],
+    );
+    assert_eq!(shares(&report), 1, "{:?}", report.differences);
+    // A reserve whose share capture refused is a named limitation.
+    let report = run(&mut frame, [Recorded::Value(None), Recorded::Value(None)]);
+    assert_eq!(shares(&report), 0, "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.starts_with("A reserve's speed share was refused at capture"))
+    );
+    // An older recording holds no share: a limitation, not a difference.
+    let report = run(&mut frame, [Recorded::NotRecorded, Recorded::NotRecorded]);
+    assert_eq!(shares(&report), 0, "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("LandCombatDivisions.reinforcement_speed"))
+    );
+}
+
 #[test]
 fn border_width_oracle_compares_zero_precision_and_unconditional_presence() {
     use replay::rows::{LandBorderWarInputs, LandCombatDetailsRow};
@@ -275,92 +481,7 @@ fn air_base_wing_rows_must_be_exactly_the_referenced_bases_in_the_air_censuses()
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
 }
 
-use replay::rows::{LandCombatCommanderTimedTrait, LandCombatSideDetails};
-
-#[test]
-fn naval_modifier_breakdowns_check_runtime_joins_without_claiming_save_values() {
-    use replay::rows::{
-        ModifierBreakdownNode, NavalCombatDetailsRow, NavalModifierBreakdownRow, NavalModifierUse,
-    };
-    fn set(frame: &mut DecodedFrame, rows: TableRows) {
-        let index = rows.table().index();
-        *frame.tables[index] = TableView::Complete(rows);
-    }
-    let (mut frame, ..) = super::super::tests::fixture();
-    set(
-        &mut frame,
-        TableRows::NavalCombatDetails(vec![NavalCombatDetailsRow {
-            combat: 123,
-            ..Default::default()
-        }]),
-    );
-    set(
-        &mut frame,
-        TableRows::NavalCombatShips(vec![NavalCombatShipRow {
-            combat: 123,
-            side: 1,
-            battle_slot: 7,
-            state: 8,
-            ..Default::default()
-        }]),
-    );
-    let tree = NavalModifierBreakdownRow {
-        accumulator: 0x5678,
-        key: 0x5b,
-        uses: vec![NavalModifierUse {
-            combat: 123,
-            side: 1,
-            battle_slot: 7,
-            source_scope: 1,
-            ..Default::default()
-        }],
-        nodes: vec![ModifierBreakdownNode {
-            children: 0,
-            value: 42,
-            name: b"Runtime source".to_vec(),
-        }],
-    };
-    set(
-        &mut frame,
-        TableRows::NavalModifierBreakdowns(vec![tree.clone()]),
-    );
-    let mut report = Report::default();
-    naval_modifier_breakdowns(&frame, &mut report).unwrap();
-    assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert_eq!(report.compared_tables["NavalModifierBreakdowns"], 1);
-    assert!(
-        report
-            .limitations
-            .keys()
-            .any(|text| text.contains("does not serialize"))
-    );
-
-    let mut bad = tree;
-    bad.uses.push(bad.uses[0].clone());
-    bad.uses[1].combat = 999;
-    set(&mut frame, TableRows::NavalModifierBreakdowns(vec![bad]));
-    let mut report = Report::default();
-    naval_modifier_breakdowns(&frame, &mut report).unwrap();
-    assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
-    assert!(
-        report
-            .differences
-            .iter()
-            .any(|text| text.contains("source order"))
-    );
-    assert!(
-        report
-            .differences
-            .iter()
-            .any(|text| text.contains("999 combat"))
-    );
-    assert!(
-        report
-            .differences
-            .iter()
-            .any(|text| text.contains("999 slot"))
-    );
-}
+use replay::rows::LandCombatCommanderTimedTrait;
 
 #[test]
 fn naval_air_localized_cache_is_not_a_saved_plane_comparator() {
@@ -472,65 +593,44 @@ fn timed_traits_compare_saved_tokens_and_signed_days_in_vector_order() {
         definition_ordinal: 0,
         remaining_days,
     };
-    let side = LandCombatSideDetails {
-        commander: (4 << 32) | 4713,
-        commander_category: 1,
-        timed_traits: vec![timed(1, 20), timed(2, -1)],
-        ..Default::default()
-    };
+    // Naval commanders' timed traits; the land side's are retired.
+    let commander = (4 << 32) | 4713;
+    let traits = vec![timed(1, 20), timed(2, -1)];
     let tokens: TokenNames<'static> =
         BTreeMap::from([(1, b"sick".as_slice()), (2, b"wounded".as_slice())]);
-    let compare = |side: &LandCombatSideDetails, tokens: &TokenNames<'_>| {
+    let compare = |commander, traits: &[LandCombatCommanderTimedTrait], tokens: &TokenNames<'_>| {
         let mut report = Report::default();
-        timed_traits(
-            &mut report,
-            "side",
-            side.commander,
-            side.commander_category,
-            &side.timed_traits,
-            &save,
-            tokens,
-        );
+        timed_traits(&mut report, "side", commander, 1, traits, &save, tokens);
         report
     };
-    let report = compare(&side, &tokens);
+    let report = compare(commander, &traits, &tokens);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     // Vector order and exact signed days, never a set.
-    let swapped = LandCombatSideDetails {
-        timed_traits: vec![timed(2, -1), timed(1, 20)],
-        ..side.clone()
-    };
-    assert_eq!(compare(&swapped, &tokens).differences.len(), 4);
+    let swapped = [timed(2, -1), timed(1, 20)];
+    assert_eq!(compare(commander, &swapped, &tokens).differences.len(), 4);
     // An unspelled token limits only its own spelling; days still compare.
-    let report = compare(&side, &TokenNames::new());
+    let report = compare(commander, &traits, &TokenNames::new());
     assert!(report.differences.is_empty());
     assert_eq!(report.limitations.values().flatten().count(), 2);
     // A capture longer than the save is a count difference.
-    let extra = LandCombatSideDetails {
-        timed_traits: vec![timed(1, 20), timed(2, -1), timed(1, 3)],
-        ..side.clone()
-    };
-    assert_eq!(compare(&extra, &tokens).differences.len(), 1);
+    let extra = [timed(1, 20), timed(2, -1), timed(1, 3)];
+    assert_eq!(compare(commander, &extra, &tokens).differences.len(), 1);
     // No commander carries no timed traits.
-    let absent = LandCombatSideDetails {
-        commander: 0,
-        ..side.clone()
-    };
-    assert_eq!(compare(&absent, &tokens).differences.len(), 1);
+    assert_eq!(compare(0, &traits, &tokens).differences.len(), 1);
     let mut save = save;
     save.characters
         .manager
         .as_mut()
         .unwrap()
         .unit_leaders
-        .get_mut(&side.commander)
+        .get_mut(&commander)
         .unwrap()
         .category = 2;
     let mut naval = replay::rows::NavalCommanderInputs {
-        commander: side.commander,
+        commander,
         category: 2,
         skills: [1, 0, 0, 0, 0],
-        timed_traits: Recorded::Value(side.timed_traits.clone()),
+        timed_traits: Recorded::Value(traits.clone()),
         ..Default::default()
     };
     let compare_naval = |actual: &replay::rows::NavalCommanderInputs| {
@@ -995,4 +1095,84 @@ fn commander_formations_match_the_saved_leader_group() {
     navy.commander_category = 2;
     formation(&mut report, "navy leader", &navy, &formations);
     assert_eq!(report.differences.len(), 3);
+}
+
+#[test]
+fn organisation_loss_compares_the_recorded_sum_with_the_saved_samples() {
+    use replay::rows::{LandBorderWarInputs, LandBorderWarSide, LandCombatDetailsRow};
+    let (mut frame, mut save, ..) = super::super::tests::fixture();
+    let combat = (7_u64 << 32) | 63;
+    let border = LandBorderWarInputs {
+        transfer_state: 128,
+        combat_width: Recorded::NotRecorded,
+        sides: std::array::from_fn(|_| LandBorderWarSide {
+            country: 102,
+            state: 11,
+            ..Default::default()
+        }),
+    };
+    // Samples whose signed 64-bit sum wraps, as the game's addition wraps.
+    let samples: Vec<i64> = (0..24)
+        .map(|slot| if slot == 0 { i64::MAX } else { slot })
+        .collect();
+    let sum = samples
+        .iter()
+        .fold(0_i64, |sum, value| sum.wrapping_add(*value));
+    let mut row = LandCombatDetailsRow {
+        combat,
+        province: 2,
+        border_war: Recorded::Value(Some(border)),
+        ..Default::default()
+    };
+    for side in &mut row.sides {
+        side.organisation_loss_count = 24;
+        side.organisation_loss_sum = sum;
+    }
+    *frame.tables[TableId::LandCombatDetails.index()] =
+        TableView::Complete(TableRows::LandCombatDetails(vec![row]));
+    let mut details = save::combat_details::LandDetails {
+        border_war: true,
+        transfer_state: Some(true),
+        ..Default::default()
+    };
+    let decimals = |values: &[i64]| {
+        values
+            .iter()
+            .map(|&raw| save::Decimal {
+                raw,
+                fractional_digits: 5,
+                lexeme: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+    };
+    for side in &mut details.sides {
+        side.border_country = Some(b"GER".to_vec());
+        side.border_state = Some(11);
+        side.organisation_loss_count = Some(24);
+        side.organisation_loss = Some(decimals(&samples));
+    }
+    save.land_combats.insert(
+        combat,
+        save::LandCombat {
+            id: combat,
+            province: 2,
+            details,
+            day: 0,
+            duration: 0,
+            attackers: Vec::new(),
+            defenders: Vec::new(),
+        },
+    );
+    let mut report = Report::default();
+    land(&frame, &save, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    // One saved sample off changes the sum; a short ring is reported too.
+    let saved = &mut save.land_combats.get_mut(&combat).unwrap().details;
+    let mut moved = samples.clone();
+    moved[5] += 1;
+    saved.sides[0].organisation_loss = Some(decimals(&moved));
+    saved.sides[1].organisation_loss = Some(decimals(&samples[..23]));
+    let mut report = Report::default();
+    land(&frame, &save, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
 }

@@ -13,7 +13,7 @@
 
 use engine::memory::ReadCounts;
 use replay::{frame::TABLE_COUNT, rows::TableId};
-use std::{cell::RefCell, marker::PhantomData, rc::Rc};
+use std::{cell::RefCell, marker::PhantomData, mem::MaybeUninit, rc::Rc};
 
 pub(crate) type TableCounts = [ReadCounts; TABLE_COUNT];
 pub(crate) const ZERO: TableCounts = [ReadCounts::ZERO; TABLE_COUNT];
@@ -89,64 +89,101 @@ pub(crate) fn with_table<R>(owner: TableId, work: impl FnOnce() -> R) -> R {
 
 /// Keep this guard outside the job's panic boundary. Its table guards unwind
 /// inside that boundary, so finish still returns all attempted native work.
+/// The parent's counts are saved and restored in place: no second set of
+/// counts is ever built on the opening thread's stack.
 #[must_use]
 pub(crate) struct Capture {
-    previous: Option<State>,
+    previous: MaybeUninit<State>,
+    open: bool,
     _thread: PhantomData<Rc<()>>,
 }
 
 impl Capture {
     pub(crate) fn new() -> Self {
-        let previous = STATE.with(|state| {
-            let mut state = state.borrow_mut();
-            state.flush();
-            std::mem::replace(&mut *state, State::new())
-        });
-        Self {
-            previous: Some(previous),
+        let mut capture = Self {
+            previous: MaybeUninit::uninit(),
+            open: false,
             _thread: PhantomData,
-        }
-    }
-
-    pub(crate) fn finish(mut self) -> TableCounts {
-        self.restore()
-    }
-
-    fn restore(&mut self) -> TableCounts {
-        let Some(previous) = self.previous.take() else {
-            return ZERO;
         };
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.flush();
-            std::mem::replace(&mut *state, previous).tables
-        })
+            let previous = capture.previous.as_mut_ptr();
+            // SAFETY: every field of `previous` is written before `open` is set.
+            unsafe {
+                std::ptr::addr_of_mut!((*previous).tables).write(state.tables);
+                std::ptr::addr_of_mut!((*previous).current).write(state.current);
+            }
+            state.tables = ZERO;
+            state.current = TableId::Clock.index();
+        });
+        capture.open = true;
+        capture
+    }
+
+    pub(crate) fn finish(mut self) -> TableCounts {
+        let mut tables = ZERO;
+        self.restore(Some(&mut tables));
+        tables
+    }
+
+    /// `finish` into the caller's storage, without a copy on this stack.
+    pub(crate) fn finish_into(mut self, tables: &mut TableCounts) {
+        self.restore(Some(tables));
+    }
+
+    /// Restore the parent; this capture's counts go to `tables` when given.
+    fn restore(&mut self, tables: Option<&mut TableCounts>) {
+        if !std::mem::take(&mut self.open) {
+            return;
+        }
+        // SAFETY: `open` was set only after `new` initialized `previous`.
+        let previous = unsafe { self.previous.assume_init_ref() };
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            state.flush();
+            if let Some(tables) = tables {
+                *tables = state.tables;
+            }
+            state.tables = previous.tables;
+            state.current = previous.current;
+        });
     }
 }
 
 impl Drop for Capture {
     fn drop(&mut self) {
-        self.restore();
+        // Discarded counts are never copied out.
+        self.restore(None);
     }
 }
 
-/// Merge a collected completion after restoring its caller's Capture.
-pub(crate) fn merge(counts: TableCounts) {
+/// Merge a collected completion after restoring its caller's Capture. Borrowed,
+/// so a collector merges in place without copying the counts onto its stack.
+pub(crate) fn merge(counts: &TableCounts) {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         for (total, extra) in state.tables.iter_mut().zip(counts) {
-            *total += extra;
+            *total += *extra;
         }
     });
 }
 
 /// Called after all worker collections and live reads, before frame ownership
 /// transfers to the decode queue. Taking another snapshot never adds work.
+#[cfg(test)]
 pub(crate) fn snapshot() -> TableCounts {
+    let mut tables = ZERO;
+    snapshot_into(&mut tables);
+    tables
+}
+
+/// `snapshot` into the caller's storage, without a copy on this stack.
+pub(crate) fn snapshot_into(tables: &mut TableCounts) {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         state.flush();
-        state.tables
+        *tables = state.tables;
     })
 }
 
@@ -226,7 +263,7 @@ mod tests {
         assert_eq!(job_counts[TableId::DivisionEquipment.index()], copies(1, 4));
         assert_eq!(snapshot()[TableId::Divisions.index()], ReadCounts::ZERO);
         read(5);
-        merge(job_counts);
+        merge(&job_counts);
         // Actual job table guards unwind before their executor Capture ends.
         drop(owner);
         let mut expected = job_counts;
@@ -297,7 +334,7 @@ mod tests {
                 let mut entry = ZERO;
                 entry[TableId::Clock.index()] = copies(1, 2);
                 assert_eq!(snapshot(), entry);
-                merge(completed.table_reads);
+                merge(&completed.table_reads);
                 expected[TableId::Clock.index()] = entry[TableId::Clock.index()];
                 assert_eq!(snapshot(), expected);
                 assert!(pool.finish(ticket).is_none());

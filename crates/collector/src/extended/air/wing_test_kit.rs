@@ -292,12 +292,11 @@ pub(crate) fn split_with(
 
 pub(crate) fn direct_truncated(memory: &impl Memory) -> Split {
     let capacity = Capacities {
-        rows: [1, 2048, 1, 8192, 16384, 1024, 2048, 4096, 1024, 64, 0],
+        rows: [1, 2048, 1, 1024, 2048, 4096, 1024, 64, 0],
         ace_names: 65536,
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
-        transport: [0; 5],
     };
     collect_typed(memory, &capacity)
 }
@@ -317,12 +316,11 @@ pub(crate) fn split_truncated(memory: &impl Memory) -> (Split, AirWingCopyReport
     let report = super::copy_air_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
     let capacity = Capacities {
-        rows: [1, 2048, 1, 8192, 16384, 1024, 2048, 4096, 1024, 64, 0],
+        rows: [1, 2048, 1, 1024, 2048, 4096, 1024, 64, 0],
         ace_names: 65536,
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
-        transport: [0; 5],
     };
     let mut captured = Captured::with_capacities(&capacity);
     let mut ticks = [0u64; 2];

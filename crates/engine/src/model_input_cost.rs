@@ -1,6 +1,6 @@
 //! Synthetic capture cost of the template and clone walks that scale with the
-//! country count: the daily template dictionary, the hourly template counter
-//! and 3D-model inputs, and the daily local sub-unit clones. Each country owns `TEMPLATES` templates over `CLONES` clones of a
+//! country count: the full template dictionary walk, the hourly template
+//! counter and 3D-model inputs, and the local sub-unit clones. Each country owns `TEMPLATES` templates over `CLONES` clones of a
 //! shared global database, and one country in eight has a clone whose
 //! requirements differ. The budget test runs in every build; the timings are
 //! `#[ignore]`d benches:
@@ -178,7 +178,7 @@ fn build(countries: u32, templates: usize) -> Bench {
 
 struct Cost {
     templates: usize,
-    /// The daily dictionary walk: names and categories.
+    /// The full dictionary walk: names and categories.
     daily_copies: usize,
     daily_seconds: f64,
     /// The hourly walk: counter and 3D-model inputs.

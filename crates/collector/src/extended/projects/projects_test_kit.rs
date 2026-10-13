@@ -69,6 +69,12 @@ fn country(bytes: &mut [u8], slot: u32, id: u32, object: usize, status: usize) {
         ((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
     );
     put(bytes, object + ccountry::ID, id.to_le_bytes());
+    // Each country owns a state, so its projects advance daily.
+    put(
+        bytes,
+        object + ccountry::OWNED_STATE_COUNT,
+        1_i32.to_le_bytes(),
+    );
     pointer(bytes, object + ccountry::PROGRAM_STATUS, status);
     put(
         bytes,
@@ -431,7 +437,8 @@ pub(crate) fn job() -> ProjectsJob {
     job
 }
 
-/// Capture one current payload, then decode into fresh pooled buffers.
+/// Capture one current payload, then decode into fresh pooled buffers. The
+/// payload holds ProjectPrograms and ProjectBreakthroughs only.
 pub(crate) fn split(
     memory: &impl engine::Memory,
     capacities: &Capacities,
@@ -445,7 +452,7 @@ pub(crate) fn split(
     let mut first = job();
     let report = copy_projects_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
-    let mut ticks = [0u64; 4];
+    let mut ticks = [0u64; super::RAW.len()];
     captured.decode_projects_payload(BASE, &first, &mut ticks);
     (captured, report, first)
 }
@@ -463,8 +470,6 @@ fn assert_rows<R: PartialEq + std::fmt::Debug>(
 
 pub(crate) fn assert_matches_direct(split: &Captured, direct: &Captured) {
     assert_rows("programs", &split.programs, &direct.programs);
-    assert_rows("projects", &split.projects, &direct.projects);
-    assert_rows("history", &split.history, &direct.history);
     assert_rows("breakthroughs", &split.breakthroughs, &direct.breakthroughs);
     assert_eq!(
         &split.names.first[..split.names.len],

@@ -7,8 +7,15 @@
 //! state's share (`ACCLIMATIZATION_CAMO_SHOW_WHEN_IN_STATE`). The game tries
 //! the resulting `<entity>_<condition>` and keeps the base if it is absent.
 //!
-//! A condition is literal `snow` (effective snow positive) or a terrain name
-//! compared with the province's authored terrain. Effective snow is the game's
+//! A recording's DivisionStatus holds the category the first two steps keep
+//! (`camouflage`), decided at capture with the live define. Recordings before
+//! it hold every entry and the maximum, and the same port
+//! ([`engine::acclimatization_data::camouflage`]) decides here with the
+//! content's define.
+//!
+//! A condition is literal `snow` (the executable keyword, effective snow
+//! positive) or a terrain name compared with the province's authored terrain.
+//! Effective snow is the weather record's
 //! `min(permanent + current, snow_gain_max)`, all three recorded.
 
 use std::{collections::BTreeMap, io};
@@ -16,7 +23,7 @@ use std::{collections::BTreeMap, io};
 use installed_content::{ResolvedLayers, defines::Defines, parser};
 use replay::{
     frame::DecodedFrame,
-    rows::{DivisionStatusRow, tables},
+    rows::{DivisionStatusRow, Recorded, tables},
 };
 
 use super::tables::{Available, core, rows};
@@ -108,6 +115,31 @@ impl Content {
         })
     }
 
+    /// The token of the category the game keeps for a division before
+    /// its province conditions; `None` shows no camouflage. An unreadable
+    /// acclimatization is an error, never a false test.
+    fn category(&self, status: &DivisionStatusRow) -> io::Result<Option<u32>> {
+        match &status.camouflage {
+            Recorded::Value(Some(camouflage)) => Ok(camouflage.category),
+            Recorded::Value(None) => Err(invalid("division camouflage is unavailable this hour")),
+            // Older recordings: every entry and the maximum, which is None
+            // when the division's acclimatization was unreadable that hour.
+            Recorded::NotRecorded => {
+                let maximum = status
+                    .acclimatization_maximum
+                    .ok_or_else(|| invalid("division acclimatization is unavailable this hour"))?;
+                Ok(engine::acclimatization_data::camouflage(
+                    status
+                        .acclimatization
+                        .iter()
+                        .map(|entry| (entry.category, entry.weight)),
+                    maximum,
+                    self.show_at,
+                ))
+            }
+        }
+    }
+
     /// The suffix for one division at one province. `state_provinces` holds
     /// every member of the province's state, the province included; empty when
     /// it has no state. `matches` decides one condition at one province.
@@ -119,23 +151,9 @@ impl Content {
         state_provinces: &[u32],
         mut matches: impl FnMut(u32, &str) -> io::Result<bool>,
     ) -> io::Result<Option<&'a str>> {
-        let mut winner = None;
-        let mut highest = 0;
-        for entry in &status.acclimatization {
-            if entry.weight > highest {
-                highest = entry.weight;
-                winner = Some(entry.category);
-            }
-        }
-        let Some(token) = winner else {
+        let Some(token) = self.category(status)? else {
             return Ok(None);
         };
-        let maximum = status
-            .acclimatization_maximum
-            .ok_or_else(|| invalid("division acclimatization is unavailable this hour"))?;
-        if highest < maximum.wrapping_mul(self.show_at) / 100_000 {
-            return Ok(None);
-        }
         // The division records the category by token: its spelling names the
         // authored category equal to it under the lexer's fold.
         let spelling = tokens
@@ -310,7 +328,7 @@ impl<'a> Context<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::DivisionAcclimatization;
+    use replay::rows::{DivisionAcclimatization, DivisionCamouflage};
 
     fn content() -> Content {
         Content::parse(
@@ -324,6 +342,7 @@ mod tests {
         .unwrap()
     }
 
+    /// A row of a recording before `camouflage`: every entry and the maximum.
     fn status(entries: &[(u32, i64)], maximum: i64) -> DivisionStatusRow {
         DivisionStatusRow {
             acclimatization_maximum: Some(maximum),
@@ -331,6 +350,15 @@ mod tests {
                 .iter()
                 .map(|&(category, weight)| DivisionAcclimatization { category, weight })
                 .collect(),
+            camouflage: Recorded::NotRecorded,
+            ..Default::default()
+        }
+    }
+
+    /// A current row: the category the capture kept, if any.
+    fn recorded(category: Option<u32>) -> DivisionStatusRow {
+        DivisionStatusRow {
+            camouflage: Recorded::Value(Some(DivisionCamouflage { category })),
             ..Default::default()
         }
     }
@@ -363,6 +391,12 @@ mod tests {
         assert_eq!(
             content
                 .suffix(&status(&[(3, 90)], 100), tokens(), 1, &[], snowy)
+                .unwrap(),
+            Some(SNOW)
+        );
+        assert_eq!(
+            content
+                .suffix(&recorded(Some(3)), tokens(), 1, &[], snowy)
                 .unwrap(),
             Some(SNOW)
         );
@@ -412,12 +446,83 @@ mod tests {
         );
         let unknown = status(&[(9, 90)], 100);
         assert!(content.suffix(&unknown, tokens(), 1, &[], snowy).is_err());
-        // An unreadable acclimatization is never a false test.
-        let unread = DivisionStatusRow {
-            acclimatization_maximum: None,
-            ..status(&[(1, 90)], 100)
+        // An unreadable acclimatization is never a false test, in either
+        // form, even without entries.
+        for unread in [
+            DivisionStatusRow {
+                acclimatization_maximum: None,
+                ..status(&[(1, 90)], 100)
+            },
+            DivisionStatusRow {
+                acclimatization_maximum: None,
+                ..status(&[], 100)
+            },
+            DivisionStatusRow {
+                camouflage: Recorded::Value(None),
+                ..Default::default()
+            },
+        ] {
+            assert!(content.suffix(&unread, tokens(), 1, &[], snowy).is_err());
+        }
+        // A recorded camouflage is the capture's decision: no category shows
+        // nothing, and the province conditions still apply to a category.
+        assert_eq!(
+            content
+                .suffix(&recorded(None), tokens(), 1, &[], snowy)
+                .unwrap(),
+            None
+        );
+        let dry = |_: u32, _: &str| Ok(false);
+        assert_eq!(
+            content
+                .suffix(&recorded(Some(1)), tokens(), 1, &[], dry)
+                .unwrap(),
+            None
+        );
+    }
+
+    /// A recording's camouflage, decided at capture by the shared port,
+    /// draws exactly what the older rows' entries and maximum draw, for
+    /// synthetic divisions with ties, zero, negative and below-threshold
+    /// weights.
+    #[test]
+    fn a_recorded_camouflage_draws_what_the_entries_drew() {
+        let content = content();
+        let terrain = |id: u32, condition: &str| {
+            Ok(match id {
+                1 => condition == SNOW,
+                2 => condition == "desert",
+                _ => condition == "jungle",
+            })
         };
-        assert!(content.suffix(&unread, tokens(), 1, &[], snowy).is_err());
+        let weights = [0_i64, 1, -1, 74, 75, 76, 90, 100, i64::MAX];
+        let mut compared = 0;
+        for maximum in [0_i64, 100, -100, i64::MAX] {
+            for first in weights {
+                for second in weights {
+                    for (categories, province) in [((1, 2), 1), ((2, 1), 2), ((2, 2), 3)] {
+                        let entries = [(categories.0, first), (categories.1, second)];
+                        let old = status(&entries, maximum);
+                        let current = recorded(engine::acclimatization_data::camouflage(
+                            entries,
+                            maximum,
+                            content.show_at,
+                        ));
+                        assert_eq!(
+                            content
+                                .suffix(&old, tokens(), province, &[], terrain)
+                                .unwrap(),
+                            content
+                                .suffix(&current, tokens(), province, &[], terrain)
+                                .unwrap(),
+                            "{entries:?} maximum {maximum}"
+                        );
+                        compared += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(compared, 4 * 9 * 9 * 3);
     }
 
     #[test]

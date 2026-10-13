@@ -28,8 +28,7 @@ impl Fixture {
         world.u64(countries.element(3, 8).unwrap(), world.object(2) as u64);
         world.u32(links.element(3, 4).unwrap(), 2);
         world.u32(world.object(2) + ccountry::ID, 3);
-        // Only these headers are sizing inputs: the map payloads are absent.
-        world.array(state + cgame_state::PROVINCES, 0x0800_0000, 5);
+        // Only this map header is a sizing input: its payload is absent.
         world.array(state + cgame_state::STRATEGIC_REGIONS, 0x0900_0000, 3);
         Self {
             world,
@@ -37,15 +36,13 @@ impl Fixture {
         }
     }
 
-    fn division(&mut self, roster: u32, expeditionary: i32, logical: u32, moving: bool) -> usize {
+    fn division(&mut self, roster: u32, logical: u32, moving: bool) -> usize {
         let unit = self.world.alloc(0x220);
         self.world.u64(unit, crate::carmy::VTABLE_RVA as u64);
         self.world.u32(unit + cunit::CLASS, 0);
         self.world
             .u64(unit + cunit::HANDLE, (unit as u64) << 32 | 4713);
         self.world.u32(unit + cunit::ROSTER_OWNER, roster);
-        self.world
-            .u32(unit + cunit::EXPEDITIONARY_OWNER, expeditionary as u32);
         self.world.u32(unit + cunit::LOGICAL_OWNER, logical);
         self.world.array(
             unit + cunit::ORDINARY_ROUTE_DATA,
@@ -118,8 +115,8 @@ impl Memory for Fault<'_> {
 #[test]
 fn aliases_and_repeated_movers_count_distinct_owners_without_payload_reads() {
     let mut fixture = Fixture::new();
-    let first = fixture.division(1, 3, 3, true);
-    let second = fixture.division(3, -1, 2, true);
+    let first = fixture.division(1, 3, true);
+    let second = fixture.division(3, 2, true);
     let gun = fixture.gun(3, 1);
     fixture.roster(1, ccountry::DIVISIONS, &[0, first, first]);
     fixture.roster(2, ccountry::DIVISIONS, &[second]);
@@ -135,12 +132,8 @@ fn aliases_and_repeated_movers_count_distinct_owners_without_payload_reads() {
         LiveDemand {
             country_slots: Ok(4),
             raw_links: Ok(4),
-            controller_bound: Ok(4),
             region_bound: Ok(3),
-            movers: Ok(MovingOwners {
-                land: 1,
-                logical: 2
-            }),
+            movers: Ok(MovingOwners { logical: 2 }),
         }
     );
     assert_eq!(no_secondary.calls.get(), 0);
@@ -168,13 +161,12 @@ fn aliases_and_repeated_movers_count_distinct_owners_without_payload_reads() {
 #[test]
 fn idle_divisions_and_railways_demand_owners_without_route_payload_reads() {
     let mut fixture = Fixture::new();
-    let first = fixture.division(1, i32::MIN, 3, false);
-    let idle = fixture.division(3, 3, 3, false);
+    let first = fixture.division(1, 3, false);
+    let idle = fixture.division(3, 3, false);
     let gun = fixture.gun(3, 1);
-    // Every receiver has a valid zero-count header. Positive owner references
-    // remain demanded; the signed-negative first expeditionary owner falls
-    // back to roster country 1, independently of the second receiver's country 3.
-    // Its retained empty-vector pointer cannot cause a route payload read.
+    // Every receiver has a valid zero-count header and its logical owner
+    // remains demanded. The first division's retained empty-vector pointer
+    // cannot cause a route payload read.
     fixture
         .world
         .array(first + cunit::ORDINARY_ROUTE_DATA, 0x0a00_0000, 0);
@@ -198,10 +190,7 @@ fn idle_divisions_and_railways_demand_owners_without_route_payload_reads() {
     };
     assert_eq!(
         observe_live(&no_payload, 0, fixture.world.game_state()).movers,
-        Ok(MovingOwners {
-            land: 2,
-            logical: 2,
-        })
+        Ok(MovingOwners { logical: 2 })
     );
     assert_eq!(no_payload.calls.get(), 0);
     assert!(LiveDemand::default().movers.is_err());
@@ -210,7 +199,7 @@ fn idle_divisions_and_railways_demand_owners_without_route_payload_reads() {
 #[test]
 fn invalid_idle_route_header_refuses_before_demanded_owner_reads() {
     let mut fixture = Fixture::new();
-    let idle = fixture.division(1, 1, 3, false);
+    let idle = fixture.division(1, 3, false);
     fixture.roster(1, ccountry::DIVISIONS, &[idle]);
     // Positive count with null data cannot be reinterpreted as a valid idle
     // route, even though no route payload is required by the demand reader.
@@ -231,8 +220,8 @@ fn invalid_idle_route_header_refuses_before_demanded_owner_reads() {
 #[test]
 fn failed_later_idle_owner_withholds_partial_counts_but_retains_every_header_floor() {
     let mut fixture = Fixture::new();
-    let first = fixture.division(1, 0, 1, true);
-    let later = fixture.division(3, 0, 3, false);
+    let first = fixture.division(1, 1, true);
+    let later = fixture.division(3, 3, false);
     fixture.roster(1, ccountry::DIVISIONS, &[first]);
     fixture.roster(2, ccountry::DIVISIONS, &[later]);
     let memory = Fault {
@@ -247,18 +236,14 @@ fn failed_later_idle_owner_withholds_partial_counts_but_retains_every_header_flo
         (
             observed.country_slots,
             observed.raw_links,
-            observed.controller_bound,
             observed.region_bound
         ),
-        (Ok(4), Ok(4), Ok(4), Ok(3))
+        (Ok(4), Ok(4), Ok(3))
     );
     assert_eq!(memory.calls.get(), 1);
     assert_eq!(
         observe_live(&memory, 0, fixture.world.game_state()).movers,
-        Ok(MovingOwners {
-            land: 2,
-            logical: 2
-        })
+        Ok(MovingOwners { logical: 2 })
     );
 }
 
@@ -274,38 +259,24 @@ fn transient_country_header_failure_is_not_retried_and_other_headers_survive() {
     let observed = observe_live(&memory, 0, fixture.world.game_state());
     assert!(observed.country_slots.is_err());
     assert!(observed.movers.is_err());
-    assert_eq!(
-        (
-            observed.raw_links,
-            observed.controller_bound,
-            observed.region_bound
-        ),
-        (Ok(4), Ok(4), Ok(3))
-    );
+    assert_eq!((observed.raw_links, observed.region_bound), (Ok(4), Ok(3)));
     assert_eq!(memory.calls.get(), 1);
 }
 
 #[test]
 fn independent_map_failure_does_not_erase_the_complete_mover_census() {
     let mut fixture = Fixture::new();
-    let unit = fixture.division(1, 0, 3, true);
+    let unit = fixture.division(1, 3, true);
     fixture.roster(1, ccountry::DIVISIONS, &[unit]);
     let memory = Fault {
         fixture: &fixture,
-        address: fixture.world.game_state() + cgame_state::PROVINCES,
+        address: fixture.world.game_state() + cgame_state::STRATEGIC_REGIONS,
         calls: Cell::new(0),
         once: false,
     };
     let observed = observe_live(&memory, 0, fixture.world.game_state());
-    assert!(observed.controller_bound.is_err());
-    assert_eq!(observed.region_bound, Ok(3));
-    assert_eq!(
-        observed.movers,
-        Ok(MovingOwners {
-            land: 1,
-            logical: 1
-        })
-    );
+    assert!(observed.region_bound.is_err());
+    assert_eq!(observed.movers, Ok(MovingOwners { logical: 1 }));
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     carmy_leader,
-    crelation_status::bench::{Arena, Counting, report},
+    crelation_status::bench::{Arena, Counting, RUNS, report},
     csub_unit_definition as stats, cunit, cunit_leader, modifier_definition, modifier_entry,
 };
 
@@ -111,15 +111,21 @@ fn bench_division_move_flags() {
                 format!("{} divisions, {flags} exile/exfiltration bits", seeds.len())
             },
         );
-        // DivisionRetreatBans: every division of the read owners, a
-        // daily slice in a steady hour, every owner in the first.
+        // DivisionRetreatBans: every division each hour; a commander whose
+        // held bans no writer touched is not read again.
         let mut packet = StatusPacket::new(seeds.len()).unwrap();
         let mut rows = vec![RetreatBanRow::default(); seeds.len()];
-        for (label, slice) in [
-            ("DivisionRetreatBans, first hour (every owner)", false),
-            ("DivisionRetreatBans, steady hour (one slice)", true),
+        let owner = |raw: u32| Ok(Some(raw));
+        for (label, held) in [
+            (
+                "DivisionRetreatBans, first hour (every commander read)",
+                false,
+            ),
+            (
+                "DivisionRetreatBans, steady hour (every commander held)",
+                true,
+            ),
         ] {
-            let owner = move |raw: u32| Ok((!slice || raw % 24 == 7).then_some(raw));
             report(label, n, &memory, || {
                 let outcome = packet.retreat_bans(
                     &memory,
@@ -128,9 +134,201 @@ fn bench_division_move_flags() {
                     Outcome::Rows { len: seeds.len() },
                     &owner,
                     &mut rows,
+                    &mut |leader| {
+                        held.then_some(crate::carmy_leader::RetreatBans {
+                            leader,
+                            ordinary: 0,
+                            alternate: 0,
+                        })
+                    },
                 );
                 format!("{} banned divisions", outcome.len())
             });
         }
     }
 }
+
+/// Evicts the bench's objects from every cache level, as an hour of the
+/// game's own work does between two captures.
+fn evict(scratch: &mut [u8]) {
+    for (index, byte) in scratch.iter_mut().step_by(64).enumerate() {
+        *byte = byte.wrapping_add(index as u8);
+    }
+    std::hint::black_box(&scratch);
+}
+
+/// The DivisionInputs seed gather over cold armies scattered through a heap
+/// far larger than the last-level cache. Prints the median ns per division.
+#[test]
+#[ignore = "synthetic capture bench; run with --release -- --ignored --nocapture"]
+fn bench_division_seed_gather_cold() {
+    // A 16 KiB stride spreads the armies over more memory than the
+    // last-level cache holds.
+    const STRIDE: usize = 0x4000;
+    let mut scratch = vec![0_u8; 256 << 20];
+    for divisions in [3_300, 5_000] {
+        let mut arena = Arena::new(divisions * STRIDE);
+        let armies: Vec<usize> = (0..divisions)
+            .map(|index| {
+                let army = arena.alloc(STRIDE);
+                // Vary the line alignment as heap blocks do.
+                let army = army + (index % 4) * 16;
+                arena.u64(army, arena.rva(VTABLE_RVA));
+                arena.u64(army + cunit::HANDLE, ((index as u64 + 1) << 32) | 1);
+                army
+            })
+            .collect();
+        let memory = Counting::new();
+        let mut seeds: Vec<DivisionSeed> = armies
+            .iter()
+            .map(|&pointer| DivisionSeed {
+                pointer,
+                ..DivisionSeed::default()
+            })
+            .collect();
+        let mut times = Vec::with_capacity(RUNS);
+        for _ in 0..RUNS {
+            evict(&mut scratch);
+            let started = std::time::Instant::now();
+            capture_division_seeds(&memory, &mut seeds);
+            times.push(started.elapsed().as_secs_f64() * 1e9 / divisions as f64);
+        }
+        times.sort_by(f64::total_cmp);
+        assert!(seeds.iter().all(|seed| seed.handle.is_some()));
+        println!(
+            "BENCH | DivisionInputs seed gather, cold | {divisions} divisions | {:.0} ns/division",
+            times[RUNS / 2]
+        );
+    }
+}
+
+/// ArmyIconInputs over cold armies, as the Late job reads them each hour:
+/// before, two guarded reads per division (the separate-counter byte and the
+/// alternate template pointer); now, both from the DivisionInputs seed, whose
+/// gather takes the two fields on lines it already copies. Prints the median
+/// ns per division of the seed gather with and without the two fields and of
+/// the icon pass each way.
+#[test]
+#[ignore = "synthetic capture bench; run with --release -- --ignored --nocapture"]
+fn bench_army_icon_inputs_from_seeds() {
+    const STRIDE: usize = 0x4000;
+    let mut scratch = vec![0_u8; 256 << 20];
+    for divisions in [12_000, 30_000] {
+        let mut arena = Arena::new(divisions * STRIDE);
+        let mut sources = Vec::with_capacity(divisions);
+        let armies: Vec<usize> = (0..divisions)
+            .map(|index| {
+                let army = arena.alloc(STRIDE) + (index % 4) * 16;
+                let division = ((index as u64 + 1) << 32) | 1;
+                arena.u64(army, arena.rva(VTABLE_RVA));
+                arena.u64(army + SECONDARY_BASE, arena.rva(SECONDARY_VTABLE_RVA));
+                arena.u64(army + cunit::HANDLE, division);
+                arena.u32(army + cunit::ROSTER_OWNER, 1);
+                arena.u8(army + SEPARATE_COUNTER, (index % 2) as u8);
+                sources.push(crate::cequipment_variant_pool::DivisionSource {
+                    pointer: army,
+                    division,
+                    country: 1,
+                    template: 0,
+                });
+                army
+            })
+            .collect();
+        let base = arena.base();
+        let memory = Counting::new();
+        let mut seeds: Vec<DivisionSeed> = armies
+            .iter()
+            .zip(&sources)
+            .map(|(&pointer, source)| DivisionSeed {
+                pointer,
+                division: source.division,
+                ..DivisionSeed::default()
+            })
+            .collect();
+        let median = |mut times: Vec<f64>| {
+            times.sort_by(f64::total_cmp);
+            times[RUNS / 2]
+        };
+        let timed = |run: &mut dyn FnMut(), scratch: &mut Vec<u8>| {
+            let mut times = Vec::with_capacity(RUNS);
+            for _ in 0..RUNS {
+                evict(scratch);
+                let started = std::time::Instant::now();
+                run();
+                times.push(started.elapsed().as_secs_f64() * 1e9 / divisions as f64);
+            }
+            median(times)
+        };
+        // The seed gather without the two icon fields, as before.
+        const BEFORE: crate::memory::RecordLayout<'static> =
+            crate::memory::RecordLayout::new(&OLD_SEED_FIELDS, OLD_SEED_STRIDE)
+                .expect("valid layout");
+        let pointers: Vec<usize> = armies.clone();
+        let mut bytes = vec![0_u8; 64 * OLD_SEED_STRIDE];
+        // Unhinted, as the seed gather is: the record copy prefetches ahead itself.
+        let gather_before = timed(
+            &mut || {
+                for chunk in pointers.chunks(64) {
+                    memory.copy_records(
+                        crate::memory::RecordSources::Pointers(chunk),
+                        &BEFORE,
+                        &mut bytes[..chunk.len() * OLD_SEED_STRIDE],
+                    );
+                }
+            },
+            &mut scratch,
+        );
+        const NOW: crate::memory::RecordLayout<'static> =
+            crate::memory::RecordLayout::new(&DIVISION_SEED_FIELDS, DIVISION_SEED_STRIDE)
+                .expect("valid layout");
+        let mut now_bytes = vec![0_u8; 64 * DIVISION_SEED_STRIDE];
+        let gather_now = timed(
+            &mut || {
+                for chunk in pointers.chunks(64) {
+                    memory.copy_records(
+                        crate::memory::RecordSources::Pointers(chunk),
+                        &NOW,
+                        &mut now_bytes[..chunk.len() * DIVISION_SEED_STRIDE],
+                    );
+                }
+            },
+            &mut scratch,
+        );
+        capture_division_seeds(&memory, &mut seeds);
+        assert!(seeds.iter().all(|seed| seed.separate_counter.is_some()));
+        let mut rows = vec![IconInputsRow::default(); divisions];
+        let unseeded: Vec<DivisionSeed> = seeds
+            .iter()
+            .map(|seed| DivisionSeed {
+                separate_counter: None,
+                alternate_template: None,
+                ..*seed
+            })
+            .collect();
+        let mut icons = |seeds: &[DivisionSeed]| {
+            for ((row, source), seed) in rows.iter_mut().zip(&sources).zip(seeds) {
+                *row = read_icon_inputs(&memory, base, *source, Some(seed)).unwrap();
+            }
+        };
+        let icons_before = timed(&mut || icons(&unseeded), &mut scratch);
+        let icons_now = timed(&mut || icons(&seeds), &mut scratch);
+        println!(
+            "BENCH | ArmyIconInputs, cold | {divisions} divisions | raw seed gather 38 -> 40 fields {gather_before:.0} -> {gather_now:.0} ns/division; icon pass {icons_before:.0} -> {icons_now:.0} ns/division"
+        );
+    }
+}
+
+const OLD_SEED_FIELDS: [crate::memory::RecordField; 38] = {
+    let mut fields = [crate::memory::RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 0,
+    }; 38];
+    let mut index = 0;
+    while index < 38 {
+        fields[index] = DIVISION_SEED_FIELDS[index];
+        index += 1;
+    }
+    fields
+};
+const OLD_SEED_STRIDE: usize = 341;

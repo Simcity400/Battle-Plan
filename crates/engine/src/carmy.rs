@@ -344,11 +344,20 @@ pub fn read_icon_inputs(
         Ok(())
     };
     identity()?;
-    let separate_counter =
-        read::<u8>(memory, at(SEPARATE_COUNTER)?).ok_or("army separate-counter byte unreadable")?;
-    let pointer = read::<u64>(memory, at(FAKE_INTEL_TEMPLATE)?)
-        .and_then(|pointer| usize::try_from(pointer).ok())
-        .ok_or("army alternate template pointer unreadable")?;
+    // A seed carries both fields from the census's gather at this boundary
+    // ([`capture_division_seeds`]); a field that gather could not read failed
+    // there and is not read again.
+    let separate_counter = match seed {
+        Some(seed) => seed.separate_counter,
+        None => read::<u8>(memory, at(SEPARATE_COUNTER)?),
+    }
+    .ok_or("army separate-counter byte unreadable")?;
+    let pointer = match seed {
+        Some(seed) => seed.alternate_template,
+        None => read::<u64>(memory, at(FAKE_INTEL_TEMPLATE)?)
+            .and_then(|pointer| usize::try_from(pointer).ok()),
+    }
+    .ok_or("army alternate template pointer unreadable")?;
     let alternate_template =
         if pointer != 0 && seed.is_some_and(|seed| seed.standard_template == Some(pointer)) {
             // The core projection authenticated this exact pointer and retained its
@@ -572,6 +581,17 @@ pub struct DivisionSeed {
     pub supply_grace_remaining: Option<i64>,
     /// Owned header acquired once for the hourly complete contributor list.
     pub manpower_values: Option<[u8; 24]>,
+    /// [`cunit::MOVEMENT_PRIORITY`], the raw signed movement priority of the
+    /// movement arrow style, beside the retreat byte.
+    pub movement_priority: Option<i32>,
+    /// [`cunit::WITHDRAWAL`], the raw saved `withdraw` byte of the movement
+    /// arrow style, beside the retreat byte.
+    pub withdrawal: Option<u8>,
+    /// [`FAKE_INTEL_TEMPLATE`], the counter's alternate template pointer,
+    /// beside the standard template's line ([`read_icon_inputs`]).
+    pub alternate_template: Option<usize>,
+    /// [`SEPARATE_COUNTER`], on the supply grace scalars' line.
+    pub separate_counter: Option<u8>,
 }
 
 impl DivisionSeed {
@@ -611,9 +631,18 @@ impl DivisionSeed {
     pub const SUPPLY_GRACE_MAXIMUM: u64 = 1 << 33;
     pub const SUPPLY_GRACE_REMAINING: u64 = 1 << 34;
     pub const MANPOWER_VALUES: u64 = 1 << 35;
+    pub const MOVEMENT_PRIORITY: u64 = 1 << 36;
+    pub const WITHDRAWAL: u64 = 1 << 37;
+    pub const ALTERNATE_TEMPLATE: u64 = 1 << 38;
+    pub const SEPARATE_COUNTER: u64 = 1 << 39;
 }
 
-const DIVISION_SEED_SPANS: [(usize, usize); 36] = [
+/// The two arrow-style fields (`+0x248` and `+0x24D`) share the retreat
+/// byte's line, so the census gathers them there instead of the movement pass
+/// reading each division twice more; the counter icon's alternate template
+/// (`+0x3C8`) and separate-counter byte (`+0x630`) share the standard
+/// template's and the supply grace scalars' lines.
+const DIVISION_SEED_SPANS: [(usize, usize); 40] = [
     (0, 8),
     (SECONDARY_BASE, 8),
     (cunit::HANDLE, 8),
@@ -650,20 +679,31 @@ const DIVISION_SEED_SPANS: [(usize, usize); 36] = [
     (MAXIMUM_SUPPLY_GRACE, 8),
     (REMAINING_SUPPLY_GRACE, 8),
     (MANPOWER_VALUES, 24),
+    (cunit::MOVEMENT_PRIORITY, 4),
+    (cunit::WITHDRAWAL, 1),
+    (FAKE_INTEL_TEMPLATE, 8),
+    (SEPARATE_COUNTER, 1),
 ];
-const DIVISION_SEED_FIELDS: [crate::memory::RecordField; 36] =
+const DIVISION_SEED_FIELDS: [crate::memory::RecordField; 40] =
     crate::memory::packed_fields(DIVISION_SEED_SPANS);
 const DIVISION_SEED_STRIDE: usize = crate::memory::packed_stride(DIVISION_SEED_SPANS);
 
 /// Gather exact fixed layouts in bounded row batches. A failed field stays failed;
 /// later fields remain independently available to other tables. The caller sets
 /// each native pointer and expected full handle before capture.
+///
+/// The armies are scattered through the heap, so the gather is bound by their
+/// cache misses; the record copy hints each field of the rows ahead of it.
+/// Hinting whole batches ahead as well made the cold gather slower (the
+/// `bench_division_seed_gather_cold` bench).
 pub fn capture_division_seeds(memory: &impl Memory, seeds: &mut [DivisionSeed]) -> u64 {
     const BATCH: usize = 64;
     let mut bytes = [0u8; BATCH * DIVISION_SEED_STRIDE];
     let mut pointers = [0usize; BATCH];
     let mut total = 0u64;
-    for chunk in seeds.chunks_mut(BATCH) {
+    for first in (0..seeds.len()).step_by(BATCH) {
+        let next = (first + BATCH).min(seeds.len());
+        let chunk = &mut seeds[first..next];
         for (pointer, seed) in pointers.iter_mut().zip(chunk.iter()) {
             *pointer = seed.pointer;
         }
@@ -766,6 +806,13 @@ pub fn capture_division_seeds(memory: &impl Memory, seeds: &mut [DivisionSeed]) 
                 .then(|| i64::from_le_bytes(record[304..312].try_into().unwrap()));
             seed.manpower_values = (valid & DivisionSeed::MANPOWER_VALUES != 0)
                 .then(|| record[312..336].try_into().unwrap());
+            seed.movement_priority = (valid & DivisionSeed::MOVEMENT_PRIORITY != 0)
+                .then(|| i32::from_le_bytes(record[336..340].try_into().unwrap()));
+            seed.withdrawal = (valid & DivisionSeed::WITHDRAWAL != 0).then(|| record[340]);
+            seed.alternate_template = (valid & DivisionSeed::ALTERNATE_TEMPLATE != 0)
+                .then(|| u64::from_le_bytes(record[341..349].try_into().unwrap()) as usize);
+            seed.separate_counter =
+                (valid & DivisionSeed::SEPARATE_COUNTER != 0).then(|| record[349]);
         }
     }
     total
@@ -798,19 +845,21 @@ pub struct MovementRow {
     pub alternate_start: usize,
     pub alternate_len: usize,
     pub alternate_total: u32,
-    /// Raw saved `withdraw` byte, acquired after the established movement
-    /// pass. An independent refusal withholds only this arrow-style operand.
+    /// Raw saved `withdraw` byte, gathered with the division's seed and
+    /// published after the established movement pass. An independent refusal
+    /// withholds only this arrow-style operand.
     pub withdrawal: Option<u8>,
-    /// Raw signed movement priority. Only class-zero follow-orders arrows test
-    /// values below one; unknown enum values are never clamped.
+    /// Raw signed movement priority (saved `move_priority`); the arrow renderer
+    /// tests <1 only for class-zero follow-orders arrows. Never clamp an
+    /// unknown enum. Gathered with the division's seed, as `withdrawal`.
     pub movement_priority: Option<i32>,
     /// Complete ordered full identities in MovementPacket's owned arena.
     pub combat_references: Option<(usize, usize)>,
     pub combat_references_failure: Option<&'static str>,
-    pub selected_exiled: Option<u8>,
-    pub selected_commander: Option<bool>,
-    pub selected_retreat: [Option<i64>; 2],
-    pub selected_retreat_failures: [Option<&'static str>; 2],
+    /// Raw signed fixed5 maximum speed of the authenticated stat block
+    /// (`[CArmy+0x138]+0x290`), read only when the ordinary route count is
+    /// positive. None is outside demand or a guarded refusal.
+    pub base_speed: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -840,6 +889,13 @@ impl PresentationInputs {
             entries,
             worker_growth: capacity != 0,
         })
+    }
+    /// Keeps nothing: every operand is read. Allocates nothing.
+    pub(crate) fn vacant() -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+            worker_growth: false,
+        }
     }
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.entries.capacity() * std::mem::size_of::<((usize, usize), PresentationInput)>()
@@ -954,32 +1010,6 @@ fn movement_product(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / MOVEMENT_ONE
 }
 
-/// Every normal-speed multiplication divides by MOVEMENT_ONE before the final
-/// clamp, bounding that positive input to i64::MAX / MOVEMENT_ONE. A nonzero
-/// scale in this range therefore cannot wrap or truncate the final speed to
-/// zero, regardless of the edge operands. Larger scales need exact evaluation.
-fn normal_speed_zero_from_scale(scale: i64) -> Option<bool> {
-    if scale == 0 {
-        Some(true)
-    } else if (-MOVEMENT_ONE..=MOVEMENT_ONE).contains(&scale) {
-        Some(false)
-    } else {
-        None
-    }
-}
-
-fn movement_fraction(numerator: i64, denominator: i64) -> Result<i64, &'static str> {
-    if denominator == 0
-        || (numerator as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd
-    {
-        return Ok(0xffff_ffff);
-    }
-    numerator
-        .wrapping_mul(MOVEMENT_ONE)
-        .checked_div(denominator)
-        .ok_or("native movement fraction traps")
-}
-
 fn movement_pointer(
     memory: &impl Memory,
     object: usize,
@@ -992,19 +1022,6 @@ fn movement_address(object: usize, offset: usize) -> Result<usize, &'static str>
     object
         .checked_add(offset)
         .ok_or("movement address overflow")
-}
-
-fn movement_modifier(
-    memory: &impl Memory,
-    base: usize,
-    accumulator: usize,
-    key: u32,
-) -> Result<i64, &'static str> {
-    if accumulator == 0 {
-        return Ok(0);
-    }
-    crate::modifier_accumulator::lookup_effective_at(memory, base, accumulator, key)
-        .map(|v| v.effective)
 }
 
 pub(crate) fn movement_definition(
@@ -1026,14 +1043,6 @@ pub(crate) fn movement_definition(
         return Err("movement province definition mismatch");
     }
     Ok(definition)
-}
-
-fn movement_flags(memory: &impl Memory, base: usize, province: usize) -> Result<u8, &'static str> {
-    presentation_field(
-        memory,
-        movement_definition(memory, base, province)?,
-        crate::province_definition::TERRAIN_FLAGS,
-    )
 }
 
 pub(crate) fn movement_route_province(
@@ -1170,21 +1179,6 @@ impl NormalSpeedOperands {
             outer_scale: self.outer_scale,
         }
     }
-    fn bounded(&self) -> bool {
-        // Modifier and edge together are bounded by 1e9. Base speed <=1e6
-        // gives <=1e10 before the non-increasing organisation/fuel factors.
-        // Every multiply stays below 1e15, and positive scale preserves the
-        // native minimum of 100000. These are sufficient, not assumed limits.
-        movement_bounded(self.base_speed, 1_000_000)
-            && self.modifier.bounded()
-            && self.organisation.is_none_or(|(ratio, penalty)| {
-                (0..=MOVEMENT_ONE).contains(&ratio) && (-MOVEMENT_ONE..=0).contains(&penalty)
-            })
-            && self.fuel.is_none_or(|(ratio, minimum)| {
-                (0..=MOVEMENT_ONE).contains(&ratio) && (0..=MOVEMENT_ONE).contains(&minimum)
-            })
-            && (1..=MOVEMENT_ONE).contains(&self.outer_scale)
-    }
 }
 /// Public because a replayer recomposes it from the recorded per-division
 /// terms and evaluates the same edges without any game address.
@@ -1209,9 +1203,6 @@ impl PreparedNormalSpeed {
         movement_product(speed.max(MOVEMENT_ONE), self.outer_scale)
     }
 }
-fn movement_bounded(value: i64, bound: i64) -> bool {
-    (-bound..=bound).contains(&value)
-}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct NormalModifierOperands {
@@ -1230,16 +1221,6 @@ impl NormalModifierOperands {
             .wrapping_add(movement_product(self.supply.0, self.supply.1))
             .wrapping_add(self.air.evaluate())
     }
-    fn bounded(self) -> bool {
-        movement_bounded(self.additive, 100_000_000)
-            && self
-                .weather
-                .iter()
-                .all(|&(a, b)| movement_bounded(a, MOVEMENT_ONE) && movement_bounded(b, 1_000_000))
-            && movement_bounded(self.supply.0, 1_000_000)
-            && movement_bounded(self.supply.1, 1_000_000)
-            && self.air.bounded()
-    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1254,12 +1235,6 @@ impl MovementAirOperands {
         movement_product(movement_product(self.impact, self.fraction), self.scale)
             .wrapping_add(self.defense)
             .min(0)
-    }
-    fn bounded(self) -> bool {
-        movement_bounded(self.fraction, MOVEMENT_ONE)
-            && [self.impact, self.scale, self.defense]
-                .into_iter()
-                .all(|value| movement_bounded(value, 1_000_000))
     }
 }
 
@@ -1297,2943 +1272,8 @@ impl NormalEdgeOperands {
     }
 }
 
-/// Passive CArmy speed query with the null-tooltip path.
-/// Every result uses fresh captured operands; no engine call or UI speed cache.
-#[cfg(test)]
-pub fn effective_movement_speed(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    army: usize,
-    from: usize,
-    to: usize,
-) -> Result<i64, &'static str> {
-    effective_movement_speed_with_transport(memory, base, state, army, from, to, |owner, region| {
-        crate::cnaval_unit_transfer::movement_speed(memory, base, state, owner, region)
-    })
-}
-
-/// The same movement branches with an army-independent transport callback.
-/// Share its unscaled result only within an independently verified acquisition
-/// pass.
-#[cfg(test)]
-pub fn effective_movement_speed_with_transport(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    army: usize,
-    from: usize,
-    to: usize,
-    transport_speed: impl FnMut(u32, usize) -> Result<i64, &'static str>,
-) -> Result<i64, &'static str> {
-    movement_speed_inputs_internal(
-        memory,
-        base,
-        state,
-        army,
-        from,
-        to,
-        None,
-        None,
-        transport_speed,
-    )
-    .map(MovementSpeedInputs::evaluate)
-}
-
-/// Typed geometry values acquired by the caller from its original native source.
-/// Geometry owns the authenticated dependencies used by this acquisition.
-pub(crate) trait MovementGeometry {
-    fn province_id(&mut self, pointer: usize) -> Result<u32, &'static str>;
-    fn route_pointer(&mut self, id: u32) -> Result<usize, &'static str>;
-    fn definition(&mut self, id: u32) -> Result<usize, &'static str>;
-    fn flags(&mut self, id: u32) -> Result<u8, &'static str>;
-    fn crossing(&mut self, from: u32, to: u32) -> Result<Option<u8>, &'static str>;
-}
-
-/// Typed per-division inputs shared with Movement and Status. All fields and
-/// route bytes belong to the current acquisition; failed fields are never retried.
-pub(crate) struct MovementSharedInputs<'a> {
-    pub seed: &'a DivisionSeed,
-    pub route_ids: fresh_counter_eta::MovementRouteIds<'a>,
-    pub geometry: &'a mut dyn MovementGeometry,
-    /// The current ETA range's existing directed-edge/infrastructure memo.
-    /// Ordinary movement readers leave this absent and keep direct acquisition.
-    pub rail_speeds: Option<&'a mut crate::crailway_manager::MovementSpeeds>,
-    pub state_modifiers: Option<&'a std::cell::RefCell<MovementStateModifiers>>,
-    pub category_contributions: Option<&'a std::cell::RefCell<MovementCategoryContributions>>,
-    /// Complete template supply ratios acquired lazily in this ETA pass.
-    pub supply_templates: Option<&'a std::cell::RefCell<std::collections::HashMap<usize, i64>>>,
-    /// Complete diplomacy/region prefixes from this ETA range's current pass.
-    pub air_prefixes: Option<&'a std::cell::RefCell<MovementAirMemo>>,
-}
-
-/// An air query retains every identity already authenticated before its prefix.
-/// Distinct raw owners remain distinct even when country resolution aliases them.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct MovementAirKey {
-    base: usize,
-    state: usize,
-    owner_raw: u32,
-    owner_pointer: usize,
-    canonical: u32,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct MovementAirPrefix {
-    fraction: i64,
-    impact: i64,
-    scale: i64,
-}
-
-#[derive(Clone, Copy, Default)]
-struct MovementAirActive {
-    key: MovementAirKey,
-    value: bool,
-    generation: u64,
-}
-
-#[derive(Clone, Copy, Default)]
-struct MovementAirRegion {
-    key: MovementAirKey,
-    region: usize,
-    /// None is a completely read no-hostile result, not a failed query.
-    value: Option<MovementAirPrefix>,
-    generation: u64,
-}
-
-/// Two complete successful queries shared inside one ETA acquisition only.
-/// Full keys decide hits; collisions remain cold and replace only on success.
-/// Generation reset and all storage growth happen at the packet boundaries.
-pub(crate) struct MovementAirMemo {
-    active: Vec<MovementAirActive>,
-    regions: Vec<MovementAirRegion>,
-    generation: u64,
-}
-
-fn movement_memo_slots(rows: usize) -> std::io::Result<usize> {
-    if rows == 0 {
-        Ok(0)
-    } else {
-        rows.checked_next_power_of_two()
-            .ok_or_else(crate::allocation::oom)
-    }
-}
-
-impl MovementAirMemo {
-    fn new(rows: usize) -> std::io::Result<Self> {
-        let slots = movement_memo_slots(rows)?;
-        Ok(Self {
-            active: crate::allocation::filled(slots, MovementAirActive::default())?,
-            regions: crate::allocation::filled(slots, MovementAirRegion::default())?,
-            generation: 1,
-        })
-    }
-
-    fn clear(&mut self) {
-        self.generation = match self.generation.checked_add(1) {
-            Some(generation) => generation,
-            None => {
-                for entry in &mut self.active {
-                    entry.generation = 0;
-                }
-                for entry in &mut self.regions {
-                    entry.generation = 0;
-                }
-                1
-            }
-        };
-    }
-
-    fn reserve(&mut self, rows: usize) -> std::io::Result<()> {
-        if self.active.len() < rows {
-            let slots = movement_memo_slots(rows)?;
-            crate::allocation::resize(&mut self.active, slots, MovementAirActive::default())?;
-            crate::allocation::resize(&mut self.regions, slots, MovementAirRegion::default())?;
-            self.clear();
-        }
-        Ok(())
-    }
-
-    fn allocated_bytes(&self) -> usize {
-        self.active.capacity() * size_of::<MovementAirActive>()
-            + self.regions.capacity() * size_of::<MovementAirRegion>()
-    }
-
-    fn slot(&self, key: MovementAirKey, region: usize) -> Option<usize> {
-        let mask = self.active.len().checked_sub(1)?;
-        let hash = (key.owner_pointer as u64)
-            ^ (region as u64).rotate_left(11)
-            ^ u64::from(key.owner_raw).rotate_left(23)
-            ^ u64::from(key.canonical).rotate_left(37)
-            ^ (key.base as u64).rotate_left(49)
-            ^ (key.state as u64).rotate_left(7);
-        let mixed = (hash ^ (hash >> 32)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        Some((mixed ^ (mixed >> 32)) as usize & mask)
-    }
-
-    fn active(&self, key: MovementAirKey) -> Option<bool> {
-        let entry = &self.active[self.slot(key, 0)?];
-        (entry.generation == self.generation && entry.key == key).then_some(entry.value)
-    }
-
-    fn install_active(&mut self, key: MovementAirKey, value: bool) {
-        if let Some(slot) = self.slot(key, 0) {
-            self.active[slot] = MovementAirActive {
-                key,
-                value,
-                generation: self.generation,
-            };
-        }
-    }
-
-    fn region(&self, key: MovementAirKey, region: usize) -> Option<Option<MovementAirPrefix>> {
-        let entry = &self.regions[self.slot(key, region)?];
-        (entry.generation == self.generation && entry.key == key && entry.region == region)
-            .then_some(entry.value)
-    }
-
-    fn install_region(
-        &mut self,
-        key: MovementAirKey,
-        region: usize,
-        value: Option<MovementAirPrefix>,
-    ) {
-        if let Some(slot) = self.slot(key, region) {
-            self.regions[slot] = MovementAirRegion {
-                key,
-                region,
-                value,
-                generation: self.generation,
-            };
-        }
-    }
-}
-
-/// Complete inputs to the selected-unit category contribution. Other movement
-/// stages authenticate these identities independently before this query.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct MovementCategoryKey {
-    base: usize,
-    selected: usize,
-    country_accumulator: usize,
-    leader_accumulator: usize,
-    leader: usize,
-}
-
-/// Successful category queries retained only inside one ETA acquisition.
-/// A collision follows the original cold reader and replaces the slot only
-/// after complete success. Slot storage grows only outside acquisition.
-pub(crate) struct MovementCategoryContributions {
-    entries: Vec<MovementCategoryContribution>,
-    generation: u64,
-}
-
-#[derive(Clone, Copy, Default)]
-struct MovementCategoryContribution {
-    key: MovementCategoryKey,
-    value: i64,
-    generation: u64,
-}
-
-impl MovementCategoryContributions {
-    fn new(rows: usize) -> std::io::Result<Self> {
-        Ok(Self {
-            entries: crate::allocation::filled(
-                movement_memo_slots(rows)?,
-                MovementCategoryContribution::default(),
-            )?,
-            generation: 1,
-        })
-    }
-
-    fn clear(&mut self) {
-        self.generation = match self.generation.checked_add(1) {
-            Some(generation) => generation,
-            None => {
-                for entry in &mut self.entries {
-                    entry.generation = 0;
-                }
-                1
-            }
-        };
-    }
-
-    fn reserve(&mut self, rows: usize) -> std::io::Result<()> {
-        if self.entries.len() < rows {
-            crate::allocation::resize(
-                &mut self.entries,
-                movement_memo_slots(rows)?,
-                MovementCategoryContribution::default(),
-            )?;
-            self.clear();
-        }
-        Ok(())
-    }
-
-    fn allocated_bytes(&self) -> usize {
-        self.entries.capacity() * size_of::<MovementCategoryContribution>()
-    }
-
-    fn slot(&self, key: MovementCategoryKey) -> Option<usize> {
-        let mask = self.entries.len().checked_sub(1)?;
-        // Rotate each identity separately so aliased accumulators still mix.
-        // Equality below, rather than this index, establishes a cache hit.
-        let hash = key.selected as u64
-            ^ (key.country_accumulator as u64).rotate_left(11)
-            ^ (key.leader_accumulator as u64).rotate_left(23)
-            ^ (key.leader as u64).rotate_left(37)
-            ^ (key.base as u64).rotate_left(49);
-        let mixed = (hash ^ (hash >> 32)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        Some((mixed ^ (mixed >> 32)) as usize & mask)
-    }
-}
-
-#[derive(Clone, Copy)]
-struct MovementStateModifier {
-    base: usize,
-    game_state: usize,
-    state: usize,
-    owner: u32,
-    key: u32,
-    value: i64,
-}
-
-/// Complete state queries shared only inside one ETA acquisition. Each range
-/// has one slot per admitted-row capacity; collisions use the native reader
-/// and replace that slot. No query or failure allocates or starts a second walk.
-pub(crate) struct MovementStateModifiers {
-    entries: Vec<Option<MovementStateModifier>>,
-    requests: u64,
-    hits: u64,
-}
-
-impl MovementStateModifiers {
-    fn new(rows: usize) -> std::io::Result<Self> {
-        Ok(Self {
-            entries: crate::allocation::filled(movement_memo_slots(rows)?, None)?,
-            requests: 0,
-            hits: 0,
-        })
-    }
-
-    fn clear(&mut self) {
-        self.entries.fill(None);
-        self.requests = 0;
-        self.hits = 0;
-    }
-
-    fn reserve(&mut self, rows: usize) -> std::io::Result<()> {
-        if self.entries.len() < rows {
-            crate::allocation::resize(&mut self.entries, movement_memo_slots(rows)?, None)?;
-            self.clear();
-        }
-        Ok(())
-    }
-
-    fn allocated_bytes(&self) -> usize {
-        self.entries.capacity() * size_of::<Option<MovementStateModifier>>()
-    }
-
-    fn get(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        state: usize,
-        owner: u32,
-        key: u32,
-    ) -> Result<i64, &'static str> {
-        self.get_with(base, game_state, state, owner, key, || {
-            crate::cstate::movement_modifier(memory, base, game_state, state, owner, key)
-        })
-    }
-
-    fn get_with(
-        &mut self,
-        base: usize,
-        game_state: usize,
-        state: usize,
-        owner: u32,
-        key: u32,
-        acquire: impl FnOnce() -> Result<i64, &'static str>,
-    ) -> Result<i64, &'static str> {
-        self.requests = self.requests.saturating_add(1);
-        let hash = (state as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
-            ^ u64::from(owner).wrapping_mul(0xbf58_476d_1ce4_e5b9)
-            ^ u64::from(key).wrapping_mul(0x94d0_49bb_1331_11eb);
-        let slot = self
-            .entries
-            .len()
-            .checked_sub(1)
-            .map(|mask| (hash ^ (hash >> 32)) as usize & mask);
-        if let Some(entry) = slot.and_then(|slot| self.entries[slot])
-            && (
-                entry.base,
-                entry.game_state,
-                entry.state,
-                entry.owner,
-                entry.key,
-            ) == (base, game_state, state, owner, key)
-        {
-            self.hits = self.hits.saturating_add(1);
-            return Ok(entry.value);
-        }
-        let value = acquire()?;
-        if let Some(slot) = slot {
-            self.entries[slot] = Some(MovementStateModifier {
-                base,
-                game_state,
-                state,
-                owner,
-                key,
-                value,
-            });
-        }
-        Ok(value)
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn movement_state_modifier(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    state: usize,
-    owner: u32,
-    key: u32,
-    shared: Option<&MovementSharedInputs<'_>>,
-) -> Result<i64, &'static str> {
-    match shared.and_then(|shared| shared.state_modifiers) {
-        Some(memo) => memo
-            .borrow_mut()
-            .get(memory, base, game_state, state, owner, key),
-        None => crate::cstate::movement_modifier(memory, base, game_state, state, owner, key),
-    }
-}
-
-fn movement_shared_seed_value<T>(
-    shared: &mut Option<&mut MovementSharedInputs<'_>>,
-    select: impl FnOnce(&DivisionSeed) -> Option<T>,
-    acquire: impl FnOnce() -> Result<T, &'static str>,
-) -> Result<T, &'static str> {
-    if let Some(shared) = shared {
-        select(shared.seed).ok_or("division presentation field unreadable")
-    } else {
-        acquire()
-    }
-}
-
-fn movement_shared_flags(
-    memory: &impl Memory,
-    base: usize,
-    province: usize,
-    shared: &mut Option<&mut MovementSharedInputs<'_>>,
-) -> Result<u8, &'static str> {
-    if province == 0 {
-        return Err("movement province identity mismatch");
-    }
-    if let Some(shared) = shared {
-        let id = shared.geometry.province_id(province)?;
-        shared.geometry.flags(id)
-    } else {
-        movement_flags(memory, base, province)
-    }
-}
-
-fn movement_shared_definition(
-    memory: &impl Memory,
-    base: usize,
-    province: usize,
-    shared: &mut Option<&mut MovementSharedInputs<'_>>,
-) -> Result<usize, &'static str> {
-    if province == 0 {
-        return Err("movement province identity mismatch");
-    }
-    if let Some(shared) = shared {
-        let id = shared.geometry.province_id(province)?;
-        shared.geometry.definition(id)
-    } else {
-        movement_definition(memory, base, province)
-    }
-}
-
-fn movement_shared_route(
-    memory: &impl Memory,
-    army: usize,
-    shared: &mut Option<&mut MovementSharedInputs<'_>>,
-) -> Result<[u8; 16], &'static str> {
-    if let Some(shared) = shared {
-        shared
-            .seed
-            .ordinary_route
-            .ok_or("division presentation array invalid")
-    } else {
-        army.checked_add(cunit::ORDINARY_ROUTE_DATA)
-            .and_then(|address| read(memory, address))
-            .ok_or("division presentation array invalid")
-    }
-}
-
-fn movement_shared_route_province(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    route: Array,
-    index: u32,
-    shared: &mut Option<&mut MovementSharedInputs<'_>>,
-) -> Result<usize, &'static str> {
-    if let Some(shared) = shared {
-        route
-            .element(index, 4)
-            .ok_or("movement route index invalid")?;
-        let id = shared
-            .route_ids
-            .get(memory, index as usize)?
-            .ok_or("movement route id unreadable")?;
-        let province = shared.geometry.route_pointer(id)?;
-        if province != 0 {
-            shared.geometry.definition(id)?;
-        }
-        Ok(province)
-    } else {
-        movement_route_province(memory, base, state, route, index)
-    }
-}
-
-fn movement_shared_attacking(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    army: usize,
-    mut shared: Option<&mut MovementSharedInputs<'_>>,
-) -> Result<bool, &'static str> {
-    if shared.is_none() {
-        return movement_attacking(memory, base, state, army);
-    }
-    let route = Array::from_header(movement_shared_route(memory, army, &mut shared)?, 4)
-        .ok_or("division presentation array invalid")?;
-    if route.count == 0 {
-        return Ok(false);
-    }
-    let destination =
-        movement_shared_route_province(memory, base, state, route, route.count - 1, &mut shared)?;
-    if destination == 0 {
-        return Ok(false);
-    }
-    let controller = presentation_field::<i32>(memory, destination, cprovince::CONTROLLER)?;
-    if controller <= 0 {
-        return Ok(false);
-    }
-    let owner = movement_shared_seed_value(
-        &mut shared,
-        |seed| seed.logical_owner,
-        || presentation_field(memory, army, cunit::LOGICAL_OWNER),
-    )?;
-    ccountry::movement_enemy(memory, base, state, controller as u32, owner)
-}
-
-/// Callback-local storage for one army's composed graph, so a branch the
-/// current edge skipped is read once per division and never per leg. Never
-/// retained in captured/spooled rows; a new instance per acquisition pass.
-#[derive(Default, Clone, Copy)]
-pub(crate) struct NormalMovementContext {
-    army: usize,
-    transfer: Option<Result<usize, &'static str>>,
-    transport_owner: Option<Result<u32, &'static str>>,
-    transport_scale: Option<Result<i64, &'static str>>,
-    land: Option<Result<MovementLandInputs, &'static str>>,
-    invasion_speed: Option<Result<i64, &'static str>>,
-    roots: Option<Result<MovementOwnerInputs, &'static str>>,
-    rail: Option<Result<MovementRailInputs, &'static str>>,
-    normal: Option<Result<NormalMovementInputs, &'static str>>,
-    /// Successful terrain contribution from this army's current normal edge.
-    /// The route scan consumes it by exact terrain pointer in this same pass.
-    terrain: Option<(usize, i64)>,
-    edge_observations: fresh_counter_eta::NormalEdgeObservations,
-    current: Option<fresh_counter_eta::CurrentSpeedObservation>,
-    /// IDs from a successful legacy route copy in this same pass.
-    route_endpoints: Option<(u32, u32)>,
-    legacy_terrain: Option<(usize, usize)>,
-}
-
-#[derive(Clone, Copy)]
-struct MovementLandInputs {
-    location: usize,
-    next_flags: Option<u8>,
-}
-impl MovementLandInputs {
-    fn invasion(self) -> bool {
-        self.next_flags.is_some_and(|flags| flags & 1 != 0)
-    }
-}
-
-fn movement_land_inputs(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    army: usize,
-    mut shared: Option<&mut MovementSharedInputs<'_>>,
-) -> Result<MovementLandInputs, &'static str> {
-    let location = movement_shared_seed_value(
-        &mut shared,
-        |seed| seed.location,
-        || movement_pointer(memory, army, cunit::LOCATION),
-    )?;
-    let route_header = movement_shared_route(memory, army, &mut shared)?;
-    let route = Array::from_header(route_header, 4).ok_or("division presentation array invalid")?;
-    let mut result = MovementLandInputs {
-        location,
-        next_flags: None,
-    };
-    if route.count != 0 {
-        let class = movement_shared_seed_value(
-            &mut shared,
-            |seed| seed.class,
-            || presentation_field::<u32>(memory, army, cunit::CLASS),
-        )?;
-        if class == 0 {
-            let next = movement_shared_route_province(memory, base, state, route, 0, &mut shared)?;
-            if next != 0 {
-                let flags = movement_shared_flags(memory, base, location, &mut shared)?;
-                if flags & 3 == 0 {
-                    result.next_flags =
-                        Some(movement_shared_flags(memory, base, next, &mut shared)?);
-                }
-            }
-        }
-    }
-    Ok(result)
-}
-
-#[derive(Clone, Copy)]
-struct MovementOwnerInputs {
-    roster: u32,
-    owner_raw: u32,
-    owner: ccountry::Country,
-    actual_state: usize,
-    strategic: u8,
-}
-fn movement_owner_inputs(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    army: usize,
-    location: usize,
-    mut shared: Option<&mut MovementSharedInputs<'_>>,
-) -> Result<MovementOwnerInputs, &'static str> {
-    let expeditionary = movement_shared_seed_value(
-        &mut shared,
-        |seed| seed.expeditionary_owner.map(|value| value as i32),
-        || presentation_field::<i32>(memory, army, cunit::EXPEDITIONARY_OWNER),
-    )?;
-    let roster = movement_shared_seed_value(
-        &mut shared,
-        |seed| seed.roster_owner,
-        || presentation_field(memory, army, cunit::ROSTER_OWNER),
-    )?;
-    let owner_raw = if expeditionary > 0 {
-        expeditionary as u32
-    } else {
-        roster
-    };
-    let owner = ccountry::Reader::new(memory, base, state)?.resolve(owner_raw)?;
-    // Retain the original checked-address failure before actual-state reads.
-    movement_address(owner.pointer, ccountry::MODIFIER_ACCUMULATOR)?;
-    let actual_state = movement_pointer(memory, location, cprovince::STATE)?;
-    let strategic = movement_shared_seed_value(
-        &mut shared,
-        |seed| seed.strategic_redeployment,
-        || presentation_field(memory, army, STRATEGIC_REDEPLOYMENT),
-    )?;
-    Ok(MovementOwnerInputs {
-        roster,
-        owner_raw,
-        owner,
-        actual_state,
-        strategic,
-    })
-}
-
-#[derive(Clone, Copy)]
-struct MovementRailInputs {
-    country: i64,
-    state: Option<i64>,
-    friendly_state: Option<i64>,
-}
-impl MovementRailInputs {
-    fn blocked(self) -> bool {
-        self.country != 0
-            || self.state.is_some_and(|value| value != 0)
-            || self.friendly_state.is_some_and(|value| value != 0)
-    }
-}
-fn movement_rail_inputs(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    roots: MovementOwnerInputs,
-    shared: Option<&MovementSharedInputs<'_>>,
-) -> Result<MovementRailInputs, &'static str> {
-    let inputs = strategic_action::read_inputs(
-        memory,
-        base,
-        state,
-        roots.owner_raw,
-        roots.owner.pointer,
-        || Ok(roots.roster),
-        || Ok(roots.actual_state),
-        shared.and_then(|shared| shared.state_modifiers),
-    )
-    .map_err(StrategicActionFailure::reason)?;
-    Ok(MovementRailInputs {
-        country: inputs.country_modifier,
-        state: inputs.state_modifier,
-        friendly_state: inputs.friendly_state_modifier,
-    })
-}
-
-fn movement_cached<T: Copy>(
-    slot: Option<&mut Option<Result<T, &'static str>>>,
-    acquire: impl FnOnce() -> Result<T, &'static str>,
-) -> Result<T, &'static str> {
-    let Some(slot) = slot else {
-        return acquire();
-    };
-    if let Some(result) = *slot {
-        return result;
-    }
-    let result = acquire();
-    *slot = Some(result);
-    result
-}
-
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn effective_movement_speed_in_pass(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    army: usize,
-    from: usize,
-    to: usize,
-    context: &mut NormalMovementContext,
-    transport_speed: impl FnMut(u32, usize) -> Result<i64, &'static str>,
-) -> Result<i64, &'static str> {
-    movement_speed_inputs_internal(
-        memory,
-        base,
-        state,
-        army,
-        from,
-        to,
-        None,
-        Some(context),
-        transport_speed,
-    )
-    .map(MovementSpeedInputs::evaluate)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn movement_speed_inputs_seeded_in_pass(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    shared: &mut MovementSharedInputs<'_>,
-    from: usize,
-    to: usize,
-    context: &mut NormalMovementContext,
-    transport_speed: impl FnMut(u32, usize) -> Result<i64, &'static str>,
-) -> Result<MovementSpeedInputs, &'static str> {
-    if context.army == shared.seed.pointer
-        && let Some(current) = context.current
-        && (current.from, current.to) == (from, to)
-    {
-        return current.result;
-    }
-    let result = movement_speed_inputs_internal(
-        memory,
-        base,
-        state,
-        shared.seed.pointer,
-        from,
-        to,
-        Some(shared),
-        Some(&mut *context),
-        transport_speed,
-    );
-    context.current = Some(fresh_counter_eta::CurrentSpeedObservation { from, to, result });
-    result
-}
-
-#[allow(clippy::too_many_arguments)]
-fn movement_speed_inputs_internal(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    army: usize,
-    from: usize,
-    to: usize,
-    mut shared: Option<&mut MovementSharedInputs<'_>>,
-    mut context: Option<&mut NormalMovementContext>,
-    mut transport_speed: impl FnMut(u32, usize) -> Result<i64, &'static str>,
-) -> Result<MovementSpeedInputs, &'static str> {
-    let same_army = army != 0
-        && context
-            .as_deref()
-            .is_some_and(|context| context.army == army);
-    // The cache belongs to one army; a new army starts from an empty one.
-    if !same_army && let Some(context) = context.as_deref_mut() {
-        *context = NormalMovementContext::default();
-    }
-    if !same_army {
-        let vtable = if let Some(shared) = shared.as_deref_mut() {
-            shared.seed.primary_vtable
-        } else {
-            read::<u64>(memory, army)
-        };
-        if army == 0 || vtable != base.checked_add(VTABLE_RVA).map(|p| p as u64) {
-            return Err("movement army identity mismatch");
-        }
-    }
-    if let Some(context) = context.as_deref_mut()
-        && context.army != army
-    {
-        context.army = army;
-    }
-    // Clear bit zero selects transport. The polarity is
-    // intentionally expressed in raw flags, independently of terrain naming.
-    let transport_flags = (from != 0
-        && movement_shared_flags(memory, base, from, &mut shared)? & 1 == 0)
-        || (to != 0 && movement_shared_flags(memory, base, to, &mut shared)? & 1 == 0);
-    let transfer = movement_cached(
-        context.as_deref_mut().map(|context| &mut context.transfer),
-        || {
-            movement_shared_seed_value(
-                &mut shared,
-                |seed| seed.naval_transfer_membership,
-                || movement_pointer(memory, army, NAVAL_TRANSFER_MEMBERSHIP),
-            )
-        },
-    )?;
-    let transport = transfer != 0 || transport_flags;
-    if transport {
-        if from == 0 {
-            return Err("native transport source province is null");
-        }
-        let owner = movement_cached(
-            context
-                .as_deref_mut()
-                .map(|context| &mut context.transport_owner),
-            || {
-                movement_shared_seed_value(
-                    &mut shared,
-                    |seed| seed.logical_owner,
-                    || presentation_field(memory, army, cunit::LOGICAL_OWNER),
-                )
-            },
-        )?;
-        let region = movement_pointer(memory, from, cprovince::STRATEGIC_REGION)?;
-        let speed = transport_speed(owner, region)?;
-        let scale = movement_cached(
-            context
-                .as_deref_mut()
-                .map(|context| &mut context.transport_scale),
-            || presentation_field(memory, base, TRANSPORT_SCALE_RVA),
-        )?;
-        return Ok(MovementSpeedInputs::Scaled { speed, scale });
-    }
-    let land = movement_cached(
-        context.as_deref_mut().map(|context| &mut context.land),
-        || movement_land_inputs(memory, base, state, army, shared.as_deref_mut()),
-    )?;
-    if land.invasion() {
-        return movement_cached(
-            context
-                .as_deref_mut()
-                .map(|context| &mut context.invasion_speed),
-            || presentation_field(memory, base, INVASION_SPEED_RVA),
-        )
-        .map(MovementSpeedInputs::Fixed);
-    }
-    let location = land.location;
-    let roots = movement_cached(
-        context.as_deref_mut().map(|context| &mut context.roots),
-        || movement_owner_inputs(memory, base, state, army, location, shared.as_deref_mut()),
-    )?;
-    let owner_raw = roots.owner_raw;
-    let owner = roots.owner;
-    let actual_state = roots.actual_state;
-    if roots.strategic != 0 && to != 0 {
-        let rail = movement_cached(
-            context.as_deref_mut().map(|context| &mut context.rail),
-            || movement_rail_inputs(memory, base, state, roots, shared.as_deref()),
-        )?;
-        if !rail.blocked() {
-            let speed = match shared
-                .as_deref_mut()
-                .filter(|_| from != to)
-                .and_then(|shared| shared.rail_speeds.as_deref_mut())
-            {
-                Some(memo) => memo.get(memory, base, state, from, to)?,
-                None => crate::crailway_manager::movement_speed(memory, base, state, from, to)?,
-            };
-            return Ok(MovementSpeedInputs::Scaled {
-                speed,
-                scale: presentation_field(memory, base, OUTER_SCALE_RVA)?,
-            });
-        }
-    }
-    // Do not prepare normal operands for transport, invasion, rail, or the
-    // native no-destination path. Those branches do not consume this graph.
-    if to != 0
-        && let Some(context) = context.as_deref_mut()
-    {
-        let common = movement_cached(Some(&mut context.normal), || {
-            normal_movement_inputs(
-                memory,
-                base,
-                state,
-                army,
-                owner_raw,
-                owner.pointer,
-                actual_state,
-                shared.as_deref_mut(),
-            )
-        })?;
-        let edge = normal_movement_edge(
-            memory,
-            base,
-            state,
-            from,
-            to,
-            &common.modifier,
-            shared.as_deref_mut(),
-            Some(&mut context.terrain),
-            Some(&mut context.edge_observations),
-        )?;
-        return Ok(MovementSpeedInputs::Normal {
-            common: common.speed,
-            edge,
-        });
-    }
-    let thin = (|| {
-        let stats = movement_shared_seed_value(
-            &mut shared,
-            |seed| seed.stat_block,
-            || movement_pointer(memory, army, cunit::STAT_BLOCK),
-        )?;
-        let (_, max_org) = crate::csub_unit_definition::division_maxima(memory, base, stats)?;
-        let mut speed = presentation_field::<i64>(memory, stats, 0x290)?;
-        let attacking =
-            movement_shared_attacking(memory, base, state, army, shared.as_deref_mut())?;
-        if to != 0 {
-            speed = movement_product(
-                speed,
-                normal_movement_modifier(
-                    memory,
-                    base,
-                    state,
-                    army,
-                    from,
-                    to,
-                    stats,
-                    owner_raw,
-                    owner.pointer,
-                    actual_state,
-                    attacking,
-                )?,
-            );
-        }
-        let organisation = movement_shared_seed_value(
-            &mut shared,
-            |seed| seed.organisation,
-            || presentation_field::<i64>(memory, army, ORGANISATION),
-        )?;
-        let org_fraction =
-            if (organisation as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
-                MOVEMENT_ONE
-            } else {
-                movement_fraction(organisation, max_org)?.clamp(0, MOVEMENT_ONE)
-            };
-        let org_threshold = presentation_field::<i64>(memory, base, 0x0331_cec0)?;
-        if org_fraction < org_threshold && attacking {
-            let ratio = movement_fraction(org_fraction, org_threshold)?;
-            let penalty = movement_product(
-                MOVEMENT_ONE.wrapping_sub(ratio),
-                presentation_field(memory, base, 0x0331_aa18)?,
-            );
-            speed = movement_product(MOVEMENT_ONE.wrapping_add(penalty), speed);
-        }
-        let fuel_maximum = movement_product(
-            presentation_field(memory, stats, 0x120)?,
-            presentation_field(memory, base, 0x0331_97d0)?,
-        );
-        let fuel_ratio = if fuel_maximum > 0 {
-            let fuel = presentation_field::<i64>(memory, army, FUEL_CANDIDATE)?;
-            if (fuel as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd {
-                movement_fraction(fuel, fuel_maximum)?.clamp(0, MOVEMENT_ONE)
-            } else {
-                MOVEMENT_ONE
-            }
-        } else {
-            MOVEMENT_ONE
-        };
-        if fuel_ratio < MOVEMENT_ONE {
-            let minimum = presentation_field::<i64>(memory, base, 0x0331_9f90)?;
-            speed = movement_product(
-                movement_product(MOVEMENT_ONE.wrapping_sub(minimum), fuel_ratio)
-                    .wrapping_add(minimum),
-                speed,
-            );
-        }
-        Ok(MovementSpeedInputs::Scaled {
-            speed: speed.max(MOVEMENT_ONE),
-            scale: presentation_field(memory, base, OUTER_SCALE_RVA)?,
-        })
-    })();
-    if to == 0
-        && let Err(reason) = thin
-        && let Some(context) = context
-    {
-        // No edge getter is reached here. Every thin-path operand is also
-        // required by normal_movement_inputs with the same frozen controls.
-        // Retain that shared failure without withholding rail/transport.
-        context.normal = Some(Err(reason));
-    }
-    thin
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct NormalMovementInputs {
-    modifier: NormalModifierCommon,
-    speed: NormalSpeedOperands,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn normal_movement_inputs(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    army: usize,
-    owner_raw: u32,
-    owner: usize,
-    actual_state: usize,
-    mut shared: Option<&mut MovementSharedInputs<'_>>,
-) -> Result<NormalMovementInputs, &'static str> {
-    let stats = movement_shared_seed_value(
-        &mut shared,
-        |seed| seed.stat_block,
-        || movement_pointer(memory, army, cunit::STAT_BLOCK),
-    )?;
-    // The stat block's identity, maxima and base speed are one guarded call.
-    let stat_fields = presentation_batch(
-        memory,
-        [
-            (stats, 0, 8),
-            (stats, crate::csub_unit_definition::MAXIMUM_ORGANISATION, 16),
-            (stats, 0x290, 8),
-        ],
-    );
-    let (_, max_org) =
-        crate::csub_unit_definition::division_maxima_gathered(memory, base, stats, &stat_fields)?;
-    let base_speed = presentation_batched(memory, &stat_fields, 2)?;
-    let attacking = movement_shared_attacking(memory, base, state, army, shared.as_deref_mut())?;
-    let modifier = normal_movement_common(
-        memory,
-        base,
-        state,
-        army,
-        stats,
-        owner_raw,
-        owner,
-        actual_state,
-        attacking,
-        shared.as_deref_mut(),
-    )?;
-    let organisation = movement_shared_seed_value(
-        &mut shared,
-        |seed| seed.organisation,
-        || presentation_field::<i64>(memory, army, ORGANISATION),
-    )?;
-    let org_fraction =
-        if (organisation as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
-            MOVEMENT_ONE
-        } else {
-            movement_fraction(organisation, max_org)?.clamp(0, MOVEMENT_ONE)
-        };
-    // The operands every division reads from here on, one guarded call; the
-    // branch-selected ones below keep their own reads.
-    let speed_fields = presentation_batch(
-        memory,
-        [
-            (base, 0x0331_cec0, 8),
-            (stats, 0x120, 8),
-            (base, 0x0331_97d0, 8),
-            (base, OUTER_SCALE_RVA, 8),
-        ],
-    );
-    let org_threshold = presentation_batched::<i64, 4>(memory, &speed_fields, 0)?;
-    let organisation_factor = if org_fraction < org_threshold && attacking {
-        let ratio = movement_fraction(org_fraction, org_threshold)?;
-        Some((ratio, presentation_field(memory, base, 0x0331_aa18)?))
-    } else {
-        None
-    };
-    let fuel_maximum = movement_product(
-        presentation_batched(memory, &speed_fields, 1)?,
-        presentation_batched(memory, &speed_fields, 2)?,
-    );
-    let fuel_ratio = if fuel_maximum > 0 {
-        let fuel = presentation_field::<i64>(memory, army, FUEL_CANDIDATE)?;
-        if (fuel as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd {
-            movement_fraction(fuel, fuel_maximum)?.clamp(0, MOVEMENT_ONE)
-        } else {
-            MOVEMENT_ONE
-        }
-    } else {
-        MOVEMENT_ONE
-    };
-    let fuel_factor = if fuel_ratio < MOVEMENT_ONE {
-        let minimum = presentation_field::<i64>(memory, base, 0x0331_9f90)?;
-        Some((fuel_ratio, minimum))
-    } else {
-        None
-    };
-    let mut speed = NormalSpeedOperands {
-        modifier: modifier.value,
-        base_speed,
-        organisation: organisation_factor,
-        fuel: fuel_factor,
-        outer_scale: presentation_batched(memory, &speed_fields, 3)?,
-        bounded: false,
-    };
-    speed.bounded = speed.bounded();
-    Ok(NormalMovementInputs { modifier, speed })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn normal_movement_modifier(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    army: usize,
-    from: usize,
-    to: usize,
-    stats: usize,
-    owner_raw: u32,
-    owner: usize,
-    actual_state: usize,
-    attacking: bool,
-) -> Result<i64, &'static str> {
-    let common = normal_movement_common(
-        memory,
-        base,
-        state,
-        army,
-        stats,
-        owner_raw,
-        owner,
-        actual_state,
-        attacking,
-        None,
-    )?;
-    Ok(common.value.evaluate().wrapping_add(
-        normal_movement_edge(memory, base, state, from, to, &common, None, None, None)?.evaluate(),
-    ))
-}
-
-/// One complete category contribution in its original native demand order.
-/// Only a successful result is retained for this frozen ETA capture. Keeping
-/// each modifier query between its original pointer/token reads preserves cold
-/// first failures and duplicate category occurrences.
-fn movement_category_contribution(
-    memory: &impl Memory,
-    base: usize,
-    selected: usize,
-    country_accumulator: usize,
-    leader_accumulator: usize,
-    leader: usize,
-    memo: Option<&std::cell::RefCell<MovementCategoryContributions>>,
-) -> Result<i64, &'static str> {
-    let key = MovementCategoryKey {
-        base,
-        selected,
-        country_accumulator,
-        leader_accumulator,
-        leader,
-    };
-    let (slot, cached) = memo.map_or((None, None), |memo| {
-        let memo = memo.borrow();
-        let slot = memo.slot(key);
-        let cached = slot.and_then(|slot| {
-            let entry = &memo.entries[slot];
-            (entry.generation == memo.generation && entry.key == key).then_some(entry.value)
-        });
-        (slot, cached)
-    });
-    if let Some(value) = cached {
-        return Ok(value);
-    }
-    let mut result = 0_i64;
-    if presentation_field::<u8>(memory, selected, 0x5a8)? & 4 != 0 && leader != 0 {
-        result = result
-            .wrapping_add(movement_modifier(
-                memory,
-                base,
-                leader_accumulator,
-                keys::ARMY_ARMOR_SPEED_FACTOR,
-            )?)
-            .wrapping_add(movement_modifier(
-                memory,
-                base,
-                country_accumulator,
-                keys::ARMY_ARMOR_SPEED_FACTOR,
-            )?);
-    }
-    let token = presentation_field::<u32>(memory, selected, 0x5d8)?;
-    if token != 0 {
-        result = result.wrapping_add(movement_modifier(memory, base, country_accumulator, token)?);
-    }
-    let categories = presentation_array(memory, selected, 0x508, 8)?;
-    for index in 0..categories.count {
-        let category = movement_pointer(
-            memory,
-            categories
-                .element(index, 8)
-                .ok_or("movement category index invalid")?,
-            0,
-        )?;
-        let token = presentation_field::<u32>(memory, category, 0x60)?;
-        if token != 0 {
-            result =
-                result.wrapping_add(movement_modifier(memory, base, country_accumulator, token)?);
-        }
-    }
-    if let (Some(memo), Some(slot)) = (memo, slot) {
-        let mut memo = memo.borrow_mut();
-        memo.entries[slot] = MovementCategoryContribution {
-            key,
-            value: result,
-            generation: memo.generation,
-        };
-    }
-    Ok(result)
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct NormalModifierCommon {
-    value: NormalModifierOperands,
-    stats: usize,
-    owner: usize,
-    leader: usize,
-    leader_accumulator: usize,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn normal_movement_common(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    army: usize,
-    stats: usize,
-    owner_raw: u32,
-    owner: usize,
-    actual_state: usize,
-    attacking: bool,
-    mut shared: Option<&mut MovementSharedInputs<'_>>,
-) -> Result<NormalModifierCommon, &'static str> {
-    let country_accumulator = movement_address(owner, ccountry::MODIFIER_ACCUMULATOR)?;
-    let leader_accumulator = if let Some(shared) = shared.as_deref_mut() {
-        crate::carmy_leader::movement_accumulator_seeded(memory, base, shared.seed)?
-    } else {
-        crate::carmy_leader::movement_accumulator(memory, base, army)?
-    }
-    .unwrap_or(0);
-    let group = movement_shared_seed_value(
-        &mut shared,
-        |seed| seed.orders_group,
-        || movement_pointer(memory, army, ORDERS_GROUP),
-    )?;
-    let leader = if group == 0 {
-        0
-    } else {
-        movement_pointer(memory, group, 0x88)?
-    };
-    let location = movement_shared_seed_value(
-        &mut shared,
-        |seed| seed.location,
-        || movement_pointer(memory, army, cunit::LOCATION),
-    )?;
-    let roster = movement_shared_seed_value(
-        &mut shared,
-        |seed| seed.roster_owner,
-        || presentation_field::<u32>(memory, army, cunit::ROSTER_OWNER),
-    )?;
-    let mut result = MOVEMENT_ONE;
-    let mut operands = NormalModifierOperands::default();
-    let combats = if let Some(shared) = shared.as_deref_mut() {
-        Array::from_header(
-            shared
-                .seed
-                .combat
-                .ok_or("division presentation array invalid")?,
-            8,
-        )
-        .ok_or("division presentation array invalid")?
-    } else {
-        presentation_array(memory, army, cunit::COMBAT_REFERENCE_DATA, 8)?
-    };
-    if combats.count != 0 && presentation_field::<u8>(memory, army, 0x24d)? == 0 {
-        result = 0;
-        for index in 0..combats.count {
-            let combat = movement_pointer(
-                memory,
-                combats
-                    .element(index, 8)
-                    .ok_or("movement combat index invalid")?,
-                0,
-            )?;
-            let vtable =
-                read::<u64>(memory, combat).ok_or("movement combat identity unreadable")?;
-            let land = vtable == movement_address(base, crate::cland_combat::VTABLE_RVA)? as u64
-                || vtable
-                    == movement_address(base, crate::cland_border_war_combat::VTABLE_RVA)? as u64;
-            if !land && vtable != movement_address(base, crate::cnaval_combat::VTABLE_RVA)? as u64 {
-                return Err("movement combat type unrecognized");
-            }
-            let side = movement_pointer(memory, combat, 0x28)?;
-            let members = presentation_array(memory, side, 0x20, 8)?;
-            let mut found = false;
-            for member in 0..members.count {
-                if movement_pointer(
-                    memory,
-                    members
-                        .element(member, 8)
-                        .ok_or("movement combat member index invalid")?,
-                    0,
-                )? == army
-                {
-                    found = true;
-                    break;
-                }
-            }
-            if found {
-                // Land primary dispatch returns one, naval returns two. Stop at the
-                // first match.
-                if land {
-                    result = movement_product(
-                        presentation_field(memory, base, 0x0331_d150)?,
-                        MOVEMENT_ONE,
-                    )
-                    .wrapping_add(presentation_field::<i64>(memory, combat, 0xb8)?);
-                }
-                break;
-            }
-        }
-    }
-    result = result
-        .wrapping_add(movement_modifier(
-            memory,
-            base,
-            country_accumulator,
-            keys::ARMY_SPEED_FACTOR,
-        )?)
-        .wrapping_add(movement_modifier(
-            memory,
-            base,
-            leader_accumulator,
-            keys::ARMY_SPEED_FACTOR,
-        )?);
-    if attacking {
-        result = result.wrapping_add(movement_modifier(
-            memory,
-            base,
-            country_accumulator,
-            keys::ARMY_ATTACK_SPEED_FACTOR,
-        )?);
-    }
-    if actual_state != 0 {
-        result = result.wrapping_add(movement_state_modifier(
-            memory,
-            base,
-            state,
-            actual_state,
-            roster,
-            keys::ARMY_SPEED_FACTOR,
-            shared.as_deref(),
-        )?);
-        if attacking {
-            result = result.wrapping_add(movement_state_modifier(
-                memory,
-                base,
-                state,
-                actual_state,
-                roster,
-                keys::ARMY_ATTACK_SPEED_FACTOR,
-                shared.as_deref(),
-            )?);
-        }
-        let controller = presentation_field(memory, actual_state, 0xcc)?;
-        let key = if ccountry::movement_friendly(memory, base, state, owner_raw, controller)? {
-            keys::ARMY_SPEED_FACTOR_FOR_CONTROLLER
-        } else if ccountry::movement_enemy(memory, base, state, owner_raw, controller)? {
-            keys::ENEMY_ARMY_SPEED_FACTOR
-        } else {
-            0
-        };
-        if key != 0 {
-            result = result.wrapping_add(movement_state_modifier(
-                memory,
-                base,
-                state,
-                actual_state,
-                roster,
-                key,
-                shared.as_deref(),
-            )?);
-        }
-    }
-    let acclimatization = movement_acclimatization(memory, army)?;
-    let (province_weather, region_weather) =
-        crate::cweather_manager::movement_modifiers(memory, base, state, location)?;
-    for (index, accumulator) in [province_weather, region_weather].into_iter().enumerate() {
-        if accumulator != 0 {
-            operands.weather[index * 2] = (
-                acclimatization,
-                movement_modifier(memory, base, accumulator, keys::ARMY_SPEED_FACTOR)?,
-            );
-            if attacking {
-                operands.weather[index * 2 + 1] = (
-                    acclimatization,
-                    movement_modifier(memory, base, accumulator, keys::ARMY_ATTACK_SPEED_FACTOR)?,
-                );
-            }
-        }
-    }
-    let selected = movement_priority_unit(
-        memory,
-        base,
-        movement_shared_seed_value(
-            &mut shared,
-            |seed| seed.standard_template,
-            || movement_pointer(memory, army, STANDARD_TEMPLATE),
-        )?,
-    )?;
-    result = result.wrapping_add(movement_category_contribution(
-        memory,
-        base,
-        selected,
-        country_accumulator,
-        leader_accumulator,
-        leader,
-        shared
-            .as_deref()
-            .and_then(|shared| shared.category_contributions),
-    )?);
-    operands.air = movement_air_inputs(
-        memory,
-        base,
-        state,
-        army,
-        stats,
-        location,
-        shared.as_deref_mut(),
-    )?;
-    // The census proves whether the retreat branch below reads +0x24d, so a
-    // division that is not retreating reads it with the supply gate.
-    let not_retreating = shared
-        .as_deref()
-        .is_some_and(|shared| shared.seed.retreat == Some(0));
-    let gates = crate::memory::FieldBatch::gather(
-        memory,
-        [
-            (army.checked_add(0x2ae).unwrap_or(0), 1),
-            (
-                army.checked_add(0x24d)
-                    .filter(|_| not_retreating)
-                    .unwrap_or(0),
-                1,
-            ),
-        ],
-    );
-    if presentation_batched::<u8, 2>(memory, &gates, 0)? == 0 {
-        // The two operands this branch reads around the penalty.
-        let supply_fields = presentation_batch(memory, [(base, 0x0331_94e0, 8), (army, 0x2e, 1)]);
-        operands.supply = (
-            presentation_batched(memory, &supply_fields, 0)?,
-            movement_supply_penalty(
-                memory,
-                base,
-                army,
-                country_accumulator,
-                leader_accumulator,
-                shared.as_deref_mut(),
-            )?,
-        );
-        if presentation_batched::<u8, 2>(memory, &supply_fields, 1)? == 0
-            && !ccountry::has_core_supply_access(
-                memory,
-                base,
-                state,
-                owner_raw,
-                movement_pointer(memory, location, cprovince::CONTROLLER_AREA)?,
-            )?
-        {
-            let define = if presentation_field::<i64>(memory, army, 0x58)? > 0 {
-                0x0331_9618
-            } else {
-                0x0331_9568
-            };
-            result = result.wrapping_add(presentation_field::<i64>(memory, base, define)?);
-        }
-    }
-    if movement_shared_seed_value(
-        &mut shared,
-        |seed| seed.retreat,
-        || presentation_field::<u8>(memory, army, RETREAT),
-    )? != 0
-    {
-        result = result
-            .wrapping_add(presentation_field::<i64>(memory, base, 0x0331_9758)?)
-            .wrapping_add(movement_modifier(
-                memory,
-                base,
-                country_accumulator,
-                keys::ARMY_RETREAT_SPEED_FACTOR,
-            )?);
-    } else if (if not_retreating {
-        presentation_batched::<u8, 2>(memory, &gates, 1)?
-    } else {
-        presentation_field::<u8>(memory, army, 0x24d)?
-    }) != 0
-    {
-        result = result.wrapping_add(presentation_field::<i64>(memory, base, 0x0331_9808)?);
-    }
-    operands.additive = result;
-    Ok(NormalModifierCommon {
-        value: operands,
-        stats,
-        owner,
-        leader,
-        leader_accumulator,
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn normal_movement_edge(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    from: usize,
-    to: usize,
-    common: &NormalModifierCommon,
-    mut shared: Option<&mut MovementSharedInputs<'_>>,
-    terrain_output: Option<&mut Option<(usize, i64)>>,
-    mut observations: Option<&mut fresh_counter_eta::NormalEdgeObservations>,
-) -> Result<NormalEdgeOperands, &'static str> {
-    let stats = common.stats;
-    let owner = common.owner;
-    let leader = common.leader;
-    let leader_accumulator = common.leader_accumulator;
-    let mut result = 0_i64;
-    let mut river_operands = None;
-    let definition = movement_shared_definition(memory, base, to, &mut shared)?;
-    let terrain = movement_pointer(memory, definition, 0xa8)?;
-    let unit_terrain = match observations
-        .as_deref()
-        .and_then(|observations| observations.terrain)
-        .filter(|seen| seen.pointer == terrain)
-    {
-        Some(seen) => seen.unit,
-        None => {
-            let result =
-                crate::csub_unit_definition::movement_terrain(memory, base, stats, terrain);
-            if let Some(observations) = observations.as_deref_mut() {
-                observations.terrain = Some(fresh_counter_eta::TerrainObservation {
-                    pointer: terrain,
-                    unit: result,
-                    leader: None,
-                });
-            }
-            result
-        }
-    };
-    let mut terrain_value = unit_terrain?;
-    result = result.wrapping_add(terrain_value);
-    // The destination's fort array and state are one guarded call.
-    let destination = presentation_batch(memory, [(to, 0x1e0, 16), (to, cprovince::STATE, 8)]);
-    let buildings = destination
-        .get(memory, 0)
-        .and_then(|header| Array::from_header(header, 8))
-        .ok_or("division presentation array invalid")?;
-    let mut fort_level = 0_i32;
-    for index in 0..buildings.count {
-        let building = movement_pointer(
-            memory,
-            buildings
-                .element(index, 8)
-                .ok_or("movement fort index invalid")?,
-            0,
-        )?;
-        let kind = movement_pointer(memory, building, 0x1e0)?;
-        fort_level = fort_level.wrapping_add(
-            i32::from(presentation_field::<i16>(memory, building, 0x42)?)
-                .wrapping_mul(presentation_field::<i32>(memory, kind, 0x308)?),
-        );
-    }
-    if fort_level > 0 {
-        result = result.wrapping_add(movement_cached(
-            observations
-                .as_deref_mut()
-                .map(|observations| &mut observations.fort_penalty),
-            || presentation_field::<i64>(memory, stats, 0x378),
-        )?);
-    }
-    if crate::cweather_manager::movement_snow(memory, base, state, to)? {
-        result = result.wrapping_add(movement_cached(
-            observations
-                .as_deref_mut()
-                .map(|observations| &mut observations.snow_penalty),
-            || presentation_field::<i64>(memory, stats, 0x3f0),
-        )?);
-    }
-    if leader != 0 {
-        let leader_value = movement_cached(
-            observations
-                .as_deref_mut()
-                .and_then(|observations| observations.terrain.as_mut())
-                .map(|terrain| &mut terrain.leader),
-            || {
-                crate::carmy_leader::movement_terrain(
-                    memory,
-                    base,
-                    leader,
-                    presentation_field(memory, terrain, 0x88)?,
-                )
-            },
-        )?;
-        terrain_value = terrain_value.wrapping_add(leader_value);
-        result = result.wrapping_add(leader_value);
-    }
-    let crossing = if let Some(shared) = shared {
-        let from_id = shared.geometry.province_id(from)?;
-        let to_id = shared.geometry.province_id(to)?;
-        shared.geometry.crossing(from_id, to_id)?
-    } else {
-        let from_definition = movement_definition(memory, base, from)?;
-        let neighbors = presentation_array(
-            memory,
-            from_definition,
-            crate::province_definition::NEIGHBOURS,
-            crate::province_neighbour::STRIDE,
-        )?;
-        let destination_id = presentation_field::<u32>(memory, to, cprovince::ID)?;
-        let mut crossing = None;
-        for index in 0..neighbors.count {
-            let neighbor = neighbors
-                .element(index, crate::province_neighbour::STRIDE)
-                .ok_or("movement neighbor index invalid")?;
-            if presentation_field::<u32>(memory, neighbor, crate::province_neighbour::PROVINCE_ID)?
-                == destination_id
-            {
-                crossing = Some(presentation_field::<u8>(
-                    memory,
-                    neighbor,
-                    crate::province_neighbour::CROSSING_KIND,
-                )?);
-                break;
-            }
-        }
-        crossing
-    };
-    if let Some(crossing) = crossing
-        && (1..=3).contains(&crossing)
-    {
-        let diplomacy = movement_pointer(memory, owner, 0xf88)?;
-        let controller = presentation_field::<u32>(memory, to, cprovince::CONTROLLER)?;
-        let canonical = if controller == 0 {
-            0
-        } else {
-            ccountry::Reader::new(memory, base, state)?
-                .resolve(controller)?
-                .canonical_slot
-        };
-        let relations = presentation_array(memory, diplomacy, 8, 8)?;
-        let relation = movement_pointer(
-            memory,
-            relations
-                .element(canonical, 8)
-                .ok_or("movement river relation outside roster")?,
-            0,
-        )?;
-        let combined = movement_modifier(
-            memory,
-            base,
-            movement_address(relation, 0x140)?,
-            keys::RIVER_CROSSING_FACTOR_AGAINST,
-        )?
-        .wrapping_add(movement_cached(
-            observations
-                .as_deref_mut()
-                .map(|observations| &mut observations.river_leader),
-            || {
-                movement_modifier(
-                    memory,
-                    base,
-                    leader_accumulator,
-                    keys::RIVER_CROSSING_FACTOR,
-                )
-            },
-        )?);
-        let adjustment = movement_cached(
-            observations.map(|observations| &mut observations.river_adjustment),
-            || presentation_field::<i64>(memory, stats, 0x3a0),
-        )?;
-        let river = match crossing {
-            2 => presentation_field(memory, base, RIVER_CROSSING_TWO_RVA)?,
-            3 => presentation_field(memory, base, RIVER_CROSSING_THREE_RVA)?,
-            _ => 0,
-        };
-        river_operands = Some((combined, adjustment, river));
-    }
-    let destination_state = presentation_batched::<u64, 2>(memory, &destination, 1)? as usize;
-    if destination_state != 0 {
-        result = result.wrapping_add(crate::cstate::movement_infrastructure(
-            memory,
-            base,
-            destination_state,
-        )?);
-    }
-    if let Some(output) = terrain_output {
-        *output = Some((terrain, terrain_value));
-    }
-    Ok(NormalEdgeOperands {
-        additive: result,
-        river: river_operands,
-    })
-}
-
-/// Owned ETA operands for one moving division. Per-terrain and per-leg values
-/// live in the packet's arenas; a row addresses only its own span.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct EtaInputRow {
-    pub division: u64,
-    pub speed_modifier: i64,
-    pub speed_base: i64,
-    pub speed_org: Option<i64>,
-    pub speed_fuel: Option<i64>,
-    pub current_speed: i64,
-    /// Span of (terrain index, composed modifier) pairs in the packet arena.
-    pub terrain_start: usize,
-    pub terrain_len: usize,
-    pub fort_penalty: i64,
-    pub snow_penalty: i64,
-    pub river_adjustment: i64,
-    pub river_leader: i64,
-    pub class: u32,
-    /// Viewpoint-independent effective strategic-rail modifier operands; replay
-    /// evaluates their nonzero test.
-    pub rail_country_modifier: Option<i64>,
-    pub rail_state_modifier: Option<i64>,
-    pub rail_friendly_state_modifier: Option<i64>,
-    pub leg_start: usize,
-    pub leg_len: usize,
-    /// A branch no leg took records an empty vector instead of zeros.
-    pub any_river: bool,
-    pub any_transport: bool,
-    pub any_rail: bool,
-}
-
-/// Borrowed per-leg arenas in route order; a row addresses its own span. A
-/// span covers the legs the native walk evaluates, so it ends at the first
-/// zero-speed leg rather than at the end of the route.
-#[derive(Clone, Copy)]
-pub struct EtaLegArenas<'a> {
-    pub river: &'a [i64],
-    pub transport: &'a [i64],
-    pub rail: &'a [i64],
-}
-
-/// Per-walk attribution for the ETA input acquisition. Diagnostics only: no
-/// observation comparison and no row depends on these.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EtaInputCounters {
-    pub walks: u64,
-    pub divisions: u64,
-    pub legs: u64,
-    /// The per-division composed speed graph: the native decision tree and
-    /// the additional branches required for the owned ETA inputs.
-    pub graph_ticks: u64,
-    /// The per-leg route scan, including its terrain and river operands.
-    pub scan_ticks: u64,
-    /// The rest of a division: the route copy and the prepared speed tail.
-    pub other_ticks: u64,
-    pub geometry_hits: u64,
-    pub geometry_misses: u64,
-    /// The session-static map memo: hits served without reading, misses read
-    /// live, and how often the memo was cleared.
-    pub static_hits: u64,
-    pub static_misses: u64,
-    pub static_cleared: u64,
-    pub state_modifier_requests: u64,
-    pub state_modifier_hits: u64,
-    pub air_defense_requests: u64,
-    pub air_defense_hits: u64,
-}
-
-impl EtaInputCounters {
-    pub fn add(&mut self, other: Self) {
-        let sum = |left: &mut u64, right: u64| *left = left.saturating_add(right);
-        sum(&mut self.walks, other.walks);
-        sum(&mut self.divisions, other.divisions);
-        sum(&mut self.legs, other.legs);
-        sum(&mut self.graph_ticks, other.graph_ticks);
-        sum(&mut self.scan_ticks, other.scan_ticks);
-        sum(&mut self.other_ticks, other.other_ticks);
-        sum(&mut self.geometry_hits, other.geometry_hits);
-        sum(&mut self.geometry_misses, other.geometry_misses);
-        sum(&mut self.static_hits, other.static_hits);
-        sum(&mut self.static_misses, other.static_misses);
-        sum(&mut self.static_cleared, other.static_cleared);
-        sum(
-            &mut self.state_modifier_requests,
-            other.state_modifier_requests,
-        );
-        sum(&mut self.state_modifier_hits, other.state_modifier_hits);
-        sum(&mut self.air_defense_requests, other.air_defense_requests);
-        sum(&mut self.air_defense_hits, other.air_defense_hits);
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EtaInputWalk {
-    pub outcome: Outcome,
-    pub terrain_len: usize,
-    pub required_terrain: usize,
-    pub legs_len: usize,
-    pub required_legs: usize,
-}
-
-/// Pooled owned ETA inputs. Fixed callback packets retain explicit shortages.
-/// Worker-owned packets reserve from original census and route controls before
-/// publication; no native walk restarts after growth.
-pub struct EtaInputPacket {
-    units: Vec<EtaInputRow>,
-    /// One-based signed terrain index and composed modifier per division span.
-    terrain: Vec<(i32, i64)>,
-    leg_count: usize,
-    leg_river: Vec<i64>,
-    leg_transport: Vec<i64>,
-    leg_rail: Vec<i64>,
-    route: Vec<u32>,
-    /// Same-handle acquired graph results retained until fresh projection.
-    fresh_observations: Vec<fresh_counter_eta::DivisionEtaObservation>,
-    /// Frame-local (logical owner, strategic region) transport speeds.
-    transport: crate::cnaval_unit_transfer::MovementSpeeds,
-    rail: crate::crailway_manager::MovementSpeeds,
-    state_modifiers: std::cell::RefCell<MovementStateModifiers>,
-    category_contributions: std::cell::RefCell<MovementCategoryContributions>,
-    supply_templates: std::cell::RefCell<std::collections::HashMap<usize, i64>>,
-    air_prefixes: std::cell::RefCell<MovementAirMemo>,
-    counters: EtaInputCounters,
-    result: EtaInputWalk,
-    growing: bool,
-}
-
-const ETA_INPUT_UNCAPTURED: EtaInputWalk = EtaInputWalk {
-    outcome: Outcome::Unavailable {
-        reason: "division ETA inputs not captured",
-    },
-    terrain_len: 0,
-    required_terrain: 0,
-    legs_len: 0,
-    required_legs: 0,
-};
-
-impl EtaInputPacket {
-    pub fn enable_growth(&mut self) {
-        self.growing = true;
-    }
-    pub fn new(
-        unit_capacity: usize,
-        terrain_capacity: usize,
-        leg_capacity: usize,
-    ) -> std::io::Result<Self> {
-        let mut supply_templates = std::collections::HashMap::new();
-        crate::allocation::reserve_map(&mut supply_templates, unit_capacity)?;
-        Ok(Self {
-            units: crate::allocation::vec(unit_capacity)?,
-            terrain: crate::allocation::vec(terrain_capacity)?,
-            leg_count: 0,
-            leg_river: crate::allocation::vec(leg_capacity)?,
-            leg_transport: crate::allocation::vec(leg_capacity)?,
-            leg_rail: crate::allocation::vec(leg_capacity)?,
-            // Every admitted route fits this leg capacity before its resize.
-            route: crate::allocation::vec(leg_capacity)?,
-            fresh_observations: crate::allocation::vec(unit_capacity)?,
-            transport: crate::cnaval_unit_transfer::MovementSpeeds::try_with_capacity(
-                unit_capacity,
-            )?,
-            rail: crate::crailway_manager::MovementSpeeds::try_new(leg_capacity)?,
-            state_modifiers: std::cell::RefCell::new(MovementStateModifiers::new(unit_capacity)?),
-            category_contributions: std::cell::RefCell::new(MovementCategoryContributions::new(
-                unit_capacity,
-            )?),
-            supply_templates: std::cell::RefCell::new(supply_templates),
-            air_prefixes: std::cell::RefCell::new(MovementAirMemo::new(unit_capacity)?),
-            counters: EtaInputCounters::default(),
-            result: ETA_INPUT_UNCAPTURED,
-            growing: false,
-        })
-    }
-    /// Allocation-free placeholder while a job owns the complete packet.
-    pub fn vacant() -> Self {
-        Self {
-            units: Vec::new(),
-            terrain: Vec::new(),
-            leg_count: 0,
-            leg_river: Vec::new(),
-            leg_transport: Vec::new(),
-            leg_rail: Vec::new(),
-            route: Vec::new(),
-            fresh_observations: Vec::new(),
-            transport: crate::cnaval_unit_transfer::MovementSpeeds::vacant(),
-            rail: crate::crailway_manager::MovementSpeeds::vacant(),
-            state_modifiers: std::cell::RefCell::new(MovementStateModifiers {
-                entries: Vec::new(),
-                requests: 0,
-                hits: 0,
-            }),
-            category_contributions: std::cell::RefCell::new(MovementCategoryContributions {
-                entries: Vec::new(),
-                generation: 1,
-            }),
-            supply_templates: std::cell::RefCell::new(std::collections::HashMap::new()),
-            air_prefixes: std::cell::RefCell::new(MovementAirMemo {
-                active: Vec::new(),
-                regions: Vec::new(),
-                generation: 1,
-            }),
-            counters: EtaInputCounters::default(),
-            result: ETA_INPUT_UNCAPTURED,
-            growing: false,
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.units.clear();
-        self.terrain.clear();
-        self.leg_count = 0;
-        self.leg_river.clear();
-        self.leg_transport.clear();
-        self.leg_rail.clear();
-        self.clear_fresh_observations();
-        self.transport.clear();
-        self.rail.clear();
-        self.state_modifiers.get_mut().clear();
-        self.category_contributions.get_mut().clear();
-        self.supply_templates.get_mut().clear();
-        self.air_prefixes.get_mut().clear();
-        self.counters = EtaInputCounters::default();
-        self.result = ETA_INPUT_UNCAPTURED;
-    }
-    /// A range's rows and variable-length inputs have independent capacities.
-    pub fn reserve(
-        &mut self,
-        unit_capacity: usize,
-        terrain_capacity: usize,
-        leg_capacity: usize,
-    ) -> std::io::Result<()> {
-        eta_reserve(&mut self.units, unit_capacity)?;
-        eta_reserve(&mut self.terrain, terrain_capacity)?;
-        eta_reserve(&mut self.leg_river, leg_capacity)?;
-        eta_reserve(&mut self.leg_transport, leg_capacity)?;
-        eta_reserve(&mut self.leg_rail, leg_capacity)?;
-        eta_reserve(&mut self.route, leg_capacity)?;
-        eta_reserve(&mut self.fresh_observations, unit_capacity)?;
-        self.transport.reserve(unit_capacity)?;
-        self.state_modifiers.get_mut().reserve(unit_capacity)?;
-        self.category_contributions
-            .get_mut()
-            .reserve(unit_capacity)?;
-        self.air_prefixes.get_mut().reserve(unit_capacity)?;
-        let templates = self.supply_templates.get_mut();
-        let additional = unit_capacity.saturating_sub(templates.len());
-        crate::allocation::reserve_map(templates, additional)?;
-        Ok(())
-    }
-    pub fn allocated_bytes(&self) -> usize {
-        self.units.capacity() * size_of::<EtaInputRow>()
-            + self.terrain.capacity() * size_of::<(i32, i64)>()
-            + self.leg_river.capacity() * 8
-            + (self.leg_transport.capacity() + self.leg_rail.capacity()) * 8
-            + self.route.capacity() * 4
-            + self.fresh_observations.capacity()
-                * size_of::<fresh_counter_eta::DivisionEtaObservation>()
-            + self.transport.allocated_bytes()
-            + self.rail.allocated_bytes()
-            + self.state_modifiers.borrow().allocated_bytes()
-            + self.category_contributions.borrow().allocated_bytes()
-            + self.supply_templates.borrow().capacity() * (size_of::<(usize, i64)>() + 1)
-            + self.air_prefixes.borrow().allocated_bytes()
-    }
-    pub fn outcome(&self) -> EtaInputWalk {
-        self.result
-    }
-    pub fn counters(&self) -> EtaInputCounters {
-        self.counters
-    }
-    pub fn rows(&self) -> &[EtaInputRow] {
-        &self.units
-    }
-    pub fn terrain(&self) -> &[(i32, i64)] {
-        &self.terrain
-    }
-    pub fn leg_count(&self) -> usize {
-        self.leg_count
-    }
-    pub fn legs(&self) -> EtaLegArenas<'_> {
-        EtaLegArenas {
-            river: &self.leg_river,
-            transport: &self.leg_transport,
-            rail: &self.leg_rail,
-        }
-    }
-
-    /// End the handoff on success, reset, or a collector bypass/panic path.
-    /// Storage remains prepared; no legacy rows or growth demand are cleared.
-    pub fn clear_fresh_observations(&mut self) {
-        self.fresh_observations.clear();
-    }
-
-    fn take_fresh_context(
-        &mut self,
-        division: u64,
-        pointer: usize,
-    ) -> Option<NormalMovementContext> {
-        let index = self
-            .fresh_observations
-            .binary_search_by_key(&(division, pointer), |row| (row.division, row.pointer))
-            .ok()?;
-        self.fresh_observations[index].context.take()
-    }
-}
-
-fn eta_reserve<T>(vector: &mut Vec<T>, capacity: usize) -> std::io::Result<()> {
-    if vector.capacity() < capacity {
-        crate::allocation::reserve_exact(vector, capacity - vector.len())?;
-    }
-    Ok(())
-}
-
-struct EtaGeometry<'a, M> {
-    packet: &'a mut crate::cprovince::GeometryPacket,
-    memory: &'a M,
-}
-impl<M: Memory> MovementGeometry for EtaGeometry<'_, M> {
-    fn province_id(&mut self, pointer: usize) -> Result<u32, &'static str> {
-        self.packet.acquire_province_id(self.memory, pointer)
-    }
-    fn route_pointer(&mut self, id: u32) -> Result<usize, &'static str> {
-        self.packet.acquire_route_pointer(self.memory, id)
-    }
-    fn definition(&mut self, id: u32) -> Result<usize, &'static str> {
-        self.packet.acquire_definition(self.memory, id)
-    }
-    fn flags(&mut self, id: u32) -> Result<u8, &'static str> {
-        self.packet.acquire_flags(self.memory, id)
-    }
-    fn crossing(&mut self, from: u32, to: u32) -> Result<Option<u8>, &'static str> {
-        self.packet.acquire_crossing(self.memory, from, to)
-    }
-}
-
-/// The scales a leg's speed can be proved zero from, read once per walk. A
-/// missing one only costs that branch its stop proof, never correctness.
-#[derive(Clone, Copy, Default)]
-struct EtaStopScales {
-    transport: Option<i64>,
-    invasion: Option<i64>,
-    outer: Option<i64>,
-}
-impl EtaStopScales {
-    fn read(memory: &impl Memory, base: usize) -> Self {
-        let define = |rva| presentation_field::<i64>(memory, base, rva).ok();
-        Self {
-            transport: define(TRANSPORT_SCALE_RVA),
-            invasion: define(INVASION_SPEED_RVA),
-            outer: define(OUTER_SCALE_RVA),
-        }
-    }
-    fn scaled_is_zero(speed: i64, scale: Option<i64>) -> bool {
-        scale.is_some_and(|scale| movement_product(speed, scale) == 0)
-    }
-}
-
-/// Acquire everything a replayer needs to recompute the native ETA of every
-/// moving division in one contiguous `span` of the census: the composed
-/// per-division speed graph, the per-terrain and per-edge constants, and one
-/// thin route scan for the per-leg operands. Only divisions with a nonempty
-/// route produce a row. The scan ends where the native walk ends, at the first
-/// leg proved to have zero speed. Ranges retain their original census order.
-#[allow(clippy::too_many_arguments)]
-pub fn capture_eta_inputs(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    seeds: &[DivisionSeed],
-    span: std::ops::Range<usize>,
-    source_outcome: Outcome,
-    row_capacity: usize,
-    terrain_capacity: usize,
-    leg_capacity: usize,
-    geometry: &mut crate::cprovince::GeometryPacket,
-    statics: &mut crate::cprovince::StaticGeometry,
-    packet: &mut EtaInputPacket,
-) -> EtaInputWalk {
-    packet.clear();
-    let scales = EtaStopScales::read(memory, base);
-    // Re-key the session memo before any early return, so its counters always
-    // describe this walk.
-    let statics_ready = statics.begin(memory, base, state);
-    let mut required_legs = 0_usize;
-    let result = (|| {
-        if let Outcome::Unavailable { reason } = source_outcome {
-            return Err(reason);
-        }
-        if source_outcome.len() != seeds.len() {
-            return Err("division ETA input source length invalid");
-        }
-        if span.start > span.end || span.end > seeds.len() {
-            return Err("division ETA input range outside census");
-        }
-        geometry
-            .ready()
-            .map_err(|_| "division ETA input root invalid")?;
-        if !statics_ready {
-            return Err("division ETA input static root invalid");
-        }
-        let expected = base
-            .checked_add(VTABLE_RVA)
-            .ok_or("module address overflow")? as u64;
-        if packet.growing {
-            packet
-                .reserve(span.len(), packet.terrain.len(), packet.route.len())
-                .map_err(|_| "division ETA allocation failed")?;
-        }
-        let mut len = 0_usize;
-        // The census's own unread rows belong to the first range only, so
-        // concatenated ranges report them exactly once.
-        let mut missing = match source_outcome {
-            Outcome::Truncated { unread_rows, .. } if span.start == 0 => unread_rows,
-            _ => 0,
-        };
-        for seed in seeds.iter().take(span.end).skip(span.start) {
-            let admitted = (|| -> Result<Option<EtaInputRow>, &'static str> {
-                if seed.pointer == 0
-                    || seed.division == 0
-                    || seed.primary_vtable != Some(expected)
-                    || seed.handle != Some(seed.division)
-                {
-                    return Err("division ETA input identity changed");
-                }
-
-                let route = seed
-                    .ordinary_route
-                    .and_then(|header| Array::from_header(header, 4))
-                    .ok_or("division ETA input route invalid")?;
-                if route.count == 0 {
-                    return Ok(None);
-                }
-                required_legs = required_legs
-                    .checked_add(route.count as usize)
-                    .ok_or("division ETA input leg count overflow")?;
-                if packet.growing {
-                    // Movement and transport consume this original route header.
-                    packet
-                        .reserve(span.len(), packet.terrain.len(), required_legs)
-                        .map_err(|_| "division ETA allocation failed")?;
-                }
-                let leg_storage = leg_capacity
-                    .min(packet.leg_river.capacity())
-                    .min(packet.leg_transport.capacity())
-                    .min(packet.leg_rail.capacity())
-                    .min(packet.route.capacity());
-                if len == row_capacity.min(packet.units.capacity())
-                    || leg_storage.saturating_sub(packet.leg_count) < route.count as usize
-                {
-                    missing = missing.checked_add(1).ok_or("ETA missing count overflow")?;
-                    return Ok(None);
-                }
-                if packet.fresh_observations.len() == packet.fresh_observations.capacity() {
-                    return Err("division ETA observation arena exhausted");
-                }
-                let mut context = NormalMovementContext::default();
-                let result = eta_input_row(
-                    memory,
-                    base,
-                    state,
-                    seed,
-                    route,
-                    terrain_capacity,
-                    scales,
-                    geometry,
-                    statics,
-                    packet,
-                    &mut context,
-                );
-                packet
-                    .fresh_observations
-                    .push(fresh_counter_eta::DivisionEtaObservation {
-                        division: seed.division,
-                        pointer: seed.pointer,
-                        context: Some(context),
-                    });
-                result.map(Some)
-            })();
-            if let Some(row) = admitted? {
-                packet.units.push(row);
-                len += 1;
-            }
-        }
-        Ok(if missing == 0 {
-            Outcome::Rows { len }
-        } else {
-            Outcome::Truncated {
-                len,
-                unread_rows: missing,
-            }
-        })
-    })();
-    let walk = EtaInputWalk {
-        outcome: result.unwrap_or_else(|reason| Outcome::Unavailable { reason }),
-        terrain_len: packet.terrain.len(),
-        // One spare pair, so an exhausted arena reports growth and a healthy
-        // one does not.
-        required_terrain: packet.terrain.len().saturating_add(1),
-        legs_len: packet.leg_count,
-        required_legs,
-    };
-    let geometry_counters = geometry.counters();
-    let static_counters = statics.counters();
-    packet.counters.static_hits = static_counters.hits;
-    packet.counters.static_misses = static_counters.misses;
-    packet.counters.static_cleared = static_counters.cleared;
-    packet.counters.walks = 1;
-    packet.counters.divisions = packet.units.len() as u64;
-    packet.counters.legs = packet.leg_count as u64;
-    packet.counters.geometry_hits = geometry_counters.hits;
-    packet.counters.geometry_misses = geometry_counters.misses;
-    packet.counters.state_modifier_requests = packet.state_modifiers.borrow().requests;
-    packet.counters.state_modifier_hits = packet.state_modifiers.borrow().hits;
-    packet.result = walk;
-    walk
-}
-
-/// One division's operands. The context caches this army's common graph, so a
-/// branch the current edge skipped is read once here and never per leg.
-#[allow(clippy::too_many_arguments)]
-fn eta_input_row(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    seed: &DivisionSeed,
-    route: Array,
-    terrain_capacity: usize,
-    scales: EtaStopScales,
-    geometry: &mut crate::cprovince::GeometryPacket,
-    statics: &mut crate::cprovince::StaticGeometry,
-    packet: &mut EtaInputPacket,
-    context: &mut NormalMovementContext,
-) -> Result<EtaInputRow, &'static str> {
-    // The route ids leave the pool for this division, so a seeded acquisition
-    // can borrow them while the arenas keep taking legs.
-    let started = crate::clock::qpc();
-    let measured = packet
-        .counters
-        .graph_ticks
-        .saturating_add(packet.counters.scan_ticks);
-    let mut route_ids = std::mem::take(&mut packet.route);
-    route_ids.clear();
-    // capture_eta_inputs admitted this route against packet.route.capacity().
-    debug_assert!(route.count as usize <= route_ids.capacity());
-    route_ids.resize(route.count as usize, 0);
-    let result = crate::cpdx_array::copy_u32s(
-        memory,
-        route,
-        &mut route_ids,
-        "division ETA input route unreadable",
-    )
-    .and_then(|()| {
-        let terrain_start = packet.terrain.len();
-        let result = eta_input_route(
-            memory,
-            base,
-            state,
-            seed,
-            terrain_capacity,
-            scales,
-            &route_ids,
-            geometry,
-            statics,
-            packet,
-            context,
-        );
-        context.route_endpoints = Some((route_ids[0], *route_ids.last().unwrap()));
-        context.legacy_terrain = Some((terrain_start, packet.terrain.len() - terrain_start));
-        result
-    });
-    packet.route = route_ids;
-    // Everything this division spent outside the two measured spans.
-    let spans = packet
-        .counters
-        .graph_ticks
-        .saturating_add(packet.counters.scan_ticks)
-        .saturating_sub(measured);
-    packet.counters.other_ticks = packet
-        .counters
-        .other_ticks
-        .saturating_add(crate::clock::since(started).saturating_sub(spans));
-    result
-}
-
-#[allow(clippy::too_many_arguments)]
-fn eta_input_route(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    seed: &DivisionSeed,
-    terrain_capacity: usize,
-    scales: EtaStopScales,
-    route_ids: &[u32],
-    geometry: &mut crate::cprovince::GeometryPacket,
-    statics: &mut crate::cprovince::StaticGeometry,
-    packet: &mut EtaInputPacket,
-    context: &mut NormalMovementContext,
-) -> Result<EtaInputRow, &'static str> {
-    let class = seed.class.ok_or("division ETA input field unreadable")?;
-    let location = seed.location.ok_or("division ETA input field unreadable")?;
-    if location == 0 {
-        return Err("division ETA input moving division has null location");
-    }
-    let location_id = geometry.acquire_province_id(memory, location)?;
-    let next = geometry.acquire_pointer(memory, route_ids[0])?;
-    let mut row = EtaInputRow {
-        division: seed.division,
-        class,
-        leg_start: packet.leg_count,
-        terrain_start: packet.terrain.len(),
-        ..EtaInputRow::default()
-    };
-    // Prime the context through the native decision tree, which also yields the
-    // one (location -> next) speed the duration subtracts as progress. A branch
-    // it skipped is acquired only when a later route leg actually needs it.
-    let graph_started = crate::clock::qpc();
-    let current = {
-        let mut reader = EtaGeometry {
-            packet: geometry,
-            memory,
-        };
-        let mut shared = MovementSharedInputs {
-            seed,
-            route_ids: fresh_counter_eta::MovementRouteIds::Full(route_ids),
-            geometry: &mut reader,
-            rail_speeds: Some(&mut packet.rail),
-            state_modifiers: Some(&packet.state_modifiers),
-            category_contributions: Some(&packet.category_contributions),
-            supply_templates: Some(&packet.supply_templates),
-            air_prefixes: Some(&packet.air_prefixes),
-        };
-        let transport = &mut packet.transport;
-        movement_speed_inputs_seeded_in_pass(
-            memory,
-            base,
-            state,
-            &mut shared,
-            location,
-            next,
-            context,
-            |owner, region| eta_transport_speed(memory, base, state, transport, owner, region),
-        )?
-    };
-    let scan_started = crate::clock::qpc();
-    packet.counters.graph_ticks = packet
-        .counters
-        .graph_ticks
-        .saturating_add(scan_started.saturating_sub(graph_started).max(0) as u64);
-    let prepared = match current {
-        MovementSpeedInputs::Normal { common, edge } => {
-            let prepared = common.prepare();
-            row.current_speed = prepared.evaluate(edge);
-            Some(prepared)
-        }
-        _ => {
-            row.current_speed = current.evaluate();
-            None
-        }
-    };
-
-    let transfer = seed
-        .naval_transfer_membership
-        .ok_or("division ETA input field unreadable")?;
-    let mut normal: Option<NormalMovementInputs> = context.normal.transpose()?;
-    let mut river = None;
-    let mut from = location;
-    let mut from_id = location_id;
-    let mut source_flags = None;
-    for &id in route_ids {
-        if id == 0 {
-            return Err("division ETA input province identity mismatch");
-        }
-        // The session memo supplies static map data after begin() validates
-        // the current session and province-census key.
-        let destination = statics.province(memory, base, id)?;
-        let to = destination.pointer;
-        if to == 0 {
-            return Err("division ETA input province identity mismatch");
-        }
-        if from != to {
-            let from_flags = match source_flags {
-                Some(flags) => flags,
-                None => statics.province(memory, base, from_id)?.flags,
-            };
-            let to_flags = destination.flags;
-            // Leg distances and crossing kinds are static map content; the
-            // replay derives them from the matching content stack.
-            let leg = packet.leg_count;
-            packet.leg_count += 1;
-            packet.leg_river.push(0);
-            packet.leg_transport.push(0);
-            packet.leg_rail.push(0);
-            let transport = transfer != 0 || from_flags & 1 == 0 || to_flags & 1 == 0;
-            let mut strategic = 0;
-            let mut rail_blocked = false;
-            let mut invasion = false;
-            if !transport {
-                // Transport never consumes the army's land-owner or rail
-                // graph. In a mixed route, acquire it at the first land leg.
-                let mut reader = EtaGeometry {
-                    packet: geometry,
-                    memory,
-                };
-                let mut shared = MovementSharedInputs {
-                    seed,
-                    route_ids: fresh_counter_eta::MovementRouteIds::Full(route_ids),
-                    geometry: &mut reader,
-                    rail_speeds: None,
-                    state_modifiers: Some(&packet.state_modifiers),
-                    category_contributions: Some(&packet.category_contributions),
-                    supply_templates: Some(&packet.supply_templates),
-                    air_prefixes: Some(&packet.air_prefixes),
-                };
-                let land = movement_cached(Some(&mut context.land), || {
-                    movement_land_inputs(memory, base, state, seed.pointer, Some(&mut shared))
-                })?;
-                invasion = land.invasion();
-                if !invasion {
-                    let roots = movement_cached(Some(&mut context.roots), || {
-                        movement_owner_inputs(
-                            memory,
-                            base,
-                            state,
-                            seed.pointer,
-                            land.location,
-                            Some(&mut shared),
-                        )
-                    })?;
-                    strategic = roots.strategic;
-                    if strategic != 0 {
-                        let rail = movement_cached(Some(&mut context.rail), || {
-                            movement_rail_inputs(memory, base, state, roots, Some(&shared))
-                        })?;
-                        row.rail_country_modifier = Some(rail.country);
-                        row.rail_state_modifier = rail.state;
-                        row.rail_friendly_state_modifier = rail.friendly_state;
-                        rail_blocked = rail.blocked();
-                    }
-                }
-            }
-            // The route walk stops at the first zero-speed leg
-            // and never reads the tail. Record that leg, then stop: reading on
-            // would make an unreadable later operand deny the whole table.
-            let stopped = if transport {
-                let owner_raw = seed
-                    .logical_owner
-                    .ok_or("division ETA input field unreadable")?;
-                let region = movement_pointer(memory, from, cprovince::STRATEGIC_REGION)?;
-                packet.leg_transport[leg] = eta_transport_speed(
-                    memory,
-                    base,
-                    state,
-                    &mut packet.transport,
-                    owner_raw,
-                    region,
-                )?;
-                row.any_transport = true;
-                EtaStopScales::scaled_is_zero(packet.leg_transport[leg], scales.transport)
-            } else if invasion {
-                // An authored define the replay reads from matching content.
-                scales.invasion == Some(0)
-            } else if strategic != 0 && !rail_blocked {
-                packet.leg_rail[leg] = packet.rail.get(memory, base, state, from, to)?;
-                row.any_rail = true;
-                EtaStopScales::scaled_is_zero(packet.leg_rail[leg], scales.outer)
-            } else {
-                let common = match normal {
-                    Some(common) => common,
-                    None => {
-                        let roots = context
-                            .roots
-                            .ok_or("division ETA input normal roots missing")??;
-                        let acquired = {
-                            let mut reader = EtaGeometry {
-                                packet: geometry,
-                                memory,
-                            };
-                            let mut shared = MovementSharedInputs {
-                                seed,
-                                route_ids: fresh_counter_eta::MovementRouteIds::Full(route_ids),
-                                geometry: &mut reader,
-                                rail_speeds: None,
-                                state_modifiers: Some(&packet.state_modifiers),
-                                category_contributions: Some(&packet.category_contributions),
-                                supply_templates: Some(&packet.supply_templates),
-                                air_prefixes: Some(&packet.air_prefixes),
-                            };
-                            normal_movement_inputs(
-                                memory,
-                                base,
-                                state,
-                                seed.pointer,
-                                roots.owner_raw,
-                                roots.owner.pointer,
-                                roots.actual_state,
-                                Some(&mut shared),
-                            )
-                        };
-                        context.normal = Some(acquired);
-                        let common = acquired?;
-                        normal = Some(common);
-                        common
-                    }
-                };
-                eta_terrain_modifier(
-                    memory,
-                    base,
-                    destination,
-                    &common.modifier,
-                    context.terrain,
-                    row.terrain_start,
-                    terrain_capacity,
-                    packet,
-                )?;
-                let crossing = geometry.acquire_crossing(memory, from_id, id)?;
-                if crossing.is_some_and(|crossing| (1..=3).contains(&crossing)) {
-                    let roster = match &river {
-                        Some(roster) => roster,
-                        None => river.insert({
-                            let reader = ccountry::Reader::new(memory, base, state)?;
-                            let owner = reader.of_pointer(common.modifier.owner)?;
-                            let relations = crate::crelation_status::MovementRelations::new(
-                                memory, base, owner,
-                            )?;
-                            EtaRiverRoster {
-                                reader,
-                                relations,
-                                definition: std::cell::Cell::new(None),
-                            }
-                        }),
-                    };
-                    packet.leg_river[leg] = eta_river_combined(memory, base, roster, to)?;
-                    row.any_river = true;
-                }
-                if from == location && to == next {
-                    // This edge was already evaluated for current progress.
-                    row.current_speed == 0
-                } else if let Some(zero) = normal_speed_zero_from_scale(common.speed.outer_scale) {
-                    zero
-                } else {
-                    // An exceptional scale can wrap a positive normal speed
-                    // to zero. Keep the thin scan for the proved range, but
-                    // evaluate this edge exactly before touching its tail.
-                    let mut reader = EtaGeometry {
-                        packet: geometry,
-                        memory,
-                    };
-                    let mut shared = MovementSharedInputs {
-                        seed,
-                        route_ids: fresh_counter_eta::MovementRouteIds::Full(route_ids),
-                        geometry: &mut reader,
-                        rail_speeds: None,
-                        state_modifiers: Some(&packet.state_modifiers),
-                        category_contributions: Some(&packet.category_contributions),
-                        supply_templates: Some(&packet.supply_templates),
-                        air_prefixes: Some(&packet.air_prefixes),
-                    };
-                    let edge = normal_movement_edge(
-                        memory,
-                        base,
-                        state,
-                        from,
-                        to,
-                        &common.modifier,
-                        Some(&mut shared),
-                        None,
-                        None,
-                    )?;
-                    common.speed.prepare().evaluate(edge) == 0
-                }
-            };
-            if stopped {
-                break;
-            }
-        }
-        from = to;
-        from_id = id;
-        source_flags = Some(destination.flags);
-    }
-    packet.counters.scan_ticks = packet
-        .counters
-        .scan_ticks
-        .saturating_add(crate::clock::since(scan_started));
-    row.leg_len = packet.leg_count - row.leg_start;
-    if let Some(common) = normal {
-        let prepared = prepared.unwrap_or_else(|| common.speed.prepare());
-        row.speed_modifier = prepared.modifier;
-        row.speed_base = prepared.base_speed;
-        row.speed_org = prepared.organisation;
-        row.speed_fuel = prepared.fuel;
-        let stats = common.modifier.stats;
-        (row.fort_penalty, row.snow_penalty, row.river_adjustment) =
-            normal_eta_penalties(memory, stats, &mut context.edge_observations)?;
-        row.river_leader =
-            movement_cached(Some(&mut context.edge_observations.river_leader), || {
-                movement_modifier(
-                    memory,
-                    base,
-                    common.modifier.leader_accumulator,
-                    keys::RIVER_CROSSING_FACTOR,
-                )
-            })?;
-    }
-    row.terrain_len = packet.terrain.len() - row.terrain_start;
-    Ok(row)
-}
-
-/// One guarded batch for only the common penalty fields not observed yet.
-/// A failed prefix retains the first failed Result and leaves its tail absent.
-fn normal_eta_penalties(
-    memory: &impl Memory,
-    stats: usize,
-    observations: &mut fresh_counter_eta::NormalEdgeObservations,
-) -> Result<(i64, i64, i64), &'static str> {
-    for result in [
-        observations.fort_penalty,
-        observations.snow_penalty,
-        observations.river_adjustment,
-    ] {
-        if let Some(Err(reason)) = result {
-            return Err(reason);
-        }
-    }
-    let fields = presentation_batch(
-        memory,
-        [
-            (
-                stats,
-                0x378,
-                if observations.fort_penalty.is_none() {
-                    8
-                } else {
-                    0
-                },
-            ),
-            (
-                stats,
-                0x3f0,
-                if observations.snow_penalty.is_none() {
-                    8
-                } else {
-                    0
-                },
-            ),
-            (
-                stats,
-                0x3a0,
-                if observations.river_adjustment.is_none() {
-                    8
-                } else {
-                    0
-                },
-            ),
-        ],
-    );
-    let fort = movement_cached(Some(&mut observations.fort_penalty), || {
-        presentation_batched(memory, &fields, 0)
-    })?;
-    let snow = movement_cached(Some(&mut observations.snow_penalty), || {
-        presentation_batched(memory, &fields, 1)
-    })?;
-    let river = movement_cached(Some(&mut observations.river_adjustment), || {
-        presentation_batched(memory, &fields, 2)
-    })?;
-    Ok((fort, snow, river))
-}
-
-/// Frame-local memo: the composed transport speed depends only on the owner and
-/// the source strategic region, so repeated water legs cost nothing.
-fn eta_transport_speed(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    memo: &mut crate::cnaval_unit_transfer::MovementSpeeds,
-    owner: u32,
-    region: usize,
-) -> Result<i64, &'static str> {
-    memo.get(memory, base, state, owner, region)
-}
-
-/// The composed sub-unit plus leader terrain modifier for one destination,
-/// recorded once per distinct native terrain index on this division's route.
-/// The destination's terrain is map data the caller already holds.
-#[allow(clippy::too_many_arguments)]
-fn eta_terrain_modifier(
-    memory: &impl Memory,
-    base: usize,
-    destination: crate::cprovince::StaticProvince,
-    common: &NormalModifierCommon,
-    acquired: Option<(usize, i64)>,
-    start: usize,
-    terrain_capacity: usize,
-    packet: &mut EtaInputPacket,
-) -> Result<(), &'static str> {
-    let (terrain, index) = (destination.terrain, destination.terrain_index);
-    if index <= 0 {
-        return Err("division ETA input terrain index is the null slot or negative");
-    }
-    if packet.terrain[start..]
-        .iter()
-        .any(|(seen, _)| *seen == index)
-    {
-        return Ok(());
-    }
-    let value = match acquired.filter(|(pointer, _)| *pointer == terrain) {
-        Some((_, value)) => value,
-        None => {
-            let mut value =
-                crate::csub_unit_definition::movement_terrain(memory, base, common.stats, terrain)?;
-            if common.leader != 0 {
-                value = value.wrapping_add(crate::carmy_leader::movement_terrain(
-                    memory,
-                    base,
-                    common.leader,
-                    index,
-                )?);
-            }
-            value
-        }
-    };
-    if packet.growing {
-        let required = packet
-            .terrain
-            .len()
-            .checked_add(1)
-            .ok_or("division ETA terrain demand overflow")?;
-        eta_reserve(&mut packet.terrain, required).map_err(|_| "division ETA allocation failed")?;
-    }
-    if packet.terrain.len() == terrain_capacity.min(packet.terrain.capacity()) {
-        return Err("division ETA input terrain capacity exhausted");
-    }
-    packet.terrain.push((index, value));
-    Ok(())
-}
-
-/// The owner's relation roster and the country reader are the same on every
-/// crossing leg of one route, so a division reads them at most once.
-struct EtaRiverRoster<'a, M: Memory> {
-    reader: ccountry::Reader<'a, M>,
-    relations: crate::crelation_status::MovementRelations,
-    definition: std::cell::Cell<Option<Result<crate::modifier_definition::Operands, &'static str>>>,
-}
-
-/// River relation term for one crossing leg. The leader's share is
-/// recorded separately in `river_leader` and combined during replay.
-fn eta_river_combined<M: Memory>(
-    memory: &M,
-    base: usize,
-    roster: &EtaRiverRoster<'_, M>,
-    to: usize,
-) -> Result<i64, &'static str> {
-    let controller = presentation_field::<u32>(memory, to, cprovince::CONTROLLER)?;
-    let canonical = if controller == 0 {
-        0
-    } else {
-        roster.reader.resolve(controller)?.canonical_slot
-    };
-    let relation = roster
-        .relations
-        .status(memory, base, &roster.reader, canonical)?;
-    let mut definition = roster.definition.get();
-    let value = country_movement_inputs::river_modifier(memory, base, relation, &mut definition);
-    roster.definition.set(definition);
-    value
-}
-
-fn movement_air_inputs(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    army: usize,
-    stats: usize,
-    location: usize,
-    mut shared: Option<&mut MovementSharedInputs<'_>>,
-) -> Result<MovementAirOperands, &'static str> {
-    let owner_raw = movement_shared_seed_value(
-        &mut shared,
-        |seed| seed.logical_owner,
-        || presentation_field(memory, army, cunit::LOGICAL_OWNER),
-    )?;
-    // Every division still resolves its current raw owner before either memo.
-    let owner = ccountry::Reader::new(memory, base, state)?.resolve(owner_raw)?;
-    let key = MovementAirKey {
-        base,
-        state,
-        owner_raw,
-        owner_pointer: owner.pointer,
-        canonical: owner.canonical_slot,
-    };
-    let memo = shared.as_deref().and_then(|shared| shared.air_prefixes);
-    let active = movement_air_active(memory, key, memo)?;
-    // This pointer is an independent observation even when active is false.
-    let region = movement_pointer(memory, location, cprovince::STRATEGIC_REGION)?;
-    if !active || region == 0 {
-        return Ok(MovementAirOperands::default());
-    }
-    let Some(prefix) = movement_air_region(memory, key, region, memo)? else {
-        return Ok(MovementAirOperands::default());
-    };
-    Ok(MovementAirOperands {
-        fraction: prefix.fraction,
-        impact: prefix.impact,
-        scale: prefix.scale,
-        // The regional result never supplies this division's stats or defines.
-        defense: crate::csub_unit_definition::movement_air_defense(memory, base, stats)?,
-    })
-}
-
-fn movement_air_active(
-    memory: &impl Memory,
-    key: MovementAirKey,
-    memo: Option<&std::cell::RefCell<MovementAirMemo>>,
-) -> Result<bool, &'static str> {
-    if let Some(active) = memo.and_then(|memo| memo.borrow().active(key)) {
-        return Ok(active);
-    }
-    let diplomacy = movement_pointer(memory, key.owner_pointer, 0xf88)?;
-    let mut active = presentation_field::<i32>(memory, diplomacy, 0xa4)? != 0;
-    if !active {
-        let relations = presentation_array(memory, diplomacy, 0x20, 8)?;
-        for index in 0..relations.count {
-            let relation = movement_pointer(
-                memory,
-                relations
-                    .element(index, 8)
-                    .ok_or("movement air diplomacy index invalid")?,
-                0,
-            )?;
-            if presentation_field::<u32>(memory, relation, 8)? == 0x380a {
-                active = true;
-                break;
-            }
-        }
-    }
-    // Only the successful lazy prefix is retained, never a failed relation.
-    if let Some(memo) = memo {
-        memo.borrow_mut().install_active(key, active);
-    }
-    Ok(active)
-}
-
-fn movement_air_region(
-    memory: &impl Memory,
-    key: MovementAirKey,
-    region: usize,
-    memo: Option<&std::cell::RefCell<MovementAirMemo>>,
-) -> Result<Option<MovementAirPrefix>, &'static str> {
-    if let Some(prefix) = memo.and_then(|memo| memo.borrow().region(key, region)) {
-        return Ok(prefix);
-    }
-    let manager = movement_pointer(memory, key.state, cgame_state::STRATEGIC_AIR_MANAGER)?;
-    let countries = presentation_array(memory, manager, 0x30, 8)?;
-    let country = movement_pointer(
-        memory,
-        countries
-            .element(key.canonical, 8)
-            .ok_or("movement air country outside roster")?,
-        0,
-    )?;
-    let index = presentation_field::<i32>(memory, region, 0x60)?;
-    if index < 0 {
-        return Err("movement air region index negative");
-    }
-    let regions = presentation_array(memory, country, 0xe0, 0xa0)?;
-    let entry = regions
-        .element(index as u32, 0xa0)
-        .ok_or("movement air region outside cache")?;
-    let friendly = presentation_field::<i64>(memory, entry, 0)?;
-    let hostile = presentation_field::<i64>(memory, entry, 8)?;
-    let prefix = if hostile <= 0 {
-        None
-    } else {
-        let total = friendly.wrapping_add(hostile);
-        let fraction = if total > 0 {
-            movement_fraction(hostile, total)?
-        } else {
-            0
-        };
-        Some(MovementAirPrefix {
-            fraction,
-            impact: presentation_field(memory, entry, 0x18)?,
-            scale: presentation_field(memory, key.base, 0x0331_ddd8)?,
-        })
-    };
-    // The complete common prefix can survive a later division-specific defense
-    // failure; that independent defense query remains fresh on every hit.
-    if let Some(memo) = memo {
-        memo.borrow_mut().install_region(key, region, prefix);
-    }
-    Ok(prefix)
-}
-
-fn movement_acclimatization(memory: &impl Memory, army: usize) -> Result<i64, &'static str> {
-    let object = movement_address(army, ACCLIMATIZATION)?;
-    let active = movement_pointer(memory, object, 0x20)?;
-    if active == 0 {
-        return Ok(MOVEMENT_ONE);
-    }
-    let entries = presentation_array(memory, object, 8, 0x10)?;
-    let mut chosen = 0;
-    let mut weight = 0_i64;
-    for index in 0..entries.count {
-        let entry = entries
-            .element(index, 0x10)
-            .ok_or("movement acclimatization index invalid")?;
-        let value = presentation_field::<i64>(memory, entry, 8)?;
-        if value > weight {
-            weight = value;
-            chosen = movement_pointer(memory, entry, 0)?;
-        }
-    }
-    if chosen != active {
-        return Ok(MOVEMENT_ONE);
-    }
-    let fraction = movement_fraction(weight, presentation_field(memory, object, 0x38)?)?;
-    let scaled = movement_product(fraction, presentation_field(memory, active, 0x30)?);
-    Ok(if scaled < 0 {
-        MOVEMENT_ONE
-    } else {
-        MOVEMENT_ONE - scaled.min(MOVEMENT_ONE)
-    })
+fn movement_bounded(value: i64, bound: i64) -> bool {
+    (-bound..=bound).contains(&value)
 }
 
 pub(crate) fn movement_priority_unit(
@@ -4303,149 +1343,6 @@ pub(crate) fn movement_priority_unit(
         return Err("movement selected unit identity mismatch");
     }
     Ok(selected)
-}
-
-fn movement_supply_penalty(
-    memory: &impl Memory,
-    base: usize,
-    army: usize,
-    country_accumulator: usize,
-    leader_accumulator: usize,
-    mut shared: Option<&mut MovementSharedInputs<'_>>,
-) -> Result<i64, &'static str> {
-    if movement_shared_seed_value(
-        &mut shared,
-        |seed| seed.naval_transfer_membership,
-        || movement_pointer(memory, army, NAVAL_TRANSFER_MEMBERSHIP),
-    )? != 0
-    {
-        return Ok(0);
-    }
-    // Every untransferred division reads these three; the supply gain terms
-    // are read, as their own guarded call, only by a division with supply.
-    let fields = presentation_batch(
-        memory,
-        [(army, 0x600, 8), (army, 0x498, 4), (base, 0x0331_9394, 4)],
-    );
-    let available = if presentation_batched::<i64, 3>(memory, &fields, 0)? < 1 {
-        0
-    } else {
-        let gain = presentation_batch(
-            memory,
-            [(base, 0x0331_91c0, 4), (army, 0x610, 8), (army, 0x40, 8)],
-        );
-        let hours =
-            i64::from(presentation_batched::<i32, 3>(memory, &gain, 0)?).wrapping_mul(MOVEMENT_ONE);
-        movement_fraction(presentation_batched(memory, &gain, 1)?, hours)?
-            .max(presentation_batched(memory, &gain, 2)?)
-            .clamp(0, MOVEMENT_ONE)
-    };
-    let numerator =
-        i64::from(presentation_batched::<i32, 3>(memory, &fields, 1)?).wrapping_mul(MOVEMENT_ONE);
-    let denominator =
-        i64::from(presentation_batched::<i32, 3>(memory, &fields, 2)?).wrapping_mul(MOVEMENT_ONE);
-    let penalty = movement_product(
-        MOVEMENT_ONE.wrapping_sub(available).clamp(0, MOVEMENT_ONE),
-        movement_fraction(numerator, denominator)?,
-    );
-    if penalty == 0 {
-        return Ok(0);
-    }
-    let template = movement_shared_seed_value(
-        &mut shared,
-        |seed| seed.standard_template,
-        || movement_pointer(memory, army, STANDARD_TEMPLATE),
-    )?;
-    let ratio = movement_supply_template_ratio(
-        memory,
-        template,
-        shared.as_deref().and_then(|shared| shared.supply_templates),
-    )?;
-    let mut multiplier = MOVEMENT_ONE.wrapping_add(movement_modifier(
-        memory,
-        base,
-        country_accumulator,
-        keys::OUT_OF_SUPPLY_FACTOR,
-    )?);
-    if ratio > 0 {
-        multiplier = multiplier.wrapping_add(movement_product(
-            ratio,
-            movement_modifier(
-                memory,
-                base,
-                country_accumulator,
-                keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
-            )?,
-        ));
-    }
-    if leader_accumulator != 0 {
-        multiplier = multiplier.wrapping_add(movement_modifier(
-            memory,
-            base,
-            leader_accumulator,
-            keys::OUT_OF_SUPPLY_FACTOR,
-        )?);
-        if ratio > 0 {
-            multiplier = multiplier.wrapping_add(movement_product(
-                ratio,
-                movement_modifier(
-                    memory,
-                    base,
-                    leader_accumulator,
-                    keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
-                )?,
-            ));
-        }
-    }
-    Ok(movement_product(multiplier.max(0), penalty))
-}
-
-/// The complete ordered composition depends only on this template during the
-/// frozen hourly acquisition. Keep every division's supply gates before this
-/// lookup and its country/leader modifiers after it. Distinct template pointers
-/// retain distinct observations even when their arrays or unit pointers alias.
-fn movement_supply_template_ratio(
-    memory: &impl Memory,
-    template: usize,
-    memo: Option<&std::cell::RefCell<std::collections::HashMap<usize, i64>>>,
-) -> Result<i64, &'static str> {
-    if template == 0 {
-        return Err("movement supply template is null");
-    }
-    if let Some(ratio) = memo.and_then(|memo| memo.borrow().get(&template).copied()) {
-        return Ok(ratio);
-    }
-    let units = presentation_array(memory, template, 0xc0, 0x10)?;
-    let mut total = 0_i32;
-    let mut special = 0_i32;
-    for index in 0..units.count {
-        let entry = units
-            .element(index, 0x10)
-            .ok_or("movement supply composition index invalid")?;
-        let unit = movement_pointer(memory, entry, 0)?;
-        let count = presentation_field::<i32>(memory, entry, 8)?;
-        total = total.wrapping_add(count);
-        if presentation_field::<u8>(memory, unit, 0x5b7)? != 0 {
-            special = special.wrapping_add(count);
-        }
-    }
-    let ratio = if total == 0 {
-        0
-    } else {
-        movement_fraction(
-            i64::from(special).wrapping_mul(MOVEMENT_ONE),
-            i64::from(total).wrapping_mul(MOVEMENT_ONE),
-        )?
-    };
-    if let Some(memo) = memo {
-        let mut memo = memo.borrow_mut();
-        // Storage is reserved from admitted-row capacity off capture. A full
-        // or vacant packet uses the original reader without growing or retrying.
-        if memo.len() < memo.capacity() {
-            memo.insert(template, ratio);
-        }
-    }
-    Ok(ratio)
 }
 
 mod strategic_action;
@@ -4528,25 +1425,37 @@ pub struct StatusRow {
     pub strength_factor: i64,
     /// [`RETAINED_VISUAL_VARIANT`], the stored land model number.
     pub model_number: i32,
-    /// Acclimatization maximum, raw i64; `None` when this division's
-    /// acclimatization was unreadable or outgrew the packet this hour. Only
-    /// this field and its span fail, never the row.
-    pub acclimatization_maximum: Option<i64>,
-    /// Span of this division's (category token, weight) entries in the packet;
-    /// empty when the maximum is `None`.
-    pub acclimatization_start: usize,
-    pub acclimatization_len: usize,
+    /// The division's acclimatization camouflage category; `None` when it was
+    /// unreadable or its category registry outgrew the packet this hour. Only
+    /// this field fails, never the row.
+    pub camouflage: Option<Camouflage>,
+    /// Movement availability from the same acclimatization read, which the
+    /// selected army's attack list scales its region weather term by; `None`
+    /// when it was unreadable this hour.
+    pub weather_factor: Option<i64>,
     /// Raid army-reach inputs, `MOVE_*` bits. The commander's retreat bans
-    /// are [`RetreatBanRow`]'s, read daily.
+    /// are [`RetreatBanRow`]'s.
     pub move_flags: u8,
     pub border_combat_stats: Option<[i64; 3]>,
     /// Operand spans in the collector's hour-local name arena, never cached display text.
     pub naming: Option<crate::cname_group_member::Inputs>,
     pub country_ordinal: Option<u32>,
-    /// Exact stored supply-footer scalars; only this pack fails on a scalar fault.
+    /// Exact stored supply-footer scalars ([`crate::cunit_supply_inputs`]);
+    /// only this pack fails on a scalar fault.
     pub supply: Option<crate::cunit_supply_inputs::Inputs>,
+    /// The first of the footer's origin rows in [`StatusPacket::supply_origins`].
     pub supply_origins_start: usize,
     pub supply_failure: Option<crate::cunit_supply_inputs::Failure>,
+}
+
+/// The division's land-model camouflage: the token of the registered
+/// acclimatization category whose `<entity>_<condition>` variants it may show
+/// (the strongest entry, when its weight reaches the show threshold), or `None`
+/// when no category does. The province and state conditions belong to the
+/// consumer.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Camouflage {
+    pub category: Option<u32>,
 }
 
 impl StatusRow {
@@ -4574,11 +1483,9 @@ use crate::corders_group_member::{MembershipCapacity, MembershipPacket, Membersh
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct StatusCapacities {
     pub units: usize,
-    /// Ordered distributed-supply entries across the authenticated divisions.
+    /// Ordered distributed-supply rows across the authenticated divisions.
     pub supply_origins: usize,
     pub manpower: usize,
-    /// Acclimatization (category, weight) entries across all divisions.
-    pub acclimatization: usize,
     /// Registered acclimatization categories.
     pub acclimatization_categories: usize,
     pub thresholds: usize,
@@ -4593,7 +1500,6 @@ impl StatusCapacities {
             units,
             supply_origins: 0,
             manpower: 0,
-            acclimatization: 0,
             acclimatization_categories: 0,
             thresholds: 0,
             modifiers: crate::modifier_accumulator::SnapshotCapacity::default(),
@@ -4643,15 +1549,11 @@ struct StatusUnitInputs {
     strength_factor: i64,
     exiled: u8,
     model_number: i32,
-    acclimatization_maximum: Option<i64>,
-    acclimatization_start: usize,
-    acclimatization_len: usize,
+    camouflage: Option<Camouflage>,
+    weather_factor: Option<i64>,
     exercise: Option<StatusExerciseOperands>,
     failure: Option<&'static str>,
     border_combat_stats: Option<[i64; 3]>,
-    supply: Option<crate::cunit_supply_inputs::Inputs>,
-    supply_origins_start: usize,
-    supply_failure: Option<crate::cunit_supply_inputs::Failure>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4681,6 +1583,10 @@ pub struct StatusPacket {
     capacities: StatusCapacities,
     required: StatusCapacities,
     units: Vec<StatusUnitInputs>,
+    /// Each unit's supply footer, by unit index; the first `supply_len` are
+    /// this hour's.
+    supply: Vec<crate::cunit_supply_inputs::UnitCapture>,
+    supply_len: usize,
     supply_origins: Vec<crate::cunit_supply_inputs::Origin>,
     supply_origins_len: usize,
     border_index: Vec<(u64, usize)>,
@@ -4701,10 +1607,15 @@ pub struct StatusPacket {
     modifiers: crate::modifier_accumulator::SnapshotArena,
     membership: MembershipPacket,
     manpower: Vec<i32>,
-    acclimatization: Vec<crate::acclimatization_entry::Entry>,
-    /// The category registry, loaded on the hour's first nonempty entry list.
+    exercise_control: Option<cgame_state::AiControl>,
+    exercise_autonomy: std::collections::HashMap<u32, bool>,
+    /// The category registry, loaded on the hour's first shown category.
     categories: crate::acclimatization_category::Categories,
     categories_loaded: Option<Result<(), &'static str>>,
+    /// [`crate::acclimatization_data::CAMO_SHOW_AT_RVA`], read on the hour's
+    /// first winning entry.
+    camouflage_show_at: Option<Result<i64, &'static str>>,
+    category_factors: CategoryFactors,
     thresholds_header: Option<Result<[u8; 16], &'static str>>,
     thresholds: Vec<Result<i64, &'static str>>,
     attrition_metadata: Option<Result<StatusAttritionMetadata, &'static str>>,
@@ -4736,7 +1647,6 @@ impl StatusPacket {
             units: 0,
             supply_origins: 0,
             manpower: 0,
-            acclimatization: 0,
             acclimatization_categories: 0,
             thresholds: 0,
             modifiers: crate::modifier_accumulator::SnapshotCapacity::default(),
@@ -4747,6 +1657,8 @@ impl StatusPacket {
             capacities,
             required: capacities,
             units: Vec::new(),
+            supply: Vec::new(),
+            supply_len: 0,
             supply_origins: Vec::new(),
             supply_origins_len: 0,
             border_index: Vec::new(),
@@ -4764,9 +1676,12 @@ impl StatusPacket {
             modifiers: crate::modifier_accumulator::SnapshotArena::vacant(),
             membership: MembershipPacket::vacant(),
             manpower: Vec::new(),
-            acclimatization: Vec::new(),
+            exercise_control: None,
+            exercise_autonomy: std::collections::HashMap::new(),
             categories: crate::acclimatization_category::Categories::default(),
             categories_loaded: None,
+            camouflage_show_at: None,
+            category_factors: CategoryFactors::default(),
             thresholds_header: None,
             thresholds: Vec::new(),
             attrition_metadata: None,
@@ -4782,11 +1697,18 @@ impl StatusPacket {
             .units
             .checked_mul(2)
             .ok_or_else(crate::allocation::oom)?;
+        let mut exercise_autonomy = std::collections::HashMap::new();
+        crate::allocation::reserve_map(&mut exercise_autonomy, capacities.units)?;
         Ok(Self {
             growing: false,
             capacities,
             required: capacities,
             units: crate::allocation::vec(capacities.units)?,
+            supply: crate::allocation::filled(
+                capacities.units,
+                crate::cunit_supply_inputs::UnitCapture::default(),
+            )?,
+            supply_len: 0,
             supply_origins: crate::allocation::filled(
                 capacities.supply_origins,
                 crate::cunit_supply_inputs::Origin::default(),
@@ -4815,11 +1737,14 @@ impl StatusPacket {
                 capacities.membership.chunks,
             )?,
             manpower: crate::allocation::vec(capacities.manpower)?,
-            acclimatization: crate::allocation::vec(capacities.acclimatization)?,
+            exercise_control: None,
+            exercise_autonomy,
             categories: crate::acclimatization_category::Categories::try_with_capacity(
                 capacities.acclimatization_categories,
             )?,
             categories_loaded: None,
+            camouflage_show_at: None,
+            category_factors: CategoryFactors::default(),
             thresholds_header: None,
             thresholds: crate::allocation::vec(capacities.thresholds)?,
             attrition_metadata: None,
@@ -4838,6 +1763,7 @@ impl StatusPacket {
 
     pub fn clear(&mut self) {
         self.units.clear();
+        self.supply_len = 0;
         self.supply_origins_len = 0;
         self.border_index.clear();
         self.border_stats.fill(None);
@@ -4855,9 +1781,12 @@ impl StatusPacket {
         self.modifiers.clear();
         self.membership.clear();
         self.manpower.clear();
-        self.acclimatization.clear();
+        self.exercise_control = None;
+        self.exercise_autonomy.clear();
         self.categories.clear();
         self.categories_loaded = None;
+        self.camouflage_show_at = None;
+        self.category_factors = CategoryFactors::default();
         self.thresholds_header = None;
         self.thresholds.clear();
         self.attrition_metadata = None;
@@ -4895,7 +1824,6 @@ impl StatusPacket {
         next.units = next.units.max(units).max(self.capacities.units);
         next.supply_origins = next.supply_origins.max(self.capacities.supply_origins);
         next.manpower = next.manpower.max(self.capacities.manpower);
-        next.acclimatization = next.acclimatization.max(self.capacities.acclimatization);
         next.acclimatization_categories = next
             .acclimatization_categories
             .max(self.capacities.acclimatization_categories);
@@ -4938,6 +1866,7 @@ impl StatusPacket {
     pub fn membership_capacity(&self) -> MembershipCapacity {
         self.membership.capacity()
     }
+
     /// Off-hour demand only; the existing grow/recycle path provisions it.
     pub fn raise_supply_origins(&mut self, required: usize) {
         self.required.supply_origins = self.required.supply_origins.max(required);
@@ -4946,6 +1875,7 @@ impl StatusPacket {
     pub fn allocated_bytes(&self) -> usize {
         use std::mem::size_of;
         self.units.capacity() * size_of::<StatusUnitInputs>()
+            + self.supply.capacity() * size_of::<crate::cunit_supply_inputs::UnitCapture>()
             + self.supply_origins.capacity() * size_of::<crate::cunit_supply_inputs::Origin>()
             + self.border_index.capacity() * size_of::<(u64, usize)>()
             + self.border_stats.capacity() * size_of::<Option<[i64; 3]>>()
@@ -4964,9 +1894,56 @@ impl StatusPacket {
             + self.modifiers.allocated_bytes()
             + self.membership.allocated_bytes()
             + self.manpower.capacity() * size_of::<i32>()
-            + self.acclimatization.capacity() * size_of::<crate::acclimatization_entry::Entry>()
+            + self.exercise_autonomy.capacity() * (size_of::<(u32, bool)>() + 1)
             + self.categories.allocated_bytes()
             + self.thresholds.capacity() * size_of::<Result<i64, &'static str>>()
+    }
+
+    fn stage_maxima(
+        &self,
+        memory: &impl Memory,
+        base: usize,
+        seeds: &[DivisionSeed],
+        held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+        batch: &mut crate::csub_unit_definition::MaximaBatch,
+    ) {
+        let mut pointers = [0_usize; 64];
+        let mut len = 0;
+        let mut seen = [0_usize; 64];
+        let mut seen_len = 0;
+        for (index, seed) in seeds.iter().enumerate() {
+            if seed.primary_vtable != base.checked_add(VTABLE_RVA).map(|at| at as u64)
+                || seed.handle != Some(seed.division)
+                || seed.division == 0
+            {
+                continue;
+            }
+            let Some(pointer) = seed.stat_block.filter(|&at| at != 0) else {
+                continue;
+            };
+            if seen[..seen_len].contains(&pointer) {
+                continue;
+            }
+            // An earlier carried seed inserts this same block in the serial
+            // memo before a later unheld seed asks for it. It must still cause
+            // no read, including during speculative batch preparation.
+            seen[seen_len] = pointer;
+            seen_len += 1;
+            if held
+                .get(index)
+                .copied()
+                .flatten()
+                .is_some_and(|value| value.pointer == pointer)
+            {
+                continue;
+            }
+            let slot = status_pointer_slot(&self.maxima_index, pointer, |i| self.maxima[i].pointer);
+            if self.maxima_index[slot] == 0 {
+                pointers[len] = pointer;
+                len += 1;
+            }
+        }
+        batch.capture(memory, &pointers[..len]);
     }
 
     fn maxima(
@@ -4974,16 +1951,38 @@ impl StatusPacket {
         memory: &impl Memory,
         base: usize,
         pointer: usize,
+        batch: &crate::csub_unit_definition::MaximaBatch,
     ) -> Result<usize, &'static str> {
         let slot = status_pointer_slot(&self.maxima_index, pointer, |i| self.maxima[i].pointer);
         if self.maxima_index[slot] != 0 {
             return Ok(self.maxima_index[slot] - 1);
         }
-        let value = crate::csub_unit_definition::capture_division_maxima(memory, base, pointer)?;
+        let value = batch.read(memory, base, pointer)?;
+        Ok(self.hold_maxima(value))
+    }
+
+    /// Carried maxima enter the pass's memo as a read of their block would.
+    fn hold_maxima(&mut self, value: crate::csub_unit_definition::DivisionMaxima) -> usize {
+        let slot = status_pointer_slot(&self.maxima_index, value.pointer, |i| {
+            self.maxima[i].pointer
+        });
+        if self.maxima_index[slot] != 0 {
+            return self.maxima_index[slot] - 1;
+        }
         let index = self.maxima.len();
         self.maxima.push(value);
         self.maxima_index[slot] = index + 1;
-        Ok(index)
+        index
+    }
+
+    /// The stat-block maxima this pass used for seed `index`: read or carried,
+    /// `None` for a seed the pass did not establish.
+    pub fn unit_maxima(&self, index: usize) -> Option<crate::csub_unit_definition::DivisionMaxima> {
+        let unit = self
+            .units
+            .get(index)
+            .filter(|unit| unit.failure.is_none())?;
+        self.maxima.get(unit.maxima).copied()
     }
 
     fn country_threshold(
@@ -5100,14 +2099,16 @@ impl StatusPacket {
     }
 
     /// Reads the bans of every group of a wanted division at once
-    /// (`retreat_bans_many`), keeping each group's own result for
-    /// [`Self::commander`] to report at that division, in source order.
+    /// (`retreat_bans_many`, which skips the commanders `held` returns),
+    /// keeping each group's own result for [`Self::commander`] to report at
+    /// that division, in source order.
     fn prepare_commanders(
         &mut self,
         memory: &impl Memory,
         base: usize,
         seeds: &[DivisionSeed],
         wanted: &dyn Fn(&DivisionSeed) -> bool,
+        held: &mut dyn FnMut(usize) -> Option<crate::carmy_leader::RetreatBans>,
     ) {
         let first = self.commander_groups.len();
         for seed in seeds {
@@ -5135,22 +2136,33 @@ impl StatusPacket {
             &self.commander_groups[first..],
             &mut self.commander_bans[first..],
             &self.commander_memo,
+            held,
         );
+    }
+
+    /// Each commander the latest [`Self::retreat_bans`] reached, with its
+    /// group's result, in read order.
+    pub fn commander_bans(
+        &self,
+    ) -> impl Iterator<Item = Result<Option<crate::carmy_leader::RetreatBans>, &'static str>> + '_
+    {
+        self.commander_bans.iter().copied()
     }
 
     /// The retreat bans of every division whose raw roster owner `owner`
     /// maps to a read owner, one row per division with a ban, in source
-    /// order. The daily read of `DivisionRetreatBans`: each wanted group's
-    /// commander is read once, both blocks, and a division's block is
-    /// selected only when they differ. A failed read fails the table.
+    /// order. The hourly read of `DivisionRetreatBans`: each wanted group's
+    /// commander is read once, both blocks, unless `held` returns its bans,
+    /// and a division's block is selected only when they differ. A failed
+    /// read fails the table.
     ///
     /// `owner` maps a raw roster owner to `Ok(Some(owner))` for a read owner
     /// and `Ok(None)` for one outside the read; `Err` is an owner that could
     /// not be resolved. A division whose owner is unreadable (its roster
-    /// owner field or `owner` failed) might belong to any read owner, and a
-    /// returned owner's rows replace all of its earlier ones, so the read
-    /// returns no rows at all: it is truncated, with those divisions as its
-    /// unread rows, and every earlier ban stands until a read resolves them.
+    /// owner field or `owner` failed) has no row owner, so the read returns
+    /// no rows at all: it is truncated, with those divisions as its unread
+    /// rows.
+    #[allow(clippy::too_many_arguments)] // The census, its outcome, the owner map, output and held bans.
     pub fn retreat_bans(
         &mut self,
         memory: &impl Memory,
@@ -5159,6 +2171,7 @@ impl StatusPacket {
         source: Outcome,
         owner: &dyn Fn(u32) -> Result<Option<u32>, &'static str>,
         output: &mut [RetreatBanRow],
+        held: &mut dyn FnMut(usize) -> Option<crate::carmy_leader::RetreatBans>,
     ) -> Outcome {
         let result = (|| {
             if matches!(source, Outcome::Unavailable { .. }) {
@@ -5183,9 +2196,13 @@ impl StatusPacket {
             self.commander_bans.clear();
             self.commander_index.fill(0);
             self.commander_memo.clear();
-            self.prepare_commanders(memory, base, seeds, &|seed| {
-                matches!(owned(seed), Ok(Some(_)))
-            });
+            self.prepare_commanders(
+                memory,
+                base,
+                seeds,
+                &|seed| matches!(owned(seed), Ok(Some(_))),
+                held,
+            );
             let (mut len, mut unread) = (0, 0_u32);
             for seed in seeds {
                 let Ok(Some(owner)) = owned(seed) else {
@@ -5345,13 +2362,49 @@ impl StatusPacket {
         })
     }
 
+    /// AI control from the first observation of each raw owner in this Status
+    /// pass. The existing country reader and AiControl headers/counts remain
+    /// valid while the hourly callback parks the game; human-control changes
+    /// and loads cannot run before its jobs join. Acquire only at the exercise
+    /// gate, never ahead of a prior unit's work. The first error aborts Status,
+    /// so no failed observation is retried.
+    fn exercise_autonomous<M: Memory>(
+        &mut self,
+        memory: &M,
+        base: usize,
+        state: usize,
+        countries: &ccountry::Reader<'_, M>,
+        raw: u32,
+    ) -> Result<bool, &'static str> {
+        if let Some(&value) = self.exercise_autonomy.get(&raw) {
+            return Ok(value);
+        }
+        let canonical = if raw == 0 {
+            0
+        } else {
+            countries.resolve(raw)?.canonical_slot
+        };
+        if self.exercise_control.is_none() {
+            self.exercise_control = Some(cgame_state::AiControl::read(memory, state)?);
+        }
+        let value = self
+            .exercise_control
+            .as_mut()
+            .unwrap()
+            .autonomous(memory, base, countries, raw, canonical)?;
+        if self.exercise_autonomy.len() < self.exercise_autonomy.capacity() {
+            self.exercise_autonomy.insert(raw, value);
+        }
+        Ok(value)
+    }
+
     fn capture_exercise(
         &mut self,
         memory: &impl Memory,
         base: usize,
-        state: usize,
         seed: &DivisionSeed,
         unit: usize,
+        autonomous: impl FnOnce(&mut Self, u32) -> Result<bool, &'static str>,
     ) -> Result<StatusExerciseOperands, &'static str> {
         let mut inputs = StatusExerciseOperands::default();
 
@@ -5361,7 +2414,7 @@ impl StatusPacket {
         inputs.maximum_level = (*self
             .maximum_level
             .get_or_insert_with(|| presentation_field(memory, base, EXERCISE_MAXIMUM_LEVEL_RVA)))?;
-        inputs.autonomous = cgame_state::autonomous_country(memory, base, state, owner)?;
+        inputs.autonomous = autonomous(self, owner)?;
         if inputs.autonomous {
             let level = self.capture_level(memory, base, seed.pointer)?;
             inputs.level = Some(level);
@@ -5487,129 +2540,74 @@ impl StatusPacket {
         Some(self.border_index[position].1)
     }
 
-    /// A division's (category token, weight) acclimatization entries, in
-    /// native order with repeats, as projected into its row.
-    pub fn acclimatization(
-        &self,
-        row: &StatusRow,
-    ) -> Option<&[crate::acclimatization_entry::Entry]> {
-        self.acclimatization.get(
-            row.acclimatization_start
-                ..row
-                    .acclimatization_start
-                    .checked_add(row.acclimatization_len)?,
-        )
-    }
-
-    /// Embedded acclimatization data: its maximum and every entry's
-    /// category token and weight. The winning category is the viewer's to pick.
-    /// A failure, including a full packet, leaves only this division's field
+    /// Camouflage from the division's embedded acclimatization data. A failure,
+    /// including a full category registry, leaves only this division's field
     /// `None`; the packet still asks for the room it lacked.
-    fn capture_acclimatization(
+    fn capture_camouflage(
         &mut self,
         memory: &impl Memory,
         base: usize,
         seed: &DivisionSeed,
         unit: usize,
+        first: Option<&[u8]>,
     ) {
-        let start = self.acclimatization.len();
-        let maximum = self.read_acclimatization(memory, base, seed);
-        let inputs = &mut self.units[unit];
-        inputs.acclimatization_maximum = maximum.ok();
-        inputs.acclimatization_start = start;
-        inputs.acclimatization_len = match maximum {
-            Ok(_) => self.acclimatization.len() - start,
-            Err(_) => {
-                self.acclimatization.truncate(start);
-                0
-            }
+        let (camouflage, weather_factor) = match acclimatization_winner(memory, base, seed, first) {
+            Ok((object, winner)) => (
+                self.read_camouflage(memory, base, &object, winner),
+                weather_factor(memory, &object, winner, &mut self.category_factors),
+            ),
+            Err(reason) => (Err(reason), Err(reason)),
         };
+        self.units[unit].camouflage = camouflage.ok();
+        self.units[unit].weather_factor = weather_factor.ok();
     }
 
-    /// Appends the entries, one span read per division, and returns the maximum.
-    fn read_acclimatization(
+    /// Winner selection walks every entry for the first strictly greatest
+    /// weight above zero; one span read per 32 entries copies them here. The
+    /// camouflage decision shows nothing for no winner or a null category, and
+    /// otherwise compares the winner's weight with the maximum (+0x38) times
+    /// the live `ACCLIMATIZATION_CAMO_SHOW_AT`. Only a shown category's pointer
+    /// is resolved to its token through the registry, as only it is used; the
+    /// define and the registry are read once per pass, when first needed.
+    fn read_camouflage(
         &mut self,
         memory: &impl Memory,
         base: usize,
-        seed: &DivisionSeed,
-    ) -> Result<i64, &'static str> {
-        use crate::{acclimatization_data as data, acclimatization_entry as entry};
-        let object = seed
-            .acclimatization
-            .ok_or("division presentation field unreadable")?;
-        if Some(u64::from_le_bytes(object[..8].try_into().unwrap()))
-            != base.checked_add(data::VTABLE_RVA).map(|p| p as u64)
-        {
-            return Err("division acclimatization identity mismatch");
+        object: &[u8; 0x40],
+        winner: Option<(u64, i64)>,
+    ) -> Result<Camouflage, &'static str> {
+        use crate::acclimatization_data as data;
+        let Some((category, weight)) = winner.filter(|(category, _)| *category != 0) else {
+            return Ok(Camouflage { category: None });
+        };
+        let show_at = *self
+            .camouflage_show_at
+            .get_or_insert_with(|| presentation_field::<i64>(memory, base, data::CAMO_SHOW_AT_RVA));
+        let maximum =
+            i64::from_le_bytes(object[data::MAXIMUM..data::MAXIMUM + 8].try_into().unwrap());
+        if !data::shows(weight, maximum, show_at?) {
+            return Ok(Camouflage { category: None });
         }
-        let entries = Array::from_header(
-            object[data::DATA..data::DATA + 16].try_into().unwrap(),
-            entry::STRIDE,
-        )
-        .ok_or("division acclimatization entries invalid")?;
-        let count = entries.count as usize;
-        let required = self
-            .acclimatization
-            .len()
-            .checked_add(count)
-            .ok_or("division acclimatization count overflow")?;
-        self.required.acclimatization = self.required.acclimatization.max(required);
-        if self.growing {
-            crate::allocation::reserve(&mut self.acclimatization, count)
-                .map_err(|_| "status acclimatization allocation failed")?;
-            self.capacities.acclimatization = self.capacities.acclimatization.max(required);
-        }
-        if required > self.capacities.acclimatization {
-            return Err("division status acclimatization packet capacity exceeded");
-        }
-        if count != 0 {
-            let categories = *self.categories_loaded.get_or_insert_with(|| {
-                if self.growing {
-                    self.categories.load_growing(
-                        memory,
-                        base,
-                        &mut self.required.acclimatization_categories,
-                    )
-                } else {
-                    self.categories.load(
-                        memory,
-                        base,
-                        &mut self.required.acclimatization_categories,
-                    )
-                }
-            });
-            categories?;
-        }
-        const SPAN: usize = 32;
-        let mut bytes = [0_u8; SPAN * entry::STRIDE];
-        for first in (0..count).step_by(SPAN) {
-            let len = (count - first).min(SPAN);
-            let at = entries
-                .element(first as u32, entry::STRIDE)
-                .ok_or("division acclimatization entries invalid")?;
-            if !crate::read_slice(memory, at, &mut bytes[..len * entry::STRIDE]) {
-                return Err("division acclimatization entries unreadable");
+        let categories = *self.categories_loaded.get_or_insert_with(|| {
+            if self.growing {
+                self.categories.load_growing(
+                    memory,
+                    base,
+                    &mut self.required.acclimatization_categories,
+                )
+            } else {
+                self.categories
+                    .load(memory, base, &mut self.required.acclimatization_categories)
             }
-            for raw in bytes[..len * entry::STRIDE].chunks_exact(entry::STRIDE) {
-                let category = usize::try_from(u64::from_le_bytes(
-                    raw[entry::CATEGORY..entry::CATEGORY + 8]
-                        .try_into()
-                        .unwrap(),
-                ))
-                .ok()
-                .and_then(|pointer| self.categories.token(pointer))
-                .ok_or("division acclimatization category is not registered")?;
-                self.acclimatization.push(entry::Entry {
-                    category,
-                    weight: i64::from_le_bytes(
-                        raw[entry::WEIGHT..entry::WEIGHT + 8].try_into().unwrap(),
-                    ),
-                });
-            }
-        }
-        Ok(i64::from_le_bytes(
-            object[data::MAXIMUM..data::MAXIMUM + 8].try_into().unwrap(),
-        ))
+        });
+        categories?;
+        let token = usize::try_from(category)
+            .ok()
+            .and_then(|pointer| self.categories.token(pointer))
+            .ok_or("division acclimatization category is not registered")?;
+        Ok(Camouflage {
+            category: Some(token),
+        })
     }
 
     /// Acquisition truncates at this table's own source prefix. Movement's route
@@ -5623,8 +2621,34 @@ impl StatusPacket {
         source_outcome: Outcome,
         row_capacity: usize,
     ) -> Outcome {
+        self.capture_holding(
+            memory,
+            base,
+            state,
+            seeds,
+            source_outcome,
+            row_capacity,
+            &[],
+        )
+    }
+
+    /// [`Self::capture`] with the caller's carried maxima: `held[i]` is seed
+    /// `i`'s stat-block maxima when no writer touched its block since the
+    /// read they came from, and is used in place of reading that block when
+    /// it names the seed's block. Any other seed's block is read.
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_holding(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        seeds: &[DivisionSeed],
+        source_outcome: Outcome,
+        row_capacity: usize,
+        held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+    ) -> Outcome {
         self.clear();
-        let prepared = (|| -> Result<usize, &'static str> {
+        let prepared = (|| {
             if let Outcome::Unavailable { reason } = source_outcome {
                 return Err(reason);
             }
@@ -5647,7 +2671,18 @@ impl StatusPacket {
             } else {
                 row_capacity
             });
-            for seed in &seeds[..count] {
+            let mut batch = crate::csub_unit_definition::MaximaBatch::new();
+            for (index, seed) in seeds[..count].iter().enumerate() {
+                if index.is_multiple_of(64) {
+                    let end = (index + 64).min(count);
+                    self.stage_maxima(
+                        memory,
+                        base,
+                        &seeds[index..end],
+                        held.get(index..held.len().min(end)).unwrap_or(&[]),
+                        &mut batch,
+                    );
+                }
                 let unit = self.units.len();
                 self.units.push(StatusUnitInputs {
                     division: seed.division,
@@ -5668,7 +2703,10 @@ impl StatusPacket {
                     let stats = seed
                         .stat_block
                         .ok_or("division presentation field unreadable")?;
-                    self.units[unit].maxima = self.maxima(memory, base, stats)?;
+                    self.units[unit].maxima = match held.get(index).copied().flatten() {
+                        Some(maxima) if maxima.pointer == stats => self.hold_maxima(maxima),
+                        _ => self.maxima(memory, base, stats, &batch)?,
+                    };
 
                     let expeditionary = seed
                         .expeditionary_owner
@@ -5703,14 +2741,23 @@ impl StatusPacket {
                     break;
                 }
             }
-            Ok(count)
+            Ok((count, countries))
         })();
         // Query outcomes are independent and retain their first failing root.
         // Finishing in source order preserves a prior unit's scalar/exercise
         // error ahead of a later unit's membership or preparation failure.
         self.membership.acquire(memory, base);
-        let result = prepared.and_then(|count| {
-            for (unit, seed) in seeds.iter().take(self.units.len()).enumerate() {
+        let result = prepared.and_then(|(count, countries)| {
+            let mut entries = AcclimatizationBatch::new();
+            let admitted = &seeds[..self.units.len()];
+            for (unit, seed) in admitted.iter().enumerate() {
+                if unit.is_multiple_of(64) {
+                    entries.capture(
+                        memory,
+                        base,
+                        &admitted[unit..(unit + 64).min(admitted.len())],
+                    );
+                }
                 if let Some(reason) = self.units[unit].failure {
                     return Err(reason);
                 }
@@ -5749,11 +2796,15 @@ impl StatusPacket {
                 self.units[unit].model_number = seed
                     .model_number
                     .ok_or("division presentation field unreadable")?;
-                self.capture_acclimatization(memory, base, seed, unit);
+                self.capture_camouflage(memory, base, seed, unit, entries.first(unit % 64));
                 self.units[unit].training = self.training(memory, self.units[unit].group)?;
                 if self.units[unit].training != 0 {
                     self.units[unit].exercise =
-                        Some(self.capture_exercise(memory, base, state, seed, unit)?);
+                        Some(
+                            self.capture_exercise(memory, base, seed, unit, |packet, raw| {
+                                packet.exercise_autonomous(memory, base, state, &countries, raw)
+                            })?,
+                        );
                 }
             }
             let source_missing = match source_outcome {
@@ -5790,10 +2841,9 @@ impl StatusPacket {
                 .map(|(index, unit)| (unit.division, index)),
         );
         self.border_index.sort_unstable_by_key(|entry| entry.0);
-        // Complete the established scalar/exercise prefix before this optional
-        // tooltip operand. A failed read must neither withhold that prefix nor
+        // Complete the established scalar/exercise prefix before these optional
+        // operands. A failed read must neither withhold that prefix nor
         // prevent the collector's later naming and border-stat acquisition.
-        let mut origins_required = 0_usize;
         for (unit, seed) in self.units.iter_mut().zip(seeds).take(self.outcome.len()) {
             if unit.invalid_orders != 0 {
                 unit.invalid_orders_reason = seed
@@ -5801,32 +2851,19 @@ impl StatusPacket {
                     .checked_add(cunit::INVALID_ORDERS_REASON)
                     .and_then(|address| read(memory, address));
             }
-            unit.supply_origins_start = self.supply_origins_len;
-            let origins = if self.growing {
-                crate::walk::Buffer::GrowingFrom(&mut self.supply_origins, self.supply_origins_len)
-            } else {
-                crate::walk::Buffer::Fixed(&mut self.supply_origins[self.supply_origins_len..])
-            };
-            match crate::cunit_supply_inputs::capture_buffer(memory, seed.pointer, origins) {
-                Ok(inputs) => {
-                    let demand = match inputs.origins_len {
-                        Ok(len) => {
-                            self.supply_origins_len += len;
-                            len
-                        }
-                        Err(crate::cunit_supply_inputs::Failure::OriginsCapacity { required }) => {
-                            required
-                        }
-                        Err(_) => 0,
-                    };
-                    origins_required = origins_required.saturating_add(demand);
-                    unit.supply_failure = inputs.origins_len.err();
-                    unit.supply = Some(inputs);
-                }
-                Err(reason) => unit.supply_failure = Some(reason),
-            }
         }
-        self.required.supply_origins = self.required.supply_origins.max(origins_required);
+        // The supply child's footer for every admitted division, in record
+        // batches; each division's pack and origin rows fail alone.
+        self.supply_len = self.outcome.len().min(self.supply.len());
+        let used = crate::cunit_supply_inputs::capture_units(
+            memory,
+            |index| seeds[index].pointer,
+            &mut self.supply[..self.supply_len],
+            &mut self.supply_origins,
+            self.growing,
+        );
+        self.supply_origins_len = used.len;
+        self.required.supply_origins = self.required.supply_origins.max(used.required);
         self.outcome
     }
 
@@ -5919,16 +2956,23 @@ pub fn project_status(packet: &StatusPacket, output: &mut [StatusRow]) -> Outcom
         if packet.outcome.len() > packet.units.len() || packet.outcome.len() > output.len() {
             return Err("division status projection capacity invalid");
         }
-        for (unit, row) in packet
+        for (index, (unit, row)) in packet
             .units
             .iter()
             .zip(output.iter_mut())
             .take(packet.outcome.len())
+            .enumerate()
         {
             let maxima = packet
                 .maxima
                 .get(unit.maxima)
                 .ok_or("division status maxima index invalid")?;
+            let supply = packet
+                .supply
+                .get(..packet.supply_len)
+                .and_then(|supply| supply.get(index))
+                .copied()
+                .unwrap_or_default();
             let (maximum_hit_points, maximum_organisation) = maxima.effective();
             let move_flags = (u8::from(unit.exiled != 0) * StatusRow::MOVE_EXILED)
                 | (u8::from(maxima.can_exfiltrate_from_coast != 0)
@@ -5980,15 +3024,17 @@ pub fn project_status(packet: &StatusPacket, output: &mut [StatusRow]) -> Outcom
                 strength_factor: unit.strength_factor,
                 move_flags,
                 model_number: unit.model_number,
-                acclimatization_maximum: unit.acclimatization_maximum,
-                acclimatization_start: unit.acclimatization_start,
-                acclimatization_len: unit.acclimatization_len,
+                camouflage: unit.camouflage,
+                weather_factor: unit.weather_factor,
                 border_combat_stats: unit.border_combat_stats,
                 naming: None,
                 country_ordinal: None,
-                supply: unit.supply,
-                supply_origins_start: unit.supply_origins_start,
-                supply_failure: unit.supply_failure,
+                supply: supply.inputs.ok(),
+                supply_origins_start: supply.origins_start,
+                supply_failure: match supply.inputs {
+                    Ok(inputs) => inputs.origins_len.err(),
+                    Err(reason) => Some(reason),
+                },
             };
         }
         Ok(packet.outcome)
@@ -5996,8 +3042,181 @@ pub fn project_status(packet: &StatusPacket, output: &mut [StatusRow]) -> Outcom
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Counter dig-in duration selects the commander's unit-modifier block,
-/// independently of its weather block.
+/// A division's acclimatization bytes and the selected entry's key and
+/// weight ([`acclimatization_winner`]).
+type AcclimatizationWinner = ([u8; 0x40], Option<(u64, i64)>);
+
+/// Winner selection walks entries in their native order. Each row retains its
+/// first 32 entries; longer arrays continue with the same serial span reads,
+/// with no content cap. Owned CData identities and array arithmetic validate
+/// sources.
+struct AcclimatizationBatch {
+    bytes: [[u8; 32 * crate::acclimatization_entry::STRIDE]; 64],
+    lengths: [usize; 64],
+    copied: usize,
+}
+
+impl AcclimatizationBatch {
+    fn new() -> Self {
+        Self {
+            bytes: [[0; 32 * crate::acclimatization_entry::STRIDE]; 64],
+            lengths: [0; 64],
+            copied: 0,
+        }
+    }
+
+    fn capture(&mut self, memory: &impl Memory, base: usize, seeds: &[DivisionSeed]) {
+        use crate::{acclimatization_data as data, acclimatization_entry as entry};
+        self.lengths.fill(0);
+        let mut addresses = [0_usize; 64];
+        for (index, seed) in seeds.iter().enumerate() {
+            let Some(object) = seed.acclimatization else {
+                continue;
+            };
+            if Some(u64::from_le_bytes(object[..8].try_into().unwrap()))
+                != base.checked_add(data::VTABLE_RVA).map(|at| at as u64)
+            {
+                continue;
+            }
+            if let Some(array) = Array::from_header(
+                object[data::DATA..data::DATA + 16].try_into().unwrap(),
+                entry::STRIDE,
+            ) && array.count != 0
+            {
+                addresses[index] = array.data;
+                self.lengths[index] = (array.count as usize).min(32) * entry::STRIDE;
+            }
+        }
+        if self.lengths.iter().all(|&len| len == 0) {
+            self.copied = 0;
+            return;
+        }
+        let mut rows = self.bytes.iter_mut();
+        let mut destinations: [&mut [u8]; 64] =
+            std::array::from_fn(|index| &mut rows.next().unwrap()[..self.lengths[index]]);
+        self.copied = memory.copy_scattered(addresses, &mut destinations);
+        if self.copied < 64 {
+            crate::batch_fallback::record(crate::batch_fallback::Batch::DivisionAcclimatization);
+        }
+    }
+
+    fn first(&self, index: usize) -> Option<&[u8]> {
+        (index < self.copied && self.lengths[index] != 0)
+            .then(|| &self.bytes[index][..self.lengths[index]])
+    }
+}
+
+/// The division's embedded acclimatization data (the seed's first `0x40` bytes)
+/// and its selected entry: the first strictly greatest weight above zero, read
+/// 32 entries per span.
+fn acclimatization_winner(
+    memory: &impl Memory,
+    base: usize,
+    seed: &DivisionSeed,
+    gathered_first: Option<&[u8]>,
+) -> Result<AcclimatizationWinner, &'static str> {
+    use crate::{acclimatization_data as data, acclimatization_entry as entry};
+    let object = seed
+        .acclimatization
+        .ok_or("division presentation field unreadable")?;
+    if Some(u64::from_le_bytes(object[..8].try_into().unwrap()))
+        != base.checked_add(data::VTABLE_RVA).map(|p| p as u64)
+    {
+        return Err("division acclimatization identity mismatch");
+    }
+    let entries = Array::from_header(
+        object[data::DATA..data::DATA + 16].try_into().unwrap(),
+        entry::STRIDE,
+    )
+    .ok_or("division acclimatization entries invalid")?;
+    let count = entries.count as usize;
+    const SPAN: usize = 32;
+    let mut bytes = [0_u8; SPAN * entry::STRIDE];
+    let mut strongest = data::Strongest::new();
+    for first in (0..count).step_by(SPAN) {
+        let len = (count - first).min(SPAN);
+        let at = entries
+            .element(first as u32, entry::STRIDE)
+            .ok_or("division acclimatization entries invalid")?;
+        let raw_entries = match gathered_first.filter(|_| first == 0) {
+            Some(gathered) => gathered,
+            None => {
+                if !crate::read_slice(memory, at, &mut bytes[..len * entry::STRIDE]) {
+                    return Err("division acclimatization entries unreadable");
+                }
+                &bytes[..len * entry::STRIDE]
+            }
+        };
+        for raw in raw_entries.chunks_exact(entry::STRIDE) {
+            strongest.offer(
+                u64::from_le_bytes(
+                    raw[entry::CATEGORY..entry::CATEGORY + 8]
+                        .try_into()
+                        .unwrap(),
+                ),
+                i64::from_le_bytes(raw[entry::WEIGHT..entry::WEIGHT + 8].try_into().unwrap()),
+            );
+        }
+    }
+    Ok((object, strongest.winner()))
+}
+
+/// The acclimatization categories' movement factors (+0x30) read this pass.
+/// A category is content every division in its climate shares, so each is
+/// read once a pass; a full memo only costs a fresh read.
+#[derive(Default)]
+struct CategoryFactors {
+    entries: [(u64, i64); 8],
+    len: usize,
+}
+
+impl CategoryFactors {
+    fn factor(&mut self, memory: &impl Memory, category: u64) -> Result<i64, &'static str> {
+        if let Some(&(_, factor)) = self.entries[..self.len]
+            .iter()
+            .find(|(held, _)| *held == category)
+        {
+            return Ok(factor);
+        }
+        let factor = usize::try_from(category)
+            .ok()
+            .and_then(|at| at.checked_add(crate::acclimatization_data::CATEGORY_FACTOR))
+            .and_then(|address| crate::read::<i64>(memory, address))
+            .ok_or("division acclimatization category factor unreadable")?;
+        if let Some(entry) = self.entries.get_mut(self.len) {
+            *entry = (category, factor);
+            self.len += 1;
+        }
+        Ok(factor)
+    }
+}
+
+/// Movement availability: one without an active climate (`+0x20`) or when the
+/// winner's category is not that one, otherwise
+/// [`crate::acclimatization_data::movement_factor`] with the active category's
+/// factor (`+0x30`), read once a pass ([`CategoryFactors`]).
+fn weather_factor(
+    memory: &impl Memory,
+    object: &[u8; 0x40],
+    winner: Option<(u64, i64)>,
+    factors: &mut CategoryFactors,
+) -> Result<i64, &'static str> {
+    use crate::acclimatization_data as data;
+    let active = u64::from_le_bytes(object[data::ACTIVE..data::ACTIVE + 8].try_into().unwrap());
+    let Some((_, weight)) = winner.filter(|(category, _)| active != 0 && *category == active)
+    else {
+        return Ok(100_000);
+    };
+    let maximum = i64::from_le_bytes(object[data::MAXIMUM..data::MAXIMUM + 8].try_into().unwrap());
+    Ok(data::movement_factor(
+        weight,
+        maximum,
+        factors.factor(memory, active)?,
+    ))
+}
+
+/// Counter's dig-in duration reads the selected commander's unit modifier
+/// block, not the leader's own weather block.
 pub fn counter_dig_in_factor(
     memory: &impl Memory,
     base: usize,
@@ -6013,6 +3232,75 @@ pub fn counter_dig_in_factor(
         crate::modifier_keys::COMBAT_ENTRENCHMENT,
     )
     .map(|value| 100_000_i64.wrapping_add(value))
+}
+
+/// One pass's [`counter_dig_in_factor`] reads that the divisions of a group,
+/// or of a commander, share: the leader selection's group reads
+/// ([`crate::carmy_leader::LeaderMemo`]) and each selected modifier block's
+/// entrenchment term. Within one quiescent acquisition neither can change, so
+/// every division under the same commander block reads it once.
+pub struct DigInMemo {
+    leaders: crate::carmy_leader::LeaderMemo,
+    values: crate::carmy_leader::PassTable<Result<i64, &'static str>>,
+}
+
+impl DigInMemo {
+    /// Room for `divisions` divisions, each in its own group under its own
+    /// commander; zero allocates nothing.
+    pub fn try_with_capacity(divisions: usize) -> std::io::Result<Self> {
+        Ok(Self {
+            leaders: crate::carmy_leader::LeaderMemo::try_with_capacity(divisions)?,
+            values: crate::carmy_leader::PassTable::try_with_capacity(divisions)?,
+        })
+    }
+
+    /// Keeps nothing: every division reads afresh. Allocates nothing.
+    pub fn vacant() -> Self {
+        Self {
+            leaders: crate::carmy_leader::LeaderMemo::vacant(),
+            values: crate::carmy_leader::PassTable::vacant(),
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.leaders.capacity().min(self.values.capacity())
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        self.leaders.allocated_bytes() + self.values.allocated_bytes()
+    }
+
+    /// Starts a pass: nothing a previous pass read is used again.
+    pub fn clear(&mut self) {
+        self.leaders.clear();
+        self.values.clear();
+    }
+}
+
+/// [`counter_dig_in_factor`] over a pass's [`DigInMemo`]: the same factor and
+/// the same first failure, with each group's selection reads and each
+/// commander block's term read once per pass.
+pub fn counter_dig_in_factor_memoized(
+    memory: &impl Memory,
+    base: usize,
+    seed: &DivisionSeed,
+    memo: &mut DigInMemo,
+) -> Result<i64, &'static str> {
+    let Some(root) =
+        crate::carmy_leader::movement_accumulator_memoized(memory, base, seed, &mut memo.leaders)?
+    else {
+        return Ok(100_000);
+    };
+    memo.values
+        .get_or(root, || {
+            crate::modifier_accumulator::requested_effective_at(
+                memory,
+                base,
+                root,
+                crate::modifier_keys::COMBAT_ENTRENCHMENT,
+            )
+        })
+        .map(|value| 100_000_i64.wrapping_add(value))
 }
 
 #[cfg(test)]
@@ -6097,7 +3385,9 @@ fn exercising(
             strength: maximum_hp,
             ..crate::csub_unit_definition::DivisionMaxima::default()
         });
-    let inputs = packet.capture_exercise(memory, base, state, &seeds[0], 0)?;
+    let inputs = packet.capture_exercise(memory, base, &seeds[0], 0, |_, raw| {
+        cgame_state::autonomous_country(memory, base, state, raw)
+    })?;
     packet.exercise(inputs, maximum_hp)
 }
 
@@ -6396,15 +3686,8 @@ impl<M: Memory> Reader<'_, M> {
     }
 }
 
-mod fresh_counter_eta;
-pub use fresh_counter_eta::{
-    FreshCounterEtaPacket, FreshCounterEtaRow, FreshCounterEtaWalk, FreshNormalEtaRow,
-    capture_counter_land_terrains, capture_fresh_counter_eta, counter_land_terrain_capacity,
-    fresh_counter_eta_map_demand, fresh_counter_eta_map_demand_keyed,
-};
-
-#[cfg(test)]
-mod eta_tests;
+mod presentation_demand;
+pub use presentation_demand::{PresentationDemand, presentation_demand};
 
 #[cfg(test)]
 #[path = "carmy/border/tests.rs"]

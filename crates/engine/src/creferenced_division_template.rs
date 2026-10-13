@@ -101,7 +101,7 @@ pub struct SubunitCount {
     pub count: i32,
 }
 
-/// The daily dictionary row: what the models do not need within the hour.
+/// The dictionary row: a template's handle, roster owner, names and unit_type.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub template: u64,
@@ -117,6 +117,14 @@ pub struct Row {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct IconRow {
     pub template: u64,
+    /// The template object, for the caller's per-template reads.
+    pub pointer: usize,
+    /// The raw id of the country whose roster lists it.
+    pub owner: u32,
+    /// The dictionary's unit_type ([`walk`]'s), from the same record;
+    /// `unit_type_failure` says why it is unknown.
+    pub unit_type: i32,
+    pub unit_type_failure: Option<&'static str>,
     pub priority_unit: u32,
     pub priority_unit_name: Span,
     pub custom_icon: i32,
@@ -304,9 +312,21 @@ pub struct Identity {
     token_failure: Option<&'static str>,
     local: bool,
     local_failure: Option<&'static str>,
+    /// [`subunit::template_category`]'s value, read with the identity.
+    category: i32,
+    category_failure: Option<&'static str>,
 }
 
 impl Identity {
+    /// The definition's template category, once its token authenticated.
+    fn category(self) -> Result<i32, &'static str> {
+        self.token()?;
+        match self.category_failure {
+            Some(reason) => Err(reason),
+            None => Ok(self.category),
+        }
+    }
+
     fn token(self) -> Result<u32, &'static str> {
         match self.token_failure {
             Some(reason) => Err(reason),
@@ -355,12 +375,21 @@ pub struct DefinitionSlots<'a> {
     pub locals: &'a mut [LocalSlot],
 }
 
-const DEFINITION_FIELDS: [RecordField; 2] = [
+/// A definition's identity, database index and template category bytes, in
+/// the order a failed field stops the gather.
+const DEFINITION_FIELDS: [RecordField; 3] = [
     record_field(0, 0, 17),
     record_field(subunit::DATABASE_INDEX, 20, 4),
+    record_field(
+        subunit::CATEGORY,
+        DEFINITION_CATEGORY,
+        subunit::CATEGORY_LEN,
+    ),
 ];
+const DEFINITION_CATEGORY: usize = 24;
+const DEFINITION_RECORD: usize = 40;
 const DEFINITION_LAYOUT: RecordLayout<'static> =
-    RecordLayout::new(&DEFINITION_FIELDS, 24).expect("valid definition layout");
+    RecordLayout::new(&DEFINITION_FIELDS, DEFINITION_RECORD).expect("valid definition layout");
 
 /// How a walk tells a clone from its global definition (`db[index] != pointer`).
 enum Database<'a> {
@@ -511,10 +540,11 @@ impl<'a> Definitions<'a> {
         }
     }
 
-    /// One gathered read of a definition's identity and database index. The
-    /// token does not depend on the index being readable.
+    /// One gathered read of a definition's identity, database index and
+    /// template category. The token does not depend on the others being
+    /// readable.
     fn fetch(&self, memory: &impl Memory, base: usize, at: usize) -> Identity {
-        let mut record = [0_u8; 24];
+        let mut record = [0_u8; DEFINITION_RECORD];
         let completed = memory.copy_records(
             RecordSources::Pointers(&[at]),
             &DEFINITION_LAYOUT,
@@ -526,6 +556,14 @@ impl<'a> Definitions<'a> {
                 ..Identity::default()
             };
         }
+        let (category, category_failure) = if completed < DEFINITION_FIELDS.len() {
+            (0, Some("subunit category unreadable"))
+        } else {
+            let bytes = record[DEFINITION_CATEGORY..DEFINITION_CATEGORY + subunit::CATEGORY_LEN]
+                .try_into()
+                .unwrap();
+            (subunit::category_of(&bytes), None)
+        };
         let token = match authenticate(base, &record[..17]) {
             Err(reason) => {
                 return Identity {
@@ -534,10 +572,16 @@ impl<'a> Definitions<'a> {
                 };
             }
             // The null object has no clone flag to read.
-            Ok(None) => return Identity::default(),
+            Ok(None) => {
+                return Identity {
+                    category,
+                    category_failure,
+                    ..Identity::default()
+                };
+            }
             Ok(Some(token)) => token,
         };
-        let local = if completed < DEFINITION_FIELDS.len() {
+        let local = if completed < 2 {
             Err("subunit database index unreadable")
         } else {
             self.entry(memory, dword(&record, 20))
@@ -548,6 +592,8 @@ impl<'a> Definitions<'a> {
             token_failure: None,
             local: local.unwrap_or(false),
             local_failure: local.err(),
+            category,
+            category_failure,
         }
     }
 
@@ -636,8 +682,22 @@ impl Tokens for Definitions<'_> {
     }
 }
 
-/// Fallback priority subunit: first regiment cell when the low-16-bit real-
-/// unit count is nonzero, otherwise null singleton. Preserve wrapping.
+impl Definitions<'_> {
+    /// A definition's template category ([`subunit::template_category`]),
+    /// read with its identity once a walk.
+    fn category(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        at: usize,
+    ) -> Result<i32, &'static str> {
+        self.lookup(memory, base, at).category()
+    }
+}
+
+/// The fallback when +0x190 is null: regiment cell (0,0) when the low-16-bit
+/// real-unit count is nonzero, else the null singleton. The native wrap is
+/// kept.
 fn fallback_priority_unit(
     memory: &impl Memory,
     base: usize,
@@ -702,11 +762,13 @@ const DAILY_FIELDS: [RecordField; 3] = [
 const DAILY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DAILY_FIELDS, RECORD).expect("valid template layout");
 /// The hourly row's fixed fields: identity, then one contiguous span from the
-/// grouped entries' header through the model entity string, which holds every
-/// header, the representative, the icon fields, the country operands and the
-/// model category.
+/// grouped entries' header through the unit-type override, which holds every
+/// header, the representative, the icon fields, the country operands, the
+/// model category, the model entity string and the dictionary's unit-type
+/// operands.
 const ICON_SPAN: usize = SUBUNIT_COUNTS;
-const ICON_SPAN_END: usize = MODEL_ENTITY + msvc_string::STRIDE;
+const ICON_SPAN_END: usize = UNIT_TYPE_OVERRIDE + 4;
+const _: () = assert!(MODEL_ENTITY + msvc_string::STRIDE == UNIT_TYPE_OVERRIDE);
 const ICON_RECORD: usize = 16 + ICON_SPAN_END - ICON_SPAN;
 const ICON_FIELDS: [RecordField; 2] = [
     record_field(0, 0, 16),
@@ -714,11 +776,22 @@ const ICON_FIELDS: [RecordField; 2] = [
 ];
 const ICON_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&ICON_FIELDS, ICON_RECORD).expect("valid template icon layout");
-/// The larger of the two records, for the batch buffer.
-const MAX_RECORD: usize = if RECORD > ICON_RECORD {
+/// The named walk's record: the icon record, then the display literal's
+/// header, which lies between the identity and the icon span.
+const ICON_NAME: usize = ICON_RECORD;
+const ICON_NAMED_RECORD: usize = ICON_NAME + msvc_string::STRIDE;
+const ICON_NAMED_FIELDS: [RecordField; 3] = [
+    ICON_FIELDS[0],
+    ICON_FIELDS[1],
+    record_field(NAME, ICON_NAME, msvc_string::STRIDE),
+];
+const ICON_NAMED_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&ICON_NAMED_FIELDS, ICON_NAMED_RECORD).expect("valid named icon layout");
+/// The largest record, for the batch buffer.
+const MAX_RECORD: usize = if RECORD > ICON_NAMED_RECORD {
     RECORD
 } else {
-    ICON_RECORD
+    ICON_NAMED_RECORD
 };
 
 /// An icon-span field's place in the icon record.
@@ -854,7 +927,8 @@ fn outcome(len: usize, missing: u32) -> Outcome {
 }
 
 /// Complete country template rosters, including unused templates: exact names
-/// and the unit_type category, which the models do not need within the hour.
+/// and the unit_type category. Capture derives these hourly from
+/// [`walk_icons`] and [`copy_names_growing`]; this full walk sizes them.
 /// Capacity omits a WHOLE template and grows the caller's arena off-thread. No
 /// engine getters are invoked. Each roster batch is gathered in three spans a
 /// template; the sub-unit behind a zero category is authenticated once a walk.
@@ -872,24 +946,6 @@ pub fn walk(
         state,
         Buffer::Fixed(rows),
         Buffer::Fixed(bytes),
-        memo,
-    )
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    rows: &mut Vec<Row>,
-    bytes: &mut Vec<u8>,
-    memo: &mut [MemoSlot],
-) -> Walk {
-    walk_inner(
-        memory,
-        base,
-        state,
-        Buffer::Growing(rows),
-        Buffer::Growing(bytes),
         memo,
     )
 }
@@ -997,6 +1053,34 @@ fn walk_inner(
     result
 }
 
+/// A template's literal name (`+0x20`) and fallback key (`+0x40`), copied as
+/// [`walk`] copies them into `bytes` from `start`, for a caller holding the
+/// rest of its dictionary row from this hour's [`walk_icons`] ([`IconRow`]).
+pub fn copy_names_growing(
+    memory: &impl Memory,
+    template: usize,
+    bytes: &mut Vec<u8>,
+    start: usize,
+) -> Result<[Span; 2], &'static str> {
+    let mut spans = [Span::default(); 2];
+    let mut at = start;
+    for (span, offset) in spans.iter_mut().zip([NAME, NAME_KEY]) {
+        let name = Descriptor::read(
+            memory,
+            template
+                .checked_add(offset)
+                .ok_or("template name address overflow")?,
+        )?;
+        name.copy_buffer(memory, &mut Buffer::Growing(bytes), at)?;
+        *span = Span {
+            start: at,
+            len: name.len,
+        };
+        at += name.len;
+    }
+    Ok(spans)
+}
+
 /// Every country template's hourly inputs ([`IconRow`]), roster by roster in
 /// the order [`walk`] visits them: what the counter draws and the stored
 /// results the 3D model selectors read (the representative, the grouped
@@ -1033,9 +1117,10 @@ pub fn walk_icons(
     )
 }
 
-/// Same authenticated hourly roster, with independent exact display-name reads.
-/// A name fault or shortage refuses only the optional name, never counter/model
-/// facts. The caller grows the separate name arena off-thread from observed demand.
+/// Same authenticated hourly roster, with each template's exact display name;
+/// its literal's header comes with the record. A text fault or shortage
+/// refuses only the optional name, never counter/model facts. The caller grows
+/// the separate name arena off-thread from observed demand.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_icons_with_names(
     memory: &impl Memory,
@@ -1105,21 +1190,35 @@ fn display_name(
     used: &mut usize,
     required: &mut usize,
 ) -> Result<DisplayName, &'static str> {
-    display_name_buffer(memory, wrapper, &mut Buffer::Fixed(bytes), used, required)
+    let header = wrapper
+        .checked_add(NAME)
+        .and_then(|at| read::<[u8; msvc_string::STRIDE]>(memory, at))
+        .ok_or("string header unreadable")?;
+    display_name_buffer(
+        memory,
+        wrapper,
+        header,
+        &mut Buffer::Fixed(bytes),
+        used,
+        required,
+    )
 }
 
+/// `literal` is the +0x20 header the named walk gathered with the record.
 fn display_name_buffer(
     memory: &impl Memory,
     wrapper: usize,
+    literal: [u8; msvc_string::STRIDE],
     bytes: &mut Buffer<'_, u8>,
     used: &mut usize,
     required: &mut usize,
 ) -> Result<DisplayName, &'static str> {
-    let literal = Descriptor::read(
+    let literal = Descriptor::from_header(
         memory,
         wrapper
             .checked_add(NAME)
             .ok_or("template display literal address overflow")?,
+        literal,
     )?;
     let key = if literal.len == 0 {
         Some(Descriptor::read(
@@ -1163,6 +1262,36 @@ fn display_name_buffer(
     })
 }
 
+/// The validated name descriptors of one walk's priority sub-units, keyed by
+/// definition: a few definitions are every template's priority unit, so each
+/// name's header and terminator are read once a walk and only its bytes per
+/// template. A slot another definition took only costs a fresh read.
+struct SubunitNames([(usize, Option<Descriptor>); SUBUNIT_NAMES]);
+const SUBUNIT_NAMES: usize = 64;
+
+impl SubunitNames {
+    fn new() -> Self {
+        Self([(0, None); SUBUNIT_NAMES])
+    }
+
+    fn read(&mut self, memory: &impl Memory, at: usize) -> Result<Descriptor, &'static str> {
+        let hash = (at as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let slot = &mut self.0[(hash >> (64 - SUBUNIT_NAMES.trailing_zeros())) as usize];
+        if slot.0 == at
+            && let Some(name) = slot.1
+        {
+            return Ok(name);
+        }
+        let name = Descriptor::read(
+            memory,
+            at.checked_add(subunit::NAME)
+                .ok_or("subunit name overflow")?,
+        )?;
+        *slot = (at, Some(name));
+        Ok(name)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn walk_icons_inner(
     memory: &impl Memory,
@@ -1193,6 +1322,7 @@ fn walk_icons_inner(
     let mut grouped_scratch = [0_u8; BATCH * SUBUNIT_COUNT_STRIDE];
     let mut excluded_scratch = [0_usize; BATCH];
     let mut memo = Definitions::load(memory, base, slots, &mut result.required_database);
+    let mut subunit_names = SubunitNames::new();
     let hint = |records: &[u8], stride: usize| {
         for record in records.chunks_exact(stride) {
             for (header, stride) in [
@@ -1210,7 +1340,10 @@ fn walk_icons_inner(
         memory,
         base,
         state,
-        &ICON_LAYOUT,
+        match display_bytes {
+            Some(_) => &ICON_NAMED_LAYOUT,
+            None => &ICON_LAYOUT,
+        },
         hint,
         |country, at, record| {
             if owner != Some(country) {
@@ -1226,13 +1359,16 @@ fn walk_icons_inner(
                 word(record, icon(PRIORITY_UNIT)),
             )?;
             let priority_unit = memo.token(memory, base, selected)?;
+            // The dictionary's unit_type, as `walk` derives it.
+            let unit_type = match dword(record, icon(UNIT_TYPE_OVERRIDE)) {
+                0 => match word(record, icon(CATEGORY_UNIT)) as usize {
+                    0 => memo.category(memory, base, selected),
+                    category => memo.category(memory, base, category),
+                },
+                stored => Ok(stored),
+            };
             let selected_name = if priority_unit != 0 {
-                Some(Descriptor::read(
-                    memory,
-                    selected
-                        .checked_add(subunit::NAME)
-                        .ok_or("subunit name overflow")?,
-                )?)
+                Some(subunit_names.read(memory, selected)?)
             } else {
                 None
             };
@@ -1288,6 +1424,10 @@ fn walk_icons_inner(
             let row_start = (result.bytes_len, result.counts_len, result.variants_len);
             let mut row = IconRow {
                 template: word(record, 8),
+                pointer: at,
+                owner: country,
+                unit_type: *unit_type.as_ref().unwrap_or(&0),
+                unit_type_failure: unit_type.err(),
                 priority_unit,
                 priority_unit_name: Span {
                     start: result.bytes_len,
@@ -1399,6 +1539,10 @@ fn walk_icons_inner(
                         (name_end, row_start.1, row_start.2);
                     row = IconRow {
                         template: row.template,
+                        pointer: row.pointer,
+                        owner: row.owner,
+                        unit_type: row.unit_type,
+                        unit_type_failure: row.unit_type_failure,
                         priority_unit: row.priority_unit,
                         priority_unit_name: row.priority_unit_name,
                         custom_icon: row.custom_icon,
@@ -1428,6 +1572,9 @@ fn walk_icons_inner(
                 row.display_name = display_name_buffer(
                     memory,
                     at,
+                    record[ICON_NAME..ICON_NAME + msvc_string::STRIDE]
+                        .try_into()
+                        .unwrap(),
                     names,
                     &mut result.name_bytes_len,
                     &mut result.required_name_bytes,

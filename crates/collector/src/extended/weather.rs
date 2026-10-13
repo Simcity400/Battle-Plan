@@ -11,7 +11,7 @@ use crate::{
     raw::RawLog,
     read_accounting,
     sampling::qpc,
-    spooling::table,
+    spooling::{table, table_iter},
     table_capture::{CaptureRows, bounded},
 };
 use engine::allocation::{filled, owned_vec, resize};
@@ -26,7 +26,9 @@ use replay::{
     rows::{self, TableId, tables},
 };
 
+pub(crate) mod carry;
 mod display;
+pub(crate) mod temperature;
 use display::DisplayCapture;
 static DISPLAY_DEMAND_FAILURES: crate::country_scale::DemandFailures =
     crate::country_scale::DemandFailures::new();
@@ -97,10 +99,20 @@ impl Capacities {
 pub struct Captured {
     regions: CaptureRows<sweather_per_region::Row>,
     provinces: CaptureRows<sweather_per_province::Row>,
-    attack: crate::table_capture::Arena<engine::selected_attack::WeatherAttack>,
-    attack_metadata: engine::selected_attack::ScalarMetadata,
-    attack_hour: i32,
     display: DisplayCapture,
+    /// Both suspension gates read clear at this boundary, so
+    /// hourly weather update ran `day/night update`
+    /// this hour and every clock from slot 1 is the hour's derivation.
+    clocks_updated: bool,
+    /// Each province record's temperature words at the pass's anchor, by slot, and the pass
+    /// ([`temperature::Tracker`]); `None` when the hour's temperature inputs were not read whole.
+    temperature_anchor: std::sync::Arc<Vec<replay::temperature::State>>,
+    temperature_pass: Option<rows::TemperaturePass>,
+    /// The hour's read words handed to the tracker, which returns the hour before's buffer.
+    temperature_read: Vec<replay::temperature::State>,
+    /// Each region record's ([`WeatherJob::combat`]) raw weather attack and
+    /// breakthrough entries, in region order; `None` refuses one region.
+    combat: Vec<Option<[Option<i64>; 2]>>,
     /// Raw-copy split gate for the hourly weather family (copy/decode split).
     /// Set by the game thread every hour with a valid raw payload; `capture`
     /// then skips the typed walks and the decode worker fills these rows
@@ -114,12 +126,12 @@ impl Captured {
         Self {
             regions: CaptureRows::new(capacity.rows[0]),
             provinces: CaptureRows::new(capacity.rows[1]),
-            attack: crate::table_capture::Arena::new(capacity.rows[0]),
-            attack_metadata: engine::selected_attack::ScalarMetadata::try_new(capacity.rows[0])
-                .map_err(crate::allocation::io)
-                .unwrap_or_default(),
-            attack_hour: 0,
             display: DisplayCapture::new(capacity.display_bytes),
+            clocks_updated: false,
+            temperature_anchor: Default::default(),
+            temperature_pass: None,
+            temperature_read: Vec::new(),
+            combat: Vec::new(),
             raw_mode: false,
         }
     }
@@ -127,27 +139,22 @@ impl Captured {
     pub fn reset(&mut self) {
         self.regions.reset();
         self.provinces.reset();
-        self.attack.reset();
-        self.attack_metadata.clear();
-        self.attack_hour = 0;
         self.display.clear();
+        self.clocks_updated = false;
+        self.temperature_pass = None;
+        self.combat.clear();
     }
 
     pub fn allocated_bytes(&self) -> usize {
         self.regions.allocated_bytes()
             + self.provinces.allocated_bytes()
-            + self.attack.allocated_bytes()
-            + self.attack_metadata.allocated_bytes()
             + self.display.allocated_bytes()
+            + self.temperature_read.capacity() * size_of::<replay::temperature::State>()
+            + self.combat.capacity() * size_of::<Option<[Option<i64>; 2]>>()
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
-        self.attack.grow(&mut capacity.rows[0]);
         self.regions.grow(&mut capacity.rows[0]);
-        let _ = self
-            .attack_metadata
-            .reserve(capacity.rows[0])
-            .map_err(crate::allocation::io);
         self.provinces.grow(&mut capacity.rows[1]);
         self.display.grow(&mut capacity.display_bytes);
     }
@@ -159,12 +166,8 @@ impl Captured {
     }
 
     /// Prepare the decode handoff; missing acquisition cannot retry live memory.
-    pub(crate) fn finish_owned_capture(
-        &mut self,
-        attack_guard: Result<(), &'static str>,
-    ) -> [u64; N] {
+    pub(crate) fn finish_owned_capture(&mut self) -> [u64; N] {
         self.reset();
-        self.attack_metadata.set_guard(attack_guard);
         if !self.raw_mode {
             self.fail_weather_capture("weather acquisition not supplied");
         }
@@ -174,25 +177,7 @@ impl Captured {
     /// Acquire one manager snapshot and both independent dense tables.
     #[cfg(test)]
     pub fn capture(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> [u64; N] {
-        self.capture_at(
-            memory,
-            base,
-            game_state,
-            0,
-            Err("selected attack modifier layout unverified"),
-        )
-    }
-    #[cfg(test)]
-    pub(crate) fn capture_at(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        hour: i32,
-        attack_guard: Result<(), &'static str>,
-    ) -> [u64; N] {
         self.reset();
-        self.attack_metadata.set_guard(attack_guard);
         if self.raw_mode {
             return [0; N];
         }
@@ -218,52 +203,30 @@ impl Captured {
                 ticks[$index] = ticks[$index].saturating_add(elapsed(begin));
             }};
         }
-        {
-            let _reads = read_accounting::table(TABLES[0]);
-            let begin = qpc();
-            self.attack_hour = hour;
-            self.attack
-                .first
-                .fill(engine::selected_attack::WeatherAttack::refused(
-                    hour,
-                    "selected attack weather append unobserved",
-                ));
-            self.regions.outcome = bounded(
-                reader.regions_with_attack(
-                    &mut self.regions.rows,
-                    hour,
-                    &mut self.attack.first,
-                    &mut self.attack_metadata,
-                ),
-                self.regions.rows.len(),
-            );
-            self.attack.len = self.regions.outcome.len().min(self.attack.first.len());
-            self.attack.required = self.regions.outcome.len();
-            ticks[0] = ticks[0].saturating_add(elapsed(begin));
-        }
+        primary!(0, regions);
         primary!(1, provinces);
         {
             let _reads = read_accounting::table(TABLES[1]);
             let begin = qpc();
+            self.clocks_updated = reader.suspend_flags() == Ok([0, 0]);
             self.display.capture(memory, reader.display_grid());
             ticks[1] = ticks[1].saturating_add(elapsed(begin));
         }
-        self.attack_metadata.finish_native();
-        ticks
-    }
-
-    pub(super) fn attack_refusals(&self) -> [u64; 2] {
-        let mut refused = [0_u64; 2];
-        for index in 0..self.regions.outcome.len() {
-            let value = self
-                .attack
-                .first
-                .get(index)
-                .filter(|_| index < self.attack.len);
-            refused[0] += u64::from(value.is_none_or(|value| value.attack.is_err()));
-            refused[1] += u64::from(value.is_none_or(|value| value.breakthrough.is_err()));
+        // The typed walk sees one hour: its pass anchors at it.
+        let words = reader
+            .temperature_words()
+            .ok()
+            .map(|(cursor, window, seed)| temperature::Words {
+                cursor,
+                window,
+                seed,
+                gates: reader.suspend_flags().ok(),
+            });
+        if let Err(reason) = self.track_temperature(0, words, &mut temperature::Tracker::default())
+        {
+            self.fail(reason);
         }
-        refused
+        ticks
     }
 
     pub(super) fn display_failure(&self) -> Option<&'static str> {
@@ -280,21 +243,18 @@ impl Captured {
     pub fn tables(&self) -> [TableView; N] {
         let outcomes = self.outcomes();
         [
-            table::<tables::WeatherRegions, _>(outcomes[0], &self.regions.rows, |r| {
-                rows::WeatherRegionRow {
+            table_iter::<tables::WeatherRegions, _>(
+                outcomes[0],
+                self.regions.rows.iter().take(outcomes[0].len()).enumerate(),
+                |(index, r)| rows::WeatherRegionRow {
                     id: r.id,
-                    attack: rows::Recorded::Value(super::attack_inputs::weather(
-                        self.attack
-                            .first
-                            .get(r.id as usize)
-                            .filter(|_| (r.id as usize) < self.attack.len)
-                            .copied()
-                            .unwrap_or_else(|| {
-                                engine::selected_attack::WeatherAttack::refused(
-                                    self.attack_hour,
-                                    "selected attack weather append capacity exhausted",
-                                )
-                            }),
+                    // No region operand is witnessed; current writers leave it empty.
+                    attack: rows::Recorded::Value(rows::Witnessed(None)),
+                    combat: rows::Recorded::Value(self.combat.get(index).copied().flatten().map(
+                        |[attack, breakthrough]| rows::RegionCombatWeather {
+                            army_attack_factor: attack,
+                            breakthrough_factor: breakthrough,
+                        },
                     )),
                     max_snow: r.max_snow,
                     light_rain: r.light_rain,
@@ -303,8 +263,8 @@ impl Captured {
                     blizzard: r.blizzard,
                     sandstorm: r.sandstorm,
                     arctic_water: r.arctic_water,
-                }
-            }),
+                },
+            ),
             table::<tables::WeatherProvinces, _>(outcomes[1], &self.provinces.rows, |r| {
                 rows::WeatherProvinceRow {
                     id: r.id,
@@ -312,18 +272,88 @@ impl Captured {
                     permanent_snow: r.permanent_snow,
                     display_snow: r.display_snow,
                     display_mud: r.display_mud,
-                    temperature: replay::rows::Recorded::Value(r.temperature),
+                    // The pass's anchor holds every slot; an hour without a pass keeps the
+                    // words it read, which no consumer derives from.
+                    temperature: rows::ProvinceTemperature::anchored(
+                        match &self.temperature_pass {
+                            Some(_) => self
+                                .temperature_anchor
+                                .get(r.id as usize)
+                                .copied()
+                                .unwrap_or_else(|| words_of(r)),
+                            None => words_of(r),
+                        },
+                    ),
                     raw_mud: replay::rows::Recorded::Value(r.raw_mud),
-                    local_hour: replay::rows::Recorded::Value(r.local_hour),
-                    night_factor: replay::rows::Recorded::Value(r.night_factor),
+                    // Slot 0 is never updated (day/night update starts at 1); a
+                    // suspended or unread gate holds every slot's clock.
+                    clock: if r.id != 0 && self.clocks_updated {
+                        rows::DayNightClock::UPDATED
+                    } else {
+                        rows::DayNightClock::held(replay::day_night::Clock {
+                            local_hour: r.local_hour,
+                            night_factor: r.night_factor,
+                        })
+                    },
                     display: rows::Recorded::Value(if r.id == 0 {
                         self.display.row()
+                    } else {
+                        None
+                    }),
+                    temperature_pass: rows::Recorded::Value(if r.id == 0 {
+                        self.temperature_pass.clone()
                     } else {
                         None
                     }),
                 }
             }),
         ]
+    }
+
+    /// Hand the hour's complete read to the pass tracker and keep its anchored words and pass.
+    /// A failed or truncated province walk, or unread manager words, records no pass.
+    fn track_temperature(
+        &mut self,
+        hour: i32,
+        words: Option<temperature::Words>,
+        tracker: &mut temperature::Tracker,
+    ) -> Result<(), &'static str> {
+        const ALLOCATION: &str = "weather temperature pass allocation failed";
+        let complete = matches!(self.provinces.outcome, Outcome::Rows { .. });
+        let words = words.filter(|_| complete);
+        if words.is_some() {
+            let rows = &self.provinces.rows[..self.provinces.outcome.len()];
+            self.temperature_read.clear();
+            engine::allocation::reserve(&mut self.temperature_read, rows.len())
+                .map_err(|_| ALLOCATION)?;
+            self.temperature_read.extend(rows.iter().map(words_of));
+        }
+        let read = words.map(|words| (words, &mut self.temperature_read));
+        match tracker.observe(hour, read).map_err(|_| ALLOCATION)? {
+            Some((anchor, pass)) => {
+                let hours = engine::allocation::copy_vec(&pass.hours).map_err(|_| ALLOCATION)?;
+                self.temperature_anchor = anchor;
+                self.temperature_pass = Some(rows::TemperaturePass {
+                    anchor: pass.anchor,
+                    cursor: pass.cursor,
+                    anchor_seed: pass.anchor_seed,
+                    hours,
+                    checksum: pass.checksum,
+                });
+            }
+            None => self.temperature_pass = None,
+        }
+        Ok(())
+    }
+}
+
+/// A read record's temperature words.
+fn words_of(row: &sweather_per_province::Row) -> replay::temperature::State {
+    replay::temperature::State {
+        temperature: row.temperature,
+        drift: row.drift,
+        staged: row.staged_temperature,
+        working: row.working_drift,
     }
 }
 
@@ -358,16 +388,26 @@ pub(crate) struct WeatherJob {
     clocks: DensePayload,
     capacity_charge: crate::raw_memory::Charge,
     staging_failure: Option<&'static str>,
-    attack: Vec<engine::selected_attack::WeatherAttack>,
-    attack_metadata: engine::selected_attack::ScalarMetadata,
-    attack_required: usize,
-    attack_hour: i32,
     display: DisplayCapture,
     manager: usize,
     manager_authenticated: bool,
+    /// Each region record's weather modifier (`+0x58`) entries for
+    /// `army_attack_factor` and `breakthrough_factor`, raw (`None` for an
+    /// absent key), which the selected army's attack list reads through
+    /// region weather modifier lookup; the outer `None`
+    /// is that region's read refusal. Region order.
+    combat: Vec<Option<[Option<i64>; 2]>>,
+    /// The carried province and region records, loaned for this hour's
+    /// read ([`carry`]); `None` reads every record.
+    pub carry: Option<Box<carry::WeatherCarry>>,
 }
 
 impl WeatherJob {
+    /// The payload holds a staging failure: its rows will not publish.
+    pub(crate) fn staging_failed(&self) -> bool {
+        self.staging_failure.is_some()
+    }
+
     pub fn is_provisioned(&self) -> bool {
         self.worker_growth || self.log.spans.capacity() != 0
     }
@@ -382,15 +422,11 @@ impl WeatherJob {
             clocks: DensePayload::new(0),
             capacity_charge: Default::default(),
             staging_failure: None,
-            attack: owned_vec(filled(0, engine::selected_attack::WeatherAttack::default())),
-            attack_metadata: engine::selected_attack::ScalarMetadata::try_new(0)
-                .map_err(crate::allocation::io)
-                .unwrap_or_default(),
-            attack_required: 0,
-            attack_hour: 0,
             display: DisplayCapture::new(display::bytes_hint()),
             manager: 0,
             manager_authenticated: false,
+            combat: Vec::new(),
+            carry: None,
         };
         job.update_capacity_charge();
         job
@@ -404,13 +440,10 @@ impl WeatherJob {
         self.provinces.clear();
         self.clocks.clear();
         self.staging_failure = None;
-        self.attack.fill(Default::default());
-        self.attack_metadata.clear();
-        self.attack_required = 0;
-        self.attack_hour = 0;
         self.display.clear();
         self.manager = 0;
         self.manager_authenticated = false;
+        self.combat.clear();
     }
 
     pub fn grow_for_next(&self) -> bool {
@@ -418,7 +451,6 @@ impl WeatherJob {
             || self.regions.needs_growth()
             || self.provinces.needs_growth()
             || self.clocks.needs_growth()
-            || self.attack_required > self.attack.len()
             || self.display.needs_growth()
     }
 
@@ -431,18 +463,6 @@ impl WeatherJob {
         self.clocks.grow();
         let mut display_capacity = display::bytes_hint();
         self.display.grow(&mut display_capacity);
-        if self.attack_required > self.attack.len() {
-            let _ = resize(
-                &mut self.attack,
-                self.attack_required,
-                engine::selected_attack::WeatherAttack::default(),
-            )
-            .map_err(crate::allocation::io);
-        }
-        let _ = self
-            .attack_metadata
-            .reserve(self.attack.len())
-            .map_err(crate::allocation::io);
         self.update_capacity_charge();
     }
 
@@ -451,9 +471,7 @@ impl WeatherJob {
             payload_vectors: crate::raw_memory::vector_bytes(&self.regions.bytes)
                 + crate::raw_memory::vector_bytes(&self.provinces.bytes)
                 + crate::raw_memory::vector_bytes(&self.clocks.bytes)
-                + crate::raw_memory::vector_bytes(&self.attack)
                 + self.display.allocated_bytes() as u64,
-            auxiliary_vectors: self.attack_metadata.allocated_bytes() as u64,
             ..Default::default()
         });
     }
@@ -619,8 +637,6 @@ pub(crate) struct WeatherCopyReport {
 pub(crate) struct WeatherCopyContext {
     pub game_state: usize,
     pub base: usize,
-    pub hour: i32,
-    pub attack_guard: Result<(), &'static str>,
 }
 
 /// One array header recorded under `mask`, parsed when it reads.
@@ -673,6 +689,22 @@ fn prepare_weather_pass(
     // The snow ceiling every region row carries; a failed read fails only them.
     if let Some(address) = pointer.checked_add(cweather_manager::MAX_SNOW) {
         let _ = log.take(memory, address, 8, M_REGIONS);
+    }
+    // The two suspension gates decide whether the clocks were updated this
+    // hour; a failed read fails no table and leaves every clock held.
+    if let Some(address) = pointer.checked_add(cweather_manager::SUSPEND_FLAGS) {
+        let _ = log.take(memory, address, 2, 0);
+    }
+    // The temperature pass's cursor, window and seed; a failed read fails no
+    // table and records no pass for the hour.
+    for offset in [
+        cweather_manager::UPDATE_CURSOR,
+        cweather_manager::PROVINCES_PER_UPDATE,
+        cweather_manager::SEED,
+    ] {
+        if let Some(address) = pointer.checked_add(offset) {
+            let _ = log.take(memory, address, 4, 0);
+        }
     }
     let regions = header(
         log,
@@ -744,12 +776,11 @@ fn copy_weather_dense(
         sweather_per_province::CLOCK_RECORD_BYTES,
     )
     .expect("valid clock layout");
+    carry::start(job, memory);
     let mut reads = read_accounting::table(TableId::WeatherRegions);
-    job.regions
-        .capture(memory, sweather_per_region::STRIDE, &REGIONS_LAYOUT);
+    carry::capture_regions(memory, job, &REGIONS_LAYOUT);
     reads.select(TableId::WeatherProvinces);
-    job.provinces
-        .capture(memory, sweather_per_province::STRIDE, &PROVINCES_LAYOUT);
+    carry::capture_provinces(memory, job, &PROVINCES_LAYOUT);
     let provinces_complete = !job.provinces.faulted(sweather_per_province::FIELDS.len());
     let log = &mut job.log;
     // Raw copying sees the full census, but typed output can admit a shorter
@@ -784,58 +815,11 @@ fn copy_weather_dense(
         .faulted(sweather_per_province::CLOCK_FIELDS.len());
 }
 
-/// Append numeric facts to the original successful region gathers. Only
-/// selecting controls are decoded on acquisition; no native pointer reaches
-/// row parsing on decode. A short append arena never falls back/retries.
-fn capture_attack_append(memory: &impl Memory, base: usize, job: &mut WeatherJob) {
-    let Some(array) = job.regions.array else {
-        return;
-    };
-    job.attack_required = array.count as usize;
-    job.attack
-        .fill(engine::selected_attack::WeatherAttack::refused(
-            job.attack_hour,
-            "selected attack weather append unobserved",
-        ));
-    let Some(vtable) = base.checked_add(sweather_per_region::VTABLE_RVA) else {
-        return;
-    };
-    for index in 0..array.count as usize {
-        let Some(destination) = job.attack.get_mut(index) else {
-            break;
-        };
-        let begin = index * sweather_per_region::RECORD_BYTES;
-        let Some(record) = job
-            .regions
-            .bytes
-            .get(begin..begin + sweather_per_region::RECORD_BYTES)
-        else {
-            break;
-        };
-        let copied = job
-            .regions
-            .copied_fields
-            .saturating_sub(index * sweather_per_region::FIELDS.len())
-            .min(sweather_per_region::FIELDS.len());
-        if sweather_per_region::decode_record(index as u32, record, copied, vtable).is_err() {
-            break;
-        }
-        *destination = match array.element(index as u32, sweather_per_region::STRIDE) {
-            Some(pointer) => engine::selected_attack::WeatherAttack::capture_authenticated(
-                memory,
-                base,
-                pointer,
-                job.attack_hour,
-                &mut job.attack_metadata,
-            ),
-            None => engine::selected_attack::WeatherAttack::refused(
-                job.attack_hour,
-                "selected attack weather region address invalid",
-            ),
-        };
-    }
-    job.attack_metadata.finish_native();
-}
+/// The keys of [`WeatherJob::combat`], ascending.
+const COMBAT_KEYS: [u32; 2] = [
+    engine::modifier_keys::ARMY_ATTACK_FACTOR,
+    engine::modifier_keys::BREAKTHROUGH_FACTOR,
+];
 
 /// Acquire one refresh into its owned payload.
 pub(crate) fn copy_weather_refresh_growing(
@@ -858,8 +842,6 @@ pub(crate) fn copy_weather_refresh(
         job.log.enable_worker_growth();
     }
     job.game_state = ctx.game_state;
-    job.attack_hour = ctx.hour;
-    job.attack_metadata.set_guard(ctx.attack_guard);
     let display = prepare_weather_pass(memory, ctx.game_state, ctx.base, job);
     let display_bytes = display.map_or(0, |arrays| {
         arrays.iter().map(|array| array.count as usize).sum()
@@ -870,12 +852,6 @@ pub(crate) fn copy_weather_refresh(
         job.regions.grow();
         job.provinces.grow();
         job.clocks.grow();
-        job.attack_required = job.regions.array.map_or(0, |array| array.count as usize);
-        let _ = engine::walk::Buffer::Growing(&mut job.attack).ensure(job.attack_required);
-        let _ = job
-            .attack_metadata
-            .reserve(job.attack_required)
-            .map_err(crate::allocation::io);
         if crate::allocation::failed() {
             job.staging_failure = Some("weather capture allocation failed");
             return WeatherCopyReport {
@@ -898,7 +874,11 @@ pub(crate) fn copy_weather_refresh(
     }
     if !overflow {
         copy_weather_dense(memory, job, display);
-        capture_attack_append(memory, ctx.base, job);
+        {
+            let _reads = read_accounting::table(TableId::WeatherRegions);
+            carry::capture_combat(memory, job);
+        }
+        carry::finish(job);
         let _reads = read_accounting::table(TABLES[1]);
         if job.manager_authenticated {
             let grid = cweather_manager::read_display_grid(memory, ctx.base, job.manager);
@@ -934,8 +914,23 @@ impl Captured {
         &mut self,
         base: usize,
         job: &WeatherJob,
+        hour: i32,
+        tracker: &mut temperature::Tracker,
         decode_ticks: &mut [u64; N],
     ) {
+        let words = self.decode_weather_rows(base, job, decode_ticks);
+        if let Err(reason) = self.track_temperature(hour, words, tracker) {
+            self.fail(reason);
+        }
+    }
+
+    /// The rows of the payload and, when read, the temperature pass's manager words.
+    fn decode_weather_rows(
+        &mut self,
+        base: usize,
+        job: &WeatherJob,
+        decode_ticks: &mut [u64; N],
+    ) -> Option<temperature::Words> {
         self.raw_mode = false;
         if job.worker_growth {
             let rows = job.regions.array.map_or(0, |array| array.count as usize);
@@ -943,23 +938,19 @@ impl Captured {
             let grown = (|| {
                 engine::walk::Buffer::Growing(&mut self.regions.rows).ensure(rows)?;
                 engine::walk::Buffer::Growing(&mut self.provinces.rows).ensure(provinces)?;
-                engine::walk::Buffer::Growing(&mut self.attack.first).ensure(rows)?;
-                self.attack_metadata
-                    .reserve(rows)
-                    .map_err(|_| "weather attack metadata allocation failed")?;
                 let mut display_bytes = job.display.required;
                 self.display.grow(&mut display_bytes);
                 Ok::<(), &'static str>(())
             })();
             if let Err(reason) = grown {
                 self.fail(reason);
-                return;
+                return None;
             }
         }
         self.display.copy_from(&job.display);
         if let Some(reason) = job.staging_failure {
             self.fail(reason);
-            return;
+            return None;
         }
         let recorded = crate::raw::Recorded::build(&job.log);
         let started = qpc();
@@ -968,7 +959,7 @@ impl Captured {
             Err(reason) => {
                 self.fail(reason);
                 decode_ticks[0] += elapsed(started);
-                return;
+                return None;
             }
         };
         self.regions.outcome = match reader.max_snow() {
@@ -984,32 +975,14 @@ impl Captured {
                 for row in &mut self.regions.rows[..outcome.len()] {
                     row.max_snow = max_snow;
                 }
+                self.combat.clear();
+                if engine::allocation::reserve_exact(&mut self.combat, job.combat.len()).is_ok() {
+                    self.combat.extend_from_slice(&job.combat);
+                }
                 outcome
             }
             Err(reason) => Outcome::Unavailable { reason },
         };
-        self.attack_hour = job.attack_hour;
-        self.attack
-            .first
-            .fill(engine::selected_attack::WeatherAttack::refused(
-                job.attack_hour,
-                "selected attack weather append capacity exhausted",
-            ));
-        self.attack.required = self.regions.outcome.len();
-        self.attack.len = self.attack.required.min(self.attack.first.len());
-        for (index, destination) in self.attack.first[..self.attack.len].iter_mut().enumerate() {
-            *destination = job
-                .attack
-                .get(index)
-                .copied()
-                .filter(|_| index < job.attack_required)
-                .unwrap_or_else(|| {
-                    engine::selected_attack::WeatherAttack::refused(
-                        job.attack_hour,
-                        "selected attack weather append capacity exhausted",
-                    )
-                });
-        }
         decode_ticks[0] += elapsed(started);
         let started = qpc();
         let outcome = job.provinces.decode(
@@ -1043,8 +1016,18 @@ impl Captured {
                 }
             }
         };
+        self.clocks_updated = reader.suspend_flags() == Ok([0, 0]);
         self.regions.outcome = bounded(self.regions.outcome, self.regions.rows.len());
         decode_ticks[1] += elapsed(started);
+        reader
+            .temperature_words()
+            .ok()
+            .map(|(cursor, window, seed)| temperature::Words {
+                cursor,
+                window,
+                seed,
+                gates: reader.suspend_flags().ok(),
+            })
     }
 }
 

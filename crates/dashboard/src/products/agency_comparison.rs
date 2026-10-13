@@ -2355,7 +2355,9 @@ mod tests {
                 .unwrap();
         let mut bytes = replay.bytes().to_vec();
         let block = &replay.index[0];
-        bytes[(block.offset + block.length - 1) as usize] ^= 0x40;
+        // The directory CRC guards every section; a damaged last byte only
+        // fails the section it lands in, which need not be one this scan reads.
+        bytes[(block.offset + 4) as usize] ^= 0x40;
         let damaged = Replay::open(bytes).unwrap();
         let scanned = scan(&damaged, 1, &AtomicBool::new(false)).unwrap();
         assert!(!scanned.available);

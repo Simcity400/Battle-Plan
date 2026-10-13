@@ -446,8 +446,9 @@ pub struct Buffers {
     pub modifiers: Vec<ModifierRow>,
     pub tokens: Vec<u8>,
     pub overrides: Vec<OverrideRow>,
-    /// The selected countries whose overrides the walk read this hour,
-    /// including those with none: only controllers are walked.
+    /// The countries whose overrides the walk read this hour, including
+    /// those with none: only controllers are walked, the selected ones and
+    /// those of every selected state.
     pub read_countries: Vec<u32>,
     descriptors: Vec<Resource>,
     resource_keys: Vec<[u32; 3]>,
@@ -621,7 +622,11 @@ struct Totals {
 
 /// The owners one walk reads: native state IDs for StateResourceInputs,
 /// StateResources and StateDynamicModifiers, and native country IDs for
-/// CountryBuildingResources (a sliced hour's slice and early reads).
+/// CountryBuildingResources (a sliced hour's slice and early reads). The
+/// controller of every selected state also has its overrides read, since
+/// building resource grant accumulation reads the state's controller's: a
+/// country that has just come to control a state is read with it
+/// (`Buffers::read_countries` lists every country read).
 #[derive(Clone, Copy)]
 pub struct Selection<'a> {
     pub states: &'a dyn Fn(u32) -> bool,
@@ -761,7 +766,8 @@ const fn field(source_offset: usize, destination_offset: usize, len: usize) -> R
     }
 }
 
-// A state's own fields, read for every state in record batches.
+// A state's own fields, read in record batches: its identity and controller
+// for every state, everything for the states this hour selects.
 const STATE_VTABLE: usize = 0;
 const STATE_PROVINCES: usize = 8;
 const STATE_ID: usize = 24;
@@ -797,6 +803,13 @@ const STATE_FIELDS: [RecordField; 11] = [
 ];
 const STATE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&STATE_FIELDS, STATE_RECORD).expect("valid record layout");
+/// The fields every state is read for: identity and controller, at their
+/// [`STATE_LAYOUT`] places.
+const STATE_HEAD_LAYOUT: RecordLayout<'static> = RecordLayout::new(
+    &[STATE_FIELDS[0], STATE_FIELDS[2], STATE_FIELDS[3]],
+    STATE_RECORD,
+)
+.expect("valid record layout");
 
 const COUNTRY_FIELDS: [RecordField; 3] = [
     field(0, 0, 8),
@@ -1209,7 +1222,7 @@ fn walk_inner(
     memo.clear();
     let memo = &*memo;
 
-    // Pass 1: every state's own fields, in record batches.
+    // Pass 1: every state's identity and controller, in record batches.
     let root = address(game_state, cgame_state::STATES)
         .ok()
         .and_then(|at| Array::read(memory, at, 8))
@@ -1256,7 +1269,7 @@ fn walk_inner(
         records(
             memory,
             &addresses[..len],
-            &STATE_LAYOUT,
+            &STATE_HEAD_LAYOUT,
             record,
             "state resource fields unreadable",
         )?;
@@ -1404,6 +1417,25 @@ fn walk_inner(
     }
     let count = selected;
     let states = &mut states[..count];
+    // The selected states' own fields; the others were read for their
+    // controllers alone.
+    for batch in states.chunks_mut(BATCH) {
+        for (address, state) in addresses.iter_mut().zip(batch.iter()) {
+            *address = state.pointer;
+        }
+        records(
+            memory,
+            &addresses[..batch.len()],
+            &STATE_LAYOUT,
+            bytes,
+            "state resource fields unreadable",
+        )?;
+        for (row, state) in batch.iter_mut().enumerate() {
+            state
+                .fields
+                .copy_from_slice(&bytes[row * STATE_RECORD..(row + 1) * STATE_RECORD]);
+        }
+    }
 
     // Each controller's selected states, grouped in `order`.
     for (index, state) in states.iter().enumerate() {
@@ -1484,7 +1516,8 @@ fn walk_inner(
         }
         for (index, &slot) in chunk.iter().enumerate() {
             let nation = nations[slot as usize];
-            if !(select.countries)(nation.id) {
+            // A controller of a selected state is read with it.
+            if !(select.countries)(nation.id) && nation.first == nation.end {
                 continue;
             }
             let written = overrides_of(

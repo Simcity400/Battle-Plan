@@ -14,11 +14,11 @@ use crate::{
     frame::{DecodedFrame, FrameDecoder, FrameEncoder, Metrics, TableUpdate, TableView},
     identity::{Identity, Roster, SessionStart, Verification},
     rows::{
-        AirWingRaidReference, AirWingRow, ArmyOrderRow, CampaignRow, ClockRow, CountryLinkRow,
-        CountryRow, DivisionRow, FactionMemberRow, FactionRow, FleetRow, HumanControllerRow,
-        LandCombatRow, NavalCombatParticipantRow, NavalCombatRow, PlayerRow, ProvinceAttackInputs,
+        AirWingRaidReference, AirWingRow, ArmyOrderRow, CampaignRow, ClockRow, ControllerAreaNode,
+        CountryLinkRow, CountryRow, DivisionRow, FactionMemberRow, FactionRow, FleetRow,
+        HumanControllerRow, LandCombatRow, NavalCombatParticipantRow, NavalCombatRow, PlayerRow,
         ProvinceRow, Recorded, RowCodec, RowRef, ShipRow, StateRow, TableId, TableRows,
-        TableSchema, TaskForceRow, WarRelationRow, tables,
+        TableSchema, TaskForceRow, WarRelationRow, compatibility::RETIRED_FIELDS, tables,
     },
     spool::{
         ControlRecord, Record, Recovery, SegmentBackend, SegmentSink, SegmentedSpool,
@@ -36,7 +36,7 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len()] = [
+const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRED_TABLES.len()] = [
     TableId::CountryPowerDaily,
     TableId::CountryPowerChanges,
     TableId::CountryPowerDailyCosts,
@@ -122,7 +122,6 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len()] = [
     TableId::AdvisorRoles,
     TableId::UnitLeaders,
     TableId::UnitLeaderTraits,
-    TableId::UnitLeaderTraitExperience,
     TableId::ActiveAbilities,
     TableId::Capitulation,
     TableId::Subjects,
@@ -135,7 +134,6 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len()] = [
     TableId::ScriptVariables,
     TableId::GlobalSavedEventTargets,
     TableId::EquipmentDestruction,
-    TableId::ReserveModifierBreakdowns,
     TableId::PowerBalanceModifierBreakdowns,
     TableId::Operations,
     TableId::AgencyUpgradeLevels,
@@ -144,8 +142,6 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len()] = [
     TableId::WingEquipment,
     TableId::AirBases,
     TableId::WingCumulative,
-    TableId::AirRegionHistory,
-    TableId::AirRegionDamage,
     TableId::AirAces,
     TableId::AirStatistics,
     TableId::SunkConvoys,
@@ -180,6 +176,8 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len()] = [
     TableId::AirLossEvents,
     TableId::BuildingBombingDamage,
     TableId::AirDailyRoster,
+    TableId::AirRegionCombat,
+    TableId::NuclearStrikes,
     TableId::RocketProductionOutput,
     TableId::WeatherRegions,
     TableId::WeatherProvinces,
@@ -312,7 +310,6 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len()] = [
     TableId::ModifierDefinitions,
     TableId::HiredAdvisors,
     TableId::AvailableAdvisors,
-    TableId::OwnedWargoals,
     TableId::TimedIdeas,
     TableId::DecisionRandomItems,
     TableId::CapturedOperativeReferences,
@@ -324,21 +321,26 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len()] = [
     TableId::LandCombatDetails,
     TableId::LandCombatDivisions,
     TableId::LandCombatModifiers,
+    TableId::LandCombatDivisionModifiers,
+    TableId::FuelDemandParts,
     TableId::NavalCombatDetails,
     TableId::NavalCombatShips,
-    TableId::NavalModifierBreakdowns,
-    TableId::AttritionModifierBreakdowns,
+    TableId::NavalModifierTrees,
+    TableId::NavalModifierTreeSamples,
     TableId::CountryGameScoreInputs,
     TableId::AirWingGameScoreStats,
     TableId::GameScoreMultipliers,
     TableId::NavalCombatResultDetails,
-    TableId::DivisionEtaInputs,
     TableId::FactionTheatres,
     TableId::NavalMissionTaskForces,
     TableId::NavalMissionLedgers,
     TableId::NavalMissionCountries,
     TableId::NavalMissionCommanders,
 ];
+/// Retired tables: no current writer emits them, and older recordings discard
+/// them by name (the compatibility tests exercise that framing).
+const RETIRED_TABLES: [TableId; crate::rows::compatibility::RETIRED_TABLES.len()] =
+    crate::rows::compatibility::RETIRED_TABLES;
 /// The fault campaign drives every table except those the clock, campaign,
 /// country, province, state and division fixtures build directly, so a new table cannot
 /// be added without being exercised here.
@@ -357,15 +359,23 @@ fn the_fault_campaign_covers_every_table_exactly_once() {
     let mut covered: Vec<TableId> = DOMAIN_TABLES
         .into_iter()
         .chain(DIRECT_TABLES)
+        .chain(RETIRED_TABLES)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
     covered.sort();
     assert_eq!(covered, TableId::ALL);
     assert_eq!(
-        DOMAIN_TABLES.len() + DIRECT_TABLES.len(),
+        DOMAIN_TABLES.len() + DIRECT_TABLES.len() + RETIRED_TABLES.len(),
         TableId::ALL.len()
     );
+    for table in RETIRED_TABLES {
+        assert!(
+            !table
+                .last_change()
+                .present(crate::format::FormatVersion::CURRENT.version())
+        );
+    }
 }
 
 const RAW_FLAG_CASES: [u8; 3] = [0, 2, 255];
@@ -574,7 +584,12 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
                 task_force: [0, u64::MAX, FACTION_A][tick % 3],
                 strength: scalar(0),
                 organisation: scalar(1),
-                experience: scalar(2),
+                // Whole hundredths (ShipRow::EXPERIENCE_STEP) and the sentinels.
+                experience: match (tick + 2) % 31 {
+                    0 => i64::MIN,
+                    1 => i64::MAX,
+                    value => ((1_i64 << 42) - value as i64) * 1_000,
+                },
                 category: [0, u32::MAX, tick as u32][tick % 3],
                 sunk_convoys: tick as i32,
                 class_id: [i32::MIN, 0, i32::MAX][tick % 3],
@@ -734,15 +749,32 @@ fn source_with_faults(
             fort_positive: u8::from((index + id as usize).is_multiple_of(3)),
             move_gate: [0, 1, 2, 3][(index + id as usize) % 4],
             port_sea: [0, 1, -1, i32::MAX][id as usize % 4],
-            attack: ProvinceAttackInputs {
-                sample_hour: hour,
-                fort_sum: [None, Some(i32::MIN), Some(0), Some(i32::MAX)]
-                    [(index + id as usize) % 4],
-                land_bunker_effectiveness_factor: [None, Some(i64::MIN), Some(0), Some(i64::MAX)]
-                    [(index / 3 + id as usize) % 4],
-            }
-            .into(),
+            attack: Default::default(),
             selected_areas: Default::default(),
+            fort_bunker: [None, Some(-25_000), Some(i64::MIN)][(index + id as usize) % 3].into(),
+            // Provinces 2..=8 form one area labelled 2 or two split at 5;
+            // province 1 is sea; an owner rebuild relabels every eleventh hour.
+            controller_area: Recorded::Value(Some(match (id, index % 5 < 2) {
+                (1, _) => 0,
+                (5.., true) => 5,
+                _ => 2,
+            })),
+            owner_area: Recorded::Value(if index % 11 == 3 {
+                None
+            } else {
+                Some(if id == 1 { 0 } else { 2 })
+            }),
+            area_node: Recorded::Value(match (id, index % 5 < 2) {
+                (2, split) => Some(ControllerAreaNode {
+                    first_land: Some([3, 2][index % 2]),
+                    neighbours: Some(if split { vec![5] } else { vec![] }),
+                }),
+                (5, true) => Some(ControllerAreaNode {
+                    first_land: None,
+                    neighbours: (!index.is_multiple_of(3)).then(|| vec![2, 2]),
+                }),
+                _ => None,
+            }),
         })
         .collect();
     if index % 17 < 5 {
@@ -757,6 +789,10 @@ fn source_with_faults(
             port_sea: 0,
             attack: Default::default(),
             selected_areas: Default::default(),
+            fort_bunker: None.into(),
+            controller_area: Default::default(),
+            owner_area: Default::default(),
+            area_node: Default::default(),
         });
     }
     let mut states: Vec<_> = (0..=2)
@@ -788,10 +824,12 @@ fn source_with_faults(
             ..StateRow::default()
         });
     }
+    // Whole display steps (crate::display), as capture stores them, besides
+    // the sentinel words.
     let native_value = |tick: usize| match tick % 31 {
         0 => i64::MIN,
         1 => i64::MAX,
-        _ => (1_i64 << 42) - tick as i64,
+        _ => ((1_i64 << 42) - tick as i64) * 10_000,
     };
     let division = |id, ordinal: usize| {
         DivisionRow {
@@ -964,7 +1002,7 @@ fn source_with_faults(
             }
         }
     }
-    DecodedFrame {
+    crate::frame::retire_absent(DecodedFrame {
         branch,
         hour,
         tables: tables.map(Into::into),
@@ -974,7 +1012,7 @@ fn source_with_faults(
             pool_bytes: 1 << 25,
             dropped_frames: (index / 61) as u64,
         },
-    }
+    })
 }
 
 /// Protect scenario boundaries and known parent witnesses from random queue drops.
@@ -1642,6 +1680,11 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
         } else {
             table.full_mask()
         };
+        // A retired whole field stores the same empty payload in every row.
+        let mutable_fields = RETIRED_FIELDS
+            .iter()
+            .filter(|field| field.table == table && !field.name.contains('.'))
+            .fold(mutable_fields, |mask, field| mask & !(1 << field.index));
         assert_eq!(
             covered.changed_fields, mutable_fields,
             "{table:?} mutable field coverage"
@@ -1712,7 +1755,12 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
         < i64::from(KEYFRAME_INTERVAL)));
 
     // Sequential playback checks every independently generated state, including
-    // partial rows and metrics, while decompressing each block only once.
+    // partial rows and metrics as blocks store them, while decompressing each
+    // block only once.
+    let stored = |frame: &DecodedFrame| DecodedFrame {
+        metrics: frame.metrics.stored(),
+        ..frame.clone()
+    };
     let mut visited = BTreeSet::new();
     let mut cold_targets = BTreeSet::new();
     for block in &replay.index {
@@ -1721,7 +1769,7 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
         for frame in &frames {
             let key = (frame.branch, frame.hour);
             assert!(visited.insert(key), "duplicate replay hour {key:?}");
-            let expected = &campaign.expected[&key];
+            let expected = &stored(&campaign.expected[&key]);
             let actual = decoder.advance(frame).unwrap();
             assert_eq!(actual, expected, "branch {}, hour {}", key.0, key.1);
             assert_aliases(actual);
@@ -1750,7 +1798,7 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
     }
     let cold_targets: Vec<_> = cold_targets.into_iter().collect();
     for_each_parallel(&cold_targets, |&(branch, hour)| {
-        let expected = &campaign.expected[&(branch, hour)];
+        let expected = &stored(&campaign.expected[&(branch, hour)]);
         match replay.seek(branch, hour).unwrap() {
             SeekResult::Frame(actual) => {
                 assert_eq!(actual.as_ref(), expected, "branch {branch}, hour {hour}");
@@ -1777,6 +1825,53 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
                 );
             }
             other => panic!("lost branch {branch}, hour {hour} was invented: {other:?}"),
+        }
+    });
+}
+
+/// Every layout's recording of the campaign, and its appended sessions,
+/// packed on 1, 2 and many threads: blocks follow sessions, branches, spool
+/// keyframes and the file's earlier keyframes, and every table changes in
+/// every form, so a block whose bytes depended on another's packing differs.
+#[test]
+fn the_campaign_packs_to_the_sequential_bytes_on_any_worker_count() {
+    use crate::container::{Layout, PACK_WORKERS, WRITTEN_LAYOUT};
+    let campaign = synthesize();
+    let many = parallel_budget().max(3);
+    let layouts = [
+        Layout::Advanced,
+        Layout::Trimmed,
+        Layout::Modelled,
+        Layout::Ramped,
+        Layout::Keyed,
+        Layout::Anchored,
+        Layout::Predicted,
+        Layout::Unpredicted,
+        Layout::Timed,
+    ];
+    for_each_parallel(&layouts, |&layout| {
+        WRITTEN_LAYOUT.set(layout);
+        let workers: &[usize] = if layout == Layout::Advanced {
+            &[1, 2, many]
+        } else {
+            &[1, many]
+        };
+        let written: Vec<_> = workers
+            .iter()
+            .map(|&workers| {
+                PACK_WORKERS.set(Some(workers));
+                let failed = |error: io::Error| panic!("{layout:?} on {workers} workers: {error}");
+                let first = Replay::from_recovered(CAMPAIGN.to_vec(), &campaign.segments[..2])
+                    .unwrap_or_else(failed);
+                let appended = first
+                    .append_recovered(&campaign.segments[2..])
+                    .unwrap_or_else(failed);
+                (first.bytes().to_vec(), appended.bytes().to_vec())
+            })
+            .collect();
+        PACK_WORKERS.set(None);
+        for (count, packed) in workers.iter().zip(&written).skip(1) {
+            assert!(packed == &written[0], "{layout:?} on {count} workers");
         }
     });
 }
@@ -1899,7 +1994,13 @@ fn table_encoded_sizes_match_all_tables_and_update_forms() {
     for tick in 0..4 {
         let source = source_with_faults(tick, 1, 1000, 0, false);
         let snapshot = FrameEncoder::new().encode(source, true).unwrap();
-        for table in TableId::ALL {
+        // Retired tables are not encoded; the rest each hold a snapshot.
+        let recorded = || {
+            TableId::ALL
+                .into_iter()
+                .filter(|&table| crate::frame::current_absence(table).is_none())
+        };
+        for table in recorded() {
             assert!(
                 matches!(&snapshot.tables[table.index()], TableUpdate::Snapshot(rows) if !rows.is_empty()),
                 "{table:?}"
@@ -1909,7 +2010,7 @@ fn table_encoded_sizes_match_all_tables_and_update_forms() {
         for delete in [false, true] {
             let mut delta = snapshot.clone();
             delta.keyframe = false;
-            for table in TableId::ALL {
+            for table in recorded() {
                 let TableUpdate::Snapshot(mut rows) = snapshot.tables[table.index()].clone() else {
                     unreachable!()
                 };
@@ -1954,7 +2055,8 @@ fn table_encoded_sizes_match_all_tables_and_update_forms() {
         }
         let mut truncated = snapshot;
         truncated.keyframe = false;
-        for update in &mut truncated.tables {
+        for table in recorded() {
+            let update = &mut truncated.tables[table.index()];
             let TableUpdate::Snapshot(rows) = update else {
                 unreachable!()
             };

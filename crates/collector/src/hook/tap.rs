@@ -224,7 +224,7 @@ fn entry(begin: usize, end: usize, unwind: usize) -> IMAGE_RUNTIME_FUNCTION_ENTR
 // These forms cover the political MOV/MOVUPS sites and Experience's MOV+ADD
 // prefixes. No copied operand uses RSP, RIP, a branch or a call: the native
 // CALL return slot therefore cannot change its meaning. Other forms refuse.
-fn instruction_span(bytes: &[u8; 16]) -> Result<usize, &'static str> {
+pub(crate) fn instruction_span(bytes: &[u8; 16]) -> Result<usize, &'static str> {
     if bytes[..6] == [0x48, 0x83, 0xc4, 0x30, 0x5f, 0xe9] && bytes[10..15] == [0xcc; 5] {
         return Ok(0);
     }

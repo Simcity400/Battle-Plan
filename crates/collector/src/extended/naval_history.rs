@@ -252,6 +252,138 @@ impl Capacities {
     }
 }
 
+/// The shared rail walk's tables (RailCooldowns, RailEdges and the selected
+/// rail building inputs), captured in their own job with the held
+/// [`RailStore`] and then installed in the frame's pack
+/// ([`Captured::install_rails`]). The walk reads only the game state, so it
+/// leaves in the first burst.
+pub(crate) struct RailPart {
+    cooldowns: CaptureRows<cprovince_railway_info::Row>,
+    rail_buildings: CaptureRows<crailway_manager::fresh_inputs::RailwayBuildingRow>,
+    rail_buildings_required: usize,
+    rail_levels: Arena<i32>,
+    rail_hour: Option<i32>,
+    edges: CaptureRows<rail_neighbor::Row>,
+    ticks: u64,
+}
+
+impl RailPart {
+    /// Empty storage, which the walk grows on its worker.
+    pub(crate) fn vacant() -> Self {
+        Self {
+            cooldowns: CaptureRows::new(0),
+            rail_buildings: CaptureRows::new(0),
+            rail_buildings_required: 0,
+            rail_levels: Arena::new(0),
+            rail_hour: None,
+            edges: CaptureRows::new(0),
+            ticks: 0,
+        }
+    }
+
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.cooldowns.allocated_bytes()
+            + self.rail_buildings.allocated_bytes()
+            + self.rail_levels.allocated_bytes()
+            + self.edges.allocated_bytes()
+    }
+
+    fn reset(&mut self) {
+        self.cooldowns.reset();
+        self.rail_buildings.reset();
+        self.rail_buildings_required = 0;
+        self.rail_levels.reset();
+        self.rail_hour = None;
+        self.edges.reset();
+    }
+
+    /// The hour's rail walk; `rails`, the held outputs, carries unchanged
+    /// batches ([`RailStore`]), and absent every info is read afresh.
+    /// Returns the worker ticks, also kept for the install.
+    pub(crate) fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        current_hour: i32,
+        rails: Option<&mut RailStore>,
+    ) -> u64 {
+        self.reset();
+        self.rail_hour = Some(current_hour);
+        let _reads = read_accounting::table(TableId::RailCooldowns);
+        let begin = qpc();
+        match rails {
+            Some(store) => {
+                let mut reuse = RailReuse::begin(
+                    store,
+                    &crate::rail_changes::Observer,
+                    crate::sampled_verify::Check::burned_in(
+                        current_hour,
+                        crate::rail_changes::VERIFY,
+                    ),
+                    |list| crailway_manager::cooldown_list(memory, base, game_state, list),
+                );
+                let complete = self.walk(memory, base, game_state, &mut reuse);
+                reuse.finish(complete);
+            }
+            None => {
+                self.walk(memory, base, game_state, &mut crailway_manager::Fresh);
+            }
+        }
+        self.ticks = elapsed(begin);
+        self.ticks
+    }
+
+    /// The job did not complete: every rail table fails, as the Late capture
+    /// fails them.
+    pub(crate) fn fail(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.reset();
+        let active = |table| {
+            failed(
+                replay::cadence::should_walk(table, hour, force_full),
+                reason,
+            )
+        };
+        self.cooldowns.fail(active(TABLES[2]));
+        self.rail_buildings.fail(active(TABLES[2]));
+        self.edges.fail(active(TABLES[3]));
+        self.ticks = 0;
+    }
+
+    fn walk(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        carry: &mut impl crailway_manager::RailCarry,
+    ) -> bool {
+        let mut levels = crailway_manager::selected_inputs::GrowingLevels {
+            values: &mut self.rail_levels.first,
+            len: 0,
+            required: 0,
+        };
+        let first = crailway_manager::walk_with_selection_growing_carried(
+            memory,
+            base,
+            game_state,
+            &mut self.cooldowns.rows,
+            &mut self.edges.rows,
+            &mut self.rail_buildings.rows,
+            &mut levels,
+            carry,
+        );
+        self.rail_levels.len = levels.len;
+        self.rail_levels.required = levels.required;
+        self.cooldowns.outcome = bounded(first.rows.provinces, self.cooldowns.rows.len());
+        self.edges.outcome = bounded(first.rows.edges, self.edges.rows.len());
+        self.rail_buildings.outcome = bounded(first.buildings, self.rail_buildings.rows.len());
+        self.rail_buildings_required = first.required;
+        [first.rows.provinces, first.rows.edges, first.buildings]
+            .iter()
+            .all(|outcome| matches!(outcome, Outcome::Rows { .. }))
+    }
+}
+
 pub struct Captured {
     supremacy: CaptureRows<cnaval_region_dominance::Row>,
     convoys: CaptureRows<csunk_convoy_info::Row>,
@@ -295,6 +427,10 @@ pub struct Captured {
     wings_finished: bool,
     source_ticks: [u64; 3],
     active: [bool; N],
+    /// This hour's rail tables were captured by their own job
+    /// ([`Self::install_rails`]); the Late capture keeps them, and its
+    /// worker ticks.
+    rails_early: Option<u64>,
     /// Raw-copy split gate for the hourly source-fed naval block (9 tables).
     /// Set by the game thread every hour with a valid raw payload; `capture`
     /// then skips the theatre/OOB walks and the decode worker replays them
@@ -411,9 +547,12 @@ impl Captured {
             self.supremacy.fail(failed(self.active[0], reason));
         }
         self.convoys.fail(failed(self.active[1], reason));
-        self.cooldowns.fail(failed(self.active[2], reason));
-        self.rail_buildings.fail(failed(self.active[2], reason));
-        self.edges.fail(failed(self.active[3], reason));
+        // Rails captured by their own job keep that job's outcome.
+        if self.rails_early.take().is_none() {
+            self.cooldowns.fail(failed(self.active[2], reason));
+            self.rail_buildings.fail(failed(self.active[2], reason));
+            self.edges.fail(failed(self.active[3], reason));
+        }
         if !self.raw_mode {
             self.land.fail(failed(self.active[4], reason));
             self.land_groups.fail(failed(self.active[5], reason));
@@ -488,6 +627,7 @@ impl Captured {
             orders_finished: false,
             wings_finished: false,
             source_ticks: [0; 3],
+            rails_early: None,
             active: [true; N],
             raw_mode: false,
             supremacy_raw_mode: false,
@@ -536,12 +676,14 @@ impl Captured {
     fn reset_tables(&mut self) {
         self.supremacy.reset();
         self.convoys.reset();
-        self.cooldowns.reset();
-        self.rail_buildings.reset();
-        self.rail_buildings_required = 0;
-        self.rail_levels.reset();
-        self.rail_hour = None;
-        self.edges.reset();
+        if self.rails_early.is_none() {
+            self.cooldowns.reset();
+            self.rail_buildings.reset();
+            self.rail_buildings_required = 0;
+            self.rail_levels.reset();
+            self.rail_hour = None;
+            self.edges.reset();
+        }
         self.land.reset();
         self.reserved_land_count = None;
         self.reserved_land_required_rows = 0;
@@ -962,17 +1104,19 @@ impl Captured {
         self.source_ticks[1] = self.source_ticks[1].saturating_add(ticks);
     }
 
-    pub fn capture(
+    /// `rails`: the held rail outputs ([`RailStore`]) the Late job lends;
+    /// absent reads every rail info afresh.
+    pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
         game_state: usize,
         current_hour: i32,
         force_full: bool,
+        rails: Option<&mut RailStore>,
     ) -> [u64; N] {
         self.prepare_hour(current_hour, force_full);
         self.reset_tables();
-        self.rail_hour = Some(current_hour);
         let mut ticks = [0; N];
         // Hourly supremacy raw-copy split: on hours with a valid raw payload
         // the game thread stages bytes via `copy_supremacy_refresh` and the
@@ -1002,30 +1146,16 @@ impl Captured {
             self.convoys.outcome = SKIPPED;
         }
 
-        let rail_reads = read_accounting::table(TableId::RailCooldowns);
-        let begin = qpc();
-        let mut levels = crailway_manager::selected_inputs::GrowingLevels {
-            values: &mut self.rail_levels.first,
-            len: 0,
-            required: 0,
+        ticks[2] = match self.rails_early.take() {
+            Some(ticks) => ticks,
+            None => {
+                let mut part = RailPart::vacant();
+                self.swap_rails(&mut part);
+                let ticks = part.capture(memory, base, game_state, current_hour, rails);
+                self.swap_rails(&mut part);
+                ticks
+            }
         };
-        let first = crailway_manager::walk_with_selection_growing(
-            memory,
-            base,
-            game_state,
-            &mut self.cooldowns.rows,
-            &mut self.edges.rows,
-            &mut self.rail_buildings.rows,
-            &mut levels,
-        );
-        self.rail_levels.len = levels.len;
-        self.rail_levels.required = levels.required;
-        self.cooldowns.outcome = bounded(first.rows.provinces, self.cooldowns.rows.len());
-        self.edges.outcome = bounded(first.rows.edges, self.edges.rows.len());
-        self.rail_buildings.outcome = bounded(first.buildings, self.rail_buildings.rows.len());
-        self.rail_buildings_required = first.required;
-        ticks[2] = elapsed(begin);
-        drop(rail_reads);
 
         // Raw-copy split (hourly source-fed naval block): the game thread
         // staged raw bytes and the decode worker replays theatres/OOB before
@@ -1080,6 +1210,30 @@ impl Captured {
             ticks[13] = elapsed(begin);
         }
         ticks
+    }
+
+    /// The shared rail walk (RailCooldowns with its building and selection
+    /// inputs, RailEdges); whether all three outcomes are whole rows.
+    /// Exchanges this pack's rail tables with `part`'s.
+    fn swap_rails(&mut self, part: &mut RailPart) {
+        std::mem::swap(&mut self.cooldowns, &mut part.cooldowns);
+        std::mem::swap(&mut self.rail_buildings, &mut part.rail_buildings);
+        std::mem::swap(
+            &mut self.rail_buildings_required,
+            &mut part.rail_buildings_required,
+        );
+        std::mem::swap(&mut self.rail_levels, &mut part.rail_levels);
+        std::mem::swap(&mut self.rail_hour, &mut part.rail_hour);
+        std::mem::swap(&mut self.edges, &mut part.edges);
+    }
+
+    /// The hour's rail tables, captured by the ScoresRails job: they replace
+    /// this pack's, which `part` takes back as its storage, and the Late
+    /// capture keeps them. Call after the map sample's [`Self::reset`].
+    pub(crate) fn install_rails(&mut self, part: &mut RailPart) {
+        let ticks = part.ticks;
+        self.swap_rails(part);
+        self.rails_early = Some(ticks);
     }
 
     fn capture_theatres(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
@@ -1875,6 +2029,10 @@ pub(crate) const SUNK_N: usize = 1;
 mod sunk;
 #[cfg(test)]
 pub(crate) use sunk::copy_sunk_refresh;
+mod rail_store;
+pub(crate) use rail_store::{RailReuse, RailStore};
+#[cfg(test)]
+mod rail_store_tests;
 pub(crate) use sunk::{SunkCopyContext, SunkCopyReport, SunkJob, copy_sunk_refresh_growing};
 #[cfg(test)]
 pub(crate) use supremacy::copy_supremacy_refresh;

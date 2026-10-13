@@ -59,6 +59,9 @@ pub(super) struct RailwaySource {
     pub cooldown: Input<i32>,
     pub pairs: Input<Array>,
     pub selection: Option<super::selected_inputs::SelectionRow>,
+    /// The walk publishes the info's held building row in its place
+    /// ([`super::RailCarry`]); its building is not read.
+    pub carried: bool,
 }
 
 impl Default for RailwaySource {
@@ -70,6 +73,7 @@ impl Default for RailwaySource {
             cooldown: Err(NOT_READ),
             pairs: Err(NOT_READ),
             selection: None,
+            carried: false,
         }
     }
 }
@@ -303,15 +307,30 @@ pub fn state_fractions(
     sources: &[cstate::Source],
     output: &mut [StateFractionRow],
 ) -> Outcome {
+    state_fractions_carried(memory, base, sources, output, |_| None)
+}
+
+/// [`state_fractions`] where `carried` supplies, by source index, the
+/// fraction of a state the caller proves current; that state's building
+/// status is not read. The shared definition is still read, and its failure
+/// refuses every row as a fresh read does.
+pub fn state_fractions_carried(
+    memory: &impl Memory,
+    base: usize,
+    sources: &[cstate::Source],
+    output: &mut [StateFractionRow],
+    mut carried: impl FnMut(usize) -> Option<Input<i64>>,
+) -> Outcome {
     output.fill(StateFractionRow::default());
     let outcome = capacity(sources.len(), output.len());
     if matches!(outcome, Outcome::Unavailable { .. }) {
         return outcome;
     }
     let mut controls = Controls::default();
-    for (sources, output) in sources[..outcome.len()]
+    for (batch, (sources, output)) in sources[..outcome.len()]
         .chunks(BATCH)
         .zip(output[..outcome.len()].chunks_mut(BATCH))
+        .enumerate()
     {
         for (row, source) in output.iter_mut().zip(sources) {
             row.state = source.id;
@@ -327,7 +346,9 @@ pub fn state_fractions(
         };
         let mut current = Window::new();
         for (index, source) in sources.iter().enumerate() {
-            if source.id == 0 || source.pointer == 0 {
+            if let Some(fraction) = carried(batch * BATCH + index) {
+                output[index].fraction = fraction;
+            } else if source.id == 0 || source.pointer == 0 {
                 output[index].fraction = Err("ETA infrastructure state identity mismatch");
             } else if !definition.enabled {
                 output[index].fraction = Ok(0);
@@ -514,6 +535,9 @@ pub(super) fn railway_buildings(
         for (index, source) in sources.iter().enumerate() {
             output[index].province = source.province;
             output[index].selection = source.selection;
+            if source.carried {
+                continue;
+            }
             match (|| Ok(source.cooldown? <= 0 && source.pairs?.count != 0))() {
                 Ok(true) => eta_demand[index] = true,
                 Ok(false) => output[index].building = Ok(None),

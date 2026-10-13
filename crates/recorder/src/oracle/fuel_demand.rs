@@ -4,7 +4,7 @@ use super::{Report, complete, country_tag, invalid, required_country_tag};
 use installed_content::save::Save;
 use replay::{
     frame::DecodedFrame,
-    rows::{CountryRow, FuelDemandRead, Recorded, tables},
+    rows::{CountryRow, FuelDemandHour, FuelDemandRead, Recorded, TableId, tables},
 };
 use std::{collections::BTreeMap, io};
 
@@ -23,7 +23,13 @@ pub(super) fn compare(
         .flat_map(|theatre| &theatre.definitions)
         .map(|group| (group.id, group))
         .collect();
-    for row in complete::<tables::CountryFuel>(frame)? {
+    // Each pack with its lists, which later formats record apart.
+    let rows = replay::rows::with_demand_parts(
+        complete::<tables::CountryFuel>(frame)?,
+        &frame.tables[TableId::FuelDemandParts.index()],
+        report.format,
+    )?;
+    for row in &rows {
         let label = format!("fuel demand country {}", row.country);
         let Recorded::Value(pack) = &row.demand else {
             report.limitation(
@@ -33,7 +39,13 @@ pub(super) fn compare(
             continue;
         };
         let tag = required_country_tag(row.country, links)?;
-        if pack.hour != frame.hour {
+        // A pack read with its row holds no hour: its row must have been read
+        // at this hour, as a stamped pack must name it.
+        let fresh = match pack.hour {
+            FuelDemandHour::Host => report.read_at_hour(TableId::CountryFuel),
+            FuelDemandHour::Stamped(hour) | FuelDemandHour::Historical(hour) => hour == frame.hour,
+        };
+        if !fresh {
             return Err(invalid(
                 "fuel demand oracle requires its exact supplying hour",
             ));
@@ -161,7 +173,7 @@ pub(super) fn compare(
                 .get(&fleet.reference)
                 .ok_or_else(|| invalid("fuel demand fleet absent from save"))?;
             // The game writes even an empty ordinary fleet name. Unlike the
-            // conditional CUnit task-force name, omission is not empty text.
+            // conditional unit task-force name, omission is not empty text.
             text(
                 report,
                 &format!("{label}.fleet.{:#x}.name", fleet.reference),
@@ -241,7 +253,7 @@ fn conditional_name(
 ) -> io::Result<()> {
     let actual = actual.ok_or_else(|| invalid("fuel demand stored-name capture failed"))?;
     // Unit and formation names gate on stored length;
-    // the game emits the first-NUL prefix, including an emitted empty name.
+    // The game emits the first-NUL prefix, including an emitted empty name.
     let prefix = installed_content::parser::c_string(actual);
     if prefix.len() < actual.len() {
         report.limitation(

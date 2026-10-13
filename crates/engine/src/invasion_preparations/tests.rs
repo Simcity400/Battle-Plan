@@ -327,56 +327,40 @@ fn the_walk_records_invasions_counts_overflow_and_needs_the_census() {
     let visits = [visit(ORDER), visit(0), visit(OTHER)];
     let memo = DefinitionMemo::default();
     let mut rows = [Row::default(); 1];
-    let mut slots = [0_u32; 2];
     let source = Outcome::Rows { len: 2 };
-    let walked = |memory: &Image, gs, rows: &mut [Row], slots: &mut [u32], source| {
+    let walked = |memory: &Image, gs, rows: &mut [Row], source| {
         let mut country_memo = ccountry::NativeReferenceMemo::try_with_capacity(16, 16).unwrap();
         country_memo.reset(0, gs);
         let countries = country_memo.view(memory, 0, gs);
-        walk(
-            memory, 0, gs, &visits, source, &memo, &countries, rows, slots,
-        )
+        walk(memory, 0, gs, &visits, &[], source, &memo, &countries, rows)
     };
     assert_eq!(
-        walked(&memory, GS, &mut rows, &mut slots, source),
+        walked(&memory, GS, &mut rows, source),
         Walk {
-            outcome: Outcome::Rows { len: 1 },
-            slots: 1,
-            required_slots: 1
+            outcome: Outcome::Rows { len: 1 }
         }
     );
-    assert_eq!(rows[0].instance, 9);
+    assert_eq!((rows[0].instance, rows[0].unit_owner), (9, 2));
     assert_eq!(
-        (
-            rows[0].unit_owner,
-            rows[0].zero_relation.co_belligerent,
-            &slots[rows[0].co_belligerent_start..][..rows[0].co_belligerent_len]
-        ),
-        (2, 1, &[2][..])
-    );
-    assert_eq!(
-        walked(&memory, GS, &mut [], &mut slots, source).outcome,
+        walked(&memory, GS, &mut [], source).outcome,
         Outcome::Truncated {
             len: 0,
             unread_rows: 1
         }
     );
-    // Slots that do not fit withhold the row and report the demand.
+    // The owner's relation bytes are CountryCounterInputs': an unreadable
+    // slot-0 status does not reach this walk.
+    let mut unreadable = route_fixture();
+    unreadable.u32(OTHER + corder_instance::TYPE, 1);
+    unreadable.u64(MATRIX, 0);
     assert_eq!(
-        walked(&memory, GS, &mut rows, &mut [], source),
-        Walk {
-            outcome: Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            },
-            slots: 0,
-            required_slots: 1
-        }
+        walked(&unreadable, GS, &mut rows, source).outcome,
+        Outcome::Rows { len: 1 }
     );
     // Without an invasion no country is read.
     memory.u32(ORDER + corder_instance::TYPE, 2);
     assert_eq!(
-        walked(&memory, 0x50_0000, &mut rows, &mut slots, source).outcome,
+        walked(&memory, 0x50_0000, &mut rows, source).outcome,
         Outcome::Rows { len: 0 }
     );
     for source in [
@@ -387,16 +371,53 @@ fn the_walk_records_invasions_counts_overflow_and_needs_the_census() {
         },
     ] {
         assert!(matches!(
-            walked(&memory, GS, &mut rows, &mut slots, source).outcome,
+            walked(&memory, GS, &mut rows, source).outcome,
             Outcome::Unavailable { .. }
         ));
     }
 }
 
+/// The walk acquires its rows in census order, not in the census table's:
+/// with the table holding the second invasion first, the first still
+/// comes first.
 #[test]
-fn invasion_rows_and_owner_relations_grow_before_first_and_later_publication() {
+fn invasion_rows_are_acquired_in_census_order() {
+    let mut memory = route_fixture();
+    let original: Vec<_> = memory
+        .0
+        .range(ORDER..ORDER + 0x400)
+        .map(|(&at, &byte)| (at - ORDER, byte))
+        .collect();
+    let pointers = [0x200_0000, 0x200_0400];
+    for (index, pointer) in pointers.into_iter().enumerate() {
+        for &(offset, byte) in &original {
+            memory.0.insert(pointer + offset, byte);
+        }
+        memory.u32(pointer + corder_instance::ID, index as u32 + 1);
+    }
+    let table = [visit(pointers[1]), visit(pointers[0])];
+    let mut country_memo = ccountry::NativeReferenceMemo::try_with_capacity(16, 16).unwrap();
+    country_memo.reset(0, GS);
+    let countries = country_memo.view(&memory, 0, GS);
     let mut rows = Vec::new();
-    let mut slots = Vec::new();
+    let report = walk_growing(
+        &memory,
+        0,
+        GS,
+        &table,
+        &[1, 0],
+        Outcome::Rows { len: 2 },
+        &DefinitionMemo::default(),
+        &countries,
+        &mut rows,
+    );
+    assert_eq!(report.outcome, Outcome::Rows { len: 2 });
+    assert_eq!([rows[0].instance, rows[1].instance], [1, 2]);
+}
+
+#[test]
+fn invasion_rows_grow_before_first_and_later_publication() {
+    let mut rows = Vec::new();
     for count in [5_000, 7_500] {
         let mut memory = route_fixture();
         let original: Vec<_> = memory
@@ -422,17 +443,15 @@ fn invasion_rows_and_owner_relations_grow_before_first_and_later_publication() {
             0,
             GS,
             &visits,
+            &[],
             Outcome::Rows { len: count },
             &DefinitionMemo::default(),
             &countries,
             &mut rows,
-            &mut slots,
         );
         assert_eq!(report.outcome, Outcome::Rows { len: count });
-        assert_eq!((report.slots, report.required_slots), (1, 1));
-        assert_eq!(slots[0], 2);
         assert_eq!(rows[count - 1].instance, count as u32);
-        assert!(rows[..count].iter().all(|row| row.co_belligerent_len == 1));
+        assert!(rows[..count].iter().all(|row| row.unit_owner == 2));
     }
 }
 
@@ -510,18 +529,17 @@ fn raw_zero_preparation_and_logical_route_owner_need_no_positive_context() {
         0,
         GS,
         &[visit(ORDER)],
+        &[],
         Outcome::Rows { len: 1 },
         &DefinitionMemo::default(),
         &countries,
         &mut rows,
-        &mut [],
     );
     assert_eq!(walked.outcome, Outcome::Rows { len: 1 });
     assert_eq!(rows[0].country_term, -10_000);
     assert_eq!(rows[0].relation_term, None);
     assert_eq!(rows[0].relation_bonus, Some(40_000));
     assert_eq!(rows[0].unit_owner, 0);
-    assert_eq!(rows[0].co_belligerent_len, 0);
     assert_eq!(country_memo.link_required(), 0);
 }
 
