@@ -6,7 +6,7 @@ use crate::{
     hook::{Hook, Threads},
     sampling::{self, ACTIVE, SHARED, Shared},
     spool_phases::Phase,
-    spooling::{Distribution, Processor},
+    spooling::{Distribution, Processor, WallTotals},
 };
 use engine::{
     PINNED_BUILD, build::hash_executable, cgame_state, country_memory::SeedStatus,
@@ -429,6 +429,8 @@ fn replace_status(temp: &Path, path: &Path) -> io::Result<()> {
 
 struct WorkerWork {
     buffer_service: Distribution,
+    recycle_capacities_wait: WallTotals,
+    sizing_capacities_hold: WallTotals,
     idle_flush_calls: u64,
     idle_flush_ns: u64,
     idle_flush_max_ns: u64,
@@ -470,6 +472,8 @@ impl WorkerWork {
     fn new() -> Self {
         Self {
             buffer_service: Distribution::default(),
+            recycle_capacities_wait: WallTotals::default(),
+            sizing_capacities_hold: WallTotals::default(),
             idle_flush_calls: 0,
             idle_flush_ns: 0,
             idle_flush_max_ns: 0,
@@ -478,6 +482,18 @@ impl WorkerWork {
             started_qpc: sampling::qpc(),
             started_cpu_ns: thread_cpu_ns().map_err(|error| error.kind()),
         }
+    }
+
+    fn recycle_capacities<'a>(
+        &mut self,
+        sizing: &'a SizingShared,
+        frequency: u64,
+    ) -> std::sync::MutexGuard<'a, BufferCapacities> {
+        let started = sampling::qpc();
+        let capacities = lock(&sizing.capacities);
+        self.recycle_capacities_wait
+            .record_ticks(sampling::qpc() - started, frequency);
+        capacities
     }
 
     /// Once per status update. CPU time includes all work on the spool thread;
@@ -499,6 +515,10 @@ impl WorkerWork {
         };
         Ok(crate::status::status!({
             "buffer_service": buffer_service,
+            "recycle_capacities_wait": self.recycle_capacities_wait.status(),
+            "recycle_capacities_wait_scope": "spool-thread wait for the capture-capacity mutex while it holds the returning buffer; sizing holds that mutex for raises and idle-buffer growth, and re-reads live table and input hints there only when a concurrent raise changed the observed capacities",
+            "sizing_capacities_hold": self.sizing_capacities_hold.status(),
+            "sizing_capacities_hold_scope": "capacity-mutex hold wall for sizing raises, idle-buffer and combat-hint growth, live-hint capacity copies and publication, and live-hint re-reads after a concurrent raise; excludes the initial live-hint reads, lock acquisition and diagnostic hand-over; runs inline on the spool thread when the sizing thread cannot start",
             "idle_flush": {
                 "calls": self.idle_flush_calls,
                 "total_ns": self.idle_flush_ns,
@@ -2780,10 +2800,15 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 "workers": calibration,
                 "dispatch_ns": shared.acquisition_dispatch_ns.load(Ordering::Relaxed),
                 "join_wait_ns": shared.acquisition_wait_ns.load(Ordering::Relaxed),
-                "join_scope": "sequential game-thread completion spans including bookkeeping and possible exact-target caller execution when the awaited request is still queued; no unrelated queued job is executed by a join",
+                "join_scope": if cfg!(feature = "executor_join_help") {
+                    "sequential game-thread completion spans including bookkeeping, exact-target caller execution of an eligible awaited queued job and helped caller-eligible queued jobs while the awaited job runs; help uses try_lock and skips contention, requires history for both roles and the awaited role mean minus elapsed body time at least twice the candidate role decaying maximum (max(sample, old - old/16)); each join has at most four attempts and spends at most half its first predicted remainder in cumulative candidate maximum costs; bodies have no preemption so this bound is a heuristic"
+                } else {
+                    "sequential game-thread completion spans including bookkeeping and possible exact-target caller execution when the awaited request is still queued"
+                },
                 "join_costs": join_costs_status(shared, phase_calls),
-                "join_costs_scope": "per pool role, over its collected jobs that a participant ran and published (published): those already published when their join began (ready_at_join); per acquired hour, the collector's first wait for the pool's queue mutex in each join (finish_lock_ns_per_hour), the stall from the later of join begin and publication to collection (collect_stall_ns_per_hour: the queue mutex, the wake and rescheduling, none of it job work) and the worker's wait from its body's end to publication (publish_wait_ns_per_hour); and the joins whose stall reached 0.25 and 1 ms (stalls_over_250us, stalls_over_1ms). A role's join wait less its collect stall is the time its join waited on the unfinished body",
+                "join_costs_scope": "per pool role, over its collected published jobs (published): those already published when their join began (ready_at_join); per acquired hour, the collector's first queue-lock wait only when its initial lock-free collection CAS failed (finish_lock_ns_per_hour; zero on the fast path), the stall from the later of join begin and atomic publication to collection (collect_stall_ns_per_hour: atomic handoff, address wake and rescheduling; optional helped bodies can also defer collection) and completion bookkeeping from body end to atomic publication (publish_wait_ns_per_hour; failures also stop/cancel under the queue mutex); and joins whose stall reached 0.25 and 1 ms (stalls_over_250us, stalls_over_1ms). With join help disabled, a role's join wait less its collect stall is time waiting on its unfinished body",
                 "table_costs_overlap": true,
+                "pool_bytes_scope": "reserved collector storage; executor bytes count its actual Arc shared allocation, payload cells, atomic words, metadata and ready-queue capacities, thread-id and join-handle capacities, boxed runner and enabled help history arrays",
                 "country_snapshot_scope": "one immutable country authentication snapshot shared with acquisition workers; production-rest acquires fresh country inputs for its discovery builder and validates its current read plan; payload counted once in pool_bytes; preparation charged once to Countries; worker calibration reports the borrowed snapshot status",
                 "world_country_cache": world.country_cache,
                 "world_acquisition_ns": shared.ns(i64::try_from(world.acquisition_ticks).unwrap_or(i64::MAX)),
@@ -4030,9 +4055,9 @@ fn spool_loop(
                     .map(|clock| clock.play_session_started_at),
                 failed_hour: frame.clock.as_ref().map(|clock| clock.hour),
             });
-            // The shared CountryIntel buffer grows through whichever frame
-            // returns it, so its bytes are part of every growth delta.
-            let before_bytes = frame.allocated_bytes() + shared.country_intel.allocated_bytes();
+            // Only this frame is owned across conversion. Shared CountryIntel
+            // growth is sampled under the capacity lock when it returns.
+            let before_bytes = frame.allocated_bytes();
             if !shared.roster_ready.load(Ordering::Acquire) {
                 // A readable entry clock publishes the roster before its
                 // buffer. These early callbacks have no attributable
@@ -4181,37 +4206,9 @@ fn spool_loop(
             if pending_write.is_none() {
                 crate::allocation::attempted_hour(None);
             }
-            let mut capacities = lock(&sizing.sizing.capacities);
-            let previous_capacities = *capacities;
-            let _ = capacities
-                .extended
-                .combat_progress
-                .presize(&live, shared.base);
-            frame.grow(&mut capacities.core);
-            frame.map.grow(&mut capacities.map);
-            let states = capacities.core[3];
-            capacities.extended.raise_for_states(states);
-            frame.extended.grow(&mut capacities.extended);
-            let after_bytes = frame.allocated_bytes() + shared.country_intel.allocated_bytes();
-            if after_bytes >= before_bytes {
-                shared
-                    .pool_bytes
-                    .fetch_add((after_bytes - before_bytes) as u64, Ordering::Relaxed);
-            } else {
-                shared
-                    .pool_bytes
-                    .fetch_sub((before_bytes - after_bytes) as u64, Ordering::Relaxed);
-            }
-            if previous_capacities != *capacities {
-                // Grow every idle buffer under its queue-index lease so old
-                // capacities do not repeat the same truncation on later hours.
-                capacities.grow_idle(shared);
-            }
-            drop(capacities);
-            if let SeedStatus::Capacity { required_cells } = frame.country_cache_status {
-                shared.offer_country_cache(required_cells);
-            }
-            shared.recycle_frame_prepared(index);
+            sizing
+                .sizing
+                .recycle_frame(shared, index, before_bytes, &mut work);
             work.buffer_service
                 .record_ticks(sampling::qpc() - service_started, shared.frequency);
             span.finish();
@@ -4239,7 +4236,7 @@ fn spool_loop(
         if crate::allocation::failed() {
             return Err("collector allocation failed");
         }
-        sizing.spool_pass(shared, &mut processor)?;
+        sizing.spool_pass(shared, &mut processor, &mut work)?;
         let span = phases.span(Phase::Flush);
         if crate::allocation::failed() {
             return Err("collector allocation failed");
@@ -4387,7 +4384,10 @@ fn spool_loop(
 
 /// Capture-buffer capacities. The spool thread raises them as it returns a
 /// buffer that ran short, and the sizing thread from live demand; whoever
-/// raises them grows every idle buffer while holding the lock.
+/// raises them grows every idle buffer while holding the lock. Live table and
+/// input hints read a copy outside it, published if unchanged or re-read under
+/// the lock after a concurrent raise. The spool publishes its grown returning
+/// buffer to the free queue under the same lock before growing idle buffers.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct BufferCapacities {
     core: [usize; 12],
@@ -4422,11 +4422,17 @@ struct PendingSizing {
     errors: u64,
     last_error: Option<&'static str>,
     game_score: Vec<engine::game_score_inputs::ArenaSizing>,
+    capacities_hold: WallTotals,
 }
+
+#[cfg(test)]
+type RecycleIdleCheck = Box<dyn FnOnce(&SizingShared, &Shared) + Send>;
 
 /// State the spool thread shares with its sizing thread.
 struct SizingShared {
     capacities: Mutex<BufferCapacities>,
+    #[cfg(test)]
+    before_recycle_idle_growth: Mutex<Option<RecycleIdleCheck>>,
     stop: AtomicBool,
     /// A terminal sizing failure, which ends the spool thread.
     failure: OnceLock<&'static str>,
@@ -4445,6 +4451,8 @@ impl SizingShared {
     fn new(capacities: BufferCapacities, state: Option<SizingState>) -> Self {
         Self {
             capacities: Mutex::new(capacities),
+            #[cfg(test)]
+            before_recycle_idle_growth: Mutex::new(None),
             stop: AtomicBool::new(false),
             failure: OnceLock::new(),
             pending: Mutex::new(PendingSizing::default()),
@@ -4467,12 +4475,118 @@ impl SizingShared {
     /// Raise the capacities under their lock; grow every idle buffer when
     /// the step raised any.
     fn raise<R>(&self, shared: &Shared, step: impl FnOnce(&mut BufferCapacities) -> R) -> R {
-        let mut capacities = lock(&self.capacities);
-        let before = *capacities;
-        let result = step(&mut capacities);
-        if *capacities != before {
+        self.with_capacities(shared, |capacities| {
+            let before = *capacities;
+            let result = step(capacities);
+            if *capacities != before {
+                capacities.grow_idle(shared);
+            }
+            result
+        })
+    }
+
+    /// Observe the once-a-second table and live-input hints outside the lock.
+    /// Publish the proposal only if its starting capacities still hold;
+    /// otherwise re-read once under the lock, using only that attempt's errors.
+    /// A fallback repeats character roster, role, trait and advisor definition
+    /// hints (monotonic maxima), advisor modifier hints and advisor-pool
+    /// preparation (monotonic hints and owned pools), land-event preparation
+    /// (monotonic word demand and checked pending storage), and DemandFailures
+    /// updates in table_demand.rs and the live-input readers. Those diagnostics
+    /// count read attempts, including the fallback, as their scope states.
+    /// Session errors are reported once from the published attempt after release.
+    fn raise_from_live_observation(
+        &self,
+        shared: &Shared,
+        mut observe: impl FnMut(&mut BufferCapacities) -> [Option<&'static str>; 2],
+    ) {
+        let before = self.with_capacities(shared, |capacities| *capacities);
+        let mut proposal = before;
+        let failures = observe(&mut proposal);
+        let failures = self.with_capacities(shared, |capacities| {
+            let current = *capacities;
+            let failures = if current == before {
+                *capacities = proposal;
+                failures
+            } else {
+                observe(capacities)
+            };
+            if *capacities != current {
+                capacities.grow_idle(shared);
+            }
+            failures
+        });
+        for reason in failures.into_iter().flatten() {
+            self.error(reason);
+        }
+    }
+
+    /// Grow and publish the spool's returning buffer under one capacity hold,
+    /// then grow idle buffers if its observed demand changed the capacities.
+    fn recycle_frame(
+        &self,
+        shared: &Shared,
+        index: usize,
+        before_frame_bytes: usize,
+        work: &mut WorkerWork,
+    ) {
+        let live = unsafe { LiveMemory::new() };
+        let mut capacities = work.recycle_capacities(self, shared.frequency);
+        // Idle growth may have already charged shared storage while this frame
+        // converted. Count only its change during this capacity hold.
+        let before_shared_bytes = shared.country_intel.allocated_bytes();
+        let previous = *capacities;
+        let _ = capacities
+            .extended
+            .combat_progress
+            .presize(&live, shared.base);
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        frame.grow(&mut capacities.core);
+        frame.map.grow(&mut capacities.map);
+        let states = capacities.core[3];
+        capacities.extended.raise_for_states(states);
+        frame.extended.grow(&mut capacities.extended);
+        let before = before_frame_bytes + before_shared_bytes;
+        let after = frame.allocated_bytes() + shared.country_intel.allocated_bytes();
+        if after >= before {
+            shared
+                .pool_bytes
+                .fetch_add((after - before) as u64, Ordering::Relaxed);
+        } else {
+            shared
+                .pool_bytes
+                .fetch_sub((before - after) as u64, Ordering::Relaxed);
+        }
+        if let SeedStatus::Capacity { required_cells } = frame.country_cache_status {
+            shared.offer_country_cache(required_cells);
+        }
+        shared.recycle_frame_prepared(index);
+        if *capacities != previous {
+            #[cfg(test)]
+            {
+                let check = lock(&self.before_recycle_idle_growth).take();
+                if let Some(check) = check {
+                    check(self, shared);
+                }
+            }
             capacities.grow_idle(shared);
         }
+    }
+
+    /// Time only sizing work under the capacity mutex, reporting after release.
+    fn with_capacities<R>(
+        &self,
+        shared: &Shared,
+        step: impl FnOnce(&mut BufferCapacities) -> R,
+    ) -> R {
+        let mut capacities = lock(&self.capacities);
+        let started = sampling::qpc();
+        let result = step(&mut capacities);
+        let elapsed = sampling::qpc() - started;
+        drop(capacities);
+        lock(&self.pending)
+            .capacities_hold
+            .record_ticks(elapsed, shared.frequency);
         result
     }
 }
@@ -4527,12 +4641,18 @@ impl SizingThread {
     /// Called by the spool thread once per pass: record what the sizing
     /// thread observed, hand it the current allocation context and run the
     /// pass here when the thread could not start.
-    fn spool_pass(&self, shared: &Shared, processor: &mut Processor) -> Result<(), &'static str> {
+    fn spool_pass(
+        &self,
+        shared: &Shared,
+        processor: &mut Processor,
+        work: &mut WorkerWork,
+    ) -> Result<(), &'static str> {
         let span = crate::spool_phases::SPOOL.span(Phase::Sizing);
         if let Some(&failure) = self.sizing.failure.get() {
             return Err(failure);
         }
         let pending = std::mem::take(&mut *lock(&self.sizing.pending));
+        work.sizing_capacities_hold.merge(pending.capacities_hold);
         if let Some(reason) = pending.last_error {
             processor.observe_input_demand_errors(pending.errors, reason);
         }
@@ -4697,24 +4817,20 @@ fn sizing_pass(
     crate::building_bombing::presize(0);
     crate::nuclear_strikes::presize(0);
     crate::land_events::prepare();
+    let air_loss_capacity = crate::air_losses::capacity();
+    let bombing_capacity = crate::building_bombing::capacity();
+    let nuclear_capacity = crate::nuclear_strikes::capacity();
+    let land_event_capacity = crate::land_events::capacity();
     sizing.raise(shared, |capacities| {
         let extended = &mut capacities.extended;
-        extended.air_losses.events = extended
-            .air_losses
-            .events
-            .max(crate::air_losses::capacity());
-        extended.building_bombing = extended
-            .building_bombing
-            .max(crate::building_bombing::capacity());
-        extended.nuclear_strikes = extended
-            .nuclear_strikes
-            .max(crate::nuclear_strikes::capacity());
-        extended.land_events.words = extended
-            .land_events
-            .words
-            .max(crate::land_events::capacity());
-        extended.operation_outcomes.prepare();
+        extended.air_losses.events = extended.air_losses.events.max(air_loss_capacity);
+        extended.building_bombing = extended.building_bombing.max(bombing_capacity);
+        extended.nuclear_strikes = extended.nuclear_strikes.max(nuclear_capacity);
+        extended.land_events.words = extended.land_events.words.max(land_event_capacity);
     });
+    let operations =
+        sizing.with_capacities(shared, |capacities| capacities.extended.operation_outcomes);
+    operations.prepare();
     crate::experience_gains::prepare(registry.slots);
     crate::line_output::collect();
     crate::construction_ic::collect();
@@ -4777,13 +4893,18 @@ fn sizing_pass(
     // tick; presize every buffer while the game is still loading. Sizing
     // only grows, so a larger region roster alone repeats it harmlessly.
     if let Ok(bytes) = crate::extended::weather::observe_display_capacity(&live, base) {
-        sizing.raise(shared, |capacities| {
+        let changed = sizing.raise(shared, |capacities| {
             let display = &mut capacities.extended.weather.display_bytes;
             if bytes > *display {
                 *display = bytes;
-                decode::presize_weather_jobs();
+                true
+            } else {
+                false
             }
         });
+        if changed {
+            decode::presize_weather_jobs();
+        }
     }
     if let Some((slots, regions)) = registry.poll(&live, base) {
         crate::country_scale::note_slots(slots);
@@ -4799,7 +4920,7 @@ fn sizing_pass(
         crate::world_input_changes::presize(slots);
         crate::history_changes::presize(slots, regions);
         decode::presize_country_pools();
-        sizing.raise(shared, |capacities| {
+        let country_cells = sizing.raise(shared, |capacities| {
             let mut raised = crate::country_scale::Sizing {
                 core: capacities.core,
                 map: capacities.map,
@@ -4809,11 +4930,12 @@ fn sizing_pass(
             };
             raised.raise_for_slots(slots);
             raised.extended.raise_for_regions(regions);
-            shared.offer_country_cache(raised.country_cells);
             capacities.core = raised.core;
             capacities.map = raised.map;
             capacities.extended = raised.extended;
+            raised.country_cells
         });
+        shared.offer_country_cache(country_cells);
     }
     if once_a_second {
         if let Err(reason) = crate::construction_ic::presize_from_live(&live, base) {
@@ -4825,44 +4947,33 @@ fn sizing_pass(
             crate::building_bombing::buildings().saturating_add(registry.slots),
         );
         let source = crate::country_scale::source_demand::Demand::observe(&live, base);
-        // The table and live input hints read live demand while raising, so
-        // a buffer return on the spool thread waits for them.
-        let failures = sizing.raise(shared, |capacities| {
-            let mut failures = [None; 3];
+        let air_loss_capacity = crate::air_losses::capacity();
+        let bombing_capacity = crate::building_bombing::capacity();
+        let nuclear_capacity = crate::nuclear_strikes::capacity();
+        sizing.raise(shared, |capacities| {
             let extended = &mut capacities.extended;
-            extended.air_losses.events = extended
-                .air_losses
-                .events
-                .max(crate::air_losses::capacity());
-            extended.building_bombing = extended
-                .building_bombing
-                .max(crate::building_bombing::capacity());
-            extended.nuclear_strikes = extended
-                .nuclear_strikes
-                .max(crate::nuclear_strikes::capacity());
-            match source {
-                Ok(Some(demand)) => {
-                    demand.apply_parts(&mut capacities.core, &mut capacities.extended)
-                }
-                Ok(None) => {}
-                Err(reason) => failures[0] = Some(reason),
+            extended.air_losses.events = extended.air_losses.events.max(air_loss_capacity);
+            extended.building_bombing = extended.building_bombing.max(bombing_capacity);
+            extended.nuclear_strikes = extended.nuclear_strikes.max(nuclear_capacity);
+            if let Ok(Some(demand)) = &source {
+                demand.apply_parts(&mut capacities.core, &mut capacities.extended);
             }
-            if let Err(reason) = crate::country_scale::presize_table_inputs(
-                &live,
-                base,
-                &mut capacities.map,
-                &mut capacities.extended,
-            ) {
-                failures[1] = Some(reason);
-            }
-            if let Err(reason) = capacities.extended.presize_live_inputs(&live, base) {
-                failures[2] = Some(reason);
-            }
-            failures
         });
-        for reason in failures.into_iter().flatten() {
+        if let Err(reason) = source {
             sizing.error(reason);
         }
+        sizing.raise_from_live_observation(shared, |capacities| {
+            [
+                crate::country_scale::presize_table_inputs(
+                    &live,
+                    base,
+                    &mut capacities.map,
+                    &mut capacities.extended,
+                )
+                .err(),
+                capacities.extended.presize_live_inputs(&live, base).err(),
+            ]
+        });
         // The live pool census sizes storage only; observe it once a second
         // rather than every idle pass.
         crate::equipment_destruction::prepare(&live, base, registry.slots);
@@ -4913,7 +5024,7 @@ fn sizing_pass(
         for reason in demand.map_refusals() {
             sizing.error(reason);
         }
-        sizing.raise(shared, |capacities| {
+        let port_failure = sizing.raise(shared, |capacities| {
             let mut raised = crate::country_scale::Sizing {
                 core: capacities.core,
                 map: capacities.map,
@@ -4934,21 +5045,22 @@ fn sizing_pass(
                 .extended
                 .naval_counters
                 .raise_for_supply_origins(demand.navies.supply_origins);
-            if let Err(reason) = raised
+            let failure = raised
                 .extended
                 .naval_counters
                 .raise_for_port(demand.navies.port)
-            {
-                sizing.error(reason);
-            }
-            if let Some(reason) = demand.navies.refusal() {
-                sizing.error(reason);
-            }
+                .err();
             // The map hint raises the core and extended capacities.
             capacities.core = raised.core;
             capacities.extended = raised.extended;
-            Ok(())
-        })?;
+            failure
+        });
+        for reason in [port_failure, demand.navies.refusal()]
+            .into_iter()
+            .flatten()
+        {
+            sizing.error(reason);
+        }
     }
     if let Some(demand) = sizing
         .demand(registry.poll_presentation_census(&live, base))
@@ -4976,11 +5088,11 @@ fn sizing_pass(
             })?;
             pending.game_score.push(observed);
         }
-        sizing.raise(shared, |capacities| {
-            if capacities.extended.game_score.raise(demand) {
-                decode::presize_country_pools();
-            }
-        });
+        if sizing.raise(shared, |capacities| {
+            capacities.extended.game_score.raise(demand)
+        }) {
+            decode::presize_country_pools();
+        }
     }
     if let Some(demand) = sizing.demand(registry.poll_raids(&live, base)).flatten() {
         for reason in demand.failures.into_iter().flatten() {
@@ -5016,8 +5128,10 @@ fn sizing_pass(
                 .country_counters
                 .raise_for_pride_names(demand.pride_name_bytes);
             capacities.extended.raise_for_politics(demand);
-            capacities.extended.operation_outcomes.prepare();
         });
+        let operations =
+            sizing.with_capacities(shared, |capacities| capacities.extended.operation_outcomes);
+        operations.prepare();
     }
     if let Some(slots) = sizing
         .demand(registry.poll_reserved_visibility(&live, base))
@@ -5031,13 +5145,14 @@ fn sizing_pass(
         for reason in hints.failures.into_iter().flatten() {
             sizing.error(reason);
         }
-        let capacities = lock(&sizing.capacities);
-        grow_combat_hints(
-            shared,
-            &capacities.extended,
-            &hints,
-            &mut state.applied_combat_hints,
-        );
+        sizing.with_capacities(shared, |capacities| {
+            grow_combat_hints(
+                shared,
+                &capacities.extended,
+                &hints,
+                &mut state.applied_combat_hints,
+            );
+        });
     }
     span.finish();
     if once_a_second {
@@ -5166,7 +5281,7 @@ fn background_priority_status() -> impl serde::Serialize {
         "lowered": PRIORITY_LOWERED.load(Ordering::Relaxed),
         "raised_for_backlog": PRIORITY_RAISED.load(Ordering::Relaxed),
         "failures": PRIORITY_FAILURES.load(Ordering::Relaxed),
-        "scope": "cumulative priority changes of the decode, spool and spool helper threads: below normal while idle or keeping up, normal while every reusable capture buffer but at most one is in flight (the game thread may then be waiting for them); dynamic wake-up boosts are disabled, so none runs above that base priority; failures keep the previous priority",
+        "scope": "cumulative priority changes of the decode, spool, spool helper and sizing threads: below normal while idle or keeping up, normal with at most two of the four reusable buffers free (the game thread may then be waiting for them); dynamic wake-up boosts are disabled, so none runs above that base priority; failures keep the previous priority",
     })
 }
 
@@ -5194,11 +5309,53 @@ mod tests {
     }
 
     #[test]
+    fn capacity_mutex_costs_reach_spool_status_once_per_call() {
+        let directory =
+            std::env::temp_dir().join(format!("hoi4-capacity-mutex-status-{}", std::process::id()));
+        let mut processor = crate::spooling::spool_failure_fixture(&directory).unwrap();
+        let (shared, sizing) = sizing_fixture();
+        let mut work = WorkerWork::new();
+        let returning = shared.take_frame(&mut 0).unwrap();
+        let frame = unsafe { &*shared.frames[returning].load(Ordering::Acquire) };
+        let before = frame.allocated_bytes();
+        sizing
+            .sizing
+            .recycle_frame(&shared, returning, before, &mut work);
+        let recycle_calls =
+            serde_json::to_value(work.recycle_capacities_wait.status()).unwrap()["calls"]
+                .as_u64()
+                .unwrap();
+        assert_eq!(recycle_calls, 1);
+        for _ in 0..2 {
+            sizing.sizing.raise(&shared, |_| {});
+        }
+        sizing.sizing.with_capacities(&shared, |_| {});
+        for _ in 0..2 {
+            sizing
+                .spool_pass(&shared, &mut processor, &mut work)
+                .unwrap();
+            let status = serde_json::to_value(
+                processor
+                    .status_with_work(work.status(0, shared.frequency).unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                status["spool_work"]["recycle_capacities_wait"]["calls"],
+                recycle_calls
+            );
+            assert_eq!(status["spool_work"]["sizing_capacities_hold"]["calls"], 3);
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn the_spool_records_sizing_observations_once_and_ends_on_a_sizing_failure() {
         let directory =
             std::env::temp_dir().join(format!("hoi4-sizing-handoff-{}", std::process::id()));
         let mut processor = crate::spooling::spool_failure_fixture(&directory).unwrap();
         let (shared, sizing) = sizing_fixture();
+        let mut work = WorkerWork::new();
         sizing.sizing.error("first sizing refusal");
         sizing.sizing.error("second sizing refusal");
         lock(&sizing.sizing.pending)
@@ -5209,14 +5366,18 @@ mod tests {
             ..Default::default()
         };
         crate::allocation::set_context(context);
-        sizing.spool_pass(&shared, &mut processor).unwrap();
+        sizing
+            .spool_pass(&shared, &mut processor, &mut work)
+            .unwrap();
         // A terminal allocation failure on the sizing thread names the
         // spool thread's latest campaign context.
         assert_eq!(lock(&sizing.sizing.context).failed_hour, Some(7));
         crate::allocation::set_context(Default::default());
         for pass in 0..2 {
             if pass != 0 {
-                sizing.spool_pass(&shared, &mut processor).unwrap();
+                sizing
+                    .spool_pass(&shared, &mut processor, &mut work)
+                    .unwrap();
             }
             let status = serde_json::to_value(processor.status().unwrap()).unwrap();
             assert_eq!(status["input_demand_errors"], 2);
@@ -5225,7 +5386,7 @@ mod tests {
         }
         let _ = sizing.sizing.failure.set("synthetic sizing failure");
         assert_eq!(
-            sizing.spool_pass(&shared, &mut processor).err(),
+            sizing.spool_pass(&shared, &mut processor, &mut work).err(),
             Some("synthetic sizing failure")
         );
         let _ = fs::remove_dir_all(&directory);
@@ -5256,6 +5417,186 @@ mod tests {
         assert!(capacities.extended.equipment_destruction >= 64);
         // Every idle buffer was returned after growing.
         assert_eq!(shared.free.len(), sampling::BUFFERS);
+    }
+
+    fn assert_idle_war_and_faction_capacities(shared: &Shared, sizing: &SizingShared) {
+        let capacities = *lock(&sizing.capacities);
+        assert_eq!(shared.free.len(), sampling::BUFFERS);
+        for frame in &shared.frames {
+            let frame = unsafe { &*frame.load(Ordering::Acquire) };
+            assert!(frame.wars.len() >= capacities.core[5]);
+            assert!(frame.factions.len() >= capacities.core[6]);
+        }
+    }
+
+    #[test]
+    fn live_observation_releases_capacity_mutex_and_grows_idle_buffers() {
+        let (shared, thread) = sizing_fixture();
+        let sizing = &thread.sizing;
+        let wars = lock(&sizing.capacities).core[5] + 8;
+        let mut reads = 0;
+        sizing.raise_from_live_observation(&shared, |capacities| {
+            reads += 1;
+            assert!(sizing.capacities.try_lock().is_ok());
+            capacities.core[5] = wars;
+            [None, None]
+        });
+        assert_eq!(reads, 1);
+        assert_eq!(lock(&sizing.capacities).core[5], wars);
+        assert_eq!(lock(&sizing.pending).errors, 0);
+        assert_idle_war_and_faction_capacities(&shared, sizing);
+    }
+
+    #[test]
+    fn live_observation_rereads_under_lock_and_reports_only_published_failures() {
+        let (shared, thread) = sizing_fixture();
+        let sizing = &thread.sizing;
+        let initial = *lock(&sizing.capacities);
+        let wars = initial.core[5] + 8;
+        let factions = initial.core[6] + 8;
+        let mut reads = 0;
+        sizing.raise_from_live_observation(&shared, |capacities| {
+            reads += 1;
+            assert_eq!(lock(&sizing.pending).errors, 0);
+            if reads == 1 {
+                assert!(sizing.capacities.try_lock().is_ok());
+                capacities.core[5] = wars + 8;
+                std::thread::scope(|scope| {
+                    scope
+                        .spawn(|| {
+                            sizing.raise(&shared, |capacities| {
+                                capacities.core[6] = factions;
+                            });
+                        })
+                        .join()
+                        .unwrap();
+                });
+                [Some("unpublished table hint failure"), None]
+            } else {
+                assert_eq!(reads, 2);
+                assert!(matches!(
+                    sizing.capacities.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                assert_eq!(capacities.core[5], initial.core[5]);
+                assert_eq!(capacities.core[6], factions);
+                capacities.core[5] = wars;
+                [None, Some("published live-input hint failure")]
+            }
+        });
+        assert_eq!(reads, 2);
+        let published = *lock(&sizing.capacities);
+        assert_eq!(published.core[5], wars);
+        assert_eq!(published.core[6], factions);
+        assert_idle_war_and_faction_capacities(&shared, sizing);
+        let pending = lock(&sizing.pending);
+        assert_eq!(pending.errors, 1);
+        assert_eq!(
+            pending.last_error,
+            Some("published live-input hint failure")
+        );
+    }
+
+    #[test]
+    fn recycle_publishes_grown_returning_buffer_before_idle_growth() {
+        let (shared, thread) = sizing_fixture();
+        let sizing = &thread.sizing;
+        let returning = shared.take_frame(&mut 0).unwrap();
+        let wars = lock(&sizing.capacities).core[5] + 8;
+        let frame = unsafe { &mut *shared.frames[returning].load(Ordering::Acquire) };
+        frame.wars_result = engine::walk::Outcome::Truncated {
+            len: 0,
+            unread_rows: wars as u32,
+        };
+        let before = frame.allocated_bytes();
+        let checked = Arc::new(AtomicBool::new(false));
+        let check_seen = Arc::clone(&checked);
+        *lock(&sizing.before_recycle_idle_growth) = Some(Box::new(move |sizing, shared| {
+            assert!(matches!(
+                sizing.capacities.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            assert_eq!(shared.free.len(), sampling::BUFFERS);
+            let free: [_; sampling::BUFFERS] = std::array::from_fn(|_| shared.free.pop().unwrap());
+            assert!(free.contains(&returning));
+            for index in free {
+                let frame = unsafe { &*shared.frames[index].load(Ordering::Acquire) };
+                if index == returning {
+                    assert!(frame.wars.len() >= wars);
+                } else {
+                    assert!(frame.wars.len() < wars);
+                }
+                shared.recycle_frame(index);
+            }
+            check_seen.store(true, Ordering::Relaxed);
+        }));
+        sizing.recycle_frame(&shared, returning, before, &mut WorkerWork::new());
+        assert!(checked.load(Ordering::Relaxed));
+        assert!(lock(&sizing.capacities).core[5] >= wars);
+        assert_idle_war_and_faction_capacities(&shared, sizing);
+    }
+
+    #[test]
+    fn recycle_counts_country_intel_growth_during_conversion_once() {
+        let (shared, thread) = sizing_fixture();
+        let sizing = &thread.sizing;
+        // This fixture has no workers. Include every frame's actual allocation
+        // and the one shared Home, independently of the charged pool total.
+        let allocated_bytes = || {
+            shared
+                .frames
+                .iter()
+                .map(|frame| unsafe { &*frame.load(Ordering::Acquire) }.allocated_bytes())
+                .sum::<usize>()
+                + shared.country_intel.allocated_bytes()
+        };
+        let allocated_before = allocated_bytes();
+        let pool_before = shared.pool_bytes.load(Ordering::Relaxed);
+        let shared_before = shared.country_intel.allocated_bytes();
+        let returning = shared.take_frame(&mut 0).unwrap();
+        let frame = unsafe { &*shared.frames[returning].load(Ordering::Acquire) };
+        // A fresh frame has no CountryIntel loan: Home is free for idle growth.
+        let before_frame_bytes = frame.allocated_bytes();
+        let initial = *lock(&sizing.capacities);
+        let wars = initial.core[5] + 8;
+        let intel_rows = initial.extended.intel.rows[15] + 8;
+
+        // Model a sizing raise during A's conversion with the real growth path.
+        sizing.raise(&shared, |capacities| {
+            capacities.core[5] = wars;
+            capacities.extended.raise_for_country_intel(intel_rows);
+        });
+        assert_eq!(shared.free.len(), sampling::BUFFERS - 1);
+        assert_eq!(frame.allocated_bytes(), before_frame_bytes);
+        let shared_after_idle = shared.country_intel.allocated_bytes();
+        assert!(shared_after_idle > shared_before);
+        let allocated_after_idle = allocated_bytes();
+        assert!(allocated_after_idle - allocated_before > shared_after_idle - shared_before);
+        let pool_after_idle = shared.pool_bytes.load(Ordering::Relaxed);
+        assert_eq!(
+            pool_after_idle - pool_before,
+            (allocated_after_idle - allocated_before) as u64
+        );
+
+        sizing.recycle_frame(
+            &shared,
+            returning,
+            before_frame_bytes,
+            &mut WorkerWork::new(),
+        );
+        assert_eq!(shared.country_intel.allocated_bytes(), shared_after_idle);
+        let allocated_after_return = allocated_bytes();
+        assert!(allocated_after_return > allocated_after_idle);
+        let pool_after_return = shared.pool_bytes.load(Ordering::Relaxed);
+        assert_eq!(
+            pool_after_return - pool_after_idle,
+            (allocated_after_return - allocated_after_idle) as u64
+        );
+        assert_eq!(
+            pool_after_return - pool_before,
+            (allocated_after_return - allocated_before) as u64
+        );
+        assert_idle_war_and_faction_capacities(&shared, sizing);
     }
 
     #[test]

@@ -614,6 +614,41 @@ pub struct CountryWalk {
     pub required_bytes: usize,
 }
 
+/// Diagnostic QPC ticks for inputs, children, candidates and pairing/emission.
+/// The caller supplies its existing job start; each boundary becomes the next
+/// phase's start, so a complete country costs four clock reads. Setup and
+/// between-country bookkeeping are charged to inputs. No row depends on time.
+pub struct WalkTiming {
+    ticks: [u64; 4],
+    previous: i64,
+}
+
+impl WalkTiming {
+    pub fn new(started: i64) -> Self {
+        Self {
+            ticks: [0; 4],
+            previous: started,
+        }
+    }
+
+    fn boundary(&mut self, phase: usize) {
+        self.record_at(phase, crate::clock::qpc());
+    }
+
+    fn record_at(&mut self, phase: usize, ended: i64) {
+        self.ticks[phase] =
+            self.ticks[phase].saturating_add(ended.saturating_sub(self.previous).max(0) as u64);
+        self.previous = ended;
+    }
+
+    /// End the job with its existing final clock read, including a refusal
+    /// before any country was reached. The remaining bookkeeping is inputs.
+    pub fn finish_at(mut self, ended: i64) -> [u64; 4] {
+        self.record_at(0, ended);
+        self.ticks
+    }
+}
+
 /// Reads one authenticated country. On error nothing is written.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_country<M: Memory>(
@@ -640,6 +675,7 @@ pub fn walk_country<M: Memory>(
         Buffer::Fixed(bytes),
         0,
         0,
+        None,
     )
 }
 
@@ -672,6 +708,7 @@ pub fn walk_country_growing<M: Memory>(
         Buffer::Growing(bytes),
         line_start,
         byte_start,
+        None,
     )
 }
 
@@ -705,6 +742,42 @@ pub fn walk_country_growing_memo<M: Memory>(
         Buffer::Growing(bytes),
         line_start,
         byte_start,
+        None,
+    )
+}
+
+/// The hourly-memo worker walk with optional diagnostics kept out of the
+/// ordinary walker and benchmarks. Refused phases retain their elapsed ticks.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_country_growing_memo_timed<M: Memory>(
+    memory: &M,
+    base: usize,
+    countries: &ccountry::Reader<'_, M>,
+    country: ccountry::Country,
+    context: &Context,
+    memo: &mut Memo,
+    scratch: &mut Scratch,
+    input: &mut InputRow,
+    lines: &mut Vec<LineRow>,
+    bytes: &mut Vec<u8>,
+    line_start: usize,
+    byte_start: usize,
+    timing: &mut WalkTiming,
+) -> Result<CountryWalk, &'static str> {
+    walk_country_buffers(
+        memo,
+        memory,
+        base,
+        countries,
+        country,
+        context,
+        scratch,
+        input,
+        Buffer::Growing(lines),
+        Buffer::Growing(bytes),
+        line_start,
+        byte_start,
+        Some(timing),
     )
 }
 
@@ -722,26 +795,49 @@ fn walk_country_buffers<M: Memory>(
     bytes: Buffer<'_, u8>,
     line_start: usize,
     byte_start: usize,
+    mut timing: Option<&mut WalkTiming>,
 ) -> Result<CountryWalk, &'static str> {
     // Keep the input acquisitions separate: read_children must reobserve its
     // header so the existing changed-tree consistency check remains reachable.
     scratch.batch_fallbacks = 0;
-    *input = inputs(memory, base, countries, country, context)?;
+    let acquired_input = inputs(memory, base, countries, country, context);
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.boundary(0);
+    }
+    *input = acquired_input?;
     // The original acquisitions still run in place. Filtered modifier addition
     // clones each child's own entries and text; pairing reuses those exact
     // observations without another copy.
     let mut observations = std::mem::take(&mut scratch.observations);
     let memory = Observed::new(memory, &mut observations, memo);
     let result = (|| {
-        let children = read_children(&memory, base, country.pointer, context, scratch)?;
-        if children != input.children as usize {
-            return Err("country modifier tree changed during the walk");
+        let children =
+            read_children(&memory, base, country.pointer, context, scratch).and_then(|children| {
+                if children != input.children as usize {
+                    Err("country modifier tree changed during the walk")
+                } else {
+                    Ok(children)
+                }
+            });
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.boundary(1);
         }
-        let candidates = candidates(&memory, base, country, context, scratch)?;
-        pair(&memory, scratch, children, candidates)?;
-        emit(
-            &memory, country.id, context, scratch, children, lines, bytes, line_start, byte_start,
-        )
+        let children = children?;
+        let candidates = candidates(&memory, base, country, context, scratch);
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.boundary(2);
+        }
+        let candidates = candidates?;
+        let emitted = pair(&memory, scratch, children, candidates).and_then(|()| {
+            emit(
+                &memory, country.id, context, scratch, children, lines, bytes, line_start,
+                byte_start,
+            )
+        });
+        if let Some(timing) = timing {
+            timing.boundary(3);
+        }
+        emitted
     })();
     scratch.batch_fallbacks = memory.fallbacks();
     scratch.observations = observations;
@@ -1137,9 +1233,8 @@ fn pointer_pages_gathered(
             }
         }
         phase!(ChildHeads);
-        let fields = memory.copy_records(
+        let fields = memory.copy_child_heads(
             RecordSources::Pointers(&pointers[..valid]),
-            &CHILD_HEAD_LAYOUT,
             &mut heads[..valid * CHILD_HEAD_BYTES],
         );
         let complete = fields / CHILD_HEAD.len();
@@ -2097,3 +2192,6 @@ fn pointer_pages(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))]
+mod bench;

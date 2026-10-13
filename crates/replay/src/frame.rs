@@ -38,6 +38,9 @@ pub const TRUNCATED_KEYFRAME_REASON: &str = "truncated at keyframe: ";
 pub struct Metrics {
     pub total_ns: u64,
     pub table_ns: [u64; TABLE_COUNT],
+    /// Reserved collector storage. Executor bytes include its actual shared
+    /// allocation, payload cells, state words, metadata, queue, thread ids
+    /// and handles, boxed runner and any enabled help history arrays.
     pub pool_bytes: u64,
     pub dropped_frames: u64,
 }

@@ -9,6 +9,12 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 thread_local! {
     static ADVISORY_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static GROWTHS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Checked heap growth attempts admitted on the calling thread, including advisory work.
+pub fn growths() -> u64 {
+    GROWTHS.get()
 }
 
 /// Scope a synchronous sizing census and all its nested worker readers to
@@ -89,6 +95,7 @@ pub fn allocation_attempt() -> io::Result<()> {
             return Err(oom());
         }
     }
+    GROWTHS.set(GROWTHS.get().saturating_add(1));
     Ok(())
 }
 
@@ -321,6 +328,22 @@ pub fn boxed_slice<T>(mut values: Vec<T>) -> io::Result<Box<[T]>> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn growths_count_real_growth_but_not_reserves_that_fit() {
+        let mut values = Vec::<u64>::new();
+        let before = growths();
+        reserve(&mut values, 1).unwrap();
+        assert_eq!(growths() - before, 1);
+        values.push(7);
+        let spare = values.capacity() - values.len();
+        reserve(&mut values, spare).unwrap();
+        reserve_exact(&mut values, spare).unwrap();
+        reserve_push_batch(&mut values, spare).unwrap();
+        assert_eq!(growths() - before, 1);
+        reserve_exact(&mut values, spare + 1).unwrap();
+        assert_eq!(growths() - before, 2);
+    }
 
     struct DeniedAllocator;
     #[global_allocator]

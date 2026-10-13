@@ -9,8 +9,8 @@ use crate::{
 mod gathered;
 mod hull_variant;
 pub use gathered::{
-    GatheredMemory, GatheredObject, HeldShip, Lookup, Served, ShipFields, SwitchedObject,
-    TaskForceFields,
+    GatheredMemory, GatheredObject, HeldShip, HeldVariant, Lookup, Served, ShipFields,
+    SwitchedObject, TaskForceFields,
 };
 pub use hull_variant::{HullVariantInputs, read_hull_variant};
 
@@ -1116,12 +1116,22 @@ pub struct OrganisationMemo {
     doctrine_keys: crate::naval_ship_modifier_inputs::DoctrineKeys,
     weather: Option<OrganisationWeather>,
     definitions: crate::modifier_definition::DefinitionMemo,
+    own: Option<(usize, OrganisationOperands)>,
+    /// Current metadata for each presence mask of the maximum's four keys.
+    modifier_guards: [Option<u16>; 1 << ORGANISATION_KEYS.len()],
 }
 
 /// Recent selectors an [`OrganisationMemo`] keeps.
 const RECENT: usize = 8;
 
 impl OrganisationMemo {
+    /// The ship-owned operands of the latest successful maximum read.
+    pub fn organisation_operands(&self, ship: usize) -> Option<OrganisationOperands> {
+        self.own
+            .filter(|&(pointer, _)| pointer == ship)
+            .map(|(_, operands)| operands)
+    }
+
     /// Serve `task`'s doctrine contribution from an earlier hour's complete
     /// observation that a certificate keeps: the next ship of `task` reads no
     /// doctrine tree.
@@ -1200,6 +1210,74 @@ impl OrganisationMemo {
     pub fn country(&self) -> Option<usize> {
         self.owner.map(|(_, _, country)| country)
     }
+}
+
+/// Ship-owned operands the organisation maximum reaches, carried only under
+/// the ship and medal-store certificate ([`crate::ship_model_mutations`]).
+/// Selectors remain absent when their native branch did not read them.
+/// Modifier values stay raw, with current effective metadata applied on
+/// recompute. Only the DLC-set command writes the active modifier mask, and
+/// it then always reaches the observed world reset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OrganisationOperands {
+    ship: usize,
+    handle: [u8; 8],
+    class: Option<u32>,
+    subunit: Option<u32>,
+    weather_factor: Option<i64>,
+    base_organisation: i64,
+    modifiers: [[crate::modifier_accumulator::Value; 4]; 2],
+    criticals: crate::cpdx_array::Array,
+    modifier_guard: u16,
+}
+
+impl OrganisationOperands {
+    /// A moved certificate requires fresh critical-entry observations even
+    /// when the gathered header and the ship's other fields compare equal.
+    pub fn has_criticals(&self) -> bool {
+        self.criticals.count != 0
+    }
+
+    /// Two bits per native key: absent, disabled, enabled, or clamped.
+    /// Whole-row carry must compare each present key's current metadata.
+    pub fn modifier_guard(&self) -> u16 {
+        self.modifier_guard
+    }
+}
+
+/// Compare a carried ship's modifier eligibility and clamp metadata, once
+/// per native key-presence mask in a capture. No absent key is read. The
+/// effective-value lookup uses these flags, including the active DLC mask.
+pub fn organisation_modifier_guard_matches(
+    memory: &impl Memory,
+    base: usize,
+    guard: u16,
+    memo: &mut OrganisationMemo,
+) -> Result<bool, &'static str> {
+    if guard == 0 {
+        return Ok(true);
+    }
+    let present = (0..ORGANISATION_KEYS.len()).fold(0, |mask, index| {
+        mask | (usize::from(guard >> (index * 2) & 3 != 0) << index)
+    });
+    if let Some(current) = memo.modifier_guards[present] {
+        return Ok(current == guard);
+    }
+    let mut current = 0;
+    for (index, key) in ORGANISATION_KEYS.into_iter().enumerate() {
+        if guard >> (index * 2) & 3 != 0 {
+            let (_, flags) = crate::modifier_definition::effective_observed_memo(
+                memory,
+                base,
+                key,
+                0,
+                &memo.definitions,
+            )?;
+            current |= modifier_guard(flags) << (index * 2);
+        }
+    }
+    memo.modifier_guards[present] = Some(current);
+    Ok(current == guard)
 }
 
 /// A task force's ship modifier terms in one capture
@@ -1697,11 +1775,12 @@ pub fn read_maximum_organisation_memo(
     ship: usize,
     memo: &mut OrganisationMemo,
 ) -> Result<i64, &'static str> {
+    memo.own = None;
     read_organisation_observation(memory, base, ship, memo)
 }
 
-/// The completed maximum; no source pointer, leader or critical scale is
-/// kept in the hourly memo or projected into replay.
+/// Observe sources in the original reader's order, retaining ship-owned
+/// operands only after the complete maximum succeeds.
 fn read_organisation_observation(
     memory: &impl Memory,
     base: usize,
@@ -1719,11 +1798,6 @@ fn read_organisation_observation(
     };
     let ptr = |p, o| field::<u64>(memory, p, o).map(|n| n as usize);
     let values = |address| organisation_modifier_values(memory, base, address, definitions);
-    let accumulate = |total: &mut [i64; 4], v: [i64; 4]| {
-        for n in 0..4 {
-            total[n] = total[n].wrapping_add(v[n]);
-        }
-    };
     let array = |p, o, stride| -> Result<Array, &'static str> {
         Array::read(memory, add(p, o)?, stride)
             .ok_or("ship organisation array invalid or bound exceeded")
@@ -1757,7 +1831,7 @@ fn read_organisation_observation(
             country
         }
     };
-    let mut total = match memo.country {
+    let country_values = match memo.country {
         Some((memo_country, value)) if memo_country == country => value,
         _ => {
             let value = values(add(country, 0x5b8)?)?;
@@ -1773,16 +1847,19 @@ fn read_organisation_observation(
             pair
         }
     };
-    if pride == handle {
+    let pride_values = if pride == handle {
         let root = ptr(base, 0x0331_7cc8)?;
-        accumulate(&mut total, values(add(ptr(root, 0xb0)?, 0x10)?)?);
-    }
-    accumulate(&mut total, values(add(ship, 0x750)?)?);
+        values(add(ptr(root, 0xb0)?, 0x10)?)?
+    } else {
+        [0; 4]
+    };
+    let own = organisation_modifier_observation(memory, base, add(ship, 0x750)?, definitions)?;
     let experience = ptr(ship, 0x8f8)?;
-    accumulate(&mut total, values(add(experience, 0x1b0)?)?);
+    let medals =
+        organisation_modifier_observation(memory, base, add(experience, 0x1b0)?, definitions)?;
     // The doctrine tree belongs to the task force; every ship of it adds the
     // same contribution, so it is walked once per task force.
-    let contribution = match memo.last {
+    let doctrine = match memo.last {
         Some((memo_task, value)) if memo_task == task => value,
         _ => {
             let value = doctrine_contribution(
@@ -1797,9 +1874,11 @@ fn read_organisation_observation(
             value
         }
     };
-    accumulate(&mut total, contribution);
     let location = ptr(task, cunit::LOCATION)?;
-    if location != 0 {
+    let mut class = None;
+    let mut weather_factor = None;
+    let mut terrain_values = [0; 4];
+    let location_terms = if location != 0 {
         auth(location, crate::cprovince::VTABLE_RVA)?;
         let definition = ptr(location, 0xc8)?;
         // Ship modifier calculation selects terrain from the province
@@ -1814,17 +1893,17 @@ fn read_organisation_observation(
                 terrain
             }
         };
-        let class = field(memory, ship, CLASS_DATABASE_ID)?;
-        let contribution = match memo.terrain_class.get(&(terrain, class)) {
+        let selector = field(memory, ship, CLASS_DATABASE_ID)?;
+        class = Some(selector);
+        terrain_values = match memo.terrain_class.get(&(terrain, selector)) {
             Some(value) => value,
             None => {
-                let (modifier, _) = sources::terrain_class(memory, terrain, class)?;
+                let (modifier, _) = sources::terrain_class(memory, terrain, selector)?;
                 let value = values(add(modifier, 0x10)?)?;
-                memo.terrain_class.insert((terrain, class), value);
+                memo.terrain_class.insert((terrain, selector), value);
                 value
             }
         };
-        accumulate(&mut total, contribution);
         let sources = [game, task, country, location, definition];
         let factor = if memo
             .weather
@@ -1838,22 +1917,15 @@ fn read_organisation_observation(
             memo.weather = Some(weather);
             factor
         };
-        let weather = memo.weather.as_ref().unwrap();
-        let weather_scale = factor
-            .wrapping_sub(100000)
-            .wrapping_add(weather.country_adjustment);
-        accumulate(
-            &mut total,
-            weather
-                .region
-                .map(|v| v.wrapping_mul(weather_scale) / 100000),
-        );
-        accumulate(&mut total, weather.location_and_task);
-    }
+        weather_factor = Some(factor);
+        Some((terrain, memo.weather.unwrap()))
+    } else {
+        None
+    };
     let fleet = ptr(task, ctask_force::FLEET)?;
     // Resolve the current task's fleet leader before reuse. The base fleet-
     // leader contribution has no ship operand.
-    let (leader, contribution) = match memo.fleet {
+    let (leader, fleet_values) = match memo.fleet {
         Some((source, leader, value)) if source == fleet => (leader, value),
         _ => {
             let leader = if fleet == 0 {
@@ -1872,34 +1944,24 @@ fn read_organisation_observation(
             (leader, value)
         }
     };
-    if let Some(leader) = leader {
-        accumulate(&mut total, contribution);
-        let subunit = field(memory, ship, 0x60c)?;
-        let contribution = match memo.leader_class.get(&(leader, subunit)) {
+    let mut subunit = None;
+    let leader_values = if let Some(leader) = leader {
+        let selector = field(memory, ship, 0x60c)?;
+        subunit = Some(selector);
+        match memo.leader_class.get(&(leader, selector)) {
             Some(value) => value,
             None => {
-                let class = sources::selected_class(memory, leader, subunit, true)?;
+                let class = sources::selected_class(memory, leader, selector, true)?;
                 let value = values(add(class, 0x10)?)?;
-                memo.leader_class.insert((leader, subunit), value);
+                memo.leader_class.insert((leader, selector), value);
                 value
             }
-        };
-        accumulate(&mut total, contribution);
-    }
+        }
+    } else {
+        [0; 4]
+    };
     let criticals = array(ship, 0x918, 16)?;
-    let mut critical = [0i64; 4];
-    for index in 0..criticals.count {
-        let entry = criticals
-            .element(index, 16)
-            .ok_or("ship critical address overflow")?;
-        let (count, pointer) = organisation_pair::<4, 8>(memory, (entry, 8), (entry, 0))?;
-        let count = i64::from(i32::from_le_bytes(count));
-        let v = values(add(u64::from_le_bytes(pointer) as usize, 0x98)?)?;
-        accumulate(
-            &mut critical,
-            v.map(|n| n.wrapping_mul(count).wrapping_mul(100000) / 100000),
-        );
-    }
+    let critical = read_organisation_criticals(memory, base, criticals, definitions)?;
     // Each recursive key contribution includes its own unscaled criticals
     // and maximum support.
     let support = match memo.support {
@@ -1936,33 +1998,253 @@ fn read_organisation_observation(
             support
         }
     };
-    let critical_scale = total[3]
-        .wrapping_add(critical[3])
-        .wrapping_add(support[3])
-        .wrapping_add(100000);
-    // Native truncates each critical entry before summing; distributing division changes results.
+    let mut operands = OrganisationOperands {
+        ship,
+        handle,
+        class,
+        subunit,
+        weather_factor,
+        base_organisation: 0,
+        modifiers: [own.raw, medals.raw],
+        criticals,
+        modifier_guard: own.guard | medals.guard,
+    };
+    let terms = TaskTerms {
+        owner: (game, country_id, country),
+        country: country_values,
+        pride,
+        doctrine,
+        location: location_terms,
+        fleet: (fleet, leader, fleet_values),
+        support,
+    };
+    let modifiers = combine_organisation(
+        memory,
+        base,
+        &operands,
+        &terms,
+        [
+            own.values,
+            medals.values,
+            pride_values,
+            terrain_values,
+            leader_values,
+        ],
+        critical,
+        definitions,
+    )?;
+    // The base organisation field keeps the reader's original reach, after
+    // both critical-entry passes. Only a complete read supplies a packet.
+    operands.base_organisation = field(memory, ship, BASE_ORGANISATION)?;
+    let maximum = organisation_maximum(operands.base_organisation, modifiers);
+    memo.own = Some((ship, operands));
+    Ok(maximum)
+}
+
+/// Recompute a certified ship's maximum from this hour's task-force terms.
+/// The caller proves the packet's ship identity and ship/medal certificate
+/// before calling. The terrain-class, leader-subunit and critical
+/// pointees remain hourly reads; only the owned selectors and raw arrays
+/// are served. A newly reached selector needs the original reader.
+pub fn read_maximum_organisation_from_terms(
+    memory: &impl Memory,
+    base: usize,
+    ship: usize,
+    operands: &OrganisationOperands,
+    terms: &TaskTerms,
+    memo: &mut OrganisationMemo,
+) -> Result<Option<i64>, &'static str> {
+    use crate::{cnaval_combatant::field, naval_ship_modifier_inputs as sources};
+    memo.own = None;
+    if operands.ship != ship
+        || terms.location.is_some()
+            && (operands.class.is_none() || operands.weather_factor.is_none())
+        || terms.leader().is_some() && operands.subunit.is_none()
+    {
+        return Ok(None);
+    }
+    let definitions = &memo.definitions;
+    let add = |pointer: usize, offset: usize| {
+        pointer
+            .checked_add(offset)
+            .filter(|_| pointer != 0)
+            .ok_or("ship organisation pointer overflow")
+    };
+    let values = |address| organisation_modifier_values(memory, base, address, definitions);
+    let pride = if operands.handle == terms.pride {
+        let root = field::<u64>(memory, base, 0x0331_7cc8)? as usize;
+        let source = field::<u64>(memory, root, 0xb0)? as usize;
+        values(add(source, 0x10)?)?
+    } else {
+        [0; 4]
+    };
+    let mut own = [[0; 4]; 2];
+    let mut guard = 0;
+    for (values, raw) in own.iter_mut().zip(operands.modifiers) {
+        for (index, ((value, raw), key)) in values
+            .iter_mut()
+            .zip(raw)
+            .zip(ORGANISATION_KEYS)
+            .enumerate()
+        {
+            if raw.present {
+                let (effective, flags) = crate::modifier_definition::effective_observed_memo(
+                    memory,
+                    base,
+                    key,
+                    raw.raw,
+                    definitions,
+                )?;
+                *value = effective;
+                guard |= modifier_guard(flags) << (index * 2);
+            }
+        }
+    }
+    let terrain = if let Some((terrain, _)) = terms.location {
+        let class = operands.class.expect("a reached class selector");
+        match memo.terrain_class.get(&(terrain, class)) {
+            Some(value) => value,
+            None => {
+                let (modifier, _) = sources::terrain_class(memory, terrain, class)?;
+                let value = values(add(modifier, 0x10)?)?;
+                memo.terrain_class.insert((terrain, class), value);
+                value
+            }
+        }
+    } else {
+        [0; 4]
+    };
+    let leader = if let Some(leader) = terms.leader() {
+        let subunit = operands.subunit.expect("a reached subunit selector");
+        match memo.leader_class.get(&(leader, subunit)) {
+            Some(value) => value,
+            None => {
+                let class = sources::selected_class(memory, leader, subunit, true)?;
+                let value = values(add(class, 0x10)?)?;
+                memo.leader_class.insert((leader, subunit), value);
+                value
+            }
+        }
+    } else {
+        [0; 4]
+    };
+    let critical = read_organisation_criticals(memory, base, operands.criticals, definitions)?;
+    let modifiers = combine_organisation(
+        memory,
+        base,
+        operands,
+        terms,
+        [own[0], own[1], pride, terrain, leader],
+        critical,
+        definitions,
+    )?;
+    let maximum = organisation_maximum(operands.base_organisation, modifiers);
+    memo.own = Some((
+        ship,
+        OrganisationOperands {
+            modifier_guard: guard,
+            ..*operands
+        },
+    ));
+    Ok(Some(maximum))
+}
+
+fn read_organisation_criticals(
+    memory: &impl Memory,
+    base: usize,
+    criticals: crate::cpdx_array::Array,
+    definitions: &crate::modifier_definition::DefinitionMemo,
+) -> Result<[i64; 4], &'static str> {
+    let mut critical = [0i64; 4];
     for index in 0..criticals.count {
         let entry = criticals
             .element(index, 16)
             .ok_or("ship critical address overflow")?;
         let (count, pointer) = organisation_pair::<4, 8>(memory, (entry, 8), (entry, 0))?;
         let count = i64::from(i32::from_le_bytes(count));
-        let v = values(add(u64::from_le_bytes(pointer) as usize, 0x98)?)?;
+        let pointer = u64::from_le_bytes(pointer) as usize;
+        let address = pointer
+            .checked_add(0x98)
+            .filter(|_| pointer != 0)
+            .ok_or("ship organisation pointer overflow")?;
+        let values = organisation_modifier_values(memory, base, address, definitions)?;
+        for (critical, value) in critical.iter_mut().zip(values) {
+            *critical =
+                critical.wrapping_add(value.wrapping_mul(count).wrapping_mul(100000) / 100000);
+        }
+    }
+    Ok(critical)
+}
+
+/// The ship modifier source additions, weather scaling, recursive critical
+/// scaling and support, shared by the full reader and certified recompute.
+fn combine_organisation(
+    memory: &impl Memory,
+    base: usize,
+    operands: &OrganisationOperands,
+    terms: &TaskTerms,
+    contributions: [[i64; 4]; 5],
+    critical: [i64; 4],
+    definitions: &crate::modifier_definition::DefinitionMemo,
+) -> Result<[i64; 3], &'static str> {
+    let [own, medals, pride, terrain, leader] = contributions;
+    let mut total = terms.country;
+    let accumulate = |total: &mut [i64; 4], values: [i64; 4]| {
+        for (total, value) in total.iter_mut().zip(values) {
+            *total = total.wrapping_add(value);
+        }
+    };
+    for values in [pride, own, medals, terms.doctrine] {
+        accumulate(&mut total, values);
+    }
+    if let Some((_, weather)) = terms.location {
+        accumulate(&mut total, terrain);
+        let scale = operands
+            .weather_factor
+            .expect("a reached weather factor")
+            .wrapping_sub(100000)
+            .wrapping_add(weather.country_adjustment);
+        accumulate(
+            &mut total,
+            weather
+                .region
+                .map(|value| value.wrapping_mul(scale) / 100000),
+        );
+        accumulate(&mut total, weather.location_and_task);
+    }
+    if terms.leader().is_some() {
+        accumulate(&mut total, terms.fleet.2);
+        accumulate(&mut total, leader);
+    }
+    let scale = total[3]
+        .wrapping_add(critical[3])
+        .wrapping_add(terms.support[3])
+        .wrapping_add(100000);
+    // Each entry truncates before summing, as the game does; its counts
+    // and pointed modifier values are observed again on this second pass.
+    for index in 0..operands.criticals.count {
+        let entry = operands
+            .criticals
+            .element(index, 16)
+            .ok_or("ship critical address overflow")?;
+        let (count, pointer) = organisation_pair::<4, 8>(memory, (entry, 8), (entry, 0))?;
+        let count = i64::from(i32::from_le_bytes(count));
+        let pointer = u64::from_le_bytes(pointer) as usize;
+        let address = pointer
+            .checked_add(0x98)
+            .filter(|_| pointer != 0)
+            .ok_or("ship organisation pointer overflow")?;
+        let values = organisation_modifier_values(memory, base, address, definitions)?;
         for n in 0..3 {
             total[n] = total[n].wrapping_add(
-                (v[n].wrapping_mul(count).wrapping_mul(100000) / 100000)
-                    .wrapping_mul(critical_scale)
+                (values[n].wrapping_mul(count).wrapping_mul(100000) / 100000).wrapping_mul(scale)
                     / 100000,
             );
         }
     }
-    for n in 0..3 {
-        total[n] = total[n].wrapping_add(support[n]);
-    }
-    Ok(organisation_maximum(
-        field(memory, ship, BASE_ORGANISATION)?,
-        [total[0], total[1], total[2]],
-    ))
+    Ok(std::array::from_fn(|n| {
+        total[n].wrapping_add(terms.support[n])
+    }))
 }
 
 /// Capture the four organisation-modifier operands with one full direct
@@ -1992,6 +2274,38 @@ fn organisation_modifier_values(
     address: usize,
     definitions: &crate::modifier_definition::DefinitionMemo,
 ) -> Result<[i64; 4], &'static str> {
+    organisation_modifier_observation(memory, base, address, definitions)
+        .map(|observation| observation.values)
+}
+
+const ORGANISATION_KEYS: [u32; 4] = [
+    crate::modifier_keys::NAVY_ORG,
+    crate::modifier_keys::NAVY_ORG_FACTOR,
+    crate::modifier_keys::MAX_ORGANISATION,
+    crate::modifier_keys::NAVAL_CRITICAL_EFFECT_FACTOR,
+];
+
+fn modifier_guard(flags: Option<u32>) -> u16 {
+    match flags {
+        None => 1,
+        Some(flags) if flags & crate::modifier_definition::CLAMP_MAXIMUM != 0 => 3,
+        Some(_) => 2,
+    }
+}
+
+struct OrganisationModifiers {
+    values: [i64; 4],
+    raw: [crate::modifier_accumulator::Value; 4],
+    guard: u16,
+}
+
+#[inline]
+fn organisation_modifier_observation(
+    memory: &impl Memory,
+    base: usize,
+    address: usize,
+    definitions: &crate::modifier_definition::DefinitionMemo,
+) -> Result<OrganisationModifiers, &'static str> {
     use crate::modifier_accumulator::{Value, lookup_many_at};
 
     const SORTED_KEYS: [u32; 4] = [
@@ -2003,7 +2317,9 @@ fn organisation_modifier_values(
     let mut direct = [Value::default(); 4];
     let mut captured = false;
     let mut values = [0; 4];
-    for (value, index) in values.iter_mut().zip([0, 1, 3, 2]) {
+    let mut raw_values = [Value::default(); 4];
+    let mut guard = 0;
+    for (native, (value, index)) in values.iter_mut().zip([0, 1, 3, 2]).enumerate() {
         let key = SORTED_KEYS[index];
         let raw = match memory.modifier_accumulator_value(address, key) {
             Some(result) => result?,
@@ -2017,17 +2333,24 @@ fn organisation_modifier_values(
                 direct[index]
             }
         };
+        raw_values[native] = raw;
         if raw.present {
-            *value = crate::modifier_definition::effective_memo(
+            let (effective, flags) = crate::modifier_definition::effective_observed_memo(
                 memory,
                 base,
                 key,
                 raw.raw,
                 definitions,
             )?;
+            *value = effective;
+            guard |= modifier_guard(flags) << (native * 2);
         }
     }
-    Ok(values)
+    Ok(OrganisationModifiers {
+        values,
+        raw: raw_values,
+        guard,
+    })
 }
 
 /// Signed wrapping maximum-organisation arithmetic. The minimum 100 is

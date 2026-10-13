@@ -116,21 +116,7 @@ fn status_holding(
     capacity: usize,
     held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
 ) -> (Outcome, Vec<carmy::StatusRow>) {
-    let mut packet = carmy::StatusPacket::with_capacities(carmy::StatusCapacities {
-        membership: crate::corders_group_member::MembershipCapacity {
-            queries: seeds.len(),
-            groups: 2,
-            roots: 2,
-            chunks: 2,
-        },
-        modifiers: crate::modifier_accumulator::SnapshotCapacity {
-            nodes: seeds.len(),
-            entries: seeds.len(),
-        },
-        thresholds: 3,
-        ..carmy::StatusCapacities::new(seeds.len())
-    })
-    .unwrap();
+    let mut packet = status_packet(seeds.len());
     let allocated = packet.allocated_bytes();
     let outcome = packet.capture_holding(
         memory,
@@ -148,6 +134,24 @@ fn status_holding(
     (outcome, rows)
 }
 
+fn status_packet(count: usize) -> carmy::StatusPacket {
+    carmy::StatusPacket::with_capacities(carmy::StatusCapacities {
+        membership: crate::corders_group_member::MembershipCapacity {
+            queries: count,
+            groups: 2,
+            roots: 2,
+            chunks: 2,
+        },
+        modifiers: crate::modifier_accumulator::SnapshotCapacity {
+            nodes: count,
+            entries: count,
+        },
+        thresholds: 3,
+        ..carmy::StatusCapacities::new(count)
+    })
+    .unwrap()
+}
+
 // Count actual guarded APIs, forwarding their inner spans without counting
 // them a second time. Serial mode declines only the speculative batch and
 // lets its original per-object fallback run; declined fixture gathers are
@@ -157,10 +161,24 @@ struct StatusReads<'a, 'b> {
     serial: bool,
     maxima: Cell<usize>,
     entries: Cell<usize>,
+    prefetched_entries: Cell<usize>,
+    uninit_entries: Cell<usize>,
     entries_end: usize,
 }
 
 impl Memory for StatusReads<'_, '_> {
+    fn copy_uninit<'a>(
+        &self,
+        at: usize,
+        out: &'a mut [std::mem::MaybeUninit<u8>],
+    ) -> Option<&'a mut [u8]> {
+        if (0x20000..self.entries_end).contains(&at) && !out.is_empty() {
+            self.entries.set(self.entries.get() + 1);
+            self.uninit_entries.set(self.uninit_entries.get() + 1);
+        }
+        self.source.copy_uninit(at, out)
+    }
+
     fn copy(&self, at: usize, out: &mut [u8]) -> bool {
         if (0x20000..self.entries_end).contains(&at) && !out.is_empty() {
             self.entries.set(self.entries.get() + 1);
@@ -193,6 +211,18 @@ impl Memory for StatusReads<'_, '_> {
             self.entries.set(self.entries.get() + 1);
         }
         self.source.copy_scattered(addresses, out)
+    }
+
+    fn copy_scattered_prefetched<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        out: &mut [&mut [u8]; N],
+    ) -> usize {
+        if N == 64 && out.iter().any(|row| row.len() == 512) {
+            self.prefetched_entries
+                .set(self.prefetched_entries.get() + 1);
+        }
+        self.copy_scattered(addresses, out)
     }
 }
 
@@ -275,6 +305,8 @@ fn status_reads<'a, 'b>(
         serial,
         maxima: Cell::new(0),
         entries: Cell::new(0),
+        prefetched_entries: Cell::new(0),
+        uninit_entries: Cell::new(0),
         entries_end: 0x20000 + count * 0x300,
     }
 }
@@ -420,6 +452,172 @@ fn status_exercise_observes_controller_inputs_once_for_five_thousand_divisions()
             .count(),
         5_000
     );
+}
+
+#[test]
+fn status_reuses_entry_scratch_and_prefetches_each_scatter() {
+    let (source, seeds, _) = distinct_status_world(65);
+    let mut packet = status_packet(seeds.len());
+    let scratch = std::ptr::from_ref(packet.acclimatization.as_deref().unwrap());
+    let allocated = packet.allocated_bytes();
+    let expected = status(&source, &seeds, seeds.len());
+    let mut rows = vec![carmy::StatusRow::default(); seeds.len()];
+    for fault in [None, Some(0x20000 + 20 * 0x300 + 7), None] {
+        // A previous batch's bytes, including its incomplete suffix, cannot
+        // authorize this hour's rows. Dirty scratch must remain harmless.
+        packet
+            .acclimatization
+            .as_deref_mut()
+            .unwrap()
+            .bytes
+            .fill([0xff; 512]);
+        let hinted = HintedMemory::new(&source, fault, false);
+        let memory = status_reads(&hinted, seeds.len(), false);
+        let before =
+            crate::batch_fallback::count(crate::batch_fallback::Batch::DivisionAcclimatization);
+        let outcome = packet.capture_holding(
+            &memory,
+            0,
+            GS,
+            &seeds,
+            Outcome::Rows { len: seeds.len() },
+            seeds.len(),
+            &[],
+        );
+        assert_eq!(outcome, Outcome::Rows { len: seeds.len() });
+        assert_eq!(packet.project(&mut rows), outcome);
+        assert_eq!(
+            memory.prefetched_entries.get(),
+            2,
+            "every entry batch uses the prefetched API"
+        );
+        assert_eq!(
+            memory.uninit_entries.get(),
+            if fault.is_some() { 108 } else { 65 }
+        );
+        assert_eq!(
+            crate::batch_fallback::count(crate::batch_fallback::Batch::DivisionAcclimatization)
+                - before,
+            u64::from(fault.is_some())
+        );
+        let serial = HintedMemory::new(&source, fault, false);
+        assert_eq!(
+            (outcome, rows.clone()),
+            status(&status_reads(&serial, 65, true), &seeds, 65)
+        );
+        if fault.is_none() {
+            assert_eq!((outcome, rows.clone()), expected);
+        }
+        assert_eq!(
+            std::ptr::from_ref(packet.acclimatization.as_deref().unwrap()),
+            scratch
+        );
+        assert_eq!(packet.allocated_bytes(), allocated);
+    }
+}
+
+#[test]
+fn status_maxima_reuses_one_probe_per_seed_and_keeps_carried_aliases_unread() {
+    let (source, mut seeds, held) = distinct_status_world(129);
+    // Aliases within and across chunk boundaries retain their first admission.
+    for index in [1, 31, 63, 64, 65, 128] {
+        seeds[index].stat_block = seeds[0].stat_block;
+    }
+    for carried in [false, true] {
+        let mut holds = vec![None; seeds.len()];
+        if carried {
+            holds[0] = held[0];
+        }
+        let hinted = HintedMemory::new(
+            &source,
+            carried.then_some(seeds[0].stat_block.unwrap()),
+            false,
+        );
+        let memory = status_reads(&hinted, seeds.len(), false);
+        let mut packet = status_packet(seeds.len());
+        let outcome = packet.capture_holding(
+            &memory,
+            0,
+            GS,
+            &seeds,
+            Outcome::Rows { len: seeds.len() },
+            seeds.len(),
+            &holds,
+        );
+        assert_eq!(outcome, Outcome::Rows { len: seeds.len() });
+        assert_eq!(
+            packet.maxima_probes.get(),
+            seeds.len(),
+            "selection's slots must serve admission too"
+        );
+        let mut rows = vec![carmy::StatusRow::default(); seeds.len()];
+        packet.project(&mut rows);
+        assert_eq!(
+            (outcome, rows),
+            status_holding(&source, &seeds, seeds.len(), &holds)
+        );
+        assert_eq!(
+            hinted.fault.get(),
+            carried.then_some(seeds[0].stat_block.unwrap())
+        );
+        assert!(
+            packet
+                .maxima_index
+                .iter()
+                .all(|&resident| resident <= packet.maxima.len()),
+            "speculative keys cannot survive preparation"
+        );
+    }
+}
+
+#[test]
+fn status_maxima_collisions_use_serial_slots_and_values() {
+    let (source, all, held) = distinct_status_world(5_000);
+    let mut packet = status_packet(64);
+    let empty = vec![0; packet.maxima_index.len()];
+    let home = carmy::status_pointer_slot(&empty, all[0].stat_block.unwrap(), |_| unreachable!());
+    let mut seeds: Vec<_> = all
+        .iter()
+        .copied()
+        .filter(|seed| {
+            carmy::status_pointer_slot(&empty, seed.stat_block.unwrap(), |_| unreachable!()) == home
+        })
+        .take(12)
+        .collect();
+    assert!(
+        seeds.len() >= 3,
+        "fixture must contain an actual probe chain"
+    );
+    let first = seeds[0];
+    seeds.insert(1, first);
+    let mut holds = vec![None; seeds.len()];
+    holds[0] = held[0];
+    let hinted = HintedMemory::new(&source, Some(first.stat_block.unwrap()), false);
+    let outcome = packet.capture_holding(
+        &hinted,
+        0,
+        GS,
+        &seeds,
+        Outcome::Rows { len: seeds.len() },
+        seeds.len(),
+        &holds,
+    );
+    assert_eq!(outcome, Outcome::Rows { len: seeds.len() });
+    assert_eq!(packet.maxima_probes.get(), seeds.len());
+    for (index, seed) in seeds.iter().enumerate() {
+        let expected = crate::csub_unit_definition::capture_division_maxima(
+            &source,
+            0,
+            seed.stat_block.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(packet.unit_maxima(index), Some(expected));
+        let slot = carmy::status_pointer_slot(&packet.maxima_index, expected.pointer, |at| {
+            packet.maxima[at].pointer
+        });
+        assert_eq!(packet.maxima[packet.maxima_index[slot] - 1], expected);
+    }
+    assert_eq!(hinted.fault.get(), Some(first.stat_block.unwrap()));
 }
 
 #[test]

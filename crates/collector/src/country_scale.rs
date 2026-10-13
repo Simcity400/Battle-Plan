@@ -77,7 +77,7 @@ static CO_BELLIGERENT_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
 
 pub(crate) fn demand_diagnostics() -> impl serde::Serialize {
     crate::status::status!({
-        "scope": "cumulative failed off-thread sizing observations; failed operands add no fabricated demand; existing capacities retained",
+        "scope": "cumulative failed off-thread sizing read attempts, including both attempts when a concurrent capacity raise requires table and live-input hints to be re-read under the mutex; failed operands add no fabricated demand; existing capacities retained",
         "agency_upgrade_levels": AGENCY_UPGRADE_DEMAND_FAILURES.diagnostics(),
         "operations": OPERATION_DEMAND_FAILURES.diagnostics(),
         "fuel_unit_demand": FUEL_UNIT_DEMAND_FAILURES.diagnostics(),

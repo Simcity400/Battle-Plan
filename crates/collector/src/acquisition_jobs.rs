@@ -1,8 +1,9 @@
 //! Owned acquisition requests executed within the hour's live-read lease.
 //! Job dependencies and the shared-country lease belong to the
 //! callback, which dispatches jobs and joins their results. A join can execute
-//! only its own queued job when caller execution is allowed; no family owns a
-//! dedicated thread.
+//! its own queued job when caller execution is allowed; optional executor join
+//! help can run other eligible queued jobs within learned body-time bounds.
+//! No family owns a dedicated thread.
 
 pub(crate) use crate::acquisition_countries::{
     Report as CountriesReport, Request as CountriesRequest, TemplatesReport, TemplatesRequest,
@@ -2199,12 +2200,17 @@ impl Pool {
     pub(crate) fn start(worker_count: usize, capacity: usize) -> Result<Self, &'static str> {
         let calibration = Arc::new(SharedCalibration::default());
         let runner_calibration = Arc::clone(&calibration);
-        let executor = acquisition::Pool::start(worker_count.max(1), capacity, move |job| {
-            // SAFETY: submit's callback lease remains admitted until every
-            // accepted request is collected, including on callback unwind.
-            let memory = CountedMemory::new(unsafe { LiveMemory::new() });
-            run_with_memory(job, &memory, &runner_calibration)
-        })?;
+        let executor = acquisition::Pool::start_with_class(
+            worker_count.max(1),
+            capacity,
+            Some((ROLE_COUNT, |job: &Job| job.role() as usize)),
+            move |job| {
+                // SAFETY: submit's callback lease remains admitted until every
+                // accepted request is collected, including on callback unwind.
+                let memory = CountedMemory::new(unsafe { LiveMemory::new() });
+                run_with_memory(job, &memory, &runner_calibration)
+            },
+        )?;
         executor.reserve_worker_slots(WORKER_ONLY_JOBS)?;
         Ok(Self {
             executor,

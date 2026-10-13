@@ -23,7 +23,7 @@ use crate::{
     cpdx_array::Array,
     creference_registry::ScopedResolver,
     cship, csub_unit_definition, ctask_force, cunit, cweather_manager,
-    memory::{FieldBatch, Raw},
+    memory::{FieldBatch, Raw, RecordField, RecordLayout, gather_records_once, scalar_from_bytes},
     modifier_accumulator::{self as accumulator, Value},
     modifier_definition::{self as metadata, Operands},
     modifier_keys as keys, naval_mission_inputs as mission, naval_ship_modifier_inputs as naval,
@@ -244,6 +244,10 @@ pub(super) struct Reader<'a, M: Memory> {
     /// Complete sorted-key censuses by accumulator: task forces share their
     /// country's, terrain classes', weather regions' and commanders' sources.
     censuses: Recent<(usize, [u32; VALUE_COUNT]), [Value; VALUE_COUNT], 32>,
+    /// Successful selectors and identities, valid only in this stopped capture.
+    terrain_classes: Recent<(usize, u32), (usize, usize), 16>,
+    locations: Recent<usize, (u32, usize), 16>,
+    fleets: Recent<usize, Option<usize>, 16>,
     definitions: [Option<Result<Operands, &'static str>>; VALUE_COUNT + 1],
     metadata_root: Option<Result<usize, &'static str>>,
     eligibility: Option<Result<u32, &'static str>>,
@@ -291,15 +295,26 @@ const ROSTER_SHIP: [(usize, usize); 4] = [
     (cship::HANDLE, 8),
 ];
 
-/// A roster ship's [`ROSTER_SHIP`] fields in one guarded call, each
-/// consulted where the walk reads it ([`FieldBatch`]); a null or overflowing
-/// ship reads each as [`field`] does.
-struct RosterShip {
-    ship: usize,
-    fields: Option<FieldBatch<4>>,
+const ROSTER_STRIDE: usize = 28;
+const ROSTER_RECORD_FIELDS: [RecordField; 4] = crate::memory::packed_fields(ROSTER_SHIP);
+const ROSTER_RECORD: RecordLayout<'static> =
+    RecordLayout::new(&ROSTER_RECORD_FIELDS, ROSTER_STRIDE).expect("roster ship record");
+const ROSTER_OFFSETS: [usize; 4] = [0, 8, 16, 20];
+
+enum RosterFields<'a> {
+    Gathered(Option<FieldBatch<4>>),
+    Record(&'a [u8]),
 }
 
-impl RosterShip {
+/// A complete roster record, or the original per-object [`FieldBatch`] for
+/// an incomplete record's bounded fallback. Fields are consulted where the
+/// walk reads them; null or overflowing ships read each as [`field`] does.
+struct RosterShip<'a> {
+    ship: usize,
+    fields: RosterFields<'a>,
+}
+
+impl<'a> RosterShip<'a> {
     fn gather(memory: &impl Memory, ship: usize) -> Self {
         let addresses =
             ROSTER_SHIP.map(|(offset, _)| ship.checked_add(offset).filter(|_| ship != 0));
@@ -309,15 +324,30 @@ impl RosterShip {
                 std::array::from_fn(|index| (addresses[index].unwrap(), ROSTER_SHIP[index].1)),
             )
         });
-        Self { ship, fields }
+        Self {
+            ship,
+            fields: RosterFields::Gathered(fields),
+        }
+    }
+
+    fn record(ship: usize, bytes: &'a [u8]) -> Self {
+        Self {
+            ship,
+            fields: RosterFields::Record(bytes),
+        }
     }
 
     fn get<T: Raw>(&self, memory: &impl Memory, index: usize) -> Result<T, &'static str> {
         match &self.fields {
-            Some(fields) => fields
+            RosterFields::Gathered(Some(fields)) => fields
                 .get(memory, index)
                 .ok_or("fresh task-force operand unreadable"),
-            None => field(memory, self.ship, ROSTER_SHIP[index].0),
+            RosterFields::Gathered(None) => field(memory, self.ship, ROSTER_SHIP[index].0),
+            RosterFields::Record(bytes) => {
+                let first = ROSTER_OFFSETS[index];
+                scalar_from_bytes(&bytes[first..first + std::mem::size_of::<T>()])
+                    .ok_or("fresh task-force operand unreadable")
+            }
         }
     }
 
@@ -365,6 +395,9 @@ impl<'a, M: Memory> Reader<'a, M> {
             weather: None,
             ocean: None,
             censuses: Recent::default(),
+            terrain_classes: Recent::default(),
+            locations: Recent::default(),
+            fleets: Recent::default(),
             definitions: [None; VALUE_COUNT + 1],
             metadata_root: None,
             eligibility: None,
@@ -420,7 +453,7 @@ impl<'a, M: Memory> Reader<'a, M> {
     fn ship_loan(
         &mut self,
         ordinal: u32,
-        ship: &RosterShip,
+        ship: &RosterShip<'_>,
         class: Result<u32, &'static str>,
     ) -> Result<(), &'static str> {
         if self.ship_observer.is_none() || self.receiver_handle.is_none() {
@@ -692,6 +725,104 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(self.effective_terms(values, eta, risk))
     }
 
+    /// Terrain-class selection picks the same records at each occurrence in
+    /// this stopped capture. A failed selection is never kept.
+    fn terrain_class(
+        &mut self,
+        terrain: usize,
+        class: u32,
+    ) -> Result<(usize, usize), &'static str> {
+        let key = (terrain, class);
+        if let Some(found) = self.terrain_classes.get(&key) {
+            return Ok(found);
+        }
+        let found = naval::terrain_class(self.memory, terrain, class)?;
+        self.terrain_classes.insert(key, found);
+        Ok(found)
+    }
+
+    /// The common modifier's authenticated location-to-terrain selector. Risk's
+    /// independent province leaves keep their original demand and order.
+    fn location(&mut self, location: usize, risk: bool) -> Result<(u32, usize), &'static str> {
+        if let Some(found) = self.locations.get(&location) {
+            if risk && self.full_risk {
+                self.context.location =
+                    field::<u32>(self.memory, location, crate::cprovince::ID).map(Some);
+                self.context.controller =
+                    field::<u32>(self.memory, location, crate::cprovince::CONTROLLER).map(Some);
+            }
+            if risk {
+                self.context.region = Ok(Some(found.0));
+            }
+            return Ok(found);
+        }
+        let province = gather(self.memory, location, PROVINCE_FIELDS);
+        let province = province.memory(self.memory);
+        auth(&province, self.base, location, crate::cprovince::VTABLE_RVA)?;
+        if risk && self.full_risk {
+            self.context.location =
+                field::<u32>(&province, location, crate::cprovince::ID).map(Some);
+            self.context.controller =
+                field::<u32>(&province, location, crate::cprovince::CONTROLLER).map(Some);
+        }
+        let region =
+            field::<u64>(&province, location, crate::cprovince::STRATEGIC_REGION)? as usize;
+        let region_fields = gather(self.memory, region, REGION_FIELDS);
+        let region_memory = region_fields.memory(self.memory);
+        let id = crate::cstrategic_region::id(&region_memory, self.base, region)?
+            .ok_or("fresh task-force location region absent")?;
+        if risk {
+            self.context.region = Ok(Some(id));
+        }
+        let template =
+            field::<u64>(&region_memory, region, crate::cstrategic_region::TEMPLATE)? as usize;
+        let template_fields = gather(self.memory, template, TEMPLATE_FIELDS);
+        let template_memory = template_fields.memory(self.memory);
+        auth(
+            &template_memory,
+            self.base,
+            template,
+            crate::cstrategic_region::TEMPLATE_VTABLE_RVA,
+        )?;
+        let terrain = naval::terrain_from_template_kept(
+            &template_memory,
+            self.base,
+            template,
+            &mut self.ocean,
+        )?;
+        let found = (id, terrain);
+        self.locations.insert(location, found);
+        Ok(found)
+    }
+
+    /// The common modifier's default fleet leader. Successful identity
+    /// and absence observations are shared only within this capture.
+    fn fleet_leader(&mut self, fleet: usize) -> Result<Option<usize>, &'static str> {
+        if let Some(found) = self.fleets.get(&fleet) {
+            return Ok(found);
+        }
+        let fleet_fields = gather(self.memory, fleet, FLEET_FIELDS);
+        let fleet_memory = fleet_fields.memory(self.memory);
+        auth(&fleet_memory, self.base, fleet, cfleet::VTABLE_RVA)?;
+        let reference = field::<u64>(&fleet_memory, fleet, cfleet::LEADER)?;
+        let leader = self.references.resolve(self.memory, reference)?;
+        if let Some(leader) = leader {
+            let leader_fields = gather(self.memory, leader, LEADER_FIELDS);
+            let leader_memory = leader_fields.memory(self.memory);
+            auth(
+                &leader_memory,
+                self.base,
+                leader,
+                crate::cnavy_leader::VTABLE_RVA,
+            )?;
+            if field::<u64>(&leader_memory, leader, 8)? != reference {
+                return Err("fresh task-force fleet leader reference mismatch");
+            }
+        }
+        self.fleets.insert(fleet, leader);
+        Ok(leader)
+    }
+
     /// One common graph for requested native keys at the task's actual location.
     fn common(
         &mut self,
@@ -709,47 +840,13 @@ impl<'a, M: Memory> Reader<'a, M> {
                 self.context.controller = Ok(None);
             }
             if location != 0 {
-                let province = gather(self.memory, location, PROVINCE_FIELDS);
-                let province = province.memory(self.memory);
-                auth(&province, self.base, location, crate::cprovince::VTABLE_RVA)?;
-                if risk && self.full_risk {
-                    self.context.location =
-                        field::<u32>(&province, location, crate::cprovince::ID).map(Some);
-                    self.context.controller =
-                        field::<u32>(&province, location, crate::cprovince::CONTROLLER).map(Some);
-                }
-                let region =
-                    field::<u64>(&province, location, crate::cprovince::STRATEGIC_REGION)? as usize;
-                let region_fields = gather(self.memory, region, REGION_FIELDS);
-                let region_memory = region_fields.memory(self.memory);
-                let id = crate::cstrategic_region::id(&region_memory, self.base, region)?
-                    .ok_or("fresh task-force location region absent")?;
-                if risk {
-                    self.context.region = Ok(Some(id));
-                }
-                let template =
-                    field::<u64>(&region_memory, region, crate::cstrategic_region::TEMPLATE)?
-                        as usize;
-                let template_fields = gather(self.memory, template, TEMPLATE_FIELDS);
-                let template_memory = template_fields.memory(self.memory);
-                auth(
-                    &template_memory,
-                    self.base,
-                    template,
-                    crate::cstrategic_region::TEMPLATE_VTABLE_RVA,
-                )?;
-                let terrain = naval::terrain_from_template_kept(
-                    &template_memory,
-                    self.base,
-                    template,
-                    &mut self.ocean,
-                )?;
+                let (id, terrain) = self.location(location, risk)?;
                 if risk && self.full_risk {
                     self.context.terrain_speed = self.speed_class.and_then(|class| {
                         if class < 0 {
                             return Err("risk original mixed terrain speed pending");
                         }
-                        let (_, source) = naval::terrain_class(self.memory, terrain, class as u32)?;
+                        let (_, source) = self.terrain_class(terrain, class as u32)?;
                         field(self.memory, source, 0x20)
                     });
                 }
@@ -786,33 +883,18 @@ impl<'a, M: Memory> Reader<'a, M> {
                 );
             }
             let fleet = field::<u64>(self.memory, task, ctask_force::FLEET)? as usize;
-            if fleet != 0 {
-                let fleet_fields = gather(self.memory, fleet, FLEET_FIELDS);
-                let fleet_memory = fleet_fields.memory(self.memory);
-                auth(&fleet_memory, self.base, fleet, cfleet::VTABLE_RVA)?;
-                let reference = field::<u64>(&fleet_memory, fleet, cfleet::LEADER)?;
-                if let Some(leader) = self.references.resolve(self.memory, reference)? {
-                    let leader_fields = gather(self.memory, leader, LEADER_FIELDS);
-                    let leader_memory = leader_fields.memory(self.memory);
-                    auth(
-                        &leader_memory,
-                        self.base,
+            if fleet != 0
+                && let Some(leader) = self.fleet_leader(fleet)?
+            {
+                sum(
+                    &mut total,
+                    self.certified_terms(
+                        add(leader, mission::LEADER_MODIFIERS)?,
                         leader,
-                        crate::cnavy_leader::VTABLE_RVA,
-                    )?;
-                    if field::<u64>(&leader_memory, leader, 8)? != reference {
-                        return Err("fresh task-force fleet leader reference mismatch");
-                    }
-                    sum(
-                        &mut total,
-                        self.certified_terms(
-                            add(leader, mission::LEADER_MODIFIERS)?,
-                            leader,
-                            eta,
-                            risk,
-                        )?,
-                    );
-                }
+                        eta,
+                        risk,
+                    )?,
+                );
             }
             let headquarters = Array::read(
                 self.memory,
@@ -873,7 +955,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         let mixed = risk && self.full_risk && matches!(self.speed_class, Ok(class) if class < 0);
         let mut speed = Ok(0_i64);
         let mut flush = |reader: &mut Self, class, count: i32, total: &mut Terms| {
-            let (source, speed_source) = naval::terrain_class(reader.memory, terrain, class)?;
+            let (source, speed_source) = reader.terrain_class(terrain, class)?;
             if mixed {
                 speed = speed.and_then(|sum| {
                     field::<i64>(reader.memory, speed_source, 0x20)
@@ -888,35 +970,64 @@ impl<'a, M: Memory> Reader<'a, M> {
             Ok::<(), &'static str>(())
         };
         let mut sink_result = Ok(());
-        let walked = crate::cpdx_array::pointers(
-            self.memory,
-            ships,
-            "fresh task-force ship pointer unreadable",
-            |ordinal, ship| {
-                let ship = RosterShip::gather(self.memory, ship);
-                ship.admit(
-                    self.memory,
-                    self.base,
-                    task,
-                    "fresh task-force ship parent mismatch",
-                )?;
-                let class = ship.get::<u32>(self.memory, 2);
-                if risk {
-                    let original = self.ship_loan(ordinal, &ship, class);
-                    sink_result = sink_result.and(original);
+        let mut visit = |reader: &mut Self, ordinal, ship: &RosterShip<'_>| {
+            ship.admit(
+                reader.memory,
+                reader.base,
+                task,
+                "fresh task-force ship parent mismatch",
+            )?;
+            let class = ship.get::<u32>(reader.memory, 2);
+            if risk {
+                let original = reader.ship_loan(ordinal, ship, class);
+                sink_result = sink_result.and(original);
+            }
+            let class = class?;
+            match run {
+                Some((previous, count)) if previous == class => run = Some((class, count + 1)),
+                Some((previous, count)) => {
+                    flush(reader, previous, count, total)?;
+                    run = Some((class, 1));
                 }
-                let class = class?;
-                match run {
-                    Some((previous, count)) if previous == class => run = Some((class, count + 1)),
-                    Some((previous, count)) => {
-                        flush(self, previous, count, total)?;
-                        run = Some((class, 1));
+                None => run = Some((class, 1)),
+            }
+            Ok(())
+        };
+        let memory = self.memory;
+        let walked = {
+            // The ETA walk keeps these SHIPS occurrences in order. Validated
+            // pointer pages supply exact records; a stopped gather's suffix
+            // takes the original per-object path once (and is counted).
+            let mut bytes = [0; ROSTER_STRIDE * crate::cpdx_array::POINTER_PAGE];
+            let mut complete = [false; crate::cpdx_array::POINTER_PAGE];
+            crate::cpdx_array::pointer_pages(
+                memory,
+                ships,
+                "fresh task-force ship pointer unreadable",
+                |first, page| {
+                    gather_records_once(
+                        memory,
+                        page,
+                        &ROSTER_RECORD,
+                        &mut bytes,
+                        &mut complete,
+                        crate::batch_fallback::Batch::FreshEtaGathers,
+                    );
+                    for (index, &pointer) in page.iter().enumerate() {
+                        let ship = if complete[index] {
+                            RosterShip::record(
+                                pointer,
+                                &bytes[index * ROSTER_STRIDE..(index + 1) * ROSTER_STRIDE],
+                            )
+                        } else {
+                            RosterShip::gather(memory, pointer)
+                        };
+                        visit(self, first + index as u32, &ship)?;
                     }
-                    None => run = Some((class, 1)),
-                }
-                Ok(())
-            },
-        );
+                    Ok(())
+                },
+            )
+        };
         if risk {
             self.finish_ship_loan(walked.and(sink_result));
         }

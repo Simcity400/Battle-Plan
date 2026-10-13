@@ -159,6 +159,8 @@ pub(crate) struct ArmyStatStore {
     name_bytes: Vec<u8>,
     next_names: Vec<HeldName>,
     next_name_bytes: Vec<u8>,
+    #[cfg(test)]
+    pub(super) name_lookups: usize,
 }
 
 impl Default for ArmyStatStore {
@@ -183,6 +185,8 @@ impl ArmyStatStore {
             name_bytes: Vec::new(),
             next_names: Vec::new(),
             next_name_bytes: Vec::new(),
+            #[cfg(test)]
+            name_lookups: 0,
         }
     }
 
@@ -214,12 +218,19 @@ impl ArmyStatStore {
             + self.next_name_bytes.capacity()
     }
 
-    /// The held name member of the seed at census `index`, `division`.
-    pub(super) fn held_name(&mut self, index: usize, division: u64) -> Option<HeldName> {
-        let at = self
-            .name_locator
-            .locate(&self.name_divisions, index, division)?;
-        Some(self.names[at])
+    /// The held name's index for the seed at census `index`, `division`.
+    pub(super) fn held_name(&mut self, index: usize, division: u64) -> Option<usize> {
+        #[cfg(test)]
+        {
+            self.name_lookups += 1;
+        }
+        self.name_locator
+            .locate(&self.name_divisions, index, division)
+    }
+
+    /// Borrow the selected record without copying its owned member span.
+    pub(super) fn held_name_record(&self, index: usize) -> &HeldName {
+        &self.names[index]
     }
 
     /// The cache text of a held name member.

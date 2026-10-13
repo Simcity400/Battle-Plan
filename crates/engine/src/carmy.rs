@@ -1593,6 +1593,12 @@ pub struct StatusPacket {
     border_stats: Vec<Option<[i64; 3]>>,
     maxima: Vec<crate::csub_unit_definition::DivisionMaxima>,
     maxima_index: Vec<usize>,
+    /// Every maxima-index lookup ([`Self::maxima_slot`]), selection and
+    /// admission alike.
+    #[cfg(test)]
+    maxima_probes: std::cell::Cell<usize>,
+    /// Initialized once with packet storage, reused by every hourly pass.
+    acclimatization: Option<Box<AcclimatizationBatch>>,
     countries: Vec<StatusCountryInputs>,
     country_index: Vec<usize>,
     groups: Vec<StatusGroupInputs>,
@@ -1623,6 +1629,29 @@ pub struct StatusPacket {
     maximum_level: Option<Result<i32, &'static str>>,
     minimum_strength: Option<Result<i64, &'static str>>,
     outcome: Outcome,
+}
+
+#[derive(Clone, Copy)]
+struct SelectedMaxima {
+    slot: usize,
+    /// The gathered row, or no request for a memo hit or carried block.
+    row: usize,
+}
+
+impl Default for SelectedMaxima {
+    fn default() -> Self {
+        Self {
+            slot: usize::MAX,
+            row: usize::MAX,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct StagedMaxima {
+    pointer: usize,
+    slot: usize,
+    row: usize,
 }
 
 fn status_pointer_slot(slots: &[usize], pointer: usize, key: impl Fn(usize) -> usize) -> usize {
@@ -1665,6 +1694,9 @@ impl StatusPacket {
             border_stats: Vec::new(),
             maxima: Vec::new(),
             maxima_index: Vec::new(),
+            #[cfg(test)]
+            maxima_probes: std::cell::Cell::new(0),
+            acclimatization: None,
             countries: Vec::new(),
             country_index: Vec::new(),
             groups: Vec::new(),
@@ -1718,6 +1750,13 @@ impl StatusPacket {
             border_stats: crate::allocation::filled(capacities.units, None)?,
             maxima: crate::allocation::vec(capacities.units)?,
             maxima_index: crate::allocation::filled(index_capacity, 0)?,
+            #[cfg(test)]
+            maxima_probes: std::cell::Cell::new(0),
+            acclimatization: if capacities.units == 0 {
+                None
+            } else {
+                Some(crate::allocation::boxed(AcclimatizationBatch::new())?)
+            },
             countries: crate::allocation::vec(capacities.units)?,
             country_index: crate::allocation::filled(index_capacity, 0)?,
             groups: crate::allocation::vec(capacities.units)?,
@@ -1769,6 +1808,8 @@ impl StatusPacket {
         self.border_stats.fill(None);
         self.maxima.clear();
         self.maxima_index.fill(0);
+        #[cfg(test)]
+        self.maxima_probes.set(0);
         self.countries.clear();
         self.country_index.fill(0);
         self.groups.clear();
@@ -1897,53 +1938,85 @@ impl StatusPacket {
             + self.exercise_autonomy.capacity() * (size_of::<(u32, bool)>() + 1)
             + self.categories.allocated_bytes()
             + self.thresholds.capacity() * size_of::<Result<i64, &'static str>>()
+            + self
+                .acclimatization
+                .as_ref()
+                .map_or(0, |_| size_of::<AcclimatizationBatch>())
+    }
+
+    /// The only lookup of the maxima index.
+    fn maxima_slot(&self, pointer: usize, key: impl Fn(usize) -> usize) -> usize {
+        #[cfg(test)]
+        self.maxima_probes.set(self.maxima_probes.get() + 1);
+        status_pointer_slot(&self.maxima_index, pointer, key)
     }
 
     fn stage_maxima(
-        &self,
+        &mut self,
         memory: &impl Memory,
         base: usize,
         seeds: &[DivisionSeed],
         held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
         batch: &mut crate::csub_unit_definition::MaximaBatch,
-    ) {
+    ) -> [SelectedMaxima; 64] {
+        let mut selected = [SelectedMaxima::default(); 64];
+        let mut staged = [StagedMaxima::default(); 64];
+        let mut staged_len = 0;
         let mut pointers = [0_usize; 64];
         let mut len = 0;
-        let mut seen = [0_usize; 64];
-        let mut seen_len = 0;
+        let identity = base.checked_add(VTABLE_RVA).map(|at| at as u64);
         for (index, seed) in seeds.iter().enumerate() {
-            if seed.primary_vtable != base.checked_add(VTABLE_RVA).map(|at| at as u64)
+            if seed.primary_vtable != identity
                 || seed.handle != Some(seed.division)
                 || seed.division == 0
             {
                 continue;
             }
-            let Some(pointer) = seed.stat_block.filter(|&at| at != 0) else {
+            let Some(pointer) = seed.stat_block else {
                 continue;
             };
-            if seen[..seen_len].contains(&pointer) {
-                continue;
-            }
-            // An earlier carried seed inserts this same block in the serial
-            // memo before a later unheld seed asks for it. It must still cause
-            // no read, including during speculative batch preparation.
-            seen[seen_len] = pointer;
-            seen_len += 1;
-            if held
-                .get(index)
-                .copied()
-                .flatten()
-                .is_some_and(|value| value.pointer == pointer)
-            {
-                continue;
-            }
-            let slot = status_pointer_slot(&self.maxima_index, pointer, |i| self.maxima[i].pointer);
-            if self.maxima_index[slot] == 0 {
-                pointers[len] = pointer;
-                len += 1;
-            }
+            let slot = self.maxima_slot(pointer, |i| {
+                if i < self.maxima.len() {
+                    self.maxima[i].pointer
+                } else {
+                    staged[usize::MAX - 1 - i].pointer
+                }
+            });
+            let resident = self.maxima_index[slot];
+            let row = if resident == 0 {
+                // Reserve only a key, never a value. An earlier carried seed
+                // reserves its block without a request, so later aliases also
+                // supply no speculative read.
+                let carried = held
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|value| value.pointer == pointer);
+                let row = if carried || pointer == 0 {
+                    usize::MAX
+                } else {
+                    pointers[len] = pointer;
+                    len += 1;
+                    len - 1
+                };
+                self.maxima_index[slot] = usize::MAX - staged_len;
+                staged[staged_len] = StagedMaxima { pointer, slot, row };
+                staged_len += 1;
+                row
+            } else if resident - 1 < self.maxima.len() {
+                usize::MAX
+            } else {
+                staged[usize::MAX - resident].row
+            };
+            selected[index] = SelectedMaxima { slot, row };
+        }
+        // Undo reservations before native acquisition or serial admission.
+        // The selected slots retain the same collision order as that admission.
+        for pending in &staged[..staged_len] {
+            self.maxima_index[pending.slot] = 0;
         }
         batch.capture(memory, &pointers[..len]);
+        selected
     }
 
     fn maxima(
@@ -1951,28 +2024,23 @@ impl StatusPacket {
         memory: &impl Memory,
         base: usize,
         pointer: usize,
+        selected: SelectedMaxima,
+        held: Option<crate::csub_unit_definition::DivisionMaxima>,
         batch: &crate::csub_unit_definition::MaximaBatch,
     ) -> Result<usize, &'static str> {
-        let slot = status_pointer_slot(&self.maxima_index, pointer, |i| self.maxima[i].pointer);
+        let slot = selected.slot;
+        debug_assert_ne!(slot, usize::MAX);
         if self.maxima_index[slot] != 0 {
             return Ok(self.maxima_index[slot] - 1);
         }
-        let value = batch.read(memory, base, pointer)?;
-        Ok(self.hold_maxima(value))
-    }
-
-    /// Carried maxima enter the pass's memo as a read of their block would.
-    fn hold_maxima(&mut self, value: crate::csub_unit_definition::DivisionMaxima) -> usize {
-        let slot = status_pointer_slot(&self.maxima_index, value.pointer, |i| {
-            self.maxima[i].pointer
-        });
-        if self.maxima_index[slot] != 0 {
-            return self.maxima_index[slot] - 1;
-        }
+        let value = match held.filter(|value| value.pointer == pointer) {
+            Some(value) => value,
+            None => batch.read(memory, base, pointer, selected.row)?,
+        };
         let index = self.maxima.len();
         self.maxima.push(value);
         self.maxima_index[slot] = index + 1;
-        index
+        Ok(index)
     }
 
     /// The stat-block maxima this pass used for seed `index`: read or carried,
@@ -2672,10 +2740,12 @@ impl StatusPacket {
                 row_capacity
             });
             let mut batch = crate::csub_unit_definition::MaximaBatch::new();
+            let mut selected = [SelectedMaxima::default(); 64];
+            let identity = base.checked_add(VTABLE_RVA).map(|at| at as u64);
             for (index, seed) in seeds[..count].iter().enumerate() {
                 if index.is_multiple_of(64) {
                     let end = (index + 64).min(count);
-                    self.stage_maxima(
+                    selected = self.stage_maxima(
                         memory,
                         base,
                         &seeds[index..end],
@@ -2690,7 +2760,7 @@ impl StatusPacket {
                 });
 
                 let result = (|| -> Result<(), &'static str> {
-                    if seed.primary_vtable != base.checked_add(VTABLE_RVA).map(|p| p as u64)
+                    if seed.primary_vtable != identity
                         || seed
                             .handle
                             .ok_or("division presentation field unreadable")?
@@ -2703,10 +2773,14 @@ impl StatusPacket {
                     let stats = seed
                         .stat_block
                         .ok_or("division presentation field unreadable")?;
-                    self.units[unit].maxima = match held.get(index).copied().flatten() {
-                        Some(maxima) if maxima.pointer == stats => self.hold_maxima(maxima),
-                        _ => self.maxima(memory, base, stats, &batch)?,
-                    };
+                    self.units[unit].maxima = self.maxima(
+                        memory,
+                        base,
+                        stats,
+                        selected[index % 64],
+                        held.get(index).copied().flatten(),
+                        &batch,
+                    )?;
 
                     let expeditionary = seed
                         .expeditionary_owner
@@ -2747,64 +2821,72 @@ impl StatusPacket {
         // Finishing in source order preserves a prior unit's scalar/exercise
         // error ahead of a later unit's membership or preparation failure.
         self.membership.acquire(memory, base);
+        let mut entries = self.acclimatization.take();
         let result = prepared.and_then(|(count, countries)| {
-            let mut entries = AcclimatizationBatch::new();
             let admitted = &seeds[..self.units.len()];
-            for (unit, seed) in admitted.iter().enumerate() {
-                if unit.is_multiple_of(64) {
-                    entries.capture(
-                        memory,
-                        base,
-                        &admitted[unit..(unit + 64).min(admitted.len())],
-                    );
-                }
-                if let Some(reason) = self.units[unit].failure {
-                    return Err(reason);
-                }
-                self.membership.outcome(self.units[unit].membership)?;
-
-                self.units[unit].attrition_value = seed
-                    .counter_attrition
-                    .ok_or("division presentation field unreadable")?;
-
-                self.units[unit].entrenchment = seed
-                    .entrenchment
-                    .ok_or("division presentation field unreadable")?;
-
-                self.units[unit].entrenchment_cap = seed
-                    .entrenchment_cap
-                    .ok_or("division presentation field unreadable")?;
-
-                self.units[unit].supply_ratio = seed
-                    .counter_supply_status
-                    .ok_or("division presentation field unreadable")?;
-                self.units[unit].supply_grace_maximum = seed
-                    .supply_grace_maximum
-                    .ok_or("division maximum supply grace unreadable")?;
-                self.units[unit].supply_grace_remaining = seed
-                    .supply_grace_remaining
-                    .ok_or("division remaining supply grace unreadable")?;
-                self.units[unit].invalid_orders = seed
-                    .invalid_orders
-                    .ok_or("division presentation field unreadable")?;
-                self.units[unit].strength_factor = seed
-                    .strength_factor
-                    .ok_or("division presentation field unreadable")?;
-                self.units[unit].exiled = seed
-                    .exiled
-                    .ok_or("division presentation field unreadable")?;
-                self.units[unit].model_number = seed
-                    .model_number
-                    .ok_or("division presentation field unreadable")?;
-                self.capture_camouflage(memory, base, seed, unit, entries.first(unit % 64));
-                self.units[unit].training = self.training(memory, self.units[unit].group)?;
-                if self.units[unit].training != 0 {
-                    self.units[unit].exercise =
-                        Some(
-                            self.capture_exercise(memory, base, seed, unit, |packet, raw| {
-                                packet.exercise_autonomous(memory, base, state, &countries, raw)
-                            })?,
+            if !admitted.is_empty() {
+                let entries = entries
+                    .as_deref_mut()
+                    .expect("admitted packet has entry scratch");
+                for (unit, seed) in admitted.iter().enumerate() {
+                    if unit.is_multiple_of(64) {
+                        entries.capture(
+                            memory,
+                            base,
+                            &admitted[unit..(unit + 64).min(admitted.len())],
                         );
+                    }
+                    if let Some(reason) = self.units[unit].failure {
+                        return Err(reason);
+                    }
+                    self.membership.outcome(self.units[unit].membership)?;
+
+                    self.units[unit].attrition_value = seed
+                        .counter_attrition
+                        .ok_or("division presentation field unreadable")?;
+
+                    self.units[unit].entrenchment = seed
+                        .entrenchment
+                        .ok_or("division presentation field unreadable")?;
+
+                    self.units[unit].entrenchment_cap = seed
+                        .entrenchment_cap
+                        .ok_or("division presentation field unreadable")?;
+
+                    self.units[unit].supply_ratio = seed
+                        .counter_supply_status
+                        .ok_or("division presentation field unreadable")?;
+                    self.units[unit].supply_grace_maximum = seed
+                        .supply_grace_maximum
+                        .ok_or("division maximum supply grace unreadable")?;
+                    self.units[unit].supply_grace_remaining = seed
+                        .supply_grace_remaining
+                        .ok_or("division remaining supply grace unreadable")?;
+                    self.units[unit].invalid_orders = seed
+                        .invalid_orders
+                        .ok_or("division presentation field unreadable")?;
+                    self.units[unit].strength_factor = seed
+                        .strength_factor
+                        .ok_or("division presentation field unreadable")?;
+                    self.units[unit].exiled = seed
+                        .exiled
+                        .ok_or("division presentation field unreadable")?;
+                    self.units[unit].model_number = seed
+                        .model_number
+                        .ok_or("division presentation field unreadable")?;
+                    self.capture_camouflage(memory, base, seed, unit, entries.first(unit % 64));
+                    self.units[unit].training = self.training(memory, self.units[unit].group)?;
+                    if self.units[unit].training != 0 {
+                        self.units[unit].exercise = Some(self.capture_exercise(
+                            memory,
+                            base,
+                            seed,
+                            unit,
+                            |packet, raw| {
+                                packet.exercise_autonomous(memory, base, state, &countries, raw)
+                            },
+                        )?);
+                    }
                 }
             }
             let source_missing = match source_outcome {
@@ -2825,6 +2907,7 @@ impl StatusPacket {
                 }
             })
         });
+        self.acclimatization = entries;
         self.outcome = result.unwrap_or_else(|reason| Outcome::Unavailable { reason });
         if self.units.len() > self.border_index.capacity() {
             if matches!(self.outcome, Outcome::Rows { .. }) {
@@ -3094,7 +3177,7 @@ impl AcclimatizationBatch {
         let mut rows = self.bytes.iter_mut();
         let mut destinations: [&mut [u8]; 64] =
             std::array::from_fn(|index| &mut rows.next().unwrap()[..self.lengths[index]]);
-        self.copied = memory.copy_scattered(addresses, &mut destinations);
+        self.copied = memory.copy_scattered_prefetched(addresses, &mut destinations);
         if self.copied < 64 {
             crate::batch_fallback::record(crate::batch_fallback::Batch::DivisionAcclimatization);
         }
@@ -3131,7 +3214,7 @@ fn acclimatization_winner(
     .ok_or("division acclimatization entries invalid")?;
     let count = entries.count as usize;
     const SPAN: usize = 32;
-    let mut bytes = [0_u8; SPAN * entry::STRIDE];
+    let mut bytes = [std::mem::MaybeUninit::uninit(); SPAN * entry::STRIDE];
     let mut strongest = data::Strongest::new();
     for first in (0..count).step_by(SPAN) {
         let len = (count - first).min(SPAN);
@@ -3140,12 +3223,8 @@ fn acclimatization_winner(
             .ok_or("division acclimatization entries invalid")?;
         let raw_entries = match gathered_first.filter(|_| first == 0) {
             Some(gathered) => gathered,
-            None => {
-                if !crate::read_slice(memory, at, &mut bytes[..len * entry::STRIDE]) {
-                    return Err("division acclimatization entries unreadable");
-                }
-                &bytes[..len * entry::STRIDE]
-            }
+            None => crate::memory::read_slice_uninit(memory, at, &mut bytes[..len * entry::STRIDE])
+                .ok_or("division acclimatization entries unreadable")?,
         };
         for raw in raw_entries.chunks_exact(entry::STRIDE) {
             strongest.offer(
@@ -3697,3 +3776,6 @@ mod tests;
 
 #[cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))]
 mod bench;
+
+#[cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))]
+mod status_bench;

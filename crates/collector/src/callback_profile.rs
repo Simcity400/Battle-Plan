@@ -1,15 +1,12 @@
 //! Opt-in callback tail samples. Recording uses fixed storage and atomics only;
 //! JSON construction belongs to the status thread. Slots are never overwritten.
 use crate::{acquisition, acquisition_jobs, sampling};
-use std::{
-    cell::Cell,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
-};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const LIMIT: usize = 1024;
 const THRESHOLD_NS: u64 = 10_000_000;
 const CALLBACK_SCALARS: usize = 14;
-const JOIN_SCALARS: usize = 17;
+const JOIN_SCALARS: usize = 14;
 const SCALARS: usize = CALLBACK_SCALARS + JOIN_SCALARS;
 const WIDTH: usize = SCALARS + sampling::SEGMENTS + acquisition_jobs::ROLE_COUNT;
 static SAMPLES: Samples<LIMIT> = Samples::new();
@@ -21,31 +18,20 @@ pub(crate) struct JoinSample {
     pub profile: acquisition::Profile,
 }
 
-thread_local! {
-    static SLOWEST_JOIN: Cell<Option<JoinSample>> = const { Cell::new(None) };
-}
-
 /// Call on the game thread before starting this callback's acquisition.
 pub(crate) fn reset_join() {
-    SLOWEST_JOIN.set(None);
+    sampling::reset_hour_joins();
 }
 
 /// Keep the first largest join on this thread; ties retain the earlier join.
+#[cfg(test)]
 pub(crate) fn record_join(role: usize, wall_ns: u64, profile: acquisition::Profile) {
-    SLOWEST_JOIN.with(|slowest| {
-        if slowest.get().is_none_or(|sample| wall_ns > sample.wall_ns) {
-            slowest.set(Some(JoinSample {
-                role: Some(role),
-                wall_ns,
-                profile,
-            }));
-        }
-    });
+    sampling::record_hour_join(role, wall_ns, 0, 0, profile);
 }
 
 /// Returns this callback's slowest join and clears the thread-local slot.
 pub(crate) fn take_join() -> JoinSample {
-    SLOWEST_JOIN.take().unwrap_or_default()
+    sampling::take_profile_join()
 }
 
 impl JoinSample {
@@ -61,13 +47,10 @@ impl JoinSample {
             self.profile.published_qpc as u64,
             self.profile.collected_qpc as u64,
             self.profile.submit_lock_wait_ticks,
-            self.profile.completion_lock_wait_ticks,
             self.profile.finish_lock_wait_ticks,
             u64::from(self.profile.runner_thread_cycles.is_some()),
             self.profile.runner_thread_cycles.unwrap_or(0),
             u64::from(self.profile.runner_thread_id),
-            self.profile.wake_begin_qpc as u64,
-            self.profile.wake_end_qpc as u64,
         ]
     }
 
@@ -83,12 +66,9 @@ impl JoinSample {
                 published_qpc: fields[7] as i64,
                 collected_qpc: fields[8] as i64,
                 submit_lock_wait_ticks: fields[9],
-                completion_lock_wait_ticks: fields[10],
-                finish_lock_wait_ticks: fields[11],
-                runner_thread_cycles: (fields[12] != 0).then_some(fields[13]),
-                runner_thread_id: fields[14] as u32,
-                wake_begin_qpc: fields[15] as i64,
-                wake_end_qpc: fields[16] as i64,
+                finish_lock_wait_ticks: fields[10],
+                runner_thread_cycles: (fields[11] != 0).then_some(fields[12]),
+                runner_thread_id: fields[13] as u32,
             },
         }
     }
@@ -97,7 +77,7 @@ impl JoinSample {
         let label = self
             .role
             .and_then(|index| acquisition_jobs::ROLES.get(index))
-            .map(|role| crate::status::DebugValue(role));
+            .map(crate::status::DebugValue);
         crate::status::status!({
             "role": self.role,
             "role_label": label,
@@ -109,12 +89,9 @@ impl JoinSample {
             "published_qpc": self.profile.published_qpc,
             "collected_qpc": self.profile.collected_qpc,
             "submit_lock_wait_ticks": self.profile.submit_lock_wait_ticks,
-            "completion_lock_wait_ticks": self.profile.completion_lock_wait_ticks,
             "finish_lock_wait_ticks": self.profile.finish_lock_wait_ticks,
             "runner_thread_cycles": self.profile.runner_thread_cycles,
             "runner_thread_id": self.profile.runner_thread_id,
-            "wake_begin_qpc": self.profile.wake_begin_qpc,
-            "wake_end_qpc": self.profile.wake_end_qpc,
         })
     }
 }
@@ -358,7 +335,8 @@ impl<const N: usize> Samples<N> {
             self.slots
                 .iter()
                 .zip(ready)
-                .filter_map(|(slot, ready)| ready.then(|| slot.read().unwrap().json())),
+                .filter(|&(_, ready)| ready)
+                .map(|(slot, _)| slot.read().unwrap().json()),
         );
         let roles = crate::status::sequence(
             acquisition_jobs::ROLES
@@ -450,12 +428,9 @@ mod tests {
                     published_qpc: 5,
                     collected_qpc: i64::MAX,
                     submit_lock_wait_ticks: 6,
-                    completion_lock_wait_ticks: 7,
                     finish_lock_wait_ticks: 8,
                     runner_thread_cycles: Some(0),
                     runner_thread_id: 456,
-                    wake_begin_qpc: 9,
-                    wake_end_qpc: 10,
                 },
             },
             segments_ns: std::array::from_fn(|index| 100 + index as u64),
@@ -474,8 +449,11 @@ mod tests {
         assert_eq!(status["samples"][0]["join"]["role"], 2);
         assert_eq!(status["samples"][0]["join"]["runner_thread_cycles"], 0);
         assert_eq!(status["samples"][0]["join"]["runner_thread_id"], 456);
-        assert_eq!(status["samples"][0]["join"]["wake_begin_qpc"], 9);
-        assert_eq!(status["samples"][0]["join"]["wake_end_qpc"], 10);
+        assert_eq!(status["samples"][0]["join"]["finish_lock_wait_ticks"], 8);
+        let join = status["samples"][0]["join"].as_object().unwrap();
+        assert!(!join.contains_key("completion_lock_wait_ticks"));
+        assert!(!join.contains_key("wake_begin_qpc"));
+        assert!(!join.contains_key("wake_end_qpc"));
         let missing = serde_json::to_value(Sample::default().json()).unwrap();
         assert!(missing["hour"].is_null());
         assert!(missing["thread_cycles"].is_null());

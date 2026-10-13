@@ -489,7 +489,7 @@ pub(super) fn put_residual(
     let mut run = coding.as_ref().map(|coding| KeyWriter::new(coding.keys));
     for &key in &deleted {
         match &mut run {
-            Some(run) => run.put(key, &mut out.0[KEYS])?,
+            Some(run) => out.put_key(run, key)?,
             None => put_varint(&mut out.0[KEYS], key - previous_key),
         }
         previous_key = key;
@@ -557,7 +557,7 @@ pub(super) fn put_residual(
         }
         if mask != 0 {
             match (&mut run, &mut coding) {
-                (Some(run), Some(coding)) => coding.put_row(run, key, mask, width, &mut out.0)?,
+                (Some(run), Some(coding)) => coding.put_row(run, key, mask, width, out)?,
                 _ => {
                     put_varint(&mut out.0[KEYS], key - previous_key);
                     out.0[MASKS].extend_from_slice(&mask.to_le_bytes()[..width]);
@@ -582,7 +582,7 @@ pub(super) fn put_residual(
     }
     // A modelled entry's rows are stored once the entry is kept.
     if let (Some(run), Some(coding)) = (run, &mut coding) {
-        coding.finish_run(run, &mut out.0)?;
+        coding.finish_run(run, out)?;
     }
     put_varint(&mut out.0[CONTROL], residuals as u128);
     Ok(true)

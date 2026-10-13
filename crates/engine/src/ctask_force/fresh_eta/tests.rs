@@ -132,6 +132,440 @@ fn verified_reader(memory: &Fixture) -> Reader<'_, Fixture> {
     Reader::new(memory, 0, STATE).with_modifier_guard(Ok(()))
 }
 
+fn source_reader<M: Memory>(memory: &M, base: usize) -> Reader<'_, M> {
+    Reader::new(memory, base, STATE).with_modifier_guard(Ok(()))
+}
+
+fn source_terrain_terms<M: Memory>(
+    reader: &mut Reader<'_, M>,
+    terms: &mut Terms,
+    serial: bool,
+) -> Result<(), &'static str> {
+    if serial {
+        reader.serial_terrain_terms(TASK, 0x7000, terms, true, false)
+    } else {
+        reader.terrain_terms(TASK, 0x7000, terms, true, false)
+    }
+}
+
+fn source_capture<M: Memory>(
+    reader: &mut Reader<'_, M>,
+    task: usize,
+    hour: i32,
+    serial: bool,
+) -> (FreshEtaInputs, Result<ccountry::Country, &'static str>) {
+    if serial {
+        let (eta, owner, _) =
+            reader.serial_capture_with_mission_risk_union(task, hour, Ok(false), Ok(()), false);
+        (eta, owner)
+    } else {
+        reader.capture(task, hour)
+    }
+}
+
+fn source_capture_with_risk<M: Memory>(
+    reader: &mut Reader<'_, M>,
+    hour: i32,
+    demand: Result<bool, &'static str>,
+    guard: Result<(), &'static str>,
+    contributor: bool,
+    serial: bool,
+) -> SourcePacket {
+    if serial {
+        reader.serial_capture_with_mission_risk_union(TASK, hour, demand, guard, contributor)
+    } else {
+        reader.capture_with_mission_risk_union(TASK, hour, demand, guard, contributor)
+    }
+}
+
+// Serial source acquisition shares the unchanged key arithmetic and packet
+// projection, but reads every selector and roster ship at its original occurrence.
+impl<M: Memory> Reader<'_, M> {
+    fn serial_location(
+        &mut self,
+        location: usize,
+        risk: bool,
+    ) -> Result<(u32, usize), &'static str> {
+        let province = gather(self.memory, location, PROVINCE_FIELDS);
+        let province = province.memory(self.memory);
+        auth(&province, self.base, location, crate::cprovince::VTABLE_RVA)?;
+        if risk && self.full_risk {
+            self.context.location =
+                field::<u32>(&province, location, crate::cprovince::ID).map(Some);
+            self.context.controller =
+                field::<u32>(&province, location, crate::cprovince::CONTROLLER).map(Some);
+        }
+        let region =
+            field::<u64>(&province, location, crate::cprovince::STRATEGIC_REGION)? as usize;
+        let region_fields = gather(self.memory, region, REGION_FIELDS);
+        let region_memory = region_fields.memory(self.memory);
+        let id = crate::cstrategic_region::id(&region_memory, self.base, region)?
+            .ok_or("fresh task-force location region absent")?;
+        if risk {
+            self.context.region = Ok(Some(id));
+        }
+        let template =
+            field::<u64>(&region_memory, region, crate::cstrategic_region::TEMPLATE)? as usize;
+        let template_fields = gather(self.memory, template, TEMPLATE_FIELDS);
+        let template_memory = template_fields.memory(self.memory);
+        auth(
+            &template_memory,
+            self.base,
+            template,
+            crate::cstrategic_region::TEMPLATE_VTABLE_RVA,
+        )?;
+        let terrain = naval::terrain_from_template_kept(
+            &template_memory,
+            self.base,
+            template,
+            &mut self.ocean,
+        )?;
+        Ok((id, terrain))
+    }
+
+    fn serial_fleet_leader(&mut self, fleet: usize) -> Result<Option<usize>, &'static str> {
+        let fleet_fields = gather(self.memory, fleet, FLEET_FIELDS);
+        let fleet_memory = fleet_fields.memory(self.memory);
+        auth(&fleet_memory, self.base, fleet, cfleet::VTABLE_RVA)?;
+        let reference = field::<u64>(&fleet_memory, fleet, cfleet::LEADER)?;
+        let leader = self.references.resolve(self.memory, reference)?;
+        if let Some(leader) = leader {
+            let leader_fields = gather(self.memory, leader, LEADER_FIELDS);
+            let leader_memory = leader_fields.memory(self.memory);
+            auth(
+                &leader_memory,
+                self.base,
+                leader,
+                crate::cnavy_leader::VTABLE_RVA,
+            )?;
+            if field::<u64>(&leader_memory, leader, 8)? != reference {
+                return Err("fresh task-force fleet leader reference mismatch");
+            }
+        }
+        Ok(leader)
+    }
+
+    fn serial_common(
+        &mut self,
+        task: usize,
+        country_values: [Value; VALUE_COUNT],
+        eta: bool,
+        risk: bool,
+    ) -> Result<Terms, &'static str> {
+        let mut total = self.effective_terms(country_values, eta, risk);
+        let acquired = (|| -> Result<(), &'static str> {
+            let location = field::<u64>(self.memory, task, cunit::LOCATION)? as usize;
+            if location == 0 && risk {
+                self.context.location = Ok(None);
+                self.context.region = Ok(None);
+                self.context.controller = Ok(None);
+            }
+            if location != 0 {
+                let (id, terrain) = self.serial_location(location, risk)?;
+                if risk && self.full_risk {
+                    self.context.terrain_speed = self.speed_class.and_then(|class| {
+                        if class < 0 {
+                            return Err("risk original mixed terrain speed pending");
+                        }
+                        let (_, source) = naval::terrain_class(self.memory, terrain, class as u32)?;
+                        field(self.memory, source, 0x20)
+                    });
+                }
+                let mut terrain_terms = [Ok(0); TERM_COUNT];
+                let acquired =
+                    self.serial_terrain_terms(task, terrain, &mut terrain_terms, eta, risk);
+                sum(&mut total, terrain_terms);
+                acquired?;
+                let weather = self.weather.get_or_insert_with(|| {
+                    cweather_manager::Reader::new(self.memory, self.base, self.state)
+                });
+                let record = match weather {
+                    Ok(weather) => weather.movement_record(id as i32, true)?,
+                    Err(reason) => return Err(*reason),
+                };
+                if record != 0 {
+                    let mut weather = self.terms(
+                        add(record, crate::sweather_per_region::MODIFIERS)?,
+                        eta,
+                        risk,
+                    )?;
+                    let reduction = self
+                        .effective(3, country_values[3])
+                        .map(|value| P.wrapping_add(value).clamp(0, P));
+                    for value in &mut weather {
+                        *value = value.and_then(|value| {
+                            reduction.map(|factor| value.wrapping_mul(factor) / P)
+                        });
+                    }
+                    sum(&mut total, weather);
+                }
+                sum(
+                    &mut total,
+                    self.terms(add(task, mission::LOCAL_MODIFIERS)?, eta, risk)?,
+                );
+            }
+            let fleet = field::<u64>(self.memory, task, ctask_force::FLEET)? as usize;
+            if fleet != 0
+                && let Some(leader) = self.serial_fleet_leader(fleet)?
+            {
+                sum(
+                    &mut total,
+                    self.certified_terms(
+                        add(leader, mission::LEADER_MODIFIERS)?,
+                        leader,
+                        eta,
+                        risk,
+                    )?,
+                );
+            }
+            let headquarters = Array::read(
+                self.memory,
+                add(task, ctask_force::ATTACHED_HEADQUARTERS)?,
+                8,
+            )
+            .ok_or("fresh task-force headquarters invalid")?;
+            let mut strongest: Terms = [Ok(0); TERM_COUNT];
+            let acquired = crate::cpdx_array::pointers(
+                self.memory,
+                headquarters,
+                "fresh task-force headquarters unreadable",
+                |_, entry| {
+                    let commander =
+                        field::<u64>(self.memory, entry, mission::HEADQUARTERS_COMMANDER)? as usize;
+                    if commander == 0 {
+                        return Ok(());
+                    }
+                    let reference =
+                        field::<u64>(self.memory, commander, mission::COMMANDER_CHARACTER)?;
+                    let mut terms = [Ok(0); TERM_COUNT];
+                    let acquired = self.headquarters_terms(reference, &mut terms, eta, risk);
+                    for (strongest, term) in strongest.iter_mut().zip(terms) {
+                        *strongest = strongest.and_then(|value| term.map(|term| value.max(term)));
+                    }
+                    acquired
+                },
+            );
+            sum(&mut total, strongest);
+            acquired?;
+            Ok(())
+        })();
+        if let Err(reason) = acquired {
+            sum(&mut total, [Err(reason); TERM_COUNT]);
+        }
+        Ok(total)
+    }
+
+    fn serial_terrain_terms(
+        &mut self,
+        task: usize,
+        terrain: usize,
+        total: &mut Terms,
+        eta: bool,
+        risk: bool,
+    ) -> Result<(), &'static str> {
+        let ships = Array::read(self.memory, add(task, ctask_force::SHIPS)?, 8)
+            .ok_or("fresh task-force ship roster invalid");
+        if risk {
+            self.ship_header(ships);
+            self.context.ships_walked = true;
+            if let Err(reason) = ships {
+                self.finish_ship_loan(Err(reason));
+            }
+        }
+        let ships = ships?;
+        let mut run: Option<(u32, i32)> = None;
+        let mixed = risk && self.full_risk && matches!(self.speed_class, Ok(class) if class < 0);
+        let mut speed = Ok(0_i64);
+        let mut flush = |reader: &mut Self, class, count: i32, total: &mut Terms| {
+            let (source, speed_source) = naval::terrain_class(reader.memory, terrain, class)?;
+            if mixed {
+                speed = speed.and_then(|sum| {
+                    field::<i64>(reader.memory, speed_source, 0x20)
+                        .map(|value| sum.wrapping_add(i64::from(count).wrapping_mul(value)))
+                });
+            }
+            let terms = reader.terms(add(source, 0x10)?, eta, risk)?;
+            sum(
+                total,
+                terms.map(|value| value.map(|value| i64::from(count).wrapping_mul(value))),
+            );
+            Ok::<(), &'static str>(())
+        };
+        let mut sink_result = Ok(());
+        let mut visit = |reader: &mut Self, ordinal, ship: &RosterShip<'_>| {
+            ship.admit(
+                reader.memory,
+                reader.base,
+                task,
+                "fresh task-force ship parent mismatch",
+            )?;
+            let class = ship.get::<u32>(reader.memory, 2);
+            if risk {
+                let original = reader.ship_loan(ordinal, ship, class);
+                sink_result = sink_result.and(original);
+            }
+            let class = class?;
+            match run {
+                Some((previous, count)) if previous == class => run = Some((class, count + 1)),
+                Some((previous, count)) => {
+                    flush(reader, previous, count, total)?;
+                    run = Some((class, 1));
+                }
+                None => run = Some((class, 1)),
+            }
+            Ok(())
+        };
+        let memory = self.memory;
+        let walked = crate::cpdx_array::pointers(
+            memory,
+            ships,
+            "fresh task-force ship pointer unreadable",
+            |ordinal, pointer| visit(self, ordinal, &RosterShip::gather(memory, pointer)),
+        );
+        if risk {
+            self.finish_ship_loan(walked.and(sink_result));
+        }
+        walked?;
+        if let Some((class, count)) = run {
+            flush(self, class, count, total)?;
+        }
+        if ships.count == 0 {
+            if mixed {
+                self.context.terrain_speed = Ok(0);
+            }
+            return Ok(());
+        }
+        if mixed {
+            self.context.terrain_speed =
+                speed.and_then(|value| crate::fixed5::fraction(value, i64::from(ships.count) * P));
+        }
+        *total = (*total).map(|value| {
+            value.and_then(|value| crate::fixed5::fraction(value, i64::from(ships.count) * P))
+        });
+        Ok(())
+    }
+
+    fn serial_common_inputs(
+        &mut self,
+        task: usize,
+        eta: bool,
+        risk: bool,
+    ) -> (
+        Result<ccountry::Country, &'static str>,
+        Result<[Value; VALUE_COUNT], &'static str>,
+        Terms,
+    ) {
+        self.context = RiskContext::default();
+        let raw_owner = field::<u32>(self.memory, task, cunit::ROSTER_OWNER);
+        self.context.roster_owner = raw_owner;
+        let roster = raw_owner.and_then(|raw| self.country(raw));
+        let country_values = if eta || risk {
+            roster.and_then(|country| {
+                self.country_values(
+                    add(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
+                    country.pointer,
+                    eta,
+                    risk,
+                )
+            })
+        } else {
+            self.modifier_guard
+                .and(Err("fresh task-force common query unreached"))
+        };
+        let common = country_values.and_then(|values| self.serial_common(task, values, eta, risk));
+        if risk && self.full_risk {
+            self.context.targeted_spotting =
+                roster.and_then(|roster| self.targeted_spotting(roster, self.context.controller));
+        }
+        (
+            roster,
+            country_values,
+            common.unwrap_or_else(|reason| [Err(reason); TERM_COUNT]),
+        )
+    }
+
+    fn serial_capture_with_mission_risk_union(
+        &mut self,
+        task: usize,
+        sample_hour: i32,
+        demand: Result<bool, &'static str>,
+        guard: Result<(), &'static str>,
+        contributor: bool,
+    ) -> (
+        FreshEtaInputs,
+        Result<ccountry::Country, &'static str>,
+        MissionRiskInputs,
+    ) {
+        let stats = self.stats(task);
+        let base_speed = stats.and_then(|stats| self.stat(stats, 0x1a8));
+        let terrain_class = stats.and_then(|stats| self.stat(stats, 8));
+        let range_base = self
+            .modifier_guard
+            .and_then(|_| stats.and_then(|stats| self.stat::<i64>(stats, mission::STAT_RANGE)));
+        let risk_reached = demand == Ok(true) && guard.is_ok();
+        self.full_risk = risk_reached;
+        self.speed_class = terrain_class;
+        let contribution_reached = guard.is_ok() && (risk_reached || contributor);
+        let (roster, country_values, terms) =
+            self.serial_common_inputs(task, self.modifier_guard.is_ok(), contribution_reached);
+        if contribution_reached {
+            self.observe_ship_count(task);
+        }
+        let fuel = if self.modifier_guard.is_ok() || risk_reached {
+            self.fuel(task)
+        } else {
+            self.modifier_guard
+                .and(Err("fresh task-force fuel query unreached"))
+        };
+        // OUT_OF_FUEL_SPEED_FACTOR / OUT_OF_FUEL_RANGE_FACTOR; read only on the
+        // deficit branch.
+        let observed_speed_modifier = terms[0].and_then(|value| {
+            self.deficit(fuel, 0x0331_bd80)
+                .map(|deficit| value.wrapping_add(deficit))
+        });
+        let speed_modifier = self.modifier_guard.and(observed_speed_modifier);
+        let modified_range = range_base.and_then(|base| {
+            let additive = terms[1]?;
+            let factor = terms[2]?.wrapping_add(self.deficit(fuel, 0x0331_bdf8)?);
+            let underway = self.underway(task, roster?, country_values)?;
+            Ok(base
+                .wrapping_add(additive)
+                .wrapping_mul(P.wrapping_add(factor).wrapping_add(underway).max(P / 10))
+                / P)
+        });
+        (
+            FreshEtaInputs {
+                sample_hour,
+                base_speed,
+                speed_modifier,
+                terrain_class,
+                modified_range,
+                exiled: field(self.memory, task, cunit::EXILED),
+                strategic_redeployment: field(self.memory, task, cunit::STRATEGIC_REDEPLOYMENT),
+            },
+            roster,
+            self.risk_packet(
+                sample_hour,
+                demand,
+                guard,
+                contributor,
+                RiskSources {
+                    terms,
+                    stats,
+                    base_speed,
+                    speed_modifier: observed_speed_modifier,
+                    terrain_class,
+                    detached_activity: if risk_reached {
+                        field(self.memory, task, ctask_force::DETACHED_ACTIVITY)
+                    } else {
+                        Ok(0)
+                    },
+                },
+            ),
+        )
+    }
+}
+
 #[test]
 fn current_packet_preserves_native_values_and_independent_stats_fields() {
     let mut memory = fixture();
@@ -525,12 +959,10 @@ fn actual_location_terrain_keeps_adjacent_class_runs_and_native_weighting() {
     assert_eq!(memory.calls(TASK + cunit::LOCATION), 1);
 }
 
-/// The ETA's ship walk reads each roster ship's vtable, parent and class in
-/// one guarded call, where it read each in a call of its own: a fourth ship
-/// of the last class costs one call more. A ship whose parent is unreadable
-/// still fails as before.
+/// A pointer page and one record batch serve every ship of this page. A
+/// fourth ship needs no extra guarded call; its failed parent still refuses.
 #[test]
-fn eta_roster_ships_cost_one_guarded_call_each() {
+fn eta_roster_ships_share_a_guarded_record_batch() {
     const FOURTH: usize = 0x20000;
     let capture = |memory: &Fixture| {
         let census = crate::read_census::ReadCensus::new(memory);
@@ -550,7 +982,7 @@ fn eta_roster_ships_cost_one_guarded_call_each() {
     let (speed, with_three) = capture(&three);
     assert_eq!(speed, Ok(26_666));
     let (_, with_four) = capture(&four);
-    assert_eq!(with_four - with_three, 1);
+    assert_eq!(with_four, with_three);
 
     four.fault = Some((FOURTH + cship::TASK_FORCE, 8));
     let row = Reader::new(&four, TERRAIN_IMAGE, STATE)
@@ -561,6 +993,170 @@ fn eta_roster_ships_cost_one_guarded_call_each() {
         row.speed_modifier,
         Err("fresh task-force operand unreadable")
     );
+}
+
+fn roster_fixture(count: usize) -> Fixture {
+    let mut memory = located_fixture();
+    memory.bytes.resize(0x40000 + count * cship::SIZE, 0);
+    memory.array(TASK + ctask_force::SHIPS, 0xa000, count as u32);
+    for ordinal in 0..count {
+        let ship = 0x40000 + ordinal * cship::SIZE;
+        memory.u64(0xa000 + ordinal * 8, ship as u64);
+        memory.u64(ship, (TERRAIN_IMAGE + cship::VTABLE_RVA) as u64);
+        memory.u64(ship + cship::TASK_FORCE, TASK as u64);
+        memory.u32(ship + cship::CLASS_DATABASE_ID, 3);
+        memory.u64(
+            ship + cship::HANDLE,
+            ((ordinal as u64 + 1) << 32) | u64::from(cship::HANDLE_TYPE),
+        );
+    }
+    memory
+}
+
+#[test]
+fn eta_roster_record_pages_keep_serial_terms_and_exact_guarded_cost() {
+    for count in [0_usize, 1, 3, 4, 63, 64, 65, 129] {
+        let memory = roster_fixture(count);
+        let capture = |serial| {
+            let census = crate::read_census::ReadCensus::new(&memory);
+            let mut reader = source_reader(&census, TERRAIN_IMAGE);
+            let mut terms = [Ok(0); TERM_COUNT];
+            let result = source_terrain_terms(&mut reader, &mut terms, serial);
+            (
+                result,
+                terms,
+                census.calls(),
+                census.spans(),
+                census.bytes(),
+            )
+        };
+        let serial = capture(true);
+        let batched = capture(false);
+        assert_eq!((batched.0, batched.1), (serial.0, serial.1), "{count}");
+        assert_eq!((batched.3, batched.4), (serial.3, serial.4), "{count}");
+        assert_eq!(serial.2 - batched.2, count - count.div_ceil(64), "{count}");
+    }
+}
+
+#[test]
+fn eta_roster_record_pages_keep_serial_faults_across_batch_boundaries() {
+    for ordinal in [0_usize, 63, 64, 128] {
+        for (offset, len) in ROSTER_SHIP {
+            let capture = |serial, one_shot| {
+                let mut memory = roster_fixture(129);
+                let ship = 0x40000 + ordinal * cship::SIZE;
+                memory.fault = Some((ship + offset, len));
+                memory.fail_once = one_shot;
+                let mut reader = source_reader(&memory, TERRAIN_IMAGE);
+                let mut terms = [Ok(0); TERM_COUNT];
+                let result = source_terrain_terms(&mut reader, &mut terms, serial);
+                assert!(memory.calls(ship + offset) <= 2);
+                (result, terms)
+            };
+            assert_eq!(
+                capture(false, false),
+                capture(true, false),
+                "{ordinal}+{offset:x}"
+            );
+            assert!(capture(false, true).0.is_ok(), "{ordinal}+{offset:x}");
+        }
+    }
+    for ordinal in [0_usize, 63, 64, 128] {
+        let capture = |serial| {
+            let mut memory = roster_fixture(129);
+            memory.fault = Some((0xa000 + ordinal * 8, 8));
+            let mut reader = source_reader(&memory, TERRAIN_IMAGE);
+            let mut terms = [Ok(0); TERM_COUNT];
+            (source_terrain_terms(&mut reader, &mut terms, serial), terms)
+        };
+        assert_eq!(capture(false), capture(true), "pointer {ordinal}");
+    }
+}
+
+fn counter_source_world(countries: usize) -> (Fixture, Vec<usize>) {
+    let mut memory = located_fixture();
+    let table = 0x40000;
+    let links = table + (countries + 1) * 8;
+    let owners = links + (countries + 1) * 4;
+    let tasks = owners + countries * 0x600;
+    let rosters = tasks + countries * 0x800;
+    let ships = rosters + countries * 24;
+    memory.bytes.resize(ships + countries * 3 * cship::SIZE, 0);
+    memory.u64(TERRAIN_IMAGE + metadata::TABLE_RVA, META as u64);
+    memory.array(
+        STATE + crate::cgame_state::COUNTRIES,
+        table,
+        countries as u32 + 1,
+    );
+    memory.array(
+        STATE + crate::cgame_state::COUNTRY_LINKS,
+        links,
+        countries as u32 + 1,
+    );
+    let mut pointers = Vec::with_capacity(countries);
+    for ordinal in 0..countries {
+        let owner = owners + ordinal * 0x600;
+        let task = tasks + ordinal * 0x800;
+        let roster = rosters + ordinal * 24;
+        let id = ordinal as u32 + 1;
+        memory.u64(table + id as usize * 8, owner as u64);
+        memory.u32(links + id as usize * 4, id);
+        memory.u64(owner, (TERRAIN_IMAGE + ccountry::VTABLE_RVA) as u64);
+        memory.u32(owner + ccountry::ID, id);
+        memory.u64(task, (TERRAIN_IMAGE + ctask_force::VTABLE_RVA) as u64);
+        memory.u32(task + cunit::ROSTER_OWNER, id);
+        memory.u64(task + cunit::STAT_BLOCK, STATS as u64);
+        memory.u64(task + cunit::LOCATION, 0x5000);
+        memory.array(task + ctask_force::SHIPS, roster, 3);
+        for (member, class) in [2, 2, 3].into_iter().enumerate() {
+            let ship = ships + (ordinal * 3 + member) * cship::SIZE;
+            memory.u64(roster + member * 8, ship as u64);
+            memory.u64(ship, (TERRAIN_IMAGE + cship::VTABLE_RVA) as u64);
+            memory.u64(ship + cship::TASK_FORCE, task as u64);
+            memory.u32(ship + cship::CLASS_DATABASE_ID, class);
+            memory.u64(
+                ship + cship::HANDLE,
+                (((ordinal * 3 + member + 1) as u64) << 32) | u64::from(cship::HANDLE_TYPE),
+            );
+        }
+        pointers.push(task);
+    }
+    (memory, pointers)
+}
+
+#[test]
+fn eta_source_reuse_keeps_packets_for_1500_and_5000_country_navies() {
+    for countries in [1_500, 5_000] {
+        let (memory, tasks) = counter_source_world(countries);
+        let capture = |serial| {
+            memory.reads.borrow_mut().clear();
+            let census = crate::read_census::ReadCensus::new(&memory);
+            let mut reader = source_reader(&census, TERRAIN_IMAGE);
+            let rows: Vec<_> = tasks
+                .iter()
+                .map(|&task| source_capture(&mut reader, task, 17, serial))
+                .collect();
+            (rows, census.calls())
+        };
+        let serial = capture(true);
+        let reused = capture(false);
+        assert_eq!(reused.0, serial.0, "{countries}");
+        assert_eq!(reused.0.len(), countries);
+        assert!(
+            reused.1 + countries * 12 < serial.1,
+            "{countries}: {} vs {}",
+            reused.1,
+            serial.1
+        );
+        assert_eq!(memory.calls(0x5000), 1);
+        assert_eq!(memory.calls(0x7000 + 0x1b8), 2);
+        assert!(
+            reused
+                .0
+                .iter()
+                .all(|(row, owner)| row.speed_modifier == Ok(26_666) && owner.is_ok())
+        );
+    }
 }
 
 #[test]
@@ -1109,12 +1705,186 @@ type RiskShipObservation = (
     Result<u32, &'static str>,
 );
 
-#[derive(Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct RiskShipSink {
     headers: Vec<(u64, Result<i32, &'static str>)>,
     ships: Vec<RiskShipObservation>,
     finishes: Vec<(u64, Result<(), &'static str>)>,
     refuse: bool,
+}
+
+type SourcePacket = (
+    FreshEtaInputs,
+    Result<ccountry::Country, &'static str>,
+    MissionRiskInputs,
+);
+
+fn source_risk_fixture() -> Fixture {
+    let mut memory = mission_risk_fixture();
+    for ordinal in 0..3 {
+        memory.u64(
+            0x35000 + ordinal * 0x1000 + cship::HANDLE,
+            ((ordinal as u64 + 1) << 32) | u64::from(cship::HANDLE_TYPE),
+        );
+    }
+    // Keep a repeated native occurrence, not a deduplicated membership.
+    memory.u64(0x34408, 0x35000);
+    memory
+}
+
+fn source_packet(memory: &Fixture, serial: bool) -> (SourcePacket, RiskShipSink) {
+    let mut sink = RiskShipSink::default();
+    let packet = {
+        let mut reader = source_reader(memory, TERRAIN_IMAGE).with_risk_ship_observer(&mut sink);
+        reader.set_receiver(7);
+        source_capture_with_risk(&mut reader, 17, Ok(true), Ok(()), true, serial)
+    };
+    (packet, sink)
+}
+
+#[test]
+fn eta_source_batches_match_serial_risk_loans_at_every_persistent_fault() {
+    let baseline = source_risk_fixture();
+    let healthy = source_packet(&baseline, false);
+    assert_eq!(healthy, source_packet(&source_risk_fixture(), true));
+    let mut edges: Vec<_> = baseline
+        .reads
+        .borrow()
+        .iter()
+        .flat_map(|&(address, len)| [address, address + len.max(1) - 1])
+        .collect();
+    edges.sort_unstable();
+    edges.dedup();
+    for edge in edges {
+        let mut serial = source_risk_fixture();
+        serial.fault = Some((edge, 1));
+        let mut batched = source_risk_fixture();
+        batched.fault = serial.fault;
+        assert_eq!(
+            source_packet(&batched, false),
+            source_packet(&serial, true),
+            "{edge:x}"
+        );
+    }
+}
+
+#[test]
+fn eta_roster_batch_falls_back_once_and_one_shot_faults_keep_healthy_risk_loans() {
+    use crate::batch_fallback::{Batch, count};
+    let healthy = source_packet(&source_risk_fixture(), false);
+    for ship in [0x35000, 0x37000] {
+        for (offset, len) in ROSTER_SHIP {
+            let mut memory = source_risk_fixture();
+            memory.fault = Some((ship + offset, len));
+            memory.fail_once = true;
+            let before = count(Batch::FreshEtaGathers);
+            assert_eq!(
+                source_packet(&memory, false),
+                healthy,
+                "{ship:x}+{offset:x}"
+            );
+            assert_eq!(count(Batch::FreshEtaGathers), before + 1);
+            assert_eq!(
+                memory.calls(ship + offset),
+                if ship == 0x35000 { 3 } else { 2 },
+                "{ship:x}+{offset:x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn eta_source_reuse_keeps_native_refusals_and_the_original_failure_order() {
+    for invalid in 0..6 {
+        let change = |memory: &mut Fixture| match invalid {
+            0 => memory.u64(0x34408, 0),
+            1 => memory.u64(0x35000, 1),
+            2 => memory.u64(0x35000 + cship::TASK_FORCE, TASK as u64 + 1),
+            3 => memory.u64(0x35000 + cship::HANDLE, 0),
+            4 => memory.u64(0x8000 + 8, 1),
+            5 => memory.u32(RISK_TERRAIN + 0x1b8 + 12, 2),
+            _ => unreachable!(),
+        };
+        let mut serial = source_risk_fixture();
+        let mut batched = source_risk_fixture();
+        change(&mut serial);
+        change(&mut batched);
+        assert_eq!(
+            source_packet(&batched, false),
+            source_packet(&serial, true),
+            "{invalid}"
+        );
+    }
+    let mut serial = source_risk_fixture();
+    serial.fault = Some((
+        META + KEYS[0] as usize * metadata::STRIDE + metadata::FLAGS,
+        4,
+    ));
+    serial.second_fault = Some((0x37000 + cship::CLASS_DATABASE_ID, 4));
+    let mut batched = source_risk_fixture();
+    batched.fault = serial.fault;
+    batched.second_fault = serial.second_fault;
+    assert_eq!(source_packet(&batched, false), source_packet(&serial, true));
+}
+
+#[test]
+fn eta_successful_source_memos_keep_risk_leaves_fresh_and_end_with_the_capture() {
+    let capture = |serial| {
+        let memory = source_risk_fixture();
+        let census = crate::read_census::ReadCensus::new(&memory);
+        let mut reader = source_reader(&census, TERRAIN_IMAGE);
+        let rows: Vec<_> = (0..3)
+            .map(|hour| source_capture_with_risk(&mut reader, hour, Ok(true), Ok(()), true, serial))
+            .collect();
+        assert_eq!(memory.calls(RISK_LOCATION + crate::cprovince::ID), 3);
+        assert_eq!(
+            memory.calls(RISK_LOCATION + crate::cprovince::CONTROLLER),
+            3
+        );
+        assert_eq!(memory.calls(RISK_LOCATION), if serial { 3 } else { 1 });
+        assert_eq!(memory.calls(0x7000), if serial { 3 } else { 1 });
+        assert_eq!(memory.calls(0x8000), if serial { 3 } else { 1 });
+        assert_eq!(
+            memory.calls(RISK_TERRAIN + 0x1b8),
+            if serial { 6 } else { 2 }
+        );
+        let calls = census.calls();
+        let fresh = source_capture_with_risk(
+            &mut source_reader(&census, TERRAIN_IMAGE),
+            3,
+            Ok(true),
+            Ok(()),
+            true,
+            serial,
+        );
+        assert_eq!(memory.calls(RISK_LOCATION), if serial { 4 } else { 2 });
+        (rows, fresh, calls)
+    };
+    let serial = capture(true);
+    let reused = capture(false);
+    assert_eq!((reused.0, reused.1), (serial.0, serial.1));
+    assert!(reused.2 + 25 < serial.2, "{} vs {}", reused.2, serial.2);
+}
+
+#[test]
+fn eta_source_memos_keep_no_failed_selector_or_identity() {
+    for (fault, watched) in [
+        ((RISK_LOCATION, 8), RISK_LOCATION),
+        ((RISK_TERRAIN + 0x1b8, 17), RISK_TERRAIN + 0x1b8),
+        ((0x7000, 8), 0x7000),
+        ((0x8008, 8), 0x8008),
+    ] {
+        let memory = {
+            let mut memory = source_risk_fixture();
+            memory.fault = Some(fault);
+            memory
+        };
+        let mut reader = source_reader(&memory, TERRAIN_IMAGE);
+        let first = reader.capture(TASK, 17);
+        let second = reader.capture(TASK, 17);
+        assert_eq!(first, second);
+        assert_eq!(memory.calls(watched), 2, "{watched:x}");
+    }
 }
 impl OriginalRiskShips for RiskShipSink {
     fn begin(&mut self, receiver: u64, count: Result<i32, &'static str>) {
@@ -1363,6 +2133,28 @@ fn mission_risk_combines_country_terrain_weather_local_leader_and_headquarters_o
         memory.calls(META + keys::NAVAL_DETECTION as usize * metadata::STRIDE + metadata::FLAGS),
         1
     );
+}
+
+#[test]
+fn eta_source_reuse_keeps_changed_risk_demand_and_explicit_speed_class() {
+    let capture = |serial| {
+        let mut memory = source_risk_fixture();
+        memory.u32(STATS + 8, 2);
+        memory.i64(0x34100 + 0xe8 + 0x20, 7_000);
+        let mut reader = source_reader(&memory, TERRAIN_IMAGE);
+        [
+            source_capture_with_risk(&mut reader, 17, Ok(false), Ok(()), false, serial),
+            source_capture_with_risk(&mut reader, 17, Ok(true), Ok(()), false, serial),
+            source_capture_with_risk(&mut reader, 17, Ok(false), Ok(()), true, serial),
+            source_capture_with_risk(&mut reader, 17, Ok(true), Err("risk guard"), false, serial),
+        ]
+    };
+    let serial = capture(true);
+    let reused = capture(false);
+    assert_eq!(reused, serial);
+    assert_eq!(reused[1].2.actual_terrain_speed, Ok(Some(7_000)));
+    assert_eq!(reused[2].2.coordination, Ok(None));
+    assert_eq!(reused[3].2.combined_detection, Err("risk guard"));
 }
 
 #[test]

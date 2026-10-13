@@ -903,27 +903,33 @@ impl Captured {
         }
         let check = crate::sampled_verify::current_burned_in(crate::army_stat_changes::VERIFY);
         let mut batch = cname_group_member::MemberBatch::default();
+        let mut held_indices = [None; 64];
+        let mut carries = [false; 64];
         for (index, (seed, row)) in seeds.iter().zip(&mut self.naming.first).enumerate() {
             if index.is_multiple_of(64) {
+                held_indices.fill(None);
+                carries.fill(false);
                 let mut pointers = [0_usize; 64];
                 let end = (index + 64).min(seeds.len());
                 for (slot, pending) in seeds[index..end].iter().enumerate() {
                     let Some(pointer) = pending.name_member.filter(|&at| at != 0) else {
                         continue;
                     };
-                    let carried = match store.as_deref_mut() {
-                        Some(store)
-                            if self.attack.carryable && !check.covers(pending.division >> 32) =>
-                        {
-                            store
-                                .held_name(index + slot, pending.division)
-                                .is_some_and(|held| {
-                                    held.member == pointer && !self.attack.touched(pointer)
-                                })
-                        }
-                        _ => false,
+                    // Decide eligibility once, including sampled entries whose
+                    // held record is needed later for verification. Retain only
+                    // its index; the store keeps the member span and text.
+                    let held = match store.as_deref_mut() {
+                        Some(store) if self.attack.carryable => store
+                            .held_name(index + slot, pending.division)
+                            .filter(|&at| {
+                                store.held_name_record(at).member == pointer
+                                    && !self.attack.touched(pointer)
+                            }),
+                        _ => None,
                     };
-                    if !carried {
+                    held_indices[slot] = held;
+                    carries[slot] = held.is_some() && !check.covers(pending.division >> 32);
+                    if !carries[slot] {
                         pointers[slot] = pointer;
                     }
                 }
@@ -948,14 +954,9 @@ impl Captured {
             // certifies a held member registered in the held capture's epoch
             // and untouched since; any other member is registered before its
             // read.
-            let held = match (pointer, store.as_deref_mut()) {
-                (Ok(pointer), Some(store)) if self.attack.carryable => store
-                    .held_name(index, seed.division)
-                    .filter(|held| held.member == pointer && !self.attack.touched(pointer)),
-                _ => None,
-            };
-            let sampled = check.covers(seed.division >> 32);
-            let carried = held.filter(|_| !sampled);
+            let held = held_indices[index % 64]
+                .and_then(|at| store.as_deref().map(|store| store.held_name_record(at)));
+            let carried = held.filter(|_| carries[index % 64]);
             let registered = match (held, pointer, store.is_some()) {
                 (Some(_), _, _) => true,
                 (None, Ok(pointer), true) => changes.register(pointer),
@@ -991,7 +992,7 @@ impl Captured {
             }
             let cached = match (member, carried, store.as_deref()) {
                 (_, Some(held), Some(store)) => cname_group_member::held_cached_name_growing(
-                    store.held_name_text(&held),
+                    store.held_name_text(held),
                     &mut self.cached_names.first,
                     self.cached_names.len,
                     &mut self.cached_names.required,
@@ -1038,7 +1039,7 @@ impl Captured {
                 let counts = &mut self.attack.status_counts;
                 counts.verified += 1;
                 if !cname_group_member::same_recorded_fields(&held.span, &span)
-                    || store.held_name_text(&held) != text
+                    || store.held_name_text(held) != text
                 {
                     counts.mismatches += 1;
                     changes.mismatch();
@@ -1722,6 +1723,7 @@ mod tests {
     use replay::{frame::TableView, rows::TableRows};
 
     mod read_ahead;
+    mod status_bench;
 
     fn member(base: usize, name: &[u8], order: i32) -> [u8; cname_group_member::INPUT_SPAN] {
         assert!(name.len() < 16);

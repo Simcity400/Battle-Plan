@@ -282,6 +282,273 @@ fn weather_fixture() -> Fixture {
     f
 }
 
+fn current_task_terms(memory: &impl Memory, memo: &mut OrganisationMemo) -> TaskTerms {
+    let task = TaskForceFields {
+        pointer: TASK,
+        handle: 0,
+        roster_owner: 1,
+        location: read::<u64>(memory, TASK + cunit::LOCATION).unwrap() as usize,
+        fleet: read::<u64>(memory, TASK + ctask_force::FLEET).unwrap() as usize,
+        mine_exposure: 0,
+        modifiers: TASK + 0x668,
+    };
+    read_task_terms(memory, IMAGE, &task, memo)
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn organisation_certified_operands_match_direct_after_task_terms_change() {
+    use crate::read_census::ReadCensus;
+    for factor in [100000_i64, 25000, -1, i64::MIN, i64::MAX] {
+        let mut f = weather_fixture();
+        f.word(SHIP + 0x270, factor as u64);
+        f.modifier(SHIP + 0x750, 0x6100, &[(0x46, 33333), (0x1bb, -50000)]);
+        f.modifier(0x7000 + 0x1b0, 0x6200, &[(0x46, -33333)]);
+        let mut memo = OrganisationMemo::default();
+        let before = read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo).unwrap();
+        let held = memo.organisation_operands(SHIP).unwrap();
+        assert!(memo.organisation_operands(SHIP + 8).is_none());
+
+        const MOVED: usize = 0x40000;
+        f.word(TASK + cunit::LOCATION, MOVED as u64);
+        f.word(MOVED, (IMAGE + crate::cprovince::VTABLE_RVA) as u64);
+        f.word(MOVED + 0xc8, PROVINCE_DEFINITION as u64);
+        f.dword(MOVED + crate::cprovince::ID, 0);
+        f.modifier(TASK + 0x668, 0x37200, &[(0x46, 700000), (0x1bb, 25000)]);
+        let expected = maximum_organisation(&f, IMAGE, SHIP).unwrap();
+        if factor == 100000 {
+            assert_ne!(before, expected);
+        }
+        let mut memo = OrganisationMemo::default();
+        let terms = current_task_terms(&f, &mut memo);
+        let census = ReadCensus::new(&f);
+        assert_eq!(
+            read_maximum_organisation_from_terms(&census, IMAGE, SHIP, &held, &terms, &mut memo),
+            Ok(Some(expected)),
+        );
+        let carried_calls = census.calls();
+        assert_eq!(memo.organisation_operands(SHIP), Some(held));
+
+        // Every ship-owned field and array was certified before this fault;
+        // the changed task needs none of their foreign bytes again.
+        for address in [
+            SHIP,
+            SHIP + HANDLE,
+            SHIP + CLASS_DATABASE_ID,
+            SHIP + 0x270,
+            SHIP + BASE_ORGANISATION,
+            SHIP + 0x60c,
+            SHIP + TASK_FORCE,
+            SHIP + 0x750,
+            SHIP + 0x8f8,
+            SHIP + 0x918,
+            0x7000 + 0x1b0,
+            0x6100,
+            0x6200,
+        ] {
+            f.bytes.remove(&address);
+        }
+        let mut memo = OrganisationMemo::default();
+        let terms = current_task_terms(&f, &mut memo);
+        assert_eq!(
+            read_maximum_organisation_from_terms(&f, IMAGE, SHIP, &held, &terms, &mut memo),
+            Ok(Some(expected)),
+        );
+        let fresh = weather_fixture();
+        let census = ReadCensus::new(&fresh);
+        // Use a separate full reader's count, with every selector and array
+        // read rather than supplied by a certificate and current task terms.
+        assert!(maximum_organisation(&census, IMAGE, SHIP).is_ok());
+        assert!(carried_calls < census.calls());
+    }
+}
+
+#[test]
+fn organisation_certified_operands_reread_critical_and_class_sources() {
+    let mut f = weather_fixture();
+    let mut memo = OrganisationMemo::default();
+    let before = read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo).unwrap();
+    let held = memo.organisation_operands(SHIP).unwrap();
+    f.dword(0x36008, 3);
+    f.modifier(0x7400 + 0x98, 0x36100, &[(0x46, 33333), (0x1bb, -50000)]);
+    f.modifier(TERRAIN_ROWS + 0x38, 0x34000, &[(0x46, 44444)]);
+    f.modifier(CLASS_ROWS + 0xd0 + 0x20, 0x35000, &[(0x46, 55555)]);
+    let expected = maximum_organisation(&f, IMAGE, SHIP).unwrap();
+    assert_ne!(before, expected);
+    let mut memo = OrganisationMemo::default();
+    let terms = current_task_terms(&f, &mut memo);
+    assert_eq!(
+        read_maximum_organisation_from_terms(&f, IMAGE, SHIP, &held, &terms, &mut memo),
+        Ok(Some(expected)),
+    );
+    for address in [
+        0x36008,
+        0x36000,
+        0x7400 + 0x98,
+        0x36100,
+        TERRAIN_BUCKET + 4,
+        CLASS_ROWS + 0xd0 + 0x20,
+    ] {
+        let mut faulted = f.clone();
+        faulted.bytes.remove(&address);
+        let expected = maximum_organisation(&faulted, IMAGE, SHIP).unwrap_err();
+        let mut memo = OrganisationMemo::default();
+        let terms = current_task_terms(&faulted, &mut memo);
+        assert_eq!(
+            read_maximum_organisation_from_terms(&faulted, IMAGE, SHIP, &held, &terms, &mut memo),
+            Err(expected),
+            "uncertified source {address:#x}",
+        );
+        assert!(memo.organisation_operands(SHIP).is_none());
+    }
+}
+
+#[test]
+fn organisation_certified_operands_keep_the_second_critical_observation() {
+    struct SecondCountFault<'a> {
+        source: &'a Fixture,
+        counts: Cell<usize>,
+    }
+    impl Memory for SecondCountFault<'_> {
+        fn copy(&self, address: usize, out: &mut [u8]) -> bool {
+            if address == 0x36008 {
+                self.counts.set(self.counts.get() + 1);
+                if self.counts.get() == 2 {
+                    return false;
+                }
+            }
+            self.source.copy(address, out)
+        }
+    }
+    let f = weather_fixture();
+    let mut memo = OrganisationMemo::default();
+    read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo).unwrap();
+    let held = memo.organisation_operands(SHIP).unwrap();
+    let direct = SecondCountFault {
+        source: &f,
+        counts: Cell::new(0),
+    };
+    assert_eq!(
+        maximum_organisation(&direct, IMAGE, SHIP),
+        Err("naval field unreadable")
+    );
+    assert_eq!(direct.counts.get(), 2);
+    let carried = SecondCountFault {
+        source: &f,
+        counts: Cell::new(0),
+    };
+    let mut memo = OrganisationMemo::default();
+    let terms = current_task_terms(&carried, &mut memo);
+    assert_eq!(
+        read_maximum_organisation_from_terms(&carried, IMAGE, SHIP, &held, &terms, &mut memo),
+        Err("naval field unreadable"),
+    );
+    assert_eq!(carried.counts.get(), 2);
+}
+
+#[test]
+fn organisation_certified_operands_decline_newly_reached_ship_selectors() {
+    let mut f = weather_fixture();
+    f.word(TASK + cunit::LOCATION, 0);
+    f.word(TASK + ctask_force::FLEET, 0);
+    let mut memo = OrganisationMemo::default();
+    read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo).unwrap();
+    let held = memo.organisation_operands(SHIP).unwrap();
+    assert!(held.class.is_none() && held.weather_factor.is_none() && held.subunit.is_none());
+    for (location, fleet) in [(PROVINCE, 0), (0, FLEET), (PROVINCE, FLEET)] {
+        f.word(TASK + cunit::LOCATION, location as u64);
+        f.word(TASK + ctask_force::FLEET, fleet as u64);
+        let mut memo = OrganisationMemo::default();
+        let terms = current_task_terms(&f, &mut memo);
+        let calls = f.calls.get();
+        assert_eq!(
+            read_maximum_organisation_from_terms(&f, IMAGE, SHIP, &held, &terms, &mut memo),
+            Ok(None),
+        );
+        assert_eq!(f.calls.get(), calls, "fallback precedes native reads");
+    }
+    let mut memo = OrganisationMemo::default();
+    read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo).unwrap();
+    f.bytes.remove(&(SHIP + BASE_ORGANISATION));
+    assert!(read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo).is_err());
+    assert!(memo.organisation_operands(SHIP).is_none());
+}
+
+#[test]
+fn organisation_certified_operands_apply_current_own_only_feature_eligibility() {
+    use crate::read_census::ReadCensus;
+    let mut f = fixture();
+    f.modifier(SHIP + 0x750, 0x6100, &[(0x1bb, -50000)]);
+    f.array(SHIP + 0x918, 0x6300, 1);
+    f.word(0x6300, 0x7400);
+    f.dword(0x6308, 1);
+    f.modifier(0x7400 + 0x98, 0x6400, &[(0x46, 100000)]);
+    f.dword(0x9000 + 0x1bb * md::STRIDE + md::FEATURE_SELECTOR, 4);
+    f.word(
+        IMAGE + md::ELIGIBILITY_CALLBACK_RVA,
+        (IMAGE + md::ELIGIBILITY_FLAGS_GETTER_RVA) as u64,
+    );
+    f.dword(IMAGE + md::TRADE_FEATURE_FLAGS_RVA, 0);
+    let mut memo = OrganisationMemo::default();
+    let before = read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo).unwrap();
+    let held = memo.organisation_operands(SHIP).unwrap();
+    let old_terms = current_task_terms(&f, &mut OrganisationMemo::default());
+    // The native command resets the world and revokes the certificate.
+    // This fixture isolates the packet's raw-versus-effective dependency.
+    f.dword(IMAGE + md::TRADE_FEATURE_FLAGS_RVA, 4);
+    let expected = maximum_organisation(&f, IMAGE, SHIP).unwrap();
+    assert_ne!(before, expected);
+    let mut memo = OrganisationMemo::default();
+    let terms = current_task_terms(&f, &mut memo);
+    assert_eq!(
+        terms, old_terms,
+        "the changed key is absent from task terms"
+    );
+    let census = ReadCensus::new(&f);
+    assert_eq!(
+        organisation_modifier_guard_matches(&census, IMAGE, held.modifier_guard(), &mut memo),
+        Ok(false)
+    );
+    let calls = census.calls();
+    assert!(calls > 0);
+    assert_eq!(
+        organisation_modifier_guard_matches(&census, IMAGE, held.modifier_guard(), &mut memo),
+        Ok(false)
+    );
+    assert_eq!(census.calls(), calls, "a guard is checked once per capture");
+    assert_eq!(
+        read_maximum_organisation_from_terms(&f, IMAGE, SHIP, &held, &terms, &mut memo),
+        Ok(Some(expected)),
+    );
+    let current = memo.organisation_operands(SHIP).unwrap();
+    assert_ne!(current.modifier_guard(), held.modifier_guard());
+    assert_eq!(
+        organisation_modifier_guard_matches(&f, IMAGE, current.modifier_guard(), &mut memo),
+        Ok(true)
+    );
+
+    let mut faulted = f.clone();
+    faulted.bytes.remove(&(IMAGE + md::TRADE_FEATURE_FLAGS_RVA));
+    let mut memo = OrganisationMemo::default();
+    let terms = current_task_terms(&faulted, &mut memo);
+    assert_eq!(
+        organisation_modifier_guard_matches(&faulted, IMAGE, held.modifier_guard(), &mut memo),
+        Err("modifier feature flags unreadable")
+    );
+    assert_eq!(
+        read_maximum_organisation_from_terms(&faulted, IMAGE, SHIP, &held, &terms, &mut memo),
+        maximum_organisation(&faulted, IMAGE, SHIP).map(Some),
+    );
+    let mut memo = OrganisationMemo::default();
+    let census = ReadCensus::new(&faulted);
+    assert_eq!(
+        organisation_modifier_guard_matches(&census, IMAGE, 0, &mut memo),
+        Ok(true)
+    );
+    assert_eq!(census.calls(), 0, "absent own keys need no metadata");
+}
+
 #[test]
 fn organisation_weather_packet_preserves_every_ship_factor_and_critical_operand() {
     let mut f = weather_fixture();

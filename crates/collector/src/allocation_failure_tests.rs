@@ -736,7 +736,7 @@ fn exercise_pipeline(
     if let Some(clock) = &mut frame.clock {
         clock.hour = 21;
     }
-    let index = shared.take_frame().ok_or(io::ErrorKind::Other)?;
+    let index = shared.take_frame(&mut 0).ok_or(io::ErrorKind::Other)?;
     let mut status_probe = if phase == Phase::Status {
         Some(crate::status_writer::AllocationProbe::prepare(&root)?)
     } else {

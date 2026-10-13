@@ -263,6 +263,14 @@ impl<const N: usize> Object<N> {
                 .all(|(index, &(_, len))| self.bytes[index][..len] == other.bytes[index][..len])
     }
 
+    fn differs(&self, other: &Self, fields: &[(usize, usize); N]) -> bool {
+        self.pointer == other.pointer
+            && fields[..self.completed.min(other.completed).min(N)]
+                .iter()
+                .enumerate()
+                .any(|(index, &(_, len))| self.bytes[index][..len] != other.bytes[index][..len])
+    }
+
     /// A pointer-sized field the gather copied, else zero.
     fn word(&self, index: usize) -> usize {
         if index < self.completed {
@@ -403,6 +411,15 @@ impl Heap {
             && self.completed == other.completed
             && (0..self.completed.min(2)).all(|index| self.bytes(index) == other.bytes(index))
     }
+
+    fn differs(&self, other: &Self) -> bool {
+        (0..self.completed.min(other.completed).min(2)).any(|index| {
+            self.spans[index].1 != 0
+                && other.spans[index].1 != 0
+                && (self.spans[index] != other.spans[index]
+                    || self.bytes(index) != other.bytes(index))
+        })
+    }
 }
 
 /// The task-force fields a carry of its terms compares hour to hour.
@@ -430,7 +447,44 @@ pub struct HeldShip {
     variants: [Object<8>; POOL_ENTRIES],
 }
 
+/// One variant's exact gathered observation from a held ship. Its pointer
+/// selects the same model-selection and hull-variant fields; equality includes the copied
+/// prefix and failure position, as a ship's variant comparison does.
+#[derive(Clone, Copy)]
+pub struct HeldVariant(Object<8>);
+
+impl HeldVariant {
+    pub fn pointer(&self) -> usize {
+        self.0.pointer
+    }
+
+    pub fn same(&self, other: &Self) -> bool {
+        self.0.same(&other.0, &VARIANT)
+    }
+}
+
 impl HeldShip {
+    /// Every pool-selected variant is represented by the held observations.
+    /// Larger pools and incomplete entry or variant gathers use the model reader.
+    pub fn variants_complete(&self) -> bool {
+        pool_complete(&self.ship, &self.heap) && self.variants.iter().all(variant_complete)
+    }
+
+    /// A moved certificate can be revalidated only when every owned byte
+    /// the reader could have served was gathered, including the heap sprite
+    /// and its terminator. Larger payloads use the original reader.
+    pub fn revalidation_complete(&self) -> bool {
+        self.ship.completed == SHIP.len()
+            && pool_complete(&self.ship, &self.heap)
+            && msvc_string::heap_span(&self.ship.bytes[SHIP_SPRITE])
+                .is_none_or(|span| self.heap.completed > 1 && self.heap.spans[1] == span)
+    }
+
+    /// The pool-selected observations, without copying the ship or heap.
+    pub fn variants(&self) -> [HeldVariant; POOL_ENTRIES] {
+        self.variants.map(HeldVariant)
+    }
+
     /// The task force the ship named.
     pub fn task_force(&self) -> usize {
         self.ship.word(SHIP_TASK_FORCE)
@@ -465,11 +519,37 @@ impl HeldShip {
         ]
     }
 
-    /// Whether `other` gathered the same bytes of the ship's own objects,
-    /// field by copied field.
+    /// Whether both reads gathered every owned input and its bytes match,
+    /// so a moved certificate can be revalidated.
     pub fn same(&self, other: &Self) -> bool {
-        self.ship.same(&other.ship, &SHIP) && self.heap.same(&other.heap)
+        self.revalidation_complete()
+            && other.revalidation_complete()
+            && self.ship.same(&other.ship, &SHIP)
+            && self.heap.same(&other.heap)
     }
+
+    /// Whether any owned field or payload observed on both sides differs.
+    /// Unavailable observations do not hide independent byte differences.
+    pub fn differs(&self, other: &Self) -> bool {
+        self.ship.differs(&other.ship, &SHIP) || self.heap.differs(&other.heap)
+    }
+}
+
+fn variant_complete(variant: &Object<8>) -> bool {
+    variant.pointer == 0 || variant.completed == VARIANT.len()
+}
+
+fn pool_complete(ship: &Object<16>, heap: &Heap) -> bool {
+    ship.completed > SHIP_POOL_ITEMS
+        && Array::from_header(
+            ship.bytes[SHIP_POOL_ITEMS][..16].try_into().unwrap(),
+            equipment_entry::STRIDE,
+        )
+        .is_some_and(|array| {
+            array.count == 0
+                || heap.completed > 0
+                    && heap.spans[0] == (array.data, array.count as usize * equipment_entry::STRIDE)
+        })
 }
 
 /// One capture's gathered objects: the ship being read, the task force and
@@ -517,8 +597,13 @@ impl ShipFields {
 
     /// [`Self::visit`] serving the ship's own objects from `held` without
     /// reading them; its task force, location, the game singleton and its
-    /// variants are gathered as for a read.
+    /// variants are gathered as for a read. Incomplete owned observations
+    /// are refreshed, so a prior gather failure never supplies a later hour.
     pub fn visit_held(&mut self, memory: &impl Memory, held: &HeldShip) {
+        if !held.revalidation_complete() {
+            self.visit(memory, held.ship.pointer);
+            return;
+        }
         self.ship = held.ship;
         // The held variants are not served: they are gathered for this hour.
         self.visit_shared(memory);
@@ -559,16 +644,36 @@ impl ShipFields {
     pub fn held_variants_unchanged(&mut self, memory: &impl Memory, held: &HeldShip) -> bool {
         let heap = held.heap;
         self.visit_variants_of(memory, &heap);
-        self.same_variants(held)
+        held.variants_complete() && self.same_variant_observations(held)
+    }
+
+    /// Compare one held observation with this capture's gathered bytes.
+    /// The certified pool's selection is already represented by the held
+    /// observations; no heap copy or selection walk is needed to repeat it.
+    pub fn held_variant_unchanged(&mut self, memory: &impl Memory, held: &HeldVariant) -> bool {
+        if !variant_complete(&held.0) {
+            return false;
+        }
+        if held.pointer() == 0 {
+            return true;
+        }
+        let slot = self.variant(memory, held.pointer());
+        variant_complete(&self.variants[slot]) && self.variants[slot].same(&held.0, &VARIANT)
     }
 
     /// Whether the visited ship's variants were gathered with the same bytes
     /// as `held`'s.
     pub fn same_variants(&self, held: &HeldShip) -> bool {
+        held.variants_complete()
+            && pool_complete(&self.ship, &self.heap)
+            && self.same_variant_observations(held)
+    }
+
+    fn same_variant_observations(&self, held: &HeldShip) -> bool {
         self.current_variants()
             .iter()
             .zip(&held.variants)
-            .all(|(current, held)| current.same(held, &VARIANT))
+            .all(|(current, held)| variant_complete(current) && current.same(held, &VARIANT))
     }
 
     fn current_variants(&self) -> [Object<8>; POOL_ENTRIES] {
@@ -585,6 +690,16 @@ impl ShipFields {
         held: &HeldShip,
     ) -> Option<TaskForceFields> {
         self.visit_task(memory, held.task_force());
+        self.task_force()
+    }
+
+    /// Gather the task force named by a certified ship's compact record.
+    pub fn task_force_at(
+        &mut self,
+        memory: &impl Memory,
+        pointer: usize,
+    ) -> Option<TaskForceFields> {
+        self.visit_task(memory, pointer);
         self.task_force()
     }
 

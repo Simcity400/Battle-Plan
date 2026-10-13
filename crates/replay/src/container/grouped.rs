@@ -13,7 +13,7 @@
 //! implied, an unchanged table with that baseline has no entry, counts are
 //! varints, and a changed byte field (string, list or nested record) may be a
 //! [`patch`] against the same field's previous plain encoding in this block.
-//! In a predicted block ([`MAGIC`], [`RAMPED_MAGIC`], [`KEYED_MAGIC`],
+//! In a predicted block ([`MAGIC`], [`CHOSEN_MAGIC`], [`RAMPED_MAGIC`], [`KEYED_MAGIC`],
 //! [`ANCHORED_MAGIC`], [`PREDICTED_MAGIC`]) a delta against the previous
 //! frame may be a residual entry that stores only what did not move as
 //! [`predicted`], and a frame whose changes are all predicted has no entry.
@@ -25,7 +25,11 @@
 //! mask by its place among the masks stored before it ([`keyed`]); a
 //! modelled block ([`MAGIC`]) stores those rows and masks as decisions of a
 //! context model instead, by which rows the entries before stored and with
-//! which masks ([`modelled`]). A ramped block ([`MAGIC`], [`RAMPED_MAGIC`])
+//! which masks ([`modelled`]). A chosen block ([`CHOSEN_MAGIC`]) keeps, per
+//! table's later section, model decisions or listed skips and mask places,
+//! whichever compresses smaller. Its masks column starts with 0 for modelled
+//! or 1 for listed; the control, deleted-key run and field columns agree.
+//! A ramped block ([`MAGIC`], [`CHOSEN_MAGIC`], [`RAMPED_MAGIC`])
 //! predicts each numeric field from the rate its last changes allow,
 //! unchanged hours included ([`ramp`]); a keyed one follows a steadily
 //! growing change.
@@ -78,9 +82,12 @@ use modelled::Model;
 /// model decisions ([`modelled`]), predict each numeric field from the rate
 /// its last changes allow ([`ramp`]), store a list field that is its patch
 /// base without its first element as one tag ([`DROP_FIRST`]) and store a
-/// row's advance against the head its list last dropped ([`advance_pair`]),
-/// the layout writers emit.
+/// row's advance against the head its list last dropped ([`advance_pair`]).
 pub(crate) const MAGIC: &[u8; 4] = b"H4G9";
+/// Grouped blocks whose later sections choose model decisions or listed
+/// skips and mask places, with the same predictions and patches as advanced
+/// blocks. The layout writers emit.
+pub(crate) const CHOSEN_MAGIC: &[u8; 4] = b"H4GC";
 /// Earlier format-102 trimmed blocks, which store [`DROP_FIRST`] but no
 /// advance. Read, never written.
 pub(crate) const TRIMMED_MAGIC: &[u8; 4] = b"H4G8";
@@ -124,11 +131,13 @@ pub(crate) enum Layout {
     Modelled,
     Trimmed,
     Advanced,
+    Chosen,
 }
 
 impl Layout {
     fn of(block: &[u8]) -> Option<Self> {
         match block.get(..4)? {
+            magic if magic == CHOSEN_MAGIC => Some(Self::Chosen),
             magic if magic == MAGIC => Some(Self::Advanced),
             magic if magic == TRIMMED_MAGIC => Some(Self::Trimmed),
             magic if magic == MODELLED_MAGIC => Some(Self::Modelled),
@@ -152,6 +161,7 @@ impl Layout {
             Self::Modelled => MODELLED_MAGIC,
             Self::Trimmed => TRIMMED_MAGIC,
             Self::Advanced => MAGIC,
+            Self::Chosen => CHOSEN_MAGIC,
         }
     }
     /// Residual entries and difference patches.
@@ -165,6 +175,7 @@ impl Layout {
                 | Self::Modelled
                 | Self::Trimmed
                 | Self::Advanced
+                | Self::Chosen
         )
     }
     /// Keyframes anchor to any earlier block of the file, named by how many
@@ -178,6 +189,7 @@ impl Layout {
                 | Self::Modelled
                 | Self::Trimmed
                 | Self::Advanced
+                | Self::Chosen
         )
     }
     /// Later entries store row keys and masks against the rows and masks
@@ -185,13 +197,26 @@ impl Layout {
     fn keyed(self) -> bool {
         matches!(
             self,
-            Self::Keyed | Self::Ramped | Self::Modelled | Self::Trimmed | Self::Advanced
+            Self::Keyed
+                | Self::Ramped
+                | Self::Modelled
+                | Self::Trimmed
+                | Self::Advanced
+                | Self::Chosen
         )
     }
-    /// Later deltas and residual entries store their rows and masks as
-    /// context model decisions ([`modelled`]).
+    /// Later deltas and residual entries can store their rows and masks as
+    /// context model decisions ([`modelled`]); chosen sections can list them.
     fn modelled(self) -> bool {
-        matches!(self, Self::Modelled | Self::Trimmed | Self::Advanced)
+        matches!(
+            self,
+            Self::Modelled | Self::Trimmed | Self::Advanced | Self::Chosen
+        )
+    }
+    /// Each later section keeps model decisions or listed skips and mask
+    /// places, whichever compresses smaller.
+    fn chooses_rows(self) -> bool {
+        self == Self::Chosen
     }
     /// A numeric field that changed by a steadily changing amount is
     /// predicted ([`predicted`]).
@@ -203,18 +228,18 @@ impl Layout {
     fn ramped(self) -> bool {
         matches!(
             self,
-            Self::Ramped | Self::Modelled | Self::Trimmed | Self::Advanced
+            Self::Ramped | Self::Modelled | Self::Trimmed | Self::Advanced | Self::Chosen
         )
     }
     /// A list field that is its patch base without its first element is
     /// stored as [`DROP_FIRST`].
     fn trims(self) -> bool {
-        matches!(self, Self::Trimmed | Self::Advanced)
+        matches!(self, Self::Trimmed | Self::Advanced | Self::Chosen)
     }
     /// A numeric field of an [`advance_pair`] without a predicted change is
     /// stored against the change that takes it to its list's head.
     fn advances(self) -> bool {
-        self == Self::Advanced
+        matches!(self, Self::Advanced | Self::Chosen)
     }
 }
 
@@ -239,6 +264,10 @@ const CONTROL: usize = 0;
 const KEYS: usize = 1;
 const MASKS: usize = 2;
 const FIELDS: usize = 3;
+
+/// The leading masks-column byte of a chosen later section.
+const MODELLED_ROWS: u8 = 0;
+const LISTED_ROWS: u8 = 1;
 
 const SNAPSHOT: u8 = 0;
 const DELTA: u8 = 1;
@@ -465,7 +494,8 @@ fn head_value(status: u8, bytes: &[u8], before: Option<&Vec<u8>>) -> io::Result<
 
 /// Section columns, and for a predicted block's later entries each byte
 /// field column with its patches' in-place bytes as differences instead
-/// ([`put_byte_field`]): the block stores whichever compresses smaller.
+/// ([`put_byte_field`]). A chosen later section also keeps listed keys and
+/// masks in the second pair: only those columns differ between row codings.
 struct Columns(Vec<Vec<u8>>, Vec<Option<Vec<u8>>>);
 
 impl Columns {
@@ -490,9 +520,18 @@ impl Columns {
             differences.extend_from_slice(bytes);
         }
     }
+    /// A deleted key has the same listed coding in both pairs.
+    fn put_key(&mut self, writer: &mut KeyWriter<'_>, key: u128) -> io::Result<()> {
+        let before = self.0[KEYS].len();
+        writer.put(key, &mut self.0[KEYS])?;
+        if let Some(listed) = &mut self.1[KEYS] {
+            listed.extend_from_slice(&self.0[KEYS][before..]);
+        }
+        Ok(())
+    }
     /// Keep each byte field column's smaller form, compressed alone.
     fn choose(&mut self) -> io::Result<()> {
-        for (column, differences) in self.0.iter_mut().zip(&mut self.1) {
+        for (column, differences) in self.0.iter_mut().zip(&mut self.1).skip(FIELDS) {
             if let Some(differences) = differences.take()
                 && differences != *column
                 && compress(&differences)?.len() < compress(column)?.len()
@@ -537,6 +576,25 @@ impl<'a> ColumnReader<'a> {
     }
     fn empty(fields: usize) -> Self {
         Self((0..FIELDS + fields).map(|_| Decoder::new(&[])).collect())
+    }
+    /// Consume a chosen later section's row-coding byte before its rows.
+    fn modelled_rows(&mut self, table: TableId, layout: Layout) -> io::Result<bool> {
+        if !layout.chooses_rows() {
+            return Ok(layout.modelled());
+        }
+        let masks = &mut self.0[MASKS];
+        if masks.remaining() == 0 {
+            return Err(invalid(format!(
+                "missing grouped row coding byte for {table:?}"
+            )));
+        }
+        match masks.u8()? {
+            MODELLED_ROWS => Ok(true),
+            LISTED_ROWS => Ok(false),
+            code => Err(invalid(format!(
+                "unknown grouped row coding byte {code} for {table:?}"
+            ))),
+        }
     }
     fn finish(self) -> io::Result<()> {
         if self.0.iter().all(|column| column.remaining() == 0) {
@@ -623,7 +681,7 @@ fn put_entry(
                 if token == Token::Count {
                     runs += 1;
                     if let (Some(coding), Some(changed)) = (&mut coding, run.take())
-                        && let Err(error) = coding.finish_run(changed, &mut out.0)
+                        && let Err(error) = coding.finish_run(changed, out)
                     {
                         failure = Some(error);
                         return;
@@ -646,13 +704,13 @@ fn put_entry(
                 key = value;
                 match &mut run {
                     Some(RowRun::Listed(deleted)) if runs == 2 => {
-                        if let Err(error) = deleted.put(value, &mut out.0[KEYS]) {
+                        if let Err(error) = out.put_key(deleted, value) {
                             failure = Some(error);
                         }
                     }
                     // A changed row is stored with its mask.
                     Some(_) => {}
-                    None => out.0[KEYS].extend_from_slice(bytes),
+                    None => out.extend(KEYS, bytes),
                 }
             }
             Token::Mask => match (&mut coding, &mut run) {
@@ -660,11 +718,11 @@ fn put_entry(
                     let mut mask = [0; 8];
                     mask[..width].copy_from_slice(bytes);
                     let mask = u64::from_le_bytes(mask);
-                    if let Err(error) = coding.put_row(changed, key, mask, width, &mut out.0) {
+                    if let Err(error) = coding.put_row(changed, key, mask, width, out) {
                         failure = Some(error);
                     }
                 }
-                _ => out.0[MASKS].extend_from_slice(bytes),
+                _ => out.extend(MASKS, bytes),
             },
             Token::Field(field) => {
                 if status != DELTA || !table.byte_field(field) {
@@ -1304,7 +1362,8 @@ struct Later {
     entries: usize,
     /// By frame, the keyframe first.
     present: Vec<bool>,
-    /// The masks its entries stored most recently ([`keyed`]).
+    /// The listed coding's recent masks ([`keyed`]), including the second
+    /// keys/masks pair in a chosen block.
     masks: MaskList,
     /// In a modelled block, its entries' rows and masks ([`modelled`]).
     model: Option<Model>,
@@ -1312,12 +1371,18 @@ struct Later {
 
 impl Later {
     fn new(table: TableId, fields: usize, layout: Layout) -> Self {
+        let mut columns = if layout.predicts() {
+            Columns::with_differences(table, fields)
+        } else {
+            Columns::new(fields)
+        };
+        if layout.chooses_rows() {
+            columns.0[MASKS].push(MODELLED_ROWS);
+            columns.1[KEYS] = Some(Vec::new());
+            columns.1[MASKS] = Some(vec![LISTED_ROWS]);
+        }
         Self {
-            columns: if layout.predicts() {
-                Columns::with_differences(table, fields)
-            } else {
-                Columns::new(fields)
-            },
+            columns,
             entries: 0,
             present: vec![true],
             masks: MaskList::default(),
@@ -1325,19 +1390,51 @@ impl Later {
         }
     }
     fn raw_bytes(&self) -> usize {
-        self.columns
+        let bytes = self
+            .columns
             .0
             .iter()
             .map(|column| column.len() + 5)
             .sum::<usize>()
-            + 5
-            + self.model.as_ref().map_or(0, Model::waiting)
+            + 5;
+        let modelled = bytes + self.model.as_ref().map_or(0, Model::waiting);
+        match (&self.columns.1[KEYS], &self.columns.1[MASKS]) {
+            (Some(keys), Some(masks)) => modelled.max(
+                bytes - self.columns.0[KEYS].len() - self.columns.0[MASKS].len()
+                    + keys.len()
+                    + masks.len(),
+            ),
+            _ => modelled,
+        }
     }
     /// The masks column gets the bytes its model still owes it.
     fn finish(&mut self) {
         if let Some(model) = &mut self.model {
             model.finish(&mut self.columns.0[MASKS]);
         }
+    }
+    /// Choose field variants once, then compare the two whole row codings
+    /// at LEVEL before the table chooses residual or plain entries.
+    fn compress(&mut self) -> io::Result<(usize, Option<Vec<u8>>)> {
+        self.finish();
+        self.columns.choose()?;
+        let mut best = {
+            let raw = self.columns.raw();
+            (raw.len(), compress_later(&raw, self.entries)?)
+        };
+        if let (Some(keys), Some(masks)) =
+            (self.columns.1[KEYS].take(), self.columns.1[MASKS].take())
+        {
+            self.columns.0[KEYS] = keys;
+            self.columns.0[MASKS] = masks;
+            let raw = self.columns.raw();
+            let compressed = compress_later(&raw, self.entries)?;
+            // Modelled wins ties, independently of worker scheduling.
+            if compressed.as_ref().map_or(0, Vec::len) < best.1.as_ref().map_or(0, Vec::len) {
+                best = (raw.len(), compressed);
+            }
+        }
+        Ok(best)
     }
 }
 
@@ -1469,7 +1566,7 @@ thread_local! {
     /// The layout this thread's recordings are written in: tests write
     /// earlier layouts' anchored recordings with it.
     pub(crate) static WRITTEN_LAYOUT: std::cell::Cell<Layout> =
-        const { std::cell::Cell::new(Layout::Advanced) };
+        const { std::cell::Cell::new(Layout::Chosen) };
     /// Whether this thread's blocks keep each predicting table's residual
     /// entries even where its plain entries compress smaller, so tests of
     /// residual coding do not depend on that choice.
@@ -1538,7 +1635,8 @@ fn put_keyframe(
         | Layout::Ramped
         | Layout::Modelled
         | Layout::Trimmed
-        | Layout::Advanced => usize::MAX,
+        | Layout::Advanced
+        | Layout::Chosen => usize::MAX,
         Layout::Predicted => MAX_ANCHOR_DEPTH,
         Layout::Unpredicted | Layout::Timed => 1,
     };
@@ -1639,7 +1737,7 @@ impl BlockWriter {
         #[cfg(test)]
         let layout = WRITTEN_LAYOUT.get();
         #[cfg(not(test))]
-        let layout = Layout::Advanced;
+        let layout = Layout::Chosen;
         Self::with_layout(frame, layout)
     }
 
@@ -1977,22 +2075,15 @@ impl BlockWriter {
         let force_residual = self.force_residual;
         let tables: Vec<_> = self.tables.iter_mut().collect();
         let chosen = pack::each(cores, tables, |writer: &mut TableWriter| {
-            writer.plain.finish();
-            writer.plain.columns.choose()?;
-            if let Some(later) = &mut writer.predicted {
-                later.finish();
-                later.columns.choose()?;
-            }
-            let plain = writer.plain.columns.raw();
-            let mut best = (plain.len(), compress_later(&plain, writer.plain.entries)?);
+            let mut best = writer.plain.compress()?;
             let mut predicted = false;
-            if let Some(later) = &writer.predicted {
-                let raw = later.columns.raw();
-                let compressed = compress_later(&raw, later.entries)?;
+            if let Some(later) = &mut writer.predicted {
+                let candidate = later.compress()?;
                 if force_residual
-                    || compressed.as_ref().map_or(0, Vec::len) < best.1.as_ref().map_or(0, Vec::len)
+                    || candidate.1.as_ref().map_or(0, Vec::len)
+                        < best.1.as_ref().map_or(0, Vec::len)
                 {
-                    best = (raw.len(), compressed);
+                    best = candidate;
                     predicted = true;
                 }
             }
@@ -2561,7 +2652,8 @@ fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableU
     // frame before and store masks against the masks before them.
     let mut keys = KeySet::default();
     let mut masks = MaskList::default();
-    let mut model = layout.modelled().then(|| Model::new(fields));
+    let modelled = later_raw.is_some() && later_input.modelled_rows(table, layout)?;
+    let mut model = modelled.then(|| Model::new(fields));
     let mut changes = KeyChanges::default();
     let mut updates = Vec::with_capacity(frames);
     let mut plain = Vec::new();
@@ -2795,7 +2887,8 @@ fn anchored_keyframe(
         | Layout::Ramped
         | Layout::Modelled
         | Layout::Trimmed
-        | Layout::Advanced => usize::MAX,
+        | Layout::Advanced
+        | Layout::Chosen => usize::MAX,
         Layout::Predicted => MAX_ANCHOR_DEPTH,
         Layout::Unpredicted | Layout::Timed => 1,
     };
@@ -2989,6 +3082,140 @@ pub(crate) fn keyframe_chain(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chosen_row_coding_bytes_are_required_and_refused_by_table() {
+        let table = TableId::SliceReads;
+        let read = |masks: &[u8], layout| {
+            let mut columns = Columns::new(1);
+            columns.0[MASKS].extend_from_slice(masks);
+            let raw = columns.raw();
+            ColumnReader::open(&raw, 1)
+                .unwrap()
+                .modelled_rows(table, layout)
+        };
+        for code in [2, 255] {
+            let error = read(&[code, 0, 1], Layout::Chosen).unwrap_err().to_string();
+            assert!(error.contains("unknown grouped row coding byte"), "{error}");
+            assert!(error.contains("SliceReads"), "{error}");
+        }
+        let error = read(&[], Layout::Chosen).unwrap_err().to_string();
+        assert!(error.contains("missing grouped row coding byte"), "{error}");
+        assert!(error.contains("SliceReads"), "{error}");
+        assert!(read(&[MODELLED_ROWS], Layout::Chosen).unwrap());
+        assert!(!read(&[LISTED_ROWS], Layout::Chosen).unwrap());
+    }
+
+    #[test]
+    fn chosen_pairs_keep_listed_insertions_deletions_and_plain_entries_exact() {
+        use crate::rows::SliceReadRow;
+        let table = TableId::SliceReads;
+        let format = crate::FORMAT_VERSION;
+        let rows = |owners: &[u32], hour| {
+            TableRows::SliceReads(
+                owners
+                    .iter()
+                    .map(|&owner| SliceReadRow {
+                        table: TableId::ResearchTechnologies.index() as u32,
+                        owner,
+                        sample_hour: hour,
+                    })
+                    .collect(),
+            )
+        };
+        for residual in [false, true] {
+            let mut chosen = Later::new(table, 1, Layout::Chosen);
+            let mut advanced = Later::new(table, 1, Layout::Advanced);
+            let mut listed = Later::new(table, 1, Layout::Ramped);
+            let mut predictors =
+                std::array::from_fn::<_, 3, _>(|_| predicted::Predictor::default());
+            let mut keys = KeySet::default();
+            let mut previous = rows(&[1, 3, 5], 0);
+            let mut baseline = vec![SNAPSHOT];
+            baseline.extend_from_slice(&3_u32.to_le_bytes());
+            previous.encode_rows(&mut baseline).unwrap();
+            keys.advance(table, format, &baseline).unwrap();
+            // Both orderings of deleted keys and changed rows, and a later
+            // snapshot whose uncoded keys must also reach the listed pair.
+            for (hour, owners, snapshot) in [
+                (1_i32, &[1, 2, 5][..], false),
+                (2, &[7, 9][..], true),
+                (3, &[8, 9][..], false),
+            ] {
+                let next = rows(owners, hour);
+                let mut plain = vec![if snapshot { SNAPSHOT } else { DELTA }];
+                if snapshot {
+                    plain.extend_from_slice(&(owners.len() as u32).to_le_bytes());
+                    next.encode_rows(&mut plain).unwrap();
+                } else {
+                    plain.extend_from_slice(&(hour - 1).to_le_bytes());
+                    assert!(
+                        next.encode_changes(&previous, &mut plain, &mut Vec::new())
+                            .unwrap()
+                    );
+                }
+                for ((layout, later), predictor) in [
+                    (Layout::Chosen, &mut chosen),
+                    (Layout::Advanced, &mut advanced),
+                    (Layout::Ramped, &mut listed),
+                ]
+                .into_iter()
+                .zip(&mut predictors)
+                {
+                    let coding = Some(RowCoding {
+                        keys: &keys,
+                        masks: &mut later.masks,
+                        model: later.model.as_mut(),
+                        changes: None,
+                    });
+                    if residual && !snapshot {
+                        predicted::put_residual(
+                            table,
+                            format,
+                            1,
+                            &plain,
+                            predictor,
+                            &Shadow::new(),
+                            &mut later.columns,
+                            layout,
+                            coding,
+                        )
+                        .unwrap();
+                    } else {
+                        predictor.clear();
+                        put_entry(
+                            table,
+                            format,
+                            &plain,
+                            Mode::Later { previous: hour - 1 },
+                            &Shadow::new(),
+                            &mut later.columns,
+                            coding,
+                        )
+                        .unwrap();
+                    }
+                }
+                keys.advance(table, format, &plain).unwrap();
+                previous = next;
+            }
+            chosen.finish();
+            advanced.finish();
+            assert_eq!(chosen.columns.0[KEYS], advanced.columns.0[KEYS]);
+            assert_eq!(&chosen.columns.0[MASKS][1..], advanced.columns.0[MASKS]);
+            assert_eq!(
+                chosen.columns.1[KEYS].as_ref().unwrap(),
+                &listed.columns.0[KEYS]
+            );
+            assert_eq!(
+                &chosen.columns.1[MASKS].as_ref().unwrap()[1..],
+                listed.columns.0[MASKS]
+            );
+            for column in [CONTROL, FIELDS] {
+                assert_eq!(chosen.columns.0[column], advanced.columns.0[column]);
+                assert_eq!(chosen.columns.0[column], listed.columns.0[column]);
+            }
+        }
+    }
 
     #[test]
     fn a_source_advances_to_the_head_its_path_dropped_before() {

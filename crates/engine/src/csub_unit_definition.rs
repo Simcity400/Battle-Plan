@@ -78,7 +78,6 @@ const MAXIMA_LAYOUT: crate::memory::RecordLayout<'static> =
 /// original memo in order.
 pub(crate) struct MaximaBatch {
     bytes: [u8; 64 * 25],
-    pointers: [usize; 64],
     complete: [bool; 64],
     len: usize,
 }
@@ -87,7 +86,6 @@ impl MaximaBatch {
     pub(crate) fn new() -> Self {
         Self {
             bytes: [0; 64 * 25],
-            pointers: [0; 64],
             complete: [false; 64],
             len: 0,
         }
@@ -95,7 +93,6 @@ impl MaximaBatch {
 
     pub(crate) fn capture(&mut self, memory: &impl crate::Memory, pointers: &[usize]) {
         self.len = pointers.len();
-        self.pointers[..self.len].copy_from_slice(pointers);
         crate::memory::gather_records_once(
             memory,
             pointers,
@@ -111,12 +108,9 @@ impl MaximaBatch {
         memory: &impl crate::Memory,
         base: usize,
         pointer: usize,
+        row: usize,
     ) -> Result<DivisionMaxima, &'static str> {
-        if let Some(row) = self.pointers[..self.len]
-            .iter()
-            .position(|&at| at == pointer)
-            && self.complete[row]
-        {
+        if row < self.len && self.complete[row] {
             return decode_division_maxima(
                 base,
                 pointer,

@@ -49,8 +49,8 @@ pub enum Batch {
     FleetGathers,
     /// One census task force's gathered fields ([`crate::cfleet`]).
     TaskForceGathers,
-    /// One gathered object of the counter walk's fresh ETA graph (stat
-    /// block, province, region, template, fleet, fleet leader;
+    /// One gathered object or roster-ship record page of the counter walk's
+    /// fresh ETA graph (stat block, province, region, template, fleet, fleet leader;
     /// [`crate::ctask_force`]).
     FreshEtaGathers,
     /// One naval combat member's gathered fixed fields
@@ -103,10 +103,13 @@ pub enum Batch {
     /// member's host identity and group backlink, whose guarded copy
     /// stopped early: the Naval copy reads on after the failed span.
     OrderOfBattle,
+    /// One ship's organisation metadata guard read ahead of its reader;
+    /// a failed guard runs that ship's original readers once.
+    ShipModelGuards,
 }
 
 impl Batch {
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 39] = [
         Self::CountryResources,
         Self::IntelligenceAgencies,
         Self::Cryptology,
@@ -145,6 +148,7 @@ impl Batch {
         Self::DivisionProvinces,
         Self::DivisionMovementSpeed,
         Self::OrderOfBattle,
+        Self::ShipModelGuards,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -187,6 +191,7 @@ impl Batch {
             Self::DivisionProvinces => "division_provinces",
             Self::DivisionMovementSpeed => "division_movement_speed",
             Self::OrderOfBattle => "order_of_battle",
+            Self::ShipModelGuards => "ship_model_guards",
         }
     }
 }

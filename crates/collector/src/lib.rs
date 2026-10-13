@@ -120,6 +120,7 @@ mod sampling;
 mod shared_lane;
 mod ship_model_changes;
 mod slicing;
+mod slow_hours;
 mod snapshot_plan;
 mod spool_compare;
 mod spool_helper;

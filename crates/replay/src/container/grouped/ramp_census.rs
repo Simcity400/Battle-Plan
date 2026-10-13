@@ -43,7 +43,9 @@ fn written(replay: &Replay, selected: &[TableId], layout: grouped::Layout) -> Re
     }
     grouped::WRITTEN_LAYOUT.set(layout);
     let started = std::time::Instant::now();
-    let out = Replay::from_records(replay.campaign_id.clone(), &segments).unwrap();
+    let out = Replay::from_records(replay.campaign_id.clone(), &segments);
+    grouped::WRITTEN_LAYOUT.set(grouped::Layout::Chosen);
+    let out = out.unwrap();
     println!(
         "{layout:?} written in {:.1} s",
         started.elapsed().as_secs_f64()

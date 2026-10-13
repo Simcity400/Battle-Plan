@@ -153,7 +153,20 @@ pub fn effective_memo(
     raw: i64,
     memo: &DefinitionMemo,
 ) -> Result<i64, &'static str> {
-    Ok(apply(memo.flags(memory, base, key)?, raw))
+    effective_observed_memo(memory, base, key, raw, memo).map(|(value, _)| value)
+}
+
+/// The effective value and the metadata that enabled and clamped it, from
+/// the same observation. Disabled keys retain no clamp-flags read.
+pub(crate) fn effective_observed_memo(
+    memory: &impl Memory,
+    base: usize,
+    key: u32,
+    raw: i64,
+    memo: &DefinitionMemo,
+) -> Result<(i64, Option<u32>), &'static str> {
+    let flags = memo.flags(memory, base, key)?;
+    Ok((apply(flags, raw), flags))
 }
 
 fn apply(flags: Option<u32>, raw: i64) -> i64 {

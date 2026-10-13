@@ -1418,6 +1418,12 @@ impl Captured {
         self.division_presentation.phase_ticks()
     }
 
+    /// This hour's CountryStabilityInputs span by walk phase, published in
+    /// status.json.
+    pub(crate) fn stability_phase_ticks(&self) -> [u64; 4] {
+        self.country_stability.phase_ticks()
+    }
+
     /// Loan the governance family's hourly research tables to their own job.
     /// Take before the family itself; restore after the family is restored.
     pub(crate) fn take_research_request(

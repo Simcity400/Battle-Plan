@@ -1020,12 +1020,21 @@ function Invoke-Screen($attached, [string]$runDir) {
     if ($statusBefore -and $statusAfter) {
         $calls = [int64]$statusAfter.callback_work.calls - [int64]$statusBefore.callback_work.calls
         $ticks = [int64]$statusAfter.native_tick_work.calls - [int64]$statusBefore.native_tick_work.calls
+        $beforeHistogram = @($statusBefore.callback_tail.histogram)
+        $afterHistogram = @($statusAfter.callback_tail.histogram)
+        $callbackHistogram = @(for ($bucket = 0; $bucket -lt $afterHistogram.Count; $bucket++) {
+            $beforeCount = if ($bucket -lt $beforeHistogram.Count) { [int64]$beforeHistogram[$bucket] } else { 0 }
+            [int64]$afterHistogram[$bucket] - $beforeCount
+        })
         $result.status_delta = [ordered]@{
             frames = $calls
             callback_mean_ms = $(if ($calls -gt 0) { [math]::Round(([double]$statusAfter.callback_work.total_ns - [double]$statusBefore.callback_work.total_ns) / $calls / 1e6, 3) } else { $null })
             native_tick_mean_ms = $(if ($ticks -gt 0) { [math]::Round(([double]$statusAfter.native_tick_work.elapsed_ns - [double]$statusBefore.native_tick_work.elapsed_ns) / $ticks / 1e6, 3) } else { $null })
             session_callback_p50_ms = [math]::Round([double]$statusAfter.callback_work.p50_ns / 1e6, 3)
             session_callback_p95_ms = [math]::Round([double]$statusAfter.callback_work.p95_ns / 1e6, 3)
+            session_callback_p99_ms = [math]::Round([double]$statusAfter.callback_work.p99_ns / 1e6, 3)
+            session_callback_max_ms = [math]::Round([double]$statusAfter.callback_work.max_ns / 1e6, 3)
+            callback_histogram = $callbackHistogram
             pool_bytes = $statusAfter.pool_bytes
             dropped_frames = $statusAfter.dropped_frames; write_errors = $statusAfter.write_errors
             collector_cost = Get-HookCost $statusBefore $statusAfter

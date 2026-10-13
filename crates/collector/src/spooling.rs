@@ -284,6 +284,12 @@ pub(crate) struct WallTotals {
 }
 
 impl WallTotals {
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.calls = self.calls.saturating_add(other.calls);
+        self.total_ns = self.total_ns.saturating_add(other.total_ns);
+        self.max_ns = self.max_ns.max(other.max_ns);
+    }
+
     pub(crate) fn record_ticks(&mut self, ticks: i64, frequency: u64) {
         let ns = ((ticks.max(0) as u128 * 1_000_000_000) / u128::from(frequency)) as u64;
         self.calls = self.calls.saturating_add(1);
@@ -1851,8 +1857,12 @@ struct Statistics {
     player: Option<ViewedFlag>,
     total_ns: u64,
     callback: Distribution,
+    callback_tail: crate::slow_hours::Recorder,
     table_ns: [u64; TABLE_COUNT],
     table_total_ns: [u64; TABLE_COUNT],
+    /// Cumulative successful-frame Stability job phase ticks, including its
+    /// countries that refused. Inputs includes setup and per-country folding.
+    stability_walk_ticks: [u64; 4],
     table_reads: [ReadCounts; TABLE_COUNT],
     table_total_reads: [ReadCounts; TABLE_COUNT],
     dropped_frames: u64,
@@ -1911,8 +1921,10 @@ impl Default for Statistics {
             player: None,
             total_ns: 0,
             callback: Distribution::default(),
+            callback_tail: crate::slow_hours::Recorder::default(),
             table_ns: [0; TABLE_COUNT],
             table_total_ns: [0; TABLE_COUNT],
+            stability_walk_ticks: [0; 4],
             table_reads: [ReadCounts::ZERO; TABLE_COUNT],
             table_total_reads: [ReadCounts::ZERO; TABLE_COUNT],
             dropped_frames: 0,
@@ -1951,6 +1963,12 @@ impl Default for Statistics {
 }
 
 impl Statistics {
+    fn observe_stability_walk_ticks(&mut self, latest: [u64; 4]) {
+        for (total, ticks) in self.stability_walk_ticks.iter_mut().zip(latest) {
+            *total = total.saturating_add(ticks);
+        }
+    }
+
     fn observe_table_costs(&mut self, latest: [u64; TABLE_COUNT]) {
         self.table_ns = latest;
         for (total, ns) in self.table_total_ns.iter_mut().zip(latest) {
@@ -2000,8 +2018,12 @@ impl PreparedFrame {
 /// Everything success accounting needs after the capture slot has been reused.
 struct CapturedStatistics {
     total_ns: u64,
+    hour: i32,
+    qpc: i64,
+    hour_cost: crate::sampling::HourCost,
     table_ns: [u64; TABLE_COUNT],
     table_reads: [ReadCounts; TABLE_COUNT],
+    stability_walk_ticks: [u64; 4],
     pool_bytes: u64,
     dropped_frames: u64,
     sampled_buffer_bytes: usize,
@@ -2044,8 +2066,16 @@ impl CapturedStatistics {
         .count();
         Ok(Self {
             total_ns: captured.total_ns,
+            hour: captured
+                .clock
+                .as_ref()
+                .expect("recorded frame has a clock")
+                .hour,
+            qpc: captured.qpc,
+            hour_cost: captured.hour_cost,
             table_ns: captured.table_ns,
             table_reads: captured.table_reads,
+            stability_walk_ticks: captured.extended.stability_phase_ticks(),
             pool_bytes: captured.pool_bytes,
             dropped_frames: captured.dropped_frames,
             sampled_buffer_bytes,
@@ -2063,8 +2093,12 @@ impl CapturedStatistics {
     fn record(self, stats: &mut Statistics) {
         stats.total_ns = self.total_ns;
         stats.callback.record_ns(self.total_ns);
+        stats
+            .callback_tail
+            .record(self.hour, self.qpc, self.total_ns, self.hour_cost);
         stats.observe_table_costs(self.table_ns);
         stats.observe_table_reads(self.table_reads);
+        stats.observe_stability_walk_ticks(self.stability_walk_ticks);
         stats.pool_bytes = self.pool_bytes;
         stats.sampled_buffer_bytes = self.sampled_buffer_bytes;
         stats.sampled_buffer_parts = self.sampled_buffer_parts;
@@ -2913,6 +2947,12 @@ impl Processor {
             stats.table_ns[replay::rows::TableId::ResearchSlots.index()],
             stats.table_ns[replay::rows::TableId::TechnologyDefinitions.index()],
         ];
+        let stability_walk_ns = stats.stability_walk_ticks.map(|ticks| {
+            (u128::from(ticks) * 1_000_000_000)
+                .checked_div(u128::from(self.session.qpc_frequency))
+                .unwrap_or(0)
+                .min(u128::from(u64::MAX)) as u64
+        });
         let relations_copy_ns = [
             stats.table_ns[replay::rows::TableId::RelationOpinions.index()],
             stats.table_ns[replay::rows::TableId::RelationTuples.index()],
@@ -3055,6 +3095,7 @@ impl Processor {
             "player": &stats.player,
             "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
             "callback_work": callback_work,
+            "callback_tail": stats.callback_tail.status(self.session.qpc_frequency),
             "callback_work_scope": "cumulative per-hour game-thread acquisition body wall inside the hook since attach (the block before the trampoline), excluding the original native tick; equals acquisition_work.collect_wait_ns per hour. Drops, failed frames and unattributed startup callbacks excluded; sampled asynchronously after decode, not a CPU counter or exact partition with native_tick_work",
             "max_ns": callback.max_ns, "table_ns": stats.table_ns.as_slice(),
             "table_total_ns": stats.table_total_ns.as_slice(),
@@ -3161,6 +3202,7 @@ impl Processor {
             "reserved_land_theatres": crate::extended::naval_history::reserved_land_data(),
             "orders_group_tooltip_inputs": crate::extended::group_counters::tooltip_data(),
             "research_walk_ns": research_walk_ns,
+            "stability_walk_ns": stability_walk_ns,
             "relations_copy_ns": relations_copy_ns,
             "characters_copy_ns": characters_copy_ns,
             "projects_copy_ns": projects_copy_ns,
@@ -4308,6 +4350,98 @@ mod tests {
     }
 
     #[test]
+    fn callback_tail_histogram_and_slowest_hours_share_callback_work_samples() {
+        let mut processor = Processor {
+            root: PathBuf::new(),
+            history: PreparedCampaigns::default(),
+            session: session(),
+            campaigns: Campaigns::new(),
+            stats: Statistics::default(),
+            unknown_pending: 0,
+            suppress_origin: false,
+            retry_full: false,
+            unpublished_families: 0,
+            helper: None,
+            second_helper: None,
+            backlogged: false,
+            comparison: Box::default(),
+        };
+        let mut samples = vec![0];
+        for floor_ms in [2, 4, 8, 16, 32, 64, 128, 256] {
+            samples.extend([floor_ms * 1_000_000 - 1, floor_ms * 1_000_000]);
+        }
+        samples.extend([512_000_000, 512_000_000, 4_000_000, 4_000_000]);
+        let mut frame = captured(-20);
+        for (index, &ns) in samples.iter().enumerate() {
+            frame.clock = Some(clock(index as i32 - 20));
+            frame.qpc = 6_000_000_000_000 + index as i64;
+            frame.total_ns = ns;
+            frame.hour_cost = crate::sampling::HourCost {
+                entry_ns: 100 + index as u64,
+                buffer_wait_ns: 200 + index as u64,
+                setup_ns: ns / 4,
+                parallel_ns: ns / 2,
+                residual_ns: ns - ns / 4 - ns / 2,
+                segments_ns: [index as u64; crate::sampling::SEGMENTS],
+                slowest_join: (index == 17).then_some(crate::sampling::SlowestJoin {
+                    role: 1,
+                    wait_ns: 300,
+                    collect_stall_ns: 250,
+                }),
+                collect_stalls_over_1ms: index as u64,
+                growths: index as u64 + 1,
+                first_since_attach: index == 17,
+                continuous: index != 17,
+                force_full: index == 17,
+                recovery: index == 17,
+                refresh: index == 17,
+            };
+            CapturedStatistics::capture(&frame)
+                .unwrap()
+                .record(&mut processor.stats);
+        }
+        let status = processor.json();
+        let tail = &status["callback_tail"];
+        assert_eq!(
+            tail["histogram_floor_ms"],
+            json!([0, 2, 4, 8, 16, 32, 64, 128, 256])
+        );
+        assert_eq!(tail["histogram"], json!([2, 2, 4, 2, 2, 2, 2, 2, 3]));
+        assert_eq!(tail["capacity"], 16);
+        assert_eq!(tail["qpc_frequency"], processor.session.qpc_frequency);
+        assert_eq!(status["callback_work"]["calls"], samples.len());
+        let slowest = tail["slowest"].as_array().unwrap();
+        // The third 4 ms hour arrived at capacity and cannot displace an equal one.
+        let indices = [17, 18, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 19];
+        assert_eq!(
+            slowest
+                .iter()
+                .map(|entry| entry["hour"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            indices.map(|index| index - 20),
+        );
+        let first = &slowest[0];
+        assert_eq!(first["callback_ns"], status["callback_work"]["max_ns"]);
+        assert_eq!(
+            first,
+            &json!({
+                "hour": -3, "qpc": 6_000_000_000_017_i64,
+                "daily_slot": (-3_i32).rem_euclid(replay::cadence::STAGGER_PERIOD),
+                "callback_ns": 512_000_000, "entry_ns": 117, "buffer_wait_ns": 217,
+                "setup_ns": 128_000_000, "parallel_ns": 256_000_000, "residual_ns": 128_000_000,
+                "segments_ns": vec![17; crate::sampling::SEGMENTS],
+                "slowest_join": {
+                    "role": format!("{:?}", crate::acquisition_jobs::ROLES[1]),
+                    "wait_ns": 300, "collect_stall_ns": 250,
+                },
+                "collect_stalls_over_1ms": 17, "growths": 18,
+                "first_since_attach": true, "continuous": false,
+                "force_full": true, "recovery": true, "refresh": true,
+            }),
+        );
+    }
+
+    #[test]
     fn cached_callback_summary_does_not_freeze_status_errors_or_latest_cost() {
         let mut processor = Processor {
             root: PathBuf::new(),
@@ -4540,9 +4674,14 @@ mod tests {
         processor.stats.table_ns[replay::rows::TableId::WarRelations.index()] = 601;
         processor.stats.table_ns[replay::rows::TableId::StateBuildings.index()] = 701;
         processor.stats.table_ns[replay::rows::TableId::RaidTargetStatuses.index()] = 703;
+        processor.stats.observe_stability_walk_ticks([1, 2, 3, 4]);
+        processor
+            .stats
+            .observe_stability_walk_ticks([10, 20, 30, 40]);
         let status = processor.json();
         assert_eq!(status["buildings_walk_ns"], json!([701, 0, 703]));
         assert_eq!(status["research_walk_ns"], json!([11, 22, 33]));
+        assert_eq!(status["stability_walk_ns"], json!([1100, 2200, 3300, 4400]));
         assert_eq!(status["wars_walk_ns"], json!([601]));
         // New game-thread copy-only mirrors for the coupled unit, air,
         // naval, players and session families.
@@ -4690,6 +4829,7 @@ mod tests {
         let mut source = captured(10);
         prepare_order_counter_sample(&mut source, 10, 7);
         source.total_ns = 123;
+        source.hour_cost.growths = 43;
         source.table_ns[TableId::Clock.index()] = 45;
         source.table_reads[TableId::Clock.index()].copy_calls = 6;
         source.pool_bytes = 789;
@@ -4718,6 +4858,9 @@ mod tests {
         sampled.record(&mut stats);
         witness.bind(&mut stats.order_counters, &Ok(()));
         assert_eq!(stats.total_ns, 123);
+        let tail = serde_json::to_value(stats.callback_tail.status(1)).unwrap();
+        assert_eq!(tail["slowest"][0]["hour"], 10);
+        assert_eq!(tail["slowest"][0]["growths"], 43);
         assert_eq!(stats.table_ns[TableId::Clock.index()], 45);
         assert_eq!(
             stats.table_total_reads[TableId::Clock.index()].copy_calls,

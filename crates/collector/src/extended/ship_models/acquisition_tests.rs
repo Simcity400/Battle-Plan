@@ -958,8 +958,8 @@ fn cold_ship_model_modifier_arenas_grow_from_original_mod_sized_headers() {
 /// experience, pool, variant and hull definition, without a location.
 mod fleet {
     use engine::{
-        ccountry, cequipment_type, cequipment_variant, cequipment_variant_pool, cgame_state, cship,
-        csub_unit_definition, ctask_force, cunit,
+        ccountry, cequipment_database, cequipment_type, cequipment_variant,
+        cequipment_variant_pool, cgame_state, cship, csub_unit_definition, ctask_force, cunit,
     };
 
     pub(super) const IMAGE: usize = 0x1_4000_0000;
@@ -974,6 +974,8 @@ mod fleet {
     pub(super) const TASKS: [usize; 2] = [LOW + 0x3000, LOW + 0x3800];
     const DOCTRINE: usize = LOW + 0x4000;
     const EXPERIENCE: usize = LOW + 0x4100;
+    pub(super) const DATABASE: usize = LOW + 0x5000;
+    const DEFINITIONS: usize = LOW + 0x5100;
     const VARIANT: usize = LOW + 0x6000;
     pub(super) const DEFINITION: usize = LOW + 0x7000;
     pub(super) const SHIPS: usize = 12;
@@ -1079,6 +1081,10 @@ mod fleet {
         put(VARIANT + 0xc4, &3_i32.to_le_bytes());
         put(DEFINITION, &word(IMAGE + cequipment_type::VTABLE_RVA));
         put(DEFINITION + cequipment_type::TOKEN, &11_u32.to_le_bytes());
+        put(DEFINITION + 0x418, &1_i32.to_le_bytes());
+        put(DATABASE, &word(IMAGE + cequipment_database::VTABLE_RVA));
+        put(DATABASE + 0x68, &array(DEFINITIONS, 2));
+        put(DEFINITIONS + 8, &word(DEFINITION));
         put(DEFINITION + cequipment_type::HULL_SPRITE, &inline(b"hull"));
         for index in 0..ships {
             let ship = ship(index);
@@ -1160,6 +1166,11 @@ impl Fleet {
         }
         if address == fleet::SINGLETON && output.len() == 8 {
             output.copy_from_slice(&(fleet::GAME as u64).to_le_bytes());
+            return true;
+        }
+        if address == fleet::IMAGE + engine::cequipment_database::SINGLETON_RVA && output.len() == 8
+        {
+            output.copy_from_slice(&(fleet::DATABASE as u64).to_le_bytes());
             return true;
         }
         SliceMemory {
@@ -1794,4 +1805,1800 @@ fn ship_model_quiet_bench() {
         median(certificate_ns),
         median(capture_ns)
     );
+}
+
+mod carry_cost_bench {
+    use super::*;
+    use crate::ship_model_changes::Watches;
+    use engine::{ccountry, cgame_state, cprovince, cterrain_type, cunit, cweather_manager};
+    use std::{
+        hint::black_box,
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Instant,
+    };
+
+    const PER_TASK: usize = 3;
+    const SAMPLES: usize = 31;
+    const EVICTION_BYTES: usize = 128 * 1024 * 1024;
+    const MEMORY_BUDGET: usize = 2 * 1024 * 1024 * 1024;
+
+    struct World {
+        memory: Fleet,
+        census: Vec<cship::Row>,
+        tasks: Vec<usize>,
+        locations: [usize; 2],
+    }
+
+    impl World {
+        fn new(countries: usize) -> Self {
+            let ships = countries * PER_TASK;
+            let mut memory = Fleet::in_tasks(ships, PER_TASK);
+            let tasks: Vec<_> = (0..countries)
+                .map(|index| fleet::LOW + 0x8000 + ships * 0x1000 + index * 0x800)
+                .collect();
+            let slots = fleet::LOW + memory.low.len();
+            let links = slots + (countries + 1) * 8;
+            let objects = (links + (countries + 1) * 4).next_multiple_of(0x1000);
+            let locations = [
+                objects + countries * 0x2000,
+                objects + countries * 0x2000 + 0x1000,
+            ];
+            let definitions = [locations[1] + 0x1000, locations[1] + 0x2000];
+            let template = definitions[1] + 0x1000;
+            let terrain = template + 0x1000;
+            let bucket = terrain + 0x1000;
+            let weather = bucket + 0x1000;
+            let regions = weather + 0x1000;
+            let provinces = regions + 0x1000;
+            memory.low.resize(provinces + 0x1000 - fleet::LOW, 0);
+            let mut put = |address: usize, value: &[u8]| {
+                let offset = address - fleet::LOW;
+                memory.low[offset..offset + value.len()].copy_from_slice(value);
+            };
+            let word = |value: usize| (value as u64).to_le_bytes();
+            let array = |data: usize, count: usize| {
+                let count = u32::try_from(count).unwrap();
+                let mut header = [0; 16];
+                header[..8].copy_from_slice(&word(data));
+                header[8..12].copy_from_slice(&count.to_le_bytes());
+                header[12..].copy_from_slice(&count.to_le_bytes());
+                header
+            };
+            put(
+                fleet::GAME + cgame_state::COUNTRIES,
+                &array(slots, countries + 1),
+            );
+            put(
+                fleet::GAME + cgame_state::COUNTRY_LINKS,
+                &array(links, countries + 1),
+            );
+            for (index, &task) in tasks.iter().enumerate() {
+                let id = u32::try_from(index + 1).unwrap();
+                let country = objects + index * 0x2000;
+                put(slots + (index + 1) * 8, &word(country));
+                put(links + (index + 1) * 4, &id.to_le_bytes());
+                put(country, &word(fleet::IMAGE + ccountry::VTABLE_RVA));
+                put(country + ccountry::ID, &id.to_le_bytes());
+                put(task + cunit::ROSTER_OWNER, &id.to_le_bytes());
+                put(task + cunit::LOCATION, &word(locations[0]));
+            }
+            // The ship modifier calculation's province, template, terrain and weather sources,
+            // as in engine::cship::organisation_tests::shared_sources_fixture.
+            // The empty class hash selects the native fallback class row.
+            for (index, (&location, &definition)) in locations.iter().zip(&definitions).enumerate()
+            {
+                put(location, &word(fleet::IMAGE + cprovince::VTABLE_RVA));
+                put(location + cprovince::ID, &(index as u32).to_le_bytes());
+                put(location + 0xc8, &word(definition));
+                put(definition + 0x30, &word(template));
+            }
+            put(template + 0x130, &word(terrain));
+            put(terrain, &word(fleet::IMAGE + cterrain_type::VTABLE_RVA));
+            put(terrain + cterrain_type::VALID, &[1]);
+            put(terrain + 0x1b8, &word(bucket));
+            put(fleet::GAME + cgame_state::WEATHER_MANAGER, &word(weather));
+            put(weather, &word(fleet::IMAGE + cweather_manager::VTABLE_RVA));
+            put(weather + 0x40, &array(regions, 1));
+            put(weather + 0x370, &array(provinces, locations.len()));
+            for index in 0..ships {
+                put(fleet::ship(index) + 0x270, &100_000_i64.to_le_bytes());
+            }
+            Self {
+                memory,
+                census: (0..ships)
+                    .map(|index| fleet::census_in(index, PER_TASK))
+                    .collect(),
+                tasks,
+                locations,
+            }
+        }
+
+        fn move_tasks(&mut self, hour: usize) {
+            let value = (self.locations[hour % self.locations.len()] as u64).to_le_bytes();
+            for &task in &self.tasks {
+                let offset = task + cunit::LOCATION - fleet::LOW;
+                self.memory.low[offset..offset + value.len()].copy_from_slice(&value);
+            }
+        }
+
+        fn seed(&self, capture: &mut Captured) {
+            capture.begin_sources();
+            for (index, source) in self.census.iter().enumerate() {
+                capture.visit_source_growing(fleet::ship(index), source);
+            }
+            capture.finish_sources(Outcome::Rows {
+                len: self.census.len(),
+            });
+        }
+    }
+
+    struct Borrowed<'a>(&'a Fleet);
+    impl Memory for Borrowed<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.0.copy(address, output)
+        }
+
+        fn copy_scattered<const N: usize>(
+            &self,
+            addresses: [usize; N],
+            destinations: &mut [&mut [u8]; N],
+        ) -> usize {
+            self.0.copy_scattered(addresses, destinations)
+        }
+
+        fn copy_records(
+            &self,
+            sources: RecordSources<'_>,
+            layout: &RecordLayout<'_>,
+            destination: &mut [u8],
+        ) -> usize {
+            self.0.copy_records(sources, layout, destination)
+        }
+    }
+
+    struct CountedChanges<'a> {
+        inner: &'a Watches,
+        sequences: AtomicUsize,
+        trees: AtomicUsize,
+        certificates: AtomicUsize,
+        mismatches: AtomicUsize,
+    }
+
+    impl Changes for CountedChanges<'_> {
+        fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+            self.sequences.fetch_add(1, Ordering::Relaxed);
+            self.inner.sequence(receiver)
+        }
+
+        fn mismatch(&self) {
+            self.mismatches.fetch_add(1, Ordering::Relaxed);
+            self.inner.mismatch();
+        }
+
+        fn tree_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+            self.trees.fetch_add(1, Ordering::Relaxed);
+            self.inner.tree_sequence(receiver)
+        }
+
+        fn sequence_at(&self, receiver: usize, slot: usize) -> Option<((u64, u64), usize)> {
+            self.sequences.fetch_add(1, Ordering::Relaxed);
+            self.inner.sequence_at(receiver, slot)
+        }
+
+        fn certificate_at(
+            &self,
+            receivers: [usize; 3],
+            slots: Slots,
+        ) -> Option<(Certificate, Slots)> {
+            self.certificates.fetch_add(1, Ordering::Relaxed);
+            self.sequences.fetch_add(
+                receivers.iter().filter(|&&receiver| receiver != 0).count(),
+                Ordering::Relaxed,
+            );
+            self.inner.certificate_at(receivers, slots)
+        }
+
+        fn quiet(&self) -> Option<(u64, u64)> {
+            self.inner.quiet()
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Path {
+        Carried,
+        Moved,
+        Revalidated,
+        Fresh,
+    }
+
+    impl Path {
+        fn label(self) -> &'static str {
+            match self {
+                Self::Carried => "rows carried",
+                Self::Moved => "task force moved",
+                Self::Revalidated => "writer touched unchanged bytes",
+                Self::Fresh => "read afresh",
+            }
+        }
+
+        fn check(self) -> Check {
+            match self {
+                Self::Fresh => Check::Every,
+                _ => Check::Nothing,
+            }
+        }
+
+        fn prepare(self, world: &mut World, watches: &Watches, hour: usize) {
+            match self {
+                Self::Moved => world.move_tasks(hour),
+                Self::Revalidated => {
+                    for index in 0..world.census.len() {
+                        drop(watches.notify(fleet::ship(index), 0));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn capture(ships: usize) -> Captured {
+        Captured::part(&Capacities {
+            rows: ships,
+            modifiers: SnapshotCapacity {
+                nodes: 4 * ships,
+                entries: 4 * ships,
+            },
+        })
+    }
+
+    fn evict(buffer: &mut [u64]) {
+        let mut total = 0_u64;
+        for word in buffer {
+            *word = word.wrapping_add(1);
+            total = total.wrapping_add(*word);
+        }
+        black_box(total);
+    }
+
+    fn median(mut samples: Vec<f64>) -> f64 {
+        samples.sort_by(f64::total_cmp);
+        samples[samples.len() / 2]
+    }
+
+    fn check_budget(world: &World, capture: &Captured, eviction: &[u64], started: Instant) {
+        assert!(
+            started.elapsed().as_secs() < 600,
+            "ship-model benchmark exceeded ten minutes"
+        );
+        let owned = world.memory.low.capacity()
+            + world.census.capacity() * std::mem::size_of::<cship::Row>()
+            + world.tasks.capacity() * std::mem::size_of::<usize>()
+            + capture.allocated_bytes()
+            + std::mem::size_of_val(eviction);
+        assert!(
+            owned < MEMORY_BUDGET,
+            "ship-model benchmark exceeded two GiB: {owned}"
+        );
+    }
+
+    fn account(world: &World, capture: &mut Captured, watches: &Watches, path: Path) {
+        let changes = CountedChanges {
+            inner: watches,
+            sequences: AtomicUsize::new(0),
+            trees: AtomicUsize::new(0),
+            certificates: AtomicUsize::new(0),
+            mismatches: AtomicUsize::new(0),
+        };
+        let accounting = crate::read_accounting::Capture::new();
+        let memory = engine::memory::CountedMemory::new(Borrowed(&world.memory));
+        capture.capture_carrying(
+            &memory,
+            CaptureContext::new(fleet::IMAGE),
+            &changes,
+            path.check(),
+        );
+        let reads = accounting.finish()[TableId::ShipModels.index()];
+        assert!(reads.copy_calls + reads.scattered_calls + reads.record_calls != 0);
+        assert_eq!(
+            capture.outcomes(),
+            [Outcome::Rows {
+                len: world.census.len()
+            }]
+        );
+        let ships = world.census.len() as f64;
+        println!(
+            "ACCOUNT ship models {} countries, {}: guarded calls/ship {:.2}, requested native bytes/ship {:.2}, sequence queries/ship {:.2}, tree lookups/ship {:.2}, certificate calls/ship {:.2}",
+            world.tasks.len(),
+            path.label(),
+            (reads.copy_calls + reads.scattered_calls + reads.record_calls + reads.plan_calls)
+                as f64
+                / ships,
+            reads.bytes as f64 / ships,
+            changes.sequences.load(Ordering::Relaxed) as f64 / ships,
+            changes.trees.load(Ordering::Relaxed) as f64 / ships,
+            changes.certificates.load(Ordering::Relaxed) as f64 / ships,
+        );
+        let cost = CARRY_COST.get();
+        println!(
+            "ACCOUNT carried-state operations: ship-index searches {}, cold HeldShip bytes exposed {}, organisation packet bytes read {}, cold terms bytes compared {}, variant comparisons {}, task-term comparisons {}, row clones {}; hot record {} B",
+            cost.searches,
+            cost.cold_ship_bytes,
+            cost.cold_organisation_bytes,
+            cost.cold_terms_bytes,
+            cost.variant_compares,
+            cost.terms_compares,
+            cost.row_clones,
+            std::mem::size_of::<Hot>()
+        );
+    }
+
+    fn terms_hour(memory: &impl Memory, held: &[cship::HeldShip], capture: &mut Captured) -> u128 {
+        capture.begin_details();
+        capture.modifiers.get_mut().enable_worker_growth();
+        let mut fields = cship::ShipFields::new(fleet::IMAGE);
+        let mut elapsed = 0_u128;
+        for held in held {
+            let task = fields
+                .task_force_of(memory, held)
+                .expect("complete task-force gather");
+            let gathered = fields.memory(memory);
+            let memory = ModifierMemory {
+                inner: &gathered,
+                arena: &capture.modifiers,
+            };
+            let timer = Instant::now();
+            let terms = cship::read_task_terms(&memory, fleet::IMAGE, &task, &mut capture.doctrine);
+            elapsed += timer.elapsed().as_nanos();
+            black_box(
+                terms
+                    .expect("valid task-force terms")
+                    .expect("complete task-force terms"),
+            );
+        }
+        elapsed
+    }
+
+    fn task_terms(world: &World, eviction: &mut [u64], cold: bool, started: Instant) {
+        let mut fields = cship::ShipFields::new(fleet::IMAGE);
+        let held: Vec<_> = (0..world.tasks.len())
+            .map(|index| {
+                fields.visit(&world.memory, fleet::ship(index * PER_TASK));
+                fields.held()
+            })
+            .collect();
+        let mut capture = capture(world.census.len());
+        let mut samples = Vec::with_capacity(SAMPLES);
+        for hour in 0..=SAMPLES {
+            if cold {
+                evict(eviction);
+            }
+            let elapsed = terms_hour(&world.memory, &held, &mut capture);
+            if hour != 0 {
+                samples.push(elapsed as f64 / world.census.len() as f64);
+            }
+            check_budget(world, &capture, eviction, started);
+        }
+        let outer = engine::memory::ReadCounts::take_current();
+        let counted = engine::memory::CountedMemory::new(Borrowed(&world.memory));
+        terms_hour(&counted, &held, &mut capture);
+        let reads = engine::memory::ReadCounts::take_current();
+        outer.add_current();
+        let ns = median(samples);
+        println!(
+            "BENCH ship models {} countries, {} cache, task terms read: median {ns:.0} ns per ship ({:.0} ns per task force); guarded calls/task {:.2}, requested native bytes/task {:.2} (including task gathers, timers exclude gathers)",
+            world.tasks.len(),
+            if cold { "cold" } else { "warm" },
+            ns * PER_TASK as f64,
+            (reads.copy_calls + reads.scattered_calls + reads.record_calls + reads.plan_calls)
+                as f64
+                / world.tasks.len() as f64,
+            reads.bytes as f64 / world.tasks.len() as f64,
+        );
+    }
+
+    fn hour(
+        world: &World,
+        capture: &mut Captured,
+        changes: &dyn Changes,
+        check: Check,
+    ) -> Vec<cship::ModelRow> {
+        world.seed(capture);
+        capture.capture_carrying(
+            &world.memory,
+            CaptureContext::new(fleet::IMAGE),
+            changes,
+            check,
+        );
+        assert_eq!(
+            capture.outcomes(),
+            [Outcome::Rows {
+                len: world.census.len()
+            }]
+        );
+        capture.rows.rows[..world.census.len()].to_vec()
+    }
+
+    #[test]
+    fn hot_carried_rows_avoid_cold_records_and_ship_searches_at_country_scale() {
+        for countries in [1500, 5000] {
+            let world = World::new(countries);
+            let watches = Watches::enabled(4 * world.census.len());
+            let mut capture = capture(world.census.len());
+            let before_fresh = world.memory.calls.get();
+            let fresh = hour(&world, &mut capture, &watches, Check::Nothing);
+            let fresh_calls = world.memory.calls.get() - before_fresh;
+            let changes = CountedChanges {
+                inner: &watches,
+                sequences: AtomicUsize::new(0),
+                trees: AtomicUsize::new(0),
+                certificates: AtomicUsize::new(0),
+                mismatches: AtomicUsize::new(0),
+            };
+            world.seed(&mut capture);
+            let before = world.memory.calls.get();
+            capture.capture_carrying(
+                &world.memory,
+                CaptureContext::new(fleet::IMAGE),
+                &changes,
+                Check::Nothing,
+            );
+            assert_eq!(capture.rows.rows[..world.census.len()], fresh);
+            let cost = CARRY_COST.get();
+            assert_eq!(cost.searches, 0);
+            assert_eq!(cost.cold_ship_bytes, 0);
+            assert_eq!(cost.cold_organisation_bytes, 0);
+            assert_eq!(cost.cold_terms_bytes, 0);
+            assert_eq!(cost.row_clones, 0);
+            assert_eq!(cost.variant_compares, 1, "one shared variant");
+            assert_eq!(
+                cost.terms_compares, countries,
+                "one comparison per task force"
+            );
+            assert_eq!(changes.certificates.load(Ordering::Relaxed), 0);
+            assert_eq!(
+                changes.sequences.load(Ordering::Relaxed),
+                3 * countries,
+                "task-force and two weather-region certificate queries per task force"
+            );
+            let carried_calls = world.memory.calls.get() - before;
+            assert!(
+                carried_calls > 0,
+                "shared sources remain current-hour reads"
+            );
+            assert!(
+                carried_calls < fresh_calls,
+                "{carried_calls} carried guarded calls, {fresh_calls} fresh"
+            );
+        }
+    }
+
+    #[test]
+    fn moved_task_rows_equal_fresh_reads_without_rewriting_the_model() {
+        let mut world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut capture = capture(world.census.len());
+        hour(&world, &mut capture, &watches, Check::Nothing);
+        world.move_tasks(1);
+        let carried = hour(&world, &mut capture, &watches, Check::Nothing);
+        let cost = CARRY_COST.get();
+        assert_eq!(
+            cost.cold_ship_bytes, 0,
+            "only compact organisation operands are read"
+        );
+        assert_eq!(cost.row_clones, 0);
+        let mut direct = self::capture(world.census.len());
+        assert_eq!(carried, hour(&world, &mut direct, &watches, Check::Every));
+        const MARK: i32 = 0x5eed;
+        capture.rows.rows[5].model_number = MARK;
+        world.move_tasks(0);
+        let rows = hour(&world, &mut capture, &watches, Check::Nothing);
+        assert_eq!(
+            rows[5].model_number, MARK,
+            "only organisation and roster position are written"
+        );
+    }
+
+    #[test]
+    fn reordered_ship_census_uses_the_index_and_keeps_serial_rows() {
+        let mut world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut capture = capture(world.census.len());
+        hour(&world, &mut capture, &watches, Check::Nothing);
+        // Swap the two occurrences within a task force, keeping parent and
+        // current roster identity intact while changing census positions.
+        world.census.swap(0, 1);
+        capture.begin_sources();
+        for (index, source) in world.census.iter().enumerate() {
+            let pointer = if index < 2 {
+                fleet::ship(1 - index)
+            } else {
+                fleet::ship(index)
+            };
+            capture.visit_source_growing(pointer, source);
+        }
+        capture.finish_sources(Outcome::Rows {
+            len: world.census.len(),
+        });
+        capture.capture_carrying(
+            &world.memory,
+            CaptureContext::new(fleet::IMAGE),
+            &watches,
+            Check::Nothing,
+        );
+        assert_eq!(
+            capture.outcomes(),
+            [Outcome::Rows {
+                len: world.census.len()
+            }]
+        );
+        let cost = CARRY_COST.get();
+        assert_eq!(cost.searches, 2);
+        assert_eq!(cost.row_clones, 2);
+        assert_eq!(capture.rows.rows[0].ship, world.census[0].id);
+        assert_eq!(capture.rows.rows[1].ship, world.census[1].id);
+        assert_eq!(capture.rows.rows[0].model_number, 1);
+        assert_eq!(capture.rows.rows[1].model_number, 0);
+    }
+
+    struct CriticalMemory<'a> {
+        inner: &'a Fleet,
+        watched: usize,
+        count_reads: Cell<usize>,
+        fault: Option<usize>,
+    }
+
+    impl Memory for CriticalMemory<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == self.watched {
+                self.count_reads.set(self.count_reads.get() + 1);
+            }
+            if self
+                .fault
+                .is_some_and(|fault| fault >= address && fault - address < output.len())
+            {
+                return false;
+            }
+            self.inner.copy(address, output)
+        }
+    }
+
+    fn critical_world() -> World {
+        let mut world = World::new(4);
+        let critical = fleet::LOW + world.memory.low.len();
+        world.memory.low.resize(world.memory.low.len() + 0x1000, 0);
+        for index in 0..world.census.len() {
+            let ship = fleet::ship(index);
+            let entry = ship + 0xa00;
+            let at = ship + 0x918 - fleet::LOW;
+            world.memory.low[at..at + 8].copy_from_slice(&(entry as u64).to_le_bytes());
+            world.memory.low[at + 8..at + 12].copy_from_slice(&1_u32.to_le_bytes());
+            world.memory.low[at + 12..at + 16].copy_from_slice(&1_u32.to_le_bytes());
+            let at = entry - fleet::LOW;
+            world.memory.low[at..at + 8].copy_from_slice(&(critical as u64).to_le_bytes());
+            world.memory.low[at + 8..at + 12].copy_from_slice(&2_i32.to_le_bytes());
+        }
+        world
+    }
+
+    #[test]
+    fn moved_rows_with_criticals_keep_both_live_count_reads_and_serial_faults() {
+        for fault in [None, Some(fleet::ship(0) + 0xa08)] {
+            let mut world = critical_world();
+            let watches = Watches::enabled(4 * world.census.len());
+            let mut held = capture(world.census.len());
+            hour(&world, &mut held, &watches, Check::Nothing);
+            world.move_tasks(1);
+            let memory = CriticalMemory {
+                inner: &world.memory,
+                watched: fleet::ship(0) + 0xa08,
+                count_reads: Cell::new(0),
+                fault,
+            };
+            world.seed(&mut held);
+            held.capture_carrying(
+                &memory,
+                CaptureContext::new(fleet::IMAGE),
+                &watches,
+                Check::Nothing,
+            );
+            let outcome = held.outcomes();
+            let carried = held.rows.rows[..world.census.len()].to_vec();
+            assert_eq!(
+                memory.count_reads.get(),
+                if fault.is_some() { 1 } else { 2 }
+            );
+            let cost = CARRY_COST.get();
+            assert_eq!(cost.cold_ship_bytes, 0);
+            assert_eq!(
+                cost.cold_organisation_bytes,
+                if fault.is_some() {
+                    1
+                } else {
+                    world.census.len()
+                } * std::mem::size_of::<cship::OrganisationOperands>()
+            );
+            assert_eq!(
+                cost.cold_terms_bytes,
+                if fault.is_some() {
+                    0
+                } else {
+                    world.census.len()
+                } * std::mem::size_of::<Terms>()
+            );
+            assert_eq!(cost.row_clones, 0);
+            let mut direct = capture(world.census.len());
+            memory.count_reads.set(0);
+            world.seed(&mut direct);
+            direct.capture_carrying(
+                &memory,
+                CaptureContext::new(fleet::IMAGE),
+                &watches,
+                Check::Every,
+            );
+            assert_eq!(outcome, direct.outcomes());
+            if fault.is_none() {
+                assert_eq!(carried, direct.rows.rows[..world.census.len()]);
+            }
+        }
+    }
+
+    #[test]
+    fn touched_rows_revalidate_and_revoke_quiet_certificates() {
+        let world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut capture = capture(world.census.len());
+        let expected = hour(&world, &mut capture, &watches, Check::Nothing);
+        drop(watches.notify(fleet::ship(3), 0));
+        let changes = CountedChanges {
+            inner: &watches,
+            sequences: AtomicUsize::new(0),
+            trees: AtomicUsize::new(0),
+            certificates: AtomicUsize::new(0),
+            mismatches: AtomicUsize::new(0),
+        };
+        assert_eq!(
+            hour(&world, &mut capture, &changes, Check::Nothing),
+            expected
+        );
+        let cost = CARRY_COST.get();
+        assert_eq!(cost.searches, 0);
+        assert_eq!(cost.row_clones, 0);
+        assert_eq!(cost.cold_ship_bytes, std::mem::size_of::<cship::HeldShip>());
+        assert_eq!(
+            changes.certificates.load(Ordering::Relaxed),
+            world.census.len()
+        );
+        assert!(!watches.poisoned());
+        watches.boundary(true);
+        assert_eq!(
+            hour(&world, &mut capture, &watches, Check::Nothing),
+            expected
+        );
+        assert!(
+            CARRY_COST.get().cold_ship_bytes
+                >= world.census.len() * std::mem::size_of::<cship::HeldShip>()
+        );
+    }
+
+    struct WriterDuringReads<'a> {
+        bytes: RefCell<Vec<u8>>,
+        watches: &'a Watches,
+        trigger: usize,
+        fired: Cell<bool>,
+    }
+
+    impl Memory for WriterDuringReads<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == self.trigger && !self.fired.replace(true) {
+                let notification = self.watches.notify(fleet::ship(4), 0);
+                let at = fleet::ship(4) + cship::BASE_ORGANISATION - fleet::LOW;
+                self.bytes.borrow_mut()[at..at + 8].copy_from_slice(&60_000_000_i64.to_le_bytes());
+                drop(notification);
+            }
+            if address == fleet::SINGLETON && output.len() == 8 {
+                output.copy_from_slice(&(fleet::GAME as u64).to_le_bytes());
+                return true;
+            }
+            if address == fleet::IMAGE + engine::cequipment_database::SINGLETON_RVA
+                && output.len() == 8
+            {
+                output.copy_from_slice(&(fleet::DATABASE as u64).to_le_bytes());
+                return true;
+            }
+            SliceMemory {
+                base: fleet::LOW,
+                bytes: &self.bytes.borrow(),
+            }
+            .copy(address, output)
+        }
+    }
+
+    #[test]
+    fn a_writer_during_shared_reads_revokes_later_quiet_row_carries() {
+        let world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut held = capture(world.census.len());
+        let previous = hour(&world, &mut held, &watches, Check::Nothing);
+        let memory = WriterDuringReads {
+            bytes: RefCell::new(world.memory.low.clone()),
+            watches: &watches,
+            trigger: world.tasks[0],
+            fired: Cell::new(false),
+        };
+        world.seed(&mut held);
+        held.capture_carrying(
+            &memory,
+            CaptureContext::new(fleet::IMAGE),
+            &watches,
+            Check::Nothing,
+        );
+        assert!(memory.fired.get());
+        assert_eq!(
+            held.outcomes(),
+            [Outcome::Rows {
+                len: world.census.len()
+            }]
+        );
+        assert_ne!(
+            held.rows.rows[4].maximum_organisation,
+            previous[4].maximum_organisation
+        );
+        let mut direct = capture(world.census.len());
+        world.seed(&mut direct);
+        direct.capture_carrying(
+            &memory,
+            CaptureContext::new(fleet::IMAGE),
+            &watches,
+            Check::Every,
+        );
+        assert_eq!(
+            held.rows.rows[..world.census.len()],
+            direct.rows.rows[..world.census.len()]
+        );
+        assert!(!watches.poisoned());
+    }
+
+    #[test]
+    fn pools_beyond_gathered_variant_storage_keep_the_live_model_reader() {
+        let mut world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut variant = 0;
+        for index in 0..world.census.len() {
+            let ship = fleet::ship(index);
+            let bank = ship + 0x980;
+            variant = u64::from_le_bytes(
+                world.memory.low[bank - fleet::LOW..bank - fleet::LOW + 8]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
+            let at =
+                ship + cship::EQUIPMENT_POOL + engine::cequipment_variant_pool::ITEMS - fleet::LOW;
+            world.memory.low[at + 8..at + 12].copy_from_slice(&3_u32.to_le_bytes());
+            world.memory.low[at + 12..at + 16].copy_from_slice(&3_u32.to_le_bytes());
+            for entry in 1..3 {
+                let at = bank + entry * 16 - fleet::LOW;
+                world.memory.low[at..at + 8].copy_from_slice(&(variant as u64).to_le_bytes());
+                world.memory.low[at + 8..at + 16].copy_from_slice(&5_i64.to_le_bytes());
+            }
+        }
+        let mut held = capture(world.census.len());
+        let initial = hour(&world, &mut held, &watches, Check::Nothing);
+        world.memory.low[variant + engine::cequipment_variant::VERSION - fleet::LOW] = 7;
+        let carried = hour(&world, &mut held, &watches, Check::Nothing);
+        let mut direct = capture(world.census.len());
+        let fresh = hour(&world, &mut direct, &watches, Check::Every);
+        assert_ne!(fresh[0].hull_variant, initial[0].hull_variant);
+        assert_eq!(carried, fresh);
+        assert!(!watches.poisoned());
+    }
+
+    struct MetadataMemory<'a> {
+        inner: &'a Fleet,
+        table: usize,
+        fault: Option<usize>,
+    }
+
+    impl Memory for MetadataMemory<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if self
+                .fault
+                .is_some_and(|fault| fault >= address && fault - address < output.len())
+            {
+                return false;
+            }
+            if address == fleet::IMAGE + engine::modifier_definition::TABLE_RVA && output.len() == 8
+            {
+                output.copy_from_slice(&(self.table as u64).to_le_bytes());
+                return true;
+            }
+            self.inner.copy(address, output)
+        }
+    }
+
+    #[test]
+    fn partial_definition_suffixes_recover_without_carrying_or_poisoning() {
+        for check in [Check::Nothing, Check::Every] {
+            let world = World::new(4);
+            let watches = Watches::enabled(4 * world.census.len());
+            let mut held = capture(world.census.len());
+            world.seed(&mut held);
+            held.capture_carrying(
+                &CriticalMemory {
+                    inner: &world.memory,
+                    watched: 0,
+                    count_reads: Cell::new(0),
+                    fault: Some(fleet::IMAGE + engine::cequipment_database::SINGLETON_RVA),
+                },
+                CaptureContext::new(fleet::IMAGE),
+                &watches,
+                Check::Nothing,
+            );
+            assert_eq!(
+                held.outcomes(),
+                [Outcome::Rows {
+                    len: world.census.len()
+                }]
+            );
+            assert_eq!(
+                held.rows.rows[0].hull_variant.unwrap().definition_index,
+                None
+            );
+            let recovered = hour(&world, &mut held, &watches, check);
+            let mut direct = capture(world.census.len());
+            assert_eq!(recovered, hour(&world, &mut direct, &watches, Check::Every));
+            assert_eq!(recovered[0].hull_variant.unwrap().definition_index, Some(1));
+            assert!(!watches.poisoned());
+        }
+    }
+
+    #[test]
+    fn sampled_definition_suffix_faults_publish_without_poisoning() {
+        let world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut held = capture(world.census.len());
+        hour(&world, &mut held, &watches, Check::Nothing);
+        let memory = CriticalMemory {
+            inner: &world.memory,
+            watched: 0,
+            count_reads: Cell::new(0),
+            fault: Some(fleet::IMAGE + engine::cequipment_database::SINGLETON_RVA),
+        };
+        world.seed(&mut held);
+        held.capture_carrying(
+            &memory,
+            CaptureContext::new(fleet::IMAGE),
+            &watches,
+            Check::Every,
+        );
+        assert_eq!(
+            held.outcomes(),
+            [Outcome::Rows {
+                len: world.census.len()
+            }]
+        );
+        let mut direct = capture(world.census.len());
+        world.seed(&mut direct);
+        direct.capture_carrying(
+            &memory,
+            CaptureContext::new(fleet::IMAGE),
+            &watches,
+            Check::Every,
+        );
+        assert_eq!(held.outcomes(), direct.outcomes());
+        assert_eq!(
+            held.rows.rows[..world.census.len()],
+            direct.rows.rows[..world.census.len()]
+        );
+        assert_eq!(
+            held.rows.rows[0].hull_variant.unwrap().definition_index,
+            None
+        );
+        assert!(!watches.poisoned());
+    }
+
+    #[test]
+    fn sampled_suffix_faults_do_not_hide_critical_organisation_mismatches() {
+        let mut world = critical_world();
+        let entry = fleet::ship(0) + 0xa00 - fleet::LOW;
+        let critical =
+            u64::from_le_bytes(world.memory.low[entry..entry + 8].try_into().unwrap()) as usize;
+        let table = fleet::LOW + world.memory.low.len();
+        world.memory.low.resize(world.memory.low.len() + 0x20000, 0);
+        let at = critical + 0x98 - fleet::LOW;
+        let values = critical + 0x200;
+        world.memory.low[at..at + 8].copy_from_slice(&(values as u64).to_le_bytes());
+        world.memory.low[at + 8..at + 12].copy_from_slice(&1_u32.to_le_bytes());
+        world.memory.low[at + 12..at + 16].copy_from_slice(&1_u32.to_le_bytes());
+        let at = values - fleet::LOW;
+        world.memory.low[at..at + 4]
+            .copy_from_slice(&engine::modifier_keys::NAVY_ORG.to_le_bytes());
+        world.memory.low[at + 8..at + 16].copy_from_slice(&100_000_i64.to_le_bytes());
+        let watches = Watches::enabled(4 * world.census.len());
+        let changes = CountedChanges {
+            inner: &watches,
+            sequences: AtomicUsize::new(0),
+            trees: AtomicUsize::new(0),
+            certificates: AtomicUsize::new(0),
+            mismatches: AtomicUsize::new(0),
+        };
+        let mut held = capture(world.census.len());
+        world.seed(&mut held);
+        held.capture_carrying(
+            &MetadataMemory {
+                inner: &world.memory,
+                table,
+                fault: None,
+            },
+            CaptureContext::new(fleet::IMAGE),
+            &changes,
+            Check::Nothing,
+        );
+        let before = held.rows.rows[0].maximum_organisation;
+        world.memory.low[entry + 8..entry + 12].copy_from_slice(&5_i32.to_le_bytes());
+        world.seed(&mut held);
+        held.capture_carrying(
+            &MetadataMemory {
+                inner: &world.memory,
+                table,
+                fault: Some(fleet::IMAGE + engine::cequipment_database::SINGLETON_RVA),
+            },
+            CaptureContext::new(fleet::IMAGE),
+            &changes,
+            Check::Every,
+        );
+        assert_eq!(
+            held.outcomes(),
+            [Outcome::Rows {
+                len: world.census.len()
+            }]
+        );
+        assert_eq!(
+            held.rows.rows[0].hull_variant.unwrap().definition_index,
+            None
+        );
+        assert_ne!(held.rows.rows[0].maximum_organisation, before);
+        assert_eq!(changes.mismatches.load(Ordering::Relaxed), 1);
+        assert!(watches.poisoned());
+        let mut direct = capture(world.census.len());
+        world.seed(&mut direct);
+        direct.capture_carrying(
+            &MetadataMemory {
+                inner: &world.memory,
+                table,
+                fault: Some(fleet::IMAGE + engine::cequipment_database::SINGLETON_RVA),
+            },
+            CaptureContext::new(fleet::IMAGE),
+            &watches,
+            Check::Every,
+        );
+        assert_eq!(held.outcomes(), direct.outcomes());
+        assert_eq!(
+            held.rows.rows[..world.census.len()],
+            direct.rows.rows[..world.census.len()]
+        );
+    }
+
+    #[test]
+    fn revalidated_rows_reread_critical_counts_and_pointees_with_equal_task_terms() {
+        for change_pointer in [false, true] {
+            let mut world = critical_world();
+            let watches = Watches::enabled(4 * world.census.len());
+            let first_entry = fleet::ship(0) + 0xa00 - fleet::LOW;
+            let critical = u64::from_le_bytes(
+                world.memory.low[first_entry..first_entry + 8]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
+            let other = fleet::LOW + world.memory.low.len();
+            let table = other + 0x1000;
+            world.memory.low.resize(world.memory.low.len() + 0x21000, 0);
+            for (effect, value) in [(critical, 100_000_i64), (other, 300_000_i64)] {
+                let entry = effect + 0x200;
+                let at = effect + 0x98 - fleet::LOW;
+                world.memory.low[at..at + 8].copy_from_slice(&(entry as u64).to_le_bytes());
+                world.memory.low[at + 8..at + 12].copy_from_slice(&1_u32.to_le_bytes());
+                world.memory.low[at + 12..at + 16].copy_from_slice(&1_u32.to_le_bytes());
+                let at = entry - fleet::LOW;
+                world.memory.low[at..at + 4]
+                    .copy_from_slice(&engine::modifier_keys::NAVY_ORG.to_le_bytes());
+                world.memory.low[at + 8..at + 16].copy_from_slice(&value.to_le_bytes());
+            }
+            let mut held = capture(world.census.len());
+            world.seed(&mut held);
+            held.capture_carrying(
+                &MetadataMemory {
+                    inner: &world.memory,
+                    table,
+                    fault: None,
+                },
+                CaptureContext::new(fleet::IMAGE),
+                &watches,
+                Check::Nothing,
+            );
+            assert_eq!(
+                held.outcomes(),
+                [Outcome::Rows {
+                    len: world.census.len()
+                }]
+            );
+            let before = held.rows.rows[0].maximum_organisation;
+            // Critical-hit writers reach the ship notification through the
+            // equipment-stat recalculation; the critical header need not change.
+            let notification = watches.notify(fleet::ship(0), 0);
+            if change_pointer {
+                world.memory.low[first_entry..first_entry + 8]
+                    .copy_from_slice(&(other as u64).to_le_bytes());
+            } else {
+                world.memory.low[first_entry + 8..first_entry + 12]
+                    .copy_from_slice(&5_i32.to_le_bytes());
+            }
+            drop(notification);
+            let memory = MetadataMemory {
+                inner: &world.memory,
+                table,
+                fault: None,
+            };
+            world.seed(&mut held);
+            held.capture_carrying(
+                &memory,
+                CaptureContext::new(fleet::IMAGE),
+                &watches,
+                Check::Nothing,
+            );
+            assert_eq!(
+                held.outcomes(),
+                [Outcome::Rows {
+                    len: world.census.len()
+                }]
+            );
+            assert_ne!(held.rows.rows[0].maximum_organisation, before);
+            let mut direct = capture(world.census.len());
+            world.seed(&mut direct);
+            direct.capture_carrying(
+                &memory,
+                CaptureContext::new(fleet::IMAGE),
+                &watches,
+                Check::Every,
+            );
+            assert_eq!(held.outcomes(), direct.outcomes());
+            assert_eq!(
+                held.rows.rows[..world.census.len()],
+                direct.rows.rows[..world.census.len()]
+            );
+            assert!(!watches.poisoned());
+        }
+    }
+
+    #[test]
+    fn modifier_guard_fallback_preserves_model_fault_order_and_is_bounded() {
+        use engine::{
+            batch_fallback::{Batch, count},
+            modifier_definition as metadata,
+        };
+        for bad_variant in [false, true] {
+            let mut world = World::new(4);
+            let watches = Watches::enabled(4 * world.census.len());
+            let table = fleet::LOW + world.memory.low.len();
+            world.memory.low.resize(world.memory.low.len() + 0x20000, 0);
+            for index in 0..world.census.len() {
+                let ship = fleet::ship(index);
+                let entry = ship + 0xb00;
+                let at = ship + 0x750 - fleet::LOW;
+                world.memory.low[at..at + 8].copy_from_slice(&(entry as u64).to_le_bytes());
+                world.memory.low[at + 8..at + 12].copy_from_slice(&1_u32.to_le_bytes());
+                world.memory.low[at + 12..at + 16].copy_from_slice(&1_u32.to_le_bytes());
+                let at = entry - fleet::LOW;
+                world.memory.low[at..at + 4]
+                    .copy_from_slice(&engine::modifier_keys::NAVY_ORG.to_le_bytes());
+                world.memory.low[at + 8..at + 16].copy_from_slice(&100_000_i64.to_le_bytes());
+            }
+            let mut held = capture(world.census.len());
+            world.seed(&mut held);
+            held.capture_carrying(
+                &MetadataMemory {
+                    inner: &world.memory,
+                    table,
+                    fault: None,
+                },
+                CaptureContext::new(fleet::IMAGE),
+                &watches,
+                Check::Nothing,
+            );
+            assert_eq!(
+                held.outcomes(),
+                [Outcome::Rows {
+                    len: world.census.len()
+                }]
+            );
+            if bad_variant {
+                let bank = fleet::ship(0) + 0x980 - fleet::LOW;
+                let variant =
+                    u64::from_le_bytes(world.memory.low[bank..bank + 8].try_into().unwrap())
+                        as usize;
+                world.memory.low[variant - fleet::LOW..variant - fleet::LOW + 8].fill(0);
+            }
+            let memory = MetadataMemory {
+                inner: &world.memory,
+                table,
+                fault: Some(
+                    table
+                        + engine::modifier_keys::NAVY_ORG as usize * metadata::STRIDE
+                        + metadata::FLAGS,
+                ),
+            };
+            world.seed(&mut held);
+            let before = count(Batch::ShipModelGuards);
+            held.capture_carrying(
+                &memory,
+                CaptureContext::new(fleet::IMAGE),
+                &watches,
+                Check::Nothing,
+            );
+            assert_eq!(
+                count(Batch::ShipModelGuards) - before,
+                u64::from(!bad_variant)
+            );
+            let mut direct = capture(world.census.len());
+            world.seed(&mut direct);
+            direct.capture_carrying(
+                &memory,
+                CaptureContext::new(fleet::IMAGE),
+                &watches,
+                Check::Every,
+            );
+            assert_eq!(held.outcomes(), direct.outcomes());
+        }
+    }
+
+    struct VariantVersionFault<'a> {
+        inner: &'a Fleet,
+        version: usize,
+    }
+
+    impl Memory for VariantVersionFault<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if self.version >= address && self.version - address < output.len() {
+                return false;
+            }
+            self.inner.copy(address, output)
+        }
+    }
+
+    #[test]
+    fn partial_variant_gathers_keep_later_optional_fields_current() {
+        let mut world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let bank = fleet::ship(0) + 0x980 - fleet::LOW;
+        let variant =
+            u64::from_le_bytes(world.memory.low[bank..bank + 8].try_into().unwrap()) as usize;
+        let marker = variant + 0x4b0 - fleet::LOW;
+        world.memory.low[marker..marker + 4].copy_from_slice(&23_i32.to_le_bytes());
+        let memory = VariantVersionFault {
+            inner: &world.memory,
+            version: variant + engine::cequipment_variant::VERSION,
+        };
+        let mut fields = cship::ShipFields::new(fleet::IMAGE);
+        fields.visit(&memory, fleet::ship(0));
+        let observation = fields.held();
+        assert!(!observation.variants_complete());
+        let variant_observation = observation.variants()[0];
+        assert!(!fields.held_variant_unchanged(&memory, &variant_observation));
+        let mut held = capture(world.census.len());
+        world.seed(&mut held);
+        held.capture_carrying(
+            &memory,
+            CaptureContext::new(fleet::IMAGE),
+            &watches,
+            Check::Nothing,
+        );
+        assert_eq!(
+            held.outcomes(),
+            [Outcome::Rows {
+                len: world.census.len()
+            }]
+        );
+        let initial = held.rows.rows[0].hull_variant.unwrap();
+        assert_eq!(initial.version, None);
+        assert_eq!(initial.organisation_marker, Some(23));
+
+        // The organisation bonus refresh writes this marker without
+        // changing the fields before the failed VERSION gather.
+        world.memory.low[marker..marker + 4].copy_from_slice(&41_i32.to_le_bytes());
+        let memory = VariantVersionFault {
+            inner: &world.memory,
+            version: variant + engine::cequipment_variant::VERSION,
+        };
+        world.seed(&mut held);
+        held.capture_carrying(
+            &memory,
+            CaptureContext::new(fleet::IMAGE),
+            &watches,
+            Check::Nothing,
+        );
+        let mut direct = capture(world.census.len());
+        world.seed(&mut direct);
+        direct.capture_carrying(
+            &memory,
+            CaptureContext::new(fleet::IMAGE),
+            &watches,
+            Check::Every,
+        );
+        assert_eq!(held.outcomes(), direct.outcomes());
+        assert_eq!(
+            held.outcomes(),
+            [Outcome::Rows {
+                len: world.census.len()
+            }]
+        );
+        assert_eq!(
+            held.rows.rows[..world.census.len()],
+            direct.rows.rows[..world.census.len()]
+        );
+        let current = held.rows.rows[0].hull_variant.unwrap();
+        assert_eq!(current.version, None);
+        assert_eq!(current.organisation_marker, Some(41));
+        assert!(!watches.poisoned());
+    }
+
+    struct SpriteGatherFault<'a> {
+        inner: &'a Fleet,
+        payload: usize,
+        len: usize,
+        fail_gather: bool,
+    }
+
+    impl Memory for SpriteGatherFault<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if self.fail_gather && address == self.payload && output.len() == self.len + 1 {
+                return false;
+            }
+            self.inner.copy(address, output)
+        }
+    }
+
+    #[test]
+    fn notified_sprite_payload_changes_require_complete_revalidation() {
+        for (len, fail_gather) in [
+            (32, false),
+            (32, true),
+            (cship::MODEL_TEXT_CAPACITY + 37, false),
+        ] {
+            let mut world = World::new(4);
+            let watches = Watches::enabled(4 * world.census.len());
+            let ship = fleet::ship(0);
+            let payload = fleet::LOW + world.memory.low.len();
+            world.memory.low.resize(world.memory.low.len() + len + 1, 0);
+            let at = payload - fleet::LOW;
+            world.memory.low[at..at + len].fill(b'a');
+            let header_at = ship + cship::FALLBACK_SPRITE - fleet::LOW;
+            world.memory.low[header_at..header_at + 8]
+                .copy_from_slice(&(payload as u64).to_le_bytes());
+            world.memory.low[header_at + 16..header_at + 24]
+                .copy_from_slice(&(len as u64).to_le_bytes());
+            world.memory.low[header_at + 24..header_at + 32]
+                .copy_from_slice(&(len as u64).to_le_bytes());
+            let header = world.memory.low[header_at..header_at + 32].to_vec();
+            let memory = SpriteGatherFault {
+                inner: &world.memory,
+                payload,
+                len,
+                fail_gather,
+            };
+            let mut fields = cship::ShipFields::new(fleet::IMAGE);
+            fields.visit(&memory, ship);
+            let observation = fields.held();
+            assert_eq!(
+                observation.revalidation_complete(),
+                !fail_gather && len <= cship::MODEL_TEXT_CAPACITY
+            );
+            let mut held = capture(world.census.len());
+            world.seed(&mut held);
+            held.capture_carrying(
+                &memory,
+                CaptureContext::new(fleet::IMAGE),
+                &watches,
+                Check::Nothing,
+            );
+            assert_eq!(
+                held.outcomes(),
+                [Outcome::Rows {
+                    len: world.census.len()
+                }]
+            );
+            assert_eq!(
+                held.rows.rows[0].fallback_sprite.as_bytes(),
+                vec![b'a'; len]
+            );
+
+            // The equipment-stat recalculation replaces the sprite's
+            // bytes even when its pointer, length and capacity stay equal.
+            let writer = watches.notify(ship, 0);
+            world.memory.low[at..at + len].fill(b'b');
+            drop(writer);
+            assert_eq!(world.memory.low[header_at..header_at + 32], header);
+            let memory = SpriteGatherFault {
+                inner: &world.memory,
+                payload,
+                len,
+                fail_gather,
+            };
+            fields.visit(&memory, ship);
+            assert!(!observation.same(&fields.held()));
+            world.seed(&mut held);
+            held.capture_carrying(
+                &memory,
+                CaptureContext::new(fleet::IMAGE),
+                &watches,
+                Check::Nothing,
+            );
+            let mut direct = capture(world.census.len());
+            world.seed(&mut direct);
+            direct.capture_carrying(
+                &memory,
+                CaptureContext::new(fleet::IMAGE),
+                &watches,
+                Check::Every,
+            );
+            assert_eq!(held.outcomes(), direct.outcomes());
+            assert_eq!(
+                held.outcomes(),
+                [Outcome::Rows {
+                    len: world.census.len()
+                }]
+            );
+            assert_eq!(
+                held.rows.rows[..world.census.len()],
+                direct.rows.rows[..world.census.len()]
+            );
+            assert_eq!(
+                held.rows.rows[0].fallback_sprite.as_bytes(),
+                vec![b'b'; len]
+            );
+            assert!(!watches.poisoned());
+        }
+    }
+
+    struct SubunitGatherFault<'a> {
+        inner: &'a Fleet,
+        subunit: usize,
+    }
+
+    impl Memory for SubunitGatherFault<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if self.subunit >= address && self.subunit - address < output.len() {
+                return false;
+            }
+            self.inner.copy(address, output)
+        }
+    }
+
+    #[test]
+    fn cleared_own_subunit_gather_fault_refreshes_the_optional_suffix() {
+        let world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let memory = SubunitGatherFault {
+            inner: &world.memory,
+            subunit: fleet::ship(0) + cship::SUBUNIT_INDEX,
+        };
+        let mut held = capture(world.census.len());
+        world.seed(&mut held);
+        held.capture_carrying(
+            &memory,
+            CaptureContext::new(fleet::IMAGE),
+            &watches,
+            Check::Nothing,
+        );
+        assert_eq!(
+            held.outcomes(),
+            [Outcome::Rows {
+                len: world.census.len()
+            }]
+        );
+        assert_eq!(held.rows.rows[0].subunit_index, None);
+
+        let mut fields = cship::ShipFields::new(fleet::IMAGE);
+        fields.visit(&memory, fleet::ship(0));
+        let observation = fields.held();
+        assert!(!observation.revalidation_complete());
+        fields.visit_held(&world.memory, &observation);
+        assert!(fields.held().revalidation_complete());
+
+        let current = hour(&world, &mut held, &watches, Check::Nothing);
+        let mut direct = capture(world.census.len());
+        assert_eq!(current, hour(&world, &mut direct, &watches, Check::Every));
+        assert_eq!(current[0].subunit_index, Some(0));
+        assert!(!watches.poisoned());
+    }
+
+    #[test]
+    fn sampled_incomplete_own_gathers_compare_successful_fields() {
+        for changed in [false, true] {
+            let mut world = World::new(4);
+            let watches = Watches::enabled(4 * world.census.len());
+            let changes = CountedChanges {
+                inner: &watches,
+                sequences: AtomicUsize::new(0),
+                trees: AtomicUsize::new(0),
+                certificates: AtomicUsize::new(0),
+                mismatches: AtomicUsize::new(0),
+            };
+            let mut held = capture(world.census.len());
+            hour(&world, &mut held, &changes, Check::Nothing);
+            // Changed shared terms legitimately change the maximum. The ship's
+            // observed base must still be compared when a later gather fails.
+            world.move_tasks(1);
+            if changed {
+                let at = fleet::ship(0) + cship::BASE_ORGANISATION - fleet::LOW;
+                world.memory.low[at..at + 8].copy_from_slice(&20_000_000_i64.to_le_bytes());
+            }
+            let memory = SubunitGatherFault {
+                inner: &world.memory,
+                subunit: fleet::ship(0) + cship::SUBUNIT_INDEX,
+            };
+            world.seed(&mut held);
+            held.capture_carrying(
+                &memory,
+                CaptureContext::new(fleet::IMAGE),
+                &changes,
+                Check::Every,
+            );
+            assert_eq!(
+                held.outcomes(),
+                [Outcome::Rows {
+                    len: world.census.len()
+                }]
+            );
+            assert_eq!(held.rows.rows[0].subunit_index, None);
+            assert_eq!(
+                changes.mismatches.load(Ordering::Relaxed),
+                usize::from(changed)
+            );
+            assert_eq!(watches.poisoned(), changed);
+            let mut direct = capture(world.census.len());
+            world.seed(&mut direct);
+            direct.capture_carrying(
+                &memory,
+                CaptureContext::new(fleet::IMAGE),
+                &watches,
+                Check::Every,
+            );
+            assert_eq!(
+                held.rows.rows[..world.census.len()],
+                direct.rows.rows[..world.census.len()]
+            );
+        }
+    }
+
+    #[test]
+    fn sampled_model_failures_keep_independent_own_field_mismatches() {
+        for changed in [false, true] {
+            let mut world = World::new(4);
+            let watches = Watches::enabled(4 * world.census.len());
+            let changes = CountedChanges {
+                inner: &watches,
+                sequences: AtomicUsize::new(0),
+                trees: AtomicUsize::new(0),
+                certificates: AtomicUsize::new(0),
+                mismatches: AtomicUsize::new(0),
+            };
+            let mut held = capture(world.census.len());
+            hour(&world, &mut held, &changes, Check::Nothing);
+            if changed {
+                let at = fleet::ship(0) + cship::BASE_ORGANISATION - fleet::LOW;
+                world.memory.low[at..at + 8].copy_from_slice(&20_000_000_i64.to_le_bytes());
+            }
+            world.seed(&mut held);
+            held.capture_carrying(
+                &CriticalMemory {
+                    inner: &world.memory,
+                    watched: 0,
+                    count_reads: Cell::new(0),
+                    fault: Some(fleet::ship(0) + cship::MODEL_NUMBER),
+                },
+                CaptureContext::new(fleet::IMAGE),
+                &changes,
+                Check::Every,
+            );
+            assert!(matches!(held.outcomes()[0], Outcome::Unavailable { .. }));
+            assert_eq!(
+                changes.mismatches.load(Ordering::Relaxed),
+                usize::from(changed)
+            );
+            assert_eq!(watches.poisoned(), changed);
+        }
+    }
+
+    fn split_hour(capture: &mut Captured, memory: &impl Memory, changes: &dyn Changes) {
+        let parts = capture.split_details(3);
+        capture.capture_carrying(
+            memory,
+            CaptureContext::new(fleet::IMAGE),
+            changes,
+            Check::Nothing,
+        );
+        for index in 0..parts - 1 {
+            let mut part = capture.take_part(index);
+            part.capture_carrying(
+                memory,
+                CaptureContext::new(fleet::IMAGE),
+                changes,
+                Check::Nothing,
+            );
+            capture.restore_part(index, part);
+        }
+        capture.finish_split();
+    }
+
+    fn assert_stores_forgotten(capture: &Captured) {
+        for range in std::iter::once(capture).chain(&capture.extra) {
+            let store = &range.store;
+            assert!(store.held.is_empty());
+            assert!(store.hot.is_empty());
+            assert!(store.index.is_empty());
+            assert!(store.tasks.is_empty());
+            assert!(store.variants.is_empty());
+            assert!(store.entries.is_empty());
+            assert!(store.next.is_empty());
+            assert!(store.next_hot.is_empty());
+            assert!(store.next_tasks.is_empty());
+            assert!(store.next_variants.is_empty());
+            assert!(store.next_variant_index.is_empty());
+            assert!(store.next_entries.is_empty());
+            assert_eq!(store.quiet, None);
+            assert_eq!(store.generation, 0);
+        }
+    }
+
+    struct ShipReads<'a> {
+        inner: &'a Fleet,
+        ships: RefCell<Vec<usize>>,
+    }
+
+    impl Memory for ShipReads<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if output.len() == 16 {
+                let mut ships = self.ships.borrow_mut();
+                for (index, reads) in ships.iter_mut().enumerate() {
+                    if address == fleet::ship(index) {
+                        *reads += 1;
+                    }
+                }
+            }
+            self.inner.copy(address, output)
+        }
+    }
+
+    fn assert_split_recovery(world: &World, capture: &mut Captured, watches: &Watches) {
+        let memory = ShipReads {
+            inner: &world.memory,
+            ships: RefCell::new(vec![0; world.census.len()]),
+        };
+        world.seed(capture);
+        split_hour(capture, &memory, watches);
+        assert_eq!(
+            capture.outcomes(),
+            [Outcome::Rows {
+                len: world.census.len()
+            }]
+        );
+        assert!(memory.ships.borrow().iter().all(|&reads| reads == 1));
+        for range in std::iter::once(&*capture).chain(&capture.extra[..2]) {
+            assert!(!range.store.held.is_empty());
+            assert!(range.store.quiet.is_some());
+        }
+        let recovered = capture.tables();
+        memory.ships.borrow_mut().fill(0);
+        world.seed(capture);
+        split_hour(capture, &memory, watches);
+        assert_eq!(capture.tables(), recovered);
+        assert!(memory.ships.borrow().iter().all(|&reads| reads == 0));
+    }
+
+    #[test]
+    fn failed_split_families_forget_every_range_and_recover() {
+        for failed in [0, 4, 8] {
+            let world = World::new(4);
+            let watches = Watches::enabled(4 * world.census.len());
+            let mut held = Captured::with_capacities(&Capacities {
+                rows: world.census.len(),
+                modifiers: SnapshotCapacity {
+                    nodes: 64,
+                    entries: 64,
+                },
+            });
+            world.seed(&mut held);
+            split_hour(&mut held, &world.memory, &watches);
+            drop(watches.notify(fleet::ship(failed), 0));
+            world.seed(&mut held);
+            split_hour(
+                &mut held,
+                &CriticalMemory {
+                    inner: &world.memory,
+                    watched: 0,
+                    count_reads: Cell::new(0),
+                    fault: Some(fleet::ship(failed) + cship::BASE_ORGANISATION),
+                },
+                &watches,
+            );
+            assert!(matches!(held.outcomes()[0], Outcome::Unavailable { .. }));
+            assert_stores_forgotten(&held);
+            assert_split_recovery(&world, &mut held, &watches);
+        }
+    }
+
+    #[test]
+    fn incomplete_split_censuses_forget_every_range_and_recover() {
+        let world = World::new(4);
+        for parent in [
+            Outcome::Truncated {
+                len: world.census.len(),
+                unread_rows: 1,
+            },
+            Outcome::Unavailable {
+                reason: "synthetic ship census failed",
+            },
+            Outcome::Rows {
+                len: world.census.len() + 1,
+            },
+        ] {
+            let watches = Watches::enabled(4 * world.census.len());
+            let mut held = Captured::with_capacities(&Capacities {
+                rows: world.census.len(),
+                modifiers: SnapshotCapacity {
+                    nodes: 64,
+                    entries: 64,
+                },
+            });
+            world.seed(&mut held);
+            split_hour(&mut held, &world.memory, &watches);
+            world.seed(&mut held);
+            held.parent = parent;
+            split_hour(&mut held, &world.memory, &watches);
+            assert!(!matches!(held.outcomes()[0], Outcome::Rows { .. }));
+            assert_stores_forgotten(&held);
+            assert_split_recovery(&world, &mut held, &watches);
+        }
+    }
+
+    #[test]
+    fn oversized_split_ranges_forget_every_store_and_recover() {
+        let world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut held = Captured::with_capacities(&Capacities {
+            rows: world.census.len(),
+            modifiers: SnapshotCapacity {
+                nodes: 64,
+                entries: 64,
+            },
+        });
+        world.seed(&mut held);
+        split_hour(&mut held, &world.memory, &watches);
+        world.seed(&mut held);
+        held.extra[0].rows.rows.truncate(1);
+        split_hour(&mut held, &world.memory, &watches);
+        assert_eq!(
+            held.outcomes(),
+            [Outcome::Unavailable {
+                reason: "ship model part capacity below its census range"
+            }]
+        );
+        assert_stores_forgotten(&held);
+        assert_split_recovery(&world, &mut held, &watches);
+    }
+
+    #[test]
+    fn terminal_split_families_forget_every_store_including_early_returns() {
+        for terminal in 0..4 {
+            let world = World::new(4);
+            let watches = Watches::enabled(4 * world.census.len());
+            let mut held = Captured::with_capacities(&Capacities {
+                rows: world.census.len(),
+                modifiers: SnapshotCapacity {
+                    nodes: 64,
+                    entries: 64,
+                },
+            });
+            world.seed(&mut held);
+            split_hour(&mut held, &world.memory, &watches);
+            match terminal {
+                0 => held.terminal_failure = Some("synthetic terminal family failure"),
+                1 => held.extra[0].terminal_failure = Some("synthetic terminal part failure"),
+                2 => {
+                    held.fail_owned_capture("synthetic stopped family");
+                }
+                3 => {
+                    held.terminal_failure = Some("synthetic early terminal capture");
+                    held.capture_owned(&world.memory, CaptureContext::new(fleet::IMAGE));
+                }
+                _ => unreachable!(),
+            }
+            held.finish_split();
+            assert!(held.has_terminal_failure());
+            assert_stores_forgotten(&held);
+            assert_split_recovery(&world, &mut held, &watches);
+        }
+    }
+
+    pub(super) fn run(countries: usize) {
+        if !ship_model_changes::CARRY {
+            panic!("benchmark requires ship_model_changes");
+        }
+        let started = Instant::now();
+        let mut world = World::new(countries);
+        let ships = world.census.len();
+        let mut eviction = vec![1_u64; EVICTION_BYTES / std::mem::size_of::<u64>()];
+        println!(
+            "BENCH ship-model packets: HeldShip {} B, ModelRow {} B, TaskTerms {} B; {countries} distinct country slots/objects and task forces, {ships} ships, {SAMPLES} samples, {} MiB eviction outside capture timers",
+            std::mem::size_of::<cship::HeldShip>(),
+            std::mem::size_of::<cship::ModelRow>(),
+            std::mem::size_of::<cship::TaskTerms>(),
+            EVICTION_BYTES / (1024 * 1024),
+        );
+        // Baseline d16cedeb6c: a carried row does two hint peeks and one
+        // take (three ship-index binary searches away from the range tail),
+        // passes Held's size to prefetch::span (at most sixteen 64-byte steps
+        // and its final byte), copies Heap and both Object<8> variants, compares
+        // the TaskTerms packet, and moves the box without allocating.
+        // Same-position rows write only roster_ordinal; relocated rows clone
+        // ModelRow. These are source counts, not measured cache traffic.
+        for cold in [false, true] {
+            for path in [Path::Carried, Path::Moved, Path::Revalidated, Path::Fresh] {
+                world.move_tasks(0);
+                let watches = Watches::enabled(4 * ships);
+                let mut capture = capture(ships);
+                for _ in 0..2 {
+                    world.seed(&mut capture);
+                    capture.capture_carrying(
+                        &world.memory,
+                        CaptureContext::new(fleet::IMAGE),
+                        &watches,
+                        Check::Nothing,
+                    );
+                    assert_eq!(capture.outcomes(), [Outcome::Rows { len: ships }]);
+                }
+                let mut samples = Vec::with_capacity(SAMPLES);
+                for hour in 1..=SAMPLES {
+                    path.prepare(&mut world, &watches, hour);
+                    world.seed(&mut capture);
+                    if cold {
+                        evict(&mut eviction);
+                    }
+                    let timer = Instant::now();
+                    capture.capture_carrying(
+                        &world.memory,
+                        CaptureContext::new(fleet::IMAGE),
+                        &watches,
+                        path.check(),
+                    );
+                    samples.push(timer.elapsed().as_nanos() as f64 / ships as f64);
+                    assert_eq!(capture.outcomes(), [Outcome::Rows { len: ships }]);
+                    assert!(!watches.poisoned());
+                    check_budget(&world, &capture, &eviction, started);
+                }
+                println!(
+                    "BENCH ship models {countries} countries, {ships} ships, {} cache, {}: median {:.0} ns per ship",
+                    if cold { "cold" } else { "warm" },
+                    path.label(),
+                    median(samples),
+                );
+                path.prepare(&mut world, &watches, SAMPLES + 1);
+                world.seed(&mut capture);
+                account(&world, &mut capture, &watches, path);
+            }
+            task_terms(&world, &mut eviction, cold, started);
+        }
+    }
+}
+
+/// Live-sized country rosters, separate carry paths and cold-cache hours.
+#[test]
+#[ignore = "release ship-model carry-cost benchmark"]
+fn ship_model_carry_cost_bench_1500_countries() {
+    carry_cost_bench::run(1500);
+}
+
+#[test]
+#[ignore = "release ship-model carry-cost benchmark"]
+fn ship_model_carry_cost_bench_5000_countries() {
+    carry_cost_bench::run(5000);
 }

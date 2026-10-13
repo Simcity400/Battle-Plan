@@ -1,4 +1,4 @@
-//! Row keys and masks of a modelled block's later entries.
+//! Row keys and masks of a modelled later section.
 //!
 //! Each way of writing a table's later entries keeps one [`Model`]: which of
 //! the table's rows its last two entries stored and with which masks, each
@@ -21,6 +21,11 @@
 //! same field in the row's last three masks. A table whose rows mostly
 //! change the same few fields, or the same rows hour after hour, then costs
 //! a fraction of a bit for most rows.
+//!
+//! Modelled layouts always use these decisions. A chosen layout keeps them
+//! beside listed skips and mask places, and stores whichever whole section
+//! compresses smaller; its leading masks-column byte names the coding. A
+//! reader builds a model only for a section that chose model decisions.
 
 use super::keyed::KeySet;
 use crate::{
@@ -1097,5 +1102,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "model_census.rs"]
-mod model_census;
+#[path = "layout_census.rs"]
+mod layout_census;

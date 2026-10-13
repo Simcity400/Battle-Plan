@@ -90,12 +90,28 @@ impl Watches {
 /// store and its carrier air base; an absent receiver is zero.
 pub(crate) type Certificate = [(u64, u64); 3];
 
+/// Hints for the ship, medal store and carrier base in the current watch
+/// table. Only the registry's receiver and epoch checks can certify them.
+pub(crate) type Slots = [usize; 3];
+pub(crate) const NO_SLOTS: Slots = [usize::MAX; 3];
+
 /// What a capture sees of the notifications.
 pub(crate) trait Changes: Sync {
     /// `(epoch, sequence)` of one receiver, registering it; `None` when it
     /// cannot be observed. Equal values across hours prove that no observed
     /// writer touched it.
     fn sequence(&self, receiver: usize) -> Option<(u64, u64)>;
+    /// [`Self::sequence`] and an optional slot hint, validated by the
+    /// observation domain. Implementations without slots use no hint.
+    fn sequence_at(&self, receiver: usize, _held_slot: usize) -> Option<((u64, u64), usize)> {
+        self.sequence(receiver)
+            .map(|certificate| (certificate, usize::MAX))
+    }
+    /// `(epoch, revision)` with no observed writer running. Equal tokens
+    /// across complete captures spare already-certified receivers a lookup.
+    fn quiet(&self) -> Option<(u64, u64)> {
+        None
+    }
     /// A fresh read disagreed with carried bytes: disable reuse for the
     /// attachment.
     fn mismatch(&self);
@@ -103,10 +119,6 @@ pub(crate) trait Changes: Sync {
     /// (`CUnitLeader+0x418`) modifier tree, which the naval tree family
     /// certifies.
     fn tree_sequence(&self, country: usize) -> Option<(u64, u64)>;
-
-    /// Cache hints for the receivers' watch slots, ahead of a
-    /// [`Self::certificate`]; nothing by default.
-    fn prefetch(&self, _receivers: [usize; 3]) {}
 
     /// The certificate of a ship with `receivers` (ship, medal store,
     /// carrier base; zero for none), or `None` when one cannot be observed.
@@ -119,11 +131,43 @@ pub(crate) trait Changes: Sync {
         }
         Some(certificate)
     }
+
+    /// [`Self::certificate`] with receiver-validated slot hints. An absent
+    /// receiver keeps its zero certificate and has no slot.
+    fn certificate_at(
+        &self,
+        receivers: [usize; 3],
+        _held_slots: Slots,
+    ) -> Option<(Certificate, Slots)> {
+        self.certificate(receivers)
+            .map(|certificate| (certificate, NO_SLOTS))
+    }
 }
 
 impl Changes for Watches {
     fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
         self.registry.sequence(receiver)
+    }
+    fn sequence_at(&self, receiver: usize, held_slot: usize) -> Option<((u64, u64), usize)> {
+        self.registry.sequence_at(receiver, held_slot)
+    }
+    fn quiet(&self) -> Option<(u64, u64)> {
+        self.registry.quiet()
+    }
+    fn certificate_at(
+        &self,
+        receivers: [usize; 3],
+        held_slots: Slots,
+    ) -> Option<(Certificate, Slots)> {
+        let mut certificate = [(0, 0); 3];
+        let mut slots = NO_SLOTS;
+        for (index, receiver) in receivers.into_iter().enumerate() {
+            if receiver != 0 {
+                (certificate[index], slots[index]) =
+                    self.sequence_at(receiver, held_slots[index])?;
+            }
+        }
+        Some((certificate, slots))
     }
     fn mismatch(&self) {
         self.registry.poison();
@@ -140,10 +184,18 @@ impl Changes for Observer {
     fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
         WATCHES.sequence(receiver)
     }
-    fn prefetch(&self, receivers: [usize; 3]) {
-        for receiver in receivers {
-            WATCHES.registry.prefetch(receiver);
-        }
+    fn sequence_at(&self, receiver: usize, held_slot: usize) -> Option<((u64, u64), usize)> {
+        WATCHES.sequence_at(receiver, held_slot)
+    }
+    fn quiet(&self) -> Option<(u64, u64)> {
+        WATCHES.quiet()
+    }
+    fn certificate_at(
+        &self,
+        receivers: [usize; 3],
+        held_slots: Slots,
+    ) -> Option<(Certificate, Slots)> {
+        WATCHES.certificate_at(receivers, held_slots)
     }
     fn mismatch(&self) {
         WATCHES.mismatch();
@@ -202,7 +254,8 @@ pub(crate) struct Counts {
     /// Ships whose finished row was carried.
     pub rows_carried: u64,
     /// Carried ships whose model part was carried, only their maximum
-    /// organisation computed.
+    /// organisation computed from certified ship operands and current
+    /// task-force terms.
     pub models_carried: u64,
     /// Ships whose certificate moved but whose own objects and modifier
     /// arrays read this hour equal the held read's, carried again.
@@ -220,7 +273,9 @@ pub(crate) struct Counts {
     /// Carryable rows that did not carry, by reason: each task-force term
     /// that differed (owner, country, pride ship, doctrine, location, fleet
     /// leader, HQ support), the fleet leader's tree certificate, terms not
-    /// read for the task force, and equal terms with changed variants.
+    /// read for the task force, and equal terms with changed variants or
+    /// organisation modifier eligibility or clamp metadata, and a revalidated
+    /// critical header whose live entry payload must be read again.
     pub terms_changed: [u64; REASONS],
 }
 
@@ -229,7 +284,7 @@ pub(crate) const PATH_SAMPLE: usize = 16;
 /// Sampled paths: row, model, readers, fresh, revalidated.
 pub(crate) const PATHS: usize = 5;
 /// Reasons a carryable row did not carry.
-pub(crate) const REASONS: usize = 10;
+pub(crate) const REASONS: usize = 11;
 static PATH_TOTALS: [AtomicU64; 2 * PATHS] = [const { AtomicU64::new(0) }; 2 * PATHS];
 static TERM_TOTALS: [AtomicU64; 2 + REASONS] = [const { AtomicU64::new(0) }; 2 + REASONS];
 
@@ -312,8 +367,9 @@ fn timing_status() -> impl serde::Serialize {
             "leader_certificate": reason(7),
             "terms_unread": reason(8),
             "variants": reason(9),
+            "revalidated_criticals": reason(10),
         }),
-        "scope": "cumulative since attach; every sample_every-th census row is timed by the path it took (a revalidated ship also counts under its path); task_terms_read times the task-force terms read without a ship; rows_not_carried counts carried ships with a carryable held row (no carrier base) whose row did not carry, by each term that differed from the held row's, an unobservable leader certificate change, terms not read for the task force, or equal terms with changed variant bytes",
+        "scope": "cumulative since attach; every sample_every-th census row is timed by the path it took (a revalidated ship also counts under its path); task_terms_read times the task-force terms read without a ship; rows_not_carried counts carried ships with a carryable held row (no carrier base) whose row did not carry, by each term that differed from the held row's, an unobservable leader certificate change, terms not read for the task force, equal terms with changed or ungathered variant bytes, incomplete optional suffixes, or organisation modifier eligibility or clamp metadata (variants), or a writer notification requiring fresh critical counts and pointees despite equal certified own bytes (revalidated_criticals)",
     })
 }
 
@@ -345,7 +401,7 @@ pub fn status() -> impl serde::Serialize {
         "timing": timing_status(),
         "events": events,
         "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; a ship's finished row is carried when its own inputs are certified, its task force's terms read this hour equal those of its held row, its variants' gathered bytes are unchanged and it has no carrier base; under the same conditions with other task-force terms (carried_models), the row's model part (every field but the maximum organisation and roster ordinal) is carried and only the maximum organisation is computed; a ship whose certificate moved is gathered again and, when its own objects and modifier arrays equal its held read's, carried under the new certificate (revalidated_ships), or with only its arrays changed keeps its model part; otherwise a ship's own ShipModels inputs (fixed fields, pool entries, heap fallback sprite, experience and medal-store modifiers) are served from its held read when it has the handle and task force of that read and no hooked writer touched the ship, its medal store or its carrier base since; its task force's doctrine contribution is served while its doctrine tree writer and its country's naval tree certificate held still, and its modifier accumulator while its mine exposure (+0x650) is unchanged, and its location's weather terms while its weather region's writer did not run, its province's applied night factor (+0x268) is unchanged and its country's tree certificate held; its location, fleet, headquarters, variants and every other source are read each hour; every hour also reads the carryable ships of its slice afresh (one in rotation_hours by ship id; every one in verify mode), publishes the fresh row and disables reuse at the first mismatch (sampled_*)"
+        "scope": "cumulative since attach; a ship's finished row is carried when its handle, task force and receiver certificates hold, its task force's terms read this hour equal those of its held row, its selected variant gathers and optional suffixes are complete, its variant bytes are unchanged, its present organisation modifier keys keep their current eligibility and clamp metadata, and it has no carrier base; compact held records follow census order with a sorted-index fallback, domain quiet tokens rechecked before each ship spare receiver lookups, and validated slot indices spare watch hashing otherwise; task-force terms are compared once per task force, variants once per distinct held observation and organisation modifier eligibility and clamp metadata once per distinct guard per capture; under the same conditions with changed task-force terms or modifier eligibility (carried_models), the row's model part (every field but maximum organisation and roster ordinal) is carried and maximum organisation uses the shared reader arithmetic over certified ship operands and current shared terms, critical counts and pointees, and terrain-class and leader-subunit contributions; a ship whose certificate moved is gathered again and, when complete own-object and heap payload observations and modifier arrays equal its held read's, carried under the new certificate (revalidated_ships) with fresh critical counts and pointees when its critical header is nonempty, or with only its arrays changed keeps its model part; otherwise its fixed fields, pool entries, heap fallback sprite, experience and medal-store modifiers are served from its held read while its handle, task force and certificates hold; task-force doctrine contributions require the doctrine writer and country naval tree certificates to hold, its modifier accumulator requires unchanged mine exposure (+0x650), and location weather terms require the region writer and country tree certificates to hold with unchanged applied night factor (+0x268); location, fleet, headquarters and uncertified sources are read each hour; every hour also reads the carryable ships of its slice afresh (one in rotation_hours by ship id; every one in verify mode), compares every own field, payload, modifier array and model suffix observed on both sides independently and maximum organisation under equal shared terms and modifier guard, publishes the fresh row and disables reuse at the first mismatch (sampled_*); an incomplete family forgets every range's held ships, tasks, variants, arrays and quiet token, including truncation and terminal failure"
     })
 }
 
@@ -497,6 +553,68 @@ mod tests {
         watches.mismatch();
         assert!(watches.poisoned());
         assert!(watches.certificate([ship, 0, 0]).is_none());
+    }
+
+    #[test]
+    fn ship_certificate_slots_validate_each_receiver_and_keep_absence() {
+        let watches = Watches::enabled(16);
+        let receivers = [0x1000, 0x2000, 0x3000];
+        let (certificate, slots) = watches.certificate_at(receivers, NO_SLOTS).unwrap();
+        assert_eq!(watches.certificate(receivers), Some(certificate));
+        assert!(slots.into_iter().all(|slot| slot != usize::MAX));
+        assert_eq!(
+            watches.certificate_at(receivers, slots),
+            Some((certificate, slots))
+        );
+        assert_eq!(
+            watches.certificate_at(receivers, [slots[2], slots[0], slots[1]]),
+            Some((certificate, slots))
+        );
+        let absent = watches.certificate_at([receivers[0], 0, 0], slots).unwrap();
+        assert_eq!(absent.0, [certificate[0], (0, 0), (0, 0)]);
+        assert_eq!(absent.1, [slots[0], usize::MAX, usize::MAX]);
+        assert_eq!(watches.registry.registered(), 3);
+        for (index, site) in [0, 5, 4].into_iter().enumerate() {
+            let writer = watches.notify(receivers[index], site);
+            assert!(watches.certificate_at(receivers, slots).is_none());
+            assert!(watches.quiet().is_none());
+            drop(writer);
+            let next = watches.certificate_at(receivers, slots).unwrap();
+            assert_eq!(next.1, slots);
+            assert_ne!(next.0[index], certificate[index]);
+            assert_eq!(watches.certificate(receivers), Some(next.0));
+        }
+        let held = watches.certificate_at(receivers, slots).unwrap();
+        watches.boundary(true);
+        assert_ne!(watches.certificate_at(receivers, slots).unwrap().0, held.0);
+        watches.mismatch();
+        assert!(watches.certificate_at(receivers, slots).is_none());
+        assert!(watches.quiet().is_none());
+    }
+
+    #[test]
+    fn changes_without_slot_hints_keep_the_existing_certificate_contract() {
+        struct Legacy;
+        impl Changes for Legacy {
+            fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+                (receiver != 0).then_some((7, receiver as u64))
+            }
+            fn mismatch(&self) {}
+            fn tree_sequence(&self, _receiver: usize) -> Option<(u64, u64)> {
+                None
+            }
+            fn certificate(&self, _receivers: [usize; 3]) -> Option<Certificate> {
+                Some([(9, 1); 3])
+            }
+        }
+        let changes = Legacy;
+        assert_eq!(changes.sequence_at(8, 2), Some(((7, 8), usize::MAX)));
+        assert!(changes.sequence_at(0, 2).is_none());
+        assert_eq!(
+            changes.certificate_at([8, 0, 0], [2, 3, 4]),
+            Some(([(9, 1); 3], NO_SLOTS))
+        );
+        assert!(changes.quiet().is_none());
     }
 
     /// The detour order is the site table's, and each site's receiver

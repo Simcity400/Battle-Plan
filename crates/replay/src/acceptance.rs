@@ -1839,6 +1839,7 @@ fn the_campaign_packs_to_the_sequential_bytes_on_any_worker_count() {
     let campaign = synthesize();
     let many = parallel_budget().max(3);
     let layouts = [
+        Layout::Chosen,
         Layout::Advanced,
         Layout::Trimmed,
         Layout::Modelled,
@@ -1851,7 +1852,7 @@ fn the_campaign_packs_to_the_sequential_bytes_on_any_worker_count() {
     ];
     for_each_parallel(&layouts, |&layout| {
         WRITTEN_LAYOUT.set(layout);
-        let workers: &[usize] = if layout == Layout::Advanced {
+        let workers: &[usize] = if layout == Layout::Chosen {
             &[1, 2, many]
         } else {
             &[1, many]
@@ -1870,6 +1871,7 @@ fn the_campaign_packs_to_the_sequential_bytes_on_any_worker_count() {
             })
             .collect();
         PACK_WORKERS.set(None);
+        WRITTEN_LAYOUT.set(Layout::Chosen);
         for (count, packed) in workers.iter().zip(&written).skip(1) {
             assert!(packed == &written[0], "{layout:?} on {count} workers");
         }

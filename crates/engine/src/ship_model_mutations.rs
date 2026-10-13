@@ -27,6 +27,18 @@
 //!   construction and load.
 //! - Ship vtable and handle never change; the hourly census compares its
 //!   task force +0x728.
+//! - `cship::OrganisationOperands` keeps the same certified fields: handle,
+//!   class +0x88, sub-unit index +0x60C, weather factor +0x270, base
+//!   organisation +0x300, and the raw values of +0x750 and the medal store's
+//!   +0x1B0. Its critical header +0x918 is covered by the three critical-hit
+//!   writers above, which all recalculate equipment stats; each entry's count
+//!   and modifier pointee stays a fresh read on both passes of the ship
+//!   modifier calculation. Terrain-class and leader-subunit terms remain
+//!   hourly observations. Only the DLC-set command writes the active modifier
+//!   feature mask, and it then always resets the game world, whose observed
+//!   reset revokes ship and shared-term epochs. Recompute applies current
+//!   effective metadata to the raw values; whole-row carry also compares its
+//!   compact metadata guard.
 //! - Only task-force doctrine rebuilding clears and rebuilds tree +0x640
 //!   (selector +0x20, demand +0x28, support capacity +0x2C, source +0x30),
 //!   from initialization/registration and ship addition and removal.

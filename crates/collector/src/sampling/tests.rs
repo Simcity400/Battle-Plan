@@ -1349,7 +1349,14 @@ fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
 fn exhausted_pool_reuses_a_returned_frame_without_allocating_or_dropping() {
     use std::sync::mpsc;
     let shared = Arc::new(Shared::new(0, 0, 1));
-    let held: Vec<_> = (0..BUFFERS).map(|_| shared.take_frame().unwrap()).collect();
+    let held: Vec<_> = (0..BUFFERS)
+        .map(|_| {
+            let mut wait_ns = u64::MAX;
+            let index = shared.take_frame(&mut wait_ns).unwrap();
+            assert_eq!(wait_ns, 0);
+            index
+        })
+        .collect();
     let original = shared.frames[held[0]].load(Ordering::Acquire);
     unsafe {
         (*original).qpc = 42;
@@ -1358,8 +1365,9 @@ fn exhausted_pool_reuses_a_returned_frame_without_allocating_or_dropping() {
     let (send, receive) = mpsc::channel();
     let consumer = Arc::clone(&shared);
     let waiter = std::thread::spawn(move || {
-        let result = consumer.take_frame();
-        send.send(result).unwrap();
+        let mut wait_ns = 0;
+        let result = consumer.take_frame(&mut wait_ns);
+        send.send((result, wait_ns)).unwrap();
     });
     // Nothing is returned until the waiter is counted in the wait path, so
     // it can only leave early by not waiting at all, which ends the thread.
@@ -1374,7 +1382,10 @@ fn exhausted_pool_reuses_a_returned_frame_without_allocating_or_dropping() {
     waiter.join().unwrap();
     assert_eq!(waited, 1);
     assert!(pending);
-    assert_eq!(result.unwrap(), Some(held[0]));
+    let (index, wait_ns) = result.unwrap();
+    assert_eq!(index, Some(held[0]));
+    assert_eq!(wait_ns, shared.buffer_wait_ns.load(Ordering::Relaxed));
+    assert_eq!(wait_ns, shared.buffer_wait_max_ns.load(Ordering::Relaxed));
     assert_eq!(shared.frames[held[0]].load(Ordering::Acquire), original);
     assert_eq!(unsafe { (*original).qpc }, 42);
     assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), bytes);
@@ -1386,14 +1397,60 @@ fn exhausted_pool_reuses_a_returned_frame_without_allocating_or_dropping() {
 }
 
 #[test]
+fn hourly_join_tally_keeps_first_slowest_counts_stalls_and_resets() {
+    let record = |role, wait, stall, growths| {
+        record_hour_join(
+            role,
+            wait,
+            stall,
+            growths,
+            #[cfg(feature = "callback_profile")]
+            crate::acquisition::Profile::default(),
+        )
+    };
+    reset_hour_joins();
+    assert_eq!(take_hour_joins(), HourJoins::default());
+    record(0, 10, JoinCosts::STALL_NS[1] - 1, 2);
+    record(1, 9, JoinCosts::STALL_NS[1], 3);
+    record(2, 10, JoinCosts::STALL_NS[1] * 4, 5);
+    record_caller_growths(3);
+    let joins = take_hour_joins();
+    assert_eq!(
+        joins.slowest,
+        Some(SlowestJoin {
+            role: 0,
+            wait_ns: 10,
+            collect_stall_ns: JoinCosts::STALL_NS[1] - 1,
+        })
+    );
+    assert_eq!(joins.collect_stalls_over_1ms, 2);
+    assert_eq!(joins.growths, 10);
+    assert_eq!(joins.total_growths(5), 12);
+    assert_eq!(take_hour_joins(), HourJoins::default());
+    #[cfg(feature = "callback_profile")]
+    assert_eq!(take_profile_join().role, Some(0));
+    record(3, 11, 0, 1);
+    record(4, 12, 0, 0);
+    record(5, 12, 0, 0);
+    assert_eq!(take_hour_joins().slowest.unwrap().role, 4);
+    record(6, 13, JoinCosts::STALL_NS[1], 7);
+    reset_hour_joins();
+    assert_eq!(take_hour_joins(), HourJoins::default());
+    #[cfg(feature = "callback_profile")]
+    assert!(take_profile_join().role.is_none());
+}
+
+#[test]
 fn exhausted_pool_wait_cancels_without_a_live_consumer() {
     use std::{sync::mpsc, time::Duration};
     let shared = Arc::new(Shared::new(0, 0, 1));
-    let held: Vec<_> = (0..BUFFERS).map(|_| shared.take_frame().unwrap()).collect();
+    let held: Vec<_> = (0..BUFFERS)
+        .map(|_| shared.take_frame(&mut 0).unwrap())
+        .collect();
     let (send, receive) = mpsc::channel();
     let consumer = Arc::clone(&shared);
     let waiter = std::thread::spawn(move || {
-        send.send(consumer.take_frame()).unwrap();
+        send.send(consumer.take_frame(&mut 0)).unwrap();
     });
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while shared.buffer_wait_calls.load(Ordering::Relaxed) == 0
@@ -1409,7 +1466,7 @@ fn exhausted_pool_wait_cancels_without_a_live_consumer() {
         shared.recycle_frame(index);
     }
     // Cancellation does not discard a frame that is already available.
-    assert!(shared.take_frame().is_some());
+    assert!(shared.take_frame(&mut 0).is_some());
 }
 
 #[test]
@@ -1424,7 +1481,7 @@ fn acquisition_panic_stops_admission_and_preserves_losses_without_waiting() {
     }
 
     let shared = Shared::new(0, 0, 1);
-    let index = shared.take_frame().unwrap();
+    let index = shared.take_frame(&mut 0).unwrap();
     unsafe { (&mut *shared.pending.get()).push(Some(clock(40, 7).borrowed())) };
     let acquisitions = AtomicUsize::new(0);
     let completed = unsafe {
@@ -1438,7 +1495,7 @@ fn acquisition_panic_stops_admission_and_preserves_losses_without_waiting() {
     assert!(shared.cancel_buffer_wait.load(Ordering::Acquire));
     assert_eq!(shared.acquisition_panics.load(Ordering::Acquire), 1);
     assert_eq!(shared.free.len(), BUFFERS - 1);
-    assert_eq!(shared.take_frame(), None);
+    assert_eq!(shared.take_frame(&mut 0), None);
     assert_eq!(shared.buffer_wait_calls.load(Ordering::Relaxed), 0);
 
     // During a delayed hook restore, record the next hour as a loss without
@@ -1458,7 +1515,7 @@ fn acquisition_panic_stops_admission_and_preserves_losses_without_waiting() {
     // Cancellation also works when no healthy frame remains. Do not
     // reclaim the partially restored frame as if acquisition succeeded.
     while shared.free.pop().is_some() {}
-    assert_eq!(shared.take_frame(), None);
+    assert_eq!(shared.take_frame(&mut 0), None);
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 0);
 }
 
@@ -2628,9 +2685,11 @@ fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse()
     sources::boundary(Some(clock(41, 7).with_campaign_id(0)));
     let shared = Shared::new(0, 0, 1);
     shared.roster_ready.store(true, Ordering::Release);
-    let held: Vec<_> = (0..BUFFERS).map(|_| shared.take_frame().unwrap()).collect();
+    let held: Vec<_> = (0..BUFFERS)
+        .map(|_| shared.take_frame(&mut 0).unwrap())
+        .collect();
     shared.cancel_buffer_wait.store(true, Ordering::Release);
-    let index = shared.take_frame();
+    let index = shared.take_frame(&mut 0);
     assert_eq!(index, None);
     unsafe {
         acquire(
@@ -2640,6 +2699,7 @@ fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse()
                 index,
                 entry: Some(clock(41, 7).borrowed()),
                 entry_ticks: 0,
+                buffer_wait_ns: 0,
                 dispatched: 0,
             },
         );
@@ -2652,7 +2712,7 @@ fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse()
     // Detach cancellation still permits a later callback to obtain a newly
     // recycled frame. That must not make the lost event interval complete.
     shared.recycle_frame(held[0]);
-    assert_eq!(shared.take_frame(), Some(held[0]));
+    assert_eq!(shared.take_frame(&mut 0), Some(held[0]));
     sources::boundary(Some(clock(42, 7).with_campaign_id(0)));
     assert_eq!(
         sources::drain(&mut entries).unwrap_err(),
@@ -2737,7 +2797,7 @@ fn campaign_clock_callback_keeps_long_identity_and_loss_bytes_under_allocator_de
     let mut memory = campaign_clock_memory(5_001);
     let shared = campaign_shared();
     shared.prepare_clock_capture(&memory).unwrap();
-    let index = shared.take_frame().unwrap();
+    let index = shared.take_frame(&mut 0).unwrap();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let before = frame.allocated_bytes();
     let mut capture = shared.wait_clock_preparation(&memory);
@@ -2810,7 +2870,7 @@ fn campaign_clock_growth_waits_for_spool_preparation_without_callback_allocation
         crate::allocation_failure_tests::with_allocations_denied(|| {
             let mut capture = shared.wait_clock_preparation(&long);
             let (entry, _) = capture.read(&long, 0).unwrap();
-            let index = shared.take_frame().unwrap();
+            let index = shared.take_frame(&mut 0).unwrap();
             let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
             frame.set_clock(Some(entry));
             assert_eq!(
@@ -2844,7 +2904,9 @@ fn campaign_clock_in_service_frames_prepare_before_republication() {
     let long = campaign_clock_memory(5_001);
     let shared = campaign_shared();
     shared.prepare_clock_capture(&short).unwrap();
-    let held: Vec<_> = (0..BUFFERS).map(|_| shared.take_frame().unwrap()).collect();
+    let held: Vec<_> = (0..BUFFERS)
+        .map(|_| shared.take_frame(&mut 0).unwrap())
+        .collect();
     shared.clock_required.store(5_001, Ordering::Release);
     shared.prepare_clock_capture(&long).unwrap();
     for index in held {
@@ -2854,7 +2916,7 @@ fn campaign_clock_in_service_frames_prepare_before_republication() {
         let mut capture = shared.wait_clock_preparation(&long);
         let (entry, _) = capture.read(&long, 0).unwrap();
         for _ in 0..BUFFERS {
-            let index = shared.take_frame().unwrap();
+            let index = shared.take_frame(&mut 0).unwrap();
             let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
             frame.set_clock(Some(entry));
             assert_eq!(
@@ -3570,7 +3632,9 @@ fn buffer_return_runs_on_a_small_stack() {
     let returned = std::thread::Builder::new()
         .stack_size(SMALL_STACK)
         .spawn(move || {
-            let held: Vec<_> = (0..BUFFERS).map(|_| worker.take_frame().unwrap()).collect();
+            let held: Vec<_> = (0..BUFFERS)
+                .map(|_| worker.take_frame(&mut 0).unwrap())
+                .collect();
             for index in held {
                 worker.recycle_frame_prepared(index);
             }
@@ -3580,6 +3644,21 @@ fn buffer_return_runs_on_a_small_stack() {
         .join()
         .unwrap();
     assert_eq!(returned, BUFFERS);
+}
+
+#[test]
+fn buffers_backlogged_with_two_free_buffers() {
+    let shared = campaign_shared();
+    let first = shared.take_frame(&mut 0).unwrap();
+    assert_eq!(shared.free.len(), 3);
+    assert!(!shared.buffers_backlogged());
+    let second = shared.take_frame(&mut 0).unwrap();
+    assert_eq!(shared.free.len(), 2);
+    assert!(shared.buffers_backlogged());
+    shared.recycle_frame_prepared(first);
+    assert!(!shared.buffers_backlogged());
+    shared.recycle_frame_prepared(second);
+    assert_eq!(shared.free.len(), BUFFERS);
 }
 
 /// The Radar and Projects joins turn an incomplete raw acquisition into a

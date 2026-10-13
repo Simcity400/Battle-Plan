@@ -1137,6 +1137,7 @@ fn observed_walk_bytes(
             Buffer::Fixed(&mut bytes),
             0,
             0,
+            None,
         )
     };
     copies.fault.set(None);
@@ -1196,13 +1197,17 @@ fn secondary_idea_world() -> World {
 
 /// Three pointer pages of distinct objects, with repeated character and
 /// definition pointers, every bound static slot and heap display strings.
+const PAGED_COUNT: u32 = 130;
+const PAGED_DYNAMIC_ENTRIES: usize = 0x6500_2000;
+const PAGED_OBJECTS: usize = 0x6600_0000;
+
 fn paged_sources_world() -> World {
     let mut w = scaled_world();
-    const COUNT: u32 = 130;
+    const COUNT: u32 = PAGED_COUNT;
     const IDEA_POINTERS: usize = 0x6500_0000;
     const ADVISOR_POINTERS: usize = 0x6500_1000;
-    const DYNAMIC_ENTRIES: usize = 0x6500_2000;
-    const OBJECTS: usize = 0x6600_0000;
+    const DYNAMIC_ENTRIES: usize = PAGED_DYNAMIC_ENTRIES;
+    const OBJECTS: usize = PAGED_OBJECTS;
     let advisor: Vec<_> = w
         .bytes
         .range(ADVISOR..ADVISOR + 0x260)
@@ -1272,8 +1277,8 @@ fn stability_batched_source_pages_keep_aliases_and_every_static_slot() {
         &observed_walk(&serial, true, &mut Memo::default(), 16, None),
         &observed_walk(&batched, false, &mut Memo::default(), 16, None),
     );
-    // Distinct object heads and modifier blocks share a guarded call across
-    // each complete pointer page. Dynamic definitions alias one allocation.
+    // Distinct object heads and modifier blocks share bounded guarded chunks
+    // across each pointer page. Dynamic definitions alias one allocation.
     for phase in [
         Phase::Ideas,
         Phase::Advisors,
@@ -1286,23 +1291,51 @@ fn stability_batched_source_pages_keep_aliases_and_every_static_slot() {
             "{phase:?} was not batched"
         );
     }
-    for (phase, len) in [
-        (Phase::Ideas, 8),
-        (Phase::Advisors, 24),
-        (Phase::Dynamic, 56),
-    ] {
-        assert!(
-            batched.calls.borrow().iter().any(|call| {
-                call.phase == phase
-                    && call
-                        .operands
-                        .iter()
-                        .filter(|operand| operand.1 == len)
-                        .count()
-                        == 64
-            }),
-            "{phase:?} did not gather a full page's object heads in one call"
-        );
+    // Each object head is gathered exactly once. Heads are named by address:
+    // the phase also reads other spans of the same length serially (the
+    // ideas phase starts with the political status pointer).
+    type HeadSpan = fn(usize) -> (usize, usize);
+    let heads: [(Phase, HeadSpan, usize); 3] = [
+        (
+            Phase::Ideas,
+            |index| (PAGED_OBJECTS + index * 0x1000, 8),
+            32,
+        ),
+        (
+            Phase::Advisors,
+            |index| (PAGED_OBJECTS + index * 0x1000 + 0x400, 24),
+            22,
+        ),
+        (
+            Phase::Dynamic,
+            |index| {
+                (
+                    PAGED_DYNAMIC_ENTRIES + index * dynamic_modifier_entry::STRIDE,
+                    56,
+                )
+            },
+            64,
+        ),
+    ];
+    for (phase, head, maximum) in heads {
+        let expected: Vec<_> = (0..PAGED_COUNT as usize).map(head).collect();
+        let calls = batched.calls.borrow();
+        let mut gathered = Vec::new();
+        let mut most = 0;
+        for call in calls.iter().filter(|call| call.phase == phase) {
+            assert!(call.operands.len() <= 64);
+            let before = gathered.len();
+            gathered.extend(
+                call.operands
+                    .iter()
+                    .map(|&(address, len, _)| (address, len))
+                    .filter(|span| expected.contains(span)),
+            );
+            most = most.max(gathered.len() - before);
+        }
+        gathered.sort_unstable();
+        assert_eq!(gathered, expected, "{phase:?} heads");
+        assert_eq!(most, maximum, "{phase:?} chunk geometry");
     }
 }
 

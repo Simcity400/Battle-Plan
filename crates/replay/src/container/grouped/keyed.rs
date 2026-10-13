@@ -17,11 +17,13 @@
 //! Each way of writing a table's later entries keeps the masks it stored
 //! most recently ([`MaskList`]); a mask is stored as its place among them, or
 //! as itself when it is not among them, since the rows of a table mostly
-//! change the same few fields. A modelled block stores a later delta's or
-//! residual entry's rows and masks as decisions of its [`Model`] instead;
-//! deleted keys keep this coding.
+//! change the same few fields. A modelled section stores a later delta's or
+//! residual entry's rows and masks as decisions of its [`Model`] instead.
+//! A chosen block keeps both pairs while writing and stores whichever whole
+//! section compresses smaller, named by its leading masks-column byte;
+//! deleted keys and entries without coded rows keep the same bytes in both.
 
-use super::{DELTA, KEYS, MASKS, SNAPSHOT, TRUNCATED, UNCHANGED, modelled::Model};
+use super::{Columns, DELTA, KEYS, MASKS, SNAPSHOT, TRUNCATED, UNCHANGED, modelled::Model};
 use crate::{
     codec::{Decoder, invalid_static as invalid, put_varint},
     rows::{TableId, Token},
@@ -266,7 +268,7 @@ impl MaskList {
 
 /// How a later entry stores its row keys and masks: against the table's
 /// rows at the frame before and its stream's recent masks (keyed blocks), or
-/// as its stream's model decisions (modelled blocks, with `model`). A reader
+/// as its stream's model decisions (modelled sections, with `model`). A reader
 /// also collects the rows the entry inserts and deletes.
 pub(super) struct RowCoding<'a> {
     pub keys: &'a KeySet,
@@ -277,9 +279,13 @@ pub(super) struct RowCoding<'a> {
 
 /// An entry's changed or residual rows being written: listed rows go to the
 /// keys and masks columns as they come, modelled ones once all are known.
+/// A chosen stream feeds its listed pair from the same row calls.
 pub(super) enum RowRun<'a> {
     Listed(KeyWriter<'a>),
-    Modelled(Vec<(u128, u64)>),
+    Modelled {
+        rows: Vec<(u128, u64)>,
+        listed: KeyWriter<'a>,
+    },
 }
 
 /// An entry's changed or residual rows being read: modelled ones were all
@@ -308,7 +314,10 @@ impl<'a> RowCoding<'a> {
     /// Start writing an entry's changed or residual rows.
     pub(super) fn run(&self) -> RowRun<'a> {
         if self.modelled() {
-            RowRun::Modelled(Vec::new())
+            RowRun::Modelled {
+                rows: Vec::new(),
+                listed: KeyWriter::new(self.keys),
+            }
         } else {
             RowRun::Listed(KeyWriter::new(self.keys))
         }
@@ -321,26 +330,29 @@ impl<'a> RowCoding<'a> {
         key: u128,
         mask: u64,
         width: usize,
-        columns: &mut [Vec<u8>],
+        columns: &mut Columns,
     ) -> io::Result<()> {
         match run {
             RowRun::Listed(writer) => {
-                writer.put(key, &mut columns[KEYS])?;
-                self.masks.put(mask, width, &mut columns[MASKS]);
+                writer.put(key, &mut columns.0[KEYS])?;
+                self.masks.put(mask, width, &mut columns.0[MASKS]);
             }
-            RowRun::Modelled(rows) => rows.push((key, mask)),
+            RowRun::Modelled { rows, listed } => {
+                rows.push((key, mask));
+                let (keys, masks) = columns.1.split_at_mut(MASKS);
+                if let (Some(keys), Some(masks)) = (&mut keys[KEYS], &mut masks[0]) {
+                    listed.put(key, keys)?;
+                    self.masks.put(mask, width, masks);
+                }
+            }
         }
         Ok(())
     }
 
     /// End `run`: a modelled run's rows become its model's decisions.
-    pub(super) fn finish_run(
-        &mut self,
-        run: RowRun<'a>,
-        columns: &mut [Vec<u8>],
-    ) -> io::Result<()> {
-        if let (RowRun::Modelled(rows), Some(model)) = (run, self.model.as_deref_mut()) {
-            let (keys, masks) = columns.split_at_mut(MASKS);
+    pub(super) fn finish_run(&mut self, run: RowRun<'a>, columns: &mut Columns) -> io::Result<()> {
+        if let (RowRun::Modelled { rows, .. }, Some(model)) = (run, self.model.as_deref_mut()) {
+            let (keys, masks) = columns.0.split_at_mut(MASKS);
             model.put(self.keys, &rows, &mut keys[KEYS], &mut masks[0])?;
         }
         Ok(())

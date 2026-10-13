@@ -84,6 +84,8 @@ pub struct Captured {
     keys: Option<native::Keys>,
     /// The globals every input row of this read carries.
     context: Option<native::Context>,
+    /// This capture's inputs/setup, children, candidates and pairing/emission.
+    phase_ticks: [u64; 4],
 }
 
 impl Captured {
@@ -93,6 +95,7 @@ impl Captured {
         self.lines
             .fail(super::failed_capture(TABLES[1], hour, force_full, reason));
         self.selection.reset(hour, force_full);
+        self.phase_ticks = [0; 4];
     }
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
@@ -106,6 +109,7 @@ impl Captured {
             changed: Changed::default(),
             keys: None,
             context: None,
+            phase_ticks: [0; 4],
         }
     }
     pub fn with_capacities(capacity: &Capacities) -> Self {
@@ -121,6 +125,7 @@ impl Captured {
             changed: Changed::default(),
             keys: None,
             context: None,
+            phase_ticks: [0; 4],
         }
     }
     pub fn reset(&mut self) {
@@ -129,6 +134,7 @@ impl Captured {
         self.bytes.reset();
         self.context = None;
         self.memo.clear();
+        self.phase_ticks = [0; 4];
     }
     pub fn allocated_bytes(&self) -> usize {
         self.inputs.allocated_bytes()
@@ -152,9 +158,14 @@ impl Captured {
         &self.selection
     }
 
+    pub(crate) fn phase_ticks(&self) -> [u64; 4] {
+        self.phase_ticks
+    }
+
     /// Start a frame's selection at its hour; the job resets it again.
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.selection.reset(hour, force_full);
+        self.phase_ticks = [0; 4];
     }
 
     /// Reads this hour's countries, as the hooks' marks select them
@@ -206,12 +217,15 @@ impl Captured {
         }
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
-        let result = self.walk(memory, base, game_state, fingerprints, changes);
+        let mut timing = native::WalkTiming::new(started);
+        let result = self.walk(memory, base, game_state, fingerprints, changes, &mut timing);
         if let Err(reason) = result {
             self.inputs.outcome = Outcome::Unavailable { reason };
             self.lines.outcome = Outcome::Unavailable { reason };
         }
-        [qpc().saturating_sub(started).max(0) as u64, 0]
+        let ended = qpc();
+        self.phase_ticks = timing.finish_at(ended);
+        [ended.saturating_sub(started).max(0) as u64, 0]
     }
 
     fn walk(
@@ -221,6 +235,7 @@ impl Captured {
         game_state: usize,
         mut fingerprints: Option<&mut SliceFingerprints>,
         changes: &dyn Changes,
+        timing: &mut native::WalkTiming,
     ) -> Result<(), &'static str> {
         // The first failure stands: a failed check is not retried by resolving again.
         let cached = match self.keys {
@@ -286,7 +301,7 @@ impl Captured {
             }
             let mut input = native::InputRow::default();
             let start = lines.len();
-            let walk = native::walk_country_growing_memo(
+            let walk = native::walk_country_growing_memo_timed(
                 memory,
                 base,
                 &countries,
@@ -299,6 +314,7 @@ impl Captured {
                 &mut self.bytes.first,
                 start,
                 self.bytes.len,
+                timing,
             );
             // Count failed speculative batches even when the serial fallback
             // refuses this country, before propagating that original reason.
@@ -658,7 +674,8 @@ mod tests {
                 .unwrap()
         };
         let before = count();
-        captured.capture(&memory, BASE, STATE, 0, true, None);
+        let cost = captured.capture(&memory, BASE, STATE, 0, true, None);
+        assert_eq!(cost[0], captured.phase_ticks().iter().sum::<u64>());
         assert_eq!(
             captured.outcomes(),
             [Outcome::Rows { len: 1 }, Outcome::Rows { len: 0 }]
@@ -668,7 +685,9 @@ mod tests {
         memory
             .fault
             .set(Some(IDEA + native::IDEA_MODIFIER + cmodifier::ACCUMULATOR));
-        captured.capture(&memory, BASE, STATE, 1, true, None);
+        let cost = captured.capture(&memory, BASE, STATE, 1, true, None);
+        assert_eq!(cost[0], captured.phase_ticks().iter().sum::<u64>());
+        assert_eq!(captured.phase_ticks()[3], 0);
         assert_eq!(
             captured.outcomes(),
             [Outcome::Unavailable {
@@ -687,7 +706,9 @@ mod tests {
         memory
             .fault
             .set(Some(NEXT_COUNTRY + native::PROPAGANDA_STABILITY_PENALTY));
-        captured.capture(&memory, BASE, STATE, 2, true, None);
+        let cost = captured.capture(&memory, BASE, STATE, 2, true, None);
+        assert_eq!(cost[0], captured.phase_ticks().iter().sum::<u64>());
+        assert_eq!(&captured.phase_ticks()[1..], &[0; 3]);
         assert_eq!(
             captured.outcomes(),
             [Outcome::Unavailable {
@@ -720,7 +741,9 @@ mod tests {
                 .iter()
                 .all(|table| matches!(table, TableView::Unavailable { .. }))
         );
+        captured.phase_ticks = [1, 2, 3, 4];
         captured.fail_capture(5, false, "worker stopped");
+        assert_eq!(captured.phase_ticks(), [0; 4]);
         assert_eq!(
             captured.outcomes()[0],
             Outcome::Unavailable {

@@ -132,7 +132,7 @@ struct Table {
 enum Lookup<'a> {
     /// The receiver's slot index and sequence.
     Watched(usize, &'a AtomicU64),
-    Registered(&'a AtomicU64),
+    Registered(usize, &'a AtomicU64),
     Unwatched,
     Full,
 }
@@ -164,7 +164,7 @@ impl Table {
             let mut current = slot.address.load(SeqCst);
             if current == 0 && register {
                 match slot.address.compare_exchange(0, address, SeqCst, SeqCst) {
-                    Ok(_) => return Lookup::Registered(&slot.sequence),
+                    Ok(_) => return Lookup::Registered(index, &slot.sequence),
                     Err(winner) => current = winner,
                 }
             }
@@ -483,27 +483,46 @@ impl WatchRegistry {
         Some((epoch, revision(state)))
     }
 
-    /// A cache hint for `receiver`'s first slot, ahead of its
-    /// [`Self::sequence`]: reads and changes nothing.
-    pub fn prefetch(&self, receiver: usize) {
-        if receiver == 0 {
-            return;
-        }
-        if let Some(table) = self.table() {
-            let index = crate::table_hash::slot((receiver >> 3) as u64, table.slots.len());
-            if let Some(slot) = table.slots.get(index) {
-                engine::prefetch::span(
-                    std::ptr::from_ref(slot) as usize,
-                    std::mem::size_of::<Slot>(),
-                );
-            }
-        }
-    }
-
     /// `(epoch, sequence)` of `receiver`, registering it; `None` when it
     /// cannot be observed. Captures only, after the hour's boundary.
     pub fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
         self.register(receiver).map(|(certificate, _)| certificate)
+    }
+
+    /// [`Self::sequence`] and the receiver's slot index. A held index skips
+    /// probing only when the current table's slot still names `receiver`.
+    /// The hint retains no table pointer; bounds, receiver, epoch and quiet
+    /// checks apply to the installed table as for an ordinary registration.
+    pub(crate) fn sequence_at(
+        &self,
+        receiver: usize,
+        held_slot: usize,
+    ) -> Option<((u64, u64), usize)> {
+        if !self.observing() {
+            return None;
+        }
+        let epoch = self.epoch.load(SeqCst);
+        let table = self.table()?;
+        let lookup = table
+            .slots
+            .get(held_slot)
+            .filter(|slot| receiver != 0 && slot.address.load(SeqCst) == receiver)
+            .map(|slot| Lookup::Watched(held_slot, &slot.sequence))
+            .unwrap_or_else(|| table.find(receiver, true));
+        let (index, sequence) = match lookup {
+            Lookup::Watched(index, sequence) => (index, sequence),
+            Lookup::Registered(index, sequence) => {
+                self.registered.fetch_add(1, Relaxed);
+                (index, sequence)
+            }
+            Lookup::Unwatched => return None,
+            Lookup::Full => {
+                self.refused.fetch_add(1, Relaxed);
+                return None;
+            }
+        };
+        let sequence = sequence.load(SeqCst);
+        (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some(((epoch, sequence), index))
     }
 
     /// [`Self::sequence`], and whether this call registered `receiver`: a
@@ -516,7 +535,7 @@ impl WatchRegistry {
         let epoch = self.epoch.load(SeqCst);
         let (sequence, fresh) = match self.table()?.find(receiver, true) {
             Lookup::Watched(_, sequence) => (sequence, false),
-            Lookup::Registered(sequence) => {
+            Lookup::Registered(_, sequence) => {
                 self.registered.fetch_add(1, Relaxed);
                 (sequence, true)
             }
@@ -791,6 +810,122 @@ mod tests {
         drop(registry.notify(0x1000));
         drop(running);
         assert_ne!(registry.sequence(0x1000), Some(certificate));
+    }
+
+    #[test]
+    fn held_slot_certificates_keep_writer_and_running_semantics() {
+        let registry = registry(64);
+        let (held, slot) = registry.sequence_at(8, usize::MAX).unwrap();
+        let other = registry.sequence_at(16, usize::MAX).unwrap();
+        assert_eq!(
+            registry.table().unwrap().slots[slot].address.load(SeqCst),
+            8
+        );
+        assert_eq!(registry.sequence(8), Some(held));
+        for _ in 0..3 {
+            assert_eq!(registry.sequence_at(8, slot), Some((held, slot)));
+        }
+        assert_eq!(registry.registered(), 2);
+        let quiet = registry.quiet();
+        let running = registry.running();
+        assert!(registry.sequence_at(8, slot).is_none());
+        assert!(registry.quiet().is_none());
+        drop(running);
+        assert_eq!(registry.sequence_at(8, slot), Some((held, slot)));
+        assert_eq!(registry.quiet(), quiet);
+        let writer = registry.notify(8);
+        assert!(registry.sequence_at(8, slot).is_none());
+        assert!(registry.sequence_at(16, other.1).is_none());
+        drop(writer);
+        assert_eq!(
+            registry.sequence_at(8, slot),
+            Some(((held.0, held.1 + 1), slot))
+        );
+        assert_eq!(registry.sequence_at(16, other.1), Some(other));
+        assert_eq!(registry.registered(), 2);
+    }
+
+    #[test]
+    fn held_slot_hints_validate_the_receiver_and_bounds() {
+        let registry = registry(64);
+        let first = registry.sequence_at(8, usize::MAX).unwrap();
+        let second = registry.sequence_at(16, first.1).unwrap();
+        assert_ne!(first.1, second.1);
+        assert_eq!(registry.sequence_at(8, second.1), Some(first));
+        assert_eq!(registry.sequence_at(16, first.1), Some(second));
+        assert_eq!(registry.sequence_at(8, 64), Some(first));
+        assert_eq!(registry.sequence_at(8, usize::MAX), Some(first));
+        assert!(registry.sequence_at(0, first.1).is_none());
+        assert!(registry.sequence_at(0, usize::MAX).is_none());
+        assert_eq!(registry.registered(), 2);
+        assert_eq!(registry.refused.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn held_slot_hints_do_not_preserve_a_cleared_or_replaced_epoch() {
+        let registry = registry(64);
+        let (_, slot) = registry.sequence_at(8, usize::MAX).unwrap();
+        drop(registry.notify(8));
+        let held = registry.sequence_at(8, slot).unwrap();
+        registry.boundary(true);
+        let cleared = registry.sequence_at(8, slot).unwrap();
+        assert_ne!(cleared.0.0, held.0.0);
+        assert_eq!(cleared.0.1, 0);
+        assert_eq!(registry.sequence(8), Some(cleared.0));
+        registry.offer(1_000);
+        assert!(!registry.boundary(false));
+        assert_eq!(registry.sequence_at(8, cleared.1), Some(cleared));
+        assert!(registry.boundary(true));
+        registry.collect();
+        let installed = registry.sequence_at(8, cleared.1).unwrap();
+        assert_ne!(installed.0.0, cleared.0.0);
+        assert_eq!(registry.sequence(8), Some(installed.0));
+        drop(registry.notify(8));
+        assert_eq!(
+            registry.sequence_at(8, installed.1),
+            Some(((installed.0.0, installed.0.1 + 1), installed.1))
+        );
+        assert_eq!(registry.registered(), 1);
+    }
+
+    #[test]
+    fn held_slot_certificates_refuse_disabled_poisoned_or_untrusted_observation() {
+        let empty = WatchRegistry::new();
+        empty.set_enabled(true);
+        assert!(empty.sequence_at(8, usize::MAX).is_none());
+        let registry = registry(64);
+        let held = registry.sequence_at(8, usize::MAX).unwrap();
+        registry.set_enabled(false);
+        assert!(registry.sequence_at(8, held.1).is_none());
+        assert!(registry.quiet().is_none());
+        registry.set_enabled(true);
+        let enabled = registry.sequence_at(8, held.1).unwrap();
+        assert_ne!(enabled.0.0, held.0.0);
+        registry.state.0.store(UNTRUSTED, SeqCst);
+        assert!(registry.sequence_at(8, held.1).is_none());
+        registry.state.0.store(0, SeqCst);
+        registry.poison();
+        assert!(registry.sequence_at(8, held.1).is_none());
+        assert!(registry.quiet().is_none());
+        assert_eq!(registry.registered(), 1);
+    }
+
+    #[test]
+    fn held_slot_registration_keeps_full_table_refusal_counts() {
+        let registry = registry(4);
+        let mut slots = Vec::new();
+        for receiver in [8, 16, 24, 32] {
+            slots.push(registry.sequence_at(receiver, usize::MAX).unwrap());
+        }
+        assert_eq!(registry.registered(), 4);
+        assert!(registry.sequence_at(40, slots[0].1).is_none());
+        assert_eq!(registry.refused.load(Relaxed), 1);
+        assert!(registry.sequence(40).is_none());
+        assert_eq!(registry.refused.load(Relaxed), 2);
+        for (receiver, held) in [8, 16, 24, 32].into_iter().zip(slots) {
+            assert_eq!(registry.sequence_at(receiver, held.1), Some(held));
+        }
+        assert_eq!(registry.registered(), 4);
     }
 
     #[test]

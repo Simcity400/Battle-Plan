@@ -298,7 +298,18 @@ fn batched_naming_carried_members_and_heap_cache_equal_serial() {
             Some(&mut store),
             &watches,
         );
+        let lookups = store.name_lookups;
+        let expected = if actual.attack.carryable {
+            seeds.len()
+        } else {
+            0
+        };
         actual.capture_naming_holding(&memory, 0, &seeds, Some(&mut store), &watches);
+        assert_eq!(
+            store.name_lookups - lookups,
+            expected,
+            "each seed's held lookup must serve gathering, decoding and verification"
+        );
         store.hold(actual.attack.epoch());
         same(&actual, &capture(&reads(&bytes, true, None, false), &seeds));
         if hour == 0 || VERIFY {
@@ -314,6 +325,80 @@ fn batched_naming_carried_members_and_heap_cache_equal_serial() {
             );
             assert_eq!(actual.attack.status_counts.names_reused, 64);
         }
+    }
+    assert!(!watches.poisoned());
+}
+
+#[test]
+fn batched_naming_selects_once_with_sampled_touched_and_reordered_seeds() {
+    use crate::army_stat_changes::{VERIFY, Watches};
+    crate::sampled_verify::begin_hour(20);
+    let (bytes, mut seeds) = fixture(5_000);
+    for (index, seed) in seeds.iter_mut().enumerate() {
+        seed.pointer = 0x1000_0000 + index * 256;
+    }
+    let watches = Watches::enabled(2 * seeds.len());
+    let mut store = super::super::super::attack_stats::ArmyStatStore::new();
+    let mut actual = capture(&reads(&bytes, false, None, false), &[]);
+    for hour in 0..3 {
+        if hour == 1 {
+            seeds.rotate_left(23);
+            seeds.remove(40);
+            // Independent pointer failures keep their original naming and
+            // cache refusals and never enter carry selection.
+            seeds[90].name_member = None;
+            seeds[91].name_member = Some(0);
+            // Touch a sampled member, so its lost held eligibility changes the
+            // verified count with or without army_stat_verify.
+            let check = crate::sampled_verify::current_burned_in(VERIFY);
+            let touched = seeds
+                .iter()
+                .find(|seed| {
+                    seed.name_member.is_some_and(|at| at != 0) && check.covers(seed.division >> 32)
+                })
+                .and_then(|seed| seed.name_member)
+                .unwrap();
+            drop(watches.notify(touched, 1));
+        }
+        let memory = reads(&bytes, false, None, false);
+        actual.attack.certify(
+            &seeds,
+            Outcome::Rows { len: seeds.len() },
+            Some(&mut store),
+            &watches,
+        );
+        let before = store.name_lookups;
+        let expected = if actual.attack.carryable {
+            seeds
+                .iter()
+                .filter(|seed| seed.name_member.is_some_and(|at| at != 0))
+                .count()
+        } else {
+            0
+        };
+        actual.capture_naming_holding(&memory, 0, &seeds, Some(&mut store), &watches);
+        assert_eq!(store.name_lookups - before, expected);
+        // Verified: sampled, valid members still held and untouched. The
+        // notified member loses its held eligibility and is read fresh.
+        let check = crate::sampled_verify::current_burned_in(VERIFY);
+        let verified = seeds
+            .iter()
+            .enumerate()
+            .filter(|(index, seed)| {
+                let Some(pointer) = seed.name_member.filter(|&at| at != 0) else {
+                    return false;
+                };
+                check.covers(seed.division >> 32)
+                    && actual.attack.carryable
+                    && store
+                        .held_name(*index, seed.division)
+                        .is_some_and(|at| store.held_name_record(at).member == pointer)
+                    && !actual.attack.touched(pointer)
+            })
+            .count();
+        assert_eq!(actual.attack.status_counts.verified as usize, verified);
+        store.hold(actual.attack.epoch());
+        same(&actual, &capture(&reads(&bytes, true, None, false), &seeds));
     }
     assert!(!watches.poisoned());
 }

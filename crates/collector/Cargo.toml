@@ -21,6 +21,14 @@ advisor_changes = []
 advisor_profile = ["advisor_changes"]
 # Bounded per-hour slow-callback phase and thread-cycle diagnostics.
 callback_profile = []
+# A/B, off by default: try-only help, four attempts and half the first predicted
+# remainder in cumulative decaying-maximum costs; awaited prediction uses its mean.
+executor_join_help = []
+# A/B, off by default: zero spin budget takes precedence over the spin policy.
+executor_no_join_spin = []
+# A/B, off by default: end the single idle-started spin when the pool becomes
+# busy; the default continues until publication or the 2 ms deadline.
+executor_spin_until_pool_busy = []
 # Diagnostic oracle, off by default: also record the native values playback derives a breakdown
 # from inputs (the power-balance description trees) for the hour's sampled slice, for
 # `recorder derived` to compare with the derivation.

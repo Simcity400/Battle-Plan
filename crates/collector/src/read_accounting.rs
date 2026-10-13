@@ -346,7 +346,6 @@ mod tests {
             assert_eq!(calibration.completed, 2);
             assert_eq!(calibration.panicked, 1);
             assert_eq!(calibration.stopped, 0);
-            assert_eq!(calibration.active, 0);
             assert_eq!(calibration.uncollected, 0);
             assert_eq!(
                 calibration.caller_executed,
@@ -356,6 +355,10 @@ mod tests {
                 calibration.worker_executed,
                 if workers == 0 { 0 } else { 2 }
             );
+            // Publication makes completion counters visible, but the worker
+            // can be descheduled before retiring its active claim.
+            pool.settle();
+            assert_eq!(pool.calibration().active, 0);
         }
     }
 }

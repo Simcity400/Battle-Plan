@@ -332,13 +332,123 @@ pub struct Captured {
     pub table_ns: [u64; TABLE_COUNT],
     pub table_reads: [ReadCounts; TABLE_COUNT],
     pub total_ns: u64,
+    /// This hour's diagnostics, replaced in full before decode publication.
+    pub(crate) hour_cost: HourCost,
     pub qpc: i64,
+    /// Reserved collector storage, including the executor's actual shared
+    /// allocation, cells, words, metadata, queue, thread ids/handles, boxed
+    /// runner and enabled help histories; copied into the hour's Metrics.
     pub pool_bytes: u64,
     pub dropped_frames: u64,
     pub dropped_before: LossBatch,
     /// The verdicts were reset for the next hour when the spool returned
     /// this frame ([`Self::reset_verdicts`]); the callback then skips it.
     verdicts_reset: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct HourCost {
+    pub entry_ns: u64,
+    pub buffer_wait_ns: u64,
+    pub setup_ns: u64,
+    pub parallel_ns: u64,
+    pub residual_ns: u64,
+    pub segments_ns: [u64; SEGMENTS],
+    pub slowest_join: Option<SlowestJoin>,
+    pub collect_stalls_over_1ms: u64,
+    pub growths: u64,
+    pub first_since_attach: bool,
+    pub continuous: bool,
+    pub force_full: bool,
+    pub recovery: bool,
+    pub refresh: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SlowestJoin {
+    pub role: usize,
+    pub wait_ns: u64,
+    pub collect_stall_ns: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct HourJoins {
+    slowest: Option<SlowestJoin>,
+    collect_stalls_over_1ms: u64,
+    growths: u64,
+    /// Already included in the game thread's growth delta; subtract once.
+    caller_growths: u64,
+}
+
+impl HourJoins {
+    fn total_growths(&self, game_thread_growths: u64) -> u64 {
+        game_thread_growths
+            .saturating_sub(self.caller_growths)
+            .saturating_add(self.growths)
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct JoinTally {
+    hour: HourJoins,
+    // The opt-in sample is consumed after acquire takes the hour's diagnostics.
+    #[cfg(feature = "callback_profile")]
+    profile: crate::callback_profile::JoinSample,
+}
+
+thread_local! {
+    static HOUR_JOINS: std::cell::Cell<Option<JoinTally>> = const { std::cell::Cell::new(None) };
+}
+
+pub(crate) fn reset_hour_joins() {
+    HOUR_JOINS.set(None);
+}
+
+pub(crate) fn record_hour_join(
+    role: usize,
+    wait_ns: u64,
+    collect_stall_ns: u64,
+    growths: u64,
+    #[cfg(feature = "callback_profile")] profile: crate::acquisition::Profile,
+) {
+    let mut tally = HOUR_JOINS.get().unwrap_or_default();
+    if tally.hour.slowest.is_none_or(|join| wait_ns > join.wait_ns) {
+        tally.hour.slowest = Some(SlowestJoin {
+            role,
+            wait_ns,
+            collect_stall_ns,
+        });
+        #[cfg(feature = "callback_profile")]
+        {
+            tally.profile = crate::callback_profile::JoinSample {
+                role: Some(role),
+                wall_ns: wait_ns,
+                profile,
+            };
+        }
+    }
+    tally.hour.collect_stalls_over_1ms += u64::from(collect_stall_ns >= JoinCosts::STALL_NS[1]);
+    tally.hour.growths = tally.hour.growths.saturating_add(growths);
+    HOUR_JOINS.set(Some(tally));
+}
+
+/// Executor work run by the joining game thread also appears in its own delta.
+pub(crate) fn record_caller_growths(growths: u64) {
+    let mut tally = HOUR_JOINS.get().unwrap_or_default();
+    tally.hour.caller_growths = tally.hour.caller_growths.saturating_add(growths);
+    HOUR_JOINS.set(Some(tally));
+}
+
+fn take_hour_joins() -> HourJoins {
+    let mut tally = HOUR_JOINS.get().unwrap_or_default();
+    let hour = std::mem::take(&mut tally.hour);
+    HOUR_JOINS.set(Some(tally));
+    hour
+}
+
+#[cfg(feature = "callback_profile")]
+pub(crate) fn take_profile_join() -> crate::callback_profile::JoinSample {
+    HOUR_JOINS.take().unwrap_or_default().profile
 }
 
 impl Captured {
@@ -350,6 +460,7 @@ impl Captured {
             reason: "clock unavailable",
         };
         self.table_ns = [0; TABLE_COUNT];
+        self.hour_cost = HourCost::default();
         self.table_reads = crate::read_accounting::ZERO;
         self.countries_result = unavailable;
         self.provinces_result = unavailable;
@@ -449,6 +560,7 @@ impl Captured {
             table_ns: [0; TABLE_COUNT],
             table_reads: crate::read_accounting::ZERO,
             total_ns: 0,
+            hour_cost: HourCost::default(),
             qpc: 0,
             pool_bytes: 0,
             dropped_frames: 0,
@@ -812,10 +924,13 @@ impl RoleTimeline {
 }
 
 /// Where a pool role's joins spend their wall once the awaited job is done,
-/// over every collected job: the collector's first wait for the queue mutex,
+/// over every collected job: the collector's first wait for the queue mutex
+/// when the initial lock-free collection CAS did not succeed,
 /// the stall from the moment the job is both awaited and published to its
-/// collection (the mutex, the condition-variable wake and rescheduling), and
-/// the worker's wait to publish after its body ended. Diagnostics only.
+/// collection (the atomic handoff, address wake and rescheduling), and
+/// the worker's completion bookkeeping after its body ended, before atomic
+/// publication. Failure publication also stops/cancels under the queue mutex.
+/// Diagnostics only; optional helped bodies are part of their caller's join.
 pub struct JoinCosts {
     /// Collected jobs whose completion was published (canceled ones too).
     published: AtomicU64,
@@ -843,9 +958,14 @@ impl JoinCosts {
     /// One collected job: `join` is when its join began; `ns` converts
     /// ticks for the stall thresholds. A job that no participant ran or that
     /// was never published (rejected or inline work) is not counted.
-    fn record(&self, timeline: &crate::acquisition::Timeline, join: i64, ns: impl Fn(i64) -> u64) {
+    fn record(
+        &self,
+        timeline: &crate::acquisition::Timeline,
+        join: i64,
+        ns: impl Fn(i64) -> u64,
+    ) -> u64 {
         if timeline.published_qpc == 0 || timeline.collected_qpc == 0 {
-            return;
+            return 0;
         }
         let ticks = |from: i64, to: i64| u64::try_from(to.saturating_sub(from)).unwrap_or(0);
         let stall = ticks(join.max(timeline.published_qpc), timeline.collected_qpc);
@@ -867,6 +987,7 @@ impl JoinCosts {
                 count.fetch_add(1, Ordering::Relaxed);
             }
         }
+        stall_ns
     }
 
     /// `(published jobs, of them ready at their join, [finish-lock wait,
@@ -948,6 +1069,8 @@ pub struct Shared {
     /// payloads are bounded recycled boxes, never pool memory).
     pub decode_queue: decode::DecodeQueue,
     pub dropped: AtomicU64,
+    /// Reserved collector storage; executor bytes use real allocation sizes
+    /// and capacities, including synchronization and enabled help histories.
     pub pool_bytes: AtomicU64,
     pub recording: AtomicBool,
     pub stop_spool: AtomicBool,
@@ -1463,7 +1586,9 @@ impl Shared {
     /// The callback retains the hourly boundary while an existing frame drains.
     /// The common path is only a queue pop; no native reads or allocations are
     /// repeated while waiting. Loader cancellation prevents shutdown deadlocks.
-    pub fn take_frame(&self) -> Option<usize> {
+    /// Writes this call's wait to `wait_ns`, zero on the common path.
+    pub fn take_frame(&self, wait_ns: &mut u64) -> Option<usize> {
+        *wait_ns = 0;
         if self.acquisition_failed() {
             return None;
         }
@@ -1492,6 +1617,7 @@ impl Shared {
         self.buffer_wait_ns.fetch_add(elapsed, Ordering::Relaxed);
         self.buffer_wait_max_ns
             .fetch_max(elapsed, Ordering::Relaxed);
+        *wait_ns = elapsed;
         index
     }
 
@@ -1504,10 +1630,10 @@ impl Shared {
         }
     }
 
-    /// At most one reusable capture buffer is free: the next callback may wait
-    /// in `take_frame` for the decode and spool threads to return one.
+    /// At most two of the four reusable buffers free: raise background priority
+    /// before the next callback waits in `take_frame` for a returned buffer.
     pub fn buffers_backlogged(&self) -> bool {
-        self.free.len() <= 1
+        self.free.len() <= 2
     }
 
     pub fn acquisition_failed(&self) -> bool {
@@ -1850,6 +1976,7 @@ struct Dispatch<'a> {
     index: Option<usize>,
     entry: Option<Clock<&'a [u8]>>,
     entry_ticks: i64,
+    buffer_wait_ns: u64,
     dispatched: i64,
 }
 
@@ -2000,7 +2127,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         shared
             .acquisition_entry_qpc
             .store(dispatched, Ordering::Relaxed);
-        let index = shared.take_frame();
+        let mut buffer_wait_ns = 0;
+        let index = shared.take_frame(&mut buffer_wait_ns);
         if let Some(index) = index {
             shared.completed[index].store(0, Ordering::Relaxed);
             shared.callback_tail[index].store(0, Ordering::Relaxed);
@@ -2013,6 +2141,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             index,
             entry,
             entry_ticks,
+            buffer_wait_ns,
             dispatched,
         };
         if unsafe { guarded_acquisition(shared, entry, || acquire(shared, job)) }
@@ -2151,8 +2280,11 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
         index,
         entry,
         entry_ticks,
+        buffer_wait_ns,
         dispatched,
     } = dispatch;
+    reset_hour_joins();
+    let growths_before = engine::allocation::growths();
     let memory = CountedMemory::new(unsafe { LiveMemory::new() });
 
     if let Some(index) = index {
@@ -2302,6 +2434,12 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
         // The two halves of the parallel phase.
         let mut inline_walk_ns = 0u64;
         let mut join_ns = 0u64;
+        let mut segments_ns = [0; SEGMENTS];
+        let mut first_since_attach = false;
+        let mut continuous = false;
+        let mut force_full = false;
+        let mut recovery = false;
+        let mut refresh = false;
         if let Some(clock) = entry {
             // Out of line: the layout report (about 10 KiB) stays off this frame.
             out_of_line(|| {
@@ -2315,11 +2453,12 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 });
             });
             let cadence = unsafe { &mut *shared.cadence.get() };
-            let continuous = cadence.continuous(&clock);
-            let recovery = shared.force_next.swap(false, Ordering::AcqRel);
-            let refresh = shared.refresh_next.swap(false, Ordering::AcqRel);
+            first_since_attach = !cadence.initialized;
+            continuous = cadence.continuous(&clock);
+            recovery = shared.force_next.swap(false, Ordering::AcqRel);
+            refresh = shared.refresh_next.swap(false, Ordering::AcqRel);
             forget_unpublished_families(shared);
-            let force_full = cadence.force_full(&clock) | recovery | refresh;
+            force_full = cadence.force_full(&clock) | recovery | refresh;
             // A periodic encoding keyframe does not interrupt native mutation
             // observation. Its freshly certified owned rows remain complete.
             if !continuous || recovery {
@@ -2416,8 +2555,9 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             macro_rules! segment {
                 ($index:expr) => {{
                     let now = qpc();
-                    shared.phase_segments[$index]
-                        .fetch_add(shared.ns(now - segment_prev), Ordering::Relaxed);
+                    let ns = shared.ns(now - segment_prev);
+                    shared.phase_segments[$index].fetch_add(ns, Ordering::Relaxed);
+                    segments_ns[$index] += ns;
                     segment_prev = now;
                 }};
             }
@@ -5383,18 +5523,40 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
         // so owning a buffer guarantees space for its index.
         // The frame's cost is this acquisition body's wall on the game thread.
         let game_elapsed = (qpc() - dispatched).max(1);
+        let setup_ns = shared.ns(ts_setup - dispatched);
+        let parallel_ns = shared.ns(ts_parallel - ts_setup);
+        let residual_ns = shared.ns(dispatched + game_elapsed - ts_parallel);
         // Disjoint block phases: setup+snapshot, parallel (dispatch/inline/joins),
         // then residual work and enqueue.
-        shared
-            .phase_setup_ns
-            .fetch_add(shared.ns(ts_setup - dispatched), Ordering::Relaxed);
+        shared.phase_setup_ns.fetch_add(setup_ns, Ordering::Relaxed);
         shared
             .phase_parallel_ns
-            .fetch_add(shared.ns(ts_parallel - ts_setup), Ordering::Relaxed);
-        shared.phase_residual_ns.fetch_add(
-            shared.ns(dispatched + game_elapsed - ts_parallel),
-            Ordering::Relaxed,
-        );
+            .fetch_add(parallel_ns, Ordering::Relaxed);
+        shared
+            .phase_residual_ns
+            .fetch_add(residual_ns, Ordering::Relaxed);
+        let joins = take_hour_joins();
+        frame.hour_cost = if frame.clock.is_some() {
+            HourCost {
+                entry_ns: shared.ns(entry_ticks),
+                buffer_wait_ns,
+                setup_ns,
+                parallel_ns,
+                residual_ns,
+                segments_ns,
+                slowest_join: joins.slowest,
+                collect_stalls_over_1ms: joins.collect_stalls_over_1ms,
+                growths: joins
+                    .total_growths(engine::allocation::growths().saturating_sub(growths_before)),
+                first_since_attach,
+                continuous,
+                force_full,
+                recovery,
+                refresh,
+            }
+        } else {
+            HourCost::default()
+        };
         shared
             .phase_inline_walk_ns
             .fetch_add(inline_walk_ns, Ordering::Relaxed);
@@ -5641,10 +5803,18 @@ unsafe fn finish_acquisition_into(
             let result = out.as_ref().expect("submitted acquisition job");
             let end = qpc();
             let wait = shared.ns(end - begin);
-            shared.join_costs[result.request.role() as usize].record(
+            let stall_ns = shared.join_costs[result.request.role() as usize].record(
                 &result.timeline,
                 begin,
                 |ticks| shared.ns(ticks),
+            );
+            record_hour_join(
+                result.request.role() as usize,
+                wait,
+                stall_ns,
+                result.timeline.growths,
+                #[cfg(feature = "callback_profile")]
+                result.profile,
             );
             shared
                 .acquisition_wait_ns
@@ -5656,12 +5826,6 @@ unsafe fn finish_acquisition_into(
                 begin,
                 end,
                 wait,
-            );
-            #[cfg(feature = "callback_profile")]
-            crate::callback_profile::record_join(
-                result.request.role() as usize,
-                wait,
-                result.profile,
             );
         }
         // SAFETY: forwarded from the caller.
@@ -6248,6 +6412,7 @@ mod role_timeline_tests {
                 published_qpc: 1_040,
                 collected_qpc: 5_000,
                 finish_lock_ticks: 2_900,
+                growths: 0,
             },
             2_000,
             ns,
@@ -6261,6 +6426,7 @@ mod role_timeline_tests {
                 published_qpc: 6_500,
                 collected_qpc: 6_510,
                 finish_lock_ticks: 1,
+                growths: 0,
             },
             6_000,
             ns,
