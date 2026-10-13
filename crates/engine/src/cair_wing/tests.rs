@@ -1515,17 +1515,9 @@ fn capacity_counts_omitted_wings_but_does_not_hide_a_broken_roster() {
 }
 
 #[test]
-fn strategic_air_manager_absence_is_zero_sizing_but_other_identities_refuse() {
+fn strategic_air_manager_absence_and_foreign_identity_refuse() {
     let mut bytes = fixture();
     p64(&mut bytes, GS + cgame_state::STRATEGIC_AIR_MANAGER, 0);
-    let memory = SliceMemory {
-        base: 0,
-        bytes: &bytes,
-    };
-    assert_eq!(
-        crate::transport_air_normalization::wing_entry_demand(&memory, 0, GS),
-        Ok(0)
-    );
     assert_eq!(
         capture(&bytes, &mut [Row::default(); 2]),
         Outcome::Unavailable {
@@ -1556,13 +1548,11 @@ fn strategic_air_manager_absence_is_zero_sizing_but_other_identities_refuse() {
         MANAGER,
         (cstrategic_air_manager::VTABLE_RVA + 0x20) as u64,
     );
-    let memory = SliceMemory {
-        base: 0,
-        bytes: &bytes,
-    };
     assert_eq!(
-        crate::transport_air_normalization::wing_entry_demand(&memory, 0, GS),
-        Err("strategic air manager vtable mismatch")
+        capture(&bytes, &mut [Row::default(); 2]),
+        Outcome::Unavailable {
+            reason: "strategic air manager vtable mismatch"
+        }
     );
 }
 

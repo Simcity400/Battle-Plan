@@ -2,114 +2,6 @@ use super::*;
 use crate::{cstrategic_navy, memory::SliceMemory};
 use std::collections::BTreeMap;
 
-#[test]
-fn allocation_capacity_overflow_preserves_movement_memo() {
-    let mut memo = MovementSpeeds::new(8);
-    let before = memo.allocated_bytes();
-    assert_eq!(
-        memo.reserve(usize::MAX).unwrap_err().kind(),
-        std::io::ErrorKind::OutOfMemory,
-    );
-    assert_eq!(memo.allocated_bytes(), before);
-}
-
-/// One owner/region query outside a bound domain: the pass selection and
-/// shared-observation query `get_in_domain` makes after its region key.
-fn query(
-    memo: &mut MovementSpeeds,
-    memory: &impl Memory,
-    owner: u32,
-    region: usize,
-) -> Result<i64, &'static str> {
-    memo.select_pass(0, 0x1000);
-    memo.position = None;
-    memo.query(memory, 0, 0x1000, owner, region)
-}
-
-#[test]
-fn vacant_legacy_movement_memo_keeps_healthy_uncached_speed() {
-    let source = fixture();
-    let mut memo = MovementSpeeds::vacant();
-    assert_eq!(
-        query(&mut memo, &source, 1, 0xd000),
-        movement_speed(&source, 0, 0x1000, 1, 0xd000)
-    );
-}
-
-#[test]
-fn transport_success_cache_saturation_keeps_scoped_refusal_and_shared_root() {
-    use std::cell::{Cell, RefCell};
-    struct Fault<'a> {
-        source: &'a Fixture,
-        failed: Cell<bool>,
-        reads: RefCell<Vec<usize>>,
-    }
-    impl Memory for Fault<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.reads.borrow_mut().push(address);
-            if address == 0x14008 && !self.failed.replace(true) {
-                return false;
-            }
-            self.source.copy(address, output)
-        }
-    }
-    let mut source = fixture();
-    source.word(0xc200, 0xd100);
-    source.word(0xd100, cstrategic_region::VTABLE_RVA as u64);
-    source.dword(0xd100 + cstrategic_region::ID, 0);
-    source.dword(0xd100 + cstrategic_region::RUNTIME_SLOT, 0);
-    source.word(0xf000, sweather_per_region::VTABLE_RVA as u64);
-    source.dword(0xf000 + sweather_per_region::ID, 0);
-    source.word(0x14000, 100_000);
-    let memory = Fault {
-        source: &source,
-        failed: Cell::new(false),
-        reads: RefCell::new(Vec::new()),
-    };
-    let mut memo = MovementSpeeds::new(1);
-    memo.reserve_queries(3, 2).unwrap();
-    // Existing optional success-cache saturation uses the uncached path.
-    for index in 0..memo.observations.capacity() {
-        let input = Input::Country(10_000 + index as u32);
-        memo.observations.push(Observation {
-            input,
-            result: Ok(InputValue::Scalar(0)),
-        });
-        memo.index_observation(input, index * 2 + 1);
-    }
-    assert_eq!(
-        memo.get_for_region(&memory, 0, 0x1000, 1, 0xd000, 1),
-        Err("navy regional operand unreadable")
-    );
-    let expected = movement_speed(&source, 0, 0x1000, 1, 0xd100);
-    assert_eq!(
-        memo.get_for_region(&memory, 0, 0x1000, 1, 0xd100, 0),
-        expected
-    );
-    assert_eq!(
-        memo.get_for_region(&memory, 0, 0x1000, 1, 0xd000, 1),
-        Err("navy regional operand unreadable")
-    );
-    assert_eq!(
-        memory
-            .reads
-            .borrow()
-            .iter()
-            .filter(|&&at| at == 0x14008)
-            .count(),
-        1
-    );
-    assert_eq!(
-        memory
-            .reads
-            .borrow()
-            .iter()
-            .filter(|&&at| at == BASE_SPEED_RVA)
-            .count(),
-        1
-    );
-}
-
 struct Fixture {
     bytes: Vec<u8>,
     globals: BTreeMap<usize, Vec<u8>>,
@@ -256,155 +148,6 @@ fn fixture() -> Fixture {
 }
 
 #[test]
-fn hourly_transport_inputs_share_only_complete_current_observations() {
-    use std::cell::RefCell;
-    struct Observed<'a> {
-        source: &'a Fixture,
-        reads: RefCell<Vec<(usize, usize)>>,
-        fault: Option<usize>,
-    }
-    impl Memory for Observed<'_> {
-        fn copy(&self, at: usize, output: &mut [u8]) -> bool {
-            let index = self.reads.borrow().len();
-            self.reads.borrow_mut().push((at, output.len()));
-            if self.fault == Some(index) {
-                output.fill(0xab);
-                return false;
-            }
-            self.source.copy(at, output)
-        }
-    }
-    let mut source = fixture();
-    fn observed(source: &Fixture, fault: Option<usize>) -> Observed<'_> {
-        Observed {
-            source,
-            reads: RefCell::new(vec![]),
-            fault,
-        }
-    }
-    let reference = observed(&source, None);
-    let expected = movement_speed(&reference, 0, 0x1000, 1, 0xd000).unwrap();
-    let first = observed(&source, None);
-    assert_eq!(
-        query(&mut MovementSpeeds::new(8), &first, 1, 0xd000),
-        Ok(expected)
-    );
-    // The owner and enemy share this manager's accepted controls. Only their
-    // repeated attempts disappear; every other operand keeps native order.
-    let shared_controls = [
-        0x1000 + cgame_state::STRATEGIC_NAVY_MANAGER,
-        0x11000,
-        0x11000 + cstrategic_navy_manager::NAVIES,
-    ];
-    let retained = |reads: &[(usize, usize)]| {
-        let mut seen = std::collections::BTreeSet::new();
-        reads
-            .iter()
-            .enumerate()
-            .filter_map(|(index, &(at, width))| {
-                (!shared_controls.contains(&at) || seen.insert((at, width))).then_some(index)
-            })
-            .collect::<Vec<_>>()
-    };
-    let direct_reads = reference.reads.borrow();
-    let retained_indices = retained(&direct_reads);
-    assert_eq!(
-        *first.reads.borrow(),
-        retained_indices
-            .iter()
-            .map(|&index| direct_reads[index])
-            .collect::<Vec<_>>()
-    );
-    assert_eq!(direct_reads.len() - retained_indices.len(), 3);
-    drop(direct_reads);
-    for (fault, &direct_fault) in retained_indices.iter().enumerate() {
-        let direct = observed(&source, Some(direct_fault));
-        let shared = observed(&source, Some(fault));
-        let mut memo = MovementSpeeds::new(8);
-        let expected = movement_speed(&direct, 0, 0x1000, 1, 0xd000);
-        assert!(expected.is_err());
-        assert_eq!(
-            query(&mut memo, &shared, 1, 0xd000),
-            expected,
-            "fault {fault}"
-        );
-        assert_eq!(
-            *shared.reads.borrow(),
-            retained(&direct.reads.borrow())
-                .into_iter()
-                .map(|index| direct.reads.borrow()[index])
-                .collect::<Vec<_>>(),
-            "fault order {fault}"
-        );
-        assert!(memo.owners.is_empty());
-        assert!(memo.enemies.is_empty());
-    }
-    // A second region has different weather and naval operands but the
-    // same owner's ordered enemy/reciprocal-intel dependencies.
-    source.word(0xc200, 0xd100);
-    source.word(0xd100, cstrategic_region::VTABLE_RVA as u64);
-    source.dword(0xd100 + cstrategic_region::ID, 0);
-    source.dword(0xd100 + cstrategic_region::RUNTIME_SLOT, 0);
-    source.word(0xf000, sweather_per_region::VTABLE_RVA as u64);
-    source.dword(0xf000 + sweather_per_region::ID, 0);
-    source.word(0x14000, 100_000);
-    let mut memo = MovementSpeeds::new(8);
-    let shared = observed(&source, None);
-    assert_eq!(query(&mut memo, &shared, 1, 0xd000), Ok(expected));
-    shared.reads.borrow_mut().clear();
-    let direct = observed(&source, None);
-    let expected_second = movement_speed(&direct, 0, 0x1000, 1, 0xd100).unwrap();
-    assert_ne!(expected_second, expected);
-    assert_eq!(query(&mut memo, &shared, 1, 0xd100), Ok(expected_second));
-    assert!(shared.reads.borrow().len() < direct.reads.borrow().len());
-    assert!(
-        !shared
-            .reads
-            .borrow()
-            .iter()
-            .any(|&(at, _)| at == 0xa000 + cdiplomacy_status::ENEMY_COUNTRIES)
-    );
-    assert!(shared.reads.borrow().iter().any(|&(at, _)| at == 0x14000));
-    // Duplicate native enemies contribute once per occurrence. An arena
-    // too small for the full roster must never publish a partial total.
-    for count in [2, 9] {
-        source.array(0xa000 + cdiplomacy_status::ENEMY_COUNTRIES, 0xc000, count);
-        for index in 0..count {
-            source.dword(0xc000 + index as usize * 4, 2);
-        }
-        for capacity in [1, 8] {
-            let mut bounded = MovementSpeeds::new(capacity);
-            for region in [0xd000, 0xd100] {
-                assert_eq!(
-                    query(&mut bounded, &source, 1, region),
-                    movement_speed(&source, 0, 0x1000, 1, region)
-                );
-            }
-            assert_eq!(bounded.enemies.len(), count as usize);
-        }
-    }
-    // A changed enemy gate after the hourly reset must affect both regions.
-    source.put(0xb000 + cdiplomacy_status::CAPITULATED, &[1]);
-    memo.clear();
-    assert_ne!(movement_speed(&source, 0, 0x1000, 1, 0xd000), Ok(expected));
-    for region in [0xd000, 0xd100] {
-        assert_eq!(
-            query(&mut memo, &source, 1, region),
-            movement_speed(&source, 0, 0x1000, 1, region)
-        );
-    }
-    // Vacant/full storage keeps all source observations and exact values.
-    let mut vacant = MovementSpeeds::new(0);
-    let direct = observed(&source, None);
-    let shared = observed(&source, None);
-    assert_eq!(
-        query(&mut vacant, &shared, 1, 0xd000),
-        movement_speed(&direct, 0, 0x1000, 1, 0xd000)
-    );
-    assert_eq!(*shared.reads.borrow(), *direct.reads.borrow());
-}
-
-#[test]
 fn transport_native_fraction_and_separate_rounding_are_preserved() {
     assert_eq!(fraction(1, 3), Ok(33_333));
     assert_eq!(fraction(-1, 3), Ok(-33_333));
@@ -523,14 +266,92 @@ fn transport_faults_never_become_partial_enemy_aggregates() {
     assert_eq!(movement_speed(&m, 0, 0x1000, 1, 0xd000), Ok(200_000));
 }
 
-#[test]
-fn observation_index_demand_excludes_allocator_spare_capacity() {
-    let mut memo = MovementSpeeds::try_with_capacity(0).unwrap();
-    memo.observations.reserve(30_000);
-    memo.failures.reserve(30_000);
-    let slots = observation_slots(5_001, 5_001).unwrap();
-    for _ in 0..20 {
-        memo.reserve_queries(5_001, 0).unwrap();
-        assert_eq!(memo.observation_index.len(), slots);
+#[derive(Default)]
+struct TransferFixture {
+    bytes: BTreeMap<usize, u8>,
+    calls: std::cell::RefCell<Vec<(usize, usize)>>,
+}
+
+impl TransferFixture {
+    fn put(&mut self, address: usize, bytes: &[u8]) {
+        for (offset, byte) in bytes.iter().enumerate() {
+            self.bytes.insert(address + offset, *byte);
+        }
     }
+}
+
+impl Memory for TransferFixture {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.calls.borrow_mut().push((address, output.len()));
+        for (index, byte) in output.iter_mut().enumerate() {
+            let Some(source) = self.bytes.get(&(address + index)) else {
+                return false;
+            };
+            *byte = *source;
+        }
+        true
+    }
+}
+
+#[test]
+fn transfer_uses_the_original_selector_and_signed_status() {
+    const TRANSFER: usize = 0x12000;
+    const TRANSFER_HANDLE: u64 = (7u64 << 32) | 4713;
+    let mut memory = TransferFixture::default();
+    let mut resolves = 0;
+    assert_eq!(
+        transfer(&memory, 0, Err("original selector failed"), |_| panic!(
+            "unreached registry"
+        )),
+        Err("original selector failed")
+    );
+    assert_eq!(
+        transfer(&memory, 0, Ok(0), |_| panic!("null registry")),
+        Ok(Transfer::Absent)
+    );
+    assert!(memory.calls.borrow().is_empty());
+    memory.put(TRANSFER, &(VTABLE_RVA as u64).to_le_bytes());
+    memory.put(TRANSFER + HANDLE, &TRANSFER_HANDLE.to_le_bytes());
+    for status in [-7i32, 0] {
+        memory.put(TRANSFER + ACTION_STATUS, &status.to_le_bytes());
+        assert_eq!(
+            transfer(&memory, 0, Ok(TRANSFER), |handle| {
+                assert_eq!(handle, TRANSFER_HANDLE);
+                resolves += 1;
+                Ok(Some(TRANSFER))
+            }),
+            Ok(Transfer::Present {
+                handle: TRANSFER_HANDLE,
+                status: Ok(status),
+            })
+        );
+    }
+    assert_eq!(resolves, 2);
+    assert!(
+        !memory
+            .calls
+            .borrow()
+            .iter()
+            .any(|(address, _)| *address == TRANSFER + SOURCE_PROVINCE)
+    );
+}
+
+#[test]
+fn transfer_authenticated_identity_survives_independent_status_refusal() {
+    const TRANSFER: usize = 0x12000;
+    const TRANSFER_HANDLE: u64 = (7u64 << 32) | 4713;
+    let mut memory = TransferFixture::default();
+    memory.put(TRANSFER, &(VTABLE_RVA as u64).to_le_bytes());
+    memory.put(TRANSFER + HANDLE, &TRANSFER_HANDLE.to_le_bytes());
+    assert_eq!(
+        transfer(&memory, 0, Ok(TRANSFER), |_| Ok(Some(TRANSFER))),
+        Ok(Transfer::Present {
+            handle: TRANSFER_HANDLE,
+            status: Err("selected transport transfer status unreadable"),
+        })
+    );
+    assert_eq!(
+        transfer(&memory, 0, Ok(TRANSFER), |_| Ok(Some(TRANSFER + 1))),
+        Err("selected transport transfer registry mismatch")
+    );
 }

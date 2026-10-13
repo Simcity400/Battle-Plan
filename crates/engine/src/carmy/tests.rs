@@ -2137,41 +2137,34 @@ fn movement_combat_hits_do_not_hide_later_first_pointer_failure() {
 #[test]
 fn owned_movement_projection_matches_direct_route_caps_and_stack_branches() {
     for class in [0, 1, 13] {
-        for moving in [0, 1] {
-            let mut memory = shared_geometry_fixture();
-            p32(&mut memory.bytes, A1 + crate::cunit::CLASS, class);
-            p32(
-                &mut memory.bytes,
-                0x14000 + crate::unit_map_entity_layout::MOVEMENT_SELECTOR,
-                moving,
-            );
-            let sources = [presentation_source()[0]; 3];
-            for rows in [0, 1, 3] {
-                for paths in [0, 1, 2, 5, 6] {
-                    let mut expected = [super::MovementRow::default(); 3];
-                    let mut actual = expected;
-                    let mut expected_paths = [0; 6];
-                    let mut actual_paths = expected_paths;
-                    let direct = super::walk_movement(
-                        &memory,
-                        0,
-                        GS,
-                        &sources,
-                        Outcome::Rows { len: sources.len() },
-                        &mut expected[..rows],
-                        &mut expected_paths[..paths],
-                    );
-                    let owned = owned_movement_fixture_run(
-                        &memory,
-                        &sources,
-                        &mut actual[..rows],
-                        &mut actual_paths[..paths],
-                    );
-                    assert_eq!(
-                        (owned, actual, actual_paths),
-                        (direct, expected, expected_paths)
-                    );
-                }
+        let mut memory = shared_geometry_fixture();
+        p32(&mut memory.bytes, A1 + crate::cunit::CLASS, class);
+        let sources = [presentation_source()[0]; 3];
+        for rows in [0, 1, 3] {
+            for paths in [0, 1, 2, 5, 6] {
+                let mut expected = [super::MovementRow::default(); 3];
+                let mut actual = expected;
+                let mut expected_paths = [0; 6];
+                let mut actual_paths = expected_paths;
+                let direct = super::walk_movement(
+                    &memory,
+                    0,
+                    GS,
+                    &sources,
+                    Outcome::Rows { len: sources.len() },
+                    &mut expected[..rows],
+                    &mut expected_paths[..paths],
+                );
+                let owned = owned_movement_fixture_run(
+                    &memory,
+                    &sources,
+                    &mut actual[..rows],
+                    &mut actual_paths[..paths],
+                );
+                assert_eq!(
+                    (owned, actual, actual_paths),
+                    (direct, expected, expected_paths)
+                );
             }
         }
     }

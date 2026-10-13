@@ -246,7 +246,7 @@ mod transport_subject_tests {
             country: 11,
             target_index: 1,
             transport_subject: Recorded::Value(Some(TransportSubjectAccess {
-                sample_hour: replay::rows::PacketHour::Stamped(7),
+                sample_hour: replay::rows::PacketHour::Host,
                 complete_owner: true,
                 ..Default::default()
             })),

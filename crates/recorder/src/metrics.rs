@@ -59,12 +59,10 @@ pub(crate) fn percentiles_ns(values: &mut [u64]) -> Option<[u64; 3]> {
     ])
 }
 
-/// Whether a table's acquisition can fail in a recording of `format`: the
-/// format records it and the current format has not retired it. Another
-/// table's absence or discard is named by inspection, never a capture failure.
-fn capture_counted(table: TableId, format: u16) -> bool {
-    let lifetime = table.last_change();
-    lifetime.present(format) && lifetime.present(replay::FORMAT_VERSION)
+fn capture_counted(table: TableId) -> bool {
+    replay::format::FormatVersion::CURRENT
+        .table_refusal(table)
+        .is_none()
 }
 
 fn report(replay: &Replay, branch: BranchId, first: Hour, last: Hour) -> io::Result<Value> {
@@ -139,7 +137,7 @@ fn report(replay: &Replay, branch: BranchId, first: Hour, last: Hour) -> io::Res
                     .or_default() += 1;
             }
             for table in TableId::ALL {
-                if !capture_counted(table, replay.format.version()) {
+                if !capture_counted(table) {
                     continue;
                 }
                 let reason = match &*decoded.tables[table.index()] {
@@ -319,41 +317,6 @@ mod tests {
         );
         assert!(failures.keys().any(|key| key.contains("dropped_frames")));
         assert_eq!(output["callback"]["samples"], 1);
-    }
-
-    #[test]
-    fn retired_tables_are_no_capture_failures_in_current_or_older_recordings() {
-        let older = replay::FORMAT_VERSION - 1;
-        for table in [
-            TableId::DivisionEtaInputs,
-            TableId::AttritionModifierBreakdowns,
-        ] {
-            // Older recordings held these tables; the reader discards them by
-            // name, which is no failure of their capture.
-            assert!(table.last_change().present(older), "{table:?}");
-            assert!(!capture_counted(table, older), "{table:?}");
-            assert!(!capture_counted(table, replay::FORMAT_VERSION), "{table:?}");
-        }
-        for table in [
-            TableId::ReservedNearestNavies,
-            TableId::ReservedNearestBases,
-        ] {
-            assert!(!capture_counted(table, replay::FORMAT_VERSION), "{table:?}");
-        }
-        assert!(capture_counted(TableId::Countries, older));
-        assert!(capture_counted(TableId::Countries, replay::FORMAT_VERSION));
-        // A current recording decodes its retired tables as named absences
-        // and still reports no failure.
-        let current = replay(records());
-        let mut decoder = FrameDecoder::new();
-        let frame = decoder
-            .advance(&current.read_block(&current.index[0]).unwrap()[0])
-            .unwrap();
-        assert!(matches!(
-            &*frame.tables[TableId::DivisionEtaInputs.index()],
-            TableView::Unavailable { reason } if reason.contains("retired at format")
-        ));
-        assert_eq!(report(&current, 9, 2, 4).unwrap()["failures"], json!({}));
     }
 
     #[test]

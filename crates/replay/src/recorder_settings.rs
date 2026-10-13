@@ -1,21 +1,12 @@
 //! Recorder-owned preferences shared with the replay app.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::{
     collections::BTreeMap,
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
 };
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RecordingCompression {
-    #[default]
-    Fast,
-    Small,
-}
 
 /// What the next session of a campaign records into.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -45,8 +36,6 @@ pub struct CampaignChoice {
     /// Recorded country tag whose flag stands for the campaign.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flag: Option<String>,
-    #[serde(flatten)]
-    other: BTreeMap<String, Value>,
 }
 
 impl CampaignChoice {
@@ -55,7 +44,6 @@ impl CampaignChoice {
             && self.next == NextLoad::Continue
             && self.folder.is_none()
             && self.flag.is_none()
-            && self.other.is_empty()
     }
 }
 
@@ -66,8 +54,6 @@ fn enabled() -> bool {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecorderSettings {
-    #[serde(default)]
-    pub compression: RecordingCompression,
     #[serde(default = "enabled")]
     pub record_every_campaign: bool,
     /// Where recordings are saved; absent is the recorder's default folder.
@@ -91,16 +77,11 @@ pub struct RecorderSettings {
     /// Display names by normalized recording path. File names never change.
     #[serde(default)]
     pub recording_names: BTreeMap<String, String>,
-    // Settings clients update only their owned fields; preferences a newer
-    // program adds survive saves from an older one.
-    #[serde(flatten)]
-    other: BTreeMap<String, Value>,
 }
 
 impl Default for RecorderSettings {
     fn default() -> Self {
         Self {
-            compression: RecordingCompression::Fast,
             record_every_campaign: true,
             save_folder: None,
             user_folder: None,
@@ -111,7 +92,6 @@ impl Default for RecorderSettings {
             politics: true,
             campaigns: BTreeMap::new(),
             recording_names: BTreeMap::new(),
-            other: BTreeMap::new(),
         }
     }
 }
@@ -244,37 +224,10 @@ mod tests {
     }
 
     #[test]
-    fn preference_defaults_fast_and_persists_small_without_losing_old_fields() {
-        let root = scratch("compression");
-        let path = root.join("settings.json");
-        assert_eq!(
-            RecorderSettings::load_from(&path).unwrap().compression,
-            RecordingCompression::Fast
-        );
-        fs::write(&path, br#"{"futureRecorderSetting":42}"#).unwrap();
-        let mut settings = RecorderSettings::load_from(&path).unwrap();
-        assert_eq!(settings.compression, RecordingCompression::Fast);
-        settings.compression = RecordingCompression::Small;
-        settings.save_to(&path).unwrap();
-        let restored = RecorderSettings::load_from(&path).unwrap();
-        assert_eq!(restored.compression, RecordingCompression::Small);
-        assert_eq!(restored.other["futureRecorderSetting"], 42);
-        settings.compression = RecordingCompression::Fast;
-        settings.save_to(&path).unwrap();
-        assert_eq!(
-            RecorderSettings::load_from(&path).unwrap().compression,
-            RecordingCompression::Fast
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn old_files_take_the_documented_defaults() {
+    fn first_run_uses_the_documented_defaults() {
         let root = scratch("defaults");
         let path = root.join("settings.json");
-        fs::write(&path, br#"{"compression":"small"}"#).unwrap();
         let settings = RecorderSettings::load_from(&path).unwrap();
-        assert_eq!(settings.compression, RecordingCompression::Small);
         assert!(settings.record_every_campaign);
         assert!(settings.start_with_replay && !settings.start_with_windows);
         assert!(settings.game_score && settings.operation_outcomes && settings.politics);
@@ -284,12 +237,12 @@ mod tests {
     }
 
     #[test]
-    fn campaign_choices_override_the_global_default_and_keep_unknown_fields() {
+    fn campaign_choices_override_the_global_default() {
         let root = scratch("campaigns");
         let path = root.join("settings.json");
         fs::write(
             &path,
-            br#"{"recordEveryCampaign":false,"campaigns":{"a":{"record":true,"futureChoice":"kept"},"b":{"next":"newFile","folder":"b (2)"}}}"#,
+            br#"{"recordEveryCampaign":false,"campaigns":{"a":{"record":true},"b":{"next":"newFile","folder":"b (2)"}}}"#,
         )
         .unwrap();
         let (settings, ()) = RecorderSettings::update_at(&path, |settings| {
@@ -303,8 +256,7 @@ mod tests {
         assert_eq!(settings.campaigns["b"].folder.as_deref(), Some("b (2)"));
         // An entry with no choices is not kept.
         assert!(!settings.campaigns.contains_key("c"));
-        let restored: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(restored["campaigns"]["a"]["futureChoice"], "kept");
+        assert_eq!(RecorderSettings::load_from(&path).unwrap(), settings);
         fs::remove_dir_all(root).unwrap();
     }
 

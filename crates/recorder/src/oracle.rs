@@ -211,9 +211,6 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
     let save_document = save::SaveDocument::read(&fs::read(&save_path)?)?;
     let hour = matching_hour(save_document.date().engine_hour()?, requested_hour)?;
     let replay = Replay::open(fs::read(&replay_path)?)?;
-    for reason in crate::replay_io::compatibility_notes(&replay) {
-        println!("Compatibility gap: {reason}");
-    }
     if save_document.campaign_id() != replay.campaign_id.as_slice() {
         return Err(invalid("save campaign id differs from the replay"));
     }
@@ -309,8 +306,7 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
             installed_content::weather::temperature::read_with(&content.layers, graph, geometry)
         });
     let read_hours = last_read_hours(&replay, frame.branch, hour)?;
-    let mut report = compare_core_in(
-        replay.format,
+    let mut report = compare_core(
         &frame,
         session.sample_boundary,
         &save,
@@ -651,32 +647,7 @@ fn boundary_limitation(boundary: SampleBoundary) -> &'static str {
     }
 }
 
-/// [`compare_core_in`] for a recording in the current format.
-#[cfg(test)]
 fn compare_core(
-    frame: &DecodedFrame,
-    boundary: SampleBoundary,
-    save: &Save,
-    membership: ContentRead<'_, save::PartialMapMembership>,
-    equipment: ContentRead<'_, installed_content::equipment::Database>,
-    read_hours: Option<BTreeMap<TableId, Hour>>,
-) -> io::Result<Report> {
-    compare_core_in(
-        replay::format::FormatVersion::CURRENT,
-        frame,
-        boundary,
-        save,
-        membership,
-        equipment,
-        read_hours,
-    )
-}
-
-/// `format` is the recording's: from [`replay::display::DISPLAY_PRECISION_FORMAT`]
-/// its stepped columns hold display precision, and their comparisons round
-/// the save's exact values the same way.
-fn compare_core_in(
-    format: replay::format::FormatVersion,
     frame: &DecodedFrame,
     boundary: SampleBoundary,
     save: &Save,
@@ -687,8 +658,6 @@ fn compare_core_in(
     validate_identity(frame, save)?;
     let mut report = Report {
         read_hours,
-        display_steps: replay::display::stepped_format(format.version()),
-        format,
         ..Report::default()
     };
     report.record_tables(frame);

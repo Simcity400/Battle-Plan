@@ -278,7 +278,7 @@ public sealed class Hoi4ClockBaseline : IDisposable {
             ReadProcessMemory(process, new IntPtr((long)address), bytes, new UIntPtr(size), out read) && read.ToUInt64() == size;
     }
     bool Presentation(Clock clock) {
-        // engine::cin_game_idler and camera_root_layout: read only, never call engine code.
+        // The game idler and camera root: read only, never call engine code.
         if (!Read(image + 0x33172e0, 8)) return false;
         ulong idler = BitConverter.ToUInt64(bytes, 0);
         if (idler == 0 || idler > long.MaxValue - 0x1000) return false;

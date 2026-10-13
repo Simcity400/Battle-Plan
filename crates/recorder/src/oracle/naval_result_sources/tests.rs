@@ -1,7 +1,6 @@
 use super::*;
 use replay::{
     branches::{BranchReason, BranchStart, Gap, Parentage},
-    format::FormatVersion,
     frame::{FrameEncoder, TableView},
     identity::{Identity, Roster, SessionStart, Verification},
     rows::{CampaignRow, ClockRow, NavalCombatRow, NavalResultRow, TableRows},
@@ -422,31 +421,6 @@ fn later_result_read_resolves_pending_sources_after_an_unavailable_read() {
     ]);
     has_failure(&report, "input_unavailable");
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-}
-
-#[test]
-fn older_recording_reports_one_compatibility_reason_without_scanning_hours() {
-    let frames = [
-        frame(100, &[], &[], vec![]),
-        frame(101, &[], &[], vec![]),
-        frame(102, &[], &[], vec![]),
-    ];
-    let mut replay = replay_of(&frames);
-    // The refusal must happen before reading any payload; only the opened
-    // recording's format is relevant to this compatibility check.
-    replay.format =
-        FormatVersion::read(TableId::NavalResultSources.last_change().introduced - 1).unwrap();
-    let reason = replay
-        .format
-        .table_refusal(TableId::NavalResultSources)
-        .unwrap();
-    let mut report = Report::default();
-    compare(&replay, &frames[2], &mut report).unwrap();
-    has_failure(&report, "compatibility");
-    assert_eq!(report.differences.len(), 1);
-    assert!(report.differences[0].contains(&reason));
-    assert!(report.compared_tables.is_empty());
-    assert!(report.limitations.is_empty());
 }
 
 #[test]

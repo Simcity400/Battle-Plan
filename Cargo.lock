@@ -3849,7 +3849,6 @@ dependencies = [
 name = "recorder-app"
 version = "0.1.0"
 dependencies = [
- "crc32fast",
  "installed-content",
  "recorder",
  "replay",
@@ -3859,7 +3858,6 @@ dependencies = [
  "tauri",
  "tauri-build",
  "windows-sys 0.61.2",
- "zstd",
 ]
 
 [[package]]
@@ -3982,7 +3980,6 @@ dependencies = [
 name = "replay-desktop"
 version = "0.1.0"
 dependencies = [
- "crc32fast",
  "dashboard",
  "engine",
  "installed-content",
@@ -3994,7 +3991,6 @@ dependencies = [
  "tauri-build",
  "tokio",
  "windows-sys 0.61.2",
- "zstd",
 ]
 
 [[package]]

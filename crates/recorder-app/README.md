@@ -7,16 +7,15 @@ Battle Plan Recorder (`battle-plan-recorder.exe`): a tray program that records c
 | File | Responsibility |
 |---|---|
 | [main.rs](src/main.rs) | Single instance, Tauri setup, commands and keeping the app alive with no window. |
-| [worker.rs](src/worker.rs) | The record loop, the published snapshot, Stop/Discard/Record/Quit and compaction after HOI4 closes. |
+| [worker.rs](src/worker.rs) | The record loop, the published snapshot, Stop/Discard/Record/Quit. |
 | [targets.rs](src/targets.rs) | Each campaign's recording folder and New file. |
 | [snapshot.rs](src/snapshot.rs) | The snapshot the panel and tray show, and the reading of collector status into it. |
 | [tray.rs](src/tray.rs) | The runtime-drawn icon, tooltip and right-click menu. |
 | [panel.rs](src/panel.rs), [commands.rs](src/commands.rs) | The panel window and the commands it invokes. |
-| [compaction.rs](src/compaction.rs) | Automatic compaction of finished recordings. |
 | [flags.rs](src/flags.rs) | The viewed country's flag through the recorded content stack. |
 | [startup.rs](src/startup.rs) | One instance per user session, Start with Windows and the taskbar's light/dark mode. |
 
-The panel itself is the `recorder.html` entry of the [frontend](../../ui/README.md); settings live in the shared [RecorderSettings](../replay/README.md#finished-recording-compression) file both programs read. Shared development, validation and storage rules live in [AGENTS.md](../../AGENTS.md); capture behaviour and its checks in the [recorder guide](../recorder/README.md).
+The panel itself is the `recorder.html` entry of the [frontend](../../ui/README.md); settings live in the shared [RecorderSettings](../replay/README.md#recorder-settings) file both programs read. Shared development, validation and storage rules live in [AGENTS.md](../../AGENTS.md); capture behaviour and its checks in the [recorder guide](../recorder/README.md).
 
 ## Lifecycle
 
@@ -32,7 +31,7 @@ The worker looks for one supported game about once a second, woken early by comm
 
 ## Stop, Discard and Quit
 
-Stop opens a one-row prompt asking whether to keep this session: **Save** finalizes as the command line does; **Discard** detaches, then (after collector absence or game exit is proved) finalizes nothing, keeps only the session's `completed.json` (marked `discarded`) and removes its spool, copied collector and evidence. A recording the session would have continued keeps its earlier contents. Pressing Stop again, Esc or clicking away cancels. The right-click menu's **Stop recording** (enabled only while recording) and **Quit** while recording open the panel on the same prompt; Quit exits once Save or Discard completes, and cancelling the prompt cancels Quit. Quit while saving exits when saving ends; Quit while compacting cancels compaction, leaving that recording as recorded.
+Stop opens a one-row prompt asking whether to keep this session: **Save** finalizes as the command line does; **Discard** detaches, then (after collector absence or game exit is proved) finalizes nothing, keeps only the session's `completed.json` (marked `discarded`) and removes its spool, copied collector and evidence. A recording the session would have continued keeps its earlier contents. Pressing Stop again, Esc or clicking away cancels. The right-click menu's **Stop recording** (enabled only while recording) and **Quit** while recording open the panel on the same prompt; Quit exits once Save or Discard completes, and cancelling the prompt cancels Quit. Quit while saving exits when saving ends.
 
 ## Campaigns and files
 
@@ -50,13 +49,9 @@ Left-clicking the tray icon creates the 360 px panel above the icon within the m
 
 The worker publishes a snapshot (phase, campaign, recording path, whether that file held an earlier recording, hour, size, progress, session start, problem, flag) as the `recorder-status` event and through `recorder_status`. Recording size is the earlier recording plus this session's spool bytes; the saved line reads the file's hour span from its trailer and its size. Saving progress counts actual finalization work against about four steps per recorded hour and stops short of complete until saving ends. Saved and Session discarded stay until the panel has shown them; a capture failure stays until shown or the next capture.
 
-The flag is the recording client's viewed country as the game draws it. The collector publishes that country's flag operands in `status.json` (`player`, from committed rows; see the [collector](../collector/README.md#how-it-works)); `installed_content::country_names::flag_keys` turns them into the game's key order (cosmetic tag with and without the ruling group, then the original-or-own tag likewise). A background thread resolves the session's recorded content stack once (the identity in `bin/collector.json`, the game's folder and the session's Paradox user folder, mods first-class) and takes the first key whose `gfx/flags/<key>.tga` exists and passes the game's checked decoder at the content's large flag cell; a missing or refused file falls through, and a key that would leave the flag folder ends the search. The image, bounded to 128 pixels like the replay app's, goes to the panel's flag canvas. No flag is drawn when none resolves, and the panel title stays the campaign's display name. A campaign shown while not recording, saving, compacting or saved keeps the last flag this recorder resolved for it.
+The flag is the recording client's viewed country as the game draws it. The collector publishes that country's flag operands in `status.json` (`player`, from committed rows; see the [collector](../collector/README.md#how-it-works)); `installed_content::country_names::flag_keys` turns them into the game's key order (cosmetic tag with and without the ruling group, then the original-or-own tag likewise). A thread in Windows background mode for CPU and I/O resolves the session's recorded content stack once (the identity in `bin/collector.json`, the game's folder and the session's Paradox user folder, mods first-class) and takes the first key whose `gfx/flags/<key>.tga` exists and passes the game's checked decoder at the content's large flag cell; a missing or refused file falls through, and a key that would leave the flag folder ends the search. The image, bounded to 128 pixels like the replay app's, goes to the panel's flag canvas. No flag is drawn when none resolves, and the panel title stays the campaign's display name. A campaign shown while not recording, saving or saved keeps the last flag this recorder resolved for it.
 
-The 32-pixel icon is drawn at run time: a light ring (dark on a light taskbar) around a dot that is grey at rest, red while recording, amber for a problem and blue while saving or compacting. The tooltip names the state or problem. Problems use plain words; Details opens the session folder with the collector's status and completion records.
-
-## Compaction
-
-With **File size: Small**, recordings written or appended while a game ran are compacted after that game closes, one at a time in Windows thread background mode, through `replay::container::compact_with`: streamed, verified frame by frame and published only when strictly smaller. A game starting (checked every quarter second) or Quit cancels the current file, leaving it as recorded; the rest wait for the next close. Manual Compact stays in Battle Plan.
+The 32-pixel icon is drawn at run time: a light ring (dark on a light taskbar) around a dot that is grey at rest, red while recording, amber for a problem and blue while saving. The tooltip names the state or problem. Problems use plain words; Details opens the session folder with the collector's status and completion records.
 
 ## Build and run
 

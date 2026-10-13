@@ -9,8 +9,6 @@ use crate::{
     creferenced_division_template, cunit, read, walk::Outcome,
 };
 
-pub mod country_movement_inputs;
-
 /// Primary division vtable.
 pub const VTABLE_RVA: usize = 0x0294_3ad0;
 /// Secondary division vtable.

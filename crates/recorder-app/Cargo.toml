@@ -23,9 +23,5 @@ serde_json.workspace = true
 rfd.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading"] }
 
-[dev-dependencies]
-crc32fast = "1"
-zstd = "0.13"
-
 [features]
 custom-protocol = ["tauri/custom-protocol"]

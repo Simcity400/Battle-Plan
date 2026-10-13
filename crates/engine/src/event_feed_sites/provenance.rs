@@ -294,7 +294,7 @@ impl<'a, M: Memory> World<'a, M> {
         Ok(identity(self.memory, self.base, &self.countries, reference)?.1)
     }
 
-    /// The country a `u32` reference pointer names (`ccountry_tag`).
+    /// The country a `u32` reference pointer names.
     pub fn country_at(&self, reference: usize) -> Result<CountryIdentity, &'static str> {
         self.country(value(self.memory, reference, 0)?)
     }

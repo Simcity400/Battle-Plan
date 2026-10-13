@@ -25,8 +25,6 @@ test('every panel state reads as the approved design', () => {
     dot: 'grey', label: null, detail: 'Not recording · 3 Feb 1938', action: 'record', campaign: true, footer: true });
   assert.deepEqual(head(recording({ phase: 'saving', progress: 0.35 }), names), { glyph: false, flag: null, title: 'Operation Barbarossa', dot: 'spin',
     label: 'Saving recording…', detail: null, action: null, campaign: false, footer: false, bar: 0.35 });
-  assert.deepEqual(head(recording({ phase: 'compacting', progress: 0.62, bytes: 640 * MB }), names), { glyph: false, flag: null, title: 'Operation Barbarossa',
-    dot: 'blue', label: 'Compacting', detail: '62% · 640 MB', action: null, campaign: false, footer: true, bar: 0.62 });
   assert.deepEqual(head(recording({ phase: 'saved', firstHour: hour(1936, 1, 1), bytes: 412 * MB }), names), { glyph: false, flag: null,
     title: 'Operation Barbarossa', dot: 'green', label: 'Saved', detail: '1936 – Jun 1943 · 412 MB', action: 'open', campaign: false, footer: true });
   assert.deepEqual(head(recording({ phase: 'discarded' }), names), { glyph: false, flag: null, title: 'Operation Barbarossa', dot: 'grey', label: null,
@@ -52,7 +50,7 @@ test('loads a session left out are said in one plain line, in place of the usual
 
 test('a resolved flag stands beside the campaign in every state that names it', () => {
   const flag = { width: 2, height: 1, pixels: [255, 0, 0, 255, 0, 0, 255, 255] };
-  for (const phase of ['recording', 'notRecording', 'saving', 'compacting', 'saved', 'discarded'] as const)
+  for (const phase of ['recording', 'notRecording', 'saving', 'saved', 'discarded'] as const)
     assert.deepEqual(head(recording({ phase, flag }), names).flag, flag, phase);
   // Waiting names no campaign, so no flag; none resolved means none drawn.
   assert.equal(head(snapshot({ flag }), names).flag, null);
@@ -94,7 +92,7 @@ test('the Stop prompt asks about this session and says what Discard deletes', ()
 });
 
 test('campaign choices follow the global default until set', () => {
-  const settings: RecorderSettings = { compression: 'fast', recordEveryCampaign: true, startWithWindows: false, startWithReplay: true, gameScore: true,
+  const settings: RecorderSettings = { recordEveryCampaign: true, startWithWindows: false, startWithReplay: true, gameScore: true,
     operationOutcomes: true, politics: true, campaigns: { [CAMPAIGN]: { record: false, next: 'newFile' } }, recordingNames: {}, effectiveSaveFolder: 'C:\\r' };
   assert.equal(recordsAutomatically(settings, CAMPAIGN), false);
   assert.equal(nextLoad(settings, CAMPAIGN), 'newFile');

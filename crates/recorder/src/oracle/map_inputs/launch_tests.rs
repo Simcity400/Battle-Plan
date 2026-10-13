@@ -17,7 +17,7 @@ fn fixture(physical: Vec<u32>, countries: &[u8], words: &[i32]) -> (DecodedFrame
                 country_array: Recorded::Value(Some(physical)),
                 owned_state_count: Recorded::Value(Some(3)),
                 launch_sources: Recorded::Value(Some(ReservedLaunchSources {
-                    sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+                    sample_hour: replay::rows::PacketHour::Host,
                     naval_bases: LaunchNavalBases::Bases(
                         words
                             .iter()
@@ -176,23 +176,6 @@ fn native_null_needs_the_current_hour_and_authenticated_save_join() {
                 .contains_key("reserved launch native-null saved absence")
         );
     }
-    frame = baseline.clone();
-    let Recorded::Value(Some(packet)) = &mut row(&mut frame).launch_sources else {
-        unreachable!();
-    };
-    packet.sample_hour = replay::rows::PacketHour::Stamped(packet.sample_hour.stamp().unwrap() - 1);
-    let report = run(&frame, &save);
-    assert!(
-        report
-            .differences
-            .iter()
-            .any(|difference| difference.contains("sample_hour"))
-    );
-    assert!(
-        !report
-            .compared_tables
-            .contains_key("reserved launch native-null saved absence")
-    );
     frame = baseline;
     save.country_naval_launch[0].tag = b"OTHER".to_vec();
     assert!(
@@ -424,7 +407,7 @@ fn unavailable_domains_fail_independently_and_historical_packet_stays_absent() {
     assert_eq!(run(&frame, &save).differences.len(), 1);
     for naval_failed in [true, false] {
         row(&mut frame).launch_sources = Recorded::Value(Some(ReservedLaunchSources {
-            sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+            sample_hour: replay::rows::PacketHour::Host,
             naval_bases: if naval_failed {
                 LaunchNavalBases::Unavailable
             } else {
@@ -450,24 +433,6 @@ fn unavailable_domains_fail_independently_and_historical_packet_stays_absent() {
             !naval_failed
         );
     }
-}
-
-#[test]
-fn wrong_hour_cannot_compare_same_date_values() {
-    let (mut frame, save) = fixture(vec![0, 0], b"RESERVED={strategic_navy={}}", &[]);
-    let hour = frame.hour;
-    let Recorded::Value(Some(packet)) = &mut row(&mut frame).launch_sources else {
-        unreachable!()
-    };
-    packet.sample_hour = replay::rows::PacketHour::Stamped(hour - 1);
-    let report = run(&frame, &save);
-    assert_eq!(report.differences.len(), 1);
-    assert!(report.differences[0].contains("sample_hour"));
-    assert!(
-        !report
-            .compared_tables
-            .contains_key("reserved launch saved naval bases")
-    );
 }
 
 #[test]

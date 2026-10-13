@@ -6,6 +6,29 @@ use installed_content::{ResolveOptions, ResolvedLayers, flags::FlagSet, image::R
 use replay::identity::Identity;
 use serde::Serialize;
 use std::io;
+use windows_sys::Win32::System::Threading::{
+    GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN, THREAD_MODE_BACKGROUND_END,
+};
+
+/// Windows background mode for this thread's CPU and I/O while loading flags.
+pub(crate) struct BackgroundPriority;
+
+impl BackgroundPriority {
+    pub(crate) fn enter() -> io::Result<Self> {
+        if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for BackgroundPriority {
+    fn drop(&mut self) {
+        unsafe {
+            SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
+        }
+    }
+}
 
 /// Longest side of the flag handed to the panel, as the replay app bounds its flags.
 const MAX_FLAG_EDGE: u32 = 128;

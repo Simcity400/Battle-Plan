@@ -1,6 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod compaction;
 mod dashboard_service;
 mod native;
 mod recorder;
@@ -147,7 +146,6 @@ fn main() {
     }
     let app = tauri::Builder::default()
         .manage(video::VideoState::default())
-        .manage(compaction::CompactionHost::default())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main")
                 && let Err(error) = video::restore(&window)
@@ -156,9 +154,6 @@ fn main() {
                     .0
                     .lock()
                     .map_err(|e| std::io::Error::other(e.to_string()))? = Err(error);
-            }
-            if let Err(error) = app.state::<compaction::CompactionHost>().start() {
-                eprintln!("Compaction hints could not be read: {error}");
             }
             recorder::start_recorder();
             Ok(())
@@ -181,12 +176,7 @@ fn main() {
             replay_library::set_replay_folder,
             replay_library::choose_replay_folder,
             replay_library::choose_recording,
-            compaction::recorder_settings,
-            compaction::set_recording_compression,
-            compaction::compact_recording,
-            compaction::compact_replay_folder,
-            compaction::compaction_progress,
-            compaction::recording_compaction_status,
+            recorder::recorder_settings,
             recorder::recording_preferences,
             recorder::set_recording_names,
             recorder::set_campaign_flag,
@@ -208,7 +198,6 @@ fn main() {
         ) {
             app.state::<DashboardService>().shutdown();
             app.state::<NativeHost>().shutdown();
-            app.state::<compaction::CompactionHost>().shutdown();
         }
     });
 }

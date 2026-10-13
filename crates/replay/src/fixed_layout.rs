@@ -100,7 +100,7 @@ pub const TRANSPORT_RISK: Family = Family {
 /// keeps the keys authenticated.
 pub const TRANSPORT_AIR: Family = Family {
     name: "selected transport air normalization",
-    keys: &engine::transport_air_normalization::KEYS,
+    keys: &engine::modifier_keys::TRANSPORT_AIR_NORMALIZATION,
     tokens: &[],
     tables: &[],
 };

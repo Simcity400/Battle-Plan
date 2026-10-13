@@ -17,7 +17,6 @@ pub enum Phase {
     Saving,
     Saved,
     Discarded,
-    Compacting,
 }
 
 /// Why loads were left out of a session's recordings.
@@ -66,7 +65,7 @@ pub struct Snapshot {
     pub first_hour: Option<i32>,
     /// Bytes on disk for this recording.
     pub bytes: Option<u64>,
-    /// Saving or compacting progress, 0 to 1, when it can be told.
+    /// Saving progress, 0 to 1, when it can be told.
     pub progress: Option<f64>,
     /// When this session began recording, in milliseconds since the Unix epoch.
     pub started_at: Option<u64>,
@@ -164,7 +163,7 @@ impl Snapshot {
         } else {
             match self.phase {
                 Phase::Recording => Light::Recording,
-                Phase::Saving | Phase::Compacting => Light::Busy,
+                Phase::Saving => Light::Busy,
                 _ => Light::Idle,
             }
         }
@@ -180,7 +179,6 @@ impl Snapshot {
             (None, Phase::Saving) => "Saving recording…",
             (None, Phase::Saved) => "Saved",
             (None, Phase::Discarded) => "Session discarded",
-            (None, Phase::Compacting) => "Compacting",
         };
         format!("Battle Plan Recorder: {state}")
     }
@@ -271,8 +269,6 @@ mod tests {
         snapshot.phase = Phase::Saving;
         assert_eq!(snapshot.light(), Light::Busy);
         assert_eq!(snapshot.tooltip(), "Battle Plan Recorder: Saving recording…");
-        snapshot.phase = Phase::Compacting;
-        assert_eq!(snapshot.light(), Light::Busy);
         snapshot.problem = Some(Problem {
             text: "2 hours couldn't be recorded".into(),
             detail: String::new(),

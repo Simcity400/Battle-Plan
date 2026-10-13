@@ -16,7 +16,7 @@ fn ordered_enemies_accept_reserved_zero_repeats_and_native_order_without_save_cr
                 enemies_read: 0,
                 enemies: vec![],
                 ordered: Some(OrderedEnemyInputs {
-                    sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+                    sample_hour: replay::rows::PacketHour::Host,
                     entries: vec![77, 0, 77, 9],
                 })
                 .into(),
@@ -27,7 +27,7 @@ fn ordered_enemies_accept_reserved_zero_repeats_and_native_order_without_save_cr
                 enemies_read: 1,
                 enemies: vec![77, 0, 9, 77],
                 ordered: Some(OrderedEnemyInputs {
-                    sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+                    sample_hour: replay::rows::PacketHour::Host,
                     entries: vec![77, 0, 9, 77],
                 })
                 .into(),
@@ -59,23 +59,14 @@ fn ordered_enemies_accept_reserved_zero_repeats_and_native_order_without_save_cr
 }
 
 #[test]
-fn ordered_enemy_history_refusal_staleness_and_empty_current_packet_are_distinct() {
+fn ordered_enemy_absence_refusal_and_empty_current_packet_are_distinct() {
     let (mut frame, _) = fixture();
     for (field, differences, historical) in [
         (Recorded::NotRecorded, 0, true),
         (Recorded::Value(None), 1, false),
         (
             Some(OrderedEnemyInputs {
-                sample_hour: replay::rows::PacketHour::Stamped(frame.hour + 1),
-                entries: vec![],
-            })
-            .into(),
-            1,
-            false,
-        ),
-        (
-            Some(OrderedEnemyInputs {
-                sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+                sample_hour: replay::rows::PacketHour::Host,
                 entries: vec![],
             })
             .into(),

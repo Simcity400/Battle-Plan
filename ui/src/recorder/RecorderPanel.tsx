@@ -43,7 +43,6 @@ export interface PanelViewProps {
   root?: Ref<HTMLDivElement>;
 }
 
-const FILE_SIZE_HINT = 'Fast saves straight away. Small compacts each recording after the game closes; about a third smaller.';
 const folderName = (path: string) => path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
 
 function Switch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
@@ -88,9 +87,6 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
       {error && notice}
       <section className="recorder-section is-first">
         <Switch label="Record every campaign" checked={settings.recordEveryCampaign} onChange={recordEveryCampaign => actions.settings({ recordEveryCampaign })} />
-        <div className="recorder-row"><span>File size <span className="recorder-info" tabIndex={0} data-tooltip={FILE_SIZE_HINT}><Icon name="info" /></span></span>
-          <Segmented label="File size" value={settings.compression} options={[{ value: 'fast', label: 'Fast' }, { value: 'small', label: 'Small' }]}
-            onChange={compression => actions.settings({ compression })} /></div>
         <div className="recorder-row"><span>Save to</span>
           <button type="button" className="recorder-path" data-tooltip={settings.effectiveSaveFolder} onClick={actions.saveFolder}>
             <span>{settings.effectiveSaveFolder}</span><i><Icon name="folder" /></i></button></div>

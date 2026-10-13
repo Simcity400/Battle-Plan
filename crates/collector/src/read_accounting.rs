@@ -121,6 +121,7 @@ impl Capture {
         capture
     }
 
+    #[cfg(test)]
     pub(crate) fn finish(mut self) -> TableCounts {
         let mut tables = ZERO;
         self.restore(Some(&mut tables));

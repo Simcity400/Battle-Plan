@@ -117,11 +117,11 @@ pub(super) fn last_read_hours(
     Ok(last)
 }
 
-/// Whether the current format no longer records `table`: a retired table.
-/// No comparison reads it, so its named refusal, in a current or an older
-/// recording, is listed but is no table availability issue.
+/// Tables outside the current recording contract have no acquisition to compare.
 pub(super) fn retired_table(table: TableId) -> bool {
-    !table.last_change().present(replay::FORMAT_VERSION)
+    replay::format::FormatVersion::CURRENT
+        .table_refusal(table)
+        .is_some()
 }
 
 pub(super) fn recorded_table_counts(
@@ -207,14 +207,8 @@ pub(super) struct Report {
     pub(super) boundary_verdict: Option<String>,
     /// The compared session's sample boundary, printed with the witness.
     pub(super) sample_boundary: Option<SampleBoundary>,
-    /// The recording stores its stepped columns at the game's display
-    /// precision ([`replay::display`]); an older recording holds them exact.
-    pub(super) display_steps: bool,
     /// Each column compared at display precision, with that precision.
     pub(super) display_compared: BTreeMap<String, String>,
-    /// The recording's format, which decides where it holds what (a fuel
-    /// demand pack's lists, say).
-    pub(super) format: replay::format::FormatVersion,
 }
 
 impl Report {
@@ -644,9 +638,6 @@ impl Report {
     /// to the column's display step when the recording keeps that column at
     /// display precision, which the report then names.
     pub(super) fn displayed(&mut self, column: &str, step: Step, saved: i64) -> i64 {
-        if !self.display_steps {
-            return saved;
-        }
         if !self.display_compared.contains_key(column) {
             self.display_compared
                 .insert(column.to_owned(), step.describe());
@@ -693,15 +684,11 @@ impl Report {
         match (captured, saved) {
             (Some(captured), Some(saved)) => {
                 self.scalar_checks += 1;
-                let expected = if self.display_steps {
-                    if !self.display_compared.contains_key(column) {
-                        self.display_compared
-                            .insert(column.to_owned(), precision.to_owned());
-                    }
-                    round(saved.raw)
-                } else {
-                    saved.raw
-                };
+                if !self.display_compared.contains_key(column) {
+                    self.display_compared
+                        .insert(column.to_owned(), precision.to_owned());
+                }
+                let expected = round(saved.raw);
                 if captured != expected {
                     self.difference(format!("{tag}.{field}"), captured, expected);
                 }
@@ -790,7 +777,7 @@ impl Report {
     pub(super) fn format_line(format: replay::format::FormatVersion) -> String {
         let tables = TableId::ALL
             .into_iter()
-            .filter(|&table| table.last_change().present(format.version()) && !retired_table(table))
+            .filter(|&table| !retired_table(table))
             .count();
         format!(
             "Replay format {}: comparison checks {} table types",

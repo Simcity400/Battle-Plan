@@ -5,7 +5,7 @@ import { recordingDisplayName } from '../dashboard/recordingNames.ts';
 import type { RecordingNames } from '../dashboard/recordingNames.ts';
 import { formatMegabytes } from '../charts/numberFormat.ts';
 
-export type Phase = 'waiting' | 'notRecording' | 'recording' | 'saving' | 'saved' | 'discarded' | 'compacting';
+export type Phase = 'waiting' | 'notRecording' | 'recording' | 'saving' | 'saved' | 'discarded';
 export interface Problem { text: string; detail: string }
 /** Loads a finished session recorded but left out of its recordings, and why when it is one reason. */
 export interface OmittedLoads { loads: number; reason: 'off' | 'elsewhere' | 'settings' | 'notAdmitted' | null }
@@ -36,7 +36,6 @@ export interface Snapshot {
 export type NextLoad = 'continue' | 'newFile';
 export interface CampaignChoice { record?: boolean; next?: NextLoad; folder?: string; flag?: string }
 export interface RecorderSettings {
-  compression: 'fast' | 'small';
   recordEveryCampaign: boolean;
   saveFolder?: string;
   userFolder?: string;
@@ -51,7 +50,7 @@ export interface RecorderSettings {
   effectiveSaveFolder: string;
 }
 
-export type Dot = 'red' | 'grey' | 'blue' | 'green' | 'spin';
+export type Dot = 'red' | 'grey' | 'green' | 'spin';
 export type HeadAction = 'stop' | 'record' | 'open';
 
 /** The head row and which parts of the panel follow it. */
@@ -129,9 +128,6 @@ export function head(snapshot: Snapshot, names: RecordingNames): Head {
         action: snapshot.stopping ? null : 'stop', campaign: snapshot.campaign != null };
     case 'saving':
       return { ...plain, glyph: !named, dot: 'spin', label: 'Saving recording…', footer: false, bar: snapshot.progress };
-    case 'compacting':
-      return { ...plain, glyph: !named, dot: 'blue', label: 'Compacting',
-        detail: joined([snapshot.progress == null ? null : `${Math.round(snapshot.progress * 100)}%`, sizeText(snapshot.bytes)]), bar: snapshot.progress ?? 0 };
     case 'saved':
       return { ...plain, glyph: !named, dot: 'green', label: 'Saved', detail: omitted ?? joined([spanText(snapshot.firstHour, snapshot.hour), sizeText(snapshot.bytes)]),
         action: snapshot.recording ? 'open' : null };

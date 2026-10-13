@@ -3352,33 +3352,38 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 }
                 (naval_roots_ticks, naval_job)
             });
-            let mut orders_request = frame.extended.take_orders_request(
-                &country_snapshot,
-                &mut frame.map.orders,
-                shared.base,
-                state,
-            );
-            let orders_bytes = orders_request.allocated_bytes();
-            // The order census and its plans need only the root census: they
-            // leave in parts over ranges of the groups (`orders_parts`): the
-            // Orders job walks part 0, an OrdersPart job each other part. The
-            // Naval copy leaves with them; ChildFronts waits for both.
-            let mut order_part_pending: [Option<PendingAcquisition>;
-                crate::orders_parts::MAX_PARTS - 1] =
-                [const { None }; crate::orders_parts::MAX_PARTS - 1];
-            for index in 1..orders_request.orders.part_count() {
-                if let Some(part) = orders_request.orders.take_part(index) {
-                    order_part_pending[index - 1] = Some(queue!(acquisition::Job::OrdersPart(
-                        acquisition::OrdersPartRequest {
-                            base: shared.base,
-                            index,
-                            part,
-                            rejected: false,
-                        }
-                    )));
+            // Out of line: building the request and its submission closure
+            // must not leave two request-sized values in the hourly body.
+            let (orders_bytes, order_part_pending, orders_pending) = out_of_line(|| {
+                let mut orders_request = frame.extended.take_orders_request(
+                    &country_snapshot,
+                    &mut frame.map.orders,
+                    shared.base,
+                    state,
+                );
+                let orders_bytes = orders_request.allocated_bytes();
+                // The order census and its plans need only the root census: they
+                // leave in parts over ranges of the groups (`orders_parts`): the
+                // Orders job walks part 0, an OrdersPart job each other part. The
+                // Naval copy leaves with them; ChildFronts waits for both.
+                let mut order_part_pending: [Option<PendingAcquisition>;
+                    crate::orders_parts::MAX_PARTS - 1] =
+                    [const { None }; crate::orders_parts::MAX_PARTS - 1];
+                for index in 1..orders_request.orders.part_count() {
+                    if let Some(part) = orders_request.orders.take_part(index) {
+                        order_part_pending[index - 1] = Some(queue!(acquisition::Job::OrdersPart(
+                            acquisition::OrdersPartRequest {
+                                base: shared.base,
+                                index,
+                                part,
+                                rejected: false,
+                            }
+                        )));
+                    }
                 }
-            }
-            let orders_pending = queue!(acquisition::Job::Orders(orders_request));
+                let orders_pending = queue!(acquisition::Job::Orders(orders_request));
+                (orders_bytes, order_part_pending, orders_pending)
+            });
             // The Naval copy's raw phase reads no wing value: the wing census
             // is installed when it returns. Behind the wing
             // join it was the next join the game thread waited for (0.18 ms

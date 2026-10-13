@@ -4,3 +4,4 @@
 *.md text eol=lf
 ui/src/generated/dashboard.ts text eol=lf
 *.png binary
+LICENSES/** text eol=lf

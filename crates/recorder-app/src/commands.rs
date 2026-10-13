@@ -5,7 +5,7 @@ use crate::{
     startup,
     worker::{Recorder, save_folder},
 };
-use replay::recorder_settings::{NextLoad, RecorderSettings, RecordingCompression};
+use replay::recorder_settings::{NextLoad, RecorderSettings};
 use serde::{Deserialize, Serialize};
 use std::{
     os::windows::process::CommandExt,
@@ -112,7 +112,6 @@ pub async fn recorder_settings() -> Result<SettingsView, String> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SettingsPatch {
     record_every_campaign: Option<bool>,
-    compression: Option<RecordingCompression>,
     start_with_windows: Option<bool>,
     start_with_replay: Option<bool>,
     game_score: Option<bool>,
@@ -145,9 +144,6 @@ pub async fn update_recorder_settings(
             set(&mut settings.game_score, patch.game_score);
             set(&mut settings.operation_outcomes, patch.operation_outcomes);
             set(&mut settings.politics, patch.politics);
-            if let Some(compression) = patch.compression {
-                settings.compression = compression;
-            }
         })
     })
     .await?;

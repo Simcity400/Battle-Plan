@@ -23,11 +23,6 @@ const HEADER_MAGIC: &[u8; 4] = b"H4RP";
 const TRAILER_MAGIC: &[u8; 4] = b"H4TR";
 const FOOTER_MAGIC: &[u8; 4] = b"H4FT";
 const FOOTER_SIZE: usize = 24;
-mod compaction;
-pub use compaction::{
-    CompactionOutcome, CompactionResult, CompactionStage, ReplayRevision, compact, compact_with,
-    replay_revision,
-};
 // A decoder allocation bound, not a campaign-size or frame-count limit.
 // V1E branch 6 held 720 valid frames (~5.95 GB raw) between keyframes;
 // writers must close smaller independently decodable blocks before this bound.
@@ -799,7 +794,7 @@ impl Replay {
         Ok(replay)
     }
 
-    /// Shared metadata validation for in-memory readers and file compaction;
+    /// Container metadata validation;
     /// `warnings` carries what the caller already found (a trailer checksum failure).
     fn open_metadata(
         header_bytes: &[u8],

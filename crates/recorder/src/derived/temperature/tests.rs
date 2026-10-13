@@ -2,7 +2,7 @@ use super::*;
 use replay::{
     frame::{Metrics, TableView},
     rows::{ProvinceTemperature, TableId, TableRows, TemperaturePass},
-    temperature::{PERIOD_DEFAULT_DATE, Period, Province, Settings, State},
+    temperature::{self, PERIOD_DEFAULT_DATE, Period, Province, Settings, State},
 };
 
 const HOUR: i32 = 43_800_000 + 1936 * 8_760 + 100 * 24;
@@ -136,7 +136,7 @@ fn anchored_frames_must_reproduce_their_checksum_and_proven_anchors_their_words(
     ];
     let mut checker = Checker::new(Ok(content.clone()));
     for frame in &frames {
-        checker.observe(frame, &Ok([0, 0]));
+        checker.observe(frame);
     }
     let stats = &checker.stats;
     assert_eq!(
@@ -162,71 +162,27 @@ fn anchored_frames_must_reproduce_their_checksum_and_proven_anchors_their_words(
             &differing,
             pass(HOUR + 2, vec![], Some(8), simulation.cursor, 0),
         )));
-    let mut checker = Checker::new(Ok(content));
+    let mut checker = Checker::new(Ok(content.clone()));
     for frame in &wrong {
-        checker.observe(frame, &Ok([0, 0]));
+        checker.observe(frame);
     }
     // The hour before the second anchor failed its checksum, so that anchor is unproven
     // like the first frame's.
     assert_eq!(checker.stats.checksum_mismatches, 2);
     assert_eq!(checker.stats.anchors_unproven, 2);
-    let mut checker = Checker::new(Ok(content_with_window(2)));
+    let mut checker = Checker::new(Ok(content));
     wrong[1] = frames[1].clone();
     for frame in &wrong {
-        checker.observe(frame, &Ok([0, 0]));
+        checker.observe(frame);
     }
     assert_eq!(checker.stats.anchor_rows_differing, 1);
-}
-
-fn content_with_window(width: i32) -> Content {
-    let mut content = content();
-    content.settings.provinces_per_update = width;
-    content
-}
-
-fn hourly(temperatures: &[i64]) -> Vec<WeatherProvinceRow> {
-    temperatures
-        .iter()
-        .enumerate()
-        .map(|(slot, &temperature)| WeatherProvinceRow {
-            id: slot as u32,
-            temperature: ProvinceTemperature::historical(temperature),
-            temperature_pass: Recorded::NotRecorded,
-            ..Default::default()
-        })
-        .collect()
-}
-
-#[test]
-fn hourly_temperatures_change_only_in_the_rotating_window() {
-    let content = content();
-    let hours = [
-        hourly(&[0, 500_000, 900_000, -200_000]),
-        // The window of two from cursor 1: slots 1 and 2.
-        hourly(&[0, 600_000, 800_000, -200_000]),
-        // Then slots 3 and 0; slot 0 is inactive.
-        hourly(&[0, 600_000, 800_000, -100_000]),
-    ];
-    let mut checker = Checker::new(Ok(content.clone()));
-    for (offset, rows) in hours.iter().enumerate() {
-        checker.observe(&frame(HOUR + offset as i32, rows.clone()), &Ok([0, 0]));
-    }
-    assert_eq!(checker.stats.mismatches(), 0);
-    assert_eq!(checker.stats.bounded_compared, 3);
-    // Slot 1 changing with slot 3 fits no window that followed the first hour's.
-    let mut outside = hours.clone();
-    outside[2] = hourly(&[0, 700_000, 800_000, -100_000]);
-    let mut checker = Checker::new(Ok(content.clone()));
-    for (offset, rows) in outside.iter().enumerate() {
-        checker.observe(&frame(HOUR + offset as i32, rows.clone()), &Ok([0, 0]));
-    }
-    assert_eq!(checker.stats.window_mismatches, 1);
-    // Nothing changes while the manager is suspended; an inactive province never changes.
-    let mut checker = Checker::new(Ok(content));
-    checker.observe(&frame(HOUR, hours[0].clone()), &Ok([0, 0]));
-    checker.observe(
-        &frame(HOUR + 1, hourly(&[1, 500_000, 900_000, -200_000])),
-        &Ok([1, 0]),
+    let mut stats = Stats::default();
+    compare_anchor(
+        &mut stats,
+        &frames[2],
+        &anchored(&simulation.states[..3], pass(HOUR + 2, vec![], None, 0, 0)),
+        &simulation,
+        simulation.cursor,
     );
-    assert_eq!(checker.stats.suspended_changed, 1);
+    assert_eq!(stats.anchor_rows_differing, 1);
 }

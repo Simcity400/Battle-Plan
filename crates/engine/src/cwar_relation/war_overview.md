@@ -79,8 +79,10 @@ resolvers. Preserve explicit refusals and the recording language of stored custo
 
 Worker storage grows from original acquired headers. Header fingerprints reuse
 discovery only: pointer pages, retired bytes, goal lists and score operands are
-checked freshly. Full refreshes and failures invalidate retained discovery. Native
-pointers stay within the acquisition; they never become replay identities.
+checked freshly. The type-pointer gather keeps its bounded batch scratch in its
+own frame, separate from the walker's owned pointer pages and type bytes.
+Full refreshes and failures invalidate retained discovery. Native pointers stay
+within the acquisition; they never become replay identities.
 
 The [war oracle](../../../recorder/src/oracle/wars.rs) compares ordered references,
 joins serialized goal objects and checks saved naming operands. It preserves list

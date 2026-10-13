@@ -1,5 +1,5 @@
 use replay::recorder_settings::RecorderSettings;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::WebviewWindow;
 
@@ -15,20 +15,6 @@ pub struct ReplayLibrary {
     folder: Option<String>,
     pub(super) files: Vec<ReplayFile>,
 }
-/// This app's own folder file, adopted once into Battle Plan Recorder's settings.
-#[derive(Deserialize)]
-struct Settings {
-    folder: String,
-}
-
-fn settings_path() -> Result<PathBuf, String> {
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .ok_or("User configuration folder is unavailable")?;
-    Ok(base.join("battle-plan").join("replay-folder.json"))
-}
-
 pub(super) fn scan(folder: &Path) -> Result<ReplayLibrary, String> {
     scan_with(folder, || Ok(()))
 }
@@ -97,29 +83,11 @@ pub(super) fn scan_with(
     })
 }
 
-/// The recordings folder this app lists, shared with Battle Plan Recorder through its
-/// settings: the folder recordings are saved to. The app's own earlier choice
-/// becomes that folder once, when none was chosen there, so what it listed
-/// stays listed and nothing moves.
-fn shared_folder(settings: &Path, legacy: &Path) -> Result<PathBuf, String> {
-    if let Ok(bytes) = std::fs::read(legacy)
-        && let Ok(previous) = serde_json::from_slice::<Settings>(&bytes)
-    {
-        RecorderSettings::update_at(settings, |shared| {
-            if shared.save_folder.is_none() {
-                shared.save_folder = Some(PathBuf::from(previous.folder));
-            }
-        })
-        .map_err(|error| format!("Recorder settings could not be saved: {error}"))?;
-        std::fs::remove_file(legacy).map_err(|error| error.to_string())?;
-    }
-    RecorderSettings::load_from(settings)
+/// The recorder's save folder, shared through its settings.
+pub(super) fn configured_folder() -> Result<PathBuf, String> {
+    RecorderSettings::load()
         .map(|shared| shared.effective_save_folder())
         .map_err(|error| format!("Recorder settings could not be read: {error}"))
-}
-
-pub(super) fn configured_folder() -> Result<PathBuf, String> {
-    shared_folder(&RecorderSettings::path(), &settings_path()?)
 }
 
 #[tauri::command]
@@ -193,53 +161,6 @@ pub async fn choose_recording(window: WebviewWindow) -> Result<Option<String>, S
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_app_and_recorder_share_one_recordings_folder_adopting_the_apps_choice_once() {
-        let root = std::env::temp_dir().join(format!(
-            "hoi4-shared-folder-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let settings = root.join("settings.json");
-        let legacy = root.join("replay-folder.json");
-        // Nothing chosen anywhere: both use the recorder's default folder.
-        assert_eq!(
-            shared_folder(&settings, &legacy).unwrap(),
-            replay::recorder_settings::default_save_folder()
-        );
-        // The app's earlier folder becomes the shared one, once.
-        let listed = root.join("my recordings");
-        std::fs::write(
-            &legacy,
-            serde_json::to_vec(&serde_json::json!({"folder": listed})).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(shared_folder(&settings, &legacy).unwrap(), listed);
-        assert!(!legacy.exists());
-        assert_eq!(
-            RecorderSettings::load_from(&settings).unwrap().save_folder,
-            Some(listed.clone())
-        );
-        // A folder already chosen in the recorder is kept; the app follows it.
-        let recorder = root.join("recorder folder");
-        RecorderSettings::update_at(&settings, |shared| {
-            shared.save_folder = Some(recorder.clone())
-        })
-        .unwrap();
-        std::fs::write(
-            &legacy,
-            serde_json::to_vec(&serde_json::json!({"folder": listed})).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(shared_folder(&settings, &legacy).unwrap(), recorder);
-        assert!(!legacy.exists());
-        std::fs::remove_dir_all(root).unwrap();
-    }
 
     #[test]
     fn cancellation_interrupts_a_scan_between_recording_metadata_reads() {

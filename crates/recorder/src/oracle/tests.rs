@@ -930,7 +930,6 @@ fn division_supply_grace_compares_at_display_precision() {
     let tokens = BTreeMap::new();
     let check = |saved: &Save, grace: Result<i32, String>| {
         let mut report = Report {
-            display_steps: true,
             ..Report::default()
         };
         compare_division_status(&frame, saved, &tokens, &Ok(50_000), &grace, &mut report).unwrap();
@@ -972,7 +971,7 @@ fn division_supply_grace_compares_at_display_precision() {
 }
 
 #[test]
-fn division_supply_grace_oracle_requires_unconditional_save_fields_and_keeps_old_absence() {
+fn division_supply_grace_oracle_requires_unconditional_save_fields_at_display_precision() {
     let (mut frame, mut saved, _, _) = division_fixture();
     let id = *saved.divisions.keys().next().unwrap();
     let presentation = &mut saved.divisions.get_mut(&id).unwrap().presentation;
@@ -981,7 +980,7 @@ fn division_supply_grace_oracle_requires_unconditional_save_fields_and_keeps_old
     let row = DivisionStatusRow {
         division: id,
         supply_grace_maximum: Recorded::Value(9_007_199_254_740_993),
-        supply_grace_remaining: Recorded::Value(-1_234_567),
+        supply_grace_remaining: Recorded::Value(-1_234_000),
         supply: Recorded::NotRecorded,
         ..Default::default()
     };
@@ -997,7 +996,7 @@ fn division_supply_grace_oracle_requires_unconditional_save_fields_and_keeps_old
         if field == 0 {
             p.max_supply = None;
         } else {
-            p.army_current_supply_ratio = Some(Decimal::parse(b"-12.34566").unwrap());
+            p.army_current_supply_ratio = Some(Decimal::parse(b"-12.33567").unwrap());
         }
         let mut report = Report::default();
         compare_division_status(&frame, &wrong, &tokens, &Ok(50_000), &Ok(72), &mut report)
@@ -1017,22 +1016,6 @@ fn division_supply_grace_oracle_requires_unconditional_save_fields_and_keeps_old
     let mut report = Report::default();
     compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report).unwrap();
     assert_eq!(report.differences.len(), 2);
-    *frame.tables[TableId::DivisionStatus.index()] =
-        TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
-            supply_grace_maximum: Recorded::NotRecorded,
-            supply_grace_remaining: Recorded::NotRecorded,
-            ..row
-        }]));
-    let mut report = Report::default();
-    compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report).unwrap();
-    assert!(report.differences.is_empty());
-    for field in ["supply_grace_maximum", "supply_grace_remaining"] {
-        assert!(
-            report
-                .limitations
-                .contains_key(&format!("DivisionStatus.{field} not recorded"))
-        );
-    }
 }
 
 #[test]
@@ -1755,57 +1738,6 @@ fn failed_content_reads_preserve_independent_map_and_pack_diagnostics() {
             .contains("equipment definition is malformed")
     );
     assert!(report.outcome().is_err());
-}
-
-/// A current recording refuses every retired table by name. No comparison
-/// reads one, so none fails a comparison group, is counted as compared or is
-/// a table availability issue.
-#[test]
-fn retired_tables_refused_by_name_fail_no_comparison_group() {
-    let (mut frame, saved, membership, equipment) = fixture();
-    for table in replay::rows::compatibility::RETIRED_TABLES {
-        *frame.tables[table.index()] = TableView::Unavailable {
-            reason: format!(
-                "{table:?} retired at format {0}; this recording is format {0}",
-                replay::FORMAT_VERSION
-            ),
-        };
-    }
-    let mut report = compare(&frame, &saved, &membership, &equipment).unwrap();
-    compare_extended(
-        &frame,
-        &saved,
-        ExtendedContent {
-            membership: Ok(&membership),
-            base_resources: Ok(&save::construction::PartialBaseResources::default()),
-            railway_adjacency: Err("railway content is outside this fixture".into()),
-            buildings: Ok(&installed_content::buildings::Buildings::default()),
-            defines: Ok(&installed_content::defines::Defines::new().unwrap()),
-            raid_graph: Err("map/adjacencies.csv: unused".into()),
-            equipment: Err("common/units/equipment: unused".into()),
-            leader_traits: Err("common/country_leader: unused".into()),
-            sub_units: Err("common/units: unused".into()),
-            essential_caps: Err("common/units: unused".into()),
-            intelligence: Err("common/intelligence_agency_upgrades: unused".into()),
-            temperature: Err("unused".into()),
-        },
-        &mut report,
-    );
-    assert_eq!(report.unavailable_tables(), 0);
-    for table in replay::rows::compatibility::RETIRED_TABLES {
-        let name = format!("{table:?}");
-        assert!(
-            !report.compared_tables.keys().any(|key| key.contains(&name)),
-            "{name}: {:?}",
-            report.compared_tables
-        );
-        for (group, reason) in &report.failed_comparisons {
-            assert!(
-                !group.contains(&name) && !reason.contains(&name),
-                "{group}: {reason}"
-            );
-        }
-    }
 }
 
 #[test]
@@ -2645,20 +2577,6 @@ fn division_oracle_compares_display_precision_and_three_distinct_owners() {
             "  Divisions.organisation: 0.1 (fixed5, toward zero)".to_owned(),
         ]
     );
-    // A recording before display steps holds exact values: the same rows
-    // now differ from the save.
-    let report = compare_core_in(
-        replay::format::FormatVersion::read(replay::display::DISPLAY_PRECISION_FORMAT - 1).unwrap(),
-        &frame,
-        SampleBoundary::EndOfHour,
-        &save,
-        Ok(&membership),
-        Ok(&equipment),
-        None,
-    )
-    .unwrap();
-    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
-    assert!(report.display_precision_lines().is_empty());
     let mut changed = frame.clone();
     let row = division_row_mut(&mut changed);
     row.hit_points -= 1;
@@ -4781,9 +4699,7 @@ fn country_intel_reads_absent_in_range_records_as_zero_and_keeps_the_count() {
     assert!(lines[0].contains("GER.intel[5000..5010]"));
 }
 
-/// Format-24 sessions sample at the end of the hour; the oracle compares
-/// save hour H with recorded hour H and names that boundary in its report,
-/// while an older session keeps the after-update limitation.
+/// The oracle names the session's sample boundary and its instant limits.
 #[test]
 fn the_oracle_selects_the_session_sample_boundary() {
     let (mut frame, save, membership, equipment) = relation_fixture();

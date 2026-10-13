@@ -3,6 +3,11 @@
 //! Fixed names come from verified executable metadata, independently of content
 //! order. Dynamic keys come from live data.
 
+/// Air-wing, ace and country keys authenticated by the transport air family.
+pub const TRANSPORT_AIR_NORMALIZATION: [u32; 16] = [
+    2, 0xb, 0xd, 0xf, 0x10, 0x6f, 0x70, 0x72, 0x74, 0x75, 0x76, 0x104, 0x105, 0x106, 0x10d, 0x25a,
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Key {
     pub index: u32,

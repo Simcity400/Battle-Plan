@@ -44,7 +44,7 @@ fn fixture_name(value: TemplateNameValue) -> (DecodedFrame, Save) {
                 template,
                 country: 102,
                 display_name: Recorded::Value(Some(TemplateDisplayName {
-                    sample_hour: replay::rows::PacketHour::Stamped(77),
+                    sample_hour: replay::rows::PacketHour::Host,
                     value,
                 })),
                 ..Default::default()
@@ -145,7 +145,7 @@ fn active_fallback_key_is_compared_and_save_nul_limit_is_named() {
 }
 
 #[test]
-fn current_name_refusal_and_stale_sample_fail_saved_operand_acceptance() {
+fn current_name_refusal_fails_saved_operand_acceptance() {
     let (mut frame, saved) = fixture_name(TemplateNameValue::Changed {
         literal: b"New".to_vec(),
         fallback_key: None,
@@ -162,23 +162,6 @@ fn current_name_refusal_and_stale_sample_fail_saved_operand_acceptance() {
             .keys()
             .any(|field| field.contains("display_name"))
     );
-    row.display_name = Recorded::Value(Some(TemplateDisplayName {
-        sample_hour: replay::rows::PacketHour::Stamped(frame.hour - 1),
-        value: TemplateNameValue::Changed {
-            literal: b"New".to_vec(),
-            fallback_key: None,
-        },
-    }));
-    *frame.tables[TableId::DivisionTemplateIcons.index()] =
-        TableView::Complete(TableRows::DivisionTemplateIcons(vec![row]));
-    let report = report_name(&frame, &saved);
-    assert!(report.outcome().is_err());
-    assert!(
-        report
-            .failed_comparisons
-            .values()
-            .any(|why| why.contains("not current"))
-    );
 }
 
 #[test]
@@ -190,7 +173,7 @@ fn missing_same_frame_certificate_and_malformed_demand_fail_saved_comparison() {
     assert!(report_name(&frame, &saved).outcome().is_err());
     let mut row = frame.complete::<tables::DivisionTemplateIcons>().unwrap()[0].clone();
     row.display_name = Recorded::Value(Some(TemplateDisplayName {
-        sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+        sample_hour: replay::rows::PacketHour::Host,
         value: TemplateNameValue::Changed {
             literal: b"New".to_vec(),
             fallback_key: Some(b"inactive".to_vec()),

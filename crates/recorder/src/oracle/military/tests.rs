@@ -379,37 +379,23 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
             ..Default::default()
         }))
     };
-    // (display steps, recorded footer, saved disruption, differences)
-    for (stepped, supply, text, differences) in [
-        // Format 101 and earlier recorded the exact word.
-        (
-            false,
-            value(9_007_199_254_740_993),
-            Some("90071992547.40993"),
-            0,
-        ),
-        (
-            false,
-            value(9_007_199_254_740_992),
-            Some("90071992547.40993"),
-            1,
-        ),
-        (false, value(0), Some("0.00001"), 1),
+    // (recorded footer, saved disruption, differences)
+    for (supply, text, differences) in [
         // Current recordings hold the printed hundredth, half away from zero
         // with a nonzero amount kept; the save's word is rounded the same way.
-        (true, value(1_000), Some("0.00001"), 0),
-        (true, value(1_000), Some("0.01499"), 0),
-        (true, value(1_000), Some("0.01500"), 1),
-        (true, value(0), Some("0.00001"), 1),
+        (value(1_000), Some("0.00001"), 0),
+        (value(1_000), Some("0.01499"), 0),
+        (value(1_000), Some("0.01500"), 1),
+        (value(0), Some("0.00001"), 1),
         // The save omits nonpositive disruption only.
-        (true, value(0), None, 0),
-        (true, value(-1_000), None, 0),
-        (true, value(1_000), None, 1),
+        (value(0), None, 0),
+        (value(-1_000), None, 0),
+        (value(1_000), None, 1),
         // A refused scalar pack differs; an older recording's absence is a
         // named limitation.
-        (true, Recorded::Value(None), None, 1),
-        (true, Recorded::Value(None), Some("0.00001"), 1),
-        (true, Recorded::NotRecorded, Some("0.00001"), 0),
+        (Recorded::Value(None), None, 1),
+        (Recorded::Value(None), Some("0.00001"), 1),
+        (Recorded::NotRecorded, Some("0.00001"), 0),
     ] {
         saved
             .divisions
@@ -428,10 +414,7 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
                 ..Default::default()
             }]),
         );
-        let mut report = Report {
-            display_steps: stepped,
-            ..Report::default()
-        };
+        let mut report = Report::default();
         compare_division_status(
             &frame,
             &saved,
@@ -460,7 +443,7 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
                     .contains_key("DivisionStatus.supply not recorded")
             );
         }
-        if stepped && text.is_some() && matches!(supply, Recorded::Value(Some(_))) {
+        if text.is_some() && matches!(supply, Recorded::Value(Some(_))) {
             assert!(
                 report.display_precision_lines().iter().any(|line| line
                     == "  DivisionStatus.supply.disruption: 0.01 (fixed5, half away from zero, nonzero kept)")
@@ -839,8 +822,8 @@ fn naval_combats_compare_locations_and_missing_rows_despite_membership_exclusion
 }
 
 /// One saved ship with 30.00999 experience beside a recorded row holding
-/// `recorded`, compared as a recording with or without display steps.
-fn ship_experience_report(recorded: i64, display_steps: bool) -> Report {
+/// `recorded`, compared at its display step.
+fn ship_experience_report(recorded: i64) -> Report {
     let membership = membership();
     let (mut frame, mut saved, _, _) = super::super::tests::fixture();
     let owner = saved.countries.keys().next().unwrap().clone();
@@ -922,10 +905,7 @@ fn ship_experience_report(recorded: i64, display_steps: bool) -> Report {
         }]),
     );
     let context = super::super::country_context(&frame).unwrap();
-    let mut report = Report {
-        display_steps,
-        ..Report::default()
-    };
+    let mut report = Report::default();
     compare_naval_units(&frame, &saved, &membership, &context.links, &mut report).unwrap();
     assert_eq!(report.ships, 1);
     report
@@ -933,23 +913,17 @@ fn ship_experience_report(recorded: i64, display_steps: bool) -> Report {
 
 /// Ships.experience is recorded at a hundredth truncated toward zero
 /// (`ShipRow::EXPERIENCE_STEP`): the save's exact value is rounded the same
-/// way, and an older recording's exact value compares exactly.
+/// way.
 #[test]
 fn ship_experience_compares_at_its_display_step() {
-    let report = ship_experience_report(3_000_000, true);
+    let report = ship_experience_report(3_000_000);
     assert_differences(&report, &[]);
     assert_eq!(
         report.display_precision_lines()[1..],
         ["  Ships.experience: 0.01 (fixed5, toward zero)".to_owned()]
     );
     assert_differences(
-        &ship_experience_report(2_990_000, true),
-        &["type=15 id=0.experience"],
-    );
-    // A recording before display steps holds the exact value.
-    assert_differences(&ship_experience_report(3_000_999, false), &[]);
-    assert_differences(
-        &ship_experience_report(3_000_000, false),
+        &ship_experience_report(2_990_000),
         &["type=15 id=0.experience"],
     );
 }

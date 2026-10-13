@@ -3762,6 +3762,11 @@ fn convert_with_helper(
         packs: [Option<TableInput>; TABLE_COUNT],
         costs: [i64; crate::extended::PACK_NAMES.len()],
     }
+    const EMPTY_OUTPUT: HelperOutput = HelperOutput {
+        map: None,
+        packs: [const { None }; TABLE_COUNT],
+        costs: [0; crate::extended::PACK_NAMES.len()],
+    };
     let projection = conversion
         .projection
         .as_ref()
@@ -3798,7 +3803,7 @@ fn convert_with_helper(
         projection: own_projection.as_deref_mut(),
         helper: None,
     };
-    let lane = |lanes: u8, with_map: bool, output: &std::sync::Mutex<Option<HelperOutput>>| {
+    let lane = |lanes: u8, with_map: bool, output: &std::sync::Mutex<HelperOutput>| {
         let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
         crate::allocation::set_context(context);
         let caches = {
@@ -3826,29 +3831,23 @@ fn convert_with_helper(
             }
         };
         let mut projection = projection;
-        let span = HELPER.span(Phase::ConvertCore);
-        let map = with_map.then(|| crate::map_spool::table_inputs(map, projection.as_mut()));
-        let span = span.switch(Phase::ConvertPacks);
-        let mut packs = std::array::from_fn(|_| None);
-        let mut costs = [0; crate::extended::PACK_NAMES.len()];
-        view.tables(
-            hour,
-            lanes,
-            projection.as_mut(),
-            caches,
-            &mut packs,
-            &mut costs,
-        );
-        span.finish();
-        *output
+        // Fill the caller's output slot directly, so the complete pack array
+        // is never copied through another helper-frame aggregate.
+        let mut output = output
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(HelperOutput { map, packs, costs });
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let span = HELPER.span(Phase::ConvertCore);
+        output.map = with_map.then(|| crate::map_spool::table_inputs(map, projection.as_mut()));
+        let span = span.switch(Phase::ConvertPacks);
+        let HelperOutput { packs, costs, .. } = &mut *output;
+        view.tables(hour, lanes, projection.as_mut(), caches, packs, costs);
+        span.finish();
     };
-    let (first, second) = (std::sync::Mutex::new(None), std::sync::Mutex::new(None));
+    let first = std::sync::Mutex::new(EMPTY_OUTPUT);
+    let second = helpers.second.map(|_| std::sync::Mutex::new(EMPTY_OUTPUT));
     let first_lanes = if helpers.second.is_some() { 0b01 } else { 0b11 };
     let first_job = || lane(first_lanes, true, &first);
-    let second_job = || lane(0b10, false, &second);
+    let second_job = || lane(0b10, false, second.as_ref().expect("second helper output"));
     let mut pack_ticks = [None; crate::extended::PACK_NAMES.len()];
     let own = || {
         let conversion = &mut conversion;
@@ -3871,13 +3870,10 @@ fn convert_with_helper(
         None => helpers.first.join(helpers.backlogged, &first_job, own),
     };
     wait.finish();
-    for output in [first, second] {
-        let Some(HelperOutput { map, packs, costs }) = output
+    for output in [Some(first), second].into_iter().flatten() {
+        let HelperOutput { map, packs, costs } = output
             .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-        else {
-            continue;
-        };
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(map) = map {
             for (destination, value) in tables[TableId::Players.index()..].iter_mut().zip(map) {
                 *destination = value;

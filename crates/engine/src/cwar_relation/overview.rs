@@ -247,6 +247,33 @@ fn pointer(bytes: &[u8]) -> usize {
     u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize
 }
 
+// Keep the 32 KiB pointer scratch in its own frame, separate from the
+// walker's owned pages and type bytes, without retained storage.
+#[inline(never)]
+fn gather_owned_types(
+    memory: &impl Memory,
+    owned_pages: &[u8],
+    vectors: &[Array],
+    type_starts: &mut [usize],
+    page_types: &mut [u8; 64 * 64 * 4],
+) -> Result<(), &'static str> {
+    let mut type_pointers = [0; 64 * 64];
+    let mut type_count = 0;
+    for (index, vector) in vectors.iter().enumerate() {
+        type_starts[index] = type_count;
+        for ordinal in 0..vector.count.min(64) as usize {
+            type_pointers[type_count] = pointer(&owned_pages[index * 512 + ordinal * 8..]);
+            type_count += 1;
+        }
+    }
+    gather(
+        memory,
+        &type_pointers[..type_count],
+        [(crelation::TYPE_ID, 4)],
+        page_types,
+    )
+}
+
 #[derive(Clone, Copy, Default)]
 struct Occurrence {
     owner: u32,
@@ -578,21 +605,13 @@ fn walk_cached_buffer(
             if memory.copy_scattered(addresses, &mut destinations) != 64 {
                 return Err("war overview owned pointer page unreadable");
             }
-            let mut type_pointers = [0; 64 * 64];
             let mut type_starts = [0; 64];
-            let mut type_count = 0;
-            for index in 0..n {
-                type_starts[index] = type_count;
-                for ordinal in 0..vectors[index].count.min(64) as usize {
-                    type_pointers[type_count] = pointer(&owned_pages[index * 512 + ordinal * 8..]);
-                    type_count += 1;
-                }
-            }
             let mut page_types = [0; 64 * 64 * 4];
-            gather(
+            gather_owned_types(
                 memory,
-                &type_pointers[..type_count],
-                [(crelation::TYPE_ID, 4)],
+                &owned_pages,
+                &vectors[..n],
+                &mut type_starts,
                 &mut page_types,
             )?;
             for index in 0..n {

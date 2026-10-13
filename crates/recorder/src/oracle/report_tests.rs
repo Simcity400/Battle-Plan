@@ -1,104 +1,6 @@
 use super::*;
 
 #[test]
-fn report_prints_the_recordings_accepted_format() {
-    for version in [
-        replay::rows::compatibility::PROVEN_FROM,
-        97,
-        replay::FORMAT_VERSION - 1,
-        replay::FORMAT_VERSION,
-    ] {
-        let format = replay::format::FormatVersion::read(version).unwrap();
-        // A retired table is no comparison check, even where it was recorded.
-        let tables = TableId::ALL
-            .into_iter()
-            .filter(|table| {
-                table.last_change().present(version)
-                    && table.last_change().present(replay::FORMAT_VERSION)
-            })
-            .count();
-        assert_eq!(
-            Report::format_line(format),
-            format!("Replay format {version}: comparison checks {tables} table types")
-        );
-    }
-}
-
-/// A current recording no longer records the retired tables. Decoded as
-/// named absences, they are listed but are neither availability issues nor
-/// differences, so the comparison stays complete. An older recording's
-/// discarded rows are named by the same retirement and are not counted
-/// either; an ordinary refused table still is.
-#[test]
-fn retired_tables_are_named_but_never_availability_issues() {
-    let retired = [
-        TableId::DivisionEtaInputs,
-        TableId::AttritionModifierBreakdowns,
-        TableId::ReservedNearestNavies,
-        TableId::ReservedNearestBases,
-    ];
-    let (mut frame, _, _, _) = tests::fixture();
-    let mut report = Report::default();
-    report.record_tables(&frame);
-    for table in retired {
-        assert!(report::retired_table(table), "{table:?}");
-        let reason = report.recorded_tables[&table].as_ref().unwrap_err();
-        assert!(
-            reason.contains(&format!(
-                "{table:?} retired at format {}",
-                replay::FORMAT_VERSION
-            )),
-            "{reason}"
-        );
-    }
-    assert!(!report::retired_table(TableId::DivisionMovement));
-    assert_eq!(report.unavailable_tables(), 0);
-    assert!(report.differences.is_empty());
-    report.outcome().unwrap();
-    assert!(
-        report.coverage_line().starts_with(
-            "Comparison status for recorded-format coverage: complete; 0 table availability issues"
-        ),
-        "{}",
-        report.coverage_line()
-    );
-
-    let older = replay::format::FormatVersion::read(replay::FORMAT_VERSION - 1).unwrap();
-    for table in [
-        TableId::DivisionEtaInputs,
-        TableId::AttritionModifierBreakdowns,
-    ] {
-        // The older format recorded these rows; today's reader discards them.
-        assert!(table.last_change().present(older.version()));
-        *frame.tables[table.index()] = TableView::Unavailable {
-            reason: older.table_refusal(table).unwrap(),
-        };
-    }
-    let mut report = Report::default();
-    report.record_tables(&frame);
-    assert_eq!(report.unavailable_tables(), 0);
-    let reason = report.recorded_tables[&TableId::DivisionEtaInputs]
-        .as_ref()
-        .unwrap_err();
-    assert!(
-        reason.contains(&format!(
-            "DivisionEtaInputs retired at format {}; this recording is format {}",
-            replay::FORMAT_VERSION,
-            older.version()
-        )),
-        "{reason}"
-    );
-    report.outcome().unwrap();
-
-    *frame.tables[TableId::Stockpiles.index()] = TableView::Unavailable {
-        reason: "failed native walk".into(),
-    };
-    report.record_tables(&frame);
-    assert_eq!(report.unavailable_tables(), 1);
-    assert!(report.outcome().is_err());
-}
-
-#[test]
 fn oracle_output_keeps_the_latest_uncovered_content_note() {
     let root = std::env::temp_dir().join(format!(
         "hoi4_oracle_content_notes_{}_{:?}",
@@ -416,7 +318,7 @@ fn a_report_without_differences_prints_no_difference_section() {
 }
 
 // Reporting fixtures contain only the gaps under test, independent of the
-// shared save fixture's historical fields and future row suffixes.
+// shared save fixture's unavailable fields.
 fn field_gap_frame() -> DecodedFrame {
     DecodedFrame {
         branch: 1,
@@ -429,7 +331,7 @@ fn field_gap_frame() -> DecodedFrame {
 }
 
 #[test]
-fn compatibility_field_limitations_aggregate_counts_without_duplicate_subjects() {
+fn field_limitations_aggregate_counts_without_duplicate_subjects() {
     use replay::rows::{ProvinceTemperature, Recorded, TemperatureRecord, WeatherProvinceRow};
 
     let mut frame = field_gap_frame();
@@ -437,7 +339,7 @@ fn compatibility_field_limitations_aggregate_counts_without_duplicate_subjects()
         .map(|id| WeatherProvinceRow {
             id,
             temperature: if id == 0 {
-                ProvinceTemperature::historical(0)
+                ProvinceTemperature::anchored(replay::temperature::State::default())
             } else {
                 ProvinceTemperature::NOT_RECORDED
             },
@@ -458,7 +360,7 @@ fn compatibility_field_limitations_aggregate_counts_without_duplicate_subjects()
         report.record_tables(&frame);
         for row in &rows {
             let temperature = match row.temperature.record() {
-                Ok(TemperatureRecord::AtHour(temperature)) => Recorded::Value(temperature),
+                Ok(TemperatureRecord::Anchored(state)) => Recorded::Value(state.temperature),
                 _ => Recorded::NotRecorded,
             };
             report.recorded(
@@ -468,15 +370,14 @@ fn compatibility_field_limitations_aggregate_counts_without_duplicate_subjects()
             );
             report.recorded(&row.raw_mud, "WeatherProvinces.raw_mud", row.id.to_string());
         }
-        // A historical temperature holds the committed word alone, so the
-        // anchored drift and staged words are gaps on every row.
+        // Only the first row holds all the anchored temperature words.
         assert_eq!(report.limitations.len(), 5);
         for (field, count) in [
             ("temperature", 13_412),
             ("raw_mud", 13_413),
-            ("temperature_drift", 13_413),
-            ("temperature_staged", 13_413),
-            ("temperature_working", 13_413),
+            ("temperature_drift", 13_412),
+            ("temperature_staged", 13_412),
+            ("temperature_working", 13_412),
         ] {
             assert_eq!(
                 report.limitations[&format!("WeatherProvinces.{field} not recorded")],
@@ -665,18 +566,4 @@ fn a_report_without_limitations_keeps_the_existing_header() {
         Report::default().limitation_lines().collect::<Vec<_>>(),
         ["Limitations:"]
     );
-}
-
-#[test]
-fn current_packets_are_fresh_and_only_a_historical_other_hour_is_a_difference() {
-    use replay::rows::PacketHour;
-    let mut report = Report::default();
-    // Current packets were read with their hourly host row.
-    assert!(report.packet_fresh("Synthetic.packet", PacketHour::Host, 41));
-    assert!(report.packet_fresh("Synthetic.packet", PacketHour::Stamped(41), 41));
-    assert!(report.differences.is_empty());
-    assert!(!report.packet_fresh("Synthetic.packet", PacketHour::Stamped(40), 41));
-    assert_eq!(report.differences.len(), 1);
-    assert!(report.differences[0].contains("Synthetic.packet.sample_hour"));
-    assert_eq!(report.scalar_checks, 3);
 }

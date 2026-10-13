@@ -14,7 +14,7 @@ use replay::{
 
 use super::{CountryContext, Report, TokenNames, complete, invalid, required_country_tag};
 
-pub(super) const RETIRED_LIMITATION: &str =
+pub(super) const ENDED_WAR_LIMITATION: &str =
     "Retired owned war occurrences have no comparable serialized live goal list.";
 
 pub(super) const LIMITATIONS: &[&str] = &[
@@ -98,7 +98,7 @@ pub(super) fn compare(
             }
             relation
         } else {
-            report.limitation(RETIRED_LIMITATION, label.clone());
+            report.limitation(ENDED_WAR_LIMITATION, label.clone());
             None
         };
         for (side, count) in [row.first_goal_count, row.second_goal_count]

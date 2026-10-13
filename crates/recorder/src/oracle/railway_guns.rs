@@ -650,7 +650,7 @@ mod tests {
         use replay::rows::{FreshRailwayCounterEta, Recorded};
         let mut frame = fixture();
         let packet = FreshRailwayCounterEta {
-            sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+            sample_hour: replay::rows::PacketHour::Host,
             maximum_speed: Some(i64::MIN),
             land_supply_factor: Some(i64::MAX),
             orders_group: Some(0),
@@ -705,20 +705,6 @@ mod tests {
                 fresh: Recorded::Value(Some(FreshRailwayCounterEta {
                     orders_group: None,
                     ..transfer
-                })),
-                ..row.clone()
-            })
-            .differences
-            .len(),
-            1
-        );
-        assert_eq!(
-            run(RailwayGunCounterInputRow {
-                fresh: Recorded::Value(Some(FreshRailwayCounterEta {
-                    sample_hour: replay::rows::PacketHour::Stamped(
-                        packet.sample_hour.stamp().unwrap() - 1
-                    ),
-                    ..packet
                 })),
                 ..row.clone()
             })

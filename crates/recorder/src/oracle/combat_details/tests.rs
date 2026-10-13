@@ -192,7 +192,6 @@ fn cas_operands_compare_anti_air_exactly_and_prevented_damage_at_its_step() {
                 ..Default::default()
             }]));
         let mut report = Report {
-            display_steps: true,
             ..Default::default()
         };
         land(frame, save, &mut report).unwrap();

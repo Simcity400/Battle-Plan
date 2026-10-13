@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { newId } from '../shell/ids.ts';
 import { desktopAvailable } from '../shell/api';
 import type { SourceReply } from '../generated/dashboard';
-import type { CompactionProgress, DashboardClient, DashboardMapState, DashboardSource, HistoryCacheReply, MapSettingsReply, ProductReply, RecorderSettings, RecordingCompression, ReplayLibrary } from './client';
+import type { DashboardClient, DashboardMapState, DashboardSource, HistoryCacheReply, MapSettingsReply, ProductReply, RecorderSettings, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
 
 function cancelled(): DOMException {
@@ -59,12 +59,6 @@ export const nativeDashboardClient: DashboardClient = {
     chooseReplayFolder: (initial?: string) => invoke<string | null>('choose_replay_folder', { initial: initial ?? null }),
     chooseRecording: () => invoke<string | null>('choose_recording'),
     recorderSettings: () => invoke<RecorderSettings>('recorder_settings'),
-    setRecordingCompression: (compression: RecordingCompression) => invoke<RecorderSettings>('set_recording_compression', { compression }),
-    compactRecording: (path: string) => invoke<CompactionProgress>('compact_recording', { path }),
-    compactReplayFolder: () => invoke<CompactionProgress>('compact_replay_folder'),
-    compactionProgress: () => invoke<CompactionProgress>('compaction_progress'),
-    recordingCompacted: (path: string) => invoke<boolean>('recording_compaction_status', { path }),
-    onRecordingCompacted: (callback: (path: string) => void) => listen<string>('recording-compacted', event => callback(event.payload)),
   } : {}),
 
   async mapSettings(sourceId, revision, settings, signal, target = { scope: 'campaign' }) {

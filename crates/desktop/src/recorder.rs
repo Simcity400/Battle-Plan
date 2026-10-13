@@ -90,6 +90,14 @@ async fn blocking<T: Send + 'static>(
 }
 
 #[tauri::command]
+pub async fn recorder_settings() -> Result<RecorderSettings, String> {
+    tauri::async_runtime::spawn_blocking(RecorderSettings::load)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn recording_preferences() -> Result<RecordingPreferences, String> {
     blocking(|| {
         RecorderSettings::load()

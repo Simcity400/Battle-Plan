@@ -12,11 +12,7 @@
 //! listed with their province or record and hour.
 //!
 //! `--census` counts, for every table, how many rows and which fields each
-//! hour's delta changes. `--sizes` writes the table again with the derived
-//! fields held constant and attributes its compressed bytes as `sizes` does.
-//! `--weather-factor <steps>` writes DivisionStatus again with its
-//! `weather_factor` at each step and counts the attack list entries that
-//! would print differently ([`weather_factor`]).
+//! hour's delta changes. Differences and incomplete comparisons fail the command.
 
 use std::{
     collections::BTreeMap,
@@ -27,25 +23,19 @@ use std::{
 
 use installed_content::ResolveOptions;
 use replay::{
-    container::{Replay, Section},
+    container::Replay,
     day_night::{self, Clock, HourOperands, ProvinceClock},
-    frame::{DecodedFrame, Frame, FrameDecoder, FrameEncoder, TABLE_COUNT, TableUpdate, TableView},
+    frame::{DecodedFrame, Frame, FrameDecoder, TABLE_COUNT, TableUpdate, TableView},
     identity::Verification,
-    rows::{
-        ClockState, DayNightClock, ProvinceTemperature, Recorded, TableId, TemperatureRecord,
-        tables,
-    },
-    spool::Record,
-    temperature::State,
+    rows::{ClockState, Recorded, TableId, tables},
 };
 
 mod attack;
 mod naval_trees;
 mod power_balance;
 mod temperature;
-mod weather_factor;
 
-pub const USAGE: &str = "recorder derived <campaign.battleplan> [--game-dir <directory>] [--user-dir <directory>] [--census] [--sizes] [--weather-factor <raw step>[,<raw step>...]]";
+pub const USAGE: &str = "recorder derived <campaign.battleplan> [--game-dir <directory>] [--user-dir <directory>] [--census]";
 
 /// Mismatches listed by name; all of them are counted.
 const LISTED: usize = 40;
@@ -55,41 +45,18 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
     let mut game_dir = None;
     let mut user_dir = None;
     let mut census = false;
-    let mut sizes = false;
-    let mut weather_steps = Vec::new();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--game-dir") => game_dir = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
             Some("--user-dir") => user_dir = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
             Some("--census") => census = true,
-            Some("--sizes") => sizes = true,
-            Some("--weather-factor") => {
-                weather_steps = weather_factor_steps(args.next().ok_or(USAGE)?.to_str())?;
-            }
             _ if path.is_none() => path = Some(PathBuf::from(arg)),
             _ => return Err(USAGE.into()),
         }
     }
     let path = path.ok_or(USAGE)?;
-    run(&path, game_dir, user_dir, census, sizes, &weather_steps).map_err(|error| error.to_string())
-}
-
-/// Comma-separated fixed5 raw steps, each a divisor of one above one
-/// (`replay::display::Step::fixed5`); `default` is [`weather_factor::DEFAULT_STEPS`].
-fn weather_factor_steps(list: Option<&str>) -> Result<Vec<i64>, String> {
-    let list = list.ok_or(USAGE)?;
-    if list == "default" {
-        return Ok(weather_factor::DEFAULT_STEPS.to_vec());
-    }
-    list.split(',')
-        .map(|step| match step.trim().parse::<i64>() {
-            Ok(raw) if raw > 1 && 100_000 % raw == 0 => Ok(raw),
-            _ => Err(format!(
-                "weather_factor step {step:?} is not a fixed5 raw divisor of 100000 above 1"
-            )),
-        })
-        .collect()
+    run(&path, game_dir, user_dir, census).map_err(|error| error.to_string())
 }
 
 /// The recording's content facts the derivations read.
@@ -101,8 +68,6 @@ struct Content {
     temperature: Result<replay::temperature::Content, String>,
     /// Each terrain category's own adjuster attack, in database order.
     terrains: Result<Vec<i64>, String>,
-    /// Province to strategic region, for the weather_factor what-if.
-    regions: Result<BTreeMap<u32, u32>, String>,
     /// The verified stack, for lazily read databases (static modifiers).
     layers: installed_content::ResolvedLayers,
 }
@@ -177,37 +142,18 @@ fn content(
                 .collect()
         })
         .map_err(|error| error.to_string());
-    let regions = installed_content::regions::read(&resolved.layers)
-        .map_err(|error| error.to_string())
-        .and_then(|database| {
-            let mut regions = BTreeMap::new();
-            for (id, region) in database.regions {
-                for province in region.provinces {
-                    if regions
-                        .insert(province, id)
-                        .is_some_and(|previous| previous != id)
-                    {
-                        return Err(format!(
-                            "province {province} is in more than one strategic region"
-                        ));
-                    }
-                }
-            }
-            Ok(regions)
-        });
     Ok(Content {
         defines,
         clocks,
         temperature,
         terrains,
-        regions,
         layers: resolved.layers,
     })
 }
 
 #[derive(Default)]
 struct ClockStats {
-    /// Rows holding a recorded clock (held from format 102, every row in 101).
+    /// Rows holding a recorded clock.
     rows: u64,
     /// Rows recording only that the native writer updated them.
     recorded_updated: u64,
@@ -224,6 +170,7 @@ struct ClockStats {
     /// Rows whose hour does not prove both gates clear, by recorded flags.
     held: BTreeMap<String, u64>,
     held_equal: u64,
+    held_unproven: u64,
     not_recorded: u64,
     no_content: u64,
     hours: u64,
@@ -351,6 +298,7 @@ fn check_clocks(frame: &DecodedFrame, content: &Content, stats: &mut ClockStats)
             continue;
         }
         if !matches!(gates, Ok([0, 0])) {
+            stats.held_unproven += u64::from(gates.is_err());
             let key = match &gates {
                 Ok(flags) => format!("flags {flags:?}"),
                 Err(reason) => reason.clone(),
@@ -385,229 +333,11 @@ fn check_clocks(frame: &DecodedFrame, content: &Content, stats: &mut ClockStats)
     }
 }
 
-/// One way of writing the table again with the current writer.
-struct Variant {
-    name: &'static str,
-    encoder: FrameEncoder,
-    segments: Vec<Vec<Record>>,
-    /// Write a held clock the gates prove updated as updated, as the current
-    /// collector does (format-101 recordings held every clock).
-    derive: bool,
-    /// Also hold temperature constant, to attribute its bytes.
-    temperature: bool,
-    /// Estimate an anchored temperature layout on a recording that holds every hour's.
-    anchored: Option<Anchored>,
-}
-
-/// What slot 0's display field carries in an anchored estimate.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Pass {
-    /// The recorded boundary.
-    Recorded,
-    /// A stand-in for the temperature pass: the anchor hour, a random checksum and five random
-    /// bytes per hour since the anchor, the size and entropy of an hour's seed.
-    Synthetic,
-    /// None, to subtract the stand-in's own cost.
-    Dropped,
-}
-
-/// Rows hold each province's temperature at the anchor (each original keyframe) and a drift
-/// stand-in: the province's last change.
-struct Anchored {
-    pass: Pass,
-    branch: u64,
-    anchor_hour: i32,
-    anchor: Vec<i64>,
-    drift: Vec<i64>,
-    previous: Vec<i64>,
-    last_change: Vec<i64>,
-    hours: Vec<u8>,
-    random: u64,
-}
-
-impl Anchored {
-    fn new(pass: Pass) -> Self {
-        Self {
-            pass,
-            branch: u64::MAX,
-            anchor_hour: 0,
-            anchor: Vec::new(),
-            drift: Vec::new(),
-            previous: Vec::new(),
-            last_change: Vec::new(),
-            hours: Vec::new(),
-            random: 0x9e37_79b9_7f4a_7c15,
-        }
-    }
-
-    /// splitmix64.
-    fn next(&mut self) -> u64 {
-        self.random = self.random.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.random;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
-    fn apply(
-        &mut self,
-        branch: u64,
-        hour: i32,
-        keyframe: bool,
-        rows: &mut [replay::rows::WeatherProvinceRow],
-    ) {
-        let temperatures: Vec<i64> = rows
-            .iter()
-            .map(|row| match row.temperature.record() {
-                Ok(TemperatureRecord::AtHour(value)) => value,
-                Ok(TemperatureRecord::Anchored(state)) => state.temperature,
-                _ => 0,
-            })
-            .collect();
-        if self.previous.len() == temperatures.len() {
-            for (slot, (&now, &before)) in temperatures.iter().zip(&self.previous).enumerate() {
-                if now != before {
-                    self.last_change[slot] = now.wrapping_sub(before);
-                }
-            }
-        } else {
-            self.last_change = vec![0; temperatures.len()];
-        }
-        if keyframe || branch != self.branch || self.anchor.len() != temperatures.len() {
-            self.anchor = temperatures.clone();
-            self.drift = self.last_change.clone();
-            self.hours.clear();
-            self.anchor_hour = hour;
-            self.branch = branch;
-        } else {
-            self.hours.push(1);
-            let seed = self.next() as u32;
-            self.hours.extend_from_slice(&seed.to_le_bytes());
-        }
-        self.previous = temperatures;
-        let checksum = self.next();
-        for (slot, row) in rows.iter_mut().enumerate() {
-            row.temperature = ProvinceTemperature::anchored(State {
-                temperature: self.anchor[slot],
-                drift: self.drift[slot],
-                staged: self.anchor[slot],
-                working: self.drift[slot],
-            });
-            if row.id == 0 {
-                match self.pass {
-                    Pass::Recorded => {}
-                    Pass::Synthetic => {
-                        row.display = Recorded::Value(Some(replay::rows::WeatherDisplay {
-                            width: self.anchor_hour as u32,
-                            height: 0,
-                            refresh_interval: 0,
-                            refresh_identity: checksum,
-                            edges: self.hours.clone(),
-                        }))
-                    }
-                    Pass::Dropped => row.display = Recorded::Value(None),
-                }
-            }
-        }
-    }
-}
-
-impl Variant {
-    fn new(name: &'static str, derive: bool, temperature: bool) -> Self {
-        Self {
-            name,
-            encoder: FrameEncoder::new(),
-            segments: Vec::new(),
-            derive,
-            temperature,
-            anchored: None,
-        }
-    }
-
-    fn anchored(name: &'static str, pass: Pass) -> Self {
-        Self {
-            anchored: Some(Anchored::new(pass)),
-            ..Self::new(name, true, false)
-        }
-    }
-
-    fn push(
-        &mut self,
-        mut frame: DecodedFrame,
-        keyframe: bool,
-        content: &Content,
-    ) -> io::Result<()> {
-        let gates = gates(&frame);
-        let operands = HourOperands::new(frame.hour, &content.defines).ok();
-        if let TableView::Complete(rows) = &mut *frame.tables[TableId::WeatherProvinces.index()]
-            && let Some(rows) = rows.rows_mut::<tables::WeatherProvinces>()
-        {
-            for row in rows.iter_mut() {
-                // The current writer stores anchored words: an hourly temperature is written
-                // as an anchor at its own hour, so each change costs what it cost.
-                if let Ok(TemperatureRecord::AtHour(temperature)) = row.temperature.record() {
-                    row.temperature = ProvinceTemperature::anchored(State {
-                        temperature,
-                        staged: temperature,
-                        ..State::default()
-                    });
-                }
-                if row.temperature_pass == Recorded::NotRecorded {
-                    row.temperature_pass = Recorded::Value(None);
-                }
-                if let Ok(ClockState::Held(clock)) = row.clock.state(row.id) {
-                    // Format 101 recorded every clock without a source.
-                    row.clock = DayNightClock::held(clock);
-                    if self.derive
-                        && derived_clock(content, operands.as_ref(), &gates, row.id) == Some(clock)
-                    {
-                        row.clock = DayNightClock::UPDATED;
-                    }
-                }
-                if self.temperature {
-                    row.temperature = ProvinceTemperature::anchored(State::default());
-                    row.temperature_pass = Recorded::Value(None);
-                }
-            }
-            if let Some(anchored) = &mut self.anchored {
-                anchored.apply(frame.branch, frame.hour, keyframe, rows);
-            }
-        }
-        let encoded = self.encoder.encode(frame, keyframe)?;
-        self.segments
-            .last_mut()
-            .ok_or_else(|| io::Error::other("frame before its session"))?
-            .push(Record::Frame(encoded));
-        Ok(())
-    }
-
-    /// Compressed bytes of `table`'s sections, written as one recording.
-    fn measure(&self, campaign: &[u8], table: TableId) -> io::Result<u64> {
-        let replay = Replay::from_records(campaign.to_vec(), &self.segments)?;
-        let mut bytes = 0;
-        for block in &replay.index {
-            for section in replay
-                .block_sections(block)?
-                .ok_or_else(|| io::Error::other("written block is not grouped"))?
-            {
-                if let Section::Keyframe(found) | Section::Later(found) = section.section
-                    && found == table
-                {
-                    bytes += section.compressed;
-                }
-            }
-        }
-        Ok(bytes)
-    }
-}
-
 fn run(
     path: &Path,
     game_dir: Option<PathBuf>,
     user_dir: Option<PathBuf>,
     census: bool,
-    sizes: bool,
-    weather_steps: &[i64],
 ) -> io::Result<()> {
     let replay = Replay::open(fs::read(path)?)?;
     println!(
@@ -615,9 +345,6 @@ fn run(
         replay.format.version(),
         replay.index.len()
     );
-    for gap in replay.compatibility_gaps() {
-        println!("compatibility gap: {gap}");
-    }
     let content = content(&replay, game_dir, user_dir)?;
     let selected = [
         TableId::WeatherProvinces,
@@ -630,9 +357,6 @@ fn run(
         TableId::NavalCombatShips,
         TableId::NavalModifierTrees,
         TableId::NavalModifierTreeSamples,
-        // The weather_factor what-if's region weather entries.
-        TableId::Divisions,
-        TableId::WeatherRegions,
     ];
     let mut clocks = ClockStats::default();
     let mut attack = attack::Checker::new(content.terrains.clone());
@@ -640,62 +364,8 @@ fn run(
     let mut temperatures = temperature::Checker::new(content.temperature.clone());
     let mut balances = power_balance::Checker::default();
     let mut counts = Census::new();
-    let mut variants = if sizes {
-        vec![
-            Variant::new("as recorded", false, false),
-            Variant::new("derived", true, false),
-            Variant::new("derived, temperature constant", true, true),
-            Variant::anchored("derived, temperature anchored at keyframes", Pass::Recorded),
-            Variant::anchored(
-                "derived, temperature anchored, pass stand-in",
-                Pass::Synthetic,
-            ),
-            Variant::anchored("derived, temperature anchored, no display", Pass::Dropped),
-        ]
-    } else {
-        Vec::new()
-    };
-    let mut factors: Vec<weather_factor::Candidate> = if weather_steps.is_empty() {
-        Vec::new()
-    } else {
-        std::iter::once(None)
-            .chain(weather_steps.iter().copied().map(Some))
-            .map(weather_factor::Candidate::new)
-            .collect()
-    };
-    let regions = weather_factor::Regions(content.regions.clone());
     let mut hours = 0_u64;
-    let (mut session, mut branch) = (None, None);
     for block in &replay.index {
-        let start = replay
-            .branches
-            .iter()
-            .find(|start| start.id == block.branch)
-            .ok_or_else(|| io::Error::other("block refers to an unknown branch"))?;
-        for variant in variants
-            .iter_mut()
-            .chain(factors.iter_mut().map(|candidate| &mut candidate.variant))
-        {
-            if session != Some(start.session) {
-                let started = replay
-                    .sessions
-                    .iter()
-                    .find(|candidate| candidate.id == start.session)
-                    .ok_or_else(|| io::Error::other("branch refers to an unknown session"))?;
-                variant
-                    .segments
-                    .push(vec![Record::SessionStart(started.clone())]);
-            }
-            if branch != Some(block.branch) {
-                variant
-                    .segments
-                    .last_mut()
-                    .unwrap()
-                    .push(Record::BranchStart(start.clone()));
-            }
-        }
-        session = Some(start.session);
-        branch = Some(block.branch);
         let frames = if census {
             replay.read_block(block)?
         } else {
@@ -709,16 +379,10 @@ fn run(
             }
             let decoded = decoder.advance(frame)?;
             check_clocks(decoded, &content, &mut clocks);
-            temperatures.observe(decoded, &gates(decoded));
+            temperatures.observe(decoded);
             attack.observe(decoded);
             balances.observe(decoded, &content.layers);
             naval.observe(decoded);
-            for variant in &mut variants {
-                variant.push(decoded.clone(), frame.keyframe, &content)?;
-            }
-            for candidate in &mut factors {
-                candidate.push(decoded.clone(), frame.keyframe, &content, &regions)?;
-            }
         }
     }
     println!("hours: {hours}");
@@ -757,16 +421,33 @@ fn run(
     if census {
         counts.print();
     }
-    for variant in &variants {
-        let weather = variant.measure(&replay.campaign_id, TableId::WeatherProvinces)?;
-        println!(
-            "sizes ({}): WeatherProvinces {:.1} B/h",
-            variant.name,
-            weather as f64 / hours as f64
-        );
+    let [mismatches, incomplete] = [
+        [
+            clocks.mismatches,
+            clocks.unavailable_hours
+                + clocks.not_recorded
+                + clocks.updated_underivable
+                + clocks.no_content
+                + clocks.held_unproven
+                + u64::from(hours == 0),
+        ],
+        temperatures.failures(),
+        attack.failures(),
+        balances.failures(),
+        naval.failures(),
+    ]
+    .into_iter()
+    .fold([0, 0], |[differences, refused], [next, missing]| {
+        [differences + next, refused + missing]
+    });
+    if mismatches == 0 && incomplete == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "derivation comparison failed: {mismatches} mismatches; {incomplete} incomplete comparisons"
+        )))
     }
-    for candidate in &factors {
-        candidate.print(&replay.campaign_id, hours)?;
-    }
-    Ok(())
 }
+
+#[cfg(test)]
+mod tests;

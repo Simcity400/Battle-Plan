@@ -2863,6 +2863,8 @@ impl Captured {
         }
     }
 
+    // Keep the assembly's table-sized temporaries off the hourly body's frame.
+    #[inline(never)]
     pub(crate) fn capture_tables(
         &mut self,
         memory: &impl Memory,
@@ -3149,6 +3151,7 @@ impl Captured {
     /// The rest of the hour's tables, after the late pool job is back: its
     /// packs' ticks when it ran, the same walks inline when it did not.
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     pub(crate) fn capture_tables_late(
         &mut self,
         memory: &impl Memory,

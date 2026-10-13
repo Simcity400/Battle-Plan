@@ -994,7 +994,7 @@ fn popularity(memory: &impl Memory, base: usize, country: usize) -> Result<i64, 
 }
 
 /// Owned war-relation predicates retain relation type, attacker/defender roles
-/// and `ccountry_tag::same_country` identity. Mode 1 additionally requires
+/// and same-country identity. Mode 1 additionally requires
 /// the second country's diplomacy word to be below one.
 fn war_flags<M: Memory>(
     memory: &M,

@@ -447,17 +447,12 @@ fn naval_transfer(
     base: usize,
     gun: usize,
     registry: &mut creference_registry::HeaderResolver,
-    capture_source: bool,
-) -> Result<(bool, bool, crate::selected_transport_units::Transfer), &'static str> {
+) -> Result<(bool, bool), &'static str> {
     let pointer = pointer_at(memory, at(gun, cunit::NAVAL_TRANSFER_MEMBERSHIP)?)
         .ok_or("railway gun naval transfer unreadable")?;
-    let observed = crate::selected_transport_units::transfer(
-        memory,
-        base,
-        Ok(pointer),
-        capture_source,
-        |handle| registry.resolve(memory, base, handle),
-    )
+    let observed = crate::cnaval_unit_transfer::transfer(memory, base, Ok(pointer), |handle| {
+        registry.resolve(memory, base, handle)
+    })
     .map_err(|reason| match reason {
         "selected transport transfer module overflow" => {
             "railway gun naval transfer module overflow"
@@ -474,11 +469,10 @@ fn naval_transfer(
         _ => reason,
     })?;
     match observed {
-        crate::selected_transport_units::Transfer::Absent => Ok((false, false, observed)),
-        crate::selected_transport_units::Transfer::Present { status, .. } => Ok((
+        crate::cnaval_unit_transfer::Transfer::Absent => Ok((false, false)),
+        crate::cnaval_unit_transfer::Transfer::Present { status, .. } => Ok((
             true,
             status.map_err(|_| "railway gun naval transfer action unreadable")? != 0,
-            observed,
         )),
     }
 }
@@ -748,10 +742,8 @@ fn walk_impl(
                         combats,
                     )?
                 };
-                // The retired selected transport preview read the transfer's
-                // source province; the counter needs only its presence and status.
-                let (naval_transfer, transfer_action_status, _) =
-                    naval_transfer(memory, base, gun, &mut registry, false)?;
+                let (naval_transfer, transfer_action_status) =
+                    naval_transfer(memory, base, gun, &mut registry)?;
                 let railway_building_level = if province == 0 {
                     None
                 } else {

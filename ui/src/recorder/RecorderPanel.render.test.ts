@@ -9,7 +9,7 @@ import type { RecorderSettings, Snapshot } from './status';
 const CAMPAIGN = '00000000-0000-4000-8000-000000000000';
 const PATH = `C:\\Recordings\\${CAMPAIGN}.battleplan`;
 const STARTED = Date.UTC(2026, 9, 12, 12, 0);
-const settings: RecorderSettings = { compression: 'fast', recordEveryCampaign: true, startWithWindows: false, startWithReplay: true, gameScore: true,
+const settings: RecorderSettings = { recordEveryCampaign: true, startWithWindows: false, startWithReplay: true, gameScore: true,
   operationOutcomes: true, politics: true, campaigns: {}, recordingNames: { [`c:/recordings/${CAMPAIGN}.battleplan`]: 'Operation Barbarossa' },
   effectiveSaveFolder: 'C:\\Recordings' };
 const recording: Snapshot = { phase: 'recording', campaign: CAMPAIGN, recording: PATH, continued: true, hour: 59_000_000, firstHour: null,
@@ -59,7 +59,8 @@ test('the panel draws each state, and the Stop prompt replaces everything under 
     assert.doesNotMatch(text(waiting), /This campaign/);
 
     const panelSettings = text(render({ view: 'settings' }));
-    assert.match(panelSettings, /Settings Record every campaign File size Fast Small Save to C:\\Recordings Paradox user folder Automatic/);
+    assert.match(panelSettings, /Settings Record every campaign Save to C:\\Recordings Paradox user folder Automatic/);
+    assert.doesNotMatch(panelSettings, /File size|Fast|Small/);
     assert.match(panelSettings, /Start With Windows With Battle Plan What to record Everything/);
     assert.match(text(render({ view: 'record' })), /What to record Game score Operation outcomes Politics/);
   } finally { await vite.close(); }

@@ -47,9 +47,8 @@ fn compare_provinces(
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = complete::<tables::WeatherProvinces>(frame)?;
-    // Every record's temperature at the frame's hour: recorded hourly before format 102,
-    // derived since from the frame's anchor and pass (`recorder derived` checks each hour's
-    // derivation against the read checksum).
+    // Derive temperatures at the frame's hour from its anchor and pass.
+    // `recorder derived` checks each hour against the read checksum.
     let unrecorded = rows
         .iter()
         .all(|row| matches!(row.temperature.record(), Ok(TemperatureRecord::NotRecorded)));

@@ -11,8 +11,8 @@
 //! everywhere is a content resolution difference.
 
 use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{Recorded, TableId, tables},
+    frame::DecodedFrame,
+    rows::{Recorded, tables},
 };
 
 /// Mismatches listed by name; all of them are counted.
@@ -29,6 +29,7 @@ pub(super) struct Checker {
     /// Witnessed terrains past the content's categories or the stat block's
     /// entries, which neither side can derive.
     underivable: u64,
+    unavailable_hours: u64,
     listed: Vec<String>,
 }
 
@@ -41,6 +42,7 @@ impl Checker {
             scalar_equal: 0,
             mismatches: 0,
             underivable: 0,
+            unavailable_hours: 0,
             listed: Vec::new(),
         }
     }
@@ -56,25 +58,25 @@ impl Checker {
     }
 
     pub(super) fn observe(&mut self, frame: &DecodedFrame) {
-        let TableView::Complete(rows) = &*frame.tables[TableId::DivisionStatus.index()] else {
+        let Ok(rows) = frame.complete::<tables::DivisionStatus>() else {
+            self.unavailable_hours += 1;
             return;
         };
-        let Some(rows) = rows.rows::<tables::DivisionStatus>() else {
-            return;
-        };
-        let Ok(terrains) = self.terrains.clone() else {
-            return;
-        };
+        let terrains = self.terrains.clone();
         for row in rows {
-            let (Recorded::Value(witness), Recorded::Value(Some(stats))) =
-                (&row.attack, &row.attack_stats)
-            else {
+            let Recorded::Value(witness) = &row.attack else {
                 continue;
             };
             let Some(witness) = witness.get() else {
                 continue;
             };
             self.rows += 1;
+            let (Ok(terrains), Recorded::Value(Some(stats))) = (&terrains, &row.attack_stats)
+            else {
+                self.underivable += 1;
+                continue;
+            };
+            self.underivable += u64::from(witness.terrain.is_none());
             for terrain in witness.terrain.iter().flatten() {
                 let Some(witnessed) = terrain.attack else {
                     self.underivable += 1;
@@ -115,7 +117,9 @@ impl Checker {
                 ),
             ];
             for (name, recorded, witnessed) in scalars {
-                if recorded == witnessed {
+                if recorded.is_none() && witnessed.is_none() {
+                    self.underivable += 1;
+                } else if recorded == witnessed {
                     self.scalar_equal += 1;
                 } else {
                     self.mismatch(
@@ -126,6 +130,10 @@ impl Checker {
                 }
             }
         }
+    }
+
+    pub(super) fn failures(&self) -> [u64; 2] {
+        [self.mismatches, self.underivable + self.unavailable_hours]
     }
 
     pub(super) fn print(&self) {
@@ -152,10 +160,10 @@ impl Checker {
 mod tests {
     use super::*;
     use replay::{
-        frame::Metrics,
+        frame::{Metrics, TableView},
         rows::{
             AttackStats, AttackTerrain, DivisionAttackInputs, DivisionAttackStats,
-            DivisionStatusRow, PacketHour, TableRows, Witnessed,
+            DivisionStatusRow, PacketHour, TableId, TableRows, Witnessed,
         },
     };
 
@@ -225,10 +233,24 @@ mod tests {
         checker.observe(&frame(vec![row(-10_000, -20_000)]));
         assert_eq!(checker.mismatches, 1);
         assert!(checker.listed[0].contains("terrain 1"));
-        // A row without a witness or without operands is not compared.
+        // Production rows without diagnostic witnesses have no comparison to request.
         let mut unwitnessed = row(0, 0);
         unwitnessed.attack = Recorded::Value(Witnessed(None));
         checker.observe(&frame(vec![unwitnessed]));
         assert_eq!(checker.rows, 2);
+        assert_eq!(checker.failures(), [1, 2]);
+        let mut missing_operands = row(0, 0);
+        missing_operands.attack_stats = Recorded::Value(None);
+        checker.observe(&frame(vec![missing_operands]));
+        assert_eq!(checker.failures(), [1, 3]);
+        let mut missing_content = Checker::new(Err("terrain content refused".into()));
+        missing_content.observe(&frame(vec![row(0, 0)]));
+        assert_eq!(missing_content.failures(), [0, 1]);
+        let mut checker = Checker::new(Ok(vec![-5_000, 0]));
+        for _ in 0..=LISTED {
+            checker.observe(&frame(vec![row(-10_000, -20_000)]));
+        }
+        assert_eq!(checker.failures(), [LISTED as u64 + 1, LISTED as u64 + 1]);
+        assert_eq!(checker.listed.len(), LISTED);
     }
 }

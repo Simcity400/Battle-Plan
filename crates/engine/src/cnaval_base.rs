@@ -292,7 +292,7 @@ pub fn walk_buffer(
 }
 
 /// The base's row and its country list; an empty list for a count that is not
-/// positive, which `ccountry_tag::list_contains` never walks. A null list with a
+/// positive, which the game's country-list membership check never walks. A null list with a
 /// positive count marks only this base's list unreadable.
 fn read_row(
     memory: &impl Memory,
@@ -326,7 +326,7 @@ fn read_row(
         ..Row::default()
     };
     // The list is a CPdxArray: data pointer, signed capacity and count. A count
-    // that is not positive is empty, as `ccountry_tag::list_contains` reads it;
+    // that is not positive is empty, as the game's membership check reads it;
     // any other count must pass the shared header check (within its capacity
     // and the address space), so a torn header can never size the arena.
     let header = read::<[u8; 16]>(memory, field(COUNTRY_LIST)?)

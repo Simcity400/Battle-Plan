@@ -179,7 +179,7 @@ fn popularity(memory: &impl Memory, base: usize, country: usize) -> Result<i64, 
 /// Mode-one war, offensive-war and defensive-war predicates over the owned
 /// relations (+0x20, count +0x2c): a war relation (type 0x380a) whose attacker
 /// (first when `first_was_instigator` +0x158, else second) or defender is this
-/// country under `ccountry_tag::same_country`, and for mode one whose second
+/// country by same-country identity, and for mode one whose second
 /// country's diplomacy +0x1a8 is below one.
 fn war_flags<M: Memory>(
     memory: &M,

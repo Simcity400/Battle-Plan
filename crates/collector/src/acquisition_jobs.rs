@@ -2285,6 +2285,8 @@ impl Pool {
     ///
     /// # Safety
     /// The admitted callback lease must remain valid throughout this call.
+    // Keep the request, isolated read counts and completion in their own frame.
+    #[inline(never)]
     pub(crate) unsafe fn run_inline(&self, mut request: Job) -> Completion<Job, Report> {
         assert!(!request.worker_only(), "acquisition requires a worker");
         let role = request.role();
@@ -2294,7 +2296,8 @@ impl Pool {
             let memory = CountedMemory::new(unsafe { LiveMemory::new() });
             run_with_memory(&mut request, &memory, &self.calibration)
         });
-        let table_reads = reads.finish();
+        let mut table_reads = crate::read_accounting::ZERO;
+        reads.finish_into(&mut table_reads);
         crate::read_accounting::merge(&table_reads);
         let counters = &self.calibration.roles[role as usize];
         counters.inline_completed.fetch_add(1, Ordering::Relaxed);

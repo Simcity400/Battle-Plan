@@ -513,7 +513,6 @@ fn fresh_task_force_packet_refusal_is_a_difference_for_idle_and_targeted_units()
 fn fresh_idle_railway_packet_refusal_differs_from_historical_absence_and_native_zero() {
     use replay::rows::{FreshRailwayCounterEta, RailwayGunCounterInputRow};
     let (mut frame, saved, _, _) = tests::fixture();
-    let hour = frame.hour;
     let gun = (7_u64 << 32) | 51;
     let label = format!("RailwayGunCounterInputs {gun}.fresh");
     for (fresh, refused, historical) in [
@@ -521,7 +520,7 @@ fn fresh_idle_railway_packet_refusal_differs_from_historical_absence_and_native_
         (Recorded::NotRecorded, false, true),
         (
             Recorded::Value(Some(FreshRailwayCounterEta {
-                sample_hour: replay::rows::PacketHour::Stamped(hour),
+                sample_hour: replay::rows::PacketHour::Host,
                 maximum_speed: Some(0),
                 land_supply_factor: Some(0),
                 orders_group: Some(0),

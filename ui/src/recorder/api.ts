@@ -6,7 +6,6 @@ import type { NextLoad, RecorderSettings, Snapshot } from './status';
 
 export interface SettingsPatch {
   recordEveryCampaign?: boolean;
-  compression?: 'fast' | 'small';
   startWithWindows?: boolean;
   startWithReplay?: boolean;
   gameScore?: boolean;

@@ -973,7 +973,7 @@ fn finalize_campaign_with_publisher(
     let observe = |frame: &Frame, decoded: &DecodedFrame, sizes| {
         progress()?;
         summary
-            .observe_decoded(frame, decoded, sizes, FormatVersion::CURRENT)
+            .observe_decoded(frame, decoded, sizes)
             .map_err(std::io::Error::other)
     };
     let replay = if destination.exists() {
@@ -1055,7 +1055,7 @@ fn finalize_campaign_with_publisher(
                     let frame = frames
                         .read(*number, frame)
                         .map_err(|error| error.to_string())?;
-                    summary.observe(&frame, FormatVersion::CURRENT)?;
+                    summary.observe(&frame)?;
                 }
             }
         }
@@ -1441,27 +1441,6 @@ fn already_finalized_with_reader(
     Ok(true)
 }
 
-/// The recording's compatibility gaps and every retired field of a table it
-/// records, each named once. A retired field's older payloads are discarded;
-/// current recordings hold none.
-pub(crate) fn compatibility_notes(replay: &Replay) -> Vec<String> {
-    let format = replay.format.version();
-    let retired = replay::rows::compatibility::RETIRED_FIELDS
-        .iter()
-        .filter(|field| field.table.last_change().present(format))
-        .map(|field| {
-            format!(
-                "{:?}.{} retired at format {}; this recording is format {format}",
-                field.table, field.name, field.retired
-            )
-        });
-    replay
-        .compatibility_gaps()
-        .into_iter()
-        .chain(retired)
-        .collect()
-}
-
 pub fn inspect(path: &Path) -> Result<()> {
     let replay = open(path)?;
     println!(
@@ -1472,9 +1451,6 @@ pub fn inspect(path: &Path) -> Result<()> {
         String::from_utf8_lossy(&replay.campaign_id),
         replay.keyframe_interval
     );
-    for reason in compatibility_notes(&replay) {
-        println!("Compatibility gap: {reason}");
-    }
     print_identity("header", &replay.identity);
     println!(
         "content_verified={} sessions={} branches={} blocks={}",
@@ -1516,7 +1492,7 @@ pub fn inspect(path: &Path) -> Result<()> {
             .read_block(index)
             .map_err(|error| failure(path, error))?
         {
-            summary.observe(&frame, replay.format)?;
+            summary.observe(&frame)?;
         }
     }
     for branch in &replay.branches {
@@ -1784,10 +1760,6 @@ struct Summary {
     max_dropped: u64,
     hours: BTreeMap<BranchId, BTreeSet<Hour>>,
     issues: [Vec<Issue>; TABLE_COUNT],
-    /// The observed recording's format. A table it does not record (one
-    /// introduced later or retired) is named by its compatibility gap, not
-    /// counted per hour as unavailable.
-    format: Option<FormatVersion>,
 }
 
 impl Default for Summary {
@@ -1803,21 +1775,20 @@ impl Default for Summary {
             max_dropped: 0,
             hours: BTreeMap::new(),
             issues: std::array::from_fn(|_| Vec::new()),
-            format: None,
         }
     }
 }
 
 impl Summary {
-    fn observe(&mut self, frame: &Frame, format: FormatVersion) -> Result<()> {
+    fn observe(&mut self, frame: &Frame) -> Result<()> {
         let decoded = self
             .decoder
             .apply(frame)
             .map_err(|error| error.to_string())?;
         let sizes = frame
-            .table_encoded_sizes_version(format)
+            .table_encoded_sizes()
             .map_err(|error| error.to_string())?;
-        self.observe_decoded(frame, &decoded, sizes, format)
+        self.observe_decoded(frame, &decoded, sizes)
     }
 
     fn observe_decoded(
@@ -1825,9 +1796,7 @@ impl Summary {
         frame: &Frame,
         decoded: &DecodedFrame,
         sizes: [usize; TABLE_COUNT],
-        format: FormatVersion,
     ) -> Result<()> {
-        self.format = Some(format);
         self.totals.push(frame.metrics.total_ns);
         self.max_pool = self.max_pool.max(frame.metrics.pool_bytes);
         self.max_dropped = self.max_dropped.max(frame.metrics.dropped_frames);
@@ -1858,7 +1827,7 @@ impl Summary {
                 TableUpdate::Delta { .. } => 1,
                 TableUpdate::Unchanged { .. } => 2,
                 TableUpdate::Truncated { .. } => 3,
-                TableUpdate::Unavailable { .. } | TableUpdate::Incompatible { .. } => 4,
+                _ => 4,
             };
             self.states[i][state] += 1;
             if let TableView::Complete(rows) | TableView::Truncated { rows, .. } =
@@ -1903,8 +1872,7 @@ impl Summary {
     }
 
     fn recorded(&self, table: TableId) -> bool {
-        self.format
-            .is_none_or(|format| table.last_change().present(format.version()))
+        FormatVersion::CURRENT.table_refusal(table).is_none()
     }
 
     fn print(&mut self, spool_bytes: u64) {
@@ -2623,146 +2591,6 @@ mod tests {
     }
 
     #[test]
-    fn inspect_historical_table_sizes_exclude_tables_not_recorded() {
-        // This is main's format 97, before the appended inputs and new tables.
-        let format = FormatVersion::read(97).unwrap();
-        let mut frame = crate::test_support::allocation_records()
-            .into_iter()
-            .find_map(|record| match record {
-                Record::Frame(frame) => Some(frame),
-                _ => None,
-            })
-            .unwrap();
-        for table in TableId::ALL {
-            if !table.last_change().present(format.version()) {
-                frame.tables[table.index()] = TableUpdate::Unavailable {
-                    reason: format!("{table:?} not recorded"),
-                };
-            }
-        }
-        let mut summary = Summary::default();
-        summary.observe(&frame, format).unwrap();
-        for table in [TableId::AvailableAdvisors, TableId::OwnedWargoals] {
-            assert_eq!(summary.table_bytes[table.index()], 0);
-        }
-        assert!(summary.table_bytes[TableId::Clock.index()] > 0);
-    }
-
-    /// A current recording does not record the retired tables: inspection
-    /// names them once as compatibility gaps and counts no hour of them as
-    /// unavailable. An older recording's discarded rows remain a named table
-    /// gap, and each retired field is listed once.
-    #[test]
-    fn inspect_names_retired_inputs_without_counting_current_absences() {
-        // The selected transport preview's split tables retired with the
-        // arrival-time, attrition and nearest-base inputs.
-        let retired: Vec<TableId> = [
-            TableId::DivisionEtaInputs,
-            TableId::AttritionModifierBreakdowns,
-            TableId::ReservedNearestNavies,
-            TableId::ReservedNearestBases,
-        ]
-        .into_iter()
-        .chain(replay::rows::RESERVED_SPLIT_TABLES)
-        .collect();
-        let frame = crate::test_support::allocation_records()
-            .into_iter()
-            .find_map(|record| match record {
-                Record::Frame(frame) => Some(frame),
-                _ => None,
-            })
-            .unwrap();
-        // The frames each format decodes: an unrecorded table is a named
-        // absence, and a recorded retired table's bytes are discarded by name.
-        let decoded = |format: FormatVersion| {
-            let mut frame = frame.clone();
-            for table in TableId::ALL {
-                if let Some(reason) = format.table_refusal(table) {
-                    frame.tables[table.index()] = if table.last_change().present(format.version()) {
-                        TableUpdate::Incompatible {
-                            reason,
-                            source_format: format,
-                            recorded_bytes: 5,
-                        }
-                    } else {
-                        TableUpdate::Unavailable { reason }
-                    };
-                }
-            }
-            frame
-        };
-        let current = FormatVersion::CURRENT;
-        let mut summary = Summary::default();
-        summary.observe(&decoded(current), current).unwrap();
-        for &table in &retired {
-            assert!(!summary.recorded(table), "{table:?}");
-            assert_eq!(summary.states[table.index()], [0; 5], "{table:?}");
-            assert!(summary.issues[table.index()].is_empty(), "{table:?}");
-        }
-        assert!(
-            TableId::ALL.into_iter().all(|table| {
-                retired.contains(&table) || summary.issues[table.index()].is_empty()
-            })
-        );
-        assert_eq!(summary.states[TableId::Clock.index()][0], 1);
-
-        let older = FormatVersion::read(replay::FORMAT_VERSION - 1).unwrap();
-        let mut summary = Summary::default();
-        summary.observe(&decoded(older), older).unwrap();
-        for table in [
-            TableId::DivisionEtaInputs,
-            TableId::AttritionModifierBreakdowns,
-        ] {
-            assert!(summary.recorded(table), "{table:?}");
-            let [issue] = summary.issues[table.index()].as_slice() else {
-                panic!("{table:?}: {:?}", summary.issues[table.index()].len());
-            };
-            assert!(
-                issue.reason.contains(&format!(
-                    "{table:?} retired at format {}; this recording is format {}",
-                    replay::FORMAT_VERSION,
-                    older.version()
-                )),
-                "{}",
-                issue.reason
-            );
-        }
-        // Tables the older format never recorded are only compatibility gaps.
-        for table in replay::rows::RESERVED_SPLIT_TABLES {
-            assert!(!summary.recorded(table), "{table:?}");
-            assert!(summary.issues[table.index()].is_empty(), "{table:?}");
-        }
-
-        let recording = Replay::open(
-            Replay::from_records(
-                crate::test_support::ALLOCATION_CAMPAIGN.to_vec(),
-                &[crate::test_support::allocation_records()],
-            )
-            .unwrap()
-            .bytes()
-            .to_vec(),
-        )
-        .unwrap();
-        let notes = compatibility_notes(&recording);
-        for &table in &retired {
-            let name = format!("{table:?} retired at format {}", replay::FORMAT_VERSION);
-            assert_eq!(
-                notes.iter().filter(|note| note.starts_with(&name)).count(),
-                1,
-                "{notes:?}"
-            );
-        }
-        for field in replay::rows::compatibility::RETIRED_FIELDS {
-            let name = format!("{:?}.{} retired at format", field.table, field.name);
-            assert_eq!(
-                notes.iter().filter(|note| note.starts_with(&name)).count(),
-                1,
-                "{notes:?}"
-            );
-        }
-    }
-
-    #[test]
     fn inspect_reports_read_times_a_replay_does_not_record() {
         let mut records = crate::test_support::allocation_records();
         for record in &mut records {
@@ -2779,7 +2607,7 @@ mod tests {
         for index in &replay.index {
             for frame in replay.read_block(index).unwrap() {
                 assert_ne!(frame.metrics.table_ns[TableId::Clock.index()], 0);
-                from_replay.observe(&frame, replay.format).unwrap();
+                from_replay.observe(&frame).unwrap();
             }
         }
         assert_eq!(
@@ -2790,7 +2618,7 @@ mod tests {
         let mut from_spool = Summary::default();
         for record in &records {
             if let Record::Frame(frame) = record {
-                from_spool.observe(frame, FormatVersion::CURRENT).unwrap();
+                from_spool.observe(frame).unwrap();
             }
         }
         assert_eq!(from_spool.read_times(TableId::Clock), "2.500 2.500 2.500");
@@ -3000,138 +2828,6 @@ mod tests {
         fs::write(campaign.join("spool.0000.h4s"), spool).unwrap();
         fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
         (session, output, witness)
-    }
-
-    #[test]
-    fn compatibility_finalization_refuses_an_older_spool_and_retains_its_bytes() {
-        use crate::test_support::{
-            ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory,
-        };
-        use replay::rows::RowCodec;
-
-        let format = FormatVersion::read(94).unwrap();
-        let root = allocation_test_directory("compatibility-format94-spool");
-        let session = root.join("session");
-        let campaign = session.join(std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap());
-        let output = root.join("replays");
-        fs::create_dir_all(&campaign).unwrap();
-        let mut spool = Vec::new();
-        for record in allocation_records() {
-            let mut envelope = if let Record::Frame(frame) = &record {
-                // Construct the historical stream directly: its table timings and
-                // updates omit tables introduced later. Clock and Campaign have
-                // unchanged row contracts; other tables are explicitly unavailable.
-                let mut bytes = vec![0; replay::spool::RECORD_HEADER_BYTES];
-                bytes[..4].copy_from_slice(&replay::spool::RECORD_MAGIC);
-                bytes.push(2);
-                bytes.extend_from_slice(&frame.branch.to_le_bytes());
-                bytes.extend_from_slice(&frame.hour.to_le_bytes());
-                bytes.push(u8::from(frame.keyframe));
-                bytes.extend_from_slice(&frame.metrics.total_ns.to_le_bytes());
-                for table in TableId::ALL {
-                    if table.last_change().present(format.version()) {
-                        bytes.extend_from_slice(
-                            &frame.metrics.table_ns[table.index()].to_le_bytes(),
-                        );
-                    }
-                }
-                bytes.extend_from_slice(&frame.metrics.pool_bytes.to_le_bytes());
-                bytes.extend_from_slice(&frame.metrics.dropped_frames.to_le_bytes());
-                for table in TableId::ALL {
-                    if !table.last_change().present(format.version()) {
-                        continue;
-                    }
-                    match &frame.tables[table.index()] {
-                        TableUpdate::Snapshot(TableRows::Clock(rows)) => {
-                            assert_eq!(rows.len(), 1);
-                            bytes.push(0);
-                            bytes.extend_from_slice(&1_u32.to_le_bytes());
-                            bytes.push(0); // Singleton key difference is still a zero varint.
-                            rows[0].encode_fields(&mut bytes).unwrap();
-                        }
-                        TableUpdate::Snapshot(TableRows::Campaign(rows)) => {
-                            assert_eq!(rows.len(), 1);
-                            bytes.push(0);
-                            bytes.extend_from_slice(&1_u32.to_le_bytes());
-                            bytes.push(0); // Singleton key difference is still a zero varint.
-                            rows[0].encode_fields(&mut bytes).unwrap();
-                        }
-                        _ => {
-                            bytes.push(4);
-                            replay::codec::put_string(&mut bytes, "not read by historical fixture")
-                                .unwrap();
-                        }
-                    }
-                }
-                let payload = &bytes[replay::spool::RECORD_HEADER_BYTES..];
-                let length = u32::try_from(payload.len()).unwrap();
-                // CRC32/IEEE for this handcrafted fixture; the spool's sealer is private.
-                let mut crc = !0_u32;
-                for &byte in payload {
-                    crc ^= u32::from(byte);
-                    for _ in 0..8 {
-                        crc = (crc >> 1) ^ (0xEDB8_8320 & 0_u32.wrapping_sub(crc & 1));
-                    }
-                }
-                bytes[6..10].copy_from_slice(&length.to_le_bytes());
-                bytes[10..14].copy_from_slice(&(!crc).to_le_bytes());
-                bytes
-            } else {
-                // These control and identity layouts are unchanged at this version.
-                replay::spool::encode_record(&record).unwrap()
-            };
-            envelope[4..6].copy_from_slice(&format.version().to_le_bytes());
-            spool.extend(envelope);
-        }
-        let recovered = recover_prefix(&spool);
-        assert!(recovered.damage.is_none(), "{:?}", recovered.damage);
-        assert_eq!(recovered.format.unwrap().version(), 94);
-        assert_eq!(recovered.valid_bytes, spool.len());
-        let frames: Vec<_> = recovered
-            .records
-            .iter()
-            .filter_map(|record| match record {
-                Record::Frame(frame) => Some(frame),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(frames.len(), 3);
-        let mut decoder = FrameDecoder::new();
-        for (frame, hour) in frames.into_iter().zip(2..=4) {
-            let decoded = decoder.apply(frame).unwrap();
-            assert_eq!(decoded.hour, hour);
-            let clocks = decoded.complete::<tables::Clock>().unwrap();
-            assert_eq!(clocks[0].hour, hour);
-            assert_eq!(clocks[0].play_session_started_at, 19);
-            assert_eq!(
-                decoded.complete::<tables::Campaign>().unwrap()[0].id,
-                ALLOCATION_CAMPAIGN
-            );
-            assert_eq!(
-                *decoded.tables[TableId::ReservedCountryNaming.index()],
-                TableView::Unavailable {
-                    reason: format
-                        .table_refusal(TableId::ReservedCountryNaming)
-                        .unwrap()
-                }
-            );
-        }
-        let spool_path = campaign.join("spool.0000.h4s");
-        fs::write(&spool_path, &spool).unwrap();
-        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap().parts();
-        assert!(paths.is_empty());
-        assert_eq!(issues.len(), 1, "{issues:?}");
-        assert!(
-            issues[0].contains(&format!(
-                "Spool finalization requires format {}; segment 0 is format 94",
-                replay::FORMAT_VERSION
-            )),
-            "{}",
-            issues[0]
-        );
-        assert!(issues[0].contains("historical rows are never rewritten"));
-        assert!(fs::read_dir(&output).unwrap().next().is_none());
-        assert_eq!(fs::read(spool_path).unwrap(), spool);
     }
 
     #[test]

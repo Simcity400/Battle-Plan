@@ -44,9 +44,17 @@ impl Checker {
             Ok(samples) => samples,
             Err(error) => {
                 *self.unsampled.entry(error.to_string()).or_default() += 1;
+                self.incomplete += 1;
                 return;
             }
         };
+        if samples.is_empty() {
+            *self
+                .unsampled
+                .entry("no diagnostic samples recorded".into())
+                .or_default() += 1;
+            return;
+        }
         let (Ok(rows), Ok(details), Ok(ships)) = (
             frame.complete::<tables::NavalModifierTrees>(),
             frame.complete::<tables::NavalCombatDetails>(),
@@ -105,6 +113,13 @@ impl Checker {
                 sample.combat, sample.side, sample.battle_slot, sample.ordinal, sample.scope
             ));
         }
+    }
+
+    pub(super) fn failures(&self) -> [u64; 2] {
+        [
+            self.identity_mismatches + self.tree_mismatches,
+            self.incomplete + self.unjoined,
+        ]
     }
 
     pub(super) fn print(&self) {
@@ -265,24 +280,40 @@ mod tests {
         let mut checker = Checker::default();
         checker.observe(&frame(5_000, 5_000, Kind::Country));
         assert_eq!(checker.counts(), [2, 2, 0, 0, 0]);
+        assert_eq!(checker.failures(), [0, 0]);
         // A carried tree that drifted from the fresh read is a mismatch.
         checker.observe(&frame(5_000, 6_000, Kind::Country));
         assert_eq!(checker.counts(), [4, 2, 0, 2, 0]);
         // A capture that filed the source under another kind is named.
         checker.observe(&frame(5_000, 5_000, Kind::Commander));
         assert_eq!(checker.counts(), [6, 2, 2, 2, 0]);
+        assert_eq!(checker.failures(), [4, 0]);
         assert_eq!(checker.listed.len(), 4);
+        let mut missing = frame(5_000, 5_000, Kind::Country);
+        *missing.tables[TableId::NavalCombatShips.index()] = TableView::Unavailable {
+            reason: "sampled occurrence has no ship input".into(),
+        };
+        checker.observe(&missing);
+        assert_eq!(checker.failures(), [4, 1]);
+        let mut unjoined = frame(5_000, 5_000, Kind::Country);
+        *unjoined.tables[TableId::NavalCombatShips.index()] =
+            TableView::Complete(TableRows::NavalCombatShips(Vec::new()));
+        checker.observe(&unjoined);
+        assert_eq!(checker.failures(), [4, 2]);
     }
 
     #[test]
     fn a_production_recording_reports_no_samples() {
         let mut frame = frame(5_000, 5_000, Kind::Country);
-        *frame.tables[TableId::NavalModifierTreeSamples.index()] = TableView::Unavailable {
-            reason: "naval tree samples are a diagnostic capture".into(),
+        *frame.tables[TableId::NavalModifierTreeSamples.index()] =
+            TableView::Complete(TableRows::NavalModifierTreeSamples(Vec::new()));
+        *frame.tables[TableId::NavalModifierTrees.index()] = TableView::Unavailable {
+            reason: "no trees compared without diagnostic samples".into(),
         };
         let mut checker = Checker::default();
         checker.observe(&frame);
         assert_eq!(checker.counts(), [0; 5]);
         assert_eq!(checker.unsampled.values().sum::<u64>(), 1);
+        assert_eq!(checker.failures(), [0, 0]);
     }
 }

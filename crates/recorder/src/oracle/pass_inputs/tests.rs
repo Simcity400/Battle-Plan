@@ -14,9 +14,9 @@ fn known_supply() -> UnitSupplyInputs {
 }
 
 /// Non-strike task forces still capture the current, genuinely empty searching vector.
-fn known_port(hour: replay::Hour) -> NavalPortMissionInputs {
+fn known_port() -> NavalPortMissionInputs {
     NavalPortMissionInputs {
-        sample_hour: replay::rows::PacketHour::Stamped(hour),
+        sample_hour: replay::rows::PacketHour::Host,
         searching: Some(Vec::new()),
         engagement_target: None,
         avoided_ship_types: None,
@@ -30,7 +30,7 @@ fn port_suffix_oracle_compares_order_raw_dangling_targets_and_each_known_slot() 
     let mut row = TaskForceCounterInputRow {
         task_force: 9,
         port_mission: Recorded::Value(Some(NavalPortMissionInputs {
-            sample_hour: replay::rows::PacketHour::Stamped(7),
+            sample_hour: replay::rows::PacketHour::Host,
             searching: Some(vec![
                 NavalSearcher {
                     reference: Some(0),
@@ -104,7 +104,7 @@ fn port_saved_strings_compare_first_nul_prefix_and_keep_ordered_empty_slots() {
             task_force: 9,
             port_mission: Recorded::Value(Some(NavalPortMissionInputs {
                 avoided_ship_types: Some(vec![Some(stored.to_vec()), Some(Vec::new())]),
-                ..known_port(7)
+                ..known_port()
             })),
             ..Default::default()
         };
@@ -173,7 +173,7 @@ fn port_suffix_oracle_keeps_historical_fault_and_unreached_domains_distinct() {
     task_force_port(7, &row, &force, &saved, &mut refused);
     assert_eq!(refused.differences.len(), 1);
     let packet = NavalPortMissionInputs {
-        sample_hour: replay::rows::PacketHour::Stamped(7),
+        sample_hour: replay::rows::PacketHour::Host,
         searching: Some(Vec::new()),
         engagement_target: None,
         avoided_ship_types: None,
@@ -490,7 +490,6 @@ fn controlled_state_count_follows_the_saved_controller_or_owner() {
 #[test]
 fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
     let (mut frame, mut save) = base();
-    let hour = frame.hour;
     let fleet = (1_u64 << 32) | 61;
     let task = (43_u64 << 32) | 51;
     let pride = (32_u64 << 32) | 51;
@@ -528,7 +527,7 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
             naval_transfer: Recorded::Value(Some(0)),
             combat_links: Recorded::Value(Some([0; 2])),
             fresh: Recorded::Value(Some(FreshTaskForceCounterEta {
-                sample_hour: replay::rows::PacketHour::Stamped(hour),
+                sample_hour: replay::rows::PacketHour::Host,
                 base_speed: Some(0),
                 speed_modifier: Some(0),
                 terrain_class: Some(0),
@@ -566,7 +565,7 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
             task_force: task,
             name: Recorded::Value(Some(Vec::new())),
             supply: Recorded::Value(Some(known_supply())),
-            port_mission: Recorded::Value(Some(known_port(hour))),
+            port_mission: Recorded::Value(Some(known_port())),
             is_in_regions: 255,
             engagement_rule: 2,
             bombardment_region: 206,
@@ -709,7 +708,6 @@ fn task_force_names_compare_cached_bytes_and_native_saved_presence() {
     let force = (43_u64 << 32) | 51;
     let run = |name: Recorded<Option<Vec<u8>>>, suffix: &str| {
         let (mut frame, _) = base();
-        let hour = frame.hour;
         let mut saved = serialized(suffix, "");
         saved
             .counter_inputs
@@ -730,7 +728,7 @@ fn task_force_names_compare_cached_bytes_and_native_saved_presence() {
                 task_force: force,
                 name,
                 supply: Recorded::Value(Some(known_supply())),
-                port_mission: Recorded::Value(Some(known_port(hour))),
+                port_mission: Recorded::Value(Some(known_port())),
                 ..Default::default()
             }]),
         );
@@ -778,7 +776,6 @@ fn task_force_supply_reports_runtime_caches_and_counts_independent_refusals() {
     let force = (43_u64 << 32) | 51;
     let run = |supply: Recorded<Option<UnitSupplyInputs>>, whole_frame: bool| {
         let (mut frame, _) = base();
-        let hour = frame.hour;
         let mut saved = serialized("", "");
         saved
             .counter_inputs
@@ -799,7 +796,7 @@ fn task_force_supply_reports_runtime_caches_and_counts_independent_refusals() {
                 task_force: force,
                 name: Some(Vec::new()).into(),
                 supply,
-                port_mission: Recorded::Value(Some(known_port(hour))),
+                port_mission: Recorded::Value(Some(known_port())),
                 ..Default::default()
             }]),
         );
@@ -965,7 +962,6 @@ fn task_force_names_join_the_full_saved_handle_and_refuse_a_missing_force() {
     let force = (43_u64 << 32) | 51;
     let other = (44_u64 << 32) | 51;
     let (mut frame, _) = base();
-    let hour = frame.hour;
     let mut saved = serialized("name=Cached", "");
     let mut second = saved.task_forces[&force].clone();
     second.id = other;
@@ -1000,7 +996,7 @@ fn task_force_names_join_the_full_saved_handle_and_refuse_a_missing_force() {
                         task_force,
                         name: Recorded::Value(Some(name.to_vec())),
                         supply: Recorded::Value(Some(known_supply())),
-                        port_mission: Recorded::Value(Some(known_port(hour))),
+                        port_mission: Recorded::Value(Some(known_port())),
                         ..Default::default()
                     })
                     .collect(),
@@ -1398,13 +1394,13 @@ fn task_force_motion_compares_routes_target_and_saved_combat_membership() {
 }
 
 #[test]
-fn fresh_task_force_packets_require_the_current_hour_and_each_independent_operand() {
+fn fresh_task_force_packets_require_each_independent_operand() {
     use replay::rows::FreshTaskForceCounterEta;
     let (mut frame, _) = base();
     let force = (43_u64 << 32) | 51;
     let saved = serialized("path={1}", "");
     let packet = FreshTaskForceCounterEta {
-        sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+        sample_hour: replay::rows::PacketHour::Host,
         base_speed: Some(i64::MIN),
         speed_modifier: Some(i64::MAX),
         terrain_class: Some(i32::MIN),
@@ -1451,20 +1447,6 @@ fn fresh_task_force_packets_require_the_current_hour_and_each_independent_operan
             1
         );
     }
-    assert_eq!(
-        run(TaskForceMapMotionRow {
-            fresh: Recorded::Value(Some(FreshTaskForceCounterEta {
-                sample_hour: replay::rows::PacketHour::Stamped(
-                    packet.sample_hour.stamp().unwrap() - 1
-                ),
-                ..packet
-            })),
-            ..row.clone()
-        })
-        .differences
-        .len(),
-        1
-    );
     assert_eq!(
         run(TaskForceMapMotionRow {
             fresh: Recorded::Value(None),
@@ -1546,7 +1528,7 @@ fn fresh_task_force_exile_compares_saved_truth_without_claiming_raw_magnitude() 
     let (mut frame, _) = base();
     let force = (43_u64 << 32) | 51;
     let packet = FreshTaskForceCounterEta {
-        sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+        sample_hour: replay::rows::PacketHour::Host,
         base_speed: Some(0),
         speed_modifier: Some(0),
         terrain_class: Some(0),

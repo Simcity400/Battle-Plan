@@ -2,7 +2,6 @@
 //! Battle Plan Recorder: a tray program that records campaigns while the game runs.
 
 mod commands;
-mod compaction;
 mod flags;
 mod panel;
 mod snapshot;

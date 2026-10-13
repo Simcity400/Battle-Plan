@@ -23,11 +23,11 @@ pub(super) fn compare(
         .flat_map(|theatre| &theatre.definitions)
         .map(|group| (group.id, group))
         .collect();
-    // Each pack with its lists, which later formats record apart.
+    // Join each current pack with its lists' keyed parts.
     let rows = replay::rows::with_demand_parts(
         complete::<tables::CountryFuel>(frame)?,
         &frame.tables[TableId::FuelDemandParts.index()],
-        report.format,
+        replay::format::FormatVersion::CURRENT,
     )?;
     for row in &rows {
         let label = format!("fuel demand country {}", row.country);
@@ -39,11 +39,11 @@ pub(super) fn compare(
             continue;
         };
         let tag = required_country_tag(row.country, links)?;
-        // A pack read with its row holds no hour: its row must have been read
-        // at this hour, as a stamped pack must name it.
-        let fresh = match pack.hour {
-            FuelDemandHour::Host => report.read_at_hour(TableId::CountryFuel),
-            FuelDemandHour::Stamped(hour) | FuelDemandHour::Historical(hour) => hour == frame.hour,
+        // A host pack requires a current row; an explicit hour must match it.
+        let fresh = if pack.hour == FuelDemandHour::Host {
+            report.read_at_hour(TableId::CountryFuel)
+        } else {
+            pack.hour.at(frame.hour) == frame.hour
         };
         if !fresh {
             return Err(invalid(

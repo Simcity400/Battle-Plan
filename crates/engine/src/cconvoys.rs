@@ -1,6 +1,5 @@
-//! Country-embedded convoy state. The original country-row loan also supplies
-//! the selected cache, pool and reservation inputs in `transport`. Retain the
-//! signed stored pool rows before display calculations.
+//! Country-embedded convoy state. The country row records the signed quantity
+//! cache only when its validity byte is set.
 
 /// Convoy-state primary vtable.
 pub const VTABLE_RVA: usize = 0x027d_0c60;
@@ -22,5 +21,3 @@ pub const CACHE_VALID: usize = 0x78;
 pub const CACHE_RAW: usize = 0x80;
 /// Signed pool-sum clamp magnitude, applied after every addition.
 pub const POOL_CLAMP_MAGNITUDE: i64 = 0x53e2_d620_fb40;
-
-pub mod transport;

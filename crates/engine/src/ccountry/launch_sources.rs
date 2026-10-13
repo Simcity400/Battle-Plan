@@ -4,7 +4,6 @@
 //! Storage is caller-owned and pointer controls retire within the frozen pass.
 //! Synthetic coverage does not establish live capture, save agreement or cost.
 
-use crate::carmy::country_movement_inputs::DomainCapture;
 use crate::{
     Memory, cgame_state, cnaval_base,
     cpdx_array::Array,
@@ -12,6 +11,18 @@ use crate::{
     memory::{RecordField, RecordLayout, RecordSources},
     read, read_slice,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DomainCapture {
+    /// Ok admits the complete keyed domain, including entry-local None values.
+    /// Err exposes no usable prefix (invalid domain, owner or arena shortage).
+    pub len: Result<usize, &'static str>,
+    /// The source header's conservative slot bound survives all refusals,
+    /// including nullable entries and repeated controller observations.
+    pub required: usize,
+    /// First native query refusal in domain order, independent of admission.
+    pub first_failure: Option<&'static str>,
+}
 
 const BATCH: usize = 64;
 /// Physical naval-base pointer array visited for launch sources.

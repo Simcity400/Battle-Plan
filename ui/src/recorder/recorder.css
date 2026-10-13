@@ -15,7 +15,6 @@
 .recorder-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
 .recorder-dot.red { background: var(--error); }
 .recorder-dot.grey { background: var(--quiet); }
-.recorder-dot.blue { background: var(--accent); }
 .recorder-dot.green { background: var(--positive); }
 .recorder-spin { flex: none; width: 9px; height: 9px; border: 2px solid var(--line-strong); border-top-color: var(--text); border-radius: 50%; animation: spin .8s linear infinite; }
 [data-motion='reduced'] .recorder-spin { animation-duration: 2.4s; }
@@ -52,8 +51,6 @@
 .recorder-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; }
 .recorder-row > span:first-child { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .recorder-link { width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; }
-.recorder-info { display: inline-grid; color: var(--quiet); }
-.recorder-info svg { width: 13px; height: 13px; }
 .recorder-value { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); white-space: nowrap; }
 .recorder-value svg { width: 14px; height: 14px; color: var(--quiet); }
 

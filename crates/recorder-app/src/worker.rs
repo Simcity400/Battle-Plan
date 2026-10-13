@@ -2,8 +2,7 @@
 //! single game, attaches when the settings say so and finalizes; the tray and
 //! panel reach it through this state.
 use crate::{
-    compaction,
-    flags::{FlagContent, FlagImage},
+    flags::{BackgroundPriority, FlagContent, FlagImage},
     panel,
     snapshot::{self, OmissionReason, OmittedLoads, Phase, Problem, Snapshot},
     targets, tray,
@@ -11,10 +10,7 @@ use crate::{
 use recorder::controller::{
     self, CaptureOutcome, Control, LoadedCampaign, Omission, Probe, Recording, Refusal, Stage,
 };
-use replay::{
-    container::Replay,
-    recorder_settings::{RecorderSettings, RecordingCompression},
-};
+use replay::{container::Replay, recorder_settings::RecorderSettings};
 use serde_json::Value;
 use std::{
     cell::{Cell, RefCell},
@@ -22,7 +18,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, MutexGuard},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -37,7 +33,6 @@ struct Inner {
     /// Exit after the Stop prompt that Quit opened is answered and carried out.
     quit_after_stop: bool,
     capturing: bool,
-    compacting: bool,
     /// A finished session's Saved or Discarded state stays until the panel has shown it.
     result: bool,
     /// A capture's failure stays until the panel has shown it.
@@ -80,7 +75,7 @@ fn request_flag(
         .name("recorder-flag".into())
         .spawn(move || {
             let recorder = Arc::clone(app.state::<Arc<Recorder>>().inner());
-            let _priority = compaction::BackgroundPriority::enter();
+            let _priority = BackgroundPriority::enter();
             let flag = recorder
                 .flag_content(&session, game_dir, user_dir)
                 .and_then(|content| content.find(&keys))
@@ -138,8 +133,6 @@ struct Ended {
     hold: bool,
     /// The session ended because a load was refused.
     rerouted: bool,
-    /// Recordings the session wrote or appended to.
-    replays: Vec<PathBuf>,
     /// The campaign Record was pressed for, refused only because it records
     /// into another folder: the next session for it is a Record session too.
     handover: Option<String>,
@@ -155,7 +148,6 @@ fn continuation(outcome: &CaptureOutcome, stopped: bool) -> Ended {
     Ended {
         hold: outcome.detach_requested && !outcome.process_exited && !rerouted,
         rerouted,
-        replays: outcome.replays.clone(),
         handover: None,
     }
 }
@@ -165,7 +157,6 @@ impl Ended {
         Self {
             hold: true,
             rerouted: false,
-            replays: Vec::new(),
             handover: None,
         }
     }
@@ -349,12 +340,7 @@ impl Recorder {
     /// Quit: while recording, the same choice as Stop first.
     pub fn quit(&self, app: &AppHandle) {
         let mut inner = self.lock();
-        if inner.compacting {
-            // Compaction stops at its next step and keeps the recording as it was.
-            inner.quit_when_idle = true;
-            drop(inner);
-            self.wake.notify_all();
-        } else if !inner.capturing {
+        if !inner.capturing {
             drop(inner);
             app.exit(0);
         } else if inner.snapshot.phase == Phase::Recording && !inner.snapshot.stopping {
@@ -423,79 +409,6 @@ impl Recorder {
         inner.quit_when_idle || inner.quit_after_stop
     }
 
-    /// Compact the recordings finished while the game ran, one at a time. A
-    /// game starting, or Quit, cancels the current one and leaves it as recorded
-    /// (a game's recordings wait for that game to close).
-    fn compact(&self, app: &AppHandle, finished: &mut Vec<PathBuf>) {
-        let game_or_quit = || {
-            self.exit_requested() || controller::single_game().map_or(true, |game| game.is_some())
-        };
-        while let Some(path) = finished.first().cloned() {
-            if game_or_quit() {
-                return;
-            }
-            let previous = self.snapshot();
-            let campaign = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .map(str::to_owned);
-            let bytes = fs::metadata(&path).ok().map(|metadata| metadata.len());
-            self.update(app, |inner| {
-                inner.compacting = true;
-                let flag = campaign
-                    .as_ref()
-                    .and_then(|campaign| inner.last_flags.get(campaign).cloned());
-                inner.snapshot = Snapshot {
-                    phase: Phase::Compacting,
-                    flag,
-                    campaign,
-                    recording: Some(path.display().to_string()),
-                    bytes,
-                    progress: Some(0.0),
-                    automatic: inner.snapshot.automatic,
-                    ..Snapshot::default()
-                };
-            });
-            // Process discovery is the costly check; ask it every quarter second.
-            let checked = Cell::new(Instant::now());
-            let cancel = || {
-                if self.exit_requested() {
-                    return true;
-                }
-                if checked.get().elapsed() < Duration::from_millis(250) {
-                    return false;
-                }
-                checked.set(Instant::now());
-                game_or_quit()
-            };
-            let progress =
-                |share: f64| self.update(app, |inner| inner.snapshot.progress = Some(share));
-            let result = compaction::compact(&path, &cancel, &progress);
-            let interrupted = result
-                .as_ref()
-                .is_err_and(|error| error.kind() == std::io::ErrorKind::Interrupted);
-            if let Err(error) = &result
-                && !interrupted
-            {
-                // The recording stays as recorded; Compact in Battle Plan can try again.
-                eprintln!("Compacting {}: {error}", path.display());
-            }
-            let after = fs::metadata(&path).ok().map(|metadata| metadata.len());
-            self.update(app, |inner| {
-                inner.compacting = false;
-                let compacted = previous.recording.as_deref() == Some(&*path.display().to_string());
-                inner.snapshot = previous;
-                if compacted {
-                    inner.snapshot.bytes = after.or(inner.snapshot.bytes);
-                }
-            });
-            if interrupted {
-                return;
-            }
-            finished.remove(0);
-        }
-    }
-
     fn run(&self, app: &AppHandle) {
         // The game process the user stopped, or whose capture failed. It is not
         // attached again until it exits or Record is pressed.
@@ -505,9 +418,6 @@ impl Recorder {
         let mut rerouted = false;
         // The game and campaign a Record session hands over to its own folder.
         let mut handover: Option<(u64, String)> = None;
-        // Recordings finished while a game ran, compacted once it closes when
-        // File size is Small.
-        let mut finished: Vec<PathBuf> = Vec::new();
         loop {
             if self.exit_requested() {
                 app.exit(0);
@@ -533,11 +443,6 @@ impl Recorder {
                     held = None;
                     handover = None;
                     game = None;
-                    if settings.compression == RecordingCompression::Small {
-                        self.compact(app, &mut finished);
-                    } else {
-                        finished.clear();
-                    }
                     self.idle(app, &settings, false, None, None);
                 }
                 Ok(Some(pid)) => match controller::game_start_time(pid) {
@@ -584,11 +489,6 @@ impl Recorder {
                             }
                             rerouted = ended.rerouted;
                             handover = ended.handover.map(|campaign| (start, campaign));
-                            for replay in ended.replays {
-                                if !finished.contains(&replay) {
-                                    finished.push(replay);
-                                }
-                            }
                             continue;
                         }
                         self.idle(app, &settings, true, loaded.as_ref(), None);

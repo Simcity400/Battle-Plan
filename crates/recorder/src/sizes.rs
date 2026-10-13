@@ -12,7 +12,6 @@
 
 use replay::{
     container::{Replay, Section},
-    format::FormatVersion,
     frame::{DecodedFrame, FrameDecoder, TABLE_COUNT, TableUpdate},
     rows::TableId,
 };
@@ -133,17 +132,6 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
 }
 
 pub(crate) fn measure(replay: &Replay) -> io::Result<(Sizes, Replay)> {
-    // Frames are written again only in the format they were recorded in.
-    if replay.format != FormatVersion::CURRENT {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "sizes re-encodes frames in format {}; this recording is format {}",
-                FormatVersion::CURRENT.version(),
-                replay.format.version()
-            ),
-        ));
-    }
     let mut sizes = Sizes {
         table_plain: vec![0; TABLE_COUNT],
         table_keyframe: vec![0; TABLE_COUNT],
@@ -185,7 +173,11 @@ pub(crate) fn measure(replay: &Replay) -> io::Result<(Sizes, Replay)> {
         // A plain frame is its 37-byte header, a u64 per table and its updates.
         let present = TableId::ALL
             .into_iter()
-            .filter(|table| table.last_change().present(replay.format.version()))
+            .filter(|table| {
+                replay::format::FormatVersion::CURRENT
+                    .table_refusal(*table)
+                    .is_none()
+            })
             .count();
         sizes.plain += (37 + 8 * present + table_sizes.iter().sum::<usize>()) as u64;
         for (total, size) in sizes.table_plain.iter_mut().zip(table_sizes) {
@@ -748,16 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn sizes_refuse_recordings_it_cannot_reencode_and_route_through_the_cli() {
-        let mut historical = replay();
-        historical.format = FormatVersion::read(FormatVersion::CURRENT.version() - 1).unwrap();
-        assert!(
-            measure(&historical)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("re-encodes frames in format")
-        );
+    fn sizes_route_through_the_cli() {
         let directory = crate::test_support::allocation_test_directory("sizes");
         let path = directory.join("synthetic.battleplan");
         fs::write(&path, replay().bytes()).unwrap();

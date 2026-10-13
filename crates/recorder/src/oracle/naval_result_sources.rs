@@ -22,14 +22,6 @@ pub(super) fn compare(
     frame: &DecodedFrame,
     report: &mut Report,
 ) -> io::Result<()> {
-    if let Some(reason) = replay.format.table_refusal(TableId::NavalResultSources) {
-        report.difference(
-            "NavalResultSources.compatibility",
-            reason,
-            "compatible recorded event table",
-        );
-        return Ok(());
-    }
     report.limitation(
         "recording self-check only: naval-result fill/merge/save retain no source-combat reference, fleet/task-force identity, start hour or duration. Text saves contain retained results and live combats, but no live reference for an ended combat, so they cannot certify the captured mapping or transient source identity. Complete consecutive branch reads certify observed new-result and result_hour transitions against events; results retired before a read and same-hour merges that leave result_hour unchanged are invisible to those checks. Callback context, hook counters and native probes still require the live run; no save difference is waived",
         "NavalResultSources",

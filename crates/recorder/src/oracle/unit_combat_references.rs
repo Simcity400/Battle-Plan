@@ -109,9 +109,9 @@ fn check_packet(
 mod tests {
     use super::*;
     use replay::rows::{LandCombatDetailsRow, LandCombatRow, UnitCombatReference};
-    fn packet(hour: i32) -> UnitCombatReferences {
+    fn packet() -> UnitCombatReferences {
         UnitCombatReferences {
-            sample_hour: replay::rows::PacketHour::Stamped(hour),
+            sample_hour: replay::rows::PacketHour::Host,
             entries: vec![
                 UnitCombatReference {
                     combat: u64::MAX,
@@ -132,7 +132,7 @@ mod tests {
             (Recorded::Value(None), 0, 1),
             (
                 Recorded::Value(Some(UnitCombatReferences {
-                    sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+                    sample_hour: replay::rows::PacketHour::Host,
                     entries: Vec::new(),
                 })),
                 0,
@@ -175,11 +175,7 @@ mod tests {
                 border_war: None.into(),
                 ..Default::default()
             }]));
-        for (packet, count, differences) in [
-            (packet(frame.hour), 2, 0),
-            (packet(frame.hour.wrapping_add(1)), 2, 1),
-            (packet(frame.hour), 1, 1),
-        ] {
+        for (packet, count, differences) in [(packet(), 2, 0), (packet(), 1, 1)] {
             let mut report = Report::default();
             check_packet(
                 &frame,
@@ -199,7 +195,7 @@ mod tests {
         check_packet(
             &frame,
             &mut report,
-            &Some(packet(frame.hour)).into(),
+            &Some(packet()).into(),
             2,
             "DivisionMovement.combat_references",
             77,
@@ -224,7 +220,7 @@ mod tests {
                 }]));
             let actual = u8::from(border.is_some());
             let packet = UnitCombatReferences {
-                sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+                sample_hour: replay::rows::PacketHour::Host,
                 entries: vec![UnitCombatReference {
                     combat: u64::MAX,
                     kind: 1 - actual,
@@ -253,7 +249,7 @@ mod tests {
         check_packet(
             &frame,
             &mut report,
-            &Some(packet(frame.hour)).into(),
+            &Some(packet()).into(),
             2,
             "DivisionMovement.combat_references",
             77,

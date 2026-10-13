@@ -19,6 +19,7 @@ regions={0={region=0 temperature=-90071992547.40993
     )
     .unwrap();
     let hour = saved.date.engine_hour().unwrap();
+    let content = replay::temperature::Content::default();
     let mut frame = DecodedFrame {
         branch: 1,
         hour,
@@ -35,7 +36,10 @@ regions={0={region=0 temperature=-90071992547.40993
             permanent_snow: 4_000_000,
             display_snow: 128,
             display_mud: 255,
-            temperature: replay::rows::ProvinceTemperature::historical(100_000),
+            temperature: replay::rows::ProvinceTemperature::anchored(replay::temperature::State {
+                temperature: 100_000,
+                ..Default::default()
+            }),
             raw_mud: replay::rows::Recorded::Value(7),
             clock: replay::rows::DayNightClock::held(replay::day_night::Clock {
                 local_hour: 0,
@@ -47,7 +51,11 @@ regions={0={region=0 temperature=-90071992547.40993
                 edges: vec![2, 3],
                 ..Default::default()
             })),
-            temperature_pass: replay::rows::Recorded::NotRecorded,
+            temperature_pass: replay::rows::Recorded::Value(Some(replay::rows::TemperaturePass {
+                anchor: hour,
+                checksum: replay::temperature::checksum([100_000]),
+                ..Default::default()
+            })),
         }]));
     *frame.tables[TableId::WeatherRegions.index()] =
         TableView::Complete(TableRows::WeatherRegions(vec![WeatherRegionRow {
@@ -56,7 +64,7 @@ regions={0={region=0 temperature=-90071992547.40993
             ..Default::default()
         }]));
     let mut report = Report::default();
-    compare(&frame, &saved, Err("unused".into()), &mut report).unwrap();
+    compare(&frame, &saved, Ok(&content), &mut report).unwrap();
     assert!(report.differences.is_empty());
     assert_eq!(report.scalar_checks, 2);
     assert_eq!(report.limitations.len(), 5);
@@ -64,7 +72,7 @@ regions={0={region=0 temperature=-90071992547.40993
         "the weather manager writer omits the stored day/night array; held clocks require a matched native read witness, and updated clocks are the hour's derivation from content (`recorder derived` compares it with recorded clocks)"
     ));
 
-    // Historical absence withholds temperature/mud comparisons and identifies
+    // Missing fields withhold temperature/mud comparisons and identify
     // the missing stored clock without inventing a save counterpart.
     let original = frame.tables[TableId::WeatherProvinces.index()].clone();
     if let TableView::Complete(TableRows::WeatherProvinces(rows)) =
@@ -76,7 +84,7 @@ regions={0={region=0 temperature=-90071992547.40993
         rows[0].display = replay::rows::Recorded::NotRecorded;
     }
     let mut old = Report::default();
-    compare(&frame, &saved, Err("unused".into()), &mut old).unwrap();
+    compare(&frame, &saved, Ok(&content), &mut old).unwrap();
     assert!(old.differences.is_empty());
     assert_eq!(old.scalar_checks, 1); // snow remains compared
     assert_eq!(
@@ -113,7 +121,7 @@ regions={0={region=0 temperature=-90071992547.40993
             }
         };
         let mut report = Report::default();
-        assert!(compare(&frame, &saved, Err("unused".into()), &mut report).is_err());
+        assert!(compare(&frame, &saved, Ok(&content), &mut report).is_err());
         assert!(report.differences.is_empty());
         assert_eq!(report.scalar_checks, scalar_checks);
         assert_eq!(report.failed_comparisons.len(), 1);
@@ -130,7 +138,7 @@ regions={0={region=0 temperature=-90071992547.40993
     };
     rows[0].snow -= 1;
     let mut report = Report::default();
-    compare(&frame, &saved, Err("unused".into()), &mut report).unwrap();
+    compare(&frame, &saved, Ok(&content), &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
 
     let TableView::Complete(TableRows::WeatherProvinces(rows)) =
@@ -138,10 +146,18 @@ regions={0={region=0 temperature=-90071992547.40993
     else {
         unreachable!();
     };
-    rows[0].temperature = replay::rows::ProvinceTemperature::historical(99_999);
+    rows[0].temperature = replay::rows::ProvinceTemperature::anchored(replay::temperature::State {
+        temperature: 99_999,
+        ..Default::default()
+    });
+    rows[0].temperature_pass = replay::rows::Recorded::Value(Some(replay::rows::TemperaturePass {
+        anchor: hour,
+        checksum: replay::temperature::checksum([99_999]),
+        ..Default::default()
+    }));
     rows[0].raw_mud = replay::rows::Recorded::Value(0);
     let mut report = Report::default();
-    compare(&frame, &saved, Err("unused".into()), &mut report).unwrap();
+    compare(&frame, &saved, Ok(&content), &mut report).unwrap();
     assert_eq!(report.differences.len(), 3);
     for field in ["snow", "temperature", "mud"] {
         assert!(
@@ -158,23 +174,29 @@ regions={0={region=0 temperature=-90071992547.40993
         unreachable!();
     };
     rows[0].snow += 1;
-    rows[0].temperature = replay::rows::ProvinceTemperature::historical(0);
+    rows[0].temperature =
+        replay::rows::ProvinceTemperature::anchored(replay::temperature::State::default());
+    rows[0].temperature_pass = replay::rows::Recorded::Value(Some(replay::rows::TemperaturePass {
+        anchor: hour,
+        checksum: replay::temperature::checksum([0]),
+        ..Default::default()
+    }));
     rows[0].raw_mud = replay::rows::Recorded::Value(7);
     let expected = &mut saved.weather.provinces.as_mut().unwrap()[0];
     expected.temperature = Some(Decimal::parse(b"0").unwrap());
     let mut report = Report::default();
-    compare(&frame, &saved, Err("unused".into()), &mut report).unwrap();
+    compare(&frame, &saved, Ok(&content), &mut report).unwrap();
     assert!(report.differences.is_empty());
     saved.weather.provinces.as_mut().unwrap()[0].temperature = None;
     let mut report = Report::default();
-    compare(&frame, &saved, Err("unused".into()), &mut report).unwrap();
+    compare(&frame, &saved, Ok(&content), &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("province 0.temperature"));
 
     *frame.tables[TableId::WeatherRegions.index()] = TableView::Unavailable {
         reason: "region read failed".into(),
     };
-    assert!(compare(&frame, &saved, Err("unused".into()), &mut Report::default()).is_err());
+    assert!(compare(&frame, &saved, Ok(&content), &mut Report::default()).is_err());
 }
 
 #[test]

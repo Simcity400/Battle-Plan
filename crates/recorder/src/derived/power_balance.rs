@@ -1,8 +1,7 @@
 //! Power-balance description trees: playback's derivation from each record's
 //! recorded sources and the content's static modifiers
 //! ([`replay::power_balance_derive`]) against the native trees a recording
-//! holds as witnesses: every row of a recording made before playback derived
-//! them, and the rows of the hour's sampled slice a `breakdown_witness`
+//! holds as witnesses: the rows of the hour's sampled slice a `breakdown_witness`
 //! collector build read. Rows without witnesses are counted, not compared.
 
 use installed_content::{ResolvedLayers, static_modifiers::Descriptions};
@@ -38,7 +37,10 @@ impl Checker {
             return;
         };
         self.rows += rows.len() as u64;
-        let mut witnessed = rows.iter().filter(|row| !row.daily.is_empty()).peekable();
+        let mut witnessed = rows
+            .iter()
+            .filter(|row| !row.daily.is_empty() || !row.weekly.is_empty())
+            .peekable();
         if witnessed.peek().is_none() {
             return;
         }
@@ -119,6 +121,10 @@ impl Checker {
             derive::tree(DAILY, &inputs, registry)?,
             derive::tree(WEEKLY, &inputs, registry)?,
         ])
+    }
+
+    pub(super) fn failures(&self) -> [u64; 2] {
+        [self.mismatches, self.refused + self.unavailable_hours]
     }
 
     pub(super) fn print(&self) {

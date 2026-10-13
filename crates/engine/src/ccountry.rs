@@ -1415,7 +1415,6 @@ pub fn read_reserved_naming(
         game_state,
         crate::walk::Buffer::Fixed(names),
         None,
-        None,
     )
 }
 pub fn read_reserved_naming_observed(
@@ -1431,7 +1430,6 @@ pub fn read_reserved_naming_observed(
         game_state,
         crate::walk::Buffer::Fixed(names),
         Some(journal),
-        None,
     )
 }
 pub fn read_reserved_naming_observed_growing(
@@ -1447,49 +1445,6 @@ pub fn read_reserved_naming_observed_growing(
         game_state,
         crate::walk::Buffer::Growing(names),
         Some(journal),
-        None,
-    )
-}
-pub type ReservedNamingObserver<'a, M> = dyn FnMut(
-        Result<&Reader<'_, M>, &'static str>,
-        Result<Country, &'static str>,
-        Result<i32, &'static str>,
-    ) + 'a;
-
-/// The reserved spotting borrower receives the genuine naming root/count,
-/// including faults, before any fallible naming or optional output capacity.
-pub fn read_reserved_naming_observed_with_transport<M: Memory>(
-    memory: &M,
-    base: usize,
-    game_state: usize,
-    names: &mut [u8],
-    journal: &mut crate::raw_country_observations::Journal,
-    observer: &mut ReservedNamingObserver<'_, M>,
-) -> ReservedNamingWalk {
-    read_reserved_naming_observed_inner(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(names),
-        Some(journal),
-        Some(observer),
-    )
-}
-pub fn read_reserved_naming_observed_with_transport_growing<M: Memory>(
-    memory: &M,
-    base: usize,
-    game_state: usize,
-    names: &mut Vec<u8>,
-    journal: &mut crate::raw_country_observations::Journal,
-    observer: &mut ReservedNamingObserver<'_, M>,
-) -> ReservedNamingWalk {
-    read_reserved_naming_observed_inner(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Growing(names),
-        Some(journal),
-        Some(observer),
     )
 }
 fn read_reserved_naming_observed_inner<M: Memory>(
@@ -1498,36 +1453,10 @@ fn read_reserved_naming_observed_inner<M: Memory>(
     game_state: usize,
     mut names: crate::walk::Buffer<'_, u8>,
     mut journal: Option<&mut crate::raw_country_observations::Journal>,
-    observer: Option<&mut ReservedNamingObserver<'_, M>>,
 ) -> ReservedNamingWalk {
     // Observe +484 before any fallible naming work. Both success and failure
     // belong to this one root observation; the vector consumes it below.
     let launch_states = launch_sources::ReservedOwnedStates::new(memory, base, game_state);
-    if let Some(observer) = observer {
-        let reader = journal
-            .as_deref()
-            .ok_or("original country journal not supplied")
-            .and_then(|journal| {
-                Reader::with_link_observations(
-                    memory,
-                    base,
-                    game_state,
-                    journal.link_observations(),
-                )
-            });
-        if let Ok(reader) = &reader {
-            reader
-                .reserved
-                .set(Some(ReservedCountryObservation::from_result(
-                    launch_states.root(),
-                )));
-        }
-        observer(
-            reader.as_ref().map_err(|reason| *reason),
-            launch_states.root(),
-            launch_states.count(),
-        );
-    }
     let visibility = ReservedVisibilityObservation::from_root(memory, base, launch_states.root());
     let mut required_bytes = 0;
     let result = (|| {
@@ -3209,7 +3138,7 @@ fn walk_links_observed_inner(
 }
 
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_observed_inner(memory, base, game_state, output, None, None, None)
+    walk_observed_inner(memory, base, game_state, output, None)
 }
 pub fn walk_observed(
     memory: &impl Memory,
@@ -3218,49 +3147,7 @@ pub fn walk_observed(
     output: &mut [Row],
     journal: &mut crate::raw_country_observations::Journal,
 ) -> Outcome {
-    walk_observed_inner(memory, base, game_state, output, Some(journal), None, None)
-}
-pub fn walk_observed_with_convoys(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    journal: &mut crate::raw_country_observations::Journal,
-    observer: &mut dyn FnMut(Country, crate::cconvoys::transport::OriginalCache),
-) -> Outcome {
-    walk_observed_inner(
-        memory,
-        base,
-        game_state,
-        output,
-        Some(journal),
-        Some(observer),
-        None,
-    )
-}
-pub type CountryObserver<'a, M> =
-    dyn FnMut(&Reader<'_, M>, u32, Result<Option<Country>, &'static str>) + 'a;
-
-/// Borrow the original full physical authentication and original row cache.
-/// No reader constructor selects another root/header/census for these loans.
-pub fn walk_observed_with_transport<M: Memory>(
-    memory: &M,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    journal: &mut crate::raw_country_observations::Journal,
-    convoy_observer: &mut dyn FnMut(Country, crate::cconvoys::transport::OriginalCache),
-    country_observer: &mut CountryObserver<'_, M>,
-) -> Outcome {
-    walk_observed_inner(
-        memory,
-        base,
-        game_state,
-        output,
-        Some(journal),
-        Some(convoy_observer),
-        Some(country_observer),
-    )
+    walk_observed_inner(memory, base, game_state, output, Some(journal))
 }
 fn walk_observed_inner<M: Memory>(
     memory: &M,
@@ -3268,8 +3155,6 @@ fn walk_observed_inner<M: Memory>(
     game_state: usize,
     output: &mut [Row],
     mut journal: Option<&mut crate::raw_country_observations::Journal>,
-    mut convoy_observer: Option<&mut dyn FnMut(Country, crate::cconvoys::transport::OriginalCache)>,
-    mut country_observer: Option<&mut CountryObserver<'_, M>>,
 ) -> Outcome {
     let Some(countries) = game_state
         .checked_add(cgame_state::COUNTRIES)
@@ -3313,138 +3198,118 @@ fn walk_observed_inner<M: Memory>(
             reason: "country links and tags have different counts",
         };
     }
-    let mut read_row = |id: u32,
-                        canonical_slot: u32,
-                        pointer: usize,
-                        journal: &mut Option<&mut crate::raw_country_observations::Journal>|
+    let read_row = |id: u32,
+                    canonical_slot: u32,
+                    pointer: usize,
+                    journal: &mut Option<&mut crate::raw_country_observations::Journal>|
      -> Result<Row, &'static str> {
-        let mut original_cache = None;
-        let result = (|| {
-            let at = |offset| {
-                pointer
-                    .checked_add(offset)
-                    .ok_or("country address overflow")
-            };
-            let scalar =
-                |offset| read::<i64>(memory, at(offset)?).ok_or("country scalar unreadable");
-            let tag_address = tags
-                .element(id, STRIDE)
-                .ok_or("country id outside link tags")?;
-            let tag = match journal.as_deref_mut() {
-                Some(journal) => crate::msvc_string::read_text_observed::<8, true>(
-                    memory,
-                    tag_address,
-                    id as i32,
-                    crate::raw_country_observations::Source::Countries,
-                    journal,
-                ),
-                None => read_text_prefetched::<8>(memory, tag_address),
+        let at = |offset| {
+            pointer
+                .checked_add(offset)
+                .ok_or("country address overflow")
+        };
+        let scalar = |offset| read::<i64>(memory, at(offset)?).ok_or("country scalar unreadable");
+        let tag_address = tags
+            .element(id, STRIDE)
+            .ok_or("country id outside link tags")?;
+        let tag = match journal.as_deref_mut() {
+            Some(journal) => crate::msvc_string::read_text_observed::<8, true>(
+                memory,
+                tag_address,
+                id as i32,
+                crate::raw_country_observations::Source::Countries,
+                journal,
+            ),
+            None => read_text_prefetched::<8>(memory, tag_address),
+        }
+        .ok_or("country tag unreadable or too long")?;
+        if tag.len == 0 {
+            return Err("country tag empty");
+        }
+        // The country's own scalars in one guarded scattered copy, in
+        // the order the row checks them ([`Fields::get`]): the field it
+        // faults on refuses with its own reason and is not read again,
+        // and a field after it is read alone where the row reaches it.
+        let fields = Fields::gather(memory, pointer);
+        let status = fields
+            .get::<u64>(memory, pointer, GATHERED_STATUS)?
+            .ok_or("political status pointer unreadable")?;
+        let political_power_raw = if status == 0 {
+            None
+        } else {
+            let status =
+                usize::try_from(status).map_err(|_| "political status address overflow")?;
+            let vtable = base
+                .checked_add(cpolitical_status::VTABLE_RVA)
+                .ok_or("module address overflow")?;
+            if read::<u64>(memory, status) != Some(vtable as u64) {
+                return Err("political status vtable mismatch");
             }
-            .ok_or("country tag unreadable or too long")?;
-            if tag.len == 0 {
-                return Err("country tag empty");
+            if status
+                .checked_add(cpolitical_status::COUNTRY)
+                .and_then(|p| read::<u64>(memory, p))
+                != Some(pointer as u64)
+            {
+                return Err("political status country mismatch");
             }
-            // The country's own scalars in one guarded scattered copy, in
-            // the order the row checks them ([`Fields::get`]): the field it
-            // faults on refuses with its own reason and is not read again,
-            // and a field after it is read alone where the row reaches it.
-            let fields = Fields::gather(memory, pointer);
-            let status = fields
-                .get::<u64>(memory, pointer, GATHERED_STATUS)?
-                .ok_or("political status pointer unreadable")?;
-            let political_power_raw = if status == 0 {
-                None
-            } else {
-                let status =
-                    usize::try_from(status).map_err(|_| "political status address overflow")?;
-                let vtable = base
-                    .checked_add(cpolitical_status::VTABLE_RVA)
-                    .ok_or("module address overflow")?;
-                if read::<u64>(memory, status) != Some(vtable as u64) {
-                    return Err("political status vtable mismatch");
-                }
-                if status
-                    .checked_add(cpolitical_status::COUNTRY)
-                    .and_then(|p| read::<u64>(memory, p))
-                    != Some(pointer as u64)
-                {
-                    return Err("political status country mismatch");
-                }
-                Some(
-                    status
-                        .checked_add(cpolitical_status::POLITICAL_POWER)
-                        .and_then(|p| read::<i64>(memory, p))
-                        .ok_or("political power unreadable")?,
-                )
-            };
-            Ok(Row {
-                id,
-                canonical_slot,
-                tag,
-                political_power_raw,
-                politics_witness: (|| {
-                    let instance = fields
-                        .get::<u32>(memory, pointer, GATHERED_INSTANCE)
-                        .ok()??;
-                    let party = if status == 0 {
+            Some(
+                status
+                    .checked_add(cpolitical_status::POLITICAL_POWER)
+                    .and_then(|p| read::<i64>(memory, p))
+                    .ok_or("political power unreadable")?,
+            )
+        };
+        Ok(Row {
+            id,
+            canonical_slot,
+            tag,
+            political_power_raw,
+            politics_witness: (|| {
+                let instance = fields
+                    .get::<u32>(memory, pointer, GATHERED_INSTANCE)
+                    .ok()??;
+                let party = if status == 0 {
+                    None
+                } else {
+                    let pointer = read::<u64>(
+                        memory,
+                        (status as usize).checked_add(cpolitical_status::RULING_PARTY)?,
+                    )? as usize;
+                    if pointer == 0 {
                         None
                     } else {
-                        let pointer = read::<u64>(
-                            memory,
-                            (status as usize).checked_add(cpolitical_status::RULING_PARTY)?,
-                        )? as usize;
-                        if pointer == 0 {
-                            None
-                        } else {
-                            Some(cpolitical_party::identity(memory, base, pointer).ok()?.0)
-                        }
-                    };
-                    Some((instance, party))
-                })(),
-                border_land_doctrine_level: None,
-                manpower_residual: fields
-                    .get::<i32>(memory, pointer, GATHERED_MANPOWER)?
-                    .ok_or("country manpower residual unreadable")?,
-                command_power_raw: fields
-                    .get::<i64>(memory, pointer, GATHERED_COMMAND_POWER)?
-                    .ok_or("country scalar unreadable")?,
-                stability_raw: fields
-                    .get::<i64>(memory, pointer, GATHERED_STABILITY)?
-                    .ok_or("country scalar unreadable")?,
-                war_support_raw: fields
-                    .get::<i64>(memory, pointer, GATHERED_WAR_SUPPORT)?
-                    .ok_or("country scalar unreadable")?,
-                peace_conference_participant: fields
-                    .get::<u8>(memory, pointer, GATHERED_PEACE)?
-                    .ok_or("peace conference participation unreadable")?,
-                convoys_raw: {
-                    let cache = (|| {
-                        let valid = fields
-                            .get::<u8>(memory, pointer, GATHERED_CONVOY_VALID)?
-                            .ok_or("convoy cache validity unreadable")?;
-                        let raw = if valid == 0 {
-                            None
-                        } else {
-                            Some(scalar(CONVOY_STATE + cconvoys::CACHE_RAW)?)
-                        };
-                        Ok(cconvoys::transport::Cache { valid, raw })
-                    })();
-                    original_cache = Some(cache);
-                    cache?.raw
-                },
-            })
-        })();
-        if let Some(observer) = convoy_observer.as_deref_mut() {
-            observer(
-                Country {
-                    id,
-                    canonical_slot,
-                    pointer,
-                },
-                original_cache,
-            );
-        }
-        result
+                        Some(cpolitical_party::identity(memory, base, pointer).ok()?.0)
+                    }
+                };
+                Some((instance, party))
+            })(),
+            border_land_doctrine_level: None,
+            manpower_residual: fields
+                .get::<i32>(memory, pointer, GATHERED_MANPOWER)?
+                .ok_or("country manpower residual unreadable")?,
+            command_power_raw: fields
+                .get::<i64>(memory, pointer, GATHERED_COMMAND_POWER)?
+                .ok_or("country scalar unreadable")?,
+            stability_raw: fields
+                .get::<i64>(memory, pointer, GATHERED_STABILITY)?
+                .ok_or("country scalar unreadable")?,
+            war_support_raw: fields
+                .get::<i64>(memory, pointer, GATHERED_WAR_SUPPORT)?
+                .ok_or("country scalar unreadable")?,
+            peace_conference_participant: fields
+                .get::<u8>(memory, pointer, GATHERED_PEACE)?
+                .ok_or("peace conference participation unreadable")?,
+            convoys_raw: {
+                let valid = fields
+                    .get::<u8>(memory, pointer, GATHERED_CONVOY_VALID)?
+                    .ok_or("convoy cache validity unreadable")?;
+                if valid == 0 {
+                    None
+                } else {
+                    Some(scalar(CONVOY_STATE + cconvoys::CACHE_RAW)?)
+                }
+            },
+        })
     };
     let result = (|| {
         if countries.count < 2 {
@@ -3483,26 +3348,6 @@ fn walk_observed_inner<M: Memory>(
         let mut len = 0;
         let mut unread_rows = 0;
         let mut reserved = cached_reserved_observation(memory, base, game_state);
-        let observe = |slot,
-                       original,
-                       reserved: &mut Option<ReservedCountryObservation>,
-                       journal: &Option<&mut crate::raw_country_observations::Journal>,
-                       observer: &mut Option<&mut CountryObserver<'_, M>>| {
-            if let Some(observer) = observer.as_deref_mut()
-                && let Ok(mut reader) =
-                    Reader::from_arrays(memory, base, game_state, [countries, links])
-            {
-                reader.observed_links = journal
-                    .as_deref()
-                    .map(|journal| journal.link_observations());
-                reader.reserved.set(*reserved);
-                observer(&reader, slot, original);
-                // Observer leaf attempts cannot change original census selection.
-            }
-        };
-        // Physical zero is a separate native reserved naming owner; the
-        // full ordinary loan still certifies its occurrence without payload.
-        observe(0, Ok(None), &mut reserved, &journal, &mut country_observer);
         for slot in 1..countries.count {
             let original = (|| {
                 let pointer = pointer_at(slot)?;
@@ -3545,18 +3390,11 @@ fn walk_observed_inner<M: Memory>(
                     pointer,
                 }))
             })();
-            observe(
-                slot,
-                original,
-                &mut reserved,
-                &journal,
-                &mut country_observer,
-            );
             let Some(country) = original? else {
                 continue;
             };
             // Native aliases and reserved occurrences authenticate coverage,
-            // while the original row/cache is still published once.
+            // while the row is published once.
             if slot != country.canonical_slot {
                 continue;
             }
@@ -6892,215 +6730,6 @@ mod tests {
             assert_eq!((row.id, row.canonical_slot), (id, id));
             assert_eq!(row.politics_witness, Some((0xf001_0000 + id, None)));
         }
-    }
-
-    #[test]
-    fn original_country_spotting_loan_covers_aliases_without_selecting_controls_twice() {
-        use std::cell::RefCell;
-        struct Traced<'a> {
-            memory: SliceMemory<'a>,
-            calls: RefCell<Vec<(usize, usize)>>,
-        }
-        impl Memory for Traced<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                self.calls.borrow_mut().push((address, output.len()));
-                self.memory.copy(address, output)
-            }
-        }
-        let bytes = countries_with_aliases();
-        for capacity in [0, 2] {
-            let make = || Traced {
-                memory: SliceMemory {
-                    base: 0x1000,
-                    bytes: &bytes,
-                },
-                calls: Default::default(),
-            };
-            let journal = || {
-                crate::raw_country_observations::Journal::try_new(
-                    crate::raw_country_observations::Capacity {
-                        occurrences: 64,
-                        links: 8,
-                        bytes: 256,
-                        ..Default::default()
-                    },
-                )
-                .unwrap()
-            };
-            let reference = make();
-            let mut expected = vec![Row::default(); capacity];
-            let original = walk_observed(&reference, 0, 0x1000, &mut expected, &mut journal());
-            let memory = make();
-            let mut rows = vec![Row::default(); capacity];
-            let mut observations = Vec::new();
-            let actual = walk_observed_with_transport(
-                &memory,
-                0,
-                0x1000,
-                &mut rows,
-                &mut journal(),
-                &mut |_, _| {},
-                &mut |reader, slot, original| {
-                    assert_eq!(reader.count(), 3);
-                    if let Ok(Some(country)) = original {
-                        assert_eq!(reader.link(country.id), Ok(Some(1)));
-                    }
-                    observations.push((slot, original));
-                },
-            );
-            assert_eq!(actual, original);
-            assert_eq!(rows, expected);
-            assert_eq!(
-                *memory.calls.borrow(),
-                *reference.calls.borrow(),
-                "borrow adds no census/header/identity/link attempts"
-            );
-            assert_eq!(
-                observations
-                    .iter()
-                    .map(|(slot, _)| *slot)
-                    .collect::<Vec<_>>(),
-                [0, 1, 2]
-            );
-            assert_eq!(observations[0].1, Ok(None));
-            assert_eq!(
-                observations[1].1, observations[2].1,
-                "alias borrows original canonical identity"
-            );
-        }
-    }
-
-    #[test]
-    fn original_country_convoy_observer_borrows_cache_success_and_failure_without_retry() {
-        use std::cell::RefCell;
-        struct Traced<'a> {
-            memory: SliceMemory<'a>,
-            fault: Option<usize>,
-            calls: RefCell<Vec<usize>>,
-        }
-        impl Memory for Traced<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                self.calls.borrow_mut().push(address);
-                // A second attempt could succeed, which must never heal the
-                // original cache failure through the selected-unit suffix.
-                if self.fault == Some(address)
-                    && self
-                        .calls
-                        .borrow()
-                        .iter()
-                        .filter(|&&at| at == address)
-                        .count()
-                        == 1
-                {
-                    return false;
-                }
-                self.memory.copy(address, output)
-            }
-        }
-        let mut bytes = countries_with_aliases();
-        let pointer = 0x2000;
-        let root = pointer + CONVOY_STATE;
-        put(
-            &mut bytes,
-            root - 0x1000,
-            &(cconvoys::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            root + cconvoys::COUNTRY - 0x1000,
-            &7_u32.to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            root + cconvoys::EQUIPMENT_POOL - 0x1000,
-            &(crate::cequipment_variant_pool::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        let valid = root + cconvoys::CACHE_VALID;
-        let raw = root + cconvoys::CACHE_RAW;
-        for fault in [None, Some(valid), Some(raw)] {
-            let memory = Traced {
-                memory: SliceMemory {
-                    base: 0x1000,
-                    bytes: &bytes,
-                },
-                fault,
-                calls: Default::default(),
-            };
-            let mut journal = crate::raw_country_observations::Journal::vacant();
-            let mut scratch = cconvoys::transport::Scratch::try_new(1).unwrap();
-            let mut observations = Vec::new();
-            let mut rows = [Row::default(); 2];
-            let result = walk_observed_with_convoys(
-                &memory,
-                0,
-                0x1000,
-                &mut rows,
-                &mut journal,
-                &mut |country, original| {
-                    assert_eq!(
-                        country,
-                        Country {
-                            id: 7,
-                            canonical_slot: 1,
-                            pointer
-                        }
-                    );
-                    let suffix = cconvoys::transport::capture(
-                        &memory,
-                        0,
-                        country,
-                        original,
-                        &mut [],
-                        &mut [],
-                        &mut scratch,
-                    );
-                    assert_eq!(Some(suffix.cache), original);
-                    observations.push(original);
-                },
-            );
-            assert_eq!(
-                observations.len(),
-                1,
-                "physical alias is authenticated but emits no second row"
-            );
-            assert_eq!(
-                memory
-                    .calls
-                    .borrow()
-                    .iter()
-                    .filter(|&&at| at == valid)
-                    .count(),
-                1
-            );
-            assert_eq!(
-                memory
-                    .calls
-                    .borrow()
-                    .iter()
-                    .filter(|&&at| at == raw)
-                    .count(),
-                usize::from(fault != Some(valid))
-            );
-            assert_eq!(matches!(result, Outcome::Rows { len: 1 }), fault.is_none());
-            assert_eq!(observations[0].unwrap().is_err(), fault.is_some());
-            scratch.retire();
-        }
-        let memory = SliceMemory {
-            base: 0x1000,
-            bytes: &bytes,
-        };
-        let mut journal = crate::raw_country_observations::Journal::vacant();
-        let mut attempts = 0;
-        assert!(matches!(
-            walk_observed_with_convoys(&memory, 0, 0x1000, &mut [], &mut journal, &mut |_, _| {
-                attempts += 1
-            }),
-            Outcome::Truncated { .. }
-        ));
-        assert_eq!(
-            attempts, 0,
-            "unattempted original row capacity never manufactures a convoy loan"
-        );
     }
 
     #[test]

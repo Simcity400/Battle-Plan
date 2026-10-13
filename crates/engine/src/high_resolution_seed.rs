@@ -1,8 +1,0 @@
-//! High-resolution seed helper; no event capture is enabled.
-
-/// Seed helper; writes two u32 words.
-pub const HIGH_RESOLUTION_SEED_RVA: u32 = 0x024D_BE60;
-/// Seed-helper entry bytes.
-pub const SEED_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xf9, 0xe8, 0x9e, 0xc7,
-];
