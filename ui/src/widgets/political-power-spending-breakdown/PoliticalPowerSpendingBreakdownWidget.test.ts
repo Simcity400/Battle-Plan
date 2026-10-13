@@ -9,7 +9,7 @@ import { groupTree, sliceTooltip } from '../../charts/sunburst/layout.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { IdeaInfo, PoliticsLedgerReply } from '../../generated/dashboard';
 
-test('registered spending breakdown uses supplying reads, exact charges and the current sunburst tooltip contract', async () => {
+test('registered spending breakdown draws everything recorded, names unrecorded time and writes whole amounts', async () => {
   const payment = (id: string, hour: number, readHour: number, chargeRaw: string) => ({id, hour, readHour, sequence: id === 'first' ? '1' : '2', ordinal: 0,
     countryTag: 'synthetic actor', countryName: null, currency: 'Political' as const, category: 'mod category', itemId: 'mod action',
     chargeRaw, realizedDeltaRaw: '-50000', covered: true, occurrences: 1,
@@ -54,7 +54,7 @@ test('registered spending breakdown uses supplying reads, exact charges and the 
       countries: {kind: 'tags', tags: ['synthetic actor']}, time: {mode: 'follow'}, options: {growth: 'fill'}}, runtime: {client: {}, tracks: [track],
       clock: {getHour: () => state.clock, getSnapshot: () => ({hoursPerSecond: 24})}}, active: true, onDiagnostics() {}} as unknown as WidgetProps;
     const render = () => {state.chart = undefined; return renderToStaticMarkup(createElement(Widget, props));};
-    assert.match(render(), /No spending recorded in this period/);
+    assert.match(render(), /No political power spent in this period\./);
     assert.equal(state.chart, undefined, 'a native action is unavailable until its supplying read');
     state.clock = 12; render();
     assert.equal(state.subscribed, true);
@@ -62,27 +62,34 @@ test('registered spending breakdown uses supplying reads, exact charges and the 
     assert.equal(chart.settings.growth, 'fill');
     assert.deepEqual(chart.levels, [true, true]);
     assert.equal(chart.items.find(item => item.present)!.exact, 150000n, 'the evaluated charge differs from the realized balance delta');
-    assert.equal(chart.items.find(item => item.path[0].id === 'coverage-gap')!.present, false);
+    assert.equal(chart.items.some(item => item.path[0].id === 'coverage-gap'), false, 'unrecorded time is no slice or legend row');
+    assert.equal(chart.root.label, 'Spent');
     assert.equal(chart.footnote, undefined);
     const tree = groupTree(chart.items, chart.root, chart.levels);
     const category = tree.children.find(node => node.key === 'mod category')!;
     const leaf = category.children[0];
     const tooltip = chart.tooltip!(leaf, tree, chart.text);
     assert.equal(tooltip[0].title, 'Recorded action');
-    assert.ok(tooltip[0].rows.some(row => row.label === 'Spent' && row.value === '1.5 PP'));
+    assert.ok(tooltip[0].rows.some(row => row.label === 'Spent' && row.value === '2 PP'), 'whole numbers by default');
+    assert.match(tooltip[0].subtitle ?? '', /^Recorded category · most recent /);
     assert.ok(!tooltip[0].rows.some(row => row.label === 'Most recent read'));
     assert.ok(tooltip[0].rows.some(row => row.label === 'Against Dated other actor at 10:'));
     assert.deepEqual(state.namedAt, [10, 10], 'each tooltip form names targets at the native action, apart from the read and playhead');
     assert.deepEqual(chart.tooltip!(category, tree, chart.text), sliceTooltip(category, tree, chart.text));
     const folded = {...leaf, other: true};
     assert.deepEqual(chart.tooltip!(folded, tree, chart.text), sliceTooltip(folded, tree, chart.text));
+    props.widget.options = {growth: 'fill', decimals: 1}; render();
+    const precise = groupTree(state.chart!.items, state.chart!.root, state.chart!.levels);
+    const preciseLeaf = precise.children.find(node => node.key === 'mod category')!.children[0];
+    assert.ok(state.chart!.tooltip!(preciseLeaf, precise, state.chart!.text)[0].rows.some(row => row.value === '1.5 PP'), 'the Decimals setting raises the digits');
+    props.widget.options = {growth: 'fill'};
     props.widget.time = {mode: 'campaign'}; render();
     assert.equal(state.subscribed, false);
     const complete = groupTree(state.chart!.items, state.chart!.root);
-    assert.equal(complete.exact, null); assert.equal(complete.valueUnknown, true);
-    assert.equal(complete.children.find(node => node.key === 'mod category')!.exact, 250000n);
-    assert.match(state.chart!.footnote!, /2.5 PP known; total unknown/);
-    assert.equal(state.chart!.items.find(item => item.path[0].id === 'coverage-gap')!.unknownValue, true);
+    assert.equal(complete.exact, 250000n, 'a stretch that was not recorded never hides what was');
+    assert.equal(complete.valueUnknown, false);
+    assert.match(state.chart!.footnote!, /^Spending wasn’t recorded for 2 hours \(.+\); anything spent then isn’t counted\.$/);
+    assert.doesNotMatch(state.chart!.footnote!, /known|Not known|total unknown/);
     props.widget.time = {mode: 'range', firstOffset: 15, lastOffset: 25}; render();
     assert.equal(groupTree(state.chart!.items, state.chart!.root).exact, 100000n);
     props.widget.time = {mode: 'pin', windows: {track: {firstOffset: 0, lastOffset: 12}}}; render();

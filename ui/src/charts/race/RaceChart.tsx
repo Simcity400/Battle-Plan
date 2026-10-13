@@ -14,7 +14,7 @@ import type { ChartTokens } from '../tokens';
 import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { formatAxisValue } from '../valueAxis';
-import { drawDateOverlay, drawRaceBar, drawRaceGrid, FLAG, NAME_X, VALUE_GAP } from './draw';
+import { drawDateOverlay, drawRaceBar, drawRaceGrid, FLAG, MIN_LABEL, NAME_PAD, NAME_X, VALUE_GAP, VALUE_PAD } from './draw';
 import { keyedEntry, paintOrder, raceHeight, raceLayout, raceMoving, raceText, rowAt, rowCentre, rowInView, rowSeen, selectRaceRow, stepRace } from './race';
 import type { RaceItem, RaceLayout, RaceRow, RaceState } from './race';
 import '../charts.css';
@@ -57,11 +57,8 @@ export interface RaceChartProps {
  * the scroll reaches only the entries there are. */
 const raceSlots = (props: Pick<RaceChartProps, 'items' | 'slots'>) => Math.max(1, props.slots, props.items.length);
 
-/** Room left of the flag and after the widest name, and the column's bounds. */
-const NAME_PAD = 12;
-const MIN_LABEL = 72;
+/** The name column's largest share of the chart. */
 const MAX_LABEL_SHARE = 0.4;
-const VALUE_PAD = 6;
 
 type Pointer = { x: number; y: number; clientX: number; clientY: number };
 

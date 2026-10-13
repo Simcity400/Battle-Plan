@@ -1,9 +1,11 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { SUNBURST_OPTIONS, levelOption } from '../../charts/sunburst/sunburstOptions.ts';
+import { POWER_DECIMALS_OPTION } from '../../dashboard/powerDecimals.ts';
 
 export const OPTIONS = [
   levelOption('categoryLevel', 'Category'),
   levelOption('itemLevel', 'Specific item'),
+  POWER_DECIMALS_OPTION,
   ...SUNBURST_OPTIONS,
 ];
 export const definition = {

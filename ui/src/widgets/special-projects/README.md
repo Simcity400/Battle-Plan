@@ -2,7 +2,7 @@
 
 ## What it shows
 
-Current prototype cards or project-history lanes, with native progress, scientist attribution and iteration counts.
+Current lists a country's projects at the shown hour: projects in progress with their scientist, progress and iteration count, then completed and cancelled projects. History draws each project's progress steps over the campaign.
 
 ## Products it reads
 
@@ -10,20 +10,31 @@ Current prototype cards or project-history lanes, with native progress, scientis
 
 ## Settings
 
-Countries/groups, campaign/follow/pin/range; Current/History view in the header, completed-card retention and Grow with playback. The view choice is separate from the frame’s Live time switch.
+Countries/groups, campaign/follow/pin/range. The Current/History switch sits in the header beside Live and is also the View setting; Grow with playback applies to History. The view choice is separate from the frame's Live time switch. Saved layouts from before version 2 drop the retired completed-project retention setting.
+
+## Current
+
+- In progress: the Research page's compact card for each running, paused or unknown-state project, closest to completion first (then the earlier start). The card shows the blueprint, name, scientist portrait and name, the whole-number percent, the iteration count and a progress line. Paused cards say so in the warning colour, and the line turns to it; an unknown state is named and its line is quiet. When nothing is running, one line says so.
+- Completed: one-line rows, newest first, with the completion date shown plainly and the last assigned scientist. Projects the recording first saw already complete fold into one row, "N completed by" the latest of their first reads, which opens to their names.
+- Cancelled: muted rows with the cancellation date and the progress last seen.
+- The shared tooltip adds the type, the last-assignment date when it differs from the completion, the start, "by" bounds and the game's own iteration text. Right-click, Enter or Shift+F10 offers Jump to the start and completion.
+- Several countries compare in side-by-side panels. A panel requests only its holder at the shown time.
+
+## History
+
+- One lane per project with a recorded run in the shown range, in start order. Each bar splits at every recorded progress step, one segment per iteration, labelled with its percent where it fits. Running segments take the timeline's shade, deeper as progress rises. Completed bars keep the positive fill with the tick at the game's completion date. Paused segments are neutral and cancelled lanes muted.
+- Projects that ended before the range, including those already complete when first recorded, get no lane. One closing line counts them by the latest of their end bounds.
+- Lanes follow recorded aliases and group membership, and missing identity stays unknown. Several countries get one heading each.
 
 ## Notable behaviour
 
-- Current shows a panel for each selected country and requests only its matching aliases at the shown time. History compares holders through recorded aliases and group membership. Missing identity stays unknown.
-- Starts say By; recognized native completion history can be exact. Future completion remains hidden until observed. Progress is stepped; gaps never fill missing hours. Paused/cancelled episodes keep their observed meanings.
-- Iterations are the native completed-history count formatted with content text, without a denominator/dots. Country breakthrough points are not attributable to a project.
-- Completion clears the scientist reference: Last assigned uses an earlier observation in that episode and dates it. Gaps cannot supply attribution. Missing portraits use a helmet fallback; missing count text says Iteration count unavailable.
-- Jump offers the bounded start and completion dates. Grow preserves zoom and recorded spans; Pin/Range retain held bounds.
+- Starts are observation bounds ("by"). Recognized native completion history dates a completion exactly; otherwise it is bounded by the read. A future completion stays hidden until observed. Progress is stepped and gaps never fill missing hours.
+- Iteration counts are the native completed-history count, without a denominator. The game's localized count text appears in the tooltip. Country breakthrough points are not attributable to a project.
+- Completion clears the scientist reference, so a completed project names the scientist from an earlier observation in that episode and the tooltip dates it. Gaps cannot supply attribution. Missing portraits and blueprints use the helmet and flask fallbacks.
 
 ## Files
 
 | File | Responsibility |
 |---|---|
-| [SpecialProjectsWidget.tsx](SpecialProjectsWidget.tsx), [specialProjectsData.ts](specialProjectsData.ts) | Cards/lanes, validation and dated lookups; adjacent tests. |
-| [IterationRow.tsx](IterationRow.tsx) | Native count-to-text rendering. |
-| [definition.ts](definition.ts), [index.ts](index.ts), [specialProjects.css](specialProjects.css) | Settings, registration and layout. |
+| [SpecialProjectsWidget.tsx](SpecialProjectsWidget.tsx), [specialProjectsData.ts](specialProjectsData.ts) | Current sections, History lanes, validation and dated lookups; adjacent tests. |
+| [definition.ts](definition.ts), [index.ts](index.ts), [specialProjects.css](specialProjects.css) | Settings and migration, registration, and sizes for the shared National focus cards and rows. |

@@ -496,6 +496,8 @@ pub static PRODUCTS: &[Registered] = &[
     register::<land_battles::LandBattles>(),
     register::<land_battles::LandBattlesManifest>(),
     register::<land_battles::LandBattlesRanking>(),
+    register::<land_battles::LandBattleCourses>(),
+    register::<land_battles::LandBattleTerrains>(),
     register::<place_names::PlaceNames>(),
     register::<country_styles::CountryStyles>(),
     register::<country_groups::CountryGroups>(),

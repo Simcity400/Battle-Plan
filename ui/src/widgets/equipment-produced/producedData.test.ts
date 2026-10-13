@@ -23,7 +23,7 @@ const key = (item: Partial<ProducedKey> & { key: string }): ProducedKey => ({ na
  * 8, 32, 56, 80, each carried 23 hours). Germany's fighters are unknown from the third
  * read (a tick not counted), so its total is too; Italy has no read on the second day. */
 const REPLY: EquipmentProducedReply = {
-  branchId: '1', measure: 'total', grouping: 'type',
+  branchId: '1', measure: 'total', count: 'units', decimals: 0, grouping: 'type',
   types: [{ key: 'infantry_equipment', name: 'Infantry Equipment', domain: 'land' }, { key: 'fighter_equipment', name: 'Fighter', domain: 'air' }],
   keys: [key({ key: 'infantry_equipment', name: 'Infantry Equipment', domain: 'land' }), key({ key: 'fighter_equipment', name: 'Fighter', domain: 'air' })],
   series: [
@@ -342,9 +342,9 @@ test('tags are opaque and types are listed as the recorded content names them, m
 
 test('the request asks for the top N or the chosen countries, with the measure, grouping and types', () => {
   assert.deepEqual(producedRequest('1', { tags: [], top: 10 }, 'week', 'variant', ['infantry_equipment'], false),
-    { branchId: '1', measure: 'week', grouping: 'variant', included: ['infantry_equipment'], refits: false, tags: [], top: 10 });
+    { branchId: '1', measure: 'week', count: 'units', grouping: 'variant', included: ['infantry_equipment'], refits: false, tags: [], top: 10 });
   assert.deepEqual(producedRequest('1', { tags: ['GER'] }, 'total', 'type', [], true),
-    { branchId: '1', measure: 'total', grouping: 'type', included: [], refits: true, tags: ['GER'], top: null });
+    { branchId: '1', measure: 'total', count: 'units', grouping: 'type', included: [], refits: true, tags: ['GER'], top: null });
 });
 
 test('production selection and ranking accept every recorded country', () => {

@@ -262,6 +262,32 @@ impl Observed {
             .filter_map(|(i, d)| d.conference_id.as_ref().map(|id| (id.clone(), i)))
             .collect();
         let mut exact_states = HashSet::new();
+        // A finalizer outcome for a released country can lack a giver. The ownership
+        // comparison at its publication hour names each state's former owner.
+        let releases: HashMap<(u32, i32), (u32, u32)> = reply
+            .deals
+            .iter()
+            .flat_map(|deal| &deal.items)
+            .filter(|item| item.derived)
+            .flat_map(|item| match &item.change {
+                PeaceChange::CountryReleased {
+                    to_country,
+                    transfers,
+                    ..
+                } => transfers
+                    .iter()
+                    .map(|transfer| {
+                        (
+                            (transfer.state, item.dates.after_hour),
+                            to_country.identity(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let mut released_exact = HashSet::new();
+        let mut kept_releases: HashMap<usize, Vec<PeaceItem>> = HashMap::new();
         for capture in self.captures {
             let row = &capture.row;
             let Some(id) = row.conference else {
@@ -373,6 +399,11 @@ impl Observed {
                     (&t.from_country, &t.to_country, u32::try_from(t.state))
                 {
                     exact_states.insert((t.state, capture.publication_hour));
+                    if releases.get(&(state, capture.publication_hour))
+                        == Some(&to_country.identity())
+                    {
+                        released_exact.insert((state, hour, to_country.identity()));
+                    }
                     let vp = capture
                         .vps
                         .as_ref()
@@ -404,6 +435,26 @@ impl Observed {
             }
             // A sampled conference can already own the dated fallback item.
             // Keep it when the raw transfer cannot supply both exact endpoints.
+            // A release's undrawable states feed only the graph: the captured
+            // outcomes already list them for the card.
+            let releases_kept: Vec<_> = fallback
+                .iter()
+                .filter(|item| item.derived && item.dates.after_hour == capture.publication_hour)
+                .filter_map(|item| {
+                    let mut kept = item.clone();
+                    let PeaceChange::CountryReleased { transfers, .. } = &mut kept.change else {
+                        return None;
+                    };
+                    transfers.retain(|transfer| undrawable.contains(&transfer.state));
+                    (!transfers.is_empty()).then_some(kept)
+                })
+                .collect();
+            if !releases_kept.is_empty() {
+                kept_releases
+                    .entry(index)
+                    .or_default()
+                    .extend(releases_kept);
+            }
             deal.items.extend(fallback.into_iter().filter(|item| {
                 item.derived && item.dates.after_hour == capture.publication_hour
                     && matches!(&item.change, PeaceChange::StateTransfer { state, .. } if undrawable.contains(state))
@@ -442,16 +493,33 @@ impl Observed {
         // Rebuild graphs after overrides. A derived unassigned card must not
         // retain the same witnessed state outcome as an exact conference.
         let mut campaign = GraphBuilder::default();
-        for deal in &mut reply.deals {
+        for (index, deal) in reply.deals.iter_mut().enumerate() {
             deal.items.retain(|item| {
                 !item.derived
                     || !matches!(&item.change, PeaceChange::StateTransfer { state, .. }
                     if exact_states.contains(&(*state as i32, item.dates.after_hour)))
             });
+            let kept = kept_releases.remove(&index).unwrap_or_default();
             let mut graph = GraphBuilder::default();
-            for item in &deal.items {
-                graph.add(item);
-                campaign.add(item);
+            for item in deal.items.iter().chain(&kept) {
+                let released = match &item.change {
+                    PeaceChange::StateTransfer {
+                        state, to_country, ..
+                    } => {
+                        !item.derived
+                            && released_exact.contains(&(
+                                *state,
+                                item.dates.after_hour,
+                                to_country.identity(),
+                            ))
+                    }
+                    _ => false,
+                };
+                // A released state the finalizer drew exactly belongs to its conference.
+                let keep =
+                    |state: u32| !exact_states.contains(&(state as i32, item.dates.after_hour));
+                graph.add_with(item, released, &keep);
+                campaign.add_with(item, released, &keep);
             }
             deal.transfers = graph.finish();
         }

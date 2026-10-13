@@ -8,6 +8,20 @@ import type { Run, Span } from '../../charts/series';
 import type { StripBar } from '../../charts/strip';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatAmount, formatSigned, rescale } from '../../charts/valueAxis.ts';
+import type { OptionField, OptionValue } from '../../dashboard/options';
+
+/** Fuel amounts are written in whole numbers unless the widget's settings ask for
+ * decimals. Only the writing rounds: totals, shares, bars and order use the exact
+ * recorded amounts. Gains are recorded in fixed5, so 5 places reach every gain digit. */
+const MOST_FUEL_DECIMALS = 5;
+export const FUEL_DECIMALS_OPTION: OptionField = { key: 'fuelDecimals', section: 'options', label: 'Fuel decimals',
+  hint: 'Decimal places in fuel amounts.', kind: 'number', min: 0, max: MOST_FUEL_DECIMALS, step: 1, default: 0 };
+
+/** The decimals chosen (`resolveOptions`), within the option's range. */
+export function fuelDecimals(options: Readonly<Record<string, OptionValue>>): number {
+  const chosen = options[FUEL_DECIMALS_OPTION.key];
+  return typeof chosen === 'number' && Number.isInteger(chosen) ? Math.max(0, Math.min(MOST_FUEL_DECIMALS, chosen)) : 0;
+}
 
 /** Content labels reload independently of recorded amounts and native identity. */
 const labelNumbers = (label: FuelLabel): FuelLabel => ({ ...label, template: null, reason: null });
@@ -42,9 +56,6 @@ const LEFT_OUT: Readonly<Record<DayLeftOut, (dayHours: number) => { value: strin
   ownershipNotRecorded: () => ({ value: 'Not known',
     note: 'Daily data incomplete.' }),
 };
-/** Decimal places amounts are written with, at most. */
-const DECIMALS = 2;
-/** How often fuel is read, for a carried value's note. */
 
 const nullableText = (value: unknown) => value === null || typeof value === 'string';
 const raws = (value: unknown, length: number) => Array.isArray(value) && value.length === length && value.every(isRaw);
@@ -136,12 +147,14 @@ export function fuelRuns(reads: readonly FuelRead[], scale: number, of: 'fuel' |
     breakBefore: read.startsSegment }));
 }
 
-/** A recorded fuel quantity, exact to `digits` decimals (none when whole). */
-export const formatFuel = (raw: string, scale: number, digits = DECIMALS) => formatAmount(rescale(raw, scale, digits), digits, digits);
+/** A recorded fuel quantity, rounded once to `digits` decimals (none when whole). */
+export const formatFuel = (raw: string, scale: number, digits: number) => formatAmount(rescale(raw, scale, digits), digits, digits);
 
-/** Exact finite decimal fuel amounts; the common denominator may retain more
- * places than either native scale alone. No plotting number supplies the text. */
-export function formatFuelPart(raw: bigint, scale: bigint): string {
+/** A fuel amount over `scale`, rounded once to `digits` decimals; without `digits`,
+ * the exact finite decimal, whose common denominator may retain more places than
+ * either native scale alone. No plotting number supplies the text. */
+export function formatFuelPart(raw: bigint, scale: bigint, digits?: number): string {
+  if (digits !== undefined) return formatAmount(rescale(raw, scale, digits), digits, digits);
   let denominator = scale, twos = 0, fives = 0;
   while (denominator % 2n === 0n) { denominator /= 2n; twos++; }
   while (denominator % 5n === 0n) { denominator /= 5n; fives++; }
@@ -152,19 +165,21 @@ export function formatFuelPart(raw: bigint, scale: bigint): string {
 
 export const fuelPartShare = (raw: bigint, total: bigint) => total === 0n ? '\u2014' : `${formatAmount(rescale(raw * (total < 0n ? -100n : 100n), total < 0n ? -total : total, 1), 1, 1)}%`;
 
-/** The day before a read in hundredths of fuel: gained, burned and the net, each
- * rounded once from the recorded values, never from the rounded parts. */
-export function dayAmounts(reply: Pick<FuelReply, 'quantityScale' | 'gainScale'>, read: Pick<FuelRead, 'day'>) {
+/** The day before a read in units of 10^-`digits` fuel: gained, burned and the net,
+ * each rounded once from the recorded values, never from the rounded parts, and
+ * whether the exact net is above zero. */
+export function dayAmounts(reply: Pick<FuelReply, 'quantityScale' | 'gainScale'>, read: Pick<FuelRead, 'day'>, digits: number) {
   if (!read.day) return null;
   const [gainScale, quantityScale] = [BigInt(reply.gainScale), BigInt(reply.quantityScale)];
   const gained = BigInt(read.day.gainedRaw);
   const burned = BigInt(read.day.burnedRaw);
+  const [net, netScale] = read.day.awards ? [BigInt(read.day.awards.ownGainQuantityRaw) - burned, quantityScale]
+    : [gained * quantityScale - burned * gainScale, gainScale * quantityScale];
   return {
-    gained: rescale(gained, gainScale, DECIMALS),
-    burned: rescale(burned, quantityScale, DECIMALS),
-    net: read.day.awards
-      ? rescale(BigInt(read.day.awards.ownGainQuantityRaw) - burned, quantityScale, DECIMALS)
-      : rescale(gained * quantityScale - burned * gainScale, gainScale * quantityScale, DECIMALS),
+    gained: rescale(gained, gainScale, digits),
+    burned: rescale(burned, quantityScale, digits),
+    net: rescale(net, netScale, digits),
+    gaining: net > 0n,
   };
 }
 
@@ -178,30 +193,31 @@ export interface FuelPart { id: string; label: string; raw: bigint; consumer?: n
 export type FuelPartLabels = Pick<FuelReply, 'gainLabels' | 'transferLabels'>;
 
 /** Fuel labels use NUM and, for oil, OIL placeholders. The recorded catalogue
- * has already expanded references and removed markup. */
-export function fuelLabel(label: FuelLabel | undefined, raw: bigint, scale: bigint): string | null {
-  return label?.template?.replaceAll('{NUM}', formatFuelPart(raw, scale)).replaceAll('{OIL}', '?') ?? null;
+ * has already expanded references and removed markup. NUM is written like the
+ * amounts (`formatFuelPart`). */
+export function fuelLabel(label: FuelLabel | undefined, raw: bigint, scale: bigint, digits?: number): string | null {
+  return label?.template?.replaceAll('{NUM}', formatFuelPart(raw, scale, digits)).replaceAll('{OIL}', '?') ?? null;
 }
 
 /** Common-denominator operands retain each hourly conversion residual. Incoming
  * lend-lease is separate from own production and its share denominator. */
-export function fuelParts(reply: FuelReply, read: FuelRead, measure: 'gain' | 'burn', labels: FuelPartLabels = reply):
+export function fuelParts(reply: FuelReply, read: FuelRead, measure: 'gain' | 'burn', labels: FuelPartLabels = reply, digits?: number):
   { scale: bigint; total: bigint; parts: FuelPart[]; transfer: FuelPart | null; reason: string | null } | null {
   if (!read.day) return null;
   const gain = BigInt(reply.gainScale), quantity = BigInt(reply.quantityScale), awards = read.day.awards;
   const named = (id: string, raw: bigint, label: string | null | undefined, reason?: string | null): FuelPart => ({ id, raw,
     label: label ?? 'Other', muted: label == null, reason });
   if (measure === 'gain') return { scale: gain, total: BigInt(read.day.gainedRaw),
-    parts: awards ? awards.gainsRaw.map((raw, i) => named(`gain-${i}`, BigInt(raw), fuelLabel(labels.gainLabels[i], BigInt(raw), gain), labels.gainLabels[i].reason))
+    parts: awards ? awards.gainsRaw.map((raw, i) => named(`gain-${i}`, BigInt(raw), fuelLabel(labels.gainLabels[i], BigInt(raw), gain, digits), labels.gainLabels[i].reason))
       : [{ id: 'unidentified', label: 'Other', raw: BigInt(read.day.gainedRaw), muted: true }],
-    transfer: awards ? named('incoming', BigInt(awards.transfersRaw[0]), fuelLabel(labels.transferLabels[0], BigInt(awards.transfersRaw[0]), quantity), labels.transferLabels[0].reason) : null,
+    transfer: awards ? named('incoming', BigInt(awards.transfersRaw[0]), fuelLabel(labels.transferLabels[0], BigInt(awards.transfersRaw[0]), quantity, digits), labels.transferLabels[0].reason) : null,
     reason: awards ? null : read.awardsReason };
   const total = BigInt(read.day.burnedRaw) * gain;
   const received = read.day.receivedRaw.map((raw, index) => ({ ...named(`consumer-${index}`, BigInt(raw) * quantity, reply.consumerNames[index]), consumer: index }));
   const other = BigInt(read.day.otherRaw) * gain;
   const residual = total - other - received.reduce((sum, part) => sum + part.raw, 0n);
-  const transfers: FuelPart[] = awards ? [named('outgoing', BigInt(awards.transfersRaw[1]) * gain, fuelLabel(labels.transferLabels[1], BigInt(awards.transfersRaw[1]), quantity), labels.transferLabels[1].reason),
-    named('flat', BigInt(awards.transfersRaw[2]) * gain, fuelLabel(labels.transferLabels[2], BigInt(awards.transfersRaw[2]), quantity), labels.transferLabels[2].reason),
+  const transfers: FuelPart[] = awards ? [named('outgoing', BigInt(awards.transfersRaw[1]) * gain, fuelLabel(labels.transferLabels[1], BigInt(awards.transfersRaw[1]), quantity, digits), labels.transferLabels[1].reason),
+    named('flat', BigInt(awards.transfersRaw[2]) * gain, fuelLabel(labels.transferLabels[2], BigInt(awards.transfersRaw[2]), quantity, digits), labels.transferLabels[2].reason),
     { id: 'other', label: 'Other', raw: other - (BigInt(awards.transfersRaw[1]) + BigInt(awards.transfersRaw[2])) * gain, muted: true }]
     : [{ id: 'other', label: 'Other', raw: other, muted: true }];
   return { scale: gain * quantity, total, parts: [...received, ...transfers,
@@ -225,10 +241,10 @@ export function fuelRecipientAmount(runs: readonly FuelAwardRun[], hour: number 
 
 /** A part is absent when its attribution was not recorded, never a known zero.
  * Daily histories use stable source keys across legacy and actual accounting. */
-export function fuelPartHistory(reply: FuelReply, measure: 'gain' | 'burn', labels: FuelPartLabels = reply) {
+export function fuelPartHistory(reply: FuelReply, measure: 'gain' | 'burn', labels: FuelPartLabels = reply, digits?: number) {
   const parts = new Map<string, { id: string; label: string; runs: Run[]; transfer: boolean }>();
   for (const read of reply.reads) {
-    const values = fuelParts(reply, read, measure, labels);
+    const values = fuelParts(reply, read, measure, labels, digits);
     if (!values) continue;
     for (const part of [...values.parts, ...(values.transfer ? [values.transfer] : [])]) {
       const transfer = part === values.transfer;
@@ -249,27 +265,28 @@ export function fuelAwardBasis(reply: Pick<FuelReply, 'branchId' | 'tag'>, read:
     hour: read.firstHour, country: read.country, countryInstance: read.countryInstance } : null;
 }
 
-/** Full and compact tooltip forms: the tank, then the day before its read. */
+/** Full and compact tooltip forms: the tank, then the day before its read, with
+ * amounts written to `digits` decimals. */
 export function fuelTooltips(reply: FuelReply, reads: readonly FuelRead[], hour: number, title: string,
-  colors: { fuel: string; capacity: string; gained: string; burned: string }): TooltipContent[] {
+  colors: { fuel: string; capacity: string; gained: string; burned: string }, digits: number): TooltipContent[] {
   const read = runAt(reads, hour);
   if (!read) return [{ title, rows: [{ label: 'Not recorded at this time', tone: 'muted' }] }];
   const full = percentFull(read);
   const tank: TooltipRow[] = [
-    { label: 'Fuel', value: formatFuel(read.fuelRaw, reply.quantityScale), swatch: colors.fuel },
-    { label: 'Capacity', value: formatFuel(read.capacityRaw, reply.quantityScale), swatch: colors.capacity, tone: 'muted' },
+    { label: 'Fuel', value: formatFuel(read.fuelRaw, reply.quantityScale, digits), swatch: colors.fuel },
+    { label: 'Capacity', value: formatFuel(read.capacityRaw, reply.quantityScale, digits), swatch: colors.capacity, tone: 'muted' },
     { label: 'Full', value: full == null ? 'No capacity' : `${full}%` },
   ];
   const notes: (string | undefined)[] = [];
-  const day = dayAmounts(reply, read);
+  const day = dayAmounts(reply, read, digits);
   let rows: TooltipRow[];
   if (day) {
-    const net: TooltipRow = { label: 'Net', value: formatSigned(day.net, DECIMALS, DECIMALS), strong: true,
+    const net: TooltipRow = { label: 'Net', value: formatSigned(day.net, digits, digits), strong: true,
       tone: day.net < 0n ? 'negative' : day.net > 0n ? 'positive' : undefined };
-    rows = [...tank, { label: 'Gained (own production)', value: formatSigned(day.gained, DECIMALS, DECIMALS), swatch: colors.gained, divider: true },
-      { label: 'Burned', value: formatSigned(-day.burned, DECIMALS, DECIMALS), swatch: colors.burned }, net];
+    rows = [...tank, { label: 'Gained (own production)', value: formatSigned(day.gained, digits, digits), swatch: colors.gained, divider: true },
+      { label: 'Burned', value: formatSigned(-day.burned, digits, digits), swatch: colors.burned }, net];
     notes.push(`Previous ${reply.dayHours} hours; excludes incoming lend-lease.`);
-    if (read.fuelRaw === read.capacityRaw && day.net > 0n) notes.push('The tank was full: the game discards fuel beyond its capacity.');
+    if (read.fuelRaw === read.capacityRaw && day.gaining) notes.push('The tank was full: the game discards fuel beyond its capacity.');
   } else {
     const why = LEFT_OUT[read.leftOut ?? 'notUpdated'](reply.dayHours);
     rows = [...tank, { label: 'Gained and burned', value: why.value, tone: 'muted', divider: true }];
@@ -277,7 +294,7 @@ export function fuelTooltips(reply: FuelReply, reads: readonly FuelRead[], hour:
   }
   const incoming = read.day?.awards?.transfersRaw[0];
   if (day && incoming !== undefined) {
-    rows.push({ label: 'Lend-lease received (separate)', value: formatSigned(rescale(incoming, reply.quantityScale, DECIMALS), DECIMALS, DECIMALS) });
+    rows.push({ label: 'Lend-lease received (separate)', value: formatSigned(rescale(incoming, reply.quantityScale, digits), digits, digits) });
   } else {
     const lendLease = BigInt(read.lendLeaseRaw);
     if (day && lendLease !== 0n) notes.push('Daily lend-lease total unavailable.');

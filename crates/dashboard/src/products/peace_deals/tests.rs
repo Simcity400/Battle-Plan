@@ -1379,6 +1379,182 @@ fn new_subject_released_country_and_government_changes_are_neutral_dated_evidenc
     assert!(items.iter().any(|item| matches!(&item.change, PeaceChange::GovernmentChange { country, .. } if country == "country/1") && item.winner.is_none()));
 }
 
+/// Before the settlement country/1 owns state 3 and country/3 does not exist;
+/// the shared settled frame then hands state 3 to country/3.
+fn release_before(roster: &[u64]) -> DecodedFrame {
+    let mut before = frame(100, 3, false, roster);
+    let TableView::Complete(TableRows::States(states)) =
+        &mut *before.tables[TableId::States.index()]
+    else {
+        panic!()
+    };
+    states[2].owner = 1001;
+    let TableView::Complete(TableRows::CountryCounterInputs(counters)) =
+        &mut *before.tables[TableId::CountryCounterInputs.index()]
+    else {
+        panic!()
+    };
+    counters[2].owned_state_count = 0;
+    before
+}
+
+fn occurrences(graph: &PeaceTransferGraph, state: u32) -> Vec<&PeaceTransferredState> {
+    graph
+        .links
+        .iter()
+        .flat_map(|link| &link.states)
+        .filter(|occurrence| occurrence.state == state)
+        .collect()
+}
+
+#[test]
+fn released_country_states_join_both_graphs_with_their_former_owner() {
+    for roster in [vec![9], vec![]] {
+        let result = scan(vec![release_before(&roster), frame(101, 3, true, &[])]);
+        let is_release =
+            |item: &&PeaceItem| matches!(item.change, PeaceChange::CountryReleased { .. });
+        let deal = result
+            .deals
+            .iter()
+            .find(|deal| deal.items.iter().any(|item| is_release(&item)))
+            .unwrap();
+        let PeaceChange::CountryReleased {
+            to_country,
+            transfers,
+            states,
+            ..
+        } = &deal.items.iter().find(is_release).unwrap().change
+        else {
+            panic!()
+        };
+        assert_eq!(states, &[3]);
+        assert_eq!(
+            (
+                to_country.slot,
+                to_country.country_id,
+                to_country.tag.as_str(),
+                to_country.hour
+            ),
+            (3, 10_003, "country/3", 101)
+        );
+        assert_eq!(transfers.len(), 1);
+        assert_eq!(transfers[0].from_country.tag, "country/1");
+        for graph in [&deal.transfers, &result.transfers] {
+            let released = occurrences(graph, 3);
+            assert_eq!(released.len(), 1);
+            let released = released[0];
+            assert!(released.released);
+            let from = &released.from_country;
+            assert_eq!(
+                (from.slot, from.country_id, from.tag.as_str(), from.hour),
+                (1, 10_001, "country/1", 100)
+            );
+            assert_eq!(released.to_country, *to_country);
+            assert_eq!(
+                (released.dates.before_hour, released.dates.after_hour),
+                (100, 101)
+            );
+            assert_eq!(released.victory_points.as_deref(), Some("5"));
+            assert_eq!(released.victory_points_read_hour, Some(101));
+            let plain = occurrences(graph, 1);
+            assert_eq!(plain.len(), 1);
+            assert!(!plain[0].released);
+        }
+        let link = result
+            .transfers
+            .links
+            .iter()
+            .find(|link| link.target == "target:3:10003")
+            .unwrap();
+        assert_eq!(link.source, "source:1:10001");
+        assert_eq!(link.victory_points.as_deref(), Some("5"));
+    }
+}
+
+#[test]
+fn a_finalizer_outcome_without_a_giver_keeps_the_released_states_former_owner() {
+    for roster in [vec![9], vec![]] {
+        let mut row = settled_row();
+        row.transfers.push(SettledPeaceTransfer {
+            state: 3,
+            taker: 1003,
+            automatic: true,
+        });
+        let result = scan(vec![
+            release_before(&roster),
+            with_settlement(frame(101, 3, true, &[]), row),
+        ]);
+        let released = occurrences(&result.transfers, 3);
+        assert_eq!(released.len(), 1);
+        assert!(released[0].released);
+        assert_eq!(released[0].from_country.tag, "country/1");
+        assert_eq!(
+            (released[0].dates.before_hour, released[0].dates.after_hour),
+            (100, 101)
+        );
+        assert!(!occurrences(&result.transfers, 1)[0].released);
+        // A sampled conference owns its derived release; otherwise the war-end card does.
+        let exact = result
+            .deals
+            .iter()
+            .find(|deal| deal.captured.is_some())
+            .unwrap();
+        assert_eq!(
+            occurrences(&exact.transfers, 3).len(),
+            usize::from(roster.len() == 1)
+        );
+        assert!(
+            exact
+                .items
+                .iter()
+                .all(|item| !matches!(item.change, PeaceChange::CountryReleased { .. }))
+        );
+    }
+}
+
+#[test]
+fn an_exact_transfer_to_a_released_country_is_marked_and_counted_once() {
+    for roster in [vec![9], vec![]] {
+        let mut row = settled_row();
+        row.actions.push(SettledPeaceAction {
+            token: 991,
+            country: 1002,
+            turn: 1,
+            ordinal: 3,
+            taker: 1003,
+            giver: 1001,
+            negotiator: 1002,
+            state: Some(3),
+            flags: Some([0; 4]),
+            ..Default::default()
+        });
+        row.transfers.push(SettledPeaceTransfer {
+            state: 3,
+            taker: 1003,
+            automatic: false,
+        });
+        let result = scan(vec![
+            release_before(&roster),
+            with_settlement(frame(101, 3, true, &[]), row),
+        ]);
+        let released = occurrences(&result.transfers, 3);
+        assert_eq!(released.len(), 1);
+        assert!(released[0].released);
+        assert_eq!(released[0].to_country.tag, "country/3");
+        assert_eq!(
+            (released[0].dates.before_hour, released[0].dates.after_hour),
+            (101, 101)
+        );
+        assert!(!occurrences(&result.transfers, 1)[0].released);
+        let exact = result
+            .deals
+            .iter()
+            .find(|deal| deal.captured.is_some())
+            .unwrap();
+        assert!(occurrences(&exact.transfers, 3)[0].released);
+    }
+}
+
 #[test]
 fn cancelled_subjects_do_not_become_derived_peace_outcomes() {
     for cancel in [0, 1] {

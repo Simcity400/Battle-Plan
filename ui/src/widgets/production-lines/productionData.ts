@@ -110,7 +110,8 @@ export function validateProductionReply(data: unknown): ProductionLinesReply {
   return reply;
 }
 
-/** Checks a window's shape: each line's runs and output in hour order without overlaps. */
+/** Checks a window's shape: each line's runs and output in hour order without
+ * overlaps. Modifier factors come from the breakdown, never a window. */
 export function validateDetailReply(data: unknown): ProductionLineDetailReply {
   const reply = data as ProductionLineDetailReply;
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
@@ -118,8 +119,7 @@ export function validateDetailReply(data: unknown): ProductionLineDetailReply {
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
     && Array.isArray(reply.lines) && reply.lines.every(line => typeof line.key === 'string'
       && Array.isArray(line.runs) && ordered(line.runs) && line.runs.every(isRun)
-      && Array.isArray(line.output) && ordered(line.output) && line.output.every(isOutput)
-      && Array.isArray(line.modifiers) && ordered(line.modifiers) && line.modifiers.every(isModifierRun))
+      && Array.isArray(line.output) && ordered(line.output) && line.output.every(isOutput))
     && new Set(reply.lines.map(line => line.key)).size === reply.lines.length;
   if (!ok) throw new Error('The production lines reply is malformed.');
   return reply;
@@ -336,42 +336,26 @@ export function modifierTooltip(group: ProductionModifierRun['groups'][number] |
     { label: `${group.parts.length} factors`, tone: 'muted' }] }];
 }
 
-/** Recorded line values stay alongside their supplying modifier parts. Older
- * recordings without the supplement identify the missing attribution. */
+/** A live cell's recorded line values. Its modifier factors are the breakdown's,
+ * which the cell opens: the read window carries no modifier trees, and nothing
+ * here calls them missing. */
 export function breakdownTooltip(reply: ProductionLinesReply, run: LineRun, hour: number, part: 'efficiency' | 'output',
-  head: Pick<TooltipContent, 'subtitle' | 'note'>, modifiers?: ProductionModifierRun | null): TooltipForms {
+  head: Pick<TooltipContent, 'subtitle' | 'note'>): TooltipForms {
   const variant = variantAt(reply, run.variant, hour);
   const weekly = weeklyOutput(run);
   const exact = (raw: string) => formatFixed(raw, reply.decimals, reply.decimals);
   const rows: TooltipRow[] = part === 'efficiency' ? [
     { label: 'Efficiency', value: `${efficiencyPercent(run)}%`, strong: true },
     { label: 'Factories included in average', value: String(Math.max(0, Math.min(run.activeFactories, run.maxFactories))) },
-    { label: 'Other', value: 'Not recorded', divider: true, tone: 'muted' },
   ] : [
     { label: 'Output', value: weekly == null ? 'Not recorded' : `${weeklyText(weekly, reply.decimals)} per week`, strong: true },
     { label: 'Factories', value: `${run.activeFactories} of ${run.requestedFactories} requested` },
     { label: 'Efficiency', value: `${efficiencyPercent(run)}%` },
     { label: 'Output rate', value: `${exact(run.speedRaw)} IC` },
     { label: 'Cost per unit', value: `${exact(run.costRaw)} IC` },
-    { label: 'Other', value: 'Not recorded', divider: true, tone: 'muted' },
   ];
-  const groups = modifiers?.groups.filter(group => part === 'output' ? group.id === 'output' : ['efficiency', 'start', 'cap', 'gain', 'daily'].includes(group.id) || group.id.startsWith('retention-'));
-  if (groups?.length) {
-    const sourceRows: TooltipRow[] = groups.flatMap(group => [{ label: group.label,
-      value: group.totalRaw == null ? 'Not recorded' : `${formatFixed(group.totalRaw, group.decimals, group.decimals)} ${group.unit}`, strong: true, divider: true },
-      ...group.parts.map(source => ({ label: source.label ?? 'Other',
-        value: `${formatFixed(source.raw, group.decimals, group.decimals)} ${group.unit}`, tone: source.unknown ? 'muted' as const : undefined }))]);
-      const title = variantName(variant, run.variant);
-      const note = head.note;
-      const recordedRows = rows.filter(row => row.label !== 'Other');
-      const icon = iconImage(reply, variant?.icon ?? null) ?? undefined;
-      return [{ title, icon, subtitle: head.subtitle, rows: [...recordedRows, ...sourceRows], note },
-        { title, icon, subtitle: head.subtitle, rows: [...recordedRows, ...groups.map(group => ({ label: group.label, value: group.totalRaw == null ? 'Not recorded'
-          : `${formatFixed(group.totalRaw, group.decimals, group.decimals)} ${group.unit}`, strong: true }))], note }];
-  }
-  const why = 'Breakdown not recorded.';
   return [{ title: variantName(variant, run.variant), icon: iconImage(reply, variant?.icon ?? null) ?? undefined,
-    subtitle: head.subtitle, rows, note: withNote(head.note, why) }];
+    subtitle: head.subtitle, rows, note: head.note }];
 }
 
 /** The tooltip of a line at an hour after it ended, or of one made and deleted

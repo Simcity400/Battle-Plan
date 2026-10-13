@@ -4,10 +4,12 @@ import { runAt } from '../../charts/series.ts';
 import { buildStack as buildStackOf, stackedSegments } from '../../charts/stack.ts';
 import type { StackModel } from '../../charts/stack';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
+import { GREY_CHROMA } from '../../charts/palette.ts';
+import { oklchToRgb, parseColor, rgbToOklch, toHex } from '../../shell/appearance/color.ts';
 import type { FixedRun, HourSpan, LeaderRun, LedgerGovernment, PartyHistoryReply, PartySeries } from '../../generated/dashboard';
 
-/** Party popularity as stacked bands in each ideology's content colour, with the
- * ruling party's changes and elections as badges. */
+/** Party popularity as stacked bands in each ideology's colour, with the ruling
+ * party's changes and elections as badges. */
 
 export interface Band { token: string; name: string; color: string; series: PartySeries }
 
@@ -31,17 +33,37 @@ export function validatePartyHistoryReply(data: unknown): PartyHistoryReply {
   return reply;
 }
 
-/** Bands in content order (unknown ideologies after, by token), coloured by content
- * or, without a content colour, by the categorical palette in its fixed order. */
+/** Bands in content order (unknown ideologies after, by token), coloured by their
+ * content colour in the palette's tone or, without one, by the categorical palette
+ * in its fixed order. */
 export function bands(reply: PartyHistoryReply, palette: readonly string[]): Band[] {
   const order = new Map(reply.ideologies.map((ideology, index) => [ideology.token, index]));
   const sorted = [...reply.parties].sort((a, b) => (order.get(a.token) ?? Infinity) - (order.get(b.token) ?? Infinity) || a.token.localeCompare(b.token));
+  const tone = paletteTone(palette);
   let fallback = 0;
   return sorted.map(series => {
     const ideology = reply.ideologies.find(item => item.token === series.token);
-    const color = ideology?.color ? `rgb(${ideology.color.join(' ')})` : palette[fallback++ % Math.max(1, palette.length)];
+    const color = ideology?.color ? ideologyColour(ideology.color, tone) : palette[fallback++ % Math.max(1, palette.length)];
     return { token: series.token, name: contentTitle(ideology?.name, series.token, 'Ideology name unavailable'), color, series };
   });
+}
+
+/** The categorical palette's median lightness and chroma: the tone every category
+ * colour on this theme shares. Null for an empty or unreadable palette. */
+export function paletteTone(palette: readonly string[]): { l: number; c: number } | null {
+  const tones = palette.flatMap(hex => { const colour = parseColor(hex); return colour ? [rgbToOklch(colour)] : []; });
+  if (!tones.length) return null;
+  const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+  return { l: median(tones.map(tone => tone.l)), c: median(tones.map(tone => tone.c)) };
+}
+
+/** An ideology's content colour in the palette's tone: the hue the content (or a mod)
+ * gives it, at the palette's lightness and no more than its chroma, so the bands sit
+ * with the app's other categories. A grey stays grey. */
+export function ideologyColour([r, g, b]: readonly [number, number, number], tone: { l: number; c: number } | null): string {
+  const source = rgbToOklch({ r, g, b });
+  if (!tone) return toHex({ r, g, b });
+  return toHex(oklchToRgb({ l: tone.l, c: source.c < GREY_CHROMA ? source.c : Math.min(source.c, tone.c), h: source.h }));
 }
 
 /** The ruling party's band first (the bottom of the stack and the legend's first

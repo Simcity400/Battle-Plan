@@ -1,16 +1,18 @@
-import { contentTitle } from '../../dashboard/contentTitles.ts';
-import { useEffect, useId, useMemo } from 'react';
+import { useContext, useEffect, useId, useMemo } from 'react';
+import type { CSSProperties, HTMLAttributes, KeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
 import { Segmented } from '../../components/Segmented';
 import ArtFallback from '../../components/ArtFallback';
 import CountryComparisons from '../../dashboard/CountryComparisons';
 import WidgetState from '../../components/WidgetState';
+import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
-import ProgressMeter from '../../charts/meter/ProgressMeter';
+import { usNumber } from '../../charts/numberFormat';
 import Timeline from '../../charts/timeline/Timeline';
 import { fitTooltip, hideTooltip, showTooltip, tooltipText } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
+import { HeaderActionsSlot } from '../../charts/ZoomReset';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -20,12 +22,66 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { useProducts } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import type { SpecialProjectsReply } from '../../generated/dashboard';
-import IterationRow from './IterationRow';
+import type { ProjectPresentation, SpecialProjectsReply } from '../../generated/dashboard';
 import { OPTIONS, VIEWS } from './definition';
-import { historyCard, historyTooltip, liveCards, observedAt, projectCountries, projectCountryHour, projectDate, projectHeading, projectHistoryExtent, projectLanes, projectTooltip, scientistName, validateSpecialProjectsReply } from './specialProjectsData';
+import { closedLane, currentProjects, earlierBound, historyCard, historyTooltip, iterationCount, observedAt, projectCountries, projectCountryHour, projectDate, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, scientistName, validateSpecialProjectsReply } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
+import '../national-focus/nationalFocus.css';
 import './specialProjects.css';
+
+const ProjectTile = ({ icon }: { icon: string | null }) =>
+  <span className="blueprint-tile">{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
+
+function Scientist({ reply, info }: { reply: SpecialProjectsReply; info: ProjectPresentation }) {
+  const person = reply.people[info.scientist];
+  if (!person.name) return <span className="special-project-scientist is-unassigned">{scientistName(reply, info)}</span>;
+  return <span className="special-project-scientist">{person.portrait ? <img src={person.portrait} alt="" /> : <ArtFallback icon="helmet" />}<span>{person.name}</span></span>;
+}
+
+const Section = ({ label, count, children }: { label: string; count: number; children: ReactNode }) =>
+  <><p className="special-project-section">{label}<span>{usNumber.format(count)}</span></p>{children}</>;
+
+type ItemProps = (card: ProjectCard) => HTMLAttributes<HTMLElement>;
+
+/** Current: running projects as the Research page's compact cards, then one-line
+ * completed rows, the projects already complete when first recorded folded into
+ * one row, and cancelled rows. */
+function CurrentList({ reply, at, item }: { reply: SpecialProjectsReply; at: number; item: ItemProps }) {
+  const { running, completed, earlier, cancelled } = currentProjects(reply, at);
+  if (!running.length && !completed.length && !earlier.length && !cancelled.length) return <WidgetState kind="empty" message="No special projects yet." />;
+  const row = (card: ProjectCard, line: string, className = '') => <div key={card.project.id} className={`focus-row special-project-row${className}`} {...item(card)}>
+    <ProjectTile icon={card.info.icon} /><span className="focus-label"><strong>{card.info.name}</strong><span>{line}</span></span></div>;
+  return <div className="special-project-list">
+    {running.length ? <Section label="In progress" count={running.length}>{running.map(card => {
+      const { run, info } = card;
+      return <div key={card.project.id} className={`focus-now special-project-now${run.state === 'paused' ? ' is-paused' : run.state === 'unknown' ? ' is-unknown' : ''}`} {...item(card)}>
+        <ProjectTile icon={info.icon} />
+        <span className="focus-now-text"><strong>{info.name}</strong><span>
+          {run.state === 'paused' && <><b className="special-project-state is-paused">Paused</b>·</>}
+          {run.state === 'unknown' && <><b className="special-project-state">State unknown</b>·</>}
+          <Scientist reply={reply} info={info} /></span></span>
+        <span className="focus-now-left"><strong>{run.progress}%</strong><small>{iterationCount(run.iterations)}</small></span>
+        <span className="focus-progress" aria-hidden="true" style={{ '--focus-progress': Math.max(0, run.progress) / 100 } as CSSProperties}><span /></span>
+      </div>;
+    })}</Section> : <p className="special-project-none">No projects in progress.</p>}
+    {completed.length + earlier.length > 0 && <Section label="Completed" count={completed.length + earlier.length}>
+      {completed.map(card => {
+        const person = reply.people[card.info.scientist].name;
+        return row(card, `${dayLabel(card.run.completion!.hour)}${person ? ` · ${person}` : ''}`);
+      })}
+      {earlier.length > 0 && <details className="focus-details special-project-earlier">
+        <summary className="focus-row special-project-row"><span className="blueprint-tile special-project-count">+{usNumber.format(earlier.length)}</span>
+          <span className="focus-label"><strong>{`${usNumber.format(earlier.length)} completed by ${dayLabel(earlierBound(earlier))}`}</strong><span>Already complete when first recorded</span></span>
+          <svg className="focus-chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg></summary>
+        <div className="special-project-earlier-grid">{earlier.map(card => <div key={card.project.id} className="special-project-earlier-item" {...item(card)}>
+          <ProjectTile icon={card.info.icon} /><span>{card.info.name}</span></div>)}</div>
+      </details>}
+    </Section>}
+    {cancelled.length > 0 && <Section label="Cancelled" count={cancelled.length}>
+      {cancelled.map(card => row(card, `Cancelled · ${dayLabel(card.run.cancellation!.hour)} · ${card.run.progress}%`, ' is-cancelled'))}
+    </Section>}
+  </div>;
+}
 
 function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
@@ -59,20 +115,37 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const diagnostics = useMemo(() => [...(data?.flatMap(reply => reply.warnings) ?? []), ...(groups.data?.warnings ?? [])], [data, groups.data]);
   useDiagnostics(onDiagnostics, diagnostics);
   useEffect(() => () => hideTooltip(owner), [owner, view, at]);
+  const from = extent[0];
   const lanes = useMemo(() => view !== 'history' ? [] : data?.flatMap((reply, country) => {
     const membership = resolved.memberships.get(reply.tag) ?? [];
-    const projects = projectLanes(reply, at, membership).map(lane => ({ ...lane, id: JSON.stringify([country, lane.id]) }));
+    const history = projectHistory(reply, at, membership, from);
+    const closing = closedLane(JSON.stringify([country, null, 'closed']), history);
+    const projects = [...history.lanes.map(lane => ({ ...lane, id: JSON.stringify([country, lane.id]) })), ...(closing ? [closing] : [])];
     const hour = projectCountryHour(reply, at, membership);
     if (hour === null) return [];
     if (data.length === 1) return projects;
     return [projectHeading(JSON.stringify([country, null]), labelAt(hour)(reply.tag), reply.unavailable ? PROJECTS_UNRECORDED : (projects.length ? '' : 'No special projects yet.')), ...projects];
-  }) ?? [], [data, at, labelAt, resolved.memberships, view]);
+  }) ?? [], [data, at, from, labelAt, resolved.memberships, view]);
   const openMenu = (card: ProjectCard, x: number, y: number) => {
     if (!track) return;
     const start = jumpItem(runtime, track.id, card.project.start.hour);
     const completion = card.run.completion;
     menu.open(x, y, [{ ...start, label: `Jump to start · ${projectDate(card.project.start)}` },
       ...(completion ? [{ ...jumpItem(runtime, track.id, completion.hour), label: `Jump to completion · ${projectDate(completion)}` }] : [])]);
+  };
+  // Every listed project shares the hover tooltip, spoken description and Jump menu.
+  const item = (reply: SpecialProjectsReply): ItemProps => card => {
+    const tip = projectTooltip(reply, card);
+    const show = (x: number, y: number) => showTooltip(owner, fitTooltip([tip], viewport), x, y);
+    return { tabIndex: 0, role: 'group', 'aria-label': tooltipText(tip),
+      onPointerMove: event => show(event.clientX, event.clientY), onPointerLeave: () => hideTooltip(owner),
+      onFocus: event => { const box = event.currentTarget.getBoundingClientRect(); show(box.right, box.top); }, onBlur: () => hideTooltip(owner),
+      onContextMenu: event => { event.preventDefault(); openMenu(card, event.clientX, event.clientY); },
+      onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+        if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey || event.key === 'Enter') {
+          event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); openMenu(card, box.left, box.bottom);
+        }
+      } };
   };
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign and choose a country to see its special projects." />;
@@ -88,30 +161,10 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   else if (data.every(reply => reply.unavailable)) body = <WidgetState kind="unavailable" message={PROJECTS_UNRECORDED} />;
   else if (view === 'live') {
     const reply = data.find(reply => resolved.match.matches(reply.tag, at));
-    const cards = reply ? liveCards(reply, at, Number(options.completedRetentionDays)) : [];
     if (!reply) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
     else if (!observedAt(reply, at)) body = <WidgetState kind="unavailable" message="Projects were not recorded at this time." />;
-    else if (!cards.length) body = <WidgetState kind="empty" message="No projects running." />;
-    else body = <div className="special-project-grid">{cards.map(card => {
-      const { project, run, info } = card;
-      const scientist = reply.people[info.scientist];
-      const tip = projectTooltip(reply, card);
-      const show = (x: number, y: number) => showTooltip(owner, fitTooltip([tip], viewport), x, y);
-      return <div className={`special-project-card${run.state === 'completed' ? ' is-complete' : ''}`} key={project.id} tabIndex={0} role="group" aria-label={tooltipText(tip)}
-        onPointerMove={event => show(event.clientX, event.clientY)} onPointerLeave={() => hideTooltip(owner)}
-        onFocus={event => { const box = event.currentTarget.getBoundingClientRect(); show(box.right, box.top); }} onBlur={() => hideTooltip(owner)}
-        onContextMenu={event => { event.preventDefault(); openMenu(card, event.clientX, event.clientY); }}
-        onKeyDown={event => { if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey || event.key === 'Enter') { event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); openMenu(card, box.left, box.bottom); } }}>
-        <div className="blueprint-tile">{info.icon ? <img src={info.icon} alt="" /> : <ArtFallback icon="flask" />}</div>
-        <div className="special-project-detail"><b>{info.name}</b>
-          <small>{`${contentTitle(info.specializationName, info.specialization, 'Type name unavailable')} · `}{run.completion ? `completed ${projectDate(run.completion)}` : `${run.state === 'paused' ? 'paused · ' : run.state === 'unknown' ? 'state not recorded · ' : ''}${run.progress}%`}</small>
-          <ProgressMeter value={run.progress / 100} state={run.state === 'completed' ? 'done' : run.state === 'running' ? 'live' : 'idle'} label="Project progress" />
-          <IterationRow text={run.iterations === null ? null : reply.iterationTexts[run.iterations] ?? null} recorded={run.iterations !== null} />
-          <div className="special-project-scientist">{scientist.portrait ? <img src={scientist.portrait} alt="" /> : <ArtFallback icon="helmet" className="special-project-portrait" />}<span>{scientistName(reply, info)}</span></div>
-        </div>
-      </div>;
-    })}</div>;
-  } else if (!lanes.some(lane => lane.identity?.tile === 'blueprint')) body = historyMembershipUnknown
+    else body = <CurrentList reply={reply} at={at} item={item(reply)} />;
+  } else if (!lanes.some(lane => lane.identity?.tile === 'blueprint' || lane.compact)) body = historyMembershipUnknown
     ? <WidgetState kind="unavailable" message="This group’s members were not recorded for part of this history." />
     : <WidgetState kind="empty" message="No special projects yet." />;
   else body = <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Special project history" extent={extent} playhead={playhead} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} active={active} revision={lanes}
@@ -138,6 +191,9 @@ const PROJECTS_UNRECORDED = 'Projects were not recorded.';
 export default function SpecialProjectsWidget(props: WidgetProps) {
   const view = props.widget.options?.view === 'history' ? 'history' : 'live';
   usePlaybackHour(props.runtime.clock, props.active && props.widget.time.mode === 'follow');
+  // The view switch sits beside Live, where the frame never clips it; a frame
+  // without header actions (the catalogue preview) shows it beside the title.
+  const actions = useContext(HeaderActionsSlot);
   const track = props.runtime.tracks.find(item => item.id === props.widget.trackIds[0]);
   const groups = useCountryGroups(props.runtime, track, props.active);
   const fallback = defaultCountryTag(track);
@@ -150,10 +206,12 @@ export default function SpecialProjectsWidget(props: WidgetProps) {
   const tagsKey = JSON.stringify(tags);
   // Stable panels keep their scroll position while playback advances.
   const comparisonWidget = useMemo(() => ({ ...props.widget, countries: { kind: 'tags' as const, tags: JSON.parse(tagsKey) as string[] } }), [props.widget, tagsKey]);
-  const header = props.headerSlot && createPortal(<Segmented value={view} options={VIEWS}
-    onChange={value => props.setOption?.('view', value)} label="Special projects view" />, props.headerSlot);
+  const slot = actions ?? props.headerSlot;
+  const header = slot && createPortal(<Segmented value={view} options={VIEWS}
+    onChange={value => props.setOption?.('view', value)} label="Special projects view" />, slot);
   const compare = view === 'live' && selected.ready && !unknown && tags.length > 1 && !groups.error;
   return <>{header}{compare
     ? <CountryComparisons {...props} widget={comparisonWidget} headerSlot={null} component={ProjectPanel} />
-    : <ProjectPanel {...props} />}</>;
+    // Each view gets its own panel, so a switch starts at the top instead of keeping the other view's scroll.
+    : <ProjectPanel key={view} {...props} />}</>;
 }

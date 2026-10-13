@@ -55,7 +55,7 @@ const runtime = { client: {}, tracks: [track], clock: { getHour: () => 150, getS
 const widget = (tag: string, origin: number): WidgetSpec => ({ id: 'widget', kind: 'equipment-produced', configVersion: 1, title: 'Produced',
   trackIds: ['track'], countries: { kind: 'tags', tags: [tag] }, time: { mode: 'campaign' }, options: { show: 'breakdown', drillOriginHour: origin } });
 const key = (token: string): ProducedKey => ({ key: token, name: token, typeKey: token, domain: null, names: [] });
-const base: EquipmentProducedReply = { branchId: 'branch', measure: 'total', grouping: 'type', types: [], warnings: [],
+const base: EquipmentProducedReply = { branchId: 'branch', measure: 'total', count: 'units', decimals: 0, grouping: 'type', types: [], warnings: [],
   keys: [key('Known'), key('Correction'), key('Zero'), key('Unknown')], reads: [8, 32], observations: [8], known: [],
   series: [{ tag: 'MOD', identities: [{ firstHour: 0, lastHour: 127, slot: 3, countryId: 9 }],
     firstHours: [8, 32], lastHours: [31, 127], breaks: [0], membership: null,

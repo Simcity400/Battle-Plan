@@ -1,19 +1,10 @@
-import { sumFlowParts } from '../../charts/flow/sum.ts';
-import { usNumber } from '../../charts/numberFormat.ts';
-import type { SummedDiagram, SummedNode } from '../../charts/flow/sum';
-import type { PeaceDeal, PeaceDealsReply, PeaceTransferGraph, PeaceTransferredState } from '../../generated/dashboard';
-import { checkedPeaceVictoryPoints, peaceDealHour, peaceDealIsBy, peaceDealKnownAt } from '../../dashboard/peaceDealsData.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
+import type { HourSpan, PeaceDeal, PeaceDealsReply, PeaceTransferCountry } from '../../generated/dashboard';
+import { peaceDealHour, peaceDealIsBy, peaceDealKnownAt, peaceWarName } from '../../dashboard/peaceDealsData.ts';
+import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar.ts';
 import { campaignToken } from '../../dashboard/chosen.ts';
 import { contentKey, setToken } from '../../dashboard/options.ts';
-import { compareTags } from '../../dashboard/tagOrder.ts';
-import { lookHour } from '../../dashboard/countryLooks.ts';
 import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
-import { MAX_NAME_HOURS } from '../../dashboard/countryFacts.ts';
-import { nameKey } from '../../dashboard/countryNamesAt.ts';
-import type { RecordedBranch } from '../../dashboard/countryLooks';
 
-export type TransferMeasure = 'states' | 'victoryPoints';
 /** Conference handles hold only within their campaign and branch. */
 export const conferenceToken = (campaign: string, branch: string, id: string) => setToken(campaignToken(campaign, JSON.stringify([branch, id])));
 export function conferenceChoiceId(token: string, campaign: string, branch: string): string | null {
@@ -26,97 +17,111 @@ export function conferenceChoiceId(token: string, campaign: string, branch: stri
     return Array.isArray(identity) && identity.length === 2 && identity[0] === branch && typeof identity[1] === 'string' ? identity[1] : null;
   } catch { return null; }
 }
-export interface TransferOccurrence extends PeaceTransferredState {
-  from: string; to: string; derived: boolean | null;
+
+/** One end of a transfer: its native holder and the read that names it. */
+export interface TransferSide { key: string; tag: string; hour: number }
+/** One state changing hands once; a state transferred twice is two occurrences. */
+export interface TransferOccurrence {
+  key: string; deal: string; state: number;
+  /** Null only where an older bridge names several former owners for one release. */
+  from: TransferSide | null; to: TransferSide;
+  beforeHour: number; afterHour: number;
   /** The supplying observation, independently of the outcome's actual date. */
-  knownAt?: number;
-  /** Live has not reached the VP read, or its read hour was not recorded. */
+  knownAt: number;
+  victoryPoints: bigint | null; victoryPointsReadHour: number | null;
+  /** Live has not reached this state's own victory-points read. */
   victoryPointsPending?: boolean;
-}
-export interface TransferLink {
-  id: string; from: string; to: string; source: string; target: string; states: readonly TransferOccurrence[];
-  /** Preserve the product's fold order independently of the playback date index. */
-  nativeStates?: readonly TransferOccurrence[];
-  stateCount: number; victoryPoints: bigint | null;
+  /** The same settlement released the taker. */
+  released: boolean;
+  /** An exact finalizer outcome (false), an ownership comparison (true), or no matching item. */
+  derived: boolean | null;
 }
 export interface TransferData {
   reply: PeaceDealsReply;
-  campaign: readonly TransferLink[];
-  conferences: ReadonlyMap<string, readonly TransferLink[]>;
+  deals: ReadonlyMap<string, PeaceDeal>;
+  /** Every occurrence by its date; a deal's own list keeps the same order. */
+  all: readonly TransferOccurrence[];
+  byDeal: ReadonlyMap<string, readonly TransferOccurrence[]>;
+  /** Dates, supplying observations and VP reads, so playback ticks reuse one cut. */
   hours: readonly number[];
   conferenceHours: readonly number[];
-  victoryPointHours: readonly number[];
-  countryOrder: ReadonlyMap<string, number>;
-  colourReads: ReadonlyMap<string, readonly { firstHour: number; readHour: number; tag: string }[]>;
 }
-export interface TransferDiagram extends SummedDiagram<TransferLink> { missingVictoryPoints: number; nonpositiveVictoryPoints: number }
 
-const occurrenceKey = (from: string, to: string, state: number, before: number, after: number) => JSON.stringify([from, to, state, before, after]);
+const side = (country: PeaceTransferCountry): TransferSide => ({ key: countryIdentityKey(country), tag: country.tag, hour: country.hour });
+/** A holder an older bridge names only by tag; never joined to a native identity. */
+const tagSide = (tag: string, hour: number): TransferSide => ({ key: JSON.stringify(['tag', tag]), tag, hour });
+const provenanceKey = (state: number, before: number, after: number, from: string, to: string) => JSON.stringify([state, before, after, from, to]);
 const decoded = new WeakMap<PeaceDealsReply, TransferData>();
 
-/** Join the graph to its item provenance once. A graph occurrence without a
- * matching item remains unknown rather than being labelled exact or derived. */
+/** Every deal's graph occurrence, joined to its deal and item provenance once. A
+ * reply from a bridge built before released states joined the graphs keeps them
+ * from the release item, without victory points. */
 export function decodeTransfers(reply: PeaceDealsReply): TransferData {
   const held = decoded.get(reply);
   if (held) return held;
-  const provenance = new Map<string, { derived: boolean; knownAt: number }>();
-  for (const deal of reply.deals) for (const item of deal.items) if (item.change.kind === 'stateTransfer') {
-    const change = item.change;
-    const key = occurrenceKey(countryIdentityKey(change.fromCountry), countryIdentityKey(change.toCountry), change.state, item.dates.beforeHour, item.dates.afterHour);
-    // Exact finalizer items supersede a matching derived observation.
-    const previous = provenance.get(key);
-    if (!previous || previous.derived && !item.derived) provenance.set(key, { derived: item.derived, knownAt: peaceDealKnownAt(deal) });
+  const all: TransferOccurrence[] = [];
+  const byDeal = new Map<string, TransferOccurrence[]>();
+  for (const deal of reply.deals) {
+    const knownAt = peaceDealKnownAt(deal);
+    const provenance = new Map<string, boolean>();
+    const witness = (key: string, derived: boolean) => {
+      // An exact finalizer item supersedes a matching derived observation.
+      if (!provenance.has(key) || provenance.get(key) && !derived) provenance.set(key, derived);
+    };
+    for (const item of deal.items) {
+      const change = item.change, { beforeHour, afterHour } = item.dates;
+      if (change.kind === 'stateTransfer') witness(provenanceKey(change.state, beforeHour, afterHour, countryIdentityKey(change.fromCountry), countryIdentityKey(change.toCountry)), item.derived);
+      else if (change.kind === 'countryReleased' && change.toCountry && change.transfers)
+        for (const transfer of change.transfers) witness(provenanceKey(transfer.state, beforeHour, afterHour, countryIdentityKey(transfer.fromCountry), countryIdentityKey(change.toCountry)), item.derived);
+    }
+    const own: TransferOccurrence[] = [];
+    const keys = new Map<string, number>();
+    const push = (occurrence: Omit<TransferOccurrence, 'key'>) => {
+      const base = JSON.stringify([deal.id, occurrence.from?.key ?? null, occurrence.to.key, occurrence.state, occurrence.beforeHour, occurrence.afterHour]);
+      const repeat = keys.get(base) ?? 0;
+      keys.set(base, repeat + 1);
+      own.push({ ...occurrence, key: repeat ? `${base}#${repeat}` : base });
+    };
+    const graphStates = deal.transfers.links.flatMap(link => link.states);
+    for (const state of graphStates) {
+      const from = side(state.fromCountry), to = side(state.toCountry);
+      push({ deal: deal.id, state: state.state, from, to, beforeHour: state.dates.beforeHour, afterHour: state.dates.afterHour,
+        knownAt: Math.max(state.dates.afterHour, knownAt), victoryPoints: state.victoryPoints == null ? null : BigInt(state.victoryPoints),
+        victoryPointsReadHour: state.victoryPointsReadHour, released: state.released === true,
+        derived: provenance.get(provenanceKey(state.state, state.dates.beforeHour, state.dates.afterHour, from.key, to.key)) ?? null });
+    }
+    for (const item of deal.items) {
+      const change = item.change;
+      if (change.kind !== 'countryReleased' || change.transfers !== undefined) continue;
+      // Only a single former owner can be named for each state; the giver lost
+      // other states in this settlement, so the graph holds its identity.
+      const owner = change.from.length === 1 ? change.from[0] : null;
+      const known = owner == null ? undefined : graphStates.find(state => state.fromCountry.tag === owner)?.fromCountry;
+      const from = owner == null ? null : known ? side(known) : tagSide(owner, item.dates.beforeHour);
+      for (const state of change.states) push({ deal: deal.id, state, from, to: tagSide(change.country, item.dates.afterHour),
+        beforeHour: item.dates.beforeHour, afterHour: item.dates.afterHour, knownAt: Math.max(item.dates.afterHour, knownAt),
+        victoryPoints: null, victoryPointsReadHour: null, released: true, derived: item.derived });
+    }
+    own.sort(byDate);
+    byDeal.set(deal.id, own);
+    all.push(...own);
   }
-  const graph = (value: PeaceTransferGraph): TransferLink[] => {
-    const countries = new Map(value.nodes.map(node => [node.id, node.country]));
-    return value.links.map(link => {
-      const source = countryIdentityKey(countries.get(link.source)!);
-      const target = countryIdentityKey(countries.get(link.target)!);
-      const nativeStates = link.states.map(state => {
-        const witness = provenance.get(occurrenceKey(source, target, state.state, state.dates.beforeHour, state.dates.afterHour));
-        return { ...state, from: state.fromCountry.tag, to: state.toCountry.tag, derived: witness?.derived ?? null, knownAt: witness?.knownAt ?? state.dates.afterHour };
-      });
-      const states = [...nativeStates]
-        .sort((a, b) => a.dates.afterHour - b.dates.afterHour || a.dates.beforeHour - b.dates.beforeHour || a.state - b.state);
-      return { id: link.id, source, target, from: states.at(-1)!.from, to: states.at(-1)!.to, states, nativeStates, stateCount: link.stateCount,
-        victoryPoints: link.victoryPoints == null ? null : BigInt(link.victoryPoints) };
-    });
-  };
-  const campaign = graph(reply.transfers);
-  const conferences = new Map(reply.deals.map(deal => [deal.id, graph(deal.transfers)]));
-  const hours = [...new Set(campaign.flatMap(link => link.states.flatMap(state => [state.dates.afterHour, state.knownAt ?? state.dates.afterHour])))].sort((a, b) => a - b);
+  all.sort(byDate);
+  const hours = [...new Set(all.flatMap(occurrence => [occurrence.afterHour, occurrence.knownAt, ...(occurrence.victoryPointsReadHour == null ? [] : [occurrence.victoryPointsReadHour])]))]
+    .sort((a, b) => a - b);
   const conferenceHours = [...new Set(reply.deals.flatMap(deal => [peaceDealHour(deal), peaceDealKnownAt(deal)]))].sort((a, b) => a - b);
-  const victoryPointHours = [...new Set(campaign.flatMap(link => link.states.flatMap(state => state.victoryPointsReadHour == null ? [] : [state.victoryPointsReadHour])))].sort((a, b) => a - b);
-  const countries = new Map<string, string>();
-  const colourWitnesses = new Map<string, Map<string, { firstHour: number; readHour: number; tag: string }>>();
-  for (const links of [campaign, ...conferences.values()]) for (const link of links) for (const state of link.states) for (const country of [state.fromCountry, state.toCountry]) {
-    const key = countryIdentityKey(country);
-    countries.set(key, country.tag);
-    const reads = colourWitnesses.get(key) ?? new Map<string, { firstHour: number; readHour: number; tag: string }>();
-    const firstHour = Math.max(state.dates.afterHour, state.knownAt ?? state.dates.afterHour);
-    const readKey = nameKey(country.hour, country.tag);
-    reads.set(readKey, { firstHour: Math.min(firstHour, reads.get(readKey)?.firstHour ?? Infinity), readHour: country.hour, tag: country.tag });
-    colourWitnesses.set(key, reads);
-  }
-  const countryOrder = new Map([...countries].sort((a, b) => compareTags(a[1], b[1]) || a[0].localeCompare(b[0])).map(([key], index) => [key, index]));
-  const colourReads = new Map([...colourWitnesses].map(([key, reads]) =>
-    [key, [...reads.values()].sort((a, b) => a.firstHour - b.firstHour || a.readHour - b.readHour)] as const));
-  const data = { reply, campaign, conferences, hours, conferenceHours, victoryPointHours, countryOrder, colourReads };
+  const data = { reply, deals: new Map(reply.deals.map(deal => [deal.id, deal])), all, byDeal, hours, conferenceHours };
   decoded.set(reply, data);
   return data;
 }
+const byDate = (a: TransferOccurrence, b: TransferOccurrence) => a.afterHour - b.afterHour || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 
-/** Full-history admission waits for publication; appearance still belongs to the event's actor. */
-export function transferColourPlan(data: TransferData | null | undefined, branch: RecordedBranch | undefined, moment: number, fixed: boolean) {
-  const samples = fixed && data && branch ? [...data.countryOrder.keys()].flatMap(key =>
-    (data.colourReads.get(key) ?? []).flatMap(read => read.firstHour <= moment && lookHour(branch, read.readHour, undefined, true)
-      ? [{ key, tag: read.tag, hour: read.readHour }] : [])) : [];
-  const wanted = [...new Map(samples.map(sample => [nameKey(sample.hour, sample.tag), { tag: sample.tag, hour: sample.hour }])).values()];
-  return { samples, wanted, maxHours: Math.max(MAX_NAME_HOURS, new Set(wanted.map(sample => sample.hour)).size) };
-}
+/** The campaign's occurrences, or one conference's. */
+export const transferScope = (data: TransferData, conference: string | null): readonly TransferOccurrence[] =>
+  conference == null ? data.all : data.byDeal.get(conference) ?? [];
 
-/** Last transfer the playhead has reached, so intervening playback ticks reuse
- * the diagram without another pass or another sort. */
+/** Last hour at which anything shown can change, so playback ticks between them
+ * reuse the same lists without another pass. */
 export function transferCutoff(hours: readonly number[], hour: number): number {
   let low = 0;
   let high = hours.length;
@@ -127,72 +132,132 @@ export function transferCutoff(hours: readonly number[], hour: number): number {
   return low ? hours[low - 1] : -Infinity;
 }
 
-/** The current scope's occurrences, dated by their after read. VPs are summed
- * only when every contributing occurrence is known, including repeated states.
- * Live also waits for the separate read that supplied each VP value. */
-export function transfersThrough(links: readonly TransferLink[], hour: number, victoryPointsHour = Infinity, from = -Infinity): TransferLink[] {
-  const shown: TransferLink[] = [];
-  for (const link of links) {
-    let low = 0;
-    let high = link.states.length;
-    while (low < high) {
-      const middle = (low + high) >>> 1;
-      if (link.states[middle].dates.afterHour <= hour) low = middle + 1; else high = middle;
-    }
-    if (!low) continue;
-    if (low === link.states.length && victoryPointsHour === Infinity && from === -Infinity && link.states.every(state => (state.knownAt ?? state.dates.afterHour) <= hour)) { shown.push(link); continue; }
-    const read = (state: TransferOccurrence) => victoryPointsHour !== Infinity && state.victoryPoints != null && (state.victoryPointsReadHour == null || state.victoryPointsReadHour > victoryPointsHour)
-      ? { ...state, victoryPoints: null, victoryPointsPending: true } : state;
-    const reached = (state: TransferOccurrence) => state.dates.afterHour >= from && state.dates.afterHour <= hour && (state.knownAt ?? state.dates.afterHour) <= hour;
-    const states = link.states.slice(0, low).filter(reached).map(read);
-    if (!states.length) continue;
-    const nativeStates = (link.nativeStates ?? link.states).filter(reached).map(read);
-    const victoryPoints = checkedPeaceVictoryPoints(nativeStates);
-    shown.push({ ...link, from: states.at(-1)!.from, to: states.at(-1)!.to, states, nativeStates, stateCount: states.length, victoryPoints });
+/** Occurrences reached by `through`, dated from `from` (Range includes both ends).
+ * Unless the whole campaign is shown, a state's VP waits for its own read. */
+export function transfersAt(list: readonly TransferOccurrence[], through: number, from = -Infinity, wholeCampaign = true): TransferOccurrence[] {
+  const shown: TransferOccurrence[] = [];
+  for (const occurrence of list) {
+    if (occurrence.afterHour > through) break;
+    if (occurrence.afterHour < from || occurrence.knownAt > through) continue;
+    shown.push(!wholeCampaign && occurrence.victoryPoints != null && (occurrence.victoryPointsReadHour == null || occurrence.victoryPointsReadHour > through)
+      ? { ...occurrence, victoryPoints: null, victoryPointsPending: true } : occurrence);
   }
   return shown;
 }
 
-export function transferNodeCountries(links: readonly TransferLink[]) {
-  const countries = new Map<string, TransferOccurrence['fromCountry']>();
-  for (const link of links) for (const state of link.states) for (const country of [state.fromCountry, state.toCountry]) {
-    const key = countryIdentityKey(country);
-    if (country.hour > (countries.get(key)?.hour ?? -Infinity)) countries.set(key, country);
+/** A country's peace-settlement territory: states received and given up, with their
+ * counterparts. Missing VPs make that side unknown; no partial sum becomes known. */
+export interface CountryBalance {
+  key: string;
+  /** The newest read naming this holder among the shown transfers. */
+  side: TransferSide;
+  gained: number; lost: number;
+  gainedVictoryPoints: bigint | null; lostVictoryPoints: bigint | null;
+  from: ReadonlyMap<string, Counterpart>; to: ReadonlyMap<string, Counterpart>;
+  /** Received states whose former owner is not named. */
+  unattributed: number;
+  first: number; last: number;
+}
+export interface Counterpart { side: TransferSide; count: number }
+type Building = CountryBalance & { from: Map<string, Counterpart>; to: Map<string, Counterpart> };
+const plus = (sum: bigint | null, value: bigint | null) => sum == null || value == null ? null : sum + value;
+
+export function countryBalances(list: readonly TransferOccurrence[]): CountryBalance[] {
+  const rows = new Map<string, Building>();
+  const row = (at: TransferSide, hour: number) => {
+    let found = rows.get(at.key);
+    if (!found) {
+      found = { key: at.key, side: at, gained: 0, lost: 0, gainedVictoryPoints: 0n, lostVictoryPoints: 0n, from: new Map(), to: new Map(), unattributed: 0, first: hour, last: hour };
+      rows.set(at.key, found);
+    }
+    if (at.hour > found.side.hour) found.side = at;
+    found.first = Math.min(found.first, hour);
+    found.last = Math.max(found.last, hour);
+    return found;
+  };
+  const count = (into: Map<string, Counterpart>, at: TransferSide) => {
+    const held = into.get(at.key);
+    if (held) { held.count++; if (at.hour > held.side.hour) held.side = at; } else into.set(at.key, { side: at, count: 1 });
+  };
+  for (const occurrence of list) {
+    const value = occurrence.victoryPoints;
+    const taker = row(occurrence.to, occurrence.afterHour);
+    taker.gained++;
+    taker.gainedVictoryPoints = plus(taker.gainedVictoryPoints, value);
+    if (!occurrence.from) { taker.unattributed++; continue; }
+    count(taker.from, occurrence.from);
+    const giver = row(occurrence.from, occurrence.afterHour);
+    giver.lost++;
+    giver.lostVictoryPoints = plus(giver.lostVictoryPoints, value);
+    count(giver.to, occurrence.to);
   }
-  return countries;
+  return [...rows.values()];
+}
+export const netVictoryPoints = (row: Pick<CountryBalance, 'gainedVictoryPoints' | 'lostVictoryPoints'>) =>
+  row.gainedVictoryPoints == null || row.lostVictoryPoints == null ? null : row.gainedVictoryPoints - row.lostVictoryPoints;
+
+/** Transfers involving one holder, or the old pinned giver → taker links. */
+export function involving(list: readonly TransferOccurrence[], key: string): TransferOccurrence[] {
+  return list.filter(occurrence => occurrence.to.key === key || occurrence.from?.key === key);
 }
 
-export function transferLookPlan(countries: ReturnType<typeof transferNodeCountries>, branch: RecordedBranch | undefined) {
-  const samples = branch ? [...countries].flatMap(([key, country]) => lookHour(branch, country.hour, undefined, true)
-    ? [{ key, tag: country.tag, hour: country.hour }] : []) : [];
-  const wanted = [...new Map(samples.map(sample => [nameKey(sample.hour, sample.tag), { tag: sample.tag, hour: sample.hour }])).values()];
-  return { samples, wanted, maxHours: Math.max(MAX_NAME_HOURS, new Set(wanted.map(sample => sample.hour)).size) };
+/** How the recorded settlement moved the state, as far as it records. */
+export interface TransferHow { released: boolean; subjectOf: string | null; action: string | null }
+export function transferHow(occurrence: TransferOccurrence, deal: PeaceDeal | undefined): TransferHow {
+  const to = occurrence.to.tag;
+  if (!deal) return { released: occurrence.released, subjectOf: null, action: null };
+  let subjectOf: string | null = null;
+  for (const item of deal.items) if (item.change.kind === 'newSubject' && item.change.subject === to) subjectOf = item.change.overlord;
+  subjectOf ??= deal.captured?.subjects.find(subject => subject.subjectTag === to)?.overlordTag ?? null;
+  const actions = deal.captured?.actions ?? [];
+  // The content's own action name, never a guessed one.
+  const action = actions.find(action => action.name != null && action.state === occurrence.state && (action.takerTag == null || action.takerTag === to))
+    ?? (occurrence.released ? actions.find(action => action.name != null && action.countryOperandTag === to) : undefined);
+  return { released: occurrence.released, subjectOf, action: action?.name ?? null };
 }
 
-/** Shared flow-kit summing retains every contributing link and occurrence in
- * the "other" node. An unknown VP link never supplies a partial width. */
-export function buildTransferDiagram(links: readonly TransferLink[], measure: TransferMeasure, capacity: number | null): TransferDiagram {
-  let missingVictoryPoints = 0;
-  let nonpositiveVictoryPoints = 0;
-  const valued = [];
-  for (const link of links) {
-    if (measure === 'victoryPoints' && link.victoryPoints == null) { missingVictoryPoints++; continue; }
-    const value = measure === 'states' ? link.stateCount : Number(link.victoryPoints);
-    if (value <= 0) { if (measure === 'victoryPoints') nonpositiveVictoryPoints++; continue; }
-    valued.push({ part: link, source: link.source, target: link.target, value });
+/** Plain dates in rows; the tooltip carries the hour and any "by" caveat. */
+export function transferDate(hour: number): string {
+  const date = gameDate(hour);
+  return date ? formatDate(date) : formatDateTime(hour);
+}
+/** An ownership comparison bounds the change between two reads. */
+export const transferIsBy = (occurrence: Pick<TransferOccurrence, 'derived' | 'beforeHour' | 'afterHour'>) =>
+  occurrence.derived !== false && occurrence.beforeHour !== occurrence.afterHour;
+
+/** Gaps in the hourly settlement, ownership and war inputs that establish transfers,
+ * including hours missing from the recording. The conference roster is read once a
+ * day: the hours between its reads are its cadence, not missing transfers. */
+export function transferGaps(reply: PeaceDealsReply, from: number, to: number): HourSpan[] {
+  const sorted = [...reply.unobserved.settlements, ...reply.unobserved.ownership, ...reply.unobserved.wars]
+    .filter(span => span.firstHour <= to && span.lastHour >= from)
+    .map(span => ({ firstHour: Math.max(from, span.firstHour), lastHour: Math.min(to, span.lastHour) }))
+    .sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
+  const spans: HourSpan[] = [];
+  for (const span of sorted) {
+    const last = spans.at(-1);
+    if (last && span.firstHour <= last.lastHour + 1) last.lastHour = Math.max(last.lastHour, span.lastHour);
+    else spans.push({ ...span });
   }
-  // The canvas measures its own room before drawing countries. No provisional
-  // top-N or unbounded first frame is needed while that measurement arrives.
-  return { ...sumFlowParts(capacity == null ? [] : valued, Math.max(1, (capacity ?? 1) - 1)), missingVictoryPoints, nonpositiveVictoryPoints };
+  return spans;
+}
+/** One hint for every gap in the shown time, never one line per gap. */
+export function transferGapHint(gaps: readonly HourSpan[]): string | null {
+  if (!gaps.length) return null;
+  const between = `between ${formatDateTime(gaps[0].firstHour)} and ${formatDateTime(gaps.at(-1)!.lastHour)}`;
+  return gaps.length === 1 ? `Not fully recorded ${between}.` : `${gaps.length} stretches not fully recorded ${between}.`;
+}
+/** A completed conference's gaps belong to its own observed interval; an active one follows Live. */
+export function transferGapWindow(conference: PeaceDeal | null, list: readonly TransferOccurrence[], firstHour: number, moment: number): [number, number] {
+  if (!conference) return [firstHour, moment];
+  let first = conference.firstObservedHour;
+  for (const occurrence of list) first = Math.min(first, occurrence.beforeHour);
+  const completed = conference.captured != null || conference.endHour != null || conference.firstFinalizedHour != null;
+  return [first, completed ? Math.min(moment, peaceDealHour(conference)) : moment];
 }
 
-/** Describe every drawn ribbon, including every summed node, without a chosen
- * screen-reader limit. Tooltip content retains their individual occurrences. */
-export function transferDiagramDescription(diagram: TransferDiagram, measure: TransferMeasure, nodeName: (node: SummedNode) => string, note?: string): string {
-  const nodes = new Map(diagram.nodes.map(node => [node.id, node]));
-  const listed = diagram.links.map(link => `${nodeName(nodes.get(link.source)!)} to ${nodeName(nodes.get(link.target)!)}, ${transferAmount(link.parts, measure)} ${measure === 'states' ? 'state occurrences' : 'victory points'}`);
-  return `${listed.join('; ')}${note ? `. ${note}` : ''}`;
-}
+/** The body's message when nothing is shown. */
+export const transferEmptyMessage = (filtered: boolean) => filtered ? 'No territory transfers for these countries yet.' : 'No territory transfers yet.';
 
 /** Conferences available to the scope picker, including active conferences whose
  * outcome is still unknown. The product already supplies newest-first order. */
@@ -206,40 +271,7 @@ export function chosenConference(deals: readonly PeaceDeal[], id: string): Peace
   return id ? deals.find(deal => deal.id === id) ?? null : deals[0] ?? null;
 }
 
-export function transferAmount(links: readonly TransferLink[], measure: TransferMeasure): string {
-  if (measure === 'states') return usNumber.format(links.reduce((sum, link) => sum + link.stateCount, 0));
-  let total = 0n;
-  for (const link of links) {
-    if (link.victoryPoints == null) return 'Not recorded';
-    total += link.victoryPoints;
-  }
-  return usNumber.format(total);
-}
-
-/** A completed conference's gap warning belongs to its own observed interval,
- * rather than later unrelated campaign gaps. An active conference follows Live. */
-export function transferGapWindow(conference: PeaceDeal | null, links: readonly TransferLink[], firstHour: number, moment: number): [number, number] {
-  if (!conference) return [firstHour, moment];
-  let first = conference.firstObservedHour;
-  for (const link of links) for (const state of link.states) first = Math.min(first, state.dates.beforeHour);
-  const completed = conference.captured != null || conference.endHour != null || conference.firstFinalizedHour != null;
-  return [first, completed ? Math.min(moment, peaceDealHour(conference)) : moment];
-}
-
-/** Gaps in the inputs that identify and attribute peace transfers remain visible
- * beside a total, including when no transfer could be attributed. */
-export function transferGapCount(reply: PeaceDealsReply, from: number, to: number): number {
-  const spans = [...reply.unobserved.settlements, ...reply.unobserved.conferences, ...reply.unobserved.ownership, ...reply.unobserved.wars]
-    .filter(span => span.firstHour <= to && span.lastHour >= from)
-    .map(span => ({ first: Math.max(from, span.firstHour), last: Math.min(to, span.lastHour) }))
-    .sort((a, b) => a.first - b.first || a.last - b.last);
-  let count = 0;
-  let last = -Infinity;
-  for (const span of spans) { if (span.first > last + 1) count++; last = Math.max(last, span.last); }
-  return count;
-}
-
-/** Event bounds and the war name, without acquisition-method captions. */
+/** Event bounds and the war name, for the conference picker and the scope line. */
 export function transferConferenceLabel(deal: PeaceDeal): string {
-  return `${peaceDealIsBy(deal) ? 'by ' : ''}${formatDateTime(peaceDealHour(deal))} · ${deal.warName ?? 'Unknown war'}`;
+  return `${peaceDealIsBy(deal) ? 'by ' : ''}${formatDateTime(peaceDealHour(deal))} · ${peaceWarName(deal)}`;
 }

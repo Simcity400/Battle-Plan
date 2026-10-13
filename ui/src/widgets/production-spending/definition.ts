@@ -2,12 +2,14 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import { REFITS_OPTION } from '../../dashboard/equipment.ts';
 import type { OptionField } from '../../dashboard/options';
 import { SUNBURST_OPTIONS, levelOption } from '../../charts/sunburst/sunburstOptions.ts';
+import { IC_DECIMALS_OPTION } from '../../dashboard/icDecimals.ts';
 
 export const OPTIONS: readonly OptionField[] = [
   levelOption('domainLevel', 'Production source', 'Land, air, naval and Rocket sites'),
   levelOption('typeLevel', 'Equipment type'),
   levelOption('variantLevel', 'Design'),
   REFITS_OPTION,
+  IC_DECIMALS_OPTION,
   ...SUNBURST_OPTIONS,
 ];
 

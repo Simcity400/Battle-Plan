@@ -21,13 +21,24 @@ function change(v: unknown): boolean {
     case 'stateTransfer': return unsigned(v.state) && text(v.from) && text(v.to) && country(v.fromCountry) && country(v.toCountry) && object(v.fromCountry) && object(v.toCountry) && v.fromCountry.tag === v.from && v.toCountry.tag === v.to && nullable(v.victoryPoints, decimal) && nullable(v.victoryPointsReadHour, integer);
     case 'newSubject': return text(v.overlord) && text(v.subject) && text(v.autonomyState) && integer(v.startHour);
     case 'governmentChange': return text(v.country) && government(v.before) && government(v.after);
-    case 'countryReleased': return text(v.country) && list(v.from, text) && list(v.states, unsigned);
+    case 'countryReleased': return text(v.country) && list(v.from, text) && list(v.states, unsigned) && releasedStates(v);
     default: return false;
   }
 }
+/** Each released state's own former owner and the released holder. A bridge built
+ * before these were recorded sends neither; one without the other is malformed. */
+function releasedStates(v: Record<string, unknown>): boolean {
+  if (v.toCountry === undefined && v.transfers === undefined) return true;
+  if (!country(v.toCountry) || (v.toCountry as { tag: unknown }).tag !== v.country || !Array.isArray(v.transfers)) return false;
+  const states = v.states as number[], from = new Set(v.from as string[]);
+  return v.transfers.length === states.length && v.transfers.every((t, index) => object(t) && t.state === states[index] && country(t.fromCountry)
+    && from.has((t.fromCountry as { tag: string }).tag) && nullable(t.victoryPoints, decimal) && nullable(t.victoryPointsReadHour, integer));
+}
 const country = (v: unknown) => object(v) && unsigned(v.slot) && unsigned(v.countryId) && text(v.tag) && integer(v.hour);
 const item = (v: unknown) => object(v) && bool(v.derived) && dates(v.dates) && nullable(v.winner, text) && action(v.action) && change(v.change);
-const state = (v: unknown) => object(v) && unsigned(v.state) && dates(v.dates) && country(v.fromCountry) && country(v.toCountry) && nullable(v.victoryPoints, decimal) && nullable(v.victoryPointsReadHour, integer);
+// `released` is absent from replies of a bridge built before it was recorded.
+const state = (v: unknown) => object(v) && unsigned(v.state) && dates(v.dates) && country(v.fromCountry) && country(v.toCountry) && nullable(v.victoryPoints, decimal) && nullable(v.victoryPointsReadHour, integer)
+  && (v.released === undefined || bool(v.released));
 
 /** Match the product's ordered checked i64 fold. An intermediate overflow stays
  * unknown even when a later signed term would bring the final sum back in range. */

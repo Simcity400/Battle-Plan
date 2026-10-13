@@ -11,9 +11,10 @@ import type { ResearchHistory, ResearchSlotHistory, ResearchSlotState } from '..
 
 export interface ResearchColumn { slot: ResearchSlotHistory; offset: number }
 
-/** Playback never exposes future outcomes, assignments, or slot additions. */
-export function researchAt(history: ResearchHistory, hour: number): ResearchSlotHistory[] | null {
-  if (!history.coverage.some(c => c.firstHour <= hour && hour <= c.lastHour)) return null;
+/** Playback never exposes future outcomes, assignments, or slot additions.
+ * History up to `hour` stays known when that hour itself has no read: only
+ * the slot states looked up at the hour are then missing. */
+export function researchAt(history: ResearchHistory, hour: number): ResearchSlotHistory[] {
   return history.slots.filter(s => s.availability[0]?.firstHour <= hour).map(slot => ({
     ...slot,
     availability: slot.availability.filter(c => c.firstHour <= hour).map(c => ({ ...c, lastHour: Math.min(c.lastHour, hour) })),
@@ -26,6 +27,13 @@ export function researchAt(history: ResearchHistory, hour: number): ResearchSlot
         ? e.outcomeObservedHour != null && e.outcomeObservedHour > hour ? 'unknown' : e.outcome : 'active',
     })),
   }));
+}
+
+/** A slot state naming a technology that no assignment joins: the recording
+ * did not identify which occurrence of it the slot held. It is shown, but its
+ * progress and completion stay unknown. */
+export function isUnjoinedResearch(state: ResearchSlotState | null): state is ResearchSlotState & { token: string } {
+  return !!state?.token && state.entryFirstObservedHour === null;
 }
 
 export function researchStateAt(slot: ResearchSlotHistory, hour: number): ResearchSlotState | null {
@@ -89,6 +97,7 @@ export function researchArtworkTokens(slots: readonly ResearchSlotHistory[] | nu
     const entry = current && slot.entries.find(entry => entry.outcome === 'active'
       && entry.firstObservedHour === current.entryFirstObservedHour && entry.token === current.token);
     if (entry) tokens.push(entry.token);
+    else if (isUnjoinedResearch(current)) tokens.push(current.token);
   }
   for (const slot of ordered) for (const entry of slot.entries) if (entry.outcome === 'completed') tokens.push(entry.token);
   return [...new Set(tokens)];

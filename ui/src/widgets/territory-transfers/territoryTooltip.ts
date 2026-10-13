@@ -1,83 +1,77 @@
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import type { SummedLink, SummedNode } from '../../charts/flow/sum';
 import { usNumber } from '../../charts/numberFormat.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import { nameKey } from '../../dashboard/countryFacts.ts';
 import type { NameAt } from '../../dashboard/countryFacts';
-import { transferAmount } from './territoryData.ts';
-import type { TransferLink, TransferOccurrence } from './territoryData';
+import type { PeaceDeal } from '../../generated/dashboard';
+import { transferHow, transferIsBy } from './territoryData.ts';
+import type { CountryBalance, Counterpart, TransferOccurrence, TransferSide } from './territoryData';
 
 export interface TransferStateAt { hour: number; state: number }
 export interface TransferTipRequest { countries: NameAt[]; states: TransferStateAt[] }
-interface TooltipOptions {
-  note?: string;
-  nodeName: (node: SummedNode) => string;
-  labelAt: (hour: number) => CountryLabel;
-  stateNameAt: (hour: number, state: number) => string;
-  ask: (request: TransferTipRequest) => void;
+type Label = { name: string; flag?: string; flagPending?: boolean; flagReason?: string };
+export interface TransferLabels {
+  country: (side: TransferSide) => Label;
+  /** The country's dated name for a tag at an hour, such as an overlord. */
+  tag: (tag: string, hour: number) => Label;
+  state: (occurrence: Pick<TransferOccurrence, 'state' | 'afterHour'>) => string;
 }
 
-/** Ask for every country and state the hover lists, at each occurrence's own
- * hour. A campaign ribbon may name the same tag differently at several dates. */
-export function transferTipRequest(states: readonly TransferOccurrence[]): TransferTipRequest {
+/** Names and flags a set of rows or one tooltip needs, each at its own read. */
+export function transferRequest(occurrences: readonly TransferOccurrence[], balances: readonly CountryBalance[] = []): TransferTipRequest {
   const countries = new Map<string, NameAt>();
-  const namedStates = new Map<string, TransferStateAt>();
-  for (const state of states) {
-    const hour = state.dates.afterHour;
-    for (const country of [state.fromCountry, state.toCountry]) countries.set(nameKey(country.hour, country.tag), { hour: country.hour, tag: country.tag });
-    namedStates.set(JSON.stringify([hour, state.state]), { hour, state: state.state });
+  const states = new Map<string, TransferStateAt>();
+  const add = (at: { tag: string; hour: number }) => countries.set(JSON.stringify([at.hour, at.tag]), { hour: at.hour, tag: at.tag });
+  for (const occurrence of occurrences) {
+    add(occurrence.to);
+    if (occurrence.from) add(occurrence.from);
+    states.set(JSON.stringify([occurrence.afterHour, occurrence.state]), { hour: occurrence.afterHour, state: occurrence.state });
   }
-  return { countries: [...countries.values()], states: [...namedStates.values()] };
+  for (const balance of balances) {
+    add(balance.side);
+    for (const counterpart of [...balance.from.values(), ...balance.to.values()]) add(counterpart.side);
+  }
+  return { countries: [...countries.values()], states: [...states.values()] };
 }
 
-function occurrenceRows(state: TransferOccurrence, options: TooltipOptions): TooltipRow[] {
-  const hour = state.dates.afterHour;
-  const giver = options.labelAt(state.fromCountry.hour)(state.fromCountry.tag);
-  const taker = options.labelAt(state.toCountry.hour)(state.toCountry.tag);
-  const date = state.derived === false ? formatDateTime(hour)
-    : state.derived ? `By ${formatDateTime(hour)}`
-      : `${formatDateTime(state.dates.beforeHour)} – ${formatDateTime(hour)}`;
-  return [
-    { label: options.stateNameAt(hour, state.state), value: date, divider: true, strong: true },
-    { label: 'Giver', value: giver.name, countryFlag: giver, indent: true },
-    { label: 'Taker', value: taker.name, countryFlag: taker, indent: true },
-    { label: 'Victory points', value: state.victoryPointsPending || state.victoryPoints == null ? 'Not available at this time'
-      : usNumber.format(BigInt(state.victoryPoints)), indent: true },
+const states = (count: number) => `${usNumber.format(count)} ${count === 1 ? 'state' : 'states'}`;
+const withVictoryPoints = (count: number, victoryPoints: bigint | null) =>
+  victoryPoints == null ? states(count) : `${states(count)} · ${usNumber.format(victoryPoints)} VP`;
+function counterparts(list: ReadonlyMap<string, Counterpart>, labels: TransferLabels): TooltipRow[] {
+  return [...list.values()].sort((a, b) => b.count - a.count || labels.country(a.side).name.localeCompare(labels.country(b.side).name))
+    .map(({ side, count }) => ({ label: labels.country(side).name, countryFlag: labels.country(side), value: usNumber.format(count), indent: true }));
+}
+
+/** Who a country gained from and lost to, one line per counterpart. */
+export function countryTooltip(balance: CountryBalance, labels: TransferLabels): TooltipContent {
+  const label = labels.country(balance.side);
+  const rows: TooltipRow[] = [];
+  if (balance.gained) {
+    rows.push({ label: 'Gained', value: withVictoryPoints(balance.gained, balance.gainedVictoryPoints), strong: true }, ...counterparts(balance.from, labels));
+    if (balance.unattributed) rows.push({ label: 'Former owner not recorded', value: usNumber.format(balance.unattributed), indent: true, tone: 'muted' });
+  }
+  if (balance.lost) rows.push({ label: 'Lost', value: withVictoryPoints(balance.lost, balance.lostVictoryPoints), strong: true, divider: rows.length > 0 },
+    ...counterparts(balance.to, labels));
+  return { title: label.name, countryFlag: label, rows, scrollable: true, scrollId: `country:${balance.key}` };
+}
+
+/** One state's transfer: date, war, how and victory points. A comparison of two
+ * reads dates the change "by" its later read and says when it was still unchanged. */
+export function transferTooltip(occurrence: TransferOccurrence, deal: PeaceDeal | undefined, labels: TransferLabels): TooltipContent {
+  const giver = occurrence.from ? labels.country(occurrence.from).name : 'Former owner not recorded';
+  const taker = labels.country(occurrence.to).name;
+  const by = transferIsBy(occurrence);
+  const how = transferHow(occurrence, deal);
+  const subject = how.subjectOf == null ? null : `subject of ${labels.tag(how.subjectOf, occurrence.afterHour).name}`;
+  const manner = [how.action, how.released ? 'Released' : null].filter(Boolean).join(' · ');
+  const howText = manner ? subject ? `${manner}, ${subject}` : manner : subject ? subject[0].toUpperCase() + subject.slice(1) : null;
+  const victoryPoints = occurrence.victoryPoints != null ? usNumber.format(occurrence.victoryPoints)
+    : occurrence.victoryPointsPending ? 'Not read yet' : 'Not recorded';
+  const rows: TooltipRow[] = [
+    { label: 'Date', value: `${by ? 'By ' : ''}${formatDateTime(occurrence.afterHour)}` },
+    deal?.warName != null ? { label: 'War', value: deal.warName } : { label: 'War', value: 'Not recorded', tone: 'muted' },
+    ...(howText ? [{ label: 'How', value: howText }] : []),
+    { label: 'Victory points', value: victoryPoints, ...(occurrence.victoryPoints == null ? { tone: 'muted' as const } : {}) },
   ];
-}
-
-function latestOccurrence(parts: readonly TransferLink[]): TransferOccurrence | null {
-  return parts.reduce<TransferOccurrence | null>((found, part) => {
-    const state = part.states[part.states.length - 1];
-    return !found || state.dates.afterHour > found.dates.afterHour ? state : found;
-  }, null);
-}
-
-function transfersTooltip(title: string, links: readonly TransferLink[], options: TooltipOptions, scrollId: string, countryFlag?: TooltipContent['countryFlag']): TooltipContent {
-  // Each link already has a date index. Show its newest occurrence first without
-  // sorting the whole campaign or dropping any part of an other node.
-  const states = links.flatMap(link => [...link.states].reverse());
-  options.ask(transferTipRequest(states));
-  const total: TooltipRow[] = [
-    { label: 'Transfers', value: transferAmount(links, 'states'), strong: true },
-    { label: 'Victory points', value: transferAmount(links, 'victoryPoints') },
-  ];
-  const head = { title, countryFlag, note: options.note };
-  return { ...head, scrollable: true, scrollId, rows: [...total, ...states.flatMap(state => occurrenceRows(state, options))] };
-}
-
-export function transferRibbonTooltip(link: SummedLink<TransferLink>, source: SummedNode, target: SummedNode, options: TooltipOptions): TooltipContent {
-  const latest = latestOccurrence(link.parts);
-  const giver = source.tag != null && latest ? options.labelAt(latest.fromCountry.hour)(latest.fromCountry.tag) : null;
-  const taker = target.tag != null && latest ? options.labelAt(latest.toCountry.hour)(latest.toCountry.tag) : null;
-  return transfersTooltip(`${giver?.name ?? options.nodeName(source)} → ${taker?.name ?? options.nodeName(target)}`, link.parts, options, `link:${link.id}`, giver ?? undefined);
-}
-
-export function transferNodeTooltip(node: SummedNode, links: readonly SummedLink<TransferLink>[], options: TooltipOptions): TooltipContent {
-  const parts = links.flatMap(link => link.parts);
-  const latest = latestOccurrence(parts);
-  const country = latest && (node.side === 'source' ? latest.fromCountry : latest.toCountry);
-  const label = node.tag != null && country ? options.labelAt(country.hour)(country.tag) : null;
-  return transfersTooltip(label?.name ?? options.nodeName(node), parts, options, `node:${node.id}`, label ?? undefined);
+  return { title: labels.state(occurrence), subtitle: `${giver} → ${taker}`, rows,
+    description: by ? `It changed hands after ${formatDateTime(occurrence.beforeHour)}; the exact hour was not recorded.` : undefined };
 }

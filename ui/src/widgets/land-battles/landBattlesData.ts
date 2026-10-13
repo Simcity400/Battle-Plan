@@ -5,21 +5,25 @@ import type { BattleWindow, LandBattleHistory, LandBattlesReply, LandBattlesMani
 import type { BattleRow, BattleValue, BattleWarning } from '../battles/battleRows';
 import { battleMeasure, battleValueText, isBattleValue } from '../battles/battleRows.ts';
 
-/** A loss read as shown: each side's full values; equipment raw is the fixed5 total then variants. */
-export interface LandLossRead { hour: number; terminal: boolean; sides: [BattleValue[], BattleValue[]]; equipmentRaw?: [string[], string[]] }
-export type LandBattle = Omit<LandBattleHistory, 'losses'> & { losses: LandLossRead[] };
-export type LandBattlesWindow = Omit<LandBattlesReply, 'labels' | 'rows' | 'reasons' | 'warnings'> & { rows: LandBattle[]; warnings: BattleWarning[] };
-export type LandBattlesRanking = Omit<LandBattlesRankingReply, 'labels' | 'rows'> & { rows: LandBattle[] };
+/** A loss read as shown: each side's manpower and equipment total; the raw is that total's exact fixed5. */
+export interface LandLossRead { hour: number; terminal: boolean; sides: [BattleValue[], BattleValue[]]; equipmentRaw?: [string | null, string | null] }
+export interface LandPeak { value: number; hour: number }
+/** `priorSidePeaks` is null for replies from builds that did not send each side's peak. */
+export type LandBattle = Omit<LandBattleHistory, 'losses' | 'priorSidePeaks'> & { losses: LandLossRead[]; priorSidePeaks: [LandPeak | null, LandPeak | null] | null };
+export type LandBattlesWindow = Omit<LandBattlesReply, 'rows' | 'reasons' | 'warnings'> & { rows: LandBattle[]; warnings: BattleWarning[] };
+export type LandBattlesRanking = Omit<LandBattlesRankingReply, 'rows'> & { rows: LandBattle[] };
 
 export interface LandBattleRow extends BattleRow {
   provinceId: number;
   windowIndex: number;
   readHour: number;
-  peak: { value: number; hour: number };
+  peak: LandPeak;
   peakUnknown: boolean;
+  /** Each side's most divisions at once, attacker then defender; null when not sent or no roster was read. */
+  sidePeaks: [LandPeak | null, LandPeak | null] | null;
   length: BattleValue;
   casualties: BattleValue;
-  lossRead: { hour: number; terminal: boolean; equipmentRaw?: [string[], string[]] } | null;
+  lossRead: { hour: number; terminal: boolean; equipmentRaw?: [string | null, string | null] } | null;
 }
 const nullableText = (v: unknown) => v === null || typeof v === 'string';
 const uint = (v: unknown): v is number => int(v) && v >= 0 && v <= 4294967295;
@@ -43,25 +47,28 @@ function equipmentValue(label: string, raw: bigint): BattleValue {
 type Variants = [number, string][];
 const variants = (v: unknown, size: number): v is Variants => Array.isArray(v) && v.every(entry => Array.isArray(entry) && entry.length === 2
   && int(entry[0]) && entry[0] >= 0 && entry[0] < size && rawAmount(entry[1]));
-interface LossSide { values: BattleValue[]; raw: string[]; variants: Variants | null }
-/** A side lists every variant, or changes its previous read's amounts by position. */
-function lossSide(v: unknown, labels: readonly string[], previous: LossSide | null): LossSide | null {
+interface LossSide { values: BattleValue[]; raw: string | null; variants: Variants | null }
+/** A side's exact equipment total; replies from builds that listed each design
+ * (by `labels`) are reduced to that total, by position against the previous read. */
+function lossSide(v: unknown, labels: readonly string[] | null, previous: LossSide | null): LossSide | null {
   if (!object(v)) return null;
   const manpower: BattleValue = typeof v.manpower === 'number' ? { label: MANPOWER, value: v.manpower } : { label: MANPOWER, value: null, unknown: v.manpower as string };
-  if (v.unknown !== undefined) return { values: [manpower, { label: EQUIPMENT, value: null, unknown: v.unknown as string }], raw: [], variants: null };
+  if (v.unknown !== undefined) return { values: [manpower, { label: EQUIPMENT, value: null, unknown: v.unknown as string }], raw: null, variants: null };
+  if (v.equipment !== undefined) return rawAmount(v.equipment) && v.variants === undefined && v.changed === undefined
+    ? { values: [manpower, equipmentValue(EQUIPMENT, BigInt(v.equipment))], raw: v.equipment, variants: null } : null;
+  if (!labels) return null;
   let list: Variants;
   if (variants(v.variants, labels.length)) list = v.variants;
   else if (previous?.variants && variants(v.changed, previous.variants.length) && v.changed.every((entry, index, all) => index === 0 || entry[0] > all[index - 1][0])) {
     list = [...previous.variants];
     for (const [at, amount] of v.changed) list[at] = [list[at][0], amount];
   } else return null;
-  const amounts = list.map(([, amount]) => BigInt(amount));
-  const total = amounts.reduce((sum, amount) => sum + amount, 0n);
-  return { values: [manpower, equipmentValue(EQUIPMENT, total), ...list.map(([label], index) => equipmentValue(labels[label], amounts[index]))],
-    raw: [String(total), ...list.map(([, amount]) => amount)], variants: list };
+  if (new Set(list.map(([label]) => label)).size !== list.length) return null;
+  const total = list.reduce((sum, [, amount]) => sum + BigInt(amount), 0n);
+  return { values: [manpower, equipmentValue(EQUIPMENT, total)], raw: String(total), variants: list };
 }
 /** Rebuilds each read's full values; a side's changes apply to its previous read in the reply. */
-function lossReads(v: unknown, start: unknown, labels: readonly string[]): LandLossRead[] | null {
+function lossReads(v: unknown, start: unknown, labels: readonly string[] | null): LandLossRead[] | null {
   if (!Array.isArray(v) || !object(start) || !hour(start.hour)) return null;
   const reads: LandLossRead[] = [];
   let previous: (LossSide | null)[] = [null, null];
@@ -84,13 +91,14 @@ function lossReads(v: unknown, start: unknown, labels: readonly string[]): LandL
   }
   return reads.every(read => read.sides.every(side => side.every(isBattleValue) && new Set(side.map(value => value.label)).size === side.length)) ? reads : null;
 }
+const sidePeaks = (v: unknown) => Array.isArray(v) && v.length === 2 && v.every(side => side === null || peak(side));
 function battles(v: unknown, labels: unknown): LandBattle[] | null {
-  if (!histories(v) || !texts(labels)) return null;
+  if (!histories(v) || !(labels === undefined || texts(labels))) return null;
   const rows: LandBattle[] = [];
-  for (const row of v as LandBattleHistory[]) {
-    const losses = lossReads(row.losses, row.start, labels);
-    if (!losses) return null;
-    rows.push({ ...row, losses });
+  for (const row of v as (Omit<LandBattleHistory, 'priorSidePeaks'> & { priorSidePeaks?: unknown })[]) {
+    const losses = lossReads(row.losses, row.start, labels ?? null);
+    if (!losses || !(row.priorSidePeaks == null || sidePeaks(row.priorSidePeaks))) return null;
+    rows.push({ ...row, losses, priorSidePeaks: (row.priorSidePeaks as LandBattle['priorSidePeaks'] | undefined) ?? null });
   }
   return rows;
 }
@@ -115,7 +123,7 @@ export function validateLandBattlesManifest(v: unknown): LandBattlesManifestRepl
     throw new Error('The land battles manifest is malformed.');
   return v as unknown as LandBattlesManifestReply;
 }
-/** Decodes the window's interned labels, changed amounts and warning reasons into full reads and warnings. */
+/** Decodes the window's loss reads and interned warning reasons into full reads and warnings. */
 export function validateLandBattlesReply(v: unknown): LandBattlesWindow {
   const rows = object(v) ? battles(v.rows, v.labels) : null;
   const reasons = object(v) && texts(v.reasons) ? v.reasons : null;
@@ -136,6 +144,10 @@ export function validateLandBattlesRanking(v: unknown): LandBattlesRanking {
     warnings: v.warnings as BattleWarning[], contentWarnings: v.contentWarnings };
 }
 
+/** A result side supplies the participants unless the result does not record that side while
+ * the battle's last hourly read did; that read's countries stay, at their own date. */
+const resultSide = (result: NonNullable<LandBattle['result']>, run: LandBattle['runs'][number], index: number) =>
+  !result.countriesUnknown[index] || run.countriesUnknown[index];
 /** Merge in recording order, independent of network completion order. */
 export function landBattleRows(windows: ReadonlyMap<number, LandBattlesWindow>, at: number,
   matches: (tag: string, hour: number) => boolean, all: boolean, from: number | null = null): LandBattleRow[] {
@@ -153,8 +165,11 @@ export function landBattleRows(windows: ReadonlyMap<number, LandBattlesWindow>, 
     if (!run) continue;
     const read = Math.min(at, run.lastHour);
     const result = h.result && h.result.hour <= at ? h.result : null;
-    const countries = (result?.countries ?? run.countries).map(tags => tags.map(tag => ({ tag, hour: result?.hour ?? read })));
-    const countriesUnknown = result?.countriesUnknown ?? run.countriesUnknown;
+    const participants = [0, 1].map(index => result && resultSide(result, run, index)
+      ? { tags: result.countries[index], hour: result.hour, unknown: result.countriesUnknown[index] }
+      : { tags: run.countries[index], hour: read, unknown: run.countriesUnknown[index] });
+    const countries = participants.map(side => side.tags.map(tag => ({ tag, hour: side.hour })));
+    const countriesUnknown = participants.map(side => side.unknown);
     if (!all && !countriesUnknown.some(Boolean) && !countries.some(side => side.some(country => matches(country.tag, country.hour)))) continue;
     let end: BattleRow['end'] = h.end && ('hour' in h.end ? h.end.hour <= at : h.endUnknownHour !== null && h.endUnknownHour <= at) ? h.end : null;
     const endedAt = h.end && 'hour' in h.end ? h.end.hour : h.endUnknownHour;
@@ -162,11 +177,16 @@ export function landBattleRows(windows: ReadonlyMap<number, LandBattlesWindow>, 
     if (end === null && read < at) end = { unknown: 'Ending not recorded' };
     let peak = h.priorPeak ?? { value: 0, hour: h.start.hour };
     let peakUnknown = h.priorPeak === null;
+    const sides: [LandPeak | null, LandPeak | null] | null = h.priorSidePeaks && [h.priorSidePeaks[0], h.priorSidePeaks[1]];
     for (const run of runs) {
       if (run.rosterUnknown) continue;
       peakUnknown = false;
       const value = run.counts[0] + run.counts[1];
       if (value > peak.value || value === peak.value && run.firstHour < peak.hour) peak = { value, hour: run.firstHour };
+      if (sides) for (const side of [0, 1]) {
+        const best = sides[side];
+        if (!best || run.counts[side] > best.value) sides[side] = { value: run.counts[side], hour: run.firstHour };
+      }
     }
     const duration = result?.duration ?? run.duration + read - run.firstHour;
     let loss: LandLossRead | undefined;
@@ -174,8 +194,10 @@ export function landBattleRows(windows: ReadonlyMap<number, LandBattlesWindow>, 
       if (h.losses[index].hour <= at) { loss = h.losses[index]; break; }
     }
     const row: LandBattleRow = { id: h.id, provinceId: h.provinceId, windowIndex: index, readHour: read, start: h.start, end, place: { name: null, hour: h.start.hour }, peak, peakUnknown,
+      sidePeaks: sides,
       lossRead: loss ? { hour: loss.hour, terminal: loss.terminal, equipmentRaw: loss.equipmentRaw } : null,
-      length: { label: 'Length', value: Math.max((result?.hour ?? read) - h.start.hour, duration - h.counterBase, 0), atLeast: true },
+      // Only a battle under way when its recorded stretch began has a length that is a minimum.
+      length: { label: 'Length', value: Math.max((result?.hour ?? read) - h.start.hour, duration - h.counterBase, 0), atLeast: h.start.bound === 'by' },
       casualties: { label: 'Casualties', value: null, unknown: 'Not in this recording' },
       sides: ['Attackers', 'Defenders'].map((label, index) => ({ label, countries: countries[index],
         ...(countriesUnknown[index] ? { countriesUnknown: 'Countries not recorded' } : {}),
@@ -203,10 +225,10 @@ export function landDivisionText(value: BattleValue, compact: boolean): string {
   return compact ? text : `${text} ${value.value === 1 ? 'division' : 'divisions'}`;
 }
 export const landCasualtiesMissing = (rows: readonly LandBattleRow[]) => rows.length > 0 && rows.every(row => row.casualties.value === null);
+/** Equipment shows whole numbers, as the game counts equipment, from the read's exact fixed5 total. */
 export function landLossText(value: BattleValue, row: LandBattleRow, side: number, tooltip: boolean): string {
-  const index = row.sides[side].losses.findIndex(loss => loss.label === value.label) - 1;
-  const raw = index >= 0 ? row.lossRead?.equipmentRaw?.[side]?.[index] : undefined;
-  return raw === undefined ? landCasualtyText(value, row, tooltip) : datedLossText(formatFixed(raw, 5, 5), row, tooltip);
+  const raw = value.label === EQUIPMENT ? row.lossRead?.equipmentRaw?.[side] : null;
+  return raw == null ? landCasualtyText(value, row, tooltip) : datedLossText(formatFixed(raw, 5, 0), row, tooltip);
 }
 export function casualtyRankingNote(data: LandBattlesRanking | undefined): string | null {
   if (data?.effectiveMeasure === 'Peak size') return 'Casualties unavailable; ranked by peak size.';

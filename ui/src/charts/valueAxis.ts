@@ -139,6 +139,21 @@ export function formatAmount(raw: string | bigint, scale: number, digits = 2): s
   return text.includes('.') ? text.replace(/\.?0+$/, '') : text;
 }
 
+/** A rate, such as units or IC a day, from a fixed-point integer: whole numbers
+ * from 10, and two significant figures below (1.7, 0.78, 0.088), so a nonzero rate
+ * never reads as 0 and a large one carries no false decimals. Exact: rounds the
+ * recorded integer half away from zero, never past its recorded scale. */
+export function formatRate(raw: string | bigint, scale: number): string {
+  const value = typeof raw === 'bigint' ? raw : BigInt(raw);
+  const magnitude = value < 0n ? -value : value;
+  const unit = 10n ** BigInt(scale);
+  if (magnitude === 0n || magnitude >= 10n * unit) return formatAmount(value, scale, 0);
+  // One digit after the point below 10, and one more for each decade further down.
+  let digits = 1;
+  for (let bound = unit; magnitude < bound && digits < scale; bound /= 10n) digits++;
+  return formatAmount(value, scale, digits);
+}
+
 /** An amount with its sign, for surpluses, deficits and changes: `+` when above
  * zero at the digits shown, `−` below. */
 export function formatSigned(raw: string | bigint, scale: number, digits = 2): string {

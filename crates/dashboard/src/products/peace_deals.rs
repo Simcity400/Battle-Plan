@@ -7,6 +7,9 @@
 //! group an outcome, not a proven conference identity. The fallback cannot recover
 //! negotiators or action order;
 //! successful finalizer observations provide them in `exact`.
+//!
+//! A state handed to a country the same settlement released joins the transfer
+//! graphs marked `released`, from its own former owner at the before read.
 
 use super::{
     LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
@@ -109,7 +112,22 @@ pub enum PeaceChange {
         /// Owners of the transferred states at the before read.
         from: Vec<String>,
         states: Vec<u32>,
+        /// The released country's native holder at the after read.
+        to_country: PeaceTransferCountry,
+        /// Each state with its own former owner, in state order.
+        transfers: Vec<PeaceReleasedState>,
     },
+}
+
+/// A state handed to the released country, with the holder that owned it before.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PeaceReleasedState {
+    pub state: u32,
+    pub from_country: PeaceTransferCountry,
+    /// Exact signed sum, null if Provinces cannot supply the state.
+    pub victory_points: Option<String>,
+    pub victory_points_read_hour: Option<i32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -185,6 +203,8 @@ pub struct PeaceTransferredState {
     pub dates: PeaceDates,
     pub victory_points: Option<String>,
     pub victory_points_read_hour: Option<i32>,
+    /// The same settlement released the taker; the state came from its former owner.
+    pub released: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -289,6 +309,7 @@ impl Product for PeaceDeals {
             PeaceTransferSide::decl(),
             PeaceTransferLink::decl(),
             PeaceTransferredState::decl(),
+            PeaceReleasedState::decl(),
             PeaceUnobserved::decl(),
             PeaceCaptured::decl(),
             PeaceCapturedAction::decl(),
@@ -1328,6 +1349,9 @@ fn components(items: Vec<PeaceItem>) -> Vec<Vec<PeaceItem>> {
     groups
 }
 
+/// A released country's losers, and each state it received with its former owner.
+type ReleaseSources = (HashSet<String>, Vec<(u32, String)>);
+
 fn populate(
     deal: &mut PeaceDeal,
     before: &Snapshot,
@@ -1366,7 +1390,8 @@ fn populate(
     };
     let mut releases = HashSet::new();
     if let (Some(old), Some(new)) = (&before.exists, &after.exists) {
-        let mut released: HashMap<String, (HashSet<String>, Vec<u32>)> = HashMap::new();
+        // Each state keeps its own former owner: one release can draw on several losers.
+        let mut released: HashMap<String, ReleaseSources> = HashMap::new();
         for from in &losers {
             for &state in before
                 .states_by_owner
@@ -1392,24 +1417,47 @@ fn populate(
                 }
                 let entry = released.entry(country.to_string()).or_default();
                 entry.0.insert(from.clone());
-                entry.1.push(state);
+                entry.1.push((state, from.clone()));
             }
         }
-        for (country, (from, states)) in released {
+        for (country, (from, mut owned)) in released {
             releases.insert(country.clone());
             let mut from: Vec<_> = from.into_iter().collect();
             from.sort();
-            let mut states = states;
-            states.sort_unstable();
+            owned.sort_unstable();
+            // Both holders were checked above: the same native identity at both reads.
+            let holder = |snapshot: &Snapshot, tag: &str| {
+                let (slot, country_id) = snapshot.countries.identities[tag];
+                PeaceTransferCountry {
+                    slot,
+                    country_id,
+                    tag: tag.to_owned(),
+                    hour: snapshot.hour,
+                }
+            };
+            let transfers = owned
+                .iter()
+                .map(|(state, owner)| {
+                    let vp = after.vps.as_ref().and_then(|vps| vps.get(state)).copied();
+                    PeaceReleasedState {
+                        state: *state,
+                        from_country: holder(before, owner.as_str()),
+                        victory_points: vp.map(|vp| vp.to_string()),
+                        victory_points_read_hour: vp.map(|_| after.hour),
+                    }
+                })
+                .collect();
             items.push(PeaceItem {
                 derived: true,
                 dates: dates.clone(),
                 winner: None,
                 action: neutral(PeaceActionKind::CountryReleased),
                 change: PeaceChange::CountryReleased {
+                    to_country: holder(after, country.as_str()),
+                    states: owned.iter().map(|(state, _)| *state).collect(),
                     country,
                     from,
-                    states,
+                    transfers,
                 },
             });
         }
@@ -1520,28 +1568,55 @@ struct GraphBuilder {
 }
 
 impl GraphBuilder {
+    /// Plain transfers, and each state a released country received.
     fn add(&mut self, item: &PeaceItem) {
-        if let PeaceChange::StateTransfer {
-            state,
-            from_country,
-            to_country,
-            victory_points,
-            victory_points_read_hour,
-            ..
-        } = &item.change
-        {
-            self.links
-                .entry((from_country.identity(), to_country.identity()))
-                .or_default()
-                .push(PeaceTransferredState {
-                    state: *state,
-                    from_country: from_country.clone(),
-                    to_country: to_country.clone(),
-                    dates: item.dates.clone(),
-                    victory_points: victory_points.clone(),
-                    victory_points_read_hour: *victory_points_read_hour,
-                });
+        self.add_with(item, false, &|_| true);
+    }
+    /// `released` marks a plain transfer whose taker the same settlement released;
+    /// `keep` selects which of a release's states this graph still draws.
+    fn add_with(&mut self, item: &PeaceItem, released: bool, keep: &dyn Fn(u32) -> bool) {
+        match &item.change {
+            PeaceChange::StateTransfer {
+                state,
+                from_country,
+                to_country,
+                victory_points,
+                victory_points_read_hour,
+                ..
+            } => self.push(PeaceTransferredState {
+                state: *state,
+                from_country: from_country.clone(),
+                to_country: to_country.clone(),
+                dates: item.dates.clone(),
+                victory_points: victory_points.clone(),
+                victory_points_read_hour: *victory_points_read_hour,
+                released,
+            }),
+            PeaceChange::CountryReleased {
+                to_country,
+                transfers,
+                ..
+            } => {
+                for transfer in transfers.iter().filter(|transfer| keep(transfer.state)) {
+                    self.push(PeaceTransferredState {
+                        state: transfer.state,
+                        from_country: transfer.from_country.clone(),
+                        to_country: to_country.clone(),
+                        dates: item.dates.clone(),
+                        victory_points: transfer.victory_points.clone(),
+                        victory_points_read_hour: transfer.victory_points_read_hour,
+                        released: true,
+                    });
+                }
+            }
+            PeaceChange::NewSubject { .. } | PeaceChange::GovernmentChange { .. } => {}
         }
+    }
+    fn push(&mut self, state: PeaceTransferredState) {
+        self.links
+            .entry((state.from_country.identity(), state.to_country.identity()))
+            .or_default()
+            .push(state);
     }
     fn finish(self) -> PeaceTransferGraph {
         let mut graph = PeaceTransferGraph::default();

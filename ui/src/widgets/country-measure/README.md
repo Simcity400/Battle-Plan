@@ -10,13 +10,14 @@ Shared Political power/Command power balances and income/spending drills; this f
 
 ## Settings
 
-[options.ts](options.ts) owns shared country, time, ticks, fill, end-label, axis and drill choices. Each registered kind supplies a MeasureConfig and its definition.
+[options.ts](options.ts) owns shared country, time, ticks, fill, end-label, decimals, axis and drill choices. Each registered kind supplies a MeasureConfig and its definition.
 
 ## Notable behaviour
 
-- Exact signed daily operands, evaluated adjustments and realized balance changes keep independent supplying dates. Later reads never backfill a tooltip; detail failure leaves balances usable.
-- Captured payments can be hidden by income or clamping. Incomplete capture falls back to explicitly net drops. CP reservations and daily deficits are outside payment ticks.
-- Income sources not captured remain Other; native wrapping appears as Adjustment. Missing totals have no percentages. Each drill shows one total with a concise status and missing values in their part rows; adjustment action details and CP reservations remain below it. Gaps and holder changes break accounting/history.
+- Balances, maxima, payments and end labels are whole numbers unless Decimals asks for more; daily rates keep the two decimals the game shows. Only the writing rounds.
+- A day's tooltip: the balance, the CP maximum, the daily change (PP: gain and daily costs beneath it; CP: daily gain or deficit), gain lost at the cap, each one-off payment by name or kind, and, for CP, what moved into or out of reserve. No hour stamps, zero rows or repeated changes. The reserve counter can sit below zero, so only its changes are shown. Beyond four countries it lists balances only.
+- Markers show one-off payments, including ones hidden by income or clamping; costs charged every day and daily deficits get none. Incomplete capture falls back to an explicit “Balance fell”. Exact signed operands keep independent supplying dates; later reads never backfill a tooltip, and detail failure leaves balances usable.
+- The drill's income tab shows the daily gain, daily costs and native wrapping (Adjustment) with one total and no shares; its spending tab lists the day's one-off payments and one row per daily-cost category. Below them it names gain lost at the cap and CP reserve moves. Missing totals have no percentages; gaps and holder changes break accounting/history.
 - Drawn curves, including visible maximum, supply picks. Overlap/keyboard choices hold the date. Scope/numeric changes invalidate gestures; label refresh retains ownership.
 - Picking holds; Follow uses the aligned clock from any time mode. Pins save native slot/ID and branch-relative origin, following only that holder's aliases. Headers use the body date; invalid holders refuse the body and older missing-holder pins stay neutral.
 - Names and flags are dated; only mounted legend rows and the displayed drill country request artwork.

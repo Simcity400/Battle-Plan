@@ -1,7 +1,7 @@
 import type { ProductionSpendingReply, ProductionSpendingRun, ProductionSpendingUnknown } from '../../generated/dashboard';
 import type { SunburstItem, SunburstTotal } from '../../charts/sunburst/layout';
 import { runAt, sameStretch } from '../../charts/series.ts';
-import { formatAmount } from '../../charts/valueAxis.ts';
+import { formatIc } from '../../dashboard/icDecimals.ts';
 import { DOMAINS, UNRESOLVED_ARM, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
 import { readAt } from '../../dashboard/reads.ts';
 
@@ -177,6 +177,7 @@ export function spendingTotal(reply: ProductionSpendingReply, window: SpendingWi
   };
 }
 
-/** Every recorded fixed5 digit is retained, including values beyond 2^53. */
-export const formatAppliedIc = (value: number, exact: bigint | null, decimals = 5) =>
-  formatAmount(exact ?? BigInt(Math.round(value)), decimals, decimals);
+/** Applied IC (`decimals` recorded places) written to `digits` places, from the
+ * exact amount, including values beyond 2^53. */
+export const formatAppliedIc = (value: number, exact: bigint | null, decimals: number, digits: number) =>
+  formatIc(value, exact, decimals, digits);

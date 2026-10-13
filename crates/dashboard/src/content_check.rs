@@ -683,6 +683,17 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         | land_battles::LandBattlesRanking::KEY => {
             Ok("No content dependency: battle census, observation bounds, participant counts and rankings use recorded Campaign, LandCombats, LandCombatSides and Countries/CountryLinks rows. Place names are resolved by the separate place-names product; casualties and winners remain unavailable without their recorded operands.".into())
         }
+        land_battles::LandBattleCourses::KEY => {
+            Ok("Equipment design names resolve through the shared recorded variant catalogue only when a battle's loss reads name the design; runs, losses and verdicts require recorded LandCombats, LandCombatSides, LandCombatProgress and LandCombatResults rows.".into())
+        }
+        land_battles::LandBattleTerrains::KEY => {
+            let catalogue = content.catalogue()?;
+            for warning in land_battles::check_terrain_content(catalogue).map_err(|why| why.to_string())? {
+                findings.push(Finding::new(Kind::Warning, "land battle terrain", warning));
+            }
+            take(catalogue, "land battle terrain titles", findings);
+            Ok("Every province terrain the content map definitions use checked against the terrain database and its localised category title, as the land combat window titles it.".into())
+        }
         naval_battles::NavalBattles::KEY
         | naval_battles::NavalBattlesManifest::KEY
         | naval_battles::NavalBattlesRanking::KEY => {

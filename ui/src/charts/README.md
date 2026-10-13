@@ -17,7 +17,7 @@ Shared Canvas charts and windowed HTML logs/tables. Widgets supply exact values,
 | Drill | [DrillHost](drill/DrillHost.tsx), [DrillParts](drill/DrillParts.tsx), [drillState.ts](drill/drillState.ts): inline/pop-out breakdowns, Follow, picked moments and Pin as widget. |
 | Table | [table/](table/README.md): typed columns, exact persisted sorting, cell bars, ranks and windowing. |
 | Share | [StackedShareChart](StackedShareChart.tsx)/[share.ts](share.ts): held proportions and percent axes; [sunburst/share.ts](sunburst/share.ts) adapts flat world shares. |
-| Butterfly | [ButterflyChart](butterfly/ButterflyChart.tsx): paired bars on one scale, exact end values and ratios. |
+| Butterfly | [ButterflyChart](butterfly/ButterflyChart.tsx): paired bars either side of one axis on one scale, exact end values and ratios, drawn as the race draws its rows (name column, bar shape, fonts, gridlines, value axis and row sizing for the top N). |
 | Meter | [ProgressMeter](meter/ProgressMeter.tsx): known/unknown progress, live/done/idle and opt-in sweep. |
 
 ## Shared machinery
@@ -52,7 +52,7 @@ Sunburst distinguishes unmeasured parts from unknown totals using `unknownValue`
 
 Tooltips retain dated metadata/full `spoken` text. Tooltips carry no read-cadence notes ("Read …; … is read once a day"); notes explain something specific. `useHoverLabels` shows each country's sampled list look (same stretch and identity segment) while the hovered hour's own read is pending. `countryTooltipContent` shares Chord/Flow/Timeline headers; dated metadata overrides node looks. `fitTooltip` retains totals and says "N more" for omitted rows; Canvas fits before decoding flags. Scrollable lists retain all rows with stable `scrollId`, decoding only the viewport. `scrollTooltip` handles wheel/Page keys and same-owner scroll; spoken text needs no hidden artwork.
 
-Logs separate identity/supplying `revealedHour` from displayed dates. Measured cards use layout pixels and `anchorRows` for stable scrolling. Hold only wanted pages/keyboard destinations; backward seeks remove future cards immediately, and late pages cannot reclaim dismissed tooltips.
+Logs separate identity/supplying `revealedHour` from displayed dates. Measured cards use layout pixels and `anchorRows` for stable scrolling. A log's viewport never takes its size from what it draws: rows clip rather than scroll sideways, and card logs keep the scrollbar's gutter because card heights follow the width. Hold only wanted pages/keyboard destinations; backward seeks remove future cards immediately, and late pages cannot reclaim dismissed tooltips.
 
 Log row windows use the scroller's outer layout height, keeping overscan membership stable when a row adds a horizontal scrollbar. Scroll bounds and keyboard movement use the usable client height; one retained viewport observer reports size changes without depending on the height it publishes.
 

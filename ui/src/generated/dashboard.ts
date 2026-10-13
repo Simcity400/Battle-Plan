@@ -332,8 +332,8 @@ export type LandBattleRun = { firstHour: number, lastHour: number, counts: [numb
  */
 duration: number, };
 export type LandManpower = number | string;
-export type LandLossSide = { manpower: LandManpower, variants: Array<[number, string]>, } | { manpower: LandManpower, changed: Array<[number, string]>, } | { manpower: LandManpower, unknown: string, };
-export type LandLossSides = [LandLossSide, LandLossSide] | string;
+export type LandLossTotal = { manpower: LandManpower, equipment: string, } | { manpower: LandManpower, unknown: string, };
+export type LandLossTotals = [LandLossTotal, LandLossTotal] | string;
 export type LandBattleLossRead = { hour: number,
 /**
  * True only for the post-flush FinalizeCombat read, never inferred from absence.
@@ -342,14 +342,14 @@ terminal: boolean,
 /**
  * Attacker then defender, or why neither side's counters were read.
  */
-sides: LandLossSides, };
+sides: LandLossTotals, };
 export type LandBattleResultRead = { hour: number, duration: number, winner: BattleWinner, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean], };
-export type LandBattleHistory = { id: string, provinceId: number, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number, priorPeak: LandBattlePeak | null, runs: Array<LandBattleRun>, losses: Array<LandBattleLossRead>, result: LandBattleResultRead | null, };
-export type LandBattlesReply = { window: number, interval: BattleWindow,
+export type LandBattleHistory = { id: string, provinceId: number, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number, priorPeak: LandBattlePeak | null,
 /**
- * Equipment loss labels, which the rows' reads refer to by index.
+ * Each side's most divisions at once before the reply's runs, attacker then defender.
  */
-labels: Array<string>, rows: Array<LandBattleHistory>, observed: Array<[number, number]>,
+priorSidePeaks: [LandBattlePeak | null, LandBattlePeak | null], runs: Array<LandBattleRun>, losses: Array<LandBattleLossRead>, result: LandBattleResultRead | null, };
+export type LandBattlesReply = { window: number, interval: BattleWindow, rows: Array<LandBattleHistory>, observed: Array<[number, number]>,
 /**
  * Each warning reason once, for `warnings` to refer to by index.
  */
@@ -366,11 +366,41 @@ export type LandBattlesManifestReply = {
 windows: Array<BattleWindow>, available: boolean, unavailable: string | null, contentWarnings: Array<string>, };
 export type LandBattleCountryFilter = { tags: Array<string> | null, membership: Array<MembershipRun> | null, unobserved: Array<HourSpan>, };
 export type LandBattlesRankingParams = { branchId: string, firstHour: number, lastHour: number, topN: number, measure: string, countries: LandBattleCountryFilter, };
-export type LandBattlesRankingReply = {
+export type LandBattlesRankingReply = { rows: Array<LandBattleHistory>, censusHour: number | null, effectiveMeasure: string, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
+export type LandBattleCourseParams = { branchId: string,
 /**
- * Equipment loss labels, which the rows' reads refer to by index.
+ * A battle id from this branch's census.
  */
-labels: Array<string>, rows: Array<LandBattleHistory>, censusHour: number | null, effectiveMeasure: string, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
+id: string, };
+export type LandLossSide = { manpower: LandManpower, variants: Array<[number, string]>, } | { manpower: LandManpower, changed: Array<[number, string]>, } | { manpower: LandManpower, unknown: string, };
+export type LandLossSides = [LandLossSide, LandLossSide] | string;
+export type LandBattleCourseRead = { hour: number,
+/**
+ * True only for the post-flush FinalizeCombat read, never inferred from absence.
+ */
+terminal: boolean,
+/**
+ * Attacker then defender, or why neither side's counters were read.
+ */
+sides: LandLossSides, };
+export type LandBattleCourse = { id: string, provinceId: number, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number, runs: Array<LandBattleRun>, losses: Array<LandBattleCourseRead>, result: LandBattleResultRead | null, };
+export type LandEquipmentDesign = {
+/**
+ * The design's name from the content stack; null when it cannot be named.
+ */
+name: string | null, variant: string, };
+export type LandBattleCourseReply = { battle: LandBattleCourse,
+/**
+ * Equipment designs, which the course's reads refer to by index.
+ */
+designs: Array<LandEquipmentDesign>, contentWarnings: Array<string>, };
+export type LandBattleTerrainParams = { provinces: Array<number>, };
+export type LandTerrainName = { provinceId: number,
+/**
+ * The terrain title the combat window shows; null when it cannot be resolved.
+ */
+name: string | null, missing: string | null, };
+export type LandBattleTerrainReply = { provinces: Array<LandTerrainName>, warnings: Array<string>, };
 export type PlaceNamesParams = { branchId: string,
 /**
  * Land's presentation ladder; other callers retain the native resolver.
@@ -1724,7 +1754,15 @@ victoryPoints: string | null, victoryPointsReadHour: number | null, } | { "kind"
 /**
  * Owners of the transferred states at the before read.
  */
-from: Array<string>, states: Array<number>, };
+from: Array<string>, states: Array<number>,
+/**
+ * The released country's native holder at the after read.
+ */
+toCountry: PeaceTransferCountry,
+/**
+ * Each state with its own former owner, in state order.
+ */
+transfers: Array<PeaceReleasedState>, };
 export type PeaceGovernment = { rulingParty: number | null, partyToken: string | null, leaderIdeology: string | null, };
 export type PeaceActionKind = "stateTransfer" | "newSubject" | "governmentChange" | "countryReleased";
 export type PeaceActionLabel = { kind: PeaceActionKind, key: string | null, name: string | null, };
@@ -1745,7 +1783,16 @@ victoryPoints: string | null,
  * Dated occurrences, kept on both the card and the campaign graph.
  */
 states: Array<PeaceTransferredState>, };
-export type PeaceTransferredState = { state: number, fromCountry: PeaceTransferCountry, toCountry: PeaceTransferCountry, dates: PeaceDates, victoryPoints: string | null, victoryPointsReadHour: number | null, };
+export type PeaceTransferredState = { state: number, fromCountry: PeaceTransferCountry, toCountry: PeaceTransferCountry, dates: PeaceDates, victoryPoints: string | null, victoryPointsReadHour: number | null,
+/**
+ * The same settlement released the taker; the state came from its former owner.
+ */
+released: boolean, };
+export type PeaceReleasedState = { state: number, fromCountry: PeaceTransferCountry,
+/**
+ * Exact signed sum, null if Provinces cannot supply the state.
+ */
+victoryPoints: string | null, victoryPointsReadHour: number | null, };
 export type PeaceUnobserved = { settlements: Array<HourSpan>, conferences: Array<HourSpan>, ownership: Array<HourSpan>, wars: Array<HourSpan>, subjects: Array<HourSpan>, governments: Array<HourSpan>, existence: Array<HourSpan>, victoryPoints: Array<HourSpan>, };
 export type PeaceCaptured = { hour: number, publicationHour: number,
 /**
@@ -2096,13 +2143,6 @@ priority: number,
  * Units still ordered; −1 for no limit.
  */
 amount: number, };
-export type ProductionModifierPart = { id: string, label: string | null, raw: string, unknown: string | null, };
-export type ProductionModifierGroup = { id: string, label: string,
-/**
- * Exact sum of the displayed signed parts; null when an operand failed.
- */
-totalRaw: string | null, decimals: number, unit: string, parts: Array<ProductionModifierPart>, note: string, };
-export type ProductionModifierRun = { firstHour: number, lastHour: number, groups: Array<ProductionModifierGroup>, warnings: Array<string>, };
 export type LineDetail = {
 /**
  * The line's key in `production-lines`.
@@ -2111,7 +2151,7 @@ key: string, runs: Array<LineRun>,
 /**
  * Its output at each read (the same reads as `runs`), where recorded.
  */
-output: Array<OutputRun>, modifiers: Array<ProductionModifierRun>, };
+output: Array<OutputRun>, };
 export type ProductionDetailParams = { branchId: string, tag: string, window: number, };
 export type ProductionLineDetailReply = { warnings: Array<string>, branchId: string, tag: string, decimals: number, window: number,
 /**
@@ -2122,6 +2162,13 @@ firstHour: number, lastHour: number,
  * Every line with a read in the window, in the order first seen.
  */
 lines: Array<LineDetail>, };
+export type ProductionModifierPart = { id: string, label: string | null, raw: string, unknown: string | null, };
+export type ProductionModifierGroup = { id: string, label: string,
+/**
+ * Exact sum of the displayed signed parts; null when an operand failed.
+ */
+totalRaw: string | null, decimals: number, unit: string, parts: Array<ProductionModifierPart>, note: string, };
+export type ProductionModifierRun = { firstHour: number, lastHour: number, groups: Array<ProductionModifierGroup>, warnings: Array<string>, };
 export type ProductionModifierChoice = { id: string, label: string, };
 export type ProductionBreakdownParams = { branchId: string, tag: string, key: string, group: string,
 /**
@@ -2150,10 +2197,21 @@ archetype: string | null, names: Array<StockVariantName>,
  */
 stock: Array<AmountRun>,
 /**
- * Units a week from its military production lines, fixed5; no run inside a
- * known span means none.
+ * Units a day from its military production lines by the game's per-day
+ * formula, each line truncated on its own and summed, fixed5; no run inside
+ * a known span means none.
  */
-weekly: Array<AmountRun>, };
+daily: Array<AmountRun>,
+/**
+ * The factory IC a day those lines apply (each line's speed), fixed5.
+ */
+dailyIc: Array<AmountRun>,
+/**
+ * The lowest and highest cost per unit among those lines, fixed5, after each
+ * line's organisation bonus: equal when they share one cost, unknown where a
+ * line has no positive cost, none without a line.
+ */
+unitCostLow: Array<AmountRun>, unitCostHigh: Array<AmountRun>, };
 export type StockType = { key: string,
 /**
  * The localised key; null when content does not name it.
@@ -2201,7 +2259,7 @@ stockHours: Array<HourSpan>,
  */
 lineHours: Array<HourSpan>,
 /**
- * Hours the production lines were read, ascending, for dating a weekly rate
+ * Hours the production lines were read, ascending, for dating a daily rate
  * apart from the stockpile read.
  */
 lineReads: Array<number>,
@@ -2239,7 +2297,11 @@ export type StockpileArt = {
  */
 key: string, variant: string, name: string | null, icon: string | null, reason: string | null, };
 export type StockpileArtworkReply = { branchId: string, tag: string, hour: number, entries: Array<StockpileArt>, warnings: Array<string>, };
-export type ProducedParams = { branchId: string, tags: Array<string>, top: number | null, measure: ProducedMeasure, grouping: ProducedGrouping,
+export type ProducedParams = { branchId: string, tags: Array<string>, top: number | null, measure: ProducedMeasure,
+/**
+ * What the values count and the top N rank by; units when left out.
+ */
+count: ProducedCount, grouping: ProducedGrouping,
 /**
  * The type keys counted (`types` keys); none counts every type.
  */
@@ -2248,7 +2310,8 @@ included: Array<string>,
  * Count ships refit lines deliver.
  */
 refits: boolean, };
-export type ProducedMeasure = "total" | "week" | "month";
+export type ProducedMeasure = "total" | "day" | "week" | "month";
+export type ProducedCount = "units" | "ic";
 export type ProducedGrouping = "type" | "variant" | "domain";
 export type ProducedType = {
 /**
@@ -2318,7 +2381,11 @@ total: ProducedCoded | null,
  * its samples are cut to them. Null for chosen countries.
  */
 membership: Array<HourSpan> | null, };
-export type EquipmentProducedReply = { branchId: string, measure: ProducedMeasure, grouping: ProducedGrouping,
+export type EquipmentProducedReply = { branchId: string, measure: ProducedMeasure, count: ProducedCount,
+/**
+ * Fixed-point decimals of every value: 0 for units, 5 for IC.
+ */
+decimals: number, grouping: ProducedGrouping,
 /**
  * Every type produced in the branch, in the equipment database's order,
  * unresolved ones last.
@@ -3488,6 +3555,6 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "research", "technology-artwork", "country-flags", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "place-names", "country-styles", "country-groups", "wars", "country-stability", "stability-parts", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "event-feed", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "operative-placements", "operatives-roster", "agency-comparison"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "research", "technology-artwork", "country-flags", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "place-names", "country-styles", "country-groups", "wars", "country-stability", "stability-parts", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "event-feed", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "operative-placements", "operatives-roster", "agency-comparison"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["focus-artwork", "technology-artwork", "country-flags", "unit-leader-portraits", "place-names", "country-styles", "air-ace-portraits", "stockpile-artwork"] as const;
+export const INTERACTIVE_PRODUCTS = ["focus-artwork", "technology-artwork", "country-flags", "unit-leader-portraits", "land-battle-terrain", "place-names", "country-styles", "air-ace-portraits", "stockpile-artwork"] as const;

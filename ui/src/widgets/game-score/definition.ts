@@ -1,6 +1,6 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
+import { TABLE_OPTIONS, tableSortOf, tableSortOptions } from '../../charts/table/options.ts';
 import { DATE_OVERLAY_OPTION } from '../../charts/race/options.ts';
 
 export const DEFAULT_SORT = { column: 'land', direction: 'descending' } as const;
@@ -9,9 +9,6 @@ export const OPTIONS: readonly OptionField[] = [
     choices: [{ value: 'table', label: 'Table' }, { value: 'race', label: 'Race' }] },
   { key: 'factions', section: 'options', label: 'Sort by faction', kind: 'toggle', default: false,
     hint: 'Group countries by faction.',
-    visibleWhen: options => options.view === 'table' },
-  { key: 'multiplierPrecision', section: 'options', label: 'Multiplier decimal places', kind: 'choice', default: 'exact',
-    choices: [{ value: 'exact', label: 'Exact' }, ...['0', '1', '2', '3', '4', '5'].map(value => ({ value, label: value }))],
     visibleWhen: options => options.view === 'table' },
   { key: 'topMeasure', section: 'countries', label: 'Top N by', kind: 'content-choice', default: '', automatic: 'Land',
     hint: 'Selects the table’s top countries.',
@@ -23,9 +20,13 @@ export const OPTIONS: readonly OptionField[] = [
   DATE_OVERLAY_OPTION,
 ];
 export const definition = {
-  kind: 'game-score', version: 1, title: 'Game score', icon: 'grid',
+  kind: 'game-score', version: 2, title: 'Game score', icon: 'grid',
   description: 'The game’s current end-screen scores for every country, as a table or a race.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, all: true },
   minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 12 }, options: OPTIONS,
+  // The global score multiplier was a column with its own precision option; a sort on it
+  // falls back to the default column.
+  migrate: (_from, { options: { multiplierPrecision: _precision, tableSort, ...options } = {}, ...widget }) => ({ ...widget,
+    options: tableSort === undefined || tableSortOf(tableSort, DEFAULT_SORT).column === 'multiplier' ? options : { ...options, tableSort } }),
 } as const satisfies WidgetMeta;

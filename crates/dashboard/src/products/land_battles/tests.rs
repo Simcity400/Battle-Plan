@@ -179,15 +179,147 @@ fn land_battles_loss_fields_remain_independent_and_equipment_stays_exact() {
     census.observe(&sample).unwrap();
     assert_eq!(census.episodes[0].casualties_at(100), Some(9.0));
     let reply = census.reply(&params(None), &windows(100, 100)).unwrap();
-    assert_eq!(reply.labels, [label(8)]);
-    let LandLossSides::Read([attacker, defender]) = &reply.rows[0].losses[0].sides else {
+    let LandLossTotals::Read([attacker, defender]) = &reply.rows[0].losses[0].sides else {
         panic!("recorded counters");
     };
     assert!(
-        matches!(attacker, LandLossSide::Unknown { manpower: LandManpower::Known(4), unknown } if unknown == "Not in this recording")
+        matches!(attacker, LandLossTotal::Unknown { manpower: LandManpower::Known(4), unknown } if unknown == "Not in this recording")
     );
     assert!(
+        matches!(defender, LandLossTotal::Known { manpower: LandManpower::Known(5), equipment } if equipment == "-9223372036854775807")
+    );
+    let id = census.episodes[0].id.clone();
+    let course = census.course(&id).unwrap();
+    assert_eq!(course.designs, [design(8)]);
+    let LandLossSides::Read([attacker, defender]) = &course.battle.losses[0].sides else {
+        panic!("recorded counters");
+    };
+    assert!(matches!(attacker, LandLossSide::Unknown { .. }));
+    assert!(
         matches!(defender, LandLossSide::Variants { manpower: LandManpower::Known(5), variants } if variants == &[(0, "-9223372036854775807".to_string())])
+    );
+}
+#[test]
+fn land_battles_census_rows_carry_exact_equipment_totals_without_designs() {
+    let mut sample = loss_frame(100, 4);
+    if let TableView::Complete(TableRows::LandCombatProgress(rows)) =
+        &mut *sample.tables[TableId::LandCombatProgress.index()]
+    {
+        // Two amounts whose sum leaves i64.
+        rows[0].defender_equipment_losses = vec![
+            LandEquipmentLoss {
+                variant: 8,
+                amount_raw: i64::MIN + 1,
+            },
+            LandEquipmentLoss {
+                variant: 9,
+                amount_raw: i64::MIN + 1,
+            },
+        ]
+        .into();
+    }
+    let mut census = Census::default();
+    census.observe(&sample).unwrap();
+    let reply = census.reply(&params(None), &windows(100, 100)).unwrap();
+    let LandLossTotals::Read([attacker, defender]) = &reply.rows[0].losses[0].sides else {
+        panic!("recorded counters");
+    };
+    assert!(matches!(attacker, LandLossTotal::Known { equipment, .. } if equipment == "-100000"));
+    assert!(
+        matches!(defender, LandLossTotal::Known { equipment, .. } if equipment == "-18446744073709551614")
+    );
+    let ranking = census
+        .ranked(
+            &ranking_params(100, 100, 1, "Casualties"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    for text in [
+        serde_json::to_string(&reply).unwrap(),
+        serde_json::to_string(&ranking).unwrap(),
+    ] {
+        for field in ["labels", "variants", "changed", "designs"] {
+            assert!(!text.contains(field), "{field} in {text}");
+        }
+    }
+}
+#[test]
+fn land_battles_course_names_designs_without_their_handles() {
+    let mut census = Census::default();
+    census.observe(&loss_frame(100, 4)).unwrap();
+    assert!(
+        census
+            .course("1:1:absent")
+            .unwrap_err()
+            .to_string()
+            .contains("not in this recording")
+    );
+    assert!(
+        LandBattleCourses::validate(&LandBattleCourseParams {
+            branch_id: "1".into(),
+            id: String::new(),
+        })
+        .is_err()
+    );
+    let id = census.episodes[0].id.clone();
+    let course = census.course(&id).unwrap();
+    // Without content the name stays unknown; the handle is never part of it.
+    assert_eq!(course.designs, [design(7)]);
+    assert_eq!(course.battle.runs, census.episodes[0].runs);
+    assert_eq!(
+        serde_json::to_value(&course.designs).unwrap(),
+        serde_json::json!([{ "name": null, "variant": "7" }])
+    );
+}
+#[test]
+fn land_battles_rows_carry_each_sides_most_divisions_at_once() {
+    let mut census = Census::default();
+    for hour in 100..=103 {
+        census.observe(&frame(hour, 5, 1)).unwrap();
+    }
+    let run = census.episodes[0].runs[0].clone();
+    census.episodes[0].runs = [(100, 100, [5, 1]), (101, 101, [2, 6]), (102, 103, [1, 1])]
+        .map(|(first_hour, last_hour, counts)| LandBattleRun {
+            first_hour,
+            last_hour,
+            counts,
+            ..run.clone()
+        })
+        .to_vec();
+    let windows = [
+        BattleWindow {
+            first_hour: 100,
+            last_hour: 101,
+        },
+        BattleWindow {
+            first_hour: 102,
+            last_hour: 103,
+        },
+    ];
+    let peaks = |row: &LandBattleHistory| {
+        [
+            &row.prior_peak,
+            &row.prior_side_peaks[0],
+            &row.prior_side_peaks[1],
+        ]
+        .map(|peak| peak.as_ref().map(|peak| (peak.value, peak.hour)))
+    };
+    let reply = census.reply(&params(Some(1)), &windows).unwrap();
+    assert_eq!(
+        peaks(&reply.rows[0]),
+        [Some((8, 101)), Some((5, 100)), Some((6, 101))]
+    );
+    let first = census.reply(&params(Some(0)), &windows).unwrap();
+    assert_eq!(peaks(&first.rows[0]), [None, None, None]);
+    let ranking = census
+        .ranked(
+            &ranking_params(100, 100, 1, "Peak size"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(
+        peaks(&ranking.rows[0]),
+        [Some((6, 100)), Some((5, 100)), Some((1, 100))]
     );
 }
 #[test]
@@ -693,6 +825,73 @@ fn land_battles_ranking_filters_before_top_n_and_keeps_unknown_participants() {
     assert!(census.episodes[0].end.is_none());
 }
 #[test]
+fn land_battles_ranking_keeps_hourly_participants_for_a_result_side_without_countries() {
+    let mut census = Census::default();
+    let mut sample = frame(100, 5000, 1);
+    if let TableView::Complete(TableRows::LandCombatSides(rows)) =
+        &mut *sample.tables[TableId::LandCombatSides.index()]
+    {
+        rows[0].defender_primary = vec![3];
+    }
+    census.observe(&sample).unwrap();
+    let mut ended = result_frame(101, 1);
+    if let TableView::Complete(TableRows::LandCombatResults(rows)) =
+        &mut *ended.tables[TableId::LandCombatResults.index()]
+    {
+        rows[0].sides[1].countries.clear();
+    }
+    census.observe(&ended).unwrap();
+    let result = census.episodes[0].result.as_ref().unwrap();
+    assert_eq!(result.countries_unknown, [false, true]);
+    let mut params = ranking_params(100, 101, 10, "Peak size");
+    // The hourly read recorded the defender, so an unrelated country no longer matches.
+    params.countries.tags = Some(vec!["mod country 4".into()]);
+    let ranked = |params: &LandBattlesRankingParams| {
+        census
+            .ranked(params, &AtomicBool::new(false))
+            .unwrap()
+            .rows
+            .len()
+    };
+    assert_eq!(ranked(&params), 0);
+    params.countries.tags = Some(vec!["mod country 3".into()]);
+    assert_eq!(ranked(&params), 1);
+    // The defender matches at its own read, an hour before the result.
+    params.countries.tags = None;
+    params.countries.membership = Some(vec![super::super::country_groups::MembershipRun {
+        tag: "mod country 3".into(),
+        first_hour: 100,
+        last_hour: 100,
+    }]);
+    assert_eq!(ranked(&params), 1);
+    params.countries.unobserved = vec![super::super::country_groups::HourSpan {
+        first_hour: 100,
+        last_hour: 100,
+    }];
+    assert_eq!(ranked(&params), 0);
+    // A side unknown in both reads still survives every filter.
+    let mut unknown = Census::default();
+    let mut sample = frame(100, 5000, 1);
+    if let TableView::Complete(TableRows::LandCombatSides(rows)) =
+        &mut *sample.tables[TableId::LandCombatSides.index()]
+    {
+        rows[0].defender_primary = vec![9999];
+    }
+    unknown.observe(&sample).unwrap();
+    unknown.observe(&ended).unwrap();
+    params.countries.membership = None;
+    params.countries.unobserved.clear();
+    params.countries.tags = Some(vec!["mod country 4".into()]);
+    assert_eq!(
+        unknown
+            .ranked(&params, &AtomicBool::new(false))
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+}
+#[test]
 fn land_battles_availability_stops_before_later_invalid_campaign_read() {
     let mut invalid = frame(101, 5, 1);
     *invalid.tables[TableId::Campaign.index()] = TableView::Unavailable {
@@ -807,7 +1006,7 @@ fn land_battles_casualties_rank_so_far_and_terminal_manpower_before_top_n() {
     );
     assert!(reply.rows[0].losses.last().unwrap().terminal);
     assert!(
-        matches!(&reply.rows[2].losses[0].sides, LandLossSides::Unread(reason) if reason == "Hourly losses not recorded")
+        matches!(&reply.rows[2].losses[0].sides, LandLossTotals::Unread(reason) if reason == "Hourly losses not recorded")
     );
     let earlier = census
         .ranked(
@@ -915,14 +1114,27 @@ fn land_battles_content_diagnostics_preserve_dated_battle_warnings() {
 }
 
 fn label(variant: u64) -> String {
-    format!("Equipment lost · Name not recorded (variant {variant})")
+    format!("variant {variant}")
+}
+fn design(variant: u64) -> LandEquipmentDesign {
+    LandEquipmentDesign {
+        name: None,
+        variant: variant.to_string(),
+    }
+}
+/// Each design's test label, by its handle.
+fn design_labels(designs: &[LandEquipmentDesign]) -> Vec<String> {
+    designs
+        .iter()
+        .map(|design| label(design.variant.parse().unwrap()))
+        .collect()
 }
 /// One full side: manpower, then each variant's label and exact amount; reasons stay text.
 type Side<'a> = (Result<i32, String>, Result<Vec<(&'a str, i64)>, String>);
 /// Rebuilds every read's full sides, applying a side's changes to its previous read.
 fn decode<'a>(
     labels: &'a [String],
-    reads: &[LandBattleLossRead],
+    reads: &[LandBattleCourseRead],
 ) -> Vec<(i32, Result<[Side<'a>; 2], String>)> {
     let mut previous: [Option<Vec<(&str, i64)>>; 2] = [None, None];
     reads
@@ -1040,25 +1252,57 @@ fn land_battles_compact_loss_reads_rebuild_every_full_read() {
             )
         })
         .collect();
-    for first in [100, 101] {
-        let reply = census.reply(&params(None), &windows(first, 105)).unwrap();
-        assert_eq!(
-            decode(&reply.labels, &reply.rows[0].losses),
-            full[(first - 100) as usize..]
-        );
-    }
-    let reply = census.reply(&params(None), &windows(100, 105)).unwrap();
-    assert_eq!(reply.labels, [label(7), label(8), label(9)]);
+    let id = census.episodes[0].id.clone();
+    let course = census.course(&id).unwrap();
+    let labels = design_labels(&course.designs);
+    assert_eq!(decode(&labels, &course.battle.losses), full);
+    assert_eq!(course.designs, [design(7), design(8), design(9)]);
     assert!(matches!(
-        &reply.rows[0].losses[1].sides,
+        &course.battle.losses[1].sides,
         LandLossSides::Read([LandLossSide::Changed { changed, .. }, LandLossSide::Unknown { .. }])
             if changed == &[(1, "-5".to_string())]
     ));
     assert!(matches!(
-        &reply.rows[0].losses[3].sides,
+        &course.battle.losses[3].sides,
         LandLossSides::Read([LandLossSide::Variants { .. }, LandLossSide::Changed { changed, .. }])
             if changed.is_empty()
     ));
+    // The census window keeps one prior read and each read's exact totals.
+    for first in [100, 101] {
+        let reply = census.reply(&params(None), &windows(first, 105)).unwrap();
+        let totals: Vec<_> = reply.rows[0]
+            .losses
+            .iter()
+            .map(|read| {
+                let sides = match &read.sides {
+                    LandLossTotals::Read(sides) => Ok(sides.each_ref().map(|side| match side {
+                        LandLossTotal::Known { equipment, .. } => {
+                            Ok(equipment.parse::<i128>().unwrap())
+                        }
+                        LandLossTotal::Unknown { unknown, .. } => Err(unknown.clone()),
+                    })),
+                    LandLossTotals::Unread(reason) => Err(reason.clone()),
+                };
+                (read.hour, sides)
+            })
+            .collect();
+        let expected: Vec<_> = full[(first - 100) as usize..]
+            .iter()
+            .map(|(hour, sides)| {
+                let sides = sides.clone().map(|sides| {
+                    sides.map(|(_, equipment)| {
+                        equipment.map(|list| {
+                            list.iter()
+                                .map(|(_, amount)| i128::from(*amount))
+                                .sum::<i128>()
+                        })
+                    })
+                });
+                (*hour, sides)
+            })
+            .collect();
+        assert_eq!(totals, expected);
+    }
 }
 /// Cumulative fixed5 losses: each side holds sixteen of 32 shared designs, and
 /// half of its amounts change each hour.
@@ -1106,24 +1350,55 @@ fn land_battles_busy_block_sends_changed_losses_far_below_their_full_reads() {
         .reply(&params(None), &windows(100, 99 + hours))
         .unwrap();
     let names: Vec<String> = (0..=32).map(label).collect();
-    // Full reads repeated every variant's label and exact amount, beyond the budget.
-    let mut full = 0;
+    // The census sends each read's totals; per-design amounts stay in the course.
+    let text = serde_json::to_string(&reply).unwrap();
+    assert!(!text.contains("variants") && !text.contains("changed"));
     for row in &reply.rows {
-        for (hour, sides) in decode(&reply.labels, &row.losses) {
-            let sides = sides.unwrap();
-            assert_eq!(
-                sides,
-                full_sides(&names, &busy_progress(row.province_id, hour - 100))
-            );
-            full += sides
-                .iter()
-                .flat_map(|(_, equipment)| equipment.as_ref().unwrap())
-                .map(|(label, amount)| label.len() + amount.to_string().len())
-                .sum::<usize>();
+        for read in &row.losses {
+            let LandLossTotals::Read(sides) = &read.sides else {
+                panic!("recorded counters");
+            };
+            let expected = full_sides(&names, &busy_progress(row.province_id, read.hour - 100));
+            for (side, (_, equipment)) in sides.iter().zip(expected) {
+                let sum: i128 = equipment
+                    .unwrap()
+                    .iter()
+                    .map(|(_, amount)| i128::from(*amount))
+                    .sum();
+                assert!(
+                    matches!(side, LandLossTotal::Known { equipment, .. } if *equipment == sum.to_string())
+                );
+            }
         }
     }
-    let compact = json_len(&reply, MAX_PRODUCT_REPLY_BYTES).unwrap();
-    assert!(full > MAX_PRODUCT_REPLY_BYTES, "{full}");
-    assert!(compact * 4 < full, "{compact} bytes for {full}");
-    assert!(compact * 2 < MAX_PRODUCT_REPLY_BYTES, "{compact}");
+    let window = json_len(&reply, MAX_PRODUCT_REPLY_BYTES).unwrap();
+    assert!(window * 4 < MAX_PRODUCT_REPLY_BYTES, "{window}");
+    // One battle's course lists only changed amounts after its first read.
+    let id = census.episodes[0].id.clone();
+    let course = census.course(&id).unwrap();
+    let labels = design_labels(&course.designs);
+    let mut full = 0;
+    for (hour, sides) in decode(&labels, &course.battle.losses) {
+        let sides = sides.unwrap();
+        assert_eq!(sides, full_sides(&names, &busy_progress(1, hour - 100)));
+        full += sides
+            .iter()
+            .map(|(_, equipment)| equipment.as_ref().unwrap().len())
+            .sum::<usize>();
+    }
+    let sent = course
+        .battle
+        .losses
+        .iter()
+        .flat_map(|read| match &read.sides {
+            LandLossSides::Read(sides) => sides.iter().collect::<Vec<_>>(),
+            LandLossSides::Unread(_) => Vec::new(),
+        })
+        .map(|side| match side {
+            LandLossSide::Variants { variants, .. } => variants.len(),
+            LandLossSide::Changed { changed, .. } => changed.len(),
+            LandLossSide::Unknown { .. } => 0,
+        })
+        .sum::<usize>();
+    assert!(sent * 3 < full * 2, "{sent} amounts for {full}");
 }

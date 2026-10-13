@@ -1,11 +1,10 @@
-import type { StackRun } from '../../charts/stack';
 import type { DrillAction } from '../../charts/drill/drillState';
-import type { FlowHit } from '../../charts/flow/FlowDiagram';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { resolveWindow } from '../../dashboard/model.ts';
 import { campaignToken } from '../../dashboard/chosen.ts';
 import { contentKey, setToken } from '../../dashboard/options.ts';
-import type { TransferData, TransferLink, TransferMeasure, TransferOccurrence } from './territoryData';
+import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
+import type { TransferOccurrence } from './territoryData';
 
 export function transferTime(widget: WidgetSpec, track: BoundTrack, tracks: BoundTrack[], position: number, fromOffset: number | null = null) {
   const window = resolveWindow(widget, track, tracks, position);
@@ -19,95 +18,45 @@ export function transferDrillOpen(hour: number, following: boolean, playhead: nu
   return { type: 'open', breakdown: 'parts', hour, playhead: following ? playhead : null, playing: following && playing };
 }
 
-export interface TransferDrawnSelection { transferIds: readonly string[]; transferConference: string | null }
-export const transferDrawnSelection = (ids: readonly string[], conference: string | null): TransferDrawnSelection => ({ transferIds: ids, transferConference: conference });
-export function transferHitSelection(hit: FlowHit): TransferDrawnSelection | null {
-  const value = hit.kind === 'node' ? hit.node : hit.link;
-  const drawn = value as typeof value & Partial<TransferDrawnSelection>;
-  return drawn.transferIds && drawn.transferConference !== undefined ? drawn as TransferDrawnSelection : null;
-}
-const NO_LINKS: readonly TransferLink[] = [];
-export const transferScopeLinks = (data: Pick<TransferData, 'campaign' | 'conferences'>, conference: string | null): readonly TransferLink[] => conference == null ? data.campaign : data.conferences.get(conference) ?? NO_LINKS;
-/** Playback and content changes keep local row selection; a new raw cohort resets it. */
-export const transferDrillKey = (source: string, branch: string, conference: string | null, ids: readonly string[]) => JSON.stringify([source, branch, conference, [...new Set(ids)].sort()]);
-export function transferRestoreFocus(focused: Node | null, body: Node, anchor: Pick<Node, 'contains'> | null, panel: Pick<Node, 'contains'> | null): boolean {
-  return focused == null || focused === body || !!anchor?.contains(focused) || !!panel?.contains(focused);
-}
-
-export const transferSelectionToken = (campaign: string, branch: string, ids: readonly string[], fromOffset: number | null = null) => setToken(campaignToken(campaign, JSON.stringify([branch, ids, fromOffset])));
-export interface TransferSelection { ids: string[]; fromOffset: number | null }
+/** A pinned breakdown: one country's transfers (its native holder key), or the
+ * giver → taker links an earlier version pinned. Both bind campaign and branch. */
+export interface TransferSelection { ids: string[]; fromOffset: number | null; country: string | null }
+export const transferSelectionToken = (campaign: string, branch: string, ids: readonly string[], fromOffset: number | null = null, country: string | null = null) =>
+  setToken(campaignToken(campaign, JSON.stringify(country == null ? [branch, ids, fromOffset] : [branch, ids, fromOffset, country])));
 export function transferSelection(token: string, campaign: string, branch: string): TransferSelection | null {
-  if (!token) return { ids: [], fromOffset: null };
+  if (!token) return { ids: [], fromOffset: null, country: null };
   const decoded = contentKey(token), prefix = `${campaign}:`;
   if (!decoded.startsWith(prefix)) return null;
   try {
     const value = JSON.parse(decoded.slice(prefix.length));
-    return Array.isArray(value) && value.length === 3 && value[0] === branch && Array.isArray(value[1]) && value[1].every(id => typeof id === 'string') && (value[2] === null || Number.isSafeInteger(value[2]))
-      ? { ids: [...new Set<string>(value[1])], fromOffset: value[2] } : null;
+    const valid = Array.isArray(value) && (value.length === 3 || value.length === 4 && typeof value[3] === 'string') && value[0] === branch
+      && Array.isArray(value[1]) && value[1].every(id => typeof id === 'string') && (value[2] === null || Number.isSafeInteger(value[2]));
+    return valid ? { ids: [...new Set<string>(value[1])], fromOffset: value[2], country: value[3] ?? null } : null;
   } catch { return null; }
 }
 
-/** Empty selects the complete inventory, including links with no positive width. */
-export function transferSelected(links: readonly TransferLink[], ids: readonly string[]): readonly TransferLink[] {
-  if (!ids.length) return links;
-  const wanted = new Set(ids);
-  return links.filter(link => wanted.has(link.id));
+/** The product's link ID names its giver and taker native holders. */
+const LINK = /^\d+:source:(\d+):(\d+)target:(\d+):(\d+)$/;
+export function linkEnds(id: string): [string, string] | null {
+  const match = LINK.exec(id);
+  if (!match) return null;
+  const [slot, countryId, toSlot, toCountryId] = match.slice(1).map(Number);
+  return [countryIdentityKey({ slot, countryId }), countryIdentityKey({ slot: toSlot, countryId: toCountryId })];
 }
-export function transferPartRaw(link: TransferLink, measure: TransferMeasure): bigint | null {
-  return measure === 'states' ? BigInt(link.stateCount) : link.victoryPoints;
-}
-export const transferPartHour = (link: TransferLink) => link.states.at(-1)?.dates.afterHour ?? 0;
 
-// The product's checked i64 fold is ordered. Prefix extrema retain intermediate
-// overflows when VP reads arrive out of order, without re-folding all past terms.
-interface Fold { sum: bigint; min: bigint; max: bigint; missing: number }
-const EMPTY: Fold = { sum: 0n, min: 0n, max: 0n, missing: 0 };
-const merge = (a: Fold, b: Fold): Fold => ({ sum: a.sum + b.sum, min: a.min < a.sum + b.min ? a.min : a.sum + b.min,
-  max: a.max > a.sum + b.max ? a.max : a.sum + b.max, missing: a.missing + b.missing });
-const leaf = (value: bigint | null): Fold => value == null ? { ...EMPTY, missing: 1 }
-  : { sum: value, min: value < 0n ? value : 0n, max: value > 0n ? value : 0n, missing: 0 };
-const raw = (fold: Fold) => fold.missing || fold.min < -(1n << 63n) || fold.max >= (1n << 63n) ? null : fold.sum;
-
-/** Sparse steps at supplying reads. Work is O(occurrences log occurrences), and
- * storage holds source changes, never countries times campaign hours. */
-export function transferHistory(links: readonly TransferLink[], measure: TransferMeasure, first: number, last: number, from = -Infinity): StackRun[][] {
-  return links.map(link => {
-    const states = (link.nativeStates ?? link.states).filter(state => state.dates.afterHour >= from && state.dates.afterHour <= last);
-    let capacity = 1;
-    while (capacity < states.length) capacity *= 2;
-    const tree: Fold[] = Array(capacity * 2).fill(EMPTY);
-    const events: { hour: number; index: number; value: bigint | null }[] = [];
-    states.forEach((state: TransferOccurrence, index) => {
-      const knownAt = Math.max(state.dates.afterHour, state.knownAt ?? state.dates.afterHour);
-      if (measure === 'states') events.push({ hour: knownAt, index, value: 1n });
-      else {
-        events.push({ hour: knownAt, index, value: null });
-        if (state.victoryPoints != null && state.victoryPointsReadHour != null)
-          events.push({ hour: Math.max(knownAt, state.victoryPointsReadHour), index, value: BigInt(state.victoryPoints) });
-      }
-    });
-    events.sort((a, b) => a.hour - b.hour || a.index - b.index);
-    const runs: StackRun[] = [];
-    let at = first, value: bigint | null = 0n;
-    const append = (end: number) => {
-      if (end < at || value == null) return;
-      const previous = runs.at(-1);
-      if (previous && previous.lastHour + 1 === at && previous.value === Number(value)) previous.lastHour = end;
-      else runs.push({ firstHour: at, lastHour: end, value: Number(value) });
-    };
-    for (let i = 0; i < events.length;) {
-      const hour = events[i].hour;
-      if (hour > last) break;
-      if (hour > first) { append(hour - 1); at = hour; }
-      do {
-        const event = events[i++];
-        let slot = capacity + event.index;
-        tree[slot] = leaf(event.value);
-        while (slot > 1) { slot = Math.floor(slot / 2); tree[slot] = merge(tree[slot * 2], tree[slot * 2 + 1]); }
-      } while (i < events.length && events[i].hour === hour);
-      value = raw(tree[1]);
-    }
-    append(last);
-    return runs;
-  });
+/** The selection's transfers and how many of its saved links this scope lacks.
+ * An empty selection is the whole scope. */
+export function selectedTransfers(list: readonly TransferOccurrence[], selection: TransferSelection): { shown: readonly TransferOccurrence[]; missing: number } {
+  if (selection.country != null) return { shown: list.filter(occurrence => occurrence.to.key === selection.country || occurrence.from?.key === selection.country), missing: 0 };
+  if (!selection.ids.length) return { shown: list, missing: 0 };
+  const pairs = new Set<string>();
+  let missing = 0;
+  for (const id of selection.ids) {
+    const ends = linkEnds(id);
+    if (ends) pairs.add(JSON.stringify(ends)); else missing++;
+  }
+  const shown = list.filter(occurrence => occurrence.from != null && pairs.has(JSON.stringify([occurrence.from.key, occurrence.to.key])));
+  const present = new Set(shown.map(occurrence => JSON.stringify([occurrence.from!.key, occurrence.to.key])));
+  for (const pair of pairs) if (!present.has(pair)) missing++;
+  return { shown, missing };
 }

@@ -34,8 +34,8 @@ const reply: EquipmentStockpileReply = {
   types: [{ key: 'mod/rifles', name: 'Authored rifles', domain: 'land', needNote: null },
     { key: 'mod/trucks', name: 'Authored trucks', domain: 'land', needNote: null }],
   variants: [{ id: '9007199254741001', token: 'mod_rifle_a', archetype: 'mod/rifles',
-    names: [{ firstHour: 100, known: true, name: 'Recorded rifles', design: 'design-a' }], stock: raw('1200000'), weekly: raw('99900000') },
-    { id: '9007199254741002', token: 'mod_truck_a', archetype: 'mod/trucks', names: [], stock: raw('800000'), weekly: [] }],
+    names: [{ firstHour: 100, known: true, name: 'Recorded rifles', design: 'design-a' }], stock: raw('1200000'), daily: raw('99900000'), dailyIc: [], unitCostLow: [], unitCostHigh: [] },
+    { id: '9007199254741002', token: 'mod_truck_a', archetype: 'mod/trucks', names: [], stock: raw('800000'), daily: [], dailyIc: [], unitCostLow: [], unitCostHigh: [] }],
   logistics: [{ key: 'mod/rifles', available: raw('2000000'), balance: raw('500000'), stock: raw('99900000') },
     { key: 'mod/trucks', available: raw('800000'), balance: raw('-200000'), stock: raw('800000') }],
 };

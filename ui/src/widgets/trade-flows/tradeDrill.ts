@@ -11,19 +11,23 @@ import { flowPrefix, flowValue, knownHours, knownSpanAt, measureAmount } from '.
 import type { Flow, Measure, SideNode } from './tradeData';
 
 export const TRADE_BREAKDOWN = { id: 'contributions', label: 'Trade contributors' };
+/** A pinned country view is the same breakdown, named for what it shows. */
+export const COUNTRY_BREAKDOWN = { id: 'contributions', label: 'Country trade' };
 
 /** Native holders selected in the drawn diagram, kept together at every day. */
 export type TradeSelection =
   | { kind: 'all' }
   | { kind: 'node'; side: 'source' | 'target'; holders: readonly string[] }
-  | { kind: 'link'; sources: readonly string[]; targets: readonly string[]; resource: number };
+  | { kind: 'link'; sources: readonly string[]; targets: readonly string[]; resource: number }
+  /** One native holder's whole trade: what it bought and what it sold. */
+  | { kind: 'country'; holder: string };
 
 /** A single-country header must not substitute a later holder of its tag. */
 export function contributionCountryTag(index: CountryIdentityIndex | null, tag: string, selection: TradeSelection | null, hour: number | null): string | null {
   if (!index || hour === null || !selection) return null;
   let keys = index.selected([tag]);
   if (selection.kind !== 'all') {
-    const cohort = new Set(selection.kind === 'node' ? selection.holders : [...selection.sources, ...selection.targets]);
+    const cohort = new Set(selection.kind === 'node' ? selection.holders : selection.kind === 'country' ? [selection.holder] : [...selection.sources, ...selection.targets]);
     const selected = new Set([...keys].filter(key => cohort.has(key)));
     if (selected.size) keys = selected;
   }
@@ -51,6 +55,7 @@ export function readSelection(value: OptionValue | undefined, context: TradeCont
     if (!item || typeof item !== 'object') return null;
     if (item.kind === 'all') return item;
     if (item.kind === 'node' && (item.side === 'source' || item.side === 'target') && holders(item.holders)) return item;
+    if (item.kind === 'country' && holders([item.holder])) return { kind: 'country', holder: item.holder };
     if (item.kind === 'link' && holders(item.sources) && holders(item.targets) && Number.isSafeInteger(item.resource) && item.resource >= 0) return item;
   } catch { /* A saved selection unavailable in this layout is reported by the view. */ }
   return null;
@@ -90,6 +95,7 @@ export function linkSelection(source: TradeSelection, target: TradeSelection, re
 
 export function selectedContributors(flows: readonly Flow[], selection: TradeSelection): Flow[] {
   if (selection.kind === 'all') return [...flows];
+  if (selection.kind === 'country') return flows.filter(flow => flow.sellerIdentity === selection.holder || flow.buyerIdentity === selection.holder);
   if (selection.kind === 'node') {
     const wanted = new Set(selection.holders);
     return flows.filter(flow => wanted.has(selection.side === 'source' ? flow.sellerIdentity : flow.buyerIdentity));
@@ -306,8 +312,12 @@ export function contributionHour(state: DrillState, track: Pick<BoundTrack, 'axi
 }
 
 export function pinContributions(source: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, selection: TradeSelection,
-  hour: number, follow: boolean, extent: readonly [number, number]): WidgetSpec {
-  const pinned = pinnedBreakdown(source, TRADE_BREAKDOWN, track.id);
+  hour: number, follow: boolean, extent: readonly [number, number], countryTag: string | null = null): WidgetSpec {
+  // A country's view is pinned for that country, so its header names it and the
+  // pinned widget reads that country's whole trade.
+  const country = selection.kind === 'country' && countryTag;
+  const pinned = pinnedBreakdown(country ? { ...source, countries: { kind: 'tags', tags: [countryTag] } } : source,
+    selection.kind === 'country' ? COUNTRY_BREAKDOWN : TRADE_BREAKDOWN, track.id);
   const offset = Math.floor(hour) - track.branch.firstHour;
   return { ...pinned, time: follow ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } },
     options: { ...pinned.options, tradeSelection: selectionToken(selection, tradeContext(track)),

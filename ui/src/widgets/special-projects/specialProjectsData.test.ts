@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { CountryGroupReply, SpecialProjectsReply } from '../../generated/dashboard';
+import type { CountryGroupReply, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import { historyCard, historyTooltip, liveCards, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistoryExtent, projectLanes, projectTooltip, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, completedWhenFirstRecorded, currentProjects, earlierBound, historyCard, historyTooltip, iterationCount, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { dayLabel } from '../../charts/draw.ts';
@@ -21,37 +21,42 @@ const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spa
 
 test('daily reads step without interpolation and future completion stays hidden', () => {
   const data = fixture();
-  assert.equal(liveCards(data,147,240)[0].run.progress,17);
-  assert.equal(liveCards(data,147,240)[0].run.completion,null);
-  assert.equal(liveCards(data,148,240)[0].run.completion?.hour,140);
-  assert.equal(projectLanes(data,147)[0].spans[0].positive,false);
-  assert.equal(projectLanes(data,148)[0].spans[0].positive,true);
+  assert.equal(currentProjects(data,147).running[0].run.progress,17);
+  assert.equal(currentProjects(data,147).running[0].run.completion,null);
+  assert.equal(currentProjects(data,148).completed[0].run.completion?.hour,140);
+  assert.equal(projectHistory(data,147).lanes[0].spans[0].positive,false);
+  assert.equal(projectHistory(data,148).lanes[0].spans[0].positive,true);
 });
-test('missing hours are unavailable and completed retention is fixed game days', () => {
+test('missing hours are unavailable and completed projects stay listed without a retention period', () => {
   const data = fixture();
   assert.equal(observedAt(data,200),false);
-  assert.equal(liveCards(data,200,240).length,0);
-  assert.equal(liveCards(data,148,0).length,0);
-  assert.equal(liveCards(data,163,1).length,1);
-  assert.equal(liveCards(data,164,1).length,0);
+  assert.deepEqual(currentProjects(data,200),{ running: [], completed: [], earlier: [], cancelled: [] });
+  assert.equal(currentProjects(data,148).completed.length,1);
+  assert.equal(currentProjects(data,199).completed.length,1, 'a completion long past still lists');
 });
-test('history caps at the completion event and leaves unrecorded intervals empty', () => {
+test('history caps at the completion event, splits at progress steps and leaves unrecorded intervals empty', () => {
   const data = fixture();
-  const lane = projectLanes(data,199)[0];
+  const lane = projectHistory(data,199).lanes[0];
   assert.equal(lane.identity?.tile,'blueprint');
   assert.equal(lane.label,'Mod scientist');
+  assert.equal(lane.names,true);
   assert.equal(lane.spans[0].lastHour,139);
+  assert.equal(lane.spans[0].label,'17%');
   assert.equal(lane.spans[0].endLabel,'✓');
+  assert.equal(lane.spans[0].shade,undefined, 'a completed bar keeps the positive fill');
   data.projects[0].runs[1].state='running'; data.projects[0].runs[1].completion=null;
   data.projects[0].runs.push({...data.projects[0].runs[0],firstHour:220,lastHour:230});
-  assert.deepEqual(projectLanes(data,300)[0].spans.map(span=>[span.firstHour,span.lastHour]),[[100,199],[220,230]]);
+  const running = projectHistory(data,300).lanes[0].spans;
+  assert.deepEqual(running.map(span=>[span.firstHour,span.lastHour,span.label,span.shade]),[[100,147,'17%',0.17],[148,199,'100%',1],[220,230,'17%',0.17]]);
 });
 test('tooltips keep bounded starts and progress without artwork or table diagnostics', () => {
   const data=fixture(); data.projects[0].runs[0].iterations=null; data.iterationTexts['2']=null;
-  const tip=projectTooltip(data,liveCards(data,120,240)[0]);
+  const tip=projectTooltip(data,currentProjects(data,120).running[0]);
   assert.match(tip.rows.find(row=>row.label==='Started')!.value!,/^by /);
   assert.doesNotMatch(tip.note ?? '',/read once a day/);
   assert.equal(tip.note, undefined);
+  assert.equal(tip.description, undefined);
+  assert.equal(tip.subtitle, 'Mod science');
   assert.equal(tip.rows.find(row=>row.label==='Progress')?.value, '17%');
 });
 test('validator rejects bad references, overlaps, missing and invented percentages', () => {
@@ -66,21 +71,28 @@ test('validator rejects bad references, overlaps, missing and invented percentag
     (data:SpecialProjectsReply)=>{data.identities[1].firstHour=190;},
   ]) {const data=fixture();mutate(data);assert.throws(()=>validateSpecialProjectsReply(data));}
 });
-test('last assignment keeps its date without adding a diagnostic paragraph', () => {
+test('last assignment keeps its date in its own tooltip row and the game text closes the tooltip', () => {
   const data=fixture(); data.presentations[0].scientistAsOf=99;
-  data.iterationTexts['2']=null;
-  const card=liveCards(data,120,240)[0];
+  const card=currentProjects(data,120).running[0];
   const tip=projectTooltip(data,card);
-  assert.equal(tip.rows.find(row=>row.label==='Scientist')!.value, `Last assigned · Mod scientist (as of ${dayLabel(99)})`);
+  assert.equal(tip.rows.find(row=>row.label==='Scientist')!.value, 'Mod scientist');
+  assert.equal(tip.rows.find(row=>row.label==='Last assigned')!.value, dayLabel(99));
+  assert.equal(tip.description, 'Mod iterations: 2');
   assert.equal(tip.note, undefined);
-  assert.doesNotMatch(tip.note ?? '',/iterations unknown/);
+  assert.equal(iterationCount(card.run.iterations), '2 iterations');
+  assert.equal(iterationCount(1), '1 iteration');
+  assert.equal(iterationCount(null), 'Iterations unknown');
+  const done=currentProjects(data,160).completed[0];
+  data.presentations[0].scientistAsOf=done.run.completion!.hour;
+  assert.ok(!projectTooltip(data,done).rows.some(row=>row.label==='Last assigned'), 'an assignment dated to the completion adds no row');
+  assert.equal(projectTooltip(data,done).rows.find(row=>row.label==='Completed')?.value, dayLabel(140));
 });
 test('presentation has no content count cap at 5000 projects and defaults are saved options', () => {
   const data=fixture(); data.projects=Array.from({length:5000},(_,id)=>({...data.projects[0],id:`mod-${id}`}));
   assert.equal(validateSpecialProjectsReply(data).projects.length,5000);
-  assert.equal(liveCards(data,120,240).length,5000);
-  assert.equal(projectLanes(data,120).length,5000);
-  assert.equal(resolveOptions(OPTIONS,{}).completedRetentionDays,240);
+  assert.equal(currentProjects(data,120).running.length,5000);
+  assert.equal(projectHistory(data,120).lanes.length,5000);
+  assert.equal('completedRetentionDays' in resolveOptions(OPTIONS,{}),false);
   assert.equal(resolveOptions(OPTIONS,{view:'history'}).view,'history');
   assert.equal(definition.defaultTime,'campaign');
 });
@@ -88,28 +100,35 @@ test('presentation has no content count cap at 5000 projects and defaults are sa
 test('paused cards are named and cancelled episodes end by observation without a completion tick', () => {
   const data = fixture();
   data.projects[0].runs = [{...data.projects[0].runs[0],state:'paused',lastHour:139}, {...data.projects[0].runs[0],firstHour:140,lastHour:199,state:'cancelled',cancellation:{hour:140,exact:false}}];
-  assert.equal(liveCards(data,139,240).length,1);
-  assert.equal(projectTooltip(data,liveCards(data,139,240)[0]).rows.find(row=>row.label==='State')?.value,'Paused');
-  assert.equal(liveCards(data,140,240).length,0);
-  const lane=projectLanes(data,199)[0];
+  assert.equal(currentProjects(data,139).running.length,1);
+  assert.equal(projectTooltip(data,currentProjects(data,139).running[0]).rows.find(row=>row.label==='State')?.value,'Paused');
+  assert.equal(currentProjects(data,140).running.length,0);
+  assert.equal(currentProjects(data,140).cancelled.length,1, 'a cancelled project is listed, not dropped');
+  const lane=projectHistory(data,199).lanes[0];
   assert.equal(lane.muted,true);
   assert.equal(lane.spans.at(-1)?.lastHour,139);
   assert.equal(lane.spans.at(-1)?.positive,false);
   assert.equal(lane.spans.at(-1)?.endLabel,undefined);
+  assert.equal(lane.spans.at(-1)?.shade,undefined, 'a paused stretch keeps the neutral fill');
 });
 test('history tooltip resolves hovered observation and span, bounded by playhead; gaps stay unknown', () => {
   const data=fixture();
-  const span=projectLanes(data,199)[0].spans[0];
+  const span=projectHistory(data,199).lanes[0].spans[0];
   assert.equal(historyTooltip(data,'episode',span,120,199)?.rows.find(row=>row.label==='Progress')?.value,'17%');
   assert.ok(historyTooltip(data,'episode',span,120,199)?.rows.some(row=>row.label==='Completed'));
   assert.equal(historyTooltip(data,'episode',{...span,lastHour:199},170,130)?.rows.find(row=>row.label==='Progress')?.value,'17%');
   assert.match(historyTooltip(data,'episode',null,205,300)?.note ?? '',/not recorded at this hour/);
+  const after=historyTooltip(data,'episode',null,170,199);
+  assert.equal(after?.note, undefined, 'past its bar a completed project is recorded as completed, not missing');
+  assert.equal(after?.rows.find(row=>row.label==='Completed')?.value, dayLabel(140));
 });
 test('group membership clips timeline bars and unassigned is an explicit flag', () => {
   const data=fixture();
-  assert.deepEqual(projectLanes(data,199,[{firstHour:110,lastHour:115}])[0].spans.map(span=>[span.firstHour,span.lastHour]),[[110,115]]);
+  assert.deepEqual(projectHistory(data,199,[{firstHour:110,lastHour:115}]).lanes[0].spans.map(span=>[span.firstHour,span.lastHour]),[[110,115]]);
   data.people[0]={assigned:false,id:null,name:null,portrait:null,missing:'A translated message'};
-  assert.equal(projectLanes(data,120)[0].label,'Unassigned');
+  assert.equal(projectHistory(data,120).lanes[0].label,'No scientist assigned');
+  data.people[0]={...data.people[0],assigned:null};
+  assert.equal(projectHistory(data,120).lanes[0].label,'Scientist unknown');
 });
 
 const countryGroups = (): CountryGroupReply => ({ branchId: '1', warnings: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
@@ -171,20 +190,20 @@ test('membership cannot borrow a later project presentation or completion', () =
   const data = fixture(), membership = [{ firstHour: 110, lastHour: 115 }];
   data.presentations.push({ ...data.presentations[0], name: 'Unselected later presentation' });
   data.projects[0].runs[1].presentation = 1;
-  const lane = projectLanes(data, 199, membership)[0];
+  const lane = projectHistory(data, 199, membership).lanes[0];
   assert.equal(lane.identity?.label, 'Mod project name');
   assert.equal(lane.spans[0].positive, false);
   assert.equal(historyCard(data, 'episode', 199, membership)?.run.state, 'running');
   assert.ok(!historyTooltip(data, 'episode', lane.spans[0], 112, 199, membership)?.rows.some(row => row.label === 'Completed'));
-  assert.equal(projectLanes(data, 199, [])[0], undefined);
+  assert.equal(projectHistory(data, 199, []).lanes[0], undefined);
 });
 
 test('clipping a run into future membership cannot reveal its blueprint or menu before the playhead', () => {
   const data = fixture(), membership = [{ firstHour: 100, lastHour: 110 }, { firstHour: 180, lastHour: 190 }];
   data.projects = [{ ...data.projects[0], start: { hour: 140, exact: false }, runs: [{ ...data.projects[0].runs[0], firstHour: 140, lastHour: 200 }] }];
-  assert.deepEqual(projectLanes(data, 150, membership), []);
+  assert.deepEqual(projectHistory(data, 150, membership).lanes, []);
   assert.equal(historyCard(data, 'episode', 150, membership), null);
-  const later = projectLanes(data, 185, membership)[0];
+  const later = projectHistory(data, 185, membership).lanes[0];
   assert.deepEqual(later.spans.map(span => [span.firstHour, span.lastHour]), [[180, 185]]);
   assert.equal(historyCard(data, 'episode', 185, membership)?.run.firstHour, 180);
 });
@@ -201,12 +220,12 @@ test('hourly group uncertainty cuts every History consumer without changing end 
   assert.deepEqual(scope('end').memberships.get(data.tag)!.map(span => [span.firstHour, span.lastHour]), [[100, 199]]);
   assert.equal(projectCountryHour(data, 113, membership), 111);
   assert.equal(historyCard(data, 'episode', 113, membership)?.run.lastHour, 111);
-  const lane = projectLanes(data, 120, membership)[0];
+  const lane = projectHistory(data, 120, membership).lanes[0];
   assert.deepEqual(lane.spans.map(span => [span.firstHour, span.lastHour]), [[100, 111], [114, 120]]);
   assert.match(historyTooltip(data, 'episode', null, 112, 120, membership)?.note ?? '', /not recorded at this hour/);
   data.projects = [{ ...data.projects[0], start: { hour: 112, exact: false }, runs: [{ ...data.projects[0].runs[0], firstHour: 112 }] }];
   assert.equal(historyCard(data, 'episode', 113, membership), null);
-  assert.deepEqual(projectLanes(data, 113, membership), []);
+  assert.deepEqual(projectHistory(data, 113, membership).lanes, []);
 });
 
 test('History keeps its campaign axis by default and grows only from an available playhead', () => {
@@ -229,15 +248,78 @@ test('5000 project choices reuse the native catalogue without repeating every ro
   assert.equal(scope.match.matches('mod-country-4999', 300), true);
 });
 
-test('the header-only view retains saved History and Current preferences', () => {
+test('View is also a setting, and saved layouts drop the retired completed-project retention', () => {
   const view = OPTIONS.find(field => field.key === 'view')!;
+  assert.equal(view.visibleWhen, undefined, 'View stays reachable when the header is narrow');
   for (const saved of ['live', 'history']) {
     const options = resolveOptions(OPTIONS, { view: saved, completedRetentionDays: 12, grow: true });
     assert.equal(options.view, saved);
-    assert.equal(view.visibleWhen?.(options), false);
-    assert.equal(options.completedRetentionDays, 12);
+    assert.equal('completedRetentionDays' in options, false);
     assert.equal(options.grow, true);
     assert.equal(OPTIONS.find(field => field.key === 'grow')?.visibleWhen?.(options), saved === 'history');
-    assert.equal(OPTIONS.find(field => field.key === 'completedRetentionDays')?.visibleWhen?.(options), saved === 'live');
   }
+  assert.equal(OPTIONS.some(field => field.key === 'completedRetentionDays'), false);
+  assert.equal(definition.version, 2);
+  const stored = (options?: Record<string, string | number | boolean>) => ({ id: 'projects', kind: 'special-projects', configVersion: 1, title: 'Special projects', trackIds: ['main'],
+    countries: { kind: 'selected' }, time: { mode: 'campaign' }, ...(options ? { options } : {}) }) as unknown as Parameters<typeof definition.migrate>[1];
+  assert.deepEqual(definition.migrate(1, stored({ completedRetentionDays: 12, view: 'history', grow: true }))?.options, { view: 'history', grow: true });
+  assert.equal('options' in definition.migrate(1, stored({ completedRetentionDays: 30 }))!, false, 'a widget left with no options stores none');
+  assert.equal(definition.migrate(1, stored())?.title, 'Special projects');
+});
+
+/** Five projects at once: completed in the recording, already complete when first
+ * recorded, two running at different progress, and one cancelled. */
+function projects(): SpecialProjectsReply {
+  const data = fixture();
+  data.iterationTexts = { 0: 'Mod iterations: 0', 1: 'Mod iterations: 1', 2: 'Mod iterations: 2', 3: 'Mod iterations: 3' };
+  data.presentations.push(...['Alpha early', 'Beta running', 'Gamma running', 'Delta cancelled'].map(name => ({ ...data.presentations[0], name })));
+  const run = (firstHour: number, lastHour: number, presentation: number, progress: number, state: SpecialProjectRun['state'], extra: Partial<SpecialProjectRun> = {}): SpecialProjectRun =>
+    ({ firstHour, lastHour, presentation, progress, state, completion: null, cancellation: null, iterations: 0, ...extra });
+  data.projects = [
+    { id: 'done', start: { hour: 100, exact: false }, runs: [run(100, 159, 0, 40, 'running'), run(160, 199, 0, 100, 'completed', { completion: { hour: 160, exact: true } })] },
+    { id: 'early', start: { hour: 100, exact: false }, runs: [run(100, 199, 1, 100, 'completed', { completion: { hour: 100, exact: false } })] },
+    { id: 'beta', start: { hour: 120, exact: false }, runs: [run(120, 149, 2, 0, 'running'), run(150, 172, 2, 30, 'running'), run(173, 199, 2, 30, 'running', { iterations: 1 })] },
+    { id: 'gamma', start: { hour: 110, exact: false }, runs: [run(110, 199, 3, 55, 'running')] },
+    { id: 'delta', start: { hour: 100, exact: false }, runs: [run(100, 199, 4, 65, 'cancelled', { cancellation: { hour: 100, exact: false } })] },
+  ];
+  return validateSpecialProjectsReply(data);
+}
+
+test('Current lists running projects closest to completion first, then completed, the folded first-recorded group and cancelled', () => {
+  const ids = (cards: readonly { project: { id: string } }[]) => cards.map(card => card.project.id);
+  const late = currentProjects(projects(), 199);
+  assert.deepEqual(ids(late.running), ['gamma', 'beta']);
+  assert.deepEqual(ids(late.completed), ['done']);
+  assert.deepEqual(ids(late.earlier), ['early']);
+  assert.deepEqual(ids(late.cancelled), ['delta']);
+  assert.equal(earlierBound(late.earlier), 100);
+  const before = currentProjects(projects(), 159);
+  assert.deepEqual(ids(before.running), ['gamma', 'done', 'beta'], 'progress orders running projects, not their ids');
+  assert.deepEqual(ids(before.completed), []);
+  const data = projects();
+  assert.equal(completedWhenFirstRecorded(data.projects[0], data.projects[0].runs[1]), false, 'an exact completion inside the recording lists on its own row');
+  assert.equal(completedWhenFirstRecorded(data.projects[1], data.projects[1].runs[0]), true);
+  data.projects[0].runs[1].completion = { hour: 160, exact: false };
+  assert.equal(completedWhenFirstRecorded(data.projects[0], data.projects[0].runs[1]), false, 'a completion bounded by a later read is still its own row');
+  const tie = projects();
+  tie.projects[2].runs = tie.projects[2].runs.map(run => ({ ...run, progress: 55 }));
+  assert.deepEqual(ids(currentProjects(tie, 199).running), ['gamma', 'beta'], 'equal progress keeps the earlier start first');
+});
+
+test('History lanes run in start order, split at each progress step and fold projects that ended before the range into one line', () => {
+  const history = projectHistory(projects(), 199);
+  assert.deepEqual(history.lanes.map(lane => lane.id), ['done', 'gamma', 'beta']);
+  const [done, gamma, beta] = history.lanes;
+  assert.deepEqual(beta.spans.map(span => [span.firstHour, span.lastHour, span.label, span.shade]), [[120, 149, '0%', 0], [150, 199, '30%', 0.3]],
+    'an iteration count change at equal progress keeps one segment');
+  assert.deepEqual(gamma.spans.map(span => span.shade), [0.55]);
+  assert.deepEqual(done.spans.map(span => [span.lastHour, span.positive, span.endLabel]), [[159, true, '✓']]);
+  assert.deepEqual([history.completed, history.cancelled, history.by], [1, 1, 100]);
+  assert.equal(closedLane('closed', history)?.label, `1 completed, 1 cancelled by ${dayLabel(100)}`);
+  assert.equal(closedLane('closed', history)?.compact, true);
+  const ranged = projectHistory(projects(), 199, undefined, 165);
+  assert.deepEqual(ranged.lanes.map(lane => lane.id), ['gamma', 'beta'], 'a project that finished before the range gets no empty lane');
+  assert.deepEqual([ranged.completed, ranged.cancelled, ranged.by], [2, 1, 160]);
+  assert.equal(closedLane('closed', ranged)?.label, `2 completed, 1 cancelled by ${dayLabel(160)}`);
+  assert.equal(closedLane('closed', projectHistory(fixture(), 199)), null);
 });

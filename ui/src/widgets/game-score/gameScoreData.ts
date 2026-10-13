@@ -180,7 +180,7 @@ export function gameScoreRow(model: GameScoreModel, tag: string, hour: number): 
 }
 export function scoreValue(row: ScoreRow, column: string): bigint | string | null {
   if (column === 'country') return row.identity.name;
-  const raw = column === 'multiplier' ? row.multipliers.total.raw : SCORE_PARTS.includes(column as ScorePart) ? row.cells[column as ScorePart].raw : null;
+  const raw = SCORE_PARTS.includes(column as ScorePart) ? row.cells[column as ScorePart].raw : null;
   return raw == null ? null : BigInt(raw);
 }
 export function gameScoreFaction(row: ScoreRow): TableGroup {
@@ -196,10 +196,6 @@ export function gameScoreRows(model: GameScoreModel, tags: readonly string[], ho
   return top === undefined ? ordered : ordered.slice(0, top);
 }
 export function formatScore(raw: string | null, digits = 0) { return raw === null ? '—' : formatNativeFixed5(raw, digits); }
-export function formatMultiplier(raw: string | null, precision: string = 'exact'): string {
-  const formatted = formatScore(raw, precision === 'exact' ? 5 : Number(precision));
-  return precision === 'exact' && formatted.includes('.') ? formatted.replace(/0+$/, '').replace(/\.$/, '') : formatted;
-}
 /** Wrapping and signed scores do not have an honest nonnegative share geometry. */
 export function scoreInsetReason(row: ScoreRow): string | null {
   const parts = BAR_PARTS.map(part => row.cells[part].raw);

@@ -34,6 +34,7 @@ const host = globalThis as typeof globalThis & { __projectTimeline?: TimelinePro
   __projectGroupReply?: CountryGroupReply; __projectReplies?: Record<string, SpecialProjectsReply>; __projectMenu?: readonly MenuItem[];
   __projectPending?: boolean; __projectGroupPending?: boolean; __projectErrors?: Record<string, string>; __projectGroupError?: string;
   __projectRetries?: string[]; __projectRetry?: () => void; __projectPortals?: ReactElement<{ onChange: (value: string) => void }>[];
+  __projectPortalTargets?: unknown[]; __projectActions?: HTMLElement;
   __projectKeys?: Record<string, (event: { key: string; shiftKey?: boolean; preventDefault: () => void; currentTarget: { getBoundingClientRect: () => { left: number; bottom: number } } }) => void> };
 
 test('actual SpecialProjects preserves literal roots, selected dated flag failures and growing held History clocks', async () => {
@@ -57,12 +58,13 @@ test('actual SpecialProjects preserves literal roots, selected dated flag failur
         const replacement = Object.entries(replacements).find(([suffix]) => path.endsWith(suffix))?.[1];
         if (replacement) return replacement;
         if (path.endsWith('/special-projects/SpecialProjectsWidget.tsx')) return code
-          .replace("import { createPortal } from 'react-dom';", 'const createPortal = (child) => { globalThis.__projectPortals.push(child); return child; };')
-          .replace('onKeyDown={event =>', 'onKeyDown={globalThis.__projectKeys[project.id] = event =>');
+          .replace("import { createPortal } from 'react-dom';", 'const createPortal = (child, target) => { globalThis.__projectPortals.push(child); globalThis.__projectPortalTargets.push(target); return child; };')
+          .replace('onKeyDown: (event: KeyboardEvent<HTMLElement>) =>', 'onKeyDown: globalThis.__projectKeys[card.project.id] = (event: KeyboardEvent<HTMLElement>) =>');
         if (path.endsWith('/components/WidgetState.tsx')) return code.replace('onClick={props.onRetry}', 'onClick={globalThis.__projectRetry = props.onRetry}');
       } }] });
   try {
     const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/special-projects/SpecialProjectsWidget.tsx');
+    const { HeaderActionsSlot } = await vite.ssrLoadModule('/ui/src/charts/ZoomReset.tsx');
     let hour = 150;
     const props = { widget: { id: 'projects', kind: 'special-projects', trackIds: ['main'], time: { mode: 'follow' },
       countries: { kind: 'tags', tags: ['X'] }, options: { view: 'history' } }, runtime: { tracks: [{ id: 'main', axisOffset: 0,
@@ -73,8 +75,8 @@ test('actual SpecialProjects preserves literal roots, selected dated flag failur
     host.__projectRetries = [];
     const render = () => {
       delete host.__projectTimeline; delete host.__projectRetry;
-      host.__projectLabels = []; host.__projectPortals = []; host.__projectKeys = {};
-      return renderToStaticMarkup(createElement(Widget, props));
+      host.__projectLabels = []; host.__projectPortals = []; host.__projectPortalTargets = []; host.__projectKeys = {};
+      return renderToStaticMarkup(createElement(HeaderActionsSlot.Provider, { value: host.__projectActions ?? null }, createElement(Widget, props)));
     };
     const flags: ReturnType<CountryLabel>[] = [{ name: 'Selected actor', flagPending: true, flag: 'data:image/png;base64,synthetic' },
       { name: '', flagPending: false, flagReason: 'Native flag selection refused its supplying read.' }];
@@ -96,9 +98,15 @@ test('actual SpecialProjects preserves literal roots, selected dated flag failur
     props.widget.options = { view: 'live' };
     const beforeCountries = props.widget.countries;
     props.widget.countries = { kind: 'tags', tags: ['X', 'Y'] };
-    props.headerSlot = {} as HTMLElement;
+    props.headerSlot = { slot: 'title summary' } as unknown as HTMLElement;
+    host.__projectActions = { slot: 'header actions' } as unknown as HTMLElement;
     props.setOption = (key, value) => { props.widget.options = { ...props.widget.options, [key]: value }; };
     const current = render();
+    assert.deepEqual(host.__projectPortalTargets, [host.__projectActions], 'the view switch sits beside Live, where a long country name cannot clip it');
+    assert.match(current, /In progress/);
+    assert.match(current, /10%/);
+    assert.match(current, /0 iterations/);
+    assert.doesNotMatch(current, /Project Iterations|iterations: 0/, 'the game text stays in the tooltip');
     assert.match(current, /X project 1/);
     assert.match(current, /Unrelated later project/);
     assert.doesNotMatch(current, /First country shown|Synthetic missing artwork|ProjectHistory/);
@@ -115,6 +123,10 @@ test('actual SpecialProjects preserves literal roots, selected dated flag failur
       host.__projectMenu![0].run!();
       assert.deepEqual(seeks.at(-1), ['main', expected]);
     }
+    delete host.__projectActions;
+    render();
+    assert.deepEqual(host.__projectPortalTargets, [props.headerSlot], 'a frame without header actions keeps the switch by the title');
+    host.__projectActions = { slot: 'header actions' } as unknown as HTMLElement;
     host.__projectPortals![0].props.onChange('history');
     assert.equal(props.widget.options?.view, 'history');
     render(); assert.equal(host.__projectPortals?.length, 1);
@@ -145,13 +157,17 @@ test('actual SpecialProjects preserves literal roots, selected dated flag failur
     assert.match(render(), /Projects were not recorded\./);
     assert.match(render(), /X project 1/);
     host.__projectReplies = { X: reply('X'), Y: { ...reply('Y'), projects: [] } };
-    assert.match(render(), /No projects running\./);
+    assert.match(render(), /No special projects yet\./);
     host.__projectReplies = { X: reply('X'), Y: { ...reply('Y'), available: [], readHours: [], projects: [] } };
     assert.match(render(), /Projects were not recorded at this time\./);
     const completed = reply('Y');
     Object.assign(completed.projects[1].runs[0], { firstHour: 130, progress: 100, state: 'completed', completion: { hour: 130, exact: true } });
     host.__projectReplies = { X: reply('X'), Y: completed };
-    assert.match(render(), /completed/);
+    const finished = render();
+    assert.match(finished, /Completed<span>1<\/span>/);
+    assert.match(finished, /No projects in progress\./, 'a panel with nothing running says so without an empty section');
+    assert.match(finished, /Hour 130/, 'the completed row shows its date plainly');
+    assert.doesNotMatch(finished.replace(/aria-label="[^"]*"/g, ''), /by Hour 130/);
     host.__projectKeys!['Y-1']({ key: 'ContextMenu', preventDefault() {}, currentTarget: { getBoundingClientRect: () => ({ left: 0, bottom: 0 }) } });
     assert.equal(host.__projectMenu?.length, 2);
     assert.match(host.__projectMenu![1].label, /Jump to completion · /);
@@ -256,7 +272,7 @@ test('actual SpecialProjects preserves literal roots, selected dated flag failur
       const unknown = view === 'live' ? moment.unknownLive : moment.unknownHistory;
       if (unknown) {
         assert.match(markup, /This group’s members were not recorded/);
-        assert.doesNotMatch(markup, /No selected countries|No projects running|No special projects yet/);
+        assert.doesNotMatch(markup, /No selected countries|No projects in progress|No special projects yet/);
       } else assert.match(markup, /No selected countries were recorded/);
       assert.deepEqual(host.__projectRequests, [], 'unknown members never become unrestricted product requests');
       assert.deepEqual(host.__projectWanted, [], 'no country heading borrows a masked membership date');
@@ -267,6 +283,7 @@ test('actual SpecialProjects preserves literal roots, selected dated flag failur
     delete host.__projectGroupReply; delete host.__projectReplies; delete host.__projectMenu;
     delete host.__projectPending; delete host.__projectGroupPending; delete host.__projectGroupError; delete host.__projectErrors;
     delete host.__projectRetries; delete host.__projectRetry; delete host.__projectPortals; delete host.__projectKeys;
+    delete host.__projectPortalTargets; delete host.__projectActions;
     await vite.close();
   }
 });
@@ -274,7 +291,7 @@ test('actual SpecialProjects preserves literal roots, selected dated flag failur
 test('Current comparison props remain stable during playback and wrapper hooks keep their order across views', async () => {
   const slots: { deps: readonly unknown[]; value: unknown }[] = [];
   let cursor = 0;
-  const state = { groups, memo: (factory: () => unknown, deps: readonly unknown[]) => {
+  const state = { groups, context: () => null, memo: (factory: () => unknown, deps: readonly unknown[]) => {
     const at = cursor++, held = slots[at];
     if (!held || deps.length !== held.deps.length || deps.some((value, index) => !Object.is(value, held.deps[index])))
       slots[at] = { deps, value: factory() };
@@ -288,7 +305,7 @@ test('Current comparison props remain stable during playback and wrapper hooks k
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/dashboard/useCountryGroups.ts')) return 'export const useCountryGroups = () => ({ data: globalThis.__projectStable.groups });';
         if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => {};';
-        if (path.endsWith('/special-projects/SpecialProjectsWidget.tsx')) return code.replaceAll('useMemo(', 'globalThis.__projectStable.memo(');
+        if (path.endsWith('/special-projects/SpecialProjectsWidget.tsx')) return code.replaceAll('useMemo(', 'globalThis.__projectStable.memo(').replaceAll('useContext(', 'globalThis.__projectStable.context(');
       } }] });
   try {
     const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/special-projects/SpecialProjectsWidget.tsx') as { default: (props: WidgetProps) => ReactElement };
@@ -303,8 +320,13 @@ test('Current comparison props remain stable during playback and wrapper hooks k
     assert.deepEqual(first.widget.countries, { kind: 'tags', tags: ['X', 'Y'] });
     hour = 151;
     assert.equal((render().children[1].props as typeof first).widget, first.widget, 'clock changes cannot reset CountryComparisons scroll or panel state');
-    props.widget.options = { view: 'history' }; render();
-    props.widget.options = { view: 'live' }; render();
+    props.widget.options = { view: 'history' };
+    assert.equal(render().children[1].key, 'history', 'switching views remounts the panel, so History never opens at the Current scroll offset');
+    props.widget.countries = { kind: 'tags', tags: ['X'] };
+    props.widget.options = { view: 'live' };
+    assert.equal(render().children[1].key, 'live');
+    props.widget.countries = { kind: 'tags', tags: ['X', 'Y'] };
+    render();
     const heldGroups = state.groups;
     state.groups = undefined as unknown as CountryGroupReply; render();
     state.groups = heldGroups; render();

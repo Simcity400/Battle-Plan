@@ -35,14 +35,18 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { readAt } from '../../dashboard/reads';
 import { mix, toHex } from '../../shell/appearance/color';
 import { buildDiagram, campaignScale, coverageNote, sideRanks, decodeTrade, exactSums, formatDays, knownHours, emptyMessage, knownSpanAt, unrecordedMessage, measureAmount, measureNote, OTHER, resourceColours, selectionMessage, identityCountryAt,
-  resourceName, selectFlows } from './tradeData';
+  resourceName, selectFlows, validateTradeFlowsReply } from './tradeData';
 import type { Flow, Measure, SideNode, SideLink } from './tradeData';
 import TradeDrill from './TradeDrillView';
+import TradeCountryView, { resourceLegendItems } from './TradeCountryView';
+import { countryTradeTags } from './tradeCountry';
+import { useProduct } from '../../dashboard/products';
+import type { TradeFlowsReply } from '../../generated/dashboard';
 import { contributionCountryTag, contributionExtent, contributionHour, linkSelection, nodeSelections, observedTradeSpans, openContributions, pinContributions, readSelection, selectedContributors, tradeContext } from './tradeDrill';
 import type { TradeSelection } from './tradeDrill';
 import { heldTradeColours, tradeColourPlan, tradeCountryColours, tradeFixedColourKey } from './tradeColours';
 import { OPTIONS } from './definition';
-import { useTradeFlows } from './useTradeFlows';
+import { tradeFlowsRequest, useTradeFlows } from './useTradeFlows';
 import { nodeTooltip, ribbonTooltip } from './tradeTooltip';
 import './tradeFlows.css';
 
@@ -182,9 +186,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const otherColour = mix(tokens.surface, tokens.text, 0.4);
   const resourceColour = useMemo(() => trade ? resourceColours(trade.reply.resources, trade.resourceOrder, tokens.categories, otherColour) : new Map<number, string>(),
     [trade, tokens.categories, otherColour]);
-  const resourceLegend = useMemo(() => shownResources.map(item => ({ id: String(item.id), label: resourceName(item), color: resourceColour.get(item.id) ?? otherColour,
-    flag: item.icon ? <img className="trade-resource-icon" src={item.icon} alt="" /> : <span className="trade-resource-icon is-missing" aria-hidden="true" /> })),
-  [shownResources, resourceColour, otherColour]);
+  const resourceLegend = useMemo(() => resourceLegendItems(shownResources, resourceColour, otherColour), [shownResources, resourceColour, otherColour]);
   const nodeName = useCallback((node: SideNode) => node.identity ? labelOf(node.identity).name
     : `${usNumber.format(node.members.length)} other ${node.side === 'source' ? (node.members.length === 1 ? 'seller' : 'sellers') : (node.members.length === 1 ? 'buyer' : 'buyers')}`, [labelOf]);
   const { flowNodes, flowLinks } = useMemo(() => {
@@ -253,11 +255,21 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
       resourceColour: id => options.colour === 'resource' ? resourceColour.get(id) : undefined });
   }, [data, trade, measure, hoverLabels.labelAt, askHover, nodeName, note, viewport, options.colour, resourceColour]);
 
+  const openCountry = useCallback((holder: string, hour: number) => {
+    setSelection({ kind: 'country', holder });
+    dispatchDrill(openContributions(widget, hour, clock.playing, playhead));
+  }, [widget, clock.playing, playhead]);
   const onContextMenu = useCallback((hit: FlowHit | null, x: number, y: number) => {
     if (!track) return;
     // The moment shown, as read for the current amount; a ribbon adds when it was
     // first and last recorded in the time shown.
     const items: MenuItem[] = [jumpItem(runtime, track.id, measure === 'current' ? read ?? moment : moment)];
+    // The country's own view, also from the keyboard (the context-menu key on its node).
+    if (hit?.kind === 'node') {
+      const drawn = (hit.node as TradeNode).trade;
+      const holder = drawn?.node.identity;
+      if (holder) items.unshift({ label: `Imports and exports of ${hit.node.label}`, icon: 'flows', run: () => openCountry(holder, drawn.hour) });
+    }
     const link = hit?.kind === 'link' ? (hit.link as TradeLink).trade?.link : null;
     if (link) {
       const sums = exactSums(link.flows, extent[0], extent[1]);
@@ -265,7 +277,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
       if (sums.last != null && sums.last !== sums.first) items.push({ ...jumpItem(runtime, track.id, sums.last), hint: 'Last recorded in the time shown' });
     }
     menu.open(x, y, items);
-  }, [track, runtime, measure, read, moment, extent[0], extent[1], menu.open]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [track, runtime, measure, read, moment, extent[0], extent[1], menu.open, openCountry]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const savedSelection = useMemo(() => track ? readSelection(options.tradeSelection, tradeContext(track)) : null,
     [options.tradeSelection, track]);
@@ -288,6 +300,28 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     setSelection(drawn.selection);
     dispatchDrill(openContributions(widget, hour, clock.playing, playhead));
   }, [track, widget, clock.playing, playhead]);
+  // A country's flag or name opens its whole trade; the summed rest opens its contributors.
+  const openLabel = useCallback((node: FlowNode, hour: number) => {
+    const drawn = (node as TradeNode).trade;
+    if (drawn?.node.identity) openCountry(drawn.node.identity, hour);
+    else openDrill({ kind: 'node', node }, hour);
+  }, [openCountry, openDrill]);
+
+  // One country's view needs its whole trade: the reply has it for every country or
+  // when one of its tags was asked for; otherwise that country's own reply is read.
+  const countryHolder = chosenSelection?.kind === 'country' ? chosenSelection.holder : null;
+  const requested = all ? null : resolved ? [...resolved.tags] : [];
+  const countryTags = trade && countryHolder ? countryTradeTags(trade, requested, countryHolder) : null;
+  const countryKey = countryTags ? JSON.stringify(countryTags) : null;
+  const countryReply = useProduct<TradeFlowsReply>(runtime.client, track && countryTags && effectiveDrill.breakdown != null ? tradeFlowsRequest(track, countryTags) : null,
+    active && effectiveDrill.breakdown != null, validateTradeFlowsReply);
+  const countryData = useMemo(() => !countryHolder ? null : countryKey ? countryReply.data ? decodeTrade(countryReply.data) : null : trade,
+    [countryHolder, countryKey, countryReply.data, trade]);
+  const countrySource = countryData ?? trade;
+  const countryFact = countryHolder && drillAt != null && countrySource ? identityCountryAt(countrySource, countryHolder, drillAt) : null;
+  const countryTitle = useCountryLabelsAt(runtime.client, track, countryFact ? [{ tag: countryFact.tag, hour: countryFact.hour }] : [], active);
+  const drillTitle = !countryHolder ? 'Trade contributors'
+    : countryFact ? `${countryTitle.labelAt(countryFact.hour)(countryFact.tag).name}: imports and exports` : 'Imports and exports';
 
   const description = useMemo(() => {
     if (!data || !diagram.links.length) return message ?? '';
@@ -322,12 +356,13 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     <FlowDiagram label={`Trade flows: sellers to buyers${all ? ', all countries' : ''}`} nodes={flowNodes} links={flowLinks}
       stretch={measure === 'current' ? spanIndex : 'all'} scale={scale} slots={perSide + 1} hour={moment} onPick={openDrill}
       hoursPerSecond={clock.hoursPerSecond} message={message} tooltip={tooltip} onContextMenu={onContextMenu} description={description} onCapacity={setCapacity}
+      onLabelPick={openLabel}
       active={active && !(effectiveDrill.breakdown && (pinnedView || options.drill !== 'popout'))} />
   </div>;
   return <div className="trade-flows" ref={anchor}>
     {pinnedHeader}
     <DrillHost mode={pinnedView || options.drill !== 'popout' ? 'inline' : 'popout'} open={effectiveDrill.breakdown != null} anchor={anchor}
-      title="Trade contributors" day={drillAt == null ? '' : dayLabel(drillAt)} following={effectiveDrill.follow} canFollow
+      title={drillTitle} day={drillAt == null ? '' : dayLabel(drillAt)} following={effectiveDrill.follow} canFollow
       returnFocus=".flow-diagram canvas" onClose={() => {
         dispatchDrill({ type: 'close' });
         if (pinnedView) setOption?.('show', 'main');
@@ -335,8 +370,15 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
       onFollow={() => dispatchDrill(drill.breakdown ? { type: 'follow' }
         : { type: 'open', breakdown: 'contributions', hour: moment, playing: true, playhead: Math.floor(runtime.clock.getHour()) + track.axisOffset })}
       onPin={chosenSelection && drillAt != null ? () => runtime.addWidgetBelow(widget.id,
-        pinContributions(widget, track, chosenSelection, drillAt, effectiveDrill.follow, extent)) : undefined} main={main}>
-      {chosenSelection && <TradeDrill flows={contributors} trade={trade} track={track} runtime={runtime} measure={measure} from={from}
+        pinContributions(widget, track, chosenSelection, drillAt, effectiveDrill.follow, extent, countryFact?.tag ?? null)) : undefined} main={main}>
+      {countryHolder ? countryReply.error && countryKey ? <WidgetState kind="error" detail={countryReply.error} onRetry={countryReply.retry} />
+        : !countryData ? <WidgetState kind="loading" label="Loading this country's trade…" />
+        : <TradeCountryView holder={countryHolder} trade={countryData} resources={resourceIds} track={track} runtime={runtime} measure={measure} from={from}
+          hour={drillAt} extent={extent} playhead={effectiveDrill.follow ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null}
+          colours={resourceColour} tokens={tokens} active={active && effectiveDrill.breakdown != null}
+          onPick={hour => dispatchDrill(drill.breakdown ? { type: 'pick', hour } : { type: 'open', breakdown: 'contributions', hour, playing: false, playhead: null })}
+          onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
+      : chosenSelection && <TradeDrill flows={contributors} trade={trade} track={track} runtime={runtime} measure={measure} from={from}
         hour={drillAt} extent={extent} playhead={effectiveDrill.follow ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null}
         known={known} colours={resourceColour} tokens={tokens} identityNote={scope?.kind === 'countries' ? scope.identityNote : undefined} active={active && effectiveDrill.breakdown != null}
         onPick={hour => dispatchDrill(drill.breakdown ? { type: 'pick', hour } : { type: 'open', breakdown: 'contributions', hour, playing: false, playhead: null })}

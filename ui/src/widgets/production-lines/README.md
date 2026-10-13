@@ -6,7 +6,7 @@ One country’s active production table at a moment, or line histories across th
 
 ## Products it reads
 
-`production-lines`, `production-line-detail` and `production-line-breakdown` are owned by [production_lines.rs](../../../../crates/dashboard/src/products/production_lines.rs). Detail loads in windows; a selected factor has its own branch history.
+`production-lines`, `production-line-detail` and `production-line-breakdown` are owned by [production_lines.rs](../../../../crates/dashboard/src/products/production_lines.rs). Detail loads in month windows of recorded line values, without modifier trees; a selected factor has its own branch history from the breakdown.
 
 ## Settings
 
@@ -19,7 +19,7 @@ Campaign/follow/pin/range; order/columns in follow and pin, ended lines in campa
 - Values, output, organisations and variant definitions have independent coverage/read dates. Gaps, incomplete tables and replacement countries stop carries; missing final output can make totals unknown.
 - Missing equipment and organisation pictures use subject icons. Line choices use equipment names and line numbers.
 - Names/art follow the read’s variant and country context. Native icon/organisation fallback logic belongs to Rust, not a frontend catalogue.
-- Hover, moment parts and factor history share one part model. Signed corrections remain exact rows; only positive bands draw. A picked day holds, Follow resumes playback and Pin preserves the line/factor and picked date. Saved line keys and original choice dates bind campaign, branch and native producer. Breakdown histories follow its renames, exclude reused tags and date the header to local Pick/Follow. Missing saved origins keep a neutral header and unavailable body.
+- Efficiency and output cells show the line's recorded values on hover and open the factor breakdown on click; its moment parts and factor history share one part model. As in the game's breakdown, a source whose recorded value is zero is not listed, so a large country's hundreds of untouched sources add no rows. Signed corrections remain exact rows; only positive bands draw. A picked day holds, Follow resumes playback and Pin preserves the line/factor and picked date. Saved line keys and original choice dates bind campaign, branch and native producer. Breakdown histories follow its renames, exclude reused tags and date the header to local Pick/Follow. Missing saved origins keep a neutral header and unavailable body.
 
 ## Files
 

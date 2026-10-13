@@ -245,6 +245,8 @@ export const RACE_AXIS = 22;
 const TOP = 8;
 /** Style A: bars are at most 20 px thick and take about half their row. */
 export const MAX_THICKNESS = 20;
+/** A bar's thickness in a row `slot` px tall: about half the row, at most [`MAX_THICKNESS`]. */
+export const barThickness = (slot: number) => Math.max(2, Math.min(MAX_THICKNESS, slot * 0.52));
 /** The least height of a row: its 14 px flag and 12 px name with room between rows,
  * so rows never overlap however many are asked for. */
 export const MIN_SLOT = 20;
@@ -266,7 +268,7 @@ export function raceLayout(width: number, height: number, slots: number, labelWi
   const drawn = Math.max(1, Math.floor(rows));
   const top = view.top - Math.max(0, Math.min(scroll, TOP + drawn * slot + RACE_AXIS - height));
   return { left: labelWidth, right: Math.max(labelWidth + 1, width - valueWidth), top, bottom: top + slot * drawn, slot,
-    thickness: Math.max(2, Math.min(MAX_THICKNESS, slot * 0.52)), view };
+    thickness: barThickness(slot), view };
 }
 
 /** Whether a row centred at `centre` shows in the view at all. */

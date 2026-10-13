@@ -10,7 +10,7 @@ Signed factory IC applied to equipment lines and rocket sites, grouped as produc
 
 ## Settings
 
-Campaign/follow/pin/range; refitted ships (off), hierarchy levels and shared sunburst options. One country and whole campaign are the defaults.
+Campaign/follow/pin/range; refitted ships (off), hierarchy levels, IC decimals and shared sunburst options. One country and whole campaign are the defaults. IC is written in whole numbers unless IC decimals asks for up to every recorded digit ([icDecimals.ts](../../dashboard/icDecimals.ts)).
 
 ## Notable behaviour
 
@@ -18,7 +18,7 @@ Campaign/follow/pin/range; refitted ships (off), hierarchy levels and shared sun
 - “No military production yet.” requires a dated complete-empty census/output read and independently known rocket absence. Empty leaves, stalled lines, zero signed totals and empty ranges do not prove this state. Historical spending survives deleted lines; unread sources retain their reasons.
 - Final deleted-line input remains counted. Ranges subtract signed endpoints in one uninterrupted observation. Lost publications, resets, overflow or classification failure leave spending unknown independently of delivery counts.
 - Unresolved types keep tokens/values and can make group attribution unknown while an independently measured country total stays exact. Names are read-dated; the rocket source name uses recorded building classification. Design/source pairs remain distinct when rings are hidden.
-- Signed corrections keep every fraction in totals/legend rows; only positive amounts draw. Unknown totals supply no shares or Fill denominator. The shared Sunburst owns zoom/folding; this widget adds no dated Jump menu.
+- Totals, shares and slices use exact amounts; only the written IC rounds to the chosen decimals. Signed corrections stay exact; only positive amounts draw. Unknown totals supply no shares or Fill denominator. The shared Sunburst owns zoom/folding; this widget adds no dated Jump menu.
 
 ## Files
 

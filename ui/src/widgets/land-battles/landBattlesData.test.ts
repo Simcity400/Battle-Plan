@@ -13,7 +13,7 @@ import { resolveOptions } from '../../dashboard/options.ts';
 import { countryMatch, countryMatchFilter } from '../../dashboard/groups.ts';
 
 const history = (id = 'episode'): LandBattle => ({ id, provinceId: 17, start: { hour: 10, bound: 'exact' }, end: { hour: 21, bound: 'exact' },
-  endUnknownHour: null, counterBase: 0, priorPeak: null, losses: [], result: null,
+  endUnknownHour: null, counterBase: 0, priorPeak: null, priorSidePeaks: null, losses: [], result: null,
   runs: [{ firstHour: 10, lastHour: 20, counts: [3, 2], rosterUnknown: false, countries: [['mod/tag'], ['other']], countriesUnknown: [false, false], duration: 1 }] });
 const reply = (rows = [history()], window = 0): LandBattlesWindow => ({ window, interval: { firstHour: 10, lastHour: 21 },
   rows, observed: [[10, 21]], warnings: [], contentWarnings: [] });
@@ -44,6 +44,25 @@ test('recorded final winners wait for their supplying hour and terminal-only ros
   assert.equal(row.peakUnknown, true);
   assert.equal(row.sides[0].counts[0].value, null);
   assert.equal(validateLandBattlesReply(wire([transient])).rows.length, 1);
+});
+
+test('a result side without countries keeps the last hourly read\'s participants at that read\'s date', () => {
+  const h = history();
+  h.result = { hour: 21, duration: 25, winner: { side: 0 }, countries: [['late attacker'], []], countriesUnknown: [false, true] };
+  const row = read(h, 21)[0];
+  assert.deepEqual(row.sides[0].countries, [{ tag: 'late attacker', hour: 21 }]);
+  assert.deepEqual(row.sides[1].countries, [{ tag: 'other', hour: 20 }]);
+  assert.equal(row.sides[1].countriesUnknown, undefined);
+  // A participant set the hourly read recorded no longer survives every country filter as unknown.
+  assert.equal(read(h, 21, false, tag => tag === 'unrelated').length, 0);
+  assert.equal(read(h, 21, false, (tag, at) => tag === 'other' && at === 20).length, 1);
+  // Unknown in both reads stays unknown, keeping the result's partial list.
+  const unread = { ...h, result: { ...h.result, countries: [['late attacker'], ['partial']] as [string[], string[]] },
+    runs: [{ ...h.runs[0], countries: [['mod/tag'], []] as [string[], string[]], countriesUnknown: [false, true] as [boolean, boolean] }] };
+  const unknown = read(unread, 21)[0];
+  assert.deepEqual(unknown.sides[1].countries, [{ tag: 'partial', hour: 21 }]);
+  assert.equal(unknown.sides[1].countriesUnknown, 'Countries not recorded');
+  assert.equal(read(unread, 21, false, tag => tag === 'unrelated').length, 1);
 });
 
 test('division text pluralises and compact summaries retain exact values without repeated unit labels', () => {
@@ -290,34 +309,61 @@ test('terminal values are shown only at their supplying hour, and absence cannot
   assert.equal(missingTerminal.lossRead?.terminal, false);
 });
 
-test('compact loss reads rebuild the full reads and loss text, with fixed5 fractions and wide signed corrections', () => {
-  const labels = ['Equipment lost · mod variant (variant 7)', 'Equipment lost · Name not recorded (variant 8)', 'Equipment lost · wide (variant 9)'];
+test('loss reads carry each side\'s exact equipment total, shown in whole numbers, with wide signed corrections', () => {
   const h = { ...history(), losses: [
-    { hour: 10, terminal: false, sides: [{ manpower: 3, variants: [[0, '-100001'], [1, '250000']] }, { manpower: 'Not in this recording', unknown: 'Not in this recording' }] },
-    { hour: 11, terminal: false, sides: [{ manpower: 4, changed: [[1, '300000']] }, { manpower: 6, variants: [[2, '-9223372036854775807']] }] },
+    { hour: 10, terminal: false, sides: [{ manpower: 3, equipment: '149999' }, { manpower: 'Not in this recording', unknown: 'Not in this recording' }] },
+    { hour: 11, terminal: false, sides: [{ manpower: 4, equipment: '250000' }, { manpower: 6, equipment: '-18446744073709551614' }] },
     { hour: 12, terminal: false, sides: 'Hourly losses not recorded' },
-    { hour: 13, terminal: true, sides: [{ manpower: 9, variants: [[1, '300000'], [0, '-100001']] }, { manpower: 7, variants: [] }] },
+    { hour: 13, terminal: true, sides: [{ manpower: 9, equipment: '250000' }, { manpower: 7, equipment: '0' }] },
   ] };
   const missing = (reason: string) => [{ label: 'Manpower lost', value: null, unknown: reason }, { label: 'Equipment lost', value: null, unknown: reason }];
-  const wide = 'Exact amount: -92233720368547.75807';
-  const losses = validateLandBattlesReply(wire([h], labels)).rows[0].losses;
+  const wide = 'Exact amount: -184467440737095.51614';
+  const losses = validateLandBattlesReply(wire([h])).rows[0].losses;
   assert.deepEqual(losses, [
-    { hour: 10, terminal: false, equipmentRaw: [['149999', '-100001', '250000'], []], sides: [
-      [{ label: 'Manpower lost', value: 3 }, { label: 'Equipment lost', value: 1.49999 }, { label: labels[0], value: -1.00001 }, { label: labels[1], value: 2.5 }],
-      missing('Not in this recording')] },
-    { hour: 11, terminal: false, equipmentRaw: [['199999', '-100001', '300000'], ['-9223372036854775807', '-9223372036854775807']], sides: [
-      [{ label: 'Manpower lost', value: 4 }, { label: 'Equipment lost', value: 1.99999 }, { label: labels[0], value: -1.00001 }, { label: labels[1], value: 3 }],
-      [{ label: 'Manpower lost', value: 6 }, { label: 'Equipment lost', value: null, unknown: wide }, { label: labels[2], value: null, unknown: wide }]] },
+    { hour: 10, terminal: false, equipmentRaw: ['149999', null], sides: [
+      [{ label: 'Manpower lost', value: 3 }, { label: 'Equipment lost', value: 1.49999 }], missing('Not in this recording')] },
+    { hour: 11, terminal: false, equipmentRaw: ['250000', '-18446744073709551614'], sides: [
+      [{ label: 'Manpower lost', value: 4 }, { label: 'Equipment lost', value: 2.5 }],
+      [{ label: 'Manpower lost', value: 6 }, { label: 'Equipment lost', value: null, unknown: wide }]] },
     { hour: 12, terminal: false, sides: [missing('Hourly losses not recorded'), missing('Hourly losses not recorded')] },
-    { hour: 13, terminal: true, equipmentRaw: [['199999', '300000', '-100001'], ['0']], sides: [
-      [{ label: 'Manpower lost', value: 9 }, { label: 'Equipment lost', value: 1.99999 }, { label: labels[1], value: 3 }, { label: labels[0], value: -1.00001 }],
-      [{ label: 'Manpower lost', value: 7 }, { label: 'Equipment lost', value: 0 }]] },
+    { hour: 13, terminal: true, equipmentRaw: ['250000', '0'], sides: [
+      [{ label: 'Manpower lost', value: 9 }, { label: 'Equipment lost', value: 2.5 }], [{ label: 'Manpower lost', value: 7 }, { label: 'Equipment lost', value: 0 }]] },
   ]);
   const row = read({ ...h, losses }, 11)[0];
   assert.equal(row.casualties.value, 10);
-  assert.equal(landLossText(row.sides[0].losses[2], row, 0, false), '−1.00001 so far');
-  assert.equal(landLossText(row.sides[1].losses[1], row, 1, true), `−92,233,720,368,547.75807 so far, as of ${formatDateTime(11)}`);
-  assert.equal(landLossText(row.sides[1].losses[2], row, 1, false), '−92,233,720,368,547.75807 so far');
+  assert.equal(landLossText(row.sides[0].losses[1], row, 0, false), '3 so far');
+  assert.equal(landLossText(row.sides[1].losses[1], row, 1, true), `−184,467,440,737,096 so far, as of ${formatDateTime(11)}`);
+  assert.equal(landLossText(row.sides[0].losses[0], row, 0, false), '4 so far');
+});
+
+test('replies that list each design are reduced to each side\'s exact total', () => {
+  const labels = ['Equipment lost · mod variant (variant 7)', 'Equipment lost · Name not recorded (variant 8)'];
+  const h = { ...history(), losses: [
+    { hour: 10, terminal: false, sides: [{ manpower: 3, variants: [[0, '-100001'], [1, '250000']] }, { manpower: 5, variants: [] }] },
+    { hour: 11, terminal: false, sides: [{ manpower: 4, changed: [[1, '300000']] }, { manpower: 6, variants: [[1, '1']] }] },
+  ] };
+  const losses = validateLandBattlesReply(wire([h], labels)).rows[0].losses;
+  assert.deepEqual(losses.map(read => read.equipmentRaw), [['149999', '0'], ['199999', '1']]);
+  assert.deepEqual(losses[1].sides[0], [{ label: 'Manpower lost', value: 4 }, { label: 'Equipment lost', value: 1.99999 }]);
+  assert.equal(validateLandBattlesReply(wire([h], labels)).rows[0].priorSidePeaks, null);
+  // A reply without design labels cannot name per-design amounts.
+  assert.throws(() => validateLandBattlesReply(wire([h])), /malformed/);
+});
+
+test('rows keep each side\'s most divisions at once and say "at least" only for battles under way at the start', () => {
+  const h = history();
+  h.priorSidePeaks = [{ value: 4, hour: 8 }, null];
+  h.runs = [{ ...h.runs[0], lastHour: 14 }, { ...h.runs[0], firstHour: 15, lastHour: 20, counts: [1, 7], duration: 6 }];
+  const row = read(h)[0];
+  assert.deepEqual(row.sidePeaks, [{ value: 4, hour: 8 }, { value: 7, hour: 15 }]);
+  assert.equal(read(history())[0].sidePeaks, null);
+  assert.deepEqual(row.length, { label: 'Length', value: 11, atLeast: false });
+  assert.deepEqual(read({ ...h, start: { hour: 10, bound: 'by' } })[0].length, { label: 'Length', value: 11, atLeast: true });
+  const reply = { ...wire([{ ...h, losses: [] }]) };
+  assert.deepEqual(validateLandBattlesReply(reply).rows[0].priorSidePeaks, [{ value: 4, hour: 8 }, null]);
+  for (const priorSidePeaks of [[], [null], [{ value: -1, hour: 8 }, null], 'none']) {
+    assert.throws(() => validateLandBattlesReply(wire([{ ...h, losses: [], priorSidePeaks }])), /malformed/);
+  }
 });
 
 test('missing casualties stay unknown, exact zero is retained, and ranking explains so-far or fallback', () => {
@@ -349,6 +395,9 @@ test('loss read validation refuses malformed sides, ambiguous labels, orphan cha
     [at(10, [{ manpower: 3, variants: [[0, '1']] }, side]), at(11, 'Hourly losses not recorded'), at(12, [{ manpower: 3, changed: [] }, side])],
     [at(10, [{ manpower: NaN, unknown: 'Not in this recording' }, side])],
     [at(10, [side])],
+    [at(10, [{ manpower: 3, equipment: '1e5' }, side])],
+    [at(10, [{ manpower: 3, equipment: '1', variants: [[0, '1']] }, side])],
+    [at(10, [{ manpower: 3, equipment: 1 }, side])],
   ]) assert.throws(() => validateLandBattlesReply(losses(...reads)), /malformed/);
 });
 

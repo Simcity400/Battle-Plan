@@ -56,7 +56,10 @@ warn, and missing capitulation coverage has its own spans.
 ## Names and cost
 
 Names use recorded prefix/first-goal operands, recorded content and shared
-country/state resolvers. Missing or refused names retain their reason, without
+country/state resolvers. Only a content key for the alliance variant reads the
+viewpoint's alliance test, whose cached-subject operand exists only for the
+recording client with scores captured; other wars take the pair key, else the
+prefix, from any viewpoint. Missing or refused names retain their reason, without
 an invented title. Stored text keeps the shared recording-language guard.
 `countryNames` is only a catalogue for measuring historical labels; it never
 fills a name, flag, roster or value at a missing hour.

@@ -22,7 +22,7 @@ import { usePlaybackSpeed } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { DEFAULT_SORT, OPTIONS } from './definition';
-import { BAR_PARTS, SCORE_PARTS, formatMultiplier, formatScore, gameScoreCountryCell, gameScoreCountryKnown, gameScoreFaction, gameScoreLabel, gameScoreLooks, gameScoreModel, gameScoreRace, gameScoreRow, gameScoreRows, gameScoreTooltips, scoreValue, validateGameScoreReply } from './gameScoreData';
+import { BAR_PARTS, SCORE_PARTS, formatScore, gameScoreCountryCell, gameScoreCountryKnown, gameScoreFaction, gameScoreLabel, gameScoreLooks, gameScoreModel, gameScoreRace, gameScoreRow, gameScoreRows, gameScoreTooltips, scoreValue, validateGameScoreReply } from './gameScoreData';
 import type { ScoreRow } from './gameScoreData';
 import type { GameScoreReply } from '../../generated/dashboard';
 
@@ -77,9 +77,7 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
     ...SCORE_PARTS.map(part => ({ key: part, header: gameScoreLabel(data.labels, part), label: gameScoreLabel(data.labels, part), numeric: true, width: 'max-content', bar: 'visible' as const,
       hint: data.hints[part],
       value: (row: ScoreRow) => scoreValue(row, part), render: (row: ScoreRow) => formatScore(row.cells[part].raw) })),
-    { key: 'multiplier', header: gameScoreLabel(data.labels, 'multiplier'), label: gameScoreLabel(data.labels, 'multiplier'), numeric: true, width: 'max-content',
-      value: row => scoreValue(row, 'multiplier'), render: row => formatMultiplier(row.multipliers.total.raw, String(options.multiplierPrecision)) },
-  ] : [], [data, flagReads, options.multiplierPrecision]);
+  ] : [], [data, flagReads]);
   const tooltip = useCallback((row: ScoreRow) => fitTooltip(gameScoreTooltips(data!, row), viewport, { keep: SCORE_PARTS.length }), [data, viewport]);
   const split = options.split === true;
   const entries = useMemo(() => gameScoreRace(raceRows, split), [raceRows, split]);

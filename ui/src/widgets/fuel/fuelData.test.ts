@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { FuelAwardTotals, FuelAwardsReply, FuelAwardHistoryReply, FuelLabel, FuelRead, FuelReply } from '../../generated/dashboard';
-import { dayAmounts, formatFuel, formatFuelPart, fuelAwardBasis, fuelChoiceKey, fuelHistoryRow, fuelLabel, fuelPartHistory, fuelParts, fuelPartShare, fuelRecipientAmount, fuelRuns, fuelTooltips, fuelView, percentFull, validateFuelReply, validateFuelAwardsReply, validateFuelAwardHistory } from './fuelData.ts';
+import { dayAmounts, formatFuel, formatFuelPart, fuelAwardBasis, fuelChoiceKey, fuelDecimals, fuelHistoryRow, fuelLabel, fuelPartHistory, fuelParts, fuelPartShare, fuelRecipientAmount, fuelRuns, fuelTooltips, fuelView, percentFull, validateFuelReply, validateFuelAwardsReply, validateFuelAwardHistory } from './fuelData.ts';
+import { OPTIONS } from './definition.ts';
+import { resolveOptions } from '../../dashboard/options.ts';
 
 const Q = 32_768;
 const label = (key: string): FuelLabel => ({ key, template: `${key}: {NUM}`, arguments: ['NUM'], reason: null });
@@ -40,11 +42,13 @@ const REPLY: FuelReply = {
   ],
 };
 const COLORS = { fuel: 'blue', capacity: 'grey', gained: 'azure', burned: 'orange' };
-const forms = (hour: number) => {
+const forms = (hour: number, digits = 2) => {
   const view = fuelView(REPLY, 0, 5000);
-  return fuelTooltips(REPLY, view.reads, hour, `Hour ${hour}`, COLORS);
+  return fuelTooltips(REPLY, view.reads, hour, `Hour ${hour}`, COLORS, digits);
 };
-const tip = (hour: number) => forms(hour)[0];
+const tip = (hour: number, digits = 2) => forms(hour, digits)[0];
+/** The decimals a widget with these stored settings writes. */
+const chosen = (stored: Record<string, unknown>) => fuelDecimals(resolveOptions(OPTIONS, stored as never));
 
 test('burn parts preserve fixed5 receipts and the signed tank-conversion residual', () => {
   const sample = read(1, 1, 10, 20, [17, 32769]);
@@ -125,12 +129,12 @@ test('a date range cuts the reads, keeps every read hour for dating, and keeps o
 
 test('amounts are exact: each part and the net are rounded once from the recorded values', () => {
   // Gained 0.005 and burned 1/32768 (0.0000305…): the net rounds from 0.0049694…
-  assert.deepEqual(dayAmounts(REPLY, read(1, 1, 0, Q, [500, 1])), { gained: 1n, burned: 0n, net: 0n });
-  assert.deepEqual(dayAmounts(REPLY, REPLY.reads[0]), { gained: 350n, burned: 125n, net: 225n });
-  assert.equal(dayAmounts(REPLY, REPLY.reads[1]), null);
+  assert.deepEqual(dayAmounts(REPLY, read(1, 1, 0, Q, [500, 1]), 2), { gained: 1n, burned: 0n, net: 0n, gaining: true });
+  assert.deepEqual(dayAmounts(REPLY, REPLY.reads[0], 2), { gained: 350n, burned: 125n, net: 225n, gaining: true });
+  assert.equal(dayAmounts(REPLY, REPLY.reads[1], 2), null);
   assert.equal(formatFuel(String(1_234_567.5 * Q), Q, 0), '1,234,568');
-  assert.equal(formatFuel('-16384', Q), '−0.5');
-  assert.equal(formatFuel(String(20 * Q), Q), '20');
+  assert.equal(formatFuel('-16384', Q, 2), '−0.5');
+  assert.equal(formatFuel(String(20 * Q), Q, 2), '20');
   assert.equal(percentFull(REPLY.reads[1]), 53n);
   assert.equal(percentFull(read(1, 1, 5, 0, 'overlaps')), null);
 });
@@ -159,6 +163,29 @@ test('the tooltip lists the tank, then the day before its read, and dates a carr
   assert.deepEqual(tip(1050).rows, [{ label: 'Not recorded at this time', tone: 'muted' }]);
 });
 
+test('fuel amounts are whole numbers by default, and the settings ask for more decimals', () => {
+  assert.equal(chosen({}), 0);
+  assert.equal(chosen({ fuelDecimals: 2 }), 2);
+  assert.equal(chosen({ fuelDecimals: 5 }), 5);
+  // A stored value out of range keeps the default rather than inventing digits.
+  assert.equal(chosen({ fuelDecimals: 9 }), 0);
+  assert.equal(chosen({ fuelDecimals: 1.5 }), 0);
+  // Gained 3.5 and burned 1.25 each round once; the net rounds from the exact 2.25, not from 4 − 1.
+  const rows = (digits: number) => tip(1018, digits).rows.map(row => [row.label, row.value]);
+  assert.deepEqual(rows(chosen({})), [
+    ['Fuel', '10'], ['Capacity', '20'], ['Full', '50%'], ['Gained (own production)', '+4'], ['Burned', '−1'], ['Net', '+2']]);
+  assert.deepEqual(rows(chosen({ fuelDecimals: 1 })), [
+    ['Fuel', '10'], ['Capacity', '20'], ['Full', '50%'], ['Gained (own production)', '+3.5'], ['Burned', '−1.3'], ['Net', '+2.3']]);
+  assert.equal(formatFuel(String(371_500.25 * Q), Q, chosen({})), '371,500');
+  assert.equal(formatFuel(String(371_500.5 * Q), Q, chosen({ fuelDecimals: 3 })), '371,500.5');
+  // A net that rounds to nothing is written 0 without a tone, while a full tank's
+  // exact gain still explains the discarded fuel.
+  const full = { ...REPLY, reads: [read(1017, 1018, 20 * Q, 20 * Q, [40_000, 0.25 * Q])] };
+  const small = fuelTooltips(full, full.reads, 1018, 'Day', COLORS, 0)[0];
+  assert.deepEqual(small.rows.at(-1), { label: 'Net', value: '0', strong: true, tone: undefined });
+  assert.match(small.note!, /discards fuel beyond its capacity/);
+});
+
 test('the compact tooltip form keeps the tank level and the net', () => {
   assert.deepEqual(forms(1018)[1].rows.map(row => row.label), ['Fuel', 'Net']);
 });
@@ -180,22 +207,50 @@ test('actual sources, transfers and per-hour quantity operands stay exact withou
   assert.deepEqual(burn.parts.slice(3, 6).map(part => part.raw), [10000000n, 20000000n, 300000n]);
   assert.equal(burn.parts.reduce((sum, part) => sum + part.raw, 0n), burn.total);
   assert.equal(burn.parts.at(-1)!.raw, (32769n - 303n) * 100000n - 100000n * 32768n);
-  assert.equal(dayAmounts(REPLY, source)!.net, 250n);
+  assert.equal(dayAmounts(REPLY, source, 2)!.net, 250n);
   const rounded = actual();
   Object.assign(rounded.day!, { gainedRaw: '500', burnedRaw: '0', receivedRaw: ['0', '0', '0'], otherRaw: '0' });
   Object.assign(rounded.day!.awards!, { ownGainRaw: '500', ownGainQuantityRaw: '151', consumedRaw: '0' });
   // 23 hourly raw20 conversions + one raw40 give151 Q15, while converting their raw500 sum gives163.
-  assert.deepEqual(dayAmounts(REPLY, rounded), { gained: 1n, burned: 0n, net: 0n });
+  assert.deepEqual(dayAmounts(REPLY, rounded, 2), { gained: 1n, burned: 0n, net: 0n, gaining: true });
   const conversion = burn.parts.at(-1)!;
   assert.equal(formatFuelPart(conversion.raw, burn.scale), '\u22120.00921630859375');
+  assert.equal(formatFuelPart(conversion.raw, burn.scale, 5), '\u22120.00922');
+  assert.equal(formatFuelPart(conversion.raw, burn.scale, 0), '0');
   assert.equal(fuelPartShare(-1n, 3n), '\u221233.3%');
   assert.equal(fuelPartShare(-1n, -3n), '33.3%');
   assert.equal(fuelPartShare(0n, 0n), '\u2014');
 });
 
+test('written decimals change only the text: parts, totals and shares stay exact', () => {
+  const source = actual();
+  for (const measure of ['gain', 'burn'] as const) {
+    const exact = fuelParts(REPLY, source, measure)!;
+    for (const digits of [0, 2, 5]) {
+      const written = fuelParts(REPLY, source, measure, REPLY, digits)!;
+      assert.deepEqual(written.parts.map(part => part.raw), exact.parts.map(part => part.raw));
+      assert.equal(written.total, exact.total);
+      assert.equal(written.parts.reduce((sum, part) => sum + part.raw, 0n), written.total);
+      assert.deepEqual(written.parts.map(part => fuelPartShare(part.raw, written.total)), exact.parts.map(part => fuelPartShare(part.raw, exact.total)));
+    }
+  }
+  const gain = fuelParts(REPLY, source, 'gain', REPLY, 0)!;
+  // 3.50017 fuel gained; the states source takes away 0.5.
+  assert.equal(formatFuelPart(gain.total, gain.scale, 0), '4');
+  assert.equal(formatFuelPart(gain.total, gain.scale, 2), '3.5');
+  assert.equal(formatFuelPart(gain.total, gain.scale), '3.50017');
+  assert.deepEqual(gain.parts.map(part => part.label), ['base: 4', 'states: \u22121', 'oil: 0', 'negative-flat: 0']);
+  assert.deepEqual(fuelParts(REPLY, source, 'gain', REPLY, 5)!.parts.map(part => part.label), ['base: 4', 'states: \u22120.5', 'oil: 0', 'negative-flat: 0.00017']);
+  assert.equal(fuelPartHistory({ ...REPLY, reads: [source] }, 'gain', REPLY, 0).find(part => part.id === 'gain-1')!.label, 'states: \u22121');
+  assert.ok(fuelTooltips({ ...REPLY, reads: [source] }, [source], 123, 'Day', COLORS, 0)[0].rows
+    .some(row => row.label === 'Lend-lease received (separate)' && row.value === '0'));
+});
+
 test('the exact supplying day resolves native template NUM; uncaptured historical OIL is never a later count', () => {
   assert.equal(fuelLabel({ key: 'synthetic-oil', template: '{OIL} oil gives {NUM}', arguments: ['OIL', 'NUM'],
     reason: 'Historical OIL operand not recorded' }, 350017n, 100000n), '? oil gives 3.50017');
+  assert.equal(fuelLabel({ key: 'synthetic-oil', template: '{OIL} oil gives {NUM}', arguments: ['OIL', 'NUM'],
+    reason: 'Historical OIL operand not recorded' }, 350017n, 100000n, 0), '? oil gives 4');
   assert.equal(fuelLabel({ key: 'missing-mod-content', template: null, arguments: ['NUM'], reason: 'Missing key' }, 3n, 1n), null);
 });
 
@@ -219,7 +274,7 @@ test('source histories keep actual source keys and signed rows across legacy/ref
 
 test('actual daily lend-lease tooltip replaces only the legacy last-hour claim and keeps the compact own net', () => {
   const source = actual(), reply = { ...REPLY, reads: [source] };
-  const full = fuelTooltips(reply, reply.reads, 123, 'Day', COLORS);
+  const full = fuelTooltips(reply, reply.reads, 123, 'Day', COLORS, 2);
   assert.ok(full[0].rows.some(row => row.label === 'Lend-lease received (separate)' && row.value === '+0.24'));
   assert.equal(full[1].rows[1].label, 'Net');
   assert.ok(!full[0].note!.includes('last hour'));

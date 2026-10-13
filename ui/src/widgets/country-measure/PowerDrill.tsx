@@ -9,16 +9,15 @@ import type { ChartTokens } from '../../charts/tokens';
 import type { PlaybackMode } from '../../charts/view';
 import { shownUntil } from '../../charts/view';
 import type { PowerBalanceIndex } from '../../dashboard/powerBalance';
-import { fixed5Text } from '../../dashboard/ideaTooltip';
-import { spendText } from '../../dashboard/politicsSpending';
+import { formatPower, formatRate } from '../../dashboard/powerDecimals';
 import type { HourSpan } from '../../generated/dashboard';
 import { powerActionDetails, powerPartHistory, powerPartsAt } from './powerDrillData';
 import type { PowerBreakdown } from './powerDrillData';
 import { powerLedgerModelKey } from './powerPickModel';
 
-export default function PowerDrill({ index, pickOwner, presentationReady, mode, hour, visibleThrough, extent, within, countries, playback, branchStart,
+export default function PowerDrill({ index, digits = 0, pickOwner, presentationReady, mode, hour, visibleThrough, extent, within, countries, playback, branchStart,
   hoursPerSecond, active, tokens, onPick, onContextMenu }: {
-  index: PowerBalanceIndex; pickOwner: unknown; presentationReady: boolean; mode: PowerBreakdown; hour: number | null; visibleThrough: number;
+  index: PowerBalanceIndex; digits?: number; pickOwner: unknown; presentationReady: boolean; mode: PowerBreakdown; hour: number | null; visibleThrough: number;
   extent: readonly [number, number]; within: readonly HourSpan[] | null; countries: readonly HourSpan[];
   playback: { playhead: number | null; mode: PlaybackMode; afterPlayhead: boolean; windowHours: number };
   branchStart: number; hoursPerSecond: number; active: boolean; tokens: ChartTokens;
@@ -29,7 +28,11 @@ export default function PowerDrill({ index, pickOwner, presentationReady, mode, 
   const identities = useMemo(() => JSON.stringify(countries), [countries]);
   const chartOwner = useMemo(() => ({ parent: pickOwner, actor: index.reply.tag, currency: index.currency, mode, model, membership, identities }),
     [pickOwner, index.reply.tag, index.currency, mode, model, membership, identities]);
-  const partLabel = (label: string) => presentationReady || mode === 'income' ? label : 'Not identified';
+  const partLabel = (label: string) => presentationReady || mode === 'income' ? label : 'Loading…';
+  // Daily figures are rates with the game's two decimals; payments are whole amounts.
+  const amount = (raw: bigint | null) => raw === null ? 'Not recorded' : mode === 'income' ? formatRate(raw, digits) : formatPower(raw, digits);
+  const totalOf = (total: bigint | null) => mode === 'spending' ? 'Spent that day'
+    : index.currency === 'Political' ? 'Daily change' : (total ?? 0n) < 0n ? 'Daily deficit' : 'Daily gain';
   const layers = useMemo(() => powerPartHistory(index, mode, within, countries), [index, mode, within, countries]);
   const colors = useMemo(() => new Map(layers.map((layer, at) => [layer.id, tokens.categories[at % tokens.categories.length] ?? tokens.muted])), [layers, tokens]);
   const stack = useMemo(() => buildStack(layers.map(layer => layer.runs)), [layers]);
@@ -48,20 +51,19 @@ export default function PowerDrill({ index, pickOwner, presentationReady, mode, 
   const snapshot = at === null || !isMember(within ?? undefined, at) ? null : powerPartsAt(index, mode, at, visibleThrough, countries);
   const parts = (snapshot?.parts ?? []).filter(part => part.raw === null || part.raw !== 0n).map(part => ({
     id: part.id, label: partLabel(part.label), value: part.raw === null ? null : Number(part.raw) / 100000,
-    text: part.raw === null ? 'Not recorded' : mode === 'income' ? `${part.raw > 0n ? '+' : ''}${fixed5Text(part.raw, -1)}` : spendText(part.raw),
+    text: amount(part.raw),
     color: colors.get(part.category), muted: part.category === 'income',
   }));
   const absolute = parts.reduce((sum, part) => sum + Math.abs(part.value ?? 0), 0);
   const title = mode === 'income' ? 'Daily income and costs' : 'Spending that day';
-  const totalLabel = mode === 'spending' ? 'Total costs' : index.currency === 'Command' && (snapshot?.total ?? 0n) < 0n ? 'Daily deficit' : 'Net daily income';
 
   return <div className="power-drill">
     {at === null ? <p className="drill-empty">Choose a day.</p>
       : !snapshot ? <p className="drill-empty">This country was not shown at this hour.</p>
         : <>
-          <DrillParts parts={parts} format={value => String(value)} total={absolute} showShares={snapshot.total !== null && !snapshot.reason}
-            totalRow={{ label: totalLabel, value: snapshot.reason ? `${spendText(snapshot.total)} · ${snapshot.reason}` : spendText(snapshot.total) }} />
-          {presentationReady ? <dl className="power-drill-details">{powerActionDetails(index, at, visibleThrough).map((row, position) => <div key={position}>
+          <DrillParts parts={parts} format={value => String(value)} total={absolute} showShares={mode === 'spending' && snapshot.total !== null && !snapshot.reason}
+            totalRow={{ label: totalOf(snapshot.total), value: snapshot.reason ? `${amount(snapshot.total)} · ${snapshot.reason}` : amount(snapshot.total) }} />
+          {presentationReady ? <dl className="power-drill-details">{powerActionDetails(index, at, visibleThrough, digits).map((row, position) => <div key={position}>
             <dt>{row.label}</dt>{row.value && <dd>{row.value}</dd>}
           </div>)}</dl> : <p className="drill-empty">Loading names…</p>}
         </>}
@@ -76,8 +78,8 @@ export default function PowerDrill({ index, pickOwner, presentationReady, mode, 
           if (!isMember(within ?? undefined, shown)) return { title: dayLabel(shown), rows: [{ label: 'Country outside the shown group', tone: 'muted' }] };
           const values = powerPartsAt(index, mode, shown, visibleThrough, countries);
           return { title: dayLabel(shown), rows: [...values.parts.map(part => ({ label: partLabel(part.label), swatch: colors.get(part.category),
-            value: spendText(part.raw), tone: part.raw === null ? 'muted' as const : undefined })),
-          { label: mode === 'spending' ? 'Total costs' : index.currency === 'Command' && (values.total ?? 0n) < 0n ? 'Daily deficit' : 'Net daily income', value: spendText(values.total), strong: true }], note: values.reason };
+            value: amount(part.raw), tone: part.raw === null ? 'muted' as const : undefined })),
+          { label: totalOf(values.total), value: amount(values.total), strong: true }], note: values.reason };
         }} onPick={onPick ? (picked, context?: ChartPick) => { if (context?.frame) onPick(picked); } : undefined} onContextMenu={onContextMenu} />
     </div>
   </div>;

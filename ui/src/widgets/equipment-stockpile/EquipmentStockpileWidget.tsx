@@ -45,7 +45,7 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { EquipmentStockpileReply } from '../../generated/dashboard';
 import { BREAKDOWN, OPTIONS } from './definition';
 import { AI_NOTE, automaticLines, CHOSEN_KEYS, hasRecords, balanceAt, balanceMode, barExtent, chartRuns, choiceKey, choiceRow, formatPercent, oneChoicePerRow, GROUP_NOUNS, groupLabel, groupTooltip, labelAt,
-  SAVED_DESIGN_UNAVAILABLE, orderGroups, otherDesigns, overTimeTooltip, shareModeOf, shareOf, shareScale, stockAt, stockChoices, stockGroups, typesComplete, undrawableReason, weeklyAt, columnVars } from './stockpileData';
+  SAVED_DESIGN_UNAVAILABLE, orderGroups, otherDesigns, overTimeTooltip, shareModeOf, shareOf, shareScale, stockAt, stockChoices, stockGroups, typesComplete, undrawableReason, dailyAt, columnVars } from './stockpileData';
 import type { Grouping, RowOrder, StockGroup } from './stockpileData';
 import { useEquipmentStockpile, useStockpileCountry } from './useEquipmentStockpile';
 import { useStockpileArtwork } from './useStockpileArtwork';
@@ -64,7 +64,7 @@ const END_LABEL_ROOM = 136;
 /** One country's equipment stockpile: for a player-controlled
  * country each equipment type's surplus or shortage as a share of what is needed, as
  * bars or over time; for an AI-controlled one, for which the game computes none, what
- * it holds. The hover adds produced per week and the variants in stock. */
+ * it holds. The hover adds output per day and the variants in stock. */
 export default function EquipmentStockpileWidget(props: WidgetProps) {
   return props.widget.options?.show === BREAKDOWN.id ? <EquipmentStockpileCountry {...props} />
     : <CountryComparisons {...props} component={EquipmentStockpileCountry} />;
@@ -435,7 +435,7 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
           const ai = shareMode && balanceMode(data, hour) === 'ai';
           // A variant is named as recorded at the hovered hour.
           return overTimeTooltip(dayLabel(hour), lines.map(line => ({ group: { ...line.group, label: labelAt(line.group, grouping, hour) }, color: line.color,
-            stock: stockAt(data, line.group, hour), weekly: weeklyAt(data, line.group, hour),
+            stock: stockAt(data, line.group, hour), daily: dailyAt(data, line.group, hour),
             ...(shareMode ? { logistics: balanceAt(data, line.group, hour) } : {}) })),
           data.decimals, ai ? AI_NOTE : undefined, viewport);
         }}

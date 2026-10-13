@@ -12,6 +12,6 @@ A changed `stretch` or reduced motion snaps geometry. `playbackHour` is the last
 
 Memoize `tooltip` with every input it reads. [tooltipCache.ts](tooltipCache.ts) refreshes still pointer/keyboard hover when the hit or callback changes. Dated country facts use [useHoverLabels](../../dashboard/useHoverLabels.ts).
 
-With `hour` and `onPick`, click/Enter/Space activates the actual drawn node/ribbon and its supplying hour, retaining caller selection metadata. The context-menu key and Shift+F10 keep the menu action; without `onPick`, Enter opens that menu too. Keyboard stops and pointer hits use the drawn geometry.
+With `hour` and `onPick`, click/Enter/Space activates the actual drawn node/ribbon and its supplying hour, retaining caller selection metadata. With `onLabelPick`, a node's drawn flag and name are pointed at as the node (tooltip, menu) and a click on them calls it instead; without it they are not. The context-menu key and Shift+F10 keep the menu action; without `onPick`, Enter opens that menu too. Keyboard stops and pointer hits use the drawn geometry.
 
 Use explicit `countryFlag` for native countries, retaining grey placeholders and dated refusal reasons; aggregates remain flagless. Fitted tooltips decode only shown flags. Scrollable breakdowns retain raw rows and a stable `scrollId`; wheel/Page Up/Down go through shared owner-scoped scrolling, whose mounted viewport decodes row flags. An explicit dated tooltip header takes precedence over the node fallback. See [tooltip.ts](../tooltip.ts) for ownership and full spoken text.

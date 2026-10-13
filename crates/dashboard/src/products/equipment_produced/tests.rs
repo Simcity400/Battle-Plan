@@ -271,7 +271,7 @@ fn produced_groups_widen_signed_updates_before_adding_and_subtracting() {
         ]),
         ..Default::default()
     };
-    let groups = group_totals(&track, |_| Some(0), 1).unwrap();
+    let groups = group_totals(&track, ProducedCount::Units, |_| Some(0), 1).unwrap();
     assert_eq!(
         groups[0],
         [
@@ -311,7 +311,7 @@ fn produced_groups_refuse_an_overflowing_widened_update() {
         ..Default::default()
     };
     assert_eq!(
-        group_totals(&track, |_| Some(0), 1)
+        group_totals(&track, ProducedCount::Units, |_| Some(0), 1)
             .unwrap_err()
             .to_string(),
         "Produced equipment group exceeds its exact integer range"
@@ -332,7 +332,7 @@ fn produced_measure_refuses_an_out_of_range_aggregate_instead_of_saturating() {
         ..Default::default()
     };
     assert_eq!(
-        measured(&track, &[Some(0)], true, |_| true)
+        measured(&track, &[Some(0)], true, ProducedCount::Units, |_| true)
             .unwrap_err()
             .to_string(),
         "Produced equipment units exceed their exact integer range"
@@ -620,10 +620,106 @@ fn produced_params(
         tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
         top,
         measure,
+        count: crate::products::equipment_produced::ProducedCount::Units,
         grouping,
         included: Vec::new(),
         refits: false,
     }
+}
+
+#[test]
+fn produced_per_day_counts_one_tick_and_ic_ranks_every_type_in_one_currency() {
+    use crate::products::{
+        LoadContext, Product,
+        equipment_produced::{EquipmentProduced, ProducedCount, ProducedGrouping, ProducedMeasure},
+    };
+    let since = produced_hour(0);
+    // Germany's line makes rifles (variant 10); Italy's builds a destroyer (30).
+    let lines = [(1, 11, 0, 10), (2, 21, 0, 30)];
+    let mut frames = Vec::new();
+    for day in 0..4 {
+        let mut next = produced_day(
+            day,
+            9001,
+            since,
+            &lines,
+            // Germany delivers 2 rifles a day; Italy's destroyer is not finished yet.
+            Some(&[
+                (1, 0, 11, 10, 2 * i64::from(day), true, false),
+                (2, 0, 21, 30, 0, true, false),
+            ]),
+        );
+        for frame in &mut next {
+            let TableView::Complete(TableRows::ProductionLineOutput(rows)) =
+                &mut *frame.tables[TableId::ProductionLineOutput.index()]
+            else {
+                unreachable!()
+            };
+            // 1.5 IC a day goes into Germany's line and 4 IC a day into Italy's.
+            rows[0].spent_raw = replay::rows::Recorded::Value(Some(150_000 * i64::from(day)));
+            rows[1].spent_raw = replay::rows::Recorded::Value(Some(400_000 * i64::from(day)));
+        }
+        frames.extend(next);
+    }
+    let source = produced_source(frames);
+    let load = |tags: &[&str], top, measure, count| {
+        EquipmentProduced::load(
+            &source,
+            &ProducedParams {
+                count,
+                ..produced_params(tags, top, measure, ProducedGrouping::Type)
+            },
+            &LoadContext { content: None },
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    };
+    let total =
+        |series: &ProducedSeries| produced_decode(series.total.as_ref(), series.first_hours.len());
+    // Per day is the running total minus the read a day before: one production tick.
+    // The first read has none before it.
+    let of = |reply: &EquipmentProducedReply, tag: &str| {
+        reply
+            .series
+            .iter()
+            .find(|series| series.tag == tag)
+            .cloned()
+            .expect("a chosen country's series")
+    };
+    let units = load(
+        &["GER", "ITA"],
+        None,
+        ProducedMeasure::Day,
+        ProducedCount::Units,
+    );
+    assert_eq!((units.count, units.decimals), (ProducedCount::Units, 0));
+    let germany = of(&units, "GER");
+    assert_eq!(germany.first_hours, [1, 2, 3].map(produced_hour).to_vec());
+    assert_eq!(total(&germany), [Some(2); 3]);
+    assert_eq!(total(&of(&units, "ITA")), [Some(0); 3]);
+    // Applied IC counts the destroyer still being built, in one currency (fixed5).
+    let ic = load(
+        &["GER", "ITA"],
+        None,
+        ProducedMeasure::Day,
+        ProducedCount::Ic,
+    );
+    assert_eq!((ic.count, ic.decimals), (ProducedCount::Ic, 5));
+    assert_eq!(total(&of(&ic, "GER")), [Some(150_000); 3]);
+    assert_eq!(total(&of(&ic, "ITA")), [Some(400_000); 3]);
+    assert_eq!(ic.keys.len(), 2);
+    let running = load(&["GER"], None, ProducedMeasure::Total, ProducedCount::Ic);
+    assert_eq!(total(&running.series[0]).last(), Some(&Some(450_000)));
+    // The top N rank by what is counted: Germany by units, Italy by IC.
+    let top = |count| {
+        load(&[], Some(1), ProducedMeasure::Day, count)
+            .series
+            .iter()
+            .map(|series| series.tag.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(top(ProducedCount::Units), ["GER"]);
+    assert_eq!(top(ProducedCount::Ic), ["ITA"]);
 }
 
 #[test]

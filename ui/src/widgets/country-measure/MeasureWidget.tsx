@@ -15,7 +15,6 @@ import Legend from '../../charts/Legend';
 import type { LegendItem } from '../../charts/Legend';
 import { SECONDARY_DASH } from '../../charts/palette';
 import { extentOf, lineEndHour, lineLabelHours, runAt } from '../../charts/series';
-import { formatFixed } from '../../charts/valueAxis';
 import type { Run } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer, ChartPick } from '../../charts/TimeChart';
@@ -36,6 +35,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { clipRuns, isMember, membershipChanges, resolveCountries } from '../../dashboard/groups';
 import { pinTime, resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
+import { powerDecimals } from '../../dashboard/powerDecimals';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct, useProducts } from '../../dashboard/products';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
@@ -61,7 +61,7 @@ const NO_WARNINGS: string[] = [];
 const NO_FLAGS: readonly string[] = [];
 /** Hovering within this many pixels of a spend tick snaps to it. */
 const SNAP_PX = 6;
-/** Beyond this many countries the tooltip lists balances only, so it fits the window. */
+/** Beyond this many countries the tooltip lists balances only (no maximum or day details), so it fits the window. */
 const CEILING_ROWS_MAX = 4;
 
 /** Which balance a widget charts, and how it names it. */
@@ -79,6 +79,9 @@ export interface MeasureConfig {
   ceiling?: string;
 }
 
+/** A drill title names its country once the dated name has loaded. */
+const drillCountryName = (label: { name: string; known?: boolean }) => label.known === undefined ? 'Loading…' : label.name;
+
 /** The balance line stays independent of captured income and attributed changes.
  * Missing capture retains the explicitly labelled net-drop fallback. */
 export default function MeasureWidget({ widget, runtime, active, countrySlot, onDiagnostics, config }: WidgetProps & { config: MeasureConfig }) {
@@ -86,6 +89,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
   const viewport = useViewportHeight();
   const options = resolveOptions(config.options ?? MEASURE_OPTIONS, widget.options);
   const showCeiling = config.ceiling != null && options.ceiling !== false;
+  const digits = powerDecimals(options);
   const pinnedMode = options.show === 'income' || options.show === 'spending' ? options.show as PowerBreakdown : null;
   const [localPick, setLocalPick] = useState<{ owner: unknown; hour: number | null } | null>(null);
   const [localDrill, dispatchDrill] = useReducer(reduceDrill, CLOSED);
@@ -273,10 +277,10 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
     const at = Math.floor(head);
     const raw = item.valueAt(at);
     return { id: item.tag, label: labels.labelAt(at)(item.tag).name, color: item.hex,
-      value: raw == null || !data ? 'Not recorded' : formatBalance(raw, data.decimals),
+      value: raw == null || !data ? 'Not recorded' : formatBalance(raw, data.decimals, digits),
       flag: <CountryFlagUrl className="country-flag" url={legendLooks.flag(item.tag, at)}
         pending={legendLooks.flagPending(item.tag, at)} reason={legendLooks.flagReason(item.tag, at)} /> };
-  }), [series, head, labels.labelAt, data, legendLooks]);
+  }), [series, head, labels.labelAt, data, legendLooks, digits]);
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
   // The last hour drawn: the playhead, unless whole-campaign playback shows past it.
   const until = shownUntil(playhead, playback, options.afterPlayhead === true);
@@ -302,7 +306,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
       : (hasSavedCountry && !savedCountry) || (groupData && (!selectedCountry || !actorSpans)) ? <WidgetState kind="unavailable" message={actorReason!} />
         : groups.error && !groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
           : !drillDetail || !data ? <WidgetState kind="loading" label="Loading income and causes..." />
-          : <PowerDrill index={drillDetail} pickOwner={pickOwner} presentationReady={selectedLedger !== undefined} mode={mode} hour={at} visibleThrough={Math.floor(drillThrough)} extent={extent}
+          : <PowerDrill index={drillDetail} digits={digits} pickOwner={pickOwner} presentationReady={selectedLedger !== undefined} mode={mode} hour={at} visibleThrough={Math.floor(drillThrough)} extent={extent}
             within={null} countries={countrySegments}
             playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }}
             branchStart={track?.branch.firstHour ?? 0} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} tokens={tokens}
@@ -352,7 +356,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
-        padding={{ right: options.endLabels ? CHART_LAYOUT.measureEndLabels : CHART_LAYOUT.right }} layers={layers} active={active} revision={`${head}:${data.branchId}:${series.length}:${viewport}:${labels.revision}:${ledger.data ? 'details' : ledger.error ?? 'loading'}`}
+        padding={{ right: options.endLabels ? CHART_LAYOUT.measureEndLabels : CHART_LAYOUT.right }} layers={layers} active={active} revision={`${head}:${data.branchId}:${series.length}:${viewport}:${labels.revision}:${digits}:${ledger.data ? 'details' : ledger.error ?? 'loading'}`}
         onViewChange={onViewChange}
         keyHours={keyHours} pickOwner={pickOwner}
         formatValue={value => Math.abs(value) >= 1000 ? `${Math.round(value / 100) / 10}k` : String(Math.round(value))}
@@ -375,26 +379,26 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
           const rows: TooltipRow[] = series.flatMap(item => {
             const raw = item.valueAt(hour);
             const label = labels.labelAt(hour)(item.tag);
-            const balance: TooltipRow = { label: label.name, countryFlag: label, swatch: item.hex, value: raw == null ? 'Not recorded' : formatFixed(raw, decimals, decimals), tone: raw == null ? 'muted' : undefined };
+            const balance: TooltipRow = { label: label.name, countryFlag: label, swatch: item.hex, value: raw == null ? 'Not recorded' : `${formatBalance(raw, decimals, digits)} ${config.unit}`, tone: raw == null ? 'muted' : undefined };
             if (!maxima || series.length > CEILING_ROWS_MAX) return [balance];
             const maximum = item.ceilingAt(hour);
-            return [balance, { label: series.length > 1 ? `${label.name}: maximum` : 'Maximum', value: maximum == null ? 'Not recorded' : formatFixed(maximum, maxima.decimals, maxima.decimals), tone: 'muted' }];
+            return [balance, { label: series.length > 1 ? `${label.name}: maximum` : 'Maximum', value: maximum == null ? 'Not recorded' : formatBalance(maximum, maxima.decimals, digits), tone: 'muted' }];
           });
-          for (const item of series) {
+          // Past a few countries the tooltip lists balances only, so it fits the window.
+          for (const item of series.length > CEILING_ROWS_MAX ? [] : series) {
             if (!isMember(item.membership, hour) || item.valueAt(hour) === null) continue;
             const detail = details.get(item.tag);
             if (series.length > 1) rows.push({ label: labels.labelAt(hour)(item.tag).name, strong: true, divider: true });
-            if (detail) rows.push(...powerBalanceRows(detail, hour, Math.floor(detailsThrough)));
+            if (detail) rows.push(...powerBalanceRows(detail, hour, Math.floor(detailsThrough), digits));
             else rows.push({ label: 'Income and causes', value: ledger.error ? 'Couldn’t load income and causes.' : 'Loading…', tone: 'muted' });
             const drop = item.drops.find(entry => entry.hour === hour);
             const cover = detail && powerCoverageAt(detail, hour);
             const captured = currency === 'Political' ? cover?.political : cover?.command;
-            if (drop && !captured) rows.push({ label: 'Spent (net)', value: netSpend(drop, decimals), tone: 'negative', divider: true },
-              { label: 'Cause', value: 'Not identified', tone: 'muted' });
+            if (drop && !captured) rows.push({ label: 'Balance fell', value: netSpend(drop, decimals, digits), divider: true });
           }
           rows.push(...badgeRows(hovered));
           const notes = [
-            ...(rows.some(row => row.label === 'Spent (net)') ? ['Net balance decrease; payment details unavailable.'] : []),
+            ...(rows.some(row => row.label === 'Balance fell') ? ['Payments weren’t recorded here.'] : []),
           ];
           const content = { title: dayLabel(hour), rows, note: notes.length ? notes.join(' ') : undefined };
           return fitTooltip([content], viewport);
@@ -409,7 +413,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
             const raw = last == null ? null : item.valueAt(last);
             if (raw == null) return [];
             // One country: its value and unit; several: each named.
-            const text = series.length === 1 ? `${formatFixed(raw, decimals, 1)} ${config.unit}` : `${labels.labelAt(last!)(item.tag).name} ${formatBalance(raw, decimals)}`;
+            const text = series.length === 1 ? `${formatBalance(raw, decimals, digits)} ${config.unit}` : `${labels.labelAt(last!)(item.tag).name} ${formatBalance(raw, decimals, digits)}`;
             return [{ id: item.tag, y: frame.toY(Number(raw) / 10 ** decimals), text, color: item.hex }];
           });
           placeEndLabels(ctx, frame, chartTokens, ends);
@@ -432,7 +436,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
   const breakdownOf = POWER_BREAKDOWNS.find(item => item.id === drillMode)!;
   return <div className="country-measure" ref={drillAnchor}>
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null} anchor={drillAnchor}
-      title={shownTag && drillAt !== null ? `${countryLabels.labelAt(Math.floor(drillAt))(shownTag).name}: ${breakdownOf.label}` : breakdownOf.label}
+      title={shownTag && drillAt !== null ? `${drillCountryName(countryLabels.labelAt(Math.floor(drillAt))(shownTag))}: ${breakdownOf.label}` : breakdownOf.label}
       day={drillAt === null ? '' : dayLabel(Math.floor(drillAt))} following={drill.follow}
       canFollow={!choosingActor && drillTag !== null && liveHour !== null && liveHour >= track.branch.firstHour && liveHour <= track.branch.lastHour} returnFocus=".country-measure-chart canvas" onClose={() => {
         dispatchDrill({ type: 'close' });

@@ -14,9 +14,9 @@ export function fuelCountryRead(replies: readonly FuelReply[], spans: ReadonlyMa
   return reply && read ? { reply, read } : null;
 }
 
-export function fuelCountryHistory(replies: readonly FuelReply[], spans: ReadonlyMap<string, readonly Span[]> | undefined, measure: 'gain' | 'burn') {
+export function fuelCountryHistory(replies: readonly FuelReply[], spans: ReadonlyMap<string, readonly Span[]> | undefined, measure: 'gain' | 'burn', digits?: number) {
   const parts = new Map<string, ReturnType<typeof fuelPartHistory>[number]>();
-  for (const reply of replies) for (const part of fuelPartHistory(reply, measure)) {
+  for (const reply of replies) for (const part of fuelPartHistory(reply, measure, reply, digits)) {
     const runs = spans ? clipToSpans(part.runs, spans.get(reply.tag) ?? []) : part.runs;
     const previous = parts.get(part.id);
     if (previous) previous.runs.push(...runs); else parts.set(part.id, { ...part, runs: [...runs] });

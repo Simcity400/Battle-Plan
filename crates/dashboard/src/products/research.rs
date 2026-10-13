@@ -1,13 +1,20 @@
 //! Slot assignments from observed research tables, with explicit coverage and bounds.
 //!
 //! Research is read one country slice per hour (see the collector README), so
-//! a country's rows are observed at their read hour (SliceReads), usually a day apart,
-//! and carried rows are ignored. Consecutive reads with no unobservable hour
+//! a country's rows are observed at their read hour (SliceReads), usually a day apart.
+//! Carried rows add no observation; they hold the last read's coverage, slots
+//! and slot states until the next read is due, and progress keeps its read hour.
+//! Consecutive reads with no unobservable hour
 //! between them are continuous: a new assignment is bounded by the previous
 //! read, unless an hour between them was unobservable or a scheduled read
 //! of the country was missed (reads more than a day apart). Assignment,
 //! cancellation, completion and slot changes are read within the hour;
 //! modifier-only changes appear at the country's next slice read.
+//!
+//! A slot read whose technology occurrence was not recorded (recordings made
+//! before it was) keeps its coverage and slot state, named by the read's own
+//! technology key, but joins no assignment: equal handles and names can belong
+//! to repeated occurrences. Such reads are counted in a named warning.
 use super::{CountryParams, LoadContext, Product, artwork};
 use crate::{
     Artwork, ResearchBonus, ResearchCoverage, ResearchDetails, ResearchEntry, ResearchHistory,
@@ -33,7 +40,8 @@ const MAX_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Default)]
 pub struct ResearchCache {
-    countries: VecDeque<(u64, String, ResearchHistory, usize)>,
+    /// Branch, tag, history, retained bytes and the slot reads not joined.
+    countries: VecDeque<(u64, String, ResearchHistory, usize, usize)>,
 }
 
 impl ResearchCache {
@@ -43,31 +51,40 @@ impl ResearchCache {
         branch: u64,
         tag: &str,
         cancelled: &AtomicBool,
-    ) -> io::Result<ResearchHistory> {
+    ) -> io::Result<(ResearchHistory, usize)> {
         check_cancel(cancelled)?;
         if let Some(i) = self
             .countries
             .iter()
-            .position(|(id, country, _, _)| *id == branch && country == tag)
+            .position(|(id, country, ..)| *id == branch && country == tag)
         {
             let entry = self.countries.remove(i).unwrap();
             self.countries.push_back(entry);
         } else {
-            let history = research_branch_selected(replay, branch, Some(tag), cancelled)?
-                .remove(tag)
-                .ok_or_else(|| io::Error::other("No recorded research history for this country"))?;
+            let (history, unjoined) =
+                research_branch_selected(replay, branch, Some(tag), cancelled)?
+                    .remove(tag)
+                    .ok_or_else(|| {
+                        io::Error::other("No recorded research history for this country")
+                    })?;
             let bytes = history_bytes(&history);
             while !self.countries.is_empty()
                 && (self.countries.len() >= 4
-                    || self.countries.iter().map(|(_, _, _, b)| b).sum::<usize>() + bytes
+                    || self
+                        .countries
+                        .iter()
+                        .map(|(_, _, _, b, _)| b)
+                        .sum::<usize>()
+                        + bytes
                         > MAX_BYTES)
             {
                 self.countries.pop_front();
             }
             self.countries
-                .push_back((branch, tag.to_owned(), history, bytes));
+                .push_back((branch, tag.to_owned(), history, bytes, unjoined));
         }
-        Ok(self.countries.back().unwrap().2.clone())
+        let (_, _, history, _, unjoined) = self.countries.back().unwrap();
+        Ok((history.clone(), *unjoined))
     }
 }
 
@@ -139,6 +156,20 @@ struct Country {
     /// per hour, so consecutive reads of a country are usually a day apart;
     /// they are still continuous observations.
     read_after: Option<i32>,
+    /// The hour of the last read observed into the history. Carried hours
+    /// extend coverage past it; a new assignment is still bounded by it.
+    observed_read: Option<i32>,
+    /// Slot reads holding a technology whose occurrence was not recorded:
+    /// shown in the slot's state, never joined into an assignment.
+    unjoined_reads: usize,
+}
+
+/// A slot's technology read without its recorded occurrence: named, but
+/// never joined to an assignment or to the technology inventory.
+struct UnjoinedTechnology {
+    token: String,
+    classifier: u32,
+    ahead_reduction_years_raw: i64,
 }
 
 /// Whether an observation at `hour` directly continues one at `last`.
@@ -257,6 +288,44 @@ impl Country {
         self.retained_bytes += history_growth(&self.history, &before);
     }
 
+    /// Whether `hour` can carry the last read: the same identity, the hour
+    /// straight after the last known one, and before the next read is due.
+    fn carries(&self, identity: (u32, u32), hour: i32) -> bool {
+        self.identity == Some(identity)
+            && self.last_read.is_some_and(|read| {
+                i64::from(hour) - i64::from(read) < i64::from(replay::cadence::STAGGER_PERIOD)
+            })
+            && self
+                .history
+                .coverage
+                .last()
+                .is_some_and(|span| span.last_hour.checked_add(1) == Some(hour))
+    }
+
+    /// A recorded hour whose rows are still those of the last read: coverage,
+    /// the slots read then and their state hold for this hour too, as a
+    /// modifier change appears only at the next read. Progress keeps its read
+    /// hour, since the game advances it daily. A gap, an unobservable hour,
+    /// another identity or a missed read ends the carry until the next read.
+    fn carry(&mut self, identity: (u32, u32), hour: i32) {
+        if !self.carries(identity, hour) {
+            return;
+        }
+        let next = |last: i32| last.checked_add(1) == Some(hour);
+        if let Some(span) = self.history.coverage.last_mut() {
+            span.last_hour = hour;
+        }
+        for slot in &mut self.history.slots {
+            let Some(available) = slot.availability.last_mut().filter(|a| next(a.last_hour)) else {
+                continue;
+            };
+            available.last_hour = hour;
+            if let Some(state) = slot.states.last_mut().filter(|s| next(s.last_hour)) {
+                state.last_hour = hour;
+            }
+        }
+    }
+
     fn observe_inputs_inner(
         &mut self,
         identity: (u32, u32),
@@ -267,15 +336,13 @@ impl Country {
         modifier_rows: Option<&[replay::rows::ResearchModifierRow]>,
     ) {
         // Any number of slots: content and effects set how many a country has.
+        // A recorded occurrence must be a template index. One that was not
+        // recorded keeps the read; only the joins that need it are refused.
         if inputs.iter().enumerate().any(|(i, r)| {
             r.index as usize != i
                 || r.technology_present > 1
                 || (r.technology_present != 0
-                    && (r
-                        .database_index
-                        .require("technology occurrence")
-                        .ok()
-                        .is_none_or(|index| *index <= 0)
+                    && (matches!(r.database_index, replay::rows::Recorded::Value(index) if index <= 0)
                         || r.token.is_empty()
                         || r.token.len() > 512
                         || std::str::from_utf8(&r.token).is_err()))
@@ -316,10 +383,28 @@ impl Country {
             }
         }
         let mut definitions = BTreeMap::new();
+        let mut unjoined = BTreeMap::new();
         let mut details = BTreeMap::new();
         self.samples
             .retain(|index, _| inputs.iter().any(|r| r.index == *index));
         for &input in inputs {
+            let occurrence = match input.database_index {
+                replay::rows::Recorded::Value(index) if input.technology_present != 0 => {
+                    Some(index as u32)
+                }
+                _ => None,
+            };
+            if input.technology_present != 0 && occurrence.is_none() {
+                self.unjoined_reads += 1;
+                unjoined.insert(
+                    input.index,
+                    UnjoinedTechnology {
+                        token: std::str::from_utf8(&input.token).unwrap().to_owned(),
+                        classifier: input.classifier,
+                        ahead_reduction_years_raw: input.ahead_reduction_raw,
+                    },
+                );
+            }
             slots.push(ResearchSlotRow {
                 country: input.country,
                 index: input.index,
@@ -346,7 +431,8 @@ impl Country {
                     .map(|(_, old)| i128::from(input.progress_raw) - i128::from(old.progress_raw))
                     .or_else(|| {
                         // Slot speed is written at assignment, not refreshed each day.
-                        // Use it only for a witnessed new assignment's first day.
+                        // Use it only for a witnessed new assignment's first day;
+                        // a read that cannot be joined witnesses no assignment.
                         let fresh = self
                             .history
                             .slots
@@ -357,7 +443,7 @@ impl Country {
                                 e.started_after_hour.is_some()
                                     && hour.saturating_sub(e.first_observed_hour) < 24
                             });
-                        (continuous && (!same || fresh))
+                        (occurrence.is_some() && continuous && (!same || fresh))
                             .then_some(i128::from(input.research_speed_raw))
                     });
                 let daily_rate = modifier_data
@@ -372,25 +458,16 @@ impl Country {
             while samples.len() > 24 {
                 samples.pop_front();
             }
-            if input.technology_present != 0 {
+            if let Some(occurrence) = occurrence {
                 definitions.insert(
-                    *input
-                        .database_index
-                        .require("technology occurrence")
-                        .unwrap() as u32,
+                    occurrence,
                     std::str::from_utf8(&input.token).unwrap().to_owned(),
                 );
                 technologies.insert(
-                    *input
-                        .database_index
-                        .require("technology occurrence")
-                        .unwrap() as u32,
+                    occurrence,
                     ResearchTechnologyRow {
                         country: input.country,
-                        database_index: *input
-                            .database_index
-                            .require("technology occurrence")
-                            .unwrap(),
+                        database_index: occurrence as i32,
                         applied_bonus_count: input.bonus_count as i32,
                         technology_handle: input.technology_handle,
                         classifier: input.classifier,
@@ -454,6 +531,7 @@ impl Country {
             &slots.iter().collect::<Vec<_>>(),
             &technologies.iter().map(|(&h, t)| (h, t)).collect(),
             &definitions,
+            &unjoined,
             Some(&details),
         );
         for input in inputs.iter().filter(|input| input.technology_present != 0) {
@@ -502,6 +580,7 @@ impl Country {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn observe(
         &mut self,
         identity: (u32, u32),
@@ -509,9 +588,11 @@ impl Country {
         slots: &[&ResearchSlotRow],
         technologies: &BTreeMap<u32, &ResearchTechnologyRow>,
         definitions: &BTreeMap<u32, String>,
+        unjoined: &BTreeMap<u32, UnjoinedTechnology>,
         details: Option<&BTreeMap<u32, ResearchDetails>>,
     ) {
         let previous = self.history.coverage.last().map(|c| c.last_hour);
+        let previous_read = self.observed_read.replace(hour);
         let read_after = self.read_after;
         let continuous = previous.is_some_and(|p| follows(read_after, p, hour))
             && self.identity == Some(identity);
@@ -637,7 +718,12 @@ impl Country {
             if row.technology_present == 0 || self.active.contains_key(&row.index) {
                 continue;
             }
-            let occurrence = *row.database_index.require("technology occurrence").unwrap() as u32;
+            // Without its recorded occurrence a technology cannot start or
+            // continue an assignment; the slot's state still shows it.
+            let replay::rows::Recorded::Value(occurrence) = row.database_index else {
+                continue;
+            };
+            let occurrence = occurrence as u32;
             let technology = technologies[&occurrence];
             // A completed assignment can remain linked for an observation. Do not
             // invent a new assignment until its recorded state becomes active again.
@@ -653,7 +739,7 @@ impl Country {
                 continuity_start_hour: self.continuity_start_hour,
                 level: technology.level,
                 first_observed_hour: hour,
-                started_after_hour: continuous.then_some(previous).flatten(),
+                started_after_hour: continuous.then_some(previous_read).flatten(),
                 last_observed_hour: hour,
                 ended_by_hour: None,
                 outcome_observed_hour: None,
@@ -672,37 +758,64 @@ impl Country {
                 .iter_mut()
                 .find(|slot| slot.index == row.index)
                 .unwrap();
-            let technology = (row.technology_present != 0).then(|| {
-                technologies
-                    [&(*row.database_index.require("technology occurrence").unwrap() as u32)]
+            let occurrence = match row.database_index {
+                replay::rows::Recorded::Value(index) if row.technology_present != 0 => {
+                    Some(index as u32)
+                }
+                _ => None,
+            };
+            // The technology the slot holds: its recorded occurrence's, or the
+            // read's own name when the occurrence was not recorded.
+            let held = occurrence
+                .map(|occurrence| {
+                    let technology = technologies[&occurrence];
+                    (
+                        definitions[&occurrence].clone(),
+                        technology.classifier,
+                        technology.researched != 0,
+                        technology.ahead_reduction_years_raw,
+                    )
+                })
+                .or_else(|| {
+                    unjoined.get(&row.index).map(|technology| {
+                        (
+                            technology.token.clone(),
+                            technology.classifier,
+                            false,
+                            technology.ahead_reduction_years_raw,
+                        )
+                    })
+                });
+            let entry_first_observed_hour = held.as_ref().and_then(|(token, ..)| {
+                slot.entries
+                    .last()
+                    .filter(|entry| {
+                        &entry.token == token
+                            && occurrence.is_some()
+                            && self.entry_occurrences[row.index as usize] == occurrence
+                    })
+                    .map(|entry| entry.first_observed_hour)
             });
-            let token = technology.map(|_| {
-                definitions[&(*row.database_index.require("technology occurrence").unwrap() as u32)]
-                    .clone()
+            // A finished technology still linked to the slot, with no
+            // assignment joined to it, is not being researched.
+            let held = held.filter(|&(_, classifier, researched, _)| {
+                entry_first_observed_hour.is_some()
+                    || !(classifier == engine::ctechnology::CLASSIFIER_COMPLETED
+                        || (researched && classifier != engine::ctechnology::CLASSIFIER_ACTIVE))
+            });
+            let (token, ahead_reduction_years_raw) = held.map_or((None, None), |held| {
+                (Some(held.0), Some(held.3.to_string()))
             });
             let state = ResearchSlotState {
                 first_hour: hour,
                 last_hour: hour,
                 details: details.and_then(|d| d.get(&row.index)).cloned(),
-                entry_first_observed_hour: slot
-                    .entries
-                    .last()
-                    .filter(|entry| {
-                        Some(&entry.token) == token.as_ref()
-                            && self.entry_occurrences[row.index as usize].is_some_and(
-                                |occurrence| {
-                                    row.database_index
-                                        == replay::rows::Recorded::Value(occurrence as i32)
-                                },
-                            )
-                    })
-                    .map(|entry| entry.first_observed_hour),
+                entry_first_observed_hour,
                 token,
                 speed_multiplier_raw: row.research_speed_raw.to_string(),
                 banked_days_raw: row.banked_days_raw.to_string(),
                 applied_days_raw: row.applied_days_raw.to_string(),
-                ahead_reduction_years_raw: technology
-                    .map(|t| t.ahead_reduction_years_raw.to_string()),
+                ahead_reduction_years_raw,
             };
             if let Some(last) = slot
                 .states
@@ -733,9 +846,13 @@ impl Country {
     }
 }
 
+/// Only a recorded occurrence identifies a technology across reads; equal
+/// handles and names can belong to repeated occurrences.
 fn same_assignment(a: &replay::rows::ResearchInputRow, b: &replay::rows::ResearchInputRow) -> bool {
     a.country == b.country
         && a.technology_present == b.technology_present
+        && (a.technology_present == 0
+            || matches!(a.database_index, replay::rows::Recorded::Value(_)))
         && a.technology_handle == b.technology_handle
         && a.database_index == b.database_index
         && a.level == b.level
@@ -758,6 +875,19 @@ fn remaining(row: &replay::rows::ResearchInputRow, rate: i128) -> Option<u32> {
     let cost = base_cost(row)?;
     let left = (cost - i128::from(row.progress_raw)).max(0);
     u32::try_from((left + rate - 1) / rate).ok()
+}
+
+/// The named refusal for slot reads whose technology occurrence was not recorded.
+fn unjoined_warning(reads: usize) -> String {
+    format!(
+        "{reads} research slot {} technology without its recorded occurrence, so {} not joined into assignments: completions, progress and time spent are unknown there.",
+        if reads == 1 {
+            "read names its"
+        } else {
+            "reads name their"
+        },
+        if reads == 1 { "it is" } else { "they are" }
+    )
 }
 
 fn detail_bytes(details: Option<&ResearchDetails>) -> usize {
@@ -815,6 +945,19 @@ pub fn research_branch(
     branch: u64,
     cancelled: &AtomicBool,
 ) -> io::Result<BTreeMap<String, ResearchHistory>> {
+    Ok(research_branch_selected(replay, branch, None, cancelled)?
+        .into_iter()
+        .map(|(tag, (history, _))| (tag, history))
+        .collect())
+}
+
+/// Every country's history with the count of its slot reads not joined.
+#[cfg(test)]
+pub fn research_branch_unjoined(
+    replay: &Replay,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<BTreeMap<String, (ResearchHistory, usize)>> {
     research_branch_selected(replay, branch, None, cancelled)
 }
 
@@ -823,7 +966,7 @@ fn research_branch_selected(
     branch: u64,
     selected_tag: Option<&str>,
     cancelled: &AtomicBool,
-) -> io::Result<BTreeMap<String, ResearchHistory>> {
+) -> io::Result<BTreeMap<String, (ResearchHistory, usize)>> {
     check_cancel(cancelled)?;
     let selected = [
         replay::rows::TableId::Campaign,
@@ -905,6 +1048,26 @@ fn research_branch_selected(
                             continue;
                         };
                         if !slots_read.contains(&canonical) {
+                            // Not read this hour: its last read holds while the rows
+                            // carried for its linked IDs are still those of that read.
+                            if let Ok(tag) = std::str::from_utf8(&country.tag)
+                                && let Some(state) = countries.get_mut(tag)
+                                && state.carries((country.id, canonical), frame.hour)
+                            {
+                                let mut held = links
+                                    .iter()
+                                    .filter(|link| link.canonical_slot == canonical)
+                                    .filter_map(|link| {
+                                        read_hour(replay::rows::TableId::ResearchInputs, link.id)
+                                    });
+                                let first = held.next();
+                                if first.is_some()
+                                    && first == state.last_read
+                                    && held.all(|read| Some(read) == first)
+                                {
+                                    state.carry((country.id, canonical), frame.hour);
+                                }
+                            }
                             continue;
                         }
                         let Ok(tag) = std::str::from_utf8(&country.tag) else {
@@ -986,7 +1149,7 @@ fn research_branch_selected(
         .into_iter()
         .map(|(tag, mut country)| {
             country.history.slots.sort_by_key(|s| s.index);
-            (tag, country.history)
+            (tag, (country.history, country.unjoined_reads))
         })
         .collect())
 }
@@ -1029,7 +1192,7 @@ impl Product for Research {
         let content = context.content()?;
         let state = source.state::<State>();
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-        let mut history =
+        let (mut history, unjoined) =
             state
                 .history
                 .get(&source.replay(), params.branch(), &params.tag, cancelled)?;
@@ -1071,6 +1234,9 @@ impl Product for Research {
                     }
                 }
             }
+        }
+        if unjoined > 0 {
+            warnings.push(unjoined_warning(unjoined));
         }
         warnings.push("Research dates are observation bounds. Elapsed durations use observed assignments across slots; initial progress and gaps can leave the full duration unknown. Base duration is derived separately from recorded cost operands. Technologies without observed slot assignments are not assigned to a column.".into());
         // Names left out for a localisation refusal, by reason and key.

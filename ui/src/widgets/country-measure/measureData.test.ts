@@ -30,10 +30,12 @@ test('replies are validated, including run order', () => {
 test('values are exact at every recorded hour and missing between runs', () => {
   assert.equal(rawAt(SERIES, 101), '1000000');
   assert.equal(rawAt(SERIES, 105), null);
-  assert.equal(formatBalance(rawAt(SERIES, 102)!, 5), '9.00');
-  assert.equal(formatBalance(rawAt(SERIES, 115)!, 5), '−0.50');
+  assert.equal(formatBalance(rawAt(SERIES, 102)!, 5), '9', 'balances are whole numbers by default');
+  assert.equal(formatBalance(rawAt(SERIES, 102)!, 5, 5), '9.00001', 'decimals raise the written digits only');
+  assert.equal(formatBalance(rawAt(SERIES, 115)!, 5, 1), '−0.5');
   assert.deepEqual(toRuns(SERIES, 5).map(run => run.value), [10, 9.00001, -0.5]);
-  assert.equal(netSpend(SERIES.drops[0], 5), '−1.00');
+  assert.equal(netSpend(SERIES.drops[0], 5), '−1', 'a net drop is whole by default');
+  assert.equal(netSpend(SERIES.drops[0], 5, 5), '−0.99999');
   assert.equal(nearestDrop(SERIES.drops, 99, 5)?.hour, 102);
   assert.equal(nearestDrop(SERIES.drops, 90, 5), null);
 });

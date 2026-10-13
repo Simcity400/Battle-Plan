@@ -5,6 +5,7 @@ import { resolveWidgetCampaign } from './campaigns';
 import { widgetDefinition, widgetUnavailable } from './definitions';
 import type { WidgetRuntime } from './definitions';
 import type { OptionValue } from './options';
+import WidgetBoundary from './WidgetBoundary';
 
 export type { WidgetRuntime } from './definitions';
 
@@ -19,6 +20,8 @@ export function WidgetBody({ widget, runtime, active = true, mapOptions, headerS
   const unavailable = widgetUnavailable(widget);
   const Render = widgetDefinition(widget.kind)?.render;
   if (unavailable || !Render) return <div className="dash-empty" role="status">{unavailable ?? 'Widget renderer unavailable.'}</div>;
-  return <Render widget={resolved} runtime={runtime} active={active} mapOptions={mapOptions ?? DEFAULT_MAP_OPTIONS} headerSlot={headerSlot ?? null} countrySlot={countrySlot ?? null}
-    onDiagnostics={onDiagnostics ?? noDiagnostics} setOption={setOption} setOptions={setOptions} />;
+  return <WidgetBoundary reset={resolved}>
+    <Render widget={resolved} runtime={runtime} active={active} mapOptions={mapOptions ?? DEFAULT_MAP_OPTIONS} headerSlot={headerSlot ?? null} countrySlot={countrySlot ?? null}
+      onDiagnostics={onDiagnostics ?? noDiagnostics} setOption={setOption} setOptions={setOptions} />
+  </WidgetBoundary>;
 }

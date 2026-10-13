@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizePoliticsSpendingOptions, NO_SPENDING_CATEGORIES, POLITICS_SPENDING_OPTIONS } from './politicsSpendingOptions.ts';
+import { normalizePoliticsSpendingOptions, NO_SPENDING_CATEGORIES, POLITICS_SPENDING_OPTIONS, SPENDING_DEFAULT_SORT, spendingSort } from './politicsSpendingOptions.ts';
 import { contentSet, resolveOptions, sectionFields, setOption, setToken } from './options.ts';
 import { OptionDraft } from './optionDraft.ts';
 
@@ -35,11 +35,16 @@ test('5000 known categories migrate without truncation', () => {
   assert.equal(contentSet(normalized.categories).at(-1), catalogue.at(-1)!.value);
 });
 
-test('politics settings offer shown categories and hide month dividers only for cost sorting', () => {
-  const visible = (order: string) => sectionFields(POLITICS_SPENDING_OPTIONS, 'options', resolveOptions(POLITICS_SPENDING_OPTIONS, { order }));
-  assert.equal(visible('cost').some(field => field.key === 'months'), false);
-  assert.equal(visible('oldest').some(field => field.key === 'months'), true);
-  assert.equal(visible('newest').some(field => field.key === 'filterMode'), false);
-  assert.equal(visible('newest').find(field => field.key === 'categories')!.label, 'Show categories');
-  assert.equal(visible('newest').find(field => field.key === 'artwork')!.hint, undefined);
+test('spending tables offer table sort, summary and decimals settings, and keep a saved log order', () => {
+  const fields = sectionFields(POLITICS_SPENDING_OPTIONS, 'options', resolveOptions(POLITICS_SPENDING_OPTIONS, {}));
+  const keys = fields.map(field => field.key);
+  for (const key of ['artwork', 'chips', 'categories', 'totals', 'decimals', 'cellBars', 'density', 'tableSort']) assert.ok(keys.includes(key), key);
+  for (const key of ['order', 'months', 'rowAnimation', 'rankMarkers', 'filterMode']) assert.equal(keys.includes(key), false, key);
+  assert.equal(fields.find(field => field.key === 'totals')!.label, 'Summary');
+  assert.equal(fields.find(field => field.key === 'categories')!.label, 'Show categories');
+  assert.equal(resolveOptions(POLITICS_SPENDING_OPTIONS, {}).decimals, 0, 'whole numbers by default');
+  assert.deepEqual(spendingSort({}), SPENDING_DEFAULT_SORT);
+  assert.deepEqual(spendingSort({ order: 'oldest' }), { column: 'date', direction: 'ascending' });
+  assert.deepEqual(spendingSort({ order: 'cost' }), { column: 'amount', direction: 'descending' });
+  assert.deepEqual(spendingSort({ order: 'cost', tableSort: JSON.stringify(['item', 'ascending']) }), { column: 'item', direction: 'ascending' });
 });

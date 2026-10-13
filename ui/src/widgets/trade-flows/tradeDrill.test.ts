@@ -325,3 +325,24 @@ test('campaign drill Follow uses the actual aligned clock; day pick and Pin pres
   assert.equal(pinned.options?.measure, 'total');
   assert.deepEqual(pinContributions(source, track, selection, 5500, true, [2500, 8000]).time, { mode: 'follow' });
 });
+
+test('a country view saves one native holder, selects both its sides and pins for that country', () => {
+  const track = { id: 't', axisOffset: 0, branch: { id: 'b', firstHour: 2000, lastHour: 9999 }, source: { metadata: { campaignKey: CONTEXT.campaignKey } } } as BoundTrack;
+  const source: WidgetSpec = { id: 'w', kind: 'trade-flows', configVersion: 1, title: 'Trade flows', campaign: 'tracks', trackIds: ['t'],
+    countries: { kind: 'all' }, time: { mode: 'campaign' }, options: { measure: 'current' } };
+  const selection = { kind: 'country', holder: identity(1) } as const;
+  assert.deepEqual(readSelection(selectionToken(selection, CONTEXT), CONTEXT), selection);
+  assert.equal(readSelection(selectionToken({ kind: 'country', holder: '' } as never, CONTEXT), CONTEXT), null);
+  const data = decodeTrade(reply(3));
+  // Countries 0-2 each sell to country 3: country 1's view is its one sale, country 3's every purchase.
+  assert.deepEqual(selectedContributors(data.flows, selection).map(flow => flow.key), [data.flows[1].key]);
+  assert.equal(selectedContributors(data.flows, { kind: 'country', holder: identity(3) }).length, 3);
+  const pinned = pinContributions(source, track, selection, 5000, false, [2000, 9999], 'Country 00001');
+  assert.deepEqual(pinned.countries, { kind: 'tags', tags: ['Country 00001'] }, 'the pin reads and names that country');
+  assert.equal(pinned.title, 'Trade flows: Country trade');
+  assert.equal(pinned.options?.show, 'contributions');
+  assert.deepEqual(readSelection(pinned.options?.tradeSelection, tradeContext(track)), selection);
+  const index = countryIdentityIndex([{ tag: 'X', identities: [{ firstHour: 0, lastHour: 50, slot: 1, countryId: 2 }, { firstHour: 51, lastHour: 99, slot: 5, countryId: 6 }] }]);
+  assert.equal(contributionCountryTag(index, 'X', { kind: 'country', holder: identity(1) }, 20), 'X');
+  assert.equal(contributionCountryTag(index, 'X', { kind: 'country', holder: identity(1) }, 70), null, 'a later holder of the tag is not this country');
+});

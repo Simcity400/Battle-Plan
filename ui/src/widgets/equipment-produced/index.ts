@@ -12,7 +12,7 @@ import { typeLabel, validateProducedReply } from './producedData';
 function useProducedTypes(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced',
-    params: { branchId: track.branch.id, tags: [], top: null, measure: 'total', grouping: 'type', included: [], refits: true } } : null;
+    params: { branchId: track.branch.id, tags: [], top: null, measure: 'total', count: 'units', grouping: 'type', included: [], refits: true } } : null;
   const { data } = useProduct<EquipmentProducedReply>(runtime.client, request, true, validateProducedReply);
   // Keys of types content does not resolve (`?token`) are escaped so they can be stored too.
   return { included: (data?.types ?? []).map(type => ({ value: setToken(type.key), label: typeLabel(type) })) };

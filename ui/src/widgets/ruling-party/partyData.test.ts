@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { PartyHistoryReply } from '../../generated/dashboard';
+import { categoricalPalette, GREY_CHROMA } from '../../charts/palette.ts';
+import { parseColor, rgbToOklch } from '../../shell/appearance/color.ts';
 import { bands, buildStack, formatPopularity, leaderAt, leaderShown, partyBadges, partyNameAt, rulingAt, rulingFirst, stackedSegments, validatePartyHistoryReply } from './partyData.ts';
 
 const run = (firstHour: number, lastHour: number, percent: number, startsSegment = false) => ({ firstHour, lastHour, valueRaw: String(percent * 100000), startsSegment });
@@ -22,9 +24,30 @@ const REPLY: PartyHistoryReply = {
 
 test('bands follow content order and colours; unknown ideologies use the palette after them', () => {
   const list = bands(REPLY, ['#111111', '#222222']);
-  assert.deepEqual(list.map(band => [band.token, band.name, band.color]), [
-    ['democratic', 'Democratic', 'rgb(0 0 255)'], ['fascism', 'Fascist', 'rgb(150 75 0)'], ['mod_ideology', 'Ideology name unavailable', '#111111'],
+  assert.deepEqual(list.map(band => [band.token, band.name]), [
+    ['democratic', 'Democratic'], ['fascism', 'Fascist'], ['mod_ideology', 'Ideology name unavailable'],
   ]);
+  assert.equal(list[2].color, '#111111');
+});
+
+test('content ideology colours keep their hue in the palette tone, and a grey stays grey', () => {
+  for (const surface of ['#111822', '#ffffff']) {
+    const palette = categoricalPalette(surface);
+    const tones = palette.map(hex => rgbToOklch(parseColor(hex)!));
+    const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+    const reply = { ...REPLY, ideologies: [...REPLY.ideologies, { token: 'neutrality', name: 'Non-Aligned', color: [128, 128, 128] as [number, number, number] }],
+      parties: [...REPLY.parties, { token: 'neutrality', runs: [] }] };
+    const shown = new Map(bands(reply, palette).map(band => [band.token, rgbToOklch(parseColor(band.color)!)]));
+    // Pure content blue and red no longer appear as raw primaries.
+    assert.ok(bands(reply, palette).every(band => band.color.startsWith('#') && band.color !== '#0000ff'));
+    for (const [token, rgb] of [['democratic', [0, 0, 255]], ['fascism', [150, 75, 0]]] as const) {
+      const source = rgbToOklch({ r: rgb[0], g: rgb[1], b: rgb[2] }), colour = shown.get(token)!;
+      assert.ok(Math.abs(colour.l - median(tones.map(tone => tone.l))) < 0.02, token);
+      assert.ok(colour.c <= median(tones.map(tone => tone.c)) + 0.01, token);
+      assert.ok(Math.min(Math.abs(colour.h - source.h), 360 - Math.abs(colour.h - source.h)) < 6, token);
+    }
+    assert.ok(shown.get('neutrality')!.c < GREY_CHROMA);
+  }
 });
 
 test('stacked segments break where any party is unrecorded', () => {

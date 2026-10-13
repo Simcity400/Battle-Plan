@@ -18,6 +18,11 @@ export const VALUE_GAP = 8;
 export const FLAG = { x: 8, width: 21, height: 14 } as const;
 /** Where the name starts, after the flag. */
 export const NAME_X = FLAG.x + FLAG.width + 7;
+/** Room after the widest name, and the name column's least width. */
+export const NAME_PAD = 12;
+export const MIN_LABEL = 72;
+/** Room kept right of the widest value label. */
+export const VALUE_PAD = 6;
 
 /** Hairline gridlines at the value ticks, labelled under the plot. */
 export function drawRaceGrid(ctx: CanvasRenderingContext2D, layout: RaceLayout, tokens: ChartTokens, min: number, max: number,

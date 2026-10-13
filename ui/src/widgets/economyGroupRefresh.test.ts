@@ -23,7 +23,7 @@ const factories: CountryFactoriesReply = { branchId: 'branch', fields: [{ group:
   series: [{ tag: 'MOD', membership: null, identities: [{ firstHour: 0, lastHour: 200, slot: 3, countryId: 9 }],
     segments: [{ firstHour: 0, lastHour: 200 }], reads: [{ firstHour: 0, lastHour: 200, readHour: 0, hourly: true }],
     runs: [{ firstHour: 0, lastHour: 200, values: [12], startsSegment: true }] }] };
-const produced: EquipmentProducedReply = { branchId: 'branch', measure: 'total', grouping: 'type', warnings: [],
+const produced: EquipmentProducedReply = { branchId: 'branch', measure: 'total', count: 'units', decimals: 0, grouping: 'type', warnings: [],
   keys: [{ key: 'mod design', typeKey: 'mod design', name: 'First design', names: [], domain: null }], types: [],
   reads: [0, 24], observations: [0], known: [{ firstHour: 0, lastHour: 200 }],
   series: [{ tag: 'MOD', membership: null, identities: [{ firstHour: 0, lastHour: 200, slot: 3, countryId: 9 }],

@@ -1312,6 +1312,113 @@ fn production_history_is_one_step_per_setting_and_its_reads_come_in_windows() {
     assert_eq!(crate::transport::json_len(&"abcd", 5), None);
 }
 
+/// A month window sends each line's recorded values, never its modifier trees: a
+/// tree lists every source of every factor at each read, so with many lines it
+/// would take a month past one reply. Its factors come from the line's breakdown.
+#[test]
+fn a_detail_window_does_not_grow_with_modifier_trees() {
+    use crate::products::production_lines::{
+        DETAIL_HOURS, MAX_REPLY_BYTES, RawRun, ScannedLine, ScannedLines,
+        breakdown::RawModifierRun, detail_lines,
+    };
+    use replay::rows::{
+        CountryProductionModifiersRow, ModifierBreakdownNode, ProductionLineModifiersRow,
+        ProductionModifierTree,
+    };
+    let runs: Vec<RawRun> = (0..30)
+        .map(|day| RawRun {
+            first_hour: day * 24,
+            last_hour: day * 24 + 23,
+            starts_segment: day == 0,
+            variant: 70,
+            active_factories: 8,
+            requested_factories: 8,
+            max_factories: 8,
+            cost_raw: 500_000,
+            speed_raw: 310_000,
+            efficiency_raw: 1_000_000 + i64::from(day) * 1000,
+            amount: -1,
+            ..RawRun::default()
+        })
+        .collect();
+    let mut scanned = ScannedLines {
+        lines: (0..300_u64)
+            .map(|handle| ScannedLine {
+                key: format!("{handle}#1"),
+                handle,
+                kind: None,
+                runs: runs.clone(),
+                output: Vec::new(),
+                final_output: None,
+                ended_by: None,
+                before_recording: false,
+                between_reads: None,
+                variants: Vec::new(),
+            })
+            .collect(),
+        ..ScannedLines::default()
+    };
+    let without = detail_lines(&scanned, 0, DETAIL_HOURS - 1);
+    // Zero-valued sources under each factor key, as a country's trees list them.
+    let nodes: Vec<ModifierBreakdownNode> = std::iter::once(ModifierBreakdownNode {
+        children: 20,
+        value: 0,
+        name: b"Synthetic total".to_vec(),
+    })
+    .chain((0..20).map(|index| ModifierBreakdownNode {
+        children: 0,
+        value: 0,
+        name: format!("Synthetic source {index}").into_bytes(),
+    }))
+    .collect();
+    let country = Arc::new(CountryProductionModifiersRow {
+        country: 9001,
+        trees: [0xa8, 0xa9, 0xab, 0xdc]
+            .into_iter()
+            .map(|key| ProductionModifierTree {
+                key,
+                nodes: nodes.clone(),
+                failure: vec![],
+            })
+            .collect(),
+        ..Default::default()
+    });
+    for line in scanned.lines.iter().take(5) {
+        let trees: Vec<RawModifierRun> = line
+            .runs
+            .iter()
+            .map(|run| RawModifierRun {
+                first_hour: run.first_hour,
+                last_hour: run.last_hour,
+                country: Arc::clone(&country),
+                line: ProductionLineModifiersRow {
+                    line: line.handle,
+                    country: 9001,
+                    variant: 70,
+                    active_factories: 8,
+                    factory_efficiencies: vec![run.efficiency_raw; 8],
+                    ..Default::default()
+                },
+                run: *run,
+                organisation: None,
+                localisation: None,
+                recorded_language: Arc::from("english"),
+            })
+            .collect();
+        scanned.modifiers.insert(line.key.clone(), trees);
+    }
+    let with = detail_lines(&scanned, 0, DETAIL_HOURS - 1);
+    assert_eq!(with, without);
+    assert_eq!(with.len(), 300);
+    assert!(with.iter().all(|line| line.runs.len() == 30));
+    assert!(crate::transport::json_len(&with, MAX_REPLY_BYTES).is_some());
+    assert!(
+        !serde_json::to_string(&with)
+            .unwrap()
+            .contains("Synthetic source")
+    );
+}
+
 /// A variant's definitions are known only where their table is read or carried: a
 /// census while the variant table is unavailable does not carry the last name or
 /// icon over an unobserved change.

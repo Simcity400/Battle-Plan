@@ -13,7 +13,7 @@ import type { ResearchEntry, ResearchReply, ResearchSlotHistory, ResearchSlotSta
 import ResearchExplanation from './ResearchExplanation';
 import { researchNumber } from './researchBreakdown';
 import { researchJourney } from './researchJourney';
-import { researchAt, researchArtworkTokens, researchColumns, researchProgressAt, researchRequest, researchStateAt, researchView, validateResearchReply } from './researchData';
+import { isUnjoinedResearch, researchAt, researchArtworkTokens, researchColumns, researchProgressAt, researchRequest, researchStateAt, researchView, validateResearchReply } from './researchData';
 import '../national-focus/nationalFocus.css';
 import WidgetState from '../../components/WidgetState';
 import ListSkeleton from '../../components/Skeleton';
@@ -69,6 +69,20 @@ function CurrentResearch({ history, slots, slot, entry, current, art, hour, live
   </details>;
 }
 
+/** Live or pinned: a technology the slot holds that no recorded assignment
+ * joins (its occurrence was not recorded). Its name and the game's estimate
+ * are known; its progress and history are not, so it has no details. */
+function UnjoinedResearch({ current, art, live }: { current: ResearchSlotState & { token: string }; art: Art; live: boolean }) {
+  const left = current.details?.remainingDays ?? null;
+  const name = contentTitle(art?.name, current.token, 'Technology name unavailable');
+  return <div className="focus-now research-now" role="status" aria-label={`${name}, researching`}>
+    <ResearchArt art={art} />
+    <span className="focus-now-text"><strong data-tooltip={contentTitleHint(current.token)}>{name}</strong>
+      <span className="focus-now-status" data-tooltip={left !== null ? 'The game’s estimate at this hour’s research speed' : undefined}>{live && <span className="live-dot" />}
+        {left !== null ? `${left} ${left === 1 ? 'day' : 'days'} left` : 'Researching'}</span></span>
+  </div>;
+}
+
 function IdleSlot({ current }: { current: ResearchSlotState | null }) {
   const banked = current ? BigInt(current.bankedDaysRaw) : 0n;
   return <div className="focus-now is-idle research-now" role="status">
@@ -101,8 +115,7 @@ export default function ResearchWidget({ widget, runtime, active, onDiagnostics 
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <div className="dash-empty" role="status">This time is outside the recording.</div>;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <ListSkeleton label="Loading research…" />;
-  if (!columns || !slots) return <div className="dash-empty" role="status">No complete research data recorded at this date.</div>;
-  if (!columns.length) return <div className="dash-empty" role="status">No research slots recorded at this date.</div>;
+  if (!columns || !slots || !columns.length) return <div className="dash-empty" role="status">No research slots recorded by this date.</div>;
   return <section key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} className="research-widget" aria-label="Research slot history">
     <div className="research-scroll">
       <div className="research-columns" style={{ minWidth: columns.length * 190 }}>
@@ -116,12 +129,14 @@ export default function ResearchWidget({ widget, runtime, active, onDiagnostics 
           {moment && (currentEntry && current
             ? <CurrentResearch history={data.history} slots={slots} slot={slot} entry={currentEntry} current={current} art={artwork.get(currentEntry.token)} hour={hour} live={live}
                 jump={rowJumpProps(runtime, track.id, () => researchJourney(slots, slot, currentEntry).firstHour, menu.open)} />
+            : isUnjoinedResearch(current) ? <UnjoinedResearch current={current} art={artwork.get(current.token)} live={live} />
             : <IdleSlot current={current} />)}
           <ol className="research-entries" style={{ paddingTop: `calc(${offset} * var(--research-row-height))` }}>
           {earlier.map(entry => <ResearchCard key={`${entry.firstObservedHour}:${entry.token}`} history={data.history} slots={slots} slot={slot} entry={entry}
             art={artwork.get(entry.token)} jump={rowJumpProps(runtime, track.id, entry.endedByHour, menu.open)} />)}
           </ol>
-          {!moment && earlier.length === 0 && <div className="research-empty-slot">No completed research</div>}
+          {!moment && earlier.length === 0 && <div className="research-empty-slot">
+            {slot.states.some(isUnjoinedResearch) ? 'Completed research not recorded' : 'No completed research'}</div>}
         </section>; })}
       </div>
     </div>

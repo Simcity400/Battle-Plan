@@ -36,7 +36,7 @@ function line(key: string, runs: LineRun[], values: Partial<LineHistory> & { out
   return {
     history: { key, handle: key.split('#')[0], kind: 'military', steps: stepsOf(runs), finalOutput: null, endedBy: null, beforeRecording: true,
       betweenReads: null, variants: [], ...rest },
-    detail: { key, runs, output: outputs, modifiers: [] },
+    detail: { key, runs, output: outputs },
   };
 }
 const variant = (id: string, firstHour: number, name: string | null, values: Partial<VariantName> = {}): VariantName => ({
@@ -96,6 +96,13 @@ test('well-formed replies pass and malformed ones are refused', () => {
   assert.throws(() => validateDetailReply({ ...DETAIL, lines: [{ key: '5#1', runs: [run(100, 130), run(120, 140)], output: [] }] }));
   assert.throws(() => validateDetailReply({ ...DETAIL, lines: [{ key: '5#1', runs: [run(100, 130, { efficiencyRaw: '1.5' })], output: [] }] }));
   assert.throws(() => validateDetailReply({ ...DETAIL, lines: [{ key: '5#1', runs: [], output: [output(100, 110, [['70', 'x', true]])] }] }));
+});
+
+test('a read window opens without modifier trees, and an older window with them still opens', () => {
+  assert.ok(DETAIL.lines.every(item => !('modifiers' in item)));
+  assert.equal(validateDetailReply(DETAIL), DETAIL);
+  const older = { ...DETAIL, lines: DETAIL.lines.map(item => ({ ...item, modifiers: [] })) };
+  assert.equal(validateDetailReply(older), older);
 });
 
 test('the history holds each line’s factory steps; a window holds its reads', () => {
@@ -412,20 +419,20 @@ test('hours whose output read was lost say lines made and ended there may be mis
 });
 
 
-test('efficiency and output breakdowns keep recorded operands and name missing attribution', () => {
+test('efficiency and output cells keep recorded operands and point to their breakdown', () => {
   const known = run(148, 171, { variant: '71', activeFactories: 12, maxFactories: 9, speedRaw: '9007199254741499', costRaw: '50001' });
   const [efficiency] = breakdownTooltip(REPLY, known, 150, 'efficiency', { subtitle: day(150), note: 'Read day 148.' });
   assert.equal(efficiency.title, 'Gewehr 98');
   assert.equal(efficiency.subtitle, 'day 150');
   assert.equal(efficiency.rows.find(row => row.label === 'Factories included in average')?.value, '9');
-  assert.equal(efficiency.rows.find(row => row.label === 'Other')?.value, 'Not recorded');
-  assert.match(efficiency.note ?? '', /Breakdown not recorded/);
-  assert.match(efficiency.note ?? '', /Read day 148/);
+  // The factors are recorded; they are the breakdown's, not missing.
+  assert.equal(efficiency.rows.find(row => row.label === 'Other'), undefined);
+  assert.equal(efficiency.note, 'Read day 148.');
   const [output] = breakdownTooltip(REPLY, known, 150, 'output', {});
   assert.equal(output.rows.find(row => row.label === 'Output rate')?.value, '90,071,992,547.41499 IC');
   assert.equal(output.rows.find(row => row.label === 'Cost per unit')?.value, '0.50001 IC');
-  assert.equal(output.rows.find(row => row.label === 'Other')?.value, 'Not recorded');
-  assert.match(output.note ?? '', /Breakdown not recorded/);
+  assert.equal(output.rows.find(row => row.label === 'Other'), undefined);
+  assert.equal(output.note, undefined);
   assert.equal(breakdownTooltip(REPLY, known, 170, 'output', {})[0].title, 'Gewehr 98k');
 });
 
@@ -439,7 +446,7 @@ test('output breakdown never turns a missing rate into zero or restores an unrea
   assert.doesNotMatch(tip.note ?? '', /name is not recorded at this time/);
 });
 
-test('native modifier hover retains exact signed parts and rejects a non-reconciling reply', () => {
+test('native modifier breakdown retains exact signed parts and rejects a non-reconciling reply', () => {
   const modifiers: ProductionModifierRun = { firstHour: 148, lastHour: 171, warnings: [], groups: [{ id: 'output', label: 'Recorded daily production IC',
     totalRaw: '100000', decimals: 5, unit: 'IC', note: 'Native retained operands.', parts: [
       { id: 'technology', label: 'Synthetic technology', raw: '120000', unknown: null },
@@ -447,20 +454,9 @@ test('native modifier hover retains exact signed parts and rejects a non-reconci
     ] }] };
   const reply = { branchId: '1', tag: 'GER', key: '5#1', groups: [{ id: 'output', label: 'Output' }], reads: [148], runs: [modifiers], warnings: [] };
   assert.equal(validateBreakdownReply(reply), reply);
-  const [tip, compact] = breakdownTooltip(REPLY, run(148, 171), 150, 'output', {}, modifiers);
-  for (const form of [tip, compact]) {
-    assert.equal(form.rows.find(row => row.label === 'Factories')?.value, '8 of 10 requested');
-    assert.equal(form.rows.find(row => row.label === 'Output')?.value, '43.4 per week');
-    assert.equal(form.rows.find(row => row.label === 'Output rate')?.value, '3.10000 IC');
-    assert.equal(form.rows.find(row => row.label === 'Cost per unit')?.value, '0.50000 IC');
-    assert.equal(form.rows.find(row => row.label === 'Recorded daily production IC')?.value, '1.00000 IC');
-  }
-  assert.equal(tip.rows.find(row => row.label === 'Synthetic technology')?.value, '1.20000 IC');
-  assert.equal(tip.rows.find(row => row.label === 'Other')?.value, '\u22120.20000 IC');
   const [full, counted] = modifierTooltip(modifiers.groups[0], 'day 150', () => undefined);
   for (const form of [full, counted]) assert.equal(form.rows[0].value, '1.00000 IC');
-  assert.deepEqual(full.rows.slice(1).map(row => row.value), ['1.20000 IC', '\u22120.20000 IC']);
-  assert.doesNotMatch(tip.note ?? '', /Click for the full breakdown/);
+  assert.deepEqual(full.rows.slice(1).map(row => [row.label, row.value]), [['Synthetic technology', '1.20000 IC'], ['Other', '\u22120.20000 IC']]);
   assert.throws(() => validateBreakdownReply({ ...reply, runs: [{ ...modifiers, groups: [{ ...modifiers.groups[0], totalRaw: '120000' }] }] }));
 });
 
@@ -475,7 +471,7 @@ test('modifier reconciliation uses the exact wide signed sum rather than modulo 
   const exact = { ...reply, runs: [{ ...reply.runs[0], groups: [{ ...group, parts: [...group.parts,
     { id: 'other', label: null, raw: '-18446744073709551616', unknown: 'Wide signed correction' }] }] }] };
   assert.equal(validateBreakdownReply(exact), exact);
-  const [tip] = breakdownTooltip(REPLY, run(148, 171, { speedRaw: '-9223372036854775808' }), 150, 'output', {}, exact.runs[0]);
+  const [tip] = modifierTooltip(exact.runs[0].groups[0], 'day 150', () => undefined);
   assert.equal(tip.rows.find(row => row.label === 'Other')?.value, '\u2212184,467,440,737,095.51616 IC');
 });
 

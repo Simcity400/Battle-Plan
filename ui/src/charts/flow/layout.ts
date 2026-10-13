@@ -250,6 +250,18 @@ export function nodeAt(nodes: readonly NodeBox[], x: number, y: number): NodeBox
   return null;
 }
 
+/** Where a node's flag and name were drawn, beside its bar. */
+export interface LabelBox { id: string; node: FlowNode; x: number; y: number; width: number; height: number; alpha: number }
+
+/** The node whose drawn flag or name holds a point. */
+export function labelAt(labels: readonly LabelBox[], x: number, y: number): LabelBox | null {
+  for (const box of labels) {
+    if (box.alpha < 0.05) continue;
+    if (x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height) return box;
+  }
+  return null;
+}
+
 /** What the keyboard stops at, in reading order: each source node and then its
  * ribbons (in their order inside it), then each target node. */
 export type FlowStop = { kind: 'node'; id: string } | { kind: 'link'; id: string };

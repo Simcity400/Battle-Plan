@@ -4,7 +4,6 @@ import { CountryFlagUrl, countryFlagUnavailable } from '../../components/Country
 import WidgetState from '../../components/WidgetState';
 import LogList from '../../charts/log/LogList';
 import FittedList from '../../charts/FittedList';
-import type { LogRow } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
 import { jumpItem } from '../../charts/jump';
 import type { TooltipContent } from '../../charts/tooltip';
@@ -17,12 +16,12 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import { peaceWarName } from '../../dashboard/peaceDealsData';
 import { formatDateTime } from '../../dashboard/calendar';
-import { conferenceLabel, derivedNote, filterPeaceLog, gapLabel, peaceActionChoices, peaceActionName, peaceDescription, peaceHasConferences, peaceRowHeight, peaceRowsAt, peaceTooltipRows, peaceWanted, preparePeaceLog } from './peaceData';
-import type { PeaceChip, PeaceLogEntry } from './peaceData';
+import { conferenceLabel, derivedNote, filterPeaceLog, peaceActionChoices, peaceActionName, peaceDescription, peaceGapHint, peaceGapsIn, peaceRowHeight, peaceRowsAt, peaceTooltipRows, peaceWanted, preparePeaceLog } from './peaceData';
+import type { PeaceChip, PeaceRow } from './peaceData';
 import { OPTIONS } from './definition';
 import './peaceDeals.css';
 
-const NO_ROWS: readonly LogRow<PeaceLogEntry>[] = [];
+const NO_ROWS: readonly PeaceRow[] = [];
 const NO_WARNINGS: string[] = [];
 const tagKey = (tag: string) => tag;
 const countryExtraWidth = () => 21 + 5;
@@ -42,8 +41,9 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
   const filtered = useMemo(() => log ? filterPeaceLog(log, contentSet(actions).map(contentKey)) : null, [log, actions]);
   const from = widget.time.mode === 'range' ? window?.firstHour ?? Infinity : -Infinity;
   const rows = useMemo(() => filtered && hour != null ? peaceRowsAt(filtered, hour, from) : NO_ROWS, [filtered, hour, from]);
+  const gapHint = useMemo(() => log && hour != null ? peaceGapHint(peaceGapsIn(log.gaps, hour, from)) : null, [log, hour, from]);
   const chips = useMemo(() => peaceActionChoices(log).map(choice => ({ ...choice, unavailable: storableToken(choice.value) ? undefined : UNSTORABLE })), [log]);
-  const [visible, setVisible] = useState<readonly LogRow<PeaceLogEntry>[]>(NO_ROWS);
+  const [visible, setVisible] = useState<readonly PeaceRow[]>(NO_ROWS);
   const wanted = useMemo(() => peaceWanted(visible), [visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted.countries, active && !!data, Infinity);
   const stateAt = useStateNamesAt(runtime.client, track, wanted.states, active && !!data);
@@ -57,9 +57,7 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
   }, [labelAt]);
   const chipDescription = useCallback((chip: PeaceChip) => [chip.tag != null ? countryDescription(chip.tag, chip.hour) : chipLabel(chip),
     chip.note].filter(Boolean).join('; '), [chipLabel, countryDescription]);
-  const tooltip = useCallback((row: LogRow<PeaceLogEntry>): readonly TooltipContent[] => {
-    if (row.item.kind === 'gap') return [{ title: 'Not recorded', rows: [{ label: gapLabel(row.item.span) }] }];
-    const { card } = row.item;
+  const tooltip = useCallback(({ item: card }: PeaceRow): readonly TooltipContent[] => {
     const details = peaceTooltipRows(card, labelAt, chipLabel);
     return [{ title: peaceWarName(card.deal), subtitle: `${card.by ? 'by ' : ''}${formatDateTime(card.hour)}`, rows: details,
       note: [conferenceLabel(card.deal), derivedNote(card.deal)].filter(Boolean).join(' · ') || undefined }];
@@ -82,9 +80,7 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
   </span>;
   const side = (tags: readonly string[], at: number) => <FittedList items={tags} className="peace-countries" moreClassName="peace-chip peace-more"
     itemKey={tagKey} label={tag => labelAt(at)(tag).name} describe={tag => countryDescription(tag, at)} extraWidth={countryExtraWidth} renderItem={tag => country(tag, at)} />;
-  const renderRow = (row: LogRow<PeaceLogEntry>) => {
-    if (row.item.kind === 'gap') return <div className="peace-gap">{gapLabel(row.item.span)}</div>;
-    const { card } = row.item;
+  const renderRow = ({ item: card }: PeaceRow) => {
     const { deal } = card;
     const missingWinners = deal.captured ? deal.captured.winners.length - deal.winners.length : 0;
     const missingLosers = deal.captured ? deal.captured.losers.length - deal.losers.length : 0;
@@ -119,7 +115,7 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
         if (value === '') setOption?.('actions', '');
         else { const next = toggleContentSet(actions, value, Number.MAX_SAFE_INTEGER); if (next !== null) setOption?.('actions', next); }
       }} /></div>}
-    {rows.length > 0 && !peaceHasConferences(rows) && <div className="peace-none">{empty}</div>}
+    {gapHint && <p className="peace-note" data-tooltip={gapHint}>Some conferences may be missing.</p>}
     <LogList key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} rows={rows} label="Peace conferences" layout="card" density={settings.density} months={settings.months}
     animate={live && settings.animate} rowHeight={peaceRowHeight} renderRow={renderRow} describe={peaceDescription} tooltip={tooltip}
     menu={row => [jumpItem(runtime, track.id, row.hour)]} onVisible={setVisible} empty={empty} /></div>;

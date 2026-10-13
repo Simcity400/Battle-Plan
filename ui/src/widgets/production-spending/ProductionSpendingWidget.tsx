@@ -6,6 +6,7 @@ import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOpt
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
+import { icDecimals } from '../../dashboard/icDecimals';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
@@ -35,11 +36,12 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   const levelKey = LEVELS.map(level => options[level] !== false).join();
   const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const decimals = data?.decimals ?? 5;
+  const digits = icDecimals(options, decimals);
   const emptyLabel = data && hour != null ? spendingEmptyLabel(data, hour, from) : 'Loading production spending…';
   const text = useMemo<SunburstText>(() => ({
-    format: (value, exact) => formatAppliedIc(value, exact, decimals), unit: UNIT, valueLabel: 'IC spent', countLabel: 'Designs',
+    format: (value, exact) => formatAppliedIc(value, exact, decimals, digits), unit: UNIT, valueLabel: 'IC spent', countLabel: 'Designs',
     emptyLabel,
-  }), [decimals, emptyLabel]);
+  }), [decimals, digits, emptyLabel]);
   useEffect(() => {
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);

@@ -1,61 +1,61 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { useContextMenu } from '../../components/ContextMenu';
+import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
-import FlowDiagram from '../../charts/flow/FlowDiagram';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
-import type { FlowHit, FlowLink } from '../../charts/flow/FlowDiagram';
-import { countryFlowColours, countryFlowNodes, flowOtherColour } from '../../charts/flow/countries';
-import type { SummedNode } from '../../charts/flow/sum';
 import { jumpItem } from '../../charts/jump';
 import { usNumber } from '../../charts/numberFormat';
-import { useChartTokens } from '../../charts/useChartTokens';
+import { tableSortOf } from '../../charts/table/options';
 import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { nameKey, useCountryFactsRead } from '../../dashboard/countryNamesAt';
-import { STYLES } from '../../dashboard/useCountriesAt';
+import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
+import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
+import { countryMatch } from '../../dashboard/groups';
 import { resolveOptions } from '../../dashboard/options';
-import { peaceDealAt, peaceDealHour } from '../../dashboard/peaceDealsData';
+import type { OptionValue } from '../../dashboard/options';
+import { peaceDealAt } from '../../dashboard/peaceDealsData';
 import { usePlaybackHour } from '../../dashboard/playback';
+import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { usePeaceDeals } from '../../dashboard/usePeaceDeals';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
-import { OPTIONS, TRANSFER_BREAKDOWN } from './definition';
+import { COUNTRY_SORT, OPTIONS, TRANSFER_BREAKDOWN, TRANSFER_SORT, TRANSFER_SORT_KEY } from './definition';
 import TransferDrill from './TransferDrill';
-import { transferDrillKey, transferDrillOpen, transferDrawnSelection, transferHitSelection, transferRestoreFocus, transferScopeLinks, transferSelected, transferSelection, transferSelectionToken, transferTime } from './transferDrillData';
-import { buildTransferDiagram, transferConferenceLabel, chosenConference, conferenceChoiceId, conferenceToken, decodeTransfers, transferColourPlan, transferCutoff, transferDiagramDescription, transferGapCount, transferGapWindow,
-  transfersThrough, transferNodeCountries, transferLookPlan, visibleConferences } from './territoryData';
-import type { TransferDrawnSelection } from './transferDrillData';
-import type { TransferLink, TransferMeasure } from './territoryData';
-import { transferNodeTooltip, transferRibbonTooltip } from './territoryTooltip';
-import type { TransferTipRequest } from './territoryTooltip';
+import { CountryTable, TransferTable } from './TransferTables';
+import { transferDrillOpen, selectedTransfers, transferSelection, transferSelectionToken, transferTime } from './transferDrillData';
+import { chosenConference, conferenceChoiceId, conferenceToken, countryBalances, decodeTransfers, involving, transferConferenceLabel, transferCutoff, transferEmptyMessage,
+  transferGapHint, transferGapWindow, transferGaps, transferHow, transferScope, transfersAt, visibleConferences } from './territoryData';
+import type { CountryBalance, TransferOccurrence } from './territoryData';
+import { countryTooltip, transferRequest, transferTooltip } from './territoryTooltip';
+import type { TransferLabels, TransferTipRequest } from './territoryTooltip';
 import './territoryTransfers.css';
 
 const NO_WARNINGS: string[] = [];
+const NO_TRANSFERS: readonly TransferOccurrence[] = [];
+const NO_BALANCES: readonly CountryBalance[] = [];
 const NO_REQUESTS: TransferTipRequest = { countries: [], states: [] };
 
-/** A two-column peace transfer graph, shaped by the same kit as Trade flows. */
-export default function TerritoryTransfersWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
+/** Peace-settlement territory as a country table (gained, lost, net) or a table of
+ * every transferred state; a country's row opens its own transfers. */
+export default function TerritoryTransfersWidget({ widget, runtime, active, onDiagnostics, headerSlot, setOption }: WidgetProps) {
   const [drill, dispatchDrill] = useReducer(reduceDrill, CLOSED);
-  const [drillIds, setDrillIds] = useState<readonly string[]>([]);
-  const [drillConference, setDrillConference] = useState<string | null>(null);
+  const [drillCountry, setDrillCountry] = useState<string | null>(null);
   const drillAnchor = useRef<HTMLDivElement>(null);
-  const drillBody = useRef<HTMLDivElement>(null);
   const following = widget.time.mode === 'follow';
   usePlaybackHour(runtime.clock, active && (following || drill.breakdown != null && drill.follow));
   const { track, data, error, retry } = usePeaceDeals(widget, runtime, active);
-  const tokens = useChartTokens();
   const options = resolveOptions(OPTIONS, widget.options);
-  const measure = options.measure as TransferMeasure;
-  const scope = options.scope as string;
+  const view = options.show === 'transfers' || options.show === TRANSFER_BREAKDOWN.id ? options.show : 'main';
+  const pinned = view === TRANSFER_BREAKDOWN.id;
+  const scope = options.scope === 'conference' ? 'conference' : 'campaign';
   const selectedToken = String(options.conference ?? '');
-  const selectedId = track ? conferenceChoiceId(selectedToken, track.source.metadata.campaignKey, track.branch.id) : null;
-  const showParts = options.show === 'parts';
-  const storedSelection = useMemo(() => track ? transferSelection(String(options.selection ?? ''), track.source.metadata.campaignKey, track.branch.id) : null,
-    [options.selection, track]);
-  const time = track ? transferTime(widget, track, runtime.tracks, runtime.clock.getHour(), showParts ? storedSelection?.fromOffset : null) : { moment: -Infinity, from: -Infinity };
-  const moment = time.moment;
-  const rangeFrom = time.from;
+  const campaignKey = track?.source.metadata.campaignKey ?? '';
+  const selectedId = track ? conferenceChoiceId(selectedToken, campaignKey, track.branch.id) : null;
+  const storedSelection = useMemo(() => track ? transferSelection(String(options.selection ?? ''), campaignKey, track.branch.id) : null,
+    [options.selection, track, campaignKey]);
+  const time = track ? transferTime(widget, track, runtime.tracks, runtime.clock.getHour(), pinned ? storedSelection?.fromOffset : null) : { moment: -Infinity, from: -Infinity };
+  const { moment, from: rangeFrom } = time;
+  const wholeCampaign = widget.time.mode === 'campaign';
   const transfers = useMemo(() => data && decodeTransfers(data), [data]);
   const conferenceThrough = transfers ? transferCutoff(transfers.conferenceHours, moment) : -Infinity;
   const available = useMemo(() => data ? visibleConferences(data.deals, conferenceThrough, rangeFrom) : [], [data, conferenceThrough, rangeFrom]);
@@ -63,82 +63,35 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
     const selected = scope === 'conference' && selectedId != null ? chosenConference(available, selectedId) : null;
     return selected ? peaceDealAt(selected, moment) : null;
   }, [scope, available, selectedId, moment]);
-  const scopeLinks = transfers ? transferScopeLinks(transfers, scope === 'conference' ? conference?.id ?? '' : null) : [];
+  const conferenceId = scope === 'conference' ? conference?.id ?? '' : null;
+  const scoped = useMemo(() => transfers ? transferScope(transfers, conferenceId) : NO_TRANSFERS, [transfers, conferenceId]);
   const through = transfers ? transferCutoff(transfers.hours, moment) : -Infinity;
-  const victoryPointsThrough = widget.time.mode !== 'campaign' && transfers ? transferCutoff(transfers.victoryPointHours, moment) : Infinity;
-  const shown = useMemo(() => transfersThrough(scopeLinks, through, victoryPointsThrough, rangeFrom), [scopeLinks, through, victoryPointsThrough, rangeFrom]);
-  const [capacity, setCapacity] = useState<number | null>(null);
-  const diagram = useMemo(() => buildTransferDiagram(shown, measure, capacity), [shown, measure, capacity]);
-  const menu = useContextMenu('Territory transfer actions');
+  const reached = useMemo(() => transfersAt(scoped, through, rangeFrom, wholeCampaign), [scoped, through, rangeFrom, wholeCampaign]);
+
+  // Chosen countries or groups keep transfers involving them, matched at each side's own read.
+  const filtered = widget.countries.kind !== 'all';
+  const groups = useCountryGroups(runtime, track, active && filtered);
+  const tagsKey = JSON.stringify(selectedTags(widget.countries, track));
+  const fallback = useMemo<string[]>(() => JSON.parse(tagsKey), [tagsKey]);
+  const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
+    [widget.countries, fallback, groups.data, track?.branch.lastHour]);
+  const shown = useMemo(() => !filtered ? reached : !match.ready ? NO_TRANSFERS
+    : reached.filter(occurrence => match.matches(occurrence.to.tag, occurrence.to.hour) || occurrence.from != null && match.matches(occurrence.from.tag, occurrence.from.hour)),
+  [filtered, reached, match]);
+  const balances = useMemo(() => {
+    const rows = countryBalances(shown);
+    return filtered ? rows.filter(row => match.matches(row.side.tag, row.side.hour)) : rows;
+  }, [shown, filtered, match]);
+  const selectionMissing = useMemo(() => pinned && storedSelection ? selectedTransfers(scoped, storedSelection).missing : 0, [pinned, storedSelection, scoped]);
 
   useEffect(() => {
     onDiagnostics(data?.warnings ?? NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, onDiagnostics]);
 
-  const nodeCountries = useMemo(() => transferNodeCountries(shown), [shown]);
-  const fixed = tokens.countryColours === 'fixed';
-  const lookPlan = useMemo(() => transferLookPlan(new Map(diagram.nodes.flatMap(node => node.tag != null && nodeCountries.has(node.tag)
-    ? [[node.tag, nodeCountries.get(node.tag)!] as const] : [])), track?.branch), [diagram, nodeCountries, track?.branch]);
-  const colourMoment = drill.breakdown ? Math.max(moment, drillHour(drill, track ? Math.floor(runtime.clock.getHour() + track.axisOffset) : null) ?? moment) : moment;
-  const stylePlan = useMemo(() => transferColourPlan(transfers, track?.branch, colourMoment, true), [transfers, track?.branch, colourMoment]);
-  const styles = useCountryFactsRead(runtime.client, track, stylePlan.wanted, active, STYLES, stylePlan.maxHours);
-  const nodeLabels = useCountryLabelsAt(runtime.client, track, lookPlan.wanted, active, lookPlan.maxHours);
-  const countryColours = useMemo(() => {
-    const variants = new Map<string, [number, number, number]>();
-    const samples = new Map<string, string>();
-    for (const sample of stylePlan.samples) {
-      const style = styles.get(nameKey(sample.hour, sample.tag));
-      if (!style || typeof style !== 'object' || style.color == null) continue;
-      // Identical looks of one holder share one adjustment across dates/scopes.
-      const key = JSON.stringify([sample.key, style.color]);
-      variants.set(key, style.color);
-      samples.set(nameKey(sample.hour, sample.tag), key);
-    }
-    const colours = countryFlowColours([...variants.keys()], key => variants.get(key) ?? null, tokens.surface, fixed);
-    return new Map([...samples].map(([key, variant]) => [key, colours.get(variant)!]));
-  }, [stylePlan, styles, tokens.surface, fixed]);
-  const nodeColours = useMemo(() => new Map([...nodeCountries].map(([key, country]) => [key, countryColours.get(nameKey(country.hour, country.tag)) ?? flowOtherColour(tokens)])), [nodeCountries, countryColours, tokens]);
-  const look = useCallback((key: string) => {
-    const sample = nodeCountries.get(key);
-    return sample ? nodeLabels.labelAt(sample.hour)(sample.tag) : { name: 'Unknown country', flagPending: false };
-  }, [nodeCountries, nodeLabels]);
-  const nodeName = useCallback((node: SummedNode) => node.tag != null ? look(node.tag).name
-    : `${usNumber.format(node.members.length)} other ${node.side === 'source' ? 'givers' : 'takers'}`, [look]);
-  const otherColour = flowOtherColour(tokens);
-  const { nodes, links } = useMemo(() => {
-    const countryNodes = countryFlowNodes(diagram.nodes, look, tokens, nodeName,
-      node => String(transfers?.countryOrder.get(node.tag!) ?? 0).padStart(10, '0'), nodeColours);
-    const idsByNode = new Map<string, string[]>();
-    for (const link of diagram.links) for (const node of [link.source, link.target]) {
-      const ids = idsByNode.get(node) ?? [];
-      for (const part of link.parts) ids.push(part.id);
-      idsByNode.set(node, ids);
-    }
-    const ordinaryNodes = new Set(diagram.nodes.filter(node => node.tag != null).map(node => node.id));
-    const links: (FlowLink & TransferDrawnSelection)[] = diagram.links.map(link => {
-      const latest = link.parts.flatMap(part => part.states.slice(-1)).reduce((a, b) => a.dates.afterHour >= b.dates.afterHour ? a : b);
-      const country = options.colour === 'taker' ? latest.toCountry : latest.fromCountry;
-      const node = options.colour === 'taker' ? link.target : link.source;
-      return { id: link.id, source: link.source, target: link.target, value: link.value,
-        ...transferDrawnSelection(link.parts.map(part => part.id), scope === 'conference' ? conference?.id ?? null : null), color: !ordinaryNodes.has(node) ? otherColour : countryColours.get(nameKey(country.hour, country.tag)) ?? otherColour, order: link.id };
-    });
-    return { nodes: countryNodes.nodes.map(node => ({ ...node, ...transferDrawnSelection([...new Set(idsByNode.get(node.id) ?? [])], scope === 'conference' ? conference?.id ?? null : null) })), links };
-  }, [diagram, look, tokens, nodeName, countryColours, options.colour, otherColour, transfers, scope, conference?.id, nodeColours]);
-  const nodeById = useMemo(() => new Map(diagram.nodes.map(node => [node.id, node])), [diagram]);
-  const linkById = useMemo(() => new Map(diagram.links.map(link => [link.id, link])), [diagram]);
-  const linksByNode = useMemo(() => {
-    const index = new Map<string, typeof diagram.links>();
-    for (const link of diagram.links) for (const id of [link.source, link.target]) {
-      const own = index.get(id) ?? [];
-      own.push(link);
-      index.set(id, own);
-    }
-    return index;
-  }, [diagram]);
-
-  // A hover can contain several conference hours. The shared fact stores keep
-  // those separate and request every occurrence in the current tooltip.
+  // Names, flags and state names load for mounted rows and for the open tooltip only.
+  const [visibleTransfers, setVisibleTransfers] = useState<readonly TransferOccurrence[]>(NO_TRANSFERS);
+  const [visibleCountries, setVisibleCountries] = useState<readonly CountryBalance[]>(NO_BALANCES);
   const [requested, setRequested] = useState<TransferTipRequest>(NO_REQUESTS);
   const requestKey = useRef('');
   const ask = useCallback((next: TransferTipRequest) => {
@@ -148,119 +101,111 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
     queueMicrotask(() => setRequested(next));
   }, []);
   useEffect(() => { if (!active) { requestKey.current = ''; setRequested(NO_REQUESTS); } }, [active]);
-  const hover = useCountryLabelsAt(runtime.client, track, requested.countries, active, Infinity);
-  const states = useStateNamesAt(runtime.client, track, requested.states, active);
-  const stateNameAt = useCallback((hour: number, state: number) => states(hour, state).name ?? `State ${state}`, [states]);
+  const wantedKey = useMemo(() => {
+    const rows = transferRequest(visibleTransfers, visibleCountries);
+    return JSON.stringify({ countries: [...rows.countries, ...requested.countries], states: [...rows.states, ...requested.states] });
+  }, [visibleTransfers, visibleCountries, requested]);
+  const wanted = useMemo<TransferTipRequest>(() => JSON.parse(wantedKey), [wantedKey]);
+  const maxHours = Math.max(MAX_NAME_HOURS, new Set(wanted.countries.map(country => country.hour)).size);
+  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted.countries, active, maxHours);
+  const stateAt = useStateNamesAt(runtime.client, track, wanted.states, active);
+  const labels = useMemo<TransferLabels>(() => ({
+    country: side => labelAt(side.hour)(side.tag),
+    tag: (tag, hour) => labelAt(hour)(tag),
+    state: occurrence => stateAt(occurrence.afterHour, occurrence.state).name ?? `State ${occurrence.state}`,
+  }), [labelAt, stateAt]);
+  const countryTip = useCallback((row: CountryBalance) => {
+    ask(transferRequest(NO_TRANSFERS, [row]));
+    return countryTooltip(row, labels);
+  }, [ask, labels]);
+  const transferTip = useCallback((row: TransferOccurrence) => {
+    const deal = transfers?.deals.get(row.deal);
+    const request = transferRequest([row]);
+    const overlord = transferHow(row, deal).subjectOf;
+    if (overlord != null) request.countries.push({ tag: overlord, hour: row.afterHour });
+    ask(request);
+    return transferTooltip(row, deal, labels);
+  }, [ask, labels, transfers]);
+  const countryMenu = useCallback((row: CountryBalance) => track ? [...new Set([row.last, row.first])].map(hour => jumpItem(runtime, track.id, hour)) : [], [runtime, track]);
+  const transferMenu = useCallback((row: TransferOccurrence) => track ? [jumpItem(runtime, track.id, row.afterHour)] : [], [runtime, track]);
 
-  const [gapFrom, until] = useMemo(() => transferGapWindow(conference, shown, track?.branch.firstHour ?? 0, moment),
-    [conference, shown, track?.branch.firstHour, moment]);
-  const from = Math.max(rangeFrom, gapFrom);
-  const gaps = useMemo(() => data ? transferGapCount(data, from, until) : 0, [data, from, until]);
-  const note = gaps ? 'Some transfers may be missing.' : undefined;
-  const tooltip = useCallback((hit: FlowHit) => {
-    const tooltipOptions = { note, nodeName, labelAt: hover.labelAt, stateNameAt, ask };
-    if (hit.kind === 'link') {
-      const link = linkById.get(hit.link.id);
-      return link ? transferRibbonTooltip(link, nodeById.get(link.source)!, nodeById.get(link.target)!, tooltipOptions) : null;
-    }
-    const node = nodeById.get(hit.node.id);
-    return node ? transferNodeTooltip(node, linksByNode.get(node.id) ?? [], tooltipOptions) : null;
-  }, [note, nodeName, hover.labelAt, stateNameAt, ask, nodeById, linkById, linksByNode]);
-
-  const onContextMenu = useCallback((hit: FlowHit | null, x: number, y: number) => {
-    if (!track) return;
-    const parts = hit?.kind === 'link' ? linkById.get(hit.link.id)?.parts ?? []
-      : hit?.kind === 'node' ? (linksByNode.get(hit.node.id) ?? []).flatMap(link => link.parts) : shown;
-    let first = Infinity;
-    let last = -Infinity;
-    for (const part of parts) for (const state of part.states) { first = Math.min(first, state.dates.afterHour); last = Math.max(last, state.dates.afterHour); }
-    const hours = Number.isFinite(last) ? [...new Set([last, first])] : [conference ? peaceDealHour(conference) : moment];
-    menu.open(x, y, hours.map(hour => jumpItem(runtime, track.id, hour)));
-  }, [track, runtime, linkById, linksByNode, shown, conference, moment, menu.open]);
-
+  // The drill shows its country's transfers at its own day, which Follow can move.
   const playhead = track ? Math.floor(runtime.clock.getHour() + track.axisOffset) : null;
-  const selectedIds = showParts ? storedSelection?.ids ?? null : drillIds;
-  const missingSelection = useMemo(() => {
-    if (!showParts || !selectedIds?.length) return 0;
-    const available = new Set(scopeLinks.map(link => link.id));
-    return selectedIds.reduce((count, id) => count + Number(!available.has(id)), 0);
-  }, [showParts, selectedIds, scopeLinks]);
-  const selectedConference = !showParts && drill.breakdown ? drillConference : scope === 'conference' ? conference?.id ?? null : null;
-  const cohortKey = useMemo(() => transferDrillKey(track?.source.id ?? '', track?.branch.id ?? '', selectedConference, selectedIds ?? []),
-    [track?.source.id, track?.branch.id, selectedConference, selectedIds]);
-  const drillSourceLinks = !showParts && drill.breakdown && transfers ? transferScopeLinks(transfers, drillConference) : scopeLinks;
-  const drillLinks = useMemo(() => transferSelected(drillSourceLinks, selectedIds ?? []), [drillSourceLinks, selectedIds]);
   const drillAt = drill.breakdown ? drillHour(drill, playhead) ?? moment : moment;
-  const drillCutoff = drill.breakdown && drill.follow ? playhead ?? moment : moment;
-  const openDrill = useCallback((ids: readonly string[], hour: number, conferenceId: string | null) => {
-    setDrillIds([...new Set(ids)]);
-    setDrillConference(conferenceId);
-    dispatchDrill(transferDrillOpen(hour, following, playhead, runtime.clock.getSnapshot().playing));
-  }, [runtime.clock, following, playhead]);
-  const onPick = useCallback((hit: FlowHit, hour: number) => {
-    const drawn = transferHitSelection(hit);
-    if (drawn?.transferIds.length) openDrill(drawn.transferIds, hour, drawn.transferConference);
-  }, [openDrill]);
-  useEffect(() => { dispatchDrill({ type: 'close' }); setDrillIds([]); setDrillConference(null); }, [track?.source.id, track?.branch.id, scope, selectedToken]);
-  const pickDay = useCallback((hour: number) => {
-    if (!drill.breakdown) dispatchDrill({ type: 'open', breakdown: 'parts', hour, playing: false, playhead: null });
-    else dispatchDrill({ type: 'pick', hour });
-  }, [drill.breakdown]);
-  const closeDrill = useCallback(() => {
-    const closingPanel = drillBody.current?.closest('.drill-popout') ?? null;
-    dispatchDrill({ type: 'close' });
-    requestAnimationFrame(() => {
-      const focused = document.activeElement;
-      if (!transferRestoreFocus(focused, document.body, drillAnchor.current, closingPanel)) return;
-      drillAnchor.current?.querySelector<HTMLCanvasElement>('.flow-diagram canvas')?.focus({ preventScroll: true });
-    });
-  }, []);
-  const colorOf = useCallback((link: TransferLink) => {
-    const state = link.states.at(-1)!;
-    const country = options.colour === 'taker' ? state.toCountry : state.fromCountry;
-    return countryColours.get(nameKey(country.hour, country.tag)) ?? otherColour;
-  }, [countryColours, otherColour, options.colour]);
-  const description = useMemo(() => transferDiagramDescription(diagram, measure, nodeName, note), [diagram, nodeName, measure, note]);
+  const drillThrough = transfers ? transferCutoff(transfers.hours, drillAt) : -Infinity;
+  const drillReached = useMemo(() => drill.breakdown || pinned ? transfersAt(scoped, drillThrough, rangeFrom, wholeCampaign) : NO_TRANSFERS,
+    [drill.breakdown, pinned, scoped, drillThrough, rangeFrom, wholeCampaign]);
+  const drillRows = useMemo(() => pinned ? storedSelection ? selectedTransfers(drillReached, storedSelection).shown : NO_TRANSFERS
+    : drillCountry != null ? involving(drillReached, drillCountry) : NO_TRANSFERS, [pinned, storedSelection, drillReached, drillCountry]);
+  const focus = pinned ? storedSelection?.country ?? null : drillCountry;
+  const openDrill = useCallback((row: CountryBalance) => {
+    setDrillCountry(row.key);
+    dispatchDrill(transferDrillOpen(moment, following, playhead, runtime.clock.getSnapshot().playing));
+  }, [moment, following, playhead, runtime.clock]);
+  useEffect(() => { dispatchDrill({ type: 'close' }); setDrillCountry(null); }, [track?.source.id, track?.branch.id, scope, selectedToken]);
+  const transferSetOption = useMemo(() => setOption && ((key: string, value: OptionValue) =>
+    setOption(key === 'tableSort' ? TRANSFER_SORT_KEY : key, value)), [setOption]);
+  const tables = { labels, cellBars: options.cellBars !== false, density: options.density === 'compact' ? 'compact' as const : 'comfortable' as const,
+    hoursPerSecond: runtime.clock.getSnapshot().hoursPerSecond };
+  const transferSort = tableSortOf(options[TRANSFER_SORT_KEY], TRANSFER_SORT);
 
   if (!track) return <WidgetState kind="empty" icon="flows" message="Load a campaign to see territory transfers." />;
   if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || !transfers) return <WidgetState kind="loading" label="Loading territory transfers…" />;
-  if (showParts && missingSelection) return <WidgetState kind="unavailable" message={`${usNumber.format(missingSelection)} selected transfer links are not recorded in this scope.`} />;
+  if (pinned && selectionMissing) return <WidgetState kind="unavailable" message={`${usNumber.format(selectionMissing)} selected transfer links are not recorded in this scope.`} />;
   if (scope === 'conference' && !conference) return <WidgetState kind="empty" message={selectedToken ? 'This conference is outside the selected recorded interval.' : 'No peace conferences yet.'} />;
-  const message = capacity == null || diagram.links.length ? null : measure === 'victoryPoints' && diagram.missingVictoryPoints ? 'The links’ victory points were not recorded.'
-    : shown.length && measure === 'victoryPoints' ? 'No positive victory points to show.'
-      : gaps || conference?.captureUnavailable != null || conference?.limitations.length ? 'No transfers could be identified.' : 'No peace territory transfers recorded yet.';
-  const caption = conference ? transferConferenceLabel(conference) : `${widget.time.mode === 'range' ? `Range from ${formatDateTime(rangeFrom)}` : 'Campaign'}${widget.time.mode !== 'campaign' ? ` · up to ${formatDateTime(moment)}` : ''}`;
-  const main = <div className="territory-transfers">
-    <p className="territory-transfer-caption">{caption} · {measure === 'states' ? 'State count' : 'Victory points'}
-      {note ? ` · ${note}` : ''}</p>
-    <p className="chart-line-key">Ribbons in each {options.colour === 'taker' ? 'taker' : 'giver'} country’s map colour</p>
-    <button type="button" className="button small transfer-all-parts" onClick={() => openDrill([], moment, scope === 'conference' ? conference?.id ?? null : null)}>All transfer details</button>
-    <FlowDiagram label="Territory transfers: losers to winners" nodes={nodes} links={links} stretch={JSON.stringify([track.source.id, track.branch.id, scope, conference?.id ?? null, measure])}
-      scale={null} slots={capacity ?? undefined} playbackHour={moment} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} message={message}
-      hour={moment} onPick={onPick} tooltip={tooltip} onContextMenu={onContextMenu} description={description} onCapacity={setCapacity} active={active && (drill.breakdown == null || options.drill === 'popout')} />
-  </div>;
+  if (filtered && !match.ready) return <WidgetState kind="loading" label="Loading territory transfers…" />;
+
+  const [gapFrom, until] = transferGapWindow(conference, scoped, track.branch.firstHour, moment);
+  const gapHint = transferGapHint(transferGaps(data, Math.max(rangeFrom, gapFrom), until));
+  const count = pinned ? drillRows.length : shown.length;
+  const header = headerSlot && count > 0 && createPortal(<span className="pill">{usNumber.format(count)} {count === 1 ? 'transfer' : 'transfers'}</span>, headerSlot);
+  const notes = <>
+    {conference && <p className="transfer-note">{transferConferenceLabel(conference)}</p>}
+    {gapHint && <p className="transfer-note has-hint" data-tooltip={gapHint}>Some transfers may be missing.</p>}
+  </>;
+  const empty = <WidgetState kind="empty" message={transferEmptyMessage(filtered)} />;
   const first = Math.max(track.branch.firstHour, rangeFrom);
   const last = widget.time.mode === 'range' ? moment : track.branch.lastHour;
-  const breakdown = <div className="transfer-drill-owner" ref={drillBody}><TransferDrill key={cohortKey} links={drillLinks} measure={measure} day={drillAt} cutoff={drillCutoff} first={first} last={last} from={rangeFrom}
-    runtime={runtime} track={track} active={active} colorOf={colorOf} onPick={pickDay}
-    onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} /></div>;
-  const pin = () => {
-    const pinned = pinnedBreakdown(widget, TRANSFER_BREAKDOWN, track.id);
-    const offset = drillAt - track.branch.firstHour;
-    runtime.addWidgetBelow(widget.id, { ...pinned, time: { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } },
-      options: { ...pinned.options, scope: selectedConference == null ? 'campaign' : 'conference', conference: selectedConference == null ? '' : conferenceToken(track.source.metadata.campaignKey, track.branch.id, selectedConference), selection: transferSelectionToken(track.source.metadata.campaignKey, track.branch.id, selectedIds ?? [], Number.isFinite(rangeFrom) ? rangeFrom - track.branch.firstHour : null) } });
-  };
-  return <div className="territory-transfer-host" ref={drillAnchor}>
-    {showParts ? storedSelection == null ? <WidgetState kind="unavailable" message="This transfer selection is unavailable. Select transfers again." /> : <>
+  const drillBody = <TransferDrill rows={drillRows} focus={focus} named={pinned} outside={drillAt < first || drillAt > last}
+    {...tables} sort={pinned ? transferSort : TRANSFER_SORT} setOption={pinned ? transferSetOption : undefined}
+    tooltip={transferTip} menu={transferMenu} onVisibleRows={setVisibleTransfers} />;
+
+  if (pinned) return <div className="territory-transfers">
+    {header}
+    {storedSelection == null ? <WidgetState kind="unavailable" message="This transfer selection is unavailable. Select transfers again." /> : <>
       <div className="drill-header"><span className="drill-day">{formatDateTime(drillAt)}</span>
         {drill.breakdown && drill.follow ? <span className="pill drill-following">Following playback</span>
           : <button type="button" className="button small" onClick={() => dispatchDrill({ type: 'open', breakdown: 'parts', hour: drillAt, playing: true, playhead })}>Follow playback</button>}
-      </div>{breakdown}</>
-      : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={drillAnchor} title="Transfer breakdown"
-        day={formatDateTime(drillAt)} following={drill.follow} canFollow={playhead != null} onClose={closeDrill}
-        onFollow={() => dispatchDrill({ type: 'follow' })} onPin={pin} main={main}>{breakdown}</DrillHost>}
-    {menu.menu}
+      </div>{notes}{drillBody}</>}
+  </div>;
+
+  if (view === 'transfers') return <div className="territory-transfers">
+    {header}{notes}
+    {shown.length ? <TransferTable {...tables} rows={shown} sort={transferSort} setOption={transferSetOption} tooltip={transferTip} menu={transferMenu}
+      onVisibleRows={setVisibleTransfers} label="Territory transfers" /> : empty}
+  </div>;
+
+  const drillLabel = drillCountry == null ? null : balances.find(row => row.key === drillCountry)?.side ?? drillRows.find(row => row.to.key === drillCountry)?.to
+    ?? drillRows.find(row => row.from?.key === drillCountry)?.from ?? null;
+  const pin = () => {
+    const spec = pinnedBreakdown(widget, TRANSFER_BREAKDOWN, track.id);
+    const offset = drillAt - track.branch.firstHour;
+    runtime.addWidgetBelow(widget.id, { ...spec, time: { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } },
+      options: { ...spec.options, scope, conference: conference == null ? '' : conferenceToken(campaignKey, track.branch.id, conference.id),
+        selection: transferSelectionToken(campaignKey, track.branch.id, [], Number.isFinite(rangeFrom) ? rangeFrom - track.branch.firstHour : null, drillCountry) } });
+  };
+  const main = <div className="territory-transfers">
+    {notes}
+    {balances.length ? <CountryTable {...tables} rows={balances} sort={tableSortOf(options.tableSort, COUNTRY_SORT)} setOption={setOption}
+      onPick={openDrill} tooltip={countryTip} menu={countryMenu} onVisibleRows={setVisibleCountries} /> : empty}
+  </div>;
+  return <div className="territory-transfer-host" ref={drillAnchor}>
+    {header}
+    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={drillAnchor}
+      title={drillLabel ? labels.country(drillLabel).name : 'Country transfers'} day={formatDateTime(drillAt)} following={drill.follow} canFollow={playhead != null}
+      returnFocus={drillCountry == null || typeof CSS === 'undefined' ? undefined : `tr[data-table-row="${CSS.escape(drillCountry)}"]`}
+      onClose={() => dispatchDrill({ type: 'close' })} onFollow={() => dispatchDrill({ type: 'follow' })} onPin={pin} main={main}>{drillBody}</DrillHost>
   </div>;
 }

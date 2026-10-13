@@ -1,21 +1,39 @@
 import { contentSet } from './options.ts';
 import type { OptionField, OptionValue } from './options';
-import { LOG_OPTIONS } from '../charts/log/logOptions.ts';
+import { TABLE_OPTIONS, tableSortOf, tableSortOptions } from '../charts/table/options.ts';
+import type { Sort } from '../charts/table/logic';
+import { POWER_DECIMALS_OPTION } from './powerDecimals.ts';
+
+/** Newest payments first. */
+export const SPENDING_DEFAULT_SORT: Sort = { column: 'date', direction: 'descending' };
+export const SPENDING_SORT_COLUMNS = [
+  { key: 'date', label: 'Date' }, { key: 'country', label: 'Country' }, { key: 'item', label: 'Item' },
+  { key: 'category', label: 'Category' }, { key: 'amount', label: 'Amount' },
+] as const;
 
 export const POLITICS_SPENDING_OPTIONS: readonly OptionField[] = [
   { key: 'artwork', section: 'options', label: 'Game artwork', kind: 'toggle', default: true },
+  { key: 'chips', section: 'options', label: 'Filter chips', kind: 'toggle', default: true },
   { key: 'categories', section: 'options', label: 'Show categories', kind: 'content-set', automatic: 'All categories', default: '' },
   // Persisted migration marker; legacy choices never appear in settings.
   { key: 'filterMode', section: 'options', label: 'Show categories', kind: 'choice', default: 'hide', visibleWhen: () => false,
     choices: [{ value: 'hide', label: 'Show categories' }, { value: 'show', label: 'Show categories' }, { value: 'shown', label: 'Show categories' }] },
-  { key: 'totals', section: 'options', label: 'Running totals', hint: 'Overall total includes all categories.', kind: 'toggle', default: true },
-  { key: 'order', section: 'options', label: 'Sort order', kind: 'choice', default: 'newest', choices: [
-    { value: 'newest', label: 'Newest first' }, { value: 'oldest', label: 'Oldest first' }, { value: 'cost', label: 'Largest cost first' },
-  ] },
-  ...LOG_OPTIONS.map(field => field.key === 'months' && field.kind === 'toggle' ? { ...field, default: true, visibleWhen: (options: Readonly<Record<string, OptionValue>>) => options.order !== 'cost' } : field),
+  { key: 'totals', section: 'options', label: 'Summary', hint: 'Spent and gained in the shown period.', kind: 'toggle', default: true },
+  POWER_DECIMALS_OPTION,
+  // The table has no rank column, so it has no rank markers.
+  ...TABLE_OPTIONS.filter(field => field.key !== 'rankMarkers'),
+  ...tableSortOptions(SPENDING_SORT_COLUMNS, SPENDING_DEFAULT_SORT),
 ];
 
-/** Explicit none preserves legacy filters that hid every known category. */
+/** The saved table order; a layout saved before the table keeps its log order. */
+export function spendingSort(saved: Readonly<Record<string, OptionValue>> | undefined): Sort {
+  if (typeof saved?.tableSort === 'string') return tableSortOf(saved.tableSort, SPENDING_DEFAULT_SORT);
+  if (saved?.order === 'oldest') return { column: 'date', direction: 'ascending' };
+  if (saved?.order === 'cost') return { column: 'amount', direction: 'descending' };
+  return SPENDING_DEFAULT_SORT;
+}
+
+/** A legacy filter that hid every known category; it now shows them all. */
 export const NO_SPENDING_CATEGORIES = ':none:';
 
 /** Resolve legacy Hide/Show selections only after the category catalogue arrives. */

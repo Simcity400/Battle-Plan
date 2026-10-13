@@ -11,6 +11,7 @@ import { UNIT, formatAppliedIc, productionSpendingItems, spendingAt, spendingEmp
 import { definition, OPTIONS } from './definition.ts';
 import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOptions.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
+import { icDecimals } from '../../dashboard/icDecimals.ts';
 
 const known = (firstHour: number, lastHour: number, totalRaw: string): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw, reason: null });
 const leaf = (extra: Partial<ProductionSpendingLeaf> = {}): ProductionSpendingLeaf => ({
@@ -35,7 +36,7 @@ const reply = (): ProductionSpendingReply => ({
 });
 
 const ROOT = { id: 'all', label: 'All production' };
-const text: SunburstText = { format: (value, exact) => formatAppliedIc(value, exact, 5), unit: UNIT, valueLabel: 'Equipment-line IC' };
+const text: SunburstText = { format: (value, exact) => formatAppliedIc(value, exact, 5, 5), unit: UNIT, valueLabel: 'Equipment-line IC' };
 
 test('a well-formed production spending reply passes; malformed shape is refused', () => {
   const good = reply();
@@ -71,10 +72,21 @@ test('the amount at an hour is the exact supplying read, without interpolation o
   assert.deepEqual(spendingAt(data.total, 147.9), { exact: 2734567n, reason: null });
   assert.deepEqual(spendingAt(data.total, 148), { exact: 11000001n, reason: null });
   assert.deepEqual(spendingAt(data.total, 172), { exact: null, reason: 'outsideRead' });
-  assert.equal(formatAppliedIc(1234567, 1234567n), '12.34567');
-  assert.equal(formatAppliedIc(1, 1n), '0.00001');
-  assert.equal(formatAppliedIc(100000, 100000n), '1');
-  assert.equal(formatAppliedIc(Number(9007199254741499n), 9007199254741499n), '90,071,992,547.41499');
+  assert.equal(formatAppliedIc(1234567, 1234567n, 5, 5), '12.34567');
+  assert.equal(formatAppliedIc(1, 1n, 5, 5), '0.00001');
+  assert.equal(formatAppliedIc(100000, 100000n, 5, 5), '1');
+  assert.equal(formatAppliedIc(Number(9007199254741499n), 9007199254741499n, 5, 5), '90,071,992,547.41499');
+});
+
+test('IC amounts are whole numbers by default, and the settings can ask for every recorded digit', () => {
+  const total = 1685606865n;
+  const written = (stored: Record<string, unknown>) => formatAppliedIc(Number(total), total, 5, icDecimals(resolveOptions(OPTIONS, stored as never), 5));
+  assert.equal(written({}), '16,856');
+  assert.equal(written({ icDecimals: 2 }), '16,856.07');
+  assert.equal(written({ icDecimals: 5 }), '16,856.06865');
+  // A stored value out of range keeps the default rather than inventing digits.
+  assert.equal(written({ icDecimals: 9 }), '16,856');
+  assert.equal(formatAppliedIc(Number(9007199254741499n), 9007199254741499n, 5, 0), '90,071,992,547');
 });
 
 test('complete-empty evidence validation scales with its ordered read inventory', () => {

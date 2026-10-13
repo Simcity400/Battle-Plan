@@ -35,9 +35,12 @@ export function stockpileCountryData(replies: readonly EquipmentStockpileReply[]
     const coverage = spans.get(reply.tag) ?? [];
     for (const variant of reply.variants) {
       const previous = variants.get(variant.id);
-      const stock = clipToSpans(variant.stock, coverage), weekly = clipToSpans(variant.weekly, coverage);
-      if (previous) { previous.stock.push(...stock); previous.weekly.push(...weekly); }
-      else variants.set(variant.id, { ...variant, stock, weekly });
+      const [stock, daily, dailyIc, unitCostLow, unitCostHigh] = [variant.stock, variant.daily, variant.dailyIc, variant.unitCostLow, variant.unitCostHigh]
+        .map(runs => clipToSpans(runs, coverage));
+      if (previous) {
+        previous.stock.push(...stock); previous.daily.push(...daily); previous.dailyIc.push(...dailyIc);
+        previous.unitCostLow.push(...unitCostLow); previous.unitCostHigh.push(...unitCostHigh);
+      } else variants.set(variant.id, { ...variant, stock, daily, dailyIc, unitCostLow, unitCostHigh });
     }
     for (const item of reply.logistics) {
       const previous = logistics.get(item.key);
@@ -50,7 +53,8 @@ export function stockpileCountryData(replies: readonly EquipmentStockpileReply[]
   const reads = (key: 'reads' | 'lineReads' | 'logisticsReads') => [...new Set(replies.flatMap(reply => reply[key].filter((hour, index, hours) => (spans.get(reply.tag) ?? []).some(span => hour <= span.lastHour
     && (hours[index + 1] === undefined || hours[index + 1] > span.firstHour)))))].sort((a, b) => a - b);
   return { ...first, tag, types: [...new Map(replies.flatMap(reply => reply.types.map(type => [type.key, type] as const))).values()],
-    variants: [...variants.values()].map(variant => ({ ...variant, stock: ordered(variant.stock), weekly: ordered(variant.weekly) })),
+    variants: [...variants.values()].map(variant => ({ ...variant, stock: ordered(variant.stock), daily: ordered(variant.daily), dailyIc: ordered(variant.dailyIc),
+      unitCostLow: ordered(variant.unitCostLow), unitCostHigh: ordered(variant.unitCostHigh) })),
     logistics: [...logistics.values()].map(item => ({ ...item, stock: ordered(item.stock), balance: ordered(item.balance), available: ordered(item.available) })),
     stockHours: coverage('stockHours'), lineHours: coverage('lineHours'), balanceHours: coverage('balanceHours'), aiHours: coverage('aiHours'),
     reads: reads('reads'), lineReads: reads('lineReads'), logisticsReads: reads('logisticsReads'), warnings: [...new Set(replies.flatMap(reply => reply.warnings))] };

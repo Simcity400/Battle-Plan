@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ConstructionSpendingReply, SpendingLeaf } from '../../generated/dashboard';
-import { foldTree, groupTree, sliceTooltip } from '../../charts/sunburst/layout.ts';
+import { arcTargets, foldTree, groupTree, listed, sliceTooltip, unknownTotal } from '../../charts/sunburst/layout.ts';
 import { tooltipText } from '../../charts/tooltip.ts';
-import { footnote, formatSpent, spendingItems as datedSpendingItems, validateSpendingReply } from './spendingData.ts';
+import { footnote, formatSpent, hasConstruction, spendingItems as datedSpendingItems, validateSpendingReply } from './spendingData.ts';
+import { OPTIONS } from './definition.ts';
+import { resolveOptions } from '../../dashboard/options.ts';
+import { icDecimals } from '../../dashboard/icDecimals.ts';
 import type { SpendingWindow } from './spendingData';
 import type { StateNameAt } from '../../dashboard/construction';
 
@@ -39,7 +42,7 @@ test('spending names both railway endpoints at the shown hour while totals and i
     assert.equal(missing.note, 'State name unavailable.');
     assert.doesNotMatch(missing.note, new RegExp(reason));
     // Keep the real shared tree/tooltip path: a missing name is not missing IC.
-    const text = { format: (value: number, exact: bigint | null) => formatSpent(value, exact, data.costScale), unit: 'IC', valueLabel: 'Spent' };
+    const text = { format: (value: number, exact: bigint | null) => formatSpent(value, exact, data.costScale, 5), unit: 'IC', valueLabel: 'Spent' };
     for (const levels of [[true, true, true], [false, true, false], [false, false, false]]) {
       const root = groupTree([missing], { id: 'all', label: 'All construction' }, levels);
       let node = root;
@@ -69,41 +72,96 @@ test('recorded repairs and signed corrections remain exact selectable amounts', 
   assert.equal(correction.exact, -1n);
   assert.equal(correction.value, -1);
   assert.equal(correction.present, true);
-  assert.equal(formatSpent(correction.value!, correction.exact!, 100000), '−0.00001');
+  assert.equal(formatSpent(correction.value!, correction.exact!, 100000, 5), '−0.00001');
 });
 
-test('a failed observation resolves only when an exact cumulative read arrives', () => {
-  const data = reply([leaf({ spent: [{ knownAt: 148, totalRaw: '700' }],
+test('a failed observation leaves the counted amount partial until an exact cumulative read arrives', () => {
+  const data = reply([leaf({ spent: [{ knownAt: 100, totalRaw: '300' }, { knownAt: 148, totalRaw: '700' }],
     unknown: [{ knownAt: 124, reason: 'readFailed', project: 'p', until: 148 }] })]);
   const missing = spendingItems(data, { from: null, hour: 124, end: 148 })[0];
-  assert.equal(missing.unknownValue, true);
+  assert.ok(!missing.unknownValue);
+  assert.equal(missing.exact, 300n);
   assert.deepEqual(missing.unknown, { readFailed: 1 });
   assert.equal(missing.finalUnknown, false);
-  const known = spendingItems(data, { from: 125, hour: 148, end: 148 })[0];
-  assert.equal(known.unknownValue, false);
+  const known = spendingItems(data, { from: null, hour: 148, end: 148 })[0];
+  assert.ok(!known.unknownValue);
+  assert.deepEqual(known.unknown, {});
   assert.equal(known.exact, 700n);
 });
 
-test('linked output makes the whole unknown, including a later range', () => {
+test('linked output keeps what was counted and makes the whole partial, including a later range', () => {
   const data = reply([leaf({ spent: [{ knownAt: 100, totalRaw: '90' }],
     unknown: [{ knownAt: 124, reason: 'linkedOutput', project: 'p', until: null }] })]);
-  const items = spendingItems(data, { from: 130, hour: 148, end: 148 });
-  assert.equal(items[0].unknownValue, true);
-  assert.equal(groupTree(items, { id: 'all', label: 'All' }).valueUnknown, true);
+  const whole = groupTree(spendingItems(data, { from: null, hour: 148, end: 148 }), { id: 'all', label: 'All' });
+  assert.equal(whole.valueUnknown, false);
+  assert.equal(whole.exact, 90n);
+  assert.deepEqual(whole.unknown, { linkedOutput: 1 });
+  assert.equal(whole.finalUnknown, true);
+  const later = groupTree(spendingItems(data, { from: 130, hour: 148, end: 148 }), { id: 'all', label: 'All' });
+  assert.equal(later.exact, 0n);
+  assert.deepEqual(later.unknown, { linkedOutput: 1 });
 });
 
-test('ownerless output remains named and limits only ranges that include it', () => {
+test('ownerless output makes only the whole partial, in ranges that include it', () => {
   const data = reply([leaf({ spent: [{ knownAt: 148, totalRaw: '70' }] })]);
   data.unattributed = [{ knownAt: 124, reason: 'ownerUnknown', project: '99', until: 125 }];
   const early = spendingItems(data, { from: null, hour: 100, end: 148 });
   assert.equal(early.at(-1)?.present, false);
   assert.equal(early.at(-1)?.finalUnknown, true);
   const whole = spendingItems(data, { from: null, hour: 148, end: 148 });
+  assert.deepEqual(whole.at(-1)?.path, []);
   assert.deepEqual(whole.at(-1)?.unknown, { ownerUnknown: 1 });
-  assert.equal(groupTree(whole, { id: 'all', label: 'All' }).valueUnknown, true);
+  const tree = groupTree(whole, { id: 'all', label: 'All' });
+  assert.equal(tree.valueUnknown, false);
+  assert.equal(tree.exact, 70n);
+  assert.deepEqual(tree.unknown, { ownerUnknown: 1 });
+  assert.deepEqual(tree.children.map(child => child.label), ['New buildings']);
+  assert.equal(footnote(data, whole), 'Output of 1 project not traced to a country isn’t counted.');
   const later = spendingItems(data, { from: 125, hour: 148, end: 148 });
   assert.equal(later.at(-1)?.present, false);
   assert.equal(later.at(-1)?.finalUnknown, false);
+  assert.equal(footnote(data, later), undefined);
+});
+
+test('known amounts stay drawn and listed when output elsewhere is not counted', () => {
+  // As recorded for a country: new buildings and repairs, a project whose output
+  // was not recorded exactly, and branch-wide output with no country.
+  const data = reply([
+    leaf({ spent: [{ knownAt: 124, totalRaw: '23049375000' }] }),
+    leaf({ state: 6, spent: [{ knownAt: 100, totalRaw: '100000' }], unknown: [{ knownAt: 124, reason: 'readFailed', project: 'q', until: null }],
+      projects: [{ project: 'q', firstRead: 100, knownAt: null, until: null, unread: false, resumes: null }] }),
+    leaf({ repair: true, spent: [{ knownAt: 124, totalRaw: '916375000' }] }),
+  ]);
+  data.unattributed = [{ knownAt: 124, reason: 'ownerUnknown', project: '99', until: null }, { knownAt: 130, reason: 'notRecorded', project: '', until: null }];
+  data.beforeFirstRead = 15;
+  const items = spendingItems(data, { from: null, hour: 148, end: 148 });
+  assert.ok(hasConstruction(items));
+  const root = groupTree(items, { id: 'all', label: 'All construction' });
+  assert.equal(root.valueUnknown, false);
+  assert.equal(root.exact, 23049375000n + 100000n + 916375000n);
+  assert.equal(unknownTotal(root), 3);
+  // Only recorded kinds are listed: nothing named for output no country can be given.
+  assert.deepEqual(root.children.filter(listed).map(child => child.label), ['New buildings', 'Repairs']);
+  assert.ok(root.children.every(child => !child.valueUnknown));
+  const targets = arcTargets(root, root, 'share');
+  for (const child of root.children) assert.equal(targets.get(child.id)?.shown, true, child.label);
+  const text = { format: (value: number, exact: bigint | null) => formatSpent(value, exact, data.costScale, 0), unit: 'IC', valueLabel: 'Spent' };
+  assert.equal(sliceTooltip(root.children[0], root, text)[0].rows[0].value, '230,495 IC · partial');
+  assert.equal(footnote(data, items), 'Earlier spending on 15 projects isn’t counted. Partial amounts leave out output that wasn’t recorded exactly. '
+    + 'Output of 1 project not traced to a country isn’t counted. Output in hours that weren’t recorded isn’t counted.');
+});
+
+test('a country with only output no country can be given shows no construction', () => {
+  const data = reply([]);
+  data.unattributed = [{ knownAt: 124, reason: 'ownerUnknown', project: '99', until: null }];
+  assert.equal(hasConstruction(spendingItems(data, { from: null, hour: 148, end: 148 })), false);
+});
+
+test('spent IC is written in whole numbers unless the settings ask for decimals', () => {
+  const written = (stored: Record<string, unknown>) => formatSpent(Number(23049375000n), 23049375000n, 100000, icDecimals(resolveOptions(OPTIONS, stored as never), 5));
+  assert.equal(written({}), '230,494');
+  assert.equal(written({ icDecimals: 2 }), '230,493.75');
+  assert.equal(written({ icDecimals: 5 }), '230,493.75');
 });
 
 test('future content leaves do not appear before their supplying read', () => {
@@ -134,7 +192,7 @@ test('the output contract refuses malformed steps and dates', () => {
   wrong.leaves[0].unknown = [];
   wrong.leaves[0].spent[0].totalRaw = 'not a number';
   assert.throws(() => validateSpendingReply(wrong), /malformed/);
-  assert.match(footnote({ ...data, beforeFirstRead: 2 })!, /Earlier spending is missing for 2 projects/);
+  assert.equal(footnote({ ...data, beforeFirstRead: 2 }, []), 'Earlier spending on 2 projects isn’t counted.');
 });
 
 
@@ -151,7 +209,7 @@ test('folded state rows retain name failure reasons beside exact recorded output
   assert.equal(root.exact, 600n);
   assert.equal(root.valueUnknown, false);
   assert.equal(other.exact, 300n);
-  const text = { format: (value: number, exact: bigint | null) => formatSpent(value, exact, data.costScale), unit: 'IC', valueLabel: 'Spent' };
+  const text = { format: (value: number, exact: bigint | null) => formatSpent(value, exact, data.costScale, 5), unit: 'IC', valueLabel: 'Spent' };
   for (const tip of sliceTooltip(other, root, text)) {
     assert.equal(tip.rows[0].value, '0.003 IC');
     assert.match(tooltipText(tip), /State name unavailable/);

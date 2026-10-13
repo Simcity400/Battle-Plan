@@ -104,6 +104,13 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
     ? wanted.filter(item => opened.rows.has(nameKey(item.hour, item.tag))) : [], [opened, detailsIdentity, runtime.client, wanted]);
   const detailsKeys = useMemo(() => new Set(detailsWanted.map(item => nameKey(item.hour, item.tag))), [detailsWanted]);
   const dated = useFocusArtwork(runtime.client, track, tag, wanted, active && inRange === true, detailsWanted, data?.staticText);
+  // Descriptions rows have shown, used while their read has no answer: closing releases the demand, yet the row
+  // closes with its text, and reopening shows the same reading at once. Another identity or client starts empty.
+  const shown = useRef<{ identity: string; client: typeof runtime.client; texts: Map<string, string> } | null>(null);
+  if (shown.current?.identity !== detailsIdentity || shown.current.client !== runtime.client) {
+    shown.current = { identity: detailsIdentity, client: runtime.client, texts: new Map() };
+  }
+  const shownTexts = shown.current.texts;
   const toggleDetails = (key: string, open: boolean) => setOpened(previous => {
     const rows = previous?.identity === detailsIdentity && previous.client === runtime.client ? previous.rows : new Set<string>();
     if (rows.has(key) === open && previous?.identity === detailsIdentity && previous.client === runtime.client) return previous;
@@ -160,6 +167,8 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
       {order.completed.length || unfinished ? <ol className="focus-list" aria-label="Completed focuses in order">{order.completed.map(entry => {
         const readHour = entry.completedByHour ?? readingHour!, key = nameKey(readHour, entry.token);
         const { art, reason, pending } = at(entry.token, readHour);
+        if (art?.description) shownTexts.set(key, art.description);
+        const description = art?.description ?? (dated.details?.get(key) === undefined ? shownTexts.get(key) : undefined);
         const date = entry.completedByHour == null ? null : gameDate(entry.completedByHour);
         return <li key={entry.ordinal} className={`focus-entry${entry.ordinal === newest ? ' is-newest' : ''}`}
           {...rowJumpProps(runtime, track.id, entry.completedByHour, menu.open)}>
@@ -168,15 +177,16 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
               <span className="focus-number" aria-label={`Focus ${entry.ordinal + 1}`}>{String(entry.ordinal + 1).padStart(2, '0')}</span>
               <FocusArt art={art} size="small" />
               <span className="focus-label"><strong data-tooltip={contentTitleHint(entry.token, reason)}>{contentTitle(art?.name, entry.token, 'Focus name unavailable', pending)}</strong>
-                <span className="focus-date" data-tooltip={entry.completedByHour == null ? 'Completion date unknown.' : 'Complete by this date.'}>
-                  {date == null ? 'Date not recorded' : `By ${formatDate(date)}`}
+                <span className="focus-date" data-tooltip={entry.completedByHour == null ? 'Completion date unknown.'
+                  : 'Completed by this date. Focuses are read once a game day, so it may have finished a day or so earlier.'}>
+                  {date == null ? 'Date not recorded' : formatDate(date)}
                 </span>
               </span>
               <svg className="focus-chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
             </summary>
             <div className="focus-description">
               <div className="focus-duration">{art?.baseDurationDays != null ? <>Base duration <strong>{days(art.baseDurationDays)}</strong></> : 'Duration unavailable'}</div>
-              {art?.description && <p>{art.description}</p>}
+              {description && <p>{description}</p>}
             </div>
           </details>
         </li>;

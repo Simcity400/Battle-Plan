@@ -613,6 +613,149 @@ fn content_mod_override_native_key_fallback_and_missing_first_goal() {
 }
 
 #[test]
+fn alliance_name_variant_reads_the_viewpoint_predicate_only_when_its_key_exists() {
+    use replay::{frame::TableView, rows::TableRows};
+    let content = |keys: &str| {
+        let file = format!(
+            "\u{feff}l_english:\n ONE:0 \"One\"\n ONE_ADJ:0 \"First\"\n TWO:0 \"Two\"\n TWO_ADJ:0 \"Second\"\n THREE:0 \"Three\"\n THREE_ADJ:0 \"Third\"\n NATIVE:0 \"$ORDER$$FIRST$ versus $SECOND$\"\n{keys}"
+        );
+        catalogue::tests::folder_catalogue(&[("localisation/mod_l_english.yml", file.as_str())])
+    };
+    let (prefix_only, _prefix_folder) = content("");
+    let (pair_only, _pair_folder) = content(" NATIVE_ONE_TWO:0 \"Pair\"\n");
+    let (alliance, _alliance_folder) =
+        content(" NATIVE_ONE_TWO:0 \"Pair\"\n NATIVE_ONE_TWO_TWO:0 \"Allied pair\"\n");
+    fn named(frame: &DecodedFrame, view: Option<&str>, cat: &Catalogue) -> WarName {
+        let hour = Hour::read(frame, view).unwrap();
+        naming::name(
+            frame,
+            &hour,
+            pair(1, 2),
+            Some(cat),
+            &naming::Inputs::read(frame),
+        )
+    }
+    fn plain(name: WarName, text: &str, key: &str) {
+        assert!(name.known, "{:?}", name.reason);
+        assert_eq!((name.text.as_str(), name.key.as_deref()), (text, Some(key)));
+    }
+    fn refused(name: WarName, reason: &str) {
+        assert!(!name.known);
+        assert_eq!(name.text, "Not recorded");
+        assert_eq!(name.reason.as_deref(), Some(reason));
+    }
+    fn score(frame: &mut DecodedFrame, country: u32, available: u8, subject: u8) {
+        let TableView::Complete(TableRows::WarOverviewCountries(scores)) =
+            &mut *frame.tables[TableId::WarOverviewCountries.index()]
+        else {
+            panic!()
+        };
+        let row = scores.iter_mut().find(|r| r.country == country).unwrap();
+        row.score_available = available;
+        row.view_subject = subject;
+    }
+    fn factions(frame: &mut DecodedFrame, members: &[u32]) {
+        frame.tables[TableId::FactionMembers.index()] =
+            TableView::Complete(TableRows::FactionMembers(
+                members
+                    .iter()
+                    .enumerate()
+                    .map(|(ordinal, &country)| rows::FactionMemberRow {
+                        country,
+                        faction: 7,
+                        ordinal: ordinal as u32,
+                    })
+                    .collect(),
+            ))
+            .into();
+    }
+    const UNCAPTURED: &str = "Not recorded: cached subject naming predicate";
+    const FOREIGN: &str = "Not recorded: cached subject naming predicate for the selected viewpoint (only the recording client's is captured)";
+
+    // ONE records. THREE fights the instigator ONE, so only TWO's cached
+    // subject flag toward THREE could ally them, and only THREE captures it.
+    let mut frame = recorded(100);
+    plain(
+        named(&frame, Some("THREE"), &prefix_only),
+        "First versus Second",
+        "NATIVE",
+    );
+    plain(
+        named(&frame, Some("THREE"), &pair_only),
+        "Pair",
+        "NATIVE_ONE_TWO",
+    );
+    refused(named(&frame, Some("THREE"), &alliance), FOREIGN);
+
+    // THREE records, but without score capture TWO's flag toward it is missing.
+    frame.tables[TableId::LocalPlayer.index()] =
+        TableView::Complete(TableRows::LocalPlayer(vec![rows::LocalPlayerRow {
+            country: 3,
+            observer_country: 0,
+        }]))
+        .into();
+    frame.tables[TableId::WarNameRules.index()] =
+        TableView::Complete(TableRows::WarNameRules(vec![rows::WarNameRuleRow {
+            viewpoint: 3,
+            index: 0,
+            prefix: b"NATIVE".to_vec(),
+        }]))
+        .into();
+    score(&mut frame, 2, 0, 1);
+    plain(
+        named(&frame, None, &prefix_only),
+        "First versus Second",
+        "NATIVE",
+    );
+    plain(named(&frame, None, &pair_only), "Pair", "NATIVE_ONE_TWO");
+    refused(named(&frame, None, &alliance), UNCAPTURED);
+
+    // A captured flag selects the alliance key exactly as before.
+    score(&mut frame, 2, 1, 0);
+    plain(named(&frame, None, &alliance), "Pair", "NATIVE_ONE_TWO");
+    score(&mut frame, 2, 1, 1);
+    plain(
+        named(&frame, None, &alliance),
+        "Allied pair",
+        "NATIVE_ONE_TWO_TWO",
+    );
+    // Either endpoint's own viewpoint is allied without any cached flag.
+    score(&mut frame, 2, 0, 0);
+    for view in ["ONE", "TWO"] {
+        plain(
+            named(&frame, Some(view), &alliance),
+            "Allied pair",
+            "NATIVE_ONE_TWO_TWO",
+        );
+    }
+
+    // At peace with THREE, the instigator is tested first: its faction allies
+    // without reading TWO's missing flag, and its own missing flag refuses the
+    // name even though TWO shares THREE's faction.
+    let TableView::Complete(TableRows::WarRelations(relations)) =
+        &mut *frame.tables[TableId::WarRelations.index()]
+    else {
+        panic!()
+    };
+    relations.retain(|r| r.second_country != 3);
+    factions(&mut frame, &[1, 3]);
+    plain(
+        named(&frame, None, &alliance),
+        "Allied pair",
+        "NATIVE_ONE_TWO_TWO",
+    );
+    factions(&mut frame, &[2, 3]);
+    score(&mut frame, 1, 0, 0);
+    refused(named(&frame, None, &alliance), UNCAPTURED);
+    score(&mut frame, 1, 1, 0);
+    plain(
+        named(&frame, None, &alliance),
+        "Allied pair",
+        "NATIVE_ONE_TWO_TWO",
+    );
+}
+
+#[test]
 fn branch_scan_preserves_exact_losses_capitulation_identity_and_gap_bounds() {
     use replay::{frame::TableView, rows::TableRows};
     let mut frames: Vec<_> = [100, 101, 103, 104].into_iter().map(recorded).collect();

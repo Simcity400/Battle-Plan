@@ -2,7 +2,7 @@
 
 ## What it shows
 
-Country command-power balances over time, with payment ticks and an optional dashed maximum.
+Country command-power balances over time, with markers for one-off payments, an optional dashed maximum and a short day tooltip.
 
 ## Products it reads
 
@@ -10,13 +10,13 @@ Country command-power balances over time, with payment ticks and an optional das
 
 ## Settings
 
-Countries, campaign/follow/pin/range, shared [balance options](../country-measure/options.ts), and Maximum. Whole campaign is the default.
+Countries, campaign/follow/pin/range, shared [balance options](../country-measure/options.ts) (including Decimals), and Maximum. Whole campaign is the default.
 
 ## Notable behaviour
 
 - Uses the [shared balance renderer](../country-measure/README.md); change common chart and drill behaviour there.
 - The maximum loads independently; missing operands leave it unknown.
-- Current CP holds are reservations, separate from spending. Allocations and releases never become payment ticks. Negative daily gain is Daily deficit.
+- Command power set aside for raids, assignments and abilities is not spending and gets no marker. The game's reserve counter can sit below zero, so the tooltip shows only what moved into or out of reserve that day; the maximum already reflects the reserve as the game displays it. Negative daily gain is Daily deficit.
 - Missing ledger capture retains explicitly net balance-drop ticks. Named payments retain evaluated charges separately from realized changes.
 
 ## Files

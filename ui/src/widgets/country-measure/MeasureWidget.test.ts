@@ -193,30 +193,32 @@ for (const kind of ['political-power', 'command-power']) test(`${kind} uses moun
     const balance = (raw: string): MeasureReply => ({ ...data, series: [{ tag: actor, drops: [],
       runs: [{ firstHour: 0, lastHour: 100, valueRaw: raw, startsSegment: true }] }] });
     const rows = () => chart().tooltip!(100, undefined!, [])!.rows!;
+    // Daily figures keep the game's two decimals; balances and maxima are whole.
+    const daily = kind === 'political-power' ? 'Daily change' : 'Daily gain';
     props.active = true; props.widget.options = { ...props.widget.options, ceiling: true };
     props.widget.countries = { kind: 'group', group: { type: 'faction', id: 'native group' }, membership: 'hour', aggregate: false };
     host.__powerFlagData = balance('700000'); state.groups = groups; state.ledger = ledger(97); state.maxima = maxima('1100001'); render();
     assert.equal(state.portals.length, 0, 'one current balance stays in its chart/legend without a duplicate header pill');
     const ownerA = chart().pickOwner;
     assert.ok(chart().keyHours!.includes(97));
-    assert.equal(rows().find(row => row.label === 'Daily income')?.value, '+3.00001');
-    if (kind === 'command-power') assert.equal(rows().find(row => row.label === 'Maximum')?.value, '11.00001');
+    assert.equal(rows().find(row => row.label === daily)?.value, '+3.00');
+    if (kind === 'command-power') assert.equal(rows().find(row => row.label === 'Maximum')?.value, '11');
     state.groups = undefined; state.ledger = undefined; state.maxima = undefined; render(false);
     assert.equal(chart().pickOwner, ownerA, 'same-client content refresh retains membership, daily geometry and maximum');
     assert.ok(chart().keyHours!.includes(97));
-    assert.equal(rows().some(row => row.label === 'Daily income'), false, 'pending labels do not borrow the old ledger presentation');
-    if (kind === 'command-power') assert.equal(rows().find(row => row.label === 'Maximum')?.value, '11.00001');
+    assert.equal(rows().some(row => row.label === daily), false, 'pending labels do not borrow the old ledger presentation');
+    if (kind === 'command-power') assert.equal(rows().find(row => row.label === 'Maximum')?.value, '11');
 
     props.runtime.client = clientB; host.__powerFlagData = balance('800000'); render(false);
     assert.equal(state.chart, undefined, "new main data cannot borrow another client's still-pending membership before effects");
     state.groups = groups; render(false);
     assert.ok(chart()); assert.notEqual(chart().pickOwner, ownerA);
     assert.deepEqual(chart().keyHours, [0], "new main data cannot borrow the previous client's daily supplying reads");
-    assert.equal(rows().some(row => row.label === 'Daily income' || row.label === 'Maximum'), false);
+    assert.equal(rows().some(row => row.label === daily || row.label === 'Maximum'), false);
     assert.equal(chart().layers.length, 2, "the previous client's ceiling is not drawn");
     state.ledger = ledger(99); state.maxima = maxima('2200002'); render();
     assert.ok(chart().keyHours!.includes(99));
-    if (kind === 'command-power') assert.equal(rows().find(row => row.label === 'Maximum')?.value, '22.00002');
+    if (kind === 'command-power') assert.equal(rows().find(row => row.label === 'Maximum')?.value, '22');
     const ownerB = chart().pickOwner;
     state.groups = undefined; state.ledger = undefined; state.maxima = undefined;
     props.runtime.client = clientA; host.__powerFlagData = balance('900000'); render(false);
@@ -224,7 +226,7 @@ for (const kind of ['political-power', 'command-power']) test(`${kind} uses moun
     state.groups = groups; render(false);
     assert.ok(chart()); assert.notEqual(chart().pickOwner, ownerA); assert.notEqual(chart().pickOwner, ownerB);
     assert.deepEqual(chart().keyHours, [0], "the returned client waits for this visit's auxiliary reads");
-    assert.equal(rows().some(row => row.label === 'Daily income' || row.label === 'Maximum'), false);
+    assert.equal(rows().some(row => row.label === daily || row.label === 'Maximum'), false);
     assert.equal(chart().layers.length, 2);
     state.ledger = ledger(97); state.maxima = maxima('1100001'); render();
     const sameFactsOwner = chart().pickOwner;

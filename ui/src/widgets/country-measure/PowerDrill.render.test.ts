@@ -27,20 +27,19 @@ test('power drills show missing parts and one qualified total, retaining adjustm
       hoursPerSecond: 0, active: true, tokens: tokensFromValues(() => '#777777', 'sans-serif'), onContextMenu() {} };
     const text = () => renderToStaticMarkup(createElement(Drill, props)).replace(/<[^>]*>/g, ' ');
     const income = text();
-    assert.match(income, /Other\s+Not recorded/);
-    assert.match(income, /Daily costs\s+-1/);
-    assert.match(income, /Net daily income\s+5 · Income breakdown incomplete\./);
-    assert.equal((income.match(/Net daily income/g) ?? []).length, 1);
-    assert.doesNotMatch(income, /Income sources were not recorded|Shares use|%/);
-    assert.match(income, /Synthetic action · Hour 24\s+\+4/);
-    assert.match(income, /Adjustment\s+\+9/);
+    assert.match(income, /Daily gain\s+Not recorded/);
+    assert.match(income, /Daily costs\s+−1\.00/);
+    assert.match(income, /Daily change\s+\+5\.00 · Income breakdown incomplete\./);
+    assert.equal((income.match(/Daily change/g) ?? []).length, 1);
+    assert.doesNotMatch(income, /Other|Net daily income|Income sources were not recorded|Shares use|%/, 'no catch-all label and no shares of signed parts');
+    assert.doesNotMatch(income, /Synthetic action|Hour 24/, 'recorded changes are not repeated as details');
+    assert.match(income, /Lost at the cap\s+−5\.00/);
     props.index = powerBalanceIndex({ ...reply, commandHolds: [{ readHour: 24, throughHour: 30, totalRaw: '300000', reason: null,
       holders: [{ id: 'hold', kind: 'advisor', name: 'Synthetic reservation', amountRaw: '300000' }] }] }, 'Command');
     const command = text();
-    assert.match(command, /Daily deficit\s+-2/);
-    assert.match(command, /Synthetic reservation\s+3/);
-    assert.equal((command.match(/Total held/g) ?? []).length, 1);
+    assert.match(command, /Daily deficit\s+−2\.00/);
+    assert.doesNotMatch(command, /Synthetic reservation|Total held|Reserv/, 'a reserve that did not move that day is not shown');
     props.index = powerBalanceIndex({ ...reply, daily: [] }, 'Political');
-    assert.match(text(), /Net daily income\s+Not known · Income not recorded\./);
+    assert.match(text(), /Daily change\s+Not recorded · Income not recorded\./);
   } finally { await vite.close(); }
 });

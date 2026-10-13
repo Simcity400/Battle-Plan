@@ -2,7 +2,7 @@
 
 ## What it shows
 
-Country political-power balance lines with payment ticks and daily income/spending details.
+Country political-power balance lines with markers for one-off payments and a short day tooltip: balance, daily change (gain and daily costs) and that day's payments.
 
 ## Products it reads
 
@@ -10,13 +10,13 @@ Country political-power balance lines with payment ticks and daily income/spendi
 
 ## Settings
 
-Countries, campaign/follow/pin/range and shared [balance options](../country-measure/options.ts): playback/window, ticks, fill, end labels, axes and drills. Whole campaign is the default.
+Countries, campaign/follow/pin/range and shared [balance options](../country-measure/options.ts): playback/window, ticks, fill, end labels, decimals, axes and drills. Whole campaign is the default.
 
 ## Notable behaviour
 
 - Uses [country-measure](../country-measure/README.md); common chart, comparison picks and Pin/Follow behaviour belong there.
 - Runs break at gaps, missing values and replacement holders. A fallback drop needs consecutive reads of the same country and remains explicitly net.
-- Captured evaluated charges stay separate from realized balance changes. Missing income sources remain Other; later reads never fill earlier unknowns.
+- Amounts are whole unless Decimals asks for more; daily rates keep two decimals. Captured evaluated charges stay separate from realized balance changes, and gain the cap took is named. Later reads never fill earlier unknowns.
 - Names, flags, end labels and membership markers use their own recorded hours.
 
 ## Files

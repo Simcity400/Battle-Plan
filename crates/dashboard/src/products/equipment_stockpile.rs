@@ -1,20 +1,26 @@
 //! One country's equipment stockpile over a branch, for the Equipment stockpile
 //! widget: what it holds of each variant, what its production lines make of it
-//! per week, and each variant's equipment type (archetype) and domain from content.
+//! per day and the IC they apply, and each variant's equipment type (archetype)
+//! and domain from content.
 //!
 //! **In stock** is the recorded `Stockpiles` pool (fixed5,
 //! `engine::equipment_entry`), compared exactly with the save by the
 //! fresh-save oracle (`recorder::oracle::production::compare_stockpiles`). A
 //! variant listed twice holds their sum; one not listed holds none.
 //!
-//! **Produced per week** is the sum, over the country's military production
-//! lines making a variant, of each line's units per week by the game's weekly
-//! formula ([`equipment::weekly_units_raw`]). A line whose rate cannot be computed
-//! (no positive cost) makes that variant's weekly total unknown for the read.
-//! Naval, refit and railway-gun lines are not military lines: whether and at what
-//! rate they deliver to the stockpile is not established, so a variant one of them
-//! produces has an unknown weekly total for the read, never zero. Naval, refit and railway-gun lines make
-//! ships and guns, not stockpiled equipment, and are left out.
+//! **Output per day** is the sum, over the country's military production lines
+//! making a variant, of each line's units per day by the game's per-day formula
+//! ([`equipment::daily_units_raw`]), each line truncated on its own as the game's
+//! production view shows it (never a summed weekly figure divided by seven). A
+//! line whose rate cannot be computed (no positive cost) makes that variant's
+//! daily total unknown for the read. **IC per day** sums the same lines' speed,
+//! the IC each daily production tick adds; the **cost per unit** is each line's
+//! recorded cost after its organisation's bonus, sent as the lowest and highest
+//! among the variant's lines. A variant held but not in production has no
+//! recorded cost. Naval, refit and railway-gun lines are not military lines:
+//! whether and at what rate they deliver to the stockpile is not established, so
+//! a variant one of them produces has an unknown daily total, IC and cost for the
+//! read, never zero.
 //!
 //! **The surplus or shortage** is the recorded `LogisticsEquipment` balance: series
 //! 16 of the logistics record, the value the Logistics screen's stock balance
@@ -115,9 +121,17 @@ pub struct StockVariant {
     pub names: Vec<StockVariantName>,
     /// In stock, fixed5; no run inside a known span means none.
     pub stock: Vec<AmountRun>,
-    /// Units a week from its military production lines, fixed5; no run inside a
-    /// known span means none.
-    pub weekly: Vec<AmountRun>,
+    /// Units a day from its military production lines by the game's per-day
+    /// formula, each line truncated on its own and summed, fixed5; no run inside
+    /// a known span means none.
+    pub daily: Vec<AmountRun>,
+    /// The factory IC a day those lines apply (each line's speed), fixed5.
+    pub daily_ic: Vec<AmountRun>,
+    /// The lowest and highest cost per unit among those lines, fixed5, after each
+    /// line's organisation bonus: equal when they share one cost, unknown where a
+    /// line has no positive cost, none without a line.
+    pub unit_cost_low: Vec<AmountRun>,
+    pub unit_cost_high: Vec<AmountRun>,
 }
 
 /// An equipment type (archetype) as content names it.
@@ -172,7 +186,7 @@ pub struct EquipmentStockpileReply {
     /// Hours whose production lines are known, likewise. Lines are captured apart
     /// from the stockpile, so stock can be known where production is not.
     pub line_hours: Vec<HourSpan>,
-    /// Hours the production lines were read, ascending, for dating a weekly rate
+    /// Hours the production lines were read, ascending, for dating a daily rate
     /// apart from the stockpile read.
     pub line_reads: Vec<i32>,
     /// Each archetype's logistics record over the branch.
@@ -194,13 +208,17 @@ pub struct EquipmentStockpileReply {
 #[derive(Clone, Debug)]
 pub struct ScannedStockpile {
     pub stock: ReadRuns<u64>,
-    pub weekly: ReadRuns<u64>,
+    /// Units a day, IC a day and the lowest and highest cost per unit by variant.
+    pub daily: ReadRuns<u64>,
+    pub daily_ic: ReadRuns<u64>,
+    pub cost_low: ReadRuns<u64>,
+    pub cost_high: ReadRuns<u64>,
     pub reads: Vec<i32>,
     /// Each variant's naming operands, with where they are known.
     pub variants: VariantCatalogue,
-    /// Lines of the country whose cost gives no weekly output, per read.
+    /// Lines of the country whose cost gives no daily output, per read.
     pub costless: usize,
-    /// Naval, refit and railway-gun line reads of the country, whose weekly
+    /// Naval, refit and railway-gun line reads of the country, whose daily
     /// output is unknown.
     pub other_kinds: usize,
     /// Logistics balance, stock and same-write availability by archetype token.
@@ -222,6 +240,32 @@ pub struct ScannedStockpile {
 /// `engine::country_stability`'s ring saturation).
 pub const NEED_BOUND_RAW: i64 = 0x53e2_d620_fb40;
 
+impl ScannedStockpile {
+    /// The production lines broke: nothing of them is carried until their next read.
+    fn close_lines(&mut self) {
+        for runs in [
+            &mut self.daily,
+            &mut self.daily_ic,
+            &mut self.cost_low,
+            &mut self.cost_high,
+        ] {
+            runs.close();
+        }
+    }
+
+    /// An hour carried from the lines' last read.
+    fn carry_lines(&mut self, hour: i32) {
+        for runs in [
+            &mut self.daily,
+            &mut self.daily_ic,
+            &mut self.cost_low,
+            &mut self.cost_high,
+        ] {
+            runs.carry(hour);
+        }
+    }
+}
+
 /// Scans one branch for one country's stockpile, production and variant names.
 pub fn scan(
     replay: &Replay,
@@ -241,7 +285,10 @@ pub fn scan(
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Stockpile request cancelled");
     let mut result = ScannedStockpile {
         stock: ReadRuns::new(),
-        weekly: ReadRuns::new(),
+        daily: ReadRuns::new(),
+        daily_ic: ReadRuns::new(),
+        cost_low: ReadRuns::new(),
+        cost_high: ReadRuns::new(),
         reads: Vec::new(),
         variants: VariantCatalogue::default(),
         costless: 0,
@@ -305,7 +352,7 @@ pub fn scan(
                         result.stock.close();
                     }
                     if !continues || lines.is_none() {
-                        result.weekly.close();
+                        result.close_lines();
                     }
                     let logistics = decoded.complete::<tables::LogisticsEquipment>().ok();
                     if !continues || logistics.is_none() {
@@ -392,7 +439,7 @@ pub fn scan(
                     if !slot_read(&decoded.metrics, TableId::Stockpiles, decoded.hour) {
                         // Carried: the last read still holds, but only after a read of this identity.
                         result.stock.carry(hour);
-                        result.weekly.carry(hour);
+                        result.carry_lines(hour);
                         continue;
                     }
                     if let Some(stock) = stock {
@@ -407,30 +454,57 @@ pub fn scan(
                     }
                     if let Some(lines) = lines {
                         result.line_reads.push(hour);
-                        let mut weekly = Vec::new();
+                        let (mut daily, mut daily_ic) = (Vec::new(), Vec::new());
+                        // Each variant's lowest and highest cost per unit among its
+                        // military lines; unknown once any of them has no positive cost.
+                        let mut costs: BTreeMap<u64, Option<(i64, i64)>> = BTreeMap::new();
                         for line in lines
                             .iter()
                             .filter(|line| link_slot(links, line.country) == Some(slot))
                         {
-                            // A rate that cannot be computed makes the variant's weekly
+                            // A rate that cannot be computed makes the variant's daily
                             // total unknown at this read, never zero or a partial sum. Only a
                             // military line's rate is the military formula; what a naval,
                             // refit or railway-gun line delivers is not established.
-                            let units =
-                                if line.kind == engine::cequipment_production_line::KIND_MILITARY {
-                                    let units =
-                                        equipment::weekly_units_raw(line.speed_raw, line.cost_raw);
-                                    if units.is_none() {
-                                        result.costless += 1;
-                                    }
-                                    units
-                                } else {
-                                    result.other_kinds += 1;
-                                    None
-                                };
-                            weekly.push((line.variant, units));
+                            let military =
+                                line.kind == engine::cequipment_production_line::KIND_MILITARY;
+                            let units = if military {
+                                let units =
+                                    equipment::daily_units_raw(line.speed_raw, line.cost_raw);
+                                if units.is_none() {
+                                    result.costless += 1;
+                                }
+                                units
+                            } else {
+                                result.other_kinds += 1;
+                                None
+                            };
+                            daily.push((line.variant, units));
+                            daily_ic.push((line.variant, military.then_some(line.speed_raw)));
+                            let cost = (military && line.cost_raw > 0).then_some(line.cost_raw);
+                            costs
+                                .entry(line.variant)
+                                .and_modify(|range| {
+                                    *range = range
+                                        .zip(cost)
+                                        .map(|((low, high), cost)| (low.min(cost), high.max(cost)))
+                                })
+                                .or_insert(cost.map(|cost| (cost, cost)));
                         }
-                        result.weekly.read(hour, weekly);
+                        result.daily.read(hour, daily);
+                        result.daily_ic.read(hour, daily_ic);
+                        result.cost_low.read(
+                            hour,
+                            costs
+                                .iter()
+                                .map(|(variant, range)| (*variant, range.map(|range| range.0))),
+                        );
+                        result.cost_high.read(
+                            hour,
+                            costs
+                                .iter()
+                                .map(|(variant, range)| (*variant, range.map(|range| range.1))),
+                        );
                     }
                 }
             }
@@ -529,11 +603,11 @@ impl Product for EquipmentStockpile {
             None => {
                 let mut scanned = scan(&source.replay(), params.branch(), &params.tag, cancelled)?;
                 let variant_warnings = scanned.variants.warnings();
-                let (stock, weekly) = (&scanned.stock.runs, &scanned.weekly.runs);
+                let (stock, daily) = (&scanned.stock.runs, &scanned.daily.runs);
                 scanned
                     .variants
                     .versions
-                    .retain(|id, _| stock.contains_key(id) || weekly.contains_key(id));
+                    .retain(|id, _| stock.contains_key(id) || daily.contains_key(id));
                 let cached = Arc::new(Cached {
                     scanned,
                     variant_warnings,
@@ -579,7 +653,7 @@ impl Product for EquipmentStockpile {
             .stock
             .runs
             .keys()
-            .chain(scanned.weekly.runs.keys())
+            .chain(scanned.daily.runs.keys())
             .copied()
             .collect();
         let mut types: BTreeMap<String, (usize, Domain)> = BTreeMap::new();
@@ -615,7 +689,10 @@ impl Product for EquipmentStockpile {
                 archetype,
                 names: scanned.variants.names(*id, texts),
                 stock: scanned.stock.runs.get(id).cloned().unwrap_or_default(),
-                weekly: scanned.weekly.runs.get(id).cloned().unwrap_or_default(),
+                daily: scanned.daily.runs.get(id).cloned().unwrap_or_default(),
+                daily_ic: scanned.daily_ic.runs.get(id).cloned().unwrap_or_default(),
+                unit_cost_low: scanned.cost_low.runs.get(id).cloned().unwrap_or_default(),
+                unit_cost_high: scanned.cost_high.runs.get(id).cloned().unwrap_or_default(),
             });
         }
         // Archetypes of the logistics record: every one with a value in the branch,
@@ -715,7 +792,7 @@ impl Product for EquipmentStockpile {
         }
         if scanned.costless > 0 {
             warnings.push(format!(
-                "{} production line reads have no positive cost, so their variant's weekly output is unknown at those reads (the game shows only a placeholder rate for them).",
+                "{} production line reads have no positive cost, so their variant's daily output and cost per unit are unknown at those reads (the game shows only a placeholder rate for them).",
                 scanned.costless
             ));
         }
@@ -726,7 +803,8 @@ impl Product for EquipmentStockpile {
             warnings.push(format!("{} logistics archetype reads have no matching recorded available-stock operand; convoy, truck and train need remains unknown at those reads.", scanned.missing_available));
         }
         let overflowed = scanned.stock.overflowed
-            + scanned.weekly.overflowed
+            + scanned.daily.overflowed
+            + scanned.daily_ic.overflowed
             + scanned.balance.overflowed
             + scanned.logistics_stock.overflowed
             + scanned.available.overflowed;
@@ -737,7 +815,7 @@ impl Product for EquipmentStockpile {
         }
         if scanned.other_kinds > 0 {
             warnings.push(format!(
-                "{} naval, refit or railway-gun line reads make equipment whose weekly output is not established, so it is unknown at those reads.",
+                "{} naval, refit or railway-gun line reads make equipment whose daily output is not established, so it, its IC and its cost are unknown at those reads.",
                 scanned.other_kinds
             ));
         }
@@ -759,7 +837,7 @@ impl Product for EquipmentStockpile {
             variants,
             reads: scanned.reads.clone(),
             stock_hours: scanned.stock.spans.clone(),
-            line_hours: scanned.weekly.spans.clone(),
+            line_hours: scanned.daily.spans.clone(),
             line_reads: scanned.line_reads.clone(),
             logistics,
             logistics_reads: scanned.logistics_reads.clone(),

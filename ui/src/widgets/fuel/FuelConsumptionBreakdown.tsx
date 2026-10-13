@@ -29,8 +29,10 @@ const partRow = (part: FuelDemandPart, scale: number, color?: string): DrillPart
   label: part.recordedName ?? 'Name unavailable', raw: part.amountRaw === null ? null : BigInt(part.amountRaw),
   value: part.amountRaw === null ? null : Number(part.amountRaw) / scale, color,
   text: part.amountRaw === null ? 'Consumption unavailable' : `${formatFuelPart(BigInt(part.amountRaw), BigInt(scale))} per day` });
-export default function FuelConsumptionBreakdown({ reply, actorSpans, identitySpans, runtime, track, hour, selection, onSelection, level, onLevel, within, ...chart }: {
-  reply: FuelReply; runtime: WidgetRuntime; track: BoundTrack; hour: number | null;
+/** Family and displayed totals are written to `digits` decimals; each army, fleet or
+ * air wing's own rate stays exact, since a fraction of one fuel would read as 0 or 1. */
+export default function FuelConsumptionBreakdown({ reply, actorSpans, identitySpans, runtime, track, hour, selection, onSelection, level, onLevel, within, digits, ...chart }: {
+  reply: FuelReply; runtime: WidgetRuntime; track: BoundTrack; hour: number | null; digits: number;
   actorSpans?: ReadonlyMap<string, readonly Span[]>; identitySpans?: ReadonlyMap<string, readonly Span[]>;
   selection: FuelConsumptionSelection | null; onSelection: (selection: FuelConsumptionSelection | null) => void;
   level: FuelConsumptionLevel | null; onLevel: (level: FuelConsumptionLevel | null) => void;
@@ -86,8 +88,8 @@ export default function FuelConsumptionBreakdown({ reply, actorSpans, identitySp
     }).sort((a, b) => a.firstHour - b.firstHour),
     amount: at => { const tag = actorSpans ? countryDrillTagAt(actorSpans, at) : reply.tag;
       const source = summaries?.find(value => value.tag === tag), read = source && runAt(source.reads, at); return read && read.reasons[kind] === null
-      ? formatFuelPart(BigInt(read.knownDailyRaw[kind]), BigInt(reply.gainScale)) : 'Unavailable'; },
-  })), [summaries, actorSpans, reply.tag, reply.gainScale, reply.consumerNames, tokens]);
+      ? formatFuelPart(BigInt(read.knownDailyRaw[kind]), BigInt(reply.gainScale), digits) : 'Unavailable'; },
+  })), [summaries, actorSpans, reply.tag, reply.gainScale, reply.consumerNames, tokens, digits]);
   const total = useMemo(() => inventory.reduce((sum, part) => sum + (part.raw ?? 0n), 0n), [inventory]);
   const complete = useMemo(() => {
     if (!data || !current || !availableLevel || inventory.some(part => part.raw === null)) return false;
@@ -105,7 +107,7 @@ export default function FuelConsumptionBreakdown({ reply, actorSpans, identitySp
     {detail.error && <WidgetState kind="error" what="consumers" detail={detail.error} onRetry={detail.retry} />}
     {current && <DrillParts positiveBars showShares={false} active={chart.active} parts={current.nativeDailyRaw.map((raw, kind) => ({ id: String(kind),
       label: `${reply.consumerNames[kind] ?? 'Consumer name unavailable'} demand per day`, value: raw === null ? null : Number(raw) / reply.gainScale,
-      raw: raw === null ? null : BigInt(raw), text: raw === null ? 'Unavailable' : formatFuelPart(BigInt(raw), BigInt(reply.gainScale)) }))} format={String}
+      raw: raw === null ? null : BigInt(raw), text: raw === null ? 'Unavailable' : formatFuelPart(BigInt(raw), BigInt(reply.gainScale), digits) }))} format={String}
       onPick={key => chooseLevel(`family:${key}`)} />}
     {chosen ? <>
       <button type="button" className="button small quiet" onClick={() => onSelection(null)}>Back to displayed consumers</button>
@@ -123,7 +125,7 @@ export default function FuelConsumptionBreakdown({ reply, actorSpans, identitySp
         total={complete ? Number(total) / reply.gainScale : null} format={String}
         totalRow={{ label: complete ? 'Daily demand' : 'Daily demand subtotal',
           value: !availableLevel ? 'Not recorded' : !complete && !inventory.some(part => part.raw !== null)
-            ? 'Unavailable' : formatFuelPart(total, BigInt(reply.gainScale)) }}
+            ? 'Unavailable' : formatFuelPart(total, BigInt(reply.gainScale), digits) }}
         onPick={key => { const part = data.parts.find(part => part.key === key); if (part) onSelection(consumptionSelection(data, part, track.source.metadata.campaignKey)); }} />}
       {data && <ConsumptionTopology data={data} active={chart.active} onLevel={chooseLevel} />}
       {basis && data && availableLevel && <FuelConsumptionStack {...chart} within={within} pickOwner={owner} runtime={runtime} track={track}

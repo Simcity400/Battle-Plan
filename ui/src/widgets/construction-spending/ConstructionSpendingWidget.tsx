@@ -10,10 +10,11 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
+import { icDecimals } from '../../dashboard/icDecimals';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import type { ConstructionSpendingReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
-import { LEVELS, footnote, formatSpent, spendingItems, validateSpendingReply } from './spendingData';
+import { LEVELS, footnote, formatSpent, hasConstruction, scaleDigits, spendingItems, validateSpendingReply } from './spendingData';
 
 const NO_WARNINGS: string[] = [];
 const ROOT = { id: 'all', label: 'All construction' };
@@ -42,9 +43,10 @@ export default function ConstructionSpendingWidget({ widget, runtime, active, on
   const levelKey = LEVELS.map(level => options[level] !== false).join();
   const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const scale = data?.costScale ?? 1;
+  const digits = icDecimals(options, scaleDigits(scale));
   const text = useMemo<SunburstText>(() => ({
-    format: (value, exact) => formatSpent(value, exact, scale), unit: 'IC', valueLabel: 'Spent', countLabel: 'Projects',
-  }), [scale]);
+    format: (value, exact) => formatSpent(value, exact, scale, digits), unit: 'IC', valueLabel: 'Spent', countLabel: 'Projects',
+  }), [scale, digits]);
   useEffect(() => {
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
@@ -55,7 +57,7 @@ export default function ConstructionSpendingWidget({ widget, runtime, active, on
   if (!data) return <WidgetState kind="loading" label="Loading construction spending…" />;
   if (!data.reads.length && !data.railwayReads.length) return <WidgetState kind="unavailable" message="Construction was not recorded." />;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (!items.some(item => item.present !== false)) return <WidgetState kind="empty" icon="sunburst" message="No construction recorded" />;
+  if (!hasConstruction(items)) return <WidgetState kind="empty" icon="sunburst" message="No construction recorded" detail={footnote(data, items)} />;
   return <Sunburst label="Construction spending" items={items} root={ROOT} levels={levels} text={text} settings={settings}
-    hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} footnote={footnote(data)} />;
+    hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} footnote={footnote(data, items)} />;
 }

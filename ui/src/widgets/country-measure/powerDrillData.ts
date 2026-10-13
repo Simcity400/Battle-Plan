@@ -1,10 +1,10 @@
-import { dayLabel } from '../../charts/draw.ts';
 import type { FixedRun, HourSpan } from '../../generated/dashboard';
 import type { StackRun } from '../../charts/stack';
 import { clipToSpans, runAt } from '../../charts/series.ts';
-import { powerCoverageAt, powerDailyReadHour } from '../../dashboard/powerBalance.ts';
+import { dailyFigures, lostAtCap, powerCoverageAt, powerDailyReadHour, reserveMoves } from '../../dashboard/powerBalance.ts';
 import type { PowerBalanceIndex } from '../../dashboard/powerBalance';
-import { commandHeldAt, commandHeldTooltip, spendAt, spendText } from '../../dashboard/politicsSpending.ts';
+import { categoryLabel, RECURRING_CATEGORIES, spendAt, spendLabel } from '../../dashboard/politicsSpending.ts';
+import { formatPowerChange, formatRate } from '../../dashboard/powerDecimals.ts';
 
 export type PowerBreakdown = 'income' | 'spending';
 export interface PowerPart { id: string; category: string; label: string; raw: bigint | null; reason?: string }
@@ -44,7 +44,7 @@ export function powerPartsAt(index: PowerBalanceIndex, mode: PowerBreakdown, hou
     if (!observations.length) return { parts: [], total: null, reason: 'Income not recorded.' };
     if (index.currency === 'Command') {
       const income = sum(observations.map(row => row.cpIncomeRaw));
-      return { parts: [{ id: 'income', category: 'income', label: 'Other', raw: income }], total: income,
+      return { parts: [{ id: 'income', category: 'income', label: 'Daily gain', raw: income }], total: income,
         reason: income === null ? 'Income not recorded.' : undefined };
     }
     const gross = sum(observations.map(row => row.ppGrossRaw));
@@ -54,18 +54,33 @@ export function powerPartsAt(index: PowerBalanceIndex, mode: PowerBreakdown, hou
     // The captured native net includes its i64 wrapping; BigInt never replaces it.
     const wrapping = gross === null || costs === null || net === null ? null : net - (gross - costs);
     return { parts: [
-      { id: 'income', category: 'income', label: 'Other', raw: gross },
+      { id: 'income', category: 'income', label: 'Daily gain', raw: gross },
       { id: 'costs', category: 'costs', label: 'Daily costs', raw: costs === null ? null : -costs },
       { id: 'wrapping', category: 'wrapping', label: 'Adjustment', raw: wrapping },
     ], total: net, reason: net === null ? 'Income not recorded.' : gross === null || costs === null ? 'Income breakdown incomplete.' : undefined };
   }
+  // One-off payments by name; costs charged every day as one part per category.
   const parts: PowerPart[] = [];
+  const recurring = new Map<string, PowerPart>();
   for (const spend of index.spends.get(day) ?? []) {
     const item = index.items.get(spend.itemId)!;
     const category = index.categories.get(spend.category)!;
     const at = spendAt(spend, item, category.name, through, category.identified, day * 24);
-    if (at) parts.push({ id: spend.id, category: spend.category, label: item.action, raw: at.charge,
-      reason: item.unknown || !at.covered ? 'Spending total is incomplete.' : undefined });
+    if (!at) continue;
+    const name = categoryLabel(category.name, category.identified);
+    const reason = !at.covered || at.charge === null ? 'Spending total is incomplete.' : undefined;
+    if (!RECURRING_CATEGORIES.has(spend.category)) {
+      parts.push({ id: spend.id, category: spend.category, label: spendLabel(item, name), raw: at.charge, reason });
+      continue;
+    }
+    const part = recurring.get(spend.category);
+    if (!part) {
+      const folded: PowerPart = { id: `recurring:${spend.category}`, category: spend.category, label: name, raw: at.charge, reason };
+      recurring.set(spend.category, folded); parts.push(folded);
+    } else {
+      part.raw = part.raw === null || at.charge === null ? null : part.raw + at.charge;
+      part.reason ??= reason;
+    }
   }
   const cover = powerCoverageAt(index, through);
   const covered = (index.currency === 'Political' ? cover?.political : cover?.command) === true
@@ -81,7 +96,7 @@ export function powerPartsAt(index: PowerBalanceIndex, mode: PowerBreakdown, hou
 export function powerPartHistory(index: PowerBalanceIndex, mode: PowerBreakdown, within: readonly HourSpan[] | null, countries?: readonly HourSpan[]): PowerLayer[] {
   const categories = new Set([...index.spends.values()].flatMap(spends => spends.map(spend => spend.category)));
   const layers: PowerLayer[] = mode === 'income' ? [
-    { id: 'income', label: 'Other', runs: [] },
+    { id: 'income', label: 'Daily gain', runs: [] },
     ...(index.currency === 'Political' ? [{ id: 'costs', label: 'Daily costs', runs: [] },
       { id: 'wrapping', label: 'Adjustment', runs: [] }] : []),
   ] : [...index.categories].filter(([id]) => id !== 'dailyDeficit' && categories.has(id))
@@ -130,15 +145,22 @@ export function powerPartHistory(index: PowerBalanceIndex, mode: PowerBreakdown,
   return within ? layers.map(layer => ({ ...layer, runs: clipToSpans(layer.runs, within) })) : layers;
 }
 
-/** Adjustment actions add details the income/payment part rows do not show. */
-export function powerActionDetails(index: PowerBalanceIndex, hour: number, visibleThrough: number) {
+/** What the parts don't show: gain the cap took and, for command power, what
+ * moved into or out of reserve that day. Never a read after the shown moment. */
+export function powerActionDetails(index: PowerBalanceIndex, hour: number, visibleThrough: number, digits = 0): { label: string; value: string }[] {
   const through = Math.min(hour, visibleThrough);
-  const signed = (value: string) => `${BigInt(value) > 0n ? '+' : ''}${spendText(BigInt(value))}`;
-  const actions = (index.changes.get(dayAt(hour)) ?? []).filter(change => change.hour <= through && change.readHour <= through)
-    .flatMap(change => [
-      { label: `${change.action} · ${dayLabel(change.hour)}${!change.covered || change.reason ? ' · Incomplete' : ''}`, value: signed(change.realizedDeltaRaw) },
-      ...(change.amountRaw !== null && BigInt(change.amountRaw) !== BigInt(change.realizedDeltaRaw)
-        ? [{ label: 'Adjustment', value: signed(change.amountRaw) }] : []),
-    ]);
-  return [...actions, ...(index.currency === 'Command' ? commandHeldTooltip(commandHeldAt([index.reply], through)).rows.filter(row => row.value !== undefined) : [])];
+  const day = dayAt(hour);
+  const details: { label: string; value: string }[] = [];
+  for (const row of index.days.get(day) ?? []) {
+    const read = powerDailyReadHour(row, index.currency);
+    if (read === null || row.dayHour > through || read > through) continue;
+    const lost = lostAtCap(dailyFigures(row, index.currency));
+    if (lost) details.push({ label: 'Lost at the cap', value: formatRate(-lost, digits) });
+  }
+  if (index.currency === 'Command') {
+    const { reserved, released } = reserveMoves(index.reply, day * 24, through);
+    if (reserved) details.push({ label: 'Reserved', value: formatPowerChange(-reserved, digits) });
+    if (released) details.push({ label: 'Released from reserve', value: formatPowerChange(released, digits) });
+  }
+  return details;
 }

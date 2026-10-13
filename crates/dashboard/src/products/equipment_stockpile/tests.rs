@@ -437,13 +437,14 @@ fn stockpile_values_start_at_reads_carry_until_the_next_and_never_cross_gaps() {
     use engine::cequipment_production_line::{KIND_MILITARY, KIND_NAVAL};
     let slot = stockpile_slot(1000);
     let lines: &[(u64, i64, i64, u8)] = &[
-        // 3.60045 IC a day at 22.5 IC a unit: 1.12014 a week.
+        // 3.60045 IC a day at 22.5 IC a unit: 0.16002 a day.
         (10, 360_045, 2_250_000, KIND_MILITARY),
         (10, 360_045, 2_250_000, KIND_MILITARY),
-        // A naval line's output is not established, so variant 30's weekly total is
-        // unknown, never zero. Variant 20 has a line with a
-        // rate and a costless one, whose rate the game does not compute: its weekly
-        // total is unknown, not the other line's alone.
+        // A naval line's output is not established, so variant 30's daily total, IC
+        // and cost are unknown, never zero. Variant 20 has a line with a
+        // rate and a costless one, whose rate the game does not compute: its daily
+        // total and cost are unknown, not the other line's alone; both lines'
+        // applied IC is recorded.
         (30, 500_000, 1_000_000, KIND_NAVAL),
         (20, 360_045, 2_250_000, KIND_MILITARY),
         (20, 100_000, 0, KIND_MILITARY),
@@ -493,17 +494,39 @@ fn stockpile_values_start_at_reads_carry_until_the_next_and_never_cross_gaps() {
         scanned.stock.spans,
         [span(slot, slot + 3), span(slot + 5, slot + 5)]
     );
-    // Two lines of one variant add their weekly output; production is known only
-    // where the lines were read.
+    // Two lines of one variant add their daily output, each truncated by the
+    // game's per-day formula, and their IC; production is known only where the
+    // lines were read.
     assert_eq!(
-        runs(&scanned.weekly, 10),
-        [(slot, slot + 1, Some("224028".to_owned()))]
+        runs(&scanned.daily, 10),
+        [(slot, slot + 1, Some("32004".to_owned()))]
     );
-    assert_eq!(runs(&scanned.weekly, 20), [(slot, slot + 1, None)]);
-    assert_eq!(runs(&scanned.weekly, 30), [(slot, slot + 1, None)]);
+    assert_eq!(
+        runs(&scanned.daily_ic, 10),
+        [(slot, slot + 1, Some("720090".to_owned()))]
+    );
+    assert_eq!(
+        runs(&scanned.cost_low, 10),
+        [(slot, slot + 1, Some("2250000".to_owned()))]
+    );
+    assert_eq!(runs(&scanned.cost_high, 10), runs(&scanned.cost_low, 10));
+    assert_eq!(runs(&scanned.daily, 20), [(slot, slot + 1, None)]);
+    assert_eq!(
+        runs(&scanned.daily_ic, 20),
+        [(slot, slot + 1, Some("460045".to_owned()))]
+    );
+    assert_eq!(runs(&scanned.cost_low, 20), [(slot, slot + 1, None)]);
+    for series in [
+        &scanned.daily,
+        &scanned.daily_ic,
+        &scanned.cost_low,
+        &scanned.cost_high,
+    ] {
+        assert_eq!(runs(series, 30), [(slot, slot + 1, None)]);
+    }
     assert_eq!(scanned.other_kinds, 1);
     assert_eq!(
-        scanned.weekly.spans,
+        scanned.daily.spans,
         [span(slot, slot + 1), span(slot + 5, slot + 5)]
     );
     assert_eq!(scanned.costless, 1);

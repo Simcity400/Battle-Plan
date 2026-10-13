@@ -84,7 +84,9 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
     hour = last;
     const html = render();
     assert.match(html, /data-row-menu="National focus actions"/);
-    assert.ok(html.includes(`By ${formatDate(gameDate(focusHour)!)}`));
+    assert.ok(html.includes('data-tooltip="Completed by this date. Focuses are read once a game day, so it may have finished a day or so earlier.">'
+      + `${formatDate(gameDate(focusHour)!)}</span>`), 'a dated completion shows its plain date with the daily-read caveat in its hint');
+    assert.ok(!html.includes(`By ${formatDate(gameDate(focusHour)!)}`));
     const focusRows = nodes(tree).filter(node => node.type === 'li');
     assert.equal(focusRows.length, 2);
     assert.equal(focusRows[0].props.onContextMenu, undefined, 'an artwork snapshot does not date an earlier completion');

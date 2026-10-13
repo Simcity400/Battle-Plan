@@ -6,7 +6,7 @@ import { createServer } from 'vite';
 import type { FlowDiagramProps } from './FlowDiagram';
 import type { FrameTask } from '../scheduler';
 import { tokensFromValues } from '../tokens.ts';
-import { flowCapacity, flowPlaybackSnap, FlowMotion, flowStops, linkAt, nodeAt, ribbonTop, slotOrder } from './layout.ts';
+import { flowCapacity, flowPlaybackSnap, FlowMotion, flowStops, labelAt, linkAt, nodeAt, ribbonTop, slotOrder } from './layout.ts';
 import type { FlowGeometry, FlowLink, FlowNode } from './layout';
 
 const node = (id: string, side: 'source' | 'target', extra: Partial<FlowNode> = {}): FlowNode => ({ id, side, label: id, color: '#888', order: id, ...extra });
@@ -214,4 +214,74 @@ test('a backward drawn cutoff clears a vanished keyed tooltip with a stable call
     globalThis.Image = before.Image; globalThis.ResizeObserver = before.ResizeObserver; globalThis.window = before.window; globalThis.innerHeight = before.innerHeight;
     delete host.__flowCutoff; delete host.__flowEffect; await vite.close();
   }
+});
+
+test('a drawn flag or name opens its node only where the diagram asks, and a bar keeps its own pick', async () => {
+  const context = new Proxy({ measureText: (text: string) => ({ width: text.length * 7 }) },
+    { get: (target, key) => Reflect.get(target, key) ?? (() => {}) });
+  const handlers = new Map<string, (event: unknown) => void>();
+  const canvas = { clientWidth: 600, clientHeight: 360, offsetWidth: 600, width: 0, height: 0, style: {},
+    getContext: () => context, getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 360 }),
+    addEventListener(name: string, handler: (event: unknown) => void) { handlers.set(name, handler); },
+    removeEventListener(name: string) { handlers.delete(name); } };
+  const state = { canvas, effects: [] as (() => unknown)[], task: undefined as FrameTask | undefined,
+    latest: undefined as { current: FlowDiagramProps } | undefined };
+  const host = globalThis as typeof globalThis & { __flowLabels?: typeof state; __flowLabelEffect?: (effect: () => unknown) => void };
+  host.__flowLabels = state; host.__flowLabelEffect = effect => { state.effects.push(effect); };
+  const before = { ResizeObserver: globalThis.ResizeObserver, window: globalThis.window };
+  globalThis.ResizeObserver = class { observe() {} disconnect() {} } as unknown as typeof ResizeObserver;
+  globalThis.window = { devicePixelRatio: 1, innerHeight: 500 } as Window & typeof globalThis;
+  const tokens = tokensFromValues(() => '#123456', 'sans-serif', undefined, { motion: 'smooth', reducedMotion: true, countryColours: 'raw' });
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'flow-label-surface', enforce: 'pre',
+      transform(source, id) {
+        const path = id.replaceAll('\\', '/');
+        if (path.endsWith('/charts/tokens.ts')) return `export const readTokens = () => (${JSON.stringify(tokens)}); export const subscribeTokens = () => () => {};`;
+        if (path.endsWith('/charts/scheduler.ts')) return `export const scheduler = { add(task) { globalThis.__flowLabels.task = task; return () => {}; }, wake() {}, setVisible() {} };`;
+        if (path.endsWith('/charts/flow/FlowDiagram.tsx')) return source
+          .replace('canvas = useRef<HTMLCanvasElement>(null)', 'canvas = useRef(globalThis.__flowLabels.canvas)')
+          .replace('const latest = useRef(props);', 'const latest = useRef(props); globalThis.__flowLabels.latest = latest;')
+          .replace(/\buseEffect\(/g, 'globalThis.__flowLabelEffect(');
+      },
+    }] });
+  const cleanups: (() => void)[] = [];
+  try {
+    const { default: FlowDiagram } = await vite.ssrLoadModule('/ui/src/charts/flow/FlowDiagram.tsx');
+    const picks: string[] = [];
+    const labelPicks = new Map<string, [number, number]>();
+    const props: FlowDiagramProps = { label: 'Synthetic flows', active: true, stretch: 'same', hour: 20, nodes,
+      links: [link('A', 'X', 1), link('B', 'Y', 2)],
+      onPick: hit => { picks.push(hit.kind === 'node' ? hit.node.id : hit.link.id); },
+      onLabelPick: (node, hour) => { assert.equal(hour, 20); if (!labelPicks.has(node.id)) labelPicks.set(node.id, [at.x, at.y]); } };
+    const at = { x: 0, y: 0 };
+    renderToStaticMarkup(createElement(FlowDiagram, props));
+    for (const effect of state.effects) { const cleanup = effect(); if (typeof cleanup === 'function') cleanups.push(cleanup as () => void); }
+    state.task!.frame({ now: 0, dt: 0 });
+    const click = (x: number, y: number) => { at.x = x; at.y = y; handlers.get('click')!({ button: 0, clientX: x, clientY: y }); };
+    for (let x = 0; x <= 600; x += 3) for (let y = 0; y <= 360; y += 3) {
+      const before = picks.length + labelPicks.size;
+      click(x, y);
+      assert.ok(picks.length + labelPicks.size - before <= 1, 'one click opens one thing');
+    }
+    assert.deepEqual([...labelPicks.keys()].sort(), ['A', 'B', 'X', 'Y'], 'every drawn country name or flag is a place to click');
+    assert.ok(picks.includes('A') && picks.includes('X'), 'node bars keep opening their own breakdown');
+    // Without a label action, a name is not a place to click (as before).
+    state.latest!.current = { ...props, onLabelPick: undefined };
+    const [x, y] = labelPicks.get('A')!;
+    const count = picks.length;
+    click(x, y);
+    assert.equal(picks.length, count);
+  } finally {
+    for (const cleanup of cleanups.reverse()) cleanup();
+    globalThis.ResizeObserver = before.ResizeObserver; globalThis.window = before.window;
+    delete host.__flowLabels; delete host.__flowLabelEffect; await vite.close();
+  }
+});
+
+test('a label box holds the points of its flag and name only', () => {
+  const box = { id: 'A', node: node('A', 'source'), x: 10, y: 20, width: 40, height: 16, alpha: 1 };
+  assert.equal(labelAt([box], 10, 20)?.id, 'A');
+  assert.equal(labelAt([box], 50, 36)?.id, 'A');
+  assert.equal(labelAt([box], 51, 30), null);
+  assert.equal(labelAt([{ ...box, alpha: 0.01 }], 20, 25), null, 'a vanishing label is not pointed at');
 });

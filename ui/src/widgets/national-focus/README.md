@@ -24,12 +24,13 @@ Country and campaign/follow/pin; Whole campaign is the default. There are no wid
 
 ## Notable behaviour
 
-- Newly observed completions say By their confirming read; entries already in the first readable snapshot have no known date. Repeats retain separate ordinals. No future outcome fills a gap.
+- Newly observed completions show the date of their confirming read; its hint says the focus completed by then and, since focuses are read once a game day, may have finished a day or so earlier. Entries already in the first readable snapshot have no known date. Repeats retain separate ordinals. No future outcome fills a gap.
 - Progress uses recorded work/base duration. Days left require a previous daily gain of the same focus; do not estimate through gaps. Progress-budget refusal leaves ordered completions usable.
 - Missing pictures use a target icon; artwork failures are diagnostics, with no visible disclosure.
 - Artwork is dated to the shown or confirming hour, scoped to client/source/branch/country/content. Pending conditional art never keeps an older choice; defined empty names stay empty.
 - Titles show localized text, loading or unavailable wording. Hover reveals the focus key and any refusal reason.
-- Opening a completed row requests its description at that row's recorded hour. A refused description retains successful titles and icons and contributes its named, counted diagnostic. Client, source, branch, country or content changes close previous detail demand.
+- Opening a completed row requests its description at that row's recorded hour; closing releases the request. While its read has no answer, a row shows the description it already showed, so it closes with its text and reopens without waiting; a refusal shows none. A refused description retains successful titles and icons and contributes its named, counted diagnostic. Client, source, branch, country or content changes close previous detail demand and forget shown descriptions.
+- Completed rows open and close by revealing their height while fading, clipped to the row so the rows below slide rather than jump or show through. A description that arrives after its row opened grows in the same way. Reduced motion makes both instant.
 - Diagnostics update when their text changes and clear on unmount; equal warnings do not restart a render cycle while text or images load.
 - Dated completed rows offer Jump to their confirming read; undated rows do not. Enter/Space toggle details. Batch all wanted artwork without truncating the list.
 
@@ -39,4 +40,4 @@ Country and campaign/follow/pin; Whole campaign is the default. There are no wid
 |---|---|
 | [NationalFocusWidget.tsx](NationalFocusWidget.tsx) | Current card, completion rows and interactions. |
 | [focusData.ts](focusData.ts), [useFocusArtwork.ts](useFocusArtwork.ts) | Validation/local lookups and dated artwork requests; adjacent tests. |
-| [definition.ts](definition.ts), [index.ts](index.ts), [nationalFocus.css](nationalFocus.css) | Metadata, registration and layout. |
+| [definition.ts](definition.ts), [index.ts](index.ts), [nationalFocus.css](nationalFocus.css) | Metadata, registration, layout and row motion; [nationalFocusMotion.test.ts](nationalFocusMotion.test.ts) checks the motion. |

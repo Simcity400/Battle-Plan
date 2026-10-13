@@ -8,3 +8,12 @@
 .trade-resource-icon { width: 16px; height: 16px; flex: none; object-fit: contain; }
 /* A resource whose content gives no icon keeps its place, never silently blank. */
 .trade-resource-icon.is-missing { border-radius: 50%; background: color-mix(in srgb, var(--text) 8%, transparent); }
+/* One country's trade: imports and exports side by side, one above the other when narrow. */
+.trade-country { display: flex; flex: 1; flex-direction: column; gap: var(--space-3); min-height: 0; }
+.trade-country-sides { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: var(--space-3) var(--space-4); }
+.trade-country-side { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.trade-country-side > header { display: flex; align-items: baseline; gap: var(--space-2); font-size: var(--type-md); }
+.trade-country-side > header > b { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+/* Its resource and country lists share columns, so their bars line up. */
+.trade-country-side :is(ol.drill-parts, .drill-part-row, .drill-total) { grid-template-columns: minmax(0, 3fr) minmax(32px, 2fr) max-content 44px; }
+.trade-country-side ol.drill-parts { padding: 0 var(--space-2); }

@@ -31,8 +31,10 @@ export function useDetailView(start: number, end: number, detailHours: number) {
   return [visible, onViewChange] as const;
 }
 
-export default function FuelBreakdown({ reply, history, actorSpans, identitySpans, measure, hour, tokens, within, runtime, track, selection: retainedSelection, onSelection, ...chart }: {
-  reply: FuelReply; measure: 'gain' | 'burn'; hour: number | null; tokens: ReturnType<typeof useChartTokens>;
+/** Country amounts are written to `digits` decimals; a single recipient's receipts
+ * stay exact, since a fraction of one fuel would read as 0 or 1. */
+export default function FuelBreakdown({ reply, history, actorSpans, identitySpans, measure, hour, tokens, within, runtime, track, selection: retainedSelection, onSelection, digits, ...chart }: {
+  reply: FuelReply; measure: 'gain' | 'burn'; hour: number | null; tokens: ReturnType<typeof useChartTokens>; digits: number;
   history?: readonly FuelReply[]; actorSpans?: ReadonlyMap<string, readonly Span[]>; identitySpans?: ReadonlyMap<string, readonly Span[]>;
   runtime: WidgetRuntime; track: BoundTrack; selection: FuelRecipientSelection | null;
   onSelection: (selection: FuelRecipientSelection | null) => void;
@@ -42,21 +44,21 @@ export default function FuelBreakdown({ reply, history, actorSpans, identitySpan
   useEffect(() => { setConsumer(null); }, [chart.pickOwner]);
   const consumer = selection?.consumer ?? pickedConsumer;
   const read = hour !== null && isMember(within ?? undefined, hour) ? runAt(reply.reads, hour) : null;
-  const values = read && fuelParts(reply, read, measure);
+  const values = read && fuelParts(reply, read, measure, reply, digits);
   const sources = useMemo(() => history ?? [reply], [history, reply]);
-  const histories = useMemo(() => fuelCountryHistory(sources, actorSpans, measure), [sources, actorSpans, measure]);
+  const histories = useMemo(() => fuelCountryHistory(sources, actorSpans, measure, digits), [sources, actorSpans, measure, digits]);
   const series = useMemo(() => histories.map((part, i): BreakdownSeries => ({ id: part.id, label: part.label,
     color: tokens.categories[i % tokens.categories.length], runs: part.runs,
     labelAt: at => {
-      const source = fuelCountryRead(sources, actorSpans, at), value = source && fuelParts(source.reply, source.read, measure);
+      const source = fuelCountryRead(sources, actorSpans, at), value = source && fuelParts(source.reply, source.read, measure, source.reply, digits);
       return fuelHistoryRow(value ?? null, part.id, part.transfer)?.label ?? 'Other';
     },
     amount: at => {
-      const source = fuelCountryRead(sources, actorSpans, at), value = source && fuelParts(source.reply, source.read, measure);
+      const source = fuelCountryRead(sources, actorSpans, at), value = source && fuelParts(source.reply, source.read, measure, source.reply, digits);
       const row = fuelHistoryRow(value ?? null, part.id, part.transfer);
-      return row && value && source ? formatFuelPart(row.raw, part.transfer ? BigInt(source.reply.quantityScale) : value.scale) : 'Not recorded';
+      return row && value && source ? formatFuelPart(row.raw, part.transfer ? BigInt(source.reply.quantityScale) : value.scale, digits) : 'Not recorded';
     },
-  })), [histories, sources, actorSpans, measure, tokens.categories]);
+  })), [histories, sources, actorSpans, measure, digits, tokens.categories]);
   const color = (id: string) => series.find(part => part.id === id)?.color;
   const basis = fuelRecipientBasis(reply, read, retainedSelection, track.source.metadata.campaignKey, identitySpans ?? actorSpans);
   const request = basis && measure === 'burn' && consumer !== null ? { sourceId: track.source.id, revision: track.source.revision,
@@ -98,7 +100,7 @@ export default function FuelBreakdown({ reply, history, actorSpans, identitySpan
           : !awards ? <WidgetState kind="loading" label="Loading actual fuel recipients..." /> : <>
             <DrillParts virtual active={chart.active} positiveBars signedShares parts={recipientParts}
               total={Number(recipientTotal) / reply.gainScale} format={String} unattributed={unattributed}
-              totalRow={{ label: reply.consumerNames[consumer] ?? 'Consumer receipts', value: formatFuelPart(recipientTotal!, BigInt(reply.gainScale)) }}
+              totalRow={{ label: reply.consumerNames[consumer] ?? 'Consumer receipts', value: formatFuelPart(recipientTotal!, BigInt(reply.gainScale), digits) }}
               onPick={key => {
                 const part = recipientRows.find(row => row.key === key);
                 if (read && part) onSelection(selectFuelRecipient(reply, read, part, track.source.metadata.campaignKey));
@@ -107,10 +109,10 @@ export default function FuelBreakdown({ reply, history, actorSpans, identitySpan
     </> : <>
       {values && hour !== null ? <DrillParts positiveBars signedShares active={chart.active} parts={values.parts.map(part => ({ id: part.id,
         label: part.label, color: color(part.id), raw: part.raw, value: Number(part.raw) / Number(values.scale),
-        text: formatFuelPart(part.raw, values.scale), shareText: fuelPartShare(part.raw, values.total), muted: part.muted,
+        text: formatFuelPart(part.raw, values.scale, digits), shareText: fuelPartShare(part.raw, values.total), muted: part.muted,
         selectable: measure === 'burn' && part.consumer !== undefined && !!read?.day?.awards }))}
         total={Number(values.total) / Number(values.scale)} format={String}
-        totalRow={{ label: measure === 'gain' ? 'Fuel gained (own production)' : 'Fuel burned', value: formatFuelPart(values.total, values.scale) }}
+        totalRow={{ label: measure === 'gain' ? 'Fuel gained (own production)' : 'Fuel burned', value: formatFuelPart(values.total, values.scale, digits) }}
         onPick={id => { const part = values.parts.find(row => row.id === id); if (part?.consumer !== undefined) setConsumer(part.consumer); }} />
         : <p className="drill-empty">No daily accounting was recorded for this moment.</p>}
       {values?.reason && <p className="drill-empty">Source breakdown unavailable.</p>}
@@ -118,7 +120,7 @@ export default function FuelBreakdown({ reply, history, actorSpans, identitySpan
       {values?.transfer && <>
         <DrillParts positiveBars showShares={false} parts={[{ id: values.transfer.id, label: values.transfer.label,
           raw: values.transfer.raw, value: Number(values.transfer.raw) / reply.quantityScale,
-          text: formatFuelPart(values.transfer.raw, BigInt(reply.quantityScale)), color: color(values.transfer.id), muted: values.transfer.muted }]} format={String} />
+          text: formatFuelPart(values.transfer.raw, BigInt(reply.quantityScale), digits), color: color(values.transfer.id), muted: values.transfer.muted }]} format={String} />
         {values.transfer.reason && <p className="drill-empty">Incoming lend-lease unavailable.</p>}
       </>}
       <BreakdownChart {...chart} within={within} series={series.filter(part => part.id !== 'incoming')} selectedHour={hour}

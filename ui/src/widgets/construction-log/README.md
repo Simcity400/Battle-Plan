@@ -2,7 +2,12 @@
 
 ## What it shows
 
-One row per observed construction project: building or repair, location, status, level bounds and assigned factories.
+One row per observed construction project. Each row has, after its date:
+
+- the building's art and name with its levels, over where it is;
+- the country, unless the widget shows exactly one;
+- a status pill;
+- while the project is in the queue, the factories on it.
 
 ## Products it reads
 
@@ -10,23 +15,51 @@ One row per observed construction project: building or repair, location, status,
 
 ## Settings
 
-All countries by default, or manual countries/groups; building types, new/repair projects, latest-change/start order, and shared log options. Campaign/follow/pin/range are available.
+- **Countries:** all countries by default, or manual countries/groups.
+- **Building types:** a searchable list with the game's art.
+- **Projects:** new and repairs, new buildings or repairs.
+- **In the queue:** off by default.
+- **Order:** latest change or start.
+- **Shared log options.**
+
+Campaign/follow/pin/range are available. With Filter chips on, one line above the log holds the Projects chips, the In the queue chip and the building-type picker, sharing the settings' selections.
 
 ## Notable behaviour
 
-- Rows appear at the read establishing them. A changed project re-enters at its latest change; Jump offers start/change/end dates.
-- Building art uses the campaign's content; a factory icon fills a missing picture slot. Building-type chips and the settings filter share the same selection.
-- Level counts retain ranges and earlier-work lower bounds. Repair/build phases can share one project; gaps leave status and factories unread. Sampled speed does not bound work between reads.
-- Finished requires a native completion outcome. Complete unlinked departures can be Removed; uncovered departures remain Left the queue. Building rises and factory output do not prove completion.
-- Signed factory IC excludes bank withdrawals, instant progress and railway carry. Between-read projects without owner/target remain unidentifiable.
-- Building and state titles preserve successfully localised empty text and titles equal to their keys. Missing titles stay unavailable; diagnostic details retain their keys.
-- Manual tags follow native holders/aliases; groups match at first read. Missing identity stays unknown. [useStateNamesAt](../../dashboard/useStateNamesAt.ts) resolves shown-hour states: older uncaptured fields use authored fallback; failed names keep an unavailable label and a concise status.
-- One window per replay block lists every project with a row date in it. The widget holds the shown hour's window, the next during Live and, back from there, as many rows below the drawn ones as are drawn; short of them it reaches further back. Rows dated before the oldest window held unbroken wait for it, so the list is always the whole log's newest rows. A far jump keeps the last shown hour until its window arrives.
+- **Row layout.**
+  - Rows appear at the read establishing them. A changed project re-enters at its latest change; Jump offers start/change/end dates.
+  - The building and its levels sit over the place (a railway "A to B"; an unnamed place capitalised, game names untouched), then the country.
+  - From 520 px down, the country joins the line under the building. Compact density puts the place after the building on one line.
+- **Art.** Building art uses the campaign's content; a factory icon fills a missing picture slot. The game's repair frame marks a repair over its art.
+- **Status pill.**
+  - Accent while building or repairing; it pulses during Live.
+  - Positive once finished.
+  - Neutral for removed, left the queue and not recorded.
+  - In the queue keeps projects still building, or unread since a gap, at the shown hour.
+- **Factories.**
+  - Shown only while the project is in the queue, with "—" between a gap and the next read.
+  - An ended project's tooltip gives the factories at its last read.
+- **Level counts and endings.**
+  - Level counts retain ranges and earlier-work lower bounds. Repair/build phases can share one project; gaps leave status and factories unread. Sampled speed does not bound work between reads.
+  - Finished requires a native completion outcome. Complete unlinked departures can be Removed; uncovered departures remain Left the queue. Building rises and factory output do not prove completion.
+- **IC amounts.**
+  - Signed factory IC excludes bank withdrawals, instant progress and railway carry.
+  - The tooltip writes cost per level (a railway's route cost) and factory output in whole IC; the recorded amounts stay exact.
+  - Between-read projects without owner/target remain unidentifiable.
+- **Names.**
+  - Building and state titles preserve successfully localised empty text and titles equal to their keys. Missing titles stay unavailable; diagnostic details retain their keys.
+  - Manual tags follow native holders/aliases; groups match at first read. Missing identity stays unknown.
+  - Each drawn row names its country at its first read: every drawn hour is requested, beyond the default hour limit. A name still being read shows a placeholder; a missing or failed one says it is unavailable.
+  - [useStateNamesAt](../../dashboard/useStateNamesAt.ts) resolves shown-hour states: older uncaptured fields use authored fallback; failed names keep an unavailable label and a concise status.
+- **Windows.** One window per replay block lists every project with a row date in it.
+  - The widget holds the shown hour's window, the next during Live and, back from there, as many rows below the drawn ones as are drawn. Short of them it reaches further back, filters included.
+  - Rows dated before the oldest window held unbroken wait for it, so the list is always the whole log's newest rows.
+  - A far jump keeps the last shown hour until its window arrives.
 
 ## Files
 
 | File | Responsibility |
 |---|---|
-| [ConstructionLogWidget.tsx](ConstructionLogWidget.tsx), [useConstructionLog.ts](useConstructionLog.ts) | Log rendering, filters and visible-row names; products and the windows held. |
-| [constructionData.ts](constructionData.ts) | Validation, window merging and reach, project bounds, status and row wording; adjacent tests. |
-| [definition.ts](definition.ts), [index.ts](index.ts), [constructionLog.css](constructionLog.css) | Registration, settings and layout. |
+| [ConstructionLogWidget.tsx](ConstructionLogWidget.tsx), [useConstructionLog.ts](useConstructionLog.ts) | Filters, row cells and visible-row names; products and the windows held. |
+| [constructionData.ts](constructionData.ts) | Validation, window merging and reach, project bounds, queue/status/factories, row wording and name requests; adjacent tests. |
+| [definition.ts](definition.ts), [index.ts](index.ts), [constructionLog.css](constructionLog.css) | Registration, settings, row grid and narrow/compact layouts. |

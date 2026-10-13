@@ -92,7 +92,7 @@ fn residual(parts: &mut Vec<ProductionModifierPart>, total: i64, reason: &str) {
         })
         .sum::<i128>();
     let value = i128::from(total) - sum;
-    if value != 0 || parts.is_empty() {
+    if value != 0 {
         parts.push(ProductionModifierPart {
             id: "other".into(),
             label: None,
@@ -153,9 +153,12 @@ fn subtree_end(nodes: &[replay::rows::ModifierBreakdownNode], start: usize) -> u
     }
     end
 }
-/// Depth selects rows without double counting interiors. Exact selectable
-/// rows retain zeros and aliases; modifier_text::breakdown instead suppresses
-/// zero text. Both use the same captured preorder tree.
+/// Depth selects rows without double counting interiors. Like the game's
+/// formatter (modifier_text::breakdown), a selected row whose native value is
+/// zero is not shown, so it is neither labelled nor warned about; a nonzero
+/// value that scales to zero still shows. Aliases stay separate rows, and
+/// occurrence numbers count every selected occurrence so a row keeps its id
+/// on days when an earlier alias is zero.
 fn sources(
     country: &CountryProductionModifiersRow,
     key: u32,
@@ -184,6 +187,12 @@ fn sources(
             continue;
         };
         if depth == 0 || node.children == 0 {
+            let occurrence = occurrences.entry(node.name.clone()).or_default();
+            *occurrence += 1;
+            let occurrence = *occurrence;
+            if node.value == 0 {
+                continue;
+            }
             let label = localisation
                 .ok_or_else(|| "Native source label has no localisation context".to_owned())
                 .and_then(|localisation| {
@@ -209,8 +218,6 @@ fn sources(
             if let Some(reason) = &unknown {
                 warnings.insert(format!("Modifier key {key:#x}, source {index}: {reason}"));
             }
-            let occurrence = occurrences.entry(node.name.clone()).or_default();
-            *occurrence += 1;
             let identity = std::str::from_utf8(&node.name)
                 .map(|name| format!("text:{name}"))
                 .unwrap_or_else(|_| format!("bytes:{:?}", node.name));
@@ -1065,39 +1072,31 @@ mod tests {
         }
     }
     #[test]
-    fn formatter_depth_preserves_aliases_zeros_and_ignores_nonzero_interior_totals() {
+    fn formatter_depth_omits_zero_rows_keeps_aliases_and_ignores_nonzero_interior_totals() {
         use replay::rows::ModifierBreakdownNode as Node;
+        let node = |children, value, name: &[u8]| Node {
+            children,
+            value,
+            name: name.to_vec(),
+        };
         let country = CountryProductionModifiersRow {
             trees: vec![ProductionModifierTree {
                 key: 0xa9,
                 failure: vec![],
                 nodes: vec![
-                    Node {
-                        children: 2,
-                        value: 9,
-                        name: b"root".to_vec(),
-                    },
-                    Node {
-                        children: 1,
-                        value: 7,
-                        name: b"interior".to_vec(),
-                    },
-                    Node {
-                        children: 0,
-                        value: -2,
-                        name: b"alias".to_vec(),
-                    },
-                    Node {
-                        children: 0,
-                        value: 0,
-                        name: b"alias".to_vec(),
-                    },
+                    node(4, 9, b"root"),
+                    node(1, 7, b"interior"),
+                    node(0, 0, b"alias"),
+                    node(0, -2, b"alias"),
+                    node(0, 0, b""),
+                    node(0, 3, b"alias"),
                 ],
             }],
             ..Default::default()
         };
         let mut localisation = installed_content::localisation::Localisation::default();
         localisation.language = "english".into();
+        let mut warnings = BTreeSet::new();
         let parts = sources(
             &country,
             0xa9,
@@ -1105,14 +1104,109 @@ mod tests {
             |value| value,
             Some(&localisation),
             "english",
-            &mut BTreeSet::new(),
+            &mut warnings,
         );
-        assert_eq!(parts.len(), 2);
-        assert_ne!(parts[0].id, parts[1].id);
-        assert_eq!((parts[0].raw.as_str(), parts[1].raw.as_str()), ("-2", "0"));
+        // The game prints no zero row, so the unnamed zero is not even warned
+        // about; the zero first alias still numbers the later ones.
+        assert!(warnings.is_empty());
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| (part.id.as_str(), part.raw.as_str()))
+                .collect::<Vec<_>>(),
+            [("a9/text:alias#2", "-2"), ("a9/text:alias#3", "3")]
+        );
         let mut parts = parts;
         residual(&mut parts, 9, "native nonlinear total");
-        assert_eq!(parts.last().unwrap().raw, "11");
+        assert_eq!(parts.last().unwrap().raw, "8");
+        // A nonzero native value is shown even when its scaled amount is zero.
+        let scaled = sources(
+            &country,
+            0xa9,
+            2,
+            |_| 0,
+            Some(&localisation),
+            "english",
+            &mut warnings,
+        );
+        assert_eq!(scaled.len(), 2);
+        assert!(scaled.iter().all(|part| part.raw == "0"));
+    }
+    #[test]
+    fn five_thousand_zero_sources_add_no_rows_or_warnings_to_output_or_refit() {
+        use replay::rows::ModifierBreakdownNode as Node;
+        let zeros = 5_000;
+        let tree = |key: u32, named: Option<i64>| {
+            let mut nodes = vec![Node {
+                children: zeros + u32::from(named.is_some()),
+                value: named.unwrap_or(0),
+                name: Vec::new(),
+            }];
+            nodes.extend((0..zeros).map(|_| Node::default()));
+            if let Some(value) = named {
+                nodes.push(Node {
+                    children: 0,
+                    value,
+                    name: b"Synthetic factory output".to_vec(),
+                });
+            }
+            ProductionModifierTree {
+                key,
+                failure: vec![],
+                nodes,
+            }
+        };
+        let country = CountryProductionModifiersRow {
+            power_raw: 100000,
+            factory_speed: [200000, 400000, 600000, 1000000],
+            trees: vec![
+                tree(0xa8, None),
+                tree(0xd4, Some(10000)),
+                tree(0xd5, None),
+                tree(0x1d5, None),
+            ],
+            ..Default::default()
+        };
+        let mut localisation = installed_content::localisation::Localisation::default();
+        localisation.language = "english".into();
+        let raw = RawModifierRun {
+            first_hour: 0,
+            last_hour: 0,
+            country: Arc::new(country),
+            line: ProductionLineModifiersRow {
+                factory_efficiencies: vec![3276800],
+                refit_output: true,
+                ..Default::default()
+            },
+            run: RawRun {
+                active_factories: 1,
+                max_factories: 1,
+                efficiency_raw: 3276800,
+                speed_raw: 440000,
+                ..Default::default()
+            },
+            organisation: None,
+            localisation: Some(Arc::new(localisation)),
+            recorded_language: "english".into(),
+        };
+        let output = raw.project(Some("output"));
+        assert!(output.warnings.is_empty());
+        assert_eq!(
+            output.groups[0]
+                .parts
+                .iter()
+                .map(|part| (part.id.as_str(), part.raw.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("base", "400000"),
+                ("d4/text:Synthetic factory output#1", "40000"),
+                ("mio/0", "0"),
+            ]
+        );
+        let refit = raw.project(Some("refit"));
+        assert!(refit.warnings.is_empty());
+        assert!(refit.groups[0].parts.is_empty());
+        assert_eq!(refit.groups[0].total_raw.as_deref(), Some("0"));
     }
     #[test]
     fn source_labels_share_the_recorded_text_guard_without_refusing_exact_amounts() {

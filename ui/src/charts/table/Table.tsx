@@ -170,7 +170,16 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const visible = useMemo(() => ordered.filter((row, slot) => (slot >= start && slot < end) || rowKey(row) === focusedKey
     || (!tokens.reducedMotion && (departing.has(rowKey(row)) || crossing?.has(rowKey(row)) === true))),
     [ordered, start, end, departing, crossing, focusedKey, rowKey, tokens.reducedMotion]);
-  useEffect(() => { onVisibleRows?.(visible); }, [visible, onVisibleRows]);
+  // Report only a changed set of mounted rows. Rebuilt columns re-sort into a new
+  // array, and a widget whose columns follow the reported rows would otherwise loop.
+  const reported = useRef<{ rows: readonly T[]; callback: typeof onVisibleRows } | null>(null);
+  useEffect(() => {
+    const held = reported.current;
+    const before = held && held.callback === onVisibleRows ? held.rows : null;
+    if (before && before.length === visible.length && before.every((row, index) => row === visible[index])) return;
+    reported.current = { rows: visible, callback: onVisibleRows };
+    onVisibleRows?.(visible);
+  }, [visible, onVisibleRows]);
   // Each mounted header/cell is observed once. Its first observation and every
   // resize arrive before paint, and a wider one grows its track in that frame.
   const naturalCells = useRef<{ observer: ResizeObserver; observed: Set<Element> } | null>(null);

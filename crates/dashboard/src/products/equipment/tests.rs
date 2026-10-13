@@ -90,6 +90,20 @@ fn weekly_units_are_the_game_s_truncated_fixed5() {
 }
 
 #[test]
+fn daily_units_are_the_game_s_own_truncation_not_a_seventh_of_the_week() {
+    // Speed 3.60045 IC a day and cost 22.5 IC a unit give 0.16002 units a day.
+    assert_eq!(daily_units_raw(360_045, 2_250_000), Some(16_002));
+    // 24.6609 IC a day at 0.5 IC a unit: 49.3218 a day.
+    assert_eq!(daily_units_raw(2_466_090, 50_000), Some(4_932_180));
+    // 1.97752 IC a day at 19.504 IC a unit: 0.10139 a day, truncated toward zero.
+    assert_eq!(daily_units_raw(197_752, 1_950_400), Some(10_139));
+    assert_eq!(daily_units_raw(7, 100_001), Some(6));
+    assert_eq!(daily_units_raw(-1, 100_001), Some(0));
+    assert_eq!(daily_units_raw(1, 0), None);
+    assert_eq!(daily_units_raw(i64::MAX, 1), None);
+}
+
+#[test]
 fn domains_follow_the_engine_s_plane_and_ship_families() {
     assert_eq!(Domain::of(1 << 10), Domain::Air); // fighter
     assert_eq!(Domain::of(1 << 32), Domain::Air); // heavy fighter

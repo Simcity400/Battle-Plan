@@ -1,28 +1,48 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
+import type { Sort } from '../../charts/table/logic';
 
-export const TRANSFER_BREAKDOWN = { id: 'parts', label: 'Transfer breakdown' };
+/** A pinned breakdown: one country's transfers, or links an earlier version pinned. */
+export const TRANSFER_BREAKDOWN = { id: 'parts', label: 'Country transfers' };
+export type TransferView = 'main' | 'transfers' | 'parts';
+
+/** Column keys and labels for the saved sorts; the widget renders the cells. */
+export const COUNTRY_COLUMNS = [
+  { key: 'country', label: 'Country' }, { key: 'gained', label: 'Gained' }, { key: 'lost', label: 'Lost' },
+  { key: 'net', label: 'Net' }, { key: 'netVictoryPoints', label: 'Net VP' },
+] as const;
+export const TRANSFER_COLUMNS = [
+  { key: 'state', label: 'State' }, { key: 'from', label: 'From' }, { key: 'to', label: 'To' },
+  { key: 'date', label: 'Date' }, { key: 'victoryPoints', label: 'VP' },
+] as const;
+export const COUNTRY_SORT: Sort = { column: 'net', direction: 'descending' };
+export const TRANSFER_SORT: Sort = { column: 'date', direction: 'descending' };
+/** The Transfers view keeps its own sort beside the Countries table's. */
+export const TRANSFER_SORT_KEY = 'transferSort';
 
 export const OPTIONS: readonly OptionField[] = [
-  breakdownOption([TRANSFER_BREAKDOWN], 'Transfer diagram'),
+  { key: 'show', section: 'options', label: 'Show', kind: 'choice', default: 'main', choices: [
+    { value: 'main', label: 'Countries' }, { value: 'transfers', label: 'Transfers' }, { value: TRANSFER_BREAKDOWN.id, label: TRANSFER_BREAKDOWN.label },
+  ] },
   { key: 'selection', section: 'options', label: 'Transfer selection', kind: 'content-choice', automatic: 'All transfers', default: '', visibleWhen: () => false },
   DRILL_OPTION,
-  { key: 'measure', section: 'options', label: 'Size', kind: 'choice', default: 'states',
-    choices: [{ value: 'states', label: 'State count' }, { value: 'victoryPoints', label: 'Victory points' }] },
   { key: 'scope', section: 'options', label: 'Scope', kind: 'choice', default: 'campaign',
     choices: [{ value: 'campaign', label: 'Whole campaign' }, { value: 'conference', label: 'One conference' }] },
   { key: 'conference', section: 'options', label: 'Conference', kind: 'content-choice', automatic: 'Newest conference shown', default: '',
     visibleWhen: options => options.scope === 'conference' },
-  { key: 'colour', section: 'options', label: 'Ribbon colour', kind: 'choice', default: 'giver',
-    choices: [{ value: 'giver', label: 'By giver country' }, { value: 'taker', label: 'By taker country' }] },
+  ...TABLE_OPTIONS.filter(option => option.key !== 'rankMarkers'),
+  { ...tableSortOptions(COUNTRY_COLUMNS, COUNTRY_SORT)[0], visibleWhen: options => options.show !== 'transfers' && options.show !== TRANSFER_BREAKDOWN.id },
+  { ...tableSortOptions(TRANSFER_COLUMNS, TRANSFER_SORT)[0], key: TRANSFER_SORT_KEY, visibleWhen: options => options.show === 'transfers' || options.show === TRANSFER_BREAKDOWN.id },
 ];
 
 export const definition = {
-  kind: 'territory-transfers', version: 1, title: 'Territory transfers', category: 'Diplomacy', icon: 'flows',
-  description: 'States transferred in peace settlements.',
+  kind: 'territory-transfers', version: 2, title: 'Territory transfers', category: 'Diplomacy', icon: 'flows',
+  description: 'Who gained and lost states in peace settlements, and when.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
-  countrySelection: false,
-  countries: { max: Number.MAX_SAFE_INTEGER },
+  countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   defaultCountries: { kind: 'all' }, minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 12 }, options: OPTIONS,
+  // Version 1 drew a flow diagram; its size and ribbon-colour settings stay stored, unused.
+  migrate: (_from, widget) => widget,
 } as const satisfies WidgetMeta;

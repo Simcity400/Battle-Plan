@@ -24,10 +24,8 @@
 .peace-more { color: var(--muted); cursor: help; }
 .peace-derived { display: inline-block; margin-top: 6px; color: var(--muted); font-size: 0.625rem; }
 .peace-observation { margin-top: 5px; color: var(--muted); font-size: 0.6875rem; overflow-wrap: anywhere; }
-.peace-gap { padding: 8px 12px 12px; color: var(--muted); font-size: 0.6875rem; }
-.peace-none { padding: 8px 12px; color: var(--muted); font-size: 0.75rem; }
+.peace-note { margin: 0; padding: 0 12px 6px; color: var(--muted); font-size: 0.6875rem; cursor: help; }
 .peace-deals .log.is-compact .peace-deal { margin-bottom: 6px; padding: 6px 8px; }
 .peace-deals .log.is-compact .peace-heading b { font-size: 0.75rem; }
 .peace-deals .log.is-compact .peace-sides { gap: 4px; margin: 4px 0 6px; }
 .peace-deals .log.is-compact .peace-actions { gap: 3px 8px; font-size: 0.6875rem; }
-.peace-deals .log.is-compact .peace-gap { padding: 6px 8px 8px; }

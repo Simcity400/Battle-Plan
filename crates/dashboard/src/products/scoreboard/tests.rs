@@ -1207,6 +1207,7 @@ fn scoreboard_stability_war_support_nukes_and_equipment_match_public_products_an
             tags: vec!["GER".into()],
             top: None,
             measure: ProducedMeasure::Total,
+            count: crate::products::equipment_produced::ProducedCount::Units,
             grouping: ProducedGrouping::Type,
             included: vec![],
             refits: false,

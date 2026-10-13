@@ -222,7 +222,7 @@ function LiveTable({ data, detail, hour, order, more, owner, active, hoursPerSec
     if (!target) return null;
     const { at, part } = target;
     return fitted(part === 'line' ? lineTooltip(data, at.line, at.detail, at.run, hour, head, dayLabel)
-      : breakdownTooltip(data, at.run, hour, part, head, runAt(at.detail.modifiers, hour)), height);
+      : breakdownTooltip(data, at.run, hour, part, head), height);
   }, [targets, data, hour, head, height]);
   const jumpHour = read ?? hour;
   const tips = useRowTooltips<string>({ owner, active, content, revision: `${hour}:${data.branchId}`, onMenu: (key, x, y) => onMenu(jumpHour, x, y, targets.get(key)?.at.line.key) });
@@ -274,12 +274,12 @@ function LiveTable({ data, detail, hour, order, more, owner, active, hoursPerSec
           <span className="production-cell"><span><b className="production-number">{run.activeFactories}</b><small> / {run.requestedFactories}</small></span>
             <span className="production-meter" aria-hidden="true"><i style={{ width: percent(run.activeFactories) }} /><em style={{ left: percent(run.requestedFactories) }} /></span></span>
           <span className="production-cell" {...(leaving ? { tabIndex: -1 } : cellProps(efficiencyKey))}>
-            <span id={tips.descriptionId(efficiencyKey)} className="sr-only">{tooltipText(breakdownTooltip(data, run, hour, 'efficiency', head, runAt(lineDetail.modifiers, hour))[0])}</span>
+            <span id={tips.descriptionId(efficiencyKey)} className="sr-only">{tooltipText(breakdownTooltip(data, run, hour, 'efficiency', head)[0])}</span>
             <button type="button" className="production-factor production-number" disabled={leaving} aria-label={`${variantName(variant, run.variant)} efficiency breakdown`}
               aria-describedby={tips.descriptionId(efficiencyKey)} onClick={() => onBreakdown(row.key, 'efficiency', hour)}>{`${efficiencyPercent(run)}%`}</button>
             <span className="production-meter" aria-hidden="true"><i style={{ width: `${efficiencyFraction(run) * 100}%` }} /></span></span>
           <span className="production-number is-number" {...(leaving ? { tabIndex: -1 } : cellProps(outputKey))}>
-            <span id={tips.descriptionId(outputKey)} className="sr-only">{tooltipText(breakdownTooltip(data, run, hour, 'output', head, runAt(lineDetail.modifiers, hour))[0])}</span>
+            <span id={tips.descriptionId(outputKey)} className="sr-only">{tooltipText(breakdownTooltip(data, run, hour, 'output', head)[0])}</span>
             <button type="button" className="production-factor" disabled={leaving} aria-label={`${variantName(variant, run.variant)} output breakdown`}
               aria-describedby={tips.descriptionId(outputKey)} onClick={() => onBreakdown(row.key, 'output', hour)}>{weekly == null ? '—' : weeklyText(weekly, data.decimals)}</button></span>
           <span className={`production-number is-number${output && outputTotal(output) != null ? '' : ' is-muted'}`}

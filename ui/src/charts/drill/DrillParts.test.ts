@@ -36,6 +36,19 @@ test('the first visible report is safe without a callback and releases a supplie
   } finally { delete shared.__drillPartEffects; }
 });
 
+test('effects replayed after their cleanup (React StrictMode) report the shown rows again', () => {
+  const shared = globalThis as typeof globalThis & { __drillPartEffects?: (() => unknown)[] };
+  const calls: (readonly string[])[] = [];
+  try {
+    shared.__drillPartEffects = [];
+    DrillParts({ parts: [{ id: 'native part', label: 'Part', value: 1 }], format: String, onVisible: ids => calls.push(ids) });
+    const effects = shared.__drillPartEffects;
+    for (const cleanup of effects.map(effect => effect())) if (typeof cleanup === 'function') cleanup();
+    effects.forEach(effect => effect());
+    assert.deepEqual(calls, [['native part'], [], ['native part']], 'rows shown after the replay must have their labels asked for');
+  } finally { delete shared.__drillPartEffects; }
+});
+
 test('negative and zero exact rows activate native IDs through keyboard-focusable buttons without amount geometry', () => {
   const picked: string[] = [];
   const tree = DrillParts({ parts: [{ id: 'negative', label: 'Correction', value: -2, raw: -2n },

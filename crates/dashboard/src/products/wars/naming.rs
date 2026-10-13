@@ -128,20 +128,17 @@ pub(super) fn name<'a>(
                 .map(|s| s.view_subject != 0)
                 .ok_or_else(|| "Not recorded: cached subject naming predicate".into())
         };
-        let suffix = if allied(instigator)? {
-            true
-        } else {
-            allied(defender)?
-        };
-        // Both alliance branches append the defender tag.
+        // Both alliance branches append the defender tag. Without that key the
+        // predicate cannot change the name, so it is read only when the key exists.
         let extra = format!("{pair_key}_{second_tag}");
-        let key = if suffix && localisation.get(&extra).is_some() {
-            extra
-        } else if localisation.get(&pair_key).is_some() {
-            pair_key
-        } else {
-            prefix.to_owned()
-        };
+        let key =
+            if localisation.get(&extra).is_some() && (allied(instigator)? || allied(defender)?) {
+                extra
+            } else if localisation.get(&pair_key).is_some() {
+                pair_key
+            } else {
+                prefix.to_owned()
+            };
         let first = names.name_with(instigator, "_ADJ")?;
         let second = names.name_with(defender, "_ADJ")?;
         let first_country = names.name(instigator)?;

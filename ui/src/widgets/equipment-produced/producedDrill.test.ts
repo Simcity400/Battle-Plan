@@ -10,7 +10,7 @@ import { producedDrillData, producedDrillNumbers } from './producedDrill.ts';
 import type { EquipmentProducedReply, ProducedKey } from '../../generated/dashboard';
 
 const key = (token: string): ProducedKey => ({ key: token, name: token, typeKey: token, domain: null, names: [] });
-const reply: EquipmentProducedReply = { branchId: 'branch', measure: 'total', grouping: 'type', types: [], warnings: [],
+const reply: EquipmentProducedReply = { branchId: 'branch', measure: 'total', count: 'units', decimals: 0, grouping: 'type', types: [], warnings: [],
   keys: [key('recorded type'), key('correction type'), key('unresolved type')],
   series: [{ tag: 'MOD', firstHours: [8, 32, 56, 104], lastHours: [31, 55, 79, 127], breaks: [0, 3], membership: null,
     values: [{ key: 0, values: { from: 0, deltas: [12], unknown: [] } },
@@ -70,7 +70,7 @@ test('produced full drill keeps corrections, independent residual, unknown total
   assert.equal(tooltip.rows.find(row => row.label === 'unresolved type')?.value, 'Not known');
   assert.equal(tooltip.rows.find(row => row.label === 'Other')?.value, '7');
   assert.deepEqual(producedRequest('branch', { tags: ['MOD'] }, 'week', 'variant', ['mod type'], true),
-    { branchId: 'branch', tags: ['MOD'], top: null, measure: 'week', grouping: 'variant', included: ['mod type'], refits: true });
+    { branchId: 'branch', tags: ['MOD'], top: null, measure: 'week', count: 'units', grouping: 'variant', included: ['mod type'], refits: true });
 });
 
 test('exact amounts and residuals never round wide cancellation, missing totals or known zero into another value', () => {

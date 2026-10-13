@@ -18,23 +18,23 @@ impl From<&LandSideLosses> for SideLossInputs {
 
 const NOT_RECORDED: &str = "Not in this recording";
 
-/// Equipment loss labels, each kept once for the branch however often it is read.
+/// Equipment designs, each kept once for the branch however often it is read.
 #[derive(Default)]
-pub(super) struct Labels {
-    pub(super) values: Vec<String>,
-    indices: HashMap<String, usize>,
+pub(super) struct Designs {
+    pub(super) values: Vec<LandEquipmentDesign>,
+    indices: HashMap<LandEquipmentDesign, usize>,
 }
-impl Labels {
-    fn intern(&mut self, label: String) -> usize {
-        if let Some(&index) = self.indices.get(&label) {
+impl Designs {
+    fn intern(&mut self, design: LandEquipmentDesign) -> usize {
+        if let Some(&index) = self.indices.get(&design) {
             return index;
         }
-        self.values.push(label.clone());
-        self.indices.insert(label, self.values.len() - 1);
+        self.values.push(design.clone());
+        self.indices.insert(design, self.values.len() - 1);
         self.values.len() - 1
     }
 }
-/// One side's counters as read; variants pair a branch label with the signed fixed5 amount.
+/// One side's counters as read; variants pair a branch design with the signed fixed5 amount.
 pub(super) struct SideRead {
     pub(super) manpower: Recorded<i32>,
     pub(super) equipment: Recorded<Vec<(usize, i64)>>,
@@ -59,20 +59,46 @@ impl LossRead {
             })
             .sum()
     }
-    /// A side lists every variant when its labels or order differ from its
+    /// Each side's manpower and exact equipment total, for the census.
+    pub(super) fn total(&self) -> LandBattleLossRead {
+        let sides = match &self.sides {
+            Ok(sides) => LandLossTotals::Read(sides.each_ref().map(|side| {
+                let manpower = manpower(side.manpower);
+                match &side.equipment {
+                    // i64 amounts cannot overflow an i128 sum over any recorded list.
+                    Recorded::Value(variants) => LandLossTotal::Known {
+                        manpower,
+                        equipment: variants
+                            .iter()
+                            .map(|&(_, amount)| i128::from(amount))
+                            .sum::<i128>()
+                            .to_string(),
+                    },
+                    Recorded::NotRecorded => LandLossTotal::Unknown {
+                        manpower,
+                        unknown: NOT_RECORDED.into(),
+                    },
+                }
+            })),
+            Err(reason) => LandLossTotals::Unread((*reason).into()),
+        };
+        LandBattleLossRead {
+            hour: self.hour,
+            terminal: self.terminal,
+            sides,
+        }
+    }
+    /// A side lists every design when its designs or order differ from its
     /// previous read in the reply, else only the positions whose amounts changed.
     pub(super) fn wire<'a>(
         &'a self,
         previous: &mut [Option<&'a [(usize, i64)]>; 2],
-        labels: &mut Numbered<usize>,
-    ) -> LandBattleLossRead {
+        designs: &mut Numbered<usize>,
+    ) -> LandBattleCourseRead {
         let sides = match &self.sides {
             Ok(sides) => LandLossSides::Read(std::array::from_fn(|index| {
                 let side = &sides[index];
-                let manpower = match side.manpower {
-                    Recorded::Value(value) => LandManpower::Known(value),
-                    Recorded::NotRecorded => LandManpower::Unknown(NOT_RECORDED.into()),
-                };
+                let manpower = manpower(side.manpower);
                 let Recorded::Value(variants) = &side.equipment else {
                     previous[index] = None;
                     return LandLossSide::Unknown {
@@ -101,7 +127,7 @@ impl LossRead {
                         manpower,
                         variants: variants
                             .iter()
-                            .map(|&(label, amount)| (labels.index(label), amount.to_string()))
+                            .map(|&(design, amount)| (designs.index(design), amount.to_string()))
                             .collect(),
                     },
                 }
@@ -111,11 +137,17 @@ impl LossRead {
                 LandLossSides::Unread((*reason).into())
             }
         };
-        LandBattleLossRead {
+        LandBattleCourseRead {
             hour: self.hour,
             terminal: self.terminal,
             sides,
         }
+    }
+}
+fn manpower(value: Recorded<i32>) -> LandManpower {
+    match value {
+        Recorded::Value(value) => LandManpower::Known(value),
+        Recorded::NotRecorded => LandManpower::Unknown(NOT_RECORDED.into()),
     }
 }
 impl Episode {
@@ -136,14 +168,14 @@ impl Census {
                 Recorded::Value(equipment) => Recorded::Value(
                     equipment
                         .iter()
-                        .map(|entry| (self.label(hour, entry.variant), entry.amount_raw))
+                        .map(|entry| (self.design(hour, entry.variant), entry.amount_raw))
                         .collect(),
                 ),
                 Recorded::NotRecorded => Recorded::NotRecorded,
             },
         })
     }
-    fn label(&mut self, hour: i32, variant: u64) -> usize {
+    fn design(&mut self, hour: i32, variant: u64) -> usize {
         let name = self.variants.current(variant).and_then(|raw| {
             super::super::equipment::variant_names(
                 raw,
@@ -159,11 +191,11 @@ impl Census {
                 format!("Equipment variant {variant}: name not recorded or content unavailable"),
             );
         }
-        // The handle distinguishes designs with identical display names.
-        self.labels.intern(format!(
-            "Equipment lost · {} (variant {variant})",
-            name.as_deref().unwrap_or("Name not recorded"),
-        ))
+        // The handle keeps designs with identical display names apart.
+        self.designs.intern(LandEquipmentDesign {
+            name,
+            variant: variant.to_string(),
+        })
     }
     pub(super) fn observe_losses(&mut self, frame: &DecodedFrame) {
         let progress = slot_read(&frame.metrics, TableId::LandCombatProgress, frame.hour)

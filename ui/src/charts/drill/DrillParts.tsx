@@ -54,7 +54,8 @@ export default function DrillParts({ parts, format, total, unattributed, totalRo
   }, [active, publishVisible]);
   const visibleCallback = useRef(onVisible);
   visibleCallback.current = onVisible;
-  useEffect(() => () => visibleCallback.current?.([]), []);
+  // Releasing the rows also forgets them, so replayed effects report them again.
+  useEffect(() => () => { reported.current = null; visibleCallback.current?.([]); }, []);
   useEffect(() => {
     if (!active) publishVisible([]);
     else if (!virtual) publishVisible(rows.map(row => row.item.id));

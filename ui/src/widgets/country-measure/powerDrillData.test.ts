@@ -115,15 +115,18 @@ test('an incomplete payment qualifies its known total without discarding its exa
   assert.equal(parts.reason, 'Spending total is incomplete.');
 });
 
-test('action details preserve signed adjustments and refuse future publications without repeating totals', () => {
-  const index = powerBalanceIndex(reply({ balanceChanges: [{ hour: 24, readHour: 26, currency: 'Political', action: 'Synthetic adjustment',
+test('drill details name only what the parts do not show, never a future publication or a repeated change', () => {
+  const index = powerBalanceIndex(reply({ daily: [], balanceChanges: [{ hour: 24, readHour: 26, currency: 'Political', action: 'Synthetic adjustment',
     amountRaw: '9', realizedDeltaRaw: '4', covered: true, reason: null }] }), 'Political');
-  assert.deepEqual(powerActionDetails(index, 25, 30), []);
-  const details = powerActionDetails(index, 26, 30);
-  assert.deepEqual(details.map(row => row.label), ['Synthetic adjustment · Hour 24', 'Adjustment']);
-  assert.equal(details.length, 2);
-  assert.deepEqual(details.map(row => row.value), ['+0.00004', '+0.00009']);
-  assert.deepEqual(powerActionDetails(index, 26, 25), []);
-  assert.equal(details.some(row => /income|Spending that day|Total costs/.test(row.label)), false);
-  assert.equal(powerActionDetails(powerBalanceIndex(reply(), 'Command'), 26, 30).some(row => row.label === 'Total held'), true);
+  assert.deepEqual(powerActionDetails(index, 26, 30), [], 'recorded changes are not repeated beside the parts');
+  const capped = powerBalanceIndex(reply({ daily: [{ country: 1, instance: 1, epoch: '1', dayHour: 24, readHour: 26, ppGrossRaw: '300000', ppCostRaw: '0',
+    ppIncomeRaw: '300000', ppRealizedRaw: '100000', ppSequence: '1', cpIncomeRaw: null, cpRealizedRaw: null, cpSequence: null }] }), 'Political');
+  assert.deepEqual(powerActionDetails(capped, 25, 30), []);
+  assert.deepEqual(powerActionDetails(capped, 26, 30), [{ label: 'Lost at the cap', value: '−2.00' }]);
+  assert.deepEqual(powerActionDetails(capped, 26, 25), []);
+  const holds = [{ readHour: 0, throughHour: 25, totalRaw: '-500000', holders: [], reason: null },
+    { readHour: 26, throughHour: 30, totalRaw: '-300000', holders: [], reason: null }];
+  const command = powerBalanceIndex(reply({ commandHolds: holds }), 'Command');
+  assert.deepEqual(powerActionDetails(command, 26, 30), [{ label: 'Reserved', value: '−2' }]);
+  assert.equal(powerActionDetails(command, 26, 30).some(row => row.label === 'Total held'), false);
 });

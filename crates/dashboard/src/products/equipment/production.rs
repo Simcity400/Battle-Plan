@@ -655,27 +655,8 @@ impl Named<'_> {
     }
 }
 
-/// Every produced variant's type, why types could not be resolved, and how many
-/// variants content does not type.
-pub(crate) fn variant_types(
-    scanned: &ScannedProduced,
-    named: Named,
-) -> (HashMap<u64, VariantType>, BTreeSet<String>, usize) {
-    let variants: BTreeSet<u64> = scanned
-        .tags
-        .values()
-        .flat_map(|track| track.changes.keys().map(|(variant, _)| *variant))
-        .chain(scanned.rocket.tags.values().flat_map(|track| {
-            track
-                .changes
-                .keys()
-                .map(|(variant, _)| *variant)
-                .filter(|variant| *variant != 0)
-        }))
-        .collect();
-    variant_types_for(&scanned.variants, variants, named)
-}
-
+/// Each variant's type, why types could not be resolved, and how many variants
+/// content does not type.
 pub(crate) fn variant_types_for(
     catalogue: &VariantCatalogue,
     variants: impl IntoIterator<Item = u64>,

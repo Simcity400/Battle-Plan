@@ -1,15 +1,13 @@
-import type { HourSpan, LedgerCommandHold, LedgerSpend, LedgerSpendItem, PoliticsLedgerReply } from '../generated/dashboard';
-import type { LogRow } from '../charts/log/logData';
+import type { HourSpan, LedgerSpend, LedgerSpendItem, PoliticsLedgerReply } from '../generated/dashboard';
 import type { SunburstItem } from '../charts/sunburst/layout';
 import { drawableIcon } from './artwork.ts';
 import { NO_SPENDING_CATEGORIES } from './politicsSpendingOptions.ts';
 import { contentSet, setToken, storableToken, UNSTORABLE } from './options.ts';
-import { fixed5Text } from './ideaTooltip.ts';
 import { validateIdeaTooltipData } from './ideaHistoryReply.ts';
-import { compareTags } from './tagOrder.ts';
-import { runAt } from '../charts/series.ts';
-import type { TooltipContent } from '../charts/tooltip';
-import { formatDateTime } from './calendar.ts';
+import { dayLabel } from '../charts/draw.ts';
+import { gameDate, monthIndex, monthAt, monthNames } from './calendar.ts';
+import { MAX_NAME_HOURS, nameKey } from './countryFacts.ts';
+import type { NameAt } from './countryFacts';
 
 export type PowerCurrency = 'Political' | 'Command';
 export interface SpendAt {
@@ -28,7 +26,6 @@ export interface SpendAt {
   sequence: bigint;
 }
 export interface SpendGap { from: number; through: number; readHour: number; reason: string; tag: string }
-export type SpendingRow = { kind: 'spend'; at: SpendAt } | { kind: 'gap'; gap: SpendGap };
 export interface SpendingWindow { from: number | null; hour: number; end: number }
 export interface SpendingSelection {
   matches: (tag: string, hour: number) => boolean;
@@ -176,48 +173,29 @@ export function spendingAt(replies: readonly PoliticsLedgerReply[], currency: Po
   return result;
 }
 
-export interface CommandHeldAt { hour: number; total: bigint | null; countries: readonly { tag: string; hold: LedgerCommandHold | null }[]; reason?: string }
-const heldRuns = new WeakMap<PoliticsLedgerReply, { firstHour: number; lastHour: number; hold: LedgerCommandHold }[]>();
+/** Product category ids of costs the game charges every day: a daily cost
+ * modifier, organisation upkeep, ability upkeep and a command power deficit.
+ * Tables fold them into one row a month; balance markers leave them out. */
+export const RECURRING_CATEGORIES: ReadonlySet<string> = new Set(['dailyCosts', 'organisationUpkeep', 'upkeep', 'dailyDeficit']);
 
-/** Allocation state applies only in the hours proved by its recorded run. A
- * missing run is unknown, including before the first read and across gaps. */
-export function commandHeldAt(replies: readonly PoliticsLedgerReply[], hour: number, selection?: SpendingSelection): CommandHeldAt {
-  if (selection?.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour)) {
-    return { hour, total: null, countries: [], reason: 'Group members unavailable at this time.' };
-  }
-  let total: bigint | null = 0n;
-  const countries = replies.filter(reply => !selection || selection.matches(reply.tag, hour)).map(reply => {
-    let runs = heldRuns.get(reply);
-    if (!runs) {
-      runs = reply.commandHolds.map(hold => ({ firstHour: hold.readHour, lastHour: hold.throughHour, hold }));
-      heldRuns.set(reply, runs);
-    }
-    const hold = runAt(runs, hour)?.hold ?? null;
-    total = total === null || hold?.totalRaw == null ? null : total + BigInt(hold.totalRaw);
-    return { tag: reply.tag, hold };
-  });
-  if (!countries.length && selection?.requireRecordedHolder) {
-    return { hour, total: null, countries, reason: 'Selected country unavailable at this time.' };
-  }
-  return { hour, total, countries };
+/** The product's wording for a name or target it could not resolve. Presentation
+ * never shows it: the payment is named by its kind instead. */
+const UNRESOLVED = 'Not identified';
+
+/** A category's shown name; one with no recorded cause is plain “Other spending”. */
+export const categoryLabel = (name: string, identified: boolean) => identified ? name : 'Other spending';
+
+/** The recorded action, or the kind of payment when its name or target wasn't recorded. */
+export function spendLabel(item: LedgerSpendItem, category: string): string {
+  if (!item.action.includes(UNRESOLVED)) return item.action;
+  return item.name ?? category;
 }
 
-export function commandHeldTooltip(held: CommandHeldAt): TooltipContent {
-  const rows: TooltipContent['rows'][number][] = [];
-  if (held.reason) rows.push({ label: held.reason, tone: 'muted' });
-  for (const { tag, hold } of held.countries) {
-    if (held.countries.length > 1) rows.push({ label: tag, strong: true, divider: rows.length > 0 });
-    if (!hold) { rows.push({ label: 'Holdings were not recorded at this hour.', tone: 'muted' }); continue; }
-    for (const holder of hold.holders) rows.push({ label: `${({ OrdersGroup: 'Orders', Army: 'Army', AirWing: 'Air wing', Country: 'Country', General: 'General', Admiral: 'Admiral', Ability: 'Ability', Raid: 'Raid' } as Record<string, string>)[holder.kind] ?? 'Reservation'}: ${holder.name ?? 'Not identified'}`, value: spendText(holder.amountRaw === null ? null : BigInt(holder.amountRaw)) });
-    if (hold.reason) rows.push({ label: 'Command power unavailable.', tone: 'muted' });
-  }
-  rows.push({ label: 'Total held', value: spendText(held.total), strong: true, divider: rows.length > 0 });
-  return { title: 'Command power held', subtitle: `Current moment ${formatDateTime(held.hour)}`, rows,
-    note: 'Reserved command power; excluded from spending.' };
-}
+/** Payments whose cost wasn't recorded. */
+export const unknownCosts = (at: SpendAt) => at.charge === null ? at.occurrences - at.knownCharges : 0;
 
-/** Named gaps are rows too. Consecutive unavailable reads with the same reason
- * are one stretch; no empty batch proves that no power was spent. */
+/** Unrecorded stretches, joined when they touch whatever the reason. No empty
+ * batch proves that no power was spent, so each is named, never counted as zero. */
 export function spendingGaps(replies: readonly PoliticsLedgerReply[], currency: PowerCurrency, window: Pick<SpendingWindow, 'from' | 'hour'>, selection?: SpendingSelection): SpendGap[] {
   const gaps: SpendGap[] = [];
   for (const reply of replies) {
@@ -228,12 +206,12 @@ export function spendingGaps(replies: readonly PoliticsLedgerReply[], currency: 
       const through = cover.throughHour ?? cover.readHour;
       if (through < (window.from ?? -Infinity) || from > window.hour) continue;
       if (currency === 'Political' ? cover.political : cover.command) { last = undefined; continue; }
-      const reason = cover.reason ?? 'Spending not recorded';
-      if (last && last.reason === reason && from <= last.through + 1) {
+      if (last && from <= last.through + 1) {
         last.through = Math.min(window.hour, Math.max(last.through, through));
         last.readHour = Math.max(last.readHour, cover.readHour);
       } else {
-        last = { from: Math.max(from, window.from ?? from), through: Math.min(through, window.hour), readHour: cover.readHour, reason, tag: reply.tag };
+        last = { from: Math.max(from, window.from ?? from), through: Math.min(through, window.hour), readHour: cover.readHour,
+          reason: cover.reason ?? 'Spending not recorded', tag: reply.tag };
         gaps.push(last);
       }
     }
@@ -252,51 +230,126 @@ export function spendingGaps(replies: readonly PoliticsLedgerReply[], currency: 
   return selected;
 }
 
-export type SpendOrder = 'newest' | 'oldest' | 'cost';
-export function spendingRows(spends: readonly SpendAt[], gaps: readonly SpendGap[], categories: string, order: SpendOrder, selection: 'include' | 'exclude' = 'include'): LogRow<SpendingRow>[] {
-  const chosen = new Set(contentSet(categories));
-  const rows: LogRow<SpendingRow>[] = spends.filter(at => selection === 'include' ? !chosen.size || chosen.has(setToken(at.spend.category)) : !chosen.has(setToken(at.spend.category)))
-    .map(at => ({ key: JSON.stringify([at.spend.countryTag, at.spend.id]), hour: at.spend.hour, item: { kind: 'spend', at } }));
-  for (const gap of gaps) rows.push({ key: JSON.stringify(['gap', gap.tag, gap.from]), hour: gap.from, item: { kind: 'gap', gap } });
-  return rows.sort((a, b) => {
-    if (order === 'cost') {
-      const av = a.item.kind === 'spend' ? a.item.at.charge : null;
-      const bv = b.item.kind === 'spend' ? b.item.at.charge : null;
-      if (av !== bv) return av === null ? 1 : bv === null ? -1 : av > bv ? -1 : 1;
-    }
-    const hour = order === 'oldest' ? a.hour - b.hour : b.hour - a.hour;
-    if (hour) return hour;
-    if (a.item.kind === 'spend' && b.item.kind === 'spend') {
-      const av = a.item.at.sequence;
-      const bv = b.item.at.sequence;
-      if (av !== bv) return (av < bv ? -1 : 1) * (order === 'oldest' ? 1 : -1);
-      const ordinal = a.item.at.spend.ordinal - b.item.at.spend.ordinal;
-      if (ordinal) return order === 'oldest' ? ordinal : -ordinal;
-    }
-    return compareTags(a.key, b.key);
-  });
+const plural = (count: number, one: string) => `${count.toLocaleString('en-US')} ${one}${count === 1 ? '' : 's'}`;
+const duration = (hours: number) => hours < 48 ? plural(hours, 'hour') : plural(Math.floor(hours / 24), 'day');
+
+/** One plain sentence naming unrecorded time: how long and on which dates. Equal
+ * stretches of several countries count once. */
+export function spendingGapNote(gaps: readonly SpendGap[]): string | null {
+  const stretches = [...new Map(gaps.map(gap => [`${gap.from}:${gap.through}`, gap])).values()].sort((a, b) => a.from - b.from);
+  if (!stretches.length) return null;
+  const hours = stretches.reduce((sum, gap) => sum + gap.through - gap.from + 1, 0);
+  const days = [...new Set(stretches.map(gap => dayLabel(gap.from)))];
+  const dates = days.length > 3 ? `${days.slice(0, 3).join(', ')} and ${plural(days.length - 3, 'other date')}` : days.join(', ');
+  return `Spending wasn’t recorded for ${duration(hours)} (${dates}); anything spent then isn’t counted.`;
 }
 
-export function spendingTotals(spends: readonly SpendAt[], gaps: readonly SpendGap[]) {
-  const categories = new Map<string, { name: string; value: bigint | null }>();
-  let total: bigint | null = gaps.length ? null : 0n;
+export interface SpendingSummary { spent: bigint; unknownCosts: number; uncovered: boolean }
+/** The exact sum of recorded costs. A cost that wasn't recorded is counted, not guessed. */
+export function spendingSummary(spends: readonly SpendAt[]): SpendingSummary {
+  let spent = 0n, unknown = 0, uncovered = false;
   for (const at of spends) {
-    const known = at.covered ? at.charge : null;
-    total = total === null || known === null ? null : total + known;
-    const old = categories.get(setToken(at.spend.category));
-    categories.set(setToken(at.spend.category), { name: at.category, value: gaps.length || known === null || old?.value === null ? null : (old?.value ?? 0n) + known });
+    spent += at.recordedCharge;
+    unknown += unknownCosts(at);
+    uncovered ||= !at.covered && at.charge !== null;
   }
-  return { total, categories, categoryTotal: (id: string): bigint | null => {
-    const entry = categories.get(id);
-    return entry ? entry.value : gaps.length ? null : 0n;
-  } };
+  return { spent, unknownCosts: unknown, uncovered };
+}
+
+/** Notes for costs counted without their amount, in plain words. */
+export function spendingCostNotes(summary: SpendingSummary): string[] {
+  return [
+    ...(summary.unknownCosts ? [`The cost of ${plural(summary.unknownCosts, 'payment')} wasn’t recorded.`] : []),
+    ...(summary.uncovered ? ['Some payments may be missing.'] : []),
+  ];
+}
+
+export interface SpendingTableRow {
+  key: string;
+  tag: string;
+  /** The payment's native hour; a folded month shows its latest payment. */
+  hour: number;
+  /** The game month a folded recurring row covers. */
+  month: number | null;
+  label: string;
+  icon: string | null;
+  category: string;
+  categoryName: string;
+  identified: boolean;
+  /** Days a folded row covers; 0 for a single payment. */
+  days: number;
+  /** Exact recorded cost; null when none of its costs were recorded. */
+  amount: bigint | null;
+  partial: boolean;
+  /** Native order: hour, then action sequence, then ordinal, exactly. */
+  order: bigint;
+  parts: readonly SpendAt[];
+}
+
+const ORDER_HOUR = 1n << 80n;
+const nativeOrder = (at: SpendAt) => BigInt(at.spend.hour) * ORDER_HOUR + (at.sequence << 16n) + BigInt(at.spend.ordinal);
+const monthOf = (hour: number) => { const date = gameDate(hour); return date ? monthIndex(date) : null; };
+export const monthLabel = (month: number) => { const { year, month: number } = monthAt(month); return `${monthNames[number - 1].slice(0, 3)} ${year}`; };
+
+type Folding = SpendingTableRow & { dayIndexes: Set<number>; partsList: SpendAt[]; missing: number };
+/** One row per payment, with each country's recurring costs folded into one row
+ * per category and game month. Category filters never change an amount. */
+export function spendingTableRows(spends: readonly SpendAt[], categories: string): SpendingTableRow[] {
+  const chosen = new Set(contentSet(categories).filter(value => value !== NO_SPENDING_CATEGORIES));
+  const rows: SpendingTableRow[] = [];
+  const months = new Map<string, Folding>();
+  for (const at of spends) {
+    if (chosen.size && !chosen.has(setToken(at.spend.category))) continue;
+    const categoryName = categoryLabel(at.category, at.identified);
+    const missing = unknownCosts(at);
+    const month = RECURRING_CATEGORIES.has(at.spend.category) ? monthOf(at.spend.hour) : null;
+    if (month === null) {
+      rows.push({ key: JSON.stringify([at.spend.countryTag, at.spend.id]), tag: at.spend.countryTag, hour: at.spend.hour, month: null,
+        label: spendLabel(at.item, categoryName), icon: at.item.icon, category: at.spend.category, categoryName, identified: at.identified, days: 0,
+        amount: missing && !at.knownCharges ? null : at.recordedCharge, partial: missing > 0 || !at.covered, order: nativeOrder(at), parts: [at] });
+      continue;
+    }
+    const key = JSON.stringify(['month', at.spend.countryTag, at.spend.category, month]);
+    let row = months.get(key);
+    if (!row) {
+      row = { key, tag: at.spend.countryTag, hour: at.spend.hour, month, label: categoryName, icon: null, category: at.spend.category, categoryName,
+        identified: at.identified, days: 0, amount: 0n, partial: false, order: nativeOrder(at), parts: [], dayIndexes: new Set(), partsList: [], missing: 0 };
+      months.set(key, row);
+    }
+    row.partsList.push(at);
+    row.dayIndexes.add(Math.floor(at.spend.hour / 24));
+    row.amount = row.amount! + at.recordedCharge;
+    row.missing += missing;
+    row.partial ||= missing > 0 || !at.covered;
+    if (nativeOrder(at) > row.order) { row.order = nativeOrder(at); row.hour = at.spend.hour; }
+  }
+  for (const { dayIndexes, partsList, missing, ...row } of months.values()) {
+    rows.push({ ...row, days: dayIndexes.size, parts: partsList, amount: missing && partsList.every(at => !at.knownCharges) ? null : row.amount });
+  }
+  return rows;
+}
+
+/** The names and flags mounted rows show: each country at its row's date when
+ * several are compared, and each payment's target at its own action hour. Every
+ * distinct date is asked for, so the newest rows keep their names past the
+ * default hour limit. */
+export function spendingCountryRequests(drawn: readonly SpendingTableRow[], compare: boolean): { wanted: NameAt[]; maxHours: number } {
+  const names = new Map<string, NameAt>();
+  for (const row of drawn) {
+    if (compare) names.set(nameKey(row.hour, row.tag), { hour: row.hour, tag: row.tag });
+    for (const at of row.month === null ? row.parts : []) {
+      if (at.item.targetTag != null) names.set(nameKey(at.spend.hour, at.item.targetTag), { hour: at.spend.hour, tag: at.item.targetTag });
+    }
+  }
+  const wanted = [...names.values()];
+  return { wanted, maxHours: Math.max(MAX_NAME_HOURS, new Set(wanted.map(item => item.hour)).size) };
 }
 
 /** Grouped content tooltips retain the exact known subtotal even when a missing
  * operand makes the whole unknown. Effects are dated to the latest matched
  * native action, named explicitly by the tooltip. */
 export function spendingGroups(spends: readonly SpendAt[]) {
-  const groups = new Map<string, { latest: SpendAt; recordedCharge: bigint; knownCharges: number; missingCharges: number }>();
+  const groups = new Map<string, { latest: SpendAt; recordedCharge: bigint; knownCharges: number; missingCharges: number; count: number }>();
   for (const at of spends) {
     const previous = groups.get(at.item.groupId);
     const later = !previous || previous.latest.spend.hour < at.spend.hour || (previous.latest.spend.hour === at.spend.hour
@@ -305,41 +358,38 @@ export function spendingGroups(spends: readonly SpendAt[]) {
     groups.set(at.item.groupId, { latest: later ? at : previous!.latest,
       recordedCharge: (previous?.recordedCharge ?? 0n) + at.recordedCharge,
       knownCharges: (previous?.knownCharges ?? 0) + at.knownCharges,
-      missingCharges: (previous?.missingCharges ?? 0) + at.missingCharges });
+      missingCharges: (previous?.missingCharges ?? 0) + at.missingCharges,
+      count: (previous?.count ?? 0) + at.occurrences });
   }
   return groups;
 }
 
-/** Category → recorded item, retaining exact fixed5 amounts. A coverage gap
- * makes the whole unknown and cannot supply Fill's final denominator. */
+/** Category → recorded item, retaining exact fixed5 amounts. Everything recorded
+ * draws: a cost that wasn't recorded marks its slice partial, and unrecorded time
+ * is named beside the chart, so the whole is the recorded spending. A payment
+ * with no recorded name sits in its category without an item slice. */
 export function spendingItems(replies: readonly PoliticsLedgerReply[], currency: PowerCurrency, window: SpendingWindow, selection?: SpendingSelection): SunburstItem[] {
   const shown = new Map(spendingAt(replies, currency, window.hour, window.from, selection).map(at => [JSON.stringify([at.spend.countryTag, at.spend.id]), at]));
   const final = spendingAt(replies, currency, window.end, window.from, selection);
-  const items = final.map<SunburstItem>(at => {
+  return final.map<SunburstItem>(at => {
     const key = JSON.stringify([at.spend.countryTag, at.spend.id]);
     const now = shown.get(key);
-    const unknown = Boolean(now && (now.charge === null || !now.covered));
-    return { path: [{ id: at.spend.category, label: at.category }, { id: at.item.groupId, label: at.item.name ?? 'Not identified', icon: at.item.icon }],
-      value: now ? Number(now.recordedCharge) : 0, exact: now ? now.recordedCharge : 0n, present: Boolean(now),
-      unknownValue: unknown, final: Number(at.recordedCharge), finalUnknown: at.charge === null || !at.covered,
-      unknown: unknown ? { incomplete: 1 } : undefined, note: unknown ? 'Some spending is missing.' : undefined,
-      counted: now ? [key] : [] };
+    const partial = Boolean(now && (unknownCosts(now) > 0 || !now.covered));
+    const category = { id: at.spend.category, label: categoryLabel(at.category, at.identified) };
+    const path = at.item.name === null ? [category] : [category, { id: at.item.groupId, label: at.item.name, icon: at.item.icon }];
+    return { path, value: now ? Number(now.recordedCharge) : 0, exact: now ? now.recordedCharge : 0n, present: Boolean(now),
+      final: Number(at.recordedCharge), unknown: partial ? { incomplete: 1 } : undefined,
+      note: partial ? 'Some costs weren’t recorded.' : undefined, counted: now ? [key] : [] };
   });
-  const gaps = spendingGaps(replies, currency, window, selection);
-  const finalGaps = spendingGaps(replies, currency, { from: window.from, hour: window.end }, selection);
-  if (gaps.length || finalGaps.length) items.push({ path: [{ id: 'coverage-gap', label: 'Not recorded' }],
-    value: null, exact: null, present: gaps.length > 0, unknownValue: gaps.length > 0, final: null, finalUnknown: finalGaps.length > 0,
-    unknown: gaps.length ? { coverage: gaps.length } : {}, note: 'Some spending is missing.' });
-  return items;
 }
 
-export const spendText = (value: bigint | null) => value === null ? 'Not known' : fixed5Text(value, -1);
+/** Category chips: every category spent on in this currency, by its shown name. */
 export function categoryChoices(replies: readonly PoliticsLedgerReply[] | undefined, currency: PowerCurrency) {
   const used = new Set((replies ?? []).flatMap(reply => reply.spending.filter(spend => spend.currency === currency).map(spend => spend.category)));
   const categories = new Map((replies ?? []).flatMap(reply => reply.spendCategories.map(category => [category.id, category] as const)));
-  const choices = [...categories.values()].filter(category => used.has(category.id)).map(category => {
+  return [...categories.values()].filter(category => used.has(category.id)).map(category => {
     const value = setToken(category.id);
-    return { value, label: category.name, identified: category.identified, unavailable: storableToken(value) ? undefined : UNSTORABLE };
+    return { value, label: categoryLabel(category.name, category.identified), identified: category.identified,
+      unavailable: storableToken(value) ? undefined : UNSTORABLE };
   });
-  return [...choices, { value: NO_SPENDING_CATEGORIES, label: 'None', identified: false, unavailable: undefined }];
 }

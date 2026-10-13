@@ -7,3 +7,12 @@ export function barContent(icons: boolean, names: boolean, hasIcon: boolean): { 
   const icon = icons && hasIcon;
   return { icon, name: names || (icons && !hasIcon) };
 }
+
+/** Room an end mark (a completion tick) keeps at a bar's end. */
+export const END_MARK_ROOM = 14;
+
+/** Whether a bar's name fits after `inset` pixels, leaving the end mark's room
+ * when the bar draws one, so the name never runs under the tick. */
+export function barNameFits(nameWidth: number, inset: number, barWidth: number, endMark: boolean): boolean {
+  return nameWidth + inset + 6 + (endMark ? END_MARK_ROOM : 0) < barWidth;
+}

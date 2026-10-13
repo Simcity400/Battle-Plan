@@ -3,7 +3,7 @@ import test from 'node:test';
 import { groupedRows } from '../../charts/table/logic.ts';
 import { FAILED_FACT } from '../../dashboard/countryFacts.ts';
 import { countryRaceItems } from '../../charts/race/countryRace.ts';
-import { SCORE_PARTS, FALLBACK_LABELS, formatMultiplier, formatScore, gameScoreCountryCell, gameScoreCountryKnown, gameScoreFaction, gameScoreIdentityAt, gameScoreLooks, gameScoreModel, gameScoreRace, gameScoreRow, gameScoreRows, gameScoreTooltip, gameScoreTooltips, scoreInsetReason, scoreValue, validateGameScoreReply } from './gameScoreData.ts';
+import { SCORE_PARTS, FALLBACK_LABELS, formatScore, gameScoreCountryCell, gameScoreCountryKnown, gameScoreFaction, gameScoreIdentityAt, gameScoreLooks, gameScoreModel, gameScoreRace, gameScoreRow, gameScoreRows, gameScoreTooltip, gameScoreTooltips, scoreInsetReason, scoreValue, validateGameScoreReply } from './gameScoreData.ts';
 import type { ScorePart } from './gameScoreData';
 import type { GameScoreReply, GameScoreCountry as ScoreCountry, GameScoreIdentity as ScoreIdentity, GameScoreSeries as ScoreSeries } from '../../generated/dashboard';
 import { countryAliasesAt } from '../../dashboard/countryIdentity.ts';
@@ -202,17 +202,22 @@ test('Land is the default exact sort and every country is eligible, including 5,
   for (const kind of ['game-score', 'occupation-trend', 'scoreboard', 'casualties'] as const) assert.ok(registered.has(kind));
   assert.equal(resolveOptions(OPTIONS).view, 'table');
   assert.equal(resolveOptions(OPTIONS).split, true);
-  assert.equal(resolveOptions(OPTIONS).multiplierPrecision, 'exact');
-  const saved = setOption(OPTIONS, {}, 'multiplierPrecision', '2');
-  assert.ok(saved);
-  assert.equal(formatMultiplier('199999', String(resolveOptions(OPTIONS, saved).multiplierPrecision)), '1.99');
-  assert.equal(formatMultiplier('199999'), '1.99999');
-  assert.equal(formatMultiplier('100000'), '1');
-  assert.equal(formatMultiplier('100010'), '1.0001');
-  assert.equal(formatMultiplier('0'), '0');
-  assert.equal(formatMultiplier(null), '—');
-  assert.equal(setOption(OPTIONS, {}, 'multiplierPrecision', '6'), null);
   assert.equal(formatScore('-199999'), '-1');
+});
+
+test('the global score multiplier is not a table column; saved layouts drop its option and sort', () => {
+  // The multiplier is one game-wide value for every country, so it lives only in the Total tooltip.
+  assert.ok(!OPTIONS.some(field => field.key === 'multiplierPrecision'));
+  assert.equal(setOption(OPTIONS, {}, 'multiplierPrecision', '2'), null);
+  assert.equal(definition.version, 2);
+  const stored = (options: Record<string, string | boolean>) => ({ id: 'w', kind: 'game-score', configVersion: 1, title: 'Game score', campaign: 'default',
+    countries: { kind: 'all' }, time: { mode: 'campaign' }, options }) as unknown as Parameters<typeof definition.migrate>[1];
+  const dropped = definition.migrate(1, stored({ multiplierPrecision: '2', tableSort: '["multiplier","descending"]', view: 'table' }));
+  assert.deepEqual(dropped.options, { view: 'table' });
+  const kept = definition.migrate(1, stored({ multiplierPrecision: 'exact', tableSort: '["navy","ascending"]' }));
+  assert.deepEqual(kept.options, { tableSort: '["navy","ascending"]' });
+  const row = gameScoreRow(gameScoreModel(reply()), 'opaque country', 1)!;
+  assert.equal(scoreValue(row, 'multiplier'), null);
 });
 
 test('same-name factions keep distinct recorded identities and unknown membership precedes known no faction', () => {

@@ -1,6 +1,6 @@
 # Casualties
 
-**What it shows:** Each country's cumulative casualties dealt/taken as a butterfly chart, or a race of losses taken. These war-relation counters cover land, sea and air together.
+**What it shows:** Each country's cumulative casualties dealt/taken as a butterfly chart, or a race of losses taken. These war-relation counters cover land, sea and air together. The butterfly reads like the other country races: flag and name on the left, taken growing left and dealt growing right of one axis with exact values at their tips, then the dealt : taken ratio; rows keep their top-N height.
 
 **Product(s) it reads:** [`war-casualties`](../../../../crates/dashboard/src/products/war_casualties.rs) supplies exact hourly country totals, identities and membership. Country loss totals and unknown recovery are computed there.
 

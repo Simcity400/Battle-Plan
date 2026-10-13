@@ -2,11 +2,11 @@
 
 ## What it shows
 
-Resource trade as seller → buyer ribbons, with a complete contributor drill for nodes and links.
+Resource trade as seller → buyer ribbons, with a complete contributor drill for nodes and links, and a view of one country's whole trade from its flag or name.
 
 ## Products it reads
 
-[`trade-flows`](../../../../crates/dashboard/src/products/trade_flows.rs) supplies sparse native-holder flows, coverage and resource content. Shared country facts provide dated labels, flags and colours.
+[`trade-flows`](../../../../crates/dashboard/src/products/trade_flows.rs) supplies sparse native-holder flows, coverage and resource content. A country view outside the chosen countries reads the same product for that country's own tags. Shared country facts provide dated labels, flags and colours.
 
 ## Settings
 
@@ -19,6 +19,7 @@ All/manual/group countries, campaign/follow/pin/range; current/total/average, re
 - Fixed country colours use the full native census; resource colours use full content order, independent of filters/ranks. Resource names come from content, with Resource name unavailable for missing names and ordinals retained. Only drawn actors request art. Other nodes sum every hidden holder, including nonpositive contributors and internal flows.
 - Signed totals/parts and missing reasons remain exact; geometry never substitutes for a full total. Keep sparse prefix histories and the shared compact stack, without a country × hour grid.
 - Drills save holders/resource with campaign/branch scope. Picking holds; Follow uses the aligned clock. Pin keeps cohort, counting/history extent and branch-relative date; a country header follows the body's date/holder or stays unavailable. Source/numeric changes invalidate picks.
+- A country's flag or name (or its node's menu, from the keyboard) opens its imports and exports: totals, then by resource and by partner, for the widget's measure at the drill day, with what was delivered over the time shown; and the same over time, a band per resource, exports above the axis and imports below. Its resource filter applies; its country choice does not. Recorded zero deals stay listed; unrecorded days stay unknown. Pinning it pins that country.
 - Oversized replies refuse explicitly; no chosen country/contributor cap.
 
 ## Files
@@ -27,5 +28,6 @@ All/manual/group countries, campaign/follow/pin/range; current/total/average, re
 |---|---|
 | [TradeFlowsWidget.tsx](TradeFlowsWidget.tsx), [useTradeFlows.ts](useTradeFlows.ts) | Diagram, products and filters. |
 | [tradeData.ts](tradeData.ts), [tradeDrill.ts](tradeDrill.ts), [TradeDrillView.tsx](TradeDrillView.tsx) | Exact sparse measures, cohort pins and histories. |
+| [tradeCountry.ts](tradeCountry.ts), [TradeCountryView.tsx](TradeCountryView.tsx) | One country's imports and exports, by resource and partner, and over time. |
 | [tradeColours.ts](tradeColours.ts), [tradeTooltip.ts](tradeTooltip.ts) | Stable colours and fitted dated tooltips; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [tradeFlows.css](tradeFlows.css) | Options, registration and layout. |

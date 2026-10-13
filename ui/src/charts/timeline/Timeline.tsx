@@ -26,7 +26,7 @@ import { labelMoment, viewForExtent } from './extent';
 import { drawCross, drawDisclosure, acceptsLaneClick, acceptsLaneMenu } from './marks';
 import { catalogueWidth } from './labelCatalogue';
 import type { TimelineLabel } from './labelCatalogue';
-import { barContent } from './barLabel';
+import { barContent, barNameFits, END_MARK_ROOM } from './barLabel';
 import '../charts.css';
 
 export type { BandStep, LaneGeometry, TimelineLane, TimelineSpan } from './layout';
@@ -531,10 +531,11 @@ export default function Timeline(props: TimelineProps) {
           context.beginPath(); context.roundRect(from, centre - barHeight / 2, to - from, barHeight, open ? [radius, 0, 0, radius] : radius); context.fill();
           if (open) { context.globalAlpha = 0.5; context.fillStyle = tokens.surface; context.fillRect(to - 1, centre - barHeight / 2, 1, barHeight); context.globalAlpha = 1; }
           if (positioned) glyphs();
-          if (span.endLabel && to - from >= 16 && hours[1] >= span.lastHour + 1) {
+          const endMark = !!span.endLabel && to - from >= 16 && hours[1] >= span.lastHour + 1;
+          if (endMark) {
             context.fillStyle = readableText(parseColor(fill) ?? parseColor(tokens.text)!);
             context.font = font(tokens, tokens.fontSize.small, 600);
-            context.fillText(span.endLabel, to - 14, centre);
+            context.fillText(span.endLabel!, to - END_MARK_ROOM, centre);
           }
           let textX = from + 7;
           const content = barContent(lane.icons ?? p.showIcons, lane.names ?? p.showNames, !!span.icon || !!span.countryFlag);
@@ -550,7 +551,7 @@ export default function Timeline(props: TimelineProps) {
           }
           if (!content.name) continue;
           context.font = font(tokens, tokens.fontSize.small, 500);
-          if (context.measureText(span.label).width + (textX - from) + 6 < to - from) {
+          if (barNameFits(context.measureText(span.label).width, textX - from, to - from, endMark)) {
             context.fillStyle = onFill;
             context.fillText(span.label, textX, centre);
           }

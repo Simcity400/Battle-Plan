@@ -9,8 +9,10 @@
 //! Values that change at nearly every read (efficiency, output per week, units made,
 //! units ordered) come from `production-line-detail`, one fixed window of
 //! [`DETAIL_HOURS`] at a time. `production-line-breakdown` sends one line's selected
-//! modifier factor across the branch. Full histories grow with the campaign;
-//! every reply is measured and refused past [`MAX_REPLY_BYTES`].
+//! modifier factor across the branch; a detail window carries no modifier trees,
+//! which hold every source of every factor at each read and would make a month of
+//! a large country's lines too big for one reply. Full histories grow with the
+//! campaign; every reply is measured and refused past [`MAX_REPLY_BYTES`].
 //!
 //! Ordinary line values are recorded `ProductionLines` fields, compared with
 //! the save by the fresh-save oracle (`recorder::oracle::production`):
@@ -322,7 +324,8 @@ pub struct LineHistory {
     pub variants: Vec<String>,
 }
 
-/// A line's reads within one detail window: every recorded value, cut to the window.
+/// A line's reads within one detail window: every recorded line value, cut to the
+/// window. Its modifier factors come from `production-line-breakdown`.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LineDetail {
@@ -331,7 +334,6 @@ pub struct LineDetail {
     pub runs: Vec<LineRun>,
     /// Its output at each read (the same reads as `runs`), where recorded.
     pub output: Vec<OutputRun>,
-    pub modifiers: Vec<ProductionModifierRun>,
 }
 
 /// A produced variant's names and icon as the game's production row shows them;
@@ -1570,6 +1572,7 @@ pub fn detail_window(window: i32) -> Option<(i32, i32)> {
 
 /// Every line's runs and output reads that hold any hour from `first` to `last`,
 /// whole (a read before the window that holds into it is sent as it was read).
+/// Modifier trees stay out: they grow with every source of every factor.
 pub fn detail_lines(scanned: &ScannedLines, first: i32, last: i32) -> Vec<LineDetail> {
     let overlaps = |from: i32, to: i32| from <= last && to >= first;
     scanned
@@ -1592,14 +1595,6 @@ pub fn detail_lines(scanned: &ScannedLines, first: i32, last: i32) -> Vec<LineDe
                 key: line.key.clone(),
                 runs,
                 output,
-                modifiers: scanned
-                    .modifiers
-                    .get(&line.key)
-                    .into_iter()
-                    .flatten()
-                    .filter(|run| overlaps(run.first_hour, run.last_hour))
-                    .map(|run| run.project(None))
-                    .collect(),
             })
         })
         .collect()
@@ -1910,9 +1905,6 @@ impl Product for ProductionLineDetail {
     fn types() -> Vec<String> {
         vec![
             LineRun::decl(),
-            ProductionModifierPart::decl(),
-            ProductionModifierGroup::decl(),
-            ProductionModifierRun::decl(),
             LineDetail::decl(),
             ProductionDetailParams::decl(),
             ProductionLineDetailReply::decl(),
@@ -1945,11 +1937,6 @@ impl Product for ProductionLineDetail {
             scanned_lines(source, &country, None, context, cancelled, &mut warnings)?;
         let (first_hour, last_hour) = detail_window(params.window).expect("validated window");
         let lines = detail_lines(&scanned, first_hour, last_hour);
-        for line in &lines {
-            for run in &line.modifiers {
-                warnings.extend(run.warnings.iter().cloned());
-            }
-        }
         warnings.sort();
         warnings.dedup();
         bounded(

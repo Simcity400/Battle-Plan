@@ -352,3 +352,79 @@ test('native focus details request only opened dated rows and preserve static de
     hooks.unmount(); await vite.close(); delete host.__focusDetails;
   }
 });
+
+test('a closing row keeps the description it showed while its demand is released, until a refusal, new content or another client', async () => {
+  const base = focusHooks(), hooks = { ...base, useLayoutEffect: base.useEffect };
+  const fixture = { hooks, detailsWanted: [] as readonly NameAt[], content: 0, details: new Map<string, unknown>() };
+  const host = globalThis as typeof globalThis & { __focusShown?: typeof fixture };
+  host.__focusShown = fixture;
+  const replacements: Record<string, string> = {
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: {
+      history: { segments: [{ firstHour: 100, lastHour: 200, order: { current: null, continuous: null, paused: false,
+        completed: [{ ordinal: 0, token: 'scoped', completedByHour: 101 }] } }], progress: [] },
+      artwork: [{ token: 'scoped', baseDurationDays: 10 }], staticText: [], warnings: [],
+    } });`,
+    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
+    '/dashboard/contentRevision.ts': 'export const useContentRevision = () => globalThis.__focusShown.content;',
+    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
+    // As the real hook: an answered description joins the row's read; a released or pending one is absent.
+    '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _country, wanted, _active, detailsWanted) => {
+      const fixture = globalThis.__focusShown; fixture.detailsWanted = detailsWanted;
+      return { warnings: [], details: fixture.details, read: new Map(wanted.map(({ tag, hour }) => {
+        const key = JSON.stringify([hour, tag]), detail = fixture.details.get(key);
+        return [key, { artwork: { token: tag, name: 'Localized focus', baseDurationDays: 10, icon: null,
+          description: detail && typeof detail === 'object' ? detail.artwork.description : null }, reason: null }];
+      })) }; };`,
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'focus-shown-description-fixture', enforce: 'pre',
+      transform(source, id) {
+        const path = id.replaceAll('\\', '/');
+        if (path.endsWith('/national-focus/NationalFocusWidget.tsx')) return source.replace(
+          /import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__focusShown.hooks;');
+        return Object.entries(replacements).find(([suffix]) => path.endsWith(suffix))?.[1];
+      },
+    }] });
+  type Element = { type: unknown; props: { children?: unknown; className?: string; onToggle?: (event: { currentTarget: { open: boolean } }) => void } };
+  const elements = (root: unknown): Element[] => Array.isArray(root) ? root.flatMap(elements)
+    : root && typeof root === 'object' && 'props' in root ? [root as Element, ...elements((root as Element).props.children)] : [];
+  try {
+    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
+    const { FAILED_FACT, nameKey } = await vite.ssrLoadModule('/ui/src/dashboard/countryFacts.ts') as typeof import('../../dashboard/countryFacts');
+    const props = { widget: { id: 'shown', kind: 'national-focus', trackIds: ['track'], countries: { kind: 'tags', tags: ['M0'] }, time: { mode: 'campaign' } },
+      runtime: { client: {}, tracks: [{ id: 'track', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 200 },
+        source: { id: 'source', revision: '1' } }], clock: { getHour: () => 200 } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
+    const key = nameKey(101, 'scoped');
+    const answer = () => fixture.details.set(key, { artwork: { token: 'scoped', name: null, description: 'Dated full description', baseDurationDays: 10, icon: null }, reason: null });
+    const render = () => { hooks.begin(); const tree = elements(Widget(props)); hooks.commit(); return tree; };
+    const paragraphs = (tree: Element[]) => tree.filter(element => element.type === 'p').map(element => element.props.children);
+    const toggle = (open: boolean) => { render().find(element => element.props.className === 'focus-details')!.props.onToggle!({ currentTarget: { open } }); };
+    // The store releases a closed row's reading; the fixture mirrors that by forgetting its answer.
+    const close = () => { toggle(false); fixture.details.delete(key); };
+
+    toggle(true);
+    assert.deepEqual(paragraphs(render()), [], 'a pending description adds no paragraph');
+    answer();
+    assert.deepEqual(paragraphs(render()), ['Dated full description']);
+    close();
+    let tree = render();
+    assert.deepEqual(fixture.detailsWanted, [], 'closing still releases the description demand');
+    assert.deepEqual(paragraphs(tree), ['Dated full description'], 'the closing row keeps its text rather than collapsing from a shorter one');
+    toggle(true); tree = render();
+    assert.deepEqual(fixture.detailsWanted, [{ tag: 'scoped', hour: 101 }], 'reopening requests the description again');
+    assert.deepEqual(paragraphs(tree), ['Dated full description'], 'the reopened row shows the reading it showed, without waiting');
+    fixture.details.set(key, FAILED_FACT);
+    assert.deepEqual(paragraphs(render()), [], 'a refusal is not hidden by an earlier reading');
+    answer(); render(); close();
+    fixture.content++; tree = render();
+    toggle(true);
+    assert.deepEqual(paragraphs(render()), [], 'new content does not show an earlier reading');
+    answer(); render(); close();
+    props.runtime.client = {} as DashboardClient; render();
+    toggle(true);
+    assert.deepEqual(paragraphs(render()), [], 'another client does not show an earlier reading');
+  } finally {
+    hooks.unmount(); await vite.close(); delete host.__focusShown;
+  }
+});

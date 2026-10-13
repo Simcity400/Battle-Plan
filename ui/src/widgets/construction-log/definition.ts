@@ -2,10 +2,13 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
 
+/** The Projects choice, in settings and as the log's filter chips. */
+export const PROJECT_CHOICES = [{ value: 'all', label: 'New and repairs' }, { value: 'new', label: 'New buildings' }, { value: 'repair', label: 'Repairs' }] as const;
+
 export const OPTIONS: readonly OptionField[] = [
-  { key: 'types', section: 'options', label: 'Building types', kind: 'content-set', automatic: 'Every type', default: '' },
-  { key: 'projects', section: 'options', label: 'Projects', kind: 'choice', default: 'all',
-    choices: [{ value: 'all', label: 'New and repairs' }, { value: 'new', label: 'New buildings' }, { value: 'repair', label: 'Repairs' }] },
+  { key: 'types', section: 'options', label: 'Building types', kind: 'content-set', automatic: 'Every type', default: '', catalogue: true },
+  { key: 'projects', section: 'options', label: 'Projects', kind: 'choice', default: 'all', choices: PROJECT_CHOICES },
+  { key: 'queue', section: 'options', label: 'In the queue', hint: 'Only projects still in the queue at the moment shown.', kind: 'toggle', default: false },
   { key: 'order', section: 'options', label: 'Order', kind: 'choice', default: 'change',
     choices: [{ value: 'change', label: 'Latest change' }, { value: 'start', label: 'Start date' }] },
   ...LOG_OPTIONS,

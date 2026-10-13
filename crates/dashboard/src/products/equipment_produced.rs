@@ -1,7 +1,7 @@
 //! Every country's equipment produced over one branch, for the Equipment produced
-//! widget: the units each country's production lines delivered, as a running
-//! total, per week or per month, grouped by equipment type (the content's
-//! archetypes), exact variant or domain.
+//! widget: the units each country's production lines delivered, or the factory IC
+//! they applied, as a running total, per day, per week or per month, grouped by
+//! equipment type (the content's archetypes), exact variant or domain.
 //!
 //! **Units delivered** come from `ProductionLineOutput`, the collector's count of
 //! every production tick per line (`collector::extended::line_output`; the game
@@ -27,8 +27,20 @@
 //! listed (made and deleted between two reads) has no recorded kind and counts
 //! as new production.
 //!
-//! **Per week** at a read is its running total minus the running total read
-//! exactly seven days (168 hours) before; **per month**, minus the one read at the
+//! **Applied IC** (`count: ic`) is the same scan's exact factory IC input: the
+//! `ProductionLineOutput` rows' recorded `spent_raw`, the progress the game's
+//! production tick added to each line, excluding instant progress (fixed5,
+//! [`equipment::EQUIPMENT_DECIMALS`]), as the Production spending widget shows it.
+//! IC is one currency, so every type adds up exactly. It is not the value of the
+//! units delivered: a unit's cost belongs to the line that made it (its
+//! organisation's bonus and the modifiers then) and is read once a day, not at each
+//! delivery, so that value cannot be reproduced exactly. Where the recording holds
+//! no applied input (an older format) or an input was lost, the IC is unknown from
+//! then on in its observation, never a partial sum.
+//!
+//! **Per day** at a read is its running total minus the running total read
+//! exactly one day (24 hours) before: one production tick. **Per week**, minus the
+//! running total read exactly seven days (168 hours) before; **per month**, minus the one read at the
 //! same hour and day of the month before (the month's last day when it is
 //! shorter; engine calendar, 365-day years, `engine::cdate`). Production ticks
 //! once a day and the output is read once a day in the census's slot, so such a
@@ -86,18 +98,32 @@ const SERIES_OVERHEAD: usize = 128;
 const VALUES_OVERHEAD: usize = 64;
 /// The largest magnitude a reply's numbers carry exactly (JavaScript's safe integers).
 const MAX_EXACT: i64 = (1 << 53) - 1;
-const WEEK_HOURS: i32 = 7 * 24;
+const DAY_HOURS: i32 = 24;
+const WEEK_HOURS: i32 = 7 * DAY_HOURS;
 
-/// What the values count (spec: running total by default).
+/// Which window the values count (spec: per day by default in the widget).
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum ProducedMeasure {
     /// Units delivered since the observation began.
     Total,
+    /// Units delivered in the day (one production tick) before.
+    Day,
     /// Units delivered in the seven days before.
     Week,
     /// Units delivered since the same moment of the month before.
     Month,
+}
+
+/// What the values count: units delivered, or the factory IC applied to the lines.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ProducedCount {
+    /// Units delivered: whole numbers.
+    #[default]
+    Units,
+    /// Applied factory IC, fixed5: one currency, so different types add up.
+    Ic,
 }
 
 /// What the values are split by.
@@ -120,6 +146,9 @@ pub struct ProducedParams {
     pub tags: Vec<String>,
     pub top: Option<u32>,
     pub measure: ProducedMeasure,
+    /// What the values count and the top N rank by; units when left out.
+    #[serde(default)]
+    pub count: ProducedCount,
     pub grouping: ProducedGrouping,
     /// The type keys counted (`types` keys); none counts every type.
     pub included: Vec<String>,
@@ -217,6 +246,9 @@ pub struct ProducedSeries {
 pub struct EquipmentProducedReply {
     pub branch_id: String,
     pub measure: ProducedMeasure,
+    pub count: ProducedCount,
+    /// Fixed-point decimals of every value: 0 for units, 5 for IC.
+    pub decimals: u8,
     pub grouping: ProducedGrouping,
     /// Every type produced in the branch, in the equipment database's order,
     /// unresolved ones last.
@@ -238,7 +270,7 @@ pub struct EquipmentProducedReply {
     pub warnings: Vec<String>,
 }
 
-use super::equipment::production::{Entry, VariantType, variant_types};
+use super::equipment::production::{Entry, VariantType, variant_types_for};
 pub use super::equipment::production::{Named, ScannedProduced, TagHistory, Total, scan};
 
 /// The hour one calendar month before `hour`: the same day and hour of the month
@@ -302,7 +334,7 @@ pub(crate) fn country_totals(
             continue;
         };
         let base = bases(track, ProducedMeasure::Total, &scanned.tainted);
-        let equipment = measured(track, &base, true, |entry| !entry.1)?;
+        let equipment = measured(track, &base, true, ProducedCount::Units, |entry| !entry.1)?;
         let rocket = scanned.rocket.tags.get(tag);
         let rocket_values = rocket
             .map(|track| {
@@ -310,6 +342,7 @@ pub(crate) fn country_totals(
                     track,
                     &bases(track, ProducedMeasure::Total, &BTreeMap::new()),
                     true,
+                    ProducedCount::Units,
                     |_| true,
                 )
             })
@@ -432,20 +465,44 @@ pub(crate) fn recording_warnings(scanned: &ScannedProduced) -> Vec<String> {
 }
 
 /// Each group's total at the samples where it changed, from the entries in it
-/// (`group_of` gives an entry's group, none leaves it out): its units and
-/// whether every row behind it is exact.
+/// (`group_of` gives an entry's group, none leaves it out): its units (or applied
+/// IC, fixed5) and whether every row behind it is exact.
 fn group_totals(
     track: &TagHistory,
+    count: ProducedCount,
     group_of: impl Fn(&Entry) -> Option<usize>,
     groups: usize,
 ) -> io::Result<Vec<Vec<(u32, i128, bool)>>> {
     let mut events: Vec<(u32, usize, &Entry, Total)> = Vec::new();
-    for (entry, list) in &track.changes {
-        if let Some(group) = group_of(entry) {
-            events.extend(
-                list.iter()
-                    .map(|(sample, total)| (*sample, group, entry, *total)),
-            );
+    match count {
+        ProducedCount::Units => {
+            for (entry, list) in &track.changes {
+                if let Some(group) = group_of(entry) {
+                    events.extend(
+                        list.iter()
+                            .map(|(sample, total)| (*sample, group, entry, *total)),
+                    );
+                }
+            }
+        }
+        ProducedCount::Ic => {
+            // An applied total with a reason stays unknown: its amount stopped
+            // counting then, so it never stands as a partial sum.
+            for (entry, list) in &track.cost_changes {
+                if let Some(group) = group_of(entry) {
+                    events.extend(list.iter().map(|(sample, cost)| {
+                        (
+                            *sample,
+                            group,
+                            entry,
+                            Total {
+                                units: cost.raw,
+                                inexact: u32::from(cost.reason.is_some()),
+                            },
+                        )
+                    }));
+                }
+            }
         }
     }
     events.sort_by_key(|(sample, group, _, _)| (*sample, *group));
@@ -497,7 +554,7 @@ fn total_at(changes: &[(u32, i128, bool)], sample: usize) -> (i128, bool) {
 
 /// For each sample, the sample the measure subtracts (itself for a running
 /// total); none where the value is not known: at or after the hour its
-/// observation's totals became unknown (`tainted`), or, for a week or a month,
+/// observation's totals became unknown (`tainted`), or, for a day, a week or a month,
 /// where no read of the same identity was taken exactly that long before, or the
 /// recording broke anywhere in between (a gap, an hour the tables could not tell,
 /// another identity or an observation restart: a sample starting a new line).
@@ -526,6 +583,7 @@ fn bases(
             }
             let target = match measure {
                 ProducedMeasure::Total => return Some(sample),
+                ProducedMeasure::Day => track.hours[sample].checked_sub(DAY_HOURS)?,
                 ProducedMeasure::Week => track.hours[sample].checked_sub(WEEK_HOURS)?,
                 ProducedMeasure::Month => month_before(track.hours[sample])?,
             };
@@ -693,9 +751,10 @@ fn measured(
     track: &TagHistory,
     bases: &[Option<usize>],
     total: bool,
+    count: ProducedCount,
     counted: impl Fn(&Entry) -> bool,
 ) -> io::Result<Vec<Option<i64>>> {
-    let sums = group_totals(track, |entry| counted(entry).then_some(0), 1)?;
+    let sums = group_totals(track, count, |entry| counted(entry).then_some(0), 1)?;
     bases
         .iter()
         .enumerate()
@@ -767,25 +826,22 @@ fn grouped(
 ) -> Grouped {
     let texts = named.texts;
     let type_name = |key: &str| named.type_name(key);
-    let entries: BTreeSet<Entry> = scanned
-        .tags
-        .values()
-        .flat_map(|track| track.changes.keys().copied())
-        .chain(
-            scanned
-                .rocket
-                .tags
-                .values()
-                .flat_map(|track| track.changes.keys().copied().filter(|entry| entry.0 != 0)),
-        )
-        .filter(|entry| params.refits || !entry.1)
-        .filter(|entry| {
-            params.included.is_empty()
-                || types
-                    .get(&entry.0)
-                    .is_some_and(|kind| params.included.contains(&kind.key))
-        })
-        .collect();
+    let entries: BTreeSet<Entry> =
+        scanned
+            .tags
+            .values()
+            .flat_map(|track| counted_entries(track, params.count))
+            .chain(scanned.rocket.tags.values().flat_map(|track| {
+                counted_entries(track, params.count).filter(|entry| entry.0 != 0)
+            }))
+            .filter(|entry| params.refits || !entry.1)
+            .filter(|entry| {
+                params.included.is_empty()
+                    || types
+                        .get(&entry.0)
+                        .is_some_and(|kind| params.included.contains(&kind.key))
+            })
+            .collect();
     // Each group's sort key: its type's database place (unresolved last), then its own.
     let mut groups: BTreeMap<(usize, String, u64), ProducedKey> = BTreeMap::new();
     let mut of_key: HashMap<Entry, (usize, String, u64)> = HashMap::new();
@@ -867,6 +923,34 @@ fn grouped(
     }
 }
 
+/// The entries a count reads in one country's history: those that delivered
+/// units, and for applied IC also those still being built (input applied, no unit
+/// delivered yet).
+fn counted_entries(track: &TagHistory, count: ProducedCount) -> impl Iterator<Item = Entry> + '_ {
+    let applied = match count {
+        ProducedCount::Units => None,
+        ProducedCount::Ic => Some(track.cost_changes.keys()),
+    };
+    track
+        .changes
+        .keys()
+        .chain(applied.into_iter().flatten())
+        .copied()
+}
+
+/// Every variant a count reads, over every country's equipment lines and Rocket
+/// designs (the Rocket scope rows, variant zero, are no variant).
+fn counted_variants(scanned: &ScannedProduced, count: ProducedCount) -> BTreeSet<u64> {
+    scanned
+        .tags
+        .values()
+        .chain(scanned.rocket.tags.values())
+        .flat_map(|track| counted_entries(track, count))
+        .map(|(variant, _)| variant)
+        .filter(|variant| *variant != 0)
+        .collect()
+}
+
 /// Where a set of entries holds a nonzero or unknown value (at every sample), so
 /// what they could belong to is not known.
 fn holding(values: &[Option<i64>]) -> Vec<bool> {
@@ -882,8 +966,10 @@ fn included_total(
     params: &ProducedParams,
 ) -> io::Result<Vec<Option<i64>>> {
     let total = params.measure == ProducedMeasure::Total;
-    let sums = measured(track, bases, total, |entry| grouped.of.contains_key(entry))?;
-    let outside = holding(&measured(track, bases, total, |entry| {
+    let sums = measured(track, bases, total, params.count, |entry| {
+        grouped.of.contains_key(entry)
+    })?;
+    let outside = holding(&measured(track, bases, total, params.count, |entry| {
         grouped.left_out(params, entry)
     })?);
     Ok(sums
@@ -945,13 +1031,14 @@ fn rocket_measures(
     };
     let bases = bases(rocket, params.measure, &BTreeMap::new());
     let total = params.measure == ProducedMeasure::Total;
-    let scope = measured(rocket, &bases, total, |entry| entry.0 == 0)?;
+    let scope = measured(rocket, &bases, total, params.count, |entry| entry.0 == 0)?;
     let sums = group_totals(
         rocket,
+        params.count,
         |entry| grouped.of.get(entry).copied(),
         grouped.keys.len(),
     )?;
-    let unsure = holding(&measured(rocket, &bases, total, |entry| {
+    let unsure = holding(&measured(rocket, &bases, total, params.count, |entry| {
         grouped.could_belong(params, entry)
     })?);
     let totals = included_total(rocket, &bases, grouped, params)?;
@@ -1009,6 +1096,20 @@ fn add_units(equipment: Option<i64>, rocket: Option<i64>) -> io::Result<Option<i
     }
 }
 
+/// The hour from which each observation's values are unknown for a count: the
+/// delivered totals' lost publications, or for applied IC also an input the
+/// recording does not hold (`ScannedProduced::spending_tainted`).
+fn taints(scanned: &ScannedProduced, count: ProducedCount) -> BTreeMap<u32, i32> {
+    match count {
+        ProducedCount::Units => scanned.tainted.clone(),
+        ProducedCount::Ic => scanned
+            .spending_tainted
+            .iter()
+            .map(|(observation, (hour, _))| (*observation, *hour))
+            .collect(),
+    }
+}
+
 fn requested(
     scanned: &ScannedProduced,
     grouped: &Grouped,
@@ -1016,6 +1117,7 @@ fn requested(
     cancelled: &AtomicBool,
 ) -> io::Result<Requested> {
     let total = params.measure == ProducedMeasure::Total;
+    let tainted = taints(scanned, params.count);
     let mut coverage = Coverage::default();
     // The countries and the hours each is shown.
     let shown: Vec<(&String, &TagHistory, Option<Vec<HourSpan>>)> = match params.top {
@@ -1027,7 +1129,7 @@ fn requested(
                 .tags
                 .iter()
                 .map(|(tag, track)| {
-                    let bases = bases(track, params.measure, &scanned.tainted);
+                    let bases = bases(track, params.measure, &tainted);
                     let rocket = rocket_measures(scanned, tag, track, grouped, params)?;
                     let totals = included_total(track, &bases, grouped, params)?
                         .into_iter()
@@ -1088,7 +1190,7 @@ fn requested(
                 "Equipment produced request cancelled",
             ));
         }
-        let bases = bases(track, params.measure, &scanned.tainted);
+        let bases = bases(track, params.measure, &tainted);
         let all = pieces(track, &bases);
         let pieces = match &membership {
             Some(spans) => clip(&all, spans),
@@ -1096,13 +1198,14 @@ fn requested(
         };
         let groups = group_totals(
             track,
+            params.count,
             |entry| grouped.of.get(entry).copied(),
             grouped.keys.len(),
         )?;
         let rocket = rocket_measures(scanned, tag, track, grouped, params)?;
         // Where a variant of an unresolved type holds anything: every resolved type or
         // arm it could belong to is unknown then.
-        let unsure = holding(&measured(track, &bases, total, |entry| {
+        let unsure = holding(&measured(track, &bases, total, params.count, |entry| {
             grouped.could_belong(params, entry)
         })?);
         let any_unsure = pieces.iter().any(|piece| unsure[piece.sample]);
@@ -1355,7 +1458,11 @@ pub fn reply(
     mut warnings: Vec<String>,
     cancelled: &AtomicBool,
 ) -> io::Result<EquipmentProducedReply> {
-    let (types, untyped, unresolved) = variant_types(scanned, named);
+    let (types, untyped, unresolved) = variant_types_for(
+        &scanned.variants,
+        counted_variants(scanned, params.count),
+        named,
+    );
     let resolved_keys: BTreeSet<&str> = types
         .values()
         .filter(|kind| kind.ordinal.is_some())
@@ -1387,6 +1494,11 @@ pub fn reply(
     Ok(EquipmentProducedReply {
         branch_id: params.branch_id.clone(),
         measure: params.measure,
+        count: params.count,
+        decimals: match params.count {
+            ProducedCount::Units => 0,
+            ProducedCount::Ic => equipment::EQUIPMENT_DECIMALS,
+        },
         grouping: params.grouping,
         types: produced_types(&types, named),
         keys: requested.keys,
@@ -1408,6 +1520,7 @@ impl Product for EquipmentProduced {
         vec![
             ProducedParams::decl(),
             ProducedMeasure::decl(),
+            ProducedCount::decl(),
             ProducedGrouping::decl(),
             ProducedType::decl(),
             ProducedKey::decl(),

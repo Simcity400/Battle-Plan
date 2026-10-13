@@ -16,7 +16,7 @@ import { domainName, variantNameAt } from '../../dashboard/equipment.ts';
 import { readAt } from '../../dashboard/reads.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { validCountryIdentityRuns } from '../../dashboard/countryIdentity.ts';
-import type { CountryIdentityRun, EquipmentProducedReply, HourSpan, ProducedCoded, ProducedGrouping, ProducedKey, ProducedMeasure, ProducedParams } from '../../generated/dashboard';
+import type { CountryIdentityRun, EquipmentProducedReply, HourSpan, ProducedCoded, ProducedCount, ProducedGrouping, ProducedKey, ProducedMeasure, ProducedParams } from '../../generated/dashboard';
 
 export type Measure = ProducedMeasure;
 export type Grouping = ProducedGrouping;
@@ -80,8 +80,8 @@ export function validateProducedReply(data: unknown): EquipmentProducedReply {
 /** What the widget asks the product for: the top N by the measure shown of the
  * included types, or the chosen countries. */
 export function producedRequest(branchId: string, resolved: { tags: readonly string[]; top?: number }, measure: Measure, grouping: Grouping,
-  included: readonly string[], refits: boolean): ProducedParams {
-  const common = { branchId, measure, grouping, included: [...included], refits };
+  included: readonly string[], refits: boolean, count: ProducedCount = 'units'): ProducedParams {
+  const common = { branchId, measure, count, grouping, included: [...included], refits };
   return resolved.top != null ? { ...common, tags: [], top: resolved.top } : { ...common, tags: [...resolved.tags], top: null };
 }
 

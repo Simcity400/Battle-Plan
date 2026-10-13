@@ -3,7 +3,7 @@ import { runAt } from '../../charts/series.ts';
 import type { Run } from '../../charts/series';
 import { fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import { fixedNumber, formatAmount, formatSigned } from '../../charts/valueAxis.ts';
+import { fixedNumber, formatAmount, formatRate, formatSigned } from '../../charts/valueAxis.ts';
 import { gbNumber, gbTwoSignificant } from '../../charts/numberFormat.ts';
 import { campaignToken } from '../../dashboard/chosen.ts';
 import type { ChoiceSource } from '../../dashboard/chosen';
@@ -34,6 +34,13 @@ const ascending = (hours: unknown) => Array.isArray(hours) && hours.every((hour,
  * reads and known spans ascending. */
 export function validateStockpileReply(data: unknown): EquipmentStockpileReply {
   const reply = data as EquipmentStockpileReply;
+  // A dashboard bridge from before the per-day output sends only a weekly figure, which
+  // is not the game's per-day one: until it is rebuilt, output reads as not recorded.
+  if (typeof reply === 'object' && reply != null && Array.isArray(reply.variants)
+    && reply.variants.some(variant => variant != null && (variant as Partial<StockVariant>).daily === undefined)) {
+    for (const variant of reply.variants) if (variant != null) Object.assign(variant, { daily: [], dailyIc: [], unitCostLow: [], unitCostHigh: [] });
+    reply.lineHours = [];
+  }
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string' && typeof reply.campaignKey === 'string'
     && Number.isInteger(reply.decimals) && reply.decimals >= 0 && reply.decimals <= 12
     && Array.isArray(reply.types) && reply.types.every(type => typeof type.key === 'string' && type.key.length > 0
@@ -45,7 +52,8 @@ export function validateStockpileReply(data: unknown): EquipmentStockpileReply {
       && Array.isArray(variant.names) && variant.names.every((name, index) => HOUR(name.firstHour) && (name.name === null || typeof name.name === 'string') && typeof name.known === 'boolean'
         && (name.design === null || (typeof name.design === 'string' && name.design.length > 0))
         && (index === 0 || variant.names[index - 1].firstHour < name.firstHour))
-      && amounts(variant.stock) && amounts(variant.weekly))
+      && amounts(variant.stock) && amounts(variant.daily) && amounts(variant.dailyIc)
+      && amounts(variant.unitCostLow) && amounts(variant.unitCostHigh))
     && new Set(reply.variants.map(variant => variant.id)).size === reply.variants.length
     && ascending(reply.reads)
     && Array.isArray(reply.stockHours) && ordered(reply.stockHours) && Array.isArray(reply.lineHours) && ordered(reply.lineHours)
@@ -196,7 +204,7 @@ function sumAt(spans: EquipmentStockpileReply['stockHours'], variants: readonly 
   return total;
 }
 
-/** A group that stockAt and weeklyAt sum: a row, or one variant alone (no kind). */
+/** A group that stockAt and dailyAt sum: a row, or one variant alone (no kind). */
 type Summed = Pick<StockGroup, 'variants'> & Partial<Pick<StockGroup, 'types' | 'kind'>>;
 
 /** Whether a type's or an arm's variants are all of it at an hour, for one measure: a
@@ -215,17 +223,22 @@ export function variantsComplete(reply: EquipmentStockpileReply, group: Summed, 
 }
 
 const stockOf = (variant: StockVariant) => variant.stock;
-const weeklyOf = (variant: StockVariant) => variant.weekly;
+const dailyOf = (variant: StockVariant) => variant.daily;
+const dailyIcOf = (variant: StockVariant) => variant.dailyIc;
 
 /** What a group holds at an hour; null where the stockpile is not known or its
  * variants cannot all be told (`variantsComplete`). */
 export const stockAt = (reply: EquipmentStockpileReply, group: Summed, hour: number) =>
   variantsComplete(reply, group, stockOf, hour) ? sumAt(reply.stockHours, group.variants, stockOf, hour) : null;
 
-/** What a group's lines make a week at an hour; null where the lines are not known or
- * its variants cannot all be told. */
-export const weeklyAt = (reply: EquipmentStockpileReply, group: Summed, hour: number) =>
-  variantsComplete(reply, group, weeklyOf, hour) ? sumAt(reply.lineHours, group.variants, weeklyOf, hour) : null;
+/** What a group's lines make a day at an hour, by the game's per-day formula; null
+ * where the lines are not known or its variants cannot all be told. */
+export const dailyAt = (reply: EquipmentStockpileReply, group: Summed, hour: number) =>
+  variantsComplete(reply, group, dailyOf, hour) ? sumAt(reply.lineHours, group.variants, dailyOf, hour) : null;
+
+/** The factory IC a day a group's lines apply at an hour; null likewise. */
+export const dailyIcAt = (reply: EquipmentStockpileReply, group: Summed, hour: number) =>
+  variantsComplete(reply, group, dailyIcOf, hour) ? sumAt(reply.lineHours, group.variants, dailyIcOf, hour) : null;
 
 /** Whether the game's surplus or shortage is known at an hour: `player` where the
  * logistics record held the country's rows, `ai` where the country was AI-controlled
@@ -641,9 +654,9 @@ const NOT_RECORDED = 'Not recorded';
 
 /** The rows every group's tooltip starts with, by what is known at the hour: for a
  * player-controlled country the logistics record's stock, what is needed, the surplus
- * or shortage and its share of need; else what is in stock; then produced per week. */
-function headRows(stock: bigint | null, weekly: bigint | null, logistics: GroupBalance | null, mode: BalanceMode | 'variant' | 'unattributed', decimals: number): TooltipRow[] {
-  const weeklyRow: TooltipRow = { label: 'Produced per week', value: weekly == null ? NOT_RECORDED : amount(weekly, decimals, 1), tone: weekly == null ? 'muted' : undefined, divider: true };
+ * or shortage and its share of need; else what is in stock; then the output per day. */
+function headRows(stock: bigint | null, daily: bigint | null, logistics: GroupBalance | null, mode: BalanceMode | 'variant' | 'unattributed', decimals: number): TooltipRow[] {
+  const outputRow: TooltipRow = { label: 'Output per day', value: daily == null ? NOT_RECORDED : formatRate(daily, decimals), tone: daily == null ? 'muted' : undefined, divider: true };
   if (logistics) {
     const share = shareOf(logistics);
     return [
@@ -652,13 +665,13 @@ function headRows(stock: bigint | null, weekly: bigint | null, logistics: GroupB
       { label: logistics.balance < 0n ? 'Shortage' : 'Surplus', value: formatSigned(logistics.balance, decimals), strong: true,
         tone: logistics.balance < 0n ? 'negative' : logistics.balance > 0n ? 'positive' : undefined },
       ...(share != null ? [{ label: 'Share of need', value: `${formatPercent(share)}` }] : []),
-      weeklyRow,
+      outputRow,
     ];
   }
   const stockRow: TooltipRow = { label: 'In stock', value: stock == null ? NOT_RECORDED : amount(stock, decimals), strong: true, tone: stock == null ? 'muted' : stock < 0n ? 'negative' : undefined };
-  if (mode === 'unknown') return [stockRow, { label: 'Surplus or shortage', value: NOT_RECORDED, tone: 'muted' }, weeklyRow];
-  if (mode === 'unattributed') return [stockRow, { label: 'Surplus or shortage', value: 'Not known', tone: 'muted' }, weeklyRow];
-  return [stockRow, weeklyRow];
+  if (mode === 'unknown') return [stockRow, { label: 'Surplus or shortage', value: NOT_RECORDED, tone: 'muted' }, outputRow];
+  if (mode === 'unattributed') return [stockRow, { label: 'Surplus or shortage', value: 'Not known', tone: 'muted' }, outputRow];
+  return [stockRow, outputRow];
 }
 
 /** A share of need as the tooltip and end labels write it: signed, whole per cent. */
@@ -683,14 +696,14 @@ function variantsInStock(reply: EquipmentStockpileReply, group: StockGroup, hour
 }
 
 /** One group's tooltip at an hour, fitted to a window `height` pixels tall: in stock,
- * need and surplus (not recorded), produced per week, and the variants in stock (as
+ * need and surplus (not recorded), output per day, and the variants in stock (as
  * many as fit, the rest summed). A screen reader gets the full list either way. */
 export function groupTooltip(reply: EquipmentStockpileReply, group: StockGroup, grouping: Grouping, hour: number,
   head: Pick<TooltipContent, 'title' | 'subtitle' | 'note'>, height: number): TooltipContent {
   const mode = balanceMode(reply, hour);
   const logistics = balanceAt(reply, group, hour);
   const unattributed = mode === 'player' && group.types.length > 0 && !typesComplete(reply, group, hour);
-  const rows = headRows(stockAt(reply, group, hour), weeklyAt(reply, group, hour), logistics,
+  const rows = headRows(stockAt(reply, group, hour), dailyAt(reply, group, hour), logistics,
     grouping === 'variant' ? 'variant' : unattributed ? 'unattributed' : mode, reply.decimals);
   const note = [head.note,
     grouping === 'variant' ? 'Need is available by equipment type.' : undefined,
@@ -726,11 +739,11 @@ export function groupLabel(reply: EquipmentStockpileReply, group: StockGroup, ho
 }
 
 /** A chosen group drawn over time, at the hour a tooltip shows. */
-export interface LineAt { group: StockGroup; color: string; stock: bigint | null; weekly: bigint | null; logistics?: GroupBalance | null }
+export interface LineAt { group: StockGroup; color: string; stock: bigint | null; daily: bigint | null; logistics?: GroupBalance | null }
 
 /** The over-time tooltip for the chosen groups at an hour, fitted to the window: each
  * group's surplus or shortage with its share of need (the share chart) or its stock,
- * and produced per week, else one row per group, and a row counting any left out. */
+ * and output per day, else one row per group, and a row counting any left out. */
 export function overTimeTooltip(title: string, lines: readonly LineAt[], decimals: number, note: string | undefined, height: number): TooltipContent {
   const value = (line: LineAt) => {
     if (line.logistics !== undefined) {
@@ -745,7 +758,7 @@ export function overTimeTooltip(title: string, lines: readonly LineAt[], decimal
     yield { title, note, rows: lines.flatMap((line, index) => [
       { label: line.group.label, swatch: line.color, strong: true, divider: index > 0, ...value(line) },
       ...(line.logistics ? [{ label: 'Needed', indent: true, ...(line.logistics.need == null ? { value: 'Unavailable', tone: 'muted' as const } : { value: amount(line.logistics.need, decimals) }) }] : []),
-      { label: 'Produced per week', indent: true, ...(line.weekly == null ? { value: NOT_RECORDED, tone: 'muted' as const } : { value: amount(line.weekly, decimals, 1) }) },
+      { label: 'Output per day', indent: true, ...(line.daily == null ? { value: NOT_RECORDED, tone: 'muted' as const } : { value: formatRate(line.daily, decimals) }) },
     ]) };
     yield { title, note, rows: lines.map(line => ({ label: line.group.label, swatch: line.color, short: true, ...value(line) })) };
   }

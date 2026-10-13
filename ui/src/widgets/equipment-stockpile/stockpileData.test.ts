@@ -6,14 +6,14 @@ import { chosenShown, storedChoices, toggleChosen } from '../../dashboard/chosen
 import { contentKey, contentSet, setToken, storableToken } from '../../dashboard/options.ts';
 import { OPTIONS } from './definition.ts';
 import { automaticGroups, automaticLines, chartChoices, chartRuns, choiceKey, choiceRow, CHOSEN_KEYS, oneChoicePerRow, columnVars, designAt, hasRecords, otherDesigns, stockChoices, typeName, undrawableReason, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, barExtent, formatPercent, groupChoices, groupLabel, groupTooltip, labelAt, orderGroups, overTimeTooltip,
-  shareOf, shareRuns, shareScale, stockAt, stockGroups, stockRuns, validateStockpileReply, variantName, weeklyAt } from './stockpileData.ts';
+  shareOf, shareRuns, shareScale, stockAt, stockGroups, stockRuns, validateStockpileReply, variantName, dailyAt } from './stockpileData.ts';
 
 const U = 100000;
 const run = (firstHour: number, lastHour: number, amount: number): AmountRun => ({ firstHour, lastHour, amountRaw: String(Math.round(amount * U)) });
 /** A variant; names default their design to none recorded. */
-const variant = (id: string, token: string, archetype: string | null, stock: AmountRun[], weekly: AmountRun[] = [],
+const variant = (id: string, token: string, archetype: string | null, stock: AmountRun[], daily: AmountRun[] = [],
   names: (Omit<StockVariant['names'][number], 'design'> & { design?: string | null })[] = []): StockVariant =>
-  ({ id, token, archetype, names: names.map(name => ({ design: null, ...name })), stock, weekly });
+  ({ id, token, archetype, names: names.map(name => ({ design: null, ...name })), stock, daily, dailyIc: [], unitCostLow: [], unitCostHigh: [] });
 const TRUCKS = 'The game adds the supply system’s trucks to its stock here, which the recording lacks, so what is needed cannot be derived.';
 
 /** Germany in the W3 save (2 Dec 1943) for the stock, with a logistics record read at
@@ -126,13 +126,13 @@ test('shares of need scale the bars, order the shortages and draw over time', ()
   assert.deepEqual(shareRuns(REPLY, trucks), []);
 });
 
-test('stock, weekly output and stock bars work for AI countries and variants', () => {
+test('stock, daily output and stock bars work for AI countries and variants', () => {
   const [infantry, tanks, , , cas, fighters] = stockGroups(REPLY, 'type', 110);
   assert.equal(stockAt(REPLY, tanks, 110), 2116n * 100000n);
   assert.equal(stockAt(REPLY, fighters, 110), 0n);
   assert.equal(stockAt(REPLY, infantry, 135), null);
-  assert.equal(weeklyAt(REPLY, infantry, 110), 54190000n);
-  assert.equal(weeklyAt(REPLY, infantry, 126), null);
+  assert.equal(dailyAt(REPLY, infantry, 110), 54190000n);
+  assert.equal(dailyAt(REPLY, infantry, 126), null);
   assert.equal(stockAt(REPLY, cas, 126), 157n * 100000n);
   assert.deepEqual(stockRuns(REPLY, infantry).map(item => [item.firstHour, item.lastHour, item.value, item.breakBefore]),
     [[100, 123, 145666, true], [124, 130, 146000, false], [140, 150, 140000, true]]);
@@ -154,13 +154,13 @@ test('tooltips give the game’s surplus for a player, the note for an AI countr
   const tanks = groups[1];
   const player = groupTooltip(REPLY, tanks, 'type', 110, { title: tanks.label }, 1000);
   assert.deepEqual(player.rows.map(row => [row.label, row.value]), [
-    ['In stock', '720'], ['Needed', '1,093'], ['Shortage', '−373'], ['Share of need', '−34%'], ['Produced per week', '15'],
+    ['In stock', '720'], ['Needed', '1,093'], ['Shortage', '−373'], ['Share of need', '−34%'], ['Output per day', '15'],
     ['Panzer II', '1,396'], ['Panzer I Ausf. A', '720']]);
   const trucks = groupTooltip(REPLY, groups[3], 'type', 110, { title: 'Truck' }, 1000);
   assert.deepEqual(trucks.rows.slice(0, 3).map(row => [row.label, row.value]), [['In stock', '5,195'], ['Needed', 'Unavailable'], ['Shortage', '−40']]);
   assert.equal(trucks.note, 'Need unavailable.');
   const ai = groupTooltip(REPLY, tanks, 'type', 145, { title: tanks.label }, 1000);
-  assert.deepEqual(ai.rows.slice(0, 2).map(row => row.label), ['In stock', 'Produced per week']);
+  assert.deepEqual(ai.rows.slice(0, 2).map(row => row.label), ['In stock', 'Output per day']);
   assert.doesNotMatch(ai.note ?? '', /AI-controlled/);
   const unknown = groupTooltip(REPLY, tanks, 'type', 135, { title: tanks.label }, 1000);
   assert.deepEqual(unknown.rows.map(row => [row.label, row.value]).slice(0, 2), [['In stock', 'Not recorded'], ['Surplus or shortage', 'Not recorded']]);
@@ -173,21 +173,34 @@ test('tooltips give the game’s surplus for a player, the note for an AI countr
   assert.ok(short.rows.length < player.rows.length && short.rows[0].label === 'In stock' && short.spoken);
   assert.equal(groupLabel(REPLY, tanks, 110), 'Light Tank: shortage −373, −34% of need');
   assert.equal(groupLabel(REPLY, tanks, 145), 'Light Tank: 0 in stock');
-  const over = overTimeTooltip('1 Dec 1943', [{ group: tanks, color: 'red', stock: 2116n * 100000n, weekly: null, logistics: balanceAt(REPLY, tanks, 110) }], 5, undefined, 1000);
-  assert.deepEqual(over.rows.map(row => [row.label, row.value]), [['Light Tank', '−373 (−34%)'], ['Needed', '1,093'], ['Produced per week', 'Not recorded']]);
-  const stockOnly = overTimeTooltip('1 Dec 1943', [{ group: tanks, color: 'red', stock: 2116n * 100000n, weekly: null }], 5, undefined, 1000);
+  const over = overTimeTooltip('1 Dec 1943', [{ group: tanks, color: 'red', stock: 2116n * 100000n, daily: null, logistics: balanceAt(REPLY, tanks, 110) }], 5, undefined, 1000);
+  assert.deepEqual(over.rows.map(row => [row.label, row.value]), [['Light Tank', '−373 (−34%)'], ['Needed', '1,093'], ['Output per day', 'Not recorded']]);
+  const stockOnly = overTimeTooltip('1 Dec 1943', [{ group: tanks, color: 'red', stock: 2116n * 100000n, daily: null }], 5, undefined, 1000);
   assert.deepEqual(stockOnly.rows[0].value, '2,116');
 });
 
-test('an uncomputable weekly rate is unknown, never zero or a partial sum', () => {
+test('an uncomputable daily rate is unknown, never zero or a partial sum', () => {
   // A read whose variant has a costless line: the product records no amount there.
   const costless: EquipmentStockpileReply = { ...REPLY, variants: [variant('1326', 'infantry_equipment_1', 'infantry_equipment', [run(100, 130, 5)],
     [{ firstHour: 100, lastHour: 123, amountRaw: null }]), variant('1327', 'infantry_equipment_1', 'infantry_equipment', [], [run(100, 123, 541.9)])] };
   assert.equal(validateStockpileReply(costless), costless);
   const infantry = stockGroups(costless, 'type', 110)[0];
-  assert.equal(weeklyAt(costless, infantry, 110), null);
+  assert.equal(dailyAt(costless, infantry, 110), null);
   const tip = groupTooltip(costless, infantry, 'type', 110, { title: 'Infantry' }, 1000);
-  assert.deepEqual(tip.rows.find(row => row.label === 'Produced per week')?.value, 'Not recorded');
+  assert.deepEqual(tip.rows.find(row => row.label === 'Output per day')?.value, 'Not recorded');
+});
+
+test('an older bridge without the per-day output shows output as not recorded, never a weekly seventh or zero', () => {
+  const older = structuredClone(REPLY) as unknown as { variants: Record<string, unknown>[] };
+  for (const item of older.variants) {
+    item.weekly = [{ firstHour: 100, lastHour: 130, amountRaw: '700000' }];
+    for (const key of ['daily', 'dailyIc', 'unitCostLow', 'unitCostHigh']) delete item[key];
+  }
+  const reply = validateStockpileReply(older);
+  const infantry = stockGroups(reply, 'type', 110)[0];
+  assert.equal(stockAt(reply, infantry, 110) != null, true);
+  assert.equal(dailyAt(reply, infantry, 110), null);
+  assert.equal(groupTooltip(reply, infantry, 'type', 110, { title: 'Infantry' }, 1000).rows.find(row => row.label === 'Output per day')?.value, 'Not recorded');
 });
 
 test('a recorded zero balance shows as zero; a type with nothing but zeros adds no row', () => {
@@ -276,13 +289,13 @@ test('a group whose variants cannot be told has unknown stock and production, ne
   const groups = stockGroups(unresolved, 'type', 110);
   const archetype = groups.find(group => group.key === ':rifle')!;
   const variantRow = groups.find(group => group.key === ':rifle_1')!;
-  assert.equal(variantsComplete(unresolved, archetype, item => item.weekly, 110), false);
-  assert.equal(weeklyAt(unresolved, archetype, 110), null);
+  assert.equal(variantsComplete(unresolved, archetype, item => item.daily, 110), false);
+  assert.equal(dailyAt(unresolved, archetype, 110), null);
   assert.equal(stockAt(unresolved, archetype, 110), null);
-  assert.equal(groupTooltip(unresolved, archetype, 'type', 110, { title: 'rifle' }, 1000).rows.find(row => row.label === 'Produced per week')?.value, 'Not recorded');
+  assert.equal(groupTooltip(unresolved, archetype, 'type', 110, { title: 'rifle' }, 1000).rows.find(row => row.label === 'Output per day')?.value, 'Not recorded');
   // As a type row it may be part of a type, so it is unknown too; its variant row is exact.
-  assert.equal(weeklyAt(unresolved, variantRow, 110), null);
-  assert.equal(weeklyAt(unresolved, stockGroups(unresolved, 'variant', 110)[0], 110), 7000000n);
+  assert.equal(dailyAt(unresolved, variantRow, 110), null);
+  assert.equal(dailyAt(unresolved, stockGroups(unresolved, 'variant', 110)[0], 110), 7000000n);
 });
 
 test('a tiny share of need is kept exactly and never collapses the scale', () => {
@@ -306,12 +319,12 @@ test('a variant of unknown type makes every type and arm total unknown, never ze
   const infantry = stockGroups(unread, 'type', 110)[0];
   assert.equal(infantry.key, 'infantry_equipment');
   assert.equal(stockAt(unread, infantry, 110), null);
-  assert.equal(weeklyAt(unread, infantry, 110), null);
-  assert.equal(groupTooltip(unread, infantry, 'type', 110, { title: 'Infantry' }, 1000).rows.find(row => row.label === 'Produced per week')?.value, 'Not recorded');
+  assert.equal(dailyAt(unread, infantry, 110), null);
+  assert.equal(groupTooltip(unread, infantry, 'type', 110, { title: 'Infantry' }, 1000).rows.find(row => row.label === 'Output per day')?.value, 'Not recorded');
   assert.equal(stockAt(unread, stockGroups(unread, 'domain', 110)[0], 110), null);
   // Its own variant row, and every other variant row, stay exact.
   const rows = stockGroups(unread, 'variant', 110);
-  assert.equal(weeklyAt(unread, rows.find(row => row.key === 'c0ffee:77:')!, 110), 7000000n);
+  assert.equal(dailyAt(unread, rows.find(row => row.key === 'c0ffee:77:')!, 110), 7000000n);
   assert.equal(stockAt(unread, rows.find(row => row.key === 'c0ffee:1351:light_tank_chassis_1')!, 110), 72000000n);
   // After its stock ends, or where it holds zero, it makes nothing unknown.
   assert.equal(stockAt(unread, infantry, 140), 140000n * 100000n);
@@ -442,7 +455,7 @@ test('recorded production shows without any stockpile read', () => {
   assert.equal(hasRecords(productionOnly), true);
   const infantry = stockGroups(productionOnly, 'type', 110)[0];
   assert.equal(stockAt(productionOnly, infantry, 110), null);
-  assert.equal(weeklyAt(productionOnly, infantry, 110), 54190000n);
+  assert.equal(dailyAt(productionOnly, infantry, 110), 54190000n);
   assert.equal(hasRecords({ ...productionOnly, lineReads: [], aiHours: [] }), false);
 });
 

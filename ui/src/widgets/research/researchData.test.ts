@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { researchAt, researchArtworkTokens, researchColumns, researchProgressAt, researchRateAt, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
+import { isUnjoinedResearch, researchAt, researchArtworkTokens, researchColumns, researchProgressAt, researchRateAt, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
 import { loadProduct } from '../../dashboard/products.ts';
 import type { ResearchEntry, ResearchHistory, ResearchReply } from '../../generated/dashboard';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
@@ -69,7 +69,39 @@ test('rewind hides new slots, future assignments and future completion or switch
   assert.equal(researchAt(history, 150)![0].entries[0].outcome, 'completed');
   assert.equal(researchAt(history, 250)![0].entries[1].outcome, 'switched');
   assert.equal(researchAt(history, 230)![2].entries.length, 0);
-  for (const hour of [99, 300, 401]) assert.equal(researchAt(history, hour), null);
+  assert.deepEqual(researchAt(history, 99), [], 'no slot before its first read');
+});
+
+test('an hour without a read keeps the history known by then and only its slot state is missing', () => {
+  const state = { firstHour: 250, lastHour: 299, token: 'C', entryFirstObservedHour: 250,
+    speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0' };
+  const read: ResearchHistory = { ...history, slots: history.slots.map(slot => slot.index === 0
+    ? { ...slot, availability: [{ firstHour: 100, lastHour: 299 }, { firstHour: 301, lastHour: 400 }], states: [state] } : slot) };
+  for (const hour of [300, 401]) {
+    const slots = researchAt(read, hour);
+    assert.deepEqual(slots[0].entries.filter(e => e.outcome === 'completed').map(e => e.token), ['A']);
+    assert.deepEqual(researchColumns(slots).map(c => c.slot.index), [0, 1, 2]);
+  }
+  const gap = researchAt(read, 300)[0];
+  assert.equal(researchStateAt(gap, 300), null, 'the unread hour has no slot state');
+  assert.equal(researchStateAt(gap, 299)?.token, 'C');
+});
+
+test('a technology no assignment joins is shown from its slot state, with its image', () => {
+  const unjoined = { firstHour: 100, lastHour: 140, token: 'radio', entryFirstObservedHour: null,
+    speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0',
+    details: { remainingDays: 12, bonuses: null } };
+  const slots = researchAt({ coverage: [{ firstHour: 100, lastHour: 140 }], slots: [
+    { index: 0, availability: [{ firstHour: 100, lastHour: 140 }], progress: [], entries: [], states: [unjoined] },
+    { index: 1, availability: [{ firstHour: 100, lastHour: 140 }], progress: [], entries: [], states: [{ ...unjoined, token: null }] },
+  ] }, 124);
+  assert.equal(isUnjoinedResearch(researchStateAt(slots[0], 124)), true);
+  assert.equal(researchStateAt(slots[0], 124)?.details?.remainingDays, 11);
+  assert.equal(isUnjoinedResearch(researchStateAt(slots[1], 124)), false, 'an idle slot');
+  assert.equal(isUnjoinedResearch({ ...unjoined, token: 'C', entryFirstObservedHour: 250 }), false, 'a joined assignment');
+  assert.equal(isUnjoinedResearch(null), false);
+  assert.deepEqual(researchArtworkTokens(slots, 124, true), ['radio']);
+  assert.deepEqual(researchArtworkTokens(slots, 124, false), [], 'whole-campaign cards show completions only');
 });
 
 test('compressed countdowns are evaluated at playback hour and delayed completion stays hidden', () => {

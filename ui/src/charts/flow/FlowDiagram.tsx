@@ -12,8 +12,8 @@ import { backingSize, toLocal } from '../surface';
 import { readTokens, subscribeTokens } from '../tokens';
 import { hideTooltip, scrollTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
-import { flowCapacity, flowPlaybackSnap, FlowMotion, flowStops, linkAt, nodeAt } from './layout';
-import type { FlowFrame, FlowLink, FlowNode, FlowStop, LinkShape, NodeBox } from './layout';
+import { flowCapacity, flowPlaybackSnap, FlowMotion, flowStops, labelAt, linkAt, nodeAt } from './layout';
+import type { FlowFrame, FlowLink, FlowNode, FlowStop, LabelBox, LinkShape, NodeBox } from './layout';
 import { FlowTooltipCache } from './tooltipCache';
 import '../charts.css';
 
@@ -48,6 +48,9 @@ export interface FlowDiagramProps {
   hour?: number;
   /** Click or Enter/Space opens this drawn node or ribbon's full breakdown. */
   onPick?: (hit: FlowHit, hour: number) => void;
+  /** Clicking a node's drawn flag or name opens what the widget shows for that node.
+   * Without it, flags and names are not pointed at. */
+  onLabelPick?: (node: FlowNode, hour: number) => void;
   onContextMenu?: (hit: FlowHit | null, clientX: number, clientY: number) => void;
   /** What the diagram shows, as text for screen readers. */
   description?: string;
@@ -83,6 +86,7 @@ export default function FlowDiagram(props: FlowDiagramProps) {
   latest.current = props;
   const task = useRef<FrameTask | null>(null);
   const drawn = useRef<FlowFrame>({ nodes: [], links: [], settled: true });
+  const drawnLabels = useRef<LabelBox[]>([]);
   const drawnHour = useRef<number | null>(null);
   const keyed = useRef<FlowStop | null>(null);
   // After Escape, no tooltip until the pointer moves again.
@@ -103,10 +107,14 @@ export default function FlowDiagram(props: FlowDiagramProps) {
     const tooltips = new FlowTooltipCache<FlowHit>();
     let capacity = 0;
 
+    // A flag or name is a place to point only for a widget that opens it.
+    const labelHit = (x: number, y: number) => latest.current.onLabelPick ? labelAt(drawnLabels.current, x, y) : null;
     const hitAt = (x: number, y: number): FlowHit | null => {
       const frame = drawn.current;
       const box = nodeAt(frame.nodes, x, y);
       if (box) return { kind: 'node', node: box.node };
+      const label = labelHit(x, y);
+      if (label) return { kind: 'node', node: label.node };
       const shape = linkAt(frame.links, x, y);
       return shape ? { kind: 'link', link: shape.link } : null;
     };
@@ -175,6 +183,7 @@ export default function FlowDiagram(props: FlowDiagramProps) {
       }
       context.globalAlpha = 1;
       const lineHeight = tokens.fontSize.body + 4;
+      const labels: LabelBox[] = [];
       for (const side of ['source', 'target'] as const) {
         const boxes = frame.nodes.filter(box => box.node.side === side && box.alpha > 0.02 && box.height > 0);
         const placed = layoutEndLabels(boxes.map(box => ({ id: box.id, y: box.y + box.height / 2, height: lineHeight })), geometry.top, geometry.bottom);
@@ -205,8 +214,12 @@ export default function FlowDiagram(props: FlowDiagramProps) {
           context.textAlign = side === 'source' ? 'right' : 'left';
           const room = Math.max(8, column - FLAG_WIDTH - LABEL_GAP * 2);
           context.fillText(box.node.label, side === 'source' ? flagX - LABEL_GAP / 2 : flagX + FLAG_WIDTH + LABEL_GAP / 2, at, room);
+          const text = Math.min(room, context.measureText(box.node.label).width) + LABEL_GAP / 2;
+          labels.push({ id: box.id, node: box.node, x: side === 'source' ? flagX - text : flagX, y: at - lineHeight / 2,
+            width: FLAG_WIDTH + text, height: lineHeight, alpha: box.alpha });
         }
       }
+      drawnLabels.current = labels;
       context.globalAlpha = 1;
       if (p.message) {
         context.fillStyle = tokens.muted; context.font = font(tokens, tokens.fontSize.body); context.textAlign = 'center'; context.textBaseline = 'middle';
@@ -254,8 +267,11 @@ export default function FlowDiagram(props: FlowDiagramProps) {
     };
     const pick = (event: MouseEvent) => {
       const p = latest.current;
-      if (event.button !== 0 || !p.active || !p.onPick || drawnHour.current == null) return;
+      if (event.button !== 0 || !p.active || drawnHour.current == null) return;
       const point = local(event);
+      const label = nodeAt(drawn.current.nodes, point.x, point.y) ? null : labelHit(point.x, point.y);
+      if (label) { p.onLabelPick!(label.node, drawnHour.current); return; }
+      if (!p.onPick) return;
       const hit = hitAt(point.x, point.y);
       if (hit) p.onPick(hit, drawnHour.current);
     };

@@ -13,8 +13,8 @@ import type { StockpileMode } from './stockpileDrill';
 const percentOfNeed = (raw: bigint | null, needed: bigint | null | undefined) => raw != null && needed != null && needed < 0n
   ? formatPercent(Number(raw) / Number(-needed)) : 'Not known';
 
-/** The same exact operands drive the moment rows and signed history. Weekly
- * production is a rate, not a contribution to this recorded stock or balance. */
+/** The same exact operands drive the moment rows and signed history. Daily
+ * output is a rate, not a contribution to this recorded stock or balance. */
 export default function StockpileDrill({ data, group, mode, percentage, hour, ...chart }: {
   data: EquipmentStockpileReply; group: StockGroup; mode: StockpileMode; percentage: boolean; hour: number;
 } & Omit<Parameters<typeof BreakdownChart>[0], 'series' | 'axes' | 'label'>) {

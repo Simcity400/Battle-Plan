@@ -2,6 +2,7 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
 import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import { FUEL_DECIMALS_OPTION } from './fuelData.ts';
 
 export const BREAKDOWNS = [{ id: 'gain', label: 'Fuel gained' }, { id: 'burn', label: 'Fuel burned' },
   { id: 'consumption', label: 'Individual current consumption' }] as const;
@@ -28,6 +29,7 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'capacity', section: 'options', label: 'Capacity', kind: 'toggle', default: true },
   { key: 'areaFill', section: 'options', label: 'Area fill', kind: 'toggle', default: true },
   { key: 'endLabels', section: 'options', label: 'Values at line ends', kind: 'toggle', default: true },
+  FUEL_DECIMALS_OPTION,
   { key: 'yMin', section: 'axes', label: 'Value axis from', hint: 'Empty starts at zero', kind: 'number', min: -1e9, max: 1e9, step: 1, default: null },
   { key: 'yMax', section: 'axes', label: 'Value axis to', hint: 'Empty fits the data', kind: 'number', min: -1e9, max: 1e9, step: 1, default: null },
   { key: 'log', section: 'axes', label: 'Log scale', hint: 'Only when every value shown is positive', kind: 'toggle', default: false },

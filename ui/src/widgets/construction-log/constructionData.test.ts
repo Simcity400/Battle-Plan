@@ -3,10 +3,11 @@ import test from 'node:test';
 import type { ConstructionLogManifestReply, ConstructionLogReply, ConstructionOutputRun, ConstructionProject, ProjectOutput, SpendingGap } from '../../generated/dashboard';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveCountries } from '../../dashboard/groups.ts';
-import { definition } from './definition.ts';
-import { buildingChoices, builtLabel, constructionWindows, describeRow as datedDescribeRow, factoriesShown, jumpHours, kindLabel, levelsLabel, logReach, logRows, mergeWindows, outputAt, placeLabel as datedPlaceLabel, projectAt, projectTooltip as datedProjectTooltip, statusLabel, validateConstructionLogManifest, validateConstructionLogWindow } from './constructionData.ts';
+import { definition, OPTIONS } from './definition.ts';
+import { buildingChoices, builtLabel, constructionWindows, describeRow as datedDescribeRow, factoriesShown, inQueue, jumpHours, kindLabel, levelsLabel, logReach, logRows, mergeWindows, outputAt, placeLabel as datedPlaceLabel, placeTitle, projectAt, projectTooltip as datedProjectTooltip, rowCountryRequests, rowFactories, statusLabel, statusTone, validateConstructionLogManifest, validateConstructionLogWindow } from './constructionData.ts';
 import type { ConstructionLog, LogFilter, ProjectAt } from './constructionData';
 import type { LogRow } from '../../charts/log/logData';
+import { MAX_NAME_HOURS } from '../../dashboard/countryFacts.ts';
 import type { StateNameAt } from '../../dashboard/construction';
 
 const project = (patch: Partial<ConstructionProject>): ConstructionProject => ({
@@ -77,6 +78,29 @@ test('construction selection accepts every recorded country', () => {
   assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
   const tags = Array.from({ length: 5000 }, (_, index) => `MOD${index}`);
   assert.deepEqual(resolveCountries({ kind: 'tags', tags }, [], undefined, 172, definition.countries.max).tags, tags);
+});
+
+test('building types are chosen from a searchable list, and the queue filter starts off', () => {
+  const types = OPTIONS.find(field => field.key === 'types');
+  assert.ok(types?.kind === 'content-set' && types.catalogue === true, 'every type a mod adds is one row of a list, not a chip');
+  const queue = OPTIONS.find(field => field.key === 'queue');
+  assert.deepEqual(queue && [queue.kind, queue.default], ['toggle', false]);
+  assert.deepEqual(OPTIONS.find(field => field.key === 'projects')?.default, 'all');
+});
+
+test('every drawn row is named at its own first read, however many hours they span', () => {
+  const rows = (count: number) => Array.from({ length: count }, (_, index) => {
+    const at = projectAt(project({ id: String(index), tag: `MOD ${index % 3}`, firstRead: 1000 + index, createdHour: 900,
+      runs: [{ firstHour: 1000 + index, lastHour: 5000, factories: 1, remaining: 1, repairLevels: 0 }] }), 5000)!;
+    return { key: at.project.id, hour: 5000 - index, item: at };
+  });
+  const many = rowCountryRequests(rows(MAX_NAME_HOURS + 36));
+  assert.equal(many.wanted.length, MAX_NAME_HOURS + 36);
+  assert.equal(many.maxHours, MAX_NAME_HOURS + 36, 'the newest rows keep their names past the default hour limit');
+  assert.deepEqual(many.wanted[0], { hour: 1000, tag: 'MOD 0' });
+  const few = rowCountryRequests(rows(3));
+  assert.deepEqual([few.wanted.length, few.maxHours], [3, MAX_NAME_HOURS]);
+  assert.deepEqual(rowCountryRequests([]), { wanted: [], maxHours: MAX_NAME_HOURS });
 });
 
 test('the manifest and its windows are checked before use', () => {
@@ -207,11 +231,16 @@ test('a project shows from its first read, and its ending only from the read tha
   const after = projectAt(built, 148)!;
   assert.deepEqual([after.status, after.built, after.levels, after.changed, after.changedBy, after.stage], ['finished', 1, 1, 144, false, 2]);
   assert.equal(factoriesShown(after), 10);
+  // A row shows factories only while the project is in the queue; its tooltip keeps the last read's.
+  assert.deepEqual([rowFactories(before), rowFactories(after)], [{ factories: 10 }, null]);
+  assert.deepEqual([statusTone(before), statusTone(after)], ['accent', 'positive']);
   const removed = projectAt(PROJECTS[2], 160)!;
   // Between the gap and the next read nothing is carried.
   assert.deepEqual([removed.status, removed.built, removed.levels, factoriesShown(removed)], ['unread', 1, 3, null]);
   const gone = projectAt(PROJECTS[2], 172)!;
   assert.deepEqual([gone.status, gone.levels, gone.changed, gone.changedBy, factoriesShown(gone)], ['removed', 3, 172, true, 12]);
+  assert.deepEqual([inQueue(removed), rowFactories(removed), statusTone(removed)], [true, { factories: null }, 'neutral']);
+  assert.deepEqual([inQueue(gone), rowFactories(gone), statusTone(gone)], [false, null, 'neutral']);
   assert.equal(levelsLabel(projectAt(PROJECTS[2], 130)!), '1 of 3');
   assert.equal(levelsLabel(gone), '×3');
   assert.equal(levelsLabel(after), null);
@@ -229,6 +258,10 @@ test('rows are newest first by their latest change, and enter again when they ch
   assert.deepEqual(keys(172, { ...every, projects: 'new' }), ['3:2@172?', '4:2@148?', '1:2@144']);
   assert.deepEqual(keys(172, { ...every, country: (tag, hour) => tag === 'ITA' && hour === 100 }), ['4:2@148?']);
   assert.deepEqual(keys(172, { ...every, from: 145 }), ['3:2@172?', '4:2@148?']);
+  // In the queue: still building, or unread since a gap, at the hour shown.
+  assert.deepEqual(keys(172, { ...every, queue: true }), ['2:0@110']);
+  assert.deepEqual(logRows(LOG, 148, { ...every, queue: true }, 'change').map(row => row.id), ['3', '2']);
+  assert.deepEqual(logRows(LOG, 124, { ...every, queue: true }, 'start').map(row => row.id).sort(), ['1', '2', '3', '4']);
 });
 
 test('a gap or failed queue read leaves status and pending dates unread until the next read', () => {
@@ -249,7 +282,8 @@ test('a gap or failed queue read leaves status and pending dates unread until th
           const dates = tip.rows.filter(row => ['Repaired', 'Built', 'Finished'].includes(row.label));
           assert.equal(dates.length, remaining && repairLevels ? 2 : 1);
           assert.ok(dates.every(row => row.value === 'Not recorded' && row.tone === 'muted'));
-          assert.equal(tip.rows.find(row => row.label === 'Factories')?.value, 'Factories unknown');
+          assert.equal(tip.rows.find(row => row.label === 'Factories')?.value, 'Not recorded');
+          assert.deepEqual(rowFactories(at), { factories: null });
         }
       }
       const resumed = projectAt(item, nextRead)!;
@@ -280,8 +314,11 @@ test('the tooltip dates its read, names its levels and cost, and says why an end
   assert.equal(full.subtitle, 'Italy · Moscow to Smolensk');
   const value = (label: string) => full.rows.find(row => row.label === label)?.value;
   assert.equal(value('Segments built'), '1 of 2');
-  assert.equal(value('Factories'), '4');
-  assert.equal(value('Cost'), '560 for the route');
+  // It left the queue: the factories are those of its last read, and the cost needs no unit to fit.
+  assert.equal(value('Factories'), undefined);
+  assert.equal(value('Factories at its last read'), '4');
+  assert.equal(value('Cost'), undefined);
+  assert.equal(value('Route cost'), '560');
   assert.equal(value('Railway level'), '1 → 2');
   assert.match(value('Left the queue') ?? '', /^by /);
   assert.match(full.note ?? '', /Completion unknown/);
@@ -290,8 +327,19 @@ test('the tooltip dates its read, names its levels and cost, and says why an end
   const repair = projectTooltip(LOG, projectAt(PROJECTS[1], 124)!, 124, 'Germany')[0];
   assert.equal(repair.rows.find(row => row.label === 'Levels repaired')?.value, '0 of 2');
   assert.equal(repair.subtitle, 'Germany · State 6 · repair');
-  assert.equal(repair.rows.find(row => row.label === 'Cost')?.value, '10,800 per level');
+  assert.equal(repair.rows.find(row => row.label === 'Cost per level')?.value, '10,800');
+  assert.equal(repair.rows.find(row => row.label === 'Factories')?.value, '0');
   assert.equal(repair.note, undefined);
+});
+
+test('a place on its own line keeps the game’s names and capitalises only what it says instead', () => {
+  const names: StateNameAt = (_hour, state) => ({ state, name: state === 7 ? 'île de Test' : STATES.find(name => name.id === state)?.name ?? null, missing: null });
+  assert.equal(placeTitle(PROJECTS[0], 148, names), 'Ruhr');
+  assert.equal(placeTitle(project({ state: 7 }), 148, names), 'île de Test');
+  assert.equal(placeTitle(PROJECTS[3], 148, names), 'Moscow to Smolensk');
+  assert.equal(placeTitle(project({ state: null, province: 5007 }), 148, names), 'Province 5007');
+  assert.equal(placeTitle(project({ state: null }), 148, names), 'An unknown place');
+  assert.equal(placeTitle(project({ kind: 'railway', state: null, toState: null }), 148, names), 'An unknown route');
 });
 
 test('the building types offered are the recording’s own, by name', () => {
@@ -425,15 +473,17 @@ test('what a line does is classified per stretch: a repair, then new levels', ()
   assert.deepEqual(logRows(logOf([between]), 130, { ...every, projects: 'repair' }, 'start').map(row => row.id), ['17']);
 });
 
-test('the log keeps exact signed output and distinguishes natural repair from factory IC', () => {
+test('the log keeps exact signed output, writes it in whole IC and distinguishes natural repair from factory IC', () => {
   const p = project({ firstRepairTick: 124 });
   const log = logOf([p], [{ id: '1', runs: [{ ...RUN, constructionRaw: '9007199254741499', repairRaw: '-1', beforeObservation: true }] }], [100]);
   assert.equal(projectAt(p, 100)!.kind, 'new');
   const at = projectAt(p, 124)!;
   assert.equal(at.kind, 'repairThenNew');
   const tip = projectTooltip(log, at, 124, 'Synthetic country')[0];
-  assert.equal(tip.rows?.find(row => row.label === 'Construction output')?.value, '90,071,992,547.41499');
-  assert.equal(tip.rows?.find(row => row.label === 'Repair output')?.value, '−0.00001');
+  assert.equal(tip.rows?.find(row => row.label === 'Construction output')?.value, '90,071,992,547');
+  assert.equal(tip.rows?.find(row => row.label === 'Repair output')?.value, '0');
+  // Only the writing rounds: the amounts held stay exact and signed.
+  assert.deepEqual([outputAt(log, p, 124)?.constructionRaw, outputAt(log, p, 124)?.repairRaw], ['9007199254741499', '-1']);
   assert.equal(tip.rows?.find(row => row.label === 'Output read')?.value, undefined);
   assert.match(tip.note ?? '', /Earlier progress unknown/);
 });

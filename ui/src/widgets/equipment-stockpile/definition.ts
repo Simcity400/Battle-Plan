@@ -47,7 +47,7 @@ export const OPTIONS: readonly OptionField[] = [
 
 export const definition = {
   kind: 'equipment-stockpile', version: 1, title: 'Equipment stockpile', icon: 'grid',
-  description: 'Each equipment type’s surplus or shortage as a share of what is needed, and what a country holds and makes per week.',
+  description: 'Each equipment type’s surplus or shortage as a share of what is needed, and what a country holds and makes per day.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 13 },
   countries: { max: Number.MAX_SAFE_INTEGER }, options: OPTIONS,

@@ -2,7 +2,7 @@ import type { ConstructionSpendingReply, SpendingLeaf, SpentStep } from '../../g
 import { isBuildingInfo, isSpendingGap, isStateName, placeName, typeName } from '../../dashboard/construction.ts';
 import type { StateNameAt } from '../../dashboard/construction';
 import type { SunburstItem } from '../../charts/sunburst/layout';
-import { formatAmount } from '../../charts/valueAxis.ts';
+import { formatIc } from '../../dashboard/icDecimals.ts';
 
 
 /** The hierarchy's levels, innermost first, and the option that switches each off. */
@@ -70,9 +70,12 @@ export interface SpendingWindow { from: number | null; hour: number; end: number
 /** The sunburst's items, one per leaf: its path new or repair → building type (from
  * content) → state; its amount by the hour shown, exactly (`exact`, fixed5) and as a
  * number for geometry; its whole amount at the end of what is shown; and what is not
- * counted by reason. A leaf none of whose projects was in the queue during what is
+ * counted by reason. Output not counted leaves the counted amount shown and partial,
+ * never hidden. A leaf none of whose projects was in the queue during what is
  * shown (established by its end, and not gone before its start) is not present: it adds only its whole amount, so Fill's whole, the order and the colours
- * are those of the end from the start. Repairs use their own recorded factory channel. */
+ * are those of the end from the start. Repairs use their own recorded factory channel.
+ * Output no country can be given (no census owner, or output not read) makes only the
+ * whole partial: it is an item without a path, so it has no slice or legend row. */
 export function spendingItems(reply: ConstructionSpendingReply, window: SpendingWindow, stateAt: StateNameAt): SunburstItem[] {
   const items: SunburstItem[] = [];
   const before = window.from == null ? null : window.from - 1;
@@ -101,7 +104,6 @@ export function spendingItems(reply: ConstructionSpendingReply, window: Spending
       value: Number(exact),
       exact,
       final: Number(since(window.end)),
-      unknownValue: Object.keys(unknown).length > 0,
       finalUnknown,
       // Present when a project worked in what is shown, or the reads in it
       // established an amount or a stretch not counted.
@@ -120,22 +122,38 @@ export function spendingItems(reply: ConstructionSpendingReply, window: Spending
     const unknown: Record<string, number> = {};
     for (const gap of unowned) unknown[gap.reason] = (unknown[gap.reason] ?? 0) + 1;
     items.push({
-      path: [{ id: 'unattributed', label: 'Not identified' }], value: null, exact: null,
-      unknownValue: unowned.length > 0, finalUnknown: reply.unattributed.some(gap => applies(gap, window.end)),
+      path: [], value: 0, exact: 0n, final: 0, finalUnknown: reply.unattributed.some(gap => applies(gap, window.end)),
       present: unowned.length > 0, unknown,
     });
   }
   return items;
 }
 
-/** An amount of output as written, from fixed5, with every recorded fractional digit: from the exact
- * integer when there is one (a number loses digits past 2^53), else the number. */
-export const formatSpent = (value: number, exact: bigint | null, scale: number) =>
-  formatAmount(exact ?? BigInt(Math.round(value)), Math.round(Math.log10(scale)), Math.round(Math.log10(scale)));
+/** Whether a country's own construction shows: a leaf present in what is shown. */
+export const hasConstruction = (items: readonly SunburstItem[]) => items.some(item => item.path.length > 0 && item.present !== false);
 
-/** The note under the legend: what the totals leave out before output observation began. */
-export function footnote(reply: ConstructionSpendingReply): string | undefined {
-  const count = reply.beforeFirstRead;
-  if (!count) return undefined;
-  return `Earlier spending is missing for ${count} ${count === 1 ? 'project' : 'projects'}.`;
+/** Decimal places of a cost scale (fixed5: 5). */
+export const scaleDigits = (scale: number) => Math.round(Math.log10(scale));
+
+/** An amount of output (fixed5 at `scale`) written to `digits` places. */
+export const formatSpent = (value: number, exact: bigint | null, scale: number, digits: number) =>
+  formatIc(value, exact, scaleDigits(scale), digits);
+
+const plural = (count: number, one: string) => `${count} ${one}${count === 1 ? '' : 's'}`;
+
+/** The note under the legend, saying plainly what the amounts leave out: earlier
+ * spending, and in what is shown, output not recorded exactly (partial amounts) and
+ * output no country can be given. */
+export function footnote(reply: ConstructionSpendingReply, items: readonly SunburstItem[]): string | undefined {
+  const notes: string[] = [];
+  if (reply.beforeFirstRead) notes.push(`Earlier spending on ${plural(reply.beforeFirstRead, 'project')} isn’t counted.`);
+  const shown = items.filter(item => item.present !== false);
+  if (shown.some(item => item.path.length > 0 && Object.keys(item.unknown ?? {}).length > 0))
+    notes.push('Partial amounts leave out output that wasn’t recorded exactly.');
+  const unowned: Record<string, number> = {};
+  for (const item of shown) if (item.path.length === 0) for (const [reason, count] of Object.entries(item.unknown ?? {})) unowned[reason] = (unowned[reason] ?? 0) + count;
+  const { ownerUnknown = 0, ...unread } = unowned;
+  if (ownerUnknown) notes.push(`Output of ${plural(ownerUnknown, 'project')} not traced to a country isn’t counted.`);
+  if (Object.keys(unread).length) notes.push('Output in hours that weren’t recorded isn’t counted.');
+  return notes.length ? notes.join(' ') : undefined;
 }

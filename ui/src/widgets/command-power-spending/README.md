@@ -2,26 +2,26 @@
 
 ## What it shows
 
-Recorded CP payments and daily deficits as a dated log, with current reservations beside the totals.
+A compact table of recorded command-power payments (Date, Item, Category, Amount, and Country when several countries are chosen), with category chips and a one-line summary of what was spent and gained in the shown period.
 
 ## Products it reads
 
-[`politics-ledger`](../../../../crates/dashboard/src/products/politics_ledger.rs) through the [shared spending consumer](../../dashboard/usePoliticsSpending.ts).
+[`politics-ledger`](../../../../crates/dashboard/src/products/politics_ledger.rs) (`balance` view, shared with the Command power chart) through the [shared spending consumer](../../dashboard/usePoliticsSpending.ts) and [spending table](../../dashboard/PoliticsSpendingTable.tsx).
 
 ## Settings
 
-Countries and campaign/follow/pin/range; shared [spending options](../../dashboard/politicsSpendingOptions.ts) control categories, order, artwork, totals and log presentation. Follow is the default. The overall total includes every category; each category total appears only for a shown category, and an empty category selection shows them all.
+Countries, campaign/follow/pin/range and the shared [spending options](../../dashboard/politicsSpendingOptions.ts): game artwork, filter chips, categories, summary, decimals, cell bars, density and sort. Follow is the default.
 
 ## Notable behaviour
 
-- Recurring upkeep groups by country and day, but contributions enter only at their supplying reads. Hourly group membership and ranges select the native payment hours; undated older aggregates cannot supply a filtered subtotal.
-- Evaluated charges and realized balance changes stay distinct. Daily deficit is separate from real costs.
-- CP held remains visible with running totals off. Allocations/releases never add to spending; missing reservation baselines or coverage keep holds unknown.
-- Names and flags use the action hour; coverage-gap rows use their gap start. Later reads never repair an earlier unknown.
+- Ability upkeep and daily deficits fold into one row per country, category and game month; every other payment is its own row. Amounts are whole unless Decimals asks for more.
+- Payments the recording could not name, such as raids and preferred tactics, are named by their kind. Gained counts the daily gain only; a deficit is spending.
+- Command power set aside for raids, assignments and abilities is not spending. The game's reserve counter can sit below zero, so its level is never shown as an amount held; the Command power chart shows what moved into and out of reserve each day, and its dashed maximum already reflects the reserve as the game displays it.
+- Unrecorded stretches are one note; they never hide recorded payments. Names and flags use the action hour.
 
 ## Files
 
 | File | Responsibility |
 |---|---|
-| [CommandPowerSpendingWidget.tsx](CommandPowerSpendingWidget.tsx) | CP adapter for shared PoliticsSpendingLog. |
+| [CommandPowerSpendingWidget.tsx](CommandPowerSpendingWidget.tsx) | CP adapter for the shared spending table. |
 | [definition.ts](definition.ts), [index.ts](index.ts) | Metadata, shared options and category choices. |

@@ -1,12 +1,46 @@
-.special-projects { height:100%; overflow:auto; }
-.special-project-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:10px; padding:4px 12px 12px; }
-.special-project-card { display:grid; grid-template-columns:72px 1fr; gap:10px; padding:10px; border-radius:9px; background:color-mix(in srgb,var(--text) 4%,transparent); box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--border) 70%,transparent); }
-.special-project-detail { min-width:0; }
-.special-project-detail b { display:block; font-size: 0.78125rem; font-weight:600; }
-.special-project-detail small { color:var(--muted); font-size: 0.6875rem; }
-.special-project-iterations { min-height:13px; font-size: 0.65625rem; color:var(--muted); }
-.special-project-scientist { display:flex; align-items:center; gap:6px; margin-top:6px; font-size: 0.6875rem; }
-.special-project-scientist img, .special-project-portrait { width:20px; height:27px; border-radius:3px; flex:none; object-fit:contain; }
-.special-project-portrait { display:grid; place-items:center; color:var(--muted); background:var(--raised); }
-.special-project-card.is-complete { opacity:.8; }
-.special-project-detail .progress-meter { margin:6px 0 4px; }
+/* Current reuses National focus's cards and rows (nationalFocus.css) and the shared
+   blueprint tile; this file only sizes them for projects. */
+.special-projects { height:100%; overflow:auto; scrollbar-gutter:stable; }
+.special-project-list { padding:0 4px 6px; container-type:inline-size; }
+.special-project-section { margin:0; padding:8px 8px 2px; color:var(--quiet); font-size:0.6875rem; font-weight:600; }
+.special-project-section span { margin-left:4px; font-variant-numeric:tabular-nums; }
+.special-project-none { margin:0; padding:8px 8px 4px; color:var(--muted); font-size:0.75rem; }
+
+/* In progress: the Research page's compact current-assignment card. */
+.special-project-now { gap:8px; height:64px; margin:3px 3px 0; padding:6px 8px 14px 6px; }
+.special-project-now .focus-now-text > strong { font-size:0.8125rem; font-weight:500; line-height:1.25; letter-spacing:0; }
+.special-project-now .focus-now-text > span { min-width:0; }
+.special-project-now .focus-progress { left:8px; right:8px; bottom:6px; height:3px; }
+.special-project-now .focus-progress > span::after { top:-2.5px; width:7px; height:7px; }
+.special-project-now.is-unknown .focus-progress > span { background:var(--quiet); }
+.special-project-now.is-unknown .focus-progress > span::after { display:none; }
+.special-project-now .blueprint-tile { flex:none; width:60px; height:40px; }
+.special-project-now .blueprint-tile img { width:54px; height:33px; }
+.special-project-now:focus-visible, .special-project-row:focus-visible, .special-project-earlier-item:focus-visible { outline-offset:-2px; }
+.special-project-state { flex:none; white-space:nowrap; color:var(--muted); font-weight:600; }
+.special-project-state.is-paused { color:var(--warning); }
+.special-project-scientist { display:inline-flex; align-items:center; gap:6px; min-width:0; }
+.special-project-scientist > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.special-project-scientist > img, .special-project-scientist > .art-fallback { flex:none; width:15px; height:20px; border-radius:2px; object-fit:cover; }
+.special-project-scientist.is-unassigned { color:var(--quiet); }
+
+/* Completed and cancelled: one-line rows like National focus history. */
+.special-project-row { min-height:46px; padding:3px 6px; cursor:default; }
+.special-project-row .focus-label strong, .special-project-row .focus-label > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.special-project-row .focus-label strong { font-size:0.8125rem; line-height:1.25; }
+.special-project-row .blueprint-tile { flex:none; width:54px; height:36px; }
+.special-project-row .blueprint-tile img { width:48px; height:29px; }
+.special-project-row.is-cancelled .blueprint-tile { opacity:.5; }
+.special-project-row.is-cancelled .focus-label strong { color:var(--muted); }
+.special-project-earlier > summary { cursor:pointer; }
+.special-project-count { font-size:0.8125rem; font-weight:600; font-variant-numeric:tabular-nums; }
+.special-project-earlier-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:2px 10px; padding:2px 8px 8px 70px; }
+.special-project-earlier-item { display:flex; align-items:center; gap:8px; min-width:0; height:30px; border-radius:var(--r-sm); font-size:0.75rem; }
+.special-project-earlier-item .blueprint-tile { flex:none; width:36px; height:24px; border-radius:4px; }
+.special-project-earlier-item .blueprint-tile img { width:32px; height:20px; }
+.special-project-earlier-item > span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+@container (max-width: 360px) {
+  .special-project-now .blueprint-tile { width:48px; height:32px; }
+  .special-project-now .blueprint-tile img { width:44px; height:27px; }
+  .special-project-earlier-grid { padding-left:8px; }
+}

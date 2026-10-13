@@ -18,7 +18,7 @@ Holder lanes show the current icon/name and cross-fade holder changes. `depth`/`
 
 A span's `band` uses the shared `bandMax`. Pixel-column placement preserves peaks without rounding over gaps; hit testing and Jump describe the span/read actually drawn, including a displaced narrow band. `runState`/`describeRun` retain uncertainty such as Held before, Ended by and Last recorded. `bridgeGaps` joins only where no recorded evidence contradicts continuation and the caller agrees; it never proves activity during missing hours.
 
-Compact lanes show just the lane label. `stepMax` with observed `value` draws steps; `joinedStep` connects consecutive hours only. `barMax` scales period counts, with positive/negative outcomes supplied only when known. Missing counts draw nothing; exact zero stays zero.
+A bar's name leaves room for its end mark, such as a completion tick. Compact lanes show just the lane label. `stepMax` with observed `value` draws steps; `joinedStep` connects consecutive hours only. `barMax` scales period counts, with positive/negative outcomes supplied only when known. Missing counts draw nothing; exact zero stays zero.
 
 Markers/icons keep their actual dated hit target. Marks outside the view or at/after an exclusive playhead have no carried keyboard stop; date-only marks never act as held spans. Positioned glyphs retain independent stops.
 

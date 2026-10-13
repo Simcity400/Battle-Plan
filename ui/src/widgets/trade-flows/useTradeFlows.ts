@@ -3,11 +3,18 @@ import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import { resolveCountries } from '../../dashboard/groups';
 import type { ResolvedCountries } from '../../dashboard/groups';
-import type { WidgetSpec } from '../../dashboard/model';
+import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
+import type { ProductRequest } from '../../dashboard/client';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { TradeFlowsReply } from '../../generated/dashboard';
 import { decodeTrade, resourceName, tradeScope, validateTradeFlowsReply } from './tradeData';
+
+/** The trade flows product for a branch: every country's trade (null), or the deals of
+ * the holders that ever had one of `tags`. */
+export function tradeFlowsRequest(track: Pick<BoundTrack, 'source' | 'branch'>, tags: readonly string[] | null): ProductRequest {
+  return { sourceId: track.source.id, revision: track.source.revision, product: 'trade-flows', params: { branchId: track.branch.id, tags } };
+}
 
 /** The widget's countries (all countries, chosen ones or a group's members) and
  * the trade flows reply for them. Chosen countries narrow the product's scan to
@@ -23,7 +30,7 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
     : resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER), [all, widget.countries, fallback, groups.data, lastHour]);
   const tags = useMemo(() => resolved ? [...resolved.tags].sort() : null, [resolved]);
   const ready = track && (all || (tags && tags.length > 0));
-  const request = ready ? { sourceId: track.source.id, revision: track.source.revision, product: 'trade-flows', params: { branchId: track.branch.id, tags } } : null;
+  const request = ready ? tradeFlowsRequest(track, tags) : null;
   const product = useProduct<TradeFlowsReply>(runtime.client, request, active, validateTradeFlowsReply);
   const scope = useMemo(() => product.data ? tradeScope(decodeTrade(product.data), widget.countries, resolved, groups.data, lastHour,
     widget.options?.between === 'between') : null, [product.data, widget.countries, widget.options?.between, resolved, groups.data, lastHour]);

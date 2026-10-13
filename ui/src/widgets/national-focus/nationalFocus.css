@@ -54,6 +54,18 @@
 .focus-row:hover .focus-chevron { color: var(--text); }
 .focus-details[open] .focus-chevron { transform: rotate(180deg); }
 .focus-description { padding: 0 12px 12px 36px; animation: rise var(--t) var(--ease) both; }
+/* A completed row opens and closes by revealing its natural height while it fades, clipped to that height,
+   so the rows below glide instead of jumping and nothing paints over them. Reduced motion zeroes the durations. */
+.national-focus .focus-details { interpolate-size: allow-keywords; }
+.national-focus .focus-details::details-content {
+  block-size: 0; overflow-y: clip; opacity: 0;
+  transition: block-size var(--t-slow) var(--ease), opacity var(--t-slow) var(--ease), content-visibility var(--t-slow) allow-discrete;
+}
+.national-focus .focus-details[open]::details-content { block-size: auto; opacity: 1; }
+.national-focus .focus-description { animation: none; }
+/* A description that arrives after its row opened grows into place the same way instead of stepping. */
+.national-focus .focus-description p { overflow-y: clip; transition: block-size var(--t-slow) var(--ease), margin-top var(--t-slow) var(--ease), opacity var(--t-slow) var(--ease); }
+@starting-style { .national-focus .focus-description p { block-size: 0; margin-top: 0; opacity: 0; } }
 .focus-duration { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 0.75rem; }
 .focus-duration strong { color: var(--text); font-weight: 600; }
 .focus-description p { margin: 6px 0 0; color: color-mix(in srgb, var(--text) 86%, var(--muted)); font-size: 0.8125rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }

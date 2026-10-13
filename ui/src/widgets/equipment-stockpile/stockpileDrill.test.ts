@@ -22,12 +22,12 @@ const reply: EquipmentStockpileReply = {
   types: [{ key: 'mod/rifles', name: 'Authored rifles', domain: 'land', needNote: null }],
   variants: [{ id: '9007199254741001', token: 'mod_rifles_a', archetype: 'mod/rifles',
     names: [{ firstHour: 100, known: true, name: 'Recorded A', design: 'design-a' }],
-    stock: [run(100, 123, 1200000n), run(130, 160, 0n)], weekly: [run(100, 160, 99900000n)] }],
+    stock: [run(100, 123, 1200000n), run(130, 160, 0n)], daily: [run(100, 160, 99900000n)], dailyIc: [], unitCostLow: [], unitCostHigh: [] }],
   logistics: [{ key: 'mod/rifles', balance: [run(100, 111, 500000n), run(112, 123, -200000n), run(130, 160, 0n)],
     stock: [run(100, 123, 99900000n)], available: [run(100, 111, 2000000n), run(112, 123, 800000n), run(130, 160, 0n)] }],
 };
 
-test('moment and history use the same signed available/need operands, not later stock or weekly production', () => {
+test('moment and history use the same signed available/need operands, not later stock or daily production', () => {
   const group = stockGroups(reply, 'type', Infinity)[0];
   const before = stockpilePartsAt(reply, group, 110, 'balance');
   assert.deepEqual(before.parts.map(part => [part.id, part.raw]), [['available', 2000000n], ['need', -1500000n], ['other', 0n]]);

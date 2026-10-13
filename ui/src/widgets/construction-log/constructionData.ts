@@ -4,7 +4,9 @@ import { isBuildingInfo, isSpendingGap, placeName, typeName } from '../../dashbo
 import type { StateNameAt } from '../../dashboard/construction';
 import { readAt } from '../../dashboard/reads.ts';
 import type { LogRow } from '../../charts/log/logData';
-import { newestFirst } from '../../charts/log/logData.ts';
+import { logCountryRequests, newestFirst } from '../../charts/log/logData.ts';
+import { MAX_NAME_HOURS } from '../../dashboard/countryFacts.ts';
+import type { NameAt } from '../../dashboard/countryFacts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { battleWindowIndex } from '../battles/battleRows.ts';
@@ -227,11 +229,17 @@ export interface LogFilter {
   /** Building type tokens to show; empty shows every type. */
   types: readonly string[];
   projects: 'all' | 'new' | 'repair';
+  /** Only projects still in the queue at the hour (`inQueue`). */
+  queue?: boolean;
   /** Whether the country's project passes the country choice at its first read. */
   country: (tag: string, hour: number) => boolean;
   /** Only rows whose date is at or after this hour (a date range). */
   from: number | null;
 }
+
+/** Whether a project is still in the queue at its hour, as far as the reads show:
+ * building or repairing, or between a gap and its next read. */
+export const inQueue = (at: ProjectAt) => at.status === 'building' || at.status === 'unread';
 
 /** The log's rows at `hour`: every project read by then that passes the filter,
  * newest first by its latest change (or its start), back to the windows held. A row
@@ -249,11 +257,19 @@ export function logRows(log: ConstructionLog, hour: number, filter: LogFilter, o
     // By what it did by then: a repair that went on to build new levels is both.
     if (filter.projects === 'new' && at.kind === 'repair') continue;
     if (filter.projects === 'repair' && at.kind === 'new') continue;
+    if (filter.queue && !inQueue(at)) continue;
     const date = order === 'start' ? project.createdHour : at.changed;
     if (date < from) continue;
     rows.push({ key: order === 'start' ? project.id : `${project.id}:${at.stage}`, id: project.id, hour: date, by: order === 'change' && at.changedBy, item: at });
   }
   return newestFirst(rows);
+}
+
+/** The countries the drawn rows name, each at its project's first read, and as many
+ * hours as they ask for: rows read at many hours keep every name, newest included. */
+export function rowCountryRequests(drawn: readonly LogRow<ProjectAt>[]): { wanted: NameAt[]; maxHours: number } {
+  const wanted = logCountryRequests(drawn, row => ({ hour: row.item.project.firstRead, tags: [row.item.project.tag] }));
+  return { wanted, maxHours: Math.max(MAX_NAME_HOURS, new Set(wanted.map(item => item.hour)).size) };
 }
 
 /** The status as a row's tag says it. */
@@ -265,6 +281,12 @@ export function statusLabel(at: ProjectAt): string {
     case 'removed': return 'Removed';
     case 'ended': return 'Left the queue';
   }
+}
+
+/** The status pill's tone: building or repairing, finished, or neither (removed,
+ * left the queue, or not recorded since a gap). */
+export function statusTone(at: ProjectAt): 'accent' | 'positive' | 'neutral' {
+  return at.status === 'building' ? 'accent' : at.status === 'finished' ? 'positive' : 'neutral';
 }
 
 /** What a project did, as the log's repair marking says it. */
@@ -284,6 +306,13 @@ export function levelsLabel(at: ProjectAt): string | null {
 /** Where the project is: its state (a railway: from one state to another). */
 export const placeLabel = (project: ConstructionProject, hour: number, stateAt: StateNameAt) =>
   placeName({ state: project.state, toState: project.toState, province: project.province, railway: project.kind === 'railway' }, hour, stateAt).label;
+
+/** Where the project is, as a line of its own: the state's name as the game gives
+ * it, and a place without one capitalised ("Province 5007", "An unknown place"). */
+export function placeTitle(project: ConstructionProject, hour: number, stateAt: StateNameAt): string {
+  const label = placeLabel(project, hour, stateAt);
+  return project.state != null || (project.kind === 'railway' && project.toState != null) ? label : label.charAt(0).toUpperCase() + label.slice(1);
+}
 
 /** The row read out as one sentence. */
 export function describeRow(log: ConstructionLog, row: LogRow<ProjectAt>, country: string, hour: number, stateAt: StateNameAt): string {
@@ -315,6 +344,13 @@ export function jumpHours(at: ProjectAt, hour: number): number[] {
  * last read once it ended; null between a gap and the next read. */
 export function factoriesShown(at: ProjectAt): number | null {
   return at.run ? at.run.factories : at.status === 'unread' ? null : at.last.factories;
+}
+
+/** The factories column of a row: only while the project is in the queue, its
+ * factories at the read in view (null between a gap and the next read). An ended
+ * project shows none; its tooltip keeps those of its last read. */
+export function rowFactories(at: ProjectAt): { factories: number | null } | null {
+  return inQueue(at) ? { factories: factoriesShown(at) } : null;
 }
 
 /** The factory output read a tooltip shows at `hour`: the project's latest by then,
@@ -363,15 +399,18 @@ export function projectTooltip(log: ConstructionLog, at: ProjectAt, hour: number
     rows.push({ label: 'Added while under way', value: `${added} ${unit}${at.added + at.possible === 1 ? '' : 's'}`, tone: 'muted' });
   }
   if (at.unknown) rows.push({ label: 'Built or dropped, not recorded', value: `${at.unknown} ${unit}${at.unknown === 1 ? '' : 's'}`, tone: 'muted' });
+  // In the queue: the factories at the read in view; once ended, those of its last read.
   const factories = factoriesShown(at);
-  rows.push({ label: 'Factories', value: factories == null ? 'Factories unknown' : String(factories) });
-  const cost = formatAmount(project.costRaw, Math.round(Math.log10(log.manifest.costScale)));
-  rows.push({ label: 'Cost', value: project.kind === 'railway' ? `${cost} for the route` : `${cost} per ${unit}` });
+  rows.push(inQueue(at) ? { label: 'Factories', value: factories == null ? 'Not recorded' : String(factories) }
+    : { label: 'Factories at its last read', value: String(at.last.factories) });
+  // Factory IC is written in whole numbers; the recorded amounts stay exact.
+  const scale = Math.round(Math.log10(log.manifest.costScale));
+  const cost = formatAmount(project.costRaw, scale, 0);
+  rows.push(project.kind === 'railway' ? { label: 'Route cost', value: cost } : { label: `Cost per ${unit}`, value: cost });
   const output = outputAt(log, project, hour);
   if (output) {
-    const digits = Math.round(Math.log10(log.manifest.costScale));
-    rows.push({ label: 'Construction output', value: output.constructionRaw == null ? 'Not recorded' : formatAmount(output.constructionRaw, digits, digits) });
-    rows.push({ label: 'Repair output', value: output.repairRaw == null ? 'Not recorded' : formatAmount(output.repairRaw, digits, digits) });
+    rows.push({ label: 'Construction output', value: output.constructionRaw == null ? 'Not recorded' : formatAmount(output.constructionRaw, scale, 0) });
+    rows.push({ label: 'Repair output', value: output.repairRaw == null ? 'Not recorded' : formatAmount(output.repairRaw, scale, 0) });
   }
   const detail: TooltipRow[] = [];
   if (project.kind === 'railway') {

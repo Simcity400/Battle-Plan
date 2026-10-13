@@ -29,7 +29,9 @@
 .sunburst-icon.country-flag { width: 18px; height: 12px; }
 .sunburst-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sunburst-legend b { font-weight: 600; text-align: right; }
-.sunburst-legend .sunburst-partial { color: var(--muted); font-size: var(--type-xs); font-weight: 400; }
+/* Partial sits under its amount, so the name keeps the row's width. */
+.sunburst-legend b:has(.sunburst-partial) { line-height: 1.15; }
+.sunburst-legend .sunburst-partial { display: block; color: var(--muted); font-size: var(--type-xs); font-weight: 400; }
 .sunburst-legend small { color: var(--muted); text-align: right; }
 .sunburst-legend .is-unmeasured :is(.sunburst-name, b) { color: var(--muted); font-style: italic; font-weight: 400; }
 .sunburst-swatch.is-blank, .sunburst-legend .is-unmeasured .sunburst-swatch { background: repeating-linear-gradient(135deg, var(--line-soft) 0 2px, transparent 2px 4px); }

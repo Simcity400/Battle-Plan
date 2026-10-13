@@ -599,12 +599,13 @@ fn sliced_research_reads_a_day_apart_are_continuous_observations() {
     let histories =
         crate::research_branch(&research_replay(frames), 1, &AtomicBool::new(false)).unwrap();
     let history = &histories["GER"];
-    // One continuous coverage span, from the first read to the last.
+    // One continuous coverage span, from the first read to the last recorded
+    // hour, which still carries the read at 148.
     assert_eq!(
         history.coverage,
         [crate::ResearchCoverage {
             first_hour: 100,
-            last_hour: 148
+            last_hour: 150
         }]
     );
     let entries = &history.slots[0].entries;
@@ -618,6 +619,109 @@ fn sliced_research_reads_a_day_apart_are_continuous_observations() {
     assert_eq!(entries[1].started_after_hour, Some(100));
     assert_eq!(entries[1].last_observed_hour, 148);
     assert_eq!(entries[1].outcome, crate::ResearchOutcome::Active);
+}
+
+#[test]
+fn carried_hours_hold_the_last_read_until_the_next_and_progress_keeps_its_read_hour() {
+    // Read at 100 and 124 (tech 1 replaced by tech 2), carried to 130.
+    let mut frames = Vec::new();
+    for hour in 100..=130 {
+        let (read, assignment) = if hour < 124 {
+            (100, Some(1))
+        } else {
+            (124, Some(2))
+        };
+        frames.push(sliced_research_frame(hour, read, &[assignment]));
+    }
+    let histories =
+        crate::research_branch(&research_replay(frames), 1, &AtomicBool::new(false)).unwrap();
+    let history = &histories["GER"];
+    assert_eq!(
+        history.coverage,
+        [crate::ResearchCoverage {
+            first_hour: 100,
+            last_hour: 130
+        }]
+    );
+    let slot = &history.slots[0];
+    assert_eq!(
+        slot.availability,
+        [crate::ResearchCoverage {
+            first_hour: 100,
+            last_hour: 130
+        }]
+    );
+    // Each hour has the state of the read it carries; none is left uncovered.
+    let spans: Vec<_> = slot
+        .states
+        .iter()
+        .map(|state| (state.first_hour, state.last_hour, state.token.as_deref()))
+        .collect();
+    assert_eq!(
+        spans,
+        [(100, 123, Some("tech_1")), (124, 130, Some("tech_2"))]
+    );
+    // Observation bounds and progress keep the read hours.
+    assert_eq!(slot.entries[0].last_observed_hour, 100);
+    assert_eq!(slot.entries[1].last_observed_hour, 124);
+    assert!(
+        slot.progress
+            .iter()
+            .all(|sample| sample.first_hour == sample.last_hour)
+    );
+}
+
+#[test]
+fn a_carried_read_ends_when_the_next_read_is_due() {
+    // Read at 100 only; its rows are carried through 140.
+    let frames = (100..=140)
+        .map(|hour| sliced_research_frame(hour, 100, &[Some(1)]))
+        .collect();
+    let histories =
+        crate::research_branch(&research_replay(frames), 1, &AtomicBool::new(false)).unwrap();
+    let history = &histories["GER"];
+    let due = 100 + replay::cadence::STAGGER_PERIOD;
+    assert_eq!(
+        history.coverage,
+        [crate::ResearchCoverage {
+            first_hour: 100,
+            last_hour: due - 1
+        }]
+    );
+    assert_eq!(history.slots[0].states.last().unwrap().last_hour, due - 1);
+    assert_eq!(history.slots[0].entries[0].last_observed_hour, 100);
+}
+
+#[test]
+fn historical_reads_are_carried_and_counted_through_the_branch() {
+    // Only older recordings lack the occurrence, and writers emit today's format,
+    // so the read and the carried hours are driven as the branch walk drives them.
+    let mut country = Country::default();
+    let mut row = input(1, 100_000);
+    row.database_index = replay::rows::Recorded::NotRecorded;
+    observe(&mut country, 100, &row);
+    country.last_read = Some(100);
+    for hour in 101..=110 {
+        assert!(country.carries((7, 7), hour));
+        country.carry((7, 7), hour);
+    }
+    let (history, unjoined) = (&country.history, country.unjoined_reads);
+    assert_eq!(unjoined, 1);
+    assert_eq!(
+        history.coverage,
+        [crate::ResearchCoverage {
+            first_hour: 100,
+            last_hour: 110
+        }]
+    );
+    let slot = &history.slots[0];
+    assert!(slot.entries.is_empty());
+    assert_eq!(slot.states.len(), 1);
+    assert_eq!(slot.states[0].token.as_deref(), Some("tech_1"));
+    assert_eq!(
+        (slot.states[0].first_hour, slot.states[0].last_hour),
+        (100, 110)
+    );
 }
 
 #[test]
@@ -637,6 +741,8 @@ fn an_unobservable_hour_between_sliced_reads_breaks_their_continuity() {
         crate::research_branch(&research_replay(frames), 1, &AtomicBool::new(false)).unwrap();
     let history = &histories["GER"];
     assert_eq!(history.coverage.len(), 2);
+    // The read at 100 is carried only up to the unobservable hour.
+    assert_eq!(history.coverage[0].last_hour, 109);
     let entries = &history.slots[0].entries;
     assert_eq!(entries[0].outcome, crate::ResearchOutcome::Unknown);
     assert_eq!(entries[1].started_after_hour, None);
@@ -725,7 +831,7 @@ fn research_never_dates_through_gaps_or_country_reuse_and_cache_is_branch_scoped
     .unwrap();
     let mut cache = crate::ResearchCache::default();
     let cancel = AtomicBool::new(false);
-    let history = cache.get(&replay, 1, "GER", &cancel).unwrap();
+    let history = cache.get(&replay, 1, "GER", &cancel).unwrap().0;
     assert_eq!(history.coverage.len(), 2);
     assert_eq!(history.coverage[0].last_hour, 100);
     let entries = &history.slots[0].entries;
@@ -736,10 +842,10 @@ fn research_never_dates_through_gaps_or_country_reuse_and_cache_is_branch_scoped
     assert_eq!(entries[2].outcome, crate::ResearchOutcome::Unknown);
     assert_eq!(entries[3].started_after_hour, None);
     assert_eq!(
-        cache.get(&replay, 2, "GER", &cancel).unwrap().slots[0].entries[0].token,
+        cache.get(&replay, 2, "GER", &cancel).unwrap().0.slots[0].entries[0].token,
         "tech_4"
     );
-    assert_eq!(cache.get(&replay, 1, "GER", &cancel).unwrap(), history);
+    assert_eq!(cache.get(&replay, 1, "GER", &cancel).unwrap().0, history);
     assert!(cache.get(&replay, 1, "FRA", &cancel).is_err());
     assert!(
         cache
@@ -791,12 +897,12 @@ fn research_cache_keeps_country_requests_independent() {
     let replay = research_replay(vec![frame]);
     let cancel = AtomicBool::new(false);
     let mut cache = crate::ResearchCache::default();
-    let german = cache.get(&replay, 1, "GER", &cancel).unwrap();
-    let british = cache.get(&replay, 1, "ENG", &cancel).unwrap();
+    let german = cache.get(&replay, 1, "GER", &cancel).unwrap().0;
+    let british = cache.get(&replay, 1, "ENG", &cancel).unwrap().0;
     assert_eq!(german.slots[0].entries[0].token, "tech_1");
     assert_eq!(british.slots[0].entries[0].token, "tech_2");
-    assert_eq!(cache.get(&replay, 1, "GER", &cancel).unwrap(), german);
-    assert_eq!(cache.get(&replay, 1, "ENG", &cancel).unwrap(), british);
+    assert_eq!(cache.get(&replay, 1, "GER", &cancel).unwrap().0, german);
+    assert_eq!(cache.get(&replay, 1, "ENG", &cancel).unwrap().0, british);
 }
 
 #[test]
@@ -935,12 +1041,58 @@ fn repeated_handle_assignments_do_not_complete_transfer_or_share_progress() {
 }
 
 #[test]
-fn historical_inputs_without_occurrence_do_not_select_an_equal_handle() {
+fn historical_inputs_without_occurrence_keep_slot_state_but_join_no_assignment() {
     let mut country = Country::default();
-    let mut row = input(7, 0);
+    let mut row = input(7, 100_000);
     row.database_index = replay::rows::Recorded::NotRecorded;
+    row.research_speed_raw = 150_000;
     observe(&mut country, 0, &row);
-    assert!(country.history.coverage.is_empty());
+    // The next read of an equal handle and name is still no proof of one assignment.
+    row.progress_raw = 200_000;
+    observe(&mut country, 1, &row);
+    let history = &country.history;
+    assert_eq!(
+        history.coverage,
+        [crate::ResearchCoverage {
+            first_hour: 0,
+            last_hour: 1
+        }]
+    );
+    let slot = &history.slots[0];
+    assert_eq!(slot.availability.len(), 1);
+    assert!(slot.entries.is_empty());
+    assert!(slot.progress.is_empty());
+    let state = slot.states.last().unwrap();
+    assert_eq!(state.token.as_deref(), Some("tech_7"));
+    assert_eq!(state.entry_first_observed_hour, None);
+    assert_eq!(state.speed_multiplier_raw, "150000");
+    assert_eq!(state.ahead_reduction_years_raw.as_deref(), Some("0"));
+    // No witnessed assignment: neither the slot speed nor a progress delta dates the rest.
+    assert_eq!(state.details.as_ref().unwrap().remaining_days, None);
+    assert_eq!(country.unjoined_reads, 2);
+    assert_eq!(
+        super::unjoined_warning(2),
+        "2 research slot reads name their technology without its recorded occurrence, so they are not joined into assignments: completions, progress and time spent are unknown there."
+    );
+    assert!(super::unjoined_warning(1).starts_with("1 research slot read names its technology"));
+}
+
+#[test]
+fn a_finished_technology_left_in_a_slot_without_an_assignment_is_not_research() {
+    for database_index in [
+        replay::rows::Recorded::NotRecorded,
+        replay::rows::Recorded::Value(7),
+    ] {
+        let mut country = Country::default();
+        let mut row = input(7, 10_000_000);
+        row.database_index = database_index;
+        row.classifier = engine::ctechnology::CLASSIFIER_COMPLETED;
+        observe(&mut country, 0, &row);
+        let slot = &country.history.slots[0];
+        assert!(slot.entries.is_empty());
+        assert_eq!(slot.states[0].token, None);
+        assert_eq!(slot.states[0].ahead_reduction_years_raw, None);
+    }
 }
 
 #[test]

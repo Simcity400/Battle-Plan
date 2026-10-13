@@ -101,6 +101,7 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
   </div>;
   return <div className="casualties">
     <ButterflyChart key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Casualties dealt and taken" items={items}
+      slots={chosen?.params.top?.count ?? selected.length}
       leftLabel="◀ Taken" rightLabel="Dealt ▶" ratioLabel="Ratio" active={active} hoursPerSecond={hoursPerSecond}
       showValues={options.values !== false} showRatio={options.ratio !== false}
       labelCandidates={campaignLabels}

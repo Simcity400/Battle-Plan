@@ -1,7 +1,7 @@
 import type { BalanceDrop, FixedRun, MeasureReply, MeasureSeries } from '../../generated/dashboard';
 import type { Run } from '../../charts/series';
 import { runAt } from '../../charts/series.ts';
-import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
+import { fixedNumber, formatAmount } from '../../charts/valueAxis.ts';
 
 const RAW = /^-?\d{1,20}$/;
 
@@ -39,11 +39,12 @@ export function rawAt(series: Pick<MeasureSeries, 'runs'>, hour: number): string
   return runAt(series.runs, hour)?.valueRaw ?? null;
 }
 
-export const formatBalance = (raw: string, decimals: number) => formatFixed(raw, decimals, 2);
+/** A balance in whole numbers unless `digits` asks for decimals; the raw stays exact. */
+export const formatBalance = (raw: string, decimals: number, digits = 0) => formatAmount(raw, decimals, digits);
 
-/** A drop's net change, negative, formatted exactly. */
-export function netSpend(drop: BalanceDrop, decimals: number): string {
-  return formatFixed(BigInt(drop.afterRaw) - BigInt(drop.beforeRaw), decimals, 2);
+/** A drop's net change, negative, written to `digits`. */
+export function netSpend(drop: BalanceDrop, decimals: number, digits = 0): string {
+  return formatAmount(BigInt(drop.afterRaw) - BigInt(drop.beforeRaw), decimals, digits);
 }
 
 /** The drop nearest `hour` within `tolerance` hours, for snapping hover to a tick. */

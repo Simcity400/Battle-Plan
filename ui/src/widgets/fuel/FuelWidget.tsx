@@ -41,7 +41,7 @@ import { fuelExtentToken, fuelMoment, fuelOpen, fuelRecipientAtPick, fuelRecipie
 import type { FuelRecipientSelection } from './fuelDrill';
 import { fuelCountrySpans, fuelCountryToken, readFuelCountry } from './fuelCountry';
 import type { FuelCountrySelection } from './fuelCountry';
-import { formatFuel, fuelChoiceKey, fuelNumbers, fuelRuns, fuelTooltips, fuelView, validateFuelReply } from './fuelData';
+import { formatFuel, fuelChoiceKey, fuelDecimals, fuelNumbers, fuelRuns, fuelTooltips, fuelView, validateFuelReply } from './fuelData';
 
 const STRIP_SHARE = 0.28;
 
@@ -51,6 +51,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const clockHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || storedDrill.breakdown !== null && storedDrill.follow));
   const tokens = useChartTokens();
   const options = resolveOptions(OPTIONS, widget.options);
+  const digits = fuelDecimals(options);
   const { track, countries, pending, contentPending: groupContentPending, error: groupError, retry: retryGroups } = useComparisonCountries(widget, runtime, active);
   const requests = track ? countries.tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision, product: 'country-fuel',
     params: { branchId: track.branch.id, tag } })) : [];
@@ -148,11 +149,11 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       ...(of === 'capacity' ? { dash: SECONDARY_DASH, endDot: false, muted: true } : { area: single && options.areaFill !== false }),
       endLabel: (hour, name) => {
         const read = runAt(view.reads, hour)!;
-        return `${single ? '' : `${name} · `}${of === 'fuel' ? 'Fuel' : 'Capacity'} ${formatFuel(of === 'fuel' ? read.fuelRaw : read.capacityRaw, reply.quantityScale, 0)}`;
+        return `${single ? '' : `${name} · `}${of === 'fuel' ? 'Fuel' : 'Capacity'} ${formatFuel(of === 'fuel' ? read.fuelRaw : read.capacityRaw, reply.quantityScale, digits)}`;
       },
     });
     return [...(options.capacity !== false ? [line('capacity')] : []), line('fuel')];
-  }), [views, countries.membership, extent[0], extent[1], single, options.capacity, options.areaFill, tokens]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [views, countries.membership, extent[0], extent[1], single, options.capacity, options.areaFill, tokens, digits]); // eslint-disable-line react-hooks/exhaustive-deps
   const strip = useMemo<ChartStrip | undefined>(() => !single || options.strip === false || !views[0] ? undefined
     : barStrip(views[0].view.bars.filter(bar => isMember(countries.membership?.get(views[0].reply.tag), bar.lastHour)),
       { height: height => Math.max(CHART_LAYOUT.stripMin, (height - CHART_LAYOUT.stripInset) * STRIP_SHARE), upLabel: 'gain', downLabel: 'burn' }),
@@ -201,12 +202,12 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       }}>View fuel breakdown</button></>}
     onPick={open} pickOwner={pickOwner} tooltip={() => null}
     timeTooltip={single ? hour => isMember(countries.membership?.get(views[0].reply.tag), hour)
-      ? fuelTooltips(views[0].reply, views[0].view.reads, hour, dayLabel(hour), colors) : null : undefined}
+      ? fuelTooltips(views[0].reply, views[0].view.reads, hour, dayLabel(hour), colors, digits) : null : undefined}
     lineTooltip={(hour, tags, labels, country) => [{ title: dayLabel(hour), rows: tags.flatMap(tag => {
       const value = views.find(item => item.reply.tag === tag);
       if (!value) return [];
       const label = labels(hour)(tag);
-      const tip = fuelTooltips(value.reply, value.view.reads, hour, label.name, colors)[0];
+      const tip = fuelTooltips(value.reply, value.view.reads, hour, label.name, colors, digits)[0];
       return [{ label: label.name, countryFlag: label, swatch: country(tag), strong: true },
         ...tip.rows.map(row => ({ ...row, indent: true })), ...(tip.note ? [{ label: tip.note, tone: 'muted' as const, indent: true }] : [])];
     }) }]} />;
@@ -247,10 +248,10 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const breakdown = invalidSaved ? <WidgetState kind="unavailable" message="Choose a country again." /> : actorState ?? state ?? (chosen && track && chart
     ? <>{selectedCountry && !shownTag && <p className="drill-empty">Country unavailable at this time.</p>}
       {drillMeasure === 'consumption' ? <FuelConsumptionBreakdown reply={chosen} actorSpans={actorSpans ?? undefined} identitySpans={identitySpans ?? undefined} runtime={runtime} track={track} hour={detailHour} selection={selectedConsumption} onSelection={setConsumption}
-      level={selectedLevel} onLevel={setLevel} {...chart} />
+      level={selectedLevel} onLevel={setLevel} digits={digits} {...chart} />
       : <FuelBreakdown reply={chosen} history={selectedCountry ? actorData : undefined} actorSpans={actorSpans ?? undefined} identitySpans={identitySpans ?? undefined}
         measure={drillMeasure} hour={detailHour} tokens={tokens} runtime={runtime} track={track}
-        selection={selectedRecipient} onSelection={setRecipient} {...chart} />}</>
+        selection={selectedRecipient} onSelection={setRecipient} digits={digits} {...chart} />}</>
     : <p className="drill-empty">Choose a country from the drawn lines for this moment.</p>);
   if (saved) return <div ref={anchor} className="drill-body">
     {pinnedHeader}

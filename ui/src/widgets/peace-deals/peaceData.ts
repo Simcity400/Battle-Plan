@@ -11,9 +11,9 @@ import { setToken } from '../../dashboard/options.ts';
 export interface PeaceChip { key: string; hour: number; state?: number; tag?: string; missing?: string; note?: string; derived: boolean }
 export interface PeaceActionRow { key: string; winner: string | null; name: string | null; token: string | null; outcome: boolean; chips: PeaceChip[] }
 export interface PeaceCard { deal: PeaceDeal; actions: PeaceActionRow[]; hour: number; knownAt: number; by: boolean }
-export type PeaceLogEntry = { kind: 'card'; card: PeaceCard } | { kind: 'gap'; span: HourSpan };
-export interface PeaceLog { rows: readonly LogRow<PeaceLogEntry>[]; gaps: readonly HourSpan[] }
-export const peaceHasConferences = (rows: readonly LogRow<PeaceLogEntry>[]) => rows.some(row => row.item.kind === 'card');
+export type PeaceRow = LogRow<PeaceCard>;
+/** Conference cards newest first, and the merged unrecorded stretches that could hide one. */
+export interface PeaceLog { rows: readonly PeaceRow[]; gaps: readonly HourSpan[] }
 export const peaceActionName = (row: PeaceActionRow) => row.outcome ? 'Outcome; action unknown' : row.name ?? 'Action name not recorded';
 const UNRECORDED_ACTION = JSON.stringify(['unrecorded']);
 const NO_ACTIONS = JSON.stringify(['noActions']);
@@ -22,13 +22,12 @@ const emptyCategory = (card: PeaceCard) => card.deal.captured && card.deal.captu
 
 export function peaceActionChoices(log: PeaceLog | null): { value: string; label: string }[] {
   const choices = new Map<string, string>();
-  for (const row of log?.rows ?? []) {
-    if (row.item.kind !== 'card') continue;
-    if (!row.item.card.actions.length) {
-      const category = emptyCategory(row.item.card);
+  for (const { item: card } of log?.rows ?? []) {
+    if (!card.actions.length) {
+      const category = emptyCategory(card);
       choices.set(category, category === NO_ACTIONS ? 'No actions recorded' : 'Action not recorded');
     }
-    for (const action of row.item.card.actions) {
+    for (const action of card.actions) {
       const category = actionCategory(action);
       choices.set(category, category === UNRECORDED_ACTION ? 'Action not recorded' : peaceActionName(action));
     }
@@ -37,12 +36,12 @@ export function peaceActionChoices(log: PeaceLog | null): { value: string; label
 }
 
 /** Filter once when the choice changes; playback keeps its binary cutoff. Gaps
- * remain visible, and a matching conference keeps all of its actions. */
+ * are kept, and a matching conference keeps all of its actions. */
 export function filterPeaceLog(log: PeaceLog, categories: readonly string[]): PeaceLog {
   if (!categories.length) return log;
   const chosen = new Set(categories);
-  return { ...log, rows: log.rows.filter(row => row.item.kind === 'gap' || (row.item.card.actions.length
-    ? row.item.card.actions.some(action => chosen.has(actionCategory(action))) : chosen.has(emptyCategory(row.item.card)))) };
+  return { ...log, rows: log.rows.filter(({ item: card }) => card.actions.length
+    ? card.actions.some(action => chosen.has(actionCategory(action))) : chosen.has(emptyCategory(card))) };
 }
 
 /** Width fitting never cuts the complete participant or outcome tooltip. */
@@ -119,9 +118,13 @@ export function peaceActions(deal: PeaceDeal): PeaceActionRow[] {
   return [...rows.values()];
 }
 
-/** Only the inputs that establish conferences or transfers define this log's gaps. */
+/** Unrecorded hours that could hide a conference: those of the hourly finalizer
+ * capture and ownership/war reads, which include every hour the recording missed.
+ * The conference roster is read once a day; its hours between reads are its
+ * cadence, not missing data. A conference that opens and closes between roster
+ * reads still reaches the hourly finalizer capture or ownership comparison. */
 export function peaceGaps(reply: PeaceDealsReply): HourSpan[] {
-  const sorted = [...reply.unobserved.conferences, ...reply.unobserved.settlements, ...reply.unobserved.ownership, ...reply.unobserved.wars]
+  const sorted = [...reply.unobserved.settlements, ...reply.unobserved.ownership, ...reply.unobserved.wars]
     .sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
   const spans: HourSpan[] = [];
   for (const span of sorted) {
@@ -132,37 +135,39 @@ export function peaceGaps(reply: PeaceDealsReply): HourSpan[] {
   return spans;
 }
 export function preparePeaceLog(reply: PeaceDealsReply): PeaceLog {
-  const gaps = peaceGaps(reply);
-  const rows: LogRow<PeaceLogEntry>[] = reply.deals.map(deal => {
+  const rows: PeaceRow[] = reply.deals.map(deal => {
     const card = { deal, actions: peaceActions(deal), hour: peaceDealHour(deal), knownAt: peaceDealKnownAt(deal), by: peaceDealIsBy(deal) };
-    return { key: JSON.stringify(['conference', deal.id]), hour: card.hour, by: card.by, item: { kind: 'card', card } };
+    return { key: JSON.stringify(['conference', deal.id]), hour: card.hour, by: card.by, item: card };
   });
-  for (const span of gaps) rows.push({ key: JSON.stringify(['gap', span.firstHour, span.lastHour]), hour: span.lastHour, item: { kind: 'gap', span } });
   rows.sort((a, b) => b.hour - a.hour);
-  return { rows, gaps };
+  return { rows, gaps: peaceGaps(reply) };
 }
 /** Binary cutoff: whole-campaign shaping and sorting never happen on a playback tick. */
-export function peaceRowsAt(log: PeaceLog, until: number | null, from = -Infinity): readonly LogRow<PeaceLogEntry>[] {
+export function peaceRowsAt(log: PeaceLog, until: number | null, from = -Infinity): readonly PeaceRow[] {
   if (until == null && from === -Infinity) return log.rows;
   const end = until ?? Infinity;
   let lo = 0, hi = log.rows.length;
   while (lo < hi) { const mid = (lo + hi) >>> 1; if (log.rows[mid].hour > end) lo = mid + 1; else hi = mid; }
-  const rows = log.rows.slice(lo).filter(row => row.hour >= from
-    && (row.item.kind === 'gap' || row.item.card.knownAt <= end))
-    .map(row => row.item.kind === 'gap' && row.item.span.firstHour < from
-      ? { ...row, item: { kind: 'gap' as const, span: { ...row.item.span, firstHour: from } } } : row)
-    .map(row => {
-      if (row.item.kind !== 'card') return row;
-      const deal = peaceDealAt(row.item.card.deal, end);
-      return deal === row.item.card.deal ? row : { ...row, item: { kind: 'card' as const, card: { ...row.item.card, deal } } };
-    });
-  lo = 0; hi = log.gaps.length;
-  while (lo < hi) { const mid = (lo + hi) >>> 1; if (log.gaps[mid].firstHour <= end) lo = mid + 1; else hi = mid; }
-  const gap = log.gaps[lo - 1];
-  if (gap && gap.lastHour > end && end >= from) rows.unshift({ key: JSON.stringify(['gap', gap.firstHour, gap.lastHour]), hour: end, item: { kind: 'gap', span: { firstHour: Math.max(from, gap.firstHour), lastHour: end } } });
-  return rows;
+  return log.rows.slice(lo).filter(row => row.hour >= from && row.item.knownAt <= end).map(row => {
+    const deal = peaceDealAt(row.item.deal, end);
+    return deal === row.item.deal ? row : { ...row, item: { ...row.item, deal } };
+  });
 }
-export const gapLabel = (span: HourSpan) => `Not recorded between ${formatDateTime(span.firstHour)} and ${formatDateTime(span.lastHour)}`;
+/** The gaps within the shown time, clipped so a later hour never shows. */
+export function peaceGapsIn(gaps: readonly HourSpan[], until: number, from = -Infinity): HourSpan[] {
+  const shown: HourSpan[] = [];
+  for (const gap of gaps) {
+    if (gap.firstHour > until) break;
+    if (gap.lastHour >= from) shown.push({ firstHour: Math.max(from, gap.firstHour), lastHour: Math.min(until, gap.lastHour) });
+  }
+  return shown;
+}
+/** One hint for every gap in the shown time, never one row per gap. */
+export function peaceGapHint(gaps: readonly HourSpan[]): string | null {
+  if (!gaps.length) return null;
+  const between = `between ${formatDateTime(gaps[0].firstHour)} and ${formatDateTime(gaps.at(-1)!.lastHour)}`;
+  return gaps.length === 1 ? `Not fully recorded ${between}.` : `${gaps.length} stretches not fully recorded ${between}.`;
+}
 export function derivedNote(deal: PeaceDeal): string {
   if (!deal.derived) return deal.captureUnavailable != null ? 'Outcomes not recorded' : '';
   let before = Infinity, after = -Infinity;
@@ -172,13 +177,11 @@ export function derivedNote(deal: PeaceDeal): string {
 }
 export const conferenceLabel = (deal: PeaceDeal) => deal.observation === 'recordedConference' ? null
   : deal.observation === 'conferenceNotRecorded' ? 'War-end outcomes' : 'Conference unknown';
-export function peaceWanted(rows: readonly LogRow<PeaceLogEntry>[]): { countries: NameAt[]; states: StateAt[] } {
+export function peaceWanted(rows: readonly PeaceRow[]): { countries: NameAt[]; states: StateAt[] } {
   const countries = new Map<string, NameAt>();
   const states = new Map<string, StateAt>();
   const country = (hour: number, tag: string) => countries.set(JSON.stringify([hour, tag]), { hour, tag });
-  for (const row of rows) {
-    if (row.item.kind !== 'card') continue;
-    const { card } = row.item;
+  for (const { item: card } of rows) {
     for (const tag of [...card.deal.winners, ...card.deal.losers]) country(card.hour, tag);
     for (const action of card.actions) {
       if (action.winner != null) country(card.hour, action.winner);
@@ -191,14 +194,10 @@ export function peaceWanted(rows: readonly LogRow<PeaceLogEntry>[]): { countries
   return { countries: [...countries.values()], states: [...states.values()] };
 }
 /** Offscreen estimate; the log measures actual wrapping only for drawn cards. */
-export function peaceRowHeight(row: LogRow<PeaceLogEntry>, density: LogDensity): number {
+export function peaceRowHeight({ item: card }: PeaceRow, density: LogDensity): number {
   const compact = density === 'compact';
-  if (row.item.kind === 'gap') return compact ? 38 : 46;
-  const { card } = row.item;
   return (compact ? 70 : 88) + card.actions.length * (compact ? 24 : 28) + (derivedNote(card.deal) ? 20 : 0) + (conferenceLabel(card.deal) ? 20 : 0);
 }
-export function peaceDescription(row: LogRow<PeaceLogEntry>): string {
-  if (row.item.kind === 'gap') return gapLabel(row.item.span);
-  const { card } = row.item;
+export function peaceDescription({ item: card }: PeaceRow): string {
   return [peaceWarName(card.deal), `${card.by ? 'by ' : ''}${formatDateTime(card.hour)}`, conferenceLabel(card.deal), derivedNote(card.deal)].filter(Boolean).join(' · ');
 }

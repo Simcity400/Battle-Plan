@@ -1,10 +1,9 @@
 import type { BalanceDrop, LedgerBalanceChange, LedgerDaily, LedgerSpend, LedgerSpendCoverage, LedgerSpendItem, PoliticsLedgerReply } from '../generated/dashboard';
 import type { TooltipRow } from '../charts/tooltip';
 import { runAt } from '../charts/series.ts';
-import { fixed5Text } from './ideaTooltip.ts';
-import { formatDateTime } from './calendar.ts';
-import { commandHeldAt, commandHeldTooltip, spendAt, spendText, validatePoliticsSpending } from './politicsSpending.ts';
-import type { PowerCurrency } from './politicsSpending';
+import { categoryLabel, RECURRING_CATEGORIES, spendAt, spendLabel, validatePoliticsSpending } from './politicsSpending.ts';
+import type { PowerCurrency, SpendingSelection, SpendingWindow } from './politicsSpending';
+import { formatPowerChange, formatRate, formatSpent } from './powerDecimals.ts';
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const integer = (value: unknown): value is number => Number.isSafeInteger(value);
@@ -100,11 +99,13 @@ const coveredAt = (index: PowerBalanceIndex, hour: number) => {
   return index.currency === 'Political' ? cover?.political === true : cover?.command === true;
 };
 
-/** Native spend ticks include a payment masked by that hour's income or clamp.
+/** Native spend ticks mark one-off payments, including one masked by that hour's
+ * income or clamp; costs charged every day would mark every day, so they don't.
  * Old or incomplete capture keeps the explicitly labelled net-drop fallback. */
 export function powerSpendTicks(index: PowerBalanceIndex | undefined, drops: readonly BalanceDrop[], through: number): { hour: number }[] {
   const hours = new Set<number>();
   if (index) for (const spends of index.spends.values()) for (const spend of spends) {
+    if (RECURRING_CATEGORIES.has(spend.category)) continue;
     if (spend.hour <= through && spend.changes.some(change => change.readHour <= through
       && (change.chargeRaw === null || BigInt(change.chargeRaw) > 0n))) hours.add(spend.hour);
   }
@@ -112,48 +113,114 @@ export function powerSpendTicks(index: PowerBalanceIndex | undefined, drops: rea
   return [...hours].sort((a, b) => a - b).map(hour => ({ hour }));
 }
 
-const signed = (value: string | null) => value === null ? 'Not recorded'
-  : `${BigInt(value) > 0n ? '+' : ''}${fixed5Text(BigInt(value), -1).replace('-', '−')}`;
+const big = (value: string | null | undefined) => value == null ? null : BigInt(value);
 
-/** Details are local to the hovered game day and never use a read after the
- * shown moment. A day without a rate observation is unknown, never zero. */
-export function powerBalanceRows(index: PowerBalanceIndex, hour: number, visibleThrough: number): TooltipRow[] {
+/** A day's native figures: gain before daily costs, the costs (political power
+ * only), the net change and the change actually applied. */
+export interface DailyFigures { gain: bigint | null; costs: bigint | null; net: bigint | null; applied: bigint | null }
+export function dailyFigures(day: LedgerDaily, currency: PowerCurrency): DailyFigures {
+  return currency === 'Political'
+    ? { gain: big(day.ppGrossRaw), costs: big(day.ppCostRaw), net: big(day.ppIncomeRaw), applied: big(day.ppRealizedRaw) }
+    : { gain: big(day.cpIncomeRaw), costs: null, net: big(day.cpIncomeRaw), applied: big(day.cpRealizedRaw) };
+}
+
+/** The gain the cap took: a positive net gain the game applied only in part. */
+export function lostAtCap(figures: DailyFigures): bigint {
+  const { net, applied } = figures;
+  return net !== null && applied !== null && net > 0n && applied < net ? net - (applied > 0n ? applied : 0n) : 0n;
+}
+
+export interface PowerGain { gained: bigint; lost: bigint; complete: boolean }
+/** Daily gain over the shown period, as the game adds it each day: before daily
+ * costs (which are spending), and never a command power deficit (also spending).
+ * `lost` is gain the cap took. A day whose gain wasn't read leaves it incomplete;
+ * null when the reply has no daily figures in the period. */
+export function powerGain(replies: readonly PoliticsLedgerReply[], currency: PowerCurrency, window: Pick<SpendingWindow, 'from' | 'hour'>,
+  selection?: Pick<SpendingSelection, 'matches'>): PowerGain | null {
+  let gained = 0n, lost = 0n, complete = true, any = false;
+  for (const reply of replies) for (const day of reply.daily ?? []) {
+    if (day.dayHour > window.hour || (window.from !== null && day.dayHour < window.from)) continue;
+    if (selection && !selection.matches(reply.tag, day.dayHour)) continue;
+    const read = powerDailyReadHour(day, currency);
+    // A day read without this currency's figures has a gain that wasn't read.
+    if (read === null) { if (day.readHour <= window.hour) complete = false; continue; }
+    if (read > window.hour) continue;
+    any = true;
+    const figures = dailyFigures(day, currency);
+    if (figures.gain === null) complete = false;
+    else if (figures.gain > 0n || currency === 'Political') gained += figures.gain;
+    lost += lostAtCap(figures);
+  }
+  return any ? { gained, lost, complete } : null;
+}
+
+/** Command power moved into and out of reserve between `from` and `through`,
+ * from changes in the game's recorded reserve counter between consecutive reads.
+ * The counter's level is not an amount held (it can sit below zero), so only its
+ * changes are ever shown. */
+export function reserveMoves(reply: PoliticsLedgerReply, from: number, through: number): { reserved: bigint; released: bigint } {
+  let reserved = 0n, released = 0n;
+  const holds = reply.commandHolds;
+  for (let at = 1; at < holds.length; at++) {
+    const before = holds[at - 1], after = holds[at];
+    if (after.readHour < from || after.readHour > through) continue;
+    if (before.throughHour + 1 !== after.readHour || before.totalRaw === null || after.totalRaw === null) continue;
+    const change = BigInt(after.totalRaw) - BigInt(before.totalRaw);
+    if (change > 0n) reserved += change; else released -= change;
+  }
+  return { reserved, released };
+}
+
+/** A day's one-off payments revealed by `through`; recurring costs are part of the daily change. */
+export function oneOffSpendsOn(index: PowerBalanceIndex, day: number, through: number) {
+  return (index.spends.get(day) ?? []).flatMap(spend => {
+    if (RECURRING_CATEGORIES.has(spend.category)) return [];
+    const item = index.items.get(spend.itemId)!;
+    const category = index.categories.get(spend.category)!;
+    const at = spendAt(spend, item, category.name, through, category.identified);
+    return at ? [at] : [];
+  });
+}
+
+/** The details under a balance: the day's change and what made it, each one-off
+ * payment and, for command power, what moved into or out of reserve. Each is local
+ * to the hovered game day, never uses a read after the shown moment, and a day
+ * without a rate observation is not recorded, never zero. */
+export function powerBalanceRows(index: PowerBalanceIndex, hour: number, visibleThrough: number, digits: number): TooltipRow[] {
   const through = Math.min(hour, visibleThrough);
   const day = dayAt(hour);
   const daily = (index.days.get(day) ?? []).filter(value => {
     const read = powerDailyReadHour(value, index.currency);
     return read !== null && value.dayHour <= through && read <= through;
   });
+  const political = index.currency === 'Political';
+  const rate = (value: bigint | null) => value === null ? 'Not recorded' : formatRate(value, digits);
   const rows: TooltipRow[] = [];
-  if (!daily.length) rows.push({ label: 'Daily income', value: 'Not recorded', tone: 'muted' });
+  if (!daily.length) rows.push({ label: political ? 'Daily change' : 'Daily gain', value: 'Not recorded', tone: 'muted' });
   for (const value of daily) {
-    const income = index.currency === 'Political' ? value.ppGrossRaw : value.cpIncomeRaw;
-    rows.push({ label: index.currency === 'Command' && income !== null && BigInt(income) < 0n ? 'Daily deficit' : 'Daily income', value: signed(income) });
-    if (index.currency === 'Political') {
-      rows.push({ label: 'Daily costs', value: signed(value.ppCostRaw), tone: 'muted' });
-      rows.push({ label: 'Net daily income', value: signed(value.ppIncomeRaw), tone: 'muted' });
+    const figures = dailyFigures(value, index.currency);
+    if (political) {
+      rows.push({ label: 'Daily change', value: rate(figures.net), tone: figures.net === null ? 'muted' : undefined });
+      if (figures.gain !== null) rows.push({ label: 'Gain', value: rate(figures.gain), indent: true, tone: 'muted' });
+      if (figures.costs !== null && figures.costs !== 0n) rows.push({ label: 'Daily costs', value: rate(-figures.costs), indent: true, tone: 'muted' });
+    } else {
+      rows.push({ label: figures.gain !== null && figures.gain < 0n ? 'Daily deficit' : 'Daily gain', value: rate(figures.gain),
+        tone: figures.gain === null ? 'muted' : undefined });
     }
+    const lost = lostAtCap(figures);
+    if (lost) rows.push({ label: 'Lost at the cap', value: rate(-lost), indent: political, tone: 'muted' });
   }
-  const changes = (index.changes.get(day) ?? []).filter(value => value.hour <= through && value.readHour <= through);
-  for (const change of changes) {
-    rows.push({ label: `${change.action} · ${formatDateTime(change.hour)}`, value: signed(change.realizedDeltaRaw),
-      tone: BigInt(change.realizedDeltaRaw) < 0n ? 'negative' : BigInt(change.realizedDeltaRaw) > 0n ? 'positive' : 'muted' });
-    if (change.amountRaw !== null && BigInt(change.amountRaw) !== BigInt(change.realizedDeltaRaw)) {
-      rows.push({ label: 'Adjustment', value: signed(change.amountRaw), indent: true });
-    }
+  const spends = oneOffSpendsOn(index, day, through);
+  for (const [position, at] of spends.entries()) {
+    rows.push({ label: spendLabel(at.item, categoryLabel(at.category, at.identified)), divider: position === 0,
+      value: at.charge === null && !at.knownCharges ? 'Not recorded' : formatSpent(at.recordedCharge, digits),
+      tone: at.charge === null && !at.knownCharges ? 'muted' : undefined });
   }
-  if (changes.some(change => !change.covered || change.reason)) rows.push({ label: 'Some changes are missing.', tone: 'muted' });
-  const spends = (index.spends.get(day) ?? []).flatMap(spend => {
-    const item = index.items.get(spend.itemId)!;
-    const category = index.categories.get(spend.category)!;
-    const at = spendAt(spend, item, category.name, through, category.identified);
-    return at ? [at] : [];
-  });
-  if (spends.length) rows.push({ label: 'Spending that day', strong: true, divider: true });
-  for (const at of spends) {
-    rows.push({ label: at.item.action, value: spendText(at.charge), tone: at.covered ? undefined : 'muted' });
+  if (!political) {
+    const { reserved, released } = reserveMoves(index.reply, day * 24, through);
+    if (reserved) rows.push({ label: 'Reserved', value: formatPowerChange(-reserved, digits), divider: !spends.length });
+    if (released) rows.push({ label: 'Released from reserve', value: formatPowerChange(released, digits), divider: !spends.length && !reserved });
   }
-  if (!coveredAt(index, through)) rows.push({ label: 'Spending unavailable at this time.', tone: 'muted' });
-  if (index.currency === 'Command') rows.push(...commandHeldTooltip(commandHeldAt([index.reply], through)).rows);
+  if (!coveredAt(index, through)) rows.push({ label: 'Payments weren’t recorded at this time.', tone: 'muted' });
   return rows;
 }

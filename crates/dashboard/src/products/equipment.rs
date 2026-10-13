@@ -164,6 +164,19 @@ pub fn weekly_units_raw(speed_raw: i64, cost_raw: i64) -> Option<i64> {
     i64::try_from(i128::from(speed_raw) * 700_000 / i128::from(cost_raw)).ok()
 }
 
+/// Units a production line makes per day, fixed5, by the game's per-day formula:
+/// the production-rate formatter's daily figure, the line's speed (the IC added at
+/// each daily production tick) × 100000 ÷ its cost per unit, truncated toward
+/// zero: `speed × 100000 ÷ cost`. It is its own truncation, not the weekly figure
+/// divided by seven. None without a positive cost (the formatter's placeholder,
+/// not a rate) and None on overflow, as for [`weekly_units_raw`].
+pub fn daily_units_raw(speed_raw: i64, cost_raw: i64) -> Option<i64> {
+    if cost_raw <= 0 {
+        return None;
+    }
+    i64::try_from(i128::from(speed_raw) * 100_000 / i128::from(cost_raw)).ok()
+}
+
 /// Which arm an equipment type serves, from the engine's own classifiers of its
 /// effective category flags (`installed_content::equipment::Database::category`):
 /// the plane family is air, the ship family (convoys included) naval, everything

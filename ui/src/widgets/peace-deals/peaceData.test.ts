@@ -10,7 +10,7 @@ import type { PeaceCapturedAction, PeaceDeal, PeaceDealsReply, PeaceItem } from 
 import { peaceCaptureLabel as captureLabel, peaceDealHour, peaceDealKnownAt, peaceDealLabel, validatePeaceDealsReply } from '../../dashboard/peaceDealsData.ts';
 import { validateStateNamesReply } from '../../dashboard/stateNamesData.ts';
 import { contentKey, storableToken } from '../../dashboard/options.ts';
-import { derivedNote, filterPeaceLog, peaceActionChoices, peaceActionName, peaceActions, peaceDescription, peaceHasConferences, peaceRowsAt, peaceTooltipRows, peaceWanted, preparePeaceLog } from './peaceData.ts';
+import { derivedNote, filterPeaceLog, peaceActionChoices, peaceActionName, peaceActions, peaceDescription, peaceGapHint, peaceGapsIn, peaceRowsAt, peaceTooltipRows, peaceWanted, preparePeaceLog } from './peaceData.ts';
 import { definition } from './definition.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
@@ -53,23 +53,24 @@ test('one card per conference newest first, Live cutoff, whole campaign and hone
   assert.equal(peaceDealHour(data.deals[1]), 30);
 });
 
-test('action categories filter whole conferences before playback and retain clipped unrecorded intervals', () => {
+test('action categories filter whole conferences before playback and keep the log gaps', () => {
   const mixed = deal('mixed', 20);
   mixed.items.push({ ...item(2), action: { kind: 'stateTransfer', key: 'mod action,[unrecorded]', name: 'Another modded action' } });
   const future = deal('future', 40);
   future.items = [{ ...item(3, 40), action: mixed.items[1].action }];
   const data = reply([deal('other', 10), mixed, future]);
-  data.unobserved.conferences = [{ firstHour: 12, lastHour: 18 }];
+  data.unobserved.ownership = [{ firstHour: 12, lastHour: 18 }];
   const log = preparePeaceLog(data);
   const category = peaceActionChoices(log).find(choice => choice.label === 'Another modded action')!;
   assert.ok(storableToken(category.value));
   const filtered = filterPeaceLog(log, [contentKey(category.value)]);
-  assert.deepEqual(filtered.rows.map(row => row.item.kind === 'card' ? row.item.card.deal.id : 'gap'), ['future', 'mixed', 'gap']);
+  assert.deepEqual(filtered.rows.map(row => row.item.deal.id), ['future', 'mixed']);
+  assert.equal(filtered.gaps, log.gaps);
   const card = filtered.rows[1];
-  assert.equal(card, log.rows.find(row => row.item.kind === 'card' && row.item.card.deal.id === 'mixed'));
-  assert.equal(card.item.kind === 'card' && card.item.card.actions.length, 2);
-  assert.deepEqual(peaceRowsAt(filtered, 15).map(row => [row.hour, row.item.kind]), [[15, 'gap']]);
-  assert.deepEqual(peaceRowsAt(filtered, 20).map(row => [row.hour, row.item.kind]), [[20, 'card'], [18, 'gap']]);
+  assert.equal(card, log.rows.find(row => row.item.deal.id === 'mixed'));
+  assert.equal(card.item.actions.length, 2);
+  assert.deepEqual(peaceRowsAt(filtered, 15), []);
+  assert.deepEqual(peaceRowsAt(filtered, 20).map(row => row.hour), [20]);
   assert.equal(filterPeaceLog(log, []), log);
 });
 
@@ -85,9 +86,9 @@ test('unrecorded category includes unnamed actions and empty failed captures wit
   const known = choices.find(choice => choice.label === 'A content-defined action')!;
   const zero = choices.find(choice => choice.label === 'No actions recorded')!;
   assert.notEqual(unknown.value, known.value);
-  assert.deepEqual(filterPeaceLog(log, [contentKey(unknown.value)]).rows.map(row => row.item.kind === 'card' && row.item.card.deal.id), ['empty', 'unnamed']);
-  assert.deepEqual(filterPeaceLog(log, [contentKey(known.value)]).rows.map(row => row.item.kind === 'card' && row.item.card.deal.id), ['named']);
-  assert.deepEqual(filterPeaceLog(log, [contentKey(zero.value)]).rows.map(row => row.item.kind === 'card' && row.item.card.deal.id), ['exactEmpty']);
+  assert.deepEqual(filterPeaceLog(log, [contentKey(unknown.value)]).rows.map(row => row.item.deal.id), ['empty', 'unnamed']);
+  assert.deepEqual(filterPeaceLog(log, [contentKey(known.value)]).rows.map(row => row.item.deal.id), ['named']);
+  assert.deepEqual(filterPeaceLog(log, [contentKey(zero.value)]).rows.map(row => row.item.deal.id), ['exactEmpty']);
 });
 test('derived groups keep game action labels, every state, opaque tags and unknown takers', () => {
   const card = deal();
@@ -182,20 +183,36 @@ test('unresolved country operands never borrow giver tags, and captured automati
   assert.equal(actions[1].chips[0].derived, false);
   assert.equal(actions.length, 2);
 });
-test('overlapping gaps merge, stay in log and clip at playhead without exposing future dates', () => {
+/** The roster's hours between its daily reads, as the product reports them. */
+const rosterWindows = (days: number) => Array.from({ length: days }, (_, day) => ({ firstHour: day * 24 + 22, lastHour: day * 24 + 44 }));
+test('hours between daily conference roster reads are cadence, never log rows or a gap hint', () => {
   const data = reply([]);
-  data.unobserved.conferences = [{ firstHour: 10, lastHour: 25 }];
-  data.unobserved.wars = [{ firstHour: 20, lastHour: 30 }];
-  data.unobserved.ownership = [{ firstHour: 40, lastHour: 45 }];
+  data.unobserved.conferences = rosterWindows(30);
   const log = preparePeaceLog(data);
-  assert.deepEqual(log.gaps, [{ firstHour: 10, lastHour: 30 }, { firstHour: 40, lastHour: 45 }]);
-  assert.equal(peaceRowsAt(log, 9).length, 0);
-  const shown = peaceRowsAt(log, 15);
-  assert.equal(shown.length, 1);
-  assert.equal(peaceHasConferences(shown), false);
-  assert.equal(peaceHasConferences(preparePeaceLog(reply()).rows), true);
-  assert.match(peaceDescription(shown[0]), /Not recorded between Hour 10 and Hour 15/);
-  assert.equal(peaceRowsAt(log, null).length, 2);
+  assert.deepEqual(log.rows, []);
+  assert.deepEqual(log.gaps, []);
+  assert.deepEqual(peaceRowsAt(log, 400), []);
+  assert.deepEqual(peaceRowsAt(log, null), []);
+  assert.equal(peaceGapHint(peaceGapsIn(log.gaps, 400)), null);
+  const cards = reply([deal('old', 100), deal('new', 300)]);
+  cards.unobserved.conferences = rosterWindows(30);
+  assert.deepEqual(peaceRowsAt(preparePeaceLog(cards), 400).map(row => row.item.deal.id), ['new', 'old']);
+});
+test('hourly input gaps merge into one hint clipped to the shown time without exposing later dates', () => {
+  const data = reply([]);
+  data.unobserved.settlements = [{ firstHour: 10, lastHour: 12 }];
+  data.unobserved.wars = [{ firstHour: 20, lastHour: 30 }];
+  data.unobserved.ownership = [{ firstHour: 25, lastHour: 45 }, { firstHour: 60, lastHour: 61 }];
+  data.unobserved.conferences = [{ firstHour: 11, lastHour: 70 }];
+  const log = preparePeaceLog(data);
+  assert.deepEqual(log.gaps, [{ firstHour: 10, lastHour: 12 }, { firstHour: 20, lastHour: 45 }, { firstHour: 60, lastHour: 61 }]);
+  assert.deepEqual(peaceRowsAt(log, 50), [], 'gaps are never log rows');
+  assert.deepEqual(peaceGapsIn(log.gaps, 9), []);
+  assert.deepEqual(peaceGapsIn(log.gaps, 25), [{ firstHour: 10, lastHour: 12 }, { firstHour: 20, lastHour: 25 }]);
+  assert.deepEqual(peaceGapsIn(log.gaps, 50, 22), [{ firstHour: 22, lastHour: 45 }]);
+  assert.deepEqual(peaceGapsIn(log.gaps, 59, 46), []);
+  assert.equal(peaceGapHint(peaceGapsIn(log.gaps, 15)), 'Not fully recorded between Hour 10 and Hour 12.');
+  assert.equal(peaceGapHint(peaceGapsIn(log.gaps, 25)), '2 stretches not fully recorded between Hour 10 and Hour 25.');
 });
 test('names and flags are requested at each conference or chip hour, only drawn cards', () => {
   const card = deal(); card.items.push(item(2, 18));
@@ -258,9 +275,10 @@ test('Pin and inclusive range keep event dates but wait for the supplying read',
   const derived = deal('derived', 124); derived.endIsBy = false; derived.firstAbsentHour = 125;
   const data = reply([deal('before', 111), exact, derived, deal('end', 147), deal('future', 148)]);
   data.unobserved.conferences = [{ firstHour: 100, lastHour: 160 }];
+  data.unobserved.wars = [{ firstHour: 100, lastHour: 160 }];
   const log = preparePeaceLog(data);
   assert.equal(peaceDealKnownAt(exact), 136); assert.equal(peaceDealKnownAt(derived), 125);
-  assert.ok(!peaceRowsAt(log, 135).some(row => row.item.kind === 'card' && row.item.card.deal.id === 'exact'));
+  assert.ok(!peaceRowsAt(log, 135).some(row => row.item.deal.id === 'exact'));
   const branch = { id: '7', sessionId: '9', firstHour: 100, lastHour: 200, parentId: null, parentHour: null, sampleBoundary: 'Sample origin unknown', gaps: [] };
   const track: BoundTrack = { id: 'main', roleId: 'primary', label: 'Campaign', branchIndex: 0, anchorOffset: null, axisOffset: 0, selectedTag: null, branch,
     source: { id: 'source', path: 'synthetic', revision: '1', metadata: { path: 'synthetic', revision: '1', name: 'Synthetic', format: 1, campaignKey: 'c0ffee',
@@ -270,14 +288,13 @@ test('Pin and inclusive range keep event dates but wait for the supplying read',
   const pinWindow = resolveWindow(widget, track, [track], 199)!;
   assert.deepEqual(pinWindow, { firstHour: 136, lastHour: 136 });
   const pinned = peaceRowsAt(log, pinWindow.lastHour);
-  assert.equal(pinned.find(row => row.item.kind === 'card' && row.item.card.deal.id === 'exact')?.hour, 112);
+  assert.equal(pinned.find(row => row.item.deal.id === 'exact')?.hour, 112);
   const rangeWindow = resolveWindow({ ...widget, time: { mode: 'range', firstOffset: 12, lastOffset: 47 } }, track, [track], 199)!;
   assert.deepEqual(rangeWindow, { firstHour: 112, lastHour: 147 });
   const range = peaceRowsAt(log, rangeWindow.lastHour, rangeWindow.firstHour);
-  assert.deepEqual(range.filter(row => row.item.kind === 'card').map(row => row.hour), [147, 124, 112]);
-  const gap = range.find(row => row.item.kind === 'gap');
-  assert.deepEqual(gap?.item.kind === 'gap' && gap.item.span, { firstHour: 112, lastHour: 147 });
-  assert.deepEqual(peaceRowsAt(log, 112, 112).filter(row => row.item.kind === 'card'), []);
+  assert.deepEqual(range.map(row => row.hour), [147, 124, 112]);
+  assert.deepEqual(peaceGapsIn(log.gaps, rangeWindow.lastHour, rangeWindow.firstHour), [{ firstHour: 112, lastHour: 147 }]);
+  assert.deepEqual(peaceRowsAt(log, 112, 112), []);
 });
 
 test('failed and omitted finalizers wait for their manifest without hiding earlier fallback evidence', () => {
@@ -292,17 +309,17 @@ test('failed and omitted finalizers wait for their manifest without hiding earli
     assert.equal(peaceDealKnownAt(fallback), 112);
     assert.throws(() => validatePeaceDealsReply(reply([{ ...failed, captureObservedHour: '136' } as unknown as PeaceDeal])), /malformed/);
     const log = preparePeaceLog(data);
-    assert.ok(!peaceRowsAt(log, 112).some(row => row.item.kind === 'card' && row.item.card.deal.id === 'never sampled'));
-    const earlier = peaceRowsAt(log, 135).filter(row => row.item.kind === 'card');
+    assert.ok(!peaceRowsAt(log, 112).some(row => row.item.deal.id === 'never sampled'));
+    const earlier = peaceRowsAt(log, 135);
     assert.equal(earlier.length, 1);
-    const card = earlier[0].item.kind === 'card' ? earlier[0].item.card : null;
-    assert.equal(card?.deal.id, 'sampled fallback');
-    assert.equal(card?.deal.captureUnavailable, null);
-    assert.deepEqual(card?.deal.limitations, ['Native fallback limitation']);
-    const reached = peaceRowsAt(log, 136).filter(row => row.item.kind === 'card');
+    const card = earlier[0].item;
+    assert.equal(card.deal.id, 'sampled fallback');
+    assert.equal(card.deal.captureUnavailable, null);
+    assert.deepEqual(card.deal.limitations, ['Native fallback limitation']);
+    const reached = peaceRowsAt(log, 136);
     assert.equal(reached.length, 2);
-    assert.ok(reached.every(row => row.item.kind === 'card' && row.item.card.deal.captureUnavailable === reason));
-    assert.equal(reached.find(row => row.item.kind === 'card' && row.item.card.deal.id === 'never sampled')?.hour, 112);
+    assert.ok(reached.every(row => row.item.deal.captureUnavailable === reason));
+    assert.equal(reached.find(row => row.item.deal.id === 'never sampled')?.hour, 112);
   }
 });
 
@@ -321,7 +338,7 @@ test('full peace rows retain dated flag status and refused state names beyond fi
 });
 
 
-test('actual Peace HTML and fitted remainders retain canonical flag and state refusal metadata', async () => {
+test('actual Peace HTML: refusal metadata, an empty state without cadence rows and one gap note', async () => {
   const host = globalThis as typeof globalThis & { __peaceFixture?: unknown; __peaceTips?: TooltipContent[] };
   const replacements: Record<string, string> = {
     '/dashboard/usePeaceDeals.ts': 'export const usePeaceDeals = () => globalThis.__peaceFixture;',
@@ -331,7 +348,7 @@ test('actual Peace HTML and fitted remainders retain canonical flag and state re
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ font: "synthetic" });',
     '/charts/log/LogList.tsx': `import { createElement } from 'react'; export default props => {
       globalThis.__peaceTips = props.rows.flatMap(props.tooltip);
-      return createElement('div', null, ...props.rows.map(props.renderRow)); };`,
+      return createElement('div', null, ...(props.rows.length ? props.rows.map(props.renderRow) : [props.empty])); };`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'peace-refusal-fixture', enforce: 'pre',
@@ -339,14 +356,28 @@ test('actual Peace HTML and fitted remainders retain canonical flag and state re
   try {
     const { default: PeaceDealsWidget } = await vite.ssrLoadModule('/ui/src/widgets/peace-deals/PeaceDealsWidget.tsx');
     const track = { id: 'track', source: { id: 'source', revision: '1' }, branch: { id: '1', firstHour: 0, lastHour: 30, gaps: [] }, axisOffset: 0 };
-    host.__peaceFixture = { track, data: reply() };
-    const html = renderToStaticMarkup(createElement(PeaceDealsWidget, { widget: { trackIds: ['track'], time: { mode: 'campaign' }, options: { chips: false } },
-      runtime: { client: {}, tracks: [track], clock: { getHour: () => 20 } }, active: true, onDiagnostics() {} } as unknown as WidgetProps));
+    const render = (data: PeaceDealsReply, time: unknown = { mode: 'campaign' }) => {
+      host.__peaceFixture = { track, data };
+      return renderToStaticMarkup(createElement(PeaceDealsWidget, { widget: { trackIds: ['track'], time, options: { chips: false } },
+        runtime: { client: {}, tracks: [track], clock: { getHour: () => 20 } }, active: true, onDiagnostics() {} } as unknown as WidgetProps));
+    };
+    const html = render(reply());
     assert.match(html, /role="img" aria-label="Flag loading"/, 'mounted taker uses the canonical accessible flag');
     assert.doesNotMatch(html, /data-tooltip="[^"]*Unsupported native mod state-name form/, 'a fitted-away state hides its internal refusal');
     assert.match(html, /Flag unavailable/, 'fitted-away participants retain flag refusal text');
     const spoken = host.__peaceTips!.map(tooltipText).join('; ');
     assert.doesNotMatch(spoken, /Native flag refusal/);
     assert.doesNotMatch(spoken, /Unsupported native mod state-name form/);
+    const quiet = reply([]);
+    quiet.unobserved.conferences = rosterWindows(2);
+    const empty = render(quiet);
+    assert.match(empty, /No peace conferences yet\./);
+    assert.doesNotMatch(empty, /Not recorded|not fully recorded|may be missing/, 'roster cadence is neither a row nor a note');
+    const missed = reply([]);
+    missed.unobserved.ownership = [{ firstHour: 5, lastHour: 6 }, { firstHour: 25, lastHour: 26 }];
+    const noted = render(missed, { mode: 'range', firstOffset: 0, lastOffset: 20 });
+    assert.equal(noted.match(/Some conferences may be missing\./g)?.length, 1);
+    assert.match(noted, /data-tooltip="Not fully recorded between Hour 5 and Hour 6\."/, 'a later gap stays out of the shown time');
+    assert.match(noted, /No peace conferences yet\./);
   } finally { await vite.close(); delete host.__peaceFixture; delete host.__peaceTips; }
 });

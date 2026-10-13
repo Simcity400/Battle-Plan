@@ -5,7 +5,8 @@ import type { WidgetSpec } from './model';
 import { defaultCountryTag } from './countrySelection';
 import { countryMatch, countryMatchFilter, resolveCountries } from './groups';
 import { useProducts } from './products';
-import { categoryChoices, validatePoliticsSpending } from './politicsSpending.ts';
+import { categoryChoices } from './politicsSpending.ts';
+import { validatePowerBalance } from './powerBalance.ts';
 import type { PowerCurrency, SpendingSelection } from './politicsSpending';
 import { useCountryGroups } from './useCountryGroups';
 import { useIdeaTooltips } from './useIdeaTooltips';
@@ -13,8 +14,9 @@ import { useIdeaTooltips } from './useIdeaTooltips';
 const recordedIdentity = (tag: string) => tag;
 const NO_WARNINGS: readonly string[] = [];
 
-/** Every chosen country uses the same politics-ledger request across spending
- * logs and the breakdown, and Rust shares its branch scan across tags. */
+/** Every chosen country uses the same politics-ledger request across the spending
+ * tables, the breakdown and the balance charts: its balance view adds the daily
+ * gain to the payments, and Rust shares its branch scan across tags. */
 export function usePoliticsSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const groups = useCountryGroups(runtime, track, active);
@@ -39,8 +41,8 @@ export function usePoliticsSpending(widget: WidgetSpec, runtime: WidgetRuntime, 
   const tags = useMemo(() => !match.ready ? [] : selected.membership === null ? resolved.tags
     : [...new Set(selected.membership.map(run => run.tag))], [match.ready, selected, resolved.tags]);
   const requests = track ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
-    product: 'politics-ledger', params: { branchId: track.branch.id, tag, view: 'spending' } })) : [];
-  const ledger = useProducts<PoliticsLedgerReply>(runtime.client, requests, active, validatePoliticsSpending);
+    product: 'politics-ledger', params: { branchId: track.branch.id, tag, view: 'balance' } })) : [];
+  const ledger = useProducts<PoliticsLedgerReply>(runtime.client, requests, active, validatePowerBalance);
   return { track, tags, ...ledger, selection, ready: match.ready, reason: resolved.reason ?? match.reason,
     groupWarnings: groups.data?.warnings ?? NO_WARNINGS,
     error: ledger.error ?? groups.error,

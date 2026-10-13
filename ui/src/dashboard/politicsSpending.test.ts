@@ -1,15 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { LedgerSpend, LedgerSpendItem, PoliticsLedgerReply } from '../generated/dashboard';
-import { categoryChoices, commandHeldAt, commandHeldTooltip, spendingAt, spendingGaps, spendingGroups, spendingItems, spendingRows, spendingTotals, spendText, validatePoliticsSpending } from './politicsSpending.ts';
+import { categoryChoices, spendingAt, spendingCountryRequests, spendingGapNote, spendingGaps, spendingGroups, spendingItems, spendingSummary, spendingTableRows, spendLabel,
+  validatePoliticsSpending } from './politicsSpending.ts';
+import { MAX_NAME_HOURS } from './countryFacts.ts';
 import { setToken } from './options.ts';
 import { groupTree } from '../charts/sunburst/layout.ts';
-import { fitTooltip, tooltipText } from '../charts/tooltip.ts';
+import { sortRows } from '../charts/table/logic.ts';
+import { formatPower } from './powerDecimals.ts';
 import type { SpendingSelection } from './politicsSpending';
 import { definition as politicalSpending } from '../widgets/political-power-spending/definition.ts';
 import { definition as commandSpending } from '../widgets/command-power-spending/definition.ts';
 import { definition as spendingBreakdown } from '../widgets/political-power-spending-breakdown/definition.ts';
-import { POLITICS_SPENDING_OPTIONS } from './politicsSpendingOptions.ts';
+import { NO_SPENDING_CATEGORIES, POLITICS_SPENDING_OPTIONS } from './politicsSpendingOptions.ts';
 import { contentSet, parseStoredOptions, resolveOptions, toggleContentSet } from './options.ts';
 
 const ICON = 'data:image/png;base64,YQ==';
@@ -65,41 +68,16 @@ test('an older aggregate without native contribution dates refuses an uncertain 
   assert.equal(at.recordedCharge, 0n);
   assert.equal(at.covered, false);
   assert.match(at.item.unknown!, /Some payment dates are unavailable/);
-  assert.equal(spendingTotals([at], []).total, null);
+  assert.deepEqual(spendingSummary([at]), { spent: 0n, unknownCosts: 2, uncovered: false }, 'undated contributions are counted, not guessed');
 });
 
-test('manual native-holder gaps keep current command holdings unknown while known zero and empty groups remain distinct', () => {
-  const data = reply({ commandHolds: [{ readHour: 10, throughHour: 20, totalRaw: '0', holders: [], reason: null }] });
-  const selection: SpendingSelection = { matches: (tag, hour) => tag === data.tag && hour >= 10 && hour <= 14,
-    membership: new Map([[data.tag, [{ firstHour: 10, lastHour: 14 }]]]), unobserved: [], requireRecordedHolder: true };
-  assert.equal(commandHeldAt([data], 14, selection).total, 0n, 'a complete selected native holder can certify zero');
-  const gap = commandHeldAt([data], 15, selection);
-  assert.equal(gap.total, null); assert.deepEqual(gap.countries, []);
-  assert.match(gap.reason!, /Selected country unavailable at this time/);
-  assert.equal(commandHeldAt([data], 15, { ...selection, requireRecordedHolder: false }).total, 0n,
-    'a known empty group has no expected holder and may sum to zero');
-  const missing = commandHeldAt([reply({ commandHolds: [] })], 14, selection);
-  assert.equal(missing.total, null); assert.equal(missing.countries.length, 1, 'existing missing hold operands remain unknown');
-  const aggregate = reply({ spending: [spend({ changes: [
-    { readHour: 12, chargeRaw: '1', realizedDeltaRaw: '-1', occurrences: 1, covered: true },
-    { readHour: 18, chargeRaw: '2', realizedDeltaRaw: '-2', occurrences: 1, covered: true },
-  ] })] });
-  const [unknown] = spendingAt([aggregate], 'Political', 20, null, selection);
-  assert.equal(unknown.occurrences, 2); assert.equal(unknown.charge, null); assert.equal(unknown.covered, false);
-  assert.match(unknown.item.unknown!, /Some payment dates are unavailable/);
-  assert.equal(spendingTotals([unknown], []).total, null, 'undated contributions remain explicit unknown rows');
-});
-
-test('group coverage clips to membership and an unread membership hour keeps spending and holds unknown', () => {
+test('group coverage clips to membership and an unread membership hour is named as unrecorded', () => {
   const data = reply({ spending: [], spendingCoverage: [{ readHour: 0, sinceHour: 0, throughHour: 30, political: false, command: false, reason: 'Native stream missing' }] });
   const selection: SpendingSelection = { matches: (_, hour) => hour >= 14 && hour <= 19 && hour !== 16,
     membership: new Map([[data.tag, [{ firstHour: 14, lastHour: 19 }]]]), unobserved: [{ firstHour: 16, lastHour: 16 }] };
   const gaps = spendingGaps([data], 'Political', { from: null, hour: 30 }, selection);
   assert.deepEqual(gaps.map(gap => [gap.from, gap.through]), [[14, 19], [16, 16]]);
-  assert.equal(spendingTotals([], gaps).total, null);
-  const held = commandHeldAt([data], 16, selection);
-  assert.equal(held.total, null);
-  assert.match(commandHeldTooltip(held).rows[0].label, /Group members/);
+  assert.match(spendingGapNote(gaps)!, /^Spending wasn’t recorded for 7 hours \(/);
   const complete = reply({ spending: [], spendingCoverage: [{ readHour: 0, sinceHour: 0, throughHour: 30, political: true, command: true, reason: null }] });
   assert.equal(spendingGaps([complete], 'Political', { from: null, hour: 30 }, selection).length, 1);
 });
@@ -114,7 +92,8 @@ test('all spending views preserve exact native charges and mod content, without 
   assert.equal(at.realized, -2500000n);
   assert.equal(at.item.name, 'A modded law');
   assert.equal(at.item.icon, ICON);
-  assert.equal(spendText(at.charge), '1234567890123456.78901');
+  assert.equal(formatPower(at.charge!, 5), '1,234,567,890,123,456.78901');
+  assert.equal(formatPower(at.charge!, 0), '1,234,567,890,123,457');
   const tree = groupTree(spendingItems([data], 'Political', { from: null, hour: 12, end: 12 }), { id: 'all', label: 'Spending' });
   assert.equal(tree.exact, at.charge);
   assert.equal(tree.children[0].label, 'Mod laws');
@@ -154,92 +133,91 @@ test('upkeep is one daily row with read-dated increments and coverage', () => {
   assert.equal(earlier[0].charge, 100000n);
   assert.equal(earlier[0].occurrences, 1);
   assert.equal(earlier[0].covered, true);
-  assert.equal(spendingTotals(earlier, []).total, 100000n);
+  assert.deepEqual(spendingSummary(earlier), { spent: 100000n, unknownCosts: 0, uncovered: false });
   const later = spendingAt([data], 'Command', 15);
   assert.equal(later.length, 1);
   assert.equal(later[0].charge, 400000n);
   assert.equal(later[0].occurrences, 4);
   assert.equal(later[0].covered, false);
-  assert.equal(spendingTotals(later, []).total, null);
+  assert.deepEqual(spendingSummary(later), { spent: 400000n, unknownCosts: 0, uncovered: true });
 });
 
-test('missing operands and coverage gaps are never zero and never Fill’s denominator', () => {
-  const data = reply({ spending: [spend({ chargeRaw: null, covered: false,
-    changes: [{ readHour: 12, chargeRaw: null, realizedDeltaRaw: '-200000', occurrences: 1, covered: false }] })],
+test('unrecorded time and missing costs are named while everything recorded still draws', () => {
+  const data = reply({ spending: [spend(), spend({ id: 'unpriced', chargeRaw: null, covered: true,
+    changes: [{ readHour: 12, chargeRaw: null, realizedDeltaRaw: '-200000', occurrences: 1, covered: true }] })],
   spendingCoverage: [{ readHour: 12, sinceHour: 10, throughHour: 12, political: false, command: true, reason: 'Dropped observations' },
-    { readHour: 13, sinceHour: 12, throughHour: 13, political: false, command: true, reason: 'Dropped observations' }] });
+    { readHour: 13, sinceHour: 12, throughHour: 13, political: false, command: true, reason: null }] });
   const gaps = spendingGaps([data], 'Political', { from: null, hour: 13 });
-  assert.equal(gaps.length, 1);
-  assert.equal(gaps[0].through, 13);
+  assert.deepEqual(gaps.map(gap => [gap.from, gap.through]), [[10, 13]], 'touching stretches join whatever their reasons');
   const at = spendingAt([data], 'Political', 13);
-  assert.equal(at[0].charge, null);
-  assert.equal(spendingTotals(at, gaps).total, null);
-  assert.equal(spendingTotals(at, gaps).categories.get(setToken('law/mod'))?.value, null);
-  const items = spendingItems([data], 'Political', { from: null, hour: 13, end: 13 });
-  const tree = groupTree(items, { id: 'all', label: 'Spending' });
-  assert.equal(tree.valueUnknown, true);
-  assert.equal(tree.finalUnknown, true);
-  assert.equal(tree.children.find(child => child.key === 'coverage-gap')?.label, 'Not recorded');
-  assert.equal(spendingRows(at, gaps, setToken('law/mod'), 'newest', 'exclude').length, 1, 'A category filter never hides gaps');
+  assert.deepEqual(spendingSummary(at), { spent: 123456789012345678901n, unknownCosts: 1, uncovered: false });
+  const tree = groupTree(spendingItems([data], 'Political', { from: null, hour: 13, end: 13 }), { id: 'all', label: 'Spent' });
+  assert.equal(tree.valueUnknown, false, 'unrecorded time never hides the recorded spending');
+  assert.equal(tree.finalUnknown, false);
+  assert.equal(tree.exact, 123456789012345678901n);
+  assert.equal(tree.children.some(child => child.key === 'coverage-gap'), false);
+  const rows = spendingTableRows(at, '');
+  assert.deepEqual(rows.map(row => row.amount), [123456789012345678901n, null], 'a missing cost is no row amount, never zero');
+  assert.equal(rows[1].partial, true);
   const empty = reply({ spending: [], spendingCoverage: [] });
-  assert.equal(spendingTotals([], spendingGaps([empty], 'Political', { from: null, hour: 12 })).total, null);
+  assert.equal(spendingGaps([empty], 'Political', { from: null, hour: 12 }).length, 1);
 });
 
-test('coverage gaps and unidentified spending have separate top-level sunburst paths', () => {
-  const data = reply({ spendCategories: [{ id: 'unidentified', name: 'Not identified', identified: false }],
-    spending: [spend({ category: 'unidentified' })], spendingCoverage: [{ readHour: 12, sinceHour: 12, throughHour: 12,
-      political: false, command: true, reason: 'Hours missing' }] });
-  const tree = groupTree(spendingItems([data], 'Political', { from: null, hour: 12, end: 12 }), { id: 'all', label: 'Spending' });
-  assert.deepEqual(new Set(tree.children.map(child => child.label)), new Set(['Not identified', 'Not recorded']));
-  assert.equal(tree.children.find(child => child.label === 'Not recorded')?.children.length, 0);
+test('the gap note gives the unrecorded time and dates once, in plain words', () => {
+  const day = 43_800_000 + 24 * 365 * 1943;
+  const stretch = (from: number, through: number) => ({ from, through, readHour: through, reason: 'any', tag: 'a' });
+  assert.equal(spendingGapNote([]), null);
+  const note = spendingGapNote([stretch(day + 11, day + 12), stretch(day + 11, day + 12), stretch(day + 30 * 24, day + 30 * 24 + 1)])!;
+  assert.match(note, /^Spending wasn’t recorded for 4 hours \(.+, .+\); anything spent then isn’t counted\.$/);
+  assert.match(spendingGapNote([stretch(day, day + 24 * 9)])!, /for 9 days/);
+  assert.match(spendingGapNote([1, 2, 3, 4, 5].map(at => stretch(day + at * 48, day + at * 48)))!, /and 2 other dates\)/);
 });
 
-test('command power allocations are current holdings, separate from spending at every read', () => {
-  const data = validatePoliticsSpending(reply({ spending: [], commandHolds: [
-    { readHour: 10, throughHour: 10, totalRaw: '500000', holders: [{ id: 'leader:42', kind: 'General', name: 'Recorded leader', amountRaw: '500000' }], reason: null },
-    { readHour: 11, throughHour: 11, totalRaw: '0', holders: [], reason: null },
-    { readHour: 12, throughHour: 13, totalRaw: '800000', holders: [{ id: 'leader:42', kind: 'General', name: 'Renamed leader', amountRaw: '800000' }], reason: null },
-    { readHour: 15, throughHour: 15, totalRaw: null, holders: [{ id: 'ability:3', kind: 'Ability', name: null, amountRaw: null }], reason: 'Allocation amount was not recorded' },
-  ] }));
-  for (const [hour, total] of [[9, null], [10, 500000n], [11, 0n], [12, 800000n], [13, 800000n], [14, null], [15, null]] as const) {
-    const held = commandHeldAt([data], hour);
-    assert.equal(held.total, total, `current holdings at ${hour}`);
-    assert.equal(spendingTotals(spendingAt([data], 'Command', hour), []).total, 0n, `allocations add no spending at ${hour}`);
-  }
-  const tooltip = commandHeldTooltip(commandHeldAt([data], 12));
-  assert.ok(!tooltip.rows.some(row => row.label === 'Recorded through'), 'Acquisition dates are hidden');
-  assert.ok(tooltip.rows.some(row => row.label === 'General: Renamed leader' && row.value === '8'));
-  assert.ok(!tooltip.rows.some(row => row.label.includes('Recorded leader')));
-  const continued = commandHeldTooltip(commandHeldAt([data], 13));
-  assert.ok(!continued.rows.some(row => row.label === 'Read'));
-  assert.ok(!continued.rows.some(row => row.label === 'Recorded through'));
-  const unknown = commandHeldTooltip(commandHeldAt([data], 15));
-  assert.ok(unknown.rows.some(row => row.label === 'Ability: Not identified' && row.value === 'Not known'));
+test('every mounted payment names its country and target at its own date, however many dates they span', () => {
+  const rows = (count: number) => {
+    const data = reply({ spendItems: [{ ...item(), targetTag: 'mod target' }],
+      spending: Array.from({ length: count }, (_, index) => spend({ id: `charge:${index}`, hour: 10 + index * 24, readHour: 12 + index * 24,
+        changes: [{ readHour: 12 + index * 24, chargeRaw: '100000', realizedDeltaRaw: '-100000', occurrences: 1, covered: true }] })) });
+    return spendingTableRows(spendingAt([data], 'Political', count * 24), '');
+  };
+  const many = spendingCountryRequests(rows(MAX_NAME_HOURS + 36), true);
+  assert.equal(many.wanted.length, 2 * (MAX_NAME_HOURS + 36));
+  assert.equal(many.maxHours, MAX_NAME_HOURS + 36, 'the newest rows keep their names past the default hour limit');
+  assert.deepEqual(many.wanted.slice(0, 2), [{ hour: 10, tag: 'mod country' }, { hour: 10, tag: 'mod target' }]);
+  const one = spendingCountryRequests(rows(3), false);
+  assert.deepEqual([one.wanted.length, one.maxHours], [3, MAX_NAME_HOURS], 'one country names only its targets');
+  assert.deepEqual(spendingCountryRequests([], true), { wanted: [], maxHours: MAX_NAME_HOURS });
 });
 
-test('5,000 country holdings sum exactly and one missing country keeps the complete figure unknown', () => {
-  const data = Array.from({ length: 5000 }, (_, index) => validatePoliticsSpending(reply({ tag: `mod ${index}`, spending: [], commandHolds: [
-    { readHour: 12, throughHour: 12, totalRaw: '100001', holders: [{ id: `raid:${index}`, kind: 'Raid', name: `Recorded raid ${index}`, amountRaw: '100001' }], reason: null },
-  ] })));
-  assert.equal(commandHeldAt(data, 12).total, 500005000n);
-  data[0] = reply({ tag: 'mod 0', commandHolds: [] });
-  const held = commandHeldAt(data, 12);
-  assert.equal(held.total, null);
-  assert.equal(held.countries[1].hold?.holders[0].name, 'Recorded raid 1');
-  const full = commandHeldTooltip(held);
-  const fitted = fitTooltip([full], 300, { keep: 1 });
-  assert.equal(fitted.rows.at(-1)?.label, 'Total held');
-  assert.ok(fitted.rows.some(row => /more/.test(row.label)));
-  assert.ok(tooltipText(fitted).includes('Raid: Recorded raid 4999'));
+test('payments the recording could not name are named by their kind, never “Not identified”', () => {
+  const raid = { ...item('raid'), name: null, action: 'Raids: Not identified', icon: null };
+  const decision = { ...item('decision'), name: 'Mod decision', action: 'Mod decision: Not identified', targetTag: 'target', targetName: null };
+  assert.equal(spendLabel(raid, 'Raids'), 'Raids');
+  assert.equal(spendLabel(decision, 'Decisions'), 'Mod decision');
+  assert.equal(spendLabel(item(), 'Mod laws'), 'A modded law');
+  const data = reply({ spendItems: [raid], spending: [spend({ itemId: 'raid', category: 'raids' })],
+    spendCategories: [{ id: 'raids', name: 'Raids', identified: true }] });
+  const [row] = spendingTableRows(spendingAt([data], 'Political', 12), '');
+  assert.equal(row.label, 'Raids');
+  const [leaf] = spendingItems([data], 'Political', { from: null, hour: 12, end: 12 });
+  assert.deepEqual(leaf.path.map(part => part.label), ['Raids'], 'no item slice repeats its category');
 });
 
-test('native signed allocation operands are displayed exactly without clamping or spending', () => {
-  const data = validatePoliticsSpending(reply({ spending: [], commandHolds: [{ readHour: 12, throughHour: 12, totalRaw: '-250001',
-    holders: [{ id: 'orders:7', kind: 'OrdersGroup', name: 'Recorded orders', amountRaw: '-250001' }], reason: null }] }));
-  const held = commandHeldAt([data], 12);
-  assert.equal(held.total, -250001n);
-  assert.ok(commandHeldTooltip(held).rows.some(row => row.label === 'Orders: Recorded orders' && row.value === '-2.50001'));
-  assert.equal(spendingTotals(spendingAt([data], 'Command', 12), []).total, 0n);
+test('costs charged every day fold into one exact row per country, category and game month', () => {
+  const first = 43_800_000 + 24 * 365 * 1944;
+  const days = Array.from({ length: 62 }, (_, day) => spend({ id: `daily ${day}`, hour: first + day * 24, readHour: first + day * 24, category: 'dailyCosts',
+    itemId: 'cost', changes: [{ readHour: first + day * 24, chargeRaw: '100001', realizedDeltaRaw: null, occurrences: 1, covered: true }] }));
+  const data = reply({ spendItems: [item(), { ...item('cost'), name: 'Recorded cost modifier', action: 'Daily costs: Recorded cost modifier' }],
+    spendCategories: [{ id: 'law/mod', name: 'Mod laws', identified: true }, { id: 'dailyCosts', name: 'Daily costs', identified: true }],
+    spending: [...days, spend({ hour: first, readHour: first, changes: [{ readHour: first, chargeRaw: '100000', realizedDeltaRaw: '-100000', occurrences: 1, covered: true }] })] });
+  const at = spendingAt([data], 'Political', first + 62 * 24);
+  const rows = spendingTableRows(at, '');
+  const folded = rows.filter(row => row.month !== null);
+  assert.deepEqual(folded.map(row => [row.days, row.amount]), [[31, 3100031n], [28, 2800028n], [3, 300003n]]);
+  assert.ok(folded.every(row => row.label === 'Daily costs' && row.parts.length === row.days));
+  assert.equal(folded[0].hour, first + 30 * 24, 'a month shows its latest payment');
+  assert.equal(rows.filter(row => row.month === null).length, 1);
+  assert.equal(rows.reduce((sum, row) => sum + (row.amount ?? 0n), 0n), spendingSummary(at).spent, 'folding never changes the total');
 });
 
 test('Daily deficit remains its own recorded category alongside real costs', () => {
@@ -248,10 +226,10 @@ test('Daily deficit remains its own recorded category alongside real costs', () 
     { id: 'daily-deficit', name: 'Daily deficit', identified: true }, { id: 'daily-costs', name: 'Daily costs', identified: true },
   ] }));
   const choices = categoryChoices([data], 'Command');
-  assert.deepEqual(choices.map(choice => choice.label), ['Daily deficit', 'Daily costs', 'None']);
-  const rows = spendingRows(spendingAt([data], 'Command', 12), [], 'daily-costs', 'newest');
+  assert.deepEqual(choices.map(choice => choice.label), ['Daily deficit', 'Daily costs'], 'no “None” choice');
+  const rows = spendingTableRows(spendingAt([data], 'Command', 12), setToken('daily-costs'));
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].item.kind === 'spend' ? rows[0].item.at.category : '', 'Daily costs');
+  assert.equal(rows[0].categoryName, 'Daily costs');
 });
 
 test('the spending view needs no raw ledger tables and resolves repeated tooltip icons from one artwork entry', () => {
@@ -267,13 +245,14 @@ test('the spending view needs no raw ledger tables and resolves repeated tooltip
   assert.deepEqual(spendingAt([data], 'Political', 12).map(at => at.item.icon), [ICON, ICON]);
 });
 
-test('coverage uncertainty keeps known recorded charges while marking complete totals unknown', () => {
+test('coverage uncertainty keeps known recorded charges and marks them partial', () => {
   const data = reply({ spending: [spend({ covered: false, changes: [{ readHour: 12, chargeRaw: '2500000', realizedDeltaRaw: '-2000000', occurrences: 1, covered: false }] })] });
   const [at] = spendingAt([data], 'Political', 12);
   assert.equal(at.charge, 2500000n);
   const [leaf] = spendingItems([data], 'Political', { from: null, hour: 12, end: 12 });
   assert.equal(leaf.exact, 2500000n);
-  assert.equal(leaf.unknownValue, true);
+  assert.equal(leaf.unknownValue, undefined, 'the recorded amount still draws');
+  assert.deepEqual(leaf.unknown, { incomplete: 1 }, 'and is marked partial');
 });
 
 test('compressed gap intervals never reveal a later end past the playhead', () => {
@@ -296,10 +275,10 @@ test('missing charge in a daily row retains every known contribution without com
   assert.equal(at.knownCharges, 1);
   assert.equal(at.missingCharges, 1);
   assert.equal(at.realized, null);
-  assert.equal(spendingTotals([at], []).total, null);
+  assert.deepEqual(spendingSummary([at]), { spent: 250001n, unknownCosts: 1, uncovered: false });
   const [leaf] = spendingItems([data], 'Command', { from: null, hour: 13, end: 13 });
   assert.equal(leaf.exact, 250001n);
-  assert.equal(leaf.unknownValue, true);
+  assert.deepEqual(leaf.unknown, { incomplete: 1 });
 });
 
 test('repeated charges for the same specific item form one sunburst leaf', () => {
@@ -331,25 +310,14 @@ test('grouped item tooltip uses the latest native ordinal within the same action
   assert.equal(group.latest.spend.id, 'later');
 });
 
-test('running category totals distinguish a missing charge from no spending without relying on a gap', () => {
-  const data = reply({ spending: [spend({ changes: [{ readHour: 12, chargeRaw: null, realizedDeltaRaw: null, occurrences: 1, covered: true }] })] });
-  const totals = spendingTotals(spendingAt([data], 'Political', 12), []);
-  assert.equal(totals.categoryTotal(setToken('law/mod')), null);
-  assert.equal(spendText(totals.categoryTotal(setToken('law/mod'))), 'Not known');
-  assert.equal(totals.categoryTotal('unseen-kind'), 0n);
-  const gaps = spendingGaps([reply({ spendingCoverage: [{ readHour: 12, sinceHour: 12, throughHour: 12, political: false, command: false, reason: 'Missing data' }] })], 'Political', { from: null, hour: 12 });
-  assert.equal(spendingTotals([], gaps).categoryTotal('unseen-kind'), null);
-});
-
-test('mockup category chips hide chosen kinds and leave all-category totals unchanged', () => {
+test('category filters keep amounts exact and a legacy “none” filter shows every category', () => {
   const data = reply({ spending: [spend(), spend({ id: 'second', category: 'advisor' })],
     spendCategories: [{ id: 'law/mod', name: 'Mod laws', identified: true }, { id: 'advisor', name: 'Advisors', identified: true }] });
   const at = spendingAt([data], 'Political', 12);
-  const totals = spendingTotals(at, []);
-  assert.equal(spendingRows(at, [], '', 'newest').length, 2);
-  assert.equal(spendingRows(at, [], 'advisor', 'newest').length, 1);
-  assert.equal(spendingRows(at, [], 'advisor', 'newest', 'include')[0].item.kind, 'spend');
-  assert.equal(spendingTotals(at, []).total, totals.total);
+  assert.equal(spendingTableRows(at, '').length, 2);
+  assert.equal(spendingTableRows(at, setToken('advisor')).length, 1);
+  assert.equal(spendingTableRows(at, NO_SPENDING_CATEGORIES).length, 2);
+  assert.equal(spendingSummary(at).spent, 123456789012345678901n * 2n, 'the summary counts every category');
   assert.equal(categoryChoices([data], 'Political')[0].value, setToken('law/mod'));
 });
 
@@ -364,7 +332,7 @@ test('authored empty and key-equal category titles remain valid across choices a
     assert.equal(at[0].charge, 123456789012345678901n);
     const [leaf] = spendingItems([data], 'Political', { from: null, hour: 12, end: 12 });
     assert.equal(leaf.path[0].label, name);
-    assert.equal(spendingTotals(at, []).total, 123456789012345678901n);
+    assert.equal(spendingSummary(at).spent, 123456789012345678901n);
   }
   assert.throws(() => validatePoliticsSpending(reply({ spendCategories: [{ id: 'law/mod', name: null as never, identified: true }] })), /malformed/);
 });
@@ -377,11 +345,10 @@ test('a long mod category key stays selectable and filters rows without changing
   assert.equal(choice.unavailable, undefined);
   assert.equal(choice.value, setToken(category));
   const at = spendingAt([data], 'Political', 12);
-  assert.equal(spendingRows(at, [], '', 'newest').length, 1);
-  assert.equal(spendingRows(at, [], choice.value, 'newest', 'include').length, 1);
-  assert.equal(spendingRows(at, [], choice.value, 'newest').length, 1);
-  assert.equal(spendingRows(at, [], choice.value, 'newest', 'exclude').length, 0);
-  assert.equal(spendingTotals(at, []).total, 123456789012345678901n);
+  assert.equal(spendingTableRows(at, '').length, 1);
+  assert.equal(spendingTableRows(at, choice.value).length, 1);
+  assert.equal(spendingTableRows(at, setToken('another kind')).length, 0);
+  assert.equal(spendingSummary(at).spent, 123456789012345678901n);
 });
 
 test('unidentified cause presentation keeps its exact charge without guessing a category identity', () => {
@@ -390,25 +357,26 @@ test('unidentified cause presentation keeps its exact charge without guessing a 
   const [at] = spendingAt([data], 'Political', 12);
   assert.equal(at.identified, false);
   assert.equal(at.charge, 123456789012345678901n);
-  assert.equal(spendingTotals([at], []).total, at.charge);
-  assert.equal(categoryChoices([data], 'Political')[0].identified, false);
+  assert.equal(spendingSummary([at]).spent, at.charge);
+  assert.deepEqual(categoryChoices([data], 'Political').map(choice => [choice.label, choice.identified]), [['Other spending', false]]);
+  assert.equal(spendingTableRows([at], '')[0].categoryName, 'Other spending');
+  assert.equal(spendingItems([data], 'Political', { from: null, hour: 12, end: 12 })[0].path[0].label, 'Other spending');
 });
 
 test('largest cost sorting remains exact beyond floating point precision', () => {
   const data = reply({ spending: [spend({ id: 'small', changes: [{ readHour: 12, chargeRaw: '9007199254740992', realizedDeltaRaw: '-1', occurrences: 1, covered: true }] }),
     spend({ id: 'big', changes: [{ readHour: 12, chargeRaw: '9007199254740993', realizedDeltaRaw: '-1', occurrences: 1, covered: true }] })] });
-  const rows = spendingRows(spendingAt([data], 'Political', 12), [], '', 'cost');
-  assert.equal(rows[0].item.kind === 'spend' ? rows[0].item.at.spend.id : '', 'big');
+  const rows = spendingTableRows(spendingAt([data], 'Political', 12), '');
+  const key = (row: (typeof rows)[number]) => row.key;
+  assert.equal(sortRows(rows, row => row.amount, 'descending', key)[0].parts[0].spend.id, 'big');
 });
 
 test('same-hour rows follow exact native sequence order in each date sort', () => {
   const data = reply({ spending: [spend({ id: 'later', sequence: '18446744073709551615' }), spend({ id: 'earlier', sequence: '9999999999999999999' })] });
-  const at = spendingAt([data], 'Political', 12);
-  const firstId = (order: 'newest' | 'oldest') => {
-    const row = spendingRows(at, [], '', order)[0]; return row.item.kind === 'spend' ? row.item.at.spend.id : null;
-  };
-  assert.equal(firstId('newest'), 'later');
-  assert.equal(firstId('oldest'), 'earlier');
+  const rows = spendingTableRows(spendingAt([data], 'Political', 12), '');
+  const key = (row: (typeof rows)[number]) => row.key;
+  assert.equal(sortRows(rows, row => row.order, 'descending', key)[0].parts[0].spend.id, 'later');
+  assert.equal(sortRows(rows, row => row.order, 'ascending', key)[0].parts[0].spend.id, 'earlier');
 });
 
 test('5,000 countries are accepted without any player-status gate or selected-country cap in the kit', () => {
@@ -416,8 +384,8 @@ test('5,000 countries are accepted without any player-status gate or selected-co
     spending: [spend({ countryTag: `country ${index}`, countryName: `Country ${index}` })] })));
   const at = spendingAt(replies, 'Political', 12);
   assert.equal(at.length, 5000);
-  assert.equal(spendingRows(at, [], '', 'newest').length, 5000);
-  assert.equal(spendingTotals(at, []).total, 123456789012345678901n * 5000n);
+  assert.equal(spendingTableRows(at, '').length, 5000);
+  assert.equal(spendingSummary(at).spent, 123456789012345678901n * 5000n);
 });
 
 test('malformed identities refuse replies by shape; unrenderable mod art stays missing', () => {

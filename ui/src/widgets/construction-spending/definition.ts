@@ -1,11 +1,13 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { SUNBURST_OPTIONS, levelOption } from '../../charts/sunburst/sunburstOptions.ts';
+import { IC_DECIMALS_OPTION } from '../../dashboard/icDecimals.ts';
 
 export const OPTIONS: readonly OptionField[] = [
   levelOption('splitLevel', 'New or repair'),
   levelOption('typeLevel', 'Building type'),
   levelOption('stateLevel', 'State'),
+  IC_DECIMALS_OPTION,
   ...SUNBURST_OPTIONS,
 ];
 
