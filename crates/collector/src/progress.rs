@@ -10,9 +10,14 @@ use std::{fs::File, io::Write, path::Path, time::Instant};
 
 pub(crate) const FILE: &str = "progress";
 
+#[cfg(test)]
+type TestWriter = Box<dyn Fn(&[u8])>;
+
 pub(crate) struct Progress {
     file: Option<File>,
     opened: Instant,
+    #[cfg(test)]
+    writer: Option<TestWriter>,
 }
 
 impl Progress {
@@ -22,17 +27,46 @@ impl Progress {
         Self {
             file: File::create(directory.join(FILE)).ok(),
             opened: Instant::now(),
+            #[cfg(test)]
+            writer: None,
         }
     }
 
     /// Appends `step`, with `count` when it has one.
     pub(crate) fn step(&self, step: impl std::fmt::Display, count: Option<u64>) {
-        let Some(mut file) = self.file.as_ref() else {
-            return;
-        };
         let mut buffer = [0_u8; 160];
         let length = line(&mut buffer, self.opened.elapsed().as_millis(), step, count);
-        let _ = file.write_all(&buffer[..length]);
+        self.append(&buffer[..length]);
+    }
+
+    fn publication(&self, family: &str, summary: crate::hook::publication::Summary) {
+        let mut buffer = [0_u8; 512];
+        let length = line(
+            &mut buffer,
+            self.opened.elapsed().as_millis(),
+            format_args!(
+                "publication {family} attempts={} total_hold_ns={} longest_hold_ns={} longest_synchronization_ns={} slowest_context_ns={} slowest_context_thread_id={}",
+                summary.attempts,
+                summary.total_hold_ns,
+                summary.longest_hold_ns,
+                summary.longest_synchronization_ns,
+                summary.slowest_context_ns,
+                summary.slowest_context_thread_id,
+            ),
+            None,
+        );
+        self.append(&buffer[..length]);
+    }
+
+    fn append(&self, bytes: &[u8]) {
+        #[cfg(test)]
+        if let Some(writer) = &self.writer {
+            writer(bytes);
+            return;
+        }
+        if let Some(mut file) = self.file.as_ref() {
+            let _ = file.write_all(bytes);
+        }
     }
 }
 
@@ -50,6 +84,7 @@ pub(crate) struct Stage<'a> {
 impl<'a> Stage<'a> {
     pub(crate) fn new(progress: &'a Progress, first: &'static str) -> Self {
         progress.step(format_args!("install {first}"), None);
+        crate::hook::publication::select_family(Some(first));
         Self {
             name: std::cell::Cell::new(first),
             first,
@@ -61,6 +96,7 @@ impl<'a> Stage<'a> {
 
     pub(crate) fn set(&self, name: &'static str) {
         self.name.set(name);
+        crate::hook::publication::select_family(Some(name));
         let reached = if name == self.first {
             0
         } else {
@@ -75,6 +111,17 @@ impl<'a> Stage<'a> {
 
     pub(crate) fn get(&self) -> &'static str {
         self.name.get()
+    }
+
+    pub(crate) fn finish(&self) {
+        crate::hook::publication::select_family(None);
+        let (families, available) = crate::hook::publication::snapshot();
+        for (name, summary) in families {
+            self.progress.publication(name, summary);
+        }
+        if !available {
+            self.progress.step("publication unavailable", None);
+        }
     }
 }
 
@@ -101,6 +148,54 @@ fn line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retries_emit_one_cumulative_summary_only_after_the_deadline_decision() {
+        use std::{
+            cell::{Cell, RefCell},
+            rc::Rc,
+        };
+        const FAMILY: &str = "synthetic_slow_progress";
+        let time = Rc::new(Cell::new(0));
+        let lines = Rc::new(RefCell::new(Vec::new()));
+        let (written, clock) = (lines.clone(), time.clone());
+        let progress = Progress {
+            file: None,
+            opened: Instant::now(),
+            writer: Some(Box::new(move |bytes| {
+                let text = String::from_utf8(bytes.to_vec()).unwrap();
+                if text.contains(" publication ") {
+                    clock.set(clock.get() + 20_000);
+                }
+                written.borrow_mut().push(text);
+            })),
+        };
+        let stage = Stage::new(&progress, FAMILY);
+        // Same ready/expired ordering as the runtime; slow diagnostic writes
+        // would stop this not-ready/not-ready/ready sequence on its second result.
+        let mut decision = false;
+        for ready in [false, false, true] {
+            stage.set(FAMILY);
+            crate::hook::publication::complete_test_attempt();
+            time.set(time.get() + 1);
+            if ready || time.get() >= 15_000 {
+                decision = ready;
+                break;
+            }
+        }
+        assert!(decision);
+        assert_eq!(time.get(), 3);
+        assert_eq!(lines.borrow().len(), 1, "retries add no diagnostic I/O");
+        stage.finish();
+        let lines = lines.borrow();
+        let summaries: Vec<_> = lines
+            .iter()
+            .filter(|line| line.contains(FAMILY) && line.contains(" publication "))
+            .collect();
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries[0].contains("attempts=3 total_hold_ns=0 longest_hold_ns=0 longest_synchronization_ns=0 slowest_context_ns=0 slowest_context_thread_id=0"));
+        assert!(time.get() > 15_000, "the slow writer runs after success");
+    }
 
     #[test]
     fn lines_carry_time_step_and_count_and_stay_in_their_buffer() {

@@ -373,20 +373,13 @@ impl<'a> Group<'a> {
     /// While suspended, exactly as a family's own publication checks: a held
     /// site or tap is `Ok(false)` and a changed snapshot `Err(0)`, before any
     /// write; then every selected hook that changes state is written.
-    fn check_and_write(&mut self, threads: &Threads) -> Result<bool, u32> {
+    fn check_and_write(&mut self, threads: &mut Threads) -> Result<bool, u32> {
         if threads.contains_ip(&self.ranges)? {
             return Ok(false);
         }
         let enabled = self.enabled;
         for hook in selected(self.hooks, &self.previous, enabled) {
-            let [relay, trampoline] = hook.executable_ranges();
-            if let Some(tap) = &hook.tap
-                && (!enabled || !hook.enabled)
-                && (tap.in_flight.load(Ordering::SeqCst) != 0
-                    || threads.contains_ip(&[relay, trampoline, tap.stub.clone()])?)
-            {
-                // A native target can hold site+5 on its stack while its
-                // current IP is outside every collector range.
+            if hook.tap_busy_with(enabled, |ranges| threads.contains_ip(ranges))? {
                 return Ok(false);
             }
             if !hook.bytes_match(hook.enabled) {
@@ -534,7 +527,7 @@ pub(super) fn publish_groups(groups: &mut [Group<'_>], mut flush: impl FnMut() -
                 let mut wrote = false;
                 for group in groups.iter_mut().filter(|group| ready(group)) {
                     let begin = crate::sampling::qpc();
-                    let checked = group.check_and_write(&threads);
+                    let checked = group.check_and_write(&mut threads);
                     wrote |= checked == Ok(true);
                     group.checked = Some(checked);
                     group.ticks = crate::sampling::qpc() - begin;

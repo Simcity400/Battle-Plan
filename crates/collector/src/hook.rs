@@ -263,6 +263,50 @@ impl Hook {
         ]
     }
 
+    fn tap_busy_with(
+        &self,
+        enabled: bool,
+        mut contains: impl FnMut(&[Range<usize>]) -> Result<bool, u32>,
+    ) -> Result<bool, u32> {
+        let [relay, trampoline] = self.executable_ranges();
+        if let Some(tap) = &self.tap
+            && (!enabled || !self.enabled)
+        {
+            // A native target can hold site+5 on its stack while its current
+            // IP is outside every collector range. Keep the flight check first.
+            return Ok(tap.in_flight.load(Ordering::SeqCst) != 0
+                || contains(&[relay, trampoline, tap.stub.clone()])?);
+        }
+        Ok(false)
+    }
+
+    fn family_ready(
+        hooks: &[&mut Self],
+        enabled: bool,
+        selected: impl Fn(usize) -> bool,
+        ranges: &[Range<usize>],
+        threads: &mut Threads,
+        snapshot_refusal: &mut bool,
+    ) -> Result<bool, u32> {
+        if threads.contains_ip(ranges)? {
+            return Ok(false);
+        }
+        for (_, hook) in hooks
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| selected(*index))
+        {
+            if hook.tap_busy_with(enabled, |ranges| threads.contains_ip(ranges))? {
+                return Ok(false);
+            }
+            if !hook.bytes_match(hook.enabled) {
+                *snapshot_refusal = enabled && hooks.iter().all(|hook| !hook.is_enabled());
+                return Err(0);
+            }
+        }
+        Ok(true)
+    }
+
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         Self::set_family_enabled(std::slice::from_mut(self), enabled)
     }
@@ -340,16 +384,17 @@ impl Hook {
             .filter(|(index, _)| selected(*index))
         {
             let mut previous = 0;
-            if unsafe {
+            let ok = unsafe {
                 VirtualProtect(
                     hook.site as *const c_void,
                     hook.sentinel_len,
                     PAGE_EXECUTE_READWRITE,
                     &mut previous,
                 )
-            } == 0
-            {
-                prepare_error = Some(io::Error::last_os_error().to_string());
+            } != 0;
+            let error = if ok { 0 } else { unsafe { GetLastError() } };
+            if !ok {
+                prepare_error = Some(io::Error::from_raw_os_error(error as i32).to_string());
                 break;
             }
             protected += 1;
@@ -358,28 +403,15 @@ impl Hook {
         let outcome = if prepare_error.is_none() {
             (|| {
                 threads.suspend()?;
-                if threads.contains_ip(&ranges)? {
+                if !Self::family_ready(
+                    hooks,
+                    enabled,
+                    selected,
+                    &ranges,
+                    &mut threads,
+                    &mut snapshot_refusal,
+                )? {
                     return Ok(false);
-                }
-                for (_, hook) in hooks
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| selected(*index))
-                {
-                    let [relay, trampoline] = hook.executable_ranges();
-                    if let Some(tap) = &hook.tap
-                        && (!enabled || !hook.enabled)
-                        && (tap.in_flight.load(Ordering::SeqCst) != 0
-                            || threads.contains_ip(&[relay, trampoline, tap.stub.clone()])?)
-                    {
-                        // A native target can hold site+5 on its stack while
-                        // its current IP is outside every collector range.
-                        return Ok(false);
-                    }
-                    if !hook.bytes_match(hook.enabled) {
-                        snapshot_refusal = enabled && previous.iter().all(|(_, owned)| !*owned);
-                        return Err(0);
-                    }
                 }
                 for (_, hook) in hooks
                     .iter_mut()
@@ -726,10 +758,50 @@ fn open_thread(id: u32) -> Result<Option<HANDLE>, u32> {
     }
 }
 
+// The successful call's start excludes the exit precheck. Refusal handling
+// still probes exit after capturing the original suspension error.
+fn suspension_with(
+    handle: HANDLE,
+    diagnostics: &publication::Attempt,
+    mut exited: impl FnMut(HANDLE) -> bool,
+    suspend: impl FnOnce(HANDLE) -> Result<(), u32>,
+) -> Result<Option<u64>, u32> {
+    if exited(handle) {
+        return Ok(None);
+    }
+    let begin = diagnostics.now();
+    match suspend(handle) {
+        Ok(()) => Ok(Some(begin)),
+        Err(error) => refused_suspension(error, exited(handle)).map(|_| None),
+    }
+}
+
+fn acquire_context(handle: HANDLE, context: &mut AlignedContext) -> Result<(), u32> {
+    #[cfg(test)]
+    if let Some(result) = snapshot_tests::acquire(handle, context) {
+        return result;
+    }
+    if unsafe { GetThreadContext(handle, &mut context.0) } == 0 {
+        Err(unsafe { GetLastError() })
+    } else {
+        Ok(())
+    }
+}
+
+fn thread_exited(handle: HANDLE) -> bool {
+    #[cfg(test)]
+    if let Some(exited) = snapshot_tests::exited(handle) {
+        return exited;
+    }
+    (unsafe { WaitForSingleObject(handle, 0) }) == 0
+}
+
 struct Thread {
     id: u32,
     handle: HANDLE,
     suspended: bool,
+    ip: Option<usize>,
+    exited: bool,
 }
 
 // The native x64 CONTEXT contract requires 16 bytes even though windows-sys
@@ -744,6 +816,9 @@ pub struct Threads {
     census_required: u32,
     census_short: bool,
     census_refusal: Option<&'static str>,
+    context: AlignedContext,
+    snapshot_valid: bool,
+    diagnostics: publication::Attempt,
 }
 
 impl Threads {
@@ -753,14 +828,16 @@ impl Threads {
 
     /// During callback quiescence registered collector workers may remain inside
     /// the DLL. Every excluded worker is joined before the final full-image check.
-    /// Hook patching always uses `open`, with no worker exclusions.
+    /// Hook patching never excludes workers.
     pub fn open_excluding(excluded_threads: &[u32]) -> Result<Self, String> {
+        let mut diagnostics = publication::Attempt::new();
         // Detach scratch must remain available after the capture allocation gate
         // stops admission. All growth still finishes before holding threads.
         let mut excluded = Vec::new();
-        excluded
-            .try_reserve_exact(excluded_threads.len())
-            .map_err(|_| "thread exclusion allocation failed")?;
+        if excluded.try_reserve_exact(excluded_threads.len()).is_err() {
+            diagnostics.finish();
+            return Err("thread exclusion allocation failed".into());
+        }
         excluded.extend_from_slice(excluded_threads);
         let mut result = Self {
             threads: Vec::new(),
@@ -769,18 +846,23 @@ impl Threads {
             census_required: 0,
             census_short: false,
             census_refusal: None,
+            context: AlignedContext(unsafe { std::mem::zeroed() }),
+            snapshot_valid: false,
+            diagnostics,
         };
-        visit_threads(&result.excluded, |id| {
+        let enumerated = visit_threads(&result.excluded, |id| {
             if let Some(handle) = open_thread(id)? {
                 result.threads.push(Thread {
                     id,
                     handle,
                     suspended: false,
+                    ip: None,
+                    exited: false,
                 });
             }
             Ok(())
-        })
-        .map_err(|code| format!("thread enumeration failed (Windows error {code})"))?;
+        });
+        enumerated.map_err(|code| format!("thread enumeration failed (Windows error {code})"))?;
         Ok(result)
     }
 
@@ -791,16 +873,14 @@ impl Threads {
         // acquiring any hold. A resize retry always resumes before preparing.
         self.prepare_census()?;
         self.suspend_with(
-            |handle| {
-                if unsafe { WaitForSingleObject(handle, 0) } == 0 {
-                    return Ok(false);
-                }
-                if unsafe { SuspendThread(handle) } == u32::MAX {
-                    let error = unsafe { GetLastError() };
-                    let exited = unsafe { WaitForSingleObject(handle, 0) } == 0;
-                    return refused_suspension(error, exited);
-                }
-                Ok(true)
+            |handle, diagnostics| {
+                suspension_with(handle, diagnostics, thread_exited, |handle| {
+                    if unsafe { SuspendThread(handle) } == u32::MAX {
+                        Err(unsafe { GetLastError() })
+                    } else {
+                        Ok(())
+                    }
+                })
             },
             Self::discover,
             |threads| {
@@ -815,6 +895,7 @@ impl Threads {
             self.census_refusal = Some("thread census resize requires resumed threads");
             return Err(ERROR_RETRY);
         }
+        self.invalidate_snapshot();
         self.census_refusal = Some("thread census sizing failed");
         let mut required = 0;
         match query_census(&mut [], &mut required) {
@@ -848,15 +929,19 @@ impl Threads {
 
     fn suspend_with(
         &mut self,
-        mut suspend: impl FnMut(HANDLE) -> Result<bool, u32>,
+        mut suspend: impl FnMut(HANDLE, &publication::Attempt) -> Result<Option<u64>, u32>,
         mut discover: impl FnMut(&mut Self) -> Result<bool, u32>,
         mut resize: impl FnMut(&mut Self) -> Result<(), u32>,
     ) -> Result<(), u32> {
         // Exited newcomers can keep recycling prepared slots. Refuse churn
         // after a live-sized number of rounds instead of holding threads forever.
         for _ in 0..=self.threads.capacity() {
+            self.snapshot_valid = false;
             for thread in self.threads.iter_mut().filter(|thread| !thread.suspended) {
-                thread.suspended = suspend(thread.handle)?;
+                if let Some(begin) = suspend(thread.handle, &self.diagnostics)? {
+                    thread.suspended = true;
+                    self.diagnostics.acquired(begin);
+                }
             }
             // A thread can be created between the first snapshot and suspension.
             // Game thread creation happens in-process; once all such callers are
@@ -881,7 +966,21 @@ impl Threads {
     fn discover(&mut self) -> Result<bool, u32> {
         // GetThreadContext synchronizes with suspension before the next census.
         // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadcontext
-        self.contains_ip(&[])?;
+        self.discover_with(Self::synchronize, Self::discover_census)
+    }
+
+    fn discover_with(
+        &mut self,
+        synchronize: impl FnOnce(&mut Self) -> Result<(), u32>,
+        census: impl FnOnce(&mut Self) -> Result<bool, u32>,
+    ) -> Result<bool, u32> {
+        synchronize(self)?;
+        let result = census(self);
+        self.snapshot_valid = result == Ok(false);
+        result
+    }
+
+    fn discover_census(&mut self) -> Result<bool, u32> {
         let length = match query_census(&mut self.census, &mut self.census_required) {
             Ok(length) => length,
             Err(code) => {
@@ -895,16 +994,12 @@ impl Threads {
             }
         };
         self.census_refusal = None;
-        self.threads.retain(|thread| {
-            if unsafe { WaitForSingleObject(thread.handle, 0) } == 0 {
-                unsafe {
-                    CloseHandle(thread.handle);
-                }
-                false
-            } else {
-                true
-            }
-        });
+        self.remove_exited_with(
+            |handle| unsafe { WaitForSingleObject(handle, 0) } == 0,
+            |handle| {
+                unsafe { CloseHandle(handle) };
+            },
+        );
         let mut added = false;
         let bytes =
             unsafe { std::slice::from_raw_parts(self.census.as_ptr().cast::<u8>(), length) };
@@ -931,6 +1026,8 @@ impl Threads {
                         id,
                         handle,
                         suspended: false,
+                        ip: None,
+                        exited: false,
                     });
                     added = true;
                 }
@@ -940,23 +1037,100 @@ impl Threads {
         Ok(added)
     }
 
-    pub fn contains_ip(&self, ranges: &[Range<usize>]) -> Result<bool, u32> {
-        for thread in self.threads.iter().filter(|t| t.suspended) {
-            let mut context = AlignedContext(unsafe { std::mem::zeroed() });
-            context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
-            if unsafe { GetThreadContext(thread.handle, &mut context.0) } == 0 {
-                let error = unsafe { GetLastError() };
-                if unsafe { WaitForSingleObject(thread.handle, 0) } == 0 {
-                    continue;
+    fn remove_exited_with(
+        &mut self,
+        mut exited: impl FnMut(HANDLE) -> bool,
+        mut close: impl FnMut(HANDLE),
+    ) {
+        self.threads.retain(|thread| {
+            if exited(thread.handle) {
+                if thread.suspended && !thread.exited {
+                    self.diagnostics.resolved();
                 }
-                return Err(error);
+                close(thread.handle);
+                false
+            } else {
+                true
             }
-            if ranges
-                .iter()
-                .any(|range| range.contains(&(context.0.Rip as usize)))
-            {
-                return Ok(true);
+        });
+    }
+
+    fn invalidate_snapshot(&mut self) {
+        self.snapshot_valid = false;
+        for thread in &mut self.threads {
+            thread.ip = None;
+        }
+    }
+
+    fn synchronize(&mut self) -> Result<(), u32> {
+        self.synchronize_with(acquire_context, thread_exited)
+    }
+
+    fn synchronize_with(
+        &mut self,
+        mut context: impl FnMut(HANDLE, &mut AlignedContext) -> Result<(), u32>,
+        mut exited: impl FnMut(HANDLE) -> bool,
+    ) -> Result<(), u32> {
+        self.invalidate_snapshot();
+        let begin = self.diagnostics.now();
+        let result = (|| {
+            for thread in self.threads.iter_mut().filter(|thread| thread.suspended) {
+                self.context.0 = unsafe { std::mem::zeroed() };
+                self.context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
+                let started = self.diagnostics.now();
+                let result = context(thread.handle, &mut self.context);
+                self.diagnostics.context(started, thread.id);
+                if let Err(error) = result {
+                    if exited(thread.handle) {
+                        if !thread.exited {
+                            thread.exited = true;
+                            self.diagnostics.resolved();
+                        }
+                        continue;
+                    }
+                    return Err(error);
+                }
+                thread.ip = Some(self.context.0.Rip as usize);
             }
+            Ok(())
+        })();
+        let elapsed = self.diagnostics.elapsed(begin);
+        self.diagnostics.sample.longest_synchronization_ns = self
+            .diagnostics
+            .sample
+            .longest_synchronization_ns
+            .max(elapsed);
+        // Discovery still has to prove that this synchronized set is complete.
+        result
+    }
+
+    pub fn contains_ip(&mut self, ranges: &[Range<usize>]) -> Result<bool, u32> {
+        self.contains_ip_with(ranges, thread_exited)
+    }
+
+    fn contains_ip_with(
+        &mut self,
+        ranges: &[Range<usize>],
+        mut exited: impl FnMut(HANDLE) -> bool,
+    ) -> Result<bool, u32> {
+        if !self.snapshot_valid && self.threads.iter().any(|thread| thread.suspended) {
+            return Err(ERROR_RETRY);
+        }
+        for thread in self.threads.iter_mut().filter(|thread| thread.suspended) {
+            let Some(ip) = thread.ip else {
+                continue;
+            };
+            // Only a collision needs an exit probe; healthy ranges add no syscall.
+            if !ranges.iter().any(|range| range.contains(&ip)) {
+                continue;
+            }
+            if exited(thread.handle) {
+                thread.ip = None;
+                thread.exited = true;
+                self.diagnostics.resolved();
+                continue;
+            }
+            return Ok(true);
         }
         Ok(false)
     }
@@ -988,6 +1162,7 @@ impl Threads {
         mut exited: impl FnMut(HANDLE) -> bool,
         mut retry: impl FnMut(),
     ) -> Result<(), u32> {
+        self.invalidate_snapshot();
         let mut first_error = None;
         while self.threads.iter().any(|thread| thread.suspended) {
             for thread in self
@@ -997,11 +1172,20 @@ impl Threads {
                 .filter(|thread| thread.suspended)
             {
                 match resume(thread.handle) {
-                    Ok(()) => thread.suspended = false,
+                    Ok(()) => {
+                        thread.suspended = false;
+                        if !thread.exited {
+                            self.diagnostics.resolved();
+                        }
+                    }
                     Err(code) => {
                         first_error.get_or_insert(code);
                         if exited(thread.handle) {
                             thread.suspended = false;
+                            if !thread.exited {
+                                thread.exited = true;
+                                self.diagnostics.resolved();
+                            }
                         }
                     }
                 }
@@ -1025,8 +1209,12 @@ impl Drop for Threads {
                 CloseHandle(thread.handle);
             }
         }
+        self.diagnostics.finish();
     }
 }
+
+#[path = "hook/publication.rs"]
+pub(crate) mod publication;
 
 #[path = "hook/shared.rs"]
 pub(crate) mod shared;
@@ -1085,6 +1273,10 @@ impl Drop for TestCode {
 #[cfg(test)]
 #[path = "hook/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "hook/snapshot_tests.rs"]
+mod snapshot_tests;
 
 #[cfg(test)]
 #[path = "hook/indirect_call_tests.rs"]
@@ -1195,79 +1387,23 @@ mod safety_tests {
     }
 
     #[test]
-    fn suspension_reenumerates_and_holds_newcomers_before_declaring_a_stable_set() {
-        let mut threads = ManuallyDrop::new(Threads {
-            threads: vec![Thread {
-                id: 1,
-                handle: 1 as HANDLE,
-                suspended: false,
-            }],
-            excluded: Vec::new(),
-            census: Vec::new(),
-            census_required: 0,
-            census_short: false,
-            census_refusal: None,
-        });
-        threads.threads.reserve(2);
-        let mut rounds = 0;
-        let mut held = Vec::new();
-        let result = threads.suspend_with(
-            |handle| {
-                held.push(handle as usize);
-                Ok(true)
-            },
-            |threads| {
-                assert!(threads.threads.iter().all(|thread| thread.suspended));
-                rounds += 1;
-                if rounds <= 2 {
-                    threads.threads.push(Thread {
-                        id: rounds + 1,
-                        handle: (rounds + 1) as usize as HANDLE,
-                        suspended: false,
-                    });
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            },
-            |_| panic!("stable census must not resize"),
-        );
-        assert_eq!(result, Ok(()));
-        assert_eq!(rounds, 3);
-        assert_eq!(held, [1, 2, 3]);
-        // Fake handles must never reach OS cleanup.
-        threads.threads.clear();
-        unsafe {
-            ManuallyDrop::drop(&mut threads);
-        }
-    }
-
-    #[test]
     fn suspension_refuses_repeated_newcomer_churn_within_prepared_capacity() {
-        let mut threads = ManuallyDrop::new(Threads {
-            threads: vec![Thread {
-                id: 1,
-                handle: 1 as HANDLE,
-                suspended: false,
-            }],
-            excluded: Vec::new(),
-            census: Vec::new(),
-            census_required: 0,
-            census_short: false,
-            census_refusal: None,
-        });
+        let mut threads = snapshot_tests::fixture(1, &[Ok(1)]);
         let limit = threads.threads.capacity() + 1;
         let mut rounds = 0;
         let result = threads.suspend_with(
-            |_| Ok(true),
+            |_, diagnostics| Ok(Some(diagnostics.now())),
             |threads| {
                 rounds += 1;
                 assert!(rounds <= limit, "thread census did not refuse churn");
                 // The held thread exited and a newcomer reuses its slot.
+                threads.diagnostics.resolved();
                 threads.threads[0] = Thread {
                     id: rounds as u32 + 1,
                     handle: (rounds + 1) as HANDLE,
                     suspended: false,
+                    ip: None,
+                    exited: false,
                 };
                 Ok(true)
             },
@@ -1275,71 +1411,85 @@ mod safety_tests {
         );
         assert_eq!(result, Err(ERROR_RETRY));
         assert_eq!(rounds, limit);
-        threads.threads.clear();
-        unsafe {
-            ManuallyDrop::drop(&mut threads);
-        }
+        snapshot_tests::release(threads);
     }
 
     #[test]
     fn census_resize_resumes_every_hold_and_retries_within_the_existing_round_bound() {
-        for keeps_growing in [false, true] {
-            let mut threads = ManuallyDrop::new(Threads {
-                threads: vec![Thread {
-                    id: 1,
-                    handle: 1 as HANDLE,
-                    suspended: false,
-                }],
-                excluded: Vec::new(),
-                census: Vec::new(),
-                census_required: 0,
-                census_short: false,
-                census_refusal: None,
-            });
+        use snapshot_tests::{counts, fixture, release, set_ips, stable};
+        for (keeps_growing, final_ip) in [
+            (true, Ok(1)),
+            (false, Ok(1)),
+            (false, Ok(100)),
+            (false, Err(87)),
+        ] {
+            let mut threads = fixture(2, &[Ok(100); 2]);
             let limit = threads.threads.capacity() + 1;
             let mut rounds = 0;
             let mut resizes = 0;
             let result = threads.suspend_with(
-                |_| Ok(true),
+                |_, clock| Ok(Some(clock.now())),
                 |threads| {
-                    assert!(threads.threads.iter().all(|thread| thread.suspended));
-                    rounds += 1;
-                    if rounds == 1 || keeps_growing {
-                        threads.census_short = true;
-                        Err(ERROR_INSUFFICIENT_BUFFER)
-                    } else {
-                        Ok(false)
-                    }
+                    threads.discover_with(Threads::synchronize, |threads| {
+                        rounds += 1;
+                        if rounds == 1 || keeps_growing {
+                            threads.census_short = true;
+                            Err(ERROR_INSUFFICIENT_BUFFER)
+                        } else {
+                            Ok(false)
+                        }
+                    })
                 },
                 |threads| {
                     threads.resume_with(|_| Ok(()), |_| false, || unreachable!())?;
-                    assert!(threads.threads.iter().all(|thread| !thread.suspended));
+                    assert!(
+                        threads
+                            .threads
+                            .iter()
+                            .all(|thread| !thread.suspended && thread.ip.is_none())
+                    );
                     threads.census.resize(threads.census.len() + 1, 0);
                     threads.census_short = false;
+                    set_ips(&[final_ip; 2]);
                     resizes += 1;
                     Ok(())
                 },
             );
             if keeps_growing {
                 assert_eq!(result, Err(ERROR_RETRY));
-                assert_eq!(rounds, limit);
-                assert_eq!(resizes, limit);
+                assert_eq!((rounds, resizes), (limit, limit));
+                assert_eq!(counts(), [limit; 2]);
                 assert_eq!(
                     threads.census_refusal(),
                     Some("thread census buffer kept growing during suspension")
                 );
             } else {
-                assert_eq!(result, Ok(()));
-                assert_eq!(rounds, 2);
+                assert_eq!(result, final_ip.map(|_| ()));
                 assert_eq!(resizes, 1);
+                assert_eq!(rounds, if final_ip.is_ok() { 2 } else { 1 });
+                assert_eq!(
+                    threads.contains_ip(std::slice::from_ref(&(100..116))),
+                    match final_ip {
+                        Ok(ip) => Ok(ip == 100),
+                        Err(_) => Err(ERROR_RETRY),
+                    }
+                );
+                assert_eq!(counts(), if final_ip.is_ok() { [2, 2] } else { [2, 1] });
+                if final_ip.is_err() {
+                    assert!(threads.threads.iter().all(|thread| thread.ip.is_none()));
+                }
+                threads
+                    .resume_with(|_| Ok(()), |_| false, || unreachable!())
+                    .unwrap();
+                set_ips(&[Ok(1); 2]);
+                stable(&mut threads).unwrap();
+                assert_eq!(
+                    threads.contains_ip(std::slice::from_ref(&(100..116))),
+                    Ok(false)
+                );
+                assert_eq!(counts(), if final_ip.is_ok() { [3, 3] } else { [3, 2] });
             }
-            threads
-                .resume_with(|_| Ok(()), |_| false, || unreachable!())
-                .unwrap();
-            threads.threads.clear();
-            unsafe {
-                ManuallyDrop::drop(&mut threads);
-            }
+            release(threads);
         }
     }
 
@@ -1375,6 +1525,8 @@ mod safety_tests {
                     id: handle as u32,
                     handle: handle as HANDLE,
                     suspended: handle != 2,
+                    ip: None,
+                    exited: false,
                 })
                 .collect(),
             excluded: Vec::new(),
@@ -1382,6 +1534,9 @@ mod safety_tests {
             census_required: 0,
             census_short: false,
             census_refusal: None,
+            context: AlignedContext(unsafe { std::mem::zeroed() }),
+            snapshot_valid: false,
+            diagnostics: publication::Attempt::new(),
         });
         let mut calls = [0; 3];
         let mut waits = 0;
@@ -1421,6 +1576,8 @@ mod thread_resume_policy_tests {
                     id: label as u32,
                     handle: label as HANDLE,
                     suspended: true,
+                    ip: None,
+                    exited: false,
                 })
                 .collect(),
             excluded: Vec::new(),
@@ -1428,9 +1585,15 @@ mod thread_resume_policy_tests {
             census_required: 0,
             census_short: false,
             census_refusal: None,
+            context: AlignedContext(unsafe { std::mem::zeroed() }),
+            snapshot_valid: false,
+            diagnostics: publication::Attempt::new(),
         })
     }
     fn release(mut threads: ManuallyDrop<Threads>) {
+        threads
+            .resume_with(|_| Ok(()), |_| false, || unreachable!())
+            .unwrap();
         threads.threads.clear();
         unsafe { ManuallyDrop::drop(&mut threads) };
     }

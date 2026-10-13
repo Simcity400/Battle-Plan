@@ -1524,6 +1524,8 @@ fn run(
             }
         }
     }
+    // Publication detail cannot affect the installation deadline decision.
+    stage.finish();
     if installation_error.is_none() && !crate::allocation::failed() {
         progress.step("ready", None);
         ready.set();
@@ -1568,6 +1570,7 @@ fn run(
                             "drain_complete":false, "original_bytes_verified":false,
                             "error":error, "detach_refusal":reason,
                             "installation_error":installation_error,
+                            "hook_publication":crate::hook::publication::status(),
                             "land_events":crate::land_events::status(),
                             "event_feed_detach":event_feed_detach,
                         }),
@@ -1963,6 +1966,7 @@ fn run(
             "process_start_time":process_start,"drain_complete":drain_complete,
             "error":spool_result.as_ref().err().copied(),
             "installation_error":installation_error,
+            "hook_publication":crate::hook::publication::status(),
             "restoration_error":restore_result.err(),"collector_pinned":pinned,
             "recording_stopped":true,"spool_closed":true,
             "original_bytes_verified":!pinned,
@@ -2626,6 +2630,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
     let base = status!({
         "decode_work": decode::calibration_json(),
         "hook_timing": crate::hook_timing::status(),
+        "hook_publication": crate::hook::publication::status(),
         "portrait_changes": crate::portrait_changes::status(),
         "advisor_changes": crate::advisor_changes::status(),
         "relation_changes": crate::relation_changes::status(),
