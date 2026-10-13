@@ -10,14 +10,41 @@ use std::{
 use windows_sys::Win32::{
     Foundation::GENERIC_WRITE,
     Storage::FileSystem::{
-        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, FileRenameInfoEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-        MoveFileExW, SetFileInformationByHandle,
+        DELETE, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS, FILE_RENAME_INFO,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfoEx,
+        FileRenameInfoEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+        SetFileInformationByHandle,
     },
 };
 
 /// FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS.
 const RENAME_REPLACE_POSIX: u32 = 0x1 | 0x2;
+
+/// Remove a file's name now; delete-sharing readers retain its bytes until close.
+/// Unsupported POSIX deletion is an error, with no deferred-delete fallback.
+pub fn posix_delete(path: &Path) -> io::Result<()> {
+    let directory = publication_directory(&std::path::absolute(path)?)?;
+    let file = OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path)?;
+    // FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.
+    let info = FILE_DISPOSITION_INFO_EX { Flags: 0x1 | 0x2 };
+    // The file handle and correctly sized disposition remain live for the call.
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfoEx,
+            (&info as *const FILE_DISPOSITION_INFO_EX).cast(),
+            std::mem::size_of_val(&info) as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    drop(file);
+    directory.sync_all()
+}
 
 /// Rename an open source with DELETE access to a NUL-terminated Windows path.
 /// Delete-sharing readers retain the old destination. `Ok(false)` means the

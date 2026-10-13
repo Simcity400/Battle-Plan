@@ -14,6 +14,7 @@ Each component's README describes its layout, concepts and local rules.
 | [collector](crates/collector/README.md) | Injected DLL, native observation hooks, acquisition and recording pipeline. |
 | [recorder](crates/recorder/README.md) | Attach/detach, replay finalization, inspection and save comparison. |
 | [replay](crates/replay/README.md) | Recording format, tables, branches and sample history. |
+| [store](crates/store/README.md) | Immutable prepared ranges, manifest publication and storage Clear. |
 | [installed-content](crates/installed-content/README.md) | Recorded content stack, game assets, text saves and identity verification. |
 | [shader-pipeline](crates/shader-pipeline/README.md) | Native shader compiler, persistent cache and GPU pass binding. |
 | [viewer](crates/viewer/README.md) | Native map rendering, playback, game-derived visuals and image export. |

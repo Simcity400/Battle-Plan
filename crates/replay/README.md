@@ -15,7 +15,7 @@ The shared recording contract: rows, tables, frames, sample provenance, branches
 | [container.rs](src/container.rs), [branches.rs](src/branches.rs) | Indexed compressed blocks, seek/read APIs and branch identity. |
 | [container/compaction.rs](src/container/compaction.rs) | Optimistic, never-larger recompression and frame-by-frame verification. |
 | [recorder_settings.rs](src/recorder_settings.rs) | Recorder-owned compression preference shared with the desktop app. |
-| [publication.rs](src/publication.rs) | Shared Windows POSIX rename and durable recording replacement. |
+| [publication.rs](src/publication.rs) | Shared Windows POSIX rename/delete and durable recording replacement. |
 | [spool.rs](src/spool.rs), [witness.rs](src/witness.rs) | Versioned CRC records, durability and terminal failure evidence. |
 | [identity.rs](src/identity.rs), [fixed_layout.rs](src/fixed_layout.rs) | Content identity and consumers of fixed modifier/token layouts. |
 | [acceptance.rs](src/acceptance.rs) | Synthetic capture/recovery campaign; `DOMAIN_TABLES` and direct fixtures cover every table exactly once. |
@@ -58,6 +58,8 @@ Finalization uses two streaming spool passes and compresses blocks before the sh
 Recording publication writes and syncs a `<destination>.tmp` sibling before atomic replacement; one publisher owns that fixed sibling at a time. On Windows, POSIX rename replaces a recording while readers hold it with `FILE_SHARE_READ | FILE_SHARE_DELETE`. Held readers keep the complete old revision until close; new opens see the complete new revision. A reader without delete sharing blocks publication with a sharing error. Unsupported rename errors alone select `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`; open readers can block that fallback. The rename syscall and unsupported-volume policy are shared with collector status publication.
 
 POSIX publication acquires writable source and parent-directory handles before rename, then flushes the renamed file and common parent directory before returning success. An access or pre-rename error preserves the destination. A post-rename flush error reports failure with the complete new revision already visible. The writable handles require appropriate directory permissions and can briefly block new deny-write readers until flushing completes. Process termination after temp sync leaves the old destination; after rename it leaves the new destination. These process-crash checks do not establish power-loss durability.
+
+`publication::posix_delete` removes a file name while delete-sharing readers retain its bytes until close, then flushes the parent directory. Unsupported POSIX deletion reports an error without a deferred-delete fallback. The prepared-data store uses this for Clear and unlisted-file cleanup.
 
 ## Finished recording compression
 
