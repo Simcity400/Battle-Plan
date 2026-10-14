@@ -746,14 +746,24 @@ impl Hooks {
         }
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
-        ENABLED.store(false, Ordering::SeqCst);
-        let mut hooks = crate::hook::publication_storage(self.taps.len(), enabled)
-            .map_err(|_| "experience gain hook family allocation failed")?;
-        hooks.extend(self.taps.iter_mut().map(Tap::publication_hook));
-        // A failed batch may have published a tap; retain storage until quiet.
-        self.publication_attempted |= enabled;
-        let result = Hook::set_enabled_batch(&mut hooks, enabled)
-            .map_err(|_| "experience gain hook publication failed")?;
+        if !crate::hook::shared::defer_preparation(|| {
+            ENABLED.store(false, Ordering::SeqCst);
+        }) {
+            ENABLED.store(false, Ordering::SeqCst);
+        }
+        let result = match crate::hook::shared::attach_outcome() {
+            Some(outcome) => outcome.map_err(|_| "experience gain hook publication failed")?,
+            None => {
+                let mut hooks =
+                    crate::hook::shared::publication_storage_attach(self.taps.len(), enabled)
+                        .map_err(|_| "experience gain hook family allocation failed")?;
+                hooks.extend(self.taps.iter_mut().map(Tap::publication_hook));
+                // A failed batch may have published a tap; retain storage until quiet.
+                self.publication_attempted |= enabled;
+                Hook::set_enabled_batch_attach(&mut hooks, enabled)
+                    .map_err(|_| "experience gain hook publication failed")?
+            }
+        };
         if result {
             ENABLED.store(enabled && !self.taps.is_empty(), Ordering::SeqCst);
         }

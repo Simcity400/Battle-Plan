@@ -1159,12 +1159,14 @@ impl Hooks {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
         }
-        invalidate();
+        if !crate::hook::shared::defer_preparation(invalidate) {
+            invalidate();
+        }
         let Some(hook) = self.entry.as_mut() else {
             return Ok(true);
         };
         let mut family = [hook];
-        match Hook::set_enabled_batch(&mut family, enabled) {
+        match Hook::set_enabled_batch_attach(&mut family, enabled) {
             Ok(false) => return Ok(false),
             Ok(true) => {}
             Err(reason) => {

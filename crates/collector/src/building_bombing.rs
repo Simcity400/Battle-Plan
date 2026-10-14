@@ -401,7 +401,7 @@ impl Hooks {
         }
         if let Some(hook) = &mut self.hook {
             if !hook
-                .set_enabled(enabled)
+                .set_enabled_attach(enabled)
                 .map_err(|_| "building bombing hook state change failed")?
             {
                 return Ok(false);

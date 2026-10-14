@@ -47,6 +47,10 @@ pub(crate) fn select_family(name: Option<&'static str>) {
     FAMILY.set(name);
 }
 
+pub(super) fn current_family() -> Option<&'static str> {
+    FAMILY.get()
+}
+
 #[cfg(test)]
 pub(crate) fn complete_test_attempt() {
     Attempt::new().finish();

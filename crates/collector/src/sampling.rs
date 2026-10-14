@@ -2064,6 +2064,8 @@ pub(crate) unsafe fn synthetic_callback(
 /// runs only after every live read has finished, so the recorded frame is that
 /// settled end-of-hour state.
 pub unsafe extern "system" fn tick(state: usize, commands: usize) {
+    #[cfg(feature = "worker_sampler")]
+    let sampler_callback = crate::worker_sampler::callback();
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::Hourly);
     ACTIVE.fetch_add(1, Ordering::SeqCst);
     let shared = unsafe { &*SHARED.load(Ordering::Acquire) };
@@ -2179,6 +2181,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         }
     }
     drop(admission);
+    #[cfg(feature = "worker_sampler")]
+    drop(sampler_callback);
     // Run the trampoline (this hour's tick) only after every live read finished.
     let original_begin = qpc();
     let original: unsafe extern "system" fn(usize, usize) =

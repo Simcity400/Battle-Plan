@@ -327,6 +327,8 @@ pub(crate) fn allocation_failure_exercise() -> std::io::Result<()> {
     ))?;
     #[cfg(feature = "callback_profile")]
     prove(&with_allocations_denied(crate::callback_profile::status))?;
+    #[cfg(feature = "worker_sampler")]
+    prove(&with_allocations_denied(crate::worker_sampler::status))?;
     crate::runtime::status_allocation_failure_exercise()?;
     Ok(())
 }

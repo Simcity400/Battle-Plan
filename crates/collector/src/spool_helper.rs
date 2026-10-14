@@ -87,6 +87,8 @@ impl SpoolHelper {
             .name("hoi4-spool-helper".into())
             .stack_size(crate::runtime::BACKGROUND_STACK_BYTES)
             .spawn(move || {
+                #[cfg(feature = "worker_sampler")]
+                let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
                 // SAFETY: GetCurrentThreadId has no preconditions.
                 let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
                 let _ = id_sender.send(id);
@@ -170,6 +172,10 @@ impl SpoolHelper {
 
 impl Drop for SpoolHelper {
     fn drop(&mut self) {
+        #[cfg(feature = "worker_sampler")]
+        if self.thread.is_some() {
+            crate::worker_sampler::stop_before_thread_exit();
+        }
         self.shared.lock().stop = true;
         self.shared.changed.notify_all();
         if let Some(thread) = self.thread.take() {

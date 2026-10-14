@@ -236,6 +236,15 @@ fn fault_config(mut config: Value, fault: Option<&AllocationFault>) -> Value {
     config
 }
 
+/// Keep the sampler grammar opaque to the recorder: the feature-enabled DLL
+/// owns parsing, while an ordinary DLL names and refuses a nonempty request.
+fn worker_sampler_config(mut config: Value, requested: Option<String>) -> Value {
+    if let Some(requested) = requested {
+        config["worker_sampler"] = Value::String(requested);
+    }
+    config
+}
+
 fn usage() -> String {
     #[cfg(feature = "alloc-fault-injection")]
     let fault_option = " [--alloc-fault <phase>:<ordinal>[:<committed-hours>]]";
@@ -252,7 +261,9 @@ recorder inspect <campaign.battleplan> --characters <substring> --hour <n> --bra
 {}
 {}
 {}
-{}",
+{}
+Environment: BATTLE_PLAN_WORKER_SAMPLER (comma-separated off, interval_us=<n>)
+  Forwarded verbatim to collector attach; a nonempty value requires collector feature worker_sampler.",
         crate::metrics::USAGE,
         crate::oracle::USAGE,
         crate::movement_oracle::USAGE,
@@ -864,6 +875,14 @@ pub(crate) fn capture(
         }
     }
     let config = json!({"session_id":session.id,"output_dir":directory,"replay_dir":target,"session_start":session_bytes,"ready_event":ready_name,"detach_event":detach_name,"done_event":done_name,"cancel_file":cancel_file,"content_order_note":content.order_note,"expected_mounts":expected_mounts,"mod_descriptors":content.mod_descriptors,"game_score":game_score,"operation_outcomes":operation_outcomes,"politics_capture":politics_capture});
+    let sampler = match std::env::var("BATTLE_PLAN_WORKER_SAMPLER").or_else(|_| std::env::var("HOI4_WORKER_SAMPLER")) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err("BATTLE_PLAN_WORKER_SAMPLER is not valid Unicode".into());
+        }
+    };
+    let config = worker_sampler_config(config, sampler);
     #[cfg(feature = "alloc-fault-injection")]
     let config = fault_config(config, alloc_fault);
     write_json(&bin.join("collector.json"), &config)?;
@@ -2231,6 +2250,19 @@ mod tests {
         assert_eq!(options.output, PathBuf::from("output"));
         assert_eq!(options.user, Some(PathBuf::from("user")));
         assert!(usage().contains("[--no-game-score]"));
+    }
+
+    #[test]
+    fn worker_sampler_config_preserves_environment_text_verbatim() {
+        let original = json!({"game_score": true, "output_dir": "synthetic/session"});
+        assert_eq!(worker_sampler_config(original.clone(), None), original);
+        for requested in ["", "off", r"interval_us=50"] {
+            let config = worker_sampler_config(original.clone(), Some(requested.into()));
+            assert_eq!(config["worker_sampler"], requested);
+            assert_eq!(config["game_score"], original["game_score"]);
+            assert_eq!(config["output_dir"], original["output_dir"]);
+        }
+        assert!(usage().contains("BATTLE_PLAN_WORKER_SAMPLER"));
     }
 
     #[test]

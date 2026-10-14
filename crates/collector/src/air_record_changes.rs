@@ -662,14 +662,15 @@ impl Hooks {
         if !enabled {
             TOUCHED.observing.store(false, Ordering::SeqCst);
         }
-        // Writes ran unobserved before enabling and after disabling.
-        TOUCHED.lost.store(true, Ordering::SeqCst);
         // One census and suspension for the whole family, shared with the
         // other families in a runtime round (`hook::shared`): a thread at any
         // of its sites, or in a tap, holds every site back until the next
         // attempt.
-        if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
-            .map_err(|_| "native hook state change failed")?
+        if !Hook::set_family_enabled_shared_prepared(&mut self.hooks, enabled, || {
+            // Writes ran unobserved before enabling and after disabling.
+            TOUCHED.lost.store(true, Ordering::SeqCst);
+        })
+        .map_err(|_| "native hook state change failed")?
         {
             return Ok(false);
         }

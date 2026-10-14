@@ -1113,6 +1113,10 @@ pub fn start_worker() -> Result<(), &'static str> {
             .name("hoi4-decode".into())
             .stack_size(crate::runtime::BACKGROUND_STACK_BYTES)
             .spawn(|| {
+                #[cfg(feature = "worker_sampler")]
+                let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
+                #[cfg(feature = "worker_sampler")]
+                crate::thread_cpu::register_decode();
                 WORKER_ID.store(
                     unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
                     Ordering::Release,
@@ -1698,6 +1702,10 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
             Some("decode worker lock poisoned"),
         ),
     };
+    #[cfg(feature = "worker_sampler")]
+    if worker.is_some() {
+        crate::worker_sampler::stop_before_thread_exit();
+    }
     if let Some(handle) = worker
         && handle.join().is_err()
     {

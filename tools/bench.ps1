@@ -61,6 +61,9 @@ before running, then remove them after all owned game/recorder work has stopped.
 .PARAMETER BuildPauseDir
 Directory created while a throughput plan's timed windows run, for build tools
 that hold new compiles and test runs while it exists. Omitted, no pause is held.
+.PARAMETER WorkerSampler
+Collector profiling configuration forwarded as BATTLE_PLAN_WORKER_SAMPLER to recorder candidates.
+Requires a frozen collector built with its worker_sampler feature.
 .PARAMETER CaptureRoot
 User-selected output root; defaults to LOCALAPPDATA/HOI4Replay/captures.
 .EXAMPLE
@@ -80,6 +83,7 @@ param(
     [int[]]$MenuPatchOrigin = @(1150, 440),
     [string]$CaptureRoot = (Join-Path $env:LOCALAPPDATA 'HOI4Replay\captures'),
     [string]$BuildPauseDir = '',
+    [string]$WorkerSampler = '',
     [string]$GameLock = (Join-Path $env:TEMP 'HOI4Replay\hoi4_game.lock'),
     [int]$AttachTimeoutSeconds = 300,
     # Default: keys posted, clicks borrow the foreground briefly (the UI needs real clicks),
@@ -669,9 +673,15 @@ function Start-Candidate($candidate, [string]$runDir) {
     if (@($script:game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) { throw 'A collector is already loaded; detach it first.' }
     $recording = Join-Path $runDir 'recording'
     $null = New-Item -ItemType Directory -Force -Path $recording
-    $process = Start-Process -FilePath $recorderExe -ArgumentList @('record', '--once', '--out', ('"' + $recording + '"'), '--user-dir', ('"' + $userPath + '"')) `
-        -WorkingDirectory $frozen -WindowStyle Hidden -PassThru `
-        -RedirectStandardOutput (Join-Path $runDir 'recorder.stdout.log') -RedirectStandardError (Join-Path $runDir 'recorder.stderr.log')
+    $previousSampler = $(if (Test-Path Env:BATTLE_PLAN_WORKER_SAMPLER) { $env:BATTLE_PLAN_WORKER_SAMPLER } else { $env:HOI4_WORKER_SAMPLER })
+    try {
+        if ($WorkerSampler) { $env:BATTLE_PLAN_WORKER_SAMPLER = $WorkerSampler }
+        $process = Start-Process -FilePath $recorderExe -ArgumentList @('record', '--once', '--out', ('"' + $recording + '"'), '--user-dir', ('"' + $userPath + '"')) `
+            -WorkingDirectory $frozen -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput (Join-Path $runDir 'recorder.stdout.log') -RedirectStandardError (Join-Path $runDir 'recorder.stderr.log')
+    } finally {
+        $env:BATTLE_PLAN_WORKER_SAMPLER = $previousSampler
+    }
     # Windows PowerShell reports ExitCode only if the process handle was opened before the exit.
     $null = $process.Handle
     $attached = [pscustomobject]@{ process = $process; recording = $recording; status = $null; active = $null; frozen = $frozen }

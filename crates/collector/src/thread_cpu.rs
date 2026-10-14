@@ -25,8 +25,28 @@ pub(crate) enum Role {
     SpoolHelper,
     SecondSpoolHelper,
     SpoolSizing,
+    #[cfg(feature = "worker_sampler")]
+    Sampler,
 }
-static REGISTERED: [AtomicU32; 6] = [const { AtomicU32::new(0) }; 6];
+const REGISTERED_ROLES: usize = NAMED - 1; // Decode publishes its id separately.
+static REGISTERED: [AtomicU32; REGISTERED_ROLES] = [const { AtomicU32::new(0) }; REGISTERED_ROLES];
+#[cfg(feature = "worker_sampler")]
+static REGISTERED_CREATION: [AtomicU64; REGISTERED_ROLES] =
+    [const { AtomicU64::new(0) }; REGISTERED_ROLES];
+#[cfg(feature = "worker_sampler")]
+static DECODE_CREATION: AtomicU64 = AtomicU64::new(0);
+
+/// Declared first on a sampled thread: later locals release their locks before
+/// this guard joins the sampler on every return or unwind. Never use it on the
+/// sampler itself or on the game thread, whose callback has a separate gate.
+#[cfg(feature = "worker_sampler")]
+pub(crate) struct StopOnThreadExit;
+#[cfg(feature = "worker_sampler")]
+impl Drop for StopOnThreadExit {
+    fn drop(&mut self) {
+        crate::worker_sampler::stop_before_thread_exit();
+    }
+}
 
 /// Call first on the registering thread.
 pub(crate) fn register(role: Role) {
@@ -35,10 +55,77 @@ pub(crate) fn register(role: Role) {
 
 /// Register a thread that published its id to its owner.
 pub(crate) fn register_id(role: Role, id: u32) {
+    #[cfg(feature = "worker_sampler")]
+    REGISTERED_CREATION[role as usize]
+        .store(registered_creation_time(id).unwrap_or(0), Ordering::Release);
     REGISTERED[role as usize].store(id, Ordering::Release);
 }
 
-const NAMED: usize = 7;
+/// Capture identity at registration, before a delayed sampler discovery can
+/// open an unrelated thread that has reused an exited collector thread's id.
+#[cfg(feature = "worker_sampler")]
+fn registered_creation_time(id: u32) -> Option<u64> {
+    if id == 0 {
+        return None;
+    }
+    let handle = unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, id) };
+    if handle.is_null() {
+        return None;
+    }
+    let [mut created, mut exited, mut kernel, mut user] = [ZERO; 4];
+    let read =
+        unsafe { GetThreadTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) != 0 };
+    unsafe { CloseHandle(handle) };
+    read.then(|| filetime(created))
+        .filter(|created| *created != 0)
+}
+
+/// Called by the decode worker before it publishes its id with Release.
+#[cfg(feature = "worker_sampler")]
+pub(crate) fn register_decode() {
+    DECODE_CREATION.store(
+        registered_creation_time(unsafe { GetCurrentThreadId() }).unwrap_or(0),
+        Ordering::Release,
+    );
+}
+
+/// The sampler refuses a named target whose registration identity is unavailable
+/// or differs from the creation time of its freshly opened thread handle.
+#[cfg(feature = "worker_sampler")]
+pub(crate) fn registered_creation(role: &str, id: u32) -> Option<u64> {
+    if id == 0 {
+        return None;
+    }
+    if role == "decode" {
+        if crate::decode::worker_id() != id {
+            return None;
+        }
+        let created = DECODE_CREATION.load(Ordering::Acquire);
+        return (created != 0 && crate::decode::worker_id() == id).then_some(created);
+    }
+    let slot = match role {
+        "runtime" => Role::Runtime,
+        "spool" => Role::Spool,
+        "status" => Role::Status,
+        "spool_helper" => Role::SpoolHelper,
+        "second_spool_helper" => Role::SecondSpoolHelper,
+        "spool_sizing" => Role::SpoolSizing,
+        "sampler" => Role::Sampler,
+        _ => return None,
+    } as usize;
+    let registered = &REGISTERED[slot];
+    if registered.load(Ordering::Acquire) != id {
+        return None;
+    }
+    let created = REGISTERED_CREATION[slot].load(Ordering::Acquire);
+    (created != 0 && registered.load(Ordering::Acquire) == id).then_some(created)
+}
+
+const BASE_NAMED: usize = 7;
+#[cfg(not(feature = "worker_sampler"))]
+const NAMED: usize = BASE_NAMED;
+#[cfg(feature = "worker_sampler")]
+const NAMED: usize = BASE_NAMED + 1;
 const THREADS: usize = NAMED + crate::acquisition::MAX_WORKERS;
 
 /// The creation time first seen for an id; a later thread reusing that id
@@ -175,7 +262,10 @@ fn sample_status(sample: Sample, hz: Option<u64>) -> impl serde::Serialize {
     })
 }
 
+#[cfg(not(feature = "worker_sampler"))]
 const SCOPE: &str = "cumulative CPU of each collector thread (runtime, decode, spool, status, the spool's two conversion helpers and its sizing thread, and acquisition workers) since it started, read when this status was built: cycles from QueryThreadCycleTime (cycle_ns converts them with hook_timing's tsc_hz), user/kernel from GetThreadTimes at scheduler-tick resolution. collector_total sums the available threads; process is the whole game process. Hooked game-thread time inside collector callbacks is in hook_timing, not here. A thread that exited or whose id now names another thread is unavailable";
+#[cfg(feature = "worker_sampler")]
+const SCOPE: &str = "cumulative CPU of each collector thread (runtime, decode, spool, status, the spool's two conversion helpers and its sizing thread, acquisition workers, and sampler) since it started, read when this status was built: cycles from QueryThreadCycleTime (cycle_ns converts them with hook_timing's tsc_hz), user/kernel from GetThreadTimes at scheduler-tick resolution. collector_total sums the available threads; process is the whole game process. Hooked game-thread time inside collector callbacks is in hook_timing, not here. A thread that exited or whose id now names another thread is unavailable";
 
 fn status_from(
     samples: [Option<Sample>; THREADS],
@@ -196,35 +286,53 @@ fn status_from(
     })
 }
 
+macro_rules! named_threads {
+    () => {
+        [
+            (
+                "runtime",
+                REGISTERED[Role::Runtime as usize].load(Ordering::Acquire),
+            ),
+            ("decode", crate::decode::worker_id()),
+            (
+                "spool",
+                REGISTERED[Role::Spool as usize].load(Ordering::Acquire),
+            ),
+            (
+                "status",
+                REGISTERED[Role::Status as usize].load(Ordering::Acquire),
+            ),
+            (
+                "spool_helper",
+                REGISTERED[Role::SpoolHelper as usize].load(Ordering::Acquire),
+            ),
+            (
+                "second_spool_helper",
+                REGISTERED[Role::SecondSpoolHelper as usize].load(Ordering::Acquire),
+            ),
+            (
+                "spool_sizing",
+                REGISTERED[Role::SpoolSizing as usize].load(Ordering::Acquire),
+            ),
+            #[cfg(feature = "worker_sampler")]
+            (
+                "sampler",
+                REGISTERED[Role::Sampler as usize].load(Ordering::Acquire),
+            ),
+        ]
+    };
+}
+
+/// Snapshot the named sampling targets without allocation; never include the
+/// sampler itself. A zero id means the role has not registered yet.
+#[cfg(feature = "worker_sampler")]
+pub(crate) fn registered() -> impl Iterator<Item = (&'static str, u32)> {
+    named_threads!().into_iter().take(BASE_NAMED)
+}
+
 /// status.json `collector_thread_cpu`. `acquisition` lists the worker ids.
 pub(crate) fn status(acquisition: &[u32]) -> impl serde::Serialize + use<> {
-    let named = [
-        (
-            "runtime",
-            REGISTERED[Role::Runtime as usize].load(Ordering::Acquire),
-        ),
-        ("decode", crate::decode::worker_id()),
-        (
-            "spool",
-            REGISTERED[Role::Spool as usize].load(Ordering::Acquire),
-        ),
-        (
-            "status",
-            REGISTERED[Role::Status as usize].load(Ordering::Acquire),
-        ),
-        (
-            "spool_helper",
-            REGISTERED[Role::SpoolHelper as usize].load(Ordering::Acquire),
-        ),
-        (
-            "second_spool_helper",
-            REGISTERED[Role::SecondSpoolHelper as usize].load(Ordering::Acquire),
-        ),
-        (
-            "spool_sizing",
-            REGISTERED[Role::SpoolSizing as usize].load(Ordering::Acquire),
-        ),
-    ];
+    let named = named_threads!();
     let workers = acquisition
         .iter()
         .take(crate::acquisition::MAX_WORKERS)

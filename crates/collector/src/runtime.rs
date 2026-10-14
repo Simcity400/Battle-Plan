@@ -86,6 +86,8 @@ struct Config {
     mod_descriptors: Vec<String>,
     #[serde(default)]
     alloc_fault: Option<AllocFault>,
+    #[serde(default)]
+    worker_sampler: Option<String>,
     #[serde(default = "game_score_enabled")]
     game_score: bool,
 }
@@ -126,6 +128,15 @@ pub(crate) fn configure_alloc_fault(fault: Option<&AllocFault>) -> Result<(), &'
 }
 fn observer_default() -> bool {
     true
+}
+
+#[cfg(not(feature = "worker_sampler"))]
+fn refuse_worker_sampler(config: Option<&str>) -> Result<(), &'static str> {
+    if config.is_some_and(|value| !value.is_empty()) {
+        Err("worker_sampler requested but collector built without the worker_sampler feature")
+    } else {
+        Ok(())
+    }
 }
 
 struct Event(HANDLE);
@@ -566,12 +577,20 @@ fn run(
     // Calibrate hook timing over the whole attachment, before any hook exists.
     crate::hook_timing::start();
     crate::thread_cpu::register(crate::thread_cpu::Role::Runtime);
+    // Arm early-exit tracking before creating any acquisition, decode, spool,
+    // status, helper or sizing worker; sampler startup itself comes later.
+    #[cfg(feature = "worker_sampler")]
+    crate::worker_sampler::prepare();
     let dll_path = module_path(module)?;
     let config: Config = serde_json::from_slice(
         &fs::read(dll_path.with_file_name("collector.json"))
             .map_err(|e| error_reason(e, "collector config read failed"))?,
     )
     .map_err(|_| "collector JSON config invalid")?;
+    // A diagnostic request must not silently become an ordinary capture. Refuse
+    // before starting any acquisition, decode, spool or helper worker.
+    #[cfg(not(feature = "worker_sampler"))]
+    refuse_worker_sampler(config.worker_sampler.as_deref())?;
     let mut input = Decoder::new(&config.session_start);
     let session = SessionStart::decode(&mut input)
         .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
@@ -1084,6 +1103,10 @@ fn run(
     let teardown_status = Arc::new(OnceLock::new());
     let spool_teardown_status = Arc::clone(&teardown_status);
     let session_id = session.id;
+    #[cfg(feature = "worker_sampler")]
+    let sampler_config = config.worker_sampler.clone();
+    #[cfg(feature = "worker_sampler")]
+    let sampler_output = config.output_dir.clone();
     let spool = std::thread::Builder::new()
         .name("hoi4-spool".into())
         .stack_size(BACKGROUND_STACK_BYTES)
@@ -1108,6 +1131,27 @@ fn run(
     }
     owned_workers.extend([spool_id.load(Ordering::Acquire), decode::worker_id()]);
     progress.step("workers_started", None);
+    // The sampler starts paused: hook publication below suspends the process,
+    // so no sampler suspension may overlap it. Activate only once every hook
+    // is installed. Startup errors use the same drain as hook-install errors.
+    #[cfg(feature = "worker_sampler")]
+    let mut sampler = match crate::worker_sampler::start(
+        sampler_config.as_deref(),
+        &sampler_output,
+        acquisition.thread_ids(),
+    ) {
+        Ok(sampler) => {
+            let id = crate::worker_sampler::thread_id();
+            if id != 0 {
+                owned_workers.push(id);
+            }
+            Some(sampler)
+        }
+        Err(error) => {
+            installation_error.get_or_insert_with(|| installation_message(error));
+            None
+        }
+    };
     if crate::allocation::failed() {
         installation_error = Some("collector allocation failed before hooks");
     }
@@ -1118,392 +1162,143 @@ fn run(
     let stage = crate::progress::Stage::new(&progress, "world_lifetime");
     while installation_error.is_none() && !crate::allocation::failed() {
         stage.set("world_lifetime");
-        match world_hooks
-            .set_enabled(true)
-            .and_then(|ready| {
-                if ready {
-                    stage.set("fuel_awards");
-                    fuel_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("advisor_changes");
-                    advisor_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("portrait_changes");
-                    portrait_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("relation_changes");
-                    relation_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("history_changes");
-                    history_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("flag_changes");
-                    flag_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("building_changes");
-                    building_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("advisor_pool_changes");
-                    advisor_pool_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("party_leader_changes");
-                    party_leader_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("variable_changes");
-                    variable_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("party_changes");
-                    party_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("wing_changes");
-                    wing_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("roster_changes");
-                    roster_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("political_status_changes");
-                    political_status_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("mission_changes");
-                    mission_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("rail_changes");
-                    rail_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("territory_changes");
-                    territory_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("army_stat_changes");
-                    army_stat_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("country_input_changes");
-                    country_input_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("raid_changes");
-                    raid_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("naval_tree_changes");
-                    naval_tree_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("unit_leader_changes");
-                    unit_leader_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("census_changes");
-                    census_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("world_input_changes");
-                    world_input_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("local_subunit_changes");
-                    local_subunit_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("province_unit_changes");
-                    province_unit_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("air_record_changes");
-                    air_record_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("template_changes");
-                    template_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("ship_model_changes");
-                    ship_model_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("air_base_carry_changes");
-                    air_base_carry_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("opinion_changes");
-                    opinion_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("line_output");
-                    line_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("peace_settlements");
-                    peace_hooks
-                        .set_enabled(true)
-                        .map_err(|_| "peace hook installation failed")
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("land_events");
-                    land_hooks
-                        .set_enabled(true)
-                        .map_err(|_| "land event hook installation failed")
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("construction_ic");
-                    construction_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("logistics_balance");
-                    logistics_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("combat_log_prune");
-                    prune_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("equipment_destruction");
-                    destruction_hooks
-                        .set_enabled(true)
-                        .map_err(|_| "equipment destruction hook installation failed")
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("event_feed_observer");
-                    event_feed_hooks.set_enabled(true).and_then(|ready| {
-                        if ready {
-                            stage.set("experience_gains");
-                            experience_hooks.set_enabled(true)
-                        } else {
-                            Ok(false)
-                        }
-                    })
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("operation_outcomes");
-                    operation_hooks
-                        .set_enabled(true)
-                        .map_err(|_| "operation outcome hook installation failed")
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("politics_changes");
-                    politics_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("naval_result_sources");
-                    naval_result_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("air_losses");
-                    air_loss_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("building_bombing");
-                    bombing_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("nuclear_strikes");
-                    nuclear_hooks.set_enabled(true)
-                } else {
-                    Ok(false)
-                }
-            })
-            .and_then(|ready| {
-                if ready {
-                    stage.set("hourly");
-                    hook.set_enabled(true)
-                        .map_err(|_| "hourly hook installation failed")
-                } else {
-                    Ok(false)
-                }
-            }) {
+        match (|| {
+            if !install_attach_batch(
+                &stage,
+                &mut [
+                    ("world_lifetime", &mut || world_hooks.set_enabled(true)),
+                    ("fuel_awards", &mut || fuel_hooks.set_enabled(true)),
+                    ("advisor_changes", &mut || advisor_hooks.set_enabled(true)),
+                    ("portrait_changes", &mut || portrait_hooks.set_enabled(true)),
+                    ("relation_changes", &mut || relation_hooks.set_enabled(true)),
+                    ("history_changes", &mut || history_hooks.set_enabled(true)),
+                    ("flag_changes", &mut || flag_hooks.set_enabled(true)),
+                    ("building_changes", &mut || building_hooks.set_enabled(true)),
+                    ("advisor_pool_changes", &mut || {
+                        advisor_pool_hooks.set_enabled(true)
+                    }),
+                    ("party_leader_changes", &mut || {
+                        party_leader_hooks.set_enabled(true)
+                    }),
+                    ("variable_changes", &mut || variable_hooks.set_enabled(true)),
+                    ("party_changes", &mut || party_hooks.set_enabled(true)),
+                    ("wing_changes", &mut || wing_hooks.set_enabled(true)),
+                    ("roster_changes", &mut || roster_hooks.set_enabled(true)),
+                    ("political_status_changes", &mut || {
+                        political_status_hooks.set_enabled(true)
+                    }),
+                    ("mission_changes", &mut || mission_hooks.set_enabled(true)),
+                    ("rail_changes", &mut || rail_hooks.set_enabled(true)),
+                    ("territory_changes", &mut || {
+                        territory_hooks.set_enabled(true)
+                    }),
+                    ("army_stat_changes", &mut || {
+                        army_stat_hooks.set_enabled(true)
+                    }),
+                    ("country_input_changes", &mut || {
+                        country_input_hooks.set_enabled(true)
+                    }),
+                    ("raid_changes", &mut || raid_hooks.set_enabled(true)),
+                    ("naval_tree_changes", &mut || {
+                        naval_tree_hooks.set_enabled(true)
+                    }),
+                    ("unit_leader_changes", &mut || {
+                        unit_leader_hooks.set_enabled(true)
+                    }),
+                    ("census_changes", &mut || census_hooks.set_enabled(true)),
+                    ("world_input_changes", &mut || {
+                        world_input_hooks.set_enabled(true)
+                    }),
+                    ("local_subunit_changes", &mut || {
+                        local_subunit_hooks.set_enabled(true)
+                    }),
+                    ("province_unit_changes", &mut || {
+                        province_unit_hooks.set_enabled(true)
+                    }),
+                    ("air_record_changes", &mut || {
+                        air_record_hooks.set_enabled(true)
+                    }),
+                    ("template_changes", &mut || template_hooks.set_enabled(true)),
+                    ("ship_model_changes", &mut || {
+                        ship_model_hooks.set_enabled(true)
+                    }),
+                    ("air_base_carry_changes", &mut || {
+                        air_base_carry_hooks.set_enabled(true)
+                    }),
+                    ("opinion_changes", &mut || opinion_hooks.set_enabled(true)),
+                    ("line_output", &mut || line_hooks.set_enabled(true)),
+                    ("peace_settlements", &mut || {
+                        peace_hooks
+                            .set_enabled(true)
+                            .map_err(|_| "peace hook installation failed")
+                    }),
+                ],
+            )? {
+                return Ok(false);
+            }
+            stage.set("land_events");
+            if !land_hooks
+                .set_enabled(true)
+                .map_err(|_| "land event hook installation failed")?
+            {
+                return Ok(false);
+            }
+            stage.set("construction_ic");
+            if !construction_hooks.set_enabled(true)? {
+                return Ok(false);
+            }
+            stage.set("logistics_balance");
+            if !logistics_hooks.set_enabled(true)? {
+                return Ok(false);
+            }
+            stage.set("combat_log_prune");
+            if !prune_hooks.set_enabled(true)? {
+                return Ok(false);
+            }
+            stage.set("equipment_destruction");
+            if !destruction_hooks
+                .set_enabled(true)
+                .map_err(|_| "equipment destruction hook installation failed")?
+            {
+                return Ok(false);
+            }
+            if !install_attach_batch(
+                &stage,
+                &mut [
+                    ("event_feed_observer", &mut || {
+                        event_feed_hooks.set_enabled(true)
+                    }),
+                    ("experience_gains", &mut || {
+                        experience_hooks.set_enabled(true)
+                    }),
+                    ("operation_outcomes", &mut || {
+                        operation_hooks
+                            .set_enabled(true)
+                            .map_err(|_| "operation outcome hook installation failed")
+                    }),
+                    ("politics_changes", &mut || politics_hooks.set_enabled(true)),
+                ],
+            )? {
+                return Ok(false);
+            }
+            stage.set("naval_result_sources");
+            if !naval_result_hooks.set_enabled(true)? {
+                return Ok(false);
+            }
+            if !install_attach_batch(
+                &stage,
+                &mut [
+                    ("air_losses", &mut || air_loss_hooks.set_enabled(true)),
+                    ("building_bombing", &mut || bombing_hooks.set_enabled(true)),
+                    ("nuclear_strikes", &mut || nuclear_hooks.set_enabled(true)),
+                ],
+            )? {
+                return Ok(false);
+            }
+            stage.set("hourly");
+            hook.set_enabled(true)
+                .map_err(|_| "hourly hook installation failed")
+        })() {
             Ok(true) => break,
             Ok(false) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
             // Recorded in status and, as the terminal error, in
@@ -1526,6 +1321,14 @@ fn run(
     }
     // Publication detail cannot affect the installation deadline decision.
     stage.finish();
+    #[cfg(feature = "worker_sampler")]
+    if installation_error.is_none()
+        && !crate::allocation::failed()
+        && let Some(sampler) = sampler.as_mut()
+        && let Err(error) = sampler.activate()
+    {
+        installation_error = Some(error);
+    }
     if installation_error.is_none() && !crate::allocation::failed() {
         progress.step("ready", None);
         ready.set();
@@ -1550,6 +1353,20 @@ fn run(
     let decode_stopped_early = installation_error.is_none() && decode::worker_finished();
     let detach_started = Instant::now();
     progress.step("detach_requested", None);
+    // Join before any hook-restoration suspension or sampled worker join. This
+    // also covers every attach failure after the sampler was started; no fallible
+    // operation returns early between startup and this common teardown path.
+    #[cfg(feature = "worker_sampler")]
+    if let Some(sampler) = sampler.as_mut() {
+        let id = crate::worker_sampler::thread_id();
+        let samples = sampler.stop();
+        // An exited sampler no longer qualifies for worker exclusions: Windows
+        // may reuse its id before the observer quiescence census below.
+        if id != 0 {
+            owned_workers.retain(|worker| *worker != id);
+        }
+        progress.step("sampler_stopped", Some(samples));
+    }
     let mut event_feed_detach = None;
     // Retain every callback, worker and frame owner on refusal. Keep an earlier
     // terminal fault separate from the new stop diagnostic.
@@ -1563,18 +1380,20 @@ fn run(
                 shared.cancel_buffer_wait.store(true, Ordering::Release);
                 status_writer.finish();
                 if !crate::allocation::failed() {
-                    let _ = write_status(
-                        &status_path,
-                        &crate::status::status!({
-                            "state":"detach_refused", "session":session_id,
-                            "drain_complete":false, "original_bytes_verified":false,
-                            "error":error, "detach_refusal":reason,
-                            "installation_error":installation_error,
-                            "hook_publication":crate::hook::publication::status(),
-                            "land_events":crate::land_events::status(),
-                            "event_feed_detach":event_feed_detach,
-                        }),
-                    );
+                    let status = crate::status::status!({
+                        "state":"detach_refused", "session":session_id,
+                        "drain_complete":false, "original_bytes_verified":false,
+                        "error":error, "detach_refusal":reason,
+                        "installation_error":installation_error,
+                        "hook_publication":crate::hook::publication::status(),
+                        "land_events":crate::land_events::status(),
+                        "event_feed_detach":event_feed_detach,
+                    });
+                    #[cfg(feature = "worker_sampler")]
+                    let status = status.join(crate::status::status!({
+                        "worker_sampler":crate::worker_sampler::status(),
+                    }));
+                    let _ = write_status(&status_path, &status);
                     let _ = fs::write(dll_path.with_file_name("collector.error.txt"), error);
                 }
                 std::mem::forget((
@@ -1973,6 +1792,10 @@ fn run(
             "active_callbacks":if pinned { None } else { Some(0_u64) },
             "event_feed_detach":event_feed_detach,
         });
+        #[cfg(feature = "worker_sampler")]
+        let status = status.join(crate::status::status!({
+            "worker_sampler":crate::worker_sampler::status(),
+        }));
         let write = if drain_complete {
             if let Some((mut bytes, directories)) = terminal_status {
                 append_event_feed_detach_status(&mut bytes, event_feed_detach)
@@ -1988,6 +1811,10 @@ fn run(
             crate::allocation::observe(&error);
             add_terminal_error(&mut spool_result, "terminal status write failed");
         }
+    }
+    #[cfg(feature = "worker_sampler")]
+    if restore_result.is_ok() {
+        crate::worker_sampler::release();
     }
     progress.step("done", None);
     // Closed before done, so the recorder may remove the session directory.
@@ -2365,6 +2192,51 @@ impl RestoreFamily {
     ];
 }
 
+type AttachFamily<'a> = (
+    &'static str,
+    &'a mut dyn FnMut() -> Result<bool, &'static str>,
+);
+
+/// Collect one-publication families, then report their outcomes in the
+/// original chain order. A collect error ends the candidate prefix; report
+/// keeps each family's original refusal mapping and post-write bookkeeping.
+fn install_attach_batch(
+    stage: &crate::progress::Stage<'_>,
+    families: &mut [AttachFamily<'_>],
+) -> Result<bool, &'static str> {
+    let mut round = crate::hook::shared::Round::collect_attach();
+    let mut collect_error = None;
+    if let Some(round) = &mut round {
+        for (index, (name, install)) in families.iter_mut().enumerate() {
+            crate::hook::publication::select_family(Some(*name));
+            let _ = crate::hook::shared::take_collect_allocation_failure();
+            let outcome = install();
+            let allocation_failure = crate::hook::shared::take_collect_allocation_failure();
+            if let Err(reason) = outcome {
+                collect_error = Some((index, reason, allocation_failure));
+                break;
+            }
+        }
+        round.publish();
+    }
+    let report_count = collect_error.map_or(families.len(), |(index, _, _)| index);
+    for (name, install) in families.iter_mut().take(report_count) {
+        stage.set(name);
+        if !install()? {
+            return Ok(false);
+        }
+    }
+    if let Some((index, reason, allocation_failure)) = collect_error {
+        stage.set(families[index].0);
+        crate::hook::shared::prepare_refused_family(families[index].0);
+        if allocation_failure {
+            let _ = engine::allocation::oom();
+        }
+        return Err(reason);
+    }
+    Ok(true)
+}
+
 fn world_restore_ready(restored: &[bool; RestoreFamily::ALL.len()], active: bool) -> bool {
     !active
         && restored[..RestoreFamily::WorldLifetime as usize]
@@ -2701,6 +2573,8 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "fuel_award_tags": crate::fuel_awards::tag_profile(),
         "fuel_award_tags_scope": "diagnostic: every fuel tap callback since attach by tap (BEGIN, END, the five land receipts, naval, air, reset) as [calls, ns], TSC-timed inside the callback, so the tap bridge and relay lie outside",
     }));
+    #[cfg(feature = "worker_sampler")]
+    let base = base.join(status!({"worker_sampler": crate::worker_sampler::status()}));
     #[cfg(feature = "advisor_profile")]
     let base = base.join(
         status!({"advisor_profile": crate::extended::characters::advisors::profile::status()}),
@@ -4013,6 +3887,10 @@ fn spool_loop(
     writer: crate::status_writer::StatusHandle,
     teardown_status: &OnceLock<TeardownStatus>,
 ) -> Result<SpoolOutcome, &'static str> {
+    // This local drops before the owned processor/sizing parameters, so an
+    // early return or unwind joins the sampler before either owner joins helpers.
+    #[cfg(feature = "worker_sampler")]
+    let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
     let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
     let live = unsafe { LiveMemory::new() };
     let mut last_warning = None;
@@ -4712,6 +4590,10 @@ impl SizingThread {
 
 impl Drop for SizingThread {
     fn drop(&mut self) {
+        #[cfg(feature = "worker_sampler")]
+        if self.thread.is_some() {
+            crate::worker_sampler::stop_before_thread_exit();
+        }
         self.sizing.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
             thread.thread().unpark();
@@ -4721,6 +4603,8 @@ impl Drop for SizingThread {
 }
 
 fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
+    #[cfg(feature = "worker_sampler")]
+    let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
     let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
     let Some(mut state) = lock(&sizing.state).take() else {
         return;
@@ -5297,6 +5181,462 @@ mod equipment_destruction_tests;
 mod tests {
     use super::*;
 
+    static ATTACH_PREPARATIONS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
+
+    fn prepare_attach_first() {
+        ATTACH_PREPARATIONS[0].fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn prepare_attach_middle() {
+        ATTACH_PREPARATIONS[1].fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn prepare_attach_later() {
+        ATTACH_PREPARATIONS[2].fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe extern "system" fn attach_original() -> usize {
+        7
+    }
+
+    unsafe extern "system" fn attach_callback() -> usize {
+        19
+    }
+
+    fn attach_fixture_hook(
+        code: &crate::hook::TestCode,
+        offset: usize,
+        flight: Option<&'static AtomicUsize>,
+    ) -> (usize, [u8; 16], Hook) {
+        let (site, bytes) = code.stub(offset, attach_original as *const () as usize);
+        let callback = attach_callback as *const () as usize;
+        let hook = if let Some(in_flight) = flight {
+            unsafe {
+                Hook::new_with_safety(
+                    site,
+                    callback,
+                    bytes,
+                    crate::hook::TapSafety {
+                        in_flight,
+                        stub: callback..callback + 1,
+                    },
+                )
+            }
+        } else {
+            unsafe { Hook::new(site, callback, bytes) }
+        }
+        .unwrap();
+        (site, bytes, hook)
+    }
+
+    fn attach_test_progress() -> crate::progress::Progress {
+        // An absent directory gives this stage no file, without creating
+        // capture or progress files in the worktree.
+        let absent = std::env::temp_dir().join(format!(
+            "hoi4-attach-stage-{}-{:?}/absent",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        crate::progress::Progress::open(&absent)
+    }
+
+    #[test]
+    fn attach_speculative_storage_failure_stays_nonterminal_behind_a_busy_family() {
+        use std::cell::Cell;
+
+        static FLIGHT: AtomicUsize = AtomicUsize::new(0);
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!crate::allocation::failed());
+        {
+            let _round = crate::hook::shared::Round::collect_attach().unwrap();
+            crate::hook::publication::select_family(Some("runtime_classified_overflow"));
+            // Capacity overflow exercises classification without changing
+            // allocator hooks or attempting a large allocation.
+            let error = crate::hook::shared::publication_storage_attach::<u8>(usize::MAX, true)
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+            assert!(crate::hook::shared::take_collect_allocation_failure());
+            assert!(!crate::hook::shared::take_collect_allocation_failure());
+            assert!(!crate::allocation::failed());
+        }
+        let code = crate::hook::TestCode::new();
+        let (_, _, ready_hook) = attach_fixture_hook(&code, 0, None);
+        let (_, _, busy_hook) = attach_fixture_hook(&code, 64, Some(&FLIGHT));
+        let mut ready = [ready_hook];
+        let mut busy = [busy_hook];
+        let later_calls = Cell::new(0);
+        let progress = attach_test_progress();
+        let stage = crate::progress::Stage::new(&progress, "runtime_allocation_ready");
+        FLIGHT.store(1, Ordering::SeqCst);
+        let suspensions = crate::hook::SUSPENSIONS.with(Cell::get);
+        assert_eq!(
+            install_attach_batch(
+                &stage,
+                &mut [
+                    ("runtime_allocation_ready", &mut || {
+                        Hook::set_family_enabled_shared(&mut ready, true)
+                            .map_err(|_| "ready publication failed")
+                    }),
+                    ("runtime_allocation_busy", &mut || {
+                        Hook::set_family_enabled_shared(&mut busy, true)
+                            .map_err(|_| "busy publication failed")
+                    }),
+                    ("runtime_allocation_later", &mut || {
+                        later_calls.set(later_calls.get() + 1);
+                        crate::hook::shared::publication_storage_attach::<u8>(usize::MAX, true)
+                            .map_err(|_| "later publication storage failed")?;
+                        Ok(true)
+                    }),
+                ],
+            ),
+            Ok(false),
+        );
+        assert_eq!(stage.get(), "runtime_allocation_busy");
+        assert_eq!(later_calls.get(), 1);
+        assert!(ready[0].is_enabled());
+        assert!(!busy[0].is_enabled());
+        assert!(!crate::allocation::failed());
+        assert!(!crate::hook::shared::take_collect_allocation_failure());
+        assert_eq!(crate::hook::SUSPENSIONS.with(Cell::get) - suspensions, 1);
+        FLIGHT.store(0, Ordering::SeqCst);
+        crate::hook::publication::select_family(None);
+        assert_eq!(Hook::set_family_enabled(&mut ready, false), Ok(true));
+    }
+
+    #[test]
+    fn attach_collect_refusal_reports_the_earlier_prefix_without_retrying_it() {
+        use std::cell::Cell;
+
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for prepared in &ATTACH_PREPARATIONS {
+            prepared.store(0, Ordering::SeqCst);
+        }
+        let code = crate::hook::TestCode::new();
+        let (_, _, first_hook) = attach_fixture_hook(&code, 0, None);
+        let (_, _, second_hook) = attach_fixture_hook(&code, 64, None);
+        let mut first = [first_hook];
+        let mut second = [second_hook];
+        let first_posts = Cell::new(0);
+        let second_posts = Cell::new(0);
+        let refused_calls = Cell::new(0);
+        let later_calls = Cell::new(0);
+        let progress = attach_test_progress();
+        let stage = crate::progress::Stage::new(&progress, "runtime_collect_first");
+        let suspensions = crate::hook::SUSPENSIONS.with(Cell::get);
+        assert_eq!(
+            install_attach_batch(
+                &stage,
+                &mut [
+                    ("runtime_collect_first", &mut || {
+                        let ready = Hook::set_family_enabled_shared_prepared(
+                            &mut first,
+                            true,
+                            prepare_attach_first,
+                        )
+                        .map_err(|_| "first publication failed")?;
+                        if ready {
+                            first_posts.set(first_posts.get() + 1);
+                        }
+                        Ok(ready)
+                    }),
+                    ("runtime_collect_second", &mut || {
+                        let ready = Hook::set_family_enabled_shared(&mut second, true)
+                            .map_err(|_| "second publication failed")?;
+                        if ready {
+                            second_posts.set(second_posts.get() + 1);
+                        }
+                        Ok(ready)
+                    }),
+                    ("runtime_collect_refused", &mut || {
+                        if !crate::hook::shared::defer_preparation(prepare_attach_middle) {
+                            prepare_attach_middle();
+                        }
+                        refused_calls.set(refused_calls.get() + 1);
+                        if refused_calls.get() == 1 {
+                            Err("synthetic preparation refused")
+                        } else {
+                            Ok(true)
+                        }
+                    }),
+                    ("runtime_collect_later", &mut || {
+                        later_calls.set(later_calls.get() + 1);
+                        Ok(true)
+                    }),
+                ],
+            ),
+            Err("synthetic preparation refused"),
+        );
+        assert_eq!(stage.get(), "runtime_collect_refused");
+        assert_eq!(
+            refused_calls.get(),
+            1,
+            "the refusal cannot be retried in report"
+        );
+        assert_eq!(later_calls.get(), 0);
+        assert_eq!(first_posts.get(), 1);
+        assert_eq!(second_posts.get(), 1);
+        assert_eq!(ATTACH_PREPARATIONS[0].load(Ordering::SeqCst), 1);
+        assert_eq!(ATTACH_PREPARATIONS[1].load(Ordering::SeqCst), 1);
+        assert_eq!(ATTACH_PREPARATIONS[2].load(Ordering::SeqCst), 0);
+        assert!(first[0].is_enabled() && second[0].is_enabled());
+        assert_eq!(crate::hook::SUSPENSIONS.with(Cell::get) - suspensions, 1);
+        crate::hook::publication::select_family(None);
+        for family in [&mut first, &mut second] {
+            assert_eq!(Hook::set_family_enabled(family, false), Ok(true));
+        }
+    }
+
+    #[test]
+    fn attach_busy_prefix_precedes_a_later_collect_refusal_and_retries_in_order() {
+        use std::cell::Cell;
+
+        static FLIGHT: AtomicUsize = AtomicUsize::new(0);
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let code = crate::hook::TestCode::new();
+        let (_, _, first_hook) = attach_fixture_hook(&code, 0, None);
+        let (middle_site, middle_bytes, middle_hook) =
+            attach_fixture_hook(&code, 64, Some(&FLIGHT));
+        let (later_site, later_bytes, later_hook) = attach_fixture_hook(&code, 128, None);
+        let mut first = [first_hook];
+        let mut middle = [middle_hook];
+        let mut later = [later_hook];
+        let collect_refused = Cell::new(true);
+        let refused_calls = Cell::new(0);
+        let later_posts = Cell::new(0);
+        let progress = attach_test_progress();
+        let stage = crate::progress::Stage::new(&progress, "runtime_busy_first");
+        FLIGHT.store(1, Ordering::SeqCst);
+        let suspensions = crate::hook::SUSPENSIONS.with(Cell::get);
+        let mut install = || {
+            install_attach_batch(
+                &stage,
+                &mut [
+                    ("runtime_busy_first", &mut || {
+                        Hook::set_family_enabled_shared(&mut first, true)
+                            .map_err(|_| "first publication failed")
+                    }),
+                    ("runtime_busy_middle", &mut || {
+                        Hook::set_family_enabled_shared(&mut middle, true)
+                            .map_err(|_| "middle publication failed")
+                    }),
+                    ("runtime_busy_refused", &mut || {
+                        refused_calls.set(refused_calls.get() + 1);
+                        if collect_refused.get() {
+                            Err("later preparation refused")
+                        } else {
+                            Ok(true)
+                        }
+                    }),
+                    ("runtime_busy_later", &mut || {
+                        let ready = Hook::set_family_enabled_shared(&mut later, true)
+                            .map_err(|_| "later publication failed")?;
+                        if ready {
+                            later_posts.set(later_posts.get() + 1);
+                        }
+                        Ok(ready)
+                    }),
+                ],
+            )
+        };
+        assert_eq!(install(), Ok(false));
+        assert_eq!(stage.get(), "runtime_busy_middle");
+        assert_eq!(refused_calls.get(), 1);
+        assert_eq!(later_posts.get(), 0);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(middle_site as *const u8, 16) },
+            middle_bytes,
+        );
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(later_site as *const u8, 16) },
+            later_bytes,
+        );
+        FLIGHT.store(0, Ordering::SeqCst);
+        collect_refused.set(false);
+        assert_eq!(install(), Ok(true));
+        assert_eq!(stage.get(), "runtime_busy_later");
+        assert_eq!(later_posts.get(), 1);
+        assert!(first[0].is_enabled() && middle[0].is_enabled() && later[0].is_enabled());
+        assert_eq!(crate::hook::SUSPENSIONS.with(Cell::get) - suspensions, 2);
+        crate::hook::publication::select_family(None);
+        for family in [&mut first, &mut middle, &mut later] {
+            assert_eq!(Hook::set_family_enabled(family, false), Ok(true));
+        }
+    }
+
+    #[test]
+    fn attach_runtime_prepares_and_reports_each_family_once_under_one_suspension() {
+        use std::cell::Cell;
+
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for prepared in &ATTACH_PREPARATIONS {
+            prepared.store(0, Ordering::SeqCst);
+        }
+        let code = crate::hook::TestCode::new();
+        let (_, _, first_hook) = attach_fixture_hook(&code, 0, None);
+        let (_, _, middle_hook) = attach_fixture_hook(&code, 64, None);
+        let (_, _, later_hook) = attach_fixture_hook(&code, 128, None);
+        let mut first = [first_hook];
+        let mut middle = [middle_hook];
+        let mut later = [later_hook];
+        let posts = [Cell::new(0), Cell::new(0), Cell::new(0)];
+        let progress = attach_test_progress();
+        let stage = crate::progress::Stage::new(&progress, "runtime_prepare_first");
+        let suspensions = crate::hook::SUSPENSIONS.with(Cell::get);
+        assert_eq!(
+            install_attach_batch(
+                &stage,
+                &mut [
+                    ("runtime_prepare_first", &mut || {
+                        let ready = Hook::set_family_enabled_shared_prepared(
+                            &mut first,
+                            true,
+                            prepare_attach_first,
+                        )
+                        .map_err(|_| "first publication failed")?;
+                        if ready {
+                            posts[0].set(posts[0].get() + 1);
+                        }
+                        Ok(ready)
+                    }),
+                    ("runtime_prepare_middle", &mut || {
+                        let ready = Hook::set_family_enabled_shared_prepared(
+                            &mut middle,
+                            true,
+                            prepare_attach_middle,
+                        )
+                        .map_err(|_| "middle publication failed")?;
+                        if ready {
+                            posts[1].set(posts[1].get() + 1);
+                        }
+                        Ok(ready)
+                    }),
+                    ("runtime_prepare_later", &mut || {
+                        let ready = Hook::set_family_enabled_shared_prepared(
+                            &mut later,
+                            true,
+                            prepare_attach_later,
+                        )
+                        .map_err(|_| "later publication failed")?;
+                        if ready {
+                            posts[2].set(posts[2].get() + 1);
+                        }
+                        Ok(ready)
+                    }),
+                ],
+            ),
+            Ok(true),
+        );
+        assert_eq!(stage.get(), "runtime_prepare_later");
+        for (prepared, posted) in ATTACH_PREPARATIONS.iter().zip(&posts) {
+            assert_eq!(prepared.load(Ordering::SeqCst), 1);
+            assert_eq!(posted.get(), 1);
+        }
+        assert_eq!(crate::hook::SUSPENSIONS.with(Cell::get) - suspensions, 1);
+        crate::hook::publication::select_family(None);
+        for family in [&mut first, &mut middle, &mut later] {
+            assert_eq!(Hook::set_family_enabled(family, false), Ok(true));
+        }
+    }
+
+    #[test]
+    fn attach_empty_prepared_families_run_only_when_reached_without_extra_suspensions() {
+        use std::cell::Cell;
+
+        fn install_prepared(
+            hooks: &mut [Hook],
+            prepare: fn(),
+            posts: &Cell<usize>,
+        ) -> Result<bool, &'static str> {
+            let ready = Hook::set_family_enabled_shared_prepared(hooks, true, prepare)
+                .map_err(|_| "synthetic publication failed")?;
+            if ready {
+                posts.set(posts.get() + 1);
+            }
+            Ok(ready)
+        }
+
+        static FLIGHT: AtomicUsize = AtomicUsize::new(0);
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for busy in [false, true] {
+            for prepared in &ATTACH_PREPARATIONS {
+                prepared.store(0, Ordering::SeqCst);
+            }
+            let code = crate::hook::TestCode::new();
+            let mut ready = if busy {
+                vec![attach_fixture_hook(&code, 0, None).2]
+            } else {
+                Vec::new()
+            };
+            let mut first = Vec::new();
+            let mut middle = if busy {
+                vec![attach_fixture_hook(&code, 64, Some(&FLIGHT)).2]
+            } else {
+                Vec::new()
+            };
+            let mut later = Vec::new();
+            let posts = [Cell::new(0), Cell::new(0), Cell::new(0)];
+            let progress = attach_test_progress();
+            let stage = crate::progress::Stage::new(&progress, "runtime_empty_ready");
+            FLIGHT.store(usize::from(busy), Ordering::SeqCst);
+            let suspensions = crate::hook::SUSPENSIONS.with(Cell::get);
+            assert_eq!(
+                install_attach_batch(
+                    &stage,
+                    &mut [
+                        ("runtime_empty_ready", &mut || {
+                            Hook::set_family_enabled_shared(&mut ready, true)
+                                .map_err(|_| "ready publication failed")
+                        }),
+                        ("runtime_empty_first", &mut || {
+                            install_prepared(&mut first, prepare_attach_first, &posts[0])
+                        }),
+                        ("runtime_empty_middle", &mut || {
+                            install_prepared(&mut middle, prepare_attach_middle, &posts[1])
+                        }),
+                        ("runtime_empty_later", &mut || {
+                            install_prepared(&mut later, prepare_attach_later, &posts[2])
+                        }),
+                    ],
+                ),
+                Ok(!busy),
+            );
+            assert_eq!(
+                stage.get(),
+                if busy {
+                    "runtime_empty_middle"
+                } else {
+                    "runtime_empty_later"
+                },
+            );
+            for (index, prepared) in ATTACH_PREPARATIONS.iter().enumerate() {
+                assert_eq!(
+                    prepared.load(Ordering::SeqCst),
+                    usize::from(index < 2 || !busy)
+                );
+                assert_eq!(posts[index].get(), usize::from(index == 0 || !busy));
+            }
+            assert!(ready.iter().all(Hook::is_enabled));
+            assert_eq!(
+                crate::hook::SUSPENSIONS.with(Cell::get) - suspensions,
+                usize::from(busy),
+            );
+            FLIGHT.store(0, Ordering::SeqCst);
+            crate::hook::publication::select_family(None);
+            assert_eq!(Hook::set_family_enabled(&mut ready, false), Ok(true));
+            assert_eq!(Hook::set_family_enabled(&mut middle, false), Ok(true));
+        }
+    }
+
     fn sizing_fixture() -> (Shared, SizingThread) {
         let sizing = crate::country_scale::Sizing::for_slots(0);
         let shared = Shared::with_sizing(0, 0, 1, &sizing).unwrap();
@@ -5624,6 +5964,39 @@ mod tests {
         );
         value["game_score"] = json!("false");
         assert!(serde_json::from_value::<Config>(value).is_err());
+    }
+
+    #[cfg(not(feature = "worker_sampler"))]
+    #[test]
+    fn worker_sampler_config_refuses_nonempty_requests_without_feature() {
+        let mut value = json!({
+            "session_id": 1, "output_dir": "synthetic/session", "replay_dir": "synthetic/replays",
+            "session_start": [], "ready_event": "synthetic-ready", "detach_event": "synthetic-detach",
+            "done_event": "synthetic-done", "cancel_file": "synthetic/cancel",
+        });
+        let absent: Config = serde_json::from_value(value.clone()).unwrap();
+        assert!(absent.worker_sampler.is_none());
+        assert_eq!(
+            refuse_worker_sampler(absent.worker_sampler.as_deref()),
+            Ok(())
+        );
+        value["worker_sampler"] = json!("");
+        let empty: Config = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            refuse_worker_sampler(empty.worker_sampler.as_deref()),
+            Ok(())
+        );
+        for requested in ["off", "interval_us=250", " "] {
+            value["worker_sampler"] = json!(requested);
+            let config: Config = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(config.worker_sampler.as_deref(), Some(requested));
+            assert_eq!(
+                refuse_worker_sampler(config.worker_sampler.as_deref()),
+                Err(
+                    "worker_sampler requested but collector built without the worker_sampler feature"
+                ),
+            );
+        }
     }
 
     #[test]

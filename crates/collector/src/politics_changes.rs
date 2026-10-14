@@ -2810,16 +2810,26 @@ impl Hooks {
                 false,
             );
         }
-        invalidate();
-        let mut family =
-            crate::hook::publication_storage(self.entries.len() + self.taps.len(), enabled)
+        if !crate::hook::shared::defer_preparation(invalidate) {
+            invalidate();
+        }
+        let outcome = match crate::hook::shared::attach_outcome() {
+            Some(outcome) => outcome,
+            None => {
+                let mut family = crate::hook::shared::publication_storage_attach(
+                    self.entries.len() + self.taps.len(),
+                    enabled,
+                )
                 .map_err(|_| "politics hook family allocation failed")?;
-        family.extend(
-            self.entries
-                .iter_mut()
-                .chain(self.taps.iter_mut().map(Tap::publication_hook)),
-        );
-        if !Hook::set_enabled_batch(&mut family, enabled).map_err(|reason| {
+                family.extend(
+                    self.entries
+                        .iter_mut()
+                        .chain(self.taps.iter_mut().map(Tap::publication_hook)),
+                );
+                Hook::set_enabled_batch_attach(&mut family, enabled)
+            }
+        };
+        if !outcome.map_err(|reason| {
             let _ = UNHOOKED.set(reason);
             "politics hook state change failed"
         })? {

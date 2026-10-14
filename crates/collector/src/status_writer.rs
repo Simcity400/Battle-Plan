@@ -142,6 +142,8 @@ impl StatusWriter {
         let Some(thread) = self.thread.take() else {
             return;
         };
+        #[cfg(feature = "worker_sampler")]
+        crate::worker_sampler::stop_before_thread_exit();
         self.handle.inner.lock().stop = true;
         self.handle.inner.wake.notify_one();
         let _ = thread.join();
@@ -200,6 +202,8 @@ pub(crate) fn measure_bytes(bytes: &mut Vec<u8>, directories: &[PathBuf]) -> io:
     Ok(())
 }
 fn run(inner: &Inner, write: &impl Fn(&Path, &[u8]) -> io::Result<()>) {
+    #[cfg(feature = "worker_sampler")]
+    let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
     crate::thread_cpu::register(crate::thread_cpu::Role::Status);
     let _phase = allocation::enter(allocation::Phase::Status);
     allocation::attempted_hour(None);

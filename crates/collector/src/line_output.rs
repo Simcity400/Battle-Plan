@@ -632,7 +632,8 @@ impl Hooks {
         }
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
-        self.shared.set_enabled(enabled)
+        self.shared
+            .set_enabled_prepared(enabled, || OBSERVATION.invalidate())
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         self.shared

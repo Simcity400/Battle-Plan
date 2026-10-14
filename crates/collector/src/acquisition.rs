@@ -1517,6 +1517,8 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         self.shared.stop();
     }
     pub(crate) fn shutdown(&self) -> Result<(), &'static str> {
+        #[cfg(feature = "worker_sampler")]
+        crate::worker_sampler::stop_before_thread_exit();
         self.shared.stop();
         let mut threads = self
             .threads
@@ -1547,6 +1549,8 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
     index: usize,
     wake_boost: bool,
 ) {
+    #[cfg(feature = "worker_sampler")]
+    let _sampler_registration = crate::worker_sampler::register_worker();
     if !wake_boost {
         use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriorityBoost};
         // SAFETY: this worker's pseudo-handle needs no close.

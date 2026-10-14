@@ -143,18 +143,45 @@ impl<const N: usize> Hooks<N> {
         Self { hooks, domain }
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+        self.set_enabled_with_prepare(enabled, None)
+    }
+
+    pub fn set_enabled_prepared(
+        &mut self,
+        enabled: bool,
+        prepare: fn(),
+    ) -> Result<bool, &'static str> {
+        self.set_enabled_with_prepare(enabled, Some(prepare))
+    }
+
+    fn set_enabled_with_prepare(
+        &mut self,
+        enabled: bool,
+        prepare: Option<fn()>,
+    ) -> Result<bool, &'static str> {
         let domain = &self.domain;
         if !enabled {
             domain.observation.enabled.store(false, Ordering::SeqCst);
         }
-        domain.observation.invalidate();
+        if let Some(prepare) = prepare {
+            if !crate::hook::shared::defer_preparation(prepare) {
+                prepare();
+            }
+        } else {
+            domain.observation.invalidate();
+        }
         if enabled
             && matches!(domain.failure, Failure::Unavailable)
             && domain.unhooked.get().is_some()
         {
             return Ok(true);
         }
-        match Hook::set_family_enabled(&mut self.hooks, enabled) {
+        let publication = if matches!(domain.failure, Failure::Propagate) {
+            Hook::set_family_enabled_attach(&mut self.hooks, enabled)
+        } else {
+            Hook::set_family_enabled(&mut self.hooks, enabled)
+        };
+        match publication {
             Ok(true) => {}
             Ok(false) => return Ok(false),
             Err(_) if enabled && matches!(domain.failure, Failure::Unavailable) => {

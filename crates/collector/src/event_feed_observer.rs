@@ -399,7 +399,7 @@ impl Hooks {
         if !enabled {
             held.owner.revoke_world();
         }
-        let ready = Hook::set_family_enabled(&mut held.hooks, enabled)
+        let ready = Hook::set_family_enabled_attach(&mut held.hooks, enabled)
             .map_err(|_| "Event feed CALL state change failed")?;
         if ready {
             held.restored = !enabled;

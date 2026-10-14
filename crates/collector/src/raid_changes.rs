@@ -575,8 +575,8 @@ impl Hooks {
         Ok(Self { hooks })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
-        AIR_CLEARS.fetch_add(1, Ordering::SeqCst);
         if !enabled {
+            AIR_CLEARS.fetch_add(1, Ordering::SeqCst);
             WATCHES.hooks.store(false, Ordering::SeqCst);
             WATCHES.apply();
             crate::country_input_changes::forwarder(
@@ -592,9 +592,14 @@ impl Hooks {
         // other families in a runtime round (`hook::shared`): a thread at any
         // of its sites, or in a tap, holds every site back until the next
         // attempt.
-        if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
-            .map_err(|_| "native hook state change failed")?
-        {
+        let publication = if enabled {
+            Hook::set_family_enabled_shared_prepared(&mut self.hooks, enabled, || {
+                AIR_CLEARS.fetch_add(1, Ordering::SeqCst);
+            })
+        } else {
+            Hook::set_family_enabled_shared(&mut self.hooks, enabled)
+        };
+        if !publication.map_err(|_| "native hook state change failed")? {
             return Ok(false);
         }
         WATCHES

@@ -21,6 +21,8 @@ advisor_changes = []
 advisor_profile = ["advisor_changes"]
 # Bounded per-hour slow-callback phase and thread-cycle diagnostics.
 callback_profile = []
+# Diagnostic in-process CPU instruction sampling; off by default.
+worker_sampler = []
 # A/B, off by default: try-only help, four attempts and half the first predicted
 # remainder in cumulative decaying-maximum costs; awaited prediction uses its mean.
 executor_join_help = []
@@ -340,7 +342,7 @@ retour = "0.3"
 crossbeam-queue = "0.3"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_SystemInformation"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_SystemInformation"] }
 
 [[example]]
 name = "tap_foreign_unwind"

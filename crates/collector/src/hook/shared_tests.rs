@@ -1,6 +1,12 @@
 use super::*;
 use std::os::windows::io::AsRawHandle;
 
+unsafe extern "system-unwind" fn tap_observer(_: &Registers, _: usize) {}
+
+fn prefix(groups: &mut [Group<'_>], flush: impl FnMut() -> Result<(), u32>) {
+    publish_groups_with_order(groups, flush, true);
+}
+
 unsafe extern "system" fn original() -> usize {
     7
 }
@@ -442,4 +448,523 @@ fn a_detach_verification_failure_refuses_only_its_own_family() {
     assert!(!first_family[0].is_enabled());
     assert_eq!(unsafe { invoke(first) }, 7);
     assert_eq!(unsafe { invoke(later) }, 7);
+}
+
+/// The attach collect/report boundary, with many ordinary families and a
+/// mixed tap family, takes one suspension and attributes its hold once.
+#[test]
+fn attach_many_families_and_taps_share_one_measured_suspension() {
+    let _guard = lock();
+    const NAMES: [&str; 24] = [
+        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r",
+        "s", "t", "u", "v", "w", "x",
+    ];
+    let code = TestCode::new();
+    let mut families: Vec<_> = (0..NAMES.len())
+        .map(|index| vec![hook_at(&code, index * 64, original as *const () as usize).1])
+        .collect();
+    let (tap_site, sentinel) = code.stub(2048, original as *const () as usize);
+    let mut tap = unsafe { Tap::new(tap_site, tap_observer, 0, sentinel) }.unwrap();
+    let (ordinary_site, mut ordinary) = hook_at(&code, 2112, original as *const () as usize);
+    let measurement = || {
+        publication::snapshot()
+            .0
+            .into_iter()
+            .find(|(name, _)| *name == "attach_shared")
+            .map(|(_, summary)| summary)
+            .unwrap_or_default()
+    };
+    let prior = measurement();
+    let before = suspensions();
+    {
+        let mut round = Round::collect_attach().unwrap();
+        for (name, family) in NAMES.iter().zip(&mut families) {
+            publication::select_family(Some(name));
+            assert_eq!(Hook::set_family_enabled_shared(family, true), Ok(false));
+        }
+        publication::select_family(Some("mixed_taps"));
+        assert_eq!(
+            Hook::set_enabled_batch_attach(&mut [tap.publication_hook(), &mut ordinary], true),
+            Ok(false)
+        );
+        assert_eq!(round.publish().families, NAMES.len() + 1);
+        for (name, family) in NAMES.iter().zip(&mut families) {
+            publication::select_family(Some(name));
+            assert_eq!(Hook::set_family_enabled_shared(family, true), Ok(true));
+        }
+        publication::select_family(Some("mixed_taps"));
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            assert_eq!(attach_outcome(), Some(Ok(true)));
+        });
+    }
+    publication::select_family(None);
+    assert_eq!(suspensions() - before, 1);
+    let measured = measurement();
+    assert_eq!(measured.attempts - prior.attempts, 1);
+    assert!(measured.total_hold_ns > prior.total_hold_ns);
+    assert!(measured.longest_hold_ns > 0);
+    assert!(families.iter().flatten().all(Hook::is_enabled));
+    assert!(tap.publication_hook().is_enabled() && ordinary.is_enabled());
+    assert_eq!(unsafe { invoke(ordinary_site) }, 19);
+    for family in &mut families {
+        assert_eq!(Hook::set_family_enabled(family, false), Ok(true));
+    }
+    assert_eq!(
+        Hook::set_enabled_batch(&mut [tap.publication_hook(), &mut ordinary], false),
+        Ok(true)
+    );
+}
+
+#[test]
+fn attach_busy_middle_publishes_only_the_prefix_and_retries_from_it() {
+    let _guard = lock();
+    let code = TestCode::new();
+    let (first_site, first_hook) = hook_at(&code, 0, original as *const () as usize);
+    let held_site = code.0 as usize + 64;
+    let (_, held_hook) = hook_at(&code, 64, held_site);
+    let (later_site, later_hook) = hook_at(&code, 128, original as *const () as usize);
+    let mut first = vec![first_hook];
+    let mut middle = vec![held_hook];
+    let mut later = vec![later_hook];
+    let later_bytes = later[0].original;
+    let middle_bytes = middle[0].original;
+    let held = Held::new(held_site);
+    let before = suspensions();
+    {
+        let mut groups = [
+            Group::new(&mut first, true),
+            Group::new(&mut middle, true),
+            Group::new(&mut later, true),
+        ];
+        prefix(&mut groups, real_flush);
+        assert_eq!(groups[0].outcome(), Some(&Ok(true)));
+        assert_eq!(groups[1].outcome(), Some(&Ok(false)));
+        assert_eq!(groups[2].outcome(), Some(&Ok(false)));
+    }
+    assert_eq!(suspensions() - before, 1);
+    assert_eq!(unsafe { invoke(first_site) }, 19);
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts(held_site as *const u8, 16) },
+        middle_bytes
+    );
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts(later_site as *const u8, 16) },
+        later_bytes
+    );
+    held.release();
+    let before = suspensions();
+    {
+        let mut groups = [
+            Group::new(&mut first, true),
+            Group::new(&mut middle, true),
+            Group::new(&mut later, true),
+        ];
+        prefix(&mut groups, real_flush);
+        assert!(
+            groups
+                .iter()
+                .all(|group| group.outcome() == Some(&Ok(true)))
+        );
+    }
+    assert_eq!(suspensions() - before, 1);
+    assert_eq!(unsafe { invoke(later_site) }, 19);
+    for family in [&mut first, &mut middle, &mut later] {
+        assert_eq!(Hook::set_family_enabled(family, false), Ok(true));
+    }
+}
+
+#[test]
+fn attach_snapshot_and_preparation_refusals_leave_later_families_untouched() {
+    let _guard = lock();
+    for preparation in [false, true] {
+        let code = TestCode::new();
+        let (_, first_hook) = hook_at(&code, 0, original as *const () as usize);
+        let (middle_site, middle_hook) = hook_at(&code, 64, original as *const () as usize);
+        let (later_site, later_hook) = hook_at(&code, 128, original as *const () as usize);
+        let mut first = vec![first_hook];
+        let mut middle = vec![middle_hook];
+        let mut later = vec![later_hook];
+        if preparation {
+            middle[0].site = 0; // VirtualProtect refuses before writing.
+        } else {
+            unsafe { ptr::write((middle_site + 15) as *mut u8, 0xcc) };
+        }
+        let before = suspensions();
+        {
+            let mut groups = [
+                Group::new(&mut first, true),
+                Group::new(&mut middle, true),
+                Group::new(&mut later, true),
+            ];
+            prefix(&mut groups, real_flush);
+            assert_eq!(groups[0].outcome(), Some(&Ok(true)));
+            assert!(groups[1].outcome().unwrap().is_err());
+            if !preparation {
+                assert_eq!(
+                    groups[1].outcome().unwrap().as_ref().unwrap_err(),
+                    BYTE_VERIFICATION_FAILURE
+                );
+            }
+            assert_eq!(groups[2].outcome(), Some(&Ok(false)));
+        }
+        assert_eq!(suspensions() - before, 1);
+        assert!(first[0].is_enabled());
+        assert!(!middle[0].is_enabled() && !later[0].is_enabled());
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(later_site as *const u8, 16) },
+            later[0].original
+        );
+        middle[0].site = middle_site;
+        unsafe { ptr::write((middle_site + 15) as *mut u8, middle[0].original[15]) };
+        let before = suspensions();
+        {
+            let mut groups = [
+                Group::new(&mut first, true),
+                Group::new(&mut middle, true),
+                Group::new(&mut later, true),
+            ];
+            prefix(&mut groups, real_flush);
+            assert!(
+                groups
+                    .iter()
+                    .all(|group| group.outcome() == Some(&Ok(true)))
+            );
+        }
+        assert_eq!(
+            suspensions() - before,
+            1,
+            "retry batches all three families"
+        );
+        for family in [&mut first, &mut middle, &mut later] {
+            assert_eq!(Hook::set_family_enabled(family, false), Ok(true));
+        }
+    }
+}
+
+#[test]
+fn attach_verifies_the_middle_family_before_writing_a_later_one() {
+    let _guard = lock();
+    let code = TestCode::new();
+    let (_, first_hook) = hook_at(&code, 0, original as *const () as usize);
+    let (middle_site, middle_hook) = hook_at(&code, 64, original as *const () as usize);
+    let (later_site, later_hook) = hook_at(&code, 128, original as *const () as usize);
+    let mut first = vec![first_hook];
+    let mut middle = vec![middle_hook];
+    let mut later = vec![later_hook];
+    let mut flushes = 0;
+    let before = suspensions();
+    {
+        let mut groups = [
+            Group::new(&mut first, true),
+            Group::new(&mut middle, true),
+            Group::new(&mut later, true),
+        ];
+        prefix(&mut groups, || {
+            flushes += 1;
+            let result = real_flush();
+            if flushes == 2 {
+                unsafe { ptr::write(middle_site as *mut u8, 0x90) };
+            }
+            result
+        });
+        assert_eq!(groups[0].outcome(), Some(&Ok(true)));
+        assert!(
+            groups[1]
+                .outcome()
+                .unwrap()
+                .as_ref()
+                .unwrap_err()
+                .starts_with("patch refused or verification failed")
+        );
+        assert_eq!(groups[2].outcome(), Some(&Ok(false)));
+    }
+    assert_eq!(flushes, 2);
+    assert_eq!(suspensions() - before, 1);
+    assert!(middle[0].needs_flush);
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts(later_site as *const u8, 16) },
+        later[0].original
+    );
+    unsafe { ptr::write(middle_site as *mut u8, 0xe9) };
+    {
+        let mut groups = [
+            Group::new(&mut first, true),
+            Group::new(&mut middle, true),
+            Group::new(&mut later, true),
+        ];
+        prefix(&mut groups, real_flush);
+        assert!(
+            groups
+                .iter()
+                .all(|group| group.outcome() == Some(&Ok(true)))
+        );
+    }
+    for family in [&mut first, &mut middle, &mut later] {
+        assert_eq!(Hook::set_family_enabled(family, false), Ok(true));
+    }
+}
+
+#[test]
+fn attach_later_flush_failure_rolls_back_every_written_family() {
+    let _guard = lock();
+    let code = TestCode::new();
+    let (first_site, first_hook) = hook_at(&code, 0, original as *const () as usize);
+    let (_, middle_hook) = hook_at(&code, 64, original as *const () as usize);
+    let (later_site, later_hook) = hook_at(&code, 128, original as *const () as usize);
+    let mut first = vec![first_hook];
+    let mut middle = vec![middle_hook];
+    let mut later = vec![later_hook];
+    let before = suspensions();
+    let mut flushes = 0;
+    {
+        let mut groups = [
+            Group::new(&mut first, true),
+            Group::new(&mut middle, true),
+            Group::new(&mut later, true),
+        ];
+        prefix(&mut groups, || {
+            flushes += 1;
+            if flushes == 2 { Err(31) } else { real_flush() }
+        });
+        for group in &groups[..2] {
+            assert!(
+                group
+                    .outcome()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap_err()
+                    .starts_with("instruction-cache publication failed")
+            );
+        }
+        assert_eq!(groups[2].outcome(), Some(&Ok(false)));
+    }
+    assert_eq!(suspensions() - before, 1);
+    assert_eq!(flushes, 3);
+    assert!(
+        first
+            .iter()
+            .chain(&middle)
+            .chain(&later)
+            .all(|hook| !hook.is_enabled())
+    );
+    assert_eq!(unsafe { invoke(first_site) }, 7);
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts(later_site as *const u8, 16) },
+        later[0].original
+    );
+}
+
+#[test]
+fn attach_protection_refusal_stops_before_a_later_write_on_a_shared_page() {
+    let _guard = lock();
+    let code = TestCode::new();
+    let (first_site, first_bytes) = code.stub(0, original as *const () as usize);
+    let (middle_site, middle_bytes) = code.stub(64, original as *const () as usize);
+    let (later_site, later_bytes) = code.stub(128, original as *const () as usize);
+    let mut prior = 0;
+    assert_ne!(
+        unsafe { VirtualProtect(code.0, 4096, PAGE_EXECUTE_READ, &mut prior) },
+        0
+    );
+    let make = |site, bytes| {
+        vec![unsafe { Hook::new(site, callback as *const () as usize, bytes) }.unwrap()]
+    };
+    let mut first = make(first_site, first_bytes);
+    let mut middle = make(middle_site, middle_bytes);
+    let mut later = make(later_site, later_bytes);
+    fail_restores(1, 1);
+    let before = suspensions();
+    {
+        let mut groups = [
+            Group::new(&mut first, true),
+            Group::new(&mut middle, true),
+            Group::new(&mut later, true),
+        ];
+        prefix(&mut groups, real_flush);
+        assert_eq!(groups[0].outcome(), Some(&Ok(true)));
+        assert_eq!(
+            groups[1].outcome(),
+            Some(&Err("failed to restore hook-page protection".into()))
+        );
+        assert_eq!(groups[2].outcome(), Some(&Ok(false)));
+    }
+    assert_eq!(protection_at(first_site), PAGE_EXECUTE_READ);
+    assert_eq!(suspensions() - before, 1);
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts(later_site as *const u8, 16) },
+        later_bytes
+    );
+    for family in [&mut first, &mut middle, &mut later] {
+        assert_eq!(Hook::set_family_enabled(family, false), Ok(true));
+    }
+}
+
+#[test]
+fn attach_recording_allocation_failure_abandons_the_whole_batch() {
+    let _guard = lock();
+    let code = TestCode::new();
+    let (_, first_hook) = hook_at(&code, 0, original as *const () as usize);
+    let (_, middle_hook) = hook_at(&code, 64, original as *const () as usize);
+    let (later_site, later_hook) = hook_at(&code, 128, original as *const () as usize);
+    let mut first = vec![first_hook];
+    let mut middle = middle_hook;
+    let mut later = vec![later_hook];
+    let before = suspensions();
+    {
+        let mut round = Round::collect_attach().unwrap();
+        publication::select_family(Some("allocation_first"));
+        assert_eq!(Hook::set_family_enabled_shared(&mut first, true), Ok(false));
+        publication::select_family(Some("allocation_middle"));
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            assert_eq!(
+                Hook::set_enabled_batch_attach(&mut [&mut middle], true),
+                Ok(false)
+            );
+        });
+        publication::select_family(Some("allocation_later"));
+        assert_eq!(Hook::set_family_enabled_shared(&mut later, true), Ok(false));
+        assert_eq!(round.publish().families, 0);
+        assert_eq!(suspensions() - before, 0);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(later_site as *const u8, 16) },
+            later[0].original
+        );
+        publication::select_family(Some("allocation_first"));
+        assert_eq!(Hook::set_family_enabled_shared(&mut first, true), Ok(true));
+        publication::select_family(Some("allocation_middle"));
+        assert_eq!(
+            Hook::set_enabled_batch_attach(&mut [&mut middle], true),
+            Ok(true)
+        );
+        publication::select_family(Some("allocation_later"));
+        assert_eq!(Hook::set_family_enabled_shared(&mut later, true), Ok(true));
+    }
+    publication::select_family(None);
+    assert_eq!(suspensions() - before, 3);
+    assert_eq!(Hook::set_family_enabled(&mut first, false), Ok(true));
+    assert_eq!(middle.set_enabled(false), Ok(true));
+    assert_eq!(Hook::set_family_enabled(&mut later, false), Ok(true));
+}
+
+#[test]
+fn detach_recording_allocation_failure_leaves_only_that_family_to_itself() {
+    let _guard = lock();
+    let code = TestCode::new();
+    let (first_site, first_hook) = hook_at(&code, 0, original as *const () as usize);
+    let (middle_site, middle_hook) = hook_at(&code, 64, original as *const () as usize);
+    let (later_site, later_hook) = hook_at(&code, 128, original as *const () as usize);
+    let mut families = [vec![first_hook], vec![middle_hook], vec![later_hook]];
+    for family in families.iter_mut() {
+        assert_eq!(Hook::set_family_enabled(family, true), Ok(true));
+    }
+    let before = suspensions();
+    {
+        let mut round = Round::collect().unwrap();
+        let [first, middle, later] = &mut families;
+        assert_eq!(Hook::set_family_enabled_shared(first, false), Ok(false));
+        // Leave no spare capacity, so recording the next family must allocate.
+        super::RECORDED.with_borrow_mut(Vec::shrink_to_fit);
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            assert_eq!(Hook::set_family_enabled_shared(middle, false), Ok(false));
+        });
+        assert_eq!(Hook::set_family_enabled_shared(later, false), Ok(false));
+        // Unlike attach, the families recorded around the failure still
+        // restore together.
+        assert_eq!(round.publish().families, 2);
+        for family in families.iter_mut() {
+            assert_eq!(Hook::set_family_enabled_shared(family, false), Ok(true));
+        }
+    }
+    assert_eq!(suspensions() - before, 2, "one shared, one of its own");
+    for site in [first_site, middle_site, later_site] {
+        assert_eq!(unsafe { invoke(site) }, 7);
+    }
+}
+
+#[test]
+fn attach_rollback_reopen_failure_keeps_executable_owners_for_detach() {
+    let _guard = lock();
+    let code = TestCode::new();
+    let (first_site, first_bytes) = code.stub(0, original as *const () as usize);
+    let (second_site, second_bytes) = code.stub(64, original as *const () as usize);
+    let mut prior = 0;
+    assert_ne!(
+        unsafe { VirtualProtect(code.0, 4096, PAGE_EXECUTE_READ, &mut prior) },
+        0
+    );
+    let make = |site, bytes| {
+        vec![unsafe { Hook::new(site, callback as *const () as usize, bytes) }.unwrap()]
+    };
+    let mut first = make(first_site, first_bytes);
+    let mut second = make(second_site, second_bytes);
+    FAIL_REOPENS.set((2, 1));
+    let mut flushes = 0;
+    {
+        let mut groups = [Group::new(&mut first, true), Group::new(&mut second, true)];
+        prefix(&mut groups, || {
+            flushes += 1;
+            if flushes == 2 { Err(31) } else { real_flush() }
+        });
+        let message = groups[0].outcome().unwrap().as_ref().unwrap_err();
+        assert!(
+            message.contains("instruction-cache publication failed")
+                && message.contains("rollback page preparation failed")
+                && message.contains("executable storage retained")
+        );
+        assert!(
+            groups[1]
+                .outcome()
+                .unwrap()
+                .as_ref()
+                .unwrap_err()
+                .starts_with("instruction-cache publication failed")
+        );
+    }
+    assert!(first[0].enabled && first[0].needs_flush);
+    assert!(!second[0].is_enabled());
+    assert_eq!(protection_at(first_site), PAGE_EXECUTE_READ);
+    assert_eq!(unsafe { invoke(first_site) }, 19);
+    for family in [&mut first, &mut second] {
+        assert_eq!(Hook::set_family_enabled(family, false), Ok(true));
+    }
+    assert_eq!(unsafe { invoke(first_site) }, 7);
+}
+
+#[test]
+fn attach_first_preparation_refusal_never_suspends_or_writes_the_suffix() {
+    let _guard = lock();
+    let code = TestCode::new();
+    let (first_site, first_hook) = hook_at(&code, 0, original as *const () as usize);
+    let (later_site, later_hook) = hook_at(&code, 64, original as *const () as usize);
+    let mut first = vec![first_hook];
+    let mut later = vec![later_hook];
+    first[0].site = 0;
+    let before = suspensions();
+    {
+        let mut groups = [Group::new(&mut first, true), Group::new(&mut later, true)];
+        prefix(&mut groups, real_flush);
+        assert!(groups[0].outcome().unwrap().is_err());
+        assert_eq!(groups[1].outcome(), Some(&Ok(false)));
+    }
+    first[0].site = first_site;
+    assert_eq!(suspensions() - before, 0);
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts(later_site as *const u8, 16) },
+        later[0].original
+    );
+    assert!(!first[0].is_enabled() && !later[0].is_enabled());
+    let before = suspensions();
+    {
+        let mut groups = [Group::new(&mut first, true), Group::new(&mut later, true)];
+        prefix(&mut groups, real_flush);
+        assert!(
+            groups
+                .iter()
+                .all(|group| group.outcome() == Some(&Ok(true)))
+        );
+    }
+    assert_eq!(suspensions() - before, 1, "retry batches both families");
+    for family in [&mut first, &mut later] {
+        assert_eq!(Hook::set_family_enabled(family, false), Ok(true));
+    }
 }

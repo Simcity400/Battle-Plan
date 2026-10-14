@@ -44,6 +44,7 @@ The [dashboard architecture](docs/dashboard.md) explains how recordings become d
 |---|---|
 | [Foreign-unwind fixture](tools/tap-foreign-unwind/README.md) | Out-of-game C++ and SEH checks for the production Tap. |
 | [Stack frames](tools/stack-frames.py) | Release collector frame sizes and the hourly hook's stack bound check. |
+| [Worker CPU profiles](tools/worker_profile.py) | Symbolize diagnostic collector instruction samples and rank self CPU costs by function, thread role and pool job. |
 
 ## Recording and dependency checks
 

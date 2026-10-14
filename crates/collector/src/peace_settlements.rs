@@ -623,7 +623,7 @@ impl Hooks {
             ENABLED.store(false, Ordering::Release);
         }
         if let Some(hook) = &mut self.hook {
-            let changed = hook.set_enabled(enabled).inspect_err(|reason| {
+            let changed = hook.set_enabled_attach(enabled).inspect_err(|reason| {
                 let _ = UNHOOKED.set(reason.clone());
             })?;
             if !changed {

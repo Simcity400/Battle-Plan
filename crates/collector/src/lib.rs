@@ -143,6 +143,8 @@ mod war_changes;
 mod war_provenance;
 mod watch_registry;
 mod wing_changes;
+#[cfg(feature = "worker_sampler")]
+mod worker_sampler;
 mod world_input_changes;
 mod world_lifetime;
 

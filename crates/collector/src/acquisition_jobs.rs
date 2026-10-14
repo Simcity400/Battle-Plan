@@ -2204,7 +2204,9 @@ impl Pool {
             worker_count.max(1),
             capacity,
             Some((ROLE_COUNT, |job: &Job| job.role() as usize)),
-            move |job| {
+            move |job: &mut Job| {
+                #[cfg(feature = "worker_sampler")]
+                let _sampler_job = crate::worker_sampler::job(job.role());
                 // SAFETY: submit's callback lease remains admitted until every
                 // accepted request is collected, including on callback unwind.
                 let memory = CountedMemory::new(unsafe { LiveMemory::new() });
