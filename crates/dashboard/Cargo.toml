@@ -10,6 +10,7 @@ license.workspace = true
 blake3.workspace = true
 replay.workspace = true
 installed-content.workspace = true
+installed-content-save.workspace = true
 engine.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

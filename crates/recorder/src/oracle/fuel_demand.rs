@@ -1,7 +1,7 @@
 //! Supplying-read cached demand has its own save witness, never a burn delta.
 use super::economy::{compare_text, equal};
 use super::{Report, complete, country_tag, invalid, required_country_tag};
-use installed_content::save::Save;
+use installed_content_save::Save;
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, FuelDemandHour, FuelDemandRead, Recorded, TableId, tables},

@@ -43,7 +43,7 @@ fn idle_pool_witnesses_match_capture_with_retained_regions_and_registration() {
                 &mut frame,
                 TableRows::AirReferenceWitnesses(vec![witness.clone()]),
             );
-            saved.air.bases = vec![installed_content::save::air::AirBase {
+            saved.air.bases = vec![installed_content_save::air::AirBase {
                 id: base,
                 state: Some(1),
                 host: None,

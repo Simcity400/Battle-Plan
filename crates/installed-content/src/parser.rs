@@ -15,6 +15,7 @@
 
 use std::io;
 
+pub mod decimal;
 pub mod native;
 pub use native::Kind;
 
@@ -376,7 +377,7 @@ pub fn parse(bytes: &[u8]) -> io::Result<Document> {
 /// Project save writer output, including an empty name emitted as `=fixed5` inside
 /// `variables`. Script loading instead takes `=` as a key with a retained value; that
 /// recovery does not represent the saved state.
-pub(crate) fn parse_save(bytes: &[u8]) -> io::Result<Document> {
+pub fn parse_save(bytes: &[u8]) -> io::Result<Document> {
     let mut parser = Parser::new(bytes, false, false);
     parser.save_variables = true;
     parser.document()
@@ -652,7 +653,7 @@ impl<'a> Parser<'a> {
                     };
                     // The writer emits signed fixed5 with at most five fractional
                     // digits and no leading plus.
-                    let decimal = crate::save::Decimal::parse(&bytes).map_err(|error| {
+                    let decimal = decimal::Decimal::parse(&bytes).map_err(|error| {
                         invalid(value.offset, &format!("empty saved variable: {error}"))
                     })?;
                     if bytes.starts_with(b"+") || decimal.fractional_digits > 5 {

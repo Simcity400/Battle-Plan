@@ -28,7 +28,7 @@ fn earlier_states(
 /// frame's hour are compared.
 pub(in crate::oracle) fn state_pools(
     rows: &[replay::rows::StateResourceRow],
-    saved: &BTreeMap<(u32, Vec<u8>), installed_content::save::Decimal>,
+    saved: &BTreeMap<(u32, Vec<u8>), installed_content_save::Decimal>,
     names: &BTreeMap<u32, &[u8]>,
     sampled: &dyn Fn(u32) -> bool,
     report: &mut Report,
@@ -383,7 +383,7 @@ pub(in crate::oracle) fn building_overrides(
 /// whose StateCores row was read at the frame's hour are compared.
 pub(in crate::oracle) fn state_cores(
     rows: &[replay::rows::StateCoreRow],
-    countries: &BTreeMap<Vec<u8>, installed_content::save::Country>,
+    countries: &BTreeMap<Vec<u8>, installed_content_save::Country>,
     links: &BTreeMap<u32, &CountryRow>,
     reads: &[replay::rows::SliceReadRow],
     hour: i32,
@@ -433,7 +433,7 @@ pub(in crate::oracle) fn state_cores(
 /// `sampled` at the frame's hour are compared.
 pub(in crate::oracle) fn state_modifiers(
     rows: &[replay::rows::StateDynamicModifierRow],
-    saved: &BTreeMap<u32, Vec<installed_content::save::governance::DynamicModifier>>,
+    saved: &BTreeMap<u32, Vec<installed_content_save::governance::DynamicModifier>>,
     links: &BTreeMap<u32, &CountryRow>,
     sampled: &dyn Fn(u32) -> bool,
     report: &mut Report,

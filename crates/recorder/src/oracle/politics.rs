@@ -9,7 +9,7 @@ use super::{
     Report, complete, country_tag, current_slice_owners, invalid, required_country_tag,
     slice_owner_limitation,
 };
-use installed_content::save::{Save, characters as saved, governance};
+use installed_content_save::{Save, characters as saved, governance};
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, PartyLeaderRow, TableId, tables},
@@ -224,7 +224,7 @@ fn available_advisors(
 /// when there are several (the slot's role is then not identified).
 fn faction_advisors(
     frame: &DecodedFrame,
-    factions: &BTreeMap<u64, installed_content::save::Faction>,
+    factions: &BTreeMap<u64, installed_content_save::Faction>,
     characters: &saved::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -495,7 +495,7 @@ fn advisor_tokens(frame: &DecodedFrame, pack: &saved::Pack, report: &mut Report)
 /// resolves to.
 fn civil_wars(
     frame: &DecodedFrame,
-    countries: &BTreeMap<Vec<u8>, installed_content::save::Country>,
+    countries: &BTreeMap<Vec<u8>, installed_content_save::Country>,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -1384,7 +1384,7 @@ mod tests {
         for tag in [b"GER".as_slice(), b"ITA", b"D01"] {
             countries.insert(
                 tag.to_vec(),
-                installed_content::save::Country {
+                installed_content_save::Country {
                     tag: tag.to_vec(),
                     ..Default::default()
                 },
@@ -1664,7 +1664,7 @@ mod tests {
         let id = (1_u64 << 32) | 88;
         let factions = BTreeMap::from([(
             id,
-            installed_content::save::Faction {
+            installed_content_save::Faction {
                 id,
                 name: None,
                 members: Vec::new(),

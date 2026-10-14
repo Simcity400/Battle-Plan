@@ -1,7 +1,7 @@
 import { usNumber } from '../charts/numberFormat.ts';
 
 // Keep this presentation conversion aligned with engine::cdate,
-// installed_content::save::GameDate::engine_hour and viewer::app::date. Game dates have
+// installed_content_save::GameDate::engine_hour and viewer::app::date. Game dates have
 // 365 days every year and display hours 01:00 through 24:00, not local time.
 export const HOUR_EPOCH = 43_800_000;
 const HOURS_PER_DAY = 24;

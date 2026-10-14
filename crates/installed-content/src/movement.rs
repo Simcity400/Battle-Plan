@@ -11,7 +11,7 @@
 //! recording client; an in-session map reload is outside the fixed-content
 //! replay contract.
 
-pub(crate) mod adjacency;
+pub mod adjacency;
 pub(crate) mod bitmap;
 mod geometry;
 pub(crate) mod records;

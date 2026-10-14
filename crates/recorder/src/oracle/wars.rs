@@ -6,7 +6,7 @@ use std::{
     io,
 };
 
-use installed_content::save::{Save, war_goals::WarGoal};
+use installed_content_save::{Save, war_goals::WarGoal};
 use replay::{
     frame::DecodedFrame,
     rows::{WarRelationGoalRow, tables},

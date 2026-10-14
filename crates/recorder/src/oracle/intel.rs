@@ -5,7 +5,7 @@ use std::{
     io,
 };
 
-use installed_content::save::{GameDate, characters as saved_characters, intel as saved};
+use installed_content_save::{GameDate, characters as saved_characters, intel as saved};
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, tables},
@@ -2179,7 +2179,7 @@ fn compare_variables(
             }
             values.entry(name).or_default().push(entry.value_raw);
         }
-        let mut expected_values = BTreeMap::<&[u8], Vec<&installed_content::save::Decimal>>::new();
+        let mut expected_values = BTreeMap::<&[u8], Vec<&installed_content_save::Decimal>>::new();
         for entry in &expected.entries {
             expected_values
                 .entry(&entry.name)

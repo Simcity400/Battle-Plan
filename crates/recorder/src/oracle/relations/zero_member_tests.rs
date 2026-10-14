@@ -1,5 +1,4 @@
 use super::*;
-use installed_content::save;
 use replay::{
     frame::TableView,
     rows::{FactionMemberRow, Recorded, ReservedCountryNamingRow, TableRows},
@@ -16,7 +15,7 @@ fn fixture() -> (DecodedFrame, Save) {
     };
     save.factions.insert(
         FACTION,
-        save::Faction {
+        installed_content_save::Faction {
             id: FACTION,
             name: None,
             members: vec![b"GER".to_vec(), vec![b'R', 0, 0xff]],
@@ -188,13 +187,14 @@ fn reserved_tag_ambiguity_and_unrelated_missing_positive_country_are_rejected() 
 fn present_reserved_country_requires_admitted_physical_alias_and_routes_to_zero() {
     let (frame, mut save) = fixture();
     let tag = vec![b'R', 0, 0xff];
-    save.countries.insert(tag.clone(), save::Country::default());
+    save.countries
+        .insert(tag.clone(), installed_content_save::Country::default());
     assert!(run(&frame, &save).is_err());
-    save.country_emissions = Some(vec![save::SavedCountryEmission {
-        identity: save::CountryEmissionIdentity {
+    save.country_emissions = Some(vec![installed_content_save::SavedCountryEmission {
+        identity: installed_content_save::CountryEmissionIdentity {
             physical_slot: 1,
             own_id: 0,
-            actual: save::ActualCountry::Reserved,
+            actual: installed_content_save::ActualCountry::Reserved,
             tag,
         },
         intel_present: false,
@@ -207,7 +207,7 @@ fn present_reserved_country_requires_admitted_physical_alias_and_routes_to_zero(
         let identity = &mut wrong.country_emissions.as_mut().unwrap()[0].identity;
         match field {
             0 => identity.own_id = 7,
-            1 => identity.actual = save::ActualCountry::Canonical(7),
+            1 => identity.actual = installed_content_save::ActualCountry::Canonical(7),
             2 => identity.physical_slot = 0,
             _ => identity.tag = b"OTHER".to_vec(),
         }

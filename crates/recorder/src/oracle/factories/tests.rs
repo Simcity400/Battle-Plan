@@ -6,7 +6,7 @@ use replay::{
 
 /// GER controls state 1 and occupies ITA's state 2; ITA owns state 3.
 fn save(ger: &str, ita: &str) -> Save {
-    installed_content::save::parse(
+    installed_content_save::parse(
         format!(
             r#"HOI4txt
 date="1936.1.2.17" game_unique_id="campaign" version="build" game_unique_seed=-42 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
@@ -53,7 +53,7 @@ fn run(saved: &Save, content: &Buildings, rows: Vec<CountryFactoriesRow>) -> io:
         saved,
         content,
         rows,
-        &installed_content::save::MapMembership {
+        &installed_content_save::MapMembership {
             provinces: BTreeMap::from([(1, Some(1)), (2, Some(2)), (3, Some(3))]),
         }
         .into(),
@@ -64,7 +64,7 @@ fn run_with_membership(
     saved: &Save,
     content: &Buildings,
     rows: Vec<CountryFactoriesRow>,
-    membership: &installed_content::save::PartialMapMembership,
+    membership: &installed_content_save::PartialMapMembership,
 ) -> io::Result<Report> {
     run_with_states(saved, content, rows, membership, Vec::new())
 }
@@ -73,7 +73,7 @@ fn run_with_states(
     saved: &Save,
     content: &Buildings,
     rows: Vec<CountryFactoriesRow>,
-    membership: &installed_content::save::PartialMapMembership,
+    membership: &installed_content_save::PartialMapMembership,
     states: Vec<replay::rows::StateRow>,
 ) -> io::Result<Report> {
     let mut frame = DecodedFrame {
@@ -113,7 +113,7 @@ fn unowned_state_factories_follow_positive_control_and_never_charge_null_control
     let state = saved.states.get_mut(&2).unwrap();
     state.owner = None;
     state.controller = None;
-    let membership = installed_content::save::MapMembership {
+    let membership = installed_content_save::MapMembership {
         provinces: BTreeMap::from([(1, Some(1)), (2, Some(2)), (3, Some(3))]),
     }
     .into();

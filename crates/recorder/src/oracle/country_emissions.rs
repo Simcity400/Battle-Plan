@@ -2,7 +2,7 @@
 
 use std::io;
 
-use installed_content::save::{ActualCountry, CountryEmissionIdentity, Save, SaveDocument};
+use installed_content_save::{ActualCountry, CountryEmissionIdentity, Save, SaveDocument};
 use replay::{
     cadence::{self, Cadence},
     frame::DecodedFrame,

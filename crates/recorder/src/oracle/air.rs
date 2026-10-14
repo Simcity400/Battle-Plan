@@ -1,7 +1,7 @@
 //! Comparisons for the native extended air tables.
 use std::{collections::BTreeMap, fmt::Debug, io};
 
-use installed_content::save::air::{self, Pack};
+use installed_content_save::air::{self, Pack};
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, tables},

@@ -1,6 +1,7 @@
 use super::super::lexical_tokens;
 use super::*;
-use installed_content::{parser, save::Decimal};
+use installed_content::parser;
+use installed_content_save::Decimal;
 use replay::{
     frame::TableView,
     rows::{
@@ -642,7 +643,7 @@ fn licences_and_the_deployment_queue_compare_exactly_against_a_real_save_shape()
         giver: 9,
         lended_cic: -1,
         required_cic: 3,
-        start_date: installed_content::save::GameDate {
+        start_date: installed_content_save::GameDate {
             year: 1936,
             month: 1,
             day: 1,
@@ -739,7 +740,7 @@ fn every_licence_record_field_can_differ_on_its_own() {
         giver: 9,
         lended_cic: -1,
         required_cic: 3,
-        start_date: installed_content::save::GameDate {
+        start_date: installed_content_save::GameDate {
             year: 1936,
             month: 1,
             day: 1,

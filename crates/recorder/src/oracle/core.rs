@@ -3,7 +3,7 @@ use std::{
     io,
 };
 
-use installed_content::save::{self, Save};
+use installed_content_save::Save;
 use replay::{
     frame::DecodedFrame,
     identity::SampleBoundary,
@@ -164,7 +164,7 @@ pub(super) fn compare_countries(
 pub(super) fn compare_provinces(
     frame: &DecodedFrame,
     save: &Save,
-    membership: &save::PartialMapMembership,
+    membership: &installed_content_save::PartialMapMembership,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -177,7 +177,7 @@ pub(super) fn compare_provinces(
     let mut affected = BTreeSet::new();
     let mut skipped = 0;
     for (&id, entry) in &membership.provinces {
-        if let save::ProvinceMembership::Unknown(states) = entry {
+        if let installed_content_save::ProvinceMembership::Unknown(states) = entry {
             affected.extend(states);
             skipped += usize::from(id != 0);
         }
@@ -301,7 +301,7 @@ pub(super) fn compare_provinces(
 pub(super) fn compare_states(
     frame: &DecodedFrame,
     save: &Save,
-    membership: &save::PartialMapMembership,
+    membership: &installed_content_save::PartialMapMembership,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -313,8 +313,8 @@ pub(super) fn compare_states(
     }
     for expected in save.state_control_emissions(membership)? {
         let id = match &expected {
-            save::StateControlEmission::Positive(control) => control.id,
-            save::StateControlEmission::NonPositiveOwner { id } => *id,
+            installed_content_save::StateControlEmission::Positive(control) => control.id,
+            installed_content_save::StateControlEmission::NonPositiveOwner { id } => *id,
         };
         let Some(actual) = states.remove(&id) else {
             report.difference(format!("state {id}"), "absent", "present");
@@ -322,7 +322,7 @@ pub(super) fn compare_states(
         };
         report.states += 1;
         match expected {
-            save::StateControlEmission::Positive(expected) => {
+            installed_content_save::StateControlEmission::Positive(expected) => {
                 let owner = country_tag(actual.owner, links)?;
                 if owner != Some(expected.owner.as_slice()) {
                     report.difference(
@@ -342,7 +342,7 @@ pub(super) fn compare_states(
                     );
                 }
             }
-            save::StateControlEmission::NonPositiveOwner { .. } => {
+            installed_content_save::StateControlEmission::NonPositiveOwner { .. } => {
                 if (actual.owner as i32) > 0 {
                     report.difference(format!("state {id}.owner positive class"), true, false);
                 }
@@ -376,7 +376,7 @@ pub(super) fn compare_states(
     Ok(())
 }
 
-fn compare_state_fields(actual: &StateRow, saved: &save::State, report: &mut Report) {
+fn compare_state_fields(actual: &StateRow, saved: &installed_content_save::State, report: &mut Report) {
     let field = format!("state {}.manpower_available", actual.id);
     match saved.manpower_available {
         Some(saved) if saved != actual.manpower_available => {
@@ -535,7 +535,7 @@ pub(super) fn compare_players(
         country_tag(player.country, links)?;
         users.entry(&player.user).or_default().push(player);
     }
-    let mut saved_users = BTreeMap::<&[u8], Vec<&save::Player>>::new();
+    let mut saved_users = BTreeMap::<&[u8], Vec<&installed_content_save::Player>>::new();
     for player in &save.players {
         if player.country != b"---" && !save.countries.contains_key(&player.country) {
             return Err(invalid("saved player has unknown country tag"));
@@ -787,7 +787,7 @@ pub(super) fn compare_boundary_counters(
 }
 
 pub(super) fn convoy_total(
-    country: &save::Country,
+    country: &installed_content_save::Country,
     save: &Save,
     equipment: &installed_content::equipment::Database,
 ) -> Result<i64, String> {

@@ -4,7 +4,7 @@ use std::{
     io,
 };
 
-use installed_content::save::Save;
+use installed_content_save::Save;
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, FactionRow, TableId, tables},
@@ -762,7 +762,7 @@ pub(super) fn compare_factions(
 fn compare_faction_presentation(
     label: &str,
     actual: &FactionRow,
-    expected: &installed_content::save::Faction,
+    expected: &installed_content_save::Faction,
     tokens: Option<&BTreeMap<u32, &[u8]>>,
     report: &mut Report,
 ) {

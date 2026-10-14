@@ -16,6 +16,7 @@ bytemuck = "1"
 dashboard = { path = "crates/dashboard" }
 engine = { path = "crates/engine" }
 installed-content = { path = "crates/installed-content" }
+installed-content-save = { path = "crates/installed-content-save" }
 mimalloc = { version = "0.1", default-features = false }
 png = "0.18"
 pollster = "0.4"

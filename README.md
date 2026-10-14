@@ -16,7 +16,8 @@ Each component's README describes its layout, concepts and local rules.
 | [recorder-app](crates/recorder-app/README.md) | Battle Plan Recorder: the tray program that records campaigns while HOI4 runs. |
 | [replay](crates/replay/README.md) | Recording format, tables, branches and sample history. |
 | [store](crates/store/README.md) | Immutable prepared ranges, manifest publication and storage Clear. |
-| [installed-content](crates/installed-content/README.md) | Recorded content stack, game assets, text saves and identity verification. |
+| [installed-content](crates/installed-content/README.md) | Recorded content stack, game assets, shared text parser and identity verification. |
+| [installed-content-save](crates/installed-content-save/README.md) | Text-save readers and serializer projections for save comparisons. |
 | [shader-pipeline](crates/shader-pipeline/README.md) | Native shader compiler, persistent cache and GPU pass binding. |
 | [viewer](crates/viewer/README.md) | Native map rendering, playback, game-derived visuals and image export. |
 | [dashboard](crates/dashboard/README.md) | Widget data products, data service, host/viewer protocol and frontend types. |

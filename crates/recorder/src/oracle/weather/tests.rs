@@ -6,7 +6,7 @@ use replay::{
 
 #[test]
 fn typed_weather_comparison_keeps_exact_words_and_refuses_unavailable_rows() {
-    let mut saved = installed_content::save::parse(
+    let mut saved = installed_content_save::parse(
         br#"HOI4txt
 date=1936.1.1.1 game_unique_id=campaign game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 version=build
 countries={} states={} provinces={}
@@ -224,7 +224,7 @@ fn weather_dense_census_includes_zero_and_rejects_duplicates_or_holes() {
 
 #[test]
 fn anchored_temperatures_compare_their_derivation_and_refuse_without_one() {
-    let saved = installed_content::save::parse(
+    let saved = installed_content_save::parse(
         br#"HOI4txt
 date=1936.1.1.1 game_unique_id=campaign game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 version=build
 countries={} states={} provinces={}

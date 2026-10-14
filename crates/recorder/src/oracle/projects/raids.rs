@@ -300,7 +300,7 @@ pub(super) fn compare_raid_equipment(
 /// compared.
 fn compare_raid_archetype_totals(
     row: &replay::rows::RaidEquipmentRow,
-    saved: &[installed_content::save::production::Equipment],
+    saved: &[installed_content_save::production::Equipment],
     archetype_of: &BTreeMap<u64, u32>,
     label: &str,
     report: &mut Report,
@@ -372,8 +372,8 @@ fn compare_raid_archetype_totals(
 pub(in crate::oracle) fn compare_raid_tooltip_operands(
     frame: &DecodedFrame,
     pack: &saved::Pack,
-    divisions: &BTreeMap<u64, installed_content::save::Division>,
-    air: &installed_content::save::air::Pack,
+    divisions: &BTreeMap<u64, installed_content_save::Division>,
+    air: &installed_content_save::air::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
     use engine::raid_tooltip_operands::*;
@@ -491,7 +491,7 @@ pub(in crate::oracle) fn compare_raid_tooltip_operands(
 fn compare_raid_wing_names(
     rows: &[replay::rows::RaidTooltipOperandRow],
     expected: &RaidCensus<'_>,
-    air: &installed_content::save::air::Pack,
+    air: &installed_content_save::air::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
     use engine::raid_tooltip_operands::*;

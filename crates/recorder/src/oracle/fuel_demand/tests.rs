@@ -1,5 +1,4 @@
 use super::*;
-use installed_content::save;
 use replay::{
     frame::TableView,
     rows::{
@@ -37,7 +36,7 @@ fn skipped_zero_wing_owner_witness_keeps_override_fallback_and_failure_independe
     let id = 7_u64 << 32 | 69;
     saved.air_wings.insert(
         id,
-        save::AirWing {
+        installed_content_save::AirWing {
             id,
             owner: b"FRA".to_vec(),
             name: Some(Vec::new()),
@@ -161,7 +160,7 @@ fn ordinary_fleet_saved_name_must_be_present_even_when_empty() {
         .insert(b"GER".to_vec(), vec![id]);
     saved.fleets.insert(
         id,
-        save::Fleet {
+        installed_content_save::Fleet {
             id,
             owner: b"GER".to_vec(),
             home_base: None,
@@ -210,7 +209,7 @@ fn fresh_cached_demand_save_witness_detects_signed_difference_and_rejects_held_d
         .insert(b"GER".to_vec(), vec![id]);
     saved.divisions.insert(
         id,
-        save::Division {
+        installed_content_save::Division {
             id,
             roster_owner: b"GER".to_vec(),
             logical_owner: b"GER".to_vec(),
@@ -219,11 +218,11 @@ fn fresh_cached_demand_save_witness_detects_signed_difference_and_rejects_held_d
             template: None,
             alternate_template: None,
             separate_counter: false,
-            hit_points: save::Decimal::parse(b"0").unwrap(),
-            organisation: save::Decimal::parse(b"0").unwrap(),
+            hit_points: installed_content_save::Decimal::parse(b"0").unwrap(),
+            organisation: installed_content_save::Decimal::parse(b"0").unwrap(),
             country_intel: Vec::new(),
-            presentation: save::DivisionPresentation {
-                fuel_requested: Some(save::Decimal::parse(b"-0.00001").unwrap()),
+            presentation: installed_content_save::DivisionPresentation {
+                fuel_requested: Some(installed_content_save::Decimal::parse(b"-0.00001").unwrap()),
                 ..Default::default()
             },
         },

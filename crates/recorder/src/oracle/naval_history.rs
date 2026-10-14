@@ -5,7 +5,7 @@ use std::{
     io,
 };
 
-use installed_content::save::naval_history as saved;
+use installed_content_save::naval_history as saved;
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, NavalSupremacyRow, SunkConvoyRow, SunkShipEntry, tables},

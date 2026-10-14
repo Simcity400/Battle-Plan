@@ -1,5 +1,5 @@
 use super::*;
-use installed_content::save::counter_inputs;
+use installed_content_save::counter_inputs;
 use replay::rows::{
     CountryCounterInputRow, FleetCounterInputRow, FleetRow, FreshTaskForceCounterEta,
     NavalPortMissionInputs, Recorded, ShipRow, TaskForceCounterInputRow, TaskForceMapMotionRow,
@@ -264,7 +264,7 @@ fn hq_distance_oracle_compares_zero_positive_and_negative_save_omission() {
         let text = format!(
             "countries={{GER={{theatres={{theatre={{id={{id=2 type=67}} orders_group={{id={{id=7 type=53}} name=Army field_marshal_group=no motorization_level=0 {suffix}}}}}}}}}}}"
         );
-        save.naval_history = installed_content::save::naval_history::parse(
+        save.naval_history = installed_content_save::naval_history::parse(
             &installed_content::parser::parse(text.as_bytes()).unwrap().items,
         )
         .unwrap();
@@ -340,7 +340,7 @@ fn invasion_source_distance_oracle_preserves_negative_omission_and_hq_comparison
         let text = format!(
             "countries={{GER={{theatres={{theatre={{id={{id=2 type=67}} orders_group={{id={{id=7 type=53}} name=Army field_marshal_group=no motorization_level=0 distance=31 {suffix}}}}}}}}}}}"
         );
-        save.naval_history = installed_content::save::naval_history::parse(
+        save.naval_history = installed_content_save::naval_history::parse(
             &installed_content::parser::parse(text.as_bytes()).unwrap().items,
         )
         .unwrap();
@@ -540,7 +540,7 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
     );
     save.task_forces.insert(
         task,
-        installed_content::save::TaskForce {
+        installed_content_save::TaskForce {
             id: task,
             name: None,
             fleet,
@@ -696,7 +696,7 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
 /// the unit save writer) and the naval participant save writer write them: no
 /// combat list on the unit, the side's `unit` references in the combat.
 fn serialized(task_force: &str, combats: &str) -> Save {
-    installed_content::save::parse(format!(
+    installed_content_save::parse(format!(
         "HOI4txt
 date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 countries={{ GER={{units={{fleet={{id={{id=1 type=61}} task_force={{id={{id=43 type=51}} {task_force} location=1 logical_country=\"GER\" mission={{mission=0}}}}}}}}}} }} states={{}} provinces={{}} combat={{{combats}}}"
     ).as_bytes())

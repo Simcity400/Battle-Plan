@@ -1,5 +1,5 @@
 use super::*;
-use installed_content::save::{Decimal, GameDate};
+use installed_content_save::{Decimal, GameDate};
 use replay::{
     frame::{Metrics, TableView},
     rows::{
@@ -211,7 +211,7 @@ fn advisor_modifier_cache_distinguishes_not_recorded_from_native_unavailable() {
 
 #[test]
 fn operative_codename_oracle_checks_both_hosts_and_saved_omissions() {
-    use installed_content::save::{DivisionName, intel};
+    use installed_content_save::{DivisionName, intel};
     use replay::rows::{CharacterOperativeRow, NameOperands};
     let (mut frame, _, _) = fixture();
     let naming = NameOperands {
@@ -350,12 +350,7 @@ fn operative_name_and_codename_compatibility_gaps_are_named_and_counted() {
         if whole_frame {
             report.record_tables(&frame);
         }
-        compare_codenames(
-            &frame,
-            &installed_content::save::intel::Pack::default(),
-            &mut report,
-        )
-        .unwrap();
+        compare_codenames(&frame, &installed_content_save::intel::Pack::default(), &mut report).unwrap();
         assert!(report.differences.is_empty());
         assert_eq!(report.scalar_checks, 0);
         assert_eq!(report.compared_tables["CharacterOperatives codenames"], 0);
@@ -407,12 +402,7 @@ fn operative_name_and_codename_native_absence_is_named_separately() {
             ..Default::default()
         }]));
     let mut report = Report::default();
-    compare_codenames(
-        &frame,
-        &installed_content::save::intel::Pack::default(),
-        &mut report,
-    )
-    .unwrap();
+    compare_codenames(&frame, &installed_content_save::intel::Pack::default(), &mut report).unwrap();
     assert!(report.differences.is_empty());
     assert_eq!(report.scalar_checks, 0);
     for field in [

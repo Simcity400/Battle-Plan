@@ -10,7 +10,7 @@
 //! the country or engine state no writer serializes.
 
 use super::{Report, complete, invalid, required_country_tag};
-use installed_content::save::Save;
+use installed_content_save::Save;
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, TableId, tables},
@@ -81,8 +81,7 @@ fn inputs(
             saved.war_support.as_ref(),
         );
         let terms = &saved.stability_terms;
-        let fixed =
-            |value: &Option<installed_content::save::Decimal>| value.as_ref().map(|value| value.raw);
+        let fixed = |value: &Option<installed_content_save::Decimal>| value.as_ref().map(|value| value.raw);
         // The save truncates a Q15 word to five decimals (see `q15_to_saved_fixed5`).
         let q15 = replay::fixed_point::q15_to_saved_fixed5;
         for (field, captured, saved) in [
@@ -163,7 +162,7 @@ mod tests {
     const HOUR: i32 = 100;
 
     fn save() -> Save {
-        installed_content::save::parse(br#"HOI4txt
+        installed_content_save::parse(br#"HOI4txt
 date="1936.1.2.17" game_unique_id="campaign" version="build" game_unique_seed=-42 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
 countries={ GER={ stability=0.5 war_support=0.4 propaganda_stability_penalty=-0.10000 coastal_protection_ratio=0.025 heroes_dying_war_support_penalty=-0.00027 } }
 states={ 1={owner="GER"} } provinces={ 2={controller="GER"} }

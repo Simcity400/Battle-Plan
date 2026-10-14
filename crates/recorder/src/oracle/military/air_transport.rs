@@ -1,7 +1,8 @@
 //! Saved pool identity and the transport wing's independently captured raid link.
 use std::{collections::BTreeMap, io};
 
-use installed_content::{save, tokens::Token, unit_leader::SubUnits};
+use installed_content::{tokens::Token, unit_leader::SubUnits};
+use installed_content_save as save;
 use replay::{
     frame::DecodedFrame,
     rows::{AirWingRow, Recorded, tables},

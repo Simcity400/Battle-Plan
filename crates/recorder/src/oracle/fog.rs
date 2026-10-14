@@ -11,7 +11,7 @@
 
 use std::{collections::BTreeMap, io};
 
-use installed_content::save::{IntelEntry, Save};
+use installed_content_save::{IntelEntry, Save};
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, tables},
@@ -230,7 +230,7 @@ fn compare_volunteer_hosts(
 /// same gate the walker applies, so the two scopes are directly comparable.
 fn volunteer_theatres(
     saved: &Save,
-) -> io::Result<BTreeMap<u64, &installed_content::save::naval_history::LandTheatre>> {
+) -> io::Result<BTreeMap<u64, &installed_content_save::naval_history::LandTheatre>> {
     let Some(countries) = &saved.naval_history.theatre_countries else {
         return Err(invalid(
             "save has no theatre roster; volunteer theatre scope cannot be established",
@@ -624,7 +624,7 @@ fn show(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::test_support::frame;
-    use installed_content::save::{self, parse};
+    use installed_content_save::parse;
     use replay::{
         frame::TableView,
         rows::{
@@ -639,7 +639,7 @@ mod tests {
     const RAILWAY_GUN: u64 = (7_u64 << 32) | 74;
     const THEATRE: u64 = (5_u64 << 32) | 67;
 
-    fn saved() -> save::Save {
+    fn saved() -> installed_content_save::Save {
         parse(
             br#"HOI4txt
 date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
@@ -659,7 +659,7 @@ states={} provinces={}"#,
         .unwrap()
     }
 
-    fn railway_saved() -> save::Save {
+    fn railway_saved() -> installed_content_save::Save {
         parse(
             br#"HOI4txt
 date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13

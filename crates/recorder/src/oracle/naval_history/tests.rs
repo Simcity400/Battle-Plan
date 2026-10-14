@@ -1,5 +1,5 @@
 use super::*;
-use installed_content::save::{Decimal, Division, GameDate};
+use installed_content_save::{Decimal, Division, GameDate};
 use replay::{
     frame::{Metrics, TableView},
     rows::{

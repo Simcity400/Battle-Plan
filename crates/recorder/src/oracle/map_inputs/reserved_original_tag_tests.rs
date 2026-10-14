@@ -1,5 +1,5 @@
 use super::*;
-use installed_content::save::{ActualCountry, CountryEmissionIdentity, SaveDocument};
+use installed_content_save::{ActualCountry, CountryEmissionIdentity, SaveDocument};
 use replay::rows::{Recorded, ReservedCountryNamingRow};
 
 fn fixture(

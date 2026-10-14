@@ -5,8 +5,8 @@
 use installed_content::{
     ResolvedLayers,
     map::{MapData, ProvinceKind},
-    save::naval_history::RailwayAdjacency,
 };
+use installed_content_save::naval_history::RailwayAdjacency;
 use replay::{
     frame::DecodedFrame,
     rows::{

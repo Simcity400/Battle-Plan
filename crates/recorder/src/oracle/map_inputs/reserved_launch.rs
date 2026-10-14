@@ -2,7 +2,7 @@
 //! This comparison never authorizes duplicate countries in the full Save parser.
 
 use super::*;
-use installed_content::save::naval_launch::CountryNavalLaunchOccurrence;
+use installed_content_save::naval_launch::CountryNavalLaunchOccurrence;
 use replay::rows::{LaunchNavalBases, Recorded, ReservedCountryNamingRow};
 
 const LABEL: &str = "ReservedCountryNaming.launch_sources";

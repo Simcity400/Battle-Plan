@@ -2,7 +2,7 @@
 //! Runtime headers, air-site access and selected stat caches are not saved.
 use std::{collections::BTreeMap, io};
 
-use installed_content::save::{PartialMapMembership, ProvinceMembership, Save};
+use installed_content_save::{PartialMapMembership, ProvinceMembership, Save};
 use replay::{
     frame::DecodedFrame,
     rows::{CountryGameScoreInputRow, CountryRow, tables},

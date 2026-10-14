@@ -1,0 +1,15 @@
+[package]
+name = "installed-content-save"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+installed-content.workspace = true
+replay.workspace = true
+
+[dev-dependencies]
+# Shared executable metadata for the installed state-history regression.
+engine.workspace = true

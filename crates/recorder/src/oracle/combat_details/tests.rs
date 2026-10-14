@@ -484,8 +484,8 @@ use replay::rows::LandCombatCommanderTimedTrait;
 
 #[test]
 fn naval_air_localized_cache_is_not_a_saved_plane_comparator() {
-    let date = installed_content::save::SavedDate::parse(b"1936.1.1.1").unwrap();
-    let mut saved = installed_content::save::combat_details::NavalPlane {
+    let date = installed_content_save::SavedDate::parse(b"1936.1.1.1").unwrap();
+    let mut saved = installed_content_save::combat_details::NavalPlane {
         source: 0,
         group_index: 0,
         index: 0,
@@ -501,7 +501,7 @@ fn naval_air_localized_cache_is_not_a_saved_plane_comparator() {
         date,
         flags: [false; 2],
         name: b"Mediterranean".to_vec(),
-        damage_mult: installed_content::save::Decimal::parse(b"1").unwrap(),
+        damage_mult: installed_content_save::Decimal::parse(b"1").unwrap(),
         naval_hits: Vec::new(),
         air_hits: Vec::new(),
     };
@@ -510,7 +510,7 @@ fn naval_air_localized_cache_is_not_a_saved_plane_comparator() {
         date: date.engine_hour().unwrap(),
         ..Default::default()
     };
-    let compare = |saved: &installed_content::save::combat_details::NavalPlane| {
+    let compare = |saved: &installed_content_save::combat_details::NavalPlane| {
         let mut report = Report::default();
         plane_values(&mut report, "plane", &row, saved, &BTreeMap::new()).unwrap();
         report.differences
@@ -534,11 +534,11 @@ fn naval_side_units_compare_with_the_saved_unit_list_in_order() {
     };
     let (frame, mut saved, _, _) = crate::oracle::tests::fixture();
     let combat = (5_u64 << 32) | 4713;
-    let zero = || installed_content::save::Decimal::parse(b"0").unwrap();
+    let zero = || installed_content_save::Decimal::parse(b"0").unwrap();
     let units = [(244_u64 << 32) | 61, (9 << 32) | 61];
     saved.naval_combats.insert(
         combat,
-        installed_content::save::NavalCombat {
+        installed_content_save::NavalCombat {
             id: combat,
             province: 2,
             attacker_positioning: zero(),
@@ -576,7 +576,7 @@ fn naval_side_units_compare_with_the_saved_unit_list_in_order() {
 
 #[test]
 fn timed_traits_compare_saved_tokens_and_signed_days_in_vector_order() {
-    let save = installed_content::save::parse(
+    let save = installed_content_save::parse(
         br#"HOI4txt
         date=1942.9.6.2 game_unique_id=test version=test game_unique_seed=1 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
         countries={} states={} provinces={}

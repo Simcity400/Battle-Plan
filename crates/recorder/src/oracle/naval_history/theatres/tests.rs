@@ -1,5 +1,5 @@
 use super::*;
-use installed_content::save::Decimal;
+use installed_content_save::Decimal;
 use replay::{
     frame::{Metrics, TableView},
     rows::{
@@ -667,7 +667,7 @@ fn repeated_reserved_country_save_tags_require_admitted_full_save_occurrences() 
 
 #[test]
 fn projected_repeated_reserved_aliases_compare_theatres_and_order_of_battle() {
-    use installed_content::save::SaveDocument;
+    use installed_content_save::SaveDocument;
     use replay::rows::CountryLinkRow;
     let mut frame = frame(true);
     *frame.tables[TableId::Countries.index()] =

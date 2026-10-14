@@ -189,7 +189,7 @@ fn projected_full_oracle_scopes_canonical_censuses_and_refuses_uncaptured_reserv
                 ungrouped: 0,
             }]));
         let mut saved = parse(&document, &captured).unwrap();
-        let membership: installed_content::save::PartialMapMembership = installed_content::save::MapMembership {
+        let membership: installed_content_save::PartialMapMembership = installed_content_save::MapMembership {
             provinces: std::collections::BTreeMap::from([(0, None)]),
         }
         .into();

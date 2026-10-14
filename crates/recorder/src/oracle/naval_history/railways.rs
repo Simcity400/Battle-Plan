@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, io};
 
-use installed_content::save::naval_history as saved;
+use installed_content_save::naval_history as saved;
 use replay::{frame::DecodedFrame, rows::tables};
 
 use super::{Report, complete, equal, invalid};
@@ -9,7 +9,7 @@ use super::{Report, complete, equal, invalid};
 /// object's exact health scalars are independently written by CBuilding.
 pub(in crate::oracle) fn compare_railway_buildings(
     frame: &DecodedFrame,
-    saved: &installed_content::save::construction::Pack,
+    saved: &installed_content_save::construction::Pack,
     names: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -68,7 +68,7 @@ pub(in crate::oracle) fn compare_railway_buildings(
 fn compare_selected_building(
     hour: i32,
     row: &replay::rows::RailCooldownRow,
-    saved: &installed_content::save::construction::Pack,
+    saved: &installed_content_save::construction::Pack,
     names: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
 ) -> io::Result<()> {

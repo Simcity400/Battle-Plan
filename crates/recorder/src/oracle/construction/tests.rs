@@ -31,7 +31,7 @@ fn state_cores_compare_canonical_membership_with_the_saved_country_lists() {
             .map(|(tag, states)| {
                 (
                     tag.to_vec(),
-                    installed_content::save::Country {
+                    installed_content_save::Country {
                         tag: tag.to_vec(),
                         cores: states.to_vec(),
                         ..Default::default()
@@ -595,7 +595,7 @@ fn building_and_railway_comparisons_detect_one_native_unit_and_order_changes() {
         cost: 9_007_199_254_740_993,
         priority: -1,
         amount: 1,
-        created_hour: installed_content::save::GameDate::parse(b"1936.1.1.12")
+        created_hour: installed_content_save::GameDate::parse(b"1936.1.1.12")
             .unwrap()
             .engine_hour()
             .unwrap(),
@@ -942,7 +942,7 @@ fn nul_token_mapping_limits_keep_independent_scope_count_and_numeric_checks() {
             country: 12,
             cost: 100_001,
             amount: 1,
-            created_hour: installed_content::save::GameDate::parse(b"1936.1.1.12")
+            created_hour: installed_content_save::GameDate::parse(b"1936.1.1.12")
                 .unwrap()
                 .engine_hour()
                 .unwrap(),
@@ -1071,18 +1071,16 @@ fn resolved_province_buildings_compare_signed_zero_values_and_named_membership()
 fn naval_bases_sum_the_contents_port_buildings() {
     let saved = saved_pack(b"countries={} states={} provinces={7={buildings={dock={level=2 healthy_levels=1 partial_health=0} pier={level=3 healthy_levels=3 partial_health=0} factory={level=5 healthy_levels=5 partial_health=0}}}}");
     let ports = BTreeSet::from([b"dock".to_vec(), b"pier".to_vec()]);
-    let country_bases = [
-        installed_content::save::naval_launch::CountryNavalLaunchOccurrence {
-            ordinal: 0,
-            tag: b"TST".to_vec(),
-            naval_bases: Some(
-                vec![7]
-                    .into_iter()
-                    .map(installed_content::save::naval_launch::NavalBaseOccurrence::from)
-                    .collect(),
-            ),
-        },
-    ];
+    let country_bases = [installed_content_save::naval_launch::CountryNavalLaunchOccurrence {
+        ordinal: 0,
+        tag: b"TST".to_vec(),
+        naval_bases: Some(
+            vec![7]
+                .into_iter()
+                .map(installed_content_save::naval_launch::NavalBaseOccurrence::from)
+                .collect(),
+        ),
+    }];
     let mut row = replay::rows::NavalBaseRow {
         province: 7,
         level: 5,
@@ -1145,18 +1143,16 @@ fn naval_base_membership_uses_saved_rosters_rather_than_all_port_buildings() {
     )
     .unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    let rosters = [
-        installed_content::save::naval_launch::CountryNavalLaunchOccurrence {
-            ordinal: 0,
-            tag: b"TST".to_vec(),
-            naval_bases: Some(
-                vec![19]
-                    .into_iter()
-                    .map(installed_content::save::naval_launch::NavalBaseOccurrence::from)
-                    .collect(),
-            ),
-        },
-    ];
+    let rosters = [installed_content_save::naval_launch::CountryNavalLaunchOccurrence {
+        ordinal: 0,
+        tag: b"TST".to_vec(),
+        naval_bases: Some(
+            vec![19]
+                .into_iter()
+                .map(installed_content_save::naval_launch::NavalBaseOccurrence::from)
+                .collect(),
+        ),
+    }];
     naval_bases(
         &[],
         &saved.province_buildings,
@@ -1172,7 +1168,7 @@ fn naval_base_membership_uses_saved_rosters_rather_than_all_port_buildings() {
 
 #[test]
 fn naval_base_saved_country_lists_compare_order_multiplicity_and_zero_level_bases() {
-    use installed_content::save::naval_launch::parse_country_occurrences;
+    use installed_content_save::naval_launch::parse_country_occurrences;
     use replay::rows::{NavalBaseRow, Recorded};
     let bases = parse_country_occurrences(&installed_content::parser::parse(
         b"A={strategic_navy={naval_base={7={disabled_for_repairs=\"A\" disabled_for_repairs=\"B\" disabled_for_repairs=\"A\" disabled_for_repairs=\"\"} 7={disabled_for_repairs=\"A\" disabled_for_repairs=\"B\" disabled_for_repairs=\"A\" disabled_for_repairs=\"\"}}}}",
@@ -1334,7 +1330,7 @@ fn resolved_construction_names_retain_exact_numeric_and_queue_checks() {
         speed: -1,
         produced: -9_007_199_254_740_993,
         priority: -1,
-        created_hour: installed_content::save::GameDate::parse(b"1936.1.1.12")
+        created_hour: installed_content_save::GameDate::parse(b"1936.1.1.12")
             .unwrap()
             .engine_hour()
             .unwrap(),
@@ -1405,7 +1401,7 @@ fn missing_construction_name_does_not_skip_numeric_or_target_comparison() {
         cost: 9_007_199_254_740_994,
         priority: -2,
         amount: 1,
-        created_hour: installed_content::save::GameDate::parse(b"1936.1.1.12")
+        created_hour: installed_content_save::GameDate::parse(b"1936.1.1.12")
             .unwrap()
             .engine_hour()
             .unwrap(),

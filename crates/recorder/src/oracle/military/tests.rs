@@ -7,7 +7,7 @@ use replay::{
     },
 };
 
-fn membership() -> save::PartialMapMembership {
+fn membership() -> installed_content_save::PartialMapMembership {
     super::super::state_history_tests::membership(
         "state={id=1 provinces={1} history={IF={limit={} free_operative={operative=a}}}} \
          state={id=2 provinces={2 3}}",
@@ -19,8 +19,8 @@ fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     *frame.tables[table.index()] = TableView::Complete(rows);
 }
 
-fn zero() -> save::Decimal {
-    save::Decimal::parse(b"0").unwrap()
+fn zero() -> installed_content_save::Decimal {
+    installed_content_save::Decimal::parse(b"0").unwrap()
 }
 
 #[test]
@@ -31,7 +31,7 @@ fn division_movement_style_compares_writer_truth_priority_and_local_refusals() {
     saved.divisions.clear();
     saved.divisions.insert(
         id,
-        save::Division {
+        installed_content_save::Division {
             id,
             roster_owner: b"GER".to_vec(),
             logical_owner: b"GER".to_vec(),
@@ -184,13 +184,13 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
     let id = (1 << 32) | 69;
     let country = frame.complete::<tables::Countries>().unwrap()[0].clone();
     let links = BTreeMap::from([(101, &country)]);
-    saved.air.wings.push(save::air::Wing {
+    saved.air.wings.push(installed_content_save::air::Wing {
         id,
         pool_type: b"fixture_plane".to_vec(),
         name: None,
         accidents: None,
         experience: zero(),
-        equipment: save::air::EquipmentPool {
+        equipment: installed_content_save::air::EquipmentPool {
             entries: Vec::new(),
             allow_zero: false,
         },
@@ -218,7 +218,7 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
         let suffix = matches!(&name, Recorded::Value(Some(bytes)) if bytes.contains(&0));
         saved.air_wings.insert(
             id,
-            save::AirWing {
+            installed_content_save::AirWing {
                 id,
                 owner: b"GER".to_vec(),
                 name: expected,
@@ -269,7 +269,7 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
 #[test]
 fn division_country_ordinal_compares_the_full_saved_roster() {
     let (mut frame, mut saved, _, _) = super::super::tests::fixture();
-    let division = |id: u64| save::Division {
+    let division = |id: u64| installed_content_save::Division {
         id: (id << 32) | 4713,
         roster_owner: b"GER".to_vec(),
         logical_owner: b"GER".to_vec(),
@@ -281,7 +281,7 @@ fn division_country_ordinal_compares_the_full_saved_roster() {
         hit_points: zero(),
         organisation: zero(),
         country_intel: Vec::new(),
-        presentation: save::DivisionPresentation {
+        presentation: installed_content_save::DivisionPresentation {
             max_supply: Some(zero()),
             army_current_supply_ratio: Some(zero()),
             ..Default::default()
@@ -352,7 +352,7 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
     saved.divisions.clear();
     saved.divisions.insert(
         id,
-        save::Division {
+        installed_content_save::Division {
             id,
             roster_owner: b"X01".to_vec(),
             logical_owner: b"X01".to_vec(),
@@ -364,7 +364,7 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
             hit_points: zero(),
             organisation: zero(),
             country_intel: Vec::new(),
-            presentation: save::DivisionPresentation {
+            presentation: installed_content_save::DivisionPresentation {
                 max_supply: Some(zero()),
                 army_current_supply_ratio: Some(zero()),
                 ..Default::default()
@@ -402,7 +402,8 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
             .get_mut(&id)
             .unwrap()
             .presentation
-            .disrupted_supply = text.map(|text| save::Decimal::parse(text.as_bytes()).unwrap());
+            .disrupted_supply =
+            text.map(|text| installed_content_save::Decimal::parse(text.as_bytes()).unwrap());
         set(
             &mut frame,
             TableId::DivisionStatus,
@@ -452,7 +453,7 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
     }
     // A failed appended scalar does not prevent independent prefix comparison.
     let presentation = &mut saved.divisions.get_mut(&id).unwrap().presentation;
-    presentation.dig_in = Some(save::Decimal::parse(b"1").unwrap());
+    presentation.dig_in = Some(installed_content_save::Decimal::parse(b"1").unwrap());
     presentation.disrupted_supply = None;
     set(
         &mut frame,
@@ -501,7 +502,7 @@ fn land_combats_compare_locations_and_missing_rows_despite_membership_exclusions
     for (id, province) in [(11, 1), (12, 1), (13, 2), (14, 2), (17, 2)] {
         saved.land_combats.insert(
             id,
-            save::LandCombat {
+            installed_content_save::LandCombat {
                 id,
                 province,
                 day: 0,
@@ -556,7 +557,7 @@ fn divisions_compare_locations_strength_and_missing_rows_despite_membership_excl
     for (id, province) in [(11, 1), (12, 2), (13, 2)] {
         saved.divisions.insert(
             id,
-            save::Division {
+            installed_content_save::Division {
                 id,
                 roster_owner: owner.clone(),
                 logical_owner: owner.clone(),
@@ -614,7 +615,7 @@ fn naval_units_compare_locations_and_missing_rows_despite_membership_exclusions(
     for (id, home_base) in [(11, 1), (12, 2), (17, 1)] {
         saved.fleets.insert(
             id,
-            save::Fleet {
+            installed_content_save::Fleet {
                 id,
                 owner: owner.clone(),
                 home_base: Some(home_base),
@@ -626,7 +627,7 @@ fn naval_units_compare_locations_and_missing_rows_despite_membership_exclusions(
     for (id, province) in [(13, 2), (14, 1), (15, 1)] {
         saved.task_forces.insert(
             id,
-            save::TaskForce {
+            installed_content_save::TaskForce {
                 id,
                 name: None,
                 fleet: 11,
@@ -648,7 +649,7 @@ fn naval_units_compare_locations_and_missing_rows_despite_membership_exclusions(
     }
     saved.ships.insert(
         15,
-        save::Ship {
+        installed_content_save::Ship {
             id: 15,
             roster_ordinal: 0,
             task_force: 14,
@@ -742,7 +743,7 @@ fn naval_combats_compare_locations_and_missing_rows_despite_membership_exclusion
     for (id, province) in [(11, 1), (12, 2), (13, 1), (14, 2)] {
         saved.naval_combats.insert(
             id,
-            save::NavalCombat {
+            installed_content_save::NavalCombat {
                 id,
                 province,
                 attackers: Vec::new(),
@@ -758,7 +759,7 @@ fn naval_combats_compare_locations_and_missing_rows_despite_membership_exclusion
     }
     saved.naval_combat_participants.insert(
         (11, 0, 0),
-        save::NavalCombatParticipant {
+        installed_content_save::NavalCombatParticipant {
             combat: 11,
             side: 0,
             battle_slot: 0,
@@ -829,7 +830,7 @@ fn ship_experience_report(recorded: i64) -> Report {
     let owner = saved.countries.keys().next().unwrap().clone();
     saved.fleets.insert(
         11,
-        save::Fleet {
+        installed_content_save::Fleet {
             id: 11,
             owner: owner.clone(),
             home_base: Some(1),
@@ -839,7 +840,7 @@ fn ship_experience_report(recorded: i64) -> Report {
     );
     saved.task_forces.insert(
         14,
-        save::TaskForce {
+        installed_content_save::TaskForce {
             id: 14,
             name: None,
             fleet: 11,
@@ -860,13 +861,13 @@ fn ship_experience_report(recorded: i64) -> Report {
     );
     saved.ships.insert(
         15,
-        save::Ship {
+        installed_content_save::Ship {
             id: 15,
             roster_ordinal: 0,
             task_force: 14,
             strength: zero(),
             organisation: zero(),
-            experience: save::Decimal::parse(b"30.00999").unwrap(),
+            experience: installed_content_save::Decimal::parse(b"30.00999").unwrap(),
             sunk_convoys: 0,
             equipment: None,
         },
@@ -972,7 +973,7 @@ fn fleet_name_is_mandatory_in_ordinary_save_even_for_historical_recordings() {
         );
         saved.fleets.insert(
             17,
-            save::Fleet {
+            installed_content_save::Fleet {
                 id: 17,
                 owner: owner.clone(),
                 home_base: Some(1),

@@ -15,7 +15,7 @@ Attachment prepares the process-wide executable tables from the verified process
 | [oracle.rs](src/oracle.rs), [oracle/](src/oracle/) | Save joins, native evidence and unsaved limitations; [report.rs](src/oracle/report.rs) owns coverage reporting. |
 | [movement_oracle.rs](src/movement_oracle.rs), [metrics.rs](src/metrics.rs) | Live movement-map comparison and offline interval metrics. |
 
-Native reads belong in [engine](../engine/README.md) and [collector](../collector/README.md), the format in [replay](../replay/README.md), content/save parsing in [installed-content](../installed-content/README.md). Shared development, mod, scale and storage rules live in [AGENTS.md](../../AGENTS.md).
+Native reads belong in [engine](../engine/README.md) and [collector](../collector/README.md), the format in [replay](../replay/README.md), content parsing in [installed-content](../installed-content/README.md) and save projections in [installed-content-save](../installed-content-save/README.md). Shared development, mod, scale and storage rules live in [AGENTS.md](../../AGENTS.md).
 
 ## Record a campaign
 
@@ -118,7 +118,7 @@ With your recorder attached, load through the game menu. Pause at the load hour,
 - Daily/sliced groups compare only their actual reads/owners. Carried groups report their read hour instead of comparing stale rows with current save values. [report.rs](src/oracle/report.rs) owns freshness rules; a sibling table's timing is not proof.
 - Columns stored at the game's display precision ([display steps](../replay/src/display.rs)) compare with the save's exact value rounded by the same step (the remaining supply grace by the content's `SUPPLY_GRACE`), and the report lists each such column with its precision.
 - Current read refusal and native empty/zero stay distinct. Readable rows still compare, and inspection uses current-format byte sizes.
-- Partial state-history membership skips only dependent joins, names/counts excluded states and makes coverage incomplete. Independent saved fields, identities and locations still compare. History effects are parsed, never executed; see [save parsing](../installed-content/src/save.rs) and [construction comparisons](src/oracle/construction.rs).
+- Partial state-history membership skips only dependent joins, names/counts excluded states and makes coverage incomplete. Independent saved fields, identities and locations still compare. History effects are parsed, never executed; see [save parsing](../installed-content-save/src/lib.rs) and [construction comparisons](src/oracle/construction.rs).
 - Template comparisons preserve omitted keys versus emitted empty strings and the native first-NUL prefix. Air transport comparisons preserve complete wing pool/raid identity; unavailable historical operands remain limitations, while current reached saved-operand faults remain differences.
 - Stored names compare the native first-NUL text, retaining counted limitations for captured trailing bytes. State, province, faction, unit and ace-callsign names preserve the stored-length gate and omitted versus emitted-empty keys; unconditional name writers require key presence in ordinary saves.
 - Active ideas compare the recorded lexical dictionary's canonical writer spelling in roster order; absent or ambiguous dictionary joins fail the comparison. Advisor-token set membership uses its native case-insensitive hash/key identity, while saved advisor role strings compare exactly. The set's retained spelling depends on unsaved insertion history.

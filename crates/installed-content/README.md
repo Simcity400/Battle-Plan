@@ -1,6 +1,6 @@
 # installed-content
 
-Rust readers for the installed content used by recording, playback and save comparison. This crate owns content layers, identity verification, authored catalogues, assets and text-save parsing. It does not read live game memory.
+Rust readers for the installed content used by recording, playback and save comparison. This crate owns content layers, identity verification, authored catalogues, assets and the shared text parser. [installed-content-save](../installed-content-save/README.md) owns text-save projections. It does not read live game memory.
 
 Read the [project rules](../../AGENTS.md) before changing a reader. Consumers should use these shared readers rather than parse the same files again or add a Python runtime dependency.
 
@@ -9,13 +9,13 @@ Read the [project rules](../../AGENTS.md) before changing a reader. Consumers sh
 | Area | Entry points and responsibility |
 |---|---|
 | Content stack | [content.rs](src/content.rs): identities, verification and overlays. [physfs_zip.rs](src/content/physfs_zip.rs): native archives. [visual.rs](src/content/visual.rs): explicit cosmetic overlays. |
-| Text readers | [parser.rs](src/parser.rs): byte-preserving data and balanced trees. [parser/native.rs](src/parser/native.rs): script lexer and persistent reader. [script_files.rs](src/script_files.rs): database file order. [crt.rs](src/crt.rs) and [fixed5.rs](src/fixed5.rs): number conversions. |
+| Text readers | [parser.rs](src/parser.rs): byte-preserving data and balanced trees. [parser/native.rs](src/parser/native.rs): script lexer and persistent reader. [script_files.rs](src/script_files.rs): database file order. [crt.rs](src/crt.rs), [fixed5.rs](src/fixed5.rs) and [parser/decimal.rs](src/parser/decimal.rs): number conversions. |
 | Script dispatch | [key_names.rs](src/key_names.rs): load-point names. [trigger_keys.rs](src/trigger_keys.rs), [combat_tactics](src/combat_tactics.rs), [effect_keys.rs](src/effect_keys.rs) and [modifiers.rs](src/modifiers.rs): shared body readers. [tokens.rs](src/tokens.rs): name identity. [coverage.rs](src/coverage.rs): unread suffixes. |
 | Names and text | [localisation.rs](src/localisation.rs), [country_names.rs](src/country_names.rs), [scripted_localisation.rs](src/scripted_localisation.rs), [scripted_keys.rs](src/scripted_keys.rs) and [defines.rs](src/defines.rs). |
 | Authored catalogues | Domain modules such as [equipment.rs](src/equipment.rs), [ideas.rs](src/ideas.rs), [characters.rs](src/characters.rs) and [events.rs](src/events.rs) own database and lookup rules. [lib.rs](src/lib.rs) indexes all modules and defines typed diagnostics. |
 | Artwork and layout | [gui/native.rs](src/gui/native.rs), [gfx.rs](src/gfx.rs), [image](src/image/mod.rs), [mesh.rs](src/mesh.rs), [particles.rs](src/particles.rs) and [pdxshader](src/pdxshader/mod.rs). |
 | Map and movement | [map.rs](src/map.rs), [states.rs](src/states.rs), [province_graph.rs](src/province_graph.rs), [movement.rs](src/movement.rs) and the land/naval path and raid modules. |
-| Saves and preferences | [save.rs](src/save.rs) and submodules: serializer output for the oracle. [settings.rs](src/settings.rs): read-only local preferences. |
+| Preferences | [settings.rs](src/settings.rs): read-only local preferences. |
 
 A catalogue retains definitions, source identity and diagnostics. Duplicate handling, case sensitivity, defaults and enumeration order follow its native database, not a universal merge rule. Reuse catalogues and stack-scoped caches. Presentation and its shared [catalogue](../dashboard/src/catalogue.rs) belong to [dashboard](../dashboard/README.md).
 
@@ -105,19 +105,13 @@ World interfaces supply recorded movement/raid facts. Missing admission inputs s
 
 [Selected movement searches](src/unit_path/selected.rs) use recorded current-hour world operands and preserve native neighbour order and caller-specific admission. Missing runtime facts remain refusals.
 
-## Refusals and save honesty
+## Refusals
 
 Keep absence, valid emptiness, native recovery, parse failure and unsupported content distinct. Preserve producer-assigned `DiagnosticKind` and named, counted diagnostics. Refuse unsupported fields/classes/definitions with file/line context; never drop them or substitute vanilla defaults.
 
 `Read::misreads` records recovery; `Read::unsettled` means consumption cannot be followed. `Deferred effect` warnings do not prove complete reads. An unread suffix can alter later objects: use database coverage tracking to refuse dependent lookups, including absence or earlier definitions. This uncertainty is separate from hash coverage.
 
-Saves follow native omission, ordering, duplicate and representation rules. Preserve exact integers, fixed-point values and optional presence; do not invent unsaved caches. Partial state membership distinguishes assigned, unassigned and unknown provinces independently of resource failures. The [recorder oracle](../recorder/README.md) owns comparison limits and finalization.
-
-An omitted state owner certifies the native signed nonpositive class and also suppresses the state controller. Province control retains absent ownership for those states, preserves each explicit positive province controller and keeps omitted controllers absent. A missing state or unknown membership remains a separate join failure or exclusion.
-
-`SaveDocument` projects serializer output: a bare `=fixed5` directly inside any saved `variables` block retains an empty literal key, distinct from an anonymous value or an omitted map. Other tree readers keep their existing grammar. This preserves the writer's state; native text-load recovery consumes that malformed assignment differently and does not round-trip the empty name.
-
-Technology description catalogues retain every indexed declaration in native order, while case-insensitive name lookup selects the first. The technology database keeps each technology's research folders in authored order, a later definition replacing an earlier one's; `read_folders` reads `common/technology_tags` folder definitions in directory order with their `available` triggers, keeping a repeated folder's first definition and refusing the repeat by name. Saved technologies retain ordered repeated keys because the native serializer filters each instance independently.
+Technology description catalogues retain every indexed declaration in native order, while case-insensitive name lookup selects the first. The technology database keeps each technology's research folders in authored order, a later definition replacing an earlier one's; `read_folders` reads `common/technology_tags` folder definitions in directory order with their `available` triggers, keeping a repeated folder's first definition and refusing the repeat by name.
 
 ## Adding or changing a reader
 
@@ -126,7 +120,7 @@ Technology description catalogues retain every indexed declaration in native ord
 3. Preserve order, defaults, redefinitions and required operands; propagate diagnostics and uncertain suffixes through lookups.
 4. Add synthetic regressions for changed behaviour, layered replacements and reached mod forms. Reuse helpers (`test-support` exposes cross-crate fixtures) and update affected consumers together.
 
-[Selected transport](src/unit_path/selected/transport.rs) preserves early returns, per-occurrence rounding and independent output buffers; its message law asks for each operand only when a native branch reaches it. [Saved transfer inputs](src/save/counter_inputs.rs) keep source province and ordered combat references separate from the target. [Mission cache reads](src/save/naval_missions/spotting_cache.rs) use recorded lexical keys and the authenticated physical-country projection; omission constrains only the nonpositive writer branch. Air pools require their saved definition token. Orders-group and plan names distinguish an omitted key from emitted empty first-NUL text.
+[Selected transport](src/unit_path/selected/transport.rs) preserves early returns, per-occurrence rounding and independent output buffers; its message law asks for each operand only when a native branch reaches it.
 
 ## Checking changes
 
@@ -134,8 +128,6 @@ Follow [AGENTS.md](../../AGENTS.md) for crate-scoped formatting, clippy and affe
 
 Tests that exercise runtime keyword or registry metadata call `engine::executable_tables::initialize_for_tests()`. Set `BATTLE_PLAN_GAME_DIR` to the supported installation for those tests; an unset variable or incompatible installation is an explicit failure. Fixtures supply synthetic authored content while the immutable metadata comes from that installation. Equipment fixtures initialize this metadata before loading authored content, and shader parsing tests initialize it before using the shared lexer. Tests limited to table decoding and byte lookup use synthetic data without an installation.
 
-Real-game tests are ignored and read-only. Set `BATTLE_PLAN_GAME_DIR` to the game folder; run `cargo test -p installed-content <filter> -- --ignored --nocapture` from the repository root. Example filters: `every_shipped_gui_file_reads`, `every_shipped_gfx_file_reads`, `vanilla_state_history_reads_without_diagnostics`. Check each test's environment: corpus audits may require `BATTLE_PLAN_WORKSHOP_DIR`; special projects use `BATTLE_PLAN_SP_GAME`/`BATTLE_PLAN_SP_WORKSHOP`. Missing variables can skip a test, so confirm it read files.
+Real-game tests are ignored and read-only. Set `BATTLE_PLAN_GAME_DIR` to the game folder; run `cargo test -p installed-content <filter> -- --ignored --nocapture` from the repository root. Example filters: `every_shipped_gui_file_reads`, `every_shipped_gfx_file_reads`. Check each test's environment: corpus audits may require `BATTLE_PLAN_WORKSHOP_DIR`; special projects use `BATTLE_PLAN_SP_GAME`/`BATTLE_PLAN_SP_WORKSHOP`. Missing variables can skip a test, so confirm it read files.
 
 Compare relevant DLC/mod diagnostics with the [viewer corpus workflow](../viewer/README.md#mod-corpus-check); identity support alone does not prove reader coverage. Asset changes follow [rendering rules](../viewer/README.md#rendering-rules); integration follows the [recorder fresh-save/smoke workflow](../recorder/README.md). Commit synthetic inputs; keep installed content, captures and audits outside Git under [shared storage rules](../../AGENTS.md).
-
-The [template save reader](src/save/units.rs), state, province and faction names, and ace callsigns preserve key presence separately from bytes: emitted empty text differs from an omitted key. Comparisons follow each native stored-length gate and first-NUL prefix. Unconditional deployment and air-group names require the saved key even when its text is empty.

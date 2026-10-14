@@ -1,7 +1,8 @@
 //! Character and persistent-ability comparisons against native text serialization.
 
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
-use installed_content::{leader_traits::LeaderTraits, parser::c_string, save::characters as saved};
+use installed_content::{leader_traits::LeaderTraits, parser::c_string};
+use installed_content_save::characters as saved;
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, tables},
@@ -784,7 +785,7 @@ fn compare_operatives(
 /// it follows the same omission rules as division_name.
 pub(super) fn compare_codenames(
     frame: &DecodedFrame,
-    pack: &installed_content::save::intel::Pack,
+    pack: &installed_content_save::intel::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
     let mut saved = BTreeMap::new();
@@ -896,7 +897,7 @@ fn codename(
     report: &mut Report,
     label: &str,
     actual: &replay::rows::NameOperands,
-    entry: Option<&installed_content::save::intel::OperativeEntry>,
+    entry: Option<&installed_content_save::intel::OperativeEntry>,
 ) -> bool {
     let Some(entry) = entry else {
         report.limitation(

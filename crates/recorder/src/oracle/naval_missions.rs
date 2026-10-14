@@ -186,7 +186,7 @@ fn presence(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::save::naval_missions;
+    use installed_content_save::naval_missions;
     use replay::rows::{NavalMissionLedgerRow, NavalMissionTaskForceRow, TaskForceRow};
 
     fn decimal(raw: i64) -> Decimal {

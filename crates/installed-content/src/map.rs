@@ -63,7 +63,7 @@ pub struct MapData {
 /// One `definition.csv` record: a u16 id, byte red, green and blue,
 /// kind, coastal and continent fields, and the terrain name.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DefinitionRow {
+pub struct DefinitionRow {
     /// One-based line of the file, for messages.
     pub line: usize,
     pub id: u16,
@@ -97,7 +97,7 @@ impl DefinitionRow {
 /// break, then narrows to the record's field. Kind and coastal columns
 /// compare exact bytes (`true` is coastal). Absent columns take the parser's
 /// defaults: kind 1, not coastal, terrain `unknown`, continent 0.
-pub(crate) fn definition_rows(input: &[u8]) -> io::Result<Vec<DefinitionRow>> {
+pub fn definition_rows(input: &[u8]) -> io::Result<Vec<DefinitionRow>> {
     let text = parser::c_string(input);
     let mut rows = Vec::new();
     let mut line_start = 0;

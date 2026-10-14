@@ -2,7 +2,7 @@
 //! Sparse holes are exact zero only inside that complete native vector.
 
 use super::*;
-use installed_content::save::ActualCountry;
+use installed_content_save::ActualCountry;
 use replay::rows::{CountryIntelRow, ReservedCountryNamingRow};
 
 const LABEL: &str = "ReservedCountryNaming.country_intel_sample";
@@ -73,7 +73,7 @@ fn admitted<'a>(frame: &'a DecodedFrame, report: &mut Report) -> io::Result<Opti
 
 fn compare_records(
     actual: &Admitted<'_>,
-    saved: Option<&[installed_content::save::CountryIntelRecord]>,
+    saved: Option<&[installed_content_save::CountryIntelRecord]>,
     label: &str,
     report: &mut Report,
 ) -> io::Result<()> {

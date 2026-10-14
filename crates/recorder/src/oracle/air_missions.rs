@@ -8,7 +8,7 @@ use std::{
     io,
 };
 
-use installed_content::save::Save;
+use installed_content_save::Save;
 use replay::{
     frame::DecodedFrame,
     rows::{AirSortieModifierRow, AirWingRow, Recorded, tables},
@@ -708,7 +708,7 @@ fn mines(
 /// contradicts the recording and is reported, never read as zero.
 /// `saved` is the country's parsed block, `None` when the country is absent.
 fn saved_mines(
-    saved: Option<Option<&BTreeMap<u32, installed_content::save::Decimal>>>,
+    saved: Option<Option<&BTreeMap<u32, installed_content_save::Decimal>>>,
     region: u32,
 ) -> Result<i64, &'static str> {
     let mines = saved
@@ -724,7 +724,7 @@ mod witness_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::save::{self, Decimal};
+    use installed_content_save::Decimal;
     use replay::{
         frame::TableView,
         rows::{
@@ -898,7 +898,7 @@ mod tests {
         // GER is 101 (alias 102) at slot 7.
         add_country(&mut frame, &mut saved, 201, 8, b"REB");
         add_country(&mut frame, &mut saved, 301, 9, b"SOV");
-        saved.war_relations.push(save::WarRelation {
+        saved.war_relations.push(installed_content_save::WarRelation {
             first_goals: Vec::new(),
             second_goals: Vec::new(),
             roster_owner: b"REB".to_vec(),

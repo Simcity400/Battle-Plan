@@ -1,6 +1,6 @@
 //! Ordered saved-global registry: header writer, row writer.
 use super::{Report, complete, counters::eq, country_tag};
-use installed_content::save::saved_event_targets::Target;
+use installed_content_save::saved_event_targets::Target;
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, GlobalSavedEventTargetRow, tables},

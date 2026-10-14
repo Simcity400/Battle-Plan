@@ -3,7 +3,7 @@
 
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
 use installed_content::parser::c_string;
-use installed_content::save::characters as saved;
+use installed_content_save::characters as saved;
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, HiredAdvisorRow, TableId, tables},

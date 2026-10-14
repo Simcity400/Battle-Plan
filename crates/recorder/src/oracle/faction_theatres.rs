@@ -4,7 +4,7 @@
 
 use std::{collections::BTreeMap, io};
 
-use installed_content::save::Save;
+use installed_content_save::Save;
 use replay::{
     frame::DecodedFrame,
     rows::{FactionTheatreRow, tables},
@@ -134,7 +134,6 @@ fn check<T: PartialEq + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::save;
     use replay::{
         frame::TableView,
         rows::{TableId, TableRows},
@@ -145,7 +144,7 @@ mod tests {
 
     fn fixture() -> (DecodedFrame, Save) {
         let (frame, mut save, _, _) = super::super::tests::fixture();
-        let faction = |id, icon: &[u8], theatres| save::Faction {
+        let faction = |id, icon: &[u8], theatres| installed_content_save::Faction {
             advisor_slots: Vec::new(),
             id,
             name: None,
@@ -164,12 +163,12 @@ mod tests {
                 ALLIES,
                 b"GFX_allies",
                 vec![
-                    save::FactionTheatre {
+                    installed_content_save::FactionTheatre {
                         regions: vec![29, 48],
                         countries: vec![b"GER".to_vec(), b"ENG".to_vec()],
                         hidden: Vec::new(),
                     },
-                    save::FactionTheatre {
+                    installed_content_save::FactionTheatre {
                         regions: vec![80],
                         countries: Vec::new(),
                         hidden: vec![b"GER".to_vec()],

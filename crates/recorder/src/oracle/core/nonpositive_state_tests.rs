@@ -1,7 +1,10 @@
 use super::*;
 use replay::{frame::TableView, rows::TableRows};
 
-fn fixture(owner: u32, controller: u32) -> (DecodedFrame, Save, save::PartialMapMembership) {
+fn fixture(
+    owner: u32,
+    controller: u32,
+) -> (DecodedFrame, Save, installed_content_save::PartialMapMembership) {
     let (mut frame, mut save, membership, _) = super::super::tests::fixture();
     *frame.tables[TableId::States.index()] =
         TableView::Complete(TableRows::States(vec![StateRow {
@@ -20,7 +23,11 @@ fn fixture(owner: u32, controller: u32) -> (DecodedFrame, Save, save::PartialMap
     (frame, save, membership)
 }
 
-fn run(frame: &DecodedFrame, save: &Save, membership: &save::PartialMapMembership) -> Report {
+fn run(
+    frame: &DecodedFrame,
+    save: &Save,
+    membership: &installed_content_save::PartialMapMembership,
+) -> Report {
     let context = super::super::country_context(frame).unwrap();
     let mut report = Report::default();
     report.attempt("States", |report| {

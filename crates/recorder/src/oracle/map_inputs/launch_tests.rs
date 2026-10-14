@@ -6,7 +6,7 @@ use replay::{
 
 fn fixture(physical: Vec<u32>, countries: &[u8], words: &[i32]) -> (DecodedFrame, Save) {
     let (mut frame, mut save, _, _) = super::super::super::tests::fixture();
-    save.country_naval_launch = installed_content::save::naval_launch::parse_country_occurrences(
+    save.country_naval_launch = installed_content_save::naval_launch::parse_country_occurrences(
         &installed_content::parser::parse(countries).unwrap().items,
     )
     .unwrap();
@@ -95,7 +95,7 @@ fn native_null_rejects_every_saved_base_word_at_every_reserved_alias() {
             save.country_naval_launch[ordinal].naval_bases = Some(
                 vec![word]
                     .into_iter()
-                    .map(installed_content::save::naval_launch::NavalBaseOccurrence::from)
+                    .map(installed_content_save::naval_launch::NavalBaseOccurrence::from)
                     .collect(),
             );
             let report = run(&frame, &save);
@@ -133,7 +133,7 @@ fn native_null_without_saved_alias_checks_emissions_and_keeps_positive_bases() {
             naval_bases: Some(
                 vec![8]
                     .into_iter()
-                    .map(installed_content::save::naval_launch::NavalBaseOccurrence::from)
+                    .map(installed_content_save::naval_launch::NavalBaseOccurrence::from)
                     .collect(),
             ),
         });
@@ -213,7 +213,7 @@ fn every_signed_base_word_compares_in_native_order_with_repeats() {
         save.country_naval_launch[0].naval_bases = Some(
             wrong
                 .into_iter()
-                .map(installed_content::save::naval_launch::NavalBaseOccurrence::from)
+                .map(installed_content_save::naval_launch::NavalBaseOccurrence::from)
                 .collect(),
         );
         assert!(
@@ -244,7 +244,7 @@ fn repeated_physical_aliases_are_compared_at_every_saved_position() {
     save.country_naval_launch[2].naval_bases = Some(
         vec![8]
             .into_iter()
-            .map(installed_content::save::naval_launch::NavalBaseOccurrence::from)
+            .map(installed_content_save::naval_launch::NavalBaseOccurrence::from)
             .collect(),
     );
     assert!(
@@ -268,11 +268,11 @@ fn admitted_full_alias_ledger_suppresses_only_the_obsolete_unsupported_note() {
     let (frame, mut save) = fixture(vec![0, 0, 0], b"RESERVED={strategic_navy={naval_base={7={}}}} RESERVED={strategic_navy={naval_base={7={}}}}", &[7]);
     save.country_emissions = Some(
         (1..=2)
-            .map(|physical_slot| installed_content::save::SavedCountryEmission {
-                identity: installed_content::save::CountryEmissionIdentity {
+            .map(|physical_slot| installed_content_save::SavedCountryEmission {
+                identity: installed_content_save::CountryEmissionIdentity {
                     physical_slot,
                     own_id: 0,
-                    actual: installed_content::save::ActualCountry::Reserved,
+                    actual: installed_content_save::ActualCountry::Reserved,
                     tag: b"RESERVED".to_vec(),
                 },
                 intel_present: false,
@@ -294,7 +294,7 @@ fn admitted_full_alias_ledger_suppresses_only_the_obsolete_unsupported_note() {
     save.country_naval_launch[1].naval_bases = Some(
         vec![8]
             .into_iter()
-            .map(installed_content::save::naval_launch::NavalBaseOccurrence::from)
+            .map(installed_content_save::naval_launch::NavalBaseOccurrence::from)
             .collect(),
     );
     assert!(
@@ -347,7 +347,7 @@ fn no_positive_physical_alias_has_no_saved_payload_and_never_infers_empty() {
             naval_bases: Some(
                 vec![13, 13]
                     .into_iter()
-                    .map(installed_content::save::naval_launch::NavalBaseOccurrence::from)
+                    .map(installed_content_save::naval_launch::NavalBaseOccurrence::from)
                     .collect(),
             ),
         });

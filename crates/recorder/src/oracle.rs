@@ -7,10 +7,8 @@ use std::{
     time::Instant,
 };
 
-use installed_content::{
-    ResolveOptions,
-    save::{self, Decimal, Save},
-};
+use installed_content::ResolveOptions;
+use installed_content_save::{self as save, Decimal, Save};
 use replay::{
     BranchId, Hour,
     container::{Replay, SeekResult},

@@ -18,7 +18,7 @@ Shared rules and checks live in [AGENTS.md](../../AGENTS.md).
 | Modifier indices, definitions and fixed tokens | [modifier_keys.rs](src/modifier_keys.rs), [modifier_definition.rs](src/modifier_definition.rs), [fixed_layout.rs](src/fixed_layout.rs) and [executable_tables/keywords.rs](src/executable_tables/keywords.rs). |
 | Struct layouts and field contracts | The corresponding module under [src](src/); [lib.rs](src/lib.rs) lists the public modules. |
 | Hook boundaries and operands | Domain site modules, for example [line_output_sites.rs](src/line_output_sites.rs), [peace_finalizer_site.rs](src/peace_finalizer_site.rs) and [event_feed_sites.rs](src/event_feed_sites.rs). |
-| Save comparisons | [installed-content save readers](../installed-content/src/save/) and [recorder oracle comparators](../recorder/src/oracle/). |
+| Save comparisons | [installed-content-save readers](../installed-content-save/src/) and [recorder oracle comparators](../recorder/src/oracle/). |
 
 Executable version text is loaded into owned metadata from the hash-verified installation before recording. Offsets, widths, calling conventions and field-specific limitations stay beside the reader. Stored fields, calculated getters and renderer caches are different sources; a similar save value does not establish equivalence.
 

@@ -5,7 +5,7 @@ use std::{
     io,
 };
 
-use installed_content::save::construction as saved;
+use installed_content_save::construction as saved;
 use replay::{
     Hour,
     container::Replay,
@@ -76,7 +76,7 @@ pub(super) fn naval_bases(
     rows: &[replay::rows::NavalBaseRow],
     saved: &BTreeMap<saved::BuildingKey, saved::Building>,
     port_types: &BTreeSet<Vec<u8>>,
-    country_bases: &[installed_content::save::naval_launch::CountryNavalLaunchOccurrence],
+    country_bases: &[installed_content_save::naval_launch::CountryNavalLaunchOccurrence],
     raw_tags: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -364,7 +364,7 @@ pub(super) fn base_resources(
 pub(super) fn partial_base_resources(
     rows: &[replay::rows::StateBaseResourceRow],
     content: &saved::PartialBaseResources,
-    membership: &installed_content::save::PartialMapMembership,
+    membership: &installed_content_save::PartialMapMembership,
     names: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
 ) -> io::Result<()> {

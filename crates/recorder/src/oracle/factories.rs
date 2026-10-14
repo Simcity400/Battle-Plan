@@ -16,10 +16,8 @@ use std::{
     io,
 };
 
-use installed_content::{
-    buildings::Buildings,
-    save::{PartialMapMembership, Save, StateControlEmission},
-};
+use installed_content::buildings::Buildings;
+use installed_content_save::{PartialMapMembership, Save, StateControlEmission};
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, tables},

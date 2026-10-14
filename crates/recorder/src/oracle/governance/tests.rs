@@ -720,7 +720,7 @@ fn sharing_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
             token: token.to_vec(),
             countries: vec![b"AAA".to_vec()],
             bonuses: vec![
-                installed_content::save::Decimal::parse(if index == 0 { b"0.00001" } else { b"0.00002" })
+                installed_content_save::Decimal::parse(if index == 0 { b"0.00001" } else { b"0.00002" })
                     .unwrap(),
             ],
         })
@@ -1184,7 +1184,7 @@ fn modifier_omissions_check_predicates_without_fabricating_negative_defaults() {
         scope_state: None,
         days: None,
         enabled: false,
-        values: vec![installed_content::save::Decimal::parse(b"-21474.83649").unwrap()],
+        values: vec![installed_content_save::Decimal::parse(b"-21474.83649").unwrap()],
     };
     pack.countries
         .get_mut(b"AAA".as_slice())

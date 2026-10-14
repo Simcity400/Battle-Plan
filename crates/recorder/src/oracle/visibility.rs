@@ -12,7 +12,7 @@ use engine::{
     cmilitary_access_relation, coffer_air_base_access_relation, coffer_docking_rights_relation,
     coffer_military_access_relation,
 };
-use installed_content::save::Save;
+use installed_content_save::Save;
 use replay::{
     frame::DecodedFrame,
     rows::{RelationLinkRow, tables},

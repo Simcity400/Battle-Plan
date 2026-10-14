@@ -1,6 +1,6 @@
 //! Exact comparisons for saved project, nuclear, raid and conference fields.
 use super::{Report, complete, country_tag, invalid, required_country_tag};
-use installed_content::save::{characters as characters_saved, projects as saved};
+use installed_content_save::{characters as characters_saved, projects as saved};
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, RaidScope, RaidSource, tables},

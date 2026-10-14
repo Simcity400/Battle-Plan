@@ -5,7 +5,7 @@ use std::{
     io,
 };
 
-use installed_content::save::{Save, production};
+use installed_content_save::{Save, production};
 use replay::{
     Hour,
     container::Replay,
@@ -1090,7 +1090,7 @@ fn omitted_not_positive(
     label: &str,
     field: &str,
     captured: i64,
-    saved: Option<&installed_content::save::Decimal>,
+    saved: Option<&installed_content_save::Decimal>,
 ) {
     match saved {
         Some(saved) => report.scalar(label, field, Some(captured), Some(saved)),

@@ -3,7 +3,7 @@ use std::{
     io,
 };
 
-use installed_content::save::{self, Save};
+use installed_content_save::Save;
 use replay::{
     frame::DecodedFrame,
     rows::{
@@ -24,7 +24,7 @@ pub(super) use air_transport::compare as compare_air_transport_inputs;
 pub(super) fn compare_land_combats(
     frame: &DecodedFrame,
     save: &Save,
-    membership: &save::PartialMapMembership,
+    membership: &installed_content_save::PartialMapMembership,
     report: &mut Report,
 ) -> io::Result<()> {
     let mut combats = BTreeMap::new();
@@ -481,7 +481,7 @@ pub(super) fn compare_division_status(
 pub(super) fn compare_camouflage(
     label: &str,
     row: &replay::rows::DivisionStatusRow,
-    saved: Option<&save::Acclimatization>,
+    saved: Option<&installed_content_save::Acclimatization>,
     tokens: &TokenNames<'_>,
     show_at: &Result<i64, String>,
     report: &mut Report,
@@ -529,12 +529,10 @@ pub(super) fn compare_camouflage(
                 .entries
                 .iter()
                 .map(|(name, weight)| (name, weight.raw)),
-            saved
-                .maximum
-                .as_ref()
-                .map_or(save::Acclimatization::OMITTED_MAXIMUM_RAW, |maximum| {
-                    maximum.raw
-                }),
+            saved.maximum.as_ref().map_or(
+                installed_content_save::Acclimatization::OMITTED_MAXIMUM_RAW,
+                |maximum| maximum.raw,
+            ),
             show_at,
         )
         .map(|name| String::from_utf8_lossy(name).into_owned())
@@ -554,7 +552,7 @@ pub(super) fn compare_camouflage(
 pub(super) fn compare_acclimatization(
     label: &str,
     row: &replay::rows::DivisionStatusRow,
-    saved: Option<&save::Acclimatization>,
+    saved: Option<&installed_content_save::Acclimatization>,
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) {
@@ -589,12 +587,10 @@ pub(super) fn compare_acclimatization(
         }
     };
     report.scalar_checks += 1;
-    let expected = saved
-        .maximum
-        .as_ref()
-        .map_or(save::Acclimatization::OMITTED_MAXIMUM_RAW, |maximum| {
-            maximum.raw
-        });
+    let expected = saved.maximum.as_ref().map_or(
+        installed_content_save::Acclimatization::OMITTED_MAXIMUM_RAW,
+        |maximum| maximum.raw,
+    );
     if maximum != expected {
         report.difference(format!("{label}.maximum"), maximum, expected);
     }
@@ -911,11 +907,14 @@ pub(super) fn compare_division_template_icons(
 pub(super) fn compare_naval_units(
     frame: &DecodedFrame,
     save: &Save,
-    membership: &save::PartialMapMembership,
+    membership: &installed_content_save::PartialMapMembership,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
-    fn province(value: Option<u32>, membership: &save::PartialMapMembership) -> io::Result<u32> {
+    fn province(
+        value: Option<u32>,
+        membership: &installed_content_save::PartialMapMembership,
+    ) -> io::Result<u32> {
         match value {
             Some(value) if value == 0 || !membership.contains_province(value) => Err(invalid(
                 "saved naval unit province is absent from verified map or explicitly zero",
@@ -1236,7 +1235,7 @@ pub(super) fn compare_naval_combat_sources(
 pub(super) fn compare_naval_combats(
     frame: &DecodedFrame,
     save: &Save,
-    membership: &save::PartialMapMembership,
+    membership: &installed_content_save::PartialMapMembership,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -1585,7 +1584,7 @@ pub(super) fn compare_army_orders(
 pub(super) fn compare_divisions(
     frame: &DecodedFrame,
     save: &Save,
-    membership: &save::PartialMapMembership,
+    membership: &installed_content_save::PartialMapMembership,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {

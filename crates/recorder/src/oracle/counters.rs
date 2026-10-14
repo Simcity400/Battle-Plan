@@ -294,7 +294,7 @@ mod tests {
     use super::*;
     use replay::rows::{CharacterPortrait, CharacterPortraitRow, LeaderPortraitRow};
     fn set_hq_scope(frame: &mut DecodedFrame, saved: &mut Save, leader: u64) {
-        use installed_content::save::naval_history::{LandTheatre, OrdersGroup, TheatreCountry};
+        use installed_content_save::naval_history::{LandTheatre, OrdersGroup, TheatreCountry};
         *frame.tables[TableId::OrdersGroups.index()] =
             TableView::Complete(TableRows::OrdersGroups(vec![
                 replay::rows::OrdersGroupRow {

@@ -1,6 +1,6 @@
 //! The native ordered province-neighbour lists.
 //!
-//! Shared by the movement map and `save::naval_history::RailwayAdjacency`,
+//! Shared by the movement map and `installed_content_save::naval_history::RailwayAdjacency`,
 //! whose saved railway levels follow the same order.
 
 use std::{collections::HashMap, io};
@@ -11,7 +11,7 @@ use crate::{ResolvedLayers, fields::invalid, terrain::DefaultMap};
 /// empty and is set to `map/` plus the `adjacencies` value. A missing key
 /// or file means no authored adjacencies, while a present file that cannot
 /// be read still fails.
-pub(crate) fn read_authored(
+pub fn read_authored(
     layers: &ResolvedLayers,
     default_map: &DefaultMap,
 ) -> io::Result<Option<Vec<u8>>> {
@@ -56,12 +56,7 @@ fn append_pair(lists: &mut [Vec<u32>], source: u32, target: u32) {
 /// wrapping horizontally, then the next-row diagonal of a four-province
 /// crossing. `ids` holds file rows (row 0 is the bottom) of record IDs
 /// below `count`; the result is indexed by ID.
-pub(crate) fn raster(
-    width: usize,
-    height: usize,
-    ids: &[u32],
-    count: usize,
-) -> io::Result<Vec<Vec<u32>>> {
+pub fn raster(width: usize, height: usize, ids: &[u32], count: usize) -> io::Result<Vec<Vec<u32>>> {
     if width == 0
         || height == 0
         || width.checked_mul(height) != Some(ids.len())
@@ -107,7 +102,7 @@ pub(crate) fn raster(
 /// Applies authored rows ([`crate::adjacencies::parse`]) in file order.
 /// New pairs append source then target; a repeated pair keeps its position
 /// and takes the row's crossing kind and raw signed Through in both directions.
-pub(crate) fn append_authored(
+pub fn append_authored(
     lists: &mut [Vec<u32>],
     kinds: &mut HashMap<(u32, u32), (u8, i32)>,
     authored: &[u8],

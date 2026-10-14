@@ -3,7 +3,7 @@
 
 use std::{collections::BTreeMap, io};
 
-use installed_content::save::{Decimal, Save};
+use installed_content_save::{Decimal, Save};
 use replay::{
     frame::DecodedFrame,
     rows::{ClockState, TemperatureRecord, tables},

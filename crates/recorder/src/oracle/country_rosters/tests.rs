@@ -1,5 +1,5 @@
 use super::*;
-use installed_content::save::{characters, country_rosters};
+use installed_content_save::{characters, country_rosters};
 use replay::rows::Recorded;
 
 fn saved_roles() -> characters::Pack {

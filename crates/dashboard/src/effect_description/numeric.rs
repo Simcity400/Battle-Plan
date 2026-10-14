@@ -378,13 +378,13 @@ impl Renderer<'_, '_, '_> {
             } else {
                 value.to_owned()
             };
-            let stored = installed_content::save::SavedDate::parse(value.as_bytes()).map_err(|why| {
+            let stored = installed_content_save::SavedDate::parse(value.as_bytes()).map_err(|why| {
                 format!("create_import date requires the game-date parser: {why}")
             })?;
-            if stored != installed_content::save::SavedDate::Invalid {
+            if stored != installed_content_save::SavedDate::Invalid {
                 let (year, _, day) =
                     numeric_date_parts(stored.engine_hour().map_err(|why| why.to_string())?);
-                let installed_content::save::SavedDate::Calendar(calendar) = stored else {
+                let installed_content_save::SavedDate::Calendar(calendar) = stored else {
                     unreachable!()
                 };
                 date = format!("{year}.{}.{day}", calendar.month);

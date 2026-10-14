@@ -609,14 +609,14 @@ fn tooltip_operand_oracle_compares_wing_name_bytes_and_reports_capture_failures(
     let wing = (7_u64 << 32) | 69;
     raid.air_wing = Some(wing);
     let name = b"A\x80BCDEFG\xffZ";
-    let mut air = installed_content::save::air::Pack::default();
-    air.wings.push(installed_content::save::air::Wing {
+    let mut air = installed_content_save::air::Pack::default();
+    air.wings.push(installed_content_save::air::Wing {
         id: wing,
         pool_type: b"fixture_plane".to_vec(),
         name: Some(name.to_vec()),
         accidents: None,
-        experience: installed_content::save::Decimal::parse(b"0").unwrap(),
-        equipment: installed_content::save::air::EquipmentPool {
+        experience: installed_content_save::Decimal::parse(b"0").unwrap(),
+        equipment: installed_content_save::air::EquipmentPool {
             entries: Vec::new(),
             allow_zero: false,
         },
@@ -624,7 +624,7 @@ fn tooltip_operand_oracle_compares_wing_name_bytes_and_reports_capture_failures(
         raid: None,
     });
     let run = |frame: &mut DecodedFrame,
-               air: &installed_content::save::air::Pack,
+               air: &installed_content_save::air::Pack,
                name_rows: Vec<(u32, i64)>| {
         let mut rows = vec![
             (REFERENCES, 0, 0),
@@ -756,10 +756,10 @@ fn raid_equipment_needs_a_row_for_every_saved_recorded_raid() {
     let (mut frame, mut pack, _) = raid_fixture();
     let raid = &mut pack.raids.as_mut().unwrap()[0].instances[0];
     raid.nukes = 2;
-    raid.equipment = Some(installed_content::save::production::Pool {
-        equipment: vec![installed_content::save::production::Equipment {
+    raid.equipment = Some(installed_content_save::production::Pool {
+        equipment: vec![installed_content_save::production::Equipment {
             variant: (41 << 32) | 70,
-            amount: installed_content::save::Decimal::parse(b"5").unwrap(),
+            amount: installed_content_save::Decimal::parse(b"5").unwrap(),
         }],
         allow_zero_entries: Some(false),
     });
@@ -779,7 +779,7 @@ fn raid_equipment_needs_a_row_for_every_saved_recorded_raid() {
 /// a difference, as is a recorded end hour other than the saved one.
 #[test]
 fn raid_censuses_follow_the_readers_rules_over_the_saved_raids() {
-    use installed_content::save::{GameDate, SavedDate};
+    use installed_content_save::{GameDate, SavedDate};
     use replay::rows::{RaidEquipmentRow, RaidSpeedInputRow};
     let (mut frame, pack, _) = raid_fixture();
     frame.hour = GameDate::parse(b"1943.4.22.7")
@@ -871,10 +871,10 @@ fn raid_equipment_compares_the_saved_pool_and_nukes() {
     let (mut frame, mut pack, _) = raid_fixture();
     let raid = &mut pack.raids.as_mut().unwrap()[0].instances[0];
     raid.nukes = 1;
-    raid.equipment = Some(installed_content::save::production::Pool {
-        equipment: vec![installed_content::save::production::Equipment {
+    raid.equipment = Some(installed_content_save::production::Pool {
+        equipment: vec![installed_content_save::production::Equipment {
             variant: (41 << 32) | 70,
-            amount: installed_content::save::Decimal::parse(b"5").unwrap(),
+            amount: installed_content_save::Decimal::parse(b"5").unwrap(),
         }],
         allow_zero_entries: Some(false),
     });
@@ -907,7 +907,7 @@ const BOUND: i64 = 0x53e2_d620_fb40;
 /// The prepared fixture raid with a saved pool of `items` (variant, save
 /// literal), both variants of archetype 0x3309 when `definitions`.
 fn totals_fixture(items: &[(u64, &str)], definitions: bool) -> (DecodedFrame, saved::Pack) {
-    use installed_content::save::{
+    use installed_content_save::{
         Decimal,
         production::{Equipment, Pool},
     };
@@ -1481,7 +1481,7 @@ fn populated_dictionary_checks_project_names_and_breakthrough_points() {
             ordinal: 0,
             prototype_reward_handle: reward,
             option_handle: option,
-            date: installed_content::save::GameDate::parse(b"1936.1.1.1")
+            date: installed_content_save::GameDate::parse(b"1936.1.1.1")
                 .unwrap()
                 .engine_hour()
                 .unwrap(),

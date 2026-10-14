@@ -1,7 +1,7 @@
 //! A fresh save certifies current endpoints; it does not serialize historical
 //! charges, daily evaluated rates/components or execution provenance.
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
-use installed_content::save::Save;
+use installed_content_save::Save;
 use replay::{frame::DecodedFrame, rows::*};
 use std::{collections::BTreeMap, io};
 pub(super) fn compare(

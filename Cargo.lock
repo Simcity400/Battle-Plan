@@ -835,6 +835,7 @@ dependencies = [
  "crc32fast",
  "engine",
  "installed-content",
+ "installed-content-save",
  "mimalloc",
  "png 0.18.1",
  "replay",
@@ -1519,6 +1520,15 @@ dependencies = [
  "serde_json",
  "sha2",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "installed-content-save"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "replay",
 ]
 
 [[package]]
@@ -3839,6 +3849,7 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "installed-content",
+ "installed-content-save",
  "replay",
  "serde_json",
  "windows-sys 0.61.2",
@@ -5557,6 +5568,7 @@ dependencies = [
  "eframe",
  "engine",
  "installed-content",
+ "installed-content-save",
  "mimalloc",
  "png 0.18.1",
  "pollster 0.4.0",

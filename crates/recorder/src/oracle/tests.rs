@@ -3123,7 +3123,7 @@ fn air_sortie_oracle_compares_the_saved_penalty_and_checks_operand_keys() {
             pool_ordinal: 0,
         },
     );
-    saved.air.bases.push(installed_content::save::air::AirBase {
+    saved.air.bases.push(installed_content_save::air::AirBase {
         id: base,
         state: Some(1),
         host: None,

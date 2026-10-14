@@ -295,7 +295,7 @@ fn task_force_port(
     hour: replay::Hour,
     row: &replay::rows::TaskForceCounterInputRow,
     force: &replay::rows::TaskForceRow,
-    saved: &installed_content::save::counter_inputs::TaskForce,
+    saved: &installed_content_save::counter_inputs::TaskForce,
     r: &mut Report,
 ) {
     let label = format!("TaskForceCounterInputs {}.port_mission", row.task_force);

@@ -23,7 +23,7 @@ fn two_country_fixture() -> (DecodedFrame, Save) {
         TableView::Complete(TableRows::CountryLinks(links)).into();
     save.countries.insert(
         b"TWO".to_vec(),
-        installed_content::save::Country {
+        installed_content_save::Country {
             tag: b"TWO".to_vec(),
             ..Default::default()
         },
@@ -35,7 +35,7 @@ fn two_country_fixture() -> (DecodedFrame, Save) {
 fn ordered_repeated_goals_aliases_and_missing_objects_compare_without_normalizing() {
     let (mut frame, mut save, _, _) = super::super::tests::fixture();
     let handle = (3_u64 << 32) | 12_345;
-    save.war_relations.push(installed_content::save::WarRelation {
+    save.war_relations.push(installed_content_save::WarRelation {
         roster_owner: b"GER".to_vec(),
         target: b"GER".to_vec(),
         first: b"GER".to_vec(),
@@ -177,7 +177,7 @@ fn ordered_repeated_goals_aliases_and_missing_objects_compare_without_normalizin
 #[test]
 fn redeclaration_does_not_compare_retired_goals_with_live_goals_and_checks_reverse_coverage() {
     let (mut frame, mut save) = two_country_fixture();
-    save.war_relations.push(installed_content::save::WarRelation {
+    save.war_relations.push(installed_content_save::WarRelation {
         roster_owner: b"GER".to_vec(),
         target: b"TWO".to_vec(),
         first: b"GER".to_vec(),
@@ -308,7 +308,7 @@ fn redeclaration_does_not_compare_retired_goals_with_live_goals_and_checks_rever
 #[test]
 fn each_saved_relation_requires_both_live_endpoint_occurrences() {
     let (mut frame, mut save) = two_country_fixture();
-    save.war_relations.push(installed_content::save::WarRelation {
+    save.war_relations.push(installed_content_save::WarRelation {
         roster_owner: b"GER".to_vec(),
         target: b"TWO".to_vec(),
         first: b"GER".to_vec(),

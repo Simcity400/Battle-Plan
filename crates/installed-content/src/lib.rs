@@ -66,7 +66,6 @@ pub mod raids;
 pub mod railways;
 pub mod regions;
 pub mod resources;
-pub mod save;
 pub mod scientist_traits;
 pub mod scope;
 pub mod scoped_variable;

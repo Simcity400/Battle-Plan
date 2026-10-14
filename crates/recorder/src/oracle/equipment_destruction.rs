@@ -2,7 +2,7 @@
 //! The army save writer saves the remaining pool; the unit save writer
 //! saves both full-handle words.
 use super::{Report, complete, country_context, invalid, required_country_tag};
-use installed_content::save::Save;
+use installed_content_save::Save;
 use replay::{
     container::{Replay, SeekResult},
     frame::{DecodedFrame, FrameDecoder},

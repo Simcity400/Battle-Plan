@@ -3,7 +3,7 @@ use std::{
     io,
 };
 
-use installed_content::save::Decimal;
+use installed_content_save::Decimal;
 use replay::{
     BranchId, Hour,
     container::Replay,
@@ -142,7 +142,7 @@ pub(super) fn recorded_table_counts(
 pub(super) struct Report {
     /// Admitted whole-save occurrences, preserving physical order and repeats.
     /// Ordinary country censuses use only their authenticated canonical owners.
-    pub(super) country_emissions: Option<Vec<installed_content::save::SavedCountryEmission>>,
+    pub(super) country_emissions: Option<Vec<installed_content_save::SavedCountryEmission>>,
     pub(super) canonical_country_tags: Option<BTreeSet<Vec<u8>>>,
     /// Queried at output time, after all content-dependent comparisons.
     pub(super) content_reads: Option<installed_content::content::UncoveredReads>,
@@ -212,7 +212,7 @@ pub(super) struct Report {
 }
 
 impl Report {
-    pub(super) fn record_country_emissions(&mut self, save: &installed_content::save::Save) {
+    pub(super) fn record_country_emissions(&mut self, save: &installed_content_save::Save) {
         self.country_emissions.clone_from(&save.country_emissions);
         self.canonical_country_tags = save.country_emissions.as_ref().map(|emissions| {
             emissions
@@ -220,7 +220,7 @@ impl Report {
                 .filter(|emission| {
                     matches!(
                         emission.identity.actual,
-                        installed_content::save::ActualCountry::Canonical(_)
+                        installed_content_save::ActualCountry::Canonical(_)
                     )
                 })
                 .map(|emission| emission.identity.tag.clone())
@@ -249,7 +249,7 @@ impl Report {
             .country_emissions
             .iter()
             .flatten()
-            .filter(|emission| emission.identity.actual == installed_content::save::ActualCountry::Reserved)
+            .filter(|emission| emission.identity.actual == installed_content_save::ActualCountry::Reserved)
             .map(|emission| emission.identity.tag.clone())
             .collect();
         for tag in tags {
@@ -577,7 +577,7 @@ impl Report {
         &mut self,
         group: &str,
         skipped: usize,
-        membership: &installed_content::save::PartialMapMembership,
+        membership: &installed_content_save::PartialMapMembership,
         affected: &BTreeSet<u32>,
     ) {
         self.excluded_states
@@ -596,7 +596,7 @@ impl Report {
     }
 
     fn state_exclusions(
-        membership: &installed_content::save::PartialMapMembership,
+        membership: &installed_content_save::PartialMapMembership,
         affected: &BTreeSet<u32>,
     ) -> String {
         affected
@@ -613,10 +613,7 @@ impl Report {
             .join(", ")
     }
 
-    pub(super) fn membership_content(
-        &mut self,
-        membership: &installed_content::save::PartialMapMembership,
-    ) {
+    pub(super) fn membership_content(&mut self, membership: &installed_content_save::PartialMapMembership) {
         self.excluded_states
             .extend(membership.excluded_states.keys());
         if !self.excluded_states.is_empty() {

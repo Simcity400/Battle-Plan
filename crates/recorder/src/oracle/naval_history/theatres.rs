@@ -3,7 +3,7 @@ use std::{
     io,
 };
 
-use installed_content::save::{Division, naval_history as saved};
+use installed_content_save::{Division, naval_history as saved};
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, Recorded, tables},
@@ -25,7 +25,7 @@ struct ReservedTheatres {
 fn reserved_theatres(
     frame: &DecodedFrame,
     saved: &saved::Pack,
-    emissions: Option<&[installed_content::save::SavedCountryEmission]>,
+    emissions: Option<&[installed_content_save::SavedCountryEmission]>,
 ) -> io::Result<ReservedTheatres> {
     let Ok(land) = complete::<tables::LandTheatres>(frame) else {
         return Ok(ReservedTheatres::default());
@@ -85,7 +85,7 @@ fn reserved_theatres(
         emissions
             .iter()
             .filter(|emission| {
-                emission.identity.actual == installed_content::save::ActualCountry::Reserved
+                emission.identity.actual == installed_content_save::ActualCountry::Reserved
                     && emission.identity.tag == naming.tag
             })
             .count()
@@ -267,7 +267,7 @@ fn check_theatre_group_ordinals(
 pub(in crate::oracle) fn omitted_regular_group_units(
     frame: &DecodedFrame,
     saved: &saved::Pack,
-    emissions: Option<&[installed_content::save::SavedCountryEmission]>,
+    emissions: Option<&[installed_content_save::SavedCountryEmission]>,
 ) -> io::Result<BTreeSet<u64>> {
     let scope = reserved_theatres(frame, saved, emissions)?;
     if scope.omitted.is_empty() {

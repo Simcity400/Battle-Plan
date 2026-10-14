@@ -6,7 +6,7 @@
 //! event context is not saved.
 use super::{ContentRead, Report, complete, country_context, invalid};
 use engine::air_loss_sites::FIELD_COUNT;
-use installed_content::save::air::Pack;
+use installed_content_save::air::Pack;
 use replay::{
     container::Replay,
     frame::{DecodedFrame, FrameDecoder},
@@ -416,7 +416,7 @@ pub(super) fn compare_bombing_damage(
 mod tests {
     use super::*;
     use crate::test_support::frame;
-    use installed_content::save::air::DailyStatistics;
+    use installed_content_save::air::DailyStatistics;
     use replay::{
         frame::TableView,
         rows::{
@@ -685,7 +685,7 @@ mod tests {
     fn daily_missing_saved_window_is_not_zero_for_an_existing_history() {
         let mut save = daily_save();
         save.daily_statistics.clear();
-        save.statistics.push(installed_content::save::air::Statistics {
+        save.statistics.push(installed_content_save::air::Statistics {
             country: b"mod country".to_vec(),
             region: 4001,
             year_slot: 0,
@@ -705,7 +705,7 @@ mod tests {
     fn malformed_daily_save_fails_only_air_group() {
         let text = br#"strategic_air={"mod country"={history={4001={history_queue={0={max_elements=30 offset=30 is_full=no} 2={max_elements=5 offset=1 is_full=no}}}}}}"#;
         let doc = installed_content::parser::parse(text).unwrap();
-        let save = installed_content::save::air::parse(&doc.items).unwrap();
+        let save = installed_content_save::air::parse(&doc.items).unwrap();
         assert_eq!(save.daily_errors.len(), 1);
         assert_eq!(save.statistics.len(), 1);
         let mut report = Report::default();
