@@ -1697,6 +1697,8 @@ fn vanilla_state_history_reads_without_diagnostics() {
 
 #[cfg(test)]
 fn history_fixture(input: &[u8]) -> installed_content::states::StateDefinition {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let context = installed_content::states::Context {
         resource: &|_| installed_content::states::Resource::Found,
         max_building_levels: 20,

@@ -151,7 +151,7 @@ mod tests {
         assert!(pack.countries[1].groups.is_empty());
     }
 
-    /// `BATTLE_PLAN_COMBAT_LOG_SAVE=<text save> cargo test -p installed-content --lib
+    /// `BATTLE_PLAN_COMBAT_LOG_SAVE=<text save> cargo test -p installed-content-save --lib
     /// real_save_combat_logs -- --ignored --nocapture` parses a whole save and
     /// summarises its combat logs.
     #[test]
