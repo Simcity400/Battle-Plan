@@ -1246,10 +1246,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // fog of war: the hour's `IntelMap` for the viewing country and the fog
         // switch. The camera decides `FOWFadeFactor`, so the report needs it.
         let intel_map = document.intel_map(&options.perspective)?;
-        println!(
-            "{}",
-            intel_map.line(&camera.defines, camera.height, options.perspective.fog)
-        );
+        let visibility = viewer_world::map::map_mode::visibility::of(&options.map_mode);
+        if visibility.fog_of_war {
+            println!(
+                "{}",
+                intel_map.line(&camera.defines, camera.height, options.perspective.fog)
+            );
+        } else {
+            println!(
+                "Fog of war: none drawn; the {} map mode draws no fog of war",
+                options.map_mode.token()
+            );
+        }
         let unverified = document
             .warnings
             .iter()
@@ -1274,6 +1282,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &options.perspective,
             omitted,
             options.counter_settings(document.game_counters),
+            visibility,
         )?;
         let mut combat_warnings = Vec::new();
         if let Some(selector) = options.combat {
@@ -1386,6 +1395,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 tree_assets: &document.tree_assets,
                 tree_geometry: &document.tree_geometry,
                 tree_field: &document.tree_field,
+                visibility,
             },
             // names
             &document.icons,

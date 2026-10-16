@@ -31,9 +31,11 @@
 //!
 //! The content `raid_map_icon` window centres its strip frame, raid glyph and
 //! `plus_icon`. Frames are zero based: offer 0 (grey unless launchable), ours
-//! 2 or 3 when ended, incoming 4 or 5. Draw at `NMapIcons.TOP_MAP_ICON` in
-//! every map mode, above victory points, counters and combats, only within
-//! `NGraphics.RAID_MAP_ICON_DRAW_DISTANCE_MIN..MAX` camera height.
+//! 2 or 3 when ended, incoming 4 or 5. Draw at `NMapIcons.TOP_MAP_ICON`, above
+//! victory points, counters and combats, in the political, air, navy,
+//! operatives and raids map modes only, within
+//! `NGraphics.RAID_MAP_ICON_DRAW_DISTANCE_MIN..MAX` camera height; the raids
+//! mode reaches up to `RAID_MAP_ICON_MAX_DRAW_DISTANCE_IN_RAID_MAP_MODE`.
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -73,6 +75,7 @@ use replay::{
 };
 
 use script::{Eval, LeaderRoles, REFUSED, Scope, Scopes, World, refused};
+use viewer_foundation::map::mode_visibility::RaidReach;
 use viewer_foundation::map::{
     camera::Camera,
     native_gui::{self, SpriteSetter, lifecycle::MapIconPool},
@@ -1598,6 +1601,8 @@ pub struct RaidInputs<'a> {
     pub viewport: [u32; 2],
     /// Device pixels per interface pixel; see [`viewer_foundation::map::ui_scale`].
     pub ui_scale: f32,
+    /// How far the view's map mode lets raid icons reach; `None` hides them.
+    pub reach: Option<RaidReach>,
 }
 
 #[cfg(any(test, feature = "test-support"))]

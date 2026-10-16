@@ -96,19 +96,19 @@ impl PreparedBases {
                 Family::AirBase,
                 AIR_BASE_WINDOW,
                 MapIconPool::AirBase,
-                inputs.content.defines.air_base_priority,
+                inputs.priority(PriorityIcon::AirBase),
             ),
             (
                 Family::Headquarter,
                 NAVAL_HEADQUARTER_WINDOW,
                 MapIconPool::Headquarter,
-                inputs.content.defines.naval_headquarter_priority,
+                inputs.priority(PriorityIcon::NavalHeadquarter),
             ),
             (
                 Family::Facility,
                 FACILITY_WINDOW,
                 MapIconPool::Facility,
-                inputs.content.defines.facility_priority,
+                inputs.priority(PriorityIcon::Facility),
             ),
         ];
         let mut layouts = Vec::new();

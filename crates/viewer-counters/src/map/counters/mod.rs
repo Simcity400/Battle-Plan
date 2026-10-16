@@ -54,6 +54,9 @@ use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
 use viewer_foundation::map::icon_windows::PoolView;
 use viewer_foundation::map::lazy_icons::flag_set;
 use viewer_foundation::map::memo::Recent;
+pub use viewer_foundation::map::mode_visibility::{
+    Priorities, PriorityIcon, PriorityTable, UnitKinds, Visibility,
+};
 use viewer_foundation::map::native_gui::Assets;
 use viewer_foundation::map::native_gui::Sheets;
 use viewer_foundation::map::native_gui::container_frame;
@@ -265,28 +268,13 @@ pub struct CounterDefines {
     pub land_combat_cutoff: f32,
     /// `NGraphics.NAVAL_COMBAT_DISTANCE_CUTOFF`.
     pub naval_combat_cutoff: f32,
-    /// Select coarse grouping strictly above the content distance threshold.
-    pub coarse_distance: f32,
-    /// `NMapIcons.DEFAULT_PRIORITY_UNITS_STACK`, the sort priority of ungrouped unit counters.
-    pub unit_priority: i8,
-    /// `NMapIcons.DEFAULT_PRIORITY_UNITS_STACK_GROUP`, the sort priority of a grouped column.
-    pub unit_group_priority: i8,
-    /// `NMapIcons.DEFAULT_PRIORITY_AIR_BASE`.
-    pub air_base_priority: i8,
-    /// `NMapIcons.DEFAULT_PRIORITY_NAVAL_BASE`; port counters are its children.
-    pub naval_base_priority: i8,
-    /// `NMapIcons.DEFAULT_PRIORITY_NAVAL_HEADQUARTER`.
-    pub naval_headquarter_priority: i8,
-    /// `NMapIcons.DEFAULT_PRIORITY_FACILITY`.
-    pub facility_priority: i8,
-    /// `NMapIcons.DEFAULT_PRIORITY_LAND_COMBAT`.
-    pub land_combat_priority: i8,
-    /// `NMapIcons.DEFAULT_PRIORITY_NAVAL_COMBAT`.
-    pub naval_combat_priority: i8,
-    /// `NMapIcons.DEFAULT_PRIORITY_NAVAL_COMBAT_RESULTS`.
-    pub naval_result_priority: i8,
-    /// `NMapIcons.DEFAULT_PRIORITY_NAVAL_MISSION`.
-    pub naval_mission_priority: i8,
+    /// Select coarse grouping strictly above the content distance threshold:
+    /// `MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE`, and `..._STRATEGIC` in the map modes with
+    /// strategic grouping ([`Visibility::strategic_grouping`]).
+    pub coarse_distance: [f32; 2],
+    /// Every map mode's `NMapIcons.<table>_PRIORITY_*`: unit stacks and their groups (port
+    /// counters are the naval base's children), bases, facilities, combats and naval missions.
+    pub priorities: Priorities,
     pub groups: GroupDefines,
     /// `NGraphics.MAP_ICONS_GROUP_SPLIT_SELECTED_LIMIT`.
     pub split_selected_limit: i32,
@@ -307,7 +295,6 @@ impl CounterDefines {
                 .map(|value| (value as f64 / 100_000.0) as f32)
         };
         let int = |name| defines.int32("NGraphics", name).map(|value| value as f32);
-        let priority = |name| sprites::priority(defines, name);
         Ok(Self {
             icons_cutoff: fixed("UNITS_ICONS_DISTANCE_CUTOFF")?,
             units_cutoff: number("UNITS_DISTANCE_CUTOFF")?,
@@ -318,19 +305,13 @@ impl CounterDefines {
                 as f32,
             land_combat_cutoff: number("LAND_COMBAT_DISTANCE_CUTOFF")?,
             naval_combat_cutoff: number("NAVAL_COMBAT_DISTANCE_CUTOFF")?,
-            coarse_distance: int("MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE")?,
-            unit_priority: priority("DEFAULT_PRIORITY_UNITS_STACK")?,
-            unit_group_priority: priority("DEFAULT_PRIORITY_UNITS_STACK_GROUP")?,
+            coarse_distance: [
+                int("MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE")?,
+                int("MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE_STRATEGIC")?,
+            ],
+            priorities: Priorities::load(defines)?,
             split_selected_limit: defines
                 .int32("NGraphics", "MAP_ICONS_GROUP_SPLIT_SELECTED_LIMIT")?,
-            air_base_priority: priority("DEFAULT_PRIORITY_AIR_BASE")?,
-            naval_base_priority: priority("DEFAULT_PRIORITY_NAVAL_BASE")?,
-            naval_headquarter_priority: priority("DEFAULT_PRIORITY_NAVAL_HEADQUARTER")?,
-            facility_priority: priority("DEFAULT_PRIORITY_FACILITY")?,
-            land_combat_priority: priority("DEFAULT_PRIORITY_LAND_COMBAT")?,
-            naval_combat_priority: priority("DEFAULT_PRIORITY_NAVAL_COMBAT")?,
-            naval_result_priority: priority("DEFAULT_PRIORITY_NAVAL_COMBAT_RESULTS")?,
-            naval_mission_priority: priority("DEFAULT_PRIORITY_NAVAL_MISSION")?,
             naval_mission_cutoff: number("NAVAL_MISSION_ICONS_DISTANCE_CUTOFF")?,
             groups: GroupDefines::read(defines)?,
             naval_counts: viewer_foundation::map::naval_count_approx::Defines::read(defines)?,
@@ -341,26 +322,25 @@ impl CounterDefines {
         })
     }
 
-    /// coarse above `MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE`,
-    /// strictly. The `_STRATEGIC` define replaces it while the map mode
-    /// Read is 1 or 2; the counters take the default mode they
-    /// draw as neither, as the land markers take it as not the air mode 1.
-    pub fn coarse(&self, height: f32) -> bool {
-        height > self.coarse_distance
+    /// Coarse above `MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE`, strictly, or above its
+    /// `_STRATEGIC` form when the map mode groups strategically (the air and navy modes).
+    pub fn coarse(&self, height: f32, strategic: bool) -> bool {
+        height > self.coarse_distance[usize::from(strategic)]
     }
 
-    /// A unit-stack column's priority at a camera height: its group icon's at every grouping
-    /// level, its own stack icon's below them.
-    pub fn stack_priority(&self, height: f32) -> i8 {
-        self.level_priority(self.groups.grouping(height))
+    /// A unit-stack column's priority at a camera height in a map mode's priority table: its
+    /// group icon's at every grouping level, its own stack icon's below them.
+    pub fn stack_priority(&self, height: f32, table: PriorityTable) -> i8 {
+        self.level_priority(self.groups.grouping(height), table)
     }
 
-    /// A unit-stack column's priority at its grouping level.
-    pub fn level_priority(&self, level: Level) -> i8 {
-        match level {
-            Level::None => self.unit_priority,
-            _ => self.unit_group_priority,
-        }
+    /// A unit-stack column's priority at its grouping level in a map mode's priority table.
+    pub fn level_priority(&self, level: Level, table: PriorityTable) -> i8 {
+        let icon = match level {
+            Level::None => PriorityIcon::UnitsStack,
+            _ => PriorityIcon::UnitsStackGroup,
+        };
+        self.priorities.get(table, icon)
     }
 
     /// The shipped `00_graphics.lua` values, for tests only.
@@ -375,17 +355,10 @@ impl CounterDefines {
         naval_mission_cutoff: 1500.0,
         land_combat_cutoff: 1500.0,
         naval_combat_cutoff: 1500.0,
-        coarse_distance: 350.0,
-        unit_priority: 10,
-        unit_group_priority: 11,
-        air_base_priority: 3,
-        naval_base_priority: 3,
-        naval_headquarter_priority: 3,
-        facility_priority: 3,
-        land_combat_priority: 20,
-        naval_combat_priority: 20,
-        naval_result_priority: 19,
-        naval_mission_priority: 13,
+        coarse_distance: [350.0, 350.0],
+        // The default table's: units, groups, victory points, air and naval bases, naval
+        // headquarters, facilities, land and naval combats, naval results and missions, capitals.
+        priorities: Priorities::uniform([10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 5]),
         groups: GroupDefines::VANILLA,
         split_selected_limit: 12,
         naval_counts: viewer_foundation::map::naval_count_approx::Defines::VANILLA,
@@ -1603,6 +1576,8 @@ pub struct CounterInputs<'a> {
     pub hovered: Option<Unit>,
     /// The host view's shared province schedule.
     pub schedule: &'a Shared,
+    /// What the view's map mode shows of the counters and icons.
+    pub visibility: Visibility,
 }
 
 /// Which unit counters a view draws. A hidden counter is laid out, hit-tested, reported and
@@ -1757,6 +1732,14 @@ impl CounterInputs<'_> {
         let split = self.selected.len() as i32 <= self.content.defines.split_selected_limit
             && height < self.content.defines.units_cutoff;
         crate::map::unit_selection::joins(self.selected, first, candidate, split)
+    }
+
+    /// An icon kind's priority in the map mode's table.
+    pub(crate) fn priority(&self, icon: PriorityIcon) -> i8 {
+        self.content
+            .defines
+            .priorities
+            .get(self.visibility.priorities, icon)
     }
 
     /// How far an icon at world `anchor` stands from the camera, as the content's map-icon
@@ -2430,12 +2413,30 @@ pub fn zoom_lift(layouts: &ColumnLayout, units_cutoff: f32, height: f32) -> f32 
 /// When a pass is disabled it supplies no sources and clears its retained
 /// source membership. Camera and recording gaps preserve their own refusals.
 fn units_shown(inputs: &CounterInputs<'_>, peace_conference: bool) -> bool {
-    inputs.shows(inputs.content.defines.icons_cutoff) && !peace_conference
+    unit_counters_shown(
+        &inputs.visibility,
+        inputs.shows(inputs.content.defines.icons_cutoff),
+        peace_conference,
+    )
+}
+
+/// Whether unit counters draw at all: their pass shown at this camera (`shown`), outside a peace
+/// conference the viewing country takes part in, and not in the resources and raids map modes
+/// ([`Visibility::unit_counters`]).
+pub(super) fn unit_counters_shown(
+    visibility: &Visibility,
+    shown: bool,
+    peace_conference: bool,
+) -> bool {
+    visibility.unit_counters && shown && !peace_conference
 }
 
 /// the coarse country grouping above its define.
 fn coarse(inputs: &CounterInputs<'_>) -> bool {
-    inputs.content.defines.coarse(inputs.camera.height)
+    inputs
+        .content
+        .defines
+        .coarse(inputs.camera.height, inputs.visibility.strategic_grouping)
 }
 
 /// Pushes one hour's counters and icons into a fresh [`CounterFrame`].

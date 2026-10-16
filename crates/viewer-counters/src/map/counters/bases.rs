@@ -807,7 +807,9 @@ pub(super) fn bases(
         .refused_tokens
         .clone_from(&tables.base_icons.refused);
 
-    if inputs.shows(defines.air_base_cutoff) {
+    // The raids map mode clears air base icons with the other province icons; naval
+    // headquarters and facilities stay.
+    if inputs.visibility.province_icons && inputs.shows(defines.air_base_cutoff) {
         let wings = wings_per_state(frame, vision)?;
         let (states, complete) = air_base_icon_states(frame)?;
         if !complete {

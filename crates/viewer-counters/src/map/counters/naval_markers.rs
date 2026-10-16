@@ -894,8 +894,8 @@ fn combat_icons(
     let window = windows.naval_combat();
     let resources = gui_windows::gui_assets(inputs, None);
     let defines = &inputs.content.defines;
-    // Off its cutoff the pass erases every icon : no pass is planned.
-    if !inputs.passes(|height| combat_pass(height, defines)) {
+    // Off its cutoff, or in the raids map mode, the pass erases every icon: no pass is planned.
+    if !inputs.visibility.province_icons || !inputs.passes(|height| combat_pass(height, defines)) {
         return Ok(());
     }
     // Resolve the map window's size in the GUI viewport. It determines every
@@ -1602,7 +1602,10 @@ fn refused_results(tables: &ResultTables, report: &mut CounterReport) {
 /// stays undecided rather than known empty. The owner and the manager's pass run
 /// on the presented frame. A content with no result window places none, counted.
 fn result_pass(inputs: &CounterInputs<'_>, tables: &NavalMarkerTables, out: &mut CounterFrame) {
-    if tables.results.provinces.is_empty() && tables.results.undecided.is_none() {
+    // The raids map mode clears naval combat result icons with the other province icons.
+    if !inputs.visibility.province_icons
+        || tables.results.provinces.is_empty() && tables.results.undecided.is_none()
+    {
         return;
     }
     let declared = inputs

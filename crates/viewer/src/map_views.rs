@@ -219,6 +219,8 @@ pub struct CounterView {
     pub selected: Arc<BTreeSet<Unit>>,
     pub hovered: Option<Unit>,
     pub presentation: Arc<Presentation>,
+    /// What the view's map mode shows of the counters, icons and labels.
+    pub visibility: viewer_foundation::map::mode_visibility::Visibility,
 }
 
 impl CounterView {
@@ -229,6 +231,7 @@ impl CounterView {
             selected: Arc::default(),
             hovered: None,
             presentation: Arc::default(),
+            visibility: Default::default(),
         }
     }
 }
@@ -239,6 +242,7 @@ impl PartialEq for CounterView {
             && self.selected == other.selected
             && self.hovered == other.hovered
             && Arc::ptr_eq(&self.presentation, &other.presentation)
+            && self.visibility == other.visibility
     }
 }
 

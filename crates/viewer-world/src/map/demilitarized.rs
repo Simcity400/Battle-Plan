@@ -280,6 +280,8 @@ pub enum ZoneEdges {
     Ordinary {
         camera_height: f32,
         fades: [[f32; 2]; 2],
+        /// Whether the map mode draws province borders ([`super::borders::class_alpha`]).
+        province_borders: bool,
     },
     /// Not at all, while land borders are hidden.
     Hidden,
@@ -300,9 +302,10 @@ impl ZoneEdges {
             Self::Ordinary {
                 camera_height,
                 fades,
+                province_borders,
             } => {
                 *selection = [0.0; 4];
-                *alpha = super::borders::class_alpha(class, camera_height, fades);
+                *alpha = super::borders::class_alpha(class, camera_height, fades, province_borders);
                 if *alpha <= 0.0 {
                     runs.clear();
                 }
@@ -542,11 +545,13 @@ mod tests {
         let near = ZoneEdges::Ordinary {
             camera_height: 5.0,
             fades,
+            province_borders: true,
         };
         assert_eq!(zone(near, BorderClass::Province), (1.0, [0.0; 4], 2));
         let far = ZoneEdges::Ordinary {
             camera_height: 25.0,
             fades,
+            province_borders: true,
         };
         assert_eq!(
             zone(far, BorderClass::Province).2,
@@ -555,9 +560,17 @@ mod tests {
         );
         assert_eq!(
             zone(far, BorderClass::State).0,
-            super::super::borders::class_alpha(BorderClass::State, 25.0, fades)
+            super::super::borders::class_alpha(BorderClass::State, 25.0, fades, true)
         );
         assert_eq!(zone(ZoneEdges::Hidden, BorderClass::Country).2, 0);
+        // A map mode without province borders gives the zone's province edges no alpha either.
+        let resources = ZoneEdges::Ordinary {
+            camera_height: 5.0,
+            fades,
+            province_borders: false,
+        };
+        assert_eq!(zone(resources, BorderClass::Province), (0.0, [0.0; 4], 0));
+        assert_eq!(zone(resources, BorderClass::State).0, 1.0);
     }
 
     #[test]

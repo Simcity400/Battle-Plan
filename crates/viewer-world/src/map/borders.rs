@@ -82,8 +82,17 @@ impl BorderClass {
 /// `STATE_BORDER_FADE_*` heights in `fades`; every other class draws at full alpha. The engine additionally drops a province edge
 /// entirely once its alpha reaches zero, which is the drawing pass's decision, not this function's.
 /// A camera height that is not a number is treated as fully near.
-pub fn class_alpha(class: BorderClass, camera_height: f32, fades: [[f32; 2]; 2]) -> f32 {
+///
+/// `province_borders` is the map mode's choice ([`crate::map::map_mode::visibility`]): the
+/// resources, infrastructure and manpower modes give province borders no alpha at any height.
+pub fn class_alpha(
+    class: BorderClass,
+    camera_height: f32,
+    fades: [[f32; 2]; 2],
+    province_borders: bool,
+) -> f32 {
     match class {
+        BorderClass::Province if !province_borders => 0.0,
         BorderClass::Province => fade(camera_height, fades[0][0], fades[0][1]),
         BorderClass::State => fade(camera_height, fades[1][0], fades[1][1]),
         _ => 1.0,

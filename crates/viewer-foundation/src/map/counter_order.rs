@@ -104,6 +104,21 @@ pub fn is_carrier(row: &ShipModelRow) -> Option<bool> {
     Some(row.formation_flags & mask != 0 || counter.positive_equipment_flags & mask != 0)
 }
 
+/// Whether a roster's first carrier ([`is_carrier`]) has a carrier air base; `false` without a
+/// carrier, `None` when a ship before it lacks model operands.
+pub fn first_carrier_has_air_base(roster: &[&ShipModelRow]) -> Option<bool> {
+    for ship in roster {
+        if is_carrier(ship)? {
+            return Some(
+                ship.counter
+                    .as_ref()
+                    .is_some_and(|c| c.carrier_air_base != 0),
+            );
+        }
+    }
+    Some(false)
+}
+
 /// A ship is capital when its capital bit or qualifying carrier status holds.
 pub fn is_capital(row: &ShipModelRow) -> Option<bool> {
     let carrier = is_carrier(row)?;
@@ -993,6 +1008,30 @@ mod tests {
         for equipment in [Err("absent content"), Ok(&incomplete)] {
             assert!(preferred_variant(&selected(2, deep), &selected(1, null), equipment).is_err());
         }
+    }
+
+    #[test]
+    fn the_air_map_mode_tests_the_first_carrier_for_an_air_base() {
+        let cruiser = ship(1, CAPITAL_FLAG, 0, 0, 0, "cruiser");
+        let carrier = ship(2, CARRIER_FLAG, 0, 900, 0, "carrier");
+        let empty_carrier = ship(3, 0, MISSILE_CARRIER_FLAG, 0, 0, "missile carrier");
+        assert_eq!(
+            first_carrier_has_air_base(&[&cruiser, &carrier]),
+            Some(true)
+        );
+        // The first carrier decides, even without an air base of its own.
+        assert_eq!(
+            first_carrier_has_air_base(&[&empty_carrier, &carrier]),
+            Some(false)
+        );
+        assert_eq!(first_carrier_has_air_base(&[&cruiser]), Some(false));
+        assert_eq!(first_carrier_has_air_base(&[]), Some(false));
+        // A ship before the first carrier without model operands leaves it open.
+        let unknown = ShipModelRow {
+            ship: 4,
+            ..Default::default()
+        };
+        assert_eq!(first_carrier_has_air_base(&[&unknown, &carrier]), None);
     }
 
     #[test]

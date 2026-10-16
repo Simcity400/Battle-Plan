@@ -31,9 +31,9 @@ use viewer_foundation::map::label_reads::victory_point_keys;
 use viewer_foundation::map::label_reads::{
     label_anchors, label_name, overrides_ladder, unreadable,
 };
+use viewer_foundation::map::mode_visibility::{Priorities, PriorityIcon, Visibility};
 use viewer_foundation::map::native_resources::Context;
 use viewer_foundation::map::province_schedule::Schedule;
-use viewer_foundation::map::sprites::priority as sprites_priority;
 #[cfg(test)]
 use viewer_foundation::map::test_support::gui;
 
@@ -69,8 +69,8 @@ pub struct LabelDefines {
     pub max_points_for_percent: f32,
     /// `CAPITAL_ICON_CUTOFF` and `VICTORY_POINT_MAP_ICON_CAPITAL_CUTOFF_MAX`.
     pub capital_cutoff: [f32; 2],
-    /// `NMapIcons.DEFAULT_PRIORITY_VICTORY_POINTS` and `DEFAULT_PRIORITY_CAPITAL`.
-    pub priority: [i8; 2],
+    /// Every map mode's `NMapIcons.<table>_PRIORITY_VICTORY_POINTS` and `_CAPITAL`.
+    pub priorities: Priorities,
 }
 
 impl LabelDefines {
@@ -84,7 +84,6 @@ impl LabelDefines {
             }
         };
         let graphics = |key: &str| number("NGraphics", key);
-        let priority = |key: &str| sprites_priority(defines, key);
         let levels = graphics("VICTORY_POINT_LEVELS")?;
         let after = defines.numbers("NGraphics", "VICTORY_POINT_MAP_ICON_AFTER")?;
         if levels < 1.0 || levels.fract() != 0.0 || after.len() < levels as usize {
@@ -109,10 +108,7 @@ impl LabelDefines {
                 graphics("CAPITAL_ICON_CUTOFF")?,
                 graphics("VICTORY_POINT_MAP_ICON_CAPITAL_CUTOFF_MAX")?,
             ],
-            priority: [
-                priority("DEFAULT_PRIORITY_VICTORY_POINTS")?,
-                priority("DEFAULT_PRIORITY_CAPITAL")?,
-            ],
+            priorities: Priorities::load(defines)?,
         })
     }
 
@@ -125,7 +121,7 @@ impl LabelDefines {
             text_cutoff: [100.0, 800.0],
             max_points_for_percent: 22.0,
             capital_cutoff: [1100.0, 1000.0],
-            priority: [5, 5],
+            priorities: Priorities::uniform([10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 5]),
         }
     }
 }
@@ -246,6 +242,9 @@ pub struct LabelInputs<'a> {
     /// Device pixels per interface pixel; the labels are laid out in interface
     /// pixels. See [`super::ui_scale`].
     pub ui_scale: f32,
+    /// What the view's map mode shows: the raids mode keeps only the capitals, and the
+    /// resources mode draws no names.
+    pub visibility: Visibility,
 }
 
 /// What one frame of labels drew, for reporting.
@@ -413,6 +412,14 @@ impl LabelReport {
     }
 }
 
+/// Whether a map mode draws a victory-point or capital label, and if so whether with its name:
+/// the raids mode clears the victory points with the other province icons but keeps the
+/// capitals, which are state icons; the resources mode empties every name and keeps the dots
+/// and stars.
+fn mode_label(capital: bool, visibility: &Visibility) -> Option<bool> {
+    (capital || visibility.province_icons).then_some(visibility.label_text)
+}
+
 /// Pushes one hour's victory-point and capital labels onto `batch`.
 pub fn prepare(
     inputs: &LabelInputs<'_>,
@@ -451,6 +458,9 @@ pub fn prepare(
         if victory_points <= 0 && !capital {
             continue;
         }
+        let Some(named) = mode_label(capital, &inputs.visibility) else {
+            continue;
+        };
         let Some(anchor) = inputs.content.anchors.get(&province.id) else {
             continue;
         };
@@ -471,8 +481,13 @@ pub fn prepare(
         };
         let allegiance = dot_allegiance(province.controller, links, allegiances);
         let shape = shape_group(capital, victory_points, defines);
-        let priority = defines.priority[usize::from(capital)];
-        let name = if height >= text {
+        let icon = if capital {
+            PriorityIcon::Capital
+        } else {
+            PriorityIcon::VictoryPoints
+        };
+        let priority = defines.priorities.get(inputs.visibility.priorities, icon);
+        let name = if !named || height >= text {
             None
         } else {
             let recorded = overrides.get(&province.id).copied();
@@ -1134,6 +1149,21 @@ pub(crate) mod tests {
                 "2 victory-point names are not drawn: localisation VICTORY_POINTS_3: its text is not UTF-8; provinces 692, 6521",
             ]
         );
+    }
+
+    #[test]
+    fn the_raid_mode_keeps_only_capitals_and_the_resource_mode_draws_no_names() {
+        use crate::map::map_mode::{MapMode, Stock, visibility};
+        let of = |stock| visibility::of(&MapMode::Stock(stock));
+        let political = of(Stock::Default);
+        assert_eq!(mode_label(false, &political), Some(true));
+        assert_eq!(mode_label(true, &political), Some(true));
+        let raids = of(Stock::Raids);
+        assert_eq!(mode_label(false, &raids), None);
+        assert_eq!(mode_label(true, &raids), Some(true));
+        let resources = of(Stock::Resources);
+        assert_eq!(mode_label(false, &resources), Some(false));
+        assert_eq!(mode_label(true, &resources), Some(false));
     }
 
     #[test]

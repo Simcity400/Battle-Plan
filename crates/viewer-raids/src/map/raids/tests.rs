@@ -642,6 +642,7 @@ fn icons_draw_at_the_top_priority_inside_the_height_band_nearest_last() {
                 },
                 viewport: [2048, 1152],
                 ui_scale: 1.0,
+                reach: Some(RaidReach::Normal),
             },
             &icons,
             &mut batch,
@@ -1243,6 +1244,16 @@ fn the_report_lists_unverified_and_withheld_icons_with_their_reasons() {
 
 /// Two icons drawn with `ui_scale` at `height` over a viewport of `viewport`.
 fn drawn(height: f32, viewport: [u32; 2], ui_scale: f32) -> (usize, Batch) {
+    drawn_in(Some(RaidReach::Normal), height, viewport, ui_scale)
+}
+
+/// [`drawn`] in a map mode with raid icon `reach`.
+fn drawn_in(
+    reach: Option<RaidReach>,
+    height: f32,
+    viewport: [u32; 2],
+    ui_scale: f32,
+) -> (usize, Batch) {
     let icon = |province, frame| RaidIcon {
         province,
         frame,
@@ -1270,6 +1281,7 @@ fn drawn(height: f32, viewport: [u32; 2], ui_scale: f32) -> (usize, Batch) {
             },
             viewport,
             ui_scale,
+            reach,
         },
         &icons,
         &mut batch,
@@ -1289,6 +1301,35 @@ fn the_camera_band_includes_both_edges() {
     assert_eq!(drawn(500.0, viewport, 1.0).0, 2);
     assert_eq!(drawn(9.99, viewport, 1.0).0, 0);
     assert_eq!(drawn(500.01, viewport, 1.0).0, 0);
+}
+
+/// The raids map mode reaches up to `RAID_MAP_ICON_MAX_DRAW_DISTANCE_IN_RAID_MAP_MODE` (1600
+/// in these test defines); the modes without raid icons draw none at any height.
+#[test]
+fn the_map_mode_decides_whether_and_how_far_raid_icons_show() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let viewport = [2048, 1152];
+    let raids = Some(RaidReach::RaidMode);
+    assert_eq!(drawn_in(raids, 1600.0, viewport, 1.0).0, 2);
+    assert_eq!(drawn_in(raids, 1600.01, viewport, 1.0).0, 0);
+    assert_eq!(drawn_in(raids, 9.99, viewport, 1.0).0, 0);
+    assert_eq!(drawn(1600.0, viewport, 1.0).0, 0);
+    // The game releases a raid icon in a mode without them through the same path as a camera
+    // outside the band, and makes it again on return: a mode round trip lays out exactly as a
+    // camera leaving the band and coming back.
+    let outside = drawn(500.01, viewport, 1.0);
+    for height in [10.0, 300.0, 500.0] {
+        let hidden = drawn_in(None, height, viewport, 1.0);
+        assert_eq!(hidden.0, 0);
+        assert_eq!(hidden.1.quads, outside.1.quads);
+        assert_eq!(
+            drawn_in(Some(RaidReach::Normal), height, viewport, 1.0)
+                .1
+                .quads,
+            drawn(height, viewport, 1.0).1.quads
+        );
+    }
 }
 
 /// Icons are laid out in interface pixels: doubling the UI scale over a

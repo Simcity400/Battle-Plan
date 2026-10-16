@@ -448,25 +448,51 @@ fn chunking_splits_a_long_polyline_and_keeps_the_strip_continuous() {
 
 #[test]
 fn the_camera_fades_match_the_defines() {
-    assert_eq!(class_alpha(BorderClass::Province, 0.0, FADES), 1.0);
-    assert_eq!(class_alpha(BorderClass::Province, 200.0, FADES), 1.0);
-    assert_eq!(class_alpha(BorderClass::Province, 250.0, FADES), 0.5);
-    assert_eq!(class_alpha(BorderClass::Province, 300.0, FADES), 0.0);
-    assert_eq!(class_alpha(BorderClass::Province, 1000.0, FADES), 0.0);
-    assert_eq!(class_alpha(BorderClass::State, 300.0, FADES), 1.0);
-    assert_eq!(class_alpha(BorderClass::State, 400.0, FADES), 1.0);
-    assert_eq!(class_alpha(BorderClass::State, 450.0, FADES), 0.5);
-    assert_eq!(class_alpha(BorderClass::State, 500.0, FADES), 0.0);
+    assert_eq!(class_alpha(BorderClass::Province, 0.0, FADES, true), 1.0);
+    assert_eq!(class_alpha(BorderClass::Province, 200.0, FADES, true), 1.0);
+    assert_eq!(class_alpha(BorderClass::Province, 250.0, FADES, true), 0.5);
+    assert_eq!(class_alpha(BorderClass::Province, 300.0, FADES, true), 0.0);
+    assert_eq!(class_alpha(BorderClass::Province, 1000.0, FADES, true), 0.0);
+    assert_eq!(class_alpha(BorderClass::State, 300.0, FADES, true), 1.0);
+    assert_eq!(class_alpha(BorderClass::State, 400.0, FADES, true), 1.0);
+    assert_eq!(class_alpha(BorderClass::State, 450.0, FADES, true), 0.5);
+    assert_eq!(class_alpha(BorderClass::State, 500.0, FADES, true), 0.0);
     for class in [
         BorderClass::Country,
         BorderClass::Impassable,
         BorderClass::Sea,
         BorderClass::SeaRegion,
     ] {
-        assert_eq!(class_alpha(class, 0.0, FADES), 1.0);
-        assert_eq!(class_alpha(class, 3000.0, FADES), 1.0);
+        assert_eq!(class_alpha(class, 0.0, FADES, true), 1.0);
+        assert_eq!(class_alpha(class, 3000.0, FADES, true), 1.0);
     }
-    assert_eq!(class_alpha(BorderClass::Province, f32::NAN, FADES), 1.0);
+    assert_eq!(
+        class_alpha(BorderClass::Province, f32::NAN, FADES, true),
+        1.0
+    );
+}
+
+#[test]
+fn a_map_mode_without_province_borders_gives_them_no_alpha_at_any_height() {
+    use crate::map::map_mode::{MapMode, Stock, visibility};
+    for stock in [Stock::Resources, Stock::Infrastructure, Stock::Manpower] {
+        let shown = visibility::of(&MapMode::Stock(stock)).province_borders;
+        assert!(!shown, "{stock:?}");
+        for height in [0.0, 250.0, f32::NAN] {
+            assert_eq!(
+                class_alpha(BorderClass::Province, height, FADES, shown),
+                0.0
+            );
+        }
+        // The other classes keep their fades.
+        assert_eq!(class_alpha(BorderClass::State, 0.0, FADES, shown), 1.0);
+        assert_eq!(class_alpha(BorderClass::Country, 0.0, FADES, shown), 1.0);
+    }
+    let political = visibility::of(&MapMode::default()).province_borders;
+    assert_eq!(
+        class_alpha(BorderClass::Province, 0.0, FADES, political),
+        1.0
+    );
 }
 
 #[test]

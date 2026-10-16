@@ -110,6 +110,8 @@ pub struct MapDefines {
     /// `RAID_MAP_ICON_DRAW_DISTANCE_MIN` and `..._MAX`: the camera heights
     /// raid map icons show between in the ordinary map modes.
     pub raid_icons: [f32; 2],
+    /// `RAID_MAP_ICON_MAX_DRAW_DISTANCE_IN_RAID_MAP_MODE`: the raid map mode's upper height.
+    pub raid_icons_raid_mode: f32,
     /// `SUN_SPECULAR_INTENSITY`.
     pub sun_specular: f32,
     /// `CUBEMAP_INTENSITY`.
@@ -208,6 +210,7 @@ impl MapDefines {
                 number("RAID_MAP_ICON_DRAW_DISTANCE_MIN")?,
                 number("RAID_MAP_ICON_DRAW_DISTANCE_MAX")?,
             ],
+            raid_icons_raid_mode: number("RAID_MAP_ICON_MAX_DRAW_DISTANCE_IN_RAID_MAP_MODE")?,
             sun_specular: number("SUN_SPECULAR_INTENSITY")?,
             cubemap: number("CUBEMAP_INTENSITY")?,
             country_names_cutoff: number("DRAW_COUNTRY_NAMES_CUTOFF")?,
@@ -259,6 +262,7 @@ impl MapDefines {
                 [r, g, b, 2.5]
             },
             raid_icons: [10.0, 500.0],
+            raid_icons_raid_mode: 1600.0,
             sun_specular: 1.0,
             cubemap: 1.0,
             country_names_cutoff: 260.0,

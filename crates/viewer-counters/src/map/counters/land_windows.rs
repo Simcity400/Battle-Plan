@@ -206,7 +206,7 @@ impl PreparedCombats {
         for drawn in drawn {
             let marker = &placed[&drawn.owner].marker;
             let key = layer(
-                inputs.content.defines.land_combat_priority,
+                inputs.priority(PriorityIcon::LandCombat),
                 report.combat_ordinal(),
                 0,
             );

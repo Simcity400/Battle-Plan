@@ -344,7 +344,14 @@ fn the_combat_window_sorts_above_every_map_icon() {
     assert!(window_layer(1) > window_layer(0));
     assert!(window_layer(usize::MAX) >= window_layer(70_000));
     // Sorted as the sprite pass sorts, the window's quads come last.
-    let icon = layer(counters::CounterDefines::VANILLA.land_combat_priority, 9, 3);
+    let icon = layer(
+        counters::CounterDefines::VANILLA.priorities.get(
+            counters::PriorityTable::Default,
+            counters::PriorityIcon::LandCombat,
+        ),
+        9,
+        3,
+    );
     let mut keys = vec![window_layer(3), icon, window_layer(0)];
     keys.sort();
     assert_eq!(keys, [icon, window_layer(0), window_layer(3)]);

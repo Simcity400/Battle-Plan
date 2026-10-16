@@ -35,11 +35,20 @@ struct Placed {
 }
 
 pub fn prepare(inputs: &RaidInputs<'_>, icons: &RaidIcons) -> PreparedRaids {
-    let [near, far] = inputs.camera.defines.raid_icons;
+    let defines = &inputs.camera.defines;
+    let [near, far] = defines.raid_icons;
+    // The map mode chooses how far the icons reach, or hides them.
+    let far = match inputs.reach {
+        Some(RaidReach::Normal) => Some(far),
+        Some(RaidReach::RaidMode) => Some(defines.raid_icons_raid_mode),
+        None => None,
+    };
     // The game's camera shows them all within the distances or none; a free eye shows each
     // within them by its own distance.
     let free = inputs.camera.free().is_some();
-    if !free && !(near..=far).contains(&inputs.camera.height) {
+    let shown = far.is_some_and(|far| free || (near..=far).contains(&inputs.camera.height));
+    let far = far.unwrap_or(near);
+    if !shown {
         return PreparedRaids {
             report: icons.report.clone(),
             ..Default::default()
@@ -399,6 +408,7 @@ mod tests {
                     camera,
                     viewport: [2048, 1152],
                     ui_scale: 1.,
+                    reach: Some(RaidReach::Normal),
                 },
                 &icons,
             );

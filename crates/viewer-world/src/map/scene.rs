@@ -178,6 +178,8 @@ pub struct Scene {
     /// Whether this hour has a fog-of-war input at all; see
     /// [`Scene::set_fog_of_war`].
     fog: bool,
+    /// What the view's map mode shows of the map's layers; see [`Scene::set_visibility`].
+    visibility: viewer_foundation::map::mode_visibility::Visibility,
     point_light_maps: crate::map::pointlights::PointLightMaps,
     point_light_tiles: crate::map::pointlights::Tiles,
     reflection: Bound,
@@ -635,6 +637,7 @@ impl Scene {
             intel_map,
             fow_noise,
             fog: false,
+            visibility: viewer_foundation::map::mode_visibility::Visibility::POLITICAL,
             point_light_maps,
             point_light_tiles: crate::map::pointlights::Tiles::default(),
             reflection: upload(
@@ -1495,6 +1498,15 @@ impl Scene {
         Ok(())
     }
 
+    /// What the view's map mode shows: the fog of war only where the mode draws it, and the
+    /// province borders only where the mode keeps them.
+    pub fn set_visibility(
+        &mut self,
+        visibility: viewer_foundation::map::mode_visibility::Visibility,
+    ) {
+        self.visibility = visibility;
+    }
+
     /// Compile, upload and fill static content on the loader, shared by all compatible views, and
     /// allocate this view's first fill state. Nothing is bound until the view's own first fill.
     pub fn warm_political(
@@ -1770,6 +1782,7 @@ impl Scene {
             map_buildings: self.map_buildings.as_mut(),
             unit_models: self.unit_models.as_mut(),
             unit_gates: self.unit_gates,
+            visibility: self.visibility,
             mesh_limit: self.mesh_limit,
             movement_arrows: Some(&mut self.movement_arrows),
             animated_text: self.animated_text.as_mut(),
@@ -1876,13 +1889,23 @@ impl Scene {
         self.point_light_maps.write(queue, &self.point_light_tiles);
         self.detail_laps.lap("lights");
         let mut globals = FrameInputs {
-            frame: FrameConstants::try_new(camera, size, day_night, animation_time, self.fog)
-                .map(|frame| {
-                    frame
-                        .with_snow_mud_fade(snow_mud_fade)
-                        .with_channels(self.mode_channels)
-                })
-                .ok_or_else(|| invalid("Map shader inputs: 1 refused frame: camera projection has no finite inverse"))?,
+            frame: FrameConstants::try_new(
+                camera,
+                size,
+                day_night,
+                animation_time,
+                self.fog && self.visibility.fog_of_war,
+            )
+            .map(|frame| {
+                frame
+                    .with_snow_mud_fade(snow_mud_fade)
+                    .with_channels(self.mode_channels)
+            })
+            .ok_or_else(|| {
+                invalid(
+                    "Map shader inputs: 1 refused frame: camera projection has no finite inverse",
+                )
+            })?,
             shadow_matrix: [[0.0; 4]; 4],
             light_grid: self.point_light_tiles.grid,
         };
@@ -1907,19 +1930,32 @@ impl Scene {
                 camera.map.x(),
             ),
         };
-        let native_frames = offsets.iter().map(|offset| {
-                    // Upload each world-wrap camera's scene block;
-                    // the native vertex stays at its original world position.
-                    let mut wrapped = camera;
-                    wrapped.center[0] -= offset;
-                    FrameConstants::try_new(wrapped, size, day_night, animation_time, self.fog)
-                        .map(|frame| {
+        let native_frames = offsets
+            .iter()
+            .map(|offset| {
+                // Upload each world-wrap camera's scene block;
+                // the native vertex stays at its original world position.
+                let mut wrapped = camera;
+                wrapped.center[0] -= offset;
+                FrameConstants::try_new(
+                    wrapped,
+                    size,
+                    day_night,
+                    animation_time,
+                    self.fog && self.visibility.fog_of_war,
+                )
+                .map(|frame| {
                     frame
                         .with_snow_mud_fade(snow_mud_fade)
                         .with_channels(self.mode_channels)
                 })
-                        .ok_or_else(|| invalid("Map shader scene: 1 refused frame: wrapped camera has no finite inverse"))
-                }).collect::<io::Result<Vec<_>>>()?;
+                .ok_or_else(|| {
+                    invalid(
+                        "Map shader scene: 1 refused frame: wrapped camera has no finite inverse",
+                    )
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
         let native_frame_bytes: Vec<_> = native_frames.iter().map(bytemuck::bytes_of).collect();
         let native_mesh_inputs = crate::map::models::NativeInputs {
             samples: self.graphics.samples,
@@ -2434,6 +2470,7 @@ impl Scene {
                         stage: BorderStage::Land,
                         camera_height: camera.height,
                         fades: camera.defines.border_fades,
+                        province_borders: self.visibility.province_borders,
                         visible: overlay.interface && self.graphics.land_borders(),
                     },
                 ))
@@ -2597,6 +2634,7 @@ impl Scene {
                         stage: BorderStage::Sea,
                         camera_height: camera.height,
                         fades: camera.defines.border_fades,
+                        province_borders: self.visibility.province_borders,
                         visible: overlay.interface && self.graphics.sea_borders(),
                     },
                 ));
@@ -2612,6 +2650,7 @@ impl Scene {
                     crate::map::demilitarized::ZoneEdges::Ordinary {
                         camera_height: camera.height,
                         fades: camera.defines.border_fades,
+                        province_borders: self.visibility.province_borders,
                     }
                 } else {
                     crate::map::demilitarized::ZoneEdges::Hidden
@@ -2707,17 +2746,21 @@ impl Scene {
         let actor_frames = actor_views
             .iter()
             .map(|&view| {
-                FrameConstants::try_new(view, size, day_night, animation_time, self.fog)
-                    .map(|frame| {
-                        frame
-                            .with_snow_mud_fade(snow_mud_fade)
-                            .with_channels(self.mode_channels)
-                    })
-                    .ok_or_else(|| {
-                        invalid(
-                            "Map shader scene: 1 refused actor frame: camera has no finite inverse",
-                        )
-                    })
+                FrameConstants::try_new(
+                    view,
+                    size,
+                    day_night,
+                    animation_time,
+                    self.fog && self.visibility.fog_of_war,
+                )
+                .map(|frame| {
+                    frame
+                        .with_snow_mud_fade(snow_mud_fade)
+                        .with_channels(self.mode_channels)
+                })
+                .ok_or_else(|| {
+                    invalid("Map shader scene: 1 refused actor frame: camera has no finite inverse")
+                })
             })
             .collect::<io::Result<Vec<_>>>()?;
         let actor_frame_bytes: Vec<_> = actor_frames.iter().map(bytemuck::bytes_of).collect();

@@ -74,6 +74,8 @@ impl Viewer {
         laps: &mut Laps,
     ) -> Result<(), std::io::Error> {
         laps.lap("before_hour");
+        // The hour builders lay counters and icons out with the map mode's visibility.
+        self.counter_view.visibility = viewer_world::map::map_mode::visibility::of(&self.map_mode);
         if self.scene.is_none() {
             return Err(std::io::Error::other("the map scene was not created"));
         }
@@ -620,6 +622,7 @@ impl Viewer {
             counter_settings: counter_view.settings,
             selected: counter_view.selected,
             hovered: counter_view.hovered,
+            visibility: counter_view.visibility,
         });
         self.overlay_fraction = None;
         let shown = ShownHour {

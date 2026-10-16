@@ -758,6 +758,9 @@ pub struct BorderFrame {
     pub camera_height: f32,
     /// The content's province and state fade heights; see [`borders::class_alpha`].
     pub fades: [[f32; 2]; 2],
+    /// Whether the map mode draws province borders; the resources, infrastructure and manpower
+    /// modes give them no opacity.
+    pub province_borders: bool,
     /// Native land batch precedes rivers; sea batch follows trees and water.
     pub stage: BorderStage,
     /// A hidden stage submits nothing but leaves the passes after it the same inputs.
@@ -1019,7 +1022,12 @@ impl BorderPass {
         let batches = classes
             .iter()
             .map(|&class| {
-                let alpha = borders::class_alpha(class, frame.camera_height, frame.fades);
+                let alpha = borders::class_alpha(
+                    class,
+                    frame.camera_height,
+                    frame.fades,
+                    frame.province_borders,
+                );
                 super::border_shader::Batch {
                     texture: &self.textures[class.bucket()],
                     selection: [0.; 4],

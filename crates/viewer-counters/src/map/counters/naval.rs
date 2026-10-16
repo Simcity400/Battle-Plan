@@ -203,6 +203,16 @@ impl<'a> ShipInputs<'a> {
         }))
     }
 
+    /// Whether a task force's first carrier, in roster order, has a carrier air base: the air
+    /// map mode's test for drawing its counter. `None` when a ship before it lacks model operands.
+    pub(super) fn carries_air_wings(&self, force: u64) -> Option<bool> {
+        let ships: Vec<&replay::rows::ShipModelRow> =
+            self.rosters.get(&force).map_or_else(Vec::new, |roster| {
+                roster.iter().map(|hull| hull.model).collect()
+            });
+        counter_order::first_carrier_has_air_base(&ships)
+    }
+
     /// A task force's strength and organisation ratios; an empty roster returns zero for each.
     pub(super) fn ratio(&self, force: u64) -> (i64, i64) {
         self.ratios.get(&force).copied().unwrap_or((0, 0))
@@ -749,6 +759,24 @@ pub(super) fn naval_can_join(
     a != 0 && b != 0 && context.reserve(a) == Some(true) && context.reserve(b) == Some(true)
 }
 
+/// Why the air map mode cannot test a task force for carriers: its ships' model operands are not
+/// all recorded this hour.
+const CARRIER_TEST_UNRECORDED: &str = "the air map mode keeps only fleets carrying air wings, and this hour's ship models cannot tell";
+
+/// Whether a map mode keeps an at-sea task force's counter: every one, none in the operatives
+/// mode, and in the air mode those whose first carrier has an air base (`carries`), `None` when
+/// that cannot be told.
+pub(super) fn mode_keeps_task_force(
+    kinds: UnitKinds,
+    carries: impl FnOnce() -> Option<bool>,
+) -> Option<bool> {
+    match kinds {
+        UnitKinds::All => Some(true),
+        UnitKinds::Nothing => Some(false),
+        UnitKinds::CarrierFleets => carries(),
+    }
+}
+
 /// Offers every task force at sea to its province's source for its visual bucket.
 ///
 /// Walk each province's mixed occupant array, whose task forces share the land
@@ -800,6 +828,22 @@ pub(super) fn add_task_forces<'a>(
         // The ordinary pass skips bucket 19; the naval base shows a docked task force.
         if placement.kind == SHIP_IN_PORT {
             continue;
+        }
+        // Docked fleets stay with their naval base whatever the map mode's unit kinds.
+        let carries = || {
+            context
+                .ship_inputs
+                .as_ref()
+                .and_then(|ships| ships.carries_air_wings(force.id))
+        };
+        match mode_keeps_task_force(inputs.visibility.unit_kinds, carries) {
+            Some(true) => {}
+            Some(false) => continue,
+            None => {
+                out.report
+                    .refuse_task_forces(CARRIER_TEST_UNRECORDED, [force.id]);
+                continue;
+            }
         }
         if !stays_a_source(
             &context.mission_skips,
@@ -964,7 +1008,9 @@ pub(super) fn port_counters(
     icons: &[NavalBaseIcon],
     out: &mut CounterFrame,
 ) -> io::Result<()> {
-    if !inputs.shows(inputs.content.defines.naval_base_cutoff) {
+    // The raids map mode clears naval base icons, and their port counters with them.
+    if !inputs.visibility.province_icons || !inputs.shows(inputs.content.defines.naval_base_cutoff)
+    {
         return Ok(());
     }
     let windows = inputs.windows;
@@ -1017,8 +1063,12 @@ pub(super) fn port_counters(
                 let at: BTreeMap<u32, [f32; 3]> = anchors.iter().copied().collect();
                 let defines = &inputs.content.defines;
                 items.retain(|province, _| {
-                    at.get(province)
-                        .is_none_or(|anchor| !defines.coarse(inputs.icon_height(*anchor)))
+                    at.get(province).is_none_or(|anchor| {
+                        !defines.coarse(
+                            inputs.icon_height(*anchor),
+                            inputs.visibility.strategic_grouping,
+                        )
+                    })
                 });
             }
             Ok(Some(items))

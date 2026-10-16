@@ -36,7 +36,8 @@
 //! byte of `trunc(c * 255)`, alpha included; the alpha is the channel's opacity.
 //!
 //! A layer the viewer does not draw leaves its channel empty and is refused by name in
-//! [`ModeFill::warnings`], as are the overlays a mode adds beyond its layers.
+//! [`ModeFill::warnings`], as are the overlays a mode adds beyond its layers. What each mode
+//! shows of the map's other layers (counters, icons, labels, fog, borders) is [`visibility`].
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -949,7 +950,7 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
     };
     let draw = match stock {
         Stock::Default => return Ok(ModeFill::default()),
-        Stock::StrategicNavy | Stock::StrategicAir | Stock::Resources | Stock::Raids => {
+        Stock::StrategicNavy | Stock::StrategicAir | Stock::Resources => {
             warnings.push(unbuilt(stock).to_owned());
             match stock {
                 Stock::StrategicNavy => return Ok(refusal(warnings)),
@@ -957,6 +958,10 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
                 _ => Draw::of([Country, Empty], political),
             }
         }
+        // The raid mode draws no layer of its own: the countries alone. Its raid icons and
+        // what it hides are [`visibility`] rules; its source stripes belong to the raid creation
+        // window, which a replay has no use for.
+        Stock::Raids => Draw::of([Country, Empty], political),
         Stock::Factions => variant(Variant::Factions, &mut warnings)?,
         Stock::Players => variant(Variant::Players, &mut warnings)?,
         Stock::Ideology => variant(Variant::Ideology, &mut warnings)?,
@@ -1044,9 +1049,6 @@ fn unbuilt(stock: Stock) -> &'static str {
         }
         Stock::Operatives => {
             "Operatives map mode: the operative, operation and counterintelligence icons are not drawn; operative locations and missions are not recorded"
-        }
-        Stock::Raids => {
-            "Raids map mode: the countries show without the raid target layer's ranges, which are not drawn"
         }
         _ => "This map mode's layer is not drawn",
     }
@@ -1777,6 +1779,8 @@ fn scripted_fill(name: &str, inputs: &Inputs) -> io::Result<ModeFill> {
         }),
     })
 }
+
+pub mod visibility;
 
 #[cfg(test)]
 mod tests;

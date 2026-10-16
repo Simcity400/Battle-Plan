@@ -252,7 +252,10 @@ impl PreparedLand {
             let lift = zoom_lift(columns, inputs.content.defines.units_cutoff, height);
             let anchor = [screen[0], screen[1] + lift];
             let level = self.levels[self.groups[index].members[0]];
-            let priority = inputs.content.defines.level_priority(level);
+            let priority = inputs
+                .content
+                .defines
+                .level_priority(level, inputs.visibility.priorities);
             let icon = inputs.icon_anchor(
                 IconFamily::Columns,
                 world,
@@ -360,16 +363,21 @@ impl PreparedLand {
                     }
                     Plate::Naval(_) => true,
                 };
-                let drawn = match plate {
-                    Plate::Land(member) => self.land_plate(
-                        inputs,
-                        report,
-                        missing_owners,
-                        member,
-                        origin,
-                        size,
-                        priority,
-                    )?,
+                let (drawn, opacity) = match plate {
+                    Plate::Land(member) => {
+                        let opacity =
+                            plate_opacity(&inputs.visibility, self.stacks[member].gun.is_some());
+                        let drawn = self.land_plate(
+                            inputs,
+                            report,
+                            missing_owners,
+                            member,
+                            origin,
+                            size,
+                            priority,
+                        )?;
+                        (drawn, opacity)
+                    }
                     Plate::Naval(member) => {
                         // The presented frame draws it through its window's instance.
                         self.naval_plate(inputs, report, missing_owners, member);
@@ -399,6 +407,7 @@ impl PreparedLand {
                     let mut quad = quad.clone();
                     quad.layer += offset;
                     quad.anchor = icon;
+                    quad.color[3] *= opacity;
                     quad
                 }));
             }
@@ -861,6 +870,12 @@ impl SourceUnit<'_> {
             Self::Naval(unit) => unit.slot,
         }
     }
+}
+
+/// A land plate's opacity in the map mode: the navy mode draws army counters at its own
+/// opacity; railway guns keep theirs.
+pub(super) fn plate_opacity(visibility: &Visibility, gun: bool) -> f32 {
+    if gun { 1.0 } else { visibility.army_opacity }
 }
 
 /// One plate of a column: a land stack or a naval item, by index.
@@ -1659,8 +1674,12 @@ pub(super) fn land_counters<'a>(
     // order; see `counter_groups`. A division in a province the camera does not admit builds
     // nothing.
     let admission = Admission::new(inputs.camera, inputs.viewport);
+    // Armies and railway guns have counters only in the map modes that show every unit kind.
+    let armies = inputs.visibility.unit_kinds == UnitKinds::All;
     let divisions = rows::<tables::Divisions>(frame)?;
-    for division in admitted_divisions(&inputs.content.bounds, &admission, divisions.rows()) {
+    for division in
+        admitted_divisions(&inputs.content.bounds, &admission, divisions.rows()).filter(|_| armies)
+    {
         let Some(slot) = owner(division.roster_owner) else {
             continue;
         };
@@ -1762,8 +1781,10 @@ pub(super) fn land_counters<'a>(
     }
     let unavailable = out.report.unavailable_railway_guns;
     // Unknown gun geometry still occupies its source: the game refuses the column.
-    add_railway_guns(inputs, owner, land, &mut sources, out);
-    if inputs.assets.layouts.gun.is_err() {
+    if armies {
+        add_railway_guns(inputs, owner, land, &mut sources, out);
+    }
+    if armies && inputs.assets.layouts.gun.is_err() {
         out.report.unavailable_railway_guns = unavailable
             + land
                 .guns
@@ -1834,7 +1855,10 @@ pub(super) fn land_counters<'a>(
         // enough draws coarse.
         let height = inputs.icon_height(group.anchor);
         let rules = JoinRules {
-            coarse: inputs.content.defines.coarse(height),
+            coarse: inputs
+                .content
+                .defines
+                .coarse(height, inputs.visibility.strategic_grouping),
             color_mode: inputs.settings.color_mode,
             nato: inputs.settings.nato,
         };

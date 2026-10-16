@@ -66,6 +66,9 @@ pub struct MapLayers<'a> {
     // fog of war
     /// The hour's `IntelMap` for the perspective the frame is drawn for.
     pub intel_map: &'a IntelMap,
+    /// What the map mode shows of the layers: the fog of war, province borders, land models and
+    /// unit arrows ([`viewer_world::map::map_mode::visibility`]).
+    pub visibility: viewer_foundation::map::mode_visibility::Visibility,
     // the map's table frame
     pub frame_assets: &'a FrameAssets,
     /// This hour's nuclear impacts, whose province effects start at presentation time zero.
@@ -420,6 +423,7 @@ pub fn dump_png(
         scene.set_snow_mud(&device, &queue, snow_mud, Continuity::Reset)?;
         // fog of war
         scene.set_fog_of_war(&queue, &layers.intel_map.texels, layers.intel_map.fog)?;
+        scene.set_visibility(layers.visibility);
         scene.settle_models();
         scene.install_animated_text(
             &layers.content.icons.animated_text,

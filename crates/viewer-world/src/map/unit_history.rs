@@ -1153,6 +1153,45 @@ pub mod tests {
         assert_eq!(near(&mut h, 1.4)[0].1.animation_epoch, epoch);
     }
 
+    /// The game's raids mode clears the same per-province land-model bit its units cutoff
+    /// clears, so a political → raids → political round trip retires and restores land models
+    /// exactly as a camera rising above the cutoff and coming back down does, frame for frame;
+    /// ships are untouched.
+    #[test]
+    fn a_map_mode_without_land_models_acts_as_a_camera_above_their_cutoff() {
+        use crate::map::map_mode::{MapMode, Stock, visibility};
+        use viewer_foundation::map::camera::{MapDefines, MapSize, Placement};
+        let targets = vec![target(7, Kind::Land), target(8, Kind::Ship)];
+        let bounds = Arc::new(BTreeMap::from([
+            (7, [0.0, 0.0, 2.0, 2.0]),
+            (8, [1.0, 1.0, 3.0, 3.0]),
+        ]));
+        let start = |h: &mut History| h.bounds = Arc::clone(&bounds);
+        let mut by_camera = history(targets.clone(), false);
+        let mut by_mode = history(targets, false);
+        start(&mut by_camera);
+        start(&mut by_mode);
+        let camera =
+            |height| Placement::map([1.0, 1.0], height).on(MapSize::TEST, MapDefines::test());
+        let political = visibility::of(&MapMode::Stock(Stock::Default));
+        let raids = visibility::of(&MapMode::Stock(Stock::Raids));
+        let mut shrinking = false;
+        for (step, in_raids) in [false, false, true, true, true, false, false, false]
+            .into_iter()
+            .enumerate()
+        {
+            let time = step as f32 * 0.25;
+            // Above the land cutoff (100) and below the ship cutoff (200).
+            let high = if in_raids { 150.0 } else { 50.0 };
+            let a = by_camera.update(camera(high), [1024, 768], time, GATES);
+            let mode = if in_raids { &raids } else { &political };
+            let b = by_mode.update(camera(50.0), [1024, 768], time, GATES.for_mode(mode));
+            assert_eq!(a, b, "step {step}");
+            shrinking |= in_raids && a.iter().any(|(_, i)| i.scale < 1.0);
+        }
+        assert!(shrinking, "the round trip passes through the shrink");
+    }
+
     #[test]
     fn dumps_settle_for_their_camera_even_with_an_explicit_animation_time() {
         use viewer_foundation::map::camera::{MapDefines, MapSize, Placement};

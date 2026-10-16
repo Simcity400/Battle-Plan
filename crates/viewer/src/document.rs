@@ -560,6 +560,7 @@ impl PreparedOverlay {
                     selected: &self.counter_view.selected,
                     hovered: self.counter_view.hovered,
                     schedule: self.counter_view.presentation.schedule(),
+                    visibility: self.counter_view.visibility,
                 };
                 // Advance the province schedule before any native map-icon consumer reads its dirty bits.
                 inputs
@@ -691,7 +692,8 @@ impl PreparedOverlay {
         raids: &raids::RaidIcons,
         drawn: Option<&mut Batch>,
     ) {
-        self.native_raids = hour.raid_owners(camera, viewport, ui_scale, raids);
+        let reach = self.counter_view.visibility.raid_icons;
+        self.native_raids = hour.raid_owners(camera, viewport, ui_scale, reach, raids);
         if self.raid_range.is_none() && !self.raids_hovered {
             self.raid_report = self.native_raids.report.clone();
             return;
@@ -2138,6 +2140,7 @@ impl Document {
         perspective: &perspective::Choice,
         omitted: Omissions,
         counter_settings: counters::CounterSettings,
+        visibility: viewer_foundation::map::mode_visibility::Visibility,
     ) -> io::Result<DumpOverlay<'_>> {
         self.hour()?.dump_overlay(
             camera,
@@ -2146,6 +2149,7 @@ impl Document {
             perspective,
             omitted,
             counter_settings,
+            visibility,
         )
     }
 
@@ -3146,12 +3150,19 @@ impl<'a> Hour<'a> {
                 selected: &view.selected,
                 hovered: view.hovered,
                 schedule: view.presentation.schedule(),
+                visibility: view.visibility,
             },
             frame,
             &tables.counters,
         )?;
         // Raid icons sort above the labels and the counters by their layer.
-        let native_raids = self.raid_owners(camera, viewport, ui_scale, &tables.raids);
+        let native_raids = self.raid_owners(
+            camera,
+            viewport,
+            ui_scale,
+            view.visibility.raid_icons,
+            &tables.raids,
+        );
         let raid_report = tables.raids.report.clone();
         // Labels set their layer before every push, so they lay out alike
         // after the raid icons or on their own.
@@ -3163,6 +3174,7 @@ impl<'a> Hour<'a> {
                 camera,
                 viewport,
                 ui_scale,
+                visibility: view.visibility,
             },
             frame,
             &tables.labels,
@@ -3189,6 +3201,7 @@ impl<'a> Hour<'a> {
         camera: Camera,
         viewport: [u32; 2],
         ui_scale: f32,
+        reach: Option<viewer_foundation::map::mode_visibility::RaidReach>,
         raids: &raids::RaidIcons,
     ) -> raids::PreparedRaids {
         let anchor = |province| {
@@ -3201,6 +3214,7 @@ impl<'a> Hour<'a> {
                 camera,
                 viewport,
                 ui_scale,
+                reach,
             },
             raids,
         )
@@ -3270,10 +3284,12 @@ impl<'a> Hour<'a> {
         perspective: &perspective::Choice,
         omitted: Omissions,
         counter_settings: counters::CounterSettings,
+        visibility: viewer_foundation::map::mode_visibility::Visibility,
     ) -> io::Result<DumpOverlay<'a>> {
         let layers = OverlayLayers::omitting(omitted);
         let tables = self.hour_tables(perspective, None)?;
-        let view = CounterView::new(counter_settings);
+        let mut view = CounterView::new(counter_settings);
+        view.visibility = visibility;
         let prepared = self.prepare_overlay_cached(camera, viewport, ui_scale, &tables, &view)?;
         Ok(DumpOverlay {
             hour: self,

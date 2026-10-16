@@ -510,7 +510,9 @@ pub(super) fn land_combats(
             .or_default()
             .extend(combats);
     }
-    if !inputs.shows(inputs.content.defines.land_combat_cutoff) {
+    // The raids map mode clears land combat icons with the other province icons.
+    if !inputs.visibility.province_icons || !inputs.shows(inputs.content.defines.land_combat_cutoff)
+    {
         return Ok(());
     }
     for marker in &markers.markers {

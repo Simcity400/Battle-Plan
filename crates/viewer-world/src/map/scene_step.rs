@@ -31,6 +31,8 @@ pub(super) struct Presentation<'a> {
     pub map_buildings: Option<&'a mut ModelPass>,
     pub unit_models: Option<&'a mut ModelPass>,
     pub unit_gates: Option<UnitGates>,
+    /// The map mode's layers: its land models and unit arrows.
+    pub visibility: viewer_foundation::map::mode_visibility::Visibility,
     pub mesh_limit: i32,
     /// `None` only where no device built the arrow player (the GPU-free tests).
     pub movement_arrows: Option<&'a mut crate::map::movement_arrows::Player>,
@@ -65,6 +67,7 @@ impl Presentation<'_> {
             map_buildings,
             unit_models,
             unit_gates,
+            visibility,
             mesh_limit,
             movement_arrows,
             animated_text,
@@ -114,6 +117,9 @@ impl Presentation<'_> {
         if let Some(arrows) = &movement_arrows {
             gates.arrows = arrows.cutoff();
         }
+        // The raids map mode draws no land unit models (ships stay), and it and the operatives
+        // mode no unit arrows, as the game's camera cutoffs would.
+        let gates = gates.for_mode(&visibility);
         let models = unit_history.update_models(
             camera,
             size,
@@ -318,6 +324,7 @@ mod tests {
                 map_buildings: None,
                 unit_models: Some(&mut self.unit_models),
                 unit_gates: Some(crate::map::unit_history::test_support::GATES),
+                visibility: viewer_foundation::map::mode_visibility::Visibility::POLITICAL,
                 mesh_limit: i32::MAX,
                 movement_arrows: None,
                 animated_text: None,

@@ -1,8 +1,8 @@
 //! Faction-theatre pins, one per admitted theatre of the viewing country's faction.
 //!
-//! The first theatre region owns its pin. Political, terrain and supply map modes
-//! and the supported theatre mode can show it; hidden-country entries compare raw
-//! tags or canonical country slots. Fog, camera height and armies are not gates.
+//! The first theatre region owns its pin. Only the political, air and navy map modes
+//! show it ([`Visibility::faction_pins`]); hidden-country entries compare raw tags or
+//! canonical country slots. Fog, camera height and armies are not gates.
 //! The count uses the recorded theatre country count.
 //!
 //! Pins live while a province of their first region is in the shared update schedule.
@@ -280,6 +280,10 @@ struct PlacedPin {
 /// owner admission on each presented frame, not while this overlay is prepared.
 pub(super) fn faction_pings(inputs: &CounterInputs<'_>, hour: &HourPins, out: &mut CounterFrame) {
     out.report.faction_ping_limits = hour.report.clone();
+    // Only the political, air and navy map modes show faction pins.
+    if !inputs.visibility.faction_pins {
+        return;
+    }
     for pin in &hour.pins {
         let world = pin.anchor;
         let Some(projection) = inputs.camera.project_map_icon(

@@ -954,7 +954,11 @@ fn counter_action_anchor_draws_the_authored_child_frame_and_white_tint() {
     assert_eq!(quad.color, [1.0; 4]);
     assert_eq!(
         quad.layer,
-        layer(CounterDefines::VANILLA.stack_priority(100.0), 0, 1)
+        layer(
+            CounterDefines::VANILLA.stack_priority(100.0, PriorityTable::Default),
+            0,
+            1
+        )
     );
 
     // Only additional fully visible members compare with the partial representative.
@@ -1182,6 +1186,7 @@ fn draw_land_action_fixture_with(
         selected: &BTreeSet::new(),
         hovered: None,
         schedule: &schedule,
+        visibility: Visibility::POLITICAL,
     };
     let countries = Arc::new(Countries::default());
     let templates = Arc::new(TemplateIcons::default());
@@ -1241,7 +1246,10 @@ fn draw_land_action_fixture_with(
             0,
             [100.0, 200.0],
             [81.0, 29.0],
-            inputs.content.defines.stack_priority(inputs.camera.height),
+            inputs
+                .content
+                .defines
+                .stack_priority(inputs.camera.height, PriorityTable::Default),
         )
         .unwrap()
         .unwrap()
@@ -3787,10 +3795,26 @@ fn counter_cutoffs_preserve_visibility_and_limit_zoom_lift() {
 #[test]
 fn counter_defines_read_each_define_through_its_native_getter() {
     let defines = installed_content::defines::Defines::new().unwrap();
-    defines
-        .load(
-            "mod.lua",
-            b"NDefines = {
+    // Every other map mode's table: its icons' priorities count up from 40 + 12 * its index.
+    let others = PriorityTable::ALL[1..]
+        .iter()
+        .enumerate()
+        .flat_map(|(table, prefix)| {
+            PriorityIcon::ALL
+                .iter()
+                .enumerate()
+                .map(move |(icon, suffix)| {
+                    format!(
+                        "{}_PRIORITY_{} = {},
+",
+                        prefix.prefix(),
+                        suffix.suffix(),
+                        40 + 12 * table + icon
+                    )
+                })
+        })
+        .collect::<String>();
+    let text = r"NDefines = {
             NGraphics = {
                 UNITS_ICONS_DISTANCE_CUTOFF = 12.345674,
                 UNITS_DISTANCE_CUTOFF = 120,
@@ -3801,6 +3825,7 @@ fn counter_defines_read_each_define_through_its_native_getter() {
                 LAND_COMBAT_DISTANCE_CUTOFF = 1500,
                 NAVAL_COMBAT_DISTANCE_CUTOFF = 1500,
                 MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE = 500.9,
+                MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE_STRATEGIC = 350.4,
                 MAP_ICONS_GROUP_CAM_DISTANCE = 90,
                 MAP_ICONS_STATE_GROUP_CAM_DISTANCE = 180,
                 MAP_ICONS_STRATEGIC_GROUP_CAM_DISTANCE = 350,
@@ -3837,6 +3862,9 @@ fn counter_defines_read_each_define_through_its_native_getter() {
                 DEFAULT_PRIORITY_NAVAL_COMBAT = 532,
                 DEFAULT_PRIORITY_NAVAL_COMBAT_RESULTS = 19,
                 DEFAULT_PRIORITY_NAVAL_MISSION = 13,
+                DEFAULT_PRIORITY_VICTORY_POINTS = 5,
+                DEFAULT_PRIORITY_CAPITAL = 6,
+                OTHER_TABLES
                 HOME_BASE_MAP_ICON_SCALE_DEFAULT = 1.25,
             },
             NNavy = {
@@ -3847,32 +3875,51 @@ fn counter_defines_read_each_define_through_its_native_getter() {
                 INTEL_LEVEL_MEDIUM_HALF_RANGE_MIN_SHIPS = 1,
                 INTEL_LEVEL_MEDIUM_HALF_RANGE_MIN_CAPITALS = 1,
             },
-        }",
-        )
-        .unwrap();
+        }"
+    .replace("OTHER_TABLES", &others);
+    defines.load("mod.lua", text.as_bytes()).unwrap();
     let read = CounterDefines::read(&defines).unwrap();
     assert_eq!(read.type_colors, type_tint::Colors::TEST);
     // fixed5 keeps five decimals where a plain number would keep 12.345674.
     assert_eq!(read.icons_cutoff, 12.34567);
     // Integer defines truncate; the game compares strictly, and the
     // naval bubble's small form takes the same answer.
-    assert_eq!(read.coarse_distance, 500.0);
-    assert!(!read.coarse(500.0));
-    assert!(read.coarse(500.01));
-    assert!(!read.coarse(400.0));
-    assert_eq!(read.unit_priority, 10);
-    assert_eq!(read.unit_group_priority, 11);
-    assert_eq!(read.air_base_priority, -3);
+    assert_eq!(read.coarse_distance, [500.0, 350.0]);
+    assert!(!read.coarse(500.0, false));
+    assert!(read.coarse(500.01, false));
+    assert!(!read.coarse(400.0, false));
+    // The air and navy modes group by country from the strategic distance.
+    assert!(read.coarse(400.0, true));
+    assert!(!read.coarse(350.0, true));
+    let default = |icon| read.priorities.get(PriorityTable::Default, icon);
+    assert_eq!(default(PriorityIcon::UnitsStack), 10);
+    assert_eq!(default(PriorityIcon::UnitsStackGroup), 11);
+    assert_eq!(default(PriorityIcon::AirBase), -3);
     assert_eq!(
-        (read.naval_headquarter_priority, read.facility_priority),
+        (
+            default(PriorityIcon::NavalHeadquarter),
+            default(PriorityIcon::Facility)
+        ),
         (4, 5)
     );
     assert_eq!(read.naval_base_scale, 1.25);
-    assert_eq!(read.naval_result_priority, 19);
-    assert_eq!(read.naval_combat_priority, 20);
+    assert_eq!(default(PriorityIcon::NavalCombatResults), 19);
+    assert_eq!(default(PriorityIcon::NavalCombat), 20);
+    // Each map mode's table is its own: the navy table is the second after the default one.
+    assert_eq!(
+        read.priorities
+            .get(PriorityTable::StrategicNavy, PriorityIcon::NavalBase),
+        (40 + 12 + 4) as i8
+    );
+    assert_eq!(
+        read.priorities
+            .get(PriorityTable::Ideology, PriorityIcon::Capital),
+        (40 + 12 * 11 + 11) as i8
+    );
     // The group icon's priority takes over from the province distance on.
-    assert_eq!(read.stack_priority(89.9), 10);
-    assert_eq!(read.stack_priority(90.0), 11);
+    assert_eq!(read.stack_priority(89.9, PriorityTable::Default), 10);
+    assert_eq!(read.stack_priority(90.0, PriorityTable::Default), 11);
+    assert_eq!(read.stack_priority(89.9, PriorityTable::StrategicAir), 40);
 }
 
 #[test]
@@ -5077,4 +5124,49 @@ fn active_ability_hovers_keep_individual_bound_records_and_transparency() {
             assert!(hovers[1].contains([155.0, 166.0]));
         }
     }
+}
+
+#[test]
+fn the_resource_and_raid_modes_draw_no_unit_counters() {
+    let political = Visibility::POLITICAL;
+    let hidden = Visibility {
+        unit_counters: false,
+        ..Visibility::POLITICAL
+    };
+    assert!(unit_counters_shown(&political, visible(100.0, 900.0), false));
+    assert!(!unit_counters_shown(&political, visible(900.0, 900.0), false));
+    assert!(!unit_counters_shown(&political, visible(100.0, 900.0), true));
+    for height in [0.0, 100.0, 899.0] {
+        assert!(!unit_counters_shown(&hidden, visible(height, 900.0), false));
+    }
+}
+
+#[test]
+fn the_map_mode_keeps_task_forces_by_its_unit_kinds() {
+    let unreached = || -> Option<bool> { panic!("only the air mode tests carriers") };
+    assert_eq!(
+        naval::mode_keeps_task_force(UnitKinds::All, unreached),
+        Some(true)
+    );
+    assert_eq!(
+        naval::mode_keeps_task_force(UnitKinds::Nothing, unreached),
+        Some(false)
+    );
+    for carries in [Some(true), Some(false), None] {
+        assert_eq!(
+            naval::mode_keeps_task_force(UnitKinds::CarrierFleets, || carries),
+            carries
+        );
+    }
+}
+
+#[test]
+fn the_navy_mode_draws_armies_at_its_opacity_and_railway_guns_whole() {
+    let navy = Visibility {
+        army_opacity: Visibility::NAVY_ARMY_OPACITY,
+        ..Visibility::POLITICAL
+    };
+    assert_eq!(land::plate_opacity(&navy, false), 0.5);
+    assert_eq!(land::plate_opacity(&navy, true), 1.0);
+    assert_eq!(land::plate_opacity(&Visibility::POLITICAL, false), 1.0);
 }

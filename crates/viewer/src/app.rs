@@ -530,6 +530,8 @@ struct OverlayKey {
     counter_settings: viewer_counters::map::counters::CounterSettings,
     selected: Arc<BTreeSet<Unit>>,
     hovered: Option<Unit>,
+    /// The map mode's visibility, which a still camera must lay out again for.
+    visibility: viewer_foundation::map::mode_visibility::Visibility,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3247,7 +3249,8 @@ impl Viewer {
         }
         laps.lap("names");
         // counters: one batch carries the bases, the labels, the counters and
-        // the combat icons in `DEFAULT_PRIORITY_*` order.
+        // the combat icons in the map mode's `<table>_PRIORITY_*` order.
+        self.counter_view.visibility = viewer_world::map::map_mode::visibility::of(&self.map_mode);
         let overlay_key = OverlayKey {
             branch: document.playback.branch(),
             hour: document.playback.hour(),
@@ -3258,6 +3261,7 @@ impl Viewer {
             counter_settings: self.counter_view.settings,
             selected: Arc::clone(self.unit_selection.units()),
             hovered: self.counter_view.hovered,
+            visibility: self.counter_view.visibility,
         };
         let (overlay_ms, additions) = {
             let overlay_timer = Instant::now();
@@ -3670,6 +3674,7 @@ impl Viewer {
             .set_player(&state.device, &state.queue, player)
             .map_err(|error| error.to_string())?;
         drop((library, aircraft));
+        scene.set_visibility(self.counter_view.visibility);
         crate::document::select_movement(
             scene,
             &document.content,

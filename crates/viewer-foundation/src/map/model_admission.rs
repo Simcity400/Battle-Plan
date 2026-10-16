@@ -64,4 +64,25 @@ impl Gates {
     pub fn ships(&self, height: f32) -> bool {
         height < self.ships
     }
+
+    /// These gates in a map mode. The game's per-province land-model and unit-arrow bits are
+    /// their camera cutoffs ANDed with the mode's choice, so a mode without them (land models in
+    /// the raids mode, arrows there and in the operatives mode) acts exactly as a camera above
+    /// those cutoffs: shown models shrink away at the content's rates and arrows lose
+    /// admission, and returning to a mode with them acts as the camera coming back down.
+    pub fn for_mode(self, visibility: &super::mode_visibility::Visibility) -> Self {
+        Self {
+            units: if visibility.land_models {
+                self.units
+            } else {
+                0.0
+            },
+            arrows: if visibility.unit_arrows {
+                self.arrows
+            } else {
+                0.0
+            },
+            ..self
+        }
+    }
 }

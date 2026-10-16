@@ -2616,7 +2616,7 @@ fn draw_results(
         );
         let origin = instance.position();
         let key = (
-            inputs.content.defines.naval_result_priority,
+            inputs.priority(PriorityIcon::NavalCombatResults),
             report.combat_ordinal(),
         );
         batch.at_anchor(
@@ -2919,7 +2919,7 @@ fn draw_combats(
         };
         let origin = instance.position();
         let key = (
-            inputs.content.defines.naval_combat_priority,
+            inputs.priority(PriorityIcon::NavalCombat),
             report.combat_ordinal(),
         );
         batch.at_anchor(windows.placed.get(owner).and_then(|&(anchor, _)| {
@@ -3076,7 +3076,7 @@ fn draw_ports(
             &mut report.icon_gui_notes,
         ) {
             let key = layer(
-                inputs.content.defines.naval_base_priority,
+                inputs.priority(PriorityIcon::NavalBase),
                 report.base_ordinal(),
                 0,
             );
@@ -3122,7 +3122,7 @@ fn draw_ports(
             let extent = layout.size.map(|value| value as f32 * holder.scale);
             let parts = holder.place(place, &layout);
             let key = (
-                inputs.content.defines.naval_base_priority,
+                inputs.priority(PriorityIcon::NavalBase),
                 report.base_ordinal(),
             );
             let first = batch.quads.len();

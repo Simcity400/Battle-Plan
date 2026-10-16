@@ -629,7 +629,9 @@ pub(super) fn naval_missions(
             .entry(reason.clone().into())
             .or_default() += *count;
     }
-    let runs = inputs.passes(|height| mission_pass(height, &inputs.content.defines));
+    // The air and raids map modes draw no naval mission icons.
+    let runs = inputs.visibility.naval_missions
+        && inputs.passes(|height| mission_pass(height, &inputs.content.defines));
     out.naval.missions = MissionPass {
         regions: runs.then(|| icons.regions.clone()),
         undecided: icons.unavailable.filter(|_| runs),
@@ -1698,7 +1700,7 @@ pub(super) fn draw(
             .unwrap_or_default()
     };
     let laid = view.laid(windows, resources, &entries_of, &defined, report);
-    let priority = inputs.content.defines.naval_mission_priority;
+    let priority = inputs.priority(PriorityIcon::NavalMission);
     for (ordinal, (origin, region, laid)) in laid.into_iter().enumerate() {
         batch.at_anchor(inputs.content.region_icon(region).and_then(|anchor| {
             inputs.icon_anchor(

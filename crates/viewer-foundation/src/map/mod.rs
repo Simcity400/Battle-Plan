@@ -16,6 +16,7 @@ pub mod icon_windows;
 pub mod layers;
 pub mod lazy_icons;
 pub mod memo;
+pub mod mode_visibility;
 pub mod msvc_stable_sort;
 pub mod native_effects;
 pub mod native_flags;
