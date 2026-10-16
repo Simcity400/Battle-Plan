@@ -9,7 +9,7 @@ fn weather_keeps_zero_slot_repeated_entries_and_exact_snow_words() {
     let saved = weather(
         br#"weather={provinces={
             "0"={province=0 temperature=0}
-            "7"={province=8 snow=0.00001 temperature=-90071992547.40993 mud=yes water=unread custom_modifiers={x=y}}
+            "7"={province=8 snow=0.00001 temperature=-90071992547.40993 mud=yes water=unread custom_modifiers={dry=-1 Wet=12 dry=3}}
             "0"={temperature=2}
         } regions={
             "0"={region=0 temperature=0 next_weather_change=unread}
@@ -32,6 +32,15 @@ fn weather_keeps_zero_slot_repeated_entries_and_exact_snow_words() {
     );
     assert_eq!(provinces[1].mud, Some(true));
     assert_eq!(provinces[0].mud, None);
+    assert_eq!(
+        provinces[1].custom_modifiers,
+        Some(vec![
+            ("dry".to_owned(), -1),
+            ("Wet".to_owned(), 12),
+            ("dry".to_owned(), 3)
+        ])
+    );
+    assert_eq!(provinces[0].custom_modifiers, None);
     assert_eq!(provinces[2].province, None);
     let regions = saved.regions.unwrap();
     assert_eq!(regions[0].slot, 0);
@@ -48,6 +57,11 @@ fn weather_distinguishes_missing_root_missing_rosters_and_empty_rosters() {
     assert!(present.present);
     assert_eq!(present.provinces, None);
     assert_eq!(present.regions, None);
+    let empty = weather(b"weather={provinces={0={custom_modifiers={}}} regions={}}").unwrap();
+    assert_eq!(
+        empty.provinces.as_ref().unwrap()[0].custom_modifiers,
+        Some(Vec::new())
+    );
     let empty = weather(b"weather={provinces={} regions={}}").unwrap();
     assert_eq!(empty.provinces, Some(Vec::new()));
     assert_eq!(empty.regions, Some(Vec::new()));
@@ -67,6 +81,12 @@ fn weather_refuses_malformed_or_ambiguous_compared_fields_without_rounding() {
         "weather={provinces={0={mud=1}}}",
         "weather={provinces={0={mud=yes mud=no}}}",
         "weather={regions={0={rain_light=1}}}",
+        "weather={provinces={0={custom_modifiers={dry=yes}}}}",
+        "weather={provinces={0={custom_modifiers={dry=1.5}}}}",
+        "weather={provinces={0={custom_modifiers={7}}}}",
+        "weather={provinces={0={custom_modifiers={dry={}}}}}",
+        "weather={provinces={0={custom_modifiers=dry}}}",
+        "weather={provinces={0={custom_modifiers={} custom_modifiers={}}}}",
     ] {
         assert!(weather(text.as_bytes()).is_err(), "{text}");
     }

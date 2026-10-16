@@ -171,6 +171,10 @@ pub const ATTACK_INPUTS_FORMAT: u16 = FORMAT_VERSION;
 /// country's movement entries, the regional air superiority entry's movement impact and
 /// the loaded movement defines. WeatherRegions.combat ([`super::RegionCombatWeather`])
 /// gained its army speed and attack speed entries inside the existing field.
+/// WeatherProvinces.modifiers ([`super::ProvinceWeatherModifiers`]) holds the province
+/// record's whole modifier accumulator, every key; captures of this version that hold only
+/// the movement and attrition keys share the version but not the field's layout, so their
+/// blocks read as malformed.
 pub const MOVEMENT_TERMS_FORMAT: u16 = FORMAT_VERSION;
 
 /// Provisional main+1: DivisionStatus.supply (field 22), the division supply

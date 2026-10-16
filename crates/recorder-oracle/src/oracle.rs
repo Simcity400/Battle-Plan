@@ -245,6 +245,7 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         .and_then(|(graph, geometry)| {
             installed_content::weather::temperature::read_with(&content.layers, graph, geometry)
         });
+    let province_modifiers = weather::ProvinceModifierContent::read(&content.layers, &save);
     let read_hours = last_read_hours(&replay, frame.branch, hour)?;
     let mut report = compare_core(
         &frame,
@@ -271,6 +272,7 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
             sub_units: content_read(&sub_units),
             intelligence: content_read(&intelligence),
             temperature: content_read(&temperature),
+            province_modifiers: content_read(&province_modifiers),
         },
         &mut report,
     );
@@ -619,6 +621,8 @@ struct ExtendedContent<'a> {
     intelligence: ContentRead<'a, installed_content::intelligence::AgencyUpgrades>,
     /// What the hourly temperature pass reads, which recordings that store only its inputs need.
     temperature: ContentRead<'a, replay::temperature::Content>,
+    /// What a province weather record's modifier rebuild reads.
+    province_modifiers: ContentRead<'a, weather::ProvinceModifierContent>,
 }
 
 fn compare_extended(
@@ -642,6 +646,7 @@ fn compare_extended(
         sub_units,
         intelligence,
         temperature,
+        province_modifiers,
     } = content;
     let port_types = buildings.clone().map(port_types);
     report.attempt("reserved country intel sample", |report| {
@@ -1208,7 +1213,7 @@ fn compare_extended(
         )
     });
     report.attempt("weather", |report| {
-        weather::compare(frame, save, temperature, report)
+        weather::compare(frame, save, temperature, province_modifiers, report)
     });
     report.attempt("fog", |report| {
         fog::compare(

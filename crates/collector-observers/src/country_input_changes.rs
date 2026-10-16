@@ -1341,12 +1341,27 @@ impl Hooks {
                 weather_initial_passes as *const () as usize,
                 weather_reload as *const () as usize,
                 weather_console_hours as *const () as usize,
+                weather_add_province_modifier as *const () as usize,
+                weather_remove_province_modifier as *const () as usize,
+                weather_expiry_rebuild as *const () as usize,
                 research_progress as *const () as usize,
             ];
             for (index, (site, _, _)) in MUTATIONS.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|_| "native hook construction failed")?;
-                ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
+                let hook = if index == sites::WEATHER_EXPIRY_REBUILD {
+                    let hook =
+                        unsafe { Hook::new_call(base + site.rva, callbacks[index], site.sentinel) }
+                            .map_err(|_| "native hook construction failed")?;
+                    // The detour calls the CALL's target itself.
+                    ORIGINAL[index]
+                        .store(base + sites::PROVINCE_WEATHER_REBUILD_RVA, Ordering::Release);
+                    hook
+                } else {
+                    let hook =
+                        unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                            .map_err(|_| "native hook construction failed")?;
+                    ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
+                    hook
+                };
                 hooks.push(hook);
             }
         }
@@ -1698,6 +1713,33 @@ weather_callback!(weather_initial_passes, sites::WEATHER_WRITERS.start + 6);
 weather_callback!(weather_reload, sites::WEATHER_WRITERS.start + 7);
 // The console command(out, arguments) that runs hourly game state.
 weather_callback!(weather_console_hours, sites::WEATHER_WRITERS.start + 8);
+// Province modifier removal (manager, province, modifier, rebuild).
+weather_callback!(
+    weather_remove_province_modifier,
+    sites::WEATHER_WRITERS.start + 10
+);
+// The daily expiry's CALL of the rebuild (record, manager, force); the detour calls the
+// rebuild, which returns to the site's next instruction through the relay.
+weather_callback!(weather_expiry_rebuild, sites::WEATHER_EXPIRY_REBUILD);
+
+/// Province modifier addition (manager, province, modifier, days, rebuild), whose
+/// fifth argument is on the caller's stack: counted as [`weather_callback`] counts,
+/// passing the fifth argument on.
+unsafe extern "system" fn weather_add_province_modifier(
+    first: usize,
+    second: usize,
+    third: usize,
+    fourth: usize,
+    fifth: usize,
+) -> usize {
+    const SITE: usize = sites::WEATHER_WRITERS.start + 9;
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::CountryInputChanges);
+    let original: unsafe extern "system" fn(usize, usize, usize, usize, usize) -> usize =
+        unsafe { std::mem::transmute(ORIGINAL[SITE].load(Ordering::Acquire)) };
+    DOMAIN.weather_write(SITE, || {
+        timing.original(|| unsafe { original(first, second, third, fourth, fifth) })
+    })
+}
 
 /// `technology research progress adder(technology, amount, source,
 /// notify)`: marks only an effect's progress ([`Domain::research_progress`]).

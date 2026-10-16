@@ -125,6 +125,7 @@ impl Content {
                     minimum_seazone_dominance: 0,
                     common_adjuster: TerrainAdjuster::default(),
                     class_adjusters: Vec::new(),
+                    color: Ok([1.0_f32.to_bits(); 4]),
                 }],
                 ..Default::default()
             }),

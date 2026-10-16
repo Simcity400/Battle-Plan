@@ -505,9 +505,11 @@ impl<'a> FrameTerms<'a> {
                 .require("WeatherProvinces.modifiers")?
                 .as_ref()
                 .ok_or("the province's weather modifier entries were refused when recorded")?;
-            values[0] = self.effective(ARMY_SPEED_FACTOR, modifiers.army_speed_factor)?;
-            values[1] =
-                self.effective(ARMY_ATTACK_SPEED_FACTOR, modifiers.army_attack_speed_factor)?;
+            values[0] = self.effective(ARMY_SPEED_FACTOR, modifiers.get(ARMY_SPEED_FACTOR))?;
+            values[1] = self.effective(
+                ARMY_ATTACK_SPEED_FACTOR,
+                modifiers.get(ARMY_ATTACK_SPEED_FACTOR),
+            )?;
         }
         if let Some(region) = geography.region(location) {
             let rows = self.weather_regions.as_ref().map_err(Clone::clone)?;

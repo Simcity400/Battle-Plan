@@ -42,6 +42,41 @@ fn naval_terrain_keeps_common_and_ordered_class_modifier_operands() {
 }
 
 #[test]
+fn category_colours_read_over_white() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let definitions = database(&[
+        "categories={ bare={} forest={ color={ 89 199 85 } } pale={ color={ 0.5 0.25 1 0.5 } } }",
+    ]);
+    let colors: Vec<_> = definitions
+        .categories
+        .iter()
+        .map(TerrainCategory::color)
+        .collect();
+    assert_eq!(
+        colors,
+        [
+            Ok([1.0; 4]),
+            Ok([89.0 / 255.0, 199.0 / 255.0, 85.0 / 255.0, 1.0]),
+            // Components at most one are kept; the fourth is the alpha as read.
+            Ok([0.5, 0.25, 1.0, 0.5]),
+        ]
+    );
+}
+
+#[test]
+fn water_reads_its_regions_naval_terrain_or_ocean() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let definitions = database(&["categories={ deep={} Ocean={} ocean={} }"]);
+    assert_eq!(definitions.naval_category(Some("DEEP")), Some(0));
+    assert_eq!(definitions.naval_category(Some("missing")), Some(1));
+    assert_eq!(definitions.naval_category(None), Some(1));
+    let without = database(&["categories={ deep={} }"]);
+    assert_eq!(without.naval_category(None), None);
+}
+
+#[test]
 fn a_redeclared_category_appends_and_a_lookup_takes_the_first() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

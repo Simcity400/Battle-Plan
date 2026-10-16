@@ -1,6 +1,6 @@
 # collector-weather
 
-Weather capture: province and region weather records, the window-following carry that reads only the records the native hourly pass visited, region combat modifiers and the weather display. The country input family in collector-observers counts the weather writers that explain a difference and reports the carry's diagnostics; the host owns dispatch, loans and table assembly.
+Weather capture: province and region weather records, the window-following carry that reads only the records the native hourly pass visited, region combat modifiers, every province record's whole modifier accumulator ([entries.rs](src/weather/entries.rs), packed in one buffer and carried with its record) and the weather display. The country input family in collector-observers counts the weather writers that explain a difference and reports the carry's diagnostics; the host owns dispatch, loans and table assembly.
 
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 

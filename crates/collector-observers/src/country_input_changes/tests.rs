@@ -511,6 +511,9 @@ fn the_callbacks_follow_the_site_order() {
             "weather_initial_passes",
             "weather_reload",
             "weather_console_hours",
+            "weather_add_province_modifier",
+            "weather_remove_province_modifier",
+            "weather_expiry_rebuild",
             "research_progress",
         ]
     );

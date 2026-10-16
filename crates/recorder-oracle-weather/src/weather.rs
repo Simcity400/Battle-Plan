@@ -1,24 +1,88 @@
 //! Weather comparisons follow the weather manager writer, the weather region writer and the weather writer. The serializers
 //! preserve fixed5 words but encode byte flags only as zero/nonzero truth.
 
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 
+use installed_content::weather::{
+    GROUND_SNOW_MODIFIERS, MUD_MODIFIER, ProvinceModifierRules, TEMPERATURE_MODIFIERS,
+};
 use installed_content_save::{Decimal, Save};
 use replay::{
     frame::DecodedFrame,
-    rows::{ClockState, TemperatureRecord, tables},
+    modifier_registry::Registry,
+    rows::{ClockState, ProvinceWeatherModifiers, Recorded, TemperatureRecord, tables},
 };
 
 use super::{Report, complete, invalid};
+
+/// What a province weather record's modifier rebuild reads from content: the
+/// rules of `common/weather.txt` and the static modifiers it can name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProvinceModifierContent {
+    pub rules: ProvinceModifierRules,
+    /// The mud, thermal and ground snow modifiers and every name a saved
+    /// province's list holds, by name as written: each one's effective
+    /// definition (an absent one is empty), or why the stack cannot give it.
+    pub statics: BTreeMap<String, Result<installed_content::modifiers::Modifiers, String>>,
+    /// Each place the static modifier reading leaves the text; the values
+    /// follow the game's reading.
+    pub notes: Vec<String>,
+}
+
+impl ProvinceModifierContent {
+    /// The stack's rules and every static modifier `saved`'s weather
+    /// provinces can name.
+    pub fn read(layers: &installed_content::ResolvedLayers, saved: &Save) -> io::Result<Self> {
+        let rules = installed_content::weather::province_modifier_rules(layers)?;
+        let mut names: BTreeSet<&str> = TEMPERATURE_MODIFIERS
+            .into_iter()
+            .chain(GROUND_SNOW_MODIFIERS)
+            .chain([MUD_MODIFIER])
+            .collect();
+        for province in saved.weather.provinces.iter().flatten() {
+            names.extend(
+                province
+                    .custom_modifiers
+                    .iter()
+                    .flatten()
+                    .map(|(name, _)| name.as_str()),
+            );
+        }
+        let names: Vec<&str> = names.into_iter().collect();
+        let blocks = installed_content::static_modifiers::read_blocks(layers, &names)?;
+        let statics = names
+            .iter()
+            .zip(blocks.blocks)
+            .map(|(name, block)| {
+                let block = block.map_err(|refusal| {
+                    format!(
+                        "{} in {}: {}",
+                        refusal.modifier, refusal.file, refusal.reason
+                    )
+                });
+                ((*name).to_owned(), block)
+            })
+            .collect();
+        Ok(Self {
+            rules,
+            statics,
+            notes: blocks.notes,
+        })
+    }
+}
 
 pub fn compare(
     frame: &DecodedFrame,
     saved: &Save,
     temperature: Result<&replay::temperature::Content, String>,
+    province_modifiers: Result<&ProvinceModifierContent, String>,
     report: &mut Report,
 ) -> io::Result<()> {
     let provinces = report.attempt("WeatherProvinces", |report| {
-        compare_provinces(frame, saved, temperature, report)
+        compare_provinces(frame, saved, temperature, province_modifiers, report)
     });
     let regions = report.attempt("WeatherRegions", |report| {
         compare_regions(frame, saved, report)
@@ -44,9 +108,11 @@ fn compare_provinces(
     frame: &DecodedFrame,
     saved: &Save,
     temperature: Result<&replay::temperature::Content, String>,
+    province_modifiers: Result<&ProvinceModifierContent, String>,
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = complete::<tables::WeatherProvinces>(frame)?;
+    let rebuild = ModifierRebuild::prepare(frame, rows, province_modifiers, report);
     // Derive temperatures at the frame's hour from its anchor and pass.
     // `recorder derived` checks each hour against the read checksum.
     let unrecorded = rows
@@ -68,10 +134,12 @@ fn compare_provinces(
                 .map(|state| state.temperature)
                 .collect::<Vec<_>>()
         });
+    // The save holds every temperature: a refused derivation leaves them all uncompared,
+    // so the comparison is incomplete.
     if let (false, Err(reason)) = (unrecorded, &temperatures) {
-        report.limitation(
-            &format!("WeatherProvinces.temperature refused: {reason}"),
-            "WeatherProvinces.temperature: not compared",
+        report.failed_comparisons.insert(
+            "WeatherProvinces.temperature".into(),
+            format!("WeatherProvinces.temperature refused: {reason}; no province's temperature compared"),
         );
     }
     let mut provinces = BTreeMap::new();
@@ -108,6 +176,7 @@ fn compare_provinces(
     }
 
     let mut compared_provinces = 0;
+    let mut compared_modifiers = 0;
     if let Some(expected) = &saved.weather.provinces {
         for (ordinal, expected) in expected.iter().enumerate() {
             // The weather manager writer emits every slot from zero to count, in array order.
@@ -131,8 +200,15 @@ fn compare_provinces(
             // when zero. Absence is malformed/missing evidence, not zero.
             let recorded = match &temperatures {
                 _ if unrecorded => Some(replay::rows::Recorded::NotRecorded),
-                Ok(values) => values.get(actual.id as usize).copied().map(Into::into),
-                // Refused once above; nothing to compare.
+                // The derivation holds one state per dense recorded slot.
+                Ok(values) => Some(
+                    values
+                        .get(actual.id as usize)
+                        .copied()
+                        .ok_or_else(|| invalid("derived temperatures do not cover every recorded province"))?
+                        .into(),
+                ),
+                // Failed once above; nothing to compare.
                 Err(_) => None,
             };
             if let Some(&temperature) = recorded.as_ref().and_then(|recorded| {
@@ -158,6 +234,51 @@ fn compare_provinces(
             ) {
                 truth(report, &format!("{label}.mud"), mud, expected.mud);
             }
+            let field = format!("{label}.modifiers");
+            match report.recorded(&actual.modifiers, "WeatherProvinces.modifiers", &field) {
+                // The list's part of a refused accumulator is uncertified.
+                Some(None) => {
+                    report.failed_comparisons.insert(
+                        field.clone(),
+                        format!("{field}: read refused, not compared"),
+                    );
+                }
+                Some(Some(recorded)) => {
+                    if let Some(rebuild) = &rebuild {
+                        let entries: BTreeMap<u32, i64> = recorded
+                            .entries
+                            .iter()
+                            .map(|entry| (entry.key, entry.value))
+                            .collect();
+                        let rebuilt = rebuild.expected(expected, actual.permanent_snow).and_then(
+                            |rebuilt| Ok((rebuild.saved_part_holds(expected, &entries)?, rebuilt)),
+                        );
+                        match rebuilt {
+                            Ok((Fit::One, _)) => compared_modifiers += 1,
+                            // Uncovered: distinct fitting states leave the list's part
+                            // uncertified, so the comparison is incomplete.
+                            Ok((Fit::Several(states), _)) => {
+                                report.failed_comparisons.insert(
+                                    field.clone(),
+                                    format!("{field} save-backed part ambiguous: {states} distinct mud, thermal and ground snow states the content can select fit"),
+                                );
+                            }
+                            // Against the load's own rebuild, which names every key.
+                            Ok((Fit::None, rebuilt)) => {
+                                compared_modifiers += 1;
+                                rebuild.compare(report, &field, recorded, &rebuilt);
+                            }
+                            Err(reason) => {
+                                report.failed_comparisons.insert(
+                                    field.clone(),
+                                    format!("{field} not rebuilt: {reason}"),
+                                );
+                            }
+                        }
+                    }
+                }
+                None => {}
+            }
         }
         for id in provinces.keys() {
             report.difference(format!("weather province {id}"), "present", "absent");
@@ -170,6 +291,13 @@ fn compare_provinces(
         );
     }
     report.compared("WeatherProvinces", compared_provinces);
+    report.compared("WeatherProvinces modifiers", compared_modifiers);
+    if compared_modifiers != 0 {
+        report.limitation(
+            "the weather manager writer saves no province modifier accumulator; a load rebuilds it from the saved mud, temperature, snow and list, while the live one keeps the mud, thermal and ground snow modifiers of its last rebuild (the hourly window rebuilds only on a change against the record's previous hour, and temperatures and mud also change outside that test). The list's static modifiers and their arithmetic are compared exactly",
+            "WeatherProvinces.modifiers mud, thermal and ground snow part: runtime-only; no text-save equality claim",
+        );
+    }
     report.limitation(
         "the weather manager writer omits the display byte arrays; a load rebuilds them from the passes",
         "WeatherProvinces.display_snow, display_mud: census only",
@@ -183,6 +311,276 @@ fn compare_provinces(
         "WeatherProvinces.display: runtime-only; no text-save equality claim",
     );
     Ok(())
+}
+
+/// Definition keys and raw values, as a static modifier adds them.
+type Entries = Vec<(u32, i64)>;
+
+/// Fixed5 one, the multiplier the province accumulator adds each static modifier at.
+const ONE: i64 = 100_000;
+
+/// A static modifier's stored value as the accumulator adds it at multiplier one: a
+/// wrapping multiply by the multiplier, then a signed division by one, so an authored value
+/// whose product wraps adds the wrapped quotient.
+fn scaled(value: i64) -> i64 {
+    value.wrapping_mul(ONE) / ONE
+}
+
+/// How many mud, thermal and ground snow states the content can select fit a recorded
+/// accumulator with the saved list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fit {
+    None,
+    One,
+    Several(usize),
+}
+
+/// The content a province record's modifier accumulator is rebuilt from, joined
+/// to the recorded modifier definitions.
+struct ModifierRebuild<'a> {
+    rules: &'a ProvinceModifierRules,
+    /// Each static modifier's values by definition key, or why they are unavailable.
+    statics: BTreeMap<&'a str, Result<Entries, String>>,
+    /// The script name of each definition key the static modifiers hold.
+    names: BTreeMap<u32, &'a str>,
+}
+
+impl<'a> ModifierRebuild<'a> {
+    /// None when no row holds a recorded accumulator, or when the content or the
+    /// recorded definitions are unavailable: then every recorded accumulator is
+    /// uncompared, one failed comparison, and the comparison is incomplete.
+    fn prepare(
+        frame: &DecodedFrame,
+        rows: &[replay::rows::WeatherProvinceRow],
+        content: Result<&'a ProvinceModifierContent, String>,
+        report: &mut Report,
+    ) -> Option<Self> {
+        if !rows
+            .iter()
+            .any(|row| matches!(row.modifiers, Recorded::Value(Some(_))))
+        {
+            return None;
+        }
+        let recorded = rows
+            .iter()
+            .filter(|row| matches!(row.modifiers, Recorded::Value(Some(_))))
+            .count();
+        let refused = |report: &mut Report, reason: &str| {
+            report.failed_comparisons.insert(
+                "WeatherProvinces.modifiers".into(),
+                format!("WeatherProvinces.modifiers refused: {reason}; {recorded} recorded accumulators not compared"),
+            );
+        };
+        let content = match content {
+            Ok(content) => content,
+            Err(reason) => {
+                refused(report, &reason);
+                return None;
+            }
+        };
+        let registry = match Registry::from_frame(frame) {
+            Ok(registry) => registry,
+            Err(reason) => {
+                refused(report, &format!("modifier definitions: {reason}"));
+                return None;
+            }
+        };
+        let mut names = BTreeMap::new();
+        let statics: BTreeMap<&str, Result<Entries, String>> = content
+            .statics
+            .iter()
+            .map(|(name, block)| {
+                let values = block
+                    .as_ref()
+                    .map_err(Clone::clone)
+                    .and_then(|block| Self::added(&registry, name, block, &mut names));
+                (name.as_str(), values)
+            })
+            .collect();
+        for note in &content.notes {
+            report.limitation(
+                "static modifier reading notes; values follow the game's reading",
+                format!("WeatherProvinces.modifiers: {note}"),
+            );
+        }
+        report.limitation(
+            "the save does not hold permanent snow; a load recomputes it from content, so the ground snow rebuild uses the recorded value",
+            "WeatherProvinces.modifiers: ground snow from saved snow and recorded permanent_snow",
+        );
+        Some(Self {
+            rules: &content.rules,
+            statics,
+            names,
+        })
+    }
+
+    /// The entries one static modifier adds to an accumulator, as the game adds them.
+    /// Its own entries only: an `added_modifier` child is a separate object the add
+    /// never visits. A name without a recorded definition was dropped when the content
+    /// loaded. A modifier whose every entry is feature-gated off, with no tooltip or child,
+    /// counts as empty and adds nothing; otherwise every entry whose definition has a
+    /// category is added, a zero value included, which still inserts its key.
+    fn added(
+        registry: &Registry<'_>,
+        name: &str,
+        block: &'a installed_content::modifiers::Modifiers,
+        names: &mut BTreeMap<u32, &'a str>,
+    ) -> Result<Vec<(u32, i64)>, String> {
+        let mut entries = Vec::new();
+        let mut eligible = false;
+        for value in &block.values {
+            let Ok(definition) = registry.named(&value.name) else {
+                continue;
+            };
+            eligible |= registry
+                .eligible(definition)
+                .map_err(|reason| format!("static modifier {name}: {reason}"))?;
+            names.insert(definition.index, value.name.as_str());
+            if definition.category_mask != 0 {
+                entries.push((definition.index, value.value));
+            }
+        }
+        let empty =
+            !eligible && block.tooltip_table().is_empty() && block.children.is_empty();
+        Ok(if empty { Vec::new() } else { entries })
+    }
+
+    /// The accumulator the game rebuilds for `saved`'s province with `mud`, and `thermal`
+    /// and `snow` as its temperature and ground snow modifiers: it clears it and adds,
+    /// summed per key, the values of `weather_mud` with mud, of `thermal`, of
+    /// every static modifier in its own list in list order, and of `snow`.
+    ///
+    /// The game drops a list entry whose days run out on the daily tick but keeps
+    /// its values in the accumulator until the province's next rebuild, so a live
+    /// accumulator can hold a modifier the save's list no longer names. The rebuild
+    /// follows the saved list alone: such an accumulator differs from it, and the
+    /// comparison reports that difference like any other.
+    fn with(
+        &self,
+        saved: &installed_content_save::weather::Province,
+        mud: bool,
+        thermal: Option<&str>,
+        snow: Option<&str>,
+    ) -> Result<BTreeMap<u32, i64>, String> {
+        let applied = mud
+            .then_some(MUD_MODIFIER)
+            .into_iter()
+            .chain(thermal)
+            .chain(
+                saved
+                    .custom_modifiers
+                    .iter()
+                    .flatten()
+                    .map(|(name, _)| name.as_str()),
+            )
+            .chain(snow);
+        let mut accumulator = BTreeMap::new();
+        for name in applied {
+            let values = self
+                .statics
+                .get(name)
+                .ok_or_else(|| format!("static modifier {name} was not read"))?
+                .as_ref()
+                .map_err(Clone::clone)?;
+            for &(key, value) in values {
+                let entry = accumulator.entry(key).or_insert(0_i64);
+                *entry = entry.wrapping_add(scaled(value));
+            }
+        }
+        Ok(accumulator)
+    }
+
+    /// The accumulator a load rebuilds from `saved`: the thermal modifier its temperature
+    /// selects and the ground snow modifier its snow and permanent snow select.
+    fn expected(
+        &self,
+        saved: &installed_content_save::weather::Province,
+        permanent_snow: i64,
+    ) -> Result<BTreeMap<u32, i64>, String> {
+        let temperature = saved
+            .temperature
+            .as_ref()
+            .ok_or("the saved province has no temperature")?
+            .raw;
+        let snow = saved.snow.as_ref().map_or(0, |snow| snow.raw);
+        self.with(
+            saved,
+            saved.mud.unwrap_or(false),
+            self.rules.temperature_modifier(temperature),
+            self.rules.ground_snow_modifier(snow, permanent_snow),
+        )
+    }
+
+    /// How `recorded` holds the save-backed part: the values of every static modifier in
+    /// `saved`'s list, summed per key, with one mud state and one thermal and ground snow
+    /// modifier the content's intervals can select. Which state that is has no save
+    /// counterpart: the save holds only the current mud, temperature and snow, from which a
+    /// load rebuilds, while the game keeps applying the live accumulator, which keeps those
+    /// of its last rebuild (the hourly window rebuilds only on a change against the record's
+    /// previous hour, and temperatures and mud also change outside that test). States whose
+    /// modifiers add the same entries are one state here; distinct states that both fit
+    /// leave the list's part uncertified.
+    fn saved_part_holds(
+        &self,
+        saved: &installed_content_save::weather::Province,
+        recorded: &BTreeMap<u32, i64>,
+    ) -> Result<Fit, String> {
+        let thermals = self.rules.reachable_temperature_modifiers();
+        let snows = self.rules.reachable_ground_snow_modifiers();
+        let empty = installed_content_save::weather::Province {
+            custom_modifiers: None,
+            ..saved.clone()
+        };
+        let mut fitting: Vec<BTreeMap<u32, i64>> = Vec::new();
+        for mud in [false, true] {
+            for &thermal in &thermals {
+                for &snow in &snows {
+                    if self.with(saved, mud, thermal, snow)? == *recorded {
+                        let state = self.with(&empty, mud, thermal, snow)?;
+                        if !fitting.contains(&state) {
+                            fitting.push(state);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(match fitting.len() {
+            0 => Fit::None,
+            1 => Fit::One,
+            states => Fit::Several(states),
+        })
+    }
+
+    /// Every key of either accumulator: a missing, extra or different entry is a
+    /// difference naming the definition key and, when known, its script name.
+    fn compare(
+        &self,
+        report: &mut Report,
+        field: &str,
+        recorded: &ProvinceWeatherModifiers,
+        rebuilt: &BTreeMap<u32, i64>,
+    ) {
+        let recorded: BTreeMap<u32, i64> = recorded
+            .entries
+            .iter()
+            .map(|entry| (entry.key, entry.value))
+            .collect();
+        let keys: BTreeSet<u32> = recorded.keys().chain(rebuilt.keys()).copied().collect();
+        for key in keys {
+            let label = match self.names.get(&key) {
+                Some(name) => format!("{field}.{name} (definition {key})"),
+                None => format!("{field}.definition {key}"),
+            };
+            match (recorded.get(&key), rebuilt.get(&key)) {
+                (Some(captured), Some(expected)) if captured != expected => {
+                    report.difference(label, captured, expected);
+                }
+                (Some(captured), None) => report.difference(label, captured, "absent"),
+                (None, Some(expected)) => report.difference(label, "absent", expected),
+                _ => {}
+            }
+        }
+    }
 }
 
 fn compare_regions(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Result<()> {

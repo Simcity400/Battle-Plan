@@ -1,5 +1,6 @@
-//! The map's weather effect entities, native thermal tooltip intervals and the
-//! hourly temperature pass's settings ([`temperature`]) from `common/weather.txt`,
+//! The map's weather effect entities, native thermal tooltip intervals, the
+//! province modifier rebuild's rules ([`ProvinceModifierRules`]) and the hourly
+//! temperature pass's settings ([`temperature`]) from `common/weather.txt`,
 //! through the recorded content stack.
 
 use std::{collections::BTreeMap, io};
@@ -54,12 +55,95 @@ pub type Effects = BTreeMap<(usize, bool), Vec<EffectPair>>;
 type Names = BTreeMap<(usize, bool), Vec<[Option<String>; 2]>>;
 
 /// Weather-manager interval order, also the static-modifier slot identifiers.
-const TEMPERATURE_MODIFIERS: [&str; 4] = [
+pub const TEMPERATURE_MODIFIERS: [&str; 4] = [
     "weather_extreme_cold",
     "weather_very_cold",
     "weather_very_hot",
     "weather_extreme_hot",
 ];
+
+/// The static modifier a province record adds while it has mud.
+pub const MUD_MODIFIER: &str = "weather_mud";
+
+/// Ground snow interval order, also the static-modifier identifiers: medium, then high.
+pub const GROUND_SNOW_MODIFIERS: [&str; 2] =
+    ["weather_ground_snow_medium", "weather_ground_snow_high"];
+
+/// What a province weather record's modifier rebuild reads from `settings`: the
+/// four thermal intervals (`temperature`), the two ground snow intervals and the
+/// snow ceiling (`snowing`). Every bound is signed fixed5, lower inclusive and
+/// upper exclusive; an interval absent from the file stays zero, which holds nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProvinceModifierRules {
+    /// In [`TEMPERATURE_MODIFIERS`] order.
+    pub temperature: [[i64; 2]; 4],
+    /// In [`GROUND_SNOW_MODIFIERS`] order.
+    pub ground_snow: [[i64; 2]; 2],
+    /// `snow_gain_max`: the ground snow intervals classify at most this much snow.
+    pub snow_gain_max: i64,
+}
+
+impl ProvinceModifierRules {
+    /// Every thermal modifier some temperature selects, None included when a temperature
+    /// falls in no interval. The selection only changes at an interval bound, so the lowest
+    /// temperature and every bound reach each one.
+    pub fn reachable_temperature_modifiers(&self) -> Vec<Option<&'static str>> {
+        let points = std::iter::once(i64::MIN).chain(self.temperature.iter().flatten().copied());
+        let mut reached = Vec::new();
+        for point in points {
+            let modifier = self.temperature_modifier(point);
+            if !reached.contains(&modifier) {
+                reached.push(modifier);
+            }
+        }
+        reached
+    }
+
+    /// Every ground snow modifier some snow selects, None included. The classified snow is
+    /// capped at [`Self::snow_gain_max`], so it takes every value up to the cap; the
+    /// selection only changes at an interval bound or the cap.
+    pub fn reachable_ground_snow_modifiers(&self) -> Vec<Option<&'static str>> {
+        let points = [i64::MIN, self.snow_gain_max]
+            .into_iter()
+            .chain(self.ground_snow.iter().flatten().copied())
+            .filter(|&point| point <= self.snow_gain_max);
+        let mut reached = Vec::new();
+        for point in points {
+            let modifier = self.ground_snow_modifier(point, 0);
+            if !reached.contains(&modifier) {
+                reached.push(modifier);
+            }
+        }
+        reached
+    }
+
+    /// The first thermal modifier whose interval holds `temperature`; None when none does.
+    pub fn temperature_modifier(&self, temperature: i64) -> Option<&'static str> {
+        self.temperature
+            .iter()
+            .position(|&range| holds(range, temperature))
+            .map(|slot| TEMPERATURE_MODIFIERS[slot])
+    }
+
+    /// The ground snow modifier of a province's snow and permanent snow: their sum,
+    /// capped at [`Self::snow_gain_max`], classifies as high when the high interval holds
+    /// it (even when the medium one does too), else as medium when the medium one does.
+    pub fn ground_snow_modifier(&self, snow: i64, permanent_snow: i64) -> Option<&'static str> {
+        let snow = snow.wrapping_add(permanent_snow).min(self.snow_gain_max);
+        let [medium, high] = self.ground_snow;
+        if holds(high, snow) {
+            Some(GROUND_SNOW_MODIFIERS[1])
+        } else if holds(medium, snow) {
+            Some(GROUND_SNOW_MODIFIERS[0])
+        } else {
+            None
+        }
+    }
+}
+
+fn holds([lower, upper]: [i64; 2], value: i64) -> bool {
+    lower <= value && value < upper
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TemperatureRange {
@@ -298,31 +382,36 @@ pub(crate) fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
 }
 
 fn parse_temperature_ranges(bytes: &[u8]) -> io::Result<[[i64; 2]; 4]> {
-    let document = parse_weather(bytes)?;
+    read_ranges(&parse_weather(bytes)?, "temperature", &TEMPERATURE_MODIFIERS)
+}
+
+/// The `keys` intervals of every `settings` group named `group`.
+fn read_ranges<const N: usize>(
+    document: &native::Read,
+    group: &str,
+    keys: &[&str; N],
+) -> io::Result<[[i64; 2]; N]> {
     // Construction zeroes all interval bounds. Repeated settings/groups
     // keep other slots; each encountered pair overwrites its two words.
-    let mut ranges = [[0; 2]; 4];
+    let mut ranges = [[0; 2]; N];
     for settings in document
         .items
         .iter()
         .filter(|item| item.keyword_is("settings"))
     {
-        for temperature in block(&settings.value, "weather settings")?
+        for settings_group in block(&settings.value, "weather settings")?
             .iter()
-            .filter(|item| item.keyword_is("temperature"))
+            .filter(|item| item.keyword_is(group))
         {
-            for field in block(&temperature.value, "weather temperature")? {
-                let Some(slot) = TEMPERATURE_MODIFIERS
-                    .iter()
-                    .position(|key| field.keyword_is(key))
-                else {
+            for field in block(&settings_group.value, "weather settings group")? {
+                let Some(slot) = keys.iter().position(|key| field.keyword_is(key)) else {
                     continue;
                 };
-                let values = block(&field.value, "weather temperature range")?;
+                let values = block(&field.value, "weather range")?;
                 let [lower, upper] = values else {
                     return Err(invalid(format!(
-                        "weather temperature range {} needs two values",
-                        TEMPERATURE_MODIFIERS[slot]
+                        "weather {group} range {} needs two values",
+                        keys[slot]
                     )));
                 };
                 // Start each list entry at zero; failed fixed5 conversion leaves
@@ -339,6 +428,43 @@ fn parse_temperature_ranges(bytes: &[u8]) -> io::Result<[[i64; 2]; 4]> {
         }
     }
     Ok(ranges)
+}
+
+fn parse_province_modifier_rules(bytes: &[u8]) -> io::Result<ProvinceModifierRules> {
+    let document = parse_weather(bytes)?;
+    // Construction zeroes the ceiling; each assignment overwrites it, and a
+    // value that is not a scalar leaves it unchanged.
+    let mut snow_gain_max = 0;
+    for settings in document
+        .items
+        .iter()
+        .filter(|item| item.keyword_is("settings"))
+    {
+        for snowing in block(&settings.value, "weather settings")?
+            .iter()
+            .filter(|item| item.keyword_is("snowing"))
+        {
+            for field in block(&snowing.value, "weather settings group")? {
+                if field.keyword_is("snow_gain_max")
+                    && let Some(text) = field.value.scalar()
+                {
+                    snow_gain_max = crate::fixed5::decimal_fixed5(text);
+                }
+            }
+        }
+    }
+    Ok(ProvinceModifierRules {
+        temperature: read_ranges(&document, "temperature", &TEMPERATURE_MODIFIERS)?,
+        ground_snow: read_ranges(&document, "snowing", &GROUND_SNOW_MODIFIERS)?,
+        snow_gain_max,
+    })
+}
+
+/// The content rules of a province weather record's modifier rebuild, from the
+/// stack's `common/weather.txt`.
+pub fn province_modifier_rules(layers: &ResolvedLayers) -> io::Result<ProvinceModifierRules> {
+    parse_province_modifier_rules(&layers.read(PATH)?)
+        .map_err(|error| invalid(format!("{PATH}: {error}")))
 }
 
 /// The four native thermal intervals and their stack-resolved modifier

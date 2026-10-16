@@ -1479,21 +1479,6 @@ impl Document {
         warnings.extend(wave_warnings);
         let (states, state_conflicts) = states;
         warnings.extend(state_conflicts.into_iter().map(|(_, message)| message));
-        let map_modes = {
-            let scripted_modes = installed_content::scripted_map_modes::read(&content.layers)?;
-            for (field, count) in scripted_modes.refusal_counts() {
-                warnings.push(format!(
-                    "Scripted map modes: {count} unread entries {field}"
-                ));
-            }
-            Arc::new(viewer_world::map::map_mode::Content::new(
-                &defines,
-                Arc::new(counters.ideologies.clone()),
-                scripted_modes,
-                content.layers.faction_templates(),
-                recorded_language.clone(),
-            )?)
-        };
         // Wave 2: everything needing assets, in parallel. Joins run in the
         // serial load order, so the first error and the warning order match
         // the serial load within this wave.
@@ -1701,6 +1686,43 @@ impl Document {
         warnings.extend(wave2_warnings);
         // Raid `is_coastal` reads the movement map's static province terrain.
         raid_assets.trigger_content.terrain = movement.clone();
+        let map_modes = {
+            let scripted_modes = installed_content::scripted_map_modes::read(&content.layers)?;
+            for (field, count) in scripted_modes.refusal_counts() {
+                warnings.push(format!(
+                    "Scripted map modes: {count} unread entries {field}"
+                ));
+            }
+            let terrain_categories = combat_assets.movement_terrain();
+            let provinces: Vec<u32> = map.definitions.keys().copied().collect();
+            let province_terrain = |province| {
+                movement
+                    .as_ref()
+                    .and_then(|movement| movement.map.terrain(province))
+            };
+            let terrain = match (&terrain_categories, &movement) {
+                (Err(why), _) => Err(format!("the terrain database did not read: {why}")),
+                (_, None) => Err(
+                    "the provinces' terrain records did not read (unit movement is unavailable)"
+                        .to_owned(),
+                ),
+                (Ok(categories), Some(_)) => Ok(viewer_world::map::map_mode::terrain::Sources {
+                    categories,
+                    provinces: &provinces,
+                    terrain: &province_terrain,
+                    region_of: &counters.region_of,
+                    regions: &regions,
+                }),
+            };
+            Arc::new(viewer_world::map::map_mode::Content::new(
+                &defines,
+                Arc::new(counters.ideologies.clone()),
+                scripted_modes,
+                content.layers.faction_templates(),
+                recorded_language.clone(),
+                terrain,
+            )?)
+        };
         let icons = MapIcons {
             combat: Arc::new(combat_assets),
             raids: Arc::new(raid_assets),

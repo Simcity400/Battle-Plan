@@ -257,6 +257,7 @@ fn projected_full_oracle_scopes_canonical_censuses_and_refuses_uncaptured_reserv
                 essential_caps: Err("fixture has no sub-units".into()),
                 intelligence: Err("fixture has no agency upgrades".into()),
                 temperature: Err("fixture has no temperature content".into()),
+                province_modifiers: Err("fixture has no weather content".into()),
             },
             &mut full,
         );

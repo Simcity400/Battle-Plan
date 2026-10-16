@@ -28,6 +28,7 @@ use replay::{
 
 pub mod carry;
 mod display;
+pub mod entries;
 pub mod temperature;
 use display::DisplayCapture;
 static DISPLAY_DEMAND_FAILURES: collector_extended_support::demand::DemandFailures =
@@ -110,8 +111,8 @@ pub struct Captured {
     /// Each region record's ([`WeatherJob::combat`]) raw weather speed, attack and
     /// breakthrough entries, in region order; `None` refuses one region.
     combat: Vec<Option<RegionModifiers>>,
-    /// Each province record's weather modifier entries, in slot order.
-    province_modifiers: Vec<Option<ProvinceModifiers>>,
+    /// Each province record's weather modifier accumulator, in slot order.
+    province_modifiers: ProvinceModifiers,
     /// Raw-copy split gate for the hourly weather family (copy/decode split).
     /// Set by the game thread every hour with a valid raw payload; `capture`
     /// then skips the typed walks and the decode worker fills these rows
@@ -131,7 +132,7 @@ impl Captured {
             temperature_pass: None,
             temperature_read: Vec::new(),
             combat: Vec::new(),
-            province_modifiers: Vec::new(),
+            province_modifiers: ProvinceModifiers::default(),
             raw_mode: false,
         }
     }
@@ -152,7 +153,7 @@ impl Captured {
             + self.display.allocated_bytes()
             + self.temperature_read.capacity() * size_of::<replay::temperature::State>()
             + self.combat.capacity() * size_of::<Option<RegionModifiers>>()
-            + self.province_modifiers.capacity() * size_of::<Option<ProvinceModifiers>>()
+            + self.province_modifiers.allocated_bytes()
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -271,20 +272,15 @@ impl Captured {
             ),
             table::<tables::WeatherProvinces, _>(outcomes[1], &self.provinces.rows, |r| {
                 // A slot past the read (a short fixture) or refused is a refusal.
-                let modifiers = self
-                    .province_modifiers
-                    .get(r.id as usize)
-                    .copied()
-                    .flatten()
-                    .map(|[speed, attrition, winter, heat, attack_speed]| {
-                        rows::ProvinceWeatherModifiers {
-                            army_speed_factor: speed,
-                            army_attack_speed_factor: attack_speed,
-                            attrition,
-                            heat_attrition: heat,
-                            winter_attrition: winter,
-                        }
-                    });
+                let modifiers =
+                    self.province_modifiers
+                        .get(r.id as usize)
+                        .map(|entries| rows::ProvinceWeatherModifiers {
+                            entries: entries
+                                .iter()
+                                .map(|&(key, value)| rows::ProvinceModifierEntry { key, value })
+                                .collect(),
+                        });
                 rows::WeatherProvinceRow {
                     modifiers: rows::Recorded::Value(modifiers),
                     id: r.id,
@@ -416,9 +412,10 @@ pub struct WeatherJob {
     /// reads through region weather modifier lookup; the outer `None` is that region's read
     /// refusal. Region order.
     combat: Vec<Option<RegionModifiers>>,
-    /// Each province record's weather modifier entries
-    /// ([`PROVINCE_MODIFIER_KEYS`]); slot order.
-    province_modifiers: Vec<Option<ProvinceModifiers>>,
+    /// Each province record's weather modifier accumulator; slot order.
+    province_modifiers: ProvinceModifiers,
+    /// One province's accumulator, as it is read.
+    province_scratch: Vec<entries::Entry>,
     /// The carried province and region records, loaned for this hour's
     /// read ([`carry`]); `None` reads every record.
     pub carry: Option<Box<carry::WeatherCarry>>,
@@ -448,7 +445,8 @@ impl WeatherJob {
             manager: 0,
             manager_authenticated: false,
             combat: Vec::new(),
-            province_modifiers: Vec::new(),
+            province_modifiers: ProvinceModifiers::default(),
+            province_scratch: Vec::new(),
             carry: None,
         };
         job.update_capacity_charge();
@@ -851,17 +849,7 @@ const COMBAT_KEYS: [u32; 4] = [
     engine::modifier_keys::ARMY_ATTACK_SPEED_FACTOR,
 ];
 
-/// One province record's weather modifier entries, in [`PROVINCE_MODIFIER_KEYS`]
-/// order: army speed, attrition, winter attrition, heat attrition and army attack
-/// speed.
-pub type ProvinceModifiers = [Option<i64>; 5];
-const PROVINCE_MODIFIER_KEYS: [u32; 5] = [
-    engine::modifier_keys::ARMY_SPEED_FACTOR,
-    engine::modifier_keys::ATTRITION,
-    engine::modifier_keys::WINTER_ATTRITION,
-    engine::modifier_keys::HEAT_ATTRITION,
-    engine::modifier_keys::ARMY_ATTACK_SPEED_FACTOR,
-];
+pub use entries::ProvinceModifiers;
 
 /// Acquire one refresh into its owned payload.
 pub fn copy_weather_refresh_growing(
@@ -1010,15 +998,8 @@ impl Captured {
         };
         // Province modifier entries belong to WeatherProvinces, whose outcome does not
         // depend on the regions' snow ceiling.
-        self.province_modifiers.clear();
-        if engine::allocation::reserve_exact(
-            &mut self.province_modifiers,
-            job.province_modifiers.len(),
-        )
-        .is_ok()
-        {
-            self.province_modifiers
-                .extend_from_slice(&job.province_modifiers);
+        if !self.province_modifiers.copy_from(&job.province_modifiers) {
+            self.province_modifiers.clear();
         }
         self.regions.outcome = match reader.max_snow() {
             Ok(max_snow) => {

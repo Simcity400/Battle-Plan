@@ -443,6 +443,54 @@ fn validate_keys(sorted_keys: &[u32], output_len: usize) -> Result<(), &'static 
     Ok(())
 }
 
+/// Every entry of the accumulator at `address`, as [`lookup_many_at`] reads the array:
+/// `visit` sees each complete entry's key and raw value, keys ascending. It fails as
+/// that lookup fails, after visiting the complete entries before the failure; the caller
+/// drops them.
+pub fn entries_at(
+    memory: &impl Memory,
+    address: usize,
+    visit: &mut impl FnMut(u32, i64),
+) -> Result<(), &'static str> {
+    let header = read::<[u8; 16]>(memory, address)
+        .ok_or("modifier accumulator header unreadable or invalid")?;
+    let array = Array::from_header(header, modifier_entry::STRIDE)
+        .ok_or("modifier accumulator header unreadable or invalid")?;
+    let mut previous_key = 0;
+    let mut bytes = [0; SNAPSHOT_BATCH * modifier_entry::STRIDE];
+    let mut first = 0;
+    while first < array.count as usize {
+        let count = (array.count as usize - first).min(SNAPSHOT_BATCH);
+        let base = array
+            .element(first as u32, modifier_entry::STRIDE)
+            .ok_or("modifier accumulator entry address overflow")?;
+        let completed = memory.copy_records(
+            crate::memory::RecordSources::Strided {
+                base,
+                stride: modifier_entry::STRIDE,
+                count,
+            },
+            &SNAPSHOT_LAYOUT,
+            &mut bytes[..count * modifier_entry::STRIDE],
+        );
+        for entry in
+            bytes[..completed * modifier_entry::STRIDE].chunks_exact(modifier_entry::STRIDE)
+        {
+            let key = u32::from_le_bytes(entry[..4].try_into().unwrap());
+            if key <= previous_key {
+                return Err("modifier accumulator keys not positive and increasing");
+            }
+            previous_key = key;
+            visit(key, i64::from_le_bytes(entry[8..].try_into().unwrap()));
+        }
+        if completed != count {
+            return Err("modifier accumulator entry unreadable");
+        }
+        first += count;
+    }
+    Ok(())
+}
+
 /// The same exact raw census for an arbitrary authenticated accumulator address,
 /// not necessarily the accumulator embedded in a country. Read the header once
 /// and validate all entries, including the unselected suffix.

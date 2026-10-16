@@ -63,6 +63,21 @@ pub struct TerrainCategory {
     pub minimum_seazone_dominance: i64,
     pub common_adjuster: TerrainAdjuster,
     pub class_adjusters: Vec<TerrainAdjuster>,
+    /// The `color` reads replayed in order over the colour object's white start, as
+    /// [`f32::to_bits`] ([`Self::color`]).
+    pub color: Result<[u32; 4], String>,
+}
+
+impl TerrainCategory {
+    /// The category's colour: white when it has no `color`, each read applied as the
+    /// colour reader does ([`crate::ideologies::read_color`]). `Err` names a form the
+    /// reader does not convert.
+    pub fn color(&self) -> Result<[f32; 4], String> {
+        self.color
+            .as_ref()
+            .map(|bits| bits.map(f32::from_bits))
+            .map_err(Clone::clone)
+    }
 }
 
 /// Three fixed5 unit adjustments read from terrain definitions.
@@ -151,6 +166,15 @@ impl TerrainDefinitions {
         self.categories
             .iter()
             .position(|category| category.name.eq_ignore_ascii_case(name))
+    }
+
+    /// The category a water province reads: its strategic region's `naval_terrain`, or
+    /// `ocean` when it has no region, the region names none or the name matches no category.
+    /// `None` when that fallback is missing too.
+    pub fn naval_category(&self, naval_terrain: Option<&str>) -> Option<usize> {
+        naval_terrain
+            .and_then(|name| self.category(name.as_bytes()))
+            .or_else(|| self.category(b"ocean"))
     }
 
     /// Reads one more file through the script reader ([`native`]). A block
@@ -279,8 +303,18 @@ impl TerrainDefinitions {
         let mut minimum_seazone_dominance = 0;
         let mut common_adjuster = TerrainAdjuster::default();
         let mut class_adjusters = Vec::new();
+        let mut color = Ok([1.0_f32; 4]);
         for field in entry.value.items().unwrap_or_default() {
             let keyword = field.keyword().map(|keyword| keyword.folded());
+            if keyword.as_deref() == Some(b"color") {
+                // Each read updates the colour from where the last left it.
+                if let Ok(state) = &mut color
+                    && let Err(cause) = crate::ideologies::read_color(state, field)
+                {
+                    color = Err(format!("{what}: {cause}"));
+                }
+                continue;
+            }
             if keyword.as_deref() == Some(b"minimum_seazone_dominance") {
                 if let Some(value) = modifiers::read_fixed5(field) {
                     minimum_seazone_dominance = value;
@@ -345,6 +379,7 @@ impl TerrainDefinitions {
             minimum_seazone_dominance,
             common_adjuster,
             class_adjusters,
+            color: color.map(|color| color.map(f32::to_bits)),
         });
     }
 

@@ -392,3 +392,62 @@ fn the_temperature_pass_rides_slot_zero_with_its_checksum_last_before_the_modifi
     let decoded = WeatherProvinceRow::decode_fields(row.key(), &mut Decoder::new(&fields)).unwrap();
     assert_eq!(decoded.temperature_pass, Recorded::Value(Some(pass)));
 }
+
+/// A province's accumulator round-trips every entry and answers a key by search.
+#[test]
+fn a_province_accumulator_keeps_every_entry() {
+    let modifiers = ProvinceWeatherModifiers {
+        entries: vec![
+            ProvinceModifierEntry {
+                key: 0x2b,
+                value: -40_000,
+            },
+            ProvinceModifierEntry {
+                key: 0x4f,
+                value: 0,
+            },
+            ProvinceModifierEntry {
+                key: 0x1a0,
+                value: i64::MIN,
+            },
+        ],
+    };
+    let row = WeatherProvinceRow {
+        id: 7,
+        modifiers: Recorded::Value(Some(modifiers.clone())),
+        ..Default::default()
+    };
+    let mut fields = Vec::new();
+    row.encode_fields(&mut fields).unwrap();
+    let decoded = WeatherProvinceRow::decode_fields(row.key(), &mut Decoder::new(&fields)).unwrap();
+    assert_eq!(decoded.modifiers, Recorded::Value(Some(modifiers.clone())));
+    assert_eq!(modifiers.get(0x2b), Some(-40_000));
+    assert_eq!(modifiers.get(0x4f), Some(0));
+    assert_eq!(modifiers.get(0x50), None);
+}
+
+/// An accumulator holds each key once, positive and ascending: a duplicate key, whose
+/// wrong value a map would silently drop, an unordered key a search would miss and a
+/// zero key are refused when the row is checked, encoded or diffed.
+#[test]
+fn a_province_accumulator_with_duplicate_unordered_or_zero_keys_is_refused() {
+    let entry = |key, value| ProvinceModifierEntry { key, value };
+    let row = |entries| WeatherProvinceRow {
+        id: 7,
+        modifiers: Recorded::Value(Some(ProvinceWeatherModifiers { entries })),
+        ..Default::default()
+    };
+    let valid = row(vec![entry(0x2b, -40_000), entry(0x4f, 0)]);
+    assert!(valid.check_key_fields().is_ok());
+    for entries in [
+        vec![entry(0x2b, 1), entry(0x2b, -40_000)],
+        vec![entry(0x4f, 0), entry(0x2b, -40_000)],
+        vec![entry(0, 5)],
+    ] {
+        let malformed = row(entries.clone());
+        assert!(malformed.check_key_fields().is_err(), "{entries:?}");
+        assert!(encode_row(&malformed, 0, &mut Vec::new()).is_err(), "{entries:?}");
+        assert!(malformed.delta(None).is_err(), "{entries:?}");
+        assert!(valid.delta(Some(&malformed)).is_err(), "{entries:?}");
+    }
+}

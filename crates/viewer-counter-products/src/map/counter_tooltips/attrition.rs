@@ -205,12 +205,13 @@ fn weather_lines(context: &Context<'_>, id: u64, province: u32) -> Result<bool, 
             Some(raw) => registry.effective(registry.named(name)?, raw),
         }
     };
-    if effective("attrition", modifiers.attrition)? != 0 {
+    use engine::modifier_keys::{ATTRITION, HEAT_ATTRITION, WINTER_ATTRITION};
+    if effective("attrition", modifiers.get(ATTRITION))? != 0 {
         return Ok(true);
     }
     let thermal = [
-        effective("heat_attrition", modifiers.heat_attrition)?,
-        effective("winter_attrition", modifiers.winter_attrition)?,
+        effective("heat_attrition", modifiers.get(HEAT_ATTRITION))?,
+        effective("winter_attrition", modifiers.get(WINTER_ATTRITION))?,
     ];
     if thermal == [0, 0] {
         return Ok(false);

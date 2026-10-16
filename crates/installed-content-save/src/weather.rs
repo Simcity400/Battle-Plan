@@ -1,7 +1,7 @@
 //! The weather save fields the oracle compares, with serializer omission rules.
 //! Source order and absence stay explicit.
 
-use super::{Decimal, Item, block, boolean, decimal, field, integer, invalid, scalar};
+use super::{Decimal, Item, Value, block, boolean, decimal, field, integer, invalid, scalar};
 use std::io;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -22,6 +22,9 @@ pub struct Province {
     pub temperature: Option<Decimal>,
     /// The Boolean serializer retains zero/nonzero truth only.
     pub mud: Option<bool>,
+    /// The province's own static modifiers, `name = days` in source order,
+    /// repeats retained; days -1 is permanent. None when the block is absent.
+    pub custom_modifiers: Option<Vec<(String, i64)>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +64,9 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
                         snow: decimal(items, b"snow")?,
                         temperature: decimal(items, b"temperature")?,
                         mud: flag(items, b"mud")?,
+                        custom_modifiers: field(items, b"custom_modifiers")?
+                            .map(custom_modifiers)
+                            .transpose()?,
                     })
                 })
                 .collect::<io::Result<Vec<_>>>()
@@ -91,6 +97,21 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
         provinces,
         regions,
     })
+}
+
+fn custom_modifiers(value: &Value) -> io::Result<Vec<(String, i64)>> {
+    block(value)?
+        .iter()
+        .map(|item| {
+            let name = item
+                .key
+                .as_deref()
+                .ok_or_else(|| invalid("weather custom modifier has no name"))?;
+            let name = String::from_utf8(name.to_vec())
+                .map_err(|_| invalid("weather custom modifier name is not UTF-8"))?;
+            Ok((name, integer(scalar(&item.value)?)?))
+        })
+        .collect()
 }
 
 fn slot(entry: &Item) -> io::Result<u32> {

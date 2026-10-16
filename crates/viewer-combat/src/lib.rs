@@ -56,6 +56,7 @@ pub mod picker;
 mod presentation;
 mod tactics;
 mod template_icons;
+pub mod terrain_mode;
 mod tooltips;
 pub use content::Content;
 

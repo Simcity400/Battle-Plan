@@ -1,6 +1,6 @@
 # installed-content-weather
 
-Authored weather entities, thermal intervals and hourly temperature content. The implementation and its tests live in [`weather`](src/weather.rs); the same public paths are exported through `installed_content::weather`. Shared parsing, identity and authored foundations come from [installed-content-core](../installed-content-core/README.md).
+Authored weather entities, thermal intervals, the province modifier rebuild's thermal and ground snow rules, and hourly temperature content. The implementation and its tests live in [`weather`](src/weather.rs); the same public paths are exported through `installed_content::weather`. Shared parsing, identity and authored foundations come from [installed-content-core](../installed-content-core/README.md).
 
 This reader also consumes [installed-content-regions](../installed-content-regions/README.md). Each weather entity keeps its default state's sound events for the map audio.
 

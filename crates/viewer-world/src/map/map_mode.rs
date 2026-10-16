@@ -13,7 +13,8 @@
 //! | resources, raids | countries | none |
 //! | states, resistance, compliance, operatives | countries | the mode's layer |
 //! | diplomacy | the mode's layer | none |
-//! | infrastructure, manpower, terrain | the mode's layer, refused | countries |
+//! | manpower, terrain | the mode's layer | countries |
+//! | infrastructure | the mode's layer, refused | countries |
 //! | supply | the supply-border layer, refused | the supply layer, refused |
 //! | scripted | the bottom layer | the top layer |
 //!
@@ -27,6 +28,7 @@
 //! | diplomacy | controller | relation to the selected country, in the fixed colours below | `THICKNESS_DIPLOMACY`; diplomacy defines |
 //! | resistance, compliance | the selected country's controlled states | the level through the content's colour list, or `OCCUPATION_RESISTANCE_NON_INITIALIZED_COLOR` without an occupier | `THICKNESS_RESISTANCE`, gradient 241; camera 0 / resistance cutoff |
 //! | operatives | each state with positive strength in one of the selected country's networks, while the network's target controls it | the strength's share of 100% between the `MAP_MODE_INTEL_NETWORK_STRENGTH` low and high colours, or the quiet pair for a quiet subnetwork | `THICKNESS_STATE`, gradient 241; camera 0 / state cutoff |
+//! | terrain | each province | its terrain category's colour ([`terrain`]) | zero, gradient 127; terrain camera / state cutoff |
 //!
 //! In the players mode the selected country pulses and its fill factor is
 //! `SELECTED_COUNTRY_HIGHLIGHT_THICKNESS_MULT`. The selected country is the viewing country:
@@ -58,6 +60,7 @@ use super::political::{color_source, inherited_colors};
 
 mod colour_script;
 pub use colour_script::ColourState;
+pub mod terrain;
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -427,6 +430,7 @@ pub struct ModeDefines {
     quiet_network_colors: [[f32; 4]; 2],
     /// `UI_CONFIGURABLE_SLOT_FROM` and `_TO`: the picker slots the user can reassign.
     pub configurable_slots: [i32; 2],
+    pub terrain: terrain::Defines,
 }
 
 impl ModeDefines {
@@ -523,6 +527,16 @@ impl ModeDefines {
                 defines.int32("NMapMode", "UI_CONFIGURABLE_SLOT_FROM")?,
                 defines.int32("NMapMode", "UI_CONFIGURABLE_SLOT_TO")?,
             ],
+            terrain: terrain::Defines {
+                alpha: [
+                    number(defines, "NMapMode", "MAP_MODE_TERRAIN_TRANSPARENCY")?,
+                    number(defines, "NMapMode", "MAP_MODE_NAVAL_TERRAIN_TRANSPARENCY")?,
+                ],
+                channel: [
+                    graphics("GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_TERRAIN")?,
+                    graphics("GRADIENT_BORDERS_OUTLINE_CUTOFF_STATE")?,
+                ],
+            },
         })
     }
 }
@@ -555,6 +569,8 @@ pub struct Content {
     faction_templates: Result<Arc<installed_content::faction_templates::Catalog>, String>,
     /// The recording's language, which a faction's stored literal name is written in.
     recorded_language: String,
+    /// The terrain mode's layer, built once, or why the content cannot build it.
+    terrain: Result<terrain::Built, String>,
 }
 
 impl Content {
@@ -564,13 +580,17 @@ impl Content {
         scripted: MapModes,
         faction_templates: Result<Arc<installed_content::faction_templates::Catalog>, String>,
         recorded_language: String,
+        terrain: Result<terrain::Sources, String>,
     ) -> io::Result<Self> {
+        let defines = ModeDefines::load(defines)?;
+        let terrain = terrain.map(|sources| terrain::build(&sources, &defines.terrain));
         Ok(Self {
-            defines: ModeDefines::load(defines)?,
+            defines,
             ideologies,
             scripted,
             faction_templates,
             recorded_language,
+            terrain,
         })
     }
 
@@ -967,7 +987,28 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
                 political,
             }
         }
-        Stock::Infrastructure | Stock::Terrain => {
+        Stock::Terrain => {
+            let layer = match &inputs.content.terrain {
+                Ok(built) => {
+                    warnings.extend(built.warnings.iter().cloned());
+                    Some(built.layer.clone())
+                }
+                Err(why) => {
+                    warnings.push(format!(
+                        "Terrain map mode: its layer is not drawn and the countries show alone: {why}"
+                    ));
+                    None
+                }
+            };
+            Draw {
+                channels: [built(&layer, Mode), Country],
+                country: None,
+                layer,
+                second: None,
+                political,
+            }
+        }
+        Stock::Infrastructure => {
             warnings.push(unbuilt(stock).to_owned());
             Draw::of([Empty, Country], political)
         }
@@ -997,9 +1038,6 @@ fn unbuilt(stock: Stock) -> &'static str {
         }
         Stock::StrategicNavy => {
             "Navy map mode: the political channels show without the naval supremacy colours, strategic region names, region statistics and range overlays, which are not drawn; the map writes no names"
-        }
-        Stock::Terrain => {
-            "Terrain map mode: the terrain layer is not drawn; the countries show alone"
         }
         Stock::Resources => {
             "Resources map mode: the countries show without the state resource icons, which are not drawn"

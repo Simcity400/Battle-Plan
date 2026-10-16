@@ -42,6 +42,67 @@ fn thermal_pairs_keep_order_fixed5_and_repeated_group_values() {
 }
 
 #[test]
+fn province_modifier_rules_keep_ranges_ceiling_and_classify_first_and_high() {
+    let rules = parse_province_modifier_rules(
+        br#"
+        settings={
+            temperature={weather_extreme_cold={-100 -20} weather_very_cold={-30 -5}}
+            snowing={
+                weather_ground_snow_medium={1 10}
+                weather_ground_snow_high={yes 20}
+                snow_gain_max=2.5
+                snow_melt_temperature={0 1}
+            }
+        }
+        settings={snowing={weather_ground_snow_high={5.5 20} snow_gain_max=12}}
+    "#,
+    )
+    .unwrap();
+    assert_eq!(
+        rules,
+        ProvinceModifierRules {
+            temperature: [[-10_000_000, -2_000_000], [-3_000_000, -500_000], [0, 0], [0, 0]],
+            ground_snow: [[100_000, 1_000_000], [550_000, 2_000_000]],
+            snow_gain_max: 1_200_000,
+        }
+    );
+    // The first interval holding the temperature wins; upper bounds are exclusive
+    // and an unset interval holds nothing.
+    assert_eq!(rules.temperature_modifier(-2_500_000), Some("weather_extreme_cold"));
+    assert_eq!(rules.temperature_modifier(-2_000_000), Some("weather_very_cold"));
+    assert_eq!(rules.temperature_modifier(-500_000), None);
+    assert_eq!(rules.temperature_modifier(0), None);
+    // High wins where both ground snow intervals hold; the sum is capped first.
+    assert_eq!(
+        rules.ground_snow_modifier(300_000, 0),
+        Some("weather_ground_snow_medium")
+    );
+    assert_eq!(
+        rules.ground_snow_modifier(500_000, 100_000),
+        Some("weather_ground_snow_high")
+    );
+    assert_eq!(
+        rules.ground_snow_modifier(2_000_000, 0),
+        Some("weather_ground_snow_high")
+    );
+    assert_eq!(rules.ground_snow_modifier(50_000, 0), None);
+    assert_eq!(
+        parse_province_modifier_rules(b"").unwrap(),
+        ProvinceModifierRules::default()
+    );
+    for text in [
+        "settings={snowing={weather_ground_snow_medium={1}}}",
+        "settings={snowing={weather_ground_snow_high={1 2 3}}}",
+        "settings={snowing={unknown=1}}",
+    ] {
+        assert!(
+            parse_province_modifier_rules(text.as_bytes()).is_err(),
+            "{text}"
+        );
+    }
+}
+
+#[test]
 fn variables_keyword_tokens_and_error_recovery() {
     let names = parse_effect_names(
         br#"@sprite=rain weather_effects={RAIN_LIGHT={
@@ -289,4 +350,38 @@ fn particle_consumer_refuses_loader_abort_and_thermal_notes_survive() {
             .contains("weather_very_hot")
     );
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The thermal and ground snow modifiers some value selects: a modifier an earlier interval
+/// shadows, or a snow interval above the cap, is never selected.
+#[test]
+fn reachable_province_modifiers_follow_the_intervals() {
+    let rules = ProvinceModifierRules {
+        temperature: [
+            [-10_000_000, -2_000_000],
+            [-5_000_000, -3_000_000],
+            [2_000_000, 3_000_000],
+            [3_000_000, 10_000_000],
+        ],
+        ground_snow: [[100_000, 500_000], [400_000, 2_000_000]],
+        snow_gain_max: 300_000,
+    };
+    assert_eq!(
+        rules.reachable_temperature_modifiers(),
+        [
+            None,
+            Some("weather_extreme_cold"),
+            Some("weather_very_hot"),
+            Some("weather_extreme_hot")
+        ]
+    );
+    assert_eq!(
+        rules.reachable_ground_snow_modifiers(),
+        [None, Some("weather_ground_snow_medium")]
+    );
+    let empty = ProvinceModifierRules {
+        ground_snow: [[0, 0], [0, 0]],
+        ..rules
+    };
+    assert_eq!(empty.reachable_ground_snow_modifiers(), [None]);
 }

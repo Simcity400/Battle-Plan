@@ -65,13 +65,37 @@ regions={0={region=0 temperature=-90071992547.40993
             ..Default::default()
         }]));
     let mut report = Report::default();
-    compare(&frame, &saved, Ok(&content), &mut report).unwrap();
+    compare(
+        &frame,
+        &saved,
+        Ok(&content),
+        Err("outside this fixture".into()),
+        &mut report,
+    )
+    .unwrap();
     assert!(report.differences.is_empty());
     assert_eq!(report.scalar_checks, 2);
+    // Unread rebuild content leaves every recorded accumulator uncompared: one failed
+    // comparison, so coverage is incomplete and the run fails.
+    assert_eq!(
+        report.failed_comparisons,
+        BTreeMap::from([(
+            "WeatherProvinces.modifiers".to_owned(),
+            "WeatherProvinces.modifiers refused: outside this fixture; 1 recorded accumulators not compared".to_owned(),
+        )])
+    );
+    assert!(report.coverage_line().contains(": incomplete;"));
+    assert!(report.outcome().is_err());
     assert_eq!(report.limitations.len(), 5);
     assert!(report.limitations.contains_key(
         "the weather manager writer omits the stored day/night array; held clocks require a matched native read witness, and updated clocks are the hour's derivation from content (`recorder derived` compares it with recorded clocks)"
     ));
+    // The rest of this fixture holds no accumulator; the modifier test covers it.
+    if let TableView::Complete(TableRows::WeatherProvinces(rows)) =
+        &mut *frame.tables[TableId::WeatherProvinces.index()]
+    {
+        rows[0].modifiers = replay::rows::Recorded::NotRecorded;
+    }
 
     // Missing fields withhold temperature/mud comparisons and identify
     // the missing stored clock without inventing a save counterpart.
@@ -85,7 +109,14 @@ regions={0={region=0 temperature=-90071992547.40993
         rows[0].display = replay::rows::Recorded::NotRecorded;
     }
     let mut old = Report::default();
-    compare(&frame, &saved, Ok(&content), &mut old).unwrap();
+    compare(
+        &frame,
+        &saved,
+        Ok(&content),
+        Err("outside this fixture".into()),
+        &mut old,
+    )
+    .unwrap();
     assert!(old.differences.is_empty());
     assert_eq!(old.scalar_checks, 1); // snow remains compared
     assert_eq!(
@@ -122,12 +153,29 @@ regions={0={region=0 temperature=-90071992547.40993
             }
         };
         let mut report = Report::default();
-        assert!(compare(&frame, &saved, Ok(&content), &mut report).is_err());
+        assert!(
+            compare(
+                &frame,
+                &saved,
+                Ok(&content),
+                Err("outside this fixture".into()),
+                &mut report
+            )
+            .is_err()
+        );
         assert!(report.differences.is_empty());
         assert_eq!(report.scalar_checks, scalar_checks);
         assert_eq!(report.failed_comparisons.len(), 1);
         assert!(report.failed_comparisons.contains_key(name));
-        assert_eq!(report.compared_tables.len(), 1);
+        // A complete province table also counts its modifier rebuilds (here none).
+        assert_eq!(
+            report.compared_tables.len(),
+            if table == TableId::WeatherProvinces {
+                1
+            } else {
+                2
+            }
+        );
         assert!(!report.compared_tables.contains_key(name));
         frame.tables[table.index()] = original;
     }
@@ -139,7 +187,14 @@ regions={0={region=0 temperature=-90071992547.40993
     };
     rows[0].snow -= 1;
     let mut report = Report::default();
-    compare(&frame, &saved, Ok(&content), &mut report).unwrap();
+    compare(
+        &frame,
+        &saved,
+        Ok(&content),
+        Err("outside this fixture".into()),
+        &mut report,
+    )
+    .unwrap();
     assert_eq!(report.differences.len(), 1);
 
     let TableView::Complete(TableRows::WeatherProvinces(rows)) =
@@ -158,7 +213,14 @@ regions={0={region=0 temperature=-90071992547.40993
     }));
     rows[0].raw_mud = replay::rows::Recorded::Value(0);
     let mut report = Report::default();
-    compare(&frame, &saved, Ok(&content), &mut report).unwrap();
+    compare(
+        &frame,
+        &saved,
+        Ok(&content),
+        Err("outside this fixture".into()),
+        &mut report,
+    )
+    .unwrap();
     assert_eq!(report.differences.len(), 3);
     for field in ["snow", "temperature", "mud"] {
         assert!(
@@ -186,18 +248,41 @@ regions={0={region=0 temperature=-90071992547.40993
     let expected = &mut saved.weather.provinces.as_mut().unwrap()[0];
     expected.temperature = Some(Decimal::parse(b"0").unwrap());
     let mut report = Report::default();
-    compare(&frame, &saved, Ok(&content), &mut report).unwrap();
+    compare(
+        &frame,
+        &saved,
+        Ok(&content),
+        Err("outside this fixture".into()),
+        &mut report,
+    )
+    .unwrap();
     assert!(report.differences.is_empty());
     saved.weather.provinces.as_mut().unwrap()[0].temperature = None;
     let mut report = Report::default();
-    compare(&frame, &saved, Ok(&content), &mut report).unwrap();
+    compare(
+        &frame,
+        &saved,
+        Ok(&content),
+        Err("outside this fixture".into()),
+        &mut report,
+    )
+    .unwrap();
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("province 0.temperature"));
 
     *frame.tables[TableId::WeatherRegions.index()] = TableView::Unavailable {
         reason: "region read failed".into(),
     };
-    assert!(compare(&frame, &saved, Ok(&content), &mut Report::default()).is_err());
+    assert!(
+        compare(
+            &frame,
+            &saved,
+            Ok(&content),
+            Err("outside this fixture".into()),
+            &mut Report::default()
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -260,6 +345,8 @@ regions={0={region=0}}
                 temperature: replay::rows::ProvinceTemperature::anchored(state),
                 raw_mud: replay::rows::Recorded::Value(0),
                 temperature_pass: replay::rows::Recorded::Value(pass),
+                // The modifier test covers the accumulator.
+                modifiers: replay::rows::Recorded::NotRecorded,
                 ..Default::default()
             }]));
         *frame.tables[TableId::WeatherRegions.index()] =
@@ -281,29 +368,524 @@ regions={0={region=0}}
         &frame(Some(pass(checksum))),
         &saved,
         Ok(&content),
+        Err("outside this fixture".into()),
         &mut report,
     )
     .unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(report.failed_comparisons.is_empty(), "{:?}", report.failed_comparisons);
     assert_eq!(report.scalar_checks, 2);
-    // A refused derivation compares nothing, once, by name.
+    // A refused derivation compares no saved temperature: one failed comparison, so
+    // coverage is incomplete and the run fails.
     let mut report = Report::default();
     compare(
         &frame(Some(pass(checksum ^ 1))),
         &saved,
         Ok(&content),
+        Err("outside this fixture".into()),
         &mut report,
     )
     .unwrap();
     assert!(report.differences.is_empty());
     assert_eq!(report.scalar_checks, 1);
+    assert_eq!(report.failed_comparisons.len(), 1, "{:?}", report.failed_comparisons);
+    assert!(
+        report.failed_comparisons["WeatherProvinces.temperature"]
+            .contains("temperature refused")
+            && report.failed_comparisons["WeatherProvinces.temperature"].contains("checksum")
+    );
+    assert!(report.coverage_line().contains(": incomplete;"));
+    assert!(report.outcome().is_err());
+    let mut report = Report::default();
+    compare(
+        &frame(None),
+        &saved,
+        Ok(&content),
+        Err("outside this fixture".into()),
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty());
+    assert_eq!(report.scalar_checks, 1);
+    assert_eq!(
+        report.failed_comparisons.keys().collect::<Vec<_>>(),
+        ["WeatherProvinces.temperature"]
+    );
+    assert!(report.outcome().is_err());
+}
+
+fn statics(values: &[(&str, i64)]) -> installed_content::modifiers::Modifiers {
+    let mut block = installed_content::modifiers::Modifiers::default();
+    block.values = values
+        .iter()
+        .map(|&(name, value)| installed_content::modifiers::Modifier {
+            key: name.to_owned(),
+            name: name.to_ascii_lowercase(),
+            text: String::new(),
+            value,
+        })
+        .collect();
+    block
+}
+
+fn entries(values: &[(u32, i64)]) -> replay::rows::Recorded<Option<ProvinceWeatherModifiers>> {
+    replay::rows::Recorded::Value(Some(ProvinceWeatherModifiers {
+        entries: values
+            .iter()
+            .map(|&(key, value)| replay::rows::ProvinceModifierEntry { key, value })
+            .collect(),
+    }))
+}
+
+#[test]
+fn province_modifier_accumulators_compare_with_their_rebuild_from_the_save() {
+    use replay::rows::{LexicalTokenRow, ModifierDefinitionRow};
+
+    // Province 0: mud, a temperature both cold intervals hold and a list naming
+    // flood twice. Province 1: snow both ground snow intervals hold once the
+    // permanent snow is added. Province 2: medium snow alone.
+    let saved = installed_content_save::parse(
+        br#"HOI4txt
+date=1936.1.1.1 game_unique_id=campaign game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 version=build
+countries={} states={} provinces={}
+weather={
+provinces={
+    0={province=0 temperature=-25 mud=yes custom_modifiers={flood=-1 flood=30}}
+    1={province=1 snow=6 temperature=-10}
+    2={province=2 snow=3 temperature=0}
+}
+regions={}
+}"#,
+    )
+    .unwrap();
+    let (speed, attrition, cold, supply) = (1, 2, 3, 4);
+    // `uncategorised` has no category, so the game never adds it to an accumulator.
+    let names: [(u32, &[u8]); 5] = [
+        (speed, b"speed".as_slice()),
+        (attrition, b"Attrition".as_slice()),
+        (cold, b"cold".as_slice()),
+        (supply, b"supply".as_slice()),
+        (5, b"uncategorised".as_slice()),
+    ];
+    let mut content = ProvinceModifierContent {
+        rules: ProvinceModifierRules {
+            temperature: [
+                [-10_000_000, -2_000_000],
+                [-3_000_000, -500_000],
+                [2_500_000, 3_500_000],
+                [3_000_000, 10_000_000],
+            ],
+            ground_snow: [[100_000, 1_000_000], [500_000, 2_000_000]],
+            snow_gain_max: 1_200_000,
+        },
+        statics: [
+            (
+                "weather_mud",
+                statics(&[
+                    ("speed", -30_000),
+                    ("ATTRITION", 10_000),
+                    ("uncategorised", 7),
+                    ("unregistered", 9),
+                ]),
+            ),
+            ("weather_extreme_cold", statics(&[("cold", 50_000)])),
+            ("weather_very_cold", statics(&[("cold", 20_000)])),
+            ("weather_very_hot", statics(&[])),
+            ("weather_extreme_hot", statics(&[("supply", -10_000)])),
+            ("weather_ground_snow_medium", statics(&[("speed", -10_000)])),
+            (
+                "weather_ground_snow_high",
+                statics(&[("speed", -20_000), ("cold", 5_000)]),
+            ),
+            ("flood", statics(&[("supply", -25_000), ("speed", -5_000)])),
+        ]
+        .into_iter()
+        .map(|(name, block)| (name.to_owned(), Ok(block)))
+        .collect(),
+        notes: Vec::new(),
+    };
+    let row = |id, snow, permanent_snow, mud, modifiers| WeatherProvinceRow {
+        id,
+        snow,
+        permanent_snow,
+        raw_mud: replay::rows::Recorded::Value(mud),
+        temperature: replay::rows::ProvinceTemperature::NOT_RECORDED,
+        modifiers,
+        ..Default::default()
+    };
+    let rows = vec![
+        // Mud and the first cold interval; each list entry adds its values.
+        row(
+            0,
+            0,
+            0,
+            1,
+            entries(&[
+                (speed, -40_000),
+                (attrition, 10_000),
+                (cold, 50_000),
+                (supply, -50_000),
+            ]),
+        ),
+        // High ground snow wins over medium.
+        row(
+            1,
+            600_000,
+            100_000,
+            0,
+            entries(&[(speed, -20_000), (cold, 25_000)]),
+        ),
+        row(2, 300_000, 0, 0, entries(&[(speed, -10_000)])),
+    ];
+    let mut frame = DecodedFrame {
+        branch: 1,
+        hour: saved.date.engine_hour().unwrap(),
+        metrics: Metrics::default(),
+        tables: std::array::from_fn(|_| TableView::Unavailable {
+            reason: "outside weather comparison".into(),
+        })
+        .map(Into::into),
+    };
+    *frame.tables[TableId::ModifierDefinitions.index()] = TableView::Complete(
+        TableRows::ModifierDefinitions(
+            names
+                .iter()
+                .map(|&(index, _)| ModifierDefinitionRow {
+                    index,
+                    token: index + 10,
+                    category_mask: u32::from(index != 5),
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(
+            names
+                .iter()
+                .map(|&(index, literal)| LexicalTokenRow {
+                    token: index + 10,
+                    literal: literal.to_vec(),
+                })
+                .collect(),
+        ));
+    let run = |frame: &mut DecodedFrame,
+               rows: &[WeatherProvinceRow],
+               content: Result<&ProvinceModifierContent, String>| {
+        *frame.tables[TableId::WeatherProvinces.index()] =
+            TableView::Complete(TableRows::WeatherProvinces(rows.to_vec()));
+        let mut report = Report::default();
+        compare_provinces(
+            frame,
+            &saved,
+            Err("outside this fixture".into()),
+            content,
+            &mut report,
+        )
+        .unwrap();
+        report
+    };
+    let report = run(&mut frame, &rows, Ok(&content));
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["WeatherProvinces modifiers"], 3);
     assert!(
         report
             .limitations
             .keys()
-            .any(|reason| reason.contains("temperature refused") && reason.contains("checksum"))
+            .any(|reason| reason.contains("does not hold permanent snow"))
     );
+
+    // The mud, thermal and ground snow part is runtime-only: province 2 kept very cold and
+    // no ground snow from an earlier rebuild while the save selects medium snow alone.
+    let mut held = rows.clone();
+    held[2].modifiers = entries(&[(cold, 20_000)]);
+    let report = run(&mut frame, &held, Ok(&content));
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(report.limitations.values().flatten().any(|subject| subject
+        == "WeatherProvinces.modifiers mud, thermal and ground snow part: runtime-only; no text-save equality claim"));
+    // It hides no mismatch in the save-backed part: an extra key, a list entry the save
+    // does not hold, or a wrong static term all differ.
+    held[2].modifiers = entries(&[(cold, 20_000), (supply, 1)]);
+    let report = run(&mut frame, &held, Ok(&content));
+    assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    held[2].modifiers = entries(&[(cold, 20_000), (supply, -25_000), (speed, -5_000)]);
+    let report = run(&mut frame, &held, Ok(&content));
+    assert!(!report.differences.is_empty());
+    let mut wrong_term = content.clone();
+    wrong_term.statics.insert(
+        "flood".into(),
+        Ok(statics(&[("supply", -25_001), ("speed", -5_000)])),
+    );
+    let report = run(&mut frame, &rows, Ok(&wrong_term));
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.starts_with("weather province 0.modifiers.supply")),
+        "{:?}",
+        report.differences
+    );
+
+    // A state the content's intervals cannot select explains nothing: with empty ground
+    // snow intervals, medium snow's -10000 speed cannot stand in for a wrong list total.
+    let mut collided = rows.clone();
+    collided[0].modifiers = entries(&[
+        (speed, -50_000),
+        (attrition, 10_000),
+        (cold, 50_000),
+        (supply, -50_000),
+    ]);
+    let report = run(&mut frame, &collided, Ok(&content));
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    let mut no_snow = content.clone();
+    no_snow.rules.ground_snow = [[0, 0], [0, 0]];
+    let report = run(&mut frame, &collided, Ok(&no_snow));
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.starts_with("weather province 0.modifiers.speed")),
+        "{:?}",
+        report.differences
+    );
+    // Two distinct states that both fit leave the list's part uncertified: high snow
+    // adding a zero supply entry fits province 0, whose list already holds supply, as
+    // well as no ground snow does. With every other province consistent, the province is
+    // uncovered and the comparison incomplete, never passed.
+    let mut twin = content.clone();
+    twin.statics
+        .insert("weather_ground_snow_high".into(), Ok(statics(&[("supply", 0)])));
+    let mut twin_rows = rows.clone();
+    twin_rows[1].modifiers = entries(&[(cold, 20_000), (supply, 0)]);
+    let report = run(&mut frame, &twin_rows, Ok(&twin));
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["WeatherProvinces modifiers"], 2);
+    assert_eq!(
+        report.failed_comparisons,
+        BTreeMap::from([(
+            "weather province 0.modifiers".to_owned(),
+            "weather province 0.modifiers save-backed part ambiguous: 2 distinct mud, thermal and ground snow states the content can select fit".to_owned(),
+        )])
+    );
+    assert!(report.coverage_line().contains(": incomplete;"));
+    assert!(report.outcome().is_err());
+
+    // A static value adds as the game scales it at multiplier one: an accepted script
+    // value of 1000000000, stored as fixed5, wraps in the multiply and adds the wrapped
+    // quotient. The unscaled value differs.
+    let mut huge = content.clone();
+    huge.statics.insert(
+        "flood".into(),
+        Ok(statics(&[("supply", 100_000_000_000_000)])),
+    );
+    let mut once = saved.clone();
+    once.weather.provinces.as_mut().unwrap()[0].custom_modifiers =
+        Some(vec![("flood".into(), 3)]);
+    let compare_once = |frame: &mut DecodedFrame, supply_total: i64| {
+        let mut wrapped = rows.clone();
+        wrapped[0].modifiers = entries(&[
+            (speed, -30_000),
+            (attrition, 10_000),
+            (cold, 50_000),
+            (supply, supply_total),
+        ]);
+        *frame.tables[TableId::WeatherProvinces.index()] =
+            TableView::Complete(TableRows::WeatherProvinces(wrapped));
+        let mut report = Report::default();
+        compare_provinces(
+            frame,
+            &once,
+            Err("outside this fixture".into()),
+            Ok(&huge),
+            &mut report,
+        )
+        .unwrap();
+        report
+    };
+    let report = compare_once(&mut frame, -84_467_440_737_095);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(report.failed_comparisons.is_empty(), "{:?}", report.failed_comparisons);
+    assert_eq!(report.compared_tables["WeatherProvinces modifiers"], 3);
+    let report = compare_once(&mut frame, 100_000_000_000_000);
+    assert_eq!(
+        report.differences,
+        ["weather province 0.modifiers.supply (definition 4): replay 100000000000000, save -84467440737095"]
+    );
+
+    // A changed value, a missing key and an extra key each differ, by name
+    // when a static modifier holds the key and by definition otherwise.
+    let mut changed = rows.clone();
+    changed[0].modifiers = entries(&[
+        (speed, -40_000),
+        (attrition, 10_001),
+        (cold, 50_000),
+        (supply, -50_000),
+    ]);
+    changed[1].modifiers = entries(&[(speed, -20_000)]);
+    changed[2].modifiers = entries(&[(speed, -10_000), (supply, 1), (9, 1)]);
+    let report = run(&mut frame, &changed, Ok(&content));
+    assert_eq!(report.differences.len(), 4, "{:?}", report.differences);
+    for expected in [
+        "weather province 0.modifiers.attrition (definition 2): replay 10001, save 10000",
+        "weather province 1.modifiers.cold (definition 3): replay \"absent\", save 25000",
+        "weather province 2.modifiers.supply (definition 4): replay 1, save \"absent\"",
+        "weather province 2.modifiers.definition 9: replay 1, save \"absent\"",
+    ] {
+        assert!(
+            report.differences.iter().any(|difference| difference == expected),
+            "{expected}: {:?}",
+            report.differences
+        );
+    }
+
+    // An entry the save's list no longer names differs; it is never waived.
+    let mut expired = saved.clone();
+    expired.weather.provinces.as_mut().unwrap()[0].custom_modifiers =
+        Some(vec![("flood".into(), 3)]);
+    *frame.tables[TableId::WeatherProvinces.index()] =
+        TableView::Complete(TableRows::WeatherProvinces(rows.clone()));
     let mut report = Report::default();
-    compare(&frame(None), &saved, Ok(&content), &mut report).unwrap();
-    assert_eq!(report.scalar_checks, 1);
+    compare_provinces(
+        &frame,
+        &expired,
+        Err("outside this fixture".into()),
+        Ok(&content),
+        &mut report,
+    )
+    .unwrap();
+    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+
+    // A refused row leaves that province's accumulator uncompared, and unread content
+    // every one: each is a failed comparison, so coverage is incomplete and the run fails.
+    let mut refused = rows.clone();
+    refused[2].modifiers = replay::rows::Recorded::Value(None);
+    let report = run(&mut frame, &refused, Ok(&content));
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["WeatherProvinces modifiers"], 2);
+    assert_eq!(
+        report.failed_comparisons,
+        BTreeMap::from([(
+            "weather province 2.modifiers".to_owned(),
+            "weather province 2.modifiers: read refused, not compared".to_owned(),
+        )])
+    );
+    assert!(report.coverage_line().contains(": incomplete;"));
+    assert!(report.outcome().is_err());
+    let report = run(&mut frame, &rows, Err("weather content failed".into()));
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["WeatherProvinces modifiers"], 0);
+    assert_eq!(
+        report.failed_comparisons,
+        BTreeMap::from([(
+            "WeatherProvinces.modifiers".to_owned(),
+            "WeatherProvinces.modifiers refused: weather content failed; 3 recorded accumulators not compared".to_owned(),
+        )])
+    );
+    assert!(report.coverage_line().contains(": incomplete;"));
+    assert!(report.outcome().is_err());
+    content
+        .statics
+        .insert("flood".into(), Err("flood in common/modifiers/a.txt: refused".into()));
+    content.statics.insert(
+        "weather_ground_snow_medium".into(),
+        Ok(statics(&[("unregistered", 1)])),
+    );
+    let report = run(&mut frame, &rows, Ok(&content));
+    assert_eq!(report.compared_tables["WeatherProvinces modifiers"], 2);
+    assert_eq!(
+        report.failed_comparisons,
+        BTreeMap::from([(
+            "weather province 0.modifiers".to_owned(),
+            "weather province 0.modifiers not rebuilt: flood in common/modifiers/a.txt: refused"
+                .to_owned(),
+        )])
+    );
+    // A name without a definition was dropped at load: the medium snow modifier holding
+    // only one is empty and adds nothing.
+    assert_eq!(
+        report.differences,
+        ["weather province 2.modifiers.speed (definition 1): replay -10000, save \"absent\""]
+    );
+
+    // Without the recorded definitions nothing is compared, by name.
+    *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+        reason: "tokens unread".into(),
+    };
+    let report = run(&mut frame, &rows, Ok(&content));
+    assert_eq!(report.compared_tables["WeatherProvinces modifiers"], 0);
+    assert_eq!(
+        report.failed_comparisons.keys().collect::<Vec<_>>(),
+        ["WeatherProvinces.modifiers"]
+    );
+    assert!(
+        report.failed_comparisons["WeatherProvinces.modifiers"]
+            .starts_with("WeatherProvinces.modifiers refused: modifier definitions")
+    );
+    assert!(report.outcome().is_err());
+}
+
+/// A static modifier adds only its own categorised entries, zeros included; an
+/// `added_modifier` child adds nothing, and a modifier whose every entry is gated off
+/// with no tooltip or child is empty.
+#[test]
+fn a_static_modifier_adds_its_own_categorised_entries() {
+    use replay::rows::{LexicalTokenRow, ModifierDefinitionRow};
+    let definitions = [
+        ModifierDefinitionRow {
+            index: 1,
+            token: 11,
+            category_mask: 1,
+            ..Default::default()
+        },
+        ModifierDefinitionRow {
+            index: 2,
+            token: 12,
+            category_mask: 1,
+            feature_selector: 4,
+            eligibility: 1,
+            ..Default::default()
+        },
+        ModifierDefinitionRow {
+            index: 3,
+            token: 13,
+            ..Default::default()
+        },
+    ];
+    let tokens = [(11, b"open"), (12, b"gate"), (13, b"none")].map(|(token, literal)| {
+        LexicalTokenRow {
+            token,
+            literal: literal.to_vec(),
+        }
+    });
+    // The hour's features leave the gated definition off.
+    let registry = Registry::new(&definitions, &tokens, Some(1)).unwrap();
+    let mut names = BTreeMap::new();
+    let mut parent = statics(&[("open", 0), ("gate", 5), ("none", 3)]);
+    parent.children.push(statics(&[("open", 7)]));
+    assert_eq!(
+        ModifierRebuild::added(&registry, "parent", &parent, &mut names),
+        Ok(vec![(1, 0), (2, 5)])
+    );
+    let gated = statics(&[("gate", 5)]);
+    assert_eq!(
+        ModifierRebuild::added(&registry, "gated", &gated, &mut names),
+        Ok(Vec::new())
+    );
+    let mut with_child = gated.clone();
+    with_child.children.push(statics(&[]));
+    assert_eq!(
+        ModifierRebuild::added(&registry, "gated", &with_child, &mut names),
+        Ok(vec![(2, 5)])
+    );
+}
+
+/// The accumulator adds a static value as the game scales it at multiplier one: a
+/// wrapping multiply by one, then a signed division, so a modded value whose product
+/// wraps adds the wrapped quotient.
+#[test]
+fn a_static_value_scales_with_the_native_wrapping_multiply() {
+    assert_eq!(scaled(25_000), 25_000);
+    assert_eq!(scaled(-25_000), -25_000);
+    // An accepted script value of 1000000000, stored as fixed5.
+    assert_eq!(scaled(100_000_000_000_000), -84_467_440_737_095);
 }

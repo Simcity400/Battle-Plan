@@ -17,7 +17,10 @@
 //! randomization effect, reload command and reset), the reset and reload
 //! Commands  (reload initializes before reseeding), snow, mud and region
 //! console commands, the console command running hourly game state, the
-//! load reader and post-load initial passes. The country input family
+//! load reader and post-load initial passes, and the province modifier
+//! addition and removal and the daily expiry's rebuild of a province whose list
+//! dropped a modifier, which rebuild a province's modifier accumulator outside
+//! the window. The country input family
 //! hooks them and counts each call on entry and return
 //! ([`crate::country_input_changes::weather_writes`]). A new game allocates
 //! its new manager before freeing the old one, so their addresses differ.
@@ -127,8 +130,8 @@ pub struct WeatherCarry {
     provinces: Vec<u8>,
     /// Every region's combat modifier entries of the held read.
     combat: Vec<Option<RegionModifiers>>,
-    /// Every province's weather modifier entries of the held read.
-    province_modifiers: Vec<Option<ProvinceModifiers>>,
+    /// Every province's weather modifier accumulator of the held read.
+    province_modifiers: ProvinceModifiers,
     /// Scratch for the comparison reads.
     scratch: Vec<u8>,
     /// This hour, set by the game thread before dispatch.
@@ -161,7 +164,7 @@ impl Default for WeatherCarry {
             regions: Vec::new(),
             provinces: Vec::new(),
             combat: Vec::new(),
-            province_modifiers: Vec::new(),
+            province_modifiers: ProvinceModifiers::default(),
             scratch: Vec::new(),
             hour: 0,
             force_full: false,
@@ -664,27 +667,16 @@ fn follow_combat(
     true
 }
 
-/// One province's weather modifier entries.
-fn province_modifiers(
+/// Reads one province's accumulator into `out`, counting the lookup; false refuses it.
+fn read_province(
     memory: &impl Memory,
     array: engine::cpdx_array::Array,
     slot: u32,
-) -> Option<ProvinceModifiers> {
+    out: &mut Vec<super::entries::Entry>,
+    grow: bool,
+) -> bool {
     MODIFIER_LOOKUPS.fetch_add(1, Relaxed);
-    array
-        .element(slot, sweather_per_province::STRIDE)
-        .and_then(|record| record.checked_add(sweather_per_province::MODIFIERS))
-        .and_then(|accumulator| {
-            let mut values = [engine::modifier_accumulator::Value::default(); 5];
-            engine::modifier_accumulator::lookup_many_at(
-                memory,
-                accumulator,
-                &PROVINCE_MODIFIER_KEYS,
-                &mut values,
-            )
-            .ok()
-            .map(|()| values.map(|value| value.present.then_some(value.raw)))
-        })
+    super::entries::read(memory, array, slot, out, grow)
 }
 
 /// [`WeatherJob::province_modifiers`] of every province record: the window's
@@ -705,54 +697,66 @@ fn capture_province_modifiers_timed(memory: &impl Memory, job: &mut WeatherJob) 
     let Some(array) = job.provinces.array else {
         return;
     };
-    let count = array.count as usize;
-    if job.worker_growth && job.province_modifiers.capacity() < count {
-        let _ = engine::allocation::reserve_exact(&mut job.province_modifiers, count)
-            .map_err(crate::allocation::io);
-    }
-    let room = count.min(job.province_modifiers.capacity());
-    // Provinces beyond the storage are refused, each counted.
-    MODIFIER_REFUSALS.fetch_add((count - room) as u64, Relaxed);
-    if let Some(carry) = job.carry.as_deref_mut()
-        && carry.provinces_followed
-        && let Some(window) = carry.window(Part::Provinces)
-        && carry.province_modifiers.len() == count
-        && follow_province_modifiers(memory, array, carry, window)
-    {
-        job.province_modifiers
-            .extend_from_slice(&carry.province_modifiers[..room]);
+    let count = array.count;
+    let grow = job.worker_growth;
+    job.province_modifiers.clear();
+    job.province_modifiers
+        .reserve_provinces(count as usize, grow);
+    let mut scratch = std::mem::take(&mut job.province_scratch);
+    let window = match job.carry.as_deref_mut() {
+        Some(carry)
+            if carry.provinces_followed && carry.province_modifiers.len() == count as usize =>
+        {
+            carry.window(Part::Provinces).filter(|&window| {
+                follow_province_modifiers(memory, array, carry, window, &mut scratch, grow)
+            })
+        }
+        _ => None,
+    };
+    if window.is_some() {
         MODIFIER_WINDOW_HOURS.fetch_add(1, Relaxed);
-        return;
+    } else {
+        MODIFIER_FULL_HOURS.fetch_add(1, Relaxed);
     }
-    MODIFIER_FULL_HOURS.fetch_add(1, Relaxed);
-    for slot in 0..room {
-        let read = province_modifiers(memory, array, slot as u32);
-        if read.is_none() {
+    let carried = job
+        .carry
+        .as_deref()
+        .map(|carry| &carry.province_modifiers);
+    for slot in 0..count {
+        let entries = match (window, carried) {
+            (Some(window), Some(carried)) if !in_window(slot, window, count) => {
+                carried.get(slot as usize)
+            }
+            _ => read_province(memory, array, slot, &mut scratch, grow).then_some(&scratch[..]),
+        };
+        if entries.is_none() {
             MODIFIER_REFUSALS.fetch_add(1, Relaxed);
         }
-        job.province_modifiers.push(read);
+        if !job.province_modifiers.push(entries, grow) {
+            // This province and those after it, beyond the storage, are refused.
+            MODIFIER_REFUSALS.fetch_add(u64::from(count - slot), Relaxed);
+            break;
+        }
     }
+    job.province_scratch = scratch;
     if let Some(carry) = job.carry.as_deref_mut() {
-        carry.province_modifiers.clear();
-        if room == count
-            && job.province_modifiers.iter().all(Option::is_some)
-            && (carry.province_modifiers.capacity() >= count
-                || engine::allocation::reserve_exact(&mut carry.province_modifiers, count).is_ok())
-        {
-            carry
-                .province_modifiers
-                .extend_from_slice(&job.province_modifiers[..count]);
+        let whole = job.province_modifiers.len() == count as usize
+            && job.province_modifiers.complete();
+        if !(whole && carry.province_modifiers.copy_from(&job.province_modifiers)) {
+            carry.province_modifiers.clear();
         }
     }
 }
 
-/// The window's province modifier entries into the carried ones, after
-/// comparing the hour's carried slots; false on a difference or a refusal.
+/// Compares the hour's carried slots outside the window with the province records'
+/// accumulators; false on a difference or a refusal.
 fn follow_province_modifiers(
     memory: &impl Memory,
     array: engine::cpdx_array::Array,
     carry: &mut WeatherCarry,
-    (first, visits): (u32, u32),
+    window: (u32, u32),
+    scratch: &mut Vec<super::entries::Entry>,
+    grow: bool,
 ) -> bool {
     let count = array.count;
     let (start, step) = compared(carry.hour, carry.every);
@@ -760,13 +764,13 @@ fn follow_province_modifiers(
     let mut slot = start;
     let begin = qpc();
     while slot < count {
-        if !in_window(slot, (first, visits), count) {
-            let Some(fresh) = province_modifiers(memory, array, slot) else {
+        if !in_window(slot, window, count) {
+            if !read_province(memory, array, slot, scratch, grow) {
                 SAMPLED.record(verified, mismatches, 3);
                 return false;
-            };
+            }
             verified += 1;
-            mismatches += u64::from(Some(fresh) != carry.province_modifiers[slot as usize]);
+            mismatches += u64::from(carry.province_modifiers.get(slot as usize) != Some(scratch));
         }
         slot += step;
     }
@@ -776,13 +780,6 @@ fn follow_province_modifiers(
         MODIFIER_DIFFERENCES.fetch_add(mismatches, Relaxed);
         carry.differed();
         return false;
-    }
-    for visit in 0..visits {
-        let slot = (first + visit) % count;
-        let Some(fresh) = province_modifiers(memory, array, slot) else {
-            return false;
-        };
-        carry.province_modifiers[slot as usize] = Some(fresh);
     }
     true
 }

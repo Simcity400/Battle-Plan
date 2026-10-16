@@ -34,7 +34,7 @@ tooltip_keys! {
 
 /// common unit adjuster, nonzero width, common modifiers,
 /// supply-flow reduction (even zero), then movement cost (even zero).
-fn effects(
+pub(crate) fn effects(
     terrain: &TerrainCategory,
     definitions: &Definitions<'_>,
     icons: &dyn TextIcons,

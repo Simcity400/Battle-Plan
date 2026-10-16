@@ -320,7 +320,7 @@ struct Capture {
     regions: Vec<u8>,
     provinces: Vec<u8>,
     combat: Vec<Option<RegionModifiers>>,
-    province_modifiers: Vec<Option<ProvinceModifiers>>,
+    province_modifiers: ProvinceModifiers,
     log: Vec<u8>,
 }
 
@@ -617,7 +617,7 @@ fn a_difference_reads_all_and_only_an_unexplained_one_poisons() {
 fn a_record_difference_reads_every_province_modifier_entry() {
     let rotation = crate::sampled_verify::ROTATION as u32;
     let mut world = World::new(80, 9, (5, 2));
-    let key = PROVINCE_MODIFIER_KEYS[0];
+    let key = engine::modifier_keys::ARMY_SPEED_FACTOR;
     let entries: Vec<usize> = (0..80)
         .map(|slot| world.province_entry(slot, key, i64::from(slot)))
         .collect();

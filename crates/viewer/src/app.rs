@@ -901,6 +901,8 @@ pub struct Viewer {
     land_marker_tooltips: combat::land_marker_tooltips::Cache,
     naval_marker_tooltips: combat::naval_marker_tooltips::Cache,
     province_tooltips: viewer_counter_products::map::province_tooltips::Cache,
+    /// The terrain map mode's province hover, which replaces the political one.
+    terrain_tooltips: combat::terrain_mode::Cache,
     counter_tooltips: viewer_counter_products::map::counter_tooltips::Cache,
     tooltip_refused: BTreeMap<String, usize>,
     // counters
@@ -1286,6 +1288,7 @@ impl Viewer {
             land_marker_tooltips: Default::default(),
             naval_marker_tooltips: Default::default(),
             province_tooltips: Default::default(),
+            terrain_tooltips: Default::default(),
             counter_tooltips: Default::default(),
             tooltip_refused: Default::default(),
             // counters
@@ -1454,6 +1457,7 @@ impl Viewer {
         self.land_marker_tooltips = Default::default();
         self.naval_marker_tooltips = Default::default();
         self.province_tooltips = Default::default();
+        self.terrain_tooltips = Default::default();
         self.counter_tooltips = Default::default();
         self.tooltip_refused.clear();
         self.source = None;
@@ -1875,6 +1879,7 @@ impl Viewer {
         self.land_marker_tooltips = Default::default();
         self.naval_marker_tooltips = Default::default();
         self.province_tooltips = Default::default();
+        self.terrain_tooltips = Default::default();
         self.counter_tooltips = Default::default();
         self.tooltip_refused.clear();
         self.source = None;
@@ -2564,6 +2569,14 @@ impl Viewer {
             }
         };
         let vision = self.overlay_tables.as_ref()?.3.vision();
+        if self.map_mode
+            == viewer_world::map::map_mode::MapMode::Stock(viewer_world::map::map_mode::Stock::Terrain)
+        {
+            let text = self
+                .terrain_tooltips
+                .request(&document.combat, frame, province, vision);
+            return Some((text, [0.0, 0.0, extent[0], extent[1]], Some(province)));
+        }
         let text = self.province_tooltips.request(
             &document.counter_content,
             document.icons.raids.movement_reads(),

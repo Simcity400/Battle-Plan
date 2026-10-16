@@ -505,7 +505,7 @@ const REBUILD_LOCALIZED_NAME_RVA: usize = 0x70_9950;
 
 /// Each hooked site, how its arguments name its countries, and the tables
 /// its writes reach.
-pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
+pub const MUTATIONS: [(MutationSite, Receiver, Tables); 84] = [
     // Country modifier recalculation (country): stores RCX in its home slot.
     (
         MutationSite {
@@ -1686,6 +1686,54 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Every,
         Tables::WEATHER,
     ),
+    // Province modifier addition (manager, province, static modifier, days,
+    // rebuild): the add_province_modifier effect and building damage put a modifier
+    // in the province's list and, when the fifth (stack) argument is set, rebuild its
+    // weather modifier accumulator. Tests the province before saving RBX.
+    (
+        MutationSite {
+            name: "weather_add_province_modifier",
+            rva: 0xf0_07c0,
+            sentinel: [
+                0x85, 0xd2, 0x0f, 0x88, 0x8f, 0x00, 0x00, 0x00, 0x53, 0x48, 0x83, 0xec, 0x30, 0x4d,
+                0x8b, 0xd0,
+            ],
+        },
+        Receiver::Every,
+        Tables::WEATHER,
+    ),
+    // Province modifier removal (manager, province, static modifier, rebuild): the
+    // remove_province_modifier effect and building repair take a modifier out of the
+    // province's list and rebuild its accumulator. Tests the province before
+    // storing RBP at RSP+0x18.
+    (
+        MutationSite {
+            name: "weather_remove_province_modifier",
+            rva: 0xf0_b6f0,
+            sentinel: [
+                0x85, 0xd2, 0x0f, 0x88, 0x5d, 0x01, 0x00, 0x00, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56,
+                0x48, 0x83,
+            ],
+        },
+        Receiver::Every,
+        Tables::WEATHER,
+    ),
+    // The daily province modifier expiry's rebuild (record, manager, force): a CALL the
+    // expiry makes only for a province whose list just dropped a modifier, so the hook
+    // sees nothing on days without an expiry. The detour calls the rebuild itself
+    // ([`PROVINCE_WEATHER_REBUILD_RVA`]).
+    (
+        MutationSite {
+            name: "weather_expiry_rebuild",
+            rva: 0xf0_35d0,
+            sentinel: [
+                0xe8, 0xfb, 0x94, 0x00, 0x00, 0x49, 0x83, 0xc6, 0x08, 0x4d, 0x3b, 0xf4, 0x0f, 0x85,
+                0x6e, 0xff,
+            ],
+        },
+        Receiver::Every,
+        Tables::WEATHER,
+    ),
     // Technology progress addition (technology, amount, source, notify) writes
     // `ctechnology::LIVE_PROGRESS`. Daily slot progress (source 0) is drift read
     // afresh by a carried slice; assignment (source 1) and console (source 0) run it
@@ -1730,10 +1778,16 @@ pub const FACTION_SHARING_BASE: usize = 70;
 /// outside the native hourly window: their detours count each call on entry
 /// and on return, and the weather read follows the window only while that
 /// count is unchanged.
-pub const WEATHER_WRITERS: std::ops::Range<usize> = 71..80;
+pub const WEATHER_WRITERS: std::ops::Range<usize> = 71..83;
+/// Index in [`MUTATIONS`] of the expiry's rebuild CALL, the one weather writer hooked at a
+/// call site rather than a function entry.
+pub const WEATHER_EXPIRY_REBUILD: usize = 82;
+/// A province weather record's modifier accumulator rebuild (record, manager, force), the
+/// target of [`WEATHER_EXPIRY_REBUILD`].
+pub const PROVINCE_WEATHER_REBUILD_RVA: usize = 0xf0_cad0;
 /// Index of technology progress addition in [`MUTATIONS`], whose
 /// detour marks only a call with [`EFFECT_PROGRESS_SOURCE`].
-pub const RESEARCH_PROGRESS: usize = 80;
+pub const RESEARCH_PROGRESS: usize = 83;
 /// Progress source (R8): technology-setting and random-stolen-bonus effects
 /// pass 2, daily slot progress and console pass 0, assignment passes 1.
 pub const EFFECT_PROGRESS_SOURCE: u32 = 2;

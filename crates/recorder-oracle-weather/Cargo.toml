@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+installed-content.workspace = true
 installed-content-save.workspace = true
 recorder-oracle-core.workspace = true
 recorder-oracle-support.workspace = true

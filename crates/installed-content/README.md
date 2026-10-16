@@ -144,7 +144,7 @@ Dependent lookups/draws retain element and subtree refusals for undefined reads,
 
 Map readers share definition rows, raster loading, geometry and adjacencies. Resolve file names/dimensions from the stack; record positions, authored IDs and terrain ordinals are distinct. Map area uses raster cells without physical-area calibration.
 
-[weather/temperature.rs](../installed-content-weather/src/weather/temperature.rs) resolves what playback's temperature pass reads: `common/weather.txt`'s temperature settings, window and terrain modifiers, each province record's activity, neighbours, terrain and last-listing strategic region, and each region template's weather periods ([regions.rs](../installed-content-regions/src/regions.rs)).
+[weather/temperature.rs](../installed-content-weather/src/weather/temperature.rs) resolves what playback's temperature pass reads: `common/weather.txt`'s temperature settings, window and terrain modifiers, each province record's activity, neighbours, terrain and last-listing strategic region, and each region template's weather periods ([regions.rs](../installed-content-regions/src/regions.rs)). [weather.rs](../installed-content-weather/src/weather.rs) also gives the rules of a province weather record's modifier rebuild: the thermal and ground snow intervals and `snow_gain_max`.
 
 World interfaces supply recorded movement/raid facts. Missing admission inputs stay unknown; do not infer port sea access or runtime caches from nearby assets. [raids/target.rs](../installed-content-raids/src/raids/target.rs) shares target/name joins. The [raid tooltip contract](../viewer-raids/src/map/raids/tooltips/README.md) owns consumer and capture rules.
 

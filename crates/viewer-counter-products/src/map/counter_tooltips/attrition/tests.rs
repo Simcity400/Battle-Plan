@@ -499,8 +499,10 @@ fn a_moving_unit_without_weather_attrition_has_no_weather_lines() {
         TableRows::WeatherProvinces(vec![WeatherProvinceRow {
             id: 7,
             modifiers: Recorded::Value(Some(replay::rows::ProvinceWeatherModifiers {
-                winter_attrition: Some(10_000),
-                ..Default::default()
+                entries: vec![replay::rows::ProvinceModifierEntry {
+                    key: engine::modifier_keys::WINTER_ATTRITION,
+                    value: 10_000,
+                }],
             })),
             ..Default::default()
         }]),

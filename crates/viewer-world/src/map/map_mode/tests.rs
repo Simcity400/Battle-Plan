@@ -43,6 +43,10 @@ fn defines() -> ModeDefines {
         network_colors: [[0.1, 0.1, 0.5, 0.2], [0.4, 0.3, 0.9, 1.0]],
         quiet_network_colors: [[0.1, 0.5, 0.1, 0.2], [0.4, 0.9, 0.3, 1.0]],
         configurable_slots: [4, 10],
+        terrain: terrain::Defines {
+            alpha: [0.5, 0.8],
+            channel: [0.39, 0.973],
+        },
     }
 }
 
@@ -53,6 +57,7 @@ fn content(scripted: MapModes) -> Content {
         scripted,
         faction_templates: Ok(Arc::new(Default::default())),
         recorded_language: "english".to_owned(),
+        terrain: Err("the terrain database did not read".to_owned()),
     }
 }
 
@@ -952,4 +957,36 @@ fn colour_borders_keep_their_colour_until_their_provinces_change() {
     assert!(refreshes(Some(&state), true, 48));
     assert!(!refreshes(Some(&state), true, 43));
     assert!(!refreshes(Some(&state), false, 48));
+}
+
+#[test]
+fn the_terrain_mode_draws_its_layer_under_the_countries() {
+    let mut content = content(MapModes::default());
+    let layer = ModeLayer {
+        region_of: vec![0, 1, 2],
+        styles: BTreeMap::from([(
+            1,
+            Style {
+                color: [10, 20, 30, 127],
+                pulse: false,
+                fill: 1.0,
+            },
+        )]),
+        thickness: Some(0.0),
+        gradient: Some(terrain::TERRAIN_GRADIENT),
+        channel: [0.39, 0.973],
+    };
+    content.terrain = Ok(terrain::Built {
+        layer: layer.clone(),
+        warnings: vec!["one province left out".to_owned()],
+    });
+    let fill = run(MapMode::Stock(Stock::Terrain), &content, Some(0));
+    let draw = fill.draw.unwrap();
+    assert_eq!(draw.channels, [Source::Mode, Source::Country]);
+    assert_eq!(draw.layer, Some(layer));
+    assert_eq!(
+        draw.channel_constants(),
+        [Some([0.39, 0.973]), Some(defines().country_channel)]
+    );
+    assert_eq!(fill.warnings, ["one province left out"]);
 }

@@ -158,9 +158,8 @@ pub fn mode_hover(
             | Stock::StrategicAir
             | Stock::StrategicNavy
             | Stock::Raids => ModeHover::Nothing,
-            Stock::Terrain => ModeHover::Unbuilt(
-                "the terrain mode's hover (terrain name and modifiers) is not built".to_owned(),
-            ),
+            // The app asks the terrain mode's own hover (viewer-combat's terrain_mode) instead.
+            Stock::Terrain => ModeHover::Nothing,
             Stock::Resources => ModeHover::Unbuilt(
                 "the resources mode's hover (each resource produced) is not built".to_owned(),
             ),

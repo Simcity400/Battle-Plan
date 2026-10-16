@@ -1474,6 +1474,7 @@ fn garrison_equipment_dispatch_skips_carried_rows_and_compares_actual_refreshes(
                 leader_traits: Err("outside the garrison fixture".into()),
                 intelligence: Err("outside the garrison fixture".into()),
                 temperature: Err("outside the garrison fixture".into()),
+                province_modifiers: Err("outside the garrison fixture".into()),
                 sub_units: Err("outside the garrison fixture".into()),
                 essential_caps: Err("outside the garrison fixture".into()),
             },
@@ -1540,6 +1541,7 @@ fn failed_content_reads_preserve_independent_map_and_pack_diagnostics() {
             essential_caps: Err("common/units: unused".into()),
             intelligence: Err("common/intelligence_agency_upgrades: unused".into()),
             temperature: Err("unused".into()),
+            province_modifiers: Err("unused".into()),
         },
         &mut report,
     );
@@ -1644,6 +1646,7 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
             essential_caps: Err("common/units: unused".into()),
             intelligence: Err("common/intelligence_agency_upgrades: unused".into()),
             temperature: Err("unused".into()),
+            province_modifiers: Err("unused".into()),
         },
         &mut report,
     );
@@ -1685,6 +1688,7 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
             essential_caps: Err("common/units: unused".into()),
             intelligence: Err("common/intelligence_agency_upgrades: unused".into()),
             temperature: Err("unused".into()),
+            province_modifiers: Err("unused".into()),
         },
         &mut report,
     );
@@ -2095,6 +2099,7 @@ fn game_score_extended_oracle_compares_every_country_and_records_empty_wings() {
                 leader_traits: Err("unused".into()),
                 intelligence: Err("unused".into()),
                 temperature: Err("unused".into()),
+                province_modifiers: Err("unused".into()),
                 sub_units: Err("unused".into()),
                 essential_caps: Err("unused".into()),
             },

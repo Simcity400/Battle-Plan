@@ -815,8 +815,10 @@ fn location_weather_is_scaled_by_acclimatization() {
         TableRows::WeatherProvinces(vec![replay::rows::WeatherProvinceRow {
             id: 1,
             modifiers: Recorded::Value(Some(replay::rows::ProvinceWeatherModifiers {
-                army_speed_factor: Some(-20_000),
-                ..Default::default()
+                entries: vec![replay::rows::ProvinceModifierEntry {
+                    key: engine::modifier_keys::ARMY_SPEED_FACTOR,
+                    value: -20_000,
+                }],
             })),
             ..Default::default()
         }]),

@@ -338,7 +338,7 @@ pub struct WeatherProvinceRow {
     /// anchor, None when the collector could not read the hour whole. Other
     /// native slots: known None. Recordings before format 102 hold none.
     pub temperature_pass: Recorded<Option<TemperaturePass>>,
-    /// The province weather modifier's movement and attrition entries
+    /// The province weather record's modifier accumulator, every entry
     /// ([`ProvinceWeatherModifiers`]), read with the record (the window's provinces
     /// afresh, the rest carried). None is this province's read refusal; older formats
     /// use NotRecorded.
@@ -348,25 +348,60 @@ typed_codec!(WeatherProvinceRow, 32, |row| row.id as u128, |key| Self { id: key 
 { 0 => (snow): I64, 1 => (permanent_snow): I64, 2 => (display_snow): U8, 3 => (display_mud): U8, 4 => (temperature.temperature): I64, 5 => (raw_mud): U8, 6 => (clock.local_hour): I32, 7 => (clock.night_factor): I64, 8 => (display): Opaque, 9 => (clock.source): U8, 10 => (temperature.drift): I64, 11 => (temperature.staged): I64, 12 => (temperature.working): I64, 13 => (temperature_pass): Opaque, 14 => (modifiers): Opaque },
 |row| {
    row.clock.canonical().map_err(invalid)?;
-   row.temperature.record().map(|_| ()).map_err(invalid)
+   row.temperature.record().map(|_| ()).map_err(invalid)?;
+   match &row.modifiers {
+       Recorded::Value(Some(modifiers)) => modifiers.canonical().map_err(invalid),
+       _ => Ok(()),
+   }
 });
 
-/// A province weather record's modifier (the province weather record's): its raw entries, `None`
-/// for an absent key. The movement speed adds `army_speed_factor` and, for a move into a province
-/// held by an enemy, `army_attack_speed_factor`, each scaled by the division's acclimatization
-/// factor; a moving division at war takes `attrition`, and `heat_attrition` and `winter_attrition`
-/// scaled by acclimatization and the country's and commander's thermal factors.
+/// One entry of a province weather record's modifier accumulator: a modifier definition
+/// key and its raw fixed5 value, the sum of that key over the static modifiers the record
+/// holds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ProvinceWeatherModifiers {
-    pub army_speed_factor: Option<i64>,
-    pub army_attack_speed_factor: Option<i64>,
-    pub attrition: Option<i64>,
-    pub heat_attrition: Option<i64>,
-    pub winter_attrition: Option<i64>,
+pub struct ProvinceModifierEntry {
+    pub key: u32,
+    pub value: i64,
 }
-value_struct!(ProvinceWeatherModifiers { army_speed_factor: Option<i64>,
-    army_attack_speed_factor: Option<i64>, attrition: Option<i64>, heat_attrition: Option<i64>,
-    winter_attrition: Option<i64> });
+value_struct!(ProvinceModifierEntry { key: u32, value: i64 });
+
+/// A province weather record's modifier accumulator: every entry, keys ascending. The game
+/// rebuilds it from the province's mud, its temperature range's and ground snow's static
+/// modifiers and the modifiers script and building damage add to the province, and keeps
+/// it until the next rebuild. The terrain map mode's hover describes it whole; the movement
+/// speed adds `army_speed_factor` and, for a move into a province held by an enemy,
+/// `army_attack_speed_factor`, each scaled by the division's acclimatization factor; a
+/// moving division at war takes `attrition`, and `heat_attrition` and `winter_attrition`
+/// scaled by acclimatization and the country's and commander's thermal factors.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProvinceWeatherModifiers {
+    pub entries: Vec<ProvinceModifierEntry>,
+}
+value_struct!(ProvinceWeatherModifiers { entries: Vec<ProvinceModifierEntry> });
+
+impl ProvinceWeatherModifiers {
+    /// The game's accumulator holds each key once, positive and ascending, as the
+    /// collector reads it: a duplicate, unordered or zero key is malformed, so no
+    /// consumer's search or map collapses or misses an entry.
+    pub fn canonical(&self) -> Result<(), &'static str> {
+        let mut previous = 0;
+        for entry in &self.entries {
+            if entry.key <= previous {
+                return Err("province weather modifier keys not positive and increasing");
+            }
+            previous = entry.key;
+        }
+        Ok(())
+    }
+
+    /// The raw entry of `key`; `None` when the accumulator has none.
+    pub fn get(&self, key: u32) -> Option<i64> {
+        self.entries
+            .binary_search_by_key(&key, |entry| entry.key)
+            .ok()
+            .map(|at| self.entries[at].value)
+    }
+}
 opaque_value!(Option<ProvinceWeatherModifiers>);
 
 /// A province record's temperature words, the `province weather` record's committed temperature,

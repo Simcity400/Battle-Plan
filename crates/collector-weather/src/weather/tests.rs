@@ -497,7 +497,7 @@ fn a_failed_snow_ceiling_keeps_the_province_modifier_entries() {
     put(&mut bytes, header, &(entry as u64).to_le_bytes());
     put(&mut bytes, header + 8, &1_u32.to_le_bytes());
     put(&mut bytes, header + 12, &1_u32.to_le_bytes());
-    put(&mut bytes, entry, &PROVINCE_MODIFIER_KEYS[0].to_le_bytes());
+    put(&mut bytes, entry, &engine::modifier_keys::ARMY_SPEED_FACTOR.to_le_bytes());
     put(&mut bytes, entry + 8, &(-20_000_i64).to_le_bytes());
     let capacities = Capacities {
         rows: [2; N],
@@ -508,13 +508,14 @@ fn a_failed_snow_ceiling_keeps_the_province_modifier_entries() {
         let TableView::Complete(provinces) = &tables[1] else {
             panic!("WeatherProvinces is complete without the snow ceiling")
         };
-        provinces.rows::<tables::WeatherProvinces>().unwrap()[0].modifiers
+        provinces.rows::<tables::WeatherProvinces>().unwrap()[0].modifiers.clone()
     };
     // The split path with storage for the province's modifier entries.
     fn split(memory: &impl Memory, capacities: &Capacities) -> Captured {
         let mut captured = Captured::with_capacities(capacities);
         let mut job = fixed_job();
-        job.province_modifiers = Vec::with_capacity(4);
+        job.province_modifiers = ProvinceModifiers::with_capacity(4, 4);
+        job.province_scratch = Vec::with_capacity(4);
         let ctx = WeatherCopyContext {
             base: 0,
             game_state: 0x1000,
@@ -528,7 +529,7 @@ fn a_failed_snow_ceiling_keeps_the_province_modifier_entries() {
     let healthy = split(&memory(&bytes), &capacities);
     let recorded = modifiers(&healthy);
     assert!(
-        matches!(&recorded, rows::Recorded::Value(Some(entries)) if entries.army_speed_factor == Some(-20_000)),
+        matches!(&recorded, rows::Recorded::Value(Some(entries)) if entries.get(engine::modifier_keys::ARMY_SPEED_FACTOR) == Some(-20_000)),
         "{recorded:?}"
     );
     let faulted = split(
@@ -934,8 +935,8 @@ fn weather_regions_record_raw_combat_entries_and_no_witness() {
             army_attack_speed_factor: None,
         }))
     );
-    // The province's raw movement and attrition entries come from the same copy;
-    // an absent key is None, distinct from a refused read.
+    // The province's raw accumulator, every entry, comes from the same copy; an absent
+    // key is absent, distinct from a refused read.
     let views = captured.tables();
     let TableView::Complete(provinces) = &views[1] else {
         panic!("weather provinces must stay complete")
@@ -943,9 +944,16 @@ fn weather_regions_record_raw_combat_entries_and_no_witness() {
     assert_eq!(
         provinces.rows::<tables::WeatherProvinces>().unwrap()[0].modifiers,
         rows::Recorded::Value(Some(rows::ProvinceWeatherModifiers {
-            army_speed_factor: Some(-40_000),
-            heat_attrition: Some(25_000),
-            ..Default::default()
+            entries: vec![
+                rows::ProvinceModifierEntry {
+                    key: engine::modifier_keys::ARMY_SPEED_FACTOR,
+                    value: -40_000,
+                },
+                rows::ProvinceModifierEntry {
+                    key: engine::modifier_keys::HEAT_ATTRITION,
+                    value: 25_000,
+                },
+            ],
         }))
     );
 }

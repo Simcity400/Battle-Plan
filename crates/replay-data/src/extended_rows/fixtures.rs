@@ -320,7 +320,8 @@ sample_struct!(CommanderMovementStats { terrain: Vec<i64> });
 sample_struct!(CountryAttackModifiers { land_night_attack: Option<i64>, land_bunker_effectiveness_factor: Option<i64> });
 sample_struct!(CountryMovementModifiers { army_speed_factor: Option<i64>, army_armor_speed_factor: Option<i64>, attrition: Option<i64>, winter_attrition_factor: Option<i64>, heat_attrition_factor: Option<i64>, out_of_supply_factor: Option<i64>, special_forces_out_of_supply_factor: Option<i64>, army_attack_speed_factor: Option<i64>, army_retreat_speed_factor: Option<i64> });
 sample_struct!(RegionCombatWeather { army_attack_factor: Option<i64>, breakthrough_factor: Option<i64>, army_speed_factor: Option<i64>, army_attack_speed_factor: Option<i64> });
-sample_struct!(ProvinceWeatherModifiers { army_speed_factor: Option<i64>, army_attack_speed_factor: Option<i64>, attrition: Option<i64>, heat_attrition: Option<i64>, winter_attrition: Option<i64> });
+sample_struct!(ProvinceModifierEntry { key: u32, value: i64 });
+sample_struct!(ProvinceWeatherModifiers { entries: Vec<ProvinceModifierEntry> });
 impl Sample for PoliticalRuntimeScalars {
     fn sample(tick: usize) -> Self {
         Self {
