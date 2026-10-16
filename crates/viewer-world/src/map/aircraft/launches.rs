@@ -17,11 +17,14 @@
 //! region, as listed by the game. The next pass that finds the base free
 //! starts the next record.
 //!
-//! A base's position is its air-base slot for an ordinary base, its host's
-//! for a base on a ship, and for a rocket site or gun emplacement the first
-//! admitted authored slot of its state, in `map/buildings.txt` order, whose
-//! bucket holds a type with `rocket_launch_capacity` or `gun_emplacement`.
-//! Missile bombing scenarios take off from the same place.
+//! A base's position is its host's for a base on a ship, and otherwise the
+//! game's base position finder's ([`SiteSlots::base`]). The finder walks the
+//! provinces the state lists for the base's kind, in `map/buildings.txt`
+//! order, and takes the first admitted record that matches: for a rocket
+//! site or gun emplacement one in the explicit bucket a
+//! `rocket_launch_capacity` or `gun_emplacement` type binds as its
+//! `spawn_point` (a type without one matches nothing), for an ordinary air
+//! base one whose own building type is an `air_base` one. Every scenario takes off from the same place.
 //!
 //! The game draws the delay, heading and explosion province from wall-clock
 //! random state, which is not recorded. The viewer draws them from fixed
@@ -31,15 +34,8 @@
 
 use std::{collections::BTreeMap, io, sync::Arc};
 
-use installed_content::{
-    ResolvedLayers,
-    buildings::{Buildings, Slot, SpawnPoint},
-    defines::Defines,
-    map::MapData,
-    mesh,
-    positions::BuildingPosition,
-};
-use viewer_foundation::map::building_facts::{SlotAdmission, admit_slot, is_floating_harbor_slot};
+use installed_content::{ResolvedLayers, defines::Defines, map::MapData, mesh};
+use viewer_foundation::map::building_facts::{self, SiteSlots, SlotAdmission, admit_slot};
 use viewer_foundation::map::province_map::ProvinceMap;
 
 use super::Random;
@@ -56,13 +52,15 @@ const INSTANCE_SEED: u32 = 0x5355_4e43;
 const FIXED5: f32 = 100_000.0;
 /// A draw's unit fraction, 2^-31.
 const UNIT: f32 = 1.0 / 2_147_483_648.0;
+/// The base kind of an ordinary air base.
+pub(super) const AIR_BASE: i32 = building_facts::AIR_BASE as i32;
 /// The base kind of a rocket site.
-pub(super) const ROCKET_SITE: i32 = 1;
+pub(super) const ROCKET_SITE: i32 = building_facts::ROCKET_SITE as i32;
 /// The base kind of a gun emplacement.
-pub(super) const GUN_EMPLACEMENT: i32 = 2;
+pub(super) const GUN_EMPLACEMENT: i32 = building_facts::GUN_EMPLACEMENT as i32;
 
-/// Each state's rocket-site and gun-emplacement position by base kind, or
-/// why it cannot be decided ([`site_table`]).
+/// Each state base's position by base kind, or why it cannot be decided
+/// ([`SiteSlots::base`]).
 pub(super) type Sites = BTreeMap<(u32, i32), Result<[f32; 3], &'static str>>;
 
 /// A mission region's provinces as the game lists them, each with its
@@ -72,8 +70,8 @@ pub(super) type ExplosionPlaces = Arc<Vec<(u32, Option<([f32; 3], [f32; 4])>)>>;
 /// What launch effects and site take-offs read from the content.
 #[derive(Debug)]
 pub(super) struct Content {
-    /// Each state's rocket-site and gun-emplacement position by base kind,
-    /// or why it cannot be decided; or why the building sites do not read.
+    /// Each state base's position by base kind, or why it cannot be
+    /// decided; or why the building sites do not read.
     sites: Result<Sites, String>,
     /// `NAirGfx.RANDOM_SCENARIO_ANIMATION_MAX_DELAY`, fixed-point as the
     /// game reads it and no less than zero, in aircraft-clock seconds.
@@ -89,11 +87,25 @@ impl Content {
         warnings: &mut Vec<installed_content::Diagnostic>,
     ) -> Self {
         let sites = sites(layers, map, defines, roster).map_err(|error| error.to_string());
+        let sites = match sites {
+            Ok((sites, refused)) => {
+                for (name, count) in refused {
+                    warnings.push((
+                        installed_content::DiagnosticKind::Refused,
+                        format!(
+                            "Building slot {name} ({count} admitted records) is refused for state base positions: it names a building declared more than once differently, which could change where its state's base stands"
+                        ),
+                    ));
+                }
+                Ok(sites)
+            }
+            Err(reason) => Err(reason),
+        };
         if let Err(reason) = &sites {
             warnings.push((
                 installed_content::DiagnosticKind::Refused,
                 format!(
-                    "Rocket-site and gun-emplacement bases have no position, so their launch effects and missile take-offs are not drawn: the building sites do not read: {reason}"
+                    "State air bases, rocket sites and gun emplacements have no position, so their flights and launch effects are not drawn: the building sites do not read: {reason}"
                 ),
             ));
         }
@@ -103,8 +115,14 @@ impl Content {
         }
     }
 
-    /// Where a state base of `kind` (a rocket site or gun emplacement) stands.
+    /// Where a state base of `kind` stands; the game treats a kind other
+    /// than a rocket site or gun emplacement as an ordinary air base.
     pub(super) fn site(&self, state: u32, kind: i32) -> Result<[f32; 3], &'static str> {
+        let kind = if matches!(kind, ROCKET_SITE | GUN_EMPLACEMENT) {
+            kind
+        } else {
+            AIR_BASE
+        };
         let sites = self
             .sites
             .as_ref()
@@ -112,7 +130,10 @@ impl Content {
         match sites.get(&(state, kind)) {
             Some(site) => *site,
             None if kind == ROCKET_SITE => Err("its state has no admitted rocket-site slot"),
-            None => Err("its state has no admitted gun-emplacement slot"),
+            None if kind == GUN_EMPLACEMENT => {
+                Err("its state has no admitted gun-emplacement slot")
+            }
+            None => Err("its state has no admitted air-base slot of an air-base type"),
         }
     }
 
@@ -138,14 +159,15 @@ pub(super) fn max_delay(defines: &Defines) -> Result<f32, &'static str> {
         .map_err(|_| "NDefines.NAirGfx.RANDOM_SCENARIO_ANIMATION_MAX_DELAY is unreadable")
 }
 
-/// Reads the authored building slots, types, states and map the site table
-/// needs ([`site_table`]); a slot is admitted as the building layer admits it.
+/// Reads the authored building slots, types, states and map, and places
+/// every state base as the game's base position finder does
+/// ([`SiteSlots::base`]); a slot is admitted as the building layer admits it.
 fn sites(
     layers: &ResolvedLayers,
     map: &MapData,
     defines: &Defines,
     roster: &mesh::Roster,
-) -> io::Result<Sites> {
+) -> io::Result<(Sites, BTreeMap<String, usize>)> {
     let types = installed_content::buildings::read(layers)?;
     let (states, _) = installed_content::states::read(layers, defines, &map.definitions)?;
     let provinces = ProvinceMap {
@@ -153,60 +175,20 @@ fn sites(
         height: map.height,
         ids: &map.province_ids,
     };
-    Ok(site_table(
-        installed_content::positions::read_buildings(layers)?,
+    let slots = SiteSlots::build(
+        &installed_content::positions::read_buildings(layers)?,
         &types,
-        |spawn, position| {
-            let province = provinces.at(position.x, position.z);
+        |x, z| provinces.at(x, z),
+        |spawn, position, province| {
             admit_slot(spawn, position, province, map, states.definitions(), roster)
                 == SlotAdmission::Admitted
         },
-    ))
-}
-
-/// The first admitted authored slot of each state whose bucket holds a
-/// rocket-site (`rocket_launch_capacity`) or gun-emplacement type, in file
-/// order, by base kind: the slot the game's position finder reaches through
-/// the state's site provinces. A slot whose bucket is declared more than
-/// once differently decides nothing, so a site it may be is undecided.
-pub(super) fn site_table(
-    positions: Vec<BuildingPosition>,
-    types: &Buildings,
-    admitted: impl Fn(&SpawnPoint, &BuildingPosition) -> bool,
-) -> Sites {
-    let mut out = BTreeMap::new();
-    for position in positions {
-        if is_floating_harbor_slot(&position.kind) {
-            continue;
-        }
-        let (spawn, ambiguous) = match types.slot(&position.kind) {
-            None => continue,
-            Some(Slot::Bucket(spawn)) => (spawn, false),
-            Some(Slot::Ambiguous(spawn)) => (spawn, true),
-        };
-        let mut kinds = [false; 2];
-        for candidate in types.slot_candidates(&spawn.name) {
-            kinds[0] |= candidate.rocket_launch_capacity > 0;
-            kinds[1] |= candidate.gun_emplacement;
-        }
-        for (kind, holds) in [ROCKET_SITE, GUN_EMPLACEMENT].into_iter().zip(kinds) {
-            if !holds || out.contains_key(&(position.state, kind)) {
-                continue;
-            }
-            if ambiguous {
-                out.insert(
-                    (position.state, kind),
-                    Err("its state's first site slot names a building declared more than once differently"),
-                );
-            } else if admitted(spawn, &position) {
-                out.insert(
-                    (position.state, kind),
-                    Ok([position.x, position.y, position.z]),
-                );
-            }
-        }
-    }
-    out
+    );
+    let bases = slots
+        .bases()
+        .map(|((state, kind), site)| ((state, kind as i32), site))
+        .collect();
+    Ok((bases, slots.refused().clone()))
 }
 
 /// The draws a launch's seed gives one record's stream: its heading (0),

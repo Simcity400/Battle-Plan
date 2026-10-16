@@ -456,6 +456,83 @@ fn wings_frame(flags: TableView) -> (DecodedFrame, Vision) {
     (frame, vision)
 }
 
+/// The air-base icon follows the state's recorded ordinary air base,
+/// whatever building type raised it: a mod's `mod_airfield` shows its
+/// state's icon, a state that holds a type named `air_base` but no ordinary
+/// base shows none, and a rocket site's base shows none. Before, the icon
+/// followed the type named `air_base`: it showed state 8 and not state 7.
+#[test]
+fn the_air_base_icon_follows_the_state_s_base_not_a_type_name() {
+    use replay::rows::{AirBaseRow, BuildingRow, LexicalTokenRow};
+    let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
+    *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
+        [(201, &b"mod_airfield"[..]), (202, b"rocket_site"), (203, b"air_base")]
+            .map(|(token, literal)| LexicalTokenRow {
+                token,
+                literal: literal.to_vec(),
+            })
+            .into(),
+    ));
+    *frame.tables[TableId::StateBuildings.index()] =
+        TableView::Complete(TableRows::StateBuildings(vec![
+            BuildingRow {
+                location: 7,
+                building_type: 201,
+                level: 2,
+                ..Default::default()
+            },
+            BuildingRow {
+                location: 9,
+                building_type: 202,
+                level: 1,
+                ..Default::default()
+            },
+            BuildingRow {
+                location: 8,
+                building_type: 203,
+                level: 1,
+                ..Default::default()
+            },
+        ]));
+    let bases = |rows: Vec<AirBaseRow>, missing: Option<u32>| match missing {
+        None => TableView::Complete(TableRows::AirBases(rows)),
+        Some(missing) => TableView::Truncated {
+            rows: TableRows::AirBases(rows),
+            missing,
+        },
+    };
+    let ordinary = AirBaseRow {
+        id: 0xB0,
+        state: Some(7),
+        kind: 0,
+        ..Default::default()
+    };
+    let site = AirBaseRow {
+        id: 0xB1,
+        state: Some(9),
+        kind: 1,
+        ..Default::default()
+    };
+    let carrier = AirBaseRow {
+        id: 0xB2,
+        state: None,
+        kind: 0,
+        ..Default::default()
+    };
+    *frame.tables[TableId::AirBases.index()] =
+        bases(vec![ordinary.clone(), site.clone(), carrier], None);
+    assert_eq!(
+        air_base_icon_states(&frame).unwrap(),
+        (BTreeSet::from([7]), true)
+    );
+    // A truncated hour still places the bases it recorded, and says so.
+    *frame.tables[TableId::AirBases.index()] = bases(vec![ordinary, site], Some(1));
+    assert_eq!(
+        air_base_icon_states(&frame).unwrap(),
+        (BTreeSet::from([7]), false)
+    );
+}
+
 /// Truncated `StateFlags` hides every wings box; the recorded containers
 /// stay decided (registrations are complete here), and the badge falls
 /// back with undecided detail but stays plain on decided-no-detail.

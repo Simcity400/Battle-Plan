@@ -777,6 +777,22 @@ pub(super) fn province_at(map: &MapData, world: [f32; 3]) -> Option<u32> {
         .filter(|id| *id != 0)
 }
 
+/// The states whose air-base provinces show their icons, and whether every
+/// air base is recorded. The game shows a province's icon while its state
+/// holds an ordinary (kind 0) air base, whichever `air_base = yes` building
+/// type raised it, so the icon reads the recorded bases rather than a type
+/// name. Rocket sites and gun emplacements (kinds 1 and 2) show none.
+pub(super) fn air_base_icon_states(frame: &DecodedFrame) -> io::Result<(BTreeSet<u32>, bool)> {
+    let bases = rows::<tables::AirBases>(frame)?;
+    let states = bases
+        .rows()
+        .iter()
+        .filter(|base| base.kind == 0)
+        .filter_map(|base| base.state)
+        .collect();
+    Ok((states, bases.is_complete()))
+}
+
 /// Draws the base icons: air bases per camera from the hour's rows, and the naval base,
 /// naval-HQ and facility icons [`BaseIcons`] decided for the hour.
 pub(super) fn bases(
@@ -787,46 +803,44 @@ pub(super) fn bases(
 ) -> io::Result<()> {
     let vision = &*tables.vision;
     let defines = &inputs.content.defines;
-    out.report.refused_tokens.clone_from(&tables.bases.refused);
     out.report
         .refused_tokens
-        .extend(tables.base_icons.refused.iter().cloned());
+        .clone_from(&tables.base_icons.refused);
 
-    if visible(inputs.camera.height, defines.air_base_cutoff)
-        && let Some(kind) = tables.bases.air
-    {
+    if visible(inputs.camera.height, defines.air_base_cutoff) {
         let wings = wings_per_state(frame, vision)?;
-        for row in rows::<tables::StateBuildings>(frame)?.rows() {
-            if row.building_type != kind || row.level <= 0 {
+        let (states, complete) = air_base_icon_states(frame)?;
+        if !complete {
+            *out.report
+                .icon_gui_notes
+                .entry(format!(
+                    "{AIR_BASE_WINDOW} icons may be missing: the air bases are not all recorded"
+                ))
+                .or_default() += 1;
+        }
+        for (province, state, anchor) in inputs.content.air_base_icons() {
+            if !states.contains(&state) {
                 continue;
             }
-            let Some(anchor) = inputs.content.air_base(row.location) else {
-                *out.report
-                    .icon_gui_notes
-                    .entry(format!(
-                        "{AIR_BASE_WINDOW} is not placed: no air-base anchor"
-                    ))
-                    .or_default() += 1;
-                continue;
+            let anchor = match anchor {
+                Ok(anchor) => anchor,
+                Err(reason) => {
+                    *out.report
+                        .icon_gui_notes
+                        .entry(format!("{AIR_BASE_WINDOW} is not placed: {reason}"))
+                        .or_default() += 1;
+                    continue;
+                }
             };
             if air_base_hidden(inputs.map, anchor, vision) {
                 out.report.hidden_air_bases += 1;
                 continue;
             }
-            let count = wings.get(&row.location).copied().unwrap_or_default();
-            let Some(province) = province_at(inputs.map, anchor) else {
-                *out.report
-                    .icon_gui_notes
-                    .entry(format!(
-                        "{AIR_BASE_WINDOW} is not placed: anchor has no province"
-                    ))
-                    .or_default() += 1;
-                continue;
-            };
+            let count = wings.get(&state).copied().unwrap_or_default();
             out.native_bases.offer(
                 inputs,
                 base_windows::Family::AirBase,
-                row.location,
+                province,
                 province,
                 anchor,
                 base_windows::State {

@@ -45,6 +45,7 @@ use viewer_foundation::engagement_history::History;
 use viewer_foundation::engagement_history::LAND_ICON;
 use viewer_foundation::engagement_history::NAVAL_ICON;
 use viewer_foundation::engagement_history::kept_frames;
+use viewer_foundation::map::building_facts::{self, SiteSlots, SlotAdmission};
 use viewer_foundation::map::counter_anchors::stack_anchor;
 use viewer_foundation::map::counter_hovers::land::{CounterControl, CounterHover};
 use viewer_foundation::map::country_index::FlagTags;
@@ -72,7 +73,6 @@ use viewer_foundation::movement_timing::Etas;
 use viewer_foundation::movement_timing::MovementContent;
 use viewer_foundation::movement_timing::Report;
 use viewer_foundation::table_access::TokenKeys;
-use viewer_foundation::table_access::TokenNames;
 use viewer_foundation::table_access::rows as table_access_rows;
 use viewer_foundation::unit_handle::Unit;
 
@@ -190,10 +190,6 @@ use viewer_foundation::map::unit_rules::STANDSTILL;
 /// into every medium cell; the small and full sets get none.
 pub const MEDIUM_FLAG_OVERLAY: &str = "gfx/interface/small_flag_overlay.tga";
 
-/// The building tokens whose level picks a base icon's frame.
-pub const AIR_BASE_TOKEN: &str = "air_base";
-/// The `map/buildings.txt` slot the air-base icon is anchored at.
-pub const AIR_BASE_SLOT: &str = "air_base";
 
 /// A stack the perspective cannot see shows `?` in its count box instead of the formatted number.
 pub const UNKNOWN_COUNT: &str = "?";
@@ -1186,8 +1182,10 @@ pub struct CounterContent {
     /// Each province's anchor for every slot `map/unitstacks.txt` leaves out
     /// ([`CounterContent::seed_default_anchors`]).
     pub default_anchors: Arc<BTreeMap<u32, [f32; 3]>>,
-    /// The state's `air_base` slot in `map/buildings.txt`.
-    pub air_bases: BTreeMap<u32, [f32; 3]>,
+    /// Each air-base province's icon, by province: every province with an
+    /// admitted `map/buildings.txt` record whose bucket holds an `air_base`
+    /// type owns one ([`SiteSlots::air_base_icons`]).
+    pub air_bases: BTreeMap<u32, building_facts::AirBaseIcon>,
     /// First is_port building slot in province order.
     ports: BTreeMap<u32, [f32; 3]>,
     /// The naval-HQ and special-facility icons' templates and anchor records.
@@ -1249,7 +1247,6 @@ impl CounterContent {
             anchors.insert((stack.province, stack.kind), [stack.x, stack.y, stack.z]);
             stack_scales.insert((stack.province, stack.kind), stack.scale);
         }
-        let mut air_bases = BTreeMap::new();
         let mut ports = BTreeMap::new();
         let definitions = installed_content::buildings::read(layers)?;
         let port_slots = port_slot_names(&definitions);
@@ -1263,20 +1260,32 @@ impl CounterContent {
         // document.rs reports the state id conflicts once.
         let (states, _) = installed_content::states::read(layers, defines, &map.definitions)?;
         let roster = layers.descriptor_roster()?;
+        let admit = |spawn: &installed_content::buildings::SpawnPoint,
+                     slot: &installed_content::positions::BuildingPosition,
+                     province: Option<u32>| {
+            viewer_foundation::map::building_facts::admit_slot(
+                spawn,
+                slot,
+                province,
+                map,
+                states.definitions(),
+                &roster,
+            )
+        };
+        // Every air-base province owns an icon, placed through the content's
+        // building types rather than a slot name.
+        let sites = SiteSlots::build(
+            &building_slots,
+            &definitions,
+            |x, z| provinces.at(x, z),
+            |spawn, slot, province| admit(spawn, slot, province) == SlotAdmission::Admitted,
+        );
+        let air_bases = sites.air_base_icons().clone();
         let building_icons = BuildingIconContent::load(
             &definitions,
             &building_slots,
             &provinces,
-            |spawn, slot, province| {
-                viewer_foundation::map::building_facts::admit_slot(
-                    spawn,
-                    slot,
-                    province,
-                    map,
-                    states.definitions(),
-                    &roster,
-                )
-            },
+            admit,
             BuildingIconContent::offsets(defines)?,
         );
         for building in building_slots {
@@ -1287,13 +1296,6 @@ impl CounterContent {
             {
                 ports
                     .entry(province)
-                    .or_insert([building.x, building.y, building.z]);
-            }
-            if building.kind == AIR_BASE_SLOT {
-                // One `air_base` slot per state; the first wins, as the loader's
-                // own map assignment does.
-                air_bases
-                    .entry(building.state)
                     .or_insert([building.x, building.y, building.z]);
             }
         }
@@ -1432,9 +1434,22 @@ impl CounterContent {
         self.default_anchors.contains_key(&province) && seeded_only(&self.anchors, province, kind)
     }
 
-    /// The world anchor of a state's `air_base` building slot.
-    pub fn air_base(&self, state: u32) -> Option<[f32; 3]> {
-        self.air_bases.get(&state).copied()
+    /// Every air-base province's icon: its province, the state whose base it
+    /// shows, and its world anchor, or why it has none. An icon no record
+    /// places stands on the province's unit-stack slot 0.
+    pub fn air_base_icons(
+        &self,
+    ) -> impl Iterator<Item = (u32, u32, Result<[f32; 3], String>)> + '_ {
+        self.air_bases.iter().map(|(&province, icon)| {
+            let anchor = match &icon.anchor {
+                Ok(building_facts::IconAnchor::Record(at)) => Ok(*at),
+                Ok(building_facts::IconAnchor::Province) => self
+                    .anchor(province, STANDSTILL)
+                    .ok_or_else(|| "the province has no unit-stack slot 0".to_owned()),
+                Err(reason) => Err(reason.clone()),
+            };
+            (province, icon.state, anchor)
+        })
     }
 
     /// Naval counters in a land province use the first port-building visual record,
@@ -2434,7 +2449,6 @@ pub struct HourTables {
     task_forces: TaskForceMotions,
     base_icons: BaseIcons,
     missions: Arc<MissionIcons>,
-    bases: BaseTokens,
     /// Each owner's type-icon relation to the viewing country.
     type_tints: Arc<type_tint::Index>,
 }
@@ -2449,28 +2463,6 @@ impl HourTables {
     #[cfg(any(test, feature = "test-support"))]
     pub fn land_combat_gaps(&self) -> (&Gaps, &Gaps) {
         (&self.land_combats.gaps, &self.land_combats.limits)
-    }
-}
-
-/// The hour's air-base building token, found once per hour. The naval base icon needs no
-/// token: it exists wherever the province has a naval base object.
-#[derive(Clone)]
-struct BaseTokens {
-    air: Option<u32>,
-    refused: BTreeSet<String>,
-}
-
-impl BaseTokens {
-    fn read(frame: &DecodedFrame) -> io::Result<Self> {
-        let names = TokenNames::new(frame)?;
-        let mut refused = BTreeSet::new();
-        let [air] = names.tokens_of([AIR_BASE_TOKEN]).map(|token| {
-            token.unwrap_or_else(|reason| {
-                refused.insert(reason);
-                None
-            })
-        });
-        Ok(Self { air, refused })
     }
 }
 
@@ -2706,7 +2698,6 @@ pub fn hour_tables(
         guns,
         abilities,
         task_forces: TaskForceMotions::read(frame)?,
-        bases: BaseTokens::read(frame)?,
         type_tints,
     })
 }

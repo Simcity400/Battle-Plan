@@ -1774,6 +1774,89 @@ fn a_retained_nonlooping_clip_reads_the_explosion_delay() {
     assert!(read(&mut early, &mut palette, 1.75) < 2.0);
 }
 
+/// The game eases each actor's drawn transform toward its pose every frame:
+/// per elapsed 30 Hz frame the position moves
+/// `AIRPLANES_SMOOTH_INTERPOLATION_MOVE` of the way and the heading and up
+/// axis `_TURN` times the clock's speed. The drawn actor lags a node that
+/// moves; the band and the runs keep reading the pose. A new cycle starts
+/// on its take-off route's first point, and a later hour's plan carries the
+/// transforms on. Before, the viewer drew the pose itself.
+#[test]
+fn the_drawn_transform_eases_toward_the_pose_and_lags_it() {
+    let defines = FlightDefines::for_tests();
+    let along = |x: f32| Transform {
+        translation: [x, 3.0, 0.0],
+        ..Transform::IDENTITY
+    };
+    let (mut plan, rigs) = one_run(
+        vec![along(0.0), along(0.0), along(6.0), along(6.0)],
+        1.0,
+        true,
+        false,
+        Explode::Absent,
+    );
+    plan.flights[0].outgoing = Route {
+        points: vec![[-10.0, 10.0, 2.0], [2.0, 10.0, 2.0]],
+        arcs: vec![0.0, 12.0],
+    };
+    plan.flights[0].incoming = Route {
+        points: vec![[2.0, 13.0, 2.0], [-10.0, 10.0, 2.0]],
+        arcs: vec![0.0, 153.0_f32.sqrt()],
+    };
+    let frame = 1.0 / 30.0;
+    let drawn = |plan: &mut AircraftPlan, seconds: f32| {
+        plan.advance(&rigs, &defines, Some(BAND), seconds, &|_| None);
+        let pose = plan.placed_runs(&rigs, &defines, seconds)[0].1;
+        let eased = plan.eased_runs(&rigs, &defines, seconds)[0].1;
+        (pose, eased)
+    };
+    // First seen mid-rig, it stands on its pose.
+    let (pose, eased) = drawn(&mut plan, 2.0);
+    assert_eq!(eased.position, pose.position);
+    // One frame later the node has moved 0.2 along x; the drawn actor 13% of
+    // that.
+    let (pose, eased) = drawn(&mut plan, 2.0 + frame);
+    assert!((pose.position[0] - 2.2).abs() < 1e-4);
+    assert!(
+        (eased.position[0] - (2.0 + 0.2 * 0.13)).abs() < 1e-4,
+        "{:?}",
+        eased.position
+    );
+    // Two frames' time in one frame step twice as far, never past the pose.
+    let before = eased.position[0];
+    let (pose, eased) = drawn(&mut plan, 2.0 + 3.0 * frame);
+    let expected = before + (pose.position[0] - before) * 0.26;
+    assert!((eased.position[0] - expected).abs() < 1e-4);
+    // A long pause brings it onto the pose.
+    let (pose, eased) = drawn(&mut plan, 4.9);
+    assert!((eased.position[0] - pose.position[0]).abs() < 1e-3);
+    // The next cycle starts on the take-off route's first point and eases
+    // from there.
+    let (pose, eased) = drawn(&mut plan, 5.02);
+    let start = [-10.0, 10.0, 2.0];
+    let moved = (0.13 * 0.12 * 1000.0 / EASING_FRAME_MS).min(1.0);
+    let expected = add(start, mul(sub(pose.position, start), moved));
+    assert!(
+        (0..3).all(|axis| (eased.position[axis] - expected[axis]).abs() < 1e-3),
+        "{:?} {expected:?}",
+        eased.position
+    );
+    assert_ne!(eased.position, pose.position);
+    // A later plan of the same flight carries the transform on.
+    let mut next = plan.clone();
+    next.eased.clear();
+    next.eased_at = None;
+    next.carry_easing(&mut plan);
+    let (pose, carried) = drawn(&mut next, 5.02 + frame);
+    assert_ne!(carried.position, pose.position);
+    // Without it the new plan stands on the pose.
+    let mut fresh = next.clone();
+    fresh.eased.clear();
+    fresh.eased_at = None;
+    let (pose, snapped) = drawn(&mut fresh, 5.02 + 2.0 * frame);
+    assert_eq!(snapped.position, pose.position);
+}
+
 /// A missile scenario plays its explosion once per cycle, when its landing
 /// ends or its rocket ends it, keyed by its flight and the cycle that
 /// follows; a long gap plays only the last.

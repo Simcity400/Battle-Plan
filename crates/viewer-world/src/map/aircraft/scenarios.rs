@@ -710,6 +710,8 @@ mod tests {
             scale_takeoff: 1.0,
             scale_landing: 1.0,
             scale_min: 1.0,
+            smooth_move: 0.13,
+            smooth_turn: 0.12,
         }
     }
 

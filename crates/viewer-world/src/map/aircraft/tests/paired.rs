@@ -34,6 +34,8 @@ pub(super) fn defines() -> FlightDefines {
         scale_takeoff: 0.1,
         scale_landing: 0.9,
         scale_min: 0.1,
+        smooth_move: 0.13,
+        smooth_turn: 0.12,
     }
 }
 

@@ -39,6 +39,8 @@ fn flight_defines(max_training: i32) -> FlightDefines {
                     AIRPLANES_SCALE_TAKEOFF_DIST = 0.1,
                     AIRPLANES_SCALE_LANDING_DIST = 0.9,
                     AIRPLANES_SCALE_MIN = 0.1,
+                    AIRPLANES_SMOOTH_INTERPOLATION_MOVE = 0.13,
+                    AIRPLANES_SMOOTH_INTERPOLATION_TURN = 0.12,
                 }} }}"
     );
     defines.load("test.lua", source.as_bytes()).unwrap();

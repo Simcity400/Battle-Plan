@@ -37,6 +37,13 @@
 //! `AIRPLANES_CURVE_MAX_EXTRAPOLATION`. Interior samples stay above terrain plus
 //! `AIRPLANES_CURVE_MIN_ELEVATION`; travel advances by polyline arc length.
 //! Take-off and landing use `AIRPLANES_SCALE_*`, with synchronized group arrivals.
+//! Each frame the drawn transform eases toward the pose, as the game's does:
+//! per elapsed 30 Hz frame the position by `AIRPLANES_SMOOTH_INTERPOLATION_MOVE`
+//! and the heading and up axis by `AIRPLANES_SMOOTH_INTERPOLATION_TURN` times
+//! the clock's speed; a new cycle starts on its take-off route's first point.
+//! The band and the runs read the pose, not the eased transform ([`Eased`]).
+//! Every state base takes off where the game's base position finder puts it
+//! ([`viewer_foundation::map::building_facts::SiteSlots::base`]).
 //! A separate presentation clock advances while paused at
 //! `AIRPLANES_ANIMATION_GLOBAL_SPEED_PER_GAMESPEED[0]`.
 //!
@@ -58,7 +65,8 @@
 //! flag, ends in a missile explosion in its mission region. A missile scenario
 //! that finishes plays the content's missile explosion entity in its
 //! province's effect slot ([`super::strike_effects`]). A rocket site or gun
-//! emplacement takes off from its state's first admitted site slot.
+//! emplacement takes off where the game's base position finder puts it
+//! ([`launches`]).
 //!
 //! The game's scenario analysis gives no landing route to the rocket, to
 //! kamikaze fighters that succeed, to the defending slots of a successful
@@ -252,6 +260,10 @@ pub struct FlightDefines {
     scale_takeoff: f32,
     scale_landing: f32,
     scale_min: f32,
+    /// `AIRPLANES_SMOOTH_INTERPOLATION_MOVE` and `_TURN`: how far, per
+    /// elapsed 30 Hz frame, an actor's drawn transform eases toward its pose.
+    smooth_move: f32,
+    smooth_turn: f32,
 }
 
 impl FlightDefines {
@@ -333,6 +345,8 @@ impl FlightDefines {
             scale_takeoff: float("AIRPLANES_SCALE_TAKEOFF_DIST")?,
             scale_landing: float("AIRPLANES_SCALE_LANDING_DIST")?,
             scale_min: float("AIRPLANES_SCALE_MIN")?,
+            smooth_move: float("AIRPLANES_SMOOTH_INTERPOLATION_MOVE")?,
+            smooth_turn: float("AIRPLANES_SMOOTH_INTERPOLATION_TURN")?,
         };
         if out.dogfight.single <= 0 || out.dogfight.sizing.triple <= 0 {
             return Err(invalid_data(
@@ -380,6 +394,8 @@ impl FlightDefines {
             scale_takeoff: 0.1,
             scale_landing: 0.9,
             scale_min: 0.1,
+            smooth_move: 0.13,
+            smooth_turn: 0.12,
         }
     }
 
@@ -1760,7 +1776,94 @@ struct Run {
     grounds: Vec<Ground>,
 }
 
+/// The game's frame period the easing counts frames by, in milliseconds.
+const EASING_FRAME_MS: f32 = 33.333_336;
+/// A heading this close to zero on every axis is replaced by its target.
+const EASED_HEADING_MINIMUM: f32 = 0.001;
+
+/// A flight's identity across hourly plans: its wing, region, rig, track,
+/// anchor and heading.
+type FlightKey = (u64, u32, String, usize, [u32; 3], u32);
+
+/// An actor's drawn transform: where it is, its heading and its up axis,
+/// in the scenario cycle it belongs to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Eased {
+    cycle: u32,
+    position: [f32; 3],
+    heading: [f32; 3],
+    up: [f32; 3],
+}
+
+impl Eased {
+    fn at(cycle: u32, pose: &Transform) -> Self {
+        Self {
+            cycle,
+            position: pose.translation,
+            heading: pose.basis[2],
+            up: pose.basis[1],
+        }
+    }
+
+    /// One frame of `frames` 30 Hz frames toward `pose`, as the game eases
+    /// an actor each frame: the position by `move` per frame and the heading
+    /// and up axis by `turn` per frame, each step at most the whole way; a
+    /// heading left within the minimum of zero takes the target's.
+    fn ease(&mut self, pose: &Transform, frames: f32, step_move: f32, step_turn: f32) {
+        let fraction = |value: f32| if value >= 0.0 { value.min(1.0) } else { 0.0 };
+        let (moving, turning) = (fraction(frames * step_move), fraction(step_turn * frames));
+        let toward = |from: [f32; 3], to: [f32; 3], t: f32| add(mul(sub(to, from), t), from);
+        self.position = toward(self.position, pose.translation, moving);
+        self.heading = toward(self.heading, pose.basis[2], turning);
+        self.up = toward(self.up, pose.basis[1], turning);
+        self.heading = if self
+            .heading
+            .iter()
+            .any(|axis| axis.abs() > EASED_HEADING_MINIMUM)
+        {
+            unit(self.heading)
+        } else {
+            pose.basis[2]
+        };
+    }
+
+    /// The basis the game builds from the heading and up axis.
+    fn basis(&self) -> [[f32; 3]; 3] {
+        let cross = |a: [f32; 3], b: [f32; 3]| {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        };
+        let heading = unit(self.heading);
+        let right = unit(cross(self.up, heading));
+        let up = unit(cross(heading, right));
+        [right, up, heading]
+    }
+}
+
+/// The instance's rotation fields for a drawn transform.
+fn pose_instance(instance: &mut ModelInstance, position: [f32; 3], basis: [[f32; 3]; 3]) {
+    instance.position = position;
+    instance.native_basis = basis;
+    instance.pitch = (-basis[2][1]).clamp(-1.0, 1.0).asin();
+    instance.rotation = (-basis[2][0]).atan2(basis[2][2]);
+    instance.roll = basis[0][1].atan2(basis[1][1]);
+}
+
 impl Flight {
+    fn key(&self) -> FlightKey {
+        (
+            self.wing,
+            self.region,
+            self.rig.clone(),
+            self.track,
+            self.origin.map(f32::to_bits),
+            self.yaw.to_bits(),
+        )
+    }
+
     /// One scenario cycle: the take-off, the rig of `duration` and the
     /// landing. A cycle can end sooner on a frame where every actor of a
     /// scenario none of whose actors lands is done ([`Run`]).
@@ -1808,6 +1911,11 @@ pub struct AircraftPlan {
     ran_at: Option<f32>,
     /// Missile scenarios that finished on a frame since they were taken.
     finished: Vec<super::strike_effects::Impact>,
+    /// Each flight's drawn transform as the last frame eased it, by its
+    /// identity, so a later hour's plan of the same flights carries it on.
+    eased: BTreeMap<FlightKey, Eased>,
+    /// The presentation time the drawn transforms last eased to.
+    eased_at: Option<f32>,
     launches: Vec<launches::Launch>,
     /// Whether explosions were taken past the launch clock's opening instant.
     opened: bool,
@@ -1821,7 +1929,6 @@ const LAUNCH_IMPACT: u64 = 1 << 63;
 struct LaunchSources<'a, 'c> {
     frame: &'a DecodedFrame,
     assets: &'a AircraftAssets,
-    air_bases: &'a BTreeMap<u32, [f32; 3]>,
     carriers: &'a CarrierSources<'c>,
     impact_place: &'a dyn Fn(u32) -> Option<([f32; 3], [f32; 4])>,
     clock_speed: f32,
@@ -1934,13 +2041,8 @@ impl LaunchRecords {
             }
             other => format!("their entity {entity} does not resolve: {other:?}"),
         })?;
-        let position = take_off(
-            sources.air_bases,
-            &assets.launch_content,
-            sources.carriers,
-            base,
-        )
-        .map_err(|reason| format!("their base has no position: {reason}"))?;
+        let position = take_off(&assets.launch_content, sources.carriers, base)
+            .map_err(|reason| format!("their base has no position: {reason}"))?;
         let max_delay = assets.launch_content.max_delay()?;
         // The entity plays its default state until its own player reads
         // its root clip's length.
@@ -2659,23 +2761,15 @@ fn wing_random(wing: u64, region: u32) -> Random {
 }
 
 /// Where a wing's scenarios take off and its launch effects stand, by the
-/// game's base position finder: an ordinary base's state air-base slot, a
-/// rocket site's or gun emplacement's first admitted site slot of its state
+/// game's base position finder for a state base
 /// ([`launches::Content::site`]), or its carrier.
 fn take_off(
-    air_bases: &BTreeMap<u32, [f32; 3]>,
     sites: &launches::Content,
     carriers: &CarrierSources<'_>,
     base: &AirBaseRow,
 ) -> Result<[f32; 3], &'static str> {
     match base.state {
-        Some(state) if matches!(base.kind, launches::ROCKET_SITE | launches::GUN_EMPLACEMENT) => {
-            sites.site(state, base.kind)
-        }
-        Some(state) => air_bases
-            .get(&state)
-            .copied()
-            .ok_or("its state has no authored air-base slot"),
+        Some(state) => sites.site(state, base.kind),
         None => carriers.start(base),
     }
 }
@@ -3073,7 +3167,6 @@ impl AircraftPlan {
     pub fn build(
         frame: &DecodedFrame,
         assets: &AircraftAssets,
-        air_bases: &BTreeMap<u32, [f32; 3]>,
         region_of: &BTreeMap<u32, u32>,
         geometry: &ProvinceGeometry,
         heights: &HeightField<'_>,
@@ -3343,7 +3436,6 @@ impl AircraftPlan {
                     &LaunchSources {
                         frame,
                         assets,
-                        air_bases,
                         carriers: &carriers,
                         impact_place,
                         clock_speed: flight_defines.clock_speed,
@@ -3394,15 +3486,14 @@ impl AircraftPlan {
                 }
                 // The scenario's orientation reference remains available
                 // even when the designated attacking entity is refused.
-                let start =
-                    match take_off(air_bases, &assets.launch_content, &carriers, candidate.base) {
-                        Ok(start) => start,
-                        Err(reason) => {
-                            out.diagnostics
-                                .push(format!("wing {} has no take-off point: {reason}", wing.id));
-                            continue;
-                        }
-                    };
+                let start = match take_off(&assets.launch_content, &carriers, candidate.base) {
+                    Ok(start) => start,
+                    Err(reason) => {
+                        out.diagnostics
+                            .push(format!("wing {} has no take-off point: {reason}", wing.id));
+                        continue;
+                    }
+                };
                 let mut actor = |candidate: ScenarioWing<'_>,
                                  start: Result<[f32; 3], &'static str>|
                  -> Option<Actor> {
@@ -3433,7 +3524,7 @@ impl AircraftPlan {
                 let defender = draw.defender.and_then(|candidate| {
                     actor(
                         candidate,
-                        take_off(air_bases, &assets.launch_content, &carriers, candidate.base),
+                        take_off(&assets.launch_content, &carriers, candidate.base),
                     )
                 });
                 let key = rig_key(scenario_name(draw.kind), outcome);
@@ -3514,7 +3605,7 @@ impl AircraftPlan {
                 ));
                 continue;
             };
-            let start = match take_off(air_bases, &assets.launch_content, &carriers, draw.base) {
+            let start = match take_off(&assets.launch_content, &carriers, draw.base) {
                 Ok(start) => start,
                 Err(reason) => {
                     out.diagnostics
@@ -3864,6 +3955,79 @@ impl AircraftPlan {
         place_flights(&self.flights, &assets.rigs, defines, seconds)
     }
 
+    /// The flights at `seconds` as their runs left them, each drawn where the
+    /// game's per-frame easing has brought it ([`Eased`]): the frame's time
+    /// since the last counts 30 Hz frames, and the turn steps by the aircraft
+    /// clock's speed too. An actor that starts a new cycle starts on its
+    /// take-off route's first point, as the game creates it there; one first
+    /// seen mid-flight, or after the clock went back, stands on its pose. An
+    /// exploding actor keeps the transform it had, as the game stops easing
+    /// it. The band reads the poses, not the eased transforms.
+    fn eased_runs(
+        &mut self,
+        rigs: &BTreeMap<String, Rig>,
+        defines: &FlightDefines,
+        seconds: f32,
+    ) -> Vec<(usize, ModelInstance)> {
+        let mut placed = self.placed_runs(rigs, defines, seconds);
+        let frames = self
+            .eased_at
+            .filter(|last| seconds >= *last)
+            .map(|last| (seconds - last) * 1000.0 / EASING_FRAME_MS);
+        if frames.is_none() {
+            self.eased.clear();
+        }
+        self.eased_at = Some(seconds);
+        // The game eases an actor on the frame it enters the band, then no more.
+        let mut frozen = BTreeMap::new();
+        for run in &self.runs {
+            for (index, ground) in run.flights.clone().zip(&run.grounds) {
+                if let Ground::Exploding { entry, .. } = ground {
+                    frozen.insert(index, *entry);
+                }
+            }
+        }
+        let turn = defines.smooth_turn * defines.clock_speed.abs();
+        for (index, instance) in &mut placed {
+            let flight = &self.flights[*index];
+            let pose = Transform {
+                translation: instance.position,
+                basis: instance.native_basis,
+            };
+            let cycle = instance.animation_epoch;
+            let eased = match (frames, self.eased.get_mut(&flight.key())) {
+                (Some(frames), Some(eased)) => {
+                    if eased.cycle != cycle {
+                        *eased = Eased::at(cycle, &flight.outgoing.at(0.0));
+                    }
+                    if frozen
+                        .get(index)
+                        .is_none_or(|entry| *entry == instance.animation_phase)
+                    {
+                        eased.ease(&pose, frames, defines.smooth_move, turn);
+                    }
+                    *eased
+                }
+                _ => {
+                    let eased = Eased::at(cycle, &pose);
+                    self.eased.insert(flight.key(), eased);
+                    eased
+                }
+            };
+            pose_instance(instance, eased.position, eased.basis());
+        }
+        placed
+    }
+
+    /// Takes over the drawn transforms of the plan this one replaces, for the
+    /// flights the two share.
+    pub fn carry_easing(&mut self, previous: &mut Self) {
+        let keys: BTreeSet<FlightKey> = self.flights.iter().map(Flight::key).collect();
+        self.eased = std::mem::take(&mut previous.eased);
+        self.eased.retain(|key, _| keys.contains(key));
+        self.eased_at = previous.eased_at;
+    }
+
     /// The flights at `seconds` as their runs left them ([`Self::advance`]).
     fn placed_runs(
         &self,
@@ -3906,7 +4070,7 @@ impl AircraftPlan {
         let placed = match &assets.flight_defines {
             Ok(defines) => {
                 self.advance(&assets.rigs, defines, assets.band, seconds, played);
-                self.placed_runs(&assets.rigs, defines, seconds)
+                self.eased_runs(&assets.rigs, defines, seconds)
             }
             Err(_) => Vec::new(),
         };

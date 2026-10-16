@@ -1158,7 +1158,9 @@ impl Scene {
         if let Some((pass, _, current)) = &mut self.aircraft {
             pass.reset_animation();
             plan.carry_opening(current);
-            Ok(Some(std::mem::replace(current, plan)))
+            let mut previous = std::mem::replace(current, plan);
+            current.carry_easing(&mut previous);
+            Ok(Some(previous))
         } else {
             let pass = ModelPass::new(&assets.library(), "flying aircraft");
             self.aircraft = Some((pass, assets, plan));

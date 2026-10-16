@@ -1,7 +1,9 @@
 //! Base-equipment launch effects: the record lifecycle, the site bases and
 //! the records over a pass.
 use super::*;
-use crate::map::aircraft::launches::{GUN_EMPLACEMENT, Launch, PASS_SECONDS, ROCKET_SITE};
+use crate::map::aircraft::launches::{
+    AIR_BASE, GUN_EMPLACEMENT, Launch, PASS_SECONDS, ROCKET_SITE,
+};
 use replay::{
     frame::{Metrics, TableView},
     rows::{LexicalTokenRow, TableId, TableRows, VariantDefinitionRow, WingEquipmentRow},
@@ -92,62 +94,36 @@ fn a_launch_flagged_record_explodes_in_its_mission_region() {
     assert_eq!(effect.explosion(0), None);
 }
 
-/// A rocket site's or gun emplacement's position is its state's first
-/// admitted slot whose bucket holds such a type, in file order; an ordinary
-/// base keeps its air-base slot. Before, every state base took off from its
-/// air-base slot.
+/// Every state base takes off where the game's base position finder puts
+/// it ([`viewer_foundation::map::building_facts::SiteSlots::base`]); a kind
+/// other than a rocket site or gun emplacement is an ordinary air base.
+/// Before, every state base took off from the slot literally named
+/// `air_base`.
 #[test]
-fn site_bases_stand_on_their_state_s_first_admitted_site_slot() {
-    let types = installed_content::buildings::parse(
-        b"buildings={ air_base={ air_base=yes } rocket_site={ rocket_launch_capacity=1 spawn_point=site } gun={ gun_emplacement=yes spawn_point=site } } spawn_points={ site={ max=1 } }",
-        &installed_content::key_names::KeyNames::default(),
-    )
-    .unwrap();
-    let slot = |state, kind: &str, x: f32| installed_content::positions::BuildingPosition {
-        state,
-        kind: kind.into(),
-        x,
-        y: 10.0,
-        z: 5.0,
-        rotation: 0.0,
-        adjacent_sea: 0,
-    };
-    let table = launches::site_table(
-        vec![
-            slot(1, "air_base", 1.0),
-            slot(1, "floating_harbor", 2.0),
-            slot(1, "site", 3.0),
-            slot(1, "site", 4.0),
-            slot(1, "site", 5.0),
-            slot(2, "air_base", 6.0),
-        ],
-        &types,
-        // The first site slot of state 1 is not admitted.
-        |_, position| position.x != 3.0,
-    );
-    assert_eq!(
-        table,
+fn state_bases_take_off_where_the_game_s_finder_puts_them() {
+    let content = launches::Content::for_tests(
         BTreeMap::from([
+            ((1, AIR_BASE), Ok([9.0, 9.0, 9.0])),
             ((1, ROCKET_SITE), Ok([4.0, 10.0, 5.0])),
             ((1, GUN_EMPLACEMENT), Ok([4.0, 10.0, 5.0])),
-        ])
+        ]),
+        3.0,
     );
-    let content = launches::Content::for_tests(table, 3.0);
-    let carriers_registry = AirRegistrySources::default();
+    let registry = AirRegistrySources::default();
     let carriers = CarrierSources {
         ships: None,
         task_forces: None,
-        registry: &carriers_registry,
+        registry: &registry,
         origin: &|_| Err("unused"),
     };
-    let air_bases = BTreeMap::from([(1, [9.0, 9.0, 9.0])]);
     let base = |state, kind| AirBaseRow {
         state: Some(state),
         kind,
         ..Default::default()
     };
-    let at = |base: AirBaseRow| take_off(&air_bases, &content, &carriers, &base);
-    assert_eq!(at(base(1, 0)), Ok([9.0, 9.0, 9.0]));
+    let at = |base: AirBaseRow| take_off(&content, &carriers, &base);
+    assert_eq!(at(base(1, AIR_BASE)), Ok([9.0, 9.0, 9.0]));
+    assert_eq!(at(base(1, 7)), Ok([9.0, 9.0, 9.0]));
     assert_eq!(at(base(1, ROCKET_SITE)), Ok([4.0, 10.0, 5.0]));
     assert_eq!(at(base(1, GUN_EMPLACEMENT)), Ok([4.0, 10.0, 5.0]));
     assert_eq!(
@@ -157,6 +133,10 @@ fn site_bases_stand_on_their_state_s_first_admitted_site_slot() {
     assert_eq!(
         at(base(2, GUN_EMPLACEMENT)),
         Err("its state has no admitted gun-emplacement slot")
+    );
+    assert_eq!(
+        at(base(2, AIR_BASE)),
+        Err("its state has no admitted air-base slot of an air-base type")
     );
 }
 
@@ -352,7 +332,6 @@ fn a_pass_starts_one_record_per_base_and_names_what_it_cannot_start() {
     let sources = LaunchSources {
         frame: &frame,
         assets: &assets,
-        air_bases: &BTreeMap::new(),
         carriers: &carriers,
         impact_place: &|province| {
             (province == 3).then_some(([3.0, 0.0, 3.0], [0.0, 0.0, 1.0, 1.0]))

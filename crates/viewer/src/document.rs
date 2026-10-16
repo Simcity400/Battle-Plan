@@ -2528,7 +2528,6 @@ impl<'a> Hour<'a> {
         viewer_world::map::aircraft::AircraftPlan::build(
             self.frame,
             &self.aircraft,
-            &self.counters.air_bases,
             &self.counters.region_of,
             &self.province_geometry,
             &heights,
