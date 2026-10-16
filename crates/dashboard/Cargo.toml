@@ -16,7 +16,16 @@ slow-tests = []
 [dependencies]
 blake3.workspace = true
 dashboard-base.workspace = true
+dashboard-air-aces.workspace = true
+dashboard-air-superiority.workspace = true
+dashboard-construction.workspace = true
+dashboard-equipment-losses.workspace = true
+dashboard-equipment-stockpile.workspace = true
+dashboard-military-air-ledger.workspace = true
 dashboard-politics-ledger.workspace = true
+dashboard-raids.workspace = true
+dashboard-resource-balance.workspace = true
+dashboard-unit-leaders.workspace = true
 dashboard-core.workspace = true
 dashboard-text.workspace = true
 replay.workspace = true
@@ -46,7 +55,11 @@ name = "dashboard-bridge"
 path = "src/bin/dashboard-bridge.rs"
 
 [dev-dependencies]
+dashboard-equipment-losses = { workspace = true, features = ["test-support"] }
+dashboard-military-air-ledger = { workspace = true, features = ["test-support"] }
 dashboard-politics-ledger = { workspace = true, features = ["test-support"] }
+dashboard-raids = { workspace = true, features = ["test-support"] }
+dashboard-unit-leaders = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["test-support"] }
 dashboard-core = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }

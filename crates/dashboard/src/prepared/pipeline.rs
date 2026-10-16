@@ -578,7 +578,7 @@ struct Checkpoint {
     sessions: Vec<Vec<u8>>,
     branches: Vec<Vec<u8>>,
     gaps: Vec<Vec<u8>>,
-    map: crate::prepared_map::Progress,
+    map: dashboard_base::prepared_map::Progress,
     content: Option<bool>,
     display_error: Option<String>,
     display_failures: u64,
@@ -821,7 +821,7 @@ fn last_blocks(replay: &Replay) -> BTreeMap<u64, usize> {
         .collect()
 }
 fn branch_coverage(
-    map: &crate::prepared_map::Progress,
+    map: &dashboard_base::prepared_map::Progress,
     branch: u64,
     last_blocks: &BTreeMap<u64, usize>,
 ) -> Option<Coverage> {
@@ -837,7 +837,7 @@ fn branch_coverage(
     })
 }
 fn accepted_coverage(
-    map: &crate::prepared_map::Progress,
+    map: &dashboard_base::prepared_map::Progress,
     last_blocks: &BTreeMap<u64, usize>,
 ) -> BTreeMap<String, Coverage> {
     map.branches
@@ -892,7 +892,7 @@ pub(crate) fn refusal(
 }
 fn save_coverage(
     writer: &mut store::Writer,
-    map: &crate::prepared_map::Progress,
+    map: &dashboard_base::prepared_map::Progress,
     branch: u64,
     last_blocks: &BTreeMap<u64, usize>,
     refused: Option<&Refused>,
@@ -961,7 +961,7 @@ fn metadata_prefix(
         return Ok(false);
     }
     if state.map.selected != {
-        let mut tables: Vec<_> = crate::prepared_map::selected_tables()
+        let mut tables: Vec<_> = dashboard_base::prepared_map::selected_tables()
             .iter()
             .map(|table| *table as u16)
             .collect();
@@ -1261,7 +1261,7 @@ fn branches_supported(
 /// Publish the lightweight map binding atomically with its checkpoint pages.
 pub fn write_map_progress(
     writer: &mut store::Writer,
-    progress: &crate::prepared_map::Progress,
+    progress: &dashboard_base::prepared_map::Progress,
 ) -> io::Result<()> {
     json(writer, MAP_PROGRESS, progress)
 }
@@ -1275,7 +1275,7 @@ pub fn map_checkpoint_binding(
     Option<(
         std::sync::Arc<store::Store>,
         store::SourceKey,
-        crate::prepared_map::Progress,
+        dashboard_base::prepared_map::Progress,
     )>,
 > {
     let (store, key) = super::files(source, content)?;
@@ -1710,7 +1710,7 @@ fn run_inner(
                 family_timings,
                 "resume.frame",
                 observe,
-                crate::prepared_map::load_resume_prefix(
+                dashboard_base::prepared_map::load_resume_prefix(
                     &store,
                     previous,
                     &key,
@@ -1722,7 +1722,7 @@ fn run_inner(
                 family_timings,
                 "resume.frame",
                 observe,
-                crate::prepared_map::load_resume(&store, &key, &state.map, selected())
+                dashboard_base::prepared_map::load_resume(&store, &key, &state.map, selected())
             )?,
         };
         let accumulator = resume
@@ -1944,10 +1944,10 @@ fn run_inner(
         family_timings,
         "construct.map",
         observe,
-        crate::prepared_map::Builder::new(
-            NonZeroU32::new(crate::prepared_map::CHECKPOINT_STRIDE)
+        dashboard_base::prepared_map::Builder::new(
+            NonZeroU32::new(dashboard_base::prepared_map::CHECKPOINT_STRIDE)
                 .ok_or_else(|| invalid("zero checkpoint stride"))?,
-            crate::prepared_map::selected_tables(),
+            dashboard_base::prepared_map::selected_tables(),
             state.map.clone(),
         )
     )?;
@@ -3064,7 +3064,7 @@ fn run_inner(
                                 &mut writer,
                                 updates,
                                 frame,
-                                crate::prepared_map::Position {
+                                dashboard_base::prepared_map::Position {
                                     block,
                                     next_frame: frame_count,
                                 },
@@ -4078,7 +4078,7 @@ fn run_inner(
                 map.save_resume(
                     &mut writer,
                     frame,
-                    crate::prepared_map::Position {
+                    dashboard_base::prepared_map::Position {
                         block,
                         next_frame: frame_count,
                     },
@@ -4322,7 +4322,7 @@ fn write_checkpoint(
     writer: &mut store::Writer,
     state: &mut Checkpoint,
     replay: &Replay,
-    map: &crate::prepared_map::Builder,
+    map: &dashboard_base::prepared_map::Builder,
     bytes: u64,
 ) -> io::Result<u64> {
     state.index = replay.index.iter().map(Block::from).collect();

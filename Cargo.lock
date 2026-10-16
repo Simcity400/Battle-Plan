@@ -1813,10 +1813,19 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "dashboard-air-aces",
+ "dashboard-air-superiority",
  "dashboard-base",
+ "dashboard-construction",
  "dashboard-core",
+ "dashboard-equipment-losses",
+ "dashboard-equipment-stockpile",
+ "dashboard-military-air-ledger",
  "dashboard-politics-ledger",
+ "dashboard-raids",
+ "dashboard-resource-balance",
  "dashboard-text",
+ "dashboard-unit-leaders",
  "engine",
  "installed-content",
  "mimalloc",
@@ -1830,6 +1839,40 @@ dependencies = [
  "ts-rs",
  "uuid",
  "windows-sys 0.61.2",
+ "zstd",
+]
+
+[[package]]
+name = "dashboard-air-aces"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "zstd",
+]
+
+[[package]]
+name = "dashboard-air-superiority"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
  "zstd",
 ]
 
@@ -1850,7 +1893,26 @@ dependencies = [
  "store",
  "ts-rs",
  "uuid",
+ "windows-sys 0.61.2",
  "zstd",
+]
+
+[[package]]
+name = "dashboard-construction"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "png 0.18.1",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
 ]
 
 [[package]]
@@ -1865,6 +1927,56 @@ dependencies = [
  "serde_json",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "dashboard-equipment-losses"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+]
+
+[[package]]
+name = "dashboard-equipment-stockpile"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "dashboard-military-air-ledger"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "zstd",
 ]
 
 [[package]]
@@ -1887,6 +1999,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashboard-raids"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
+name = "dashboard-resource-balance"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+]
+
+[[package]]
 name = "dashboard-text"
 version = "0.1.0"
 dependencies = [
@@ -1901,6 +2047,26 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "zstd",
+]
+
+[[package]]
+name = "dashboard-unit-leaders"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "png 0.18.1",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
  "zstd",
 ]
 
@@ -7747,6 +7913,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "dashboard",
+ "dashboard-base",
  "eframe",
  "engine",
  "installed-content",

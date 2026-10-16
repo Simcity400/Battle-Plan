@@ -6,7 +6,7 @@ One country’s signed losses by cause → equipment type → exact design, with
 
 ## Products it reads
 
-Prepared [`equipment-losses`](../../../../crates/dashboard/src/products/equipment_losses.rs) requests use one viewport plus exact reached dates. The existing product owns native cause meanings, content labels and coverage. Background preparation observes all native holders once; queries read the selected holder's sparse loss series and metadata.
+Prepared [`equipment-losses`](../../../../crates/dashboard-equipment-losses/src/products/equipment_losses.rs) requests use one viewport plus exact reached dates. The existing product owns native cause meanings, content labels and coverage. Background preparation observes all native holders once; queries read the selected holder's sparse loss series and metadata.
 
 ## Settings
 

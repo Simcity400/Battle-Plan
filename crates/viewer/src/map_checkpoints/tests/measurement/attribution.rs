@@ -88,7 +88,7 @@ impl Attribution {
                     "nativeRowRawBytes": total.raw, "independentNativeRowZstd9Bytes": total.compressed,
                     "recordingKeyframeBytes": keyframe, "recordingLaterBytes": later}));
             }
-            if stride == dashboard::prepared_map::CHECKPOINT_STRIDE {
+            if stride == dashboard_base::prepared_map::CHECKPOINT_STRIDE {
                 production = tables.clone();
             }
             candidates.push(serde_json::json!({"stride": stride, "tables": tables}));

@@ -13,6 +13,7 @@ pub mod catalogue;
 pub mod content;
 pub mod prepared;
 pub mod prepared_chart;
+pub mod prepared_map;
 pub mod prepared_measure;
 pub mod prepared_production;
 pub mod products;

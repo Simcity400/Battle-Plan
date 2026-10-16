@@ -6,12 +6,12 @@ One country's equipment, type by type, led by the game's surplus or shortage. Ea
 
 ## Products it reads
 
-- [`equipment-stockpile`](../../../../crates/dashboard/src/products/equipment_stockpile.rs) supplies:
+- [`equipment-stockpile`](../../../../crates/dashboard-equipment-stockpile/src/products/equipment_stockpile.rs) supplies:
   - stock by model;
   - each model's output per day: the game's per-day formula, each line truncated, then summed;
   - the IC a day its lines put in, and their lowest and highest cost per unit;
   - the logistics record (balance, its stock and the available operand).
-- `stockpile-artwork` in [artwork.rs](../../../../crates/dashboard/src/products/equipment_stockpile/artwork.rs) supplies dated best-variant pictures.
+- `stockpile-artwork` in [artwork.rs](../../../../crates/dashboard-equipment-stockpile/src/products/equipment_stockpile/artwork.rs) supplies dated best-variant pictures.
 
 The prepared stockpile adapter supplies one reached date, the visible chart
 summary, independent naming pages and next-change navigation. Native holder and

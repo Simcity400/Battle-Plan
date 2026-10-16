@@ -2,7 +2,7 @@
 
 **What it shows:** One strategic region per row and calendar day per column, coloured by the leading side's margin or split into side shares.
 
-**Product(s) it reads:** [`air-superiority`](../../../../crates/dashboard/src/products/air_superiority.rs) supplies selected-region daily timelines, the current-day moment and lightweight choices.
+**Product(s) it reads:** [`air-superiority`](../../../../crates/dashboard-air-superiority/src/products/air_superiority.rs) supplies selected-region daily timelines, the current-day moment and lightweight choices.
 
 **Settings:** Per side by default or Exact viewpoint; side/theatre filters, chosen regions or most-active count (default ten), margin/split cells; Campaign, Follow, Pin and Range. Shared heat-chart zoom, pan and keyboard controls apply.
 

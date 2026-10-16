@@ -2,7 +2,7 @@
 
 **What it shows:** Damage suffered and inflicted per country in a butterfly chart, measured in building levels with exact amounts and dealt/taken ratios.
 
-**Product(s) it reads:** [`military-air-ledger`](../../../../crates/dashboard/src/products/military_air_ledger.rs), using its bombing family. [Bombing damage breakdown](../bombing-damage-breakdown/README.md) uses the same scan.
+**Product(s) it reads:** [`military-air-ledger`](../../../../crates/dashboard-military-air-ledger/src/products/military_air_ledger.rs), using its bombing family. [Bombing damage breakdown](../bombing-damage-breakdown/README.md) uses the same scan.
 
 **Settings:** Top ten by dealt plus taken by default; manual countries and smart groups; bar-end values, ratio column and inline/pop-out drill; Campaign, Follow, Pin and Range.
 

@@ -4,7 +4,7 @@ Parity builds retain every ordered leader row and exact numeric cell operand. Th
 
 **What it shows:** Recorded generals and admirals with portraits, ranks, skills, attributes, traits and decided/unresolved battle counts. Activate a row for its career.
 
-**Product(s) it reads:** Prepared [`unit-leaders`](../../../../crates/dashboard/src/products/unit_leaders/prepared.rs) supplies the existing history/choice reply through the shared product cache; [`unit-leader-portraits`](../../../../crates/dashboard/src/products/unit_leaders/portraits.rs) supplies mounted-row artwork.
+**Product(s) it reads:** Prepared [`unit-leaders`](../../../../crates/dashboard-unit-leaders/src/products/unit_leaders/prepared.rs) supplies the existing history/choice reply through the shared product cache; [`unit-leader-portraits`](../../../../crates/dashboard-unit-leaders/src/products/unit_leaders/portraits.rs) supplies mounted-row artwork.
 
 **Settings:** All countries/leaders by default; manual countries and smart groups, land/navy kind, skill/won/lost/unresolved/win-rate sort, table bars/ranks/density, inline/pop-out career and Grow with playback; Campaign, Follow or Pin.
 

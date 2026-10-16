@@ -2,7 +2,7 @@
 
 **What it shows:** One general or admiral's identity, skill, traits, commands and recorded battles. The standalone widget and Generals leaderboard drill share CareerView.
 
-**Product(s) it reads:** Prepared [`unit-leaders`](../../../../crates/dashboard/src/products/unit_leaders/prepared.rs) supplies the existing career/choice reply through the shared product cache; [`unit-leader-portraits`](../../../../crates/dashboard/src/products/unit_leaders/portraits.rs) supplies separately cached artwork.
+**Product(s) it reads:** Prepared [`unit-leaders`](../../../../crates/dashboard-unit-leaders/src/products/unit_leaders/prepared.rs) supplies the existing career/choice reply through the shared product cache; [`unit-leader-portraits`](../../../../crates/dashboard-unit-leaders/src/products/unit_leaders/portraits.rs) supplies separately cached artwork.
 
 **Settings:** Choose a full leader reference from the country-filtered inventory; Grow with playback; Campaign, Follow or Pin. The leaderboard's inline/pop-out drill adds Back, Follow and Pin.
 

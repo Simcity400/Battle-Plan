@@ -6,7 +6,7 @@ Observed launched/succeeded raids per native country, as a race or lines.
 
 ## Products it reads
 
-[`raids`](../../../../crates/dashboard/src/products/raids.rs) shares the [Raid log](../raid-log/README.md) scan and availability check; the shared race kit supplies dated country looks.
+[`raids`](../../../../crates/dashboard-raids/src/products/raids.rs) shares the [Raid log](../raid-log/README.md) scan and availability check; the shared race kit supplies dated country looks.
 
 ## Settings
 

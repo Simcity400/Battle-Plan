@@ -197,7 +197,34 @@ opt-level = 2
 [profile.dev.package.dashboard-base]
 opt-level = 2
 
+[profile.dev.package.dashboard-air-aces]
+opt-level = 2
+
+[profile.dev.package.dashboard-air-superiority]
+opt-level = 2
+
+[profile.dev.package.dashboard-construction]
+opt-level = 2
+
+[profile.dev.package.dashboard-equipment-losses]
+opt-level = 2
+
+[profile.dev.package.dashboard-equipment-stockpile]
+opt-level = 2
+
+[profile.dev.package.dashboard-military-air-ledger]
+opt-level = 2
+
 [profile.dev.package.dashboard-politics-ledger]
+opt-level = 2
+
+[profile.dev.package.dashboard-raids]
+opt-level = 2
+
+[profile.dev.package.dashboard-resource-balance]
+opt-level = 2
+
+[profile.dev.package.dashboard-unit-leaders]
 opt-level = 2
 
 [profile.dev.package.dashboard-core]
@@ -394,7 +421,34 @@ opt-level = 0
 [profile.test.package.dashboard-base]
 opt-level = 0
 
+[profile.test.package.dashboard-air-aces]
+opt-level = 0
+
+[profile.test.package.dashboard-air-superiority]
+opt-level = 0
+
+[profile.test.package.dashboard-construction]
+opt-level = 0
+
+[profile.test.package.dashboard-equipment-losses]
+opt-level = 0
+
+[profile.test.package.dashboard-equipment-stockpile]
+opt-level = 0
+
+[profile.test.package.dashboard-military-air-ledger]
+opt-level = 0
+
 [profile.test.package.dashboard-politics-ledger]
+opt-level = 0
+
+[profile.test.package.dashboard-raids]
+opt-level = 0
+
+[profile.test.package.dashboard-resource-balance]
+opt-level = 0
+
+[profile.test.package.dashboard-unit-leaders]
 opt-level = 0
 
 [profile.test.package.dashboard-core]
@@ -583,7 +637,34 @@ opt-level = 2
 [profile.full.package.dashboard-base]
 opt-level = 2
 
+[profile.full.package.dashboard-air-aces]
+opt-level = 2
+
+[profile.full.package.dashboard-air-superiority]
+opt-level = 2
+
+[profile.full.package.dashboard-construction]
+opt-level = 2
+
+[profile.full.package.dashboard-equipment-losses]
+opt-level = 2
+
+[profile.full.package.dashboard-equipment-stockpile]
+opt-level = 2
+
+[profile.full.package.dashboard-military-air-ledger]
+opt-level = 2
+
 [profile.full.package.dashboard-politics-ledger]
+opt-level = 2
+
+[profile.full.package.dashboard-raids]
+opt-level = 2
+
+[profile.full.package.dashboard-resource-balance]
+opt-level = 2
+
+[profile.full.package.dashboard-unit-leaders]
 opt-level = 2
 
 [profile.full.package.dashboard-core]

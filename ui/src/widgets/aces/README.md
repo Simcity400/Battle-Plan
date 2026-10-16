@@ -2,7 +2,7 @@
 
 **What it shows:** Every country's recorded hall of fame at the shown moment, with portraits, callsigns, assigned aircraft and bounded first-sighting/death dates.
 
-**Product(s) it reads:** [`air-aces`](../../../../crates/dashboard/src/products/air_aces.rs) supplies the manifest and recording-block roster windows; `air-ace-portraits` in the same module supplies artwork. Country filtering uses [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs).
+**Product(s) it reads:** [`air-aces`](../../../../crates/dashboard-air-aces/src/products/air_aces.rs) supplies the manifest and recording-block roster windows; `air-ace-portraits` in the same module supplies artwork. Country filtering uses [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs).
 
 Roster windows and compact dated portrait selections come from background preparation. Manifest naming versions and successful read dates use the shared append-only event pages.
 

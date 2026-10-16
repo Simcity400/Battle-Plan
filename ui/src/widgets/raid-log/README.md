@@ -6,7 +6,7 @@ Observed raid episodes, newest first, with target/location, native phase/outcome
 
 ## Products it reads
 
-[`raids`](../../../../crates/dashboard/src/products/raids.rs) shares one branch scan with [Raid tally](../raid-tally/README.md). Shared log facts name only visible countries.
+[`raids`](../../../../crates/dashboard-raids/src/products/raids.rs) shares one branch scan with [Raid tally](../raid-tally/README.md). Shared log facts name only visible countries.
 
 ## Settings
 

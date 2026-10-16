@@ -5,7 +5,6 @@
 pub mod content_check;
 pub mod prepared;
 pub mod prepared_focus;
-pub mod prepared_map;
 pub mod prepared_stability;
 pub mod products;
 pub mod reply_cache;
@@ -18,8 +17,6 @@ pub use dashboard_base::{
 };
 pub(crate) use dashboard_core::invalid;
 pub use dashboard_core::{blocks, config, dto::*, map_display, map_settings, protocol, transport};
-#[cfg(test)]
-pub(crate) use dashboard_text::air_wing_names;
 pub use dashboard_text::{
     character_scope, cryptology, effect_description, flag_choices, identity, metadata,
     modifier_text, naval_battle_name, scope, scripted_text, state_resources, triggers, unit_names,

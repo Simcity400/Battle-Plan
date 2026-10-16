@@ -5332,7 +5332,7 @@ fn prepared_country_factories_matches_native_after_two_commits_resume_append_gap
 #[test]
 fn prepared_leaders_pipeline_resumes_appended_outcomes_under_the_current_key() {
     use crate::products::{Product, unit_leaders::*};
-    let frames = crate::products::unit_leaders::prepared::tests::outcome_frames(true);
+    let frames = crate::products::unit_leaders::prepared::test_fixtures::outcome_frames(true);
     let mut replay =
         Replay::from_records(CAMPAIGN.into(), &[records(1, frames[..2].to_vec())]).unwrap();
     let mut fixture = Fixture::new(&replay);

@@ -6,7 +6,7 @@ One countryâ€™s signed civilian-factory output as a sunburst: new/repair work â†
 
 ## Products it reads
 
-[`construction-spending`](../../../../crates/dashboard/src/products/construction_spending.rs) shares the Construction log observer and leaf grouping. Prepared leaf series supply only the selected start, reached and final totals; the catalogue retains project and partial-output operands. [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies state names at the shown hour.
+[`construction-spending`](../../../../crates/dashboard-construction/src/products/construction_spending.rs) shares the Construction log observer and leaf grouping. Prepared leaf series supply only the selected start, reached and final totals; the catalogue retains project and partial-output operands. [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies state names at the shown hour.
 
 ## Settings
 

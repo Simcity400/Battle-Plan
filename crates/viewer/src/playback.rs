@@ -10,7 +10,7 @@ use replay::{
     rows::{TableId, tables},
 };
 
-pub use dashboard::prepared_map::Current;
+pub use dashboard_base::prepared_map::Current;
 
 struct CachedBlock {
     index: usize,

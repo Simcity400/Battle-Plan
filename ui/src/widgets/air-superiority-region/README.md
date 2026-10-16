@@ -2,7 +2,7 @@
 
 **What it shows:** Strategic regions at a playback moment, with exact comparative air-score shares and assigned-wing counts.
 
-**Product(s) it reads:** [`air-superiority`](../../../../crates/dashboard/src/products/air_superiority.rs) supplies moment windows and lightweight choices. Native scoring and side assignment live in that product.
+**Product(s) it reads:** [`air-superiority`](../../../../crates/dashboard-air-superiority/src/products/air_superiority.rs) supplies moment windows and lightweight choices. Native scoring and side assignment live in that product.
 
 **Settings:** Follow or Pin; Per side (default) or Exact viewpoint; country/side viewpoint, side and recorded-theatre filters, content-region selection, and contested/activity/name ordering. Most contested is the default.
 

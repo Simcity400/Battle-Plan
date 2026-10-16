@@ -461,7 +461,7 @@ fn the_decode_lane_decodes_wanted_hours_ahead_and_serves_any_other() {
 
 #[test]
 fn source_worker_seed_attaches_committed_checkpoints_and_clear_keeps_exact_hour_ownership() {
-    use dashboard::prepared_map::{Builder, Position, Progress, selected_tables};
+    use dashboard_base::prepared_map::{Builder, Position, Progress, selected_tables};
     use replay::{frame::FrameDecoder, rows::TableId};
     let path = std::env::temp_dir().join(format!(
         "native-checkpoint-worker-{}.battleplan",

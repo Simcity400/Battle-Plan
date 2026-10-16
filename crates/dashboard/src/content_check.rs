@@ -1229,6 +1229,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn refused_construction_state_read_is_omitted_offline() {
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+            "common/buildings/test.txt",
+            "buildings={mod_building={icon_frame=-1}}",
+        )]);
+        let error = crate::scripted_text::read_state_content(&catalogue.content.layers)
+            .err()
+            .unwrap();
+        let expected = format!("State names are unavailable: {error}");
+        let checks = check(Arc::clone(&catalogue.content), "english");
+        let shared = checks
+            .iter()
+            .find(|check| check.key == CONSTRUCTION_CHECK_KEY)
+            .unwrap();
+        assert!(shared.error.is_none(), "{shared:?}");
+        assert!(
+            shared
+                .findings
+                .iter()
+                .all(|finding| !finding.message.contains(&expected)),
+            "{shared:?}"
+        );
+    }
+
+    #[test]
     fn place_name_inventory_accepts_successful_empty_text_and_native_defaults() {
         engine::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

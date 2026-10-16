@@ -11,7 +11,7 @@ One row per observed construction project. Each row has, after its date:
 
 ## Products it reads
 
-[`construction-log-manifest` and `construction-log`](../../../../crates/dashboard/src/products/construction_log.rs) supply prepared branch windows and building types, then each window's project histories and factory output. Project-keyed events retain later operands without replacing earlier window pages. [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies dated state labels through the shared naming hook.
+[`construction-log-manifest` and `construction-log`](../../../../crates/dashboard-construction/src/products/construction_log.rs) supply prepared branch windows and building types, then each window's project histories and factory output. Project-keyed events retain later operands without replacing earlier window pages. [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies dated state labels through the shared naming hook.
 
 ## Settings
 

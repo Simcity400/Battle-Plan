@@ -2,7 +2,7 @@
 
 **What it shows:** One country's applied bombing damage as a sunburst, grouped by building type then target state.
 
-**Product(s) it reads:** [`military-air-ledger`](../../../../crates/dashboard/src/products/military_air_ledger.rs), using the same bombing totals as [Bombing damage](../bombing-damage/README.md); [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) names states at their recorded dates.
+**Product(s) it reads:** [`military-air-ledger`](../../../../crates/dashboard-military-air-ledger/src/products/military_air_ledger.rs), using the same bombing totals as [Bombing damage](../bombing-damage/README.md); [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) names states at their recorded dates.
 
 **Settings:** Suffered damage by default or Inflicted; building/state levels, Share/Fill growth and shared sunburst presentation; Campaign, Follow, Pin and Range.
 

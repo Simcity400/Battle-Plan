@@ -47,7 +47,7 @@ through the existing playback path.
 ## Playback, threading and frame budgets
 
 [map_checkpoints.rs](src/map_checkpoints.rs) supplies exact-hour `Current` values
-to playback through dashboard's shared `prepared_map::Reader`. Seek restores the
+to playback through dashboard-base's shared `prepared_map::Reader`. Seek restores the
 nearest independent native checkpoint, then reads selected recording tables
 through the target hour and applies fewer than 720 recorded updates. Source
 parsing still begins at the source block's keyframe. An exact checkpoint needs

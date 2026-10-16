@@ -6,13 +6,9 @@
 //! its key.
 
 pub mod agency_comparison;
-pub mod air_aces;
 pub mod air_force;
-pub mod air_superiority;
 pub mod army_size;
 pub mod autonomy;
-pub mod construction_log;
-pub mod construction_spending;
 pub mod country_flags;
 pub mod country_fuel;
 mod country_name_cache;
@@ -20,8 +16,6 @@ pub mod country_nukes;
 pub mod country_stability;
 pub mod decryption;
 pub mod division_log;
-pub mod equipment_losses;
-pub mod equipment_stockpile;
 pub mod espionage_log;
 pub mod event_feed;
 pub mod focus_artwork;
@@ -29,7 +23,6 @@ pub mod game_score;
 pub mod intelligence_capture;
 pub mod intelligence_content;
 pub(crate) mod intelligence_prepared;
-pub mod military_air_ledger;
 pub mod operation_description;
 pub mod operative_content;
 pub mod operative_placements;
@@ -47,8 +40,6 @@ pub mod occupied_states;
 pub(crate) mod parts_race_prepared;
 pub mod party_history;
 pub mod peace_deals;
-pub mod raids;
-pub mod resource_balance;
 pub mod scoreboard;
 pub mod ships_sunk;
 pub mod sinkings;
@@ -57,15 +48,24 @@ pub mod stability_parts;
 pub mod subjects;
 pub mod supply_health;
 pub mod technology_artwork;
-pub mod trade_flows;
-pub mod unit_leaders;
 pub mod war_casualties;
 pub mod wars;
 pub mod world_tension;
 
 // The product contract and the shared products, at their old paths.
+pub use dashboard_air_aces::products::air_aces;
+pub use dashboard_air_superiority::products::air_superiority;
 pub use dashboard_base::products::*;
+pub use dashboard_construction::products::construction_log;
+pub use dashboard_construction::products::construction_spending;
+pub use dashboard_equipment_losses::products::equipment_losses;
+pub use dashboard_equipment_stockpile::products::equipment_stockpile;
+pub use dashboard_military_air_ledger::products::military_air_ledger;
 pub use dashboard_politics_ledger::products::politics_ledger;
+pub use dashboard_raids::products::raids;
+pub use dashboard_resource_balance::products::resource_balance;
+pub use dashboard_resource_balance::products::trade_flows;
+pub use dashboard_unit_leaders::products::unit_leaders;
 
 use std::sync::atomic::AtomicBool;
 
@@ -78,16 +78,10 @@ use crate::{
 
 dashboard_base::reply_warnings!(
     agency_comparison::AgencyComparisonReply,
-    air_aces::AirAcePortraitReply,
     army_size::ArmySizeReply,
     supply_health::SupplyHealthReply,
-    unit_leaders::UnitLeadersResponse,
-    unit_leaders::portraits::UnitLeaderPortraitsReply,
     air_force::AirForceReply,
     autonomy::AutonomyReply,
-    construction_log::ConstructionLogReply,
-    construction_log::ConstructionLogManifestReply,
-    construction_spending::ConstructionSpendingReply,
     country_flags::CountryFlagReply,
     country_fuel::FuelReply,
     country_fuel::FuelAwardsReply,
@@ -99,10 +93,6 @@ dashboard_base::reply_warnings!(
     country_nukes::CountryNukesReply,
     country_stability::CountryStabilityReply,
     decryption::DecryptionReply,
-    equipment_losses::LossesReply,
-    military_air_ledger::MilitaryAirReply,
-    equipment_stockpile::EquipmentStockpileReply,
-    equipment_stockpile::artwork::StockpileArtworkReply,
     espionage_log::EspionageLogReply,
     operation_description::OperationDescriptionReply,
     operative_placements::OperativePlacementReply,
@@ -119,15 +109,12 @@ dashboard_base::reply_warnings!(
     occupied_states::OccupiedStatesManifestReply,
     party_history::PartyHistoryReply,
     peace_deals::PeaceDealsReply,
-    raids::RaidsReply,
     technology_artwork::TechnologyArtworkReply,
-    resource_balance::ResourceBalanceReply,
     scoreboard::ScoreboardReply,
     ships_sunk::ShipsSunkReply,
     special_projects::SpecialProjectsReply,
     stability_parts::StabilityPartsReply,
     subjects::SubjectReply,
-    trade_flows::TradeFlowsReply,
     war_casualties::CasualtyReply,
     wars::WarsReply,
     war_casualties::pairs::CasualtyPairsReply,

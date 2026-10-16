@@ -13,6 +13,7 @@ their root so moved product code keeps its `crate::` paths.
 | [source.rs](src/source.rs), [content.rs](src/content.rs), [catalogue.rs](src/catalogue.rs) | One recording revision with its metadata, resolved content and typed per-source caches; content verification and cache keys; one content catalogue per source and folders (the catalogue itself is in [dashboard-text](../dashboard-text/README.md)). |
 | [prepared/](src/prepared/mod.rs) | The prepared store of one recording path and its source key, each branch's published coverage, binary series and event batches, frame changes, exact group sums and progressive (prepared plus recorded tail) query helpers. |
 | [prepared_chart.rs](src/prepared_chart.rs), [prepared_measure.rs](src/prepared_measure.rs), [prepared_production.rs](src/prepared_production.rs) | Aligned width summaries and event clusters; exact balance and holder observations; production observations and selections. |
+| [prepared_map.rs](src/prepared_map.rs) | Sparse native map checkpoints prepared beside the products, and the reader that serves viewer playback from them. |
 | [ranking.rs](src/ranking.rs) | Event-based top-N selection and clipping. |
 | [read_runs.rs](src/read_runs.rs) | Read-derived value runs and known coverage. |
 | [research_dto.rs](src/research_dto.rs) | The research products' reply types, shared with the frontend. |
@@ -24,3 +25,28 @@ The `test-support` feature compiles the fixtures, test oracles (the `#[cfg(test)
 whole-recording loaders of prepared-only products) and the test instrumentation
 (read and work counters) for the tests of the crates above, so their test builds
 behave exactly as this crate's own. Only dev-dependencies enable it.
+
+## Prepared map checkpoints
+
+[prepared_map.rs](src/prepared_map.rs) prepares the map's native inputs and shared
+authored-trigger tables. Independent native checkpoints retain decoded rows,
+partial censuses, unavailable fields and supplying hours every 720 accepted
+updates. Each existing Store range uses zstd9 with a checksum. Hourly updates
+remain in the recording; no prepared update pages or packet seeds are written.
+Full-selection `map.resume` state is replaced independently for all preparation
+observers. Progress keeps checkpoint ordinals per branch and the accepted source
+cursor. Appended preparation restores that native resume state.
+
+The shared [Reader](src/prepared_map/reader.rs) serves viewer playback and
+acceptance. It binary-searches checkpoint headers, restores the nearest native
+state and calls the ordinary selected recording reader through the target hour.
+Source parsing starts at each source block's keyframe; native application skips
+the frames preceding the checkpoint cursor. Selected table decoding uses half
+the available processors, at least one, with the existing below-normal worker
+priority. Consecutive steps mutate the native decoder in place. A step needing a
+source load reads the rest of that accepted block once; later steps retain it.
+Only one parsed source block remains between requests. Source admission precedes
+passed-hour callbacks, and reads never extend beyond accepted branch progress.
+No recording format, directory, index or setting is added.
+Changed gaps become interval records with reasons in original occurrence order,
+including repeats and overlaps. Readers binary-search gap records on disk.

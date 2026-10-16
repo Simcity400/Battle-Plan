@@ -1519,12 +1519,12 @@ fn map(
         return Err(invalid("Prepared map progress missing"));
     };
     let branch: u64 = requests.branch_id.as_ref().unwrap().parse().unwrap();
-    let mut reader = dashboard::prepared_map::Reader::new(
+    let mut reader = dashboard_base::prepared_map::Reader::new(
         store,
         key,
         progress.clone(),
         source.replay(),
-        dashboard::prepared_map::selected_tables(),
+        dashboard_base::prepared_map::selected_tables(),
     )?;
     let mut rows = BufWriter::new(File::create(evidence.path.join("map-reads.jsonl"))?);
     for &hour in &requests.hours {
@@ -1618,7 +1618,7 @@ fn map(
             match (expected, actual) {
                 (
                     SeekResult::Frame(expected),
-                    Some(dashboard::prepared_map::Current::Frame(actual)),
+                    Some(dashboard_base::prepared_map::Current::Frame(actual)),
                 ) => {
                     evidence.compare(
                         &format!("{label}/hour"),
@@ -1643,7 +1643,7 @@ fn map(
                 }
                 (
                     SeekResult::Gap { reason, .. },
-                    Some(dashboard::prepared_map::Current::Gap { reason: actual, .. }),
+                    Some(dashboard_base::prepared_map::Current::Gap { reason: actual, .. }),
                 ) => {
                     evidence.compare(
                         &format!("{label}/gap-reason"),
@@ -1656,7 +1656,7 @@ fn map(
                     json!(matches!(expected, SeekResult::Frame(_))),
                     json!(matches!(
                         actual,
-                        Some(dashboard::prepared_map::Current::Frame(_))
+                        Some(dashboard_base::prepared_map::Current::Frame(_))
                     )),
                 )?,
             }

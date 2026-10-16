@@ -162,7 +162,7 @@ impl<'a> Recording<'a> {
         Ok(Current::Gap {
             branch,
             hour,
-            reason: dashboard::prepared_map::gap_reason(
+            reason: dashboard_base::prepared_map::gap_reason(
                 &self.fixture.store,
                 &self.fixture.key,
                 self.progress,
@@ -302,7 +302,7 @@ fn recording_prefix_does_not_decode_a_source_block_after_its_accepted_boundary()
     let progress = Progress {
         branches: BTreeMap::from([(
             1,
-            dashboard::prepared_map::BranchProgress {
+            dashboard_base::prepared_map::BranchProgress {
                 last_block: Some(0),
                 ..Default::default()
             },

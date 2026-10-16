@@ -1,6 +1,6 @@
 //! Prepared map source binding for the shared exact-hour reader.
-use dashboard::prepared_map;
-pub use dashboard::prepared_map::Reader as PreparedMap;
+use dashboard_base::prepared_map;
+pub use dashboard_base::prepared_map::Reader as PreparedMap;
 use replay::container::Replay;
 use std::{io, sync::Arc};
 

@@ -27,6 +27,7 @@ serde_json.workspace = true
 store = { path = "../store" }
 ts-rs = "11.1"
 uuid = { workspace = true, features = ["v4"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 zstd = "0.13"
 
 [dev-dependencies]

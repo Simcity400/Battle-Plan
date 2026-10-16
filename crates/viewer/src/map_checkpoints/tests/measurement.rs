@@ -198,8 +198,8 @@ fn measure_recording(
             Some(gap)
         })
         .collect();
-    let selected = dashboard::prepared_map::selected_tables();
-    let interval = dashboard::prepared_map::CHECKPOINT_STRIDE;
+    let selected = dashboard_base::prepared_map::selected_tables();
+    let interval = dashboard_base::prepared_map::CHECKPOINT_STRIDE;
     let strides = BTreeSet::from([interval, 360, 720, 1440]);
     let fixtures: Vec<_> = strides
         .iter()
@@ -855,10 +855,10 @@ fn checkpoint_accept_timing_measurement() {
             .starts_with(evidence.canonicalize().unwrap())
     );
     let replay = Replay::open_path(&recording).unwrap();
-    let selected = dashboard::prepared_map::selected_tables();
+    let selected = dashboard_base::prepared_map::selected_tables();
     let fixture = Fixture::source(recording);
     let mut builder = Builder::new(
-        NonZeroU32::new(dashboard::prepared_map::CHECKPOINT_STRIDE).unwrap(),
+        NonZeroU32::new(dashboard_base::prepared_map::CHECKPOINT_STRIDE).unwrap(),
         selected,
         Progress::default(),
     )

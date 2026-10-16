@@ -1,6 +1,6 @@
 use super::*;
 use crate::playback::Current;
-use dashboard::prepared_map::{
+use dashboard_base::prepared_map::{
     Builder, Position, Progress, decode_checkpoint, header, load_resume, load_resume_prefix,
     section,
 };

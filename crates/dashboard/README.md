@@ -24,7 +24,7 @@ prepared files; existing open range readers retain their files.
 | [dashboard-text](../dashboard-text/README.md) | The text interpreter, name rules, content catalogue and recording metadata helpers, re-exported here at their old paths. |
 | [dashboard-base](../dashboard-base/README.md) | Sources, content, the catalogue loader, the prepared store's shared pages, series, charts, group sums and measures, ranking, the product contract and the shared products including country history, re-exported here at their old paths. |
 | [dashboard-core](../dashboard-core/README.md) | Host/viewer protocol, data transport, recording metadata, host configuration, map settings and whole-branch block scans, re-exported here at their old paths. |
-| Product crates | One crate per heavy product or product family, above dashboard-base, re-exported here at `products::<name>`: [dashboard-politics-ledger](../dashboard-politics-ledger/README.md). |
+| Product crates | One crate per heavy product or product family, above dashboard-base, re-exported here at `products::<name>`: [dashboard-air-aces](../dashboard-air-aces/README.md), [dashboard-air-superiority](../dashboard-air-superiority/README.md), [dashboard-construction](../dashboard-construction/README.md), [dashboard-equipment-losses](../dashboard-equipment-losses/README.md), [dashboard-equipment-stockpile](../dashboard-equipment-stockpile/README.md), [dashboard-military-air-ledger](../dashboard-military-air-ledger/README.md), [dashboard-politics-ledger](../dashboard-politics-ledger/README.md), [dashboard-raids](../dashboard-raids/README.md), [dashboard-resource-balance](../dashboard-resource-balance/README.md), [dashboard-unit-leaders](../dashboard-unit-leaders/README.md). |
 | [prepared_focus.rs](src/prepared_focus.rs) | Sequential focus observations, production presentation and immutable requested-page reads. |
 | [products/](src/products/mod.rs) | Product registry and shared domain helpers; each product's behaviour lives beside its code or in its widget README. |
 | [content_check.rs](src/content_check.rs) | Offline preparation and diagnostics for every registered product. |
@@ -87,7 +87,8 @@ never the completeness of a reply.
 `military-air-ledger`, `air-aces`, `air-ace-portraits`, `raids` and
 `air-superiority` use prepared query adapters. Their whole-recording loaders,
 recording availability probes and branch scan caches compile only for tests as
-parity oracles. Preparation and queries share the native observers, content
+parity oracles; the dashboard's pipeline tests reach the military air ledger's
+and raids' through those crates' `test-support` feature. Preparation and queries share the native observers, content
 resolvers and reply builders.
 
 ### Add a product
@@ -1493,29 +1494,6 @@ resolve float ties through their exact runs. The sunburst reads only its reached
 final and range-baseline dates and exposes Production spending values for parity.
 
 ## Recorded histories
-
-[prepared_map.rs](src/prepared_map.rs) prepares the map's native inputs and shared
-authored-trigger tables. Independent native checkpoints retain decoded rows,
-partial censuses, unavailable fields and supplying hours every 720 accepted
-updates. Each existing Store range uses zstd9 with a checksum. Hourly updates
-remain in the recording; no prepared update pages or packet seeds are written.
-Full-selection `map.resume` state is replaced independently for all preparation
-observers. Progress keeps checkpoint ordinals per branch and the accepted source
-cursor. Appended preparation restores that native resume state.
-
-The shared [Reader](src/prepared_map/reader.rs) serves viewer playback and
-acceptance. It binary-searches checkpoint headers, restores the nearest native
-state and calls the ordinary selected recording reader through the target hour.
-Source parsing starts at each source block's keyframe; native application skips
-the frames preceding the checkpoint cursor. Selected table decoding uses half
-the available processors, at least one, with the existing below-normal worker
-priority. Consecutive steps mutate the native decoder in place. A step needing a
-source load reads the rest of that accepted block once; later steps retain it.
-Only one parsed source block remains between requests. Source admission precedes
-passed-hour callbacks, and reads never extend beyond accepted branch progress.
-No recording format, directory, index or setting is added.
-Changed gaps become interval records with reasons in original occurrence order,
-including repeats and overlaps. Readers binary-search gap records on disk.
 
 Preserve exact recorded values and distinguish zero, absent rows, unavailable
 reads and values that cannot be computed. `read_runs` tracks known coverage;

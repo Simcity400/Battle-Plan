@@ -128,7 +128,16 @@ blake3 = "1"
 bytemuck = "1"
 dashboard = { path = "crates/dashboard" }
 dashboard-base = { path = "crates/dashboard-base" }
+dashboard-air-aces = { path = "crates/dashboard-air-aces" }
+dashboard-air-superiority = { path = "crates/dashboard-air-superiority" }
+dashboard-construction = { path = "crates/dashboard-construction" }
+dashboard-equipment-losses = { path = "crates/dashboard-equipment-losses" }
+dashboard-equipment-stockpile = { path = "crates/dashboard-equipment-stockpile" }
+dashboard-military-air-ledger = { path = "crates/dashboard-military-air-ledger" }
 dashboard-politics-ledger = { path = "crates/dashboard-politics-ledger" }
+dashboard-raids = { path = "crates/dashboard-raids" }
+dashboard-resource-balance = { path = "crates/dashboard-resource-balance" }
+dashboard-unit-leaders = { path = "crates/dashboard-unit-leaders" }
 dashboard-core = { path = "crates/dashboard-core" }
 dashboard-text = { path = "crates/dashboard-text" }
 engine = { path = "crates/engine" }
