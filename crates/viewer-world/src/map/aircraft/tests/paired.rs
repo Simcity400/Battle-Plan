@@ -1,4 +1,9 @@
 use super::*;
+
+const BAND: Band = Band {
+    offset: 0.0,
+    explosion_delay: 0.6,
+};
 use {
     crate::map::entity_animation::Clip, crate::map::entity_animation::Node,
     crate::map::entity_animation::Rig as ActorRig,
@@ -99,7 +104,8 @@ fn paired_rig(kind: u8) -> Rig {
         fps: 1.0,
         duration: 10.0,
         speed: 1.0,
-        rocket: false,
+        lands: vec![true; bones.len()],
+        rockets: vec![false; bones.len()],
         events: descriptors.inherit("scenario").unwrap().states["default"][0]
             .events
             .clone(),
@@ -144,11 +150,13 @@ fn paired_placement_keeps_each_surviving_side_and_its_native_callbacks() {
                     mesh: 1,
                     wing: 7,
                     start: reference,
+                    explode: Explode::Absent,
                 }),
                 defender: defend.then_some(Actor {
                     mesh: 2,
                     wing: 8,
                     start: [-40.0, 10.0, -60.0],
+                    explode: Explode::Absent,
                 }),
             };
             let mut out = AircraftPlan::default();
@@ -247,7 +255,8 @@ fn a_rootless_rocket_flies_to_the_rig_origin_at_rocket_speed_and_ends_there() {
         events: Vec::new(),
         speed: 1.0,
         unbound: vec![Some(15.0)],
-        rocket: true,
+        lands: vec![false],
+        rockets: vec![true],
     };
     let key = rig_key(scenario_name(15), 0);
     let start = [80.0, 0.0, 60.0];
@@ -262,6 +271,7 @@ fn a_rootless_rocket_flies_to_the_rig_origin_at_rocket_speed_and_ends_there() {
             mesh: 1,
             wing: 7,
             start,
+            explode: Explode::Absent,
         }),
         defender: None,
     };
@@ -274,10 +284,20 @@ fn a_rootless_rocket_flies_to_the_rig_origin_at_rocket_speed_and_ends_there() {
     // Its take-off ends at the rig origin and its landing would leave it.
     assert_eq!(*flight.outgoing.points.last().unwrap(), flight.origin);
     assert_eq!(flight.incoming.points[0], flight.origin);
-    assert_eq!(flight.origin[1], 0.0);
+    // The anchor takes the game's clamped terrain sample: the sea floor here.
+    assert_eq!(flight.origin[1], crate::map::models::WATER_HEIGHT);
     // It travels at ROCKET_SPEED.
     assert_eq!(flight.travel, flight.outgoing.length() / 15.0);
-    // It stands on the terrain as the rig starts, which ends the scenario.
-    assert_eq!(flight.lifetime, Some(flight.group_travel));
-    assert_eq!(flight.cycle(rig.duration), flight.group_travel);
+    // It stands on the terrain on the rig's first frame, which ends the
+    // scenario and plays its explosion.
+    let rigs = BTreeMap::from([(key.clone(), rig)]);
+    let total = out.flights[0].cycle(2.0);
+    let started = (out.flights[0].group_travel - out.flights[0].phase * total).rem_euclid(total)
+        / defines.clock_speed
+        + total / defines.clock_speed;
+    out.advance(&rigs, &defines, Some(BAND), started - 0.01, &|_| None);
+    let cycle = out.runs[0].cycle;
+    assert!(out.finished.is_empty());
+    out.advance(&rigs, &defines, Some(BAND), started + 0.01, &|_| None);
+    assert_eq!(out.runs[0].cycle, cycle + 1);
 }

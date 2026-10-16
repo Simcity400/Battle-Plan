@@ -9,8 +9,9 @@
 //! scenario of the flying aircraft places [`MISSILE_EXPLOSION_ENTITY`] in
 //! its scenario province's slot when the scenario finishes
 //! ([`super::aircraft::AircraftPlan::missile_explosions`]), as the game's
-//! regional scenario update does, through the same province effect call
-//! as a nuclear impact: the explosion stands on the standstill anchor while
+//! regional scenario update does, and in a drawn province of its mission's
+//! region when a launch-flagged launch effect's entity finishes, through
+//! the same province effect call as a nuclear impact: the explosion stands on the standstill anchor while
 //! the rocket lands at the scenario's anchor (the province's integer
 //! centroid), as in the game. The names resolve
 //! through the recorded content stack, so a mod's definitions, meshes,
@@ -851,10 +852,10 @@ mod tests {
     fn missile_explosions_in_two_provinces_keep_their_own_players() {
         let explosions = crate::map::aircraft::AircraftPlan::rocket_explosions_for_tests(
             &[(7, [7.0, 1.0, 1.0]), (9, [9.0, 1.0, 1.0])],
-            1.0,
-            2.5,
-        );
-        // Both flights finish their first cycle at two seconds.
+            &[1.0, 2.5],
+        )
+        .concat();
+        // Both rockets end their first cycle on the first frame of the rig.
         assert_eq!(
             explosions
                 .iter()
@@ -879,9 +880,10 @@ mod tests {
         // The next cycle in the same province takes a new player.
         let next = crate::map::aircraft::AircraftPlan::rocket_explosions_for_tests(
             &[(7, [7.0, 1.0, 1.0]), (9, [9.0, 1.0, 1.0])],
-            2.5,
-            4.5,
-        );
+            &[1.0, 2.5, 4.5],
+        )
+        .pop()
+        .unwrap();
         assert_eq!(next.len(), 2);
         assert!(
             next.iter()
@@ -899,14 +901,14 @@ mod tests {
     fn missile_explosions_of_two_plans_keep_their_own_players() {
         let first = crate::map::aircraft::AircraftPlan::rocket_explosions_for_tests(
             &[(7, [7.0, 1.0, 1.0])],
-            1.0,
-            2.5,
-        );
+            &[1.0, 2.5],
+        )
+        .concat();
         let second = crate::map::aircraft::AircraftPlan::rocket_explosions_for_tests(
             &[(9, [9.0, 1.0, 1.0])],
-            1.0,
-            2.5,
-        );
+            &[1.0, 2.5],
+        )
+        .concat();
         assert_eq!((first.len(), second.len()), (1, 1));
         assert_eq!(first[0].id, second[0].id);
         assert_ne!(first[0].province, second[0].province);

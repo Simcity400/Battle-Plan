@@ -323,6 +323,14 @@ impl ModelLibrary {
         &self.rigs[slot]
     }
 
+    /// A slot's rig, shared, and its default joint palette, for a player
+    /// that runs outside the pass.
+    pub fn rig_source(&self, slot: usize) -> (Arc<Rig>, Vec<PaletteJoint>) {
+        let rig = Arc::clone(&self.rigs[slot]);
+        let palette = self.palette[rig.start..rig.end].to_vec();
+        (rig, palette)
+    }
+
     /// A library with nothing baked yet whose later bakes load under `decode`.
     pub fn empty(decode: Decode) -> Self {
         Self {

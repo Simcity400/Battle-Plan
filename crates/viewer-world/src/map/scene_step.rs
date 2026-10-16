@@ -7,27 +7,23 @@
 //! clocks, mesh budget and animation epochs, and shows exactly as if it had never been hidden.
 use super::{BUILDING_TILE, BuildingHistory, ModelPass, UnitGates, hidden_map_frame_actors};
 use crate::map::border_pass::wrap_offsets;
-use viewer_foundation::map::camera::Camera;
 use crate::map::terrain::MARGIN;
 use std::sync::Arc;
+use viewer_foundation::map::camera::Camera;
 
 /// Every part of a scene that a frame advances, borrowed for one step.
 pub(super) struct Presentation<'a> {
     pub graphics: &'a dashboard_core::protocol::MapGraphics,
-    pub aircraft: Option<
-        &'a mut (
-            ModelPass,
-            Arc<crate::map::aircraft::AircraftAssets>,
-            crate::map::aircraft::AircraftPlan,
-        ),
-    >,
-    pub trains: Option<
-        &'a mut (
-            ModelPass,
-            Arc<crate::map::trains::TrainAssets>,
-            crate::map::trains::TrainPlan,
-        ),
-    >,
+    pub aircraft: Option<&'a mut (
+        ModelPass,
+        Arc<crate::map::aircraft::AircraftAssets>,
+        crate::map::aircraft::AircraftPlan,
+    )>,
+    pub trains: Option<&'a mut (
+        ModelPass,
+        Arc<crate::map::trains::TrainAssets>,
+        crate::map::trains::TrainPlan,
+    )>,
     pub sprawl: Option<&'a mut ModelPass>,
     pub city_presentation: Option<&'a mut crate::map::sprawl::Presentation>,
     pub unit_history: &'a mut crate::map::unit_history::History,
@@ -50,7 +46,13 @@ impl Presentation<'_> {
     /// Advances everything to `animation_time` for `camera`. `rails_shown` is the camera's
     /// railway fade, below which trains run; display switches decide nothing here but which
     /// placed actors draw.
-    pub(super) fn step(self, camera: Camera, size: [u32; 2], animation_time: f32, rails_shown: bool) {
+    pub(super) fn step(
+        self,
+        camera: Camera,
+        size: [u32; 2],
+        animation_time: f32,
+        rails_shown: bool,
+    ) {
         let Self {
             graphics,
             mut aircraft,
@@ -75,8 +77,13 @@ impl Presentation<'_> {
         let animation_offsets = wrap_offsets(visible, camera.map.x());
         // Every mission is placed; one the display hides stays placed and only stops drawing.
         if let Some((pass, assets, plan)) = aircraft.as_deref_mut() {
-            let (mut field, hidden) =
-                plan.field(assets, animation_time, &|mission| graphics.air_mission(mission));
+            // The band reads the actors' players as the previous frame left them.
+            let (mut field, hidden) = plan.field(
+                assets,
+                animation_time,
+                &|mission| graphics.air_mission(mission),
+                &|key| pass.root_play_position(key),
+            );
             pass.replace_field(&assets.library(), &mut field);
             pass.set_hidden(hidden);
             pass.animate(animation_time, None, &[0.]);
@@ -142,9 +149,9 @@ impl Presentation<'_> {
         // Missile scenarios finished since the last frame start their explosions on the clock
         // the flying aircraft share. Their own clock mark moves with the start, so a frame that
         // fails later starts none of them again.
-        if let Some((_, assets, plan)) = aircraft.as_deref() {
+        if let Some((_, _, plan)) = aircraft {
             let from = missile_clock.unwrap_or(animation_time);
-            let explosions = plan.missile_explosions(assets, from, animation_time);
+            let explosions = plan.missile_explosions(from, animation_time);
             strikes.receive_explosions(&explosions, animation_time);
         }
         *missile_clock = Some(animation_time);
@@ -202,16 +209,17 @@ pub(super) fn frame_events(
     if animation_time <= 0.0 {
         return events;
     }
-    let mut add = |pass: Option<&ModelPass>, layer_hidden: bool| {
-        if let Some(pass) = pass {
-            events.extend(pass.events.iter().map(|event| {
-                crate::map::entity_animation::Event {
-                    hidden: layer_hidden || pass.hides(event.key.actor()),
-                    ..event.clone()
-                }
-            }));
-        }
-    };
+    let mut add =
+        |pass: Option<&ModelPass>, layer_hidden: bool| {
+            if let Some(pass) = pass {
+                events.extend(pass.events.iter().map(|event| {
+                    crate::map::entity_animation::Event {
+                        hidden: layer_hidden || pass.hides(event.key.actor()),
+                        ..event.clone()
+                    }
+                }));
+            }
+        };
     add(sources.map_frame, false);
     add(sources.sprawl, !graphics.city_sprawl);
     add(sources.map_buildings, !graphics.buildings);
@@ -408,9 +416,18 @@ mod tests {
             assert!(drawn.events.iter().all(|event| !event.hidden));
             assert!(undrawn.events.iter().all(|event| event.hidden));
             particles_ran |= !drawn.events.is_empty()
-                && drawn.simulations.presentation_state().contains("particles=[(");
+                && drawn
+                    .simulations
+                    .presentation_state()
+                    .contains("particles=[(");
         }
-        assert!(trains_ran, "the fixture runs no train, so it proves nothing");
-        assert!(particles_ran, "the fixture emits no particle, so it proves nothing");
+        assert!(
+            trains_ran,
+            "the fixture runs no train, so it proves nothing"
+        );
+        assert!(
+            particles_ran,
+            "the fixture emits no particle, so it proves nothing"
+        );
     }
 }

@@ -24,7 +24,9 @@
 //! fighters supply a random reached province; side B fighters supply none.
 //! Naval-patrol fighters use [`NavalPatrolSources::choose`] for their province
 //! and `success`/`default` kamikaze outcome.
-//! Anchors use integer map coordinates and sampled terrain height. Orientation
+//! Anchors use integer map coordinates and the game's clamped bilinear terrain
+//! sample ([`HeightField::native_height`]), as do the route's minimum elevation
+//! and the near-ground band. Orientation
 //! follows the designated wing's base with a signed 10..40-degree perturbation
 //! from a square-root-shaped variate. Animated rig bones provide formation
 //! positions, orientation, duration and initial speed.
@@ -52,19 +54,35 @@
 //! mission's last target, checking `MAX_MISSILE_BOMBING_SCENARIOS` before
 //! each wing, unless its mission is bit 17 or its pool definition holds the
 //! launch flag (AIR_FLAGS bit 33): those start a launch effect at their base
-//! instead, which the viewer does not draw and counts. A missile scenario
+//! instead ([`launches`]), whose entity plays at the base and, for the launch
+//! flag, ends in a missile explosion in its mission region. A missile scenario
 //! that finishes plays the content's missile explosion entity in its
-//! province's effect slot ([`super::strike_effects`]). The rocket ends its
-//! scenario at its first rig pose at or below the terrain, skipping the
-//! landing. A scenario actor whose attachment node the rig lacks (vanilla's
-//! v2 rocket has only `joint1`) is logged by the game and rides the
-//! scenario entity's root: it flies its take-off to the rig origin without a
-//! heading, at `NAirGfx.ROCKET_SPEED` for the rocket and one for other
-//! slots, and stands there; a rocket there is on the terrain and ends the
-//! scenario as the rig starts. A rocket that rides a real node meets the
-//! game's near-ground band (`AIRPLANES_GROUND_COLLISION_OFFSET_Y` with the
-//! actor's ground-explosion state), which is not ported: that rig is refused
-//! by name and its scenarios are counted.
+//! province's effect slot ([`super::strike_effects`]). A rocket site or gun
+//! emplacement takes off from its state's first admitted site slot.
+//!
+//! The game's scenario analysis gives no landing route to the rocket, to
+//! kamikaze fighters that succeed, to the defending slots of a successful
+//! interception or dogfight and to the attacking slots of a lost dogfight
+//! ([`lands`]). Each frame of the rig such an actor meets the near-ground
+//! band ([`grounding`]): the rocket is done at or below the terrain; at or
+//! below the terrain plus `AIRPLANES_GROUND_COLLISION_OFFSET_Y` an actor
+//! plays its entity's `explode` state and stays where it is, done and hidden
+//! once that state's played position reaches
+//! `AIRPLANES_GROUND_EXPLOSION_TIME_DELAY`, or, when its entity declares no
+//! `explode` state, is hidden and done at once. The scenario ends when every
+//! actor is done in the same frame, which skips the landing; otherwise these
+//! actors are hidden for it. A scenario actor whose attachment node the rig
+//! lacks (vanilla's v2 rocket has only `joint1`) is logged by the game and
+//! rides the scenario entity's root: it flies its take-off to the rig origin
+//! without a heading, at `NAirGfx.ROCKET_SPEED` for the rocket and one for
+//! other slots, and stands there; a rocket there is on the terrain and ends
+//! the scenario as the rig starts. The band is tested at the viewer's own
+//! frames on the pose each actor draws then, as the game tests it at its
+//! frames, hidden missions included ([`AircraftPlan::field`]); an exploding
+//! actor is done once its own shared player reads the delay, a pdxmesh root
+//! reading the clip it played before when `explode` plays no animation, as
+//! the game's entity does. A cycle that ends early starts its next take-off
+//! on that frame.
 
 #[cfg(test)]
 use crate::map::aircraft_events::callback;
@@ -79,9 +97,10 @@ use std::{
 };
 use viewer_foundation::map::aircraft_model;
 use viewer_foundation::map::camera::Camera;
-use viewer_foundation::table_access::TokenKeys;
+use viewer_foundation::table_access::{TokenKeys, TokenNames};
 
 use engine::air_kamikaze::window_sum;
+mod launches;
 mod scenarios;
 use installed_content::image::native::Decode;
 use installed_content::{
@@ -104,7 +123,8 @@ use scenarios::{RegionGroups, ScenarioWing};
 use {
     crate::map::entity_animation::Clock, crate::map::entity_animation::Request,
     crate::map::models::ModelField, crate::map::models::ModelInstance,
-    crate::map::models::ModelLibrary, viewer_foundation::map::air_participants::AirParticipants,
+    crate::map::models::ModelLibrary, crate::map::models::PaletteJoint,
+    viewer_foundation::map::air_participants::AirParticipants,
     viewer_foundation::map::air_participants::CountryRelations,
     viewer_foundation::map::air_participants::CountryVectors,
     viewer_foundation::map::air_participants::ordered_participants,
@@ -333,6 +353,36 @@ impl FlightDefines {
         Ok(out)
     }
 
+    /// Defines for tests: one-plane families, unit clock and curves.
+    #[cfg(test)]
+    fn for_tests() -> Self {
+        let sizing = FamilyDefines {
+            factor: 1,
+            triple: 3,
+            limit: 2,
+        };
+        let stepped = SteppedFamily { sizing, single: 1 };
+        Self {
+            fighter: stepped,
+            scout: stepped,
+            bomber: sizing,
+            bomber_single: 1,
+            dogfight: stepped,
+            transport: stepped,
+            training: stepped,
+            missile: Ok(sizing),
+            fire_threshold: 300_000,
+            carpet_threshold: 200_000,
+            clock_speed: 1.0,
+            curve_density: 2.0,
+            curve_extrapolation: 20.0,
+            curve_elevation: 4.0,
+            scale_takeoff: 0.1,
+            scale_landing: 0.9,
+            scale_min: 0.1,
+        }
+    }
+
     /// Scale up over the first take-off fraction. IEEE
     /// arithmetic as native, a NaN scale included.
     fn takeoff_scale(&self, t: f32) -> f32 {
@@ -404,14 +454,65 @@ struct Rig {
     /// zero and its speed at the slot's default, and at run time the actor
     /// takes the entity's own root transform ([`scenario_tracks`]).
     unbound: Vec<Option<f32>>,
-    /// A rocket scenario (`missile_1_bombing`): its rocket ends the scenario
-    /// where its pose reaches the terrain.
-    rocket: bool,
+    /// Per track, whether the game's scenario analysis gives the actor a
+    /// landing route ([`lands`]). An actor without one meets the near-ground
+    /// band during the rig ([`grounding`]) and is hidden for the landing.
+    lands: Vec<bool>,
+    /// Per track, whether the actor is the rocket slot, which ends where its
+    /// pose reaches the terrain.
+    rockets: Vec<bool>,
 }
 
 /// The default speed of a scenario actor slot whose attachment node is
 /// absent: `NAirGfx.ROCKET_SPEED` for the rocket, one for every other slot.
 const UNBOUND_SPEED: f32 = 1.0;
+
+/// The outcome whose attacking slots lose a dogfight (`fail`).
+const FAIL: u8 = 3;
+
+/// Whether the game's scenario analysis builds a landing route for a slot on
+/// `side` of scenario `kind` playing `outcome`. It builds none for the
+/// rocket, for kamikaze fighters that succeed, for the defending slots of a
+/// successful interception or dogfight and for the attacking slots of a lost
+/// dogfight; every other slot flies home.
+fn lands(kind: u8, outcome: u8, side: u8) -> bool {
+    !match kind {
+        scenarios::MISSILE_KIND => outcome == 0,
+        16 | 17 => outcome == SUCCESS,
+        12 | 18 => side == 1 && outcome == SUCCESS,
+        13 | 14 => (side == 0 && outcome == FAIL) || (side == 1 && outcome == SUCCESS),
+        _ => false,
+    }
+}
+
+/// The state the game requests on an actor that reaches the near-ground band.
+const EXPLODE_STATE: &str = "explode";
+
+/// The near-ground band an actor without a landing route meets:
+/// `NAirGfx.AIRPLANES_GROUND_COLLISION_OFFSET_Y` above the terrain, and
+/// `NAirGfx.AIRPLANES_GROUND_EXPLOSION_TIME_DELAY` of played `explode` state
+/// before the actor is hidden.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Band {
+    offset: f32,
+    explosion_delay: f32,
+}
+
+impl Band {
+    fn load(defines: &Defines) -> Result<Self, &'static str> {
+        Ok(Self {
+            offset: defines
+                .number("NAirGfx", "AIRPLANES_GROUND_COLLISION_OFFSET_Y")
+                .map_err(|_| "NDefines.NAirGfx.AIRPLANES_GROUND_COLLISION_OFFSET_Y is unreadable")?
+                as f32,
+            explosion_delay: defines
+                .number("NAirGfx", "AIRPLANES_GROUND_EXPLOSION_TIME_DELAY")
+                .map_err(
+                    |_| "NDefines.NAirGfx.AIRPLANES_GROUND_EXPLOSION_TIME_DELAY is unreadable",
+                )? as f32,
+        })
+    }
+}
 
 #[derive(Debug)]
 pub struct AircraftAssets {
@@ -435,6 +536,11 @@ pub struct AircraftAssets {
     province_kinds: BTreeMap<u32, ProvinceKind>,
     sortie_defines: Result<SortieDefines, String>,
     flight_defines: Result<FlightDefines, String>,
+    /// The near-ground band; a rig that needs it exists only when it reads.
+    band: Option<Band>,
+    /// What launch effects and rocket-site and gun-emplacement take-offs
+    /// read ([`launches`]).
+    launch_content: launches::Content,
 }
 
 /// The exact suffix ladder under each available prefix. Missing recorded
@@ -819,6 +925,19 @@ fn place_flights(
     defines: &FlightDefines,
     seconds: f32,
 ) -> Vec<(usize, ModelInstance)> {
+    place_runs(flights, rigs, defines, seconds, &|_| None)
+}
+
+/// [`place_flights`] where `run` gives a flight's cycle start, number and
+/// ground state on the viewer's frames; without one its cycles follow its
+/// phase and it follows its node.
+fn place_runs(
+    flights: &[Flight],
+    rigs: &BTreeMap<String, Rig>,
+    defines: &FlightDefines,
+    seconds: f32,
+    run: &dyn Fn(usize) -> Option<(f32, u32, Ground)>,
+) -> Vec<(usize, ModelInstance)> {
     flights
         .iter()
         .enumerate()
@@ -830,7 +949,14 @@ fn place_flights(
                 return None;
             }
             let elapsed = seconds.max(0.0) * defines.clock_speed + flight.phase * total;
-            let time = elapsed.rem_euclid(total);
+            let (time, cycle, ground) = match run(index) {
+                Some((start, cycle, ground)) => (elapsed - start, cycle, ground),
+                None => (
+                    elapsed.rem_euclid(total),
+                    (elapsed / total).floor() as u32,
+                    Ground::Following,
+                ),
+            };
             let (pose, scale) = if time < flight.group_travel {
                 if time < flight.delay {
                     return None;
@@ -838,26 +964,29 @@ fn place_flights(
                 let t = (time - flight.delay) / flight.travel;
                 (flight.outgoing.at(t), defines.takeoff_scale(t))
             } else if time < flight.group_travel + rig.duration {
-                let frame = (time - flight.group_travel) * rig.fps;
-                let poses = &rig.tracks[flight.track];
-                let a = &poses[(frame as usize).min(poses.len() - 1)];
-                let b = &poses[(frame as usize + 1).min(poses.len() - 1)];
-                let t = frame.fract();
-                (
-                    Transform {
-                        translation: add(
-                            flight.origin,
-                            rotate(lerp(a.translation, b.translation, t), flight.yaw),
-                        ),
-                        basis: std::array::from_fn(|i| {
-                            rotate(unit(lerp(a.basis[i], b.basis[i], t)), flight.yaw)
-                        }),
-                    },
-                    1.0,
-                )
+                let rig_time = time - flight.group_travel;
+                // A hidden actor stays placed, so its player keeps stepping
+                // ([`AircraftPlan::field`] hides it).
+                match ground {
+                    Ground::Exploding { pose, .. } => (pose, 1.0),
+                    Ground::Following | Ground::Hidden => {
+                        let pose = rig_pose(&rig.tracks[flight.track], rig.fps, rig_time);
+                        (
+                            Transform {
+                                translation: add(
+                                    flight.origin,
+                                    rotate(pose.translation, flight.yaw),
+                                ),
+                                basis: pose.basis.map(|axis| rotate(axis, flight.yaw)),
+                            },
+                            1.0,
+                        )
+                    }
+                }
             } else {
                 let t = (time - flight.group_travel - rig.duration) / flight.travel;
-                if t >= 1.0 {
+                // An actor without a landing route is hidden for the landing.
+                if t >= 1.0 || !flight.lands {
                     return None;
                 }
                 (flight.incoming.at(t), defines.landing_scale(t))
@@ -879,7 +1008,7 @@ fn place_flights(
                     native_basis: pose.basis,
                     train_clip: [0.0; 4],
                     animation_seed: index as u32,
-                    animation_epoch: (elapsed / total).floor() as u32,
+                    animation_epoch: cycle,
                     animation_phase: (time - flight.delay) / defines.clock_speed,
                     ..ModelInstance::default()
                 },
@@ -976,18 +1105,17 @@ fn scenario_tracks(
 /// A scenario's rig from its entity's attachment tracks, or why it is not
 /// flown. An actor slot without its node rides the scenario entity's root
 /// at the slot's default speed: `NAirGfx.ROCKET_SPEED` for the rocket, which
-/// only that case reads. A rocket that rides a node meets the game's
-/// near-ground band (`AIRPLANES_GROUND_COLLISION_OFFSET_Y` and the actor's
-/// ground-explosion state), which is not ported, so that rig is refused.
+/// only that case reads. A rig with an actor that does not land needs the
+/// near-ground band's defines ([`Band`]), which only that case reads.
 #[allow(clippy::too_many_arguments)]
 fn scenario_rig(
     entity: &str,
-    kind: u8,
+    (kind, outcome): (u8, u8),
     bones: &[(u8, String)],
     (source, anim): (&crate::map::mesh_pose::Source, &mesh::Animation),
     speed: f32,
     events: Vec<mesh::EntityEvent>,
-    rocket_speed: &Result<f32, &'static str>,
+    (rocket_speed, band): (&Result<f32, &'static str>, &Result<Band, &'static str>),
     warnings: &mut Vec<installed_content::Diagnostic>,
 ) -> Option<Rig> {
     let mut refuse = |reason: String| {
@@ -1007,12 +1135,22 @@ fn scenario_rig(
         return refuse("its animation_speed is not positive".into());
     }
     let rocket = kind == scenarios::MISSILE_KIND;
-    if rocket && absent.iter().any(|absent| !absent) {
-        return refuse(
-            "its rocket rides an attachment node, where the game's near-ground band (AIRPLANES_GROUND_COLLISION_OFFSET_Y and the rocket's ground-explosion state) applies, which the viewer does not port".into(),
-        );
+    let landing: Vec<bool> = bones
+        .iter()
+        .map(|(side, _)| lands(kind, outcome, *side))
+        .collect();
+    if let (Err(reason), true) = (band, landing.contains(&false)) {
+        return refuse(format!(
+            "an actor that does not land meets the near-ground band, whose {reason}"
+        ));
     }
-    let default = if rocket {
+    // Only an actor without its node rides the root at the fallback speed,
+    // so only an unbound rocket needs the rocket speed.
+    let default = if !rocket {
+        UNBOUND_SPEED
+    } else if !absent.contains(&true) {
+        0.0
+    } else {
         match rocket_speed {
             Ok(speed) => *speed,
             Err(reason) => {
@@ -1021,8 +1159,6 @@ fn scenario_rig(
                 ));
             }
         }
-    } else {
-        UNBOUND_SPEED
     };
     let mut unbound = Vec::with_capacity(absent.len());
     for ((_, bone), absent) in bones.iter().zip(absent) {
@@ -1045,7 +1181,8 @@ fn scenario_rig(
         events,
         speed,
         unbound,
-        rocket,
+        lands: landing,
+        rockets: vec![rocket; bones.len()],
     })
 }
 
@@ -1147,6 +1284,7 @@ impl AircraftAssets {
             .number("NAirGfx", "ROCKET_SPEED")
             .map(|speed| speed as f32)
             .map_err(|_| "NDefines.NAirGfx.ROCKET_SPEED is unreadable");
+        let band = Band::load(defines);
         for (key, bones, outcome, kind) in scenarios {
             let entity = format!("{key}_entity");
             let state = scenario_state(descriptors, &entity, outcome);
@@ -1199,12 +1337,12 @@ impl AircraftAssets {
                 .clone();
             if let Some(rig) = scenario_rig(
                 &entity,
-                kind,
+                (kind, outcome),
                 &bones,
                 (&source, &anim),
                 speed,
                 events,
-                &rocket_speed,
+                (&rocket_speed, &band),
                 warnings,
             ) {
                 rigs.insert(rig_key(&key, outcome), rig);
@@ -1249,6 +1387,8 @@ impl AircraftAssets {
             province_kinds,
             sortie_defines: SortieDefines::load(defines).map_err(|error| error.to_string()),
             flight_defines: FlightDefines::load(defines).map_err(|error| error.to_string()),
+            band: band.ok(),
+            launch_content: launches::Content::load(layers, map, defines, &roster, warnings),
         })
     }
 
@@ -1412,8 +1552,9 @@ impl Route {
         for i in 0..count {
             let t = i as f32 / (count - 1) as f32;
             let mut p = lerp(start, lerp(p1, lerp(p2, lerp(p3, end, t), t), t), t);
+            // The game's clamped bilinear terrain sample, as for the anchor.
             if i > 0 && i + 1 < count {
-                p[1] = p[1].max(heights.height_at_world(p[0], p[2]) + defines.curve_elevation);
+                p[1] = p[1].max(heights.native_height(p[0], p[2]) + defines.curve_elevation);
             }
             arcs.push(points.last().map_or(0.0, |last| {
                 arcs.last().copied().unwrap_or(0.0) + norm(sub(p, *last))
@@ -1447,46 +1588,184 @@ impl Route {
     }
 }
 
-/// When a rocket's rig pose first stands at or below the terrain, in rig
-/// seconds: the game's rocket actor ends there. Other actors and a rocket
-/// that stays above the terrain have none.
-fn ground_contact(
-    rig: &Rig,
-    track: usize,
-    origin: [f32; 3],
-    yaw: f32,
-    height: impl Fn(f32, f32) -> f32,
-) -> Option<f32> {
-    if !rig.rocket {
-        return None;
+/// Whether an actor's entity declares an `explode` state on its root: one
+/// that does plays it in the near-ground band; one that does not is hidden
+/// there at once.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Explode {
+    Absent,
+    Plays,
+}
+
+fn explode(rig: &crate::map::entity_animation::Rig) -> Explode {
+    if rig.nodes.first().is_some_and(|root| {
+        root.clips
+            .iter()
+            .any(|clip| clip.state.name == EXPLODE_STATE)
+    }) {
+        Explode::Plays
+    } else {
+        Explode::Absent
     }
-    rig.tracks[track]
-        .iter()
-        .enumerate()
-        .find_map(|(sample, pose)| {
-            let at = add(origin, rotate(pose.translation, yaw));
-            (at[1] <= height(at[0], at[2])).then(|| sample as f32 / rig.fps)
-        })
+}
+
+/// An entity's own player for `instance` on `requests`, evaluated at
+/// entity time `at`.
+fn played_at(
+    (rig, palette): &ActorSource,
+    instance: ModelInstance,
+    requests: &Arc<Vec<Request>>,
+    at: f32,
+) -> crate::map::entity_animation::Player {
+    let mut player = crate::map::entity_animation::Player::new(rig);
+    let mut palette = palette.clone();
+    player.evaluate_clock(
+        rig,
+        instance,
+        &Clock {
+            time: at,
+            phase: None,
+            requests: Arc::clone(requests),
+        },
+        &mut palette,
+        &mut Vec::new(),
+    );
+    player
+}
+
+/// Entity seconds after it spawns until a launch entity's own player, in
+/// its default state, reads its root clip's length, where the game removes
+/// its record: at once when the root plays no animation, never (infinite)
+/// when the position never gets there.
+fn played_end(source: &ActorSource, instance: ModelInstance) -> f32 {
+    let player = played_at(source, instance, &Arc::new(Vec::new()), 0.0);
+    match player.root_play_clip(&source.0) {
+        None | Some((_, _, true)) => 0.0,
+        Some((timing, age, false)) => timing
+            .reaches(timing.length)
+            .map_or(f32::INFINITY, |from| (from - age).max(0.0)),
+    }
+}
+
+/// An actor's pose at rig time `time` relative to its rig origin, as it is
+/// drawn: between samples the translation is interpolated and each basis
+/// axis interpolated and renormalized.
+fn rig_pose(poses: &[Transform], fps: f32, time: f32) -> Transform {
+    let frame = time.max(0.0) * fps;
+    let a = &poses[(frame as usize).min(poses.len() - 1)];
+    let b = &poses[(frame as usize + 1).min(poses.len() - 1)];
+    let t = frame.fract();
+    Transform {
+        translation: lerp(a.translation, b.translation, t),
+        basis: std::array::from_fn(|i| unit(lerp(a.basis[i], b.basis[i], t))),
+    }
+}
+
+/// The heightmap pixels an actor without a landing route can stand over
+/// during its rig, so its band is tested at the viewer's frames on exactly
+/// the game's clamped bilinear terrain ([`HeightField::native_height`]).
+#[derive(Clone, Debug, PartialEq)]
+struct Terrain {
+    width: u32,
+    height: u32,
+    column: usize,
+    bottom: usize,
+    columns: usize,
+    /// The window's bytes, bottom-up from `bottom`, `columns` wide.
+    values: Vec<u8>,
+}
+
+impl Terrain {
+    /// The pixels the sampler reads anywhere over `[x0, x1] x [z0, z1]`.
+    fn capture(heights: &HeightField<'_>, (x0, x1): (f32, f32), (z0, z1): (f32, f32)) -> Self {
+        let (width, height) = (heights.width, heights.height);
+        let column =
+            |x: f32| ((x - 0.5) as i64).clamp(0, i64::from(width.saturating_sub(2))) as usize;
+        let bottom =
+            |z: f32| ((z - 0.5) as i64).clamp(0, i64::from(height.saturating_sub(2))) as usize;
+        let (c0, c1) = (column(x0), (column(x1) + 1).min(width as usize - 1));
+        let (b0, b1) = (bottom(z0), (bottom(z1) + 1).min(height as usize - 1));
+        let mut values = Vec::with_capacity((c1 - c0 + 1) * (b1 - b0 + 1));
+        for b in b0..=b1 {
+            let row = height as usize - 1 - b;
+            for c in c0..=c1 {
+                values.push(heights.values[row * width as usize + c]);
+            }
+        }
+        Self {
+            width,
+            height,
+            column: c0,
+            bottom: b0,
+            columns: c1 - c0 + 1,
+            values,
+        }
+    }
+
+    /// [`HeightField::native_height`] over the captured pixels.
+    fn native_height(&self, x: f32, z: f32) -> f32 {
+        let x = x - 0.5;
+        let z = z - 0.5;
+        let column = (x as i64).clamp(0, i64::from(self.width.saturating_sub(2))) as usize;
+        let bottom = (z as i64).clamp(0, i64::from(self.height.saturating_sub(2))) as usize;
+        let sample = |column: usize, bottom: usize| {
+            let bottom = bottom.min(self.height as usize - 1) - self.bottom;
+            let column = column.min(self.width as usize - 1) - self.column;
+            f32::from(self.values[bottom * self.columns + column])
+        };
+        let tx = x - column as f32;
+        let tz = z - bottom as f32;
+        let a = sample(column, bottom);
+        let b = sample(column + 1, bottom);
+        let c = sample(column, bottom + 1);
+        let d = sample(column + 1, bottom + 1);
+        let low = (b - a) * tx + a;
+        let high = (d - c) * tx + c;
+        (((high - low) * tz + low) * viewer_foundation::map::province_map::HEIGHT_SCALE)
+            .max(viewer_foundation::map::province_map::WATER_HEIGHT)
+    }
+}
+
+/// What an actor's own player reads, by its animation key, as the previous
+/// frame left it ([`crate::map::models::ModelPass::root_play_position`]).
+type Played<'a> = &'a dyn Fn((usize, u32, u32)) -> Option<Option<(f32, f32)>>;
+
+/// Where an actor without a landing route stands in the near-ground band
+/// this cycle, as the game's update leaves it frame by frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Ground {
+    /// It follows its node.
+    Following,
+    /// It entered the band, requested `explode` at entity time `entry` and
+    /// stays at `pose`; `hidden` once its player has read the band's delay.
+    Exploding {
+        pose: Transform,
+        entry: f32,
+        hidden: bool,
+    },
+    /// It entered the band without an `explode` state: hidden for good,
+    /// still following its node.
+    Hidden,
+}
+
+/// One placed scenario on the viewer's frames: its flights, the aircraft
+/// clock time its current cycle started, the cycle's number and each
+/// flight's ground state. A cycle ends after its landing, or on the frame
+/// every actor's update reports it done.
+#[derive(Clone, Debug)]
+struct Run {
+    flights: std::ops::Range<usize>,
+    start: f32,
+    cycle: u32,
+    grounds: Vec<Ground>,
 }
 
 impl Flight {
     /// One scenario cycle: the take-off, the rig of `duration` and the
-    /// landing, or the take-off and the rig up to a rocket's ground contact.
+    /// landing. A cycle can end sooner on a frame where every actor of a
+    /// scenario none of whose actors lands is done ([`Run`]).
     fn cycle(&self, duration: f32) -> f32 {
-        self.lifetime.unwrap_or(2.0 * self.group_travel + duration)
-    }
-
-    /// The last scenario cycle of this flight that finishes after `from`
-    /// and by `to`, as [`place_flights`] times its cycles: a cycle is
-    /// the take-off, the rig of `duration` and the landing.
-    fn finished_cycle(&self, duration: f32, clock_speed: f32, from: f32, to: f32) -> Option<u32> {
-        let total = self.cycle(duration);
-        if total.is_nan() || total <= 0.0 {
-            return None;
-        }
-        let cycle = |seconds: f32| (seconds.max(0.0) * clock_speed / total + self.phase).floor();
-        let finished = cycle(to);
-        (finished > cycle(from)).then_some(finished as u32)
+        2.0 * self.group_travel + duration
     }
 }
 
@@ -1511,15 +1790,215 @@ struct Flight {
     /// A missile bombing scenario's province, standstill anchor and
     /// admission box, where its explosion plays when the scenario finishes.
     impact: Option<(u32, [f32; 3], [f32; 4])>,
-    /// When the scenario finishes before its landing: a rocket's first rig
-    /// sample at or below the terrain, after the group's take-off.
-    lifetime: Option<f32>,
+    /// Whether the actor flies the landing route; one that does not is
+    /// hidden for the landing and meets the near-ground band.
+    lands: bool,
+    /// Whether its entity plays `explode` in the band.
+    explode: Explode,
+    /// The terrain its rig path stands over, for an actor that does not land.
+    terrain: Option<Arc<Terrain>>,
 }
 
 #[derive(Clone, Default)]
 pub struct AircraftPlan {
     flights: Vec<Flight>,
+    /// Each placed scenario's run on the viewer's frames.
+    runs: Vec<Run>,
+    /// The presentation time the runs last advanced to.
+    ran_at: Option<f32>,
+    /// Missile scenarios that finished on a frame since they were taken.
+    finished: Vec<super::strike_effects::Impact>,
+    launches: Vec<launches::Launch>,
+    /// Whether explosions were taken past the launch clock's opening instant.
+    opened: bool,
     pub diagnostics: Vec<String>,
+}
+
+/// Launch explosions' impact ids set this bit, apart from the flights'.
+const LAUNCH_IMPACT: u64 = 1 << 63;
+
+/// What starting a launch record reads.
+struct LaunchSources<'a, 'c> {
+    frame: &'a DecodedFrame,
+    assets: &'a AircraftAssets,
+    air_bases: &'a BTreeMap<u32, [f32; 3]>,
+    carriers: &'a CarrierSources<'c>,
+    impact_place: &'a dyn Fn(u32) -> Option<([f32; 3], [f32; 4])>,
+    clock_speed: f32,
+}
+
+/// One pass's launch records over every region, in visit order: a base's
+/// province holds one live record ([`launches`]).
+#[derive(Default)]
+struct LaunchRecords {
+    bases: BTreeSet<u32>,
+    /// Requests that start no record, and records that are not drawn, by
+    /// reason.
+    unstarted: BTreeMap<String, usize>,
+    undrawn: BTreeMap<String, usize>,
+    /// Each mission region's explosion places, shared by its launches.
+    places: BTreeMap<u32, launches::ExplosionPlaces>,
+    /// Launches drawn so far: the next one's index in the plan.
+    started: usize,
+}
+
+/// A wing's launch entity: its primary equipment type's token spelling with
+/// `_entity`, as the game builds the name.
+fn launch_entity(frame: &DecodedFrame, wing: u64) -> Result<String, String> {
+    let variant = aircraft_model::wing_primary(frame, wing)?
+        .ok_or("its equipment identity is not recorded")?;
+    let definitions = frame
+        .complete::<tables::VariantDefinitions>()
+        .map_err(|error| error.to_string())?;
+    let row = definitions
+        .iter()
+        .find(|row| row.id == variant)
+        .ok_or_else(|| format!("its equipment variant {variant} has no definition"))?;
+    let tokens = TokenNames::new(frame).map_err(|error| error.to_string())?;
+    let name = tokens
+        .name(row.equipment_token)
+        .map_err(|error| format!("its equipment type: {error}"))?;
+    Ok(format!("{name}_entity"))
+}
+
+impl LaunchRecords {
+    /// Starts `request`'s record unless its base holds one, and returns the
+    /// launch to draw. A name no entity declares starts no record; a record
+    /// the viewer cannot draw still holds its base.
+    fn start(
+        &mut self,
+        request: scenarios::LaunchRequest<'_>,
+        sources: &LaunchSources<'_, '_>,
+    ) -> Option<launches::Launch> {
+        let (wing, base) = (request.wing.wing, request.wing.base);
+        let province = match base.state {
+            Some(_) => base.province.ok_or("its base's province is not recorded"),
+            None => sources.carriers.province(base),
+        };
+        let province = match province {
+            Ok(province) => province,
+            Err(reason) => {
+                *self.unstarted.entry(reason.to_owned()).or_default() += 1;
+                return None;
+            }
+        };
+        if self.bases.contains(&province) {
+            return None;
+        }
+        let entity = match launch_entity(sources.frame, wing.id) {
+            Ok(entity) => entity,
+            Err(reason) => {
+                *self.unstarted.entry(reason).or_default() += 1;
+                return None;
+            }
+        };
+        let roster = &sources.assets.roster;
+        if !roster.descriptors.entities.contains_key(&entity)
+            && !roster.unreadable_names.contains_key(&entity)
+        {
+            *self
+                .unstarted
+                .entry(format!(
+                    "the content declares no {entity}, so the game spawns nothing"
+                ))
+                .or_default() += 1;
+            return None;
+        }
+        self.bases.insert(province);
+        match self.drawn(request, &entity, province, sources) {
+            Ok(launch) => {
+                self.started += 1;
+                Some(launch)
+            }
+            Err(reason) => {
+                *self.undrawn.entry(reason).or_default() += 1;
+                None
+            }
+        }
+    }
+
+    fn drawn(
+        &mut self,
+        request: scenarios::LaunchRequest<'_>,
+        entity: &str,
+        province: u32,
+        sources: &LaunchSources<'_, '_>,
+    ) -> Result<launches::Launch, String> {
+        // The index the plan will give it, which seeds its player.
+        let index = self.started;
+        let (wing, base) = (request.wing.wing, request.wing.base);
+        let assets = sources.assets;
+        let mesh = assets.resolve(entity).map_err(|error| match error {
+            Unresolved::Refused { entity, reason } => {
+                format!("their entity {entity} is refused: {reason}")
+            }
+            other => format!("their entity {entity} does not resolve: {other:?}"),
+        })?;
+        let position = take_off(
+            sources.air_bases,
+            &assets.launch_content,
+            sources.carriers,
+            base,
+        )
+        .map_err(|reason| format!("their base has no position: {reason}"))?;
+        let max_delay = assets.launch_content.max_delay()?;
+        // The entity plays its default state until its own player reads
+        // its root clip's length.
+        let source = assets.library().rig_source(mesh);
+        let length = played_end(&source, launches::Launch::instance_for(index));
+        let seed = wing.id as u32 ^ (wing.id >> 32) as u32 ^ province.rotate_left(16);
+        let explosions = match request.kind {
+            scenarios::LaunchKind::Mission => None,
+            scenarios::LaunchKind::Definition => {
+                let region = wing
+                    .mission_region
+                    .ok_or("their mission has no strategic region")?;
+                Some(Arc::clone(self.places.entry(region).or_insert_with(|| {
+                    Arc::new(
+                        assets
+                            .region_provinces
+                            .get(&region)
+                            .into_iter()
+                            .flatten()
+                            .map(|&province| (province, (sources.impact_place)(province)))
+                            .collect(),
+                    )
+                })))
+            }
+        };
+        Ok(launches::Launch {
+            mesh,
+            wing: wing.id,
+            position,
+            spawn: launches::Launch::delay(seed, max_delay, sources.clock_speed),
+            length,
+            seed,
+            explosions,
+        })
+    }
+
+    fn diagnostics(&self) -> impl Iterator<Item = String> + '_ {
+        let unstarted = self.unstarted.iter().map(|(reason, count)| {
+            format!("{count} base-equipment launch effects start no record: {reason}")
+        });
+        let undrawn = self.undrawn.iter().map(|(reason, count)| {
+            format!("{count} base-equipment launch effects are not drawn: {reason}")
+        });
+        let unplaced = self.places.iter().filter_map(|(region, places)| {
+            if places.is_empty() {
+                return Some(format!(
+                    "region {region} lists no province, so its launch effects' explosions have nowhere to play"
+                ));
+            }
+            let unplaced = places.iter().filter(|(_, place)| place.is_none()).count();
+            (unplaced > 0).then(|| {
+                format!(
+                    "region {region} lists {unplaced} provinces with no standstill anchor or painted box; a launch effect's explosion drawn there does not play"
+                )
+            })
+        });
+        unstarted.chain(undrawn).chain(unplaced)
+    }
 }
 
 type RegionMembership = (BTreeMap<u32, Vec<u32>>, BTreeMap<u32, RegionFractions>);
@@ -2179,14 +2658,20 @@ fn wing_random(wing: u64, region: u32) -> Random {
     Random::new(SEED ^ wing as u32 ^ (wing >> 32) as u32 ^ region.rotate_left(16) ^ 0xffff)
 }
 
-/// Where a wing's scenarios take off: its state's authored air-base slot, or
-/// its carrier.
+/// Where a wing's scenarios take off and its launch effects stand, by the
+/// game's base position finder: an ordinary base's state air-base slot, a
+/// rocket site's or gun emplacement's first admitted site slot of its state
+/// ([`launches::Content::site`]), or its carrier.
 fn take_off(
     air_bases: &BTreeMap<u32, [f32; 3]>,
+    sites: &launches::Content,
     carriers: &CarrierSources<'_>,
     base: &AirBaseRow,
 ) -> Result<[f32; 3], &'static str> {
     match base.state {
+        Some(state) if matches!(base.kind, launches::ROCKET_SITE | launches::GUN_EMPLACEMENT) => {
+            sites.site(state, base.kind)
+        }
         Some(state) => air_bases
             .get(&state)
             .copied()
@@ -2201,6 +2686,9 @@ struct Placement<'a, 'h> {
     heights: &'a HeightField<'h>,
     defines: &'a FlightDefines,
 }
+
+/// An actor entity's rig and default joint palette.
+type ActorSource = (Arc<crate::map::entity_animation::Rig>, Vec<PaletteJoint>);
 
 /// What every scenario of one wing's batch shares.
 struct Batch<'a> {
@@ -2291,11 +2779,13 @@ impl ScenarioHistory {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Actor {
     mesh: usize,
     wing: u64,
     start: [f32; 3],
+    /// Whether its entity plays `explode` in the near-ground band.
+    explode: Explode,
 }
 
 impl Batch<'_> {
@@ -2474,7 +2964,8 @@ impl AircraftPlan {
             ));
             return;
         };
-        let origin = [x, map.heights.height_at_world(x, z), z];
+        // The game's clamped bilinear terrain sample at the integer centroid.
+        let origin = [x, map.heights.native_height(x, z), z];
         let direction = sub(origin, start);
         let yaw = -direction[0].atan2(direction[2])
             + (10.0 + 30.0 * rng.unit().sqrt()).to_radians()
@@ -2486,12 +2977,24 @@ impl AircraftPlan {
             // The game attempts both sides independently and synchronizes
             // only actors successfully appended to the scenario.
             let Some(actor) = (if rig.sides[track] == 0 {
-                batch.attacker
+                batch.attacker.as_ref()
             } else {
-                batch.defender
+                batch.defender.as_ref()
             }) else {
                 continue;
             };
+            let lands = rig.lands[track];
+            // The pixels its drawn rig path can stand over.
+            let terrain = (!lands).then(|| {
+                let mut x = (f32::INFINITY, f32::NEG_INFINITY);
+                let mut z = x;
+                for pose in poses {
+                    let at = add(origin, rotate(pose.translation, yaw));
+                    x = (x.0.min(at[0]), x.1.max(at[0]));
+                    z = (z.0.min(at[2]), z.1.max(at[2]));
+                }
+                Arc::new(Terrain::capture(map.heights, x, z))
+            });
             let first = poses[0];
             let last = *poses.last().unwrap();
             let unbound = rig.unbound[track];
@@ -2547,22 +3050,22 @@ impl AircraftPlan {
                 phase,
                 requests: Arc::default(),
                 impact: None,
-                lifetime: None,
+                lands,
+                explode: actor.explode,
+                terrain,
             });
         }
-        // The rocket's actor update ends it at its first pose at or below the
-        // terrain, which ends the scenario; an unbound rocket stands on the
-        // rig origin's terrain and ends as the rig starts.
-        let contact = group.iter().find_map(|flight| {
-            ground_contact(rig, flight.track, origin, yaw, |x, z| {
-                map.heights.height_at_world(x, z)
-            })
-        });
         for f in &mut group {
             f.delay = group_travel - f.travel;
             f.group_travel = group_travel;
-            f.lifetime = contact.map(|contact| group_travel + contact);
         }
+        let first = self.flights.len();
+        self.runs.push(Run {
+            flights: first..first + group.len(),
+            start: 0.0,
+            cycle: 0,
+            grounds: vec![Ground::Following; group.len()],
+        });
         self.flights.extend(group);
     }
 
@@ -2814,7 +3317,7 @@ impl AircraftPlan {
             );
             Ok((Some(province), outcome))
         };
-        let mut launches = 0usize;
+        let mut records = LaunchRecords::default();
         let mut unplaced_explosions = 0usize;
         let mut unflown_missiles = 0usize;
         for (region, groups) in regional {
@@ -2834,7 +3337,21 @@ impl AircraftPlan {
                 &mut out.diagnostics,
                 &naval,
             );
-            launches += generated.launches;
+            for request in generated.launches {
+                if let Some(launch) = records.start(
+                    request,
+                    &LaunchSources {
+                        frame,
+                        assets,
+                        air_bases,
+                        carriers: &carriers,
+                        impact_place,
+                        clock_speed: flight_defines.clock_speed,
+                    },
+                ) {
+                    out.launches.push(launch);
+                }
+            }
             let draws = generated.draws;
             let mut targets = BTreeMap::new();
             for draw in draws {
@@ -2877,14 +3394,15 @@ impl AircraftPlan {
                 }
                 // The scenario's orientation reference remains available
                 // even when the designated attacking entity is refused.
-                let start = match take_off(air_bases, &carriers, candidate.base) {
-                    Ok(start) => start,
-                    Err(reason) => {
-                        out.diagnostics
-                            .push(format!("wing {} has no take-off point: {reason}", wing.id));
-                        continue;
-                    }
-                };
+                let start =
+                    match take_off(air_bases, &assets.launch_content, &carriers, candidate.base) {
+                        Ok(start) => start,
+                        Err(reason) => {
+                            out.diagnostics
+                                .push(format!("wing {} has no take-off point: {reason}", wing.id));
+                            continue;
+                        }
+                    };
                 let mut actor = |candidate: ScenarioWing<'_>,
                                  start: Result<[f32; 3], &'static str>|
                  -> Option<Actor> {
@@ -2903,6 +3421,7 @@ impl AircraftPlan {
                             mesh,
                             wing: candidate.wing.id,
                             start,
+                            explode: explode(assets.library().rig(mesh)),
                         }),
                         Err(error) => {
                             refusals.omit(candidate.wing.id, error, &mut out.diagnostics);
@@ -2912,7 +3431,10 @@ impl AircraftPlan {
                 };
                 let attacker = actor(candidate, Ok(start));
                 let defender = draw.defender.and_then(|candidate| {
-                    actor(candidate, take_off(air_bases, &carriers, candidate.base))
+                    actor(
+                        candidate,
+                        take_off(air_bases, &assets.launch_content, &carriers, candidate.base),
+                    )
                 });
                 let key = rig_key(scenario_name(draw.kind), outcome);
                 let Some(rig) = assets.rigs.get(&key) else {
@@ -2947,11 +3469,7 @@ impl AircraftPlan {
                 }
             }
         }
-        if launches > 0 {
-            out.diagnostics.push(format!(
-                "{launches} missile launch effects at air bases are not drawn: the viewer does not build the launch entity"
-            ));
-        }
+        out.diagnostics.extend(records.diagnostics());
         if unflown_missiles > 0 {
             out.diagnostics.push(format!(
                 "{unflown_missiles} missile bombing scenarios are not flown and their explosions not drawn: the content's missile_1_bombing rig is refused (its content warning names why)"
@@ -2996,7 +3514,7 @@ impl AircraftPlan {
                 ));
                 continue;
             };
-            let start = match take_off(air_bases, &carriers, draw.base) {
+            let start = match take_off(air_bases, &assets.launch_content, &carriers, draw.base) {
                 Ok(start) => start,
                 Err(reason) => {
                     out.diagnostics
@@ -3041,6 +3559,7 @@ impl AircraftPlan {
                     mesh,
                     wing: wing.id,
                     start,
+                    explode: explode(assets.library().rig(mesh)),
                 }),
                 defender: None,
             };
@@ -3061,60 +3580,208 @@ impl AircraftPlan {
         Ok(out)
     }
 
-    /// The missile explosions of scenarios that finish after presentation
-    /// time `from` and by `to`: a flight's scenario finishes when its landing
-    /// segment ends, each cycle of the flight being one scenario. Only a
-    /// flight's last finished cycle in the interval plays, since its province
-    /// holds one effect. A clock that went back finishes none.
-    pub fn missile_explosions(
-        &self,
-        assets: &AircraftAssets,
-        from: f32,
-        to: f32,
-    ) -> Vec<super::strike_effects::Impact> {
-        let Ok(defines) = &assets.flight_defines else {
-            return Vec::new();
-        };
-        self.explosions(&assets.rigs, defines.clock_speed, from, to)
+    /// The missile explosions of scenarios that finished on a frame since
+    /// the last call, each as its scenario's cycle ended ([`Self::field`]),
+    /// and of launch-flagged launch records whose entity finishes after
+    /// presentation time `from` and by `to`. The first call that reaches
+    /// the launch clock's opening instant from at or before it also takes
+    /// the records that finish at that instant, which no `(from, to]`
+    /// covers; plans carry that across swaps ([`Self::carry_opening`]).
+    pub fn missile_explosions(&mut self, from: f32, to: f32) -> Vec<super::strike_effects::Impact> {
+        let mut out = std::mem::take(&mut self.finished);
+        if from.is_nan() || to.is_nan() {
+            return out;
+        }
+        let opening = !self.opened && from <= 0.0 && to >= 0.0;
+        if to >= 0.0 {
+            self.opened = true;
+        }
+        if opening {
+            out.extend(self.launch_explosions(|launch| launch.finished_at_open()));
+        }
+        // Every later finish is after the opening instant.
+        let from = if opening { from.max(0.0) } else { from };
+        if to > from {
+            out.extend(self.launch_explosions(|launch| launch.finished(from, to)));
+        }
+        out
     }
 
-    fn explosions(
-        &self,
+    /// Keeps `previous`'s record of having passed the launch clock's
+    /// opening instant, so a plan swapped in later never takes it again.
+    pub fn carry_opening(&mut self, previous: &Self) {
+        self.opened |= previous.opened;
+    }
+
+    /// Advances every scenario's run to presentation time `seconds`, as the
+    /// game's update does each frame. A run starts, and a clock that goes
+    /// back restarts it, at its phase. On a frame inside the rig each actor
+    /// without a landing route meets the near-ground band on the pose it
+    /// draws then and the terrain under it: the rocket is done at or below
+    /// the terrain; at or below the terrain plus the band's offset an actor
+    /// requests `explode` and stays there, or without that state is hidden;
+    /// an exploding actor is done, and hidden for good, once its own player
+    /// (`played`, the previous frame's) reads the band's delay; a hidden one
+    /// is done while it is at or below the band. The cycle ends on a frame
+    /// where every actor of a scenario none of whose actors lands is done;
+    /// a missile scenario's ending cycle plays its explosion.
+    fn advance(
+        &mut self,
         rigs: &BTreeMap<String, Rig>,
-        clock_speed: f32,
-        from: f32,
-        to: f32,
-    ) -> Vec<super::strike_effects::Impact> {
-        if to.is_nan() || from.is_nan() || to <= from {
-            return Vec::new();
+        defines: &FlightDefines,
+        band: Option<Band>,
+        seconds: f32,
+        played: Played<'_>,
+    ) {
+        let restart = self.ran_at.is_none_or(|last| seconds < last);
+        self.ran_at = Some(seconds);
+        let clock_speed = defines.clock_speed;
+        for run in &mut self.runs {
+            let Some(lead) = self.flights.get(run.flights.start) else {
+                continue;
+            };
+            let rig = &rigs[&lead.rig];
+            let total = lead.cycle(rig.duration);
+            if total.is_nan() || total <= 0.0 {
+                continue;
+            }
+            let elapsed = seconds.max(0.0) * clock_speed + lead.phase * total;
+            let reset = |run: &mut Run| run.grounds.fill(Ground::Following);
+            if restart || elapsed < run.start {
+                let cycle = (elapsed / total).floor();
+                run.start = cycle * total;
+                run.cycle = cycle as u32;
+                reset(run);
+            }
+            let finish = |run: &Run, finished: &mut Vec<super::strike_effects::Impact>| {
+                for index in run.flights.clone() {
+                    if let Some((province, position, bounds)) = self.flights[index].impact {
+                        finished.push(super::strike_effects::Impact {
+                            id: (index as u64) << 32 | u64::from(run.cycle),
+                            province,
+                            effect: super::strike_effects::Effect::MissileExplosion,
+                            position,
+                            bounds,
+                        });
+                    }
+                }
+            };
+            let mut time = elapsed - run.start;
+            if time >= total {
+                // Only the last finished cycle plays: its province holds one effect.
+                let cycles = (time / total).floor();
+                run.start += cycles * total;
+                run.cycle += cycles as u32;
+                time -= cycles * total;
+                reset(run);
+                finish(run, &mut self.finished);
+            }
+            let Some(band) = band else {
+                continue;
+            };
+            if time < lead.group_travel || time >= lead.group_travel + rig.duration {
+                continue;
+            }
+            let rig_time = time - lead.group_travel;
+            let mut grounded = 0;
+            let mut done = 0;
+            for (index, ground) in run.flights.clone().zip(run.grounds.iter_mut()) {
+                let flight = &self.flights[index];
+                let Some(terrain) = flight.terrain.as_ref().filter(|_| !flight.lands) else {
+                    continue;
+                };
+                grounded += 1;
+                let local = rig_pose(&rigs[&flight.rig].tracks[flight.track], rig.fps, rig_time);
+                let pose = Transform {
+                    translation: add(flight.origin, rotate(local.translation, flight.yaw)),
+                    basis: local.basis.map(|axis| rotate(axis, flight.yaw)),
+                };
+                let at = pose.translation;
+                let surface = terrain.native_height(at[0], at[2]);
+                let on_ground = rig.rockets[flight.track] && at[1] <= surface;
+                let in_band = at[1] <= surface + band.offset;
+                let is_done = match *ground {
+                    Ground::Following if on_ground => true,
+                    Ground::Following if in_band => match flight.explode {
+                        Explode::Plays => {
+                            *ground = Ground::Exploding {
+                                pose,
+                                entry: (time - flight.delay) / clock_speed,
+                                hidden: false,
+                            };
+                            false
+                        }
+                        Explode::Absent => {
+                            *ground = Ground::Hidden;
+                            true
+                        }
+                    },
+                    Ground::Following => false,
+                    Ground::Hidden => on_ground || in_band,
+                    Ground::Exploding {
+                        pose,
+                        entry,
+                        hidden,
+                    } => {
+                        // Once it has read the delay it is hidden and stays done.
+                        let read = hidden
+                            || match played((flight.mesh, index as u32, run.cycle)) {
+                                Some(Some((position, _))) => position >= band.explosion_delay,
+                                Some(None) => 0.0 >= band.explosion_delay,
+                                None => false,
+                            };
+                        *ground = Ground::Exploding {
+                            pose,
+                            entry,
+                            hidden: hidden || read,
+                        };
+                        read
+                    }
+                };
+                done += usize::from(is_done);
+            }
+            if grounded > 0 && grounded == run.grounds.len() && done == grounded {
+                run.cycle += 1;
+                run.start = elapsed;
+                reset(run);
+                finish(run, &mut self.finished);
+            }
         }
-        self.flights
+    }
+
+    /// The missile explosions of launch-flagged launch records whose entity
+    /// finishes after `from` and by `to`, on the presentation clock: the
+    /// last record of each launch, keyed apart from the flights'.
+    fn launch_explosions<'a>(
+        &'a self,
+        finished: impl Fn(&launches::Launch) -> Option<u32> + 'a,
+    ) -> impl Iterator<Item = super::strike_effects::Impact> + 'a {
+        self.launches
             .iter()
             .enumerate()
-            .filter_map(|(index, flight)| {
-                let (province, position, bounds) = flight.impact?;
-                let rig = rigs.get(&flight.rig)?;
-                let cycle = flight.finished_cycle(rig.duration, clock_speed, from, to)?;
+            .filter_map(move |(index, launch)| {
+                launch.explosions.as_ref()?;
+                let record = finished(launch)?;
+                let (province, position, bounds) = launch.explosion(record)?;
                 Some(super::strike_effects::Impact {
-                    id: (index as u64) << 32 | u64::from(cycle),
+                    id: LAUNCH_IMPACT | (index as u64) << 32 | u64::from(record),
                     province,
                     effect: super::strike_effects::Effect::MissileExplosion,
                     position,
                     bounds,
                 })
             })
-            .collect()
     }
 
     /// A plan of rootless rockets, one per `(province, anchor)`, each a
-    /// two-second take-off ending its scenario, with its explosions over
-    /// `from..to` on a clock of speed one.
+    /// two-second take-off ending its scenario as its rig starts, run on a
+    /// clock of speed one at the frames `frames`, and the explosions those
+    /// frames finish.
     #[cfg(test)]
     pub(crate) fn rocket_explosions_for_tests(
         provinces: &[(u32, [f32; 3])],
-        from: f32,
-        to: f32,
-    ) -> Vec<super::strike_effects::Impact> {
+        frames: &[f32],
+    ) -> Vec<Vec<super::strike_effects::Impact>> {
         let route = Route {
             points: Vec::new(),
             arcs: Vec::new(),
@@ -3127,9 +3794,15 @@ impl AircraftPlan {
             events: Vec::new(),
             speed: 1.0,
             unbound: vec![Some(15.0)],
-            rocket: true,
+            lands: vec![false],
+            rockets: vec![true],
         };
-        let plan = Self {
+        let flat = HeightField {
+            width: 2,
+            height: 2,
+            values: &[0; 4],
+        };
+        let mut plan = Self {
             flights: provinces
                 .iter()
                 .map(|&(province, anchor)| Flight {
@@ -3139,7 +3812,7 @@ impl AircraftPlan {
                     region: 7,
                     rig: rig_key(scenario_name(scenarios::MISSILE_KIND), 0),
                     track: 0,
-                    origin: anchor,
+                    origin: [anchor[0], f32::NEG_INFINITY, anchor[2]],
                     yaw: 0.0,
                     outgoing: route.clone(),
                     incoming: route.clone(),
@@ -3149,13 +3822,39 @@ impl AircraftPlan {
                     phase: 0.0,
                     requests: Arc::default(),
                     impact: Some((province, anchor, [0.0, 0.0, 1.0, 1.0])),
-                    lifetime: Some(2.0),
+                    lands: false,
+                    explode: Explode::Absent,
+                    terrain: Some(Arc::new(Terrain::capture(&flat, (0.0, 1.0), (0.0, 1.0)))),
                 })
                 .collect(),
-            diagnostics: Vec::new(),
+            runs: (0..provinces.len())
+                .map(|index| Run {
+                    flights: index..index + 1,
+                    start: 0.0,
+                    cycle: 0,
+                    grounds: vec![Ground::Following],
+                })
+                .collect(),
+            ..Self::default()
         };
         let rigs = BTreeMap::from([(rig_key(scenario_name(scenarios::MISSILE_KIND), 0), rig)]);
-        plan.explosions(&rigs, 1.0, from, to)
+        let defines = FlightDefines::for_tests();
+        frames
+            .iter()
+            .map(|&frame| {
+                plan.advance(
+                    &rigs,
+                    &defines,
+                    Some(Band {
+                        offset: 0.0,
+                        explosion_delay: 0.6,
+                    }),
+                    frame,
+                    &|_| None,
+                );
+                std::mem::take(&mut plan.finished)
+            })
+            .collect()
     }
 
     fn placed(&self, assets: &AircraftAssets, seconds: f32) -> Vec<(usize, ModelInstance)> {
@@ -3165,27 +3864,129 @@ impl AircraftPlan {
         place_flights(&self.flights, &assets.rigs, defines, seconds)
     }
 
+    /// The flights at `seconds` as their runs left them ([`Self::advance`]).
+    fn placed_runs(
+        &self,
+        rigs: &BTreeMap<String, Rig>,
+        defines: &FlightDefines,
+        seconds: f32,
+    ) -> Vec<(usize, ModelInstance)> {
+        let mut runs = vec![None; self.flights.len()];
+        for run in &self.runs {
+            for (index, ground) in run.flights.clone().zip(&run.grounds) {
+                runs[index] = Some((run.start, run.cycle, *ground));
+            }
+        }
+        place_runs(&self.flights, rigs, defines, seconds, &|index| runs[index])
+    }
+
+    /// The launch entities shown at presentation time `seconds`.
+    fn launched(&self, seconds: f32) -> Vec<(usize, ModelInstance)> {
+        self.launches
+            .iter()
+            .enumerate()
+            .filter_map(|(index, launch)| Some((launch.mesh, launch.instance(index, seconds)?)))
+            .collect()
+    }
+
     /// The aircraft in the air at `seconds`, every mission placed so each keeps its player,
     /// clock and events, and the animation keys of those whose mission is not `shown`, which
-    /// stay placed but draw nothing ([`crate::map::models::ModelPass::set_hidden`]).
+    /// stay placed but draw nothing ([`crate::map::models::ModelPass::set_hidden`]). Launch
+    /// effects are missiles.
+    ///
+    /// Each scenario's run advances to `seconds` first ([`Self::advance`]),
+    /// reading the actors' players as the previous frame left them.
     pub fn field(
-        &self,
+        &mut self,
         assets: &AircraftAssets,
         seconds: f32,
         shown: &dyn Fn(AirMission) -> bool,
+        played: Played<'_>,
     ) -> (ModelField, BTreeSet<(usize, u32, u32)>) {
-        let placed = self.placed(assets, seconds);
-        let hidden = hidden_flights(&self.flights, &placed, shown);
+        let placed = match &assets.flight_defines {
+            Ok(defines) => {
+                self.advance(&assets.rigs, defines, assets.band, seconds, played);
+                self.placed_runs(&assets.rigs, defines, seconds)
+            }
+            Err(_) => Vec::new(),
+        };
+        // An actor exploding in the band asks for `explode` at its entry.
+        let mut entries = BTreeMap::new();
+        for run in &self.runs {
+            for (index, ground) in run.flights.clone().zip(&run.grounds) {
+                if let Ground::Exploding { entry, .. } = ground {
+                    entries.insert(index, *entry);
+                }
+            }
+        }
+        let launched = self.launched(seconds);
+        let mut hidden = hidden_flights(&self.flights, &placed, shown);
+        // Actors the band hid stay placed, players stepping, and draw nothing.
+        let mut grounded = BTreeSet::new();
+        for run in &self.runs {
+            for (index, ground) in run.flights.clone().zip(&run.grounds) {
+                if matches!(
+                    ground,
+                    Ground::Hidden | Ground::Exploding { hidden: true, .. }
+                ) {
+                    grounded.insert(index);
+                }
+            }
+        }
+        hidden.extend(
+            placed
+                .iter()
+                .filter(|(index, _)| grounded.contains(index))
+                .map(|(index, instance)| {
+                    let (seed, identity) = instance.animation_key();
+                    (self.flights[*index].mesh, seed, identity)
+                }),
+        );
+        if !shown(AirMission::Missile) {
+            hidden.extend(launched.iter().map(|(mesh, instance)| {
+                let (seed, identity) = instance.animation_key();
+                (*mesh, seed, identity)
+            }));
+        }
         let mut field = ModelField::build(
             &assets.library(),
             placed
                 .iter()
                 .map(|(index, instance)| (self.flights[*index].mesh, *instance))
+                .chain(launched.iter().copied())
                 .collect(),
             128.0,
         );
+        // A launch entity plays its default state from its spawn.
+        let unrequested = Arc::new(Vec::new());
+        for (mesh, instance) in launched {
+            field.clocks.insert(
+                (mesh, instance.animation_seed, instance.animation_epoch),
+                Clock {
+                    time: instance.animation_phase,
+                    phase: None,
+                    requests: Arc::clone(&unrequested),
+                },
+            );
+        }
         for (index, instance) in placed {
             let flight = &self.flights[index];
+            let requests = match entries.get(&index) {
+                Some(&entry) => {
+                    let mut requests = (*flight.requests).clone();
+                    let after = requests.partition_point(|request| request.time <= entry);
+                    requests.insert(
+                        after,
+                        Request {
+                            time: entry,
+                            phase_time: None,
+                            state: EXPLODE_STATE.into(),
+                        },
+                    );
+                    Arc::new(requests)
+                }
+                None => Arc::clone(&flight.requests),
+            };
             field.clocks.insert(
                 (
                     flight.mesh,
@@ -3195,7 +3996,7 @@ impl AircraftPlan {
                 Clock {
                     time: instance.animation_phase,
                     phase: None,
-                    requests: Arc::clone(&flight.requests),
+                    requests,
                 },
             );
         }
@@ -3220,6 +4021,24 @@ impl AircraftPlan {
                     .iter()
                     .filter(|flight| flight.impact.is_some())
                     .count()
+            ));
+        }
+        for launch in &self.launches {
+            let library = assets.library();
+            lines.push(format!(
+                "Aircraft launch effect: wing {}, {} at {:.4},{:.4},{:.4}, spawns {:.4}s after its pass, plays {:.4}s, every {:.4}s{}",
+                launch.wing,
+                library.meshes[launch.mesh].name,
+                launch.position[0],
+                launch.position[1],
+                launch.position[2],
+                launch.spawn,
+                launch.length,
+                launch.period(),
+                match &launch.explosions {
+                    Some(places) => format!(", explodes in one of {} region provinces", places.len()),
+                    None => String::new(),
+                }
             ));
         }
         let mut wings: BTreeMap<(u64, u32, &str, usize), usize> = BTreeMap::new();

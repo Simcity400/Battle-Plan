@@ -1149,11 +1149,12 @@ impl Scene {
     pub fn set_aircraft(
         &mut self,
         assets: Arc<crate::map::aircraft::AircraftAssets>,
-        plan: crate::map::aircraft::AircraftPlan,
+        mut plan: crate::map::aircraft::AircraftPlan,
     ) -> io::Result<Option<crate::map::aircraft::AircraftPlan>> {
         // Hand back the old plan so its flights can be freed off the frame path.
         if let Some((pass, _, current)) = &mut self.aircraft {
             pass.reset_animation();
+            plan.carry_opening(current);
             Ok(Some(std::mem::replace(current, plan)))
         } else {
             let pass = ModelPass::new(&assets.library(), "flying aircraft");

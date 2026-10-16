@@ -1505,6 +1505,37 @@ impl Player {
         Some((age.max(0.0) * clip.state.speed + clip.state.start, length))
     }
 
+    /// The clip [`Self::root_play_position`] reads, as it reads it: the
+    /// clip's timing, its age now in entity seconds, and whether it has
+    /// completed into its successor. A pdxmesh root keeps reading the clip
+    /// it last played while it enters a state that plays no animation.
+    /// `None` when the root plays no animation.
+    pub fn root_play_clip(&self, rig: &Rig) -> Option<(StateTiming, f32, bool)> {
+        let node = rig.nodes.first()?;
+        let playing = self.nodes.first()?.as_ref()?;
+        let (clip, age) = match self.native_samples.first().copied().flatten() {
+            Some(sample) => (sample.clip, sample.age),
+            None => (
+                playing.clip,
+                self.last - playing.start + playing.phase_offset,
+            ),
+        };
+        if !played_animation(node, clip) {
+            return None;
+        }
+        let clip = &node.clips[clip];
+        Some((
+            StateTiming {
+                start: clip.state.start,
+                speed: clip.state.speed,
+                length: clip.animation.as_ref()?.duration(),
+                looping: clip.state.looping,
+            },
+            age.max(0.0),
+            playing.completed,
+        ))
+    }
+
     /// Current root clip, phase entry time, RNG draw count and automatic cycle.
     /// Getter-only integration fixtures can prove they do not admit setters.
     #[cfg(test)]
@@ -1523,6 +1554,50 @@ impl Player {
     pub fn root_playing<'r>(&self, rig: &'r Rig) -> Option<&'r str> {
         let playing = self.nodes.first()?.as_ref()?;
         Some(rig.nodes[0].clips[playing.clip].state.name.as_str())
+    }
+}
+
+/// How the root's played position ([`Player::root_play_position`]) moves
+/// with the age of the clip it reads ([`Player::root_play_clip`]): it starts
+/// at `start` and advances by `speed` per entity second. A nonlooping clip
+/// completes after its `length` in animation seconds and then reads
+/// `length`; a looping one keeps advancing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StateTiming {
+    pub start: f32,
+    pub speed: f32,
+    pub length: f32,
+    pub looping: bool,
+}
+
+impl StateTiming {
+    /// Entity seconds after entry while the played position reads at least
+    /// `threshold`: from the first such time, until the clip completes when
+    /// the length it then reads is below the threshold (`None`: for good).
+    /// `None` when it never does.
+    pub fn reads_at_least(self, threshold: f32) -> Option<(f32, Option<f32>)> {
+        let completes = (self.speed > 0.0 && !self.looping && self.length > 0.0)
+            .then(|| self.length / self.speed);
+        let until = completes.filter(|_| threshold > self.length);
+        if threshold <= self.start {
+            return Some((0.0, until));
+        }
+        if self.speed <= 0.0 {
+            return None;
+        }
+        let at = (threshold - self.start) / self.speed;
+        match completes {
+            Some(completes) if at >= completes => {
+                (threshold <= self.length).then_some((completes, None))
+            }
+            _ => Some((at, until)),
+        }
+    }
+
+    /// Entity seconds after entry until the played position first reads at
+    /// least `threshold`; `None` when it never does.
+    pub fn reaches(self, threshold: f32) -> Option<f32> {
+        self.reads_at_least(threshold).map(|(from, _)| from)
     }
 }
 

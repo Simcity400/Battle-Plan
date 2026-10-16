@@ -36,7 +36,6 @@ use viewer_foundation::map::{
 };
 mod motion;
 mod native;
-pub(crate) use native::EntitySimulations;
 use eframe::wgpu;
 use installed_content::{
     ResolvedLayers,
@@ -44,6 +43,7 @@ use installed_content::{
     parser::{self, Item, Value},
     particles::Catalog,
 };
+pub(crate) use native::EntitySimulations;
 pub use native::Inputs as NativeInputs;
 use replay::{frame::DecodedFrame, rows::tables};
 use std::{collections::BTreeMap, io, sync::Arc};

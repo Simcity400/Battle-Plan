@@ -1,8 +1,6 @@
 //! Simulation-dependent regional scenario laws.
 //! Random choices and presentation time belong to the viewer.
 
-use std::collections::BTreeSet;
-
 use replay::rows::Recorded;
 
 use super::{
@@ -28,6 +26,22 @@ const LAUNCH_MISSION: u32 = 1 << 17;
 /// The pool-definition AIR_FLAGS bit whose base-equipment wings launch from
 /// their base without a flight.
 const LAUNCH_DEFINITION: u64 = 1 << 33;
+
+/// What a launch record does when its entity finishes: nothing for a bit-17
+/// mission's, the missile explosion in its mission's region for a
+/// launch-flagged definition's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum LaunchKind {
+    Mission,
+    Definition,
+}
+
+/// A base-equipment wing that starts a launch effect at its base.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct LaunchRequest<'a> {
+    pub wing: ScenarioWing<'a>,
+    pub kind: LaunchKind,
+}
 
 /// Bombers, fighters, base equipment, transports, scouts.
 #[derive(Default)]
@@ -62,8 +76,8 @@ struct Scheduler<'a, 's> {
     draws: Vec<ScenarioDraw<'a>>,
     next_batch: usize,
     fighters_uncertain: bool,
-    /// Base provinces that hold a launch effect of this region.
-    launches: BTreeSet<Option<u32>>,
+    /// The wings that start launch effects, in the scheduler's order.
+    launches: Vec<LaunchRequest<'a>>,
 }
 
 impl<'a> Scheduler<'a, '_> {
@@ -155,7 +169,9 @@ impl<'a> Scheduler<'a, '_> {
     /// checked before each wing, so a wing's batch can exceed it, and
     /// reaching it ends the side. A bit-17 mission launches only while the
     /// other side holds aircraft in the region; a launch-definition wing
-    /// launches unconditionally; a base holds one launch effect.
+    /// launches unconditionally. A base holds one live launch record, which
+    /// the wing's first launch decides for all of its count, so each
+    /// launching wing is one request ([`super::launches`]).
     fn missiles(&mut self, wings: &mut Vec<ScenarioWing<'a>>, opposed: bool) {
         let family = match self.defines.missile {
             Ok(family) => family,
@@ -181,28 +197,32 @@ impl<'a> Scheduler<'a, '_> {
             if planes <= 0 {
                 continue;
             }
+            let launch = if wing.wing.mission_mask & LAUNCH_MISSION != 0 {
+                Some(opposed.then_some(LaunchKind::Mission))
+            } else if wing.inputs.definition_map_flags & LAUNCH_DEFINITION != 0 {
+                Some(Some(LaunchKind::Definition))
+            } else {
+                None
+            };
+            if let Some(kind) = launch {
+                self.launches
+                    .extend(kind.map(|kind| LaunchRequest { wing, kind }));
+                continue;
+            }
+            let target = wing.inputs.last_target_province;
             for _ in 0..family.units(planes) {
-                if wing.wing.mission_mask & LAUNCH_MISSION != 0 {
-                    if opposed {
-                        self.launches.insert(wing.base.province);
-                    }
-                } else if wing.inputs.definition_map_flags & LAUNCH_DEFINITION != 0 {
-                    self.launches.insert(wing.base.province);
-                } else {
-                    let target = wing.inputs.last_target_province;
-                    self.emit(
-                        ScenarioDraw {
-                            batch: 0,
-                            attacker: wing,
-                            defender: None,
-                            kind: MISSILE_KIND,
-                            outcome: 0,
-                            // A zero target leaves placement its region draw.
-                            province: (target != 0).then_some(target as u32),
-                        },
-                        1,
-                    );
-                }
+                self.emit(
+                    ScenarioDraw {
+                        batch: 0,
+                        attacker: wing,
+                        defender: None,
+                        kind: MISSILE_KIND,
+                        outcome: 0,
+                        // A zero target leaves placement its region draw.
+                        province: (target != 0).then_some(target as u32),
+                    },
+                    1,
+                );
             }
         }
     }
@@ -460,7 +480,7 @@ impl<'a> Scheduler<'a, '_> {
     fn generated(self) -> Generated<'a> {
         Generated {
             draws: self.draws,
-            launches: self.launches.len(),
+            launches: self.launches,
         }
     }
 }
@@ -529,7 +549,7 @@ fn dogfight_outcome(a: i64, b: i64) -> u8 {
 /// start at their bases.
 pub(super) struct Generated<'a> {
     pub draws: Vec<ScenarioDraw<'a>>,
-    pub launches: usize,
+    pub launches: Vec<LaunchRequest<'a>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -577,7 +597,7 @@ pub(super) fn generate<'a>(
         draws: Vec::new(),
         next_batch: 0,
         fighters_uncertain: false,
-        launches: BTreeSet::new(),
+        launches: Vec::new(),
     };
     scheduler.stepped(&mut scouts, defines.scout, [2, 3], true);
     scheduler.missiles(&mut missiles_a, present[1]);
@@ -661,6 +681,7 @@ pub(super) fn generate<'a>(
 mod tests {
     use super::super::FamilyDefines;
     use super::*;
+    use std::collections::BTreeSet;
 
     fn defines() -> FlightDefines {
         let family = SteppedFamily {
@@ -856,9 +877,25 @@ mod tests {
             )
         };
         let alone = generate_with(false);
-        assert_eq!(alone.launches, 1);
+        let launches = |generated: &Generated<'_>| {
+            generated
+                .launches
+                .iter()
+                .map(|launch| (launch.wing.wing.id, launch.kind))
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            launches(&alone),
+            BTreeSet::from([(1, LaunchKind::Definition)])
+        );
         assert!(alone.draws.iter().all(|draw| draw.kind != MISSILE_KIND));
-        assert_eq!(generate_with(true).launches, 2);
+        // One request per launching wing, whatever its count: the base's
+        // record decides every unit.
+        assert_eq!(
+            launches(&generate_with(true)),
+            BTreeSet::from([(1, LaunchKind::Definition), (3, LaunchKind::Mission)])
+        );
+        assert_eq!(generate_with(true).launches.len(), 2);
     }
 
     #[test]

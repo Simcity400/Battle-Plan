@@ -339,7 +339,8 @@ fn a_hidden_mission_leaves_every_other_flight_on_its_own_clock() {
         speed: 1.0,
         events: Vec::new(),
         unbound: vec![None],
-        rocket: false,
+        lands: vec![true],
+        rockets: vec![false],
     };
     let rigs = BTreeMap::from([(String::new(), rig)]);
     let route = Route {
@@ -364,7 +365,9 @@ fn a_hidden_mission_leaves_every_other_flight_on_its_own_clock() {
         phase,
         requests: Arc::default(),
         impact: None,
-        lifetime: None,
+        lands: true,
+        explode: Explode::Absent,
+        terrain: None,
     };
     let flights = [
         flight(AirMission::Patrol, 0.1),

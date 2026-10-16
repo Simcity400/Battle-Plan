@@ -961,6 +961,8 @@ fn the_initial_gate_uses_the_wings_own_operands() {
     assert!(passes_initial_gate(&wing));
 }
 
+mod band;
+mod launch_effects;
 mod paired;
 mod training;
 
@@ -1156,7 +1158,8 @@ fn paired_rig_callbacks_use_defending_side_local_ordinals() {
         duration: 10.0,
         speed: 2.0,
         unbound: vec![None; 6],
-        rocket: false,
+        lands: vec![true; 6],
+        rockets: vec![false; 6],
         events: descriptors.inherit("scenario").unwrap().states["default"][0]
             .events
             .clone(),
@@ -1182,7 +1185,9 @@ fn paired_rig_callbacks_use_defending_side_local_ordinals() {
         phase: 0.0,
         requests: Arc::default(),
         impact: None,
-        lifetime: None,
+        lands: true,
+        explode: Explode::Absent,
+        terrain: None,
     };
     let requests = flight_requests(&flight, &rig, &actor, 2.0);
     assert_eq!(
@@ -1319,7 +1324,7 @@ fn scenario_tracks_bind_native_source_ordinals_without_animation_name_aliases() 
 }
 
 #[test]
-fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_only_for_a_rootless_rocket() {
+fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_needed() {
     use crate::map::mesh_pose::Source;
     let source = Source {
         pdxmesh: true,
@@ -1344,25 +1349,35 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_only_for_a_rootless_ro
         scale: 1.0,
         ..Default::default()
     }];
-    let rig = |kind: u8, bones: Vec<(u8, String)>, speed: Result<f32, &'static str>| {
+    let band = Band {
+        offset: 0.0,
+        explosion_delay: 0.6,
+    };
+    let rig = |(kind, outcome): (u8, u8),
+               bones: Vec<(u8, String)>,
+               speed: Result<f32, &'static str>,
+               band: Result<Band, &'static str>| {
         let mut warnings = Vec::new();
         let rig = scenario_rig(
             "scenario_entity",
-            kind,
+            (kind, outcome),
             &bones,
             (&source, &animation),
             1.0,
             Vec::new(),
-            &speed,
+            (&speed, &band),
             &mut warnings,
         );
         (rig, warnings)
     };
     // Vanilla's rocket rig: the node is absent, the game's log line is kept
-    // and the rocket rides the root at ROCKET_SPEED.
-    let (missile, warnings) = rig(15, scenario_bones(15), Ok(15.0));
+    // and the rocket rides the root at ROCKET_SPEED, without a landing.
+    let (missile, warnings) = rig((15, 0), scenario_bones(15), Ok(15.0), Ok(band));
     let missile = missile.unwrap();
-    assert!(missile.rocket);
+    assert_eq!(
+        (missile.rockets.as_slice(), missile.lands.as_slice()),
+        (&[true][..], &[false][..])
+    );
     assert_eq!(missile.unbound, [Some(15.0)]);
     assert_eq!(missile.duration, 1.0);
     assert_eq!(
@@ -1374,113 +1389,409 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_only_for_a_rootless_ro
     );
     // A missing ROCKET_SPEED refuses only that rig.
     let (missile, warnings) = rig(
-        15,
+        (15, 0),
         scenario_bones(15),
         Err("NDefines.NAirGfx.ROCKET_SPEED is unreadable"),
+        Ok(band),
     );
     assert!(missile.is_none());
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Refused);
     assert!(warnings[0].1.contains("ROCKET_SPEED is unreadable"));
     let (bomber, warnings) = rig(
-        6,
+        (6, 0),
         vec![(0, "bomber".into())],
         Err("NDefines.NAirGfx.ROCKET_SPEED is unreadable"),
+        Ok(band),
     );
     assert_eq!(bomber.unwrap().unbound, [Some(UNBOUND_SPEED)]);
     assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Logged);
-    let (bound, _) = rig(6, vec![(0, "joint1".into())], Err("unused"));
+    let (bound, _) = rig((6, 0), vec![(0, "joint1".into())], Err("unused"), Ok(band));
     assert_eq!(bound.unwrap().unbound, [None]);
-    // A rocket on a real node meets the unported near-ground band: refused.
-    let (rocket, warnings) = rig(15, vec![(0, "joint1".into())], Ok(15.0));
+    // A rocket on a real node flies: the near-ground band is ported.
+    let (rocket, warnings) = rig((15, 0), vec![(0, "joint1".into())], Ok(15.0), Ok(band));
+    let rocket = rocket.unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(
+        (rocket.unbound.as_slice(), rocket.lands.as_slice()),
+        (&[None][..], &[false][..])
+    );
+    // A rocket on its node never rides the root, so an unreadable
+    // ROCKET_SPEED leaves it flying.
+    let (rocket, warnings) = rig(
+        (15, 0),
+        vec![(0, "joint1".into())],
+        Err("NDefines.NAirGfx.ROCKET_SPEED is unreadable"),
+        Ok(band),
+    );
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(rocket.unwrap().unbound, [None]);
+    // Unreadable band defines refuse only a rig with an actor that does not
+    // land, by name; a landing rig never reads them.
+    let missing = Err("NDefines.NAirGfx.AIRPLANES_GROUND_COLLISION_OFFSET_Y is unreadable");
+    let (rocket, warnings) = rig((15, 0), vec![(0, "joint1".into())], Ok(15.0), missing);
     assert!(rocket.is_none());
-    assert!(warnings[0].1.contains("near-ground band"));
+    assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Refused);
+    assert!(
+        warnings[0]
+            .1
+            .contains("AIRPLANES_GROUND_COLLISION_OFFSET_Y is unreadable")
+    );
+    let (bomber, warnings) = rig((6, 0), vec![(0, "joint1".into())], Err("unused"), missing);
+    assert!(bomber.is_some() && warnings.is_empty());
 }
 
+/// The scenario analysis builds no landing route for the rocket, kamikaze
+/// fighters that succeed, defending slots of a successful interception or
+/// dogfight and attacking slots of a lost dogfight. The viewer used to fly
+/// all of them home.
 #[test]
-fn a_rocket_ends_its_scenario_where_its_pose_reaches_the_terrain() {
-    let pose = |y: f32| Transform {
-        translation: [0.0, y, 0.0],
-        basis: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+fn the_slots_the_game_gives_no_landing_route() {
+    let landing = |kind: u8, outcome: u8| {
+        scenario_bones(kind)
+            .iter()
+            .map(|(side, _)| lands(kind, outcome, *side))
+            .collect::<Vec<_>>()
     };
-    let mut rig = Rig {
-        tracks: vec![vec![pose(0.0); 3], vec![pose(3.0), pose(1.0), pose(-1.0)]],
-        sides: vec![0, 0],
-        fps: 2.0,
-        duration: 1.0,
+    assert_eq!(landing(15, 0), [false]);
+    for kind in [16, 17] {
+        assert!(landing(kind, 0).iter().all(|lands| *lands));
+        assert!(landing(kind, SUCCESS).iter().all(|lands| !lands));
+    }
+    for kind in [12, 18] {
+        assert_eq!(landing(kind, 1), [true, true]);
+        assert_eq!(landing(kind, SUCCESS), [true, false]);
+    }
+    assert_eq!(landing(13, 1), [true, true]);
+    assert_eq!(landing(13, SUCCESS), [true, false]);
+    assert_eq!(landing(13, FAIL), [false, true]);
+    assert_eq!(
+        landing(14, SUCCESS),
+        [true, true, true, false, false, false]
+    );
+    assert_eq!(landing(14, FAIL), [false, false, false, true, true, true]);
+    for kind in (0..=11).chain([19, 20]) {
+        assert!(landing(kind, 0).iter().all(|lands| *lands), "kind {kind}");
+    }
+}
+
+/// One scenario of one actor that takes off for a second and plays `poses`
+/// at `fps`, over flat terrain at height 10 (heightmap byte 100), anchored
+/// at x = 2, z = 2 on that terrain.
+fn one_run(
+    poses: Vec<Transform>,
+    fps: f32,
+    lands: bool,
+    rocket: bool,
+    explode: Explode,
+) -> (AircraftPlan, BTreeMap<String, Rig>) {
+    let duration = (poses.len() - 1) as f32 / fps;
+    let rig = Rig {
+        tracks: vec![poses],
+        sides: vec![0],
+        fps,
+        duration,
         events: Vec::new(),
         speed: 1.0,
-        unbound: vec![Some(15.0), None],
-        rocket: true,
+        unbound: vec![None],
+        lands: vec![lands],
+        rockets: vec![rocket],
     };
-    let ground = |_: f32, _: f32| 5.0;
-    let origin = [1.0, 5.0, 2.0];
-    // The unbound rocket stands on the origin's terrain from the first sample.
-    assert_eq!(ground_contact(&rig, 0, origin, 0.3, ground), Some(0.0));
-    // A bound rocket ends at its first sample at or below the terrain.
-    assert_eq!(ground_contact(&rig, 1, origin, 0.3, ground), Some(1.0));
-    assert_eq!(ground_contact(&rig, 1, origin, 0.3, |_, _| 3.0), None);
-    // Other scenarios' actors never end on the terrain.
-    rig.rocket = false;
-    assert_eq!(ground_contact(&rig, 0, origin, 0.3, ground), None);
-}
-
-#[test]
-fn a_missile_scenario_finishes_once_per_cycle_when_its_landing_ends() {
+    let heights = HeightField {
+        width: 8,
+        height: 8,
+        values: &[100; 64],
+    };
     let route = Route {
         points: Vec::new(),
         arcs: Vec::new(),
     };
-    let flight = Flight {
-        mission: AirMission::Missile,
-        mesh: 0,
-        wing: 1,
-        region: 7,
-        rig: rig_key(scenario_name(15), 0),
-        track: 0,
-        origin: [0.0; 3],
-        yaw: 0.0,
-        outgoing: route.clone(),
-        incoming: route,
-        travel: 2.0,
-        delay: 0.0,
-        group_travel: 2.0,
-        phase: 0.25,
-        requests: Arc::default(),
-        impact: Some((9, [1.0, 2.0, 3.0], [0.0, 0.0, 1.0, 1.0])),
-        lifetime: None,
+    let plan = AircraftPlan {
+        flights: vec![Flight {
+            mission: AirMission::Missile,
+            mesh: 3,
+            wing: 1,
+            region: 7,
+            rig: "rig".into(),
+            track: 0,
+            origin: [2.0, 10.0, 2.0],
+            yaw: 0.0,
+            outgoing: route.clone(),
+            incoming: route,
+            travel: 1.0,
+            delay: 0.0,
+            group_travel: 1.0,
+            phase: 0.0,
+            requests: Arc::default(),
+            impact: Some((9, [1.0, 2.0, 3.0], [0.0, 0.0, 1.0, 1.0])),
+            lands,
+            explode,
+            terrain: (!lands).then(|| Arc::new(Terrain::capture(&heights, (0.0, 6.0), (0.0, 6.0)))),
+        }],
+        runs: vec![Run {
+            flights: 0..1,
+            start: 0.0,
+            cycle: 0,
+            grounds: vec![Ground::Following],
+        }],
+        ..AircraftPlan::default()
     };
-    assert_eq!(flight.rig, "missile_1_bombing");
-    assert_eq!(scenario_bones(15), [(0, "rocket".into())]);
-    // A cycle is 2 + 4 + 2 = 8 clock seconds, a quarter already played at
-    // time zero: the first finishes at 6 seconds on a clock of speed one.
-    assert_eq!(flight.finished_cycle(4.0, 1.0, 0.0, 5.9), None);
-    assert_eq!(flight.finished_cycle(4.0, 1.0, 5.9, 6.0), Some(1));
-    assert_eq!(flight.finished_cycle(4.0, 1.0, 6.0, 13.9), None);
-    // A longer frame plays only the last finished cycle; the clock speed
-    // scales presentation time.
-    assert_eq!(flight.finished_cycle(4.0, 1.0, 0.0, 30.0), Some(4));
-    assert_eq!(flight.finished_cycle(4.0, 2.0, 2.9, 3.0), Some(1));
-    // A clock that goes back or stands still finishes nothing.
-    assert_eq!(flight.finished_cycle(4.0, 1.0, 13.0, 1.0), None);
-    assert_eq!(flight.finished_cycle(4.0, 1.0, 6.0, 6.0), None);
-    assert_eq!(
-        Flight {
-            group_travel: 0.0,
-            ..flight.clone()
+    (plan, BTreeMap::from([("rig".to_owned(), rig)]))
+}
+
+fn height(y: f32) -> Transform {
+    Transform {
+        translation: [0.0, y, 0.0],
+        ..Transform::IDENTITY
+    }
+}
+
+const BAND: Band = Band {
+    offset: 0.0,
+    explosion_delay: 0.6,
+};
+
+/// The game tests the band on the pose an actor draws at each of its
+/// frames. A 120 Hz rig dips into the terrain between two 60 Hz frames: no
+/// frame draws it there, so nothing collides; a dip a frame draws ends the
+/// rocket's scenario on that frame and plays its explosion. Before, the
+/// viewer tested only the rig's samples, and then a dense path between
+/// them, finding collisions no frame draws.
+#[test]
+fn the_band_is_met_at_the_viewer_s_frames() {
+    let defines = FlightDefines::for_tests();
+    let dip = |sample: usize| {
+        let mut poses = vec![height(3.0); 13];
+        poses[sample] = height(-1.0);
+        one_run(poses, 120.0, false, true, Explode::Absent)
+    };
+    let frames: Vec<f32> = (0..=7).map(|frame| 1.0 + frame as f32 / 60.0).collect();
+    // Sample 5 (rig time 5/120) lies between the frames at 2/60 and 3/60.
+    let (mut plan, rigs) = dip(5);
+    for &frame in &frames {
+        plan.advance(&rigs, &defines, Some(BAND), frame, &|_| None);
+    }
+    assert_eq!((plan.runs[0].cycle, plan.finished.len()), (0, 0));
+    // Sample 6 is the frame at 3/60.
+    let (mut plan, rigs) = dip(6);
+    let mut ended = None;
+    for &frame in &frames {
+        plan.advance(&rigs, &defines, Some(BAND), frame, &|_| None);
+        if ended.is_none() && plan.runs[0].cycle == 1 {
+            ended = Some(frame);
         }
-        .finished_cycle(0.0, 1.0, 0.0, 10.0),
-        None
-    );
-    // A rocket that ends at its take-off finishes each cycle there: 2 clock
-    // seconds with a quarter played, so the first at 1.5 seconds.
-    let rocket = Flight {
-        lifetime: Some(2.0),
-        ..flight
+    }
+    assert!((ended.unwrap() - (1.0 + 3.0 / 60.0)).abs() < 1e-5);
+    assert_eq!(plan.finished.len(), 1);
+    assert_eq!(plan.finished[0].id, 1);
+    // A clock that goes back restarts the run at its phase.
+    plan.advance(&rigs, &defines, Some(BAND), 0.5, &|_| None);
+    assert_eq!(plan.runs[0].cycle, 0);
+}
+
+/// In the band an actor with an `explode` state requests it and stays at
+/// the pose it drew; it is done, and hidden for good, once its own player
+/// reads the band's delay. Without the state it is hidden at once, and done
+/// while it stays at or below the band. Actors with a landing route never
+/// end a scenario early.
+#[test]
+fn an_actor_in_the_band_explodes_or_hides_by_its_own_player() {
+    let defines = FlightDefines::for_tests();
+    let falling = || vec![height(3.0), height(1.0), height(-1.0), height(-1.0)];
+    let (mut plan, rigs) = one_run(falling(), 1.0, false, false, Explode::Plays);
+    // Frames at rig times 0.5 and 1.5: the second draws it at y 10, on the
+    // terrain and so in the band.
+    plan.advance(&rigs, &defines, Some(BAND), 1.5, &|_| None);
+    assert_eq!(plan.runs[0].grounds[0], Ground::Following);
+    plan.advance(&rigs, &defines, Some(BAND), 2.5, &|_| None);
+    let Ground::Exploding {
+        pose,
+        entry,
+        hidden,
+    } = plan.runs[0].grounds[0]
+    else {
+        panic!("{:?}", plan.runs[0].grounds);
     };
-    assert_eq!(rocket.finished_cycle(4.0, 1.0, 0.0, 1.4), None);
-    assert_eq!(rocket.finished_cycle(4.0, 1.0, 1.4, 1.5), Some(1));
-    assert_eq!(rocket.finished_cycle(4.0, 1.0, 1.5, 3.5), Some(2));
+    assert_eq!(
+        (pose.translation, entry, hidden),
+        ([2.0, 10.0, 2.0], 2.5, false)
+    );
+    // Its player reads below the delay: still drawn, frozen.
+    plan.advance(&rigs, &defines, Some(BAND), 2.6, &|_| {
+        Some(Some((0.5, 2.0)))
+    });
+    let placed = plan.placed_runs(&rigs, &defines, 2.6);
+    assert_eq!(placed[0].1.position, [2.0, 10.0, 2.0]);
+    // Reading the delay hides it and, as the scenario's only actor, ends it.
+    plan.advance(&rigs, &defines, Some(BAND), 2.7, &|key| {
+        assert_eq!(key, (3, 0, 0));
+        Some(Some((0.6, 2.0)))
+    });
+    assert_eq!((plan.runs[0].cycle, plan.finished.len()), (1, 1));
+    // Without `explode` it is hidden on its first frame in the band.
+    let (mut plan, rigs) = one_run(falling(), 1.0, false, false, Explode::Absent);
+    plan.advance(&rigs, &defines, Some(BAND), 2.5, &|_| None);
+    assert_eq!(plan.runs[0].cycle, 1);
+    // A landing actor never ends it early, and lands.
+    let (mut plan, rigs) = one_run(falling(), 1.0, true, false, Explode::Absent);
+    for frame in [1.5, 2.5, 3.5] {
+        plan.advance(&rigs, &defines, Some(BAND), frame, &|_| None);
+    }
+    assert_eq!((plan.runs[0].cycle, plan.finished.len()), (0, 0));
+    // The cycle is 1 + 3 + 1 seconds; its landing ends at 5.
+    plan.advance(&rigs, &defines, Some(BAND), 5.1, &|_| None);
+    assert_eq!((plan.runs[0].cycle, plan.finished.len()), (1, 1));
+}
+
+/// A formation whose actors read the explosion delay on successive frames
+/// ends on the frame the last one does: an actor that has read it stays
+/// done and placed, hidden, so its player keeps stepping. Before, the first
+/// to finish lost its placement and player, read as unfinished, and the
+/// scenario never ended.
+#[test]
+fn a_formation_finishing_on_successive_frames_ends_with_its_last_actor() {
+    let defines = FlightDefines::for_tests();
+    let falling = vec![height(3.0), height(1.0), height(-1.0), height(-1.0)];
+    let (mut plan, rigs) = one_run(falling, 1.0, false, false, Explode::Plays);
+    let flight = plan.flights[0].clone();
+    plan.flights = vec![flight.clone(), flight.clone(), flight];
+    plan.runs[0].flights = 0..3;
+    plan.runs[0].grounds = vec![Ground::Following; 3];
+    plan.advance(&rigs, &defines, Some(BAND), 2.5, &|_| None);
+    assert!(
+        plan.runs[0]
+            .grounds
+            .iter()
+            .all(|ground| matches!(ground, Ground::Exploding { hidden: false, .. }))
+    );
+    // Each actor's player reads the delay on its own frame, and no other.
+    for (frame, actor) in [(2.6, 0), (2.7, 1)] {
+        plan.advance(&rigs, &defines, Some(BAND), frame, &|(_, index, _)| {
+            (index == actor).then_some(Some((0.6, 2.0)))
+        });
+        assert_eq!(plan.runs[0].cycle, 0, "{frame}");
+    }
+    // The finished ones stay placed, frozen, for their players.
+    assert_eq!(plan.placed_runs(&rigs, &defines, 2.75).len(), 3);
+    plan.advance(&rigs, &defines, Some(BAND), 2.8, &|(_, index, _)| {
+        (index == 2).then_some(Some((0.6, 2.0)))
+    });
+    assert_eq!((plan.runs[0].cycle, plan.finished.len()), (1, 3));
+}
+
+/// The shared player keeps reading the clip a pdxmesh root played before it
+/// entered an `explode` state that plays no animation, past that clip's end
+/// when it does not loop: entered 0.25 s into a 1 s idle, it reads the 2 s
+/// delay 1.75 s later. The band reads that player, so the explosion ends.
+#[test]
+fn a_retained_nonlooping_clip_reads_the_explosion_delay() {
+    use crate::map::entity_animation::{Clip, Clock, Node, Player, Request, Rig as ActorRig};
+    use crate::map::mesh_pose::Source;
+    let mut animation = mesh::Animation::default();
+    animation.fps = 1.0;
+    animation.samples = 2;
+    animation.joints = vec![mesh::AnimationJoint {
+        name: "joint1".into(),
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        scale: 1.0,
+        ..Default::default()
+    }];
+    let clip = |name: &str, animation: Option<Arc<mesh::Animation>>| Clip {
+        state: mesh::EntityState {
+            name: name.into(),
+            chance: 1.0,
+            speed: 1.0,
+            looping: false,
+            ..mesh::EntityState::default()
+        },
+        animation,
+    };
+    let rig = ActorRig {
+        nodes: vec![Node {
+            mesh: Arc::new(mesh::Mesh::default()),
+            native: Some(Arc::new(Source {
+                pdxmesh: true,
+                skeleton: vec![mesh::NativeJoint {
+                    name: "joint1".into(),
+                    parent: 255,
+                    inverse_bind: [0.0; 12],
+                }],
+                entity_locators: Vec::new(),
+                binary_locators: Vec::new(),
+                mesh_scale: 1.0,
+                entity_scale: 1.0,
+                frozen: None,
+                game_data: None,
+            })),
+            clips: vec![
+                clip("idle", Some(Arc::new(animation))),
+                clip(EXPLODE_STATE, None),
+            ],
+            default: "idle".into(),
+            follows_parent: false,
+            parent: None,
+            scale: 1.0,
+            mesh_scale: 1.0,
+            skin_base: None,
+            rigid: 0,
+            locators: BTreeMap::new(),
+        }],
+        start: 0,
+        end: 1,
+    };
+    let requests = Arc::new(vec![Request {
+        time: 0.25,
+        phase_time: None,
+        state: EXPLODE_STATE.into(),
+    }]);
+    let mut player = Player::new(&rig);
+    let mut palette = [crate::map::models::PaletteJoint::from_transform(
+        &Transform::IDENTITY,
+    )];
+    let read =
+        |player: &mut Player, palette: &mut [crate::map::models::PaletteJoint], time: f32| {
+            player.evaluate_clock(
+                &rig,
+                ModelInstance::default(),
+                &Clock {
+                    time,
+                    phase: None,
+                    requests: Arc::clone(&requests),
+                },
+                palette,
+                &mut Vec::new(),
+            );
+            player.root_play_position(&rig).unwrap().0
+        };
+    for step in 0..=8 {
+        read(&mut player, &mut palette, step as f32 * 0.25);
+    }
+    assert!(read(&mut player, &mut palette, 2.0) >= 2.0);
+    let mut early = Player::new(&rig);
+    for step in 0..=7 {
+        read(&mut early, &mut palette, step as f32 * 0.25);
+    }
+    assert!(read(&mut early, &mut palette, 1.75) < 2.0);
+}
+
+/// A missile scenario plays its explosion once per cycle, when its landing
+/// ends or its rocket ends it, keyed by its flight and the cycle that
+/// follows; a long gap plays only the last.
+#[test]
+fn a_missile_scenario_finishes_once_per_cycle() {
+    let defines = FlightDefines::for_tests();
+    let (mut plan, rigs) = one_run(vec![height(3.0); 4], 1.0, true, false, Explode::Absent);
+    plan.advance(&rigs, &defines, Some(BAND), 4.9, &|_| None);
+    assert!(plan.missile_explosions(0.0, 4.9).is_empty());
+    plan.advance(&rigs, &defines, Some(BAND), 5.0, &|_| None);
+    let played = plan.missile_explosions(4.9, 5.0);
+    assert_eq!(played.len(), 1);
+    assert_eq!((played[0].province, played[0].id), (9, 1));
+    assert!(plan.missile_explosions(5.0, 5.0).is_empty());
+    plan.advance(&rigs, &defines, Some(BAND), 31.0, &|_| None);
+    let played = plan.missile_explosions(5.0, 31.0);
+    assert_eq!(played.len(), 1);
+    assert_eq!(played[0].id, 6);
 }
 
 #[test]
