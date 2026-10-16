@@ -88,6 +88,9 @@ pub struct MapAssets {
     /// terrain type carries `spawn_city`. This supplies the city-sprawl footprint; the city bitmap
     /// selects architecture. See [`terrain_flag_mask`].
     pub spawn_city: Vec<bool>,
+    /// The heightmap's sight pyramid, which free-eye map icons test their anchors against;
+    /// built on first use ([`MapAssets::terrain_sight`]).
+    pub sight: std::sync::OnceLock<viewer_foundation::map::terrain_sight::TerrainSight>,
 }
 
 impl MapAssets {
@@ -97,6 +100,22 @@ impl MapAssets {
     /// must reach the shader unscaled.
     pub fn heightmap_texels(&self) -> &[u8] {
         &self.heightmap.indices
+    }
+
+    /// The heightmap as the drawn surface reads it.
+    pub fn height_field(&self) -> viewer_foundation::map::province_map::HeightField<'_> {
+        viewer_foundation::map::province_map::HeightField {
+            width: self.heightmap.width,
+            height: self.heightmap.height,
+            values: &self.heightmap.indices,
+        }
+    }
+
+    /// The heightmap's sight pyramid, built the first time a free eye shows map icons.
+    pub fn terrain_sight(&self) -> &viewer_foundation::map::terrain_sight::TerrainSight {
+        self.sight.get_or_init(|| {
+            viewer_foundation::map::terrain_sight::TerrainSight::new(&self.height_field())
+        })
     }
 
     /// The size and `Unorm` payload of the heightmap texture the passes sample

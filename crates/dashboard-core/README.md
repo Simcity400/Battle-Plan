@@ -8,7 +8,7 @@ these types and re-exports each module at its old path.
 
 | Module | What it does |
 |---|---|
-| [protocol.rs](src/protocol.rs) | Native control messages between the desktop host and the viewer (including the full map's camera mode both ways and forwarded controller state), map options and the requested-tag check. |
+| [protocol.rs](src/protocol.rs) | Native control messages between the desktop host and the viewer (including the full map's camera mode with its overlay choice both ways, and forwarded controller state), map options and the requested-tag check. |
 | [transport.rs](src/transport.rs) | Data commands and events, preparation actions, bounded JSON replies and their fragmentation, and the transient refusals a reader may retry. |
 | [dto.rs](src/dto.rs) | Recording metadata (branches, gaps, partial and damaged recordings, countries) and token artwork replies. |
 | [config.rs](src/config.rs) | The host's saved game/user folders and preparation choice (`APPDATA/battle-plan/content.json`, written under a lock), and the content options a product load receives. |

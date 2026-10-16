@@ -80,6 +80,8 @@ Options: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is;
          --free-camera <x,y,z,yaw,pitch[,roll[,fov[,near[,far]]]]>, a free eye at world (x, y, z)
            turned by degrees (yaw clockwise from north, pitch up, roll right side down) with a
            vertical field of view in degrees (default 45) and near/far planes (default 1, 20000)
+         --free-overlays on|off, whether a free camera draws the map's interface standing in
+           the world, as the fly and walk modes' overlay choice does (default off)
          --perspective <TAG>|recorded, the viewing country (default recorded)
          --fog on|off, the game's fog-of-war switch (default on)
          --allied-plans on|off, viewer-local allied battle-plan visibility (default off)
@@ -271,6 +273,10 @@ struct Options {
     /// `--day-night`: the map's day/night lighting for dumps and window dumps;
     /// the desktop app's maps take its graphics preferences.
     day_night: Option<bool>,
+    /// `--free-overlays`: whether a dump or window dump from a free camera draws the map's
+    /// interface standing in the world, as the fly and walk modes' overlay choice does. Off by
+    /// default, as those modes start.
+    free_overlays: Option<bool>,
     camera: Option<Placement>,
     /// `--window-dump --walk`: a walk placed on the map, drawn through the walking mode with
     /// the keys `--walk-keys` holds ([`controls::walker::Start`]).
@@ -546,6 +552,7 @@ impl Options {
                     | "--fog"
                     | "--allied-plans"
                     | "--day-night"
+                    | "--free-overlays"
                     | "--counter-colors"
                     | "--nato-counters"
                     | "--animation-time"
@@ -632,7 +639,7 @@ impl Options {
                         // counters
                         "--perspective" => options.perspective.country = Country::parse(&value)?,
                         "--fog" => options.perspective.fog = Choice::parse_fog(&value)?,
-                        "--allied-plans" | "--day-night" => {
+                        "--allied-plans" | "--day-night" | "--free-overlays" => {
                             let enabled = match value.trim() {
                                 value if value.eq_ignore_ascii_case("on") => true,
                                 value if value.eq_ignore_ascii_case("off") => false,
@@ -645,6 +652,8 @@ impl Options {
                             };
                             if arg == "--allied-plans" {
                                 options.allied_plans = Some(enabled);
+                            } else if arg == "--free-overlays" {
+                                options.free_overlays = Some(enabled);
                             } else {
                                 options.day_night = Some(enabled);
                             }
@@ -1273,6 +1282,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     layer_alpha: fade.0,
                     sprites: None,
                     ui_scale,
+                    // A free camera draws the map's interface only when asked to.
+                    interface: camera.free().is_none() || options.free_overlays.unwrap_or(false),
+                    ground: camera
+                        .free()
+                        .map(|_| viewer_foundation::map::free_icons::Ground {
+                            field: document.assets.height_field(),
+                            sight: document.assets.terrain_sight(),
+                        }),
                 },
                 // trees
             },
@@ -1991,7 +2008,13 @@ mod tests {
         assert_eq!((pose.lens.near, pose.lens.far), (0.5, 900.0));
         // One camera only, a usable lens and five to nine numbers.
         for bad in [
-            &["c.battleplan", "--camera", "1,2,300", "--free-camera", "1,2,3,4,5"][..],
+            &[
+                "c.battleplan",
+                "--camera",
+                "1,2,300",
+                "--free-camera",
+                "1,2,3,4,5",
+            ][..],
             &["c.battleplan", "--free-camera", "1,2,3,4"],
             &["c.battleplan", "--free-camera", "1,2,3,4,5,6,7,8,9,10"],
             &["c.battleplan", "--free-camera", "1,2,3,4,5,0,45,10,5"],
@@ -2512,12 +2535,24 @@ mod tests {
             parse(&args)
         };
         let plain = dump(&[]).unwrap();
-        assert_eq!((plain.day_night, plain.allied_plans), (None, None));
-        let chosen = dump(&["--day-night", "OFF", "--allied-plans", "on"]).unwrap();
         assert_eq!(
-            (chosen.day_night, chosen.allied_plans),
-            (Some(false), Some(true))
+            (plain.day_night, plain.allied_plans, plain.free_overlays),
+            (None, None, None)
         );
+        let chosen = dump(&[
+            "--day-night",
+            "OFF",
+            "--allied-plans",
+            "on",
+            "--free-overlays",
+            "On",
+        ])
+        .unwrap();
+        assert_eq!(
+            (chosen.day_night, chosen.allied_plans, chosen.free_overlays),
+            (Some(false), Some(true), Some(true))
+        );
+        assert!(dump(&["--free-overlays", "maybe"]).is_err());
         assert!(dump(&["--day-night", "maybe"]).is_err());
         assert!(dump(&["--day-night"]).is_err());
     }

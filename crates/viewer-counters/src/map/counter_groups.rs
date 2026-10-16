@@ -4,7 +4,11 @@
 //! members' world anchors. Their windows become rows in the group's `units_box` grid.
 //! the host counter renderer owns drawing; the decisions here are pure.
 //!
-//! Grouping levels use the province, state and strategic-region distance defines.
+//! Grouping levels use the province, state and strategic-region distance defines, read against
+//! the camera's height for the game's camera and against each icon's own distance from a free
+//! eye, so a free eye groups distant icons and keeps near ones apart; an icon joins a group only
+//! at the lowest of its own and every member's level, and only if every member still shares the
+//! group's place there.
 //! Level zero retains individual anchors. The source array retains activation order;
 //! the cursor offers a content-defined budget of sources on each frame. Groups evict
 //! ineligible members before merging sources and updating their mean positions.
@@ -266,31 +270,39 @@ pub struct Group {
 
 /// Rebuild from source cursor zero on a level change, then update group positions.
 ///
-/// Candidates retain creation order and must share a kind and an eligible place:
-/// the same province; a non-huge state at state level or in a huge region; or a
-/// non-huge region at region level or for an icon without a state. [`may_group`]
-/// still decides admission. `friendly` comes from the recorded relation cache.
-/// Ungrouped level returns one group per icon.
+/// `levels` holds each icon's grouping level. Candidates retain creation order and must share a
+/// kind and an eligible place at the icon's level: the same province; a non-huge state at state
+/// level or in a huge region; or a non-huge region at region level or for an icon without a
+/// state. [`may_group`] still decides admission against the group's first member, at the lowest
+/// level of the icon and every member, so every member shares the first's place at the group's
+/// lowest level. A newcomer below that level joins only if every member also passes against the
+/// first at the newcomer's level. For the game's camera, every icon has one level and admission is
+/// the game's. `friendly` comes from the recorded relation cache. Icons all ungrouped return one
+/// group each.
 pub fn group(
     icons: &[Icon],
-    at: Level,
+    levels: &[Level],
     extents: &Extents,
     friendly: &impl Fn(u32, u32) -> bool,
 ) -> Vec<Group> {
+    let level = |index: usize| levels.get(index).copied().unwrap_or(Level::None);
     let mut groups: Vec<Group> = Vec::new();
-    if at == Level::None {
+    if (0..icons.len()).all(|index| level(index) == Level::None) {
         groups.extend((0..icons.len()).map(|index| Group {
             members: vec![index],
             anchor: [0.0; 3],
         }));
-        update_anchors(&mut groups, icons, at, extents);
+        update_anchors(&mut groups, icons, levels, extents);
         return groups;
     }
     let mut by_province: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
     let mut by_state: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
     let mut by_region: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
     let mut candidates: Vec<usize> = Vec::new();
+    // Each group's lowest member level.
+    let mut lowest: Vec<Level> = Vec::new();
     for (index, icon) in icons.iter().enumerate() {
+        let at = level(index);
         candidates.clear();
         candidates.extend(
             by_province
@@ -320,8 +332,17 @@ pub fn group(
         let mut joined = false;
         for &candidate in &candidates {
             let group = &mut groups[candidate];
-            if may_group(&icons[group.members[0]], icon, at, extents, &friendly) {
+            let first = &icons[group.members[0]];
+            let admit = at.min(lowest[candidate]);
+            if may_group(first, icon, admit, extents, &friendly)
+                // Lowering the group's level: its members must share the first's place there too.
+                && (admit == lowest[candidate]
+                    || group.members[1..]
+                        .iter()
+                        .all(|&member| may_group(first, &icons[member], admit, extents, &friendly)))
+            {
                 group.members.push(index);
+                lowest[candidate] = admit;
                 joined = true;
             }
         }
@@ -331,6 +352,7 @@ pub fn group(
                 members: vec![index],
                 anchor: [0.0; 3],
             });
+            lowest.push(at);
             by_province
                 .entry((icon.kind, icon.province))
                 .or_default()
@@ -343,16 +365,18 @@ pub fn group(
             }
         }
     }
-    update_anchors(&mut groups, icons, at, extents);
+    update_anchors(&mut groups, icons, levels, extents);
     groups
 }
 
-/// Advances the means of existing groups, retaining member and summation order.
-pub fn update_anchors(groups: &mut [Group], icons: &[Icon], at: Level, extents: &Extents) {
+/// Advances the means of existing groups, retaining member and summation order. `levels` holds
+/// each icon's grouping level, as [`group`] takes it.
+pub fn update_anchors(groups: &mut [Group], icons: &[Icon], levels: &[Level], extents: &Extents) {
     // at level 3 an icon's own position is already its
     // strategic region's centre, so the mean below is that centre.
-    let anchor = |icon: &Icon| -> [f32; 3] {
-        if at == Level::Strategic
+    let anchor = |index: usize| -> [f32; 3] {
+        let icon = &icons[index];
+        if levels.get(index) == Some(&Level::Strategic)
             && let Some(region) = icon.region
             && !extents.region_is_huge(region)
             && let Some(centre) = extents.region_centre(region)
@@ -365,13 +389,10 @@ pub fn update_anchors(groups: &mut [Group], icons: &[Icon], at: Level, extents: 
         let count = group.members.len() as f32;
         // Members astride the date line are unwrapped against the first
         // member before the sum, and the mean is folded back onto the map.
-        let reference = group
-            .members
-            .first()
-            .map_or(0.0, |first| anchor(&icons[*first])[0]);
+        let reference = group.members.first().map_or(0.0, |first| anchor(*first)[0]);
         let mut sum = [0.0f32; 3];
         for member in &group.members {
-            let mut position = anchor(&icons[*member]);
+            let mut position = anchor(*member);
             position[0] = unwrap_x(extents.map_width, reference, position[0]);
             for axis in 0..3 {
                 sum[axis] += position[axis];

@@ -533,7 +533,7 @@ pub fn dump_png(
         // cannot rewind, such as the weather particles'.
         let request = Request {
             overlay: viewer_world::map::scene::Overlay {
-                sprites: Some(&overlay.sprites),
+                sprites: request.overlay.interface.then_some(overlay.shown()),
                 ..request.overlay
             },
             ..request
@@ -551,14 +551,14 @@ fn dump_frame(
     overlay: &mut crate::document::DumpOverlay<'_>,
     request: Request<'_>,
 ) -> io::Result<()> {
-    // Province owners, icon manager, then draw.
+    // Province owners, icon manager, then draw; a hidden interface still steps.
     let sprites = overlay.present(request.animation_time)?;
     scene.render(
         device,
         queue,
         Request {
             overlay: viewer_world::map::scene::Overlay {
-                sprites: Some(sprites),
+                sprites: request.overlay.interface.then_some(sprites),
                 ..request.overlay
             },
             ..request

@@ -33,6 +33,7 @@ struct Placed {
     screen: [f32; 2],
     depth: f32,
     state: State,
+    anchor: Option<IconAnchor>,
 }
 
 pub(super) struct State {
@@ -58,12 +59,17 @@ impl PreparedBases {
         ) else {
             return;
         };
+        let cutoff = match family {
+            Family::AirBase => inputs.content.defines.air_base_cutoff,
+            Family::Headquarter | Family::Facility => inputs.content.defines.facility_cutoff,
+        };
         self.placed[family as usize].push(Placed {
             id,
             province,
             screen: projected.position,
             depth: projected.depth,
             state,
+            anchor: inputs.icon_anchor(IconFamily::Bases, anchor, cutoff),
         });
     }
 
@@ -150,9 +156,10 @@ impl PreparedBases {
         }
         // Sort map icons by projected depth.
         layouts.sort_by(|a, b| b.3.depth.total_cmp(&a.3.depth));
-        for (family, name, priority, _, drawn) in layouts {
+        for (family, name, priority, placed, drawn) in layouts {
             let key = layer(priority, report.base_ordinal(), 0);
             batch.at_layer(key);
+            batch.at_anchor(placed.anchor);
             match native_gui::draw(&drawn.layout, drawn.origin, &resources, batch) {
                 Ok(()) => {
                     if let Some(root) = inputs.windows.gui_type(name.as_bytes()) {
@@ -167,6 +174,7 @@ impl PreparedBases {
                 Err(why) => count_refused(&mut report.icon_gui_notes, name, &[why]),
             }
         }
+        batch.at_anchor(None);
     }
 }
 

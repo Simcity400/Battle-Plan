@@ -49,6 +49,7 @@ use viewer_foundation::map::building_facts::{self, SiteSlots, SlotAdmission};
 use viewer_foundation::map::counter_anchors::stack_anchor;
 use viewer_foundation::map::counter_hovers::land::{CounterControl, CounterHover};
 use viewer_foundation::map::country_index::FlagTags;
+use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
 use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
 use viewer_foundation::map::icon_windows::PoolView;
 use viewer_foundation::map::lazy_icons::flag_set;
@@ -351,7 +352,12 @@ impl CounterDefines {
     /// A unit-stack column's priority at a camera height: its group icon's at every grouping
     /// level, its own stack icon's below them.
     pub fn stack_priority(&self, height: f32) -> i8 {
-        match self.groups.grouping(height) {
+        self.level_priority(self.groups.grouping(height))
+    }
+
+    /// A unit-stack column's priority at its grouping level.
+    pub fn level_priority(&self, level: Level) -> i8 {
+        match level {
             Level::None => self.unit_priority,
             _ => self.unit_group_priority,
         }
@@ -1744,17 +1750,47 @@ impl CounterInputs<'_> {
         ui_scale_extent(self.viewport, self.ui_scale)
     }
 
-    /// [`CounterDefines::stack_priority`] at this camera.
-    fn stack_priority(&self) -> i8 {
-        self.content.defines.stack_priority(self.camera.height)
+    /// the local selected-unit count
+    /// does not exceed the content limit and the group stands nearer than the strict cutoff
+    /// (`height`, its [`CounterInputs::icon_height`]).
+    fn selected_join(&self, first: Unit, candidate: Unit, height: f32) -> bool {
+        let split = self.selected.len() as i32 <= self.content.defines.split_selected_limit
+            && height < self.content.defines.units_cutoff;
+        crate::map::unit_selection::joins(self.selected, first, candidate, split)
     }
 
-    /// the local selected-unit count
-    /// does not exceed the content limit and the camera is below the strict cutoff.
-    fn selected_join(&self, first: Unit, candidate: Unit) -> bool {
-        let split = self.selected.len() as i32 <= self.content.defines.split_selected_limit
-            && self.camera.height < self.content.defines.units_cutoff;
-        crate::map::unit_selection::joins(self.selected, first, candidate, split)
+    /// How far an icon at world `anchor` stands from the camera, as the content's map-icon
+    /// distances read it: the game's camera height, or a free eye's distance to the anchor.
+    pub(super) fn icon_height(&self, anchor: [f32; 3]) -> f32 {
+        self.camera.icon_distance(anchor)
+    }
+
+    /// Whether icons of a kind cut off at `cutoff` are drawn this frame: strictly below the
+    /// cutoff height for the game's camera. A free eye keeps them all, and each fades by its own
+    /// distance against the cutoff its quads carry ([`CounterInputs::icon_anchor`]).
+    pub(super) fn shows(&self, cutoff: f32) -> bool {
+        self.passes(|height| visible(height, cutoff))
+    }
+
+    /// Whether a pass gated on the camera height runs this frame: as `gate` decides for the game's
+    /// camera; always for a free eye, whose icons each fade by their own distance.
+    pub(super) fn passes(&self, gate: impl Fn(f32) -> bool) -> bool {
+        self.camera.free().is_some() || gate(self.camera.height)
+    }
+
+    /// The tag of an icon of `family` standing at world `anchor` whose kind is cut off at
+    /// `cutoff`.
+    pub(super) fn icon_anchor(
+        &self,
+        family: IconFamily,
+        anchor: [f32; 3],
+        cutoff: f32,
+    ) -> Option<IconAnchor> {
+        Some(IconAnchor {
+            world: anchor,
+            cutoff,
+            family,
+        })
     }
 }
 
@@ -2394,7 +2430,7 @@ pub fn zoom_lift(layouts: &ColumnLayout, units_cutoff: f32, height: f32) -> f32 
 /// When a pass is disabled it supplies no sources and clears its retained
 /// source membership. Camera and recording gaps preserve their own refusals.
 fn units_shown(inputs: &CounterInputs<'_>, peace_conference: bool) -> bool {
-    visible(inputs.camera.height, inputs.content.defines.icons_cutoff) && !peace_conference
+    inputs.shows(inputs.content.defines.icons_cutoff) && !peace_conference
 }
 
 /// the coarse country grouping above its define.
@@ -2710,10 +2746,14 @@ pub fn prepare_cached(
     let mut out = CounterFrame::default();
     let owner = |raw: u32| tables.links.get(&raw).copied();
 
-    // The grouping pass needs the camera's level and the other owner's friendly
-    // relation toward the group's first owner.
-    let at = inputs.content.defines.groups.grouping(inputs.camera.height);
-    out.report.grouping = Some(at);
+    // The grouping pass needs each icon's level and the other owner's friendly
+    // relation toward the group's first owner. The game's camera groups every icon at one level;
+    // a free eye's icons each take their own.
+    out.report.grouping = inputs
+        .camera
+        .free()
+        .is_none()
+        .then(|| inputs.content.defines.groups.grouping(inputs.camera.height));
     out.report.type_tint_problem = tables.type_tints.problem().to_owned();
     let grouping_gaps = RefCell::new(BTreeMap::<String, usize>::new());
     let friendly =
@@ -2727,7 +2767,6 @@ pub fn prepare_cached(
     let geography = Geography {
         state_of: &tables.state_of,
         extents: &tables.extents,
-        at,
     };
 
     let land = CounterTables {
@@ -2975,7 +3014,6 @@ struct Geography<'a> {
     /// Province to state; a sea or lake province is absent.
     state_of: &'a BTreeMap<u32, u32>,
     extents: &'a Extents,
-    at: Level,
 }
 
 /// The flag's ruling ideology group of every country slot, including refusals.

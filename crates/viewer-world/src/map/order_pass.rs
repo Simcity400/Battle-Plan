@@ -276,8 +276,9 @@ impl OrderPass {
         Ok(draws)
     }
 
-    /// Submit mode 2 after mesh/tree casters and before receivers.
-    pub fn draw_shadow(
+    /// Submit mode 2 after mesh/tree casters and before receivers; reached only through
+    /// [`PlanSubmissions::cast_shadows`].
+    fn draw_shadow(
         &self,
         arena: &shader_pipeline::gpu::Arena,
         pass: &mut wgpu::RenderPass<'_>,
@@ -308,8 +309,9 @@ impl OrderPass {
         Ok(())
     }
 
+    /// Reached only through [`PlanSubmissions::draw`].
     #[allow(clippy::too_many_arguments)]
-    pub fn draw(
+    fn draw(
         &self,
         arena: &shader_pipeline::gpu::Arena,
         encoder: &mut wgpu::CommandEncoder,
@@ -412,9 +414,124 @@ impl OrderPass {
     }
 }
 
+/// The battle plans a frame submits. Their shadow casters and their draws are reachable only
+/// through here, and only while plans are shown: by their own display switch and, as part of the
+/// map's interface, by the overlay's `interface`.
+pub struct PlanSubmissions<'a, P = OrderPass> {
+    shown: Option<&'a P>,
+}
+
+/// A shown plan pass, handed to the frame's shadow casting.
+pub struct ShadowCasting<'a, P = OrderPass>(&'a P);
+
+/// A shown plan pass, handed to the frame's drawing.
+pub struct Drawing<'a, P = OrderPass>(&'a P);
+
+impl<'a, P> PlanSubmissions<'a, P> {
+    pub fn new(
+        plans: Option<&'a P>,
+        graphics: &dashboard_core::protocol::MapGraphics,
+        overlay: &crate::map::scene::Overlay<'_>,
+    ) -> Self {
+        Self {
+            shown: plans.filter(|_| graphics.battle_plans && overlay.interface),
+        }
+    }
+
+    /// Casts the shown plans' shadows with `cast`.
+    pub fn cast_shadows(
+        &self,
+        cast: impl FnOnce(ShadowCasting<'a, P>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.shown
+            .map_or(Ok(()), |plans| cast(ShadowCasting(plans)))
+    }
+
+    /// Draws the shown plans with `draw`.
+    pub fn draw(&self, draw: impl FnOnce(Drawing<'a, P>) -> io::Result<()>) -> io::Result<()> {
+        self.shown.map_or(Ok(()), |plans| draw(Drawing(plans)))
+    }
+}
+
+impl ShadowCasting<'_> {
+    /// Submits view `view`'s plan shadows after mesh and tree casters and before receivers.
+    pub fn draw_shadow(
+        &self,
+        arena: &shader_pipeline::gpu::Arena,
+        pass: &mut wgpu::RenderPass<'_>,
+        native: NativeInputs<'_>,
+        view: usize,
+        time: f32,
+    ) -> io::Result<()> {
+        self.0.draw_shadow(arena, pass, native, view, time)
+    }
+}
+
+impl Drawing<'_> {
+    /// Draws view `view`'s plans in `mode`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(
+        &self,
+        arena: &shader_pipeline::gpu::Arena,
+        encoder: &mut wgpu::CommandEncoder,
+        targets: &Targets,
+        native: NativeInputs<'_>,
+        mode: Mode,
+        view: usize,
+        time: f32,
+    ) -> io::Result<()> {
+        self.0
+            .draw(arena, encoder, targets, native, mode, view, time)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plans_submit_their_shadows_and_draws_only_while_shown() {
+        // A stand-in plan pass through the one gate the frame reaches the order pass's shadows
+        // and draws by, counting the shadow casts and draws a frame submits.
+        struct StandIn;
+        let submitted = |graphics: dashboard_core::protocol::MapGraphics, interface: bool| {
+            let overlay = crate::map::scene::Overlay {
+                interface,
+                ..Default::default()
+            };
+            let frame = PlanSubmissions::new(Some(&StandIn), &graphics, &overlay);
+            let (mut casts, mut draws) = (0, 0);
+            frame
+                .cast_shadows(|_| {
+                    casts += 1;
+                    Ok(())
+                })
+                .unwrap();
+            frame
+                .draw(|_| {
+                    draws += 1;
+                    Ok(())
+                })
+                .unwrap();
+            (casts, draws)
+        };
+        let shown = dashboard_core::protocol::MapGraphics::default();
+        assert_eq!(submitted(shown, true), (1, 1));
+        // A free view with its overlays hidden casts no plan shadows and draws no plans.
+        assert_eq!(submitted(shown, false), (0, 0));
+        let switched_off = dashboard_core::protocol::MapGraphics {
+            battle_plans: false,
+            ..shown
+        };
+        assert_eq!(submitted(switched_off, true), (0, 0));
+        // A scene without plans submits none, and a failing submission reaches the frame.
+        let overlay = crate::map::scene::Overlay::default();
+        let none = PlanSubmissions::<StandIn>::new(None, &shown, &overlay);
+        assert!(none.cast_shadows(|_| unreachable!()).is_ok());
+        let failing = PlanSubmissions::new(Some(&StandIn), &shown, &overlay)
+            .cast_shadows(|_| Err(io::Error::other("refused")));
+        assert!(failing.is_err());
+    }
     #[test]
     fn native_arrow_tail_preserves_opacity_length_and_scale_offsets() {
         let slot = Slot {

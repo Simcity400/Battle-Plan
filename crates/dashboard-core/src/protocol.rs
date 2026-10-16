@@ -87,10 +87,13 @@ pub enum NativeEvent {
     /// owns the saved choice, so it toggles it and sends the result back as
     /// [`MapAction::Diagnostics`].
     ToggleDiagnostics,
-    /// The full map's camera mode changed, by [`MapAction::CameraMode`] or the map's own
-    /// shortcut; the host's controls follow it.
+    /// The full map's camera mode or its overlay choice changed, by [`MapAction::CameraMode`] or
+    /// the map's own shortcut; the host's controls follow it.
     CameraMode {
         mode: CameraMode,
+        /// Whether flying and walking draw the map's interface.
+        #[serde(default)]
+        overlays: bool,
     },
 }
 
@@ -136,9 +139,14 @@ pub enum MapAction {
     /// The host saved map preferences; the viewer reads them again and reloads
     /// any map whose artwork, quality or anti-aliasing they change.
     MapSettingsSaved,
-    /// How the full map's camera moves: the game's map camera, flying or walking.
+    /// How the full map's camera moves: the game's map camera, flying or walking, and whether
+    /// flying and walking draw the map's interface.
     CameraMode {
         mode: CameraMode,
+        /// Fly and walk draw the map's counters, icons, names, borders and plans standing in the
+        /// world; off (the default) they draw the terrain alone. The map mode always draws them.
+        #[serde(default)]
+        overlays: bool,
     },
 }
 
@@ -734,10 +742,11 @@ mod tests {
         assert_eq!(cycle, [CameraMode::Fly, CameraMode::Walk, CameraMode::Map]);
         assert_eq!(
             serde_json::to_string(&NativeEvent::CameraMode {
-                mode: CameraMode::Walk
+                mode: CameraMode::Walk,
+                overlays: true,
             })
             .unwrap(),
-            r#"{"event":"camera_mode","mode":"walk"}"#
+            r#"{"event":"camera_mode","mode":"walk","overlays":true}"#
         );
     }
 

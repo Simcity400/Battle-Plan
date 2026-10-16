@@ -7,6 +7,7 @@ pub mod count_math;
 pub mod country_index;
 pub mod directed_wars;
 pub mod frame;
+pub mod free_icons;
 pub mod gpu_contract;
 pub mod gpu_passes;
 pub mod gradient_math;
@@ -34,6 +35,7 @@ pub mod sprites;
 pub mod tables;
 pub mod templates;
 pub mod terrain_content;
+pub mod terrain_sight;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod text;

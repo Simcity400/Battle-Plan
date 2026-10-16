@@ -629,7 +629,7 @@ pub(super) fn naval_missions(
             .entry(reason.clone().into())
             .or_default() += *count;
     }
-    let runs = mission_pass(inputs.camera.height, &inputs.content.defines);
+    let runs = inputs.passes(|height| mission_pass(height, &inputs.content.defines));
     out.naval.missions = MissionPass {
         regions: runs.then(|| icons.regions.clone()),
         undecided: icons.unavailable.filter(|_| runs),
@@ -1457,7 +1457,7 @@ impl MissionView {
         entries_of: &dyn Fn(u32) -> Vec<MissionEntry>,
         defined: &dyn Fn(&str) -> bool,
         report: &mut CounterReport,
-    ) -> Vec<([i32; 2], Laid)> {
+    ) -> Vec<([i32; 2], u32, Laid)> {
         let Some(pool) = &self.pool else {
             return Vec::new();
         };
@@ -1536,7 +1536,7 @@ impl MissionView {
                         }
                     })
                 });
-            out.push((instance.position(), laid));
+            out.push((instance.position(), region, laid));
         }
         out
     }
@@ -1699,7 +1699,14 @@ pub(super) fn draw(
     };
     let laid = view.laid(windows, resources, &entries_of, &defined, report);
     let priority = inputs.content.defines.naval_mission_priority;
-    for (ordinal, (origin, laid)) in laid.into_iter().enumerate() {
+    for (ordinal, (origin, region, laid)) in laid.into_iter().enumerate() {
+        batch.at_anchor(inputs.content.region_icon(region).and_then(|anchor| {
+            inputs.icon_anchor(
+                IconFamily::Missions,
+                anchor,
+                inputs.content.defines.naval_mission_cutoff,
+            )
+        }));
         let icon = match laid {
             Ok(Some(icon)) => icon,
             Ok(None) => continue,
@@ -1730,6 +1737,7 @@ pub(super) fn draw(
             ),
         }
     }
+    batch.at_anchor(None);
     Ok(())
 }
 

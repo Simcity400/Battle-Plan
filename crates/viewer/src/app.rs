@@ -7,7 +7,9 @@ use viewer_combat as combat;
 use viewer_foundation::combat_selection::Hit as CombatHit;
 use viewer_foundation::combat_selection::Selection;
 use viewer_foundation::map::camera::Placement;
+use viewer_foundation::map::camera::Pose;
 use viewer_foundation::map::camera::motion::{Input as MotionInput, Motion, Pan};
+use viewer_foundation::map::free_icons;
 use viewer_foundation::map::gpu_contract::SOFTWARE_RENDERER_NOTICE;
 use viewer_foundation::map::gpu_contract::device_requirements;
 use viewer_foundation::map::gpu_contract::is_software;
@@ -498,72 +500,85 @@ fn land_hover_matches_unit(
 
 /// Follow document::compose's GUI passes on equal native layer keys. Within
 /// a combat window, the actual Part attachment order decides which observer wins.
+/// The map icon under `point`: the top of the drawn hit shapes, by layer and pass. `raids` are
+/// the drawn raid icons' hit shapes. `looks` are the icons a free eye shows: the nearest shown
+/// icon whose own layout holds the pointer wins, and icons it does not show take no hits.
 fn top_map_hit(
     point: [f32; 2],
     report: &viewer_counters::map::counters::CounterReport,
-    raid: Option<&viewer_raids::map::raids::tooltips::Hit>,
+    raids: &[viewer_raids::map::raids::tooltips::Hit],
+    looks: Option<&free_icons::Looks>,
 ) -> Option<MapHit> {
+    use free_icons::IconFamily;
+    // Where the pointer falls in the layout of the icon of `family` keyed `layer`, and that
+    // icon's draw rank.
+    let seen = |family: IconFamily, layer: u64| match looks {
+        None => Some((point, 0)),
+        Some(looks) => looks.hit(family, layer, point),
+    };
     let mut top = None;
-    let mut offer = |layer, pass, order, target| {
-        let key = (layer, pass, order);
+    let mut offer = |rank: u32, layer, pass, order, target| {
+        let key = (rank, layer, pass, order);
         if top.as_ref().is_none_or(|(previous, _)| key >= *previous) {
             top = Some((key, target));
         }
     };
-    for (index, hit) in report
-        .faction_pin_hovers
-        .iter()
-        .enumerate()
-        .filter(|(_, hit)| hit.contains(point))
-    {
-        offer(hit.layer, 0, index, MapHit::Pin(index));
+    for (index, hit) in report.faction_pin_hovers.iter().enumerate() {
+        if let Some((point, rank)) = seen(IconFamily::Pins, hit.layer)
+            && hit.contains(point)
+        {
+            offer(rank, hit.layer, 0, index, MapHit::Pin(index));
+        }
     }
-    for (index, hit) in report
-        .base_hits
-        .iter()
-        .enumerate()
-        .filter(|(_, hit)| hit.contains(point))
-    {
-        offer(hit.layer, 1, index, MapHit::Base);
+    for (index, hit) in report.base_hits.iter().enumerate() {
+        if let Some((point, rank)) = seen(IconFamily::Bases, hit.layer)
+            && hit.contains(point)
+        {
+            offer(rank, hit.layer, 1, index, MapHit::Base);
+        }
     }
-    if let Some(hit) = raid.filter(|hit| hit.contains(point)) {
-        offer(
-            hit.layer,
-            2,
-            0,
-            if hit.supported {
-                MapHit::Raid
-            } else {
-                MapHit::Blocked
-            },
-        );
+    for hit in raids {
+        if let Some((point, rank)) = seen(IconFamily::Raids, hit.layer)
+            && hit.contains(point)
+        {
+            offer(
+                rank,
+                hit.layer,
+                2,
+                0,
+                if hit.supported {
+                    MapHit::Raid
+                } else {
+                    MapHit::Blocked
+                },
+            );
+        }
     }
-    for (index, hit) in report
-        .unit_hits
-        .iter()
-        .enumerate()
-        .filter(|(_, hit)| hit.contains(point))
-    {
-        offer(
-            hit.layer,
-            if hit.port { 1 } else { 4 },
-            index,
-            MapHit::Unit(index),
-        );
+    for (index, hit) in report.unit_hits.iter().enumerate() {
+        if let Some((point, rank)) = seen(unit_family(hit), hit.layer)
+            && hit.contains(point)
+        {
+            offer(
+                rank,
+                hit.layer,
+                if hit.port { 1 } else { 4 },
+                index,
+                MapHit::Unit(index),
+            );
+        }
     }
     // The shared root handler reaches inherited children outside an unclipped
     // counter's layout-size box. Keep their plate's existing layer and draw order.
-    for hover in report
-        .task_force_hovers
-        .iter()
-        .filter(|hover| hover.contains(point))
-    {
+    for hover in &report.task_force_hovers {
         if let Some(hit) = report
             .unit_hits
             .get(hover.unit_hit)
             .filter(|hit| hover.matches(hit))
+            && let Some((point, rank)) = seen(unit_family(hit), hit.layer)
+            && hover.contains(point)
         {
             offer(
+                rank,
                 hit.layer,
                 4,
                 hover.unit_hit,
@@ -575,16 +590,13 @@ fn top_map_hit(
             );
         }
     }
-    for (index, hover) in report
-        .task_force_port_hovers
-        .iter()
-        .enumerate()
-        .filter(|(_, hover)| hover.contains(point))
-    {
+    for (index, hover) in report.task_force_port_hovers.iter().enumerate() {
         if let Some(hit) = report
             .unit_hits
             .get(hover.unit_hit)
             .filter(|hit| hover.matches(hit))
+            && let Some((point, rank)) = seen(unit_family(hit), hit.layer)
+            && hover.contains(point)
         {
             let target = if !hover.supported || !hover.has_tooltip() {
                 MapHit::Blocked
@@ -595,16 +607,18 @@ fn top_map_hit(
             } else {
                 MapHit::Unit(hover.unit_hit)
             };
-            offer(hit.layer, 1, hover.unit_hit, target);
+            offer(rank, hit.layer, 1, hover.unit_hit, target);
         }
     }
-    for (index, hit) in report
-        .naval_marker_hovers
-        .iter()
-        .enumerate()
-        .filter(|(_, hit)| hit.contains(point))
-    {
+    for (index, hit) in report.naval_marker_hovers.iter().enumerate() {
+        let Some((point, rank)) = seen(IconFamily::Combats, hit.layer) else {
+            continue;
+        };
+        if !hit.contains(point) {
+            continue;
+        }
         offer(
+            rank,
             hit.layer,
             6,
             hit.order,
@@ -617,18 +631,20 @@ fn top_map_hit(
     }
     // A clickable observer also appears in the naval tooltip list: the same
     // object and attachment order retains its click callback.
-    for (index, hit) in report
-        .combat_hits
-        .iter()
-        .enumerate()
-        .filter(|(_, hit)| hit.contains(point))
-    {
+    for (index, hit) in report.combat_hits.iter().enumerate() {
+        let Some((point, rank)) = seen(IconFamily::Combats, hit.layer) else {
+            continue;
+        };
+        if !hit.contains(point) {
+            continue;
+        }
         let pass = if matches!(hit.selection, Selection::Land(_)) {
             5
         } else {
             6
         };
         offer(
+            rank,
             hit.layer,
             pass,
             hit.order,
@@ -640,6 +656,18 @@ fn top_map_hit(
         );
     }
     top.map(|(_, target)| target)
+}
+
+/// The icons a unit hit shape belongs to: a port's ships number with its base, other plates with
+/// their column.
+fn unit_family(
+    hit: &viewer_foundation::map::counter_hovers::unit_hits::Hit,
+) -> free_icons::IconFamily {
+    if hit.port {
+        free_icons::IconFamily::Bases
+    } else {
+        free_icons::IconFamily::Columns
+    }
 }
 
 pub struct Viewer {
@@ -689,6 +717,14 @@ pub struct Viewer {
     zoom: Motion,
     /// How the full map's camera moves, as the host's control sets it.
     camera_mode: CameraMode,
+    /// Whether the fly and walk modes draw the map's interface standing in the world, as the
+    /// host's control sets it.
+    free_overlays: bool,
+    /// The overlay as a free eye shows it this frame ([`free_icons::present`]).
+    presented: Batch,
+    /// The icons a free eye shows this frame, which the pointer's hits follow; `None` when the
+    /// overlay draws as laid out.
+    looks: Option<free_icons::Looks>,
     /// Keyboard, mouse and controller input for the camera controllers.
     input: crate::controls::Input,
     /// The controller's heading and tilt around the map camera.
@@ -1074,6 +1110,9 @@ impl Viewer {
             } else {
                 CameraMode::Map
             },
+            free_overlays: false,
+            presented: Batch::default(),
+            looks: None,
             input: crate::controls::Input::default(),
             orbit: crate::controls::orbit::Orbit::default(),
             observer: None,
@@ -2016,8 +2055,85 @@ impl Viewer {
             &self.counter_report,
             self.prepared_overlay
                 .as_ref()
-                .and_then(|map| map.raid_at(point)),
+                .map_or(&[], |map| map.raid_hits()),
+            self.looks.as_ref(),
         )
+    }
+
+    /// The layer key of `target`'s hit shape; `None` for targets that are not one map icon.
+    fn hit_layer(&self, target: MapHit) -> Option<(free_icons::IconFamily, u64)> {
+        use free_icons::IconFamily;
+        let report = &self.counter_report;
+        match target {
+            MapHit::Raid => None,
+            MapHit::Combat(index) => report
+                .combat_hits
+                .get(index)
+                .map(|hit| (IconFamily::Combats, hit.layer)),
+            MapHit::NavalObserver(index) => report
+                .naval_marker_hovers
+                .get(index)
+                .map(|hit| (IconFamily::Combats, hit.layer)),
+            MapHit::PortTooltip(index) => report
+                .task_force_port_hovers
+                .get(index)
+                .and_then(|hover| report.unit_hits.get(hover.unit_hit))
+                .map(|hit| (unit_family(hit), hit.layer)),
+            MapHit::Unit(index) => report
+                .unit_hits
+                .get(index)
+                .map(|hit| (unit_family(hit), hit.layer)),
+            MapHit::Pin(index) => report
+                .faction_pin_hovers
+                .get(index)
+                .map(|hit| (IconFamily::Pins, hit.layer)),
+            MapHit::Base | MapHit::Blocked => None,
+        }
+    }
+
+    /// The drawn raid icon under `point`, as [`Viewer::map_hit`] ranks them.
+    fn raid_hit(&self, point: [f32; 2]) -> Option<&viewer_raids::map::raids::tooltips::Hit> {
+        let hits = self.prepared_overlay.as_ref()?.raid_hits();
+        match &self.looks {
+            None => hits
+                .iter()
+                .filter(|hit| hit.contains(point))
+                .max_by_key(|hit| hit.layer),
+            Some(looks) => hits
+                .iter()
+                .filter_map(|hit| {
+                    let (local, rank) =
+                        looks.hit(free_icons::IconFamily::Raids, hit.layer, point)?;
+                    hit.contains(local).then_some(((rank, hit.layer), hit))
+                })
+                .max_by_key(|(key, _)| *key)
+                .map(|(_, hit)| hit),
+        }
+    }
+
+    /// `point` in the layout of the icon whose hit shape is keyed `layer` in its family, as a free
+    /// eye shows it; `point` itself when the overlay draws as laid out.
+    fn local_point(
+        &self,
+        layer: Option<(free_icons::IconFamily, u64)>,
+        point: [f32; 2],
+    ) -> [f32; 2] {
+        layer
+            .and_then(|(family, layer)| self.looks.as_ref()?.hit(family, layer, point))
+            .map_or(point, |(local, _)| local)
+    }
+
+    /// A laid-out rectangle `[x, y, width, height]` of the icon keyed `layer` where a free eye
+    /// draws it.
+    fn shown_rect(&self, layer: Option<(free_icons::IconFamily, u64)>, rect: [f32; 4]) -> [f32; 4] {
+        let Some(present) =
+            layer.and_then(|(family, layer)| self.looks.as_ref()?.of(family, layer))
+        else {
+            return rect;
+        };
+        let [x, y] = [0, 1]
+            .map(|axis| present.pivot[axis] + present.scale * (rect[axis] - present.pivot[axis]));
+        [x, y, rect[2] * present.scale, rect[3] * present.scale]
     }
 
     /// A pin owns hover only when its presented GUI object is the top hit.
@@ -2122,11 +2238,11 @@ impl Viewer {
     ) -> Option<(Arc<Tooltip>, [f32; 4], Option<u32>)> {
         let point = point?;
         let target = self.map_hit(point);
+        let layer = target.and_then(|target| self.hit_layer(target));
+        // The pointer in the hit icon's own layout, as its hover shapes are laid out.
+        let local = self.local_point(layer, point);
         if matches!(target, Some(MapHit::Raid))
-            && let Some(hit) = self
-                .prepared_overlay
-                .as_ref()
-                .and_then(|map| map.raid_at(point))
+            && let Some(hit) = self.raid_hit(point).cloned()
         {
             let crate::playback::Current::Frame(frame) = document.playback.current() else {
                 return None;
@@ -2140,11 +2256,9 @@ impl Viewer {
                 hit.key.clone(),
                 ctx,
             )?;
-            return Some((
-                text,
-                [hit.origin[0], hit.origin[1], hit.size[0], hit.size[1]],
-                None,
-            ));
+            let rect = [hit.origin[0], hit.origin[1], hit.size[0], hit.size[1]];
+            let layer = Some((free_icons::IconFamily::Raids, hit.layer));
+            return Some((text, self.shown_rect(layer, rect), None));
         }
         let land_hit = match target {
             Some(MapHit::Combat(index)) => {
@@ -2171,7 +2285,7 @@ impl Viewer {
                     let mut text = Tooltip::default();
                     text.refused
                         .insert(format!("land marker {id} engaged index: {why}"), 1);
-                    return Some((Arc::new(text), rect, None));
+                    return Some((Arc::new(text), self.shown_rect(layer, rect), None));
                 }
             };
             let text = self.land_marker_tooltips.request(
@@ -2182,7 +2296,7 @@ impl Viewer {
                 index.as_ref().map(|index| index.shared.as_ref()),
                 self.counter_view.settings.nato,
             );
-            return Some((text, rect, None));
+            return Some((text, self.shown_rect(layer, rect), None));
         }
         let naval_hit = match target {
             Some(MapHit::Combat(index)) => Some(&self.counter_report.combat_hits[index]),
@@ -2210,7 +2324,7 @@ impl Viewer {
                     let mut text = Tooltip::default();
                     text.refused
                         .insert(format!("naval marker {id} engaged index: {why}"), 1);
-                    return Some((Arc::new(text), rect, None));
+                    return Some((Arc::new(text), self.shown_rect(layer, rect), None));
                 }
             };
             let text = self.naval_marker_tooltips.request(
@@ -2220,10 +2334,10 @@ impl Viewer {
                 id,
                 index.as_ref().map(|index| index.shared.as_ref()),
             );
-            return Some((text, rect, None));
+            return Some((text, self.shown_rect(layer, rect), None));
         }
         if let Some(hit) = self.counter_report.land_hovers.iter().rev().find(|hit| {
-            hit.contains(point)
+            hit.contains(local)
                 && matches!(target, Some(MapHit::Unit(index))
                 if land_hover_matches_unit(hit, &self.counter_report.unit_hits[index]))
         }) && let crate::playback::Current::Frame(frame) = document.playback.current()
@@ -2237,7 +2351,7 @@ impl Viewer {
                 vision,
                 self.counter_view.settings.nato,
             );
-            return Some((text, hit.rect, None));
+            return Some((text, self.shown_rect(layer, hit.rect), None));
         }
         if let Some(hit) = self
             .counter_report
@@ -2245,7 +2359,7 @@ impl Viewer {
             .iter()
             .rev()
             .find(|hit| {
-                hit.contains(point)
+                hit.contains(local)
                     && matches!(target, Some(MapHit::Unit(index))
                 if index == hit.unit_hit && hit.matches(&self.counter_report.unit_hits[index]))
             })
@@ -2263,10 +2377,10 @@ impl Viewer {
                 vision,
                 self.counter_view.settings.nato,
             );
-            return Some((text, hit.rect, None));
+            return Some((text, self.shown_rect(layer, hit.rect), None));
         }
         if let Some((_, hit)) = self.counter_report.task_force_port_hovers.iter().enumerate().rev()
-            .find(|(hover_index, hit)| hit.contains(point) && hit.has_tooltip()
+            .find(|(hover_index, hit)| hit.contains(local) && hit.has_tooltip()
                 && self.counter_report.unit_hits.get(hit.unit_hit).is_some_and(|unit| hit.matches(unit))
                 && (matches!(target, Some(MapHit::Unit(index)) if index == hit.unit_hit)
                     || matches!(target, Some(MapHit::PortTooltip(index)) if index == *hover_index)))
@@ -2275,7 +2389,7 @@ impl Viewer {
             if !hit.supported { return None; }
             let vision = self.overlay_tables.as_ref()?.3.vision();
             let text = self.counter_tooltips.request_task_force_port(&document.counter_content, document.icons.raids.movement_reads(), frame, hit, vision, self.counter_view.settings.nato);
-            return Some((text, hit.rect, None));
+            return Some((text, self.shown_rect(layer, hit.rect), None));
         }
         if target.is_some() {
             return None;
@@ -2421,6 +2535,8 @@ impl Viewer {
             |placement| placement.on(map_size, defines),
         );
         let camera = &mut camera;
+        // Whether the map held the pointer for looking around before this frame's input.
+        let held_pointer = self.input.captured();
         // One frame of keyboard, mouse and controller input for the camera controllers. A
         // capture's pinned camera takes none; a placed walk holds its keys on the capture clock.
         let placed_walk = pinned.is_some() && self.walk.placed();
@@ -2448,9 +2564,19 @@ impl Viewer {
                     .pad
                     .pressed(dashboard::protocol::GamepadButton::Select))
         {
-            self.set_camera_mode(self.camera_mode.next(), ui.ctx());
+            self.set_camera_mode(self.camera_mode.next(), self.free_overlays, ui.ctx());
         }
         let free_mode = self.camera_mode != CameraMode::Map && (pinned.is_none() || placed_walk);
+        // Whether the map's interface draws: always for the game's camera and its orbit; in fly
+        // and walk, a capture's placed walk or its free camera, only when asked for.
+        let interface = match pinned {
+            Some(_) if placed_walk => self.options.free_overlays.unwrap_or(false),
+            Some((_, Some(placement))) if placement.pose != Pose::Map => {
+                self.options.free_overlays.unwrap_or(false)
+            }
+            Some(_) => true,
+            None => !free_mode || self.free_overlays,
+        };
         // Pointer and drag deltas reach the camera in framebuffer pixels.
         let scale = ui.ctx().pixels_per_point() / raster.stretch;
         let frame_point = |position: egui::Pos2| {
@@ -2462,7 +2588,9 @@ impl Viewer {
         // The interface is laid out in interface pixels, so its hit tests are
         // too: counters, combat bubbles, the combat window and its lists.
         let extent = ui_scale_extent(pixels, ui_scale);
-        if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+        // Escape first gives back a pointer held for looking around (the input layer does that);
+        // only a later one reaches the map's interface.
+        if ui.input(|input| input.key_pressed(egui::Key::Escape)) && !held_pointer {
             // Escape closes the tactics popup before the battle window.
             if self.combat.tactics_open {
                 self.combat.tactics_open = false;
@@ -2584,8 +2712,23 @@ impl Viewer {
         let window_focused = ui.input(|input| input.focused);
         let focused = window_focused && (!self.dashboard_map || owns);
         let pointed = response.hovered() && !over_combat;
-        // A free mode takes the pointer for looking around when the map is clicked.
-        if free_mode && (response.clicked() || response.drag_started()) {
+        // A free mode takes the pointer for looking around when the map is clicked, unless the
+        // click lands on a map icon it shows or on the combat window.
+        let icon_click = free_mode
+            && interface
+            && response.clicked()
+            && !self.input.captured()
+            && point.is_some_and(|point| {
+                matches!(
+                    self.map_hit(point),
+                    Some(MapHit::Combat(_) | MapHit::Unit(_))
+                )
+            });
+        if free_mode
+            && !icon_click
+            && !over_combat
+            && (response.clicked() || response.drag_started())
+        {
             self.input.capture();
         }
         // Drag panning is the viewer's own addition (the game has none): the middle button moves
@@ -2712,8 +2855,12 @@ impl Viewer {
                     && scroll != 0.0
                     && let Some(point) = pointer
                 {
-                    self.orbit
-                        .zoom(camera, (scroll * crate::controls::orbit::WHEEL_ZOOM).exp(), point, pixels);
+                    self.orbit.zoom(
+                        camera,
+                        (scroll * crate::controls::orbit::WHEEL_ZOOM).exp(),
+                        point,
+                        pixels,
+                    );
                     orbited = true;
                 }
             }
@@ -2747,7 +2894,7 @@ impl Viewer {
                         values: texels,
                     };
                     let floor = |x: f32, z: f32| field.surface_height(x, z);
-                    if self.camera_mode == CameraMode::Walk {
+                    let eye = if self.camera_mode == CameraMode::Walk {
                         // The viewing country's infantry, chosen again for each hour and view.
                         let key = (
                             document.playback.branch(),
@@ -2772,18 +2919,19 @@ impl Viewer {
                         };
                         // Walking starts on the ground the view looks at, facing the way it faces.
                         let world = crate::controls::walker::World::of(&map, &floor);
-                        let walked = self
-                            .walk
-                            .camera(&controls, wheel, map, camera.center, &world);
-                        (walked, map)
+                        self.walk
+                            .camera(&controls, wheel, map, camera.center, &world)
                     } else {
                         // Flying starts where the view looks from.
                         let observer = self.observer.get_or_insert_with(|| {
                             crate::controls::observer::Observer::flying(&map)
                         });
                         observer.update(&controls, map, &floor);
-                        (observer.camera(map, &floor), map)
-                    }
+                        observer.camera(map, &floor)
+                    };
+                    // Shown, the interface stands in the free eye's world; hidden, it stays laid
+                    // out for the map camera the mode left, undrawn.
+                    (eye, if interface { eye } else { map })
                 } else {
                     (map, map)
                 }
@@ -2860,7 +3008,9 @@ impl Viewer {
             now.frame,
         );
         self.counter_view.selected = Arc::clone(self.unit_selection.units());
-        let point = point.filter(|_| !free_mode);
+        // A free mode's pointer reaches the map's interface while it is shown and the pointer is
+        // not held for looking around.
+        let point = point.filter(|_| !free_mode || (interface && !self.input.captured()));
         self.counter_view.hovered = point.filter(|_| !over_combat).and_then(|point| {
             let MapHit::Unit(index) = self.map_hit(point)? else {
                 return None;
@@ -3074,13 +3224,31 @@ impl Viewer {
                 self.overlay_at = None;
                 ui.ctx().request_repaint();
             }
+            // A free eye shows the laid-out icons standing in the world; this frame's hits and
+            // drawing follow what it shows.
+            self.looks = if interface && overlay_camera.free().is_some() {
+                let ground = free_icons::Ground {
+                    field: document.assets.height_field(),
+                    sight: document.assets.terrain_sight(),
+                };
+                Some(free_icons::present(
+                    &overlay_camera,
+                    pixels,
+                    ui_scale,
+                    Some(&ground),
+                    self.overlay.as_ref().expect("drawn above"),
+                    &mut self.presented,
+                ))
+            } else {
+                None
+            };
             if raids_only && check_overlay() {
                 self.check_overlay(&now, overlay_camera, pixels, ui_scale, animation_time)?;
             }
             // Resolve clicks against this hour and camera's newly rebuilt hit regions.
             if response.clicked()
                 && !over_combat
-                && !free_mode
+                && (!free_mode || icon_click)
                 && let Some(point) = point
             {
                 match self.map_hit(point) {
@@ -3224,7 +3392,11 @@ impl Viewer {
         };
         laps.lap("diagnostics");
         self.update_faction_highlight(document, &state.device, point.filter(|_| !over_combat))?;
-        let overlay = self.overlay.as_ref().expect("built above");
+        let overlay = if self.looks.is_some() {
+            &self.presented
+        } else {
+            self.overlay.as_ref().expect("built above")
+        };
         let mut combined;
         let label_batch = if additions.is_empty() {
             overlay
@@ -3276,12 +3448,17 @@ impl Viewer {
                     // shadows: the window always draws them, as the game does.
                     no_shadows: false,
                     // names
-                    // The free modes draw no map interface: it cannot yet stand behind hills.
+                    // Hidden, the interface still steps; only its drawing stops.
                     overlay: Overlay {
                         names: self.placements.as_deref(),
                         layer_alpha: fade.0,
-                        sprites: (!free_mode).then_some(label_batch),
+                        sprites: interface.then_some(label_batch),
                         ui_scale,
+                        interface,
+                        ground: camera.free().map(|_| free_icons::Ground {
+                            field: document.assets.height_field(),
+                            sight: document.assets.terrain_sight(),
+                        }),
                     },
                     // trees
                     no_trees: false,
@@ -3405,10 +3582,26 @@ impl Viewer {
 }
 
 impl Viewer {
-    /// Switches how the full map's camera moves. Leaving a free mode gives the pointer back and
-    /// returns to the map camera it left; entering one starts its free eye where the map camera
-    /// looks from.
-    pub(crate) fn set_camera_mode(&mut self, mode: CameraMode, ctx: &egui::Context) {
+    /// Switches how the full map's camera moves and whether the free modes draw the map's
+    /// interface, and reports a change to the host, whose controls follow it. Leaving a free mode
+    /// gives the pointer back and returns to the map camera it left; entering one starts its free
+    /// eye where the map camera looks from.
+    pub(crate) fn set_camera_mode(
+        &mut self,
+        mode: CameraMode,
+        overlays: bool,
+        ctx: &egui::Context,
+    ) {
+        // A free mode without its interface keeps no window of it open to take clicks.
+        if mode != CameraMode::Map && !overlays {
+            self.combat.close();
+        }
+        if (mode, overlays) != (self.camera_mode, self.free_overlays)
+            && let Some(embedded) = &self.embedded
+        {
+            embedded.report_camera_mode(mode, overlays);
+        }
+        self.free_overlays = overlays;
         if mode == self.camera_mode {
             return;
         }
@@ -3416,11 +3609,6 @@ impl Viewer {
         self.observer = None;
         self.walk.leave();
         self.input.release();
-        if let Some(embedded) = &self.embedded {
-            embedded.report_camera_mode(mode);
-        }
-        // The free modes draw no map interface, so no window of it stays open to take clicks.
-        self.combat.close();
         self.grab_pointer(ctx);
     }
 
@@ -3814,18 +4002,24 @@ pub(crate) mod tests {
             members: Arc::from([7]),
         });
         let point = [8., 24.];
-        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Unit(0)));
+        assert_eq!(
+            top_map_hit(point, &report, &[], None),
+            Some(MapHit::Unit(0))
+        );
         report.base_hits.push(Blocker {
             rect: [0., 0., 40., 40.],
             layer: layer(11, 0, 0),
         });
-        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Base));
+        assert_eq!(top_map_hit(point, &report, &[], None), Some(MapHit::Base));
         report.base_hits.clear();
         report.task_force_hovers[0].supported = false;
-        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Blocked));
+        assert_eq!(
+            top_map_hit(point, &report, &[], None),
+            Some(MapHit::Blocked)
+        );
         // A stale/mismatched ordinal cannot dispatch to another class's plate.
         report.unit_hits[0].kind = Kind::Division;
-        assert_eq!(top_map_hit(point, &report, None), None);
+        assert_eq!(top_map_hit(point, &report, &[], None), None);
 
         // An opaque unbound port child stops the native walk; its authored
         // tooltip can still be shown without selecting the plate underneath.
@@ -3850,7 +4044,10 @@ pub(crate) mod tests {
                 pride: Some(false),
             },
         });
-        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Blocked));
+        assert_eq!(
+            top_map_hit(point, &report, &[], None),
+            Some(MapHit::Blocked)
+        );
         let gui = installed_content::gui::native::read(
             br#"guiTypes = { iconType = {
             name = unbound pdx_tooltip = TITLE
@@ -3862,7 +4059,7 @@ pub(crate) mod tests {
                 false,
             );
         assert_eq!(
-            top_map_hit(point, &report, None),
+            top_map_hit(point, &report, &[], None),
             Some(MapHit::PortTooltip(0))
         );
     }
@@ -3897,11 +4094,14 @@ pub(crate) mod tests {
                 regions: Arc::from([1]),
                 layer: layer(-3, 0, 0),
             });
-        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Unit(0)));
+        assert_eq!(
+            top_map_hit(point, &report, &[], None),
+            Some(MapHit::Unit(0))
+        );
         report.base_hits[0].layer = layer(4, 0, 0);
-        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Base));
+        assert_eq!(top_map_hit(point, &report, &[], None), Some(MapHit::Base));
         report.faction_pin_hovers[0].layer = layer(5, 0, 0);
-        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Pin(0)));
+        assert_eq!(top_map_hit(point, &report, &[], None), Some(MapHit::Pin(0)));
         report.faction_pin_hovers.clear();
         let raid = viewer_raids::map::raids::tooltips::Hit {
             origin: [0.0, 0.0],
@@ -3914,18 +4114,24 @@ pub(crate) mod tests {
             layer: layer(-2, 0, 0),
             supported: true,
         };
-        assert_eq!(top_map_hit(point, &report, Some(&raid)), Some(MapHit::Base));
+        assert_eq!(
+            top_map_hit(point, &report, std::slice::from_ref(&raid), None),
+            Some(MapHit::Base)
+        );
         report.base_hits.clear();
-        assert_eq!(top_map_hit(point, &report, Some(&raid)), Some(MapHit::Raid));
+        assert_eq!(
+            top_map_hit(point, &report, std::slice::from_ref(&raid), None),
+            Some(MapHit::Raid)
+        );
         let mut same_layer_raid = raid.clone();
         same_layer_raid.layer = report.unit_hits[0].layer;
         assert_eq!(
-            top_map_hit(point, &report, Some(&same_layer_raid)),
+            top_map_hit(point, &report, std::slice::from_ref(&same_layer_raid), None),
             Some(MapHit::Unit(0))
         );
         report.unit_hits[0].port = true;
         assert_eq!(
-            top_map_hit(point, &report, Some(&same_layer_raid)),
+            top_map_hit(point, &report, std::slice::from_ref(&same_layer_raid), None),
             Some(MapHit::Raid)
         );
         report.unit_hits[0].port = false;
@@ -3937,11 +4143,14 @@ pub(crate) mod tests {
             supported: true,
         });
         assert_eq!(
-            top_map_hit(point, &report, Some(&raid)),
+            top_map_hit(point, &report, std::slice::from_ref(&raid), None),
             Some(MapHit::Combat(0))
         );
         report.combat_hits[0].layer = layer(-4, 0, 0);
-        assert_eq!(top_map_hit(point, &report, Some(&raid)), Some(MapHit::Raid));
+        assert_eq!(
+            top_map_hit(point, &report, std::slice::from_ref(&raid), None),
+            Some(MapHit::Raid)
+        );
         report.combat_hits[0] = CombatHit {
             selection: Selection::Naval(1),
             rect,
@@ -3953,11 +4162,14 @@ pub(crate) mod tests {
         observer.order = 2;
         report.naval_marker_hovers.push(observer);
         assert_eq!(
-            top_map_hit(point, &report, None),
+            top_map_hit(point, &report, &[], None),
             Some(MapHit::NavalObserver(0))
         );
         report.combat_hits[0].order = 2;
-        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Combat(0)));
+        assert_eq!(
+            top_map_hit(point, &report, &[], None),
+            Some(MapHit::Combat(0))
+        );
         report.combat_hits[0].supported = false;
         report.naval_marker_hovers[0].supported = false;
         report
@@ -3967,20 +4179,88 @@ pub(crate) mod tests {
                 regions: Arc::from([1]),
                 layer: layer(4, 0, 0),
             });
-        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Blocked));
+        assert_eq!(
+            top_map_hit(point, &report, &[], None),
+            Some(MapHit::Blocked)
+        );
         report.combat_hits[0].supported = true;
         report.naval_marker_hovers[0].supported = true;
-        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Combat(0)));
+        assert_eq!(
+            top_map_hit(point, &report, &[], None),
+            Some(MapHit::Combat(0))
+        );
         report.faction_pin_hovers.clear();
         report.combat_hits.clear();
         report.naval_marker_hovers.clear();
         let mut refused_raid = raid.clone();
         refused_raid.supported = false;
         assert_eq!(
-            top_map_hit(point, &report, Some(&refused_raid)),
+            top_map_hit(point, &report, std::slice::from_ref(&refused_raid), None),
             Some(MapHit::Blocked)
         );
-        assert_eq!(top_map_hit([20.0, 5.0], &report, Some(&raid)), None);
+        assert_eq!(
+            top_map_hit([20.0, 5.0], &report, std::slice::from_ref(&raid), None),
+            None
+        );
+    }
+
+    #[test]
+    fn a_free_view_hits_the_nearest_shown_icon_in_its_own_layout() {
+        use {
+            viewer_foundation::map::counter_hovers::unit_hits::{Blocker, Hit, Kind},
+            viewer_foundation::map::free_icons::{IconFamily, Looks, Present},
+            viewer_foundation::map::sprites::layer,
+        };
+        let mut report = viewer_counters::map::counters::CounterReport::default();
+        // A unit counter laid out over [0, 20) and a base over [10, 30), both at y [0, 20).
+        report.unit_hits.push(Hit {
+            ours: true,
+            port: false,
+            rect: [0.0, 0.0, 20.0, 20.0],
+            kind: Kind::Division,
+            members: Arc::from([7]),
+            layer: layer(10, 0, 0),
+        });
+        report.base_hits.push(Blocker {
+            rect: [10.0, 0.0, 20.0, 20.0],
+            layer: layer(3, 0, 0),
+        });
+        let point = [15.0, 5.0];
+        // As laid out, the counter's higher priority wins.
+        assert_eq!(
+            top_map_hit(point, &report, &[], None),
+            Some(MapHit::Unit(0))
+        );
+        // A free eye with the base nearer: the base wins whatever its priority.
+        let at = |rank, scale, alpha| Present {
+            pivot: [10.0, 10.0],
+            scale,
+            alpha,
+            rank,
+        };
+        let mut looks = Looks::default();
+        looks.show(IconFamily::Columns, layer(10, 0, 0), at(0, 1.0, 1.0));
+        looks.show(IconFamily::Bases, layer(3, 0, 0), at(1, 1.0, 1.0));
+        assert_eq!(
+            top_map_hit(point, &report, &[], Some(&looks)),
+            Some(MapHit::Base)
+        );
+        // Shrunk to half about its anchor, the base no longer reaches the pointer; the counter does.
+        let mut looks = Looks::default();
+        looks.show(IconFamily::Columns, layer(10, 0, 0), at(0, 1.0, 1.0));
+        looks.show(IconFamily::Bases, layer(3, 0, 0), at(1, 0.5, 1.0));
+        assert_eq!(
+            top_map_hit([18.0, 3.0], &report, &[], Some(&looks)),
+            Some(MapHit::Unit(0))
+        );
+        // A faint base and an undrawn counter take no hits.
+        let mut looks = Looks::default();
+        looks.show(IconFamily::Bases, layer(3, 0, 0), at(1, 1.0, 0.2));
+        assert_eq!(top_map_hit(point, &report, &[], Some(&looks)), None);
+        // The counter's layer key shown for another family leaves the counter itself unshown.
+        let mut looks = Looks::default();
+        looks.show(IconFamily::Combats, layer(10, 0, 0), at(0, 1.0, 1.0));
+        assert_eq!(top_map_hit(point, &report, &[], Some(&looks)), None);
     }
 
     #[test]

@@ -504,7 +504,8 @@ impl<'a> NavalContext<'a> {
     }
 
     /// Builds one counter item from its task forces in admission order.
-    pub(super) fn flotilla(&self, units: &[&NavalUnit<'_>], port: bool) -> Flotilla {
+    /// One plate of `units`; `coarse` is whether its column draws coarse (port items never do).
+    pub(super) fn flotilla(&self, units: &[&NavalUnit<'_>], port: bool, coarse: bool) -> Flotilla {
         let first = units[0];
         let last = units[units.len() - 1];
         let members: Arc<[u64]> = units.iter().map(|unit| unit.force.id).collect();
@@ -593,13 +594,13 @@ impl<'a> NavalContext<'a> {
             side,
             flag_owner: if port {
                 port_flag_owner(units, self.ships_complete)
-            } else if self.coarse {
+            } else if coarse {
                 Some(first.slot)
             } else {
                 Some(first.flag_owner)
             },
             port,
-            coarse: self.coarse && !port,
+            coarse: coarse && !port,
             ships: units
                 .iter()
                 .filter(|unit| unit.sight == Sight::Full)
@@ -963,10 +964,7 @@ pub(super) fn port_counters(
     icons: &[NavalBaseIcon],
     out: &mut CounterFrame,
 ) -> io::Result<()> {
-    if !visible(
-        inputs.camera.height,
-        inputs.content.defines.naval_base_cutoff,
-    ) {
+    if !inputs.shows(inputs.content.defines.naval_base_cutoff) {
         return Ok(());
     }
     let windows = inputs.windows;
@@ -1008,13 +1006,23 @@ pub(super) fn port_counters(
     }
     out.report.unanchored += unanchored;
     // A coarse camera, or a peace conference (no context), empties every box; a recorded order
-    // the hour does not hold whole leaves every base's items undecided.
+    // the hour does not hold whole leaves every base's items undecided. A free eye empties the
+    // boxes of the bases beyond the coarse grouping distance.
     let ports = match (context, tables.order) {
         (None, _) => Ok(None),
-        (Some(context), _) if context.coarse => Ok(None),
-        (Some(context), Some(order)) => Ok(Some(port_items(
-            inputs, frame, owner, tables, context, order, out,
-        )?)),
+        (Some(context), _) if context.coarse && inputs.camera.free().is_none() => Ok(None),
+        (Some(context), Some(order)) => {
+            let mut items = port_items(inputs, frame, owner, tables, context, order, out)?;
+            if inputs.camera.free().is_some() {
+                let at: BTreeMap<u32, [f32; 3]> = anchors.iter().copied().collect();
+                let defines = &inputs.content.defines;
+                items.retain(|province, _| {
+                    at.get(province)
+                        .is_none_or(|anchor| !defines.coarse(inputs.icon_height(*anchor)))
+                });
+            }
+            Ok(Some(items))
+        }
         (Some(_), None) => Err(PORT_ORDER_UNRECORDED.into()),
     };
     out.naval.bases = Some(naval_windows::BasePass {
@@ -1196,7 +1204,8 @@ fn port_items(
             if !boundary {
                 continue;
             }
-            let flotilla = context.flotilla(&units[start..next].iter().collect::<Vec<_>>(), true);
+            let flotilla =
+                context.flotilla(&units[start..next].iter().collect::<Vec<_>>(), true, false);
             if flotilla.hidden {
                 out.report.no_intel_counters += 1;
             }

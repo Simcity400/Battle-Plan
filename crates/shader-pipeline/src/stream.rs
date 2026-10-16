@@ -98,6 +98,20 @@ impl Stream {
         self.state.write_mask = write_mask;
     }
 
+    /// Draws into a layer that keeps premultiplied colour and is blended over the frame later:
+    /// the bound blend keeps its colour terms, its alpha accumulates as `One, OneMinusSrcAlpha`,
+    /// and every channel is written. The next effect bind restores the effect's own state.
+    pub fn accumulate_alpha(&mut self) {
+        if let Some(blend) = &mut self.state.blend {
+            blend.alpha = wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            };
+        }
+        self.state.write_mask = wgpu::ColorWrites::ALL;
+    }
+
     /// A null handle retains the program and its input layout.
     /// Blend, depth, rasterizer and resource handles are independent commands.
     pub fn bind_program(&mut self, selection: Option<Selection>, vertices: Vec<gpu::VertexLayout>) {
@@ -745,5 +759,47 @@ mod tests {
             stream.program,
             Some((_, Layout::Packed(Declaration::Text)))
         ));
+    }
+
+    #[test]
+    fn a_premultiplied_layer_accumulates_alpha_over_the_bound_colour_terms() {
+        let mut stream = Stream::default();
+        stream.bind_blend(
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            wgpu::ColorWrites::COLOR,
+        );
+        stream.accumulate_alpha();
+        let blend = stream.state.blend.unwrap();
+        assert_eq!(blend.color, wgpu::BlendState::ALPHA_BLENDING.color);
+        assert_eq!(
+            blend.alpha,
+            wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            }
+        );
+        assert_eq!(stream.state.write_mask, wgpu::ColorWrites::ALL);
+        // An additive colour term is kept; only alpha accumulates.
+        stream.bind_blend(
+            Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent::REPLACE,
+            }),
+            wgpu::ColorWrites::RED,
+        );
+        stream.accumulate_alpha();
+        let blend = stream.state.blend.unwrap();
+        assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::One);
+        assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+        // Blending off stays off.
+        stream.bind_blend(None, wgpu::ColorWrites::RED);
+        stream.accumulate_alpha();
+        assert_eq!(stream.state.blend, None);
+        assert_eq!(stream.state.write_mask, wgpu::ColorWrites::ALL);
     }
 }

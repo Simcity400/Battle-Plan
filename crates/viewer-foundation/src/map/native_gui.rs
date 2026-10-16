@@ -5334,6 +5334,7 @@ fn draw_part(
     batch: &mut Batch,
     previous: &mut Option<Kept>,
 ) -> Result<(), Refusal> {
+    batch.at_part(&part.path);
     if part.shading.compiled.is_some() {
         return super::native_shader::draw::emit(part, origin, sheets, batch);
     }
@@ -5469,6 +5470,8 @@ fn draw_fixture_part(
         layer: 0,
         shade: 0.0,
         exact: Some(exact),
+        anchor: None,
+        present: None,
     };
     let missing = |what: String| Refusal::new(&part.path, RefusalKind::MissingResource, what);
     match &part.kind {

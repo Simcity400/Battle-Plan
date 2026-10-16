@@ -21,6 +21,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
+use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
 use viewer_foundation::map::gui_resources::count_refused;
 use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
 use viewer_foundation::map::icon_windows::PoolView;
@@ -433,7 +434,6 @@ pub fn prepare(
     // provinces on the static ladder, which `super::tables` states.
     let overrides = province_overrides(frame)?;
 
-    let height = inputs.camera.height;
     let mut report = LabelReport {
         perspective: tags.get(ours).cloned(),
         ..Default::default()
@@ -451,13 +451,17 @@ pub fn prepare(
         if victory_points <= 0 && !capital {
             continue;
         }
-        if height >= dot_cutoff(capital, victory_points, defines) {
-            continue;
-        }
         let Some(anchor) = inputs.content.anchors.get(&province.id) else {
             continue;
         };
         let world = *anchor;
+        // The camera's height, or a free eye's distance to this label.
+        let height = inputs.camera.icon_distance(world);
+        let dot = dot_cutoff(capital, victory_points, defines);
+        if height >= dot {
+            continue;
+        }
+        let text = text_cutoff(capital, victory_points, defines);
         let Some(projection) = inputs.camera.project_map_icon(
             world,
             inputs.viewport,
@@ -468,7 +472,7 @@ pub fn prepare(
         let allegiance = dot_allegiance(province.controller, links, allegiances);
         let shape = shape_group(capital, victory_points, defines);
         let priority = defines.priority[usize::from(capital)];
-        let name = if height >= text_cutoff(capital, victory_points, defines) {
+        let name = if height >= text {
             None
         } else {
             let recorded = overrides.get(&province.id).copied();
@@ -504,6 +508,18 @@ pub fn prepare(
             frame: frame_index(shape, allegiance) as i32 + 1,
             priority,
             text: name,
+            anchors: [
+                IconAnchor {
+                    world,
+                    cutoff: dot,
+                    family: IconFamily::Labels,
+                },
+                IconAnchor {
+                    world,
+                    cutoff: text,
+                    family: IconFamily::Labels,
+                },
+            ],
         });
     }
     Ok(PreparedLabels { placed, report })
@@ -517,6 +533,9 @@ struct Label {
     frame: i32,
     priority: i8,
     text: Option<String>,
+    /// Where the label stands for a free eye: its dot, and its name, which fades by its own
+    /// cutoff.
+    anchors: [IconAnchor; 2],
 }
 
 /// A prepared hour's label values. Preparing never changes a presented window.
@@ -640,6 +659,9 @@ impl PreparedLabels {
         drawn.sort_by(|a, b| b.0.depth.total_cmp(&a.0.depth));
         for (ordinal, (label, drawn)) in drawn.into_iter().enumerate() {
             batch.at_layer(sprites::layer(label.priority, ordinal as u32, 0));
+            batch.at_anchor(Some(label.anchors[0]));
+            // The name stands with the dot and fades by the name's cutoff.
+            batch.at_part_anchor(&format!(".{TEXT}"), label.anchors[1]);
             match native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch) {
                 Ok(()) => {
                     report.icons += 1;
@@ -657,6 +679,7 @@ impl PreparedLabels {
                 ),
             }
         }
+        batch.at_anchor(None);
         report
     }
 }
@@ -752,6 +775,14 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
+
+    /// A label standing nowhere in particular, for draws that do not test placement.
+    const UNANCHORED: IconAnchor = IconAnchor {
+        world: [0.0; 3],
+        cutoff: f32::INFINITY,
+        family: IconFamily::Labels,
+    };
     use viewer_foundation::map::native_resources;
 
     use viewer_foundation::map::test_support::localisation::loaded;
@@ -855,6 +886,7 @@ pub(crate) mod tests {
                     frame: 1,
                     priority: 5,
                     text: None,
+                    anchors: [UNANCHORED; 2],
                 },
                 Label {
                     province: 2,
@@ -864,6 +896,7 @@ pub(crate) mod tests {
                     frame: 1,
                     priority: 5,
                     text: None,
+                    anchors: [UNANCHORED; 2],
                 },
             ],
         };
@@ -886,6 +919,71 @@ pub(crate) mod tests {
             [[100., 90.], [120., 90.], [120., 100.], [100., 100.]]
         );
         assert!(batch.quads[0].layer < batch.quads[1].layer);
+    }
+
+    #[test]
+    fn a_label_s_name_stands_on_its_own_anchor_and_its_dot_on_the_label_s() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let resources = gui::fixture();
+        let windows = gui::windows(
+            br#"guiTypes = {
+            containerWindowType = { name = victory_point_mapicon size = { width = 40 height = 20 }
+                iconType = { name = icon spriteType = GFX_even }
+                instantTextBoxType = { name = text font = Main_14 } }
+        }"#,
+        );
+        let context = native_resources::Context {
+            resources: &resources,
+            windows: &windows,
+            viewport: [400, 400],
+            time: Some(0.),
+        };
+        let at = |cutoff| IconAnchor {
+            world: [100.0, 10.0, 200.0],
+            cutoff,
+            family: IconFamily::Labels,
+        };
+        let labels = PreparedLabels {
+            report: Default::default(),
+            placed: vec![Label {
+                province: 1,
+                screen: [100., 100.],
+                depth: 0.1,
+                capital: false,
+                frame: 1,
+                priority: 5,
+                text: Some("Berlin".into()),
+                anchors: [at(400.0), at(250.0)],
+            }],
+        };
+        let mut view = LabelView::default();
+        let mut batch = Batch::default();
+        let report = labels.draw(&context, &Schedule::default(), &mut view, &mut batch);
+        assert_eq!(
+            (report.icons, report.texts),
+            (1, 1),
+            "{:?}",
+            report.refused_gui
+        );
+        let cutoffs: Vec<f32> = batch
+            .quads
+            .iter()
+            .map(|quad| {
+                quad.anchor
+                    .expect("every label quad stands somewhere")
+                    .cutoff
+            })
+            .collect();
+        // The dot first, then the name's glyphs.
+        assert_eq!(cutoffs[0], 400.0);
+        assert!(
+            cutoffs.len() > 1 && cutoffs[1..].iter().all(|cutoff| *cutoff == 250.0),
+            "{cutoffs:?}"
+        );
+        // Later pushes are screen interface again.
+        batch.push(batch.quads[0].clone());
+        assert_eq!(batch.quads.last().unwrap().anchor, None);
     }
 
     #[test]
@@ -919,6 +1017,7 @@ pub(crate) mod tests {
                     frame: 1,
                     priority: 5,
                     text: None,
+                    anchors: [UNANCHORED; 2],
                 })
                 .collect(),
         };
@@ -966,6 +1065,7 @@ pub(crate) mod tests {
                     frame: 1,
                     priority: 0,
                     text: None,
+                    anchors: [UNANCHORED; 2],
                 })
                 .into(),
         };

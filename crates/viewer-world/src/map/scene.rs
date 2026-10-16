@@ -51,11 +51,11 @@ use {
     crate::map::borders::BorderMeshes, crate::map::demilitarized::DemilitarizedPass,
     crate::map::demilitarized::Zone, crate::map::political::Regions,
     crate::map::shadow::ShadowPass, crate::map::terrain::Grid, crate::map::terrain::MARGIN,
-    crate::map::water::WaterPass,
-    viewer_foundation::map::camera::Camera, viewer_foundation::map::frame::DayNight,
-    viewer_foundation::map::frame::FrameConstants, viewer_foundation::map::textures::Bound,
-    viewer_foundation::map::textures::ColorSpace, viewer_foundation::map::textures::data_texture,
-    viewer_foundation::map::textures::upload, viewer_foundation::map::textures::write_data,
+    crate::map::water::WaterPass, viewer_foundation::map::camera::Camera,
+    viewer_foundation::map::frame::DayNight, viewer_foundation::map::frame::FrameConstants,
+    viewer_foundation::map::textures::Bound, viewer_foundation::map::textures::ColorSpace,
+    viewer_foundation::map::textures::data_texture, viewer_foundation::map::textures::upload,
+    viewer_foundation::map::textures::write_data,
 };
 // names
 use {
@@ -89,7 +89,7 @@ use {
     crate::map::railways::RailMesh, crate::map::railways::RailPass,
 };
 // orders: the recorded player's battle plan
-use crate::map::order_pass::OrderPass;
+use crate::map::order_pass::{OrderPass, PlanSubmissions};
 use crate::map::sprawl::Sprawl;
 use viewer_foundation::map::ribbon_content::Mode as ArrowMode;
 use viewer_foundation::map::ribbon_content::{OrderAssets, OrderField};
@@ -345,6 +345,13 @@ pub struct Overlay<'a> {
     /// Device pixels per interface pixel of `sprites`; see
     /// [`super::ui_scale`]. The world-space names do not take it.
     pub ui_scale: f32,
+    /// Whether the map's interface that stands in the world draws: borders, demilitarised zones
+    /// and strait crossings, battle plans with their labels and raid paths, the selected units'
+    /// movement arrows, floating map text and country names. Off, as the fly and walk modes leave
+    /// it by default, they still step and keep their state; only their drawing stops.
+    pub interface: bool,
+    /// What a free eye's floating map text stands on, for its sight test; `None` tests nothing.
+    pub ground: Option<viewer_foundation::map::free_icons::Ground<'a>>,
 }
 
 impl Default for Overlay<'_> {
@@ -355,6 +362,8 @@ impl Default for Overlay<'_> {
             layer_alpha: 0.0,
             sprites: None,
             ui_scale: 1.0,
+            interface: true,
+            ground: None,
         }
     }
 }
@@ -2077,46 +2086,50 @@ impl Scene {
                         )?;
                     }
                     mark(&mut encoder, "shadow_tree_casters");
-                    if let Some(orders) = &self.orders
-                        && self.graphics.battle_plans
-                        && let Some(mut pass) =
-                            self.shadow.depth_pass(&mut encoder, wgpu::LoadOp::Load)
-                    {
-                        for (view, offset) in offsets.iter().enumerate() {
-                            let mut matrix = shadow_prepared.view_projection;
-                            for (value, axis) in
-                                matrix[3].iter_mut().zip(shadow_prepared.view_projection[0])
-                            {
-                                *value += axis * offset;
+                    // Plans cast shadows exactly while they draw.
+                    PlanSubmissions::new(self.orders.as_ref(), &self.graphics, &overlay)
+                        .cast_shadows(|plans| {
+                            let Some(mut pass) =
+                                self.shadow.depth_pass(&mut encoder, wgpu::LoadOp::Load)
+                            else {
+                                return Ok(());
+                            };
+                            for (view, offset) in offsets.iter().enumerate() {
+                                let mut matrix = shadow_prepared.view_projection;
+                                for (value, axis) in
+                                    matrix[3].iter_mut().zip(shadow_prepared.view_projection[0])
+                                {
+                                    *value += axis * offset;
+                                }
+                                let scene = crate::map::arrow_shader::shadow_constants(
+                                    native_frame_bytes[view],
+                                    matrix,
+                                );
+                                plans.draw_shadow(
+                                    arena,
+                                    &mut pass,
+                                    crate::map::order_pass::NativeInputs {
+                                        retained: None,
+                                        scene: &scene,
+                                        grid: bytemuck::bytes_of(&globals.light_grid),
+                                        textures: [
+                                            self.shadow.lit_texture(),
+                                            &self.terrain_ids.view,
+                                            &self.heightmap.view,
+                                            &self.atlas_normal.view,
+                                            &self.height_normal.view,
+                                            &self.lean1.view,
+                                            &self.lean2.view,
+                                            &self.point_light_maps.data.view,
+                                            &self.point_light_maps.indices.view,
+                                        ],
+                                    },
+                                    view,
+                                    animation_time,
+                                )?;
                             }
-                            let scene = crate::map::arrow_shader::shadow_constants(
-                                native_frame_bytes[view],
-                                matrix,
-                            );
-                            orders.draw_shadow(
-                                arena,
-                                &mut pass,
-                                crate::map::order_pass::NativeInputs {
-                                    retained: None,
-                                    scene: &scene,
-                                    grid: bytemuck::bytes_of(&globals.light_grid),
-                                    textures: [
-                                        self.shadow.lit_texture(),
-                                        &self.terrain_ids.view,
-                                        &self.heightmap.view,
-                                        &self.atlas_normal.view,
-                                        &self.height_normal.view,
-                                        &self.lean1.view,
-                                        &self.lean2.view,
-                                        &self.point_light_maps.data.view,
-                                        &self.point_light_maps.indices.view,
-                                    ],
-                                },
-                                view,
-                                animation_time,
-                            )?;
-                        }
-                    }
+                            Ok(())
+                        })?;
                     mark(&mut encoder, "shadow_arrow_casters");
                 }
                 // Clear the screen target independently of both gates.
@@ -2313,7 +2326,7 @@ impl Scene {
                         stage: BorderStage::Land,
                         camera_height: camera.height,
                         fades: camera.defines.border_fades,
-                        visible: self.graphics.land_borders(),
+                        visible: overlay.interface && self.graphics.land_borders(),
                     },
                 ))
             {
@@ -2476,14 +2489,16 @@ impl Scene {
                         stage: BorderStage::Sea,
                         camera_height: camera.height,
                         fades: camera.defines.border_fades,
-                        visible: self.graphics.sea_borders(),
+                        visible: overlay.interface && self.graphics.sea_borders(),
                     },
                 ));
             }
             mark(&mut encoder, "borders_sea");
             // Draw the secondary border bank in the final border batch.
             if let Some(demilitarized) = &self.demilitarized {
-                let edges = if self.graphics.demilitarized_zones() {
+                let edges = if !overlay.interface {
+                    crate::map::demilitarized::ZoneEdges::Hidden
+                } else if self.graphics.demilitarized_zones() {
                     crate::map::demilitarized::ZoneEdges::Highlighted
                 } else if self.graphics.land_borders() {
                     crate::map::demilitarized::ZoneEdges::Ordinary {
@@ -2514,7 +2529,7 @@ impl Scene {
                     view_frames,
                     [&self.snow_mud.view, &self.intel_map.view],
                     Some(&retained_scene),
-                    self.graphics.strait_crossings(),
+                    overlay.interface && self.graphics.strait_crossings(),
                 ));
             }
             mark(&mut encoder, "straits");
@@ -2523,11 +2538,9 @@ impl Scene {
                            mode: ArrowMode,
                            label_index: usize|
          -> io::Result<()> {
-            if let Some(orders) = &self.orders
-                && self.graphics.battle_plans
-            {
+            PlanSubmissions::new(self.orders.as_ref(), &self.graphics, &overlay).draw(|plans| {
                 for view in 0..offsets.len() {
-                    orders.draw(
+                    plans.draw(
                         arena,
                         encoder,
                         targets,
@@ -2565,8 +2578,8 @@ impl Scene {
                         Some(&retained_scene),
                     )?;
                 }
-            }
-            Ok(())
+                Ok(())
+            })
         };
         //main arrows precede both entity queues.
         draw_orders(&mut encoder, ArrowMode::Main, 0)?;
@@ -2680,7 +2693,7 @@ impl Scene {
                         &mut object.retained,
                         &actor_frames[view].view_projection,
                         &side_planes(wrapped, size),
-                        self.graphics.movement_arrows,
+                        overlay.interface && self.graphics.movement_arrows,
                     )
                 {
                     object.forget_pixel_snapshot();
@@ -2732,7 +2745,8 @@ impl Scene {
                             wrapped,
                             &actor_frames[view].view_projection,
                             None,
-                            &|family| graphics.map_text(map_text_kind(family)),
+                            &|family| overlay.interface && graphics.map_text(map_text_kind(family)),
+                            overlay.ground.as_ref(),
                         )
                     {
                         object.forget_pixel_snapshot();
@@ -2801,7 +2815,7 @@ impl Scene {
         // Draw world names into the floating-point scene after weather and before post restore. NamePass
         // uses an UNORM atlas and SrcAlpha/InvSrcAlpha blending.
         self.name_pass.validate_draw(&native_frame_bytes, None)?;
-        let names = self.graphics.country_names;
+        let names = overlay.interface && self.graphics.country_names;
         passes.run(passes::Pass::CountryNames, || {
             if !names {
                 return Ok(());

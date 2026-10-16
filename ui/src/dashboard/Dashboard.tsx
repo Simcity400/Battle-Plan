@@ -34,7 +34,9 @@ import type { Campaign } from './campaigns';
 import { followMapPlayback } from './mapPlayback';
 import type { ParityHost } from './parityFixture';
 
-interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; cameraMode?: CameraMode; onMetadata: (metadata: ReplayMetadata | null) => void;
+interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; cameraMode?: CameraMode;
+  /** Whether flying and walking draw the map's interface, as the viewer last reported it. */
+  cameraOverlays?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void;
   /** The branch the shown campaign plays, and how to play another; null without one. */
   onBranch?: (branch: BranchChoice | null) => void; onMapError?: (error: string | null) => void;
   /** Whether any page has layout changes not yet saved, which resetting the pages discards. */
@@ -44,7 +46,7 @@ interface Props { page: PageId; resetToken: number; library: ReplayLibraryState;
 
 export interface BranchChoice { id: string; choose: (branchId: string) => void }
 
-export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', onMetadata, onBranch, onMapError, onUnsaved, pages, playbackHost, campaignHost, onOpenReady }: Props) {
+export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, onUnsaved, pages, playbackHost, campaignHost, onOpenReady }: Props) {
   const [restored] = useState(() => loadLayouts(undefined, page));
   const [library, setLibrary] = useState(restored.library);
   // The page whose layouts are shown; it trails `page` until the swap below runs.
@@ -170,10 +172,14 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     });
     return () => { current = false; };
   }, [mapActive, mapReady, mapSwitching, defaultLoading, mapOptions, mapCountry, onMapError]);
-  // The camera mode is the viewer's own: the control shows what it reports and asks it to change.
+  // The camera mode and its overlay choice are the viewer's own: the control shows what it reports
+  // and asks it to change.
   const chooseCameraMode = useCallback((mode: CameraMode) => {
-    void mapAction({ kind: 'cameraMode', mode }).catch(cause => onMapError?.(errorMessage(cause)));
-  }, [onMapError]);
+    void mapAction({ kind: 'cameraMode', mode, overlays: cameraOverlays }).catch(cause => onMapError?.(errorMessage(cause)));
+  }, [cameraOverlays, onMapError]);
+  const chooseOverlays = useCallback((overlays: boolean) => {
+    void mapAction({ kind: 'cameraMode', mode: cameraMode, overlays }).catch(cause => onMapError?.(errorMessage(cause)));
+  }, [cameraMode, onMapError]);
   useLayoutEffect(() => {
     const reference = tracks.find(track => track.roleId === defaultRoleId);
     if (!mapActive || mapSwitching || defaultLoading || !desktopAvailable || !reference) return;
@@ -473,11 +479,12 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       onChange={(tag) => { if (defaultRoleId) setSelectedCountries((previous) => ({ ...previous, [defaultRoleId]: tag })); }} />
     <PlaybackStrip client={client} clock={clock} tracks={tracks} alignment={template.alignment} defaultRoleId={defaultRoleId} />
     <div className="header-workspace-tools">
-    {mapActive && mapReady && desktopAvailable && <CameraModeControl value={cameraMode} onChange={chooseCameraMode} />}
+    {mapActive && mapReady && desktopAvailable && <CameraModeControl value={cameraMode} onChange={chooseCameraMode} overlays={cameraOverlays} onOverlaysChange={chooseOverlays} />}
     {mapActive && <MapControls source={defaultSource ?? null} client={client} metadata={defaultSource?.metadata ?? null} branchId={tracks.find(track => track.roleId === defaultRoleId)?.branch.id ?? null}
       onBranch={id => { const track = tracks.find(track => track.roleId === defaultRoleId); if (track) onMapBranch(track.id, id); }}
       options={mapOptions} onOptions={setMapOptions} poppedOut={popout.open} popoutGeneration={popout.generation} popoutProblem={popoutIssue} popoutStopped={popoutStopped(popout)}
-      popoutCameraMode={popout.status?.running ? popout.status.cameraMode : null} />}
+      popoutCameraMode={popout.status?.running ? popout.status.cameraMode : null}
+      popoutCameraOverlays={popout.status?.running ? popout.status.cameraOverlays : false} />}
     {active && <>
       {/* The layout picker and the editing tools share one slot, so the bar never shifts or grows. */}
       <div className="toolbar-swap" data-editing={editing || dirty || undefined}>

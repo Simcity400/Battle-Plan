@@ -32,8 +32,10 @@ export const popoutUnloaded = (path: string, generation: number) => invoke<void>
 export const seekPopout = (generation: number, path: string, revision: string, branch: string, hour: number, playback?: { playing: boolean; seekSequence: number }) =>
   invoke<void>('popout_seek', { generation, path, revision, branch, hour, playback });
 export const configurePopout = (generation: number, options: MapOptions) => invoke<void>('popout_configure', { generation, options });
-/** Asks pop-out window `generation`'s map to move its camera as `mode`; its status reports the mode it takes. */
-export const setPopoutCameraMode = (generation: number, mode: CameraMode) => invoke<void>('popout_camera_mode', { generation, mode });
+/** Asks pop-out window `generation`'s map to move its camera as `mode`, showing the map's interface in a free
+ * mode when `overlays`; its status reports the mode and choice it takes. */
+export const setPopoutCameraMode = (generation: number, mode: CameraMode, overlays: boolean) =>
+  invoke<void>('popout_camera_mode', { generation, mode, overlays });
 
 /** The `popout-state` event carries two payloads: the whole state from opening and closing, and
  * the viewer's own status in between. An event no newer than the state shown changes nothing; a

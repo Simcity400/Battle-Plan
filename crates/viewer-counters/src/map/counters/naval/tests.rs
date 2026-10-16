@@ -140,7 +140,10 @@ fn combat_task_forces_leave_sea_group_anchors_unchanged_at_both_heights() {
         assert_eq!(defines.grouping(height), level);
         assert_eq!(sources.len(), 1, "height {height}: POL offers no plate");
         assert_eq!(sources[0].province, eng.province);
-        let groups = counter_groups::group(&sources, level, &extents, &|_, _| true);
+        let groups =
+            counter_groups::group(&sources, &vec![level; sources.len()], &extents, &|_, _| {
+                true
+            });
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].members, [0]);
         assert_eq!(groups[0].anchor, eng_anchor, "height {height}");
@@ -232,7 +235,7 @@ fn the_port_sort_keeps_roster_order_between_equal_missions() {
         sort_port_units(&mut units, context).unwrap();
         let missions: Vec<u32> = units.iter().map(|unit| unit.force.mission).collect();
         assert_eq!(missions, [1, 0, 1]);
-        let item = context.flotilla(&units.iter().collect::<Vec<_>>(), true);
+        let item = context.flotilla(&units.iter().collect::<Vec<_>>(), true, false);
         assert_eq!(item.mission, Some(1));
     });
 }

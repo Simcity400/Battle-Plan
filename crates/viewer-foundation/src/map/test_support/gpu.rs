@@ -29,12 +29,24 @@ pub fn render_with(
     queue: &eframe::wgpu::Queue,
     draw: impl FnOnce(&mut eframe::wgpu::RenderPass<'_>),
 ) -> Vec<u8> {
+    render_sized(device, queue, [16, 16], draw)
+}
+
+/// Draws into a cleared RGBA8 target of `size` pixels and reads it back, rows packed.
+pub fn render_sized(
+    device: &eframe::wgpu::Device,
+    queue: &eframe::wgpu::Queue,
+    size: [u32; 2],
+    draw: impl FnOnce(&mut eframe::wgpu::RenderPass<'_>),
+) -> Vec<u8> {
     use eframe::wgpu;
+    let row = size[0] as usize * 4;
+    let stride = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("native effect pixel comparison"),
         size: wgpu::Extent3d {
-            width: 16,
-            height: 16,
+            width: size[0],
+            height: size[1],
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -46,7 +58,7 @@ pub fn render_with(
     });
     let read = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("shader pixels"),
-        size: 256 * 16,
+        size: (stride * size[1] as usize) as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -82,7 +94,7 @@ pub fn render_with(
             buffer: &read,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(256),
+                bytes_per_row: Some(stride as u32),
                 rows_per_image: None,
             },
         },
@@ -94,7 +106,7 @@ pub fn render_with(
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     let bytes = slice.get_mapped_range().unwrap();
     bytes
-        .chunks_exact(256)
-        .flat_map(|row| row[..64].iter().copied())
+        .chunks_exact(stride)
+        .flat_map(|line| line[..row].iter().copied())
         .collect()
 }

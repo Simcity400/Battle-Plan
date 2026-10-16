@@ -31,6 +31,8 @@ pub(super) struct Placed {
     pub(super) angle: f32,
     pub(super) terrain: Option<String>,
     pub(super) text: String,
+    /// Where the marker stands for a free eye.
+    pub(super) anchor: Option<IconAnchor>,
 }
 
 #[derive(Debug, Default)]
@@ -209,6 +211,7 @@ impl PreparedCombats {
                 0,
             );
             batch.at_layer(key);
+            batch.at_anchor(placed[&drawn.owner].anchor);
             match native_gui::draw(&drawn.layout, drawn.origin, &resources, batch) {
                 Ok(()) => {
                     if let Some(root) = root
@@ -235,6 +238,7 @@ impl PreparedCombats {
                 Err(why) => count_refused(&mut report.icon_gui_notes, LAND_COMBAT_WINDOW, &[why]),
             }
         }
+        batch.at_anchor(None);
     }
 }
 
@@ -263,6 +267,7 @@ mod tests {
 
     fn placed() -> Placed {
         Placed {
+            anchor: None,
             marker: LandMarker {
                 id: 1,
                 province: 1,

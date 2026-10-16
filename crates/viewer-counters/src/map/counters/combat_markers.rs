@@ -510,10 +510,7 @@ pub(super) fn land_combats(
             .or_default()
             .extend(combats);
     }
-    if !visible(
-        inputs.camera.height,
-        inputs.content.defines.land_combat_cutoff,
-    ) {
+    if !inputs.shows(inputs.content.defines.land_combat_cutoff) {
         return Ok(());
     }
     for marker in &markers.markers {
@@ -560,6 +557,11 @@ pub(super) fn land_combats(
                 .get(&marker.province)
                 .cloned(),
             text,
+            anchor: inputs.icon_anchor(
+                IconFamily::Combats,
+                anchor,
+                inputs.content.defines.land_combat_cutoff,
+            ),
         });
     }
     Ok(())

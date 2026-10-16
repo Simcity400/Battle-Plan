@@ -20,6 +20,7 @@
 
 use replay::rows::FactionTheatreRow;
 use std::collections::HashMap;
+use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
 use viewer_foundation::map::gui_resources::contains;
 use viewer_foundation::map::gui_resources::count_refused;
 use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
@@ -271,6 +272,8 @@ struct PlacedPin {
     screen: [f32; 2],
     emblem: Vec<u8>,
     count: String,
+    /// Where the pin stands for a free eye; pins have no distance cutoff of their own.
+    anchor: Option<IconAnchor>,
 }
 
 /// All hour candidates projected for this camera; the shared province list decides
@@ -293,6 +296,7 @@ pub(super) fn faction_pings(inputs: &CounterInputs<'_>, hour: &HourPins, out: &m
             screen: projection.position,
             emblem: pin.emblem.clone(),
             count: pin.count.clone(),
+            anchor: inputs.icon_anchor(IconFamily::Pins, world, f32::INFINITY),
         });
     }
     out.native_pings
@@ -489,6 +493,7 @@ impl PreparedPins {
                 }
             };
             batch.at_layer(layer(PING_PRIORITY, ordinal as u32, 0));
+            batch.at_anchor(pins[&drawn.owner].1.anchor);
             match native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch) {
                 Ok(()) => {
                     report.faction_pings += 1;
@@ -505,6 +510,7 @@ impl PreparedPins {
                 }
             }
         }
+        batch.at_anchor(None);
     }
 }
 

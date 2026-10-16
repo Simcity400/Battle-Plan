@@ -837,6 +837,25 @@ impl Camera {
         self.defines.map_objects_cutoff.min(self.lens().far)
     }
 
+    /// How far a map icon at `anchor` stands from the camera, as the content's map-icon distance
+    /// cutoffs and grouping distances read it: the game's camera height, or a free eye's distance
+    /// to the anchor's nearest map copy.
+    pub fn icon_distance(&self, anchor: [f32; 3]) -> f32 {
+        match self.pose {
+            Pose::Map => self.height,
+            Pose::Free(_) => {
+                let eye = self.eye();
+                let width = self.map.x();
+                let mut dx = anchor[0] - eye[0];
+                if width > 0.0 {
+                    dx -= width * (dx / width).round();
+                }
+                let (dy, dz) = (anchor[1] - eye[1], anchor[2] - eye[2]);
+                (dx * dx + dy * dy + dz * dz).sqrt()
+            }
+        }
+    }
+
     /// The `(x0, z0, x1, z1)` box of the part of the view volume within view depth `range` and
     /// between heights `band`; `None` when the view misses the band.
     pub fn reach(&self, viewport: [u32; 2], range: f32, band: [f32; 2]) -> Option<[f32; 4]> {

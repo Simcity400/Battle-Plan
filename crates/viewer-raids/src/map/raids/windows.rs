@@ -10,6 +10,7 @@ use viewer_foundation::map::native_resources::Context;
 use viewer_foundation::map::test_support::gui;
 
 use super::*;
+use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
 use viewer_foundation::map::gui_resources::count_refused;
 use viewer_foundation::map::gui_resources::hit_rectangle;
 use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
@@ -29,11 +30,16 @@ pub struct PreparedRaids {
 struct Placed {
     screen: [f32; 2],
     icon: RaidIcon,
+    /// Where the icon stands for a free eye.
+    anchor: IconAnchor,
 }
 
 pub fn prepare(inputs: &RaidInputs<'_>, icons: &RaidIcons) -> PreparedRaids {
     let [near, far] = inputs.camera.defines.raid_icons;
-    if !(near..=far).contains(&inputs.camera.height) {
+    // The game's camera shows them all within the distances or none; a free eye shows each
+    // within them by its own distance.
+    let free = inputs.camera.free().is_some();
+    if !free && !(near..=far).contains(&inputs.camera.height) {
         return PreparedRaids {
             report: icons.report.clone(),
             ..Default::default()
@@ -45,6 +51,9 @@ pub fn prepare(inputs: &RaidInputs<'_>, icons: &RaidIcons) -> PreparedRaids {
         .iter()
         .filter_map(|icon| {
             let world = (inputs.anchor)(icon.province)?;
+            if free && inputs.camera.icon_distance(world) < near {
+                return None;
+            }
             let projection = inputs
                 .camera
                 .project_map_icon(world, inputs.viewport, viewport)?;
@@ -53,6 +62,11 @@ pub fn prepare(inputs: &RaidInputs<'_>, icons: &RaidIcons) -> PreparedRaids {
                 Placed {
                     screen: projection.position,
                     icon: icon.clone(),
+                    anchor: IconAnchor {
+                        world,
+                        cutoff: far,
+                        family: IconFamily::Raids,
+                    },
                 },
             ))
         })
@@ -218,6 +232,7 @@ impl PreparedRaids {
         for drawn in drawn {
             let (ordinal, placed) = placed[&drawn.owner];
             batch.at_layer(sprites::layer(priority, ordinal as u32, 0));
+            batch.at_anchor(Some(placed.anchor));
             if let Err(why) =
                 native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch)
             {
@@ -243,6 +258,7 @@ impl PreparedRaids {
                 });
             }
         }
+        batch.at_anchor(None);
         count
     }
 }
@@ -251,7 +267,15 @@ impl PreparedRaids {
 impl PreparedRaids {
     pub fn test_icon(screen: [f32; 2], icon: RaidIcon) -> Self {
         Self {
-            placed: vec![Placed { screen, icon }],
+            placed: vec![Placed {
+                screen,
+                icon,
+                anchor: IconAnchor {
+                    world: [0.0; 3],
+                    cutoff: f32::INFINITY,
+                    family: IconFamily::Raids,
+                },
+            }],
             report: RaidReport::default(),
         }
     }
@@ -261,6 +285,13 @@ impl PreparedRaids {
 mod tests {
     use super::super::test_support::{DRAW_GUI, assets, draw_resources};
     use super::*;
+
+    /// A raid icon standing nowhere in particular, for draws that do not test placement.
+    const UNANCHORED: IconAnchor = IconAnchor {
+        world: [0.0; 3],
+        cutoff: f32::INFINITY,
+        family: IconFamily::Raids,
+    };
     use viewer_foundation::map::native_gui::lifecycle::Instance;
 
     #[test]
@@ -277,6 +308,7 @@ mod tests {
         };
         let prepared = PreparedRaids {
             placed: vec![Placed {
+                anchor: UNANCHORED,
                 screen: [100., 200.],
                 icon: RaidIcon {
                     province: 1,
@@ -502,6 +534,7 @@ mod tests {
             )
         };
         let placed = |id| Placed {
+            anchor: UNANCHORED,
             screen: match id {
                 1 => [100., 200.],
                 2 => [85., 195.],
@@ -627,6 +660,7 @@ mod tests {
         let prepared = PreparedRaids {
             placed: [1, 2]
                 .map(|province| Placed {
+                    anchor: UNANCHORED,
                     screen: [100., 200.],
                     icon: RaidIcon {
                         province,
@@ -677,6 +711,7 @@ mod tests {
         };
         let mut prepared = PreparedRaids {
             placed: vec![Placed {
+                anchor: UNANCHORED,
                 screen: [100., 200.],
                 icon: RaidIcon {
                     province: 1,

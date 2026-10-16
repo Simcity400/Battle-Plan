@@ -387,7 +387,16 @@ pub fn emit(
                 vertices.extend(border.to_le_bytes());
             }
         }
-        let mut constants = (parent * matrix).to_cols_array().to_vec();
+        let world = parent * matrix;
+        // Where the vertices land, in interface pixels (native `y` runs up).
+        let m = world.0;
+        let landing = positions.map(|[x, y, z]| {
+            [
+                m[0] * x + m[4] * y + m[8] * z + m[12],
+                -(m[1] * x + m[5] * y + m[9] * z + m[13]),
+            ]
+        });
+        let mut constants = world.to_cols_array().to_vec();
         constants.extend(tail);
         // What the draw writes, then the rest of the native allocation, unwritten.
         let known = (constants.len() * 4) as u32;
@@ -423,7 +432,7 @@ pub fn emit(
                     default_blend: false,
                     bake: None,
                 })),
-                corners: [[0.; 2]; 4],
+                corners: landing,
                 uv: coordinates,
                 scissor,
                 technique: 0,
@@ -436,6 +445,8 @@ pub fn emit(
                 inputs: [0.; 4],
                 second_color: [0.; 4],
             }),
+            anchor: None,
+            present: None,
         });
     };
     let points =

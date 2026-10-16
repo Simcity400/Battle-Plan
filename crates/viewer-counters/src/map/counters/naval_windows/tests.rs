@@ -133,6 +133,8 @@ fn sea_plate(local: [i32; 2], count: usize, screen: [i32; 2]) -> land::AtSeaPlat
         local,
         column: Arc::new(land::ColumnPlacement {
             hovered: false,
+            priority: 10,
+            anchor: None,
             identity: (Level::None, 0, 1, 2, 0),
             count,
             screen,

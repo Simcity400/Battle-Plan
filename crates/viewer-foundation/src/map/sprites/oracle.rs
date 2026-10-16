@@ -65,6 +65,48 @@ pub fn render_images(
     (pixels, pass.native_refusals, first_count)
 }
 
+/// Draws `batch` on a 16 by 16 frame through the production upload and draw, fade pages included,
+/// over the given image pages.
+pub fn render_presented(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    batch: &Batch,
+    pages: &[dds::Texture],
+) -> (Vec<u8>, usize) {
+    render_presented_at(device, queue, batch, pages, [16, 16])
+}
+
+/// [`render_presented`] on a frame of `size` pixels.
+pub fn render_presented_at(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    batch: &Batch,
+    pages: &[dds::Texture],
+    size: [u32; 2],
+) -> (Vec<u8>, usize) {
+    let images = IconTextures::new(device, queue, pages).unwrap();
+    let mut pass = SpritePass::new(
+        device,
+        queue,
+        1,
+        &images,
+        &LazyTextures::new(),
+        wgpu::TextureFormat::Rgba8Unorm,
+    )
+    .unwrap();
+    let arena = shader_pipeline::gpu::Arena::new(device);
+    arena.reset();
+    pass.upload(device, queue, &arena, batch, size, 1.);
+    arena.flush(queue);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    pass.draw_pages(&mut encoder);
+    queue.submit([encoder.finish()]);
+    let pixels = crate::map::test_support::gpu::render_sized(device, queue, size, |render| {
+        pass.draw_runs(render, size)
+    });
+    (pixels, pass.fade_pages())
+}
+
 /// Caller-populated ABI inputs. Reference tests construct these from their cases, independently
 /// of GUI emission and SpritePass upload.
 pub struct Inputs {

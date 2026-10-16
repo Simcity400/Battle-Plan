@@ -448,13 +448,15 @@ fn only_the_latest_camera_mode_waits_for_the_viewer() {
     use dashboard::protocol::{CameraMode, MapAction};
     let host = NativeHost::default();
     host.shared.0.lock().unwrap().status.ready = true;
-    for mode in [
-        CameraMode::Fly,
-        CameraMode::Walk,
-        CameraMode::Map,
-        CameraMode::Fly,
+    for (mode, overlays) in [
+        (CameraMode::Fly, false),
+        (CameraMode::Walk, true),
+        (CameraMode::Map, false),
+        (CameraMode::Fly, false),
+        (CameraMode::Fly, true),
     ] {
-        host.map_action(MapAction::CameraMode { mode }).unwrap();
+        host.map_action(MapAction::CameraMode { mode, overlays })
+            .unwrap();
     }
     host.map_action(MapAction::Inspect).unwrap();
     let inner = host.shared.0.lock().unwrap();
@@ -463,23 +465,27 @@ fn only_the_latest_camera_mode_waits_for_the_viewer() {
         .actions
         .iter()
         .map(|action| match action {
-            MapAction::CameraMode { mode } => Some(*mode),
+            MapAction::CameraMode { mode, overlays } => Some((*mode, *overlays)),
             _ => None,
         })
         .collect();
-    assert_eq!(queued, [Some(CameraMode::Fly), None]);
+    // The latest mode keeps the latest overlay choice with it.
+    assert_eq!(queued, [Some((CameraMode::Fly, true)), None]);
 }
 
 #[test]
 fn the_status_carries_the_camera_mode_for_the_interface() {
     let status = HostStatus {
         camera_mode: dashboard::protocol::CameraMode::Walk,
+        camera_overlays: true,
         ..Default::default()
     };
     let value = serde_json::to_value(&status).unwrap();
     assert_eq!(value["cameraMode"], "walk");
+    assert_eq!(value["cameraOverlays"], true);
+    let fresh = serde_json::to_value(HostStatus::default()).unwrap();
     assert_eq!(
-        serde_json::to_value(HostStatus::default()).unwrap()["cameraMode"],
-        "map"
+        (&fresh["cameraMode"], &fresh["cameraOverlays"]),
+        (&"map".into(), &false.into())
     );
 }

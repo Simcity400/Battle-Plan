@@ -281,8 +281,8 @@ struct Outgoing {
     /// An odd number of diagnostics-shortcut presses not yet sent; two presses
     /// between sends cancel out.
     toggle_diagnostics: bool,
-    /// The full map's camera mode to report; a newer one replaces it.
-    camera_mode: Option<CameraMode>,
+    /// The full map's camera mode and overlay choice to report; a newer pair replaces it.
+    camera_mode: Option<(CameraMode, bool)>,
 }
 
 impl Outgoing {
@@ -297,16 +297,17 @@ impl Outgoing {
         std::mem::take(&mut self.toggle_diagnostics).then_some(NativeEvent::ToggleDiagnostics)
     }
 
-    /// Records the camera mode to report; a newer one replaces one not yet sent.
-    fn report_camera_mode(&mut self, mode: CameraMode) {
-        self.camera_mode = Some(mode);
+    /// Records the camera mode and overlay choice to report; a newer pair replaces one not yet
+    /// sent.
+    fn report_camera_mode(&mut self, mode: CameraMode, overlays: bool) {
+        self.camera_mode = Some((mode, overlays));
     }
 
     /// The camera mode event to send, once.
     fn take_camera_mode(&mut self) -> Option<NativeEvent> {
         self.camera_mode
             .take()
-            .map(|mode| NativeEvent::CameraMode { mode })
+            .map(|(mode, overlays)| NativeEvent::CameraMode { mode, overlays })
     }
 
     fn is_empty(&self) -> bool {
@@ -724,14 +725,15 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    /// Reports the full map's camera mode to the host, whose controls follow it.
-    pub fn report_camera_mode(&self, mode: CameraMode) {
+    /// Reports the full map's camera mode and overlay choice to the host, whose controls follow
+    /// them.
+    pub fn report_camera_mode(&self, mode: CameraMode, overlays: bool) {
         let mut outgoing = self
             .shared
             .outgoing
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        outgoing.report_camera_mode(mode);
+        outgoing.report_camera_mode(mode, overlays);
         drop(outgoing);
         self.shared.output_ready.notify_one();
     }
@@ -1260,17 +1262,18 @@ mod tests {
         assert!(outgoing.is_empty() && outgoing.take_toggle_diagnostics().is_none());
     }
 
-    /// The host hears the latest camera mode once.
+    /// The host hears the latest camera mode and overlay choice once.
     #[test]
     fn the_latest_camera_mode_is_reported_once() {
         let mut outgoing = Outgoing::default();
-        outgoing.report_camera_mode(CameraMode::Fly);
-        outgoing.report_camera_mode(CameraMode::Walk);
+        outgoing.report_camera_mode(CameraMode::Fly, false);
+        outgoing.report_camera_mode(CameraMode::Walk, true);
         assert!(!outgoing.is_empty());
         assert!(matches!(
             outgoing.take_camera_mode(),
             Some(NativeEvent::CameraMode {
-                mode: CameraMode::Walk
+                mode: CameraMode::Walk,
+                overlays: true,
             })
         ));
         assert!(outgoing.is_empty() && outgoing.take_camera_mode().is_none());
@@ -1349,25 +1352,42 @@ mod tests {
             .push(NativeCommand::MapAction {
                 action: MapAction::CameraMode {
                     mode: CameraMode::Fly,
+                    overlays: true,
                 },
             })
             .unwrap();
         assert!(matches!(
             pending.actions.back(),
             Some(MapAction::CameraMode {
-                mode: CameraMode::Fly
+                mode: CameraMode::Fly,
+                overlays: true,
             })
         ));
         let line = serde_json::to_string(&NativeCommand::MapAction {
             action: MapAction::CameraMode {
                 mode: CameraMode::Walk,
+                overlays: true,
             },
         })
         .unwrap();
         assert_eq!(
             line,
-            r#"{"command":"map_action","action":{"kind":"cameraMode","mode":"walk"}}"#
+            r#"{"command":"map_action","action":{"kind":"cameraMode","mode":"walk","overlays":true}}"#
         );
+        // A host that leaves the choice out asks for the terrain alone.
+        let terse: NativeCommand = serde_json::from_str(
+            r#"{"command":"map_action","action":{"kind":"cameraMode","mode":"fly"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            terse,
+            NativeCommand::MapAction {
+                action: MapAction::CameraMode {
+                    mode: CameraMode::Fly,
+                    overlays: false,
+                },
+            }
+        ));
     }
 
     #[test]

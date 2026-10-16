@@ -759,7 +759,7 @@ impl Harness {
                 &mut self.report,
             )
             .into_iter()
-            .filter_map(|(origin, laid)| Some((origin, laid.unwrap()?)))
+            .filter_map(|(origin, _, laid)| Some((origin, laid.unwrap()?)))
             .collect()
     }
 

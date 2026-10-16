@@ -236,7 +236,12 @@ fn a_group_sits_on_the_mean_of_its_members_and_a_lone_icon_does_not_move() {
         icon(0, 1, 200, Some(7), 30.0),
         icon(0, 1, 300, Some(8), 90.0),
     ];
-    let groups = group(&icons, Level::State, &extents, &all_friendly);
+    let groups = group(
+        &icons,
+        &everywhere(Level::State, &icons),
+        &extents,
+        &all_friendly,
+    );
     assert_eq!(groups.len(), 2);
     assert_eq!(groups[0].members, vec![0, 1]);
     assert_eq!(groups[0].anchor, [15.0, 0.0, 0.0]);
@@ -255,7 +260,12 @@ fn a_nontransitive_relation_joins_every_accepting_group() {
     // 2 is not friendly toward 1, so it leads its own group; 3 is friendly
     // toward both leaders, and the native scan appends it to both.
     let directed = |first, other| matches!((other, first), (3, 1) | (3, 2));
-    let groups = group(&icons, Level::State, &extents, &directed);
+    let groups = group(
+        &icons,
+        &everywhere(Level::State, &icons),
+        &extents,
+        &directed,
+    );
     assert_eq!(groups.len(), 2);
     assert_eq!(groups[0].members, vec![0, 2]);
     assert_eq!(groups[1].members, vec![1, 2]);
@@ -345,10 +355,11 @@ fn the_indexed_rebuild_matches_the_native_scan_over_every_group() {
                     }
                     for at in [Level::None, Level::Province, Level::State, Level::Strategic] {
                         let expected = scan(&icons, at, &extents, &friendly);
-                        let fast: Vec<Vec<usize>> = group(&icons, at, &extents, &friendly)
-                            .into_iter()
-                            .map(|group| group.members)
-                            .collect();
+                        let fast: Vec<Vec<usize>> =
+                            group(&icons, &everywhere(at, &icons), &extents, &friendly)
+                                .into_iter()
+                                .map(|group| group.members)
+                                .collect();
                         assert_eq!(
                             fast, expected,
                             "seed {start}, {at:?}, huge states={huge_states}, huge regions={huge_regions}"
@@ -390,7 +401,12 @@ fn level_none_leaves_every_icon_where_it_was() {
         icon(0, 1, 100, Some(7), 0.0),
         icon(0, 1, 100, Some(7), 30.0),
     ];
-    let groups = group(&icons, Level::None, &extents, &all_friendly);
+    let groups = group(
+        &icons,
+        &everywhere(Level::None, &icons),
+        &extents,
+        &all_friendly,
+    );
     assert_eq!(groups.len(), 2);
     assert_eq!(groups[0].anchor, icons[0].anchor);
     assert_eq!(groups[1].anchor, icons[1].anchor);
@@ -419,7 +435,7 @@ fn unit_scale_grouping() {
             let mut group_count = 0;
             for _ in 0..5 {
                 let started = Instant::now();
-                let groups = group(&icons, level, &extents, &|_, _| false);
+                let groups = group(&icons, &everywhere(level, &icons), &extents, &|_, _| false);
                 times.push(started.elapsed().as_secs_f64() * 1e3);
                 assert_eq!(groups.iter().map(|g| g.members.len()).sum::<usize>(), count);
                 retained = groups.capacity() * std::mem::size_of::<Group>()
@@ -456,14 +472,24 @@ fn a_group_astride_the_seam_means_across_it_rather_than_through_the_map() {
         icon(0, 1, 100, Some(7), WIDTH - 32.0),
         icon(0, 1, 100, Some(7), 32.0),
     ];
-    let groups = group(&icons, Level::State, &extents, &all_friendly);
+    let groups = group(
+        &icons,
+        &everywhere(Level::State, &icons),
+        &extents,
+        &all_friendly,
+    );
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].anchor[0], 0.0);
     let mirrored = [
         icon(0, 1, 100, Some(7), 32.0),
         icon(0, 1, 100, Some(7), WIDTH - 32.0),
     ];
-    let groups = group(&mirrored, Level::State, &extents, &all_friendly);
+    let groups = group(
+        &mirrored,
+        &everywhere(Level::State, &mirrored),
+        &extents,
+        &all_friendly,
+    );
     assert_eq!(groups[0].anchor[0], 0.0);
 }
 
@@ -506,4 +532,123 @@ fn native_grouping_uses_directed_stored_truth_despite_active_war() {
     assert_eq!(native.co_belligerent(1, 102), Ok(false));
     assert_eq!(native.zero_at_war(1), Ok(true));
     assert_eq!(native.zero_at_war(2), Ok(false));
+}
+
+/// One level for every icon, as the game's camera groups.
+fn everywhere(level: Level, icons: &[Icon]) -> Vec<Level> {
+    vec![level; icons.len()]
+}
+
+#[test]
+fn each_icon_groups_at_its_own_level_and_two_icons_at_the_lower_of_theirs() {
+    let extents = extents(10.0, 10.0);
+    // One owner's icons in four provinces of one state, as a free eye sees them: the two far
+    // ones gather by their state, the near ones stay where they are.
+    let icons = [
+        icon(0, 1, 100, Some(7), 0.0),
+        icon(0, 1, 101, Some(7), 10.0),
+        icon(0, 1, 102, Some(7), 20.0),
+        icon(0, 1, 103, Some(7), 30.0),
+    ];
+    let levels = [Level::State, Level::None, Level::State, Level::Province];
+    let members: Vec<_> = group(&icons, &levels, &extents, &all_friendly)
+        .into_iter()
+        .map(|group| group.members)
+        .collect();
+    assert_eq!(members, [vec![0, 2], vec![1], vec![3]]);
+    // A province-level icon joins a state-level group only through its own province.
+    let icons = [
+        icon(0, 1, 100, Some(7), 0.0),
+        icon(0, 1, 100, Some(7), 4.0),
+        icon(0, 1, 101, Some(7), 8.0),
+    ];
+    let levels = [Level::State, Level::Province, Level::Province];
+    let groups = group(&icons, &levels, &extents, &all_friendly);
+    let members: Vec<_> = groups.iter().map(|group| group.members.clone()).collect();
+    assert_eq!(members, [vec![0, 1], vec![2]]);
+    // A state-level icon in another province no longer joins a group holding a province-level
+    // member: it would gather that member across provinces.
+    let icons = [
+        icon(0, 1, 100, Some(7), 0.0),
+        icon(0, 1, 100, Some(7), 4.0),
+        icon(0, 1, 101, Some(7), 8.0),
+    ];
+    let levels = [Level::State, Level::Province, Level::State];
+    let members: Vec<_> = group(&icons, &levels, &extents, &all_friendly)
+        .into_iter()
+        .map(|group| group.members)
+        .collect();
+    assert_eq!(members, [vec![0, 1], vec![2]]);
+    let levels = [Level::State, Level::Province, Level::Province];
+    let groups = group(&icons, &levels, &extents, &all_friendly);
+    let members: Vec<_> = groups.iter().map(|group| group.members.clone()).collect();
+    assert_eq!(members, [vec![0, 1], vec![2]]);
+    assert_eq!(groups[0].anchor, [2.0, 0.0, 0.0]);
+}
+
+#[test]
+fn a_nearer_icon_does_not_lower_a_group_whose_members_span_provinces() {
+    let extents = extents(10.0, 10.0);
+    // Two far icons of one state gather from two provinces; a near one in the first's province
+    // would share only that province with the group, so it stands alone.
+    let icons = [
+        icon(0, 1, 100, Some(7), 0.0),
+        icon(0, 1, 101, Some(7), 10.0),
+        icon(0, 1, 100, Some(7), 4.0),
+    ];
+    let levels = [Level::State, Level::State, Level::Province];
+    let members: Vec<_> = group(&icons, &levels, &extents, &all_friendly)
+        .into_iter()
+        .map(|group| group.members)
+        .collect();
+    assert_eq!(members, [vec![0, 1], vec![2]]);
+    // Members that all share the first's province still take it, and the group then gathers by
+    // that province alone.
+    let icons = [
+        icon(0, 1, 100, Some(7), 0.0),
+        icon(0, 1, 100, Some(7), 10.0),
+        icon(0, 1, 100, Some(7), 4.0),
+        icon(0, 1, 101, Some(7), 8.0),
+    ];
+    let levels = [Level::State, Level::State, Level::Province, Level::State];
+    let members: Vec<_> = group(&icons, &levels, &extents, &all_friendly)
+        .into_iter()
+        .map(|group| group.members)
+        .collect();
+    assert_eq!(members, [vec![0, 1, 2], vec![3]]);
+    // Lowering from a region to a state, a member of another, unfriendly owner in the same state,
+    // which only the region admits, keeps the newcomer out.
+    let mut sea_far = icon(0, 1, 200, Some(7), 0.0);
+    let mut other_owner = icon(0, 2, 201, Some(7), 10.0);
+    let mut near = icon(0, 1, 202, Some(7), 4.0);
+    for icon in [&mut sea_far, &mut other_owner, &mut near] {
+        icon.region = Some(2);
+    }
+    let icons = [sea_far, other_owner, near];
+    let levels = [Level::Strategic, Level::Strategic, Level::State];
+    let unfriendly = |_: u32, _: u32| false;
+    let members: Vec<_> = group(&icons, &levels, &extents, &unfriendly)
+        .into_iter()
+        .map(|group| group.members)
+        .collect();
+    assert_eq!(members, [vec![0, 1], vec![2]]);
+}
+
+#[test]
+fn only_a_strategic_member_stands_at_its_region_s_centre() {
+    let extents = extents(10.0, 10.0);
+    let mut sea = icon(0, 1, 200, None, 100.0);
+    sea.region = Some(9);
+    let mut other = sea;
+    other.anchor = [200.0, 0.0, 0.0];
+    // Region 9's centre is (5, 0, 5): the strategic member stands there, the state-level one
+    // where it is, and their group between them.
+    let groups = group(
+        &[sea, other],
+        &[Level::Strategic, Level::State],
+        &extents,
+        &all_friendly,
+    );
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].anchor, [102.5, 0.0, 2.5]);
 }

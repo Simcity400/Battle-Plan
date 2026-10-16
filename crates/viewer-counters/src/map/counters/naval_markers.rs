@@ -895,7 +895,7 @@ fn combat_icons(
     let resources = gui_windows::gui_assets(inputs, None);
     let defines = &inputs.content.defines;
     // Off its cutoff the pass erases every icon : no pass is planned.
-    if !combat_pass(inputs.camera.height, defines) {
+    if !inputs.passes(|height| combat_pass(height, defines)) {
         return Ok(());
     }
     // Resolve the map window's size in the GUI viewport. It determines every
@@ -1322,7 +1322,7 @@ fn combat_tiles(
                 })
                 .collect::<Result<Vec<_>, &'static str>>()?;
             // `derive` starts a group only with a task force.
-            tiles[side].push(naval.flotilla(&units.iter().collect::<Vec<_>>(), true));
+            tiles[side].push(naval.flotilla(&units.iter().collect::<Vec<_>>(), true, false));
         }
     }
     Ok(tiles)

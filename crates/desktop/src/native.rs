@@ -30,6 +30,8 @@ pub struct HostStatus {
     pub error: Option<String>,
     /// The full map's camera mode, as its viewer last reported it.
     pub camera_mode: dashboard::protocol::CameraMode,
+    /// Whether flying and walking draw the map's interface, as its viewer last reported it.
+    pub camera_overlays: bool,
 }
 
 #[derive(Default)]

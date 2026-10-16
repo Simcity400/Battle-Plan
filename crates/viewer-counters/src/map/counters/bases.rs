@@ -807,7 +807,7 @@ pub(super) fn bases(
         .refused_tokens
         .clone_from(&tables.base_icons.refused);
 
-    if visible(inputs.camera.height, defines.air_base_cutoff) {
+    if inputs.shows(defines.air_base_cutoff) {
         let wings = wings_per_state(frame, vision)?;
         let (states, complete) = air_base_icon_states(frame)?;
         if !complete {
@@ -861,7 +861,7 @@ pub(super) fn bases(
     let icons = &tables.base_icons;
     out.report.unknown_bases.clone_from(&icons.unknown);
     // Both icons draw strictly below `FACILITY_DISTANCE_CUTOFF`, in frame 0.
-    if inputs.camera.height >= defines.facility_cutoff {
+    if !inputs.shows(defines.facility_cutoff) {
         return Ok(());
     }
     for &(province, anchor) in &icons.headquarters {

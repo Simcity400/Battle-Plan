@@ -338,7 +338,7 @@ impl Viewer {
                 }
             }
             MapAction::Inspect => self.report_map_details(),
-            MapAction::CameraMode { mode } => self.set_camera_mode(mode, ctx),
+            MapAction::CameraMode { mode, overlays } => self.set_camera_mode(mode, overlays, ctx),
         }
         ctx.request_repaint();
     }

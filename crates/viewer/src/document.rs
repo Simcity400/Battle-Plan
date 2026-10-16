@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 use viewer_combat as combat;
 use viewer_foundation::map::camera::MapSize;
 use viewer_foundation::map::camera::{MapDefines, motion::CameraLaw};
+use viewer_foundation::map::free_icons;
 use viewer_foundation::map::gui_resources::GuiAssets;
 use viewer_foundation::map::gui_resources::GuiFlags;
 use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
@@ -366,6 +367,8 @@ pub struct DumpOverlay<'a> {
     pub batch: Batch,
     pub extra: Batch,
     pub sprites: Batch,
+    /// The sprites as a free camera shows them ([`free_icons::present`]).
+    presented: Batch,
     pub labels: LabelReport,
     pub counters: CounterReport,
     pub raids: raids::RaidReport,
@@ -373,6 +376,16 @@ pub struct DumpOverlay<'a> {
 }
 
 impl DumpOverlay<'_> {
+    /// The sprites the last [`DumpOverlay::present`] drew: as laid out, or as a free camera
+    /// shows them.
+    pub fn shown(&self) -> &Batch {
+        if self.camera.free().is_some() {
+            &self.presented
+        } else {
+            &self.sprites
+        }
+    }
+
     pub fn schedule(&self) -> &Shared {
         self.prepared.counter_view.presentation.schedule()
     }
@@ -420,11 +433,28 @@ impl DumpOverlay<'_> {
             )?;
             self.hour.icons.lazy.settle();
             if self.hour.icons.lazy.version() == before {
-                return Ok(viewer_foundation::map::sprites::dump_sprites(
+                viewer_foundation::map::sprites::dump_sprites(
                     &self.batch,
                     &self.extra,
                     &mut self.sprites,
-                ));
+                );
+                if self.camera.free().is_none() {
+                    return Ok(&self.sprites);
+                }
+                // A free camera shows the icons standing in the world.
+                let ground = free_icons::Ground {
+                    field: self.hour.heights(),
+                    sight: self.hour.assets.terrain_sight(),
+                };
+                free_icons::present(
+                    &self.camera,
+                    self.viewport,
+                    self.ui_scale,
+                    Some(&ground),
+                    &self.sprites,
+                    &mut self.presented,
+                );
+                return Ok(&self.presented);
             }
             self.prepared = self.hour.prepare_overlay_cached(
                 self.camera,
@@ -601,15 +631,14 @@ impl PreparedOverlay {
         &self.raid_report
     }
 
-    /// Only icons submitted by the latest draw can own the hover.
-    pub fn raid_at(&self, point: [f32; 2]) -> Option<&raids::tooltips::Hit> {
-        if self.raid_range.is_none() && !self.raids_hovered {
-            return None;
+    /// The hit shapes of the raid icons the latest draw laid out for hovering, drawn or hidden;
+    /// none when it left them out. Only those icons can own the hover.
+    pub fn raid_hits(&self) -> &[raids::tooltips::Hit] {
+        if self.raid_range.is_some() || self.raids_hovered {
+            &self.raid_hits
+        } else {
+            &[]
         }
-        self.raid_hits
-            .iter()
-            .filter(|hit| hit.contains(point))
-            .max_by_key(|hit| hit.layer)
     }
 
     /// ToolTip draws after the map and combat window, with this hour's native flag atlases.
@@ -3000,6 +3029,7 @@ impl<'a> Hour<'a> {
             batch: Batch::default(),
             extra: Batch::default(),
             sprites: Batch::default(),
+            presented: Batch::default(),
             labels: LabelReport::default(),
             counters: CounterReport::default(),
             raids: raids::RaidReport::default(),
@@ -3082,6 +3112,8 @@ mod tests {
                         layer: self.below(1 << 20) as u64,
                         shade: 0.0,
                         exact: None,
+                        anchor: None,
+                        present: None,
                     })
                     .collect()
             }
@@ -3153,6 +3185,8 @@ mod tests {
             layer: group as u64,
             shade: 0.0,
             exact: None,
+            anchor: None,
+            present: None,
         };
         let groups: Vec<Vec<Quad>> = (0..7).map(|group| vec![quad(group)]).collect();
         let parts = OverlayParts {

@@ -15,9 +15,9 @@
 //! the frontend asks the owner to publish the current state once it listens, and it ignores any
 //! event that is not newer than the last it took.
 //!
-//! The pop-out's map has its own camera mode: the campaign map's controls choose it for window
-//! `generation` ([`popout_camera_mode`]), and the map's own shortcut cycles it in the window. Its
-//! viewer reports it in its status. Controllers reach it while its window is in front
+//! The pop-out's map has its own camera mode and overlay choice: the campaign map's controls
+//! choose them for window `generation` ([`popout_camera_mode`]), and the map's own shortcut cycles
+//! the mode in the window. Its viewer reports both in its status. Controllers reach it while its window is in front
 //! ([`PopOuts::in_front`]).
 mod lifecycle;
 mod shell;
@@ -409,8 +409,8 @@ impl Owner {
                         let host = NativeHost::popout(
                             shell.hwnd(),
                             Arc::new(move || {
-                                let _ = sender
-                                    .send(Message::Input(Input::StatusChanged(generation)));
+                                let _ =
+                                    sender.send(Message::Input(Input::StatusChanged(generation)));
                             }),
                         );
                         self.opening = Some((generation, PopOut { shell, host }));
@@ -434,7 +434,11 @@ impl Owner {
                     && *opening == generation
                 {
                     let popout = self.opening.take().map(|(_, popout)| popout);
-                    *self.shared.current.lock().unwrap_or_else(|e| e.into_inner()) =
+                    *self
+                        .shared
+                        .current
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) =
                         popout.map(|popout| (generation, popout));
                 }
                 // Each start or restart is a new viewer of the window.
@@ -500,16 +504,18 @@ impl Owner {
             }
             Effect::Release(generation) => {
                 let current = {
-                    let mut current = self.shared.current.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut current = self
+                        .shared
+                        .current
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     if current.as_ref().is_some_and(|(at, _)| *at == generation) {
                         current.take()
                     } else {
                         None
                     }
                 };
-                let opening = self
-                    .opening
-                    .take_if(|(at, _)| *at == generation);
+                let opening = self.opening.take_if(|(at, _)| *at == generation);
                 for (_, popout) in current.into_iter().chain(opening) {
                     popout.host.shutdown();
                     drop(popout.shell);
@@ -640,9 +646,7 @@ impl Owner {
 }
 
 /// Waits off the async runtime for the owner's answer.
-async fn answer<T: Send + 'static>(
-    receiver: Receiver<Result<T, String>>,
-) -> Result<T, String> {
+async fn answer<T: Send + 'static>(receiver: Receiver<Result<T, String>>) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(move || {
         receiver
             .recv()
@@ -716,7 +720,10 @@ pub fn popout_next_monitor(popouts: State<'_, PopOuts>, generation: u64) {
 /// The host of pop-out window `generation` (or of the open one with `None`) while its viewer
 /// runs; one that exited names why, and a command for another window is refused.
 fn running(popouts: &PopOuts, generation: Option<u64>) -> Result<NativeHost, String> {
-    let (current, host) = popouts.shared.current().ok_or("The map is not popped out")?;
+    let (current, host) = popouts
+        .shared
+        .current()
+        .ok_or("The map is not popped out")?;
     if generation.is_some_and(|generation| generation != current) {
         return Err(CLOSED_WINDOW.into());
     }
@@ -760,14 +767,16 @@ pub fn popout_configure(
     running(&popouts, Some(generation))?.map_action(MapAction::Configure { options })
 }
 
-/// The camera mode of pop-out window `generation`'s map, which the campaign map's controls choose.
+/// The camera mode of pop-out window `generation`'s map and whether a free mode shows the map's
+/// interface, which the campaign map's controls choose.
 #[tauri::command]
 pub fn popout_camera_mode(
     popouts: State<'_, PopOuts>,
     generation: u64,
     mode: dashboard::protocol::CameraMode,
+    overlays: bool,
 ) -> Result<(), String> {
-    running(&popouts, Some(generation))?.map_action(MapAction::CameraMode { mode })
+    running(&popouts, Some(generation))?.map_action(MapAction::CameraMode { mode, overlays })
 }
 
 /// Exports the map of pop-out window `generation`, captured before the save dialog opened; a
@@ -818,6 +827,7 @@ mod tests {
             },
             MapAction::CameraMode {
                 mode: dashboard::protocol::CameraMode::Fly,
+                overlays: true,
             },
         ] {
             assert_eq!(mirrored(&action), None, "{action:?}");

@@ -30,6 +30,10 @@ pub(super) type ColumnIdentity = (Level, u32, u32, u32, u32);
 #[derive(Clone, Debug)]
 pub(super) struct ColumnPlacement {
     pub(super) hovered: bool,
+    /// The column's content priority at its grouping level.
+    pub(super) priority: i8,
+    /// Where the column stands, for a free eye.
+    pub(super) anchor: Option<IconAnchor>,
     pub(super) identity: ColumnIdentity,
     pub(super) count: usize,
     pub(super) screen: [i32; 2],
@@ -138,8 +142,6 @@ pub(super) struct StackStyle {
 }
 
 pub(super) struct PreparedLand {
-    /// Whether coarse grouping applies at the camera the items were built for.
-    pub(super) coarse: bool,
     pub(super) stacks: Vec<Stack>,
     pub(super) styles: Vec<StackStyle>,
     pub(super) sprites: Vec<Option<hovers::Sprite>>,
@@ -152,7 +154,8 @@ pub(super) struct PreparedLand {
     pub(super) groups: Vec<counter_groups::Group>,
     pub(super) items: Vec<Vec<Plate>>,
     pub(super) hovered: Vec<bool>,
-    pub(super) at: Level,
+    /// Each icon's grouping level.
+    pub(super) levels: Vec<Level>,
     pub(super) extents: Extents,
     pub(super) countries: Arc<Countries>,
     pub(super) templates: Arc<TemplateIcons>,
@@ -173,7 +176,7 @@ impl PreparedLand {
         for (icon, position) in self.icons.iter_mut().zip(&self.positions) {
             icon.anchor = position.at();
         }
-        counter_groups::update_anchors(&mut self.groups, &self.icons, self.at, &self.extents);
+        counter_groups::update_anchors(&mut self.groups, &self.icons, &self.levels, &self.extents);
         report.groups += self.groups.len();
         let columns = match &inputs.assets.layouts.columns {
             Ok(columns) => columns,
@@ -218,11 +221,6 @@ impl PreparedLand {
             };
             count_noted(gaps, STACK_WINDOW, &diagnostics);
         }
-        let lift = zoom_lift(
-            columns,
-            inputs.content.defines.units_cutoff,
-            inputs.camera.height,
-        );
         // Sort the visible icons on `(depth - priority) * 1e6` and re-parents
         // them last to first, so the nearest group of one priority draws on top. The columns
         // are emitted farthest first for the same result.
@@ -246,10 +244,20 @@ impl PreparedLand {
         let mut placed_columns = Vec::new();
         for position in 0..self.order.len() {
             let index = self.order[position];
-            let Some(screen) = inputs.screen(self.groups[index].anchor) else {
+            let world = self.groups[index].anchor;
+            let Some(screen) = inputs.screen(world) else {
                 continue;
             };
+            let height = inputs.icon_height(world);
+            let lift = zoom_lift(columns, inputs.content.defines.units_cutoff, height);
             let anchor = [screen[0], screen[1] + lift];
+            let level = self.levels[self.groups[index].members[0]];
+            let priority = inputs.content.defines.level_priority(level);
+            let icon = inputs.icon_anchor(
+                IconFamily::Columns,
+                world,
+                inputs.content.defines.icons_cutoff,
+            );
             // Sum every item: an unknown size refuses the whole column.
             let plates: Result<Vec<(Plate, [f32; 2])>, String> = self.items[index]
                 .iter()
@@ -319,8 +327,10 @@ impl PreparedLand {
             let source = self.icons[representative];
             let column = Arc::new(ColumnPlacement {
                 hovered: self.hovered[index],
+                priority,
+                anchor: icon,
                 identity: (
-                    self.at,
+                    level,
                     source.kind,
                     source.owner,
                     source.province,
@@ -351,9 +361,15 @@ impl PreparedLand {
                     Plate::Naval(_) => true,
                 };
                 let drawn = match plate {
-                    Plate::Land(member) => {
-                        self.land_plate(inputs, report, missing_owners, member, origin, size)?
-                    }
+                    Plate::Land(member) => self.land_plate(
+                        inputs,
+                        report,
+                        missing_owners,
+                        member,
+                        origin,
+                        size,
+                        priority,
+                    )?,
                     Plate::Naval(member) => {
                         // The presented frame draws it through its window's instance.
                         self.naval_plate(inputs, report, missing_owners, member);
@@ -370,11 +386,11 @@ impl PreparedLand {
                 let Some(sprite) = drawn else {
                     continue;
                 };
-                let base = hovered_layer(inputs.stack_priority(), column.hovered, ordinal, 0);
+                let base = hovered_layer(priority, column.hovered, ordinal, 0);
                 for hit in &mut report.unit_hits[hit_start..] {
                     hit.layer = base;
                 }
-                let offset = base - layer(inputs.stack_priority(), 0, 0);
+                let offset = base - layer(priority, 0, 0);
                 ordinal += 1;
                 if !shown {
                     continue;
@@ -382,6 +398,7 @@ impl PreparedLand {
                 batch.quads.extend(sprite.quads.iter().map(|quad| {
                     let mut quad = quad.clone();
                     quad.layer += offset;
+                    quad.anchor = icon;
                     quad
                 }));
             }
@@ -390,7 +407,8 @@ impl PreparedLand {
     }
 
     /// Draws one land plate at `origin` into its cached sprite and reports it; `None` when it is
-    /// off screen.
+    /// off screen. `priority` is its column's.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn land_plate(
         &mut self,
         inputs: &CounterInputs<'_>,
@@ -399,6 +417,7 @@ impl PreparedLand {
         member: usize,
         origin: [f32; 2],
         size: [f32; 2],
+        priority: i8,
     ) -> io::Result<Option<&Batch>> {
         let stack = &self.stacks[member];
         if !on_screen(origin, size, inputs.extent()) && !abilities_on_screen(inputs, stack, origin)
@@ -427,7 +446,7 @@ impl PreparedLand {
         };
         if let Some(content) = content
             && let Err(reason) =
-                content.frame(action, stack.owner == self.vision.ours(), self.coarse)
+                content.frame(action, stack.owner == self.vision.ours(), stack.coarse)
         {
             if let Some(count) = report.land_action_gaps.get_mut(reason) {
                 *count += 1;
@@ -482,7 +501,7 @@ impl PreparedLand {
                 .and_then(|moving| moving.eta)
                 .map(|(next, destination)| if ours { destination } else { next }),
             ours,
-            coarse: self.coarse,
+            coarse: stack.coarse,
             hidden: stack.hidden,
             railway_gun: stack.gun.is_some(),
             members: Arc::clone(&stack.divisions),
@@ -498,10 +517,16 @@ impl PreparedLand {
                 viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
             },
             members: Arc::clone(&stack.divisions),
-            layer: layer(inputs.stack_priority(), 0, 0),
+            layer: layer(priority, 0, 0),
         };
         report.unit_hits.push(click.clone());
-        self.missing_flag(inputs, report, missing_owners, stack.flag_owner);
+        self.missing_flag(
+            inputs,
+            report,
+            missing_owners,
+            stack.flag_owner,
+            stack.coarse,
+        );
         if self.sprites[member]
             .as_ref()
             .is_none_or(|sprite| sprite.origin != origin)
@@ -512,7 +537,8 @@ impl PreparedLand {
                 .map(|sprite| sprite.batch)
                 .unwrap_or_default();
             sprite.clear();
-            let presented = draw_land_counter(inputs, &mut sprite, 0, origin, self, member)?;
+            let presented =
+                draw_land_counter(inputs, &mut sprite, 0, origin, self, member, priority)?;
             self.sprites[member] = Some(hovers::Sprite {
                 origin,
                 batch: sprite,
@@ -563,20 +589,21 @@ impl PreparedLand {
             report.no_intel_counters += 1;
         }
         if let Some(owner) = flotilla.flag_owner {
-            self.missing_flag(inputs, report, missing_owners, owner);
+            self.missing_flag(inputs, report, missing_owners, owner, flotilla.coarse);
         }
     }
 
-    /// The caller turns these owners into `report.missing_flags`' tags.
+    /// The caller turns these owners into `report.missing_flags`' tags. `coarse` is the plate's.
     fn missing_flag(
         &self,
         inputs: &CounterInputs<'_>,
         report: &mut CounterReport,
         missing_owners: &mut Vec<u32>,
         owner: u32,
+        coarse: bool,
     ) {
         // acquire the selected atlas before drawing.
-        let atlas = if self.coarse {
+        let atlas = if coarse {
             &inputs.assets.medium_flags
         } else {
             &inputs.assets.flags
@@ -604,6 +631,9 @@ pub(super) struct Stack {
     pub(super) plate: Result<[f32; 4], String>,
     /// The representative's flag owner at this zoom; see [`unit_flag_owner`].
     pub(super) flag_owner: u32,
+    /// Whether the plate draws coarse: its column stands beyond the content's coarse grouping
+    /// distance (the camera's height, or a free eye's distance to the column).
+    pub(super) coarse: bool,
     pub(super) type_tint: Option<type_tint::Side>,
     pub(super) hq: bool,
     pub(super) portrait: Option<counter_order::Portrait>,
@@ -1520,7 +1550,8 @@ fn add_railway_guns(
         if location_warning.is_none() {
             out.report.unavailable_railway_gun_locations += 1;
         }
-        let flag_owner = unit_flag_owner(slot, gun.expeditionary_owner, coarse(inputs), owner);
+        // The detailed flag owner; a coarse column takes the unit's own ([`land_stack`]).
+        let flag_owner = unit_flag_owner(slot, gun.expeditionary_owner, false, owner);
         sources
             .entry((gun.province, kind))
             .or_default()
@@ -1661,7 +1692,8 @@ pub(super) fn land_counters<'a>(
             continue;
         }
         let status = land.status.get(division.id);
-        let flag_owner = unit_flag_owner(slot, division.expeditionary_owner, coarse(inputs), owner);
+        // The detailed flag owner; a coarse column takes the unit's own ([`land_stack`]).
+        let flag_owner = unit_flag_owner(slot, division.expeditionary_owner, false, owner);
         sources
             .entry((division.province, kind))
             .or_default()
@@ -1780,18 +1812,32 @@ pub(super) fn land_counters<'a>(
         positions.push(position);
         admitted.push(source);
     }
-    let groups = counter_groups::group(&icons, geography.at, geography.extents, friendly);
-    let rules = JoinRules {
-        coarse: coarse(inputs),
-        color_mode: inputs.settings.color_mode,
-        nato: inputs.settings.nato,
-    };
+    // Each icon groups at the level its own distance gives: one level for the game's camera.
+    let levels: Vec<Level> = icons
+        .iter()
+        .map(|icon| {
+            inputs
+                .content
+                .defines
+                .groups
+                .grouping(inputs.icon_height(icon.anchor))
+        })
+        .collect();
+    let groups = counter_groups::group(&icons, &levels, geography.extents, friendly);
     let mut drawn = Vec::new();
     let mut flotillas = Vec::new();
     let mut items = Vec::new();
     let mut undecided = BTreeMap::new();
     for group in &groups {
         let mut group_items = Vec::new();
+        // A selected unit splits from its group near enough to the camera, and a group far
+        // enough draws coarse.
+        let height = inputs.icon_height(group.anchor);
+        let rules = JoinRules {
+            coarse: inputs.content.defines.coarse(height),
+            color_mode: inputs.settings.color_mode,
+            nato: inputs.settings.nato,
+        };
         // Append each member source's units, in member order, to the group icon;
         // The game then first-fits them into the column's plates, never across unit classes.
         // Nothing sorts plates: an HQ provider's plate stands wherever its source's walk puts
@@ -1807,7 +1853,7 @@ pub(super) fn land_counters<'a>(
                 } else {
                     viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
                 };
-                if !inputs.selected_join(kind.unit(rep.id), kind.unit(unit.id)) {
+                if !inputs.selected_join(kind.unit(rep.id), kind.unit(unit.id), height) {
                     return false;
                 }
                 land_join(unit, rep, land.icons, land.countries, rules, &mut undecided)
@@ -1816,6 +1862,7 @@ pub(super) fn land_counters<'a>(
                 if !inputs.selected_join(
                     Unit::TaskForce(rep.force.id),
                     Unit::TaskForce(unit.force.id),
+                    height,
                 ) {
                     return false;
                 }
@@ -1833,7 +1880,7 @@ pub(super) fn land_counters<'a>(
                     })
                     .collect();
                 group_items.push(Plate::Naval(flotillas.len()));
-                flotillas.push(naval.flotilla(&members, false));
+                flotillas.push(naval.flotilla(&members, false, rules.coarse));
                 continue;
             }
             let item: Vec<&LandUnit<'_>> = item
@@ -1844,9 +1891,14 @@ pub(super) fn land_counters<'a>(
                 })
                 .collect();
             group_items.push(Plate::Land(drawn.len()));
-            let mut stack = land_stack(&item, land, &undecided, inputs.settings.nato, &|name| {
-                inputs.assets.types.declares(name)
-            });
+            let mut stack = land_stack(
+                &item,
+                land,
+                &undecided,
+                inputs.settings.nato,
+                &|name| inputs.assets.types.declares(name),
+                rules.coarse,
+            );
             let kind = if stack.gun.is_some() {
                 viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun
             } else {
@@ -1872,8 +1924,9 @@ pub(super) fn land_counters<'a>(
         .collect();
     let hovered = items
         .iter()
-        .map(|plates: &Vec<Plate>| {
-            geography.at == Level::None
+        .zip(&groups)
+        .map(|(plates, group): (&Vec<Plate>, _)| {
+            levels[group.members[0]] == Level::None
                 && plates.iter().any(|plate| {
                     let (kind, members) = match *plate {
                         Plate::Land(member) => (
@@ -1896,7 +1949,6 @@ pub(super) fn land_counters<'a>(
         })
         .collect();
     Ok(PreparedLand {
-        coarse: rules.coarse,
         sprites: (0..drawn.len()).map(|_| None).collect(),
         stacks: drawn,
         styles,
@@ -1907,7 +1959,7 @@ pub(super) fn land_counters<'a>(
         groups,
         items,
         hovered,
-        at: geography.at,
+        levels,
         extents: geography.extents.clone(),
         countries: Arc::clone(land.countries),
         templates: Arc::clone(land.icons),
@@ -1924,6 +1976,7 @@ pub(super) fn land_stack(
     undecided: &BTreeMap<u64, SharingUnknown>,
     nato: bool,
     declared: &dyn Fn(&str) -> bool,
+    coarse: bool,
 ) -> Stack {
     let portraits = land.portraits;
     let rep = item[0];
@@ -1939,7 +1992,9 @@ pub(super) fn land_stack(
         logical: rep.logical,
         // Set under the counter colour mode by the caller.
         plate: Ok([1.0; 4]),
-        flag_owner: rep.flag_owner,
+        // A coarse plate shows the unit's own flag, a detailed one its expeditionary owner's.
+        flag_owner: if coarse { rep.owner } else { rep.flag_owner },
+        coarse,
         type_tint: rep.type_tint,
         hidden: false,
         hit_points: Vec::new(),
@@ -2131,17 +2186,18 @@ pub(super) fn draw_land_counter(
     origin: [f32; 2],
     land: &PreparedLand,
     member: usize,
+    priority: i8,
 ) -> io::Result<hovers::Presented> {
     let first = batch.quads.len();
     draw_land_children(inputs, batch, origin, land, member)?;
     let controls = hovers::presented(
         inputs,
         &land.stacks[member],
-        land.coarse,
+        land.stacks[member].coarse,
         origin,
         &batch.quads[first..],
     );
-    rank_children(batch, first, inputs.stack_priority(), icon)?;
+    rank_children(batch, first, priority, icon)?;
     Ok(controls)
 }
 
@@ -2171,7 +2227,7 @@ fn draw_land_children(
         .as_ref()
         .expect("land plate layout was admitted");
     let assets = inputs.assets;
-    if land.coarse {
+    if stack.coarse {
         draw_coarse_counter(
             inputs,
             batch,
@@ -2252,8 +2308,11 @@ fn draw_land_children(
         draw_child(batch, sheet, &layout.group_marker, origin, 0, color);
     }
     if let Some(content) = &assets.land_action
-        && let Ok(Some(frame)) =
-            content.frame(stack.action, stack.owner == land.vision.ours(), land.coarse)
+        && let Ok(Some(frame)) = content.frame(
+            stack.action,
+            stack.owner == land.vision.ours(),
+            stack.coarse,
+        )
         && let Ok(sheet) = &content.sheet
     {
         batch.at_layer(u64::from(layout.action.order));
@@ -2484,7 +2543,7 @@ fn draw_gun_children(
     if let Some(frame) = style.glyphs.supply {
         draw(&layout.supply, frame, [1.0; 4]);
     }
-    if land.coarse {
+    if stack.coarse {
         // The coarse arm only rewrites the plate, the medium flag and the count.
         let _ = draw_coarse_counter(
             inputs,
@@ -2576,7 +2635,7 @@ fn draw_gun_children(
     }
     if let Some(content) = &assets.gun_action
         && let Ok(Some(frame)) =
-            content.frame(gun.action, stack.owner == land.vision.ours(), land.coarse)
+            content.frame(gun.action, stack.owner == land.vision.ours(), stack.coarse)
         && let Ok(sheet) = &content.sheet
     {
         batch.at_layer(u64::from(layout.action.order));

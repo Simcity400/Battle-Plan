@@ -20,7 +20,7 @@ fn unit(force: &TaskForceRow, slot: u32, strength: i64) -> NavalUnit<'_> {
 fn task_force_flags_distinguish_coarse_sea_and_detailed_port() {
     let vision = Vision::default();
     let native = NativeInputs::default();
-    let mut context = NavalContext {
+    let context = NavalContext {
         vision: &vision,
         type_tints: &type_tint::Index::default(),
         native: &native,
@@ -50,11 +50,12 @@ fn task_force_flags_distinguish_coarse_sea_and_detailed_port() {
             sight: Sight::Partial,
             ..unit(&force, 7, 0)
         };
+        // The column's coarse choice decides an at-sea plate's flag; a port item is never coarse.
         for coarse in [false, true] {
-            context.coarse = coarse;
-            let sea = context.flotilla(&[&first, &second], false);
+            let sea = context.flotilla(&[&first, &second], false, coarse);
             assert_eq!(sea.flag_owner, Some(if coarse { 7 } else { detailed }));
-            let port = context.flotilla(&[&first, &second], true);
+            assert_eq!(sea.coarse, coarse);
+            let port = context.flotilla(&[&first, &second], true, coarse);
             assert_eq!(port.flag_owner, Some(detailed));
             assert!(!port.coarse);
         }

@@ -1175,10 +1175,16 @@ fn draw_land_action_fixture_with(
         icon_inputs: &Default::default(),
     };
     let members: Vec<_> = members.iter().collect();
-    let stack = land::land_stack(&members, &tables, &Default::default(), false, &|_| false);
+    let stack = land::land_stack(
+        &members,
+        &tables,
+        &Default::default(),
+        false,
+        &|_| false,
+        coarse,
+    );
     let style = land::stack_style(&inputs, &stack);
     let mut land = PreparedLand {
-        coarse,
         stacks: vec![stack],
         styles: vec![style],
         sprites: vec![None],
@@ -1189,7 +1195,7 @@ fn draw_land_action_fixture_with(
         groups: Vec::new(),
         items: Vec::new(),
         hovered: Vec::new(),
-        at: Level::None,
+        levels: Vec::new(),
         extents: Default::default(),
         countries,
         templates,
@@ -1205,6 +1211,7 @@ fn draw_land_action_fixture_with(
             0,
             [100.0, 200.0],
             [81.0, 29.0],
+            inputs.content.defines.stack_priority(inputs.camera.height),
         )
         .unwrap()
         .unwrap()
@@ -4339,7 +4346,7 @@ fn a_mission_item_shows_its_hull_and_pride_only_from_the_first_members_150() {
             position: None,
             strength: 0,
         };
-        let mut tile = context.flotilla(&[&unit], true);
+        let mut tile = context.flotilla(&[&unit], true, false);
         tile.status.pride = Some(true);
         assert_eq!(tile.no_intel_type(), !detailed, "{byte}");
         assert_eq!(tile.shows_pride(), Some(detailed), "{byte}");
@@ -4367,7 +4374,7 @@ fn a_mission_item_shows_its_hull_and_pride_only_from_the_first_members_150() {
         position: None,
         strength: 0,
     };
-    let mut sea = context.flotilla(&[&unit], false);
+    let mut sea = context.flotilla(&[&unit], false, context.coarse);
     sea.status.pride = Some(true);
     assert!(sea.no_intel_type());
     assert_eq!(sea.shows_pride(), Some(true));

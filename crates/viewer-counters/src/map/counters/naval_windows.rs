@@ -752,7 +752,9 @@ pub(super) fn present(
         draw_results(inputs, plan, windows, result, &resources, combats, report)?;
     }
     if let Some(base) = native.naval_base() {
-        draw_ports(inputs, windows, base, &resources, bases, counters, report)?;
+        draw_ports(
+            inputs, plan, windows, base, &resources, bases, counters, report,
+        )?;
     }
     // At unit-stack priority, each plate retains its column's icon order.
     // Transparent overlap still follows the presented paint order.
@@ -794,7 +796,7 @@ pub(super) fn present(
             plate.column.screen,
             &resources,
             counters,
-            (inputs.stack_priority(), 0),
+            (plate.column.priority, 0),
         )?;
         if !inputs.display.naval_plate(flotilla.owner) {
             counters.quads.truncate(first);
@@ -830,7 +832,7 @@ pub(super) fn present(
                         kind: viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce,
                         members: Arc::clone(&flotilla.members),
                         layer: hovered_layer(
-                            inputs.stack_priority(),
+                            plate.column.priority,
                             plate.column.hovered,
                             plate.ordinal,
                             0,
@@ -842,13 +844,14 @@ pub(super) fn present(
             }
         }
         let offset = hovered_layer(
-            inputs.stack_priority(),
+            plate.column.priority,
             plate.column.hovered,
             plate.ordinal,
             0,
-        ) - layer(inputs.stack_priority(), 0, 0);
+        ) - layer(plate.column.priority, 0, 0);
         for quad in &mut counters.quads[first..] {
             quad.layer += offset;
+            quad.anchor = plate.column.anchor;
         }
     }
     Ok(())
@@ -2616,6 +2619,21 @@ fn draw_results(
             inputs.content.defines.naval_result_priority,
             report.combat_ordinal(),
         );
+        batch.at_anchor(
+            plan.results
+                .as_ref()
+                .and_then(|pass| {
+                    naval_markers::result_anchor(inputs, &pass.raised, pass.vectors_whole, province)
+                        .ok()
+                })
+                .and_then(|anchor| {
+                    inputs.icon_anchor(
+                        IconFamily::Combats,
+                        anchor,
+                        inputs.content.defines.naval_combat_cutoff,
+                    )
+                }),
+        );
         if let Err(refusal) = gui_windows::draw_window(&layout, &[], origin, resources, batch, key)?
         {
             report.unavailable_naval_results += 1;
@@ -2653,6 +2671,7 @@ fn draw_results(
         }
         report.naval_result_icons += 1;
     }
+    batch.at_anchor(None);
     Ok(())
 }
 
@@ -2903,6 +2922,13 @@ fn draw_combats(
             inputs.content.defines.naval_combat_priority,
             report.combat_ordinal(),
         );
+        batch.at_anchor(windows.placed.get(owner).and_then(|&(anchor, _)| {
+            inputs.icon_anchor(
+                IconFamily::Combats,
+                anchor,
+                inputs.content.defines.naval_combat_cutoff,
+            )
+        }));
         if let Err(refusal) =
             gui_windows::draw_window(&layout, &items, origin, resources, batch, key)?
         {
@@ -2941,6 +2967,7 @@ fn draw_combats(
             report.base_frame_naval_combats += 1;
         }
     }
+    batch.at_anchor(None);
     Ok(())
 }
 
@@ -3009,8 +3036,10 @@ fn port_parts(
 }
 
 /// Base glyphs and their port items use separate batches to preserve the label draw order.
+#[allow(clippy::too_many_arguments)]
 fn draw_ports(
     inputs: &CounterInputs<'_>,
+    plan: &Plan,
     windows: &Windows,
     window: &native::Element,
     resources: &GuiAssets<'_>,
@@ -3023,7 +3052,22 @@ fn draw_ports(
     };
     let grid = window.find(native::Kind::Grid, "box_ships");
     let viewport = gui_resources_viewport(inputs.viewport, inputs.ui_scale);
+    let anchors: HashMap<u32, [f32; 3]> = plan
+        .bases
+        .as_ref()
+        .map(|pass| pass.bases.iter().copied().collect())
+        .unwrap_or_default();
     for base in pool.visible() {
+        // A base and the ships in its port stand together.
+        let anchor = anchors.get(base.owner).and_then(|&anchor| {
+            inputs.icon_anchor(
+                IconFamily::Bases,
+                anchor,
+                inputs.content.defines.naval_base_cutoff,
+            )
+        });
+        glyphs.at_anchor(anchor);
+        batch.at_anchor(anchor);
         if let Some(drawn) = visible_layout(
             &base,
             window,
@@ -3146,6 +3190,8 @@ fn draw_ports(
             }
         }
     }
+    glyphs.at_anchor(None);
+    batch.at_anchor(None);
     Ok(())
 }
 

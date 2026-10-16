@@ -41,10 +41,17 @@ pub struct Animation {
     pub phase: f32,
     pub limit: f32,
     pub scale: f32,
+    /// How far the text rises and how large it grows for each world unit the game's transform
+    /// gives it: one for the game's camera, and a free eye's measure that keeps the text's screen
+    /// size ([`super::player::Player::draw`]).
+    pub reach: f32,
+    /// The whole text's opacity over its own fade: one for the game's camera.
+    pub opacity: f32,
 }
 
 impl Animation {
-    /// The native transform: strict last-quarter comparison and unfused f32 arithmetic.
+    /// The native transform: strict last-quarter comparison and unfused f32 arithmetic. A reach
+    /// of one leaves it exact.
     fn transform(self) -> ([f32; 3], f32, f32) {
         let quarter = self.limit * 0.25;
         let fade = if self.phase > self.limit - quarter {
@@ -52,10 +59,10 @@ impl Animation {
         } else {
             1.0
         };
-        let size = (self.limit - (self.limit * 0.5) * fade) * self.scale;
+        let size = (self.limit - (self.limit * 0.5) * fade) * (self.scale * self.reach);
         let origin = [
             self.origin[0],
-            self.phase * 3.0 + self.origin[1],
+            self.phase * 3.0 * self.reach + self.origin[1],
             self.origin[2],
         ];
         (origin, size, fade)
@@ -176,7 +183,7 @@ pub fn geometry(
     .map_err(refuse)?;
     let start = -(laid.widths.iter().copied().max().unwrap_or(0).max(0) / 2);
     let (origin, size, fade) = text.animation.transform();
-    let alpha = u32::from(byte(fade)) << 24;
+    let alpha = u32::from(byte(fade * text.animation.opacity)) << 24;
     let own = color_word(text.color);
     let mut color = own & 0x00ff_ffff | alpha;
     let colors = native_text::Colors {
@@ -566,6 +573,8 @@ mod tests {
                     phase,
                     limit: 1.,
                     scale: 1.,
+                    reach: 1.,
+                    opacity: 1.,
                 },
             },
             &camera(),
@@ -597,7 +606,9 @@ mod tests {
                     origin: [0.; 3],
                     phase,
                     limit: 1.,
-                    scale: 1.
+                    scale: 1.,
+                    reach: 1.,
+                    opacity: 1.,
                 }
                 .transform(),
                 ([0., y, 0.], size, fade)
@@ -608,7 +619,9 @@ mod tests {
                 origin: [10., 20., 30.],
                 phase: 5.25,
                 limit: 6.,
-                scale: 2.
+                scale: 2.,
+                reach: 1.,
+                opacity: 1.,
             }
             .transform(),
             ([10., 35.75, 30.], 9., 0.5)
@@ -716,6 +729,8 @@ mod tests {
                     phase: 0.,
                     limit: 1.,
                     scale: 1.,
+                    reach: 1.,
+                    opacity: 1.,
                 },
             },
             &camera(),

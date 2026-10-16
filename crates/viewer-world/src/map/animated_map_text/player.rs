@@ -12,8 +12,8 @@ use shader_pipeline::gpu;
 use super::{Assets, Style, draw};
 use crate::map::shader_scene;
 use viewer_foundation::map::{
-    camera::Camera, gpu_contract::Targets, native_gui::SpriteKind, native_resources::GuiResources,
-    native_text, province_map::HeightField, province_schedule,
+    camera::Camera, free_icons, gpu_contract::Targets, native_gui::SpriteKind,
+    native_resources::GuiResources, native_text, province_map::HeightField, province_schedule,
 };
 
 /// A recorded event the viewer admitted for its viewing country, with its
@@ -375,7 +375,14 @@ impl Player {
             let Some(update) = schedule.update(province) else {
                 continue;
             };
-            if update == province_schedule::Update::OffScreen || camera.height >= cutoff {
+            // The game's camera height, or a free eye's distance to the province's texts.
+            let height = objects
+                .active
+                .iter()
+                .chain(&objects.queue)
+                .next()
+                .map_or(camera.height, |object| camera.icon_distance(object.origin));
+            if update == province_schedule::Update::OffScreen || height >= cutoff {
                 objects.queue.clear();
                 objects.active.clear();
                 continue;
@@ -393,6 +400,10 @@ impl Player {
             .retain(|_, province| !province.queue.is_empty() || !province.active.is_empty());
     }
 
+    /// Draws the active texts for `camera`. A free eye shows each as standing at its origin, as
+    /// it shows map icons ([`free_icons`]): at the screen size the game's camera gives it at
+    /// [`FREE_SIZE_SHARE`] of its cutoff, shrinking gently with distance, fading out before its
+    /// cutoff and fading as a whole when `ground` hides its origin from the eye.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -404,7 +415,10 @@ impl Player {
         matrix: &[[f32; 4]; 4],
         native_scissor: Option<[u32; 4]>,
         shown: &dyn Fn(replay::rows::MapEventFamily) -> bool,
+        ground: Option<&free_icons::Ground<'_>>,
     ) -> bool {
+        let cutoff = self.cutoff.as_ref().copied().unwrap_or(f32::INFINITY);
+        let camera_view = camera;
         self.retained.inherit(caller);
         let retained = &mut self.retained;
         draw::bind_depth(retained); // The native empty pass also binds the graphics context's depth target.
@@ -430,6 +444,10 @@ impl Player {
         });
         let mut attempted = false;
         for object in objects {
+            let (reach, opacity) = free_look(&camera_view, object.origin, cutoff, ground);
+            if opacity < 1.0 / 255.0 {
+                continue;
+            }
             attempted = true;
             let result = (|| {
                 let style = self.styles[&object.event.style]
@@ -453,6 +471,8 @@ impl Player {
                             phase: object.phase,
                             limit: Object::LIMIT,
                             scale: definition.scale,
+                            reach,
+                            opacity,
                         },
                     },
                     &camera,
@@ -506,6 +526,30 @@ impl Player {
             })
             .collect()
     }
+}
+
+/// The share of a text's cutoff at which the game's camera gives it the screen size a free eye
+/// keeps.
+pub const FREE_SIZE_SHARE: f32 = 0.5;
+
+/// How a free eye shows a text standing at `origin` whose kind is cut off at `cutoff`: its reach
+/// ([`draw::Animation::reach`]) and opacity. The game's camera shows it as the game does.
+fn free_look(
+    camera: &Camera,
+    origin: [f32; 3],
+    cutoff: f32,
+    ground: Option<&free_icons::Ground<'_>>,
+) -> (f32, f32) {
+    if camera.free().is_none() {
+        return (1.0, 1.0);
+    }
+    let distance = camera.icon_distance(origin);
+    let (shrink, fade) = free_icons::distance_look(distance, cutoff, camera.object_range());
+    let sight = ground.map_or(1.0, |ground| {
+        free_icons::sight_alpha(ground, camera.eye(), origin, distance)
+    });
+    let reference = cutoff.min(camera.object_range()) * FREE_SIZE_SHARE;
+    (distance / reference * shrink, fade * sight)
 }
 
 /// The popup's height: x and z rounded by adding .5 and truncating, each
@@ -600,5 +644,70 @@ mod tests {
         assert_eq!(popup_height(heights, 0.49, 0.49), 10.0);
         assert_eq!(popup_height(heights, 0.5, 0.5), 22.0);
         assert_eq!(popup_height(heights, -100.0, 100.0), 20.0);
+    }
+
+    #[test]
+    fn a_free_eye_keeps_a_text_s_screen_size_and_fades_it_behind_hills() {
+        use viewer_foundation::map::camera::{Free, Lens, MapDefines, MapSize, Placement, Pose};
+        use viewer_foundation::map::terrain_sight::TerrainSight;
+        let camera = |eye: [f32; 3], target: [f32; 3]| {
+            Placement {
+                center: [eye[0], eye[2]],
+                height: eye[1],
+                pose: Pose::Free(Free::looking_at(
+                    eye,
+                    target,
+                    Lens {
+                        fov_y: 0.9,
+                        near: 0.5,
+                        far: 3000.0,
+                    },
+                )),
+            }
+            .on(MapSize::TEST, MapDefines::test())
+        };
+        let origin = [1300.0, 10.0, 1000.0];
+        // The game's camera draws the text as the game does.
+        let map = Placement::map([1300.0, 1000.0], 200.0).on(MapSize::TEST, MapDefines::test());
+        assert_eq!(free_look(&map, origin, 500.0, None), (1.0, 1.0));
+        // A free eye at the reference distance (half the cutoff) draws it at the game's size, but
+        // for the gentle shrink with distance; twice as far, twice as large in the world.
+        let at = |distance: f32| camera([1300.0 - distance, 10.0, 1000.0], origin);
+        let (reach, opacity) = free_look(&at(250.0), origin, 500.0, None);
+        let (shrink, _) = free_icons::distance_look(250.0, 500.0, 1100.0);
+        assert!((reach - shrink).abs() < 1e-4, "{reach} {shrink}");
+        assert_eq!(opacity, 1.0);
+        let (near_reach, _) = free_look(&at(100.0), origin, 500.0, None);
+        let near_shrink = free_icons::distance_look(100.0, 500.0, 1100.0).0;
+        assert!(
+            (near_reach - 0.4 * near_shrink).abs() < 1e-4,
+            "{near_reach}"
+        );
+        // Fading out before the cutoff, gone at it.
+        assert!(free_look(&at(460.0), origin, 500.0, None).1 < 1.0);
+        assert_eq!(free_look(&at(500.0), origin, 500.0, None).1, 0.0);
+        // A ridge between the eye and the text hides it whole.
+        let (width, rows) = (MapSize::TEST.width, MapSize::TEST.height);
+        let mut values = vec![95u8; (width * rows) as usize];
+        for bottom in 0..rows {
+            let row = (rows - 1 - bottom) as usize;
+            for column in 1240..1250 {
+                values[row * width as usize + column] = 220;
+            }
+        }
+        let field = HeightField {
+            width,
+            height: rows,
+            values: &values,
+        };
+        let sight = TerrainSight::new(&field);
+        let ground = free_icons::Ground {
+            field,
+            sight: &sight,
+        };
+        let low = camera([1200.0, 12.0, 1000.0], origin);
+        assert_eq!(free_look(&low, origin, 500.0, Some(&ground)).1, 0.0);
+        let high = camera([1200.0, 300.0, 1000.0], origin);
+        assert_eq!(free_look(&high, origin, 500.0, Some(&ground)).1, 1.0);
     }
 }

@@ -13,7 +13,7 @@ import { formatDateTime } from '../dashboard/calendar';
 import { Icon } from './Icons';
 import './mapControls.css';
 
-export default function MapControls({ source, client, metadata, branchId, onBranch, options, onOptions, compact = false, viewId, children, onRemove, onReset, poppedOut, popoutGeneration = 0, popoutProblem, popoutStopped, popoutCameraMode }: {
+export default function MapControls({ source, client, metadata, branchId, onBranch, options, onOptions, compact = false, viewId, children, onRemove, onReset, poppedOut, popoutGeneration = 0, popoutProblem, popoutStopped, popoutCameraMode, popoutCameraOverlays = false }: {
   compact?: boolean; viewId?: string; children?: ReactNode; onRemove?: () => void; onReset?: () => void;
   /** The campaign map's pop-out window state; widget maps omit it. */
   poppedOut?: boolean;
@@ -23,6 +23,7 @@ export default function MapControls({ source, client, metadata, branchId, onBran
   popoutProblem?: string | null; popoutStopped?: boolean;
   /** The pop-out map's camera mode, as its viewer reports it while it runs. */
   popoutCameraMode?: CameraMode | null;
+  popoutCameraOverlays?: boolean;
   source: DashboardSource | null; client: DashboardClient;
   metadata: ReplayMetadata | null; branchId: string | null; onBranch: (id: string) => void;
   options: MapOptions; onOptions: (options: MapOptions) => void;
@@ -64,7 +65,9 @@ export default function MapControls({ source, client, metadata, branchId, onBran
         {poppedOut && popoutProblem && <p className="map-menu-error" role="alert">{popoutProblem}</p>}
         {poppedOut && popoutStopped && <button type="button" className="map-menu-action" disabled={busy} onClick={() => void run(() => restartPopout(popoutGeneration))}><Icon name="refresh" />Restart pop-out map</button>}
         {poppedOut && desktopAvailable && popoutCameraMode && <div className="map-option-row"><span>Pop-out camera</span>
-          <CameraModeControl value={popoutCameraMode} onChange={mode => void setPopoutCameraMode(popoutGeneration, mode).catch(cause => setError(errorMessage(cause)))} /></div>}
+          <CameraModeControl value={popoutCameraMode} overlays={popoutCameraOverlays}
+            onChange={mode => void setPopoutCameraMode(popoutGeneration, mode, popoutCameraOverlays).catch(cause => setError(errorMessage(cause)))}
+            onOverlaysChange={shown => void setPopoutCameraMode(popoutGeneration, popoutCameraMode, shown).catch(cause => setError(errorMessage(cause)))} /></div>}
         {poppedOut !== undefined && desktopAvailable && (poppedOut ? <>
           <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Save the pop-out window's map as a PNG image" onClick={() => void run(() => exportMap('popout'))}><Icon name="save" />Export pop-out map</button>
           <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Move the pop-out map to the next monitor" onClick={() => void run(() => nextPopoutMonitor(popoutGeneration))}><Icon name="monitor" />Move pop-out to next monitor</button>

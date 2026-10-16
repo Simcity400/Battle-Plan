@@ -22,11 +22,14 @@ use installed_content::{
 };
 
 use super::{
+    free_icons::{IconAnchor, Present},
     gpu_contract::{Targets, sampler_entry, texture_entry},
     lazy_icons::{DYNAMIC_BASE, LazyTextures},
     text,
     textures::{Bound, ColorSpace, upload},
 };
+
+mod fade;
 
 /// One frame-animated sprite: a horizontal strip of equal-width frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,6 +143,12 @@ pub struct Quad {
     /// A quad [`super::native_gui`] places and shades as the game does; `rect`, `uv`, `rotation`
     /// and `shade` are then unused.
     pub exact: Option<Exact>,
+    /// The map icon the quad belongs to, which a free eye shows standing in the world
+    /// ([`super::free_icons`]); `None` for screen interface.
+    pub anchor: Option<IconAnchor>,
+    /// How a free eye shows the quad's icon ([`super::free_icons::present`]); `None` draws the
+    /// quad as laid out, in layer order.
+    pub present: Option<Present>,
 }
 
 /// An unsnapped GUI draw with compiled resources, or layout-fixture geometry and metadata.
@@ -257,6 +266,13 @@ pub struct Batch {
     // counters
     /// The layer subsequent pushes are tagged with.
     layer: u64,
+    /// The map icon subsequent pushes belong to.
+    anchor: Option<IconAnchor>,
+    /// A named part of the icon standing on its own anchor: parts whose element path ends with
+    /// the name take it instead ([`Batch::at_part_anchor`]).
+    part_anchor: Option<(String, IconAnchor)>,
+    /// What the current part's pushes take ([`Batch::at_part`]).
+    current: Option<IconAnchor>,
 }
 
 impl Batch {
@@ -268,6 +284,9 @@ impl Batch {
     pub fn clear(&mut self) {
         self.quads.clear();
         self.layer = 0;
+        self.anchor = None;
+        self.part_anchor = None;
+        self.current = None;
     }
 
     // counters
@@ -276,10 +295,34 @@ impl Batch {
         self.layer = layer;
     }
 
-    /// Adds `quad` at the current layer.
+    /// Tags every later push as part of the map icon standing at `anchor`; `None` for screen
+    /// interface. Forgets any named part's own anchor.
+    pub fn at_anchor(&mut self, anchor: Option<IconAnchor>) {
+        self.anchor = anchor;
+        self.part_anchor = None;
+        self.current = anchor;
+    }
+
+    /// Gives the icon's parts whose element path ends with `name` their own `anchor`, as a city
+    /// label's name fades by its own cutoff. Later [`Batch::at_part`] calls apply it.
+    pub fn at_part_anchor(&mut self, name: &str, anchor: IconAnchor) {
+        self.part_anchor = Some((name.to_owned(), anchor));
+    }
+
+    /// Later pushes draw the GUI part at element `path`: they take its own anchor when the icon
+    /// gave it one, else the icon's.
+    pub fn at_part(&mut self, path: &str) {
+        self.current = match &self.part_anchor {
+            Some((name, anchor)) if path.ends_with(name.as_str()) => Some(*anchor),
+            _ => self.anchor,
+        };
+    }
+
+    /// Adds `quad` at the current layer, as part of the current icon.
     pub fn push(&mut self, quad: Quad) {
         self.quads.push(Quad {
             layer: self.layer,
+            anchor: self.current,
             ..quad
         });
     }
@@ -307,6 +350,8 @@ impl Batch {
             layer: self.layer,
             shade: 0.0,
             exact: None,
+            anchor: self.current,
+            present: None,
         });
     }
 
@@ -329,6 +374,8 @@ impl Batch {
             layer: self.layer,
             shade: 0.0,
             exact: None,
+            anchor: self.current,
+            present: None,
         });
     }
 
@@ -369,6 +416,8 @@ impl Batch {
             layer: self.layer,
             shade: 0.0,
             exact: None,
+            anchor: self.current,
+            present: None,
         });
     }
 
@@ -383,6 +432,8 @@ impl Batch {
             layer: self.layer,
             shade: 0.0,
             exact: None,
+            anchor: self.current,
+            present: None,
         }));
     }
 }
@@ -568,6 +619,8 @@ enum Pipe {
     /// The snapped screen-space sprites.
     Legacy,
     Native(usize),
+    /// A fading icon's cell of a fade page, drawn over the frame ([`fade`]).
+    Composite(usize),
 }
 
 /// One run of consecutive vertices sharing a pipeline, its textures and a scissor.
@@ -577,6 +630,17 @@ struct Run {
     scissor: Option<[u32; 4]>,
     range: std::ops::Range<u32>,
 }
+
+/// Where a quad draws: the frame, or a fading icon's cell (`[x0, y0, x1, y1]` page pixels) of a
+/// fade page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Target {
+    Frame,
+    Page { page: usize, cell: [u32; 4] },
+}
+
+/// Opacity from which an icon draws straight onto the frame.
+const OPAQUE: f32 = 1.0 - 0.5 / 255.0;
 
 /// A lazy texture on the GPU, at the revision it was uploaded from.
 struct DynamicPage {
@@ -616,6 +680,42 @@ pub struct SpritePass {
     capacity: u64,
     runs: Vec<Run>,
     count: u32,
+    /// Fade pages: the composite program, the pages and the snapped program drawing into them.
+    fade: fade::Pages,
+    fade_legacy: wgpu::RenderPipeline,
+    /// Compiled draws into fade pages, with the binds they inherit from the frame's stream.
+    fade_stream: super::native_shader::stream::Stream,
+    fade_draws: Vec<super::native_shader::stream::Submission>,
+    /// Each fade page's runs, in draw order, by page; cleared every upload, storage kept.
+    fade_runs: Vec<Vec<Run>>,
+    fade_vertices: wgpu::Buffer,
+    fade_capacity: u64,
+    composite_vertices: wgpu::Buffer,
+    composite_capacity: u64,
+    /// Fade pages the last upload filled.
+    fade_pages: usize,
+    /// The vertex lists an upload fills, kept between frames for their storage.
+    scratch: Scratch,
+}
+
+/// One upload's lists: the frame's snapped quads, the fade pages' and the composites' vertices,
+/// and the free eye's icons.
+#[derive(Default)]
+struct Scratch {
+    frame: Vec<Vertex>,
+    pages: Vec<Vertex>,
+    composites: Vec<fade::CompositeVertex>,
+    icons: Vec<Icon>,
+}
+
+/// A free eye's icon in one upload: its quads (a run of the draw order), where they land, and for
+/// a fading icon its frame rectangle `[x, y, width, height]`, opacity and fade-page cell.
+#[derive(Clone, Debug)]
+struct Icon {
+    quads: std::ops::Range<usize>,
+    placement: fade::Placement,
+    fading: Option<([u32; 4], f32)>,
+    cell: (usize, [u32; 2]),
 }
 
 /// Vertices a freshly built pass can hold before it grows; six per quad.
@@ -660,6 +760,50 @@ impl SpritePass {
             })]
         };
         let legacy_targets = target(Some(wgpu::BlendState::ALPHA_BLENDING));
+        // A fade page keeps premultiplied colour: the program's alpha accumulates
+        // `One, OneMinusSrcAlpha` and is written.
+        let page_targets = [Some(wgpu::ColorTargetState {
+            format,
+            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
+        let snapped = |label, samples, targets: &[Option<wgpu::ColorTargetState>]| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vertex_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![
+                            0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4,
+                            4 => Float32, 5 => Float32
+                        ],
+                    })],
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: samples,
+                    ..Default::default()
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fragment_main"),
+                    compilation_options: Default::default(),
+                    targets,
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let fade_legacy = snapped("sprite fade page", 1, &page_targets);
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sprites"),
             layout: Some(&pipeline_layout),
@@ -732,6 +876,21 @@ impl SpritePass {
             capacity: INITIAL_VERTICES,
             runs: Vec::new(),
             count: 0,
+            fade: fade::Pages::new(device, format, samples),
+            fade_legacy,
+            fade_stream: Default::default(),
+            fade_draws: Vec::new(),
+            fade_runs: Vec::new(),
+            fade_vertices: buffer(device, INITIAL_VERTICES, std::mem::size_of::<Vertex>()),
+            fade_capacity: INITIAL_VERTICES,
+            composite_vertices: buffer(
+                device,
+                INITIAL_VERTICES,
+                std::mem::size_of::<fade::CompositeVertex>(),
+            ),
+            composite_capacity: INITIAL_VERTICES,
+            fade_pages: 0,
+            scratch: Scratch::default(),
         })
     }
 
@@ -847,6 +1006,12 @@ impl SpritePass {
     ) {
         self.runs.clear();
         self.native_draws.clear();
+        // The fade pages' draws are this frame's alone.
+        self.fade_draws.clear();
+        for runs in &mut self.fade_runs {
+            runs.clear();
+        }
+        self.fade_pages = 0;
         for bake in &mut self.bakes {
             bake.used = false;
         }
@@ -889,15 +1054,20 @@ impl SpritePass {
         );
         if batch.is_empty() || size[0] == 0 || size[1] == 0 {
             self.bakes.clear();
+            self.fade.fit(device, &[]);
             return;
         }
         let mut order: Vec<usize> = (0..batch.quads.len()).collect();
         // counters: `(layer, texture)`, so a page batch never overtakes an
         // icon child that has to draw under or over another. An exact quad keeps its push
         // order in its layer: the game's GUI draws in attach order, whatever the texture.
+        // A free eye's icons come first, farthest first, each in that order among its own quads;
+        // the screen interface follows them.
         order.sort_by_key(|&index| {
             let quad = &batch.quads[index];
             (
+                quad.present.map_or(1u8, |_| 0),
+                quad.present.map_or(0, |present| present.rank),
                 quad.layer,
                 if quad.exact.is_some() {
                     0
@@ -906,125 +1076,357 @@ impl SpritePass {
                 },
             )
         });
-        let width = size[0] as f32;
-        let height = size[1] as f32;
-        let clip = |x: f32, y: f32| [x / width * 2.0 - 1.0, 1.0 - y / height * 2.0];
-        let mut vertices: Vec<Vertex> = Vec::with_capacity(order.len() * 6);
-        let filter = filter_mode(ui_scale);
-        for index in order {
-            let quad = batch.quads[index].clone();
-            if let Some(exact) = quad.exact {
-                if let Some(native) = &exact.native {
-                    match self.prepare_native(device, queue, arena, native, size, ui_scale) {
-                        Ok(submission) => {
-                            let scissor = match exact.scissor {
-                                Some(clip) => match device_scissor(clip, ui_scale, size) {
-                                    Some(clip) => Some(clip),
-                                    None => continue,
-                                },
-                                None => None,
-                            };
-                            let index = self.native_draws.len();
-                            self.native_draws.push(submission);
-                            self.runs.push(Run {
-                                pipe: Pipe::Native(index),
-                                texture: NO_TEXTURE,
-                                scissor,
-                                range: 0..0,
-                            });
-                        }
-                        // The refused draw left the binds the game makes for it, less what the
-                        // replay lacks ([`prepare_draw`]).
-                        Err(reason) => {
-                            if !self.native_refusals.contains_key(&reason) {
-                                eprintln!("{reason}");
-                            }
-                            *self.native_refusals.entry(reason).or_default() += 1;
-                        }
-                    }
+        let Scratch {
+            mut frame,
+            mut pages,
+            mut composites,
+            mut icons,
+        } = std::mem::take(&mut self.scratch);
+        frame.clear();
+        pages.clear();
+        composites.clear();
+        icons.clear();
+        // The free eye's icons come first: each the run of quads sharing a rank, and for a fading
+        // one the frame pixels it covers, placed and within the frame.
+        let mut at = 0;
+        while at < order.len() {
+            let Some(present) = batch.quads[order[at]].present else {
+                break;
+            };
+            let end = at
+                + order[at..]
+                    .iter()
+                    .take_while(|&&index| {
+                        batch.quads[index]
+                            .present
+                            .is_some_and(|other| other.rank == present.rank)
+                    })
+                    .count();
+            let quads = at..end;
+            at = end;
+            let placement = fade::Placement {
+                scale: present.scale,
+                pivot: present.pivot.map(|value| value * ui_scale),
+                shift: [0.0; 2],
+                size,
+                out: size,
+            };
+            let fading = if present.alpha < OPAQUE {
+                let bounds = order[quads.clone()]
+                    .iter()
+                    .filter_map(|&index| quad_bounds(&batch.quads[index], size, ui_scale))
+                    .map(|rect| placement.rect(rect))
+                    .reduce(|a, b| {
+                        [
+                            a[0].min(b[0]),
+                            a[1].min(b[1]),
+                            a[2].max(b[2]),
+                            a[3].max(b[3]),
+                        ]
+                    })
+                    .and_then(|rect| fade::cut(rect, [0, 0, size[0], size[1]]));
+                // A fading icon with no pixels on the frame draws nothing.
+                let Some(rect) = bounds else {
                     continue;
+                };
+                Some((rect, present.alpha))
+            } else {
+                None
+            };
+            icons.push(Icon {
+                quads,
+                placement,
+                fading,
+                cell: (0, [0, 0]),
+            });
+        }
+        let screen = at;
+        // The fading icons' cells, on pages as large as this frame's largest cell needs, and each
+        // page then as large as what it holds; pages no icon uses this frame go.
+        let largest = icons
+            .iter()
+            .filter_map(|icon| icon.fading)
+            .fold([0, 0], |most, (rect, _)| {
+                [most[0].max(rect[2]), most[1].max(rect[3])]
+            });
+        let mut shelves = self.fade.shelves(largest);
+        for icon in &mut icons {
+            if let Some((rect, _)) = icon.fading {
+                icon.cell = shelves.place([rect[2], rect[3]]);
+            }
+        }
+        self.fade.fit(device, &shelves.extents);
+        self.fade_pages = shelves.pages;
+        for icon in &icons {
+            let (placement, target) = match icon.fading {
+                Some(([x, y, width, height], alpha)) => {
+                    let (page, corner) = icon.cell;
+                    let page_size = self.fade.size(page);
+                    let cell = [corner[0], corner[1], corner[0] + width, corner[1] + height];
+                    let start = composites.len() as u32;
+                    composites.extend(fade::composite_quad(
+                        cell.map(|v| v as f32),
+                        page_size,
+                        [x, y, x + width, y + height].map(|v| v as f32),
+                        size,
+                        alpha,
+                    ));
+                    self.runs.push(Run {
+                        pipe: Pipe::Composite(page),
+                        texture: NO_TEXTURE,
+                        scissor: None,
+                        range: start..composites.len() as u32,
+                    });
+                    (
+                        fade::Placement {
+                            shift: [corner[0] as f32 - x as f32, corner[1] as f32 - y as f32],
+                            out: page_size,
+                            ..icon.placement
+                        },
+                        Target::Page { page, cell },
+                    )
                 }
+                None => (icon.placement, Target::Frame),
+            };
+            for &index in &order[icon.quads.clone()] {
+                self.emit(
+                    (device, queue, arena),
+                    &batch.quads[index],
+                    placement,
+                    target,
+                    ui_scale,
+                    (&mut frame, &mut pages),
+                );
+            }
+        }
+        // The screen interface follows, where it was laid out.
+        for &index in &order[screen..] {
+            self.emit(
+                (device, queue, arena),
+                &batch.quads[index],
+                fade::Placement::identity(size),
+                Target::Frame,
+                ui_scale,
+                (&mut frame, &mut pages),
+            );
+        }
+        self.bakes.retain(|bake| bake.used);
+        self.count = frame.len() as u32;
+        write_vertices(
+            device,
+            queue,
+            &mut self.vertices,
+            &mut self.capacity,
+            &frame,
+        );
+        write_vertices(
+            device,
+            queue,
+            &mut self.fade_vertices,
+            &mut self.fade_capacity,
+            &pages,
+        );
+        write_vertices(
+            device,
+            queue,
+            &mut self.composite_vertices,
+            &mut self.composite_capacity,
+            &composites,
+        );
+        self.scratch = Scratch {
+            frame,
+            pages,
+            composites,
+            icons,
+        };
+    }
+
+    /// Draws `quad` at `placement` onto `target`: snapped quads become vertices in `frame` or
+    /// `pages`, compiled draws become submissions. A draw into a fade page takes the frame
+    /// stream's binds at this point and leaves its own behind, as drawing it on the frame would.
+    fn emit(
+        &mut self,
+        (device, queue, arena): (&wgpu::Device, &wgpu::Queue, &shader_pipeline::gpu::Arena),
+        quad: &Quad,
+        placement: fade::Placement,
+        target: Target,
+        ui_scale: f32,
+        (frame, pages): (&mut Vec<Vertex>, &mut Vec<Vertex>),
+    ) {
+        let size = placement.size;
+        let within = match target {
+            Target::Frame => [0, 0, size[0], size[1]],
+            Target::Page { cell, .. } => cell,
+        };
+        let cell_scissor = match target {
+            Target::Frame => None,
+            Target::Page { cell, .. } => {
+                Some([cell[0], cell[1], cell[2] - cell[0], cell[3] - cell[1]])
+            }
+        };
+        if let Some(exact) = &quad.exact {
+            let Some(native) = &exact.native else {
                 self.native.invalidate_bindings();
                 *self
                     .native_refusals
                     .entry("GUI quad has no compiled effect payload".into())
                     .or_default() += 1;
-                continue;
-            }
-            self.native.invalidate_bindings();
-            if self.group(quad.texture).is_none() {
-                continue;
-            }
-            let [x0, y0, x1, y1] = device_corners(quad.rect, ui_scale);
-            // counters: a rotated quad turns about its own centre, with `y`
-            // down, so a positive angle is clockwise on screen.
-            let spin = (quad.rotation != 0.0).then(|| {
-                let (sin, cos) = quad.rotation.sin_cos();
-                ([(x0 + x1) * 0.5, (y0 + y1) * 0.5], sin, cos)
-            });
-            let corner = |x: f32, y: f32, u: f32, v: f32| {
-                let (x, y) = match spin {
-                    Some((centre, sin, cos)) => {
-                        let (dx, dy) = (x - centre[0], y - centre[1]);
-                        (
-                            centre[0] + dx * cos - dy * sin,
-                            centre[1] + dx * sin + dy * cos,
-                        )
-                    }
-                    None => (x, y),
-                };
-                Vertex {
-                    position: clip(x, y),
-                    uv: [u, v],
-                    color: quad.color,
-                    cell: quad.uv,
-                    filter,
-                    shade: quad.shade,
+                return;
+            };
+            let clip = (!placement.is_identity()).then(|| placement.clip());
+            let prepared = match target {
+                Target::Frame => {
+                    self.prepare_native(device, queue, arena, native, size, ui_scale, clip, None)
+                }
+                Target::Page { .. } => {
+                    self.fade_stream.inherit_bindings(&self.native);
+                    let prepared = self.prepare_native(
+                        device,
+                        queue,
+                        arena,
+                        native,
+                        size,
+                        ui_scale,
+                        clip,
+                        Some(self.native_format),
+                    );
+                    self.native.inherit_bindings(&self.fade_stream);
+                    prepared
                 }
             };
-            let [u0, v0, u1, v1] = quad.uv;
-            let start = vertices.len() as u32;
-            vertices.extend([
-                corner(x0, y0, u0, v0),
-                corner(x1, y0, u1, v0),
-                corner(x1, y1, u1, v1),
-                corner(x0, y0, u0, v0),
-                corner(x1, y1, u1, v1),
-                corner(x0, y1, u0, v1),
-            ]);
-            let end = vertices.len() as u32;
-            match self.runs.last_mut() {
-                Some(run)
-                    if run.pipe == Pipe::Legacy
-                        && run.texture == quad.texture
-                        && run.range.end == start =>
-                {
-                    run.range.end = end
+            match prepared {
+                Ok(submission) => {
+                    let scissor = match exact.scissor {
+                        Some(clip) => match device_scissor(clip, ui_scale, size)
+                            .and_then(|scissor| placement.scissor(scissor, within))
+                        {
+                            Some(scissor) => Some(scissor),
+                            None => return,
+                        },
+                        None => cell_scissor,
+                    };
+                    let run = |index| Run {
+                        pipe: Pipe::Native(index),
+                        texture: NO_TEXTURE,
+                        scissor,
+                        range: 0..0,
+                    };
+                    match target {
+                        Target::Frame => {
+                            let index = self.native_draws.len();
+                            self.native_draws.push(submission);
+                            self.runs.push(run(index));
+                        }
+                        Target::Page { page, .. } => {
+                            let index = self.fade_draws.len();
+                            self.fade_draws.push(submission);
+                            self.page_runs(page).push(run(index));
+                        }
+                    }
                 }
-                _ => self.runs.push(Run {
-                    pipe: Pipe::Legacy,
-                    texture: quad.texture,
-                    scissor: None,
-                    range: start..end,
-                }),
+                // The refused draw left the binds the game makes for it, less what the
+                // replay lacks ([`prepare_draw`]).
+                Err(reason) => {
+                    if !self.native_refusals.contains_key(&reason) {
+                        eprintln!("{reason}");
+                    }
+                    *self.native_refusals.entry(reason).or_default() += 1;
+                }
             }
+            return;
         }
-        self.bakes.retain(|bake| bake.used);
-        self.count = vertices.len() as u32;
-        if self.count > 0 {
-            if u64::from(self.count) > self.capacity {
-                self.capacity = u64::from(self.count).next_power_of_two();
-                self.vertices = buffer(device, self.capacity, std::mem::size_of::<Vertex>());
+        self.native.invalidate_bindings();
+        if self.group(quad.texture).is_none() {
+            return;
+        }
+        let [x0, y0, x1, y1] = device_corners(quad.rect, ui_scale);
+        // counters: a rotated quad turns about its own centre, with `y`
+        // down, so a positive angle is clockwise on screen.
+        let spin = (quad.rotation != 0.0).then(|| {
+            let (sin, cos) = quad.rotation.sin_cos();
+            ([(x0 + x1) * 0.5, (y0 + y1) * 0.5], sin, cos)
+        });
+        let filter = filter_mode(ui_scale * placement.scale);
+        let [out_width, out_height] = placement.out.map(|v| v as f32);
+        let corner = |x: f32, y: f32, u: f32, v: f32| {
+            let (x, y) = match spin {
+                Some((centre, sin, cos)) => {
+                    let (dx, dy) = (x - centre[0], y - centre[1]);
+                    (
+                        centre[0] + dx * cos - dy * sin,
+                        centre[1] + dx * sin + dy * cos,
+                    )
+                }
+                None => (x, y),
+            };
+            let [x, y] = placement.point([x, y]);
+            Vertex {
+                position: [x / out_width * 2.0 - 1.0, 1.0 - y / out_height * 2.0],
+                uv: [u, v],
+                color: quad.color,
+                cell: quad.uv,
+                filter,
+                shade: quad.shade,
             }
-            queue.write_buffer(&self.vertices, 0, bytemuck::cast_slice(&vertices));
+        };
+        let [u0, v0, u1, v1] = quad.uv;
+        let corners = [
+            corner(x0, y0, u0, v0),
+            corner(x1, y0, u1, v0),
+            corner(x1, y1, u1, v1),
+            corner(x0, y0, u0, v0),
+            corner(x1, y1, u1, v1),
+            corner(x0, y1, u0, v1),
+        ];
+        let (vertices, runs): (&mut Vec<Vertex>, Option<usize>) = match target {
+            Target::Frame => (frame, None),
+            Target::Page { page, .. } => (pages, Some(page)),
+        };
+        let start = vertices.len() as u32;
+        vertices.extend(corners);
+        let end = vertices.len() as u32;
+        let fresh = Run {
+            pipe: Pipe::Legacy,
+            texture: quad.texture,
+            scissor: cell_scissor,
+            range: start..end,
+        };
+        let extends = |run: &Run| {
+            run.pipe == Pipe::Legacy
+                && run.texture == quad.texture
+                && run.scissor == cell_scissor
+                && run.range.end == start
+        };
+        match runs {
+            None => match self.runs.last_mut() {
+                Some(run) if extends(run) => run.range.end = end,
+                _ => self.runs.push(fresh),
+            },
+            Some(page) => {
+                let runs = self.page_runs(page);
+                match runs.last_mut() {
+                    Some(run) if extends(run) => run.range.end = end,
+                    _ => runs.push(fresh),
+                }
+            }
         }
     }
 
-    /// Draws the uploaded quads over whatever the target already holds.
+    /// Fade page `page`'s runs this frame.
+    fn page_runs(&mut self, page: usize) -> &mut Vec<Run> {
+        if self.fade_runs.len() <= page {
+            self.fade_runs.resize_with(page + 1, Vec::new);
+        }
+        &mut self.fade_runs[page]
+    }
+
+    /// Draws the uploaded quads over whatever the target already holds, after drawing the
+    /// fading icons into their fade pages.
     pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, targets: &Targets) {
         if self.runs.is_empty() {
             return;
         }
+        self.draw_pages(encoder);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("sprites"),
             color_attachments: &[Some(targets.output_attachment(wgpu::LoadOp::Load))],
@@ -1035,6 +1437,54 @@ impl SpritePass {
         });
         let [width, height] = targets.size();
         self.draw_runs(&mut pass, [width, height]);
+    }
+
+    /// Draws the fading icons of the last upload into their fade pages, which the frame's
+    /// composite runs then read.
+    fn draw_pages(&self, encoder: &mut wgpu::CommandEncoder) {
+        for (index, page) in self.fade.pages.iter().take(self.fade_pages).enumerate() {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("sprite fade page"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &page.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            let mut bound = false;
+            for run in self.fade_runs.get(index).into_iter().flatten() {
+                let [x, y, w, h] = run.scissor.unwrap_or([0, 0, page.size[0], page.size[1]]);
+                pass.set_scissor_rect(x, y, w, h);
+                match run.pipe {
+                    Pipe::Native(draw) => {
+                        let submission = &self.fade_draws[draw];
+                        submission.pipeline.draw(&mut pass, &submission.draw);
+                        bound = false;
+                    }
+                    Pipe::Legacy => {
+                        let Some(group) = self.group(run.texture) else {
+                            continue;
+                        };
+                        if !bound {
+                            pass.set_pipeline(&self.fade_legacy);
+                            pass.set_vertex_buffer(0, self.fade_vertices.slice(..));
+                            bound = true;
+                        }
+                        pass.set_bind_group(0, group, &[]);
+                        pass.draw(run.range.clone(), 0..1);
+                    }
+                    Pipe::Composite(_) => unreachable!("fade pages hold no composites"),
+                }
+            }
+        }
     }
 
     fn draw_runs(&self, pass: &mut wgpu::RenderPass<'_>, [width, height]: [u32; 2]) {
@@ -1048,13 +1498,23 @@ impl SpritePass {
                 bound = None;
                 continue;
             }
+            if let Pipe::Composite(page) = run.pipe {
+                if bound != Some(Pipe::Composite(0)) {
+                    pass.set_pipeline(&self.fade.composite);
+                    pass.set_vertex_buffer(0, self.composite_vertices.slice(..));
+                    bound = Some(Pipe::Composite(0));
+                }
+                pass.set_bind_group(0, &self.fade.pages[page].group, &[]);
+                pass.draw(run.range.clone(), 0..1);
+                continue;
+            }
             if bound != Some(run.pipe) {
                 match run.pipe {
                     Pipe::Legacy => {
                         pass.set_pipeline(&self.pipeline);
                         pass.set_vertex_buffer(0, self.vertices.slice(..));
                     }
-                    Pipe::Native(_) => unreachable!(),
+                    Pipe::Native(_) | Pipe::Composite(_) => unreachable!(),
                 }
                 bound = Some(run.pipe);
             }
@@ -1062,7 +1522,7 @@ impl SpritePass {
             pass.set_scissor_rect(x, y, w, h);
             let group = match run.pipe {
                 Pipe::Legacy => self.group(run.texture),
-                Pipe::Native(_) => unreachable!(),
+                Pipe::Native(_) | Pipe::Composite(_) => unreachable!(),
             };
             let Some(group) = group else {
                 continue;
@@ -1077,6 +1537,14 @@ impl SpritePass {
         self.count / 6 + self.native_draws.len() as u32
     }
 
+    /// Fade pages the last upload drew fading icons into, for reporting and checks.
+    pub fn fade_pages(&self) -> usize {
+        self.fade_pages
+    }
+
+    /// Prepares `draw` for the frame of `size`, or for a fade page (`page`, the page format) on
+    /// the fade stream, which accumulates premultiplied colour; `clip` places it.
+    #[allow(clippy::too_many_arguments)]
     fn prepare_native(
         &mut self,
         device: &wgpu::Device,
@@ -1085,6 +1553,8 @@ impl SpritePass {
         draw: &super::native_shader::draw::Quad,
         size: [u32; 2],
         scale: f32,
+        clip: Option<fade::ClipAffine>,
+        page: Option<wgpu::TextureFormat>,
     ) -> Result<super::native_shader::stream::Submission, String> {
         let baked = draw.bake.as_ref().map(|bake| {
             self.prepare_bake(device, queue, arena, bake)
@@ -1096,16 +1566,37 @@ impl SpritePass {
                 })
         });
         let views = self.native_views(draw);
-        prepare_draw(
-            &mut self.native,
-            arena,
-            draw,
-            &views,
-            baked,
-            super::native_shader::draw::gui_viewport(size, scale),
-            self.native_format,
-            self.native_samples,
-        )
+        let viewport = super::native_shader::draw::gui_viewport(size, scale);
+        match page {
+            None => prepare_draw(
+                &mut self.native,
+                arena,
+                draw,
+                &views,
+                baked,
+                Output {
+                    viewport,
+                    format: self.native_format,
+                    samples: self.native_samples,
+                    clip,
+                    premultiply: false,
+                },
+            ),
+            Some(format) => prepare_draw(
+                &mut self.fade_stream,
+                arena,
+                draw,
+                &views,
+                baked,
+                Output {
+                    viewport,
+                    format,
+                    samples: 1,
+                    clip,
+                    premultiply: true,
+                },
+            ),
+        }
     }
 
     /// Each slot `draw` binds: its texture, `None` for a null bind, `Err` naming a texture that
@@ -1184,9 +1675,13 @@ impl SpritePass {
                 draw,
                 &views,
                 None,
-                bake.size,
-                format,
-                1,
+                Output {
+                    viewport: bake.size,
+                    format,
+                    samples: 1,
+                    clip: None,
+                    premultiply: false,
+                },
             )?);
         }
         let mut encoder = device.create_command_encoder(&Default::default());
@@ -1271,20 +1766,34 @@ fn self_contained(draw: &super::native_shader::draw::Quad) -> bool {
 /// A slot's texture as the replay holds it: `Ok(None)` a null bind, `Err` one it does not hold.
 type View = Result<Option<wgpu::TextureView>, String>;
 
+/// What a compiled draw is prepared for: the GUI viewport it projects over, the target's format
+/// and samples, a placement after its projection and whether the target keeps premultiplied
+/// colour (a fade page).
+struct Output {
+    viewport: [u32; 2],
+    format: wgpu::TextureFormat,
+    samples: u32,
+    clip: Option<fade::ClipAffine>,
+    premultiply: bool,
+}
+
 /// Applies the draw's program, constants, textures and samplers before preparing submission.
 /// A refusal retains available bindings and forgets missing resources, so later inherited
 /// draws cannot accidentally use resources from an earlier successful draw. Missing techniques
 /// retain the program; a declared technique that fails compilation makes it unavailable.
-#[allow(clippy::too_many_arguments)]
 fn prepare_draw(
     native: &mut super::native_shader::stream::Stream,
     arena: &shader_pipeline::gpu::Arena,
     draw: &super::native_shader::draw::Quad,
     views: &[(u32, View)],
     baked: Option<Result<wgpu::TextureView, String>>,
-    viewport: [u32; 2],
-    format: wgpu::TextureFormat,
-    samples: u32,
+    Output {
+        viewport,
+        format,
+        samples,
+        clip,
+        premultiply,
+    }: Output,
 ) -> Result<super::native_shader::stream::Submission, String> {
     use installed_content::pdxshader::program::Stage;
     let label = format!(
@@ -1316,7 +1825,13 @@ fn prepare_draw(
     if draw.default_blend {
         native.bind_blend(None, wgpu::ColorWrites::ALL);
     }
-    let constants = draw.projected_constants(viewport);
+    if premultiply {
+        native.accumulate_alpha();
+    }
+    let mut constants = draw.projected_constants(viewport);
+    if let Some(clip) = clip {
+        fade::apply(clip, &mut constants);
+    }
     let known = [std::ops::Range {
         start: 0,
         end: draw.known,
@@ -1402,6 +1917,82 @@ fn plan_sync(
         .map(|(id, _)| *id)
         .collect();
     SyncPlan { drop, upload }
+}
+
+/// Uploads `vertices` into `target`, growing it to the next power of two when it is too small.
+fn write_vertices<T: bytemuck::Pod>(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    target: &mut wgpu::Buffer,
+    capacity: &mut u64,
+    vertices: &[T],
+) {
+    if vertices.is_empty() {
+        return;
+    }
+    let count = vertices.len() as u64;
+    if count > *capacity {
+        *capacity = count.next_power_of_two();
+        *target = buffer(device, *capacity, std::mem::size_of::<T>());
+    }
+    queue.write_buffer(target, 0, bytemuck::cast_slice(vertices));
+}
+
+/// The device pixels `[x0, y0, x1, y1]` a quad covers as laid out, on a target of `size` at
+/// `ui_scale`, with a pixel to spare on every side for filtering; `None` for a compiled quad
+/// without geometry.
+fn quad_bounds(quad: &Quad, size: [u32; 2], ui_scale: f32) -> Option<[f32; 4]> {
+    let corners: [[f32; 2]; 4] = match &quad.exact {
+        Some(exact) => {
+            let native = exact.native.as_ref()?;
+            // A compiled draw projects over its font viewport or the GUI viewport.
+            let viewport = native
+                .font_viewport
+                .map(|font| font.map(|v| v as f32))
+                .unwrap_or_else(|| {
+                    super::native_shader::draw::gui_viewport(size, ui_scale).map(|v| v as f32)
+                });
+            exact.corners.map(|[x, y]| {
+                [
+                    x / viewport[0] * size[0] as f32,
+                    y / viewport[1] * size[1] as f32,
+                ]
+            })
+        }
+        None => {
+            let [x0, y0, x1, y1] = device_corners(quad.rect, ui_scale);
+            let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+            if quad.rotation == 0.0 {
+                corners
+            } else {
+                let (sin, cos) = quad.rotation.sin_cos();
+                let centre = [(x0 + x1) * 0.5, (y0 + y1) * 0.5];
+                corners.map(|[x, y]| {
+                    let (dx, dy) = (x - centre[0], y - centre[1]);
+                    [
+                        centre[0] + dx * cos - dy * sin,
+                        centre[1] + dx * sin + dy * cos,
+                    ]
+                })
+            }
+        }
+    };
+    let [x, y] = corners[0];
+    let mut bounds = [x, y, x, y];
+    for [x, y] in corners {
+        bounds = [
+            bounds[0].min(x),
+            bounds[1].min(y),
+            bounds[2].max(x),
+            bounds[3].max(y),
+        ];
+    }
+    Some([
+        bounds[0] - 1.0,
+        bounds[1] - 1.0,
+        bounds[2] + 1.0,
+        bounds[3] + 1.0,
+    ])
 }
 
 fn buffer(device: &wgpu::Device, vertices: u64, stride: usize) -> wgpu::Buffer {
@@ -1536,6 +2127,7 @@ pub fn dump_sprites<'a>(batch: &Batch, extra: &Batch, sprites: &'a mut Batch) ->
 
 #[cfg(test)]
 mod tests {
+    use super::oracle::{render_presented, render_presented_at};
     use super::*;
 
     #[test]
@@ -1731,6 +2323,403 @@ mod tests {
         assert_eq!(window, [0.5, 0.375, 0.5, 0.625]);
         // Flipped rectangles keep their bounds ordered.
         assert_eq!(sample_window([0.75, 0.0, 0.25, 1.0], [4, 1])[0], 0.375);
+    }
+
+    /// A one-colour quad over `rect` on image page `texture`, shown as `present`.
+    fn shown(texture: usize, rect: [f32; 4], layer: u64, present: Option<Present>) -> Quad {
+        Quad {
+            texture,
+            rect,
+            uv: [0.0, 0.0, 1.0, 1.0],
+            color: [1.0; 4],
+            rotation: 0.0,
+            layer,
+            shade: 0.0,
+            exact: None,
+            anchor: None,
+            present,
+        }
+    }
+
+    fn solid(rgba: [u8; 4]) -> dds::Texture {
+        dds::Texture::from_rgba8(installed_content::image::Rgba8Image {
+            width: 1,
+            height: 1,
+            pixels: rgba.to_vec(),
+        })
+    }
+
+    #[test]
+    fn a_fading_icon_blends_in_as_one_image_scaled_about_its_anchor() {
+        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+        let pages = [solid([255, 0, 0, 255]), solid([0, 255, 0, 255])];
+        let pixel = |pixels: &[u8], x: usize, y: usize| -> [u8; 4] {
+            pixels[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4]
+                .try_into()
+                .unwrap()
+        };
+        let near = |a: [u8; 4], b: [u8; 3]| (0..3).all(|i| a[i].abs_diff(b[i]) <= 2);
+        // A red plate under a green one covering it, as one icon at half opacity: the green
+        // shows at half and the red under it not at all, as a whole-icon fade gives.
+        let half = Present {
+            pivot: [8.0, 8.0],
+            scale: 1.0,
+            alpha: 0.5,
+            rank: 0,
+        };
+        let mut batch = Batch::default();
+        batch.quads.extend([
+            shown(0, [2.0, 2.0, 12.0, 12.0], layer(10, 0, 0), Some(half)),
+            shown(1, [2.0, 2.0, 12.0, 12.0], layer(10, 0, 1), Some(half)),
+        ]);
+        let (pixels, pages_used) = render_presented(&device, &queue, &batch, &pages);
+        assert_eq!(pages_used, 1);
+        assert!(
+            near(pixel(&pixels, 8, 8), [0, 128, 0]),
+            "{:?}",
+            pixel(&pixels, 8, 8)
+        );
+        assert!(near(pixel(&pixels, 0, 0), [0, 0, 0]));
+        // Whole, the same icon draws straight onto the frame, and at half its size about its
+        // anchor it covers the middle alone.
+        let whole = Present {
+            scale: 0.5,
+            alpha: 1.0,
+            ..half
+        };
+        batch.quads = vec![shown(
+            1,
+            [0.0, 0.0, 16.0, 16.0],
+            layer(10, 0, 0),
+            Some(whole),
+        )];
+        let (pixels, pages_used) = render_presented(&device, &queue, &batch, &pages);
+        assert_eq!(pages_used, 0);
+        assert!(near(pixel(&pixels, 8, 8), [0, 255, 0]));
+        assert!(near(pixel(&pixels, 4, 4), [0, 255, 0]));
+        assert!(
+            near(pixel(&pixels, 2, 2), [0, 0, 0]),
+            "{:?}",
+            pixel(&pixels, 2, 2)
+        );
+        assert!(near(pixel(&pixels, 13, 13), [0, 0, 0]));
+        // Nearer icons draw over farther ones whatever their layers: rank 1 is nearer.
+        let far = Present {
+            rank: 0,
+            alpha: 1.0,
+            ..half
+        };
+        let nearer = Present {
+            rank: 1,
+            alpha: 1.0,
+            ..half
+        };
+        batch.quads = vec![
+            shown(1, [2.0, 2.0, 12.0, 12.0], layer(1, 0, 0), Some(nearer)),
+            shown(0, [2.0, 2.0, 12.0, 12.0], layer(20, 0, 0), Some(far)),
+        ];
+        let (pixels, _) = render_presented(&device, &queue, &batch, &pages);
+        assert!(
+            near(pixel(&pixels, 8, 8), [0, 255, 0]),
+            "{:?}",
+            pixel(&pixels, 8, 8)
+        );
+    }
+
+    #[test]
+    fn an_icon_wider_than_a_default_fade_page_still_fades_whole() {
+        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+        // A plate as wide as a 2,200-pixel frame, as a mod's layout or a long column may draw,
+        // with a red part under a green one, at a quarter opacity.
+        let size = [2200, 8];
+        let pages = [solid([255, 0, 0, 255]), solid([0, 255, 0, 255])];
+        let quarter = Present {
+            pivot: [1100.0, 4.0],
+            scale: 1.0,
+            alpha: 0.25,
+            rank: 0,
+        };
+        let mut batch = Batch::default();
+        batch.quads.extend([
+            shown(0, [0.0, 0.0, 2200.0, 8.0], layer(10, 0, 0), Some(quarter)),
+            shown(1, [0.0, 0.0, 2200.0, 8.0], layer(10, 0, 1), Some(quarter)),
+        ]);
+        let (pixels, pages_used) = render_presented_at(&device, &queue, &batch, &pages, size);
+        assert_eq!(pages_used, 1);
+        let width = size[0] as usize;
+        for x in [0, 1100, 2199] {
+            let at = (4 * width + x) * 4;
+            let pixel = &pixels[at..at + 4];
+            assert!(
+                pixel[0] <= 2 && pixel[1].abs_diff(64) <= 2 && pixel[2] <= 2,
+                "{x}: {pixel:?}"
+            );
+        }
+    }
+
+    /// A pass over one red and one green image page.
+    fn red_and_green(device: &wgpu::Device, queue: &wgpu::Queue) -> SpritePass {
+        let images = IconTextures::new(
+            device,
+            queue,
+            &[solid([255, 0, 0, 255]), solid([0, 255, 0, 255])],
+        )
+        .unwrap();
+        SpritePass::new(
+            device,
+            queue,
+            1,
+            &images,
+            &LazyTextures::new(),
+            wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .unwrap()
+    }
+
+    /// Icon `rank`'s quad of image page `texture` over `rect`, at half opacity.
+    fn half(texture: usize, rect: [f32; 4], rank: u32, child: u32) -> Quad {
+        let present = Present {
+            pivot: [8.0, 8.0],
+            scale: 1.0,
+            alpha: 0.5,
+            rank,
+        };
+        shown(texture, rect, layer(10, rank, child), Some(present))
+    }
+
+    #[test]
+    fn each_fade_page_draws_this_upload_s_icons_alone() {
+        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+        let mut pass = red_and_green(&device, &queue);
+        // Cells pack within 20 pixels a side: no two of these icons share a page.
+        pass.fade.side = 20;
+        let arena = shader_pipeline::gpu::Arena::new(&device);
+        // One upload and draw on the same pass: its pixels, fade pages and runs on each page.
+        let frame = |pass: &mut SpritePass, quads: Vec<Quad>| {
+            let mut batch = Batch::default();
+            batch.quads = quads;
+            arena.reset();
+            pass.upload(&device, &queue, &arena, &batch, [16, 16], 1.);
+            arena.flush(&queue);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            pass.draw_pages(&mut encoder);
+            queue.submit([encoder.finish()]);
+            let pixels = crate::map::test_support::gpu::render_with(&device, &queue, |render| {
+                pass.draw_runs(render, [16, 16])
+            });
+            let runs: Vec<usize> = pass.fade_runs.iter().map(Vec::len).collect();
+            (pixels, pass.fade_pages(), runs, pass.fade.pages.len())
+        };
+        let check = |pixels: &[u8], expected: &[([usize; 2], [u8; 3])]| {
+            for &([x, y], colour) in expected {
+                let at = (y * 16 + x) * 4;
+                let pixel = &pixels[at..at + 3];
+                assert!(
+                    (0..3).all(|i| pixel[i].abs_diff(colour[i]) <= 2),
+                    "({x}, {y}): {pixel:?} for {colour:?}"
+                );
+            }
+        };
+        // A far red icon at the top left and a near green one at the bottom right over part of
+        // it, each on its own page.
+        let (pixels, used, runs, kept) = frame(
+            &mut pass,
+            vec![
+                half(0, [0.0, 0.0, 12.0, 12.0], 0, 0),
+                half(1, [4.0, 4.0, 12.0, 12.0], 1, 0),
+            ],
+        );
+        assert_eq!((used, runs, kept), (2, vec![1, 1], 2));
+        check(
+            &pixels,
+            &[
+                ([2, 2], [128, 0, 0]),
+                ([14, 14], [0, 128, 0]),
+                ([8, 8], [64, 128, 0]),
+            ],
+        );
+        // The next upload's two icons on the same two pages are two corners each, with holes
+        // between them: nothing of the last upload's icons, nor of each other, shows there. The
+        // red icon's second corner lands on its page where the green icon's hole is on the next.
+        let corners = || {
+            vec![
+                half(0, [0.0, 0.0, 2.0, 2.0], 0, 0),
+                half(0, [8.0, 8.0, 2.0, 2.0], 0, 1),
+                half(1, [4.0, 4.0, 2.0, 2.0], 1, 0),
+                half(1, [14.0, 14.0, 2.0, 2.0], 1, 1),
+            ]
+        };
+        let changed = [
+            ([1, 1], [128, 0, 0]),
+            ([9, 9], [128, 0, 0]),
+            ([5, 5], [0, 128, 0]),
+            ([15, 15], [0, 128, 0]),
+            ([7, 7], [0, 0, 0]),
+            ([12, 12], [0, 0, 0]),
+            ([3, 3], [0, 0, 0]),
+        ];
+        let (pixels, used, runs, kept) = frame(&mut pass, corners());
+        assert_eq!((used, runs, kept), (2, vec![1, 1], 2));
+        check(&pixels, &changed);
+        // An upload with no fading icon draws none and keeps no page.
+        let (pixels, used, runs, kept) =
+            frame(&mut pass, vec![shown(0, [6.0, 6.0, 4.0, 4.0], 0, None)]);
+        assert_eq!((used, runs, kept), (0, vec![0, 0], 0));
+        check(
+            &pixels,
+            &[
+                ([7, 7], [255, 0, 0]),
+                ([1, 1], [0, 0, 0]),
+                ([12, 12], [0, 0, 0]),
+                ([15, 15], [0, 0, 0]),
+            ],
+        );
+        // Then the corners again, on fresh pages.
+        let (pixels, used, runs, kept) = frame(&mut pass, corners());
+        assert_eq!((used, runs, kept), (2, vec![1, 1], 2));
+        check(&pixels, &changed);
+    }
+
+    #[test]
+    fn fade_pages_follow_each_upload_s_demand() {
+        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+        let mut pass = red_and_green(&device, &queue);
+        let arena = shader_pipeline::gpu::Arena::new(&device);
+        let sizes = |pass: &mut SpritePass, quads: Vec<Quad>, size: [u32; 2]| {
+            let mut batch = Batch::default();
+            batch.quads = quads;
+            arena.reset();
+            pass.upload(&device, &queue, &arena, &batch, size, 1.);
+            pass.fade
+                .pages
+                .iter()
+                .map(|page| page.size)
+                .collect::<Vec<_>>()
+        };
+        // Demand alternating by a pixel between the two sides (bounds of 256 by 257 and 257 by 256,
+        // a pixel to spare around each quad) grows the short side once, keeping the other, and then
+        // keeps the page: no upload makes a new one.
+        let mut alternating = red_and_green(&device, &queue);
+        let tall_by_one = vec![half(1, [1.0, 1.0, 254.0, 255.0], 0, 0)];
+        let wide_by_one = vec![half(1, [1.0, 1.0, 255.0, 254.0], 0, 0)];
+        assert_eq!(
+            sizes(&mut alternating, tall_by_one.clone(), [300, 300]),
+            [[256, 512]]
+        );
+        assert_eq!(
+            sizes(&mut alternating, wide_by_one.clone(), [300, 300]),
+            [[512, 512]]
+        );
+        let kept = alternating.fade.pages[0].view.clone();
+        for quads in [
+            tall_by_one.clone(),
+            wide_by_one.clone(),
+            tall_by_one,
+            wide_by_one,
+        ] {
+            assert_eq!(sizes(&mut alternating, quads, [300, 300]), [[512, 512]]);
+            assert_eq!(alternating.fade.pages[0].view, kept);
+        }
+        // A wide frame's wide icon, a tall frame's tall icon, then a small frame's small icon: each
+        // page is as large as this upload's icons need, never the larger of earlier uploads'.
+        let wide = sizes(
+            &mut pass,
+            vec![half(1, [0.0, 0.0, 2500.0, 8.0], 0, 0)],
+            [2500, 8],
+        );
+        assert_eq!(wide, [[2560, 256]]);
+        let tall = sizes(
+            &mut pass,
+            vec![half(1, [0.0, 0.0, 8.0, 2500.0], 0, 0)],
+            [8, 2500],
+        );
+        assert_eq!(tall, [[256, 2560]]);
+        let small = sizes(
+            &mut pass,
+            vec![half(1, [2.0, 2.0, 4.0, 4.0], 0, 0)],
+            [16, 16],
+        );
+        assert_eq!(small, [[256, 256]]);
+        // A little more than a step keeps a page within twice what it needs; a page far larger
+        // than needed is replaced.
+        let grown = sizes(
+            &mut pass,
+            vec![half(1, [0.0, 0.0, 300.0, 8.0], 0, 0)],
+            [300, 8],
+        );
+        assert_eq!(grown, [[512, 256]]);
+        let back = sizes(
+            &mut pass,
+            vec![half(1, [2.0, 2.0, 4.0, 4.0], 0, 0)],
+            [16, 16],
+        );
+        assert_eq!(back, [[512, 256]]);
+        // Pages the upload does not fill go: two icons on two pages, then one, then none, then an
+        // empty batch.
+        pass.fade.side = 20;
+        let two = vec![
+            half(0, [0.0, 0.0, 12.0, 12.0], 0, 0),
+            half(1, [4.0, 4.0, 12.0, 12.0], 1, 0),
+        ];
+        assert_eq!(sizes(&mut pass, two.clone(), [16, 16]).len(), 2);
+        assert_eq!(sizes(&mut pass, two[..1].to_vec(), [16, 16]).len(), 1);
+        let plain = vec![shown(0, [6.0, 6.0, 4.0, 4.0], 0, None)];
+        assert_eq!(sizes(&mut pass, plain, [16, 16]).len(), 0);
+        assert_eq!(sizes(&mut pass, two, [16, 16]).len(), 2);
+        assert_eq!(sizes(&mut pass, Vec::new(), [16, 16]).len(), 0);
+    }
+
+    #[test]
+    fn every_upload_draws_its_own_fading_icons_alone() {
+        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+        let images = IconTextures::new(&device, &queue, &[solid([0, 255, 0, 255])]).unwrap();
+        let mut pass = SpritePass::new(
+            &device,
+            &queue,
+            1,
+            &images,
+            &LazyTextures::new(),
+            wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .unwrap();
+        let arena = shader_pipeline::gpu::Arena::new(&device);
+        let faded = Present {
+            pivot: [8.0, 8.0],
+            scale: 1.0,
+            alpha: 0.5,
+            rank: 0,
+        };
+        let mut batch = Batch::default();
+        batch.quads.extend([
+            shown(0, [2.0, 2.0, 4.0, 4.0], layer(10, 0, 0), Some(faded)),
+            shown(
+                0,
+                [9.0, 9.0, 4.0, 4.0],
+                layer(10, 1, 0),
+                Some(Present { rank: 1, ..faded }),
+            ),
+        ]);
+        let counts = |pass: &SpritePass| {
+            (
+                pass.fade_pages(),
+                pass.fade_runs.iter().map(Vec::len).sum::<usize>(),
+                pass.fade_draws.len(),
+                pass.runs.len(),
+            )
+        };
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            arena.reset();
+            pass.upload(&device, &queue, &arena, &batch, [16, 16], 1.);
+            seen.push(counts(&pass));
+        }
+        // Two icons, each one run on the one page and one composite on the frame, every frame.
+        assert_eq!(seen, vec![(1, 2, 0, 2); 3]);
+        // A frame without fading icons keeps none of an earlier frame's.
+        batch.quads = vec![shown(0, [2.0, 2.0, 4.0, 4.0], layer(10, 0, 0), None)];
+        arena.reset();
+        pass.upload(&device, &queue, &arena, &batch, [16, 16], 1.);
+        assert_eq!(counts(&pass), (0, 0, 0, 1));
     }
 
     #[test]
