@@ -2,7 +2,7 @@
 
 **What it shows:** Planes or wings in each country's recorded air-wing census, as a race, lines or one country's equipment-type mix. National stockpiles are excluded.
 
-**Product(s) it reads:** Prepared air-force series provide bounded viewport geometry, exact reached censuses and keyboard changes. [`air-force-size`](../../../../crates/dashboard/src/products/air_force.rs) remains the history reference.
+**Product(s) it reads:** Prepared air-force series provide bounded viewport geometry, exact reached censuses and keyboard changes. [`air-force-size`](../../../../crates/dashboard-forces/src/products/air_force.rs) remains the history reference.
 
 **Settings:** Top-ten race of plane counts by default; manual countries and smart groups; planes/wings, roster owner/country it fights for, type parts, Chart/Breakdown and inline/pop-out drill. Campaign, Follow, Pin and Range plus shared race/line controls.
 

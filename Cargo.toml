@@ -139,6 +139,10 @@ dashboard-raids = { path = "crates/dashboard-raids" }
 dashboard-resource-balance = { path = "crates/dashboard-resource-balance" }
 dashboard-unit-leaders = { path = "crates/dashboard-unit-leaders" }
 dashboard-core = { path = "crates/dashboard-core" }
+dashboard-forces = { path = "crates/dashboard-forces" }
+dashboard-intelligence = { path = "crates/dashboard-intelligence" }
+dashboard-land-battles = { path = "crates/dashboard-land-battles" }
+dashboard-naval = { path = "crates/dashboard-naval" }
 dashboard-text = { path = "crates/dashboard-text" }
 engine = { path = "crates/engine" }
 engine-mutations = { path = "crates/engine-mutations" }

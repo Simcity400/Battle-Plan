@@ -6,7 +6,7 @@ Recorded decryptor → target attempts, progress/status and active bonus countdo
 
 ## Products it reads
 
-[`decryption`](../../../../crates/dashboard/src/products/decryption.rs) supplies pair histories; [cryptology.rs](../../../../crates/dashboard-text/src/cryptology.rs) owns native threshold/progress arithmetic. Shared country facts supply dated endpoint looks.
+[`decryption`](../../../../crates/dashboard-intelligence/src/products/decryption.rs) supplies pair histories; [cryptology.rs](../../../../crates/dashboard-text/src/cryptology.rs) owns native threshold/progress arithmetic. Shared country facts supply dated endpoint looks.
 
 ## Settings
 

@@ -6,7 +6,7 @@ Directed operative-placement counts between acting and target countries, with na
 
 ## Products it reads
 
-[`operative-placements`](../../../../crates/dashboard/src/products/operative_placements.rs) supplies sparse pair/roster histories; [`country-styles`](../../../../crates/dashboard-base/src/products/country_styles.rs) and shared country flags/names supply dated looks.
+[`operative-placements`](../../../../crates/dashboard-intelligence/src/products/operative_placements.rs) supplies sparse pair/roster histories; [`country-styles`](../../../../crates/dashboard-base/src/products/country_styles.rs) and shared country flags/names supply dated looks.
 
 ## Settings
 

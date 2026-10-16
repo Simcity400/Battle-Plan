@@ -230,6 +230,18 @@ opt-level = 2
 [profile.dev.package.dashboard-core]
 opt-level = 2
 
+[profile.dev.package.dashboard-forces]
+opt-level = 2
+
+[profile.dev.package.dashboard-intelligence]
+opt-level = 2
+
+[profile.dev.package.dashboard-land-battles]
+opt-level = 2
+
+[profile.dev.package.dashboard-naval]
+opt-level = 2
+
 [profile.dev.package.dashboard-text]
 opt-level = 2
 
@@ -454,6 +466,18 @@ opt-level = 0
 [profile.test.package.dashboard-core]
 opt-level = 0
 
+[profile.test.package.dashboard-forces]
+opt-level = 0
+
+[profile.test.package.dashboard-intelligence]
+opt-level = 0
+
+[profile.test.package.dashboard-land-battles]
+opt-level = 0
+
+[profile.test.package.dashboard-naval]
+opt-level = 0
+
 [profile.test.package.dashboard-text]
 opt-level = 0
 
@@ -668,6 +692,18 @@ opt-level = 2
 opt-level = 2
 
 [profile.full.package.dashboard-core]
+opt-level = 2
+
+[profile.full.package.dashboard-forces]
+opt-level = 2
+
+[profile.full.package.dashboard-intelligence]
+opt-level = 2
+
+[profile.full.package.dashboard-land-battles]
+opt-level = 2
+
+[profile.full.package.dashboard-naval]
 opt-level = 2
 
 [profile.full.package.dashboard-text]

@@ -2,7 +2,7 @@
 
 **What it shows:** Observed division creations and witnessed losses/transfers, newest first, with recorded templates, countries, locations and known killers.
 
-**Product(s) it reads:** [`division-log-manifest`, `division-log`, `division-log-totals`](../../../../crates/dashboard/src/products/division_log.rs); [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies drawn locations.
+**Product(s) it reads:** [`division-log-manifest`, `division-log`, `division-log-totals`](../../../../crates/dashboard-land-battles/src/products/division_log.rs); [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies drawn locations.
 
 **Settings:** All countries by default; created/lost-and-transferred/both, branch-scoped template choices, numeric totals and shared log controls; Campaign, Follow or Range.
 

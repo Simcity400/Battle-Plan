@@ -2,7 +2,7 @@
 
 **What it shows:** Each country's land army as a race, lines, battalion mix or full breakdown.
 
-**Product(s) it reads:** [`army-size`](../../../../crates/dashboard/src/products/army_size.rs) supplies capabilities and recording-block histories; its inventory/composition modules own native attribution and arithmetic.
+**Product(s) it reads:** [`army-size`](../../../../crates/dashboard-forces/src/products/army_size.rs) supplies capabilities and recording-block histories; its inventory/composition modules own native attribution and arithmetic.
 
 **Settings:** Top-ten race by default; manual countries and smart groups; manpower, divisions, current HP or battalions; Owner/Host attribution; authored-group parts, a View selector for race, lines, battalion mix or breakdown, and inline/pop-out drill. Campaign, Follow, Pin and Range plus shared race/line controls.
 

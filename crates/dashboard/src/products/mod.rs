@@ -5,48 +5,25 @@
 //! service, transport, host and frontend never name a product; they route by
 //! its key.
 
-pub mod agency_comparison;
-pub mod air_force;
-pub mod army_size;
 pub mod autonomy;
 pub mod country_flags;
 pub mod country_fuel;
-mod country_name_cache;
 pub mod country_nukes;
 pub mod country_stability;
-pub mod decryption;
-pub mod division_log;
-pub mod espionage_log;
 pub mod event_feed;
 pub mod focus_artwork;
 pub mod game_score;
-pub mod intelligence_capture;
-pub mod intelligence_content;
-pub(crate) mod intelligence_prepared;
-pub mod operation_description;
-pub mod operative_content;
-pub mod operative_placements;
-pub(crate) mod operative_rows;
-pub mod operatives_roster;
 pub use identity::civil_war;
-pub mod land_battles;
 pub mod land_owners;
 pub mod national_focus;
-pub mod naval_battles;
-pub mod naval_losses;
-pub mod navy;
 pub mod occupation_trend;
 pub mod occupied_states;
-pub(crate) mod parts_race_prepared;
 pub mod party_history;
 pub mod peace_deals;
 pub mod scoreboard;
-pub mod ships_sunk;
-pub mod sinkings;
 pub mod special_projects;
 pub mod stability_parts;
 pub mod subjects;
-pub mod supply_health;
 pub mod technology_artwork;
 pub mod war_casualties;
 pub mod wars;
@@ -60,7 +37,27 @@ pub use dashboard_construction::products::construction_log;
 pub use dashboard_construction::products::construction_spending;
 pub use dashboard_equipment_losses::products::equipment_losses;
 pub use dashboard_equipment_stockpile::products::equipment_stockpile;
+pub use dashboard_forces::products::air_force;
+pub use dashboard_forces::products::army_size;
+pub use dashboard_forces::products::navy;
+pub use dashboard_forces::products::parts_race_prepared;
+pub use dashboard_forces::products::supply_health;
+pub use dashboard_intelligence::products::agency_comparison;
+pub use dashboard_intelligence::products::decryption;
+pub use dashboard_intelligence::products::espionage_log;
+pub use dashboard_intelligence::products::intelligence_content;
+pub use dashboard_intelligence::products::intelligence_prepared;
+pub use dashboard_intelligence::products::operation_description;
+pub use dashboard_intelligence::products::operative_content;
+pub use dashboard_intelligence::products::operative_placements;
+pub use dashboard_intelligence::products::operatives_roster;
+pub use dashboard_land_battles::products::division_log;
+pub use dashboard_land_battles::products::land_battles;
 pub use dashboard_military_air_ledger::products::military_air_ledger;
+pub use dashboard_naval::products::naval_battles;
+pub use dashboard_naval::products::naval_losses;
+pub use dashboard_naval::products::ships_sunk;
+pub use dashboard_naval::products::sinkings;
 pub use dashboard_politics_ledger::products::politics_ledger;
 pub use dashboard_raids::products::raids;
 pub use dashboard_resource_balance::products::resource_balance;
@@ -69,7 +66,7 @@ pub use dashboard_unit_leaders::products::unit_leaders;
 
 use std::sync::atomic::AtomicBool;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::{
     Source, reply_cache,
@@ -77,10 +74,6 @@ use crate::{
 };
 
 dashboard_base::reply_warnings!(
-    agency_comparison::AgencyComparisonReply,
-    army_size::ArmySizeReply,
-    supply_health::SupplyHealthReply,
-    air_force::AirForceReply,
     autonomy::AutonomyReply,
     country_flags::CountryFlagReply,
     country_fuel::FuelReply,
@@ -92,18 +85,11 @@ dashboard_base::reply_warnings!(
     country_fuel::FuelDemandStackReply,
     country_nukes::CountryNukesReply,
     country_stability::CountryStabilityReply,
-    decryption::DecryptionReply,
-    espionage_log::EspionageLogReply,
-    operation_description::OperationDescriptionReply,
-    operative_placements::OperativePlacementReply,
-    operatives_roster::OperativeRosterReply,
     game_score::GameScoreReply,
     event_feed::EventFeedReply,
     focus_artwork::FocusArtworkReply,
     crate::LandOwners,
     national_focus::FocusReply,
-    navy::NavyReply,
-    naval_losses::NavalLossesReply,
     occupation_trend::OccupationTrendReply,
     occupied_states::OccupiedStatesReply,
     occupied_states::OccupiedStatesManifestReply,
@@ -111,7 +97,6 @@ dashboard_base::reply_warnings!(
     peace_deals::PeaceDealsReply,
     technology_artwork::TechnologyArtworkReply,
     scoreboard::ScoreboardReply,
-    ships_sunk::ShipsSunkReply,
     special_projects::SpecialProjectsReply,
     stability_parts::StabilityPartsReply,
     subjects::SubjectReply,
@@ -121,17 +106,6 @@ dashboard_base::reply_warnings!(
     war_casualties::breakdown::CasualtyBreakdownReply,
     world_tension::TensionReply,
 );
-
-/// Serialised with the lease identity the frontend used, so a reply can never
-/// be attributed to another recording.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Envelope<'a, T: Serialize> {
-    source_id: &'a str,
-    revision: &'a str,
-    product: &'static str,
-    data: T,
-}
 
 /// A product erased to its key and JSON entry points.
 pub struct Registered {
@@ -356,6 +330,9 @@ mod recording_tests;
 
 #[cfg(test)]
 mod source_warning_tests;
+
+#[cfg(test)]
+mod supply_health_registry_tests;
 
 #[cfg(test)]
 mod tests {

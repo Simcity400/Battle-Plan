@@ -6,7 +6,7 @@ Observed preparing, running and ended operations with type, endpoints, progress 
 
 ## Products it reads
 
-[`espionage-log`](../../../../crates/dashboard/src/products/espionage_log.rs) supplies window discovery/detail and completion coverage. Shared log country facts supply dated names/flags.
+[`espionage-log`](../../../../crates/dashboard-intelligence/src/products/espionage_log.rs) supplies window discovery/detail and completion coverage. Shared log country facts supply dated names/flags.
 
 ## Settings
 

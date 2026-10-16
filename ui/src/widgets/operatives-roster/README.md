@@ -6,7 +6,7 @@ Recruited agency operatives with recorded name, skill/experience, assignment and
 
 ## Products it reads
 
-[`operatives-roster`](../../../../crates/dashboard/src/products/operatives_roster.rs) supplies operative values, roster coverage and separate operation observations. Shared country facts supply dated roster/owner/target/capturer looks.
+[`operatives-roster`](../../../../crates/dashboard-intelligence/src/products/operatives_roster.rs) supplies operative values, roster coverage and separate operation observations. Shared country facts supply dated roster/owner/target/capturer looks.
 
 ## Settings
 

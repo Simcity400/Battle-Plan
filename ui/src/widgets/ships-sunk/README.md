@@ -2,7 +2,7 @@
 
 **What it shows:** Recorded named ship sinkings, newest first, with victims, attribution, class, sea zone and available native battle titles.
 
-**Product(s) it reads:** [`ships-sunk`](../../../../crates/dashboard/src/products/ships_sunk.rs) uses the shared [`sinkings`](../../../../crates/dashboard/src/products/sinkings.rs) retained-history scan; [`ships-sunk-battle-titles`](../../../../crates/dashboard/src/products/ships_sunk/battle_titles.rs) resolves drawn titles through [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs).
+**Product(s) it reads:** [`ships-sunk`](../../../../crates/dashboard-naval/src/products/ships_sunk.rs) uses the shared [`sinkings`](../../../../crates/dashboard-naval/src/products/sinkings.rs) retained-history scan; [`ships-sunk-battle-titles`](../../../../crates/dashboard-naval/src/products/ships_sunk/battle_titles.rs) resolves drawn titles through [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs).
 
 The manifest supplies class choices; normal log demand holds playback and visible replay windows. Earlier/Latest sinkings reaches every native-date window. Late retained observations repair their native window, and its stable scan indices continue to identify title requests.
 Published rows and attribution patches use shared dated events; continuation

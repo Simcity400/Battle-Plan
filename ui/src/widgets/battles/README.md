@@ -2,7 +2,7 @@
 
 **What it shows:** The shared BattleLogView used by [Land battles](../land-battles/README.md) and [Naval battles](../naval-battles/README.md). It provides log/leaderboard browsing; this folder is not a separately registered widget.
 
-**Product(s) it reads:** Caller-selected manifest, window and ranking products from [`land_battles.rs`](../../../../crates/dashboard/src/products/land_battles.rs) or [`naval_battles.rs`](../../../../crates/dashboard/src/products/naval_battles.rs), plus [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs). Shared wire types live in [`battles.rs`](../../../../crates/dashboard-base/src/products/battles.rs).
+**Product(s) it reads:** Caller-selected manifest, window and ranking products from [`land_battles.rs`](../../../../crates/dashboard-land-battles/src/products/land_battles.rs) or [`naval_battles.rs`](../../../../crates/dashboard-naval/src/products/naval_battles.rs), plus [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs). Shared wire types live in [`battles.rs`](../../../../crates/dashboard-base/src/products/battles.rs).
 
 **Settings:** `battleOptions` supplies Battle log/Biggest battles, caller-defined measure choices, user-selected top N, log/table controls and sorting. The owning widget declares campaign/time/country settings; header sorting stays within the server-selected leaderboard. Selected measure follows the current ranking measure; explicit measure sorts stay fixed. Background loading shows one Updating status.
 

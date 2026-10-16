@@ -2,7 +2,7 @@
 
 **What it shows:** Which land battles happened where and when, who attacked whom and who won, and what each side lost, as a log or a biggest-battles list; a click opens one battle's course and equipment losses.
 
-**Products:** [`land-battles-manifest`, `land-battles`, `land-battles-ranking`, `land-battle-course`](../../../../crates/dashboard/src/products/land_battles.rs) and [`land-battle-terrain`](../../../../crates/dashboard/src/products/land_battles/terrain.rs); [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies locations. Uses [shared battles](../battles/README.md) for windows, ranking, filters, names and Jump.
+**Products:** [`land-battles-manifest`, `land-battles`, `land-battles-ranking`, `land-battle-course`](../../../../crates/dashboard-land-battles/src/products/land_battles.rs) and [`land-battle-terrain`](../../../../crates/dashboard-land-battles/src/products/land_battles/terrain.rs); [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies locations. Uses [shared battles](../battles/README.md) for windows, ranking, filters, names and Jump.
 
 **Settings:** All countries and the log by default; manual/smart-group filters; Log or Biggest (also a switch beside Live), Biggest by casualties, most divisions at once or length, user-selected top N, month headers, new-row animation, density and where the battle opens (in the widget or beside it); Campaign, Follow, Pin and Range.
 

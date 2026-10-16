@@ -2,7 +2,7 @@
 
 **What it shows:** Ships or current hull HP in each country's task-force roster, as a race, lines, class/role mix or full breakdown. This is not tonnage.
 
-**Product(s) it reads:** [`navy-size`](../../../../crates/dashboard/src/products/navy.rs).
+**Product(s) it reads:** [`navy-size`](../../../../crates/dashboard-forces/src/products/navy.rs).
 
 **Settings:** Top-ten ship-count race by ship class and country holding the fleet by default; HP, assigned country, role, manual countries/smart groups, Chart/Breakdown and inline/pop-out drill; Campaign, Follow, Pin and Range plus shared race/line controls.
 

@@ -2,7 +2,7 @@
 
 **What it shows:** Ships and convoys lost or primarily credited as sunk by each country, in a race or lines, with a ships/convoys breakdown.
 
-**Product(s) it reads:** [`naval-losses`](../../../../crates/dashboard/src/products/naval_losses.rs) shares the retained-history [`sinkings`](../../../../crates/dashboard/src/products/sinkings.rs) scan with [Ships sunk](../ships-sunk/README.md).
+**Product(s) it reads:** [`naval-losses`](../../../../crates/dashboard-naval/src/products/naval_losses.rs) shares the retained-history [`sinkings`](../../../../crates/dashboard-naval/src/products/sinkings.rs) scan with [Ships sunk](../ships-sunk/README.md).
 
 Prepared holder series supply exact reached windows and width summaries. Race
 playback holds its current and adjacent windows; dense lines use shared chart

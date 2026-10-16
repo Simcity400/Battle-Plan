@@ -19,6 +19,17 @@ pub use crate::identity;
 /// transport's complete-response bound. History products share this reserve.
 pub const MAX_PRODUCT_REPLY_BYTES: usize = 24 * 1024 * 1024;
 
+/// Serialised with the lease identity the frontend used, so a reply can never
+/// be attributed to another recording.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Envelope<'a, T: Serialize> {
+    pub source_id: &'a str,
+    pub revision: &'a str,
+    pub product: &'static str,
+    pub data: T,
+}
+
 /// Refuse a complete reply instead of dropping recorded entries to fit it.
 pub fn check_reply_budget<T: Serialize>(reply: &T) -> io::Result<()> {
     if crate::transport::json_len(reply, MAX_PRODUCT_REPLY_BYTES).is_none() {

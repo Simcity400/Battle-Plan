@@ -1,0 +1,41 @@
+[package]
+name = "dashboard-naval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+# Tests that take more than about two seconds; see AGENTS.md.
+slow-tests = []
+# The products' test oracles and fixtures, for the tests of crates above this one.
+test-support = ["dashboard-base/test-support", "dashboard-land-battles/test-support"]
+
+[dependencies]
+dashboard-base.workspace = true
+dashboard-core.workspace = true
+dashboard-land-battles.workspace = true
+dashboard-text.workspace = true
+engine.workspace = true
+installed-content.workspace = true
+replay.workspace = true
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json.workspace = true
+store = { path = "../store" }
+ts-rs = "11.1"
+zstd = "0.13"
+
+[dev-dependencies]
+dashboard-base = { workspace = true, features = ["test-support"] }
+dashboard-core = { workspace = true, features = ["test-support"] }
+dashboard-land-battles = { workspace = true, features = ["test-support"] }
+dashboard-text = { workspace = true, features = ["test-support"] }
+# Folder layers, so tests load localisation files as the game content does.
+installed-content = { workspace = true, features = ["test-support"] }
+# Prepared files publish without disk flushes, which no test can observe.
+store = { path = "../store", features = ["test-support"] }
+uuid = { workspace = true, features = ["v4"] }

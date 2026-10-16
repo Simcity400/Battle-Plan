@@ -399,7 +399,7 @@ fn assert_prepared_identities(source: &Source, branch: u64) {
 }
 
 fn forces_frame(hour: i32) -> DecodedFrame {
-    let mut frame = crate::products::army_size::tests::frame(hour);
+    let mut frame = crate::products::army_size::test_fixtures::frame(hour);
     let divisions = frame.complete::<replay::rows::tables::Divisions>().unwrap();
     *frame.tables[TableId::DivisionStatus.index()] =
         TableView::Complete(TableRows::DivisionStatus(

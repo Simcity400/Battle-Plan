@@ -2,6 +2,9 @@
 
 pub(crate) use dashboard_base::prepared::query::progressive;
 
+#[cfg(test)]
+mod forces_tests;
+
 use crate::{
     Source,
     metadata::check_cancel,

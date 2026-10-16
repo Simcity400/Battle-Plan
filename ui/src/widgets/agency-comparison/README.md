@@ -6,7 +6,7 @@ Country intelligence-agency names, defence, acquired upgrades and active/maximum
 
 ## Products it reads
 
-[`agency-comparison`](../../../../crates/dashboard/src/products/agency_comparison.rs) supplies screen values, upgrade entries and identities; shared dated country facts supply names/flags.
+[`agency-comparison`](../../../../crates/dashboard-intelligence/src/products/agency_comparison.rs) supplies screen values, upgrade entries and identities; shared dated country facts supply names/flags.
 
 ## Settings
 

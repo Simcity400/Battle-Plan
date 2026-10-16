@@ -1820,7 +1820,11 @@ dependencies = [
  "dashboard-core",
  "dashboard-equipment-losses",
  "dashboard-equipment-stockpile",
+ "dashboard-forces",
+ "dashboard-intelligence",
+ "dashboard-land-battles",
  "dashboard-military-air-ledger",
+ "dashboard-naval",
  "dashboard-politics-ledger",
  "dashboard-raids",
  "dashboard-resource-balance",
@@ -1963,6 +1967,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashboard-forces"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "dashboard-intelligence"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
+name = "dashboard-land-battles"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+]
+
+[[package]]
 name = "dashboard-military-air-ledger"
 version = "0.1.0"
 dependencies = [
@@ -1976,6 +2030,25 @@ dependencies = [
  "serde_json",
  "store",
  "ts-rs",
+ "zstd",
+]
+
+[[package]]
+name = "dashboard-naval"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-land-battles",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "uuid",
  "zstd",
 ]
 

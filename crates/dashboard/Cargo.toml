@@ -27,6 +27,10 @@ dashboard-raids.workspace = true
 dashboard-resource-balance.workspace = true
 dashboard-unit-leaders.workspace = true
 dashboard-core.workspace = true
+dashboard-forces.workspace = true
+dashboard-intelligence.workspace = true
+dashboard-land-battles.workspace = true
+dashboard-naval.workspace = true
 dashboard-text.workspace = true
 replay.workspace = true
 store = { path = "../store" }
@@ -62,6 +66,10 @@ dashboard-raids = { workspace = true, features = ["test-support"] }
 dashboard-unit-leaders = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["test-support"] }
 dashboard-core = { workspace = true, features = ["test-support"] }
+dashboard-forces = { workspace = true, features = ["test-support"] }
+dashboard-intelligence = { workspace = true, features = ["test-support"] }
+dashboard-land-battles = { workspace = true, features = ["test-support"] }
+dashboard-naval = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
 # Folder layers, so tests load localisation files as the game content does.
 installed-content = { workspace = true, features = ["test-support"] }

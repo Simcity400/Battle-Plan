@@ -2,7 +2,7 @@
 
 **What it shows:** Recorded sea battles with fleets, native-side ship counts, losses and winners, as a log or biggest-battles table.
 
-**Product(s) it reads:** [`naval-battles-manifest`, `naval-battles`, `naval-battles-ranking`](../../../../crates/dashboard/src/products/naval_battles.rs); [`naval-battle-details`](../../../../crates/dashboard/src/products/naval_battles/details.rs) enriches drawn rows; [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) names locations. Uses [shared battles](../battles/README.md).
+**Product(s) it reads:** [`naval-battles-manifest`, `naval-battles`, `naval-battles-ranking`](../../../../crates/dashboard-naval/src/products/naval_battles.rs); [`naval-battle-details`](../../../../crates/dashboard-naval/src/products/naval_battles/details.rs) enriches drawn rows; [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) names locations. Uses [shared battles](../battles/README.md).
 
 **Settings:** All countries and Battle log by default; manual/smart groups, Biggest battles by Ships sunk/Peak ships/Length, top N and shared log/table controls; Campaign, Follow, Pin and Range.
 
