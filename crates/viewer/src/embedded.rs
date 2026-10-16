@@ -285,6 +285,10 @@ struct Outgoing {
     camera_mode: Option<(CameraMode, bool)>,
     /// The chosen aircraft's latest status not yet sent.
     fly_aircraft: Option<dashboard::protocol::FlyAircraftStatus>,
+    /// Each view's latest picker options; a newer change replaces an unsent one.
+    view_options: BTreeMap<String, dashboard::protocol::MapOptions>,
+    /// Picker toggle clicks in order; each is one flip of a host setting.
+    view_toggles: VecDeque<(String, dashboard::protocol::MapToggle)>,
 }
 
 impl Outgoing {
@@ -316,6 +320,8 @@ impl Outgoing {
         !self.toggle_diagnostics
             && self.camera_mode.is_none()
             && self.fly_aircraft.is_none()
+            && self.view_options.is_empty()
+            && self.view_toggles.is_empty()
             && self.ready.is_none()
             && self.details.is_none()
             && self.state.is_none()
@@ -585,6 +591,12 @@ impl Parent {
                                 state: status.state,
                             }
                         }),
+                        outgoing.view_options.pop_first().map(|(view_id, options)| {
+                            NativeEvent::MapOptions { view_id, options }
+                        }),
+                        outgoing.view_toggles.pop_front().map(|(view_id, toggle)| {
+                            NativeEvent::MapToggle { view_id, toggle }
+                        }),
                     ];
                     drop(outgoing);
                     output.output_space.notify_all();
@@ -770,6 +782,32 @@ impl Controller {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         outgoing.report_camera_mode(mode, overlays);
+        drop(outgoing);
+        self.shared.output_ready.notify_one();
+    }
+
+    /// Reports a view's options after the picker changed them; the host stores them.
+    pub fn report_view_options(&self, view_id: &str, options: dashboard::protocol::MapOptions) {
+        let mut outgoing = self
+            .shared
+            .outgoing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        outgoing.view_options.insert(view_id.to_owned(), options);
+        drop(outgoing);
+        self.shared.output_ready.notify_one();
+    }
+
+    /// Reports a picker toggle click whose setting the host owns.
+    pub fn report_view_toggle(&self, view_id: &str, toggle: dashboard::protocol::MapToggle) {
+        let mut outgoing = self
+            .shared
+            .outgoing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        outgoing
+            .view_toggles
+            .push_back((view_id.to_owned(), toggle));
         drop(outgoing);
         self.shared.output_ready.notify_one();
     }

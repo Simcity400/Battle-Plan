@@ -1,0 +1,511 @@
+//! Map modes on dashboard maps over a synthetic scene fixture: the picker's keys and toggles
+//! through two maps drawn in one frame, the names a mode writes, and the mode hovers.
+use super::*;
+use crate::map::scene_failure_tests::Fixture;
+use viewer_foundation::map::camera::Placement;
+use viewer_foundation::map::test_support::TEST_HANG_GUARD;
+use viewer_world::map::map_mode::MapMode;
+
+/// Each map's size in points; the two sit side by side.
+const MAP: [f32; 2] = [640., 480.];
+
+fn target(fixture: &Fixture, id: &str, x: i32) -> dashboard::protocol::DashboardMapView {
+    let bounds = dashboard::protocol::ViewBounds {
+        x,
+        y: 0,
+        width: MAP[0] as u32,
+        height: MAP[1] as u32,
+    };
+    dashboard::protocol::DashboardMapView {
+        options: Default::default(),
+        id: id.into(),
+        source_id: "verified-fixture".into(),
+        path: "fixture".into(),
+        revision: "fixture".into(),
+        branch_id: fixture.input.branch.to_string(),
+        playing: false,
+        hour: fixture.input.hour,
+        fraction: 0.,
+        sequence: 1,
+        seek_sequence: Some(1),
+        bounds,
+        clip: bounds,
+        visible: true,
+    }
+}
+
+/// The left edge of map `index` on screen.
+fn left(index: usize) -> f32 {
+    index as f32 * MAP[0]
+}
+
+/// One frame of both maps with `events`.
+fn pass(
+    viewers: &mut [Viewer; 2],
+    targets: &[dashboard::protocol::DashboardMapView; 2],
+    ctx: &egui::Context,
+    frame: &eframe::Frame,
+    events: Vec<egui::Event>,
+) {
+    let mut output = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(MAP[0] * 2., MAP[1]),
+            )),
+            focused: true,
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            for (index, (viewer, target)) in viewers.iter_mut().zip(targets).enumerate() {
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(left(index), 0.),
+                    egui::vec2(MAP[0], MAP[1]),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                    viewer.map_ui(ui, frame, target)
+                });
+            }
+        },
+    );
+    output.textures_delta.clear();
+}
+
+fn pointer(x: f32, y: f32) -> egui::Event {
+    egui::Event::PointerMoved(egui::pos2(x, y))
+}
+
+fn key((modifiers, key): (egui::Modifiers, egui::Key)) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+fn press(x: f32, y: f32, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos: egui::pos2(x, y),
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+/// Map-mode keys reach only the dashboard map that owns keyboard input (the one last pressed),
+/// or the hovered one while none does; the mode list holds every mode without scrolling; the
+/// player-only counters toggle filters its own map.
+#[test]
+#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
+    let fixture = Fixture::load("viewer-picker-input")?;
+    let request = fixture.request([MAP[0] as u32, MAP[1] as u32]);
+    let viewer = || -> std::io::Result<Viewer> {
+        let document = Document::from_shared_content(
+            fixture.document.content.clone(),
+            fixture.document.playback.replay_handle(),
+            &InitialHour {
+                branch: Some(fixture.input.branch),
+                hour: Some(fixture.input.hour),
+                hour_fraction: 0.,
+            },
+        )?;
+        let mut viewer = Viewer::create(
+            Config::default(),
+            Options::default(),
+            None,
+            Arc::new(Mutex::new(None)),
+            None,
+            Some((fixture.state.device.clone(), fixture.state.queue.clone())),
+        );
+        viewer.dashboard_map = true;
+        viewer.diagnostics = false;
+        viewer.graphics.samples = 1;
+        viewer.ui_scale = Setting::Manual(1.0);
+        viewer.camera_manual = true;
+        viewer.camera = Some(Placement::map(request.camera.center, request.camera.height));
+        viewer.install_map(document, fixture.scene()?, "fixture".into());
+        Ok(viewer)
+    };
+    let mut viewers = [viewer()?, viewer()?];
+    let targets = [
+        target(&fixture, "first", 0),
+        target(&fixture, "second", MAP[0] as i32),
+    ];
+    let ctx = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    frame.wgpu_render_state = Some(fixture.state.clone());
+    let deadline = Instant::now() + TEST_HANG_GUARD;
+    while !viewers.iter().all(|v| v.rendered.is_some()) {
+        pass(&mut viewers, &targets, &ctx, &frame, Vec::new());
+        for viewer in &viewers {
+            assert!(
+                viewer.error.is_none() && viewer.map_error.is_none(),
+                "{:?} {:?}",
+                viewer.error,
+                viewer.map_error
+            );
+        }
+        assert!(Instant::now() < deadline, "the maps did not draw");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    // The keys of two slots holding modes other than the default.
+    let document = viewers[0].document.as_ref().unwrap();
+    let slots = super::picker::slot_modes(document, &[]);
+    let keys: Vec<_> = viewer_combat::picker::shortcuts(
+        &document.combat,
+        MAP,
+        super::picker::four_buttons(document),
+        super::picker::DEFAULT_SLOTS.len(),
+    )?
+    .into_iter()
+    .filter_map(|(control, text)| match control {
+        viewer_combat::picker::Control::Slot(slot)
+            if slots[slot] != MapMode::default()
+                && !matches!(&slots[slot], MapMode::Stock(stock) if stock.unavailable().is_some()) =>
+        {
+            Some((slots[slot].clone(), super::picker::parse_shortcut(&text)?))
+        }
+        _ => None,
+    })
+    .collect();
+    assert!(
+        keys.len() >= 2,
+        "the picker authors fewer than two mode keys"
+    );
+    let (first_mode, first_key) = keys[0].clone();
+    let (second_mode, second_key) = keys[1].clone();
+
+    // No map was pressed yet: the key goes to the hovered map alone.
+    let over_second = left(1) + MAP[0] / 2.;
+    pass(
+        &mut viewers,
+        &targets,
+        &ctx,
+        &frame,
+        vec![pointer(over_second, MAP[1] / 2.), key(first_key)],
+    );
+    assert_eq!(viewers[0].map_mode, MapMode::default());
+    assert_eq!(viewers[1].map_mode, first_mode);
+
+    // The map last pressed takes the keys, though the pointer has moved on to the other.
+    let over_first = MAP[0] / 2.;
+    pass(
+        &mut viewers,
+        &targets,
+        &ctx,
+        &frame,
+        vec![
+            pointer(over_first, MAP[1] / 2.),
+            press(over_first, MAP[1] / 2., true),
+        ],
+    );
+    pass(
+        &mut viewers,
+        &targets,
+        &ctx,
+        &frame,
+        vec![press(over_first, MAP[1] / 2., false)],
+    );
+    pass(
+        &mut viewers,
+        &targets,
+        &ctx,
+        &frame,
+        vec![pointer(over_second, MAP[1] / 2.), key(second_key)],
+    );
+    assert_eq!(viewers[0].map_mode, second_mode);
+    assert_eq!(viewers[1].map_mode, first_mode);
+
+    // The mode list holds every mode, inside its window, and the wheel does not move it: the
+    // game's lists take no scrollbar and grow instead.
+    viewers[1].picker.open = viewer_combat::picker::Open::All;
+    pass(&mut viewers, &targets, &ctx, &frame, Vec::new());
+    let entries = |viewer: &mut Viewer| {
+        let document = viewer.document.take().unwrap();
+        let drawn = viewer
+            .draw_picker(&document, MAP, false, 0., false)
+            .unwrap()
+            .unwrap();
+        let modes = super::picker::all_modes(&document, super::picker::four_buttons(&document));
+        viewer.document = Some(document);
+        let shown: Vec<_> = drawn
+            .controls
+            .iter()
+            .filter(|(_, control)| matches!(control, viewer_combat::picker::Control::Entry(_)))
+            .cloned()
+            .collect();
+        let windows: Vec<_> = drawn
+            .controls
+            .iter()
+            .filter(|(_, control)| *control == viewer_combat::picker::Control::Window)
+            .map(|(rect, _)| *rect)
+            .collect();
+        (shown, windows, modes.len())
+    };
+    let (before, windows, modes) = entries(&mut viewers[1]);
+    assert_eq!(before.len(), modes, "every mode has its entry");
+    for (rect, control) in &before {
+        assert!(
+            windows.iter().any(|window| {
+                rect[0] >= window[0]
+                    && rect[1] >= window[1]
+                    && rect[0] + rect[2] <= window[0] + window[2]
+                    && rect[1] + rect[3] <= window[1] + window[3]
+            }),
+            "{control:?} at {rect:?} lies outside its window"
+        );
+    }
+    let (x, y) = (before[0].0[0] + 2., before[0].0[1] + 2.);
+    pass(
+        &mut viewers,
+        &targets,
+        &ctx,
+        &frame,
+        vec![
+            pointer(left(1) + x, y),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0., -1.),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    assert_eq!(
+        entries(&mut viewers[1]).0,
+        before,
+        "the wheel moved the mode list"
+    );
+    viewers[1].picker.open = viewer_combat::picker::Open::None;
+
+    // The player-only counters toggle keeps the viewing country's own counters on that map.
+    viewers[0].picker_toggle("player_counters_toggle");
+    pass(&mut viewers, &targets, &ctx, &frame, Vec::new());
+    let ours = viewers[0].overlay_tables.as_ref().unwrap().3.ours();
+    assert_eq!(
+        viewers[0].overlay_layers.counters.owners.as_deref(),
+        Some(&std::collections::BTreeSet::from([ours]))
+    );
+    assert_eq!(viewers[1].overlay_layers.counters.owners, None);
+    Ok(())
+}
+
+/// The air and navy modes write strategic region names, which are not drawn: their maps carry no
+/// names, not the countries'.
+#[test]
+#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+fn the_air_and_navy_modes_write_no_country_names() -> std::io::Result<()> {
+    use viewer_world::map::map_mode::Stock;
+    let fixture = Fixture::load("viewer-region-names")?;
+    let hour = fixture.document.hour()?;
+    let none = viewer_world::map::name_pass::NameAreas::default();
+    assert_ne!(hour.name_areas(&MapMode::default())?, none);
+    for stock in [Stock::StrategicAir, Stock::StrategicNavy] {
+        assert_eq!(hour.name_areas(&MapMode::Stock(stock))?, none, "{stock:?}");
+    }
+    Ok(())
+}
+
+/// The states mode's category line is refused by name: the state's current category is not
+/// recorded, and its history category is not shown in its place.
+#[test]
+#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+fn the_states_mode_refuses_its_category_line() -> std::io::Result<()> {
+    use viewer_counter_products::map::province_tooltips::{
+        Cache, ModeHover, STATE_CATEGORY_UNRECORDED,
+    };
+    let fixture = Fixture::load("viewer-state-category")?;
+    let document = &fixture.document;
+    let crate::playback::Current::Frame(frame) = document.playback.current() else {
+        panic!("the fixture hour is a gap");
+    };
+    let province = frame
+        .complete::<replay::rows::tables::Provinces>()
+        .map_err(std::io::Error::other)?
+        .iter()
+        .find(|province| province.state != 0)
+        .expect("a province in a state")
+        .id;
+    let vision = document.vision(&Default::default())?;
+    let hover = |category| {
+        Cache::default().request(
+            &document.counter_content,
+            document.icons.raids.movement_reads(),
+            frame,
+            province,
+            &vision,
+            false,
+            &Arc::new(Vec::new()),
+            &document.playback.replay_handle(),
+            &ModeHover::Location { category },
+            || {},
+        )
+    };
+    let refusal = format!("province state category: {STATE_CATEGORY_UNRECORDED}");
+    let states = hover(true);
+    assert_eq!(
+        states.refused.get(&refusal),
+        Some(&1),
+        "{:?}",
+        states.refused
+    );
+    // The rest of the location block is the default mode's.
+    let default = hover(false);
+    assert_eq!(states.title, default.title);
+    assert!(!default.refused.contains_key(&refusal));
+    Ok(())
+}
+
+/// A scripted mode's hover expands its text in the game's scopes: ROOT the viewing country,
+/// FROM the hovered province's state; a state function the shared expansion lacks is refused by
+/// name.
+#[test]
+#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+fn a_scripted_modes_hover_reads_the_viewer_and_the_hovered_state() -> std::io::Result<()> {
+    use dashboard::scripted_text::{EventObject, EventScope, EventScopes, ScriptedText};
+    use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
+    let fixture = Fixture::load("viewer-scripted-hover")?;
+    let document = &fixture.document;
+    let crate::playback::Current::Frame(frame) = document.playback.current() else {
+        panic!("the fixture hour is a gap");
+    };
+    let province = frame
+        .complete::<replay::rows::tables::Provinces>()
+        .map_err(std::io::Error::other)?
+        .iter()
+        .find(|province| province.state != 0)
+        .expect("a province in a state")
+        .clone();
+    let mut content = (*document.counter_content).clone();
+    content.localisation = Arc::new(
+        content
+            .localisation
+            .iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .chain([
+                (
+                    "fixture_mode_tooltip".to_owned(),
+                    "[ROOT.GetName] - [FROM.GetName]".to_owned(),
+                ),
+                (
+                    "fixture_mode_tooltip_delayed".to_owned(),
+                    "[FROM.GetContinent]".to_owned(),
+                ),
+            ])
+            .collect(),
+    );
+    let content = Arc::new(content);
+    let vision = document.vision(&Default::default())?;
+    let hover = Cache::default().request(
+        &content,
+        document.icons.raids.movement_reads(),
+        frame,
+        province.id,
+        &vision,
+        false,
+        &Arc::new(Vec::new()),
+        &document.playback.replay_handle(),
+        &ModeHover::Scripted("fixture_mode".into()),
+        || {},
+    );
+    let scripted = content.scripted.as_ref().as_ref().unwrap();
+    let text = ScriptedText::new(frame, &content.localisation, scripted, vision.ours());
+    let viewer = text.expand("[ROOT.GetName]").unwrap();
+    let state = text
+        .expand_in(
+            "[THIS.GetName]",
+            &EventScopes::new(vec![EventScope::of(EventObject::State(province.state))]),
+        )
+        .unwrap();
+    assert_eq!(
+        hover.title,
+        format!("{viewer} - {state}"),
+        "{:?}",
+        hover.refused
+    );
+    assert!(
+        hover
+            .refused
+            .keys()
+            .any(|refusal| refusal.contains("GetContinent")),
+        "{:?}",
+        hover.refused
+    );
+    Ok(())
+}
+
+/// The resistance and compliance hover shows the occupied state's recorded strengths and the
+/// lines the hour can give, refusing each other line by its key.
+#[test]
+#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+fn the_resistance_hover_shows_the_recorded_strengths() -> std::io::Result<()> {
+    use installed_content::localisation::Argument;
+    use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
+    let fixture = Fixture::load("viewer-resistance-hover")?;
+    let document = &fixture.document;
+    let crate::playback::Current::Frame(frame) = document.playback.current() else {
+        panic!("the fixture hour is a gap");
+    };
+    let resistance = frame
+        .complete::<replay::rows::tables::StateResistance>()
+        .map_err(std::io::Error::other)?
+        .iter()
+        .find(|row| row.active != 0)
+        .expect("an occupied state with resistance")
+        .clone();
+    let province = frame
+        .complete::<replay::rows::tables::Provinces>()
+        .map_err(std::io::Error::other)?
+        .iter()
+        .find(|province| province.state == resistance.state)
+        .expect("a province of the occupied state")
+        .id;
+    let vision = document.vision(&Default::default())?;
+    let hover = Cache::default().request(
+        &document.counter_content,
+        document.icons.raids.movement_reads(),
+        frame,
+        province,
+        &vision,
+        false,
+        &Arc::new(Vec::new()),
+        &document.playback.replay_handle(),
+        &ModeHover::Occupation,
+        || {},
+    );
+    let loc = &document.counter_content.localisation;
+    let strength = |key: &str, value: i64| {
+        loc.localise_with(key.as_bytes(), &[("TOT", Argument::Fixed5(value / 100))])
+            .unwrap()
+    };
+    assert!(
+        hover
+            .title
+            .contains(&strength("RESISTANCE_STRENGTH", resistance.level)),
+        "{}
+{:?}",
+        hover.title,
+        hover.refused
+    );
+    assert!(
+        hover
+            .title
+            .contains(&strength("COMPLIANCE_STRENGTH", resistance.compliance)),
+        "{}",
+        hover.title
+    );
+    assert!(
+        hover
+            .refused
+            .keys()
+            .any(|refusal| refusal.contains("RESISTANCE_TARGET_VALUE")),
+        "{:?}",
+        hover.refused
+    );
+    Ok(())
+}

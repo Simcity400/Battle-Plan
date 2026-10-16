@@ -168,6 +168,17 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::WeatherProvinces,
             TableId::WeatherRegions,
             TableId::WingEquipment,
+            // The map modes' layers (viewer_world::map::map_mode); Capitulation holds each
+            // country's owned war goals.
+            TableId::Capitulation,
+            TableId::FactionMembers,
+            TableId::Factions,
+            TableId::PoliticalParties,
+            TableId::Politics,
+            TableId::RelationOpinions,
+            TableId::SimulationFeatures,
+            TableId::StateResistance,
+            TableId::Subjects,
         ];
         TableId::ALL
             .into_iter()

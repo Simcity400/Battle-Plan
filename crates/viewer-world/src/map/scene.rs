@@ -190,6 +190,8 @@ pub struct Scene {
     snow_presentation: crate::map::weather::Presentation,
     snow_render_delta: crate::map::weather::RenderDelta,
     political: Option<crate::map::political_gpu::View>,
+    /// The shown map mode's camera override and outline cutoff per channel.
+    mode_channels: [Option<[f32; 2]>; 2],
     gradient1: Bound,
     gradient2: Bound,
     secondary: Bound,
@@ -235,6 +237,9 @@ pub struct Scene {
     // names
     icon_textures: IconTextures,
     name_pass: NamePass,
+    /// The names written close in ([`Placements::near`]), fading in as the country layer fades
+    /// out.
+    near_name_pass: NamePass,
     /// The battle-plan labels: the same `mapname` effect, drawn right after
     /// the plan's ribbons.
     order_label_pass: [NamePass; 3],
@@ -520,6 +525,14 @@ impl Scene {
             &assets.name_shader,
             None,
         )?;
+        let near_name_pass = NamePass::new(
+            device,
+            samples,
+            &icon_textures,
+            SCENE_FORMAT,
+            &assets.name_shader,
+            None,
+        )?;
         let label_pass = || {
             NamePass::new(
                 device,
@@ -652,6 +665,7 @@ impl Scene {
             snow_presentation: Default::default(),
             snow_render_delta: Default::default(),
             political: None,
+            mode_channels: [None; 2],
             gradient1,
             gradient2,
             secondary,
@@ -707,6 +721,7 @@ impl Scene {
             // names
             icon_textures,
             name_pass,
+            near_name_pass,
             order_label_pass,
             order_labels: std::array::from_fn(|_| Placements::default()),
             sprite_pass,
@@ -1523,6 +1538,10 @@ impl Scene {
         let Some(political) = &mut self.political else {
             return Err(invalid("PoliticalComputeNotWarmed"));
         };
+        self.mode_channels = regions
+            .mode
+            .as_ref()
+            .map_or([None; 2], |draw| draw.channel_constants());
         if !political.show(device, queue, regions)? {
             return Ok(());
         }
@@ -1858,7 +1877,11 @@ impl Scene {
         self.detail_laps.lap("lights");
         let mut globals = FrameInputs {
             frame: FrameConstants::try_new(camera, size, day_night, animation_time, self.fog)
-                .map(|frame| frame.with_snow_mud_fade(snow_mud_fade))
+                .map(|frame| {
+                    frame
+                        .with_snow_mud_fade(snow_mud_fade)
+                        .with_channels(self.mode_channels)
+                })
                 .ok_or_else(|| invalid("Map shader inputs: 1 refused frame: camera projection has no finite inverse"))?,
             shadow_matrix: [[0.0; 4]; 4],
             light_grid: self.point_light_tiles.grid,
@@ -1890,7 +1913,11 @@ impl Scene {
                     let mut wrapped = camera;
                     wrapped.center[0] -= offset;
                     FrameConstants::try_new(wrapped, size, day_night, animation_time, self.fog)
-                        .map(|frame| frame.with_snow_mud_fade(snow_mud_fade))
+                        .map(|frame| {
+                    frame
+                        .with_snow_mud_fade(snow_mud_fade)
+                        .with_channels(self.mode_channels)
+                })
                         .ok_or_else(|| invalid("Map shader scene: 1 refused frame: wrapped camera has no finite inverse"))
                 }).collect::<io::Result<Vec<_>>>()?;
         let native_frame_bytes: Vec<_> = native_frames.iter().map(bytemuck::bytes_of).collect();
@@ -1913,13 +1940,17 @@ impl Scene {
         };
         self.detail_laps.lap("globals_shadow_prepare");
         let animated = clock.map(|clock| clock.elapsed());
-        // Rebuild glyph buffers when placements change, then admit this frame's names.
-        self.name_pass.upload(
+        // Rebuild glyph buffers when placements change, then admit this frame's names. The near
+        // names cross-fade with the far ones.
+        let names = overlay.names.unwrap_or(&self.empty_placements);
+        self.name_pass
+            .upload(device, names, camera, size, overlay.layer_alpha, &offsets);
+        self.near_name_pass.upload(
             device,
-            overlay.names.unwrap_or(&self.empty_placements),
+            names.near.as_deref().unwrap_or(&self.empty_placements),
             camera,
             size,
-            overlay.layer_alpha,
+            1.0 - overlay.layer_alpha,
             &offsets,
         );
         // Plan labels have no camera cutoff: each label's own alpha is its
@@ -2677,7 +2708,11 @@ impl Scene {
             .iter()
             .map(|&view| {
                 FrameConstants::try_new(view, size, day_night, animation_time, self.fog)
-                    .map(|frame| frame.with_snow_mud_fade(snow_mud_fade))
+                    .map(|frame| {
+                        frame
+                            .with_snow_mud_fade(snow_mud_fade)
+                            .with_channels(self.mode_channels)
+                    })
                     .ok_or_else(|| {
                         invalid(
                             "Map shader scene: 1 refused actor frame: camera has no finite inverse",
@@ -2892,6 +2927,8 @@ impl Scene {
         // Draw world names into the floating-point scene after weather and before post restore. NamePass
         // uses an UNORM atlas and SrcAlpha/InvSrcAlpha blending.
         self.name_pass.validate_draw(&native_frame_bytes, None)?;
+        self.near_name_pass
+            .validate_draw(&native_frame_bytes, None)?;
         let names = overlay.interface && self.graphics.country_names;
         passes.run(passes::Pass::CountryNames, || {
             if !names {
@@ -2900,6 +2937,8 @@ impl Scene {
             #[cfg(any(test, feature = "test-support"))]
             faults.preflight(passes::Pass::CountryNames)?;
             self.name_pass
+                .draw(arena, &native_frame_bytes, &mut encoder, targets)?;
+            self.near_name_pass
                 .draw(arena, &native_frame_bytes, &mut encoder, targets)
         });
         mark(&mut encoder, "names");
@@ -3046,7 +3085,10 @@ impl Scene {
     // names
     /// Name-layer vertices and icon quads the last frame drew, for reporting.
     pub fn overlay_counts(&self) -> (u32, u32) {
-        (self.name_pass.vertex_count(), self.sprite_pass.quad_count())
+        (
+            self.name_pass.vertex_count() + self.near_name_pass.vertex_count(),
+            self.sprite_pass.quad_count(),
+        )
     }
 
     pub fn pass_warnings(&self) -> Vec<String> {

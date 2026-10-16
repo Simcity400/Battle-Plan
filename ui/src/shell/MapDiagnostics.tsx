@@ -25,7 +25,7 @@ export default function MapDiagnostics({ native, metadata, branch }: { native: D
     </SettingsBlock>
     <SettingsBlock id="diagnostics-map" title="Map" actions={ready && <button type="button" className="button small quiet" onClick={inspect}><Icon name="refresh" />Check again</button>}>
       <label className="settings-row" id="diagnostics-overlay"><span className="settings-row-text"><strong>Technical overlay</strong>
-        <small>Frame rate and map statistics over every map. F3 switches it anywhere.</small></span>
+        <small>Frame rate and map statistics over every map. Ctrl+F3 switches it anywhere.</small></span>
         {desktopAvailable ? <input type="checkbox" role="switch" disabled={overlay.enabled === null} aria-busy={overlay.enabled === null} checked={overlay.enabled ?? false}
           onChange={event => overlay.set(event.currentTarget.checked)} /> : <span className="graphics-unavailable">Desktop only</span>}
       </label>

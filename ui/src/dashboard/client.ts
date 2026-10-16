@@ -89,6 +89,9 @@ export interface DashboardClient {
   product<T>(request: ProductRequest, signal: AbortSignal): Promise<ProductReply<T>>;
   preparedQuery?<T>(source: DashboardSource, product: string, params: unknown, options: { signal: AbortSignal }): Promise<T>;
   mapSettings?(sourceId: string, revision: string, settings: CampaignMapSettings | null, signal: AbortSignal, target?: MapSettingsTarget): Promise<MapSettingsReply>;
+  /** Flips a setting of the target's stored choices on the service, under the lock its saves take: the opposite of
+   * its value when the flip runs, every other choice untouched. */
+  flipMapSetting?(sourceId: string, revision: string, setting: 'dayNight' | 'alliedPlans', signal: AbortSignal, target: MapSettingsTarget): Promise<MapSettingsReply>;
   /** The widget history cache's size, after clearing it when asked. */
   historyCache?(clear: boolean, signal: AbortSignal): Promise<HistoryCacheReply>;
   contentFolders?(signal: AbortSignal): Promise<ContentFolders>;
@@ -101,4 +104,13 @@ export interface DashboardClient {
   recorderSettings?(): Promise<RecorderSettings>;
   setMapViews(views: DashboardMapView[]): Promise<void>;
   onMapStates(callback: (states: DashboardMapState[]) => void): Promise<() => void>;
+  /** The native map picker changed a view's options; later layouts must carry them. */
+  onMapOptions?(callback: (event: MapOptionsEvent) => void): Promise<() => void>;
+  /** The native map picker clicked a toggle whose setting the host owns. */
+  onMapToggle?(callback: (event: MapToggleEvent) => void): Promise<() => void>;
 }
+
+export interface MapOptionsEvent { viewId: string; options: MapOptions }
+/** A picker toggle click: the host flips its own value of the setting. */
+export interface MapToggle { setting: 'dayNight' | 'alliedPlans' | 'fog' }
+export interface MapToggleEvent { viewId: string; toggle: MapToggle }

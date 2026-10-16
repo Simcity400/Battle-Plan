@@ -8,6 +8,7 @@ use viewer_foundation::{
     tooltip_text::TextIcons,
 };
 
+#[derive(Clone)]
 pub struct Content {
     pub anchors: Arc<BTreeMap<(u32, u32), [f32; 3]>>,
     pub default_anchors: Arc<BTreeMap<u32, [f32; 3]>>,

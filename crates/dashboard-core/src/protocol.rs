@@ -101,6 +101,19 @@ pub enum NativeEvent {
         aircraft: Option<String>,
         state: FlyAircraftState,
     },
+    /// The map picker or its shortcuts changed a view's options (map mode, slots, fog). The
+    /// host stores them, so later layout messages carry them back.
+    MapOptions {
+        #[serde(rename = "viewId")]
+        view_id: String,
+        options: MapOptions,
+    },
+    /// The map picker clicked a toggle whose setting the host owns.
+    MapToggle {
+        #[serde(rename = "viewId")]
+        view_id: String,
+        toggle: MapToggle,
+    },
 }
 
 /// The full map's chosen aircraft and whether it can be flown.
@@ -351,6 +364,7 @@ impl MapAction {
                 if let Some(tag) = &options.country {
                     validate_tag(tag)?;
                 }
+                options.validate_modes()?;
             }
             Self::Export { path, view_id } => {
                 validate_local_path(path)?;
@@ -413,6 +427,50 @@ pub fn validate_tag(tag: &str) -> Result<(), &'static str> {
 pub struct MapOptions {
     pub country: Option<String>,
     pub fog: bool,
+    /// The view's map mode token (a picker mode's token or `scripted:<name>`); `None` is the
+    /// political map. The viewer echoes picker changes back in [`NativeEvent::MapOptions`].
+    #[serde(default)]
+    pub map_mode: Option<String>,
+    /// The modes the picker's configurable slots hold, in slot order; empty uses the
+    /// game's defaults.
+    #[serde(default)]
+    pub map_mode_slots: Vec<String>,
+    /// Hides the map mode picker, as the map-only window does; its keys still work.
+    #[serde(default)]
+    pub picker_hidden: bool,
+}
+
+/// The view id the desktop's campaign map reports its picker changes under.
+pub const CAMPAIGN_MAP_VIEW: &str = "campaign-map";
+
+/// A picker toggle click on a setting the host owns: the host flips its own current value, each
+/// click in order on its one write path, so quick clicks each count and nothing is pending in the
+/// viewer, which shows the value the host last applied.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MapToggle {
+    pub setting: MapSetting,
+}
+
+/// A view setting the picker's toggles stand for.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum MapSetting {
+    DayNight,
+    AlliedPlans,
+    Fog,
+}
+
+impl MapOptions {
+    /// Map mode tokens name content modes, whose names a mod chooses, so only their form is
+    /// checked: present and free of control characters. The message's own size bounds them.
+    pub fn validate_modes(&self) -> Result<(), &'static str> {
+        let token = |token: &String| token.is_empty() || token.chars().any(char::is_control);
+        if self.map_mode.as_ref().is_some_and(token) || self.map_mode_slots.iter().any(token) {
+            return Err("Invalid map mode");
+        }
+        Ok(())
+    }
 }
 
 pub use crate::map_display::{
@@ -425,6 +483,9 @@ impl Default for MapOptions {
         Self {
             country: None,
             fog: true,
+            map_mode: None,
+            map_mode_slots: Vec::new(),
+            picker_hidden: false,
         }
     }
 }
@@ -657,6 +718,72 @@ mod tests {
         view.validate().unwrap();
         view.seek_sequence = Some(9_007_199_254_740_992);
         assert!(view.validate().is_err());
+    }
+
+    #[test]
+    fn map_modes_travel_in_the_options_and_bad_tokens_are_refused() {
+        let options: super::MapOptions = serde_json::from_str(
+            r#"{"country":null,"fog":true,"mapMode":"states","mapModeSlots":["terrain"]}"#,
+        )
+        .unwrap();
+        assert_eq!(options.map_mode.as_deref(), Some("states"));
+        assert!(
+            super::MapAction::Configure {
+                options: options.clone()
+            }
+            .validate()
+            .is_ok()
+        );
+        // Options without the fields show the political map.
+        let plain: super::MapOptions =
+            serde_json::from_str(r#"{"country":null,"fog":false}"#).unwrap();
+        assert_eq!(plain.map_mode, None);
+        assert!(plain.map_mode_slots.is_empty());
+        for bad in [
+            super::MapOptions {
+                map_mode: Some(String::new()),
+                ..options.clone()
+            },
+            super::MapOptions {
+                map_mode: Some(
+                    "a
+b"
+                    .into(),
+                ),
+                ..options.clone()
+            },
+            super::MapOptions {
+                map_mode_slots: vec!["terrain".into(), String::new()],
+                ..options.clone()
+            },
+        ] {
+            assert!(
+                super::MapAction::Configure { options: bad }
+                    .validate()
+                    .is_err()
+            );
+        }
+        // A mod's long mode name and many slots are its own to choose.
+        let long = super::MapOptions {
+            map_mode: Some(format!("scripted:{}", "m".repeat(249))),
+            map_mode_slots: vec!["terrain".into(); 300],
+            ..options.clone()
+        };
+        assert!(
+            super::MapAction::Configure { options: long }
+                .validate()
+                .is_ok()
+        );
+        let event = super::NativeEvent::MapToggle {
+            view_id: "m".into(),
+            toggle: super::MapToggle {
+                setting: super::MapSetting::DayNight,
+            },
+        };
+        assert_eq!(
+            serde_json::to_string(&event).unwrap(),
+            r#"{"event":"map_toggle","viewId":"m","toggle":{"setting":"dayNight"}}"#
+        );
     }
 
     #[test]

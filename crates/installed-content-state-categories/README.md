@@ -1,6 +1,6 @@
 # installed-content-state-categories
 
-Authored state-category database and modifiers. The implementation and its tests live in [`state_categories`](src/state_categories.rs); the same public paths are exported through `installed_content::state_categories`. Shared parsing, identity and authored foundations come from [installed-content-core](../installed-content-core/README.md).
+Authored state-category database, colours and modifiers. The implementation and its tests live in [`state_categories`](src/state_categories.rs); the same public paths are exported through `installed_content::state_categories`. Shared parsing, identity and authored foundations come from [installed-content-core](../installed-content-core/README.md).
 
 Resolve every authored input through the recorded `ResolvedLayers` content stack, including folders, archives, DLC, mods and replace_path. Preserve native order, lookup identity, duplicate handling, recovery and named/counted diagnostics. Keep evaluation and rendering in consumers.
 

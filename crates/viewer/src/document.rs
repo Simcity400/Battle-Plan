@@ -195,6 +195,8 @@ pub struct Content {
     /// `viewer_world::map::political::strategic_regions_of`.
     pub strategic_regions: Arc<BTreeMap<u32, installed_content::regions::StrategicRegion>>,
     pub naval_dominance: viewer_world::map::naval_dominance::Content,
+    /// The map modes' defines, colours and the content's scripted modes.
+    pub map_modes: Arc<viewer_world::map::map_mode::Content>,
     /// Wall time of the border trace, for reporting.
     pub border_trace: Duration,
     // names
@@ -1477,6 +1479,21 @@ impl Document {
         warnings.extend(wave_warnings);
         let (states, state_conflicts) = states;
         warnings.extend(state_conflicts.into_iter().map(|(_, message)| message));
+        let map_modes = {
+            let scripted_modes = installed_content::scripted_map_modes::read(&content.layers)?;
+            for (field, count) in scripted_modes.refusal_counts() {
+                warnings.push(format!(
+                    "Scripted map modes: {count} unread entries {field}"
+                ));
+            }
+            Arc::new(viewer_world::map::map_mode::Content::new(
+                &defines,
+                Arc::new(counters.ideologies.clone()),
+                scripted_modes,
+                content.layers.faction_templates(),
+                recorded_language.clone(),
+            )?)
+        };
         // Wave 2: everything needing assets, in parallel. Joins run in the
         // serial load order, so the first error and the warning order match
         // the serial load within this wave.
@@ -1887,6 +1904,7 @@ impl Document {
             raid_hover,
             strategic_regions: regions,
             naval_dominance,
+            map_modes,
             border_trace,
             // names
             icons,
@@ -2082,8 +2100,11 @@ impl Document {
         self.hour()?.intel_map(perspective)
     }
 
-    pub fn place_names(&self) -> io::Result<Placements> {
-        self.hour()?.place_names()
+    pub fn place_names(
+        &self,
+        mode: &viewer_world::map::map_mode::MapMode,
+    ) -> io::Result<Placements> {
+        self.hour()?.place_names(mode)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2827,6 +2848,31 @@ impl<'a> Hour<'a> {
             .read(self.frame, self.vision(choice)?.ours()))
     }
 
+    /// The map mode's country channel this hour; the viewing country is its selected country.
+    /// `colour` is a scripted mode's borders as the previous hour kept them.
+    pub fn map_mode_fill(
+        &self,
+        mode: &viewer_world::map::map_mode::MapMode,
+        choice: &perspective::Choice,
+        colour: Option<&viewer_world::map::map_mode::ColourState>,
+    ) -> io::Result<viewer_world::map::map_mode::ModeFill> {
+        use viewer_world::map::map_mode;
+        if *mode == map_mode::MapMode::default() {
+            return Ok(map_mode::ModeFill::default());
+        }
+        map_mode::fill(
+            mode,
+            &map_mode::Inputs {
+                content: &self.map_modes,
+                map: &self.map,
+                frame: self.frame,
+                selected: Some(self.vision(choice)?.ours()),
+                world: Some(self.trigger_world()),
+                colour,
+            },
+        )
+    }
+
     // counters: the viewing country
     /// What this hour's counters can see, for the limitation lines and the viewing tag.
     pub fn vision(
@@ -2872,15 +2918,84 @@ impl<'a> Hour<'a> {
     }
 
     // names
-    /// Places the country name layer.
-    pub fn place_names(&self) -> io::Result<Placements> {
-        name_pass::place(&self.placement_inputs(), self.frame)
+    /// Places the country name layer, as `mode`'s layer names it.
+    pub fn place_names(
+        &self,
+        mode: &viewer_world::map::map_mode::MapMode,
+    ) -> io::Result<Placements> {
+        Ok(name_pass::place_areas(
+            &self.placement_inputs(),
+            &self.name_areas(mode)?,
+            None,
+        ))
     }
 
-    /// What this hour's name placement reads, for callers that reuse
+    /// What this hour's name placement reads in `mode`, for callers that reuse
     /// placements across hours ([`name_pass::NameAreas`]).
-    pub fn name_areas(&self) -> io::Result<name_pass::NameAreas> {
-        name_pass::NameAreas::read(&self.map, &self.names.localisation, self.frame)
+    pub fn name_areas(
+        &self,
+        mode: &viewer_world::map::map_mode::MapMode,
+    ) -> io::Result<name_pass::NameAreas> {
+        use viewer_world::map::map_mode::NameLayer;
+        let layers = self.map_modes.name_layers(mode);
+        let far = self.layer_areas(layers.far)?;
+        Ok(match layers.near {
+            NameLayer::Nothing => far,
+            near => far.with_near(self.layer_areas(near)?),
+        })
+    }
+
+    /// The areas one name layer writes.
+    fn layer_areas(
+        &self,
+        layer: viewer_world::map::map_mode::NameLayer,
+    ) -> io::Result<name_pass::NameAreas> {
+        use viewer_world::map::map_mode::{self, NameLayer};
+        let groups = match layer {
+            // Strategic region names are not drawn, and the countries' are not the mode's (named
+            // in the mode's warnings).
+            NameLayer::Nothing | NameLayer::StrategicRegions => {
+                return Ok(name_pass::NameAreas::default());
+            }
+            NameLayer::States => {
+                let content = &self.counter_content;
+                return name_pass::NameAreas::states(&self.map, self.frame, |state| {
+                    viewer_foundation::tooltip_text::state_name(
+                        &content.localisation,
+                        &content.recorded_language,
+                        state.id,
+                        &state.custom_name,
+                        &state.owner_name,
+                        || {
+                            let key = content
+                                .state_name_keys
+                                .get(&state.id)
+                                .ok_or("state content name absent")?
+                                .as_ref()
+                                .map_err(Clone::clone)?;
+                            viewer_foundation::tooltip_text::localise(
+                                &content.localisation,
+                                key,
+                                &[],
+                            )
+                        },
+                    )
+                });
+            }
+            NameLayer::Factions => Some(map_mode::faction_labels(
+                &self.map_modes,
+                self.frame,
+                &self.names.localisation,
+            )),
+            NameLayer::Players => Some(map_mode::player_labels(self.frame)),
+            NameLayer::Countries => None,
+        };
+        name_pass::NameAreas::read(
+            &self.map,
+            &self.names.localisation,
+            self.frame,
+            groups.as_ref(),
+        )
     }
 
     /// Places `areas`, reusing the names of areas `placed` already holds.

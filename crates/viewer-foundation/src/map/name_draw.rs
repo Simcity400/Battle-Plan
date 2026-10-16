@@ -95,6 +95,9 @@ pub struct Placements {
     /// Which placement this is: the name pass builds its static vertices once
     /// per generation. Zero is the empty default; every name placement is unique.
     pub generation: u64,
+    /// The names written close in, below the country-name cutoff, as these fade out; `None`
+    /// when the map mode writes none there.
+    pub near: Option<std::sync::Arc<Placements>>,
 }
 
 /// The next [`Placements::generation`].

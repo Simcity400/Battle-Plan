@@ -205,6 +205,21 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
     }
 
+    /// A temp variable the last evaluation left, fixed5; `None` when it is unset.
+    pub fn temp_value(&self, name: &[u8]) -> Option<Result<i64, String>> {
+        self.local_temps
+            .borrow()
+            .get(name)
+            .map(|value| match value {
+                Ok(super::variables::Value::Raw(value)) => Ok(*value),
+                Ok(super::variables::Value::Object(_)) => Err(format!(
+                    "temp variable {} holds a scope, not a number",
+                    String::from_utf8_lossy(name)
+                )),
+                Err(why) => Err(why.clone()),
+            })
+    }
+
     pub fn variable_session(&self) -> VariableSession {
         VariableSession {
             values: self.local_temps.borrow().clone(),

@@ -626,6 +626,31 @@ fn map(
     if let Some((_, warnings)) = &ideologies {
         log.typed("ideologies", warnings.clone());
     }
+    if let Some(modes) = log.read("scripted_map_modes", || {
+        installed_content::scripted_map_modes::read(layers)
+    }) {
+        for (file, field) in &modes.refused {
+            log.about("scripted_map_modes", Kind::Refused, file, field);
+        }
+        // The viewer draws a layer that hands over to one of the game's layers; a colour
+        // script is not evaluated.
+        for mode in &modes.modes {
+            for (side, layer) in [("top", &mode.top), ("bottom", &mode.bottom)] {
+                use installed_content::scripted_map_modes::LayerType;
+                if matches!(
+                    layer.kind,
+                    LayerType::Country | LayerType::State | LayerType::StateController
+                ) {
+                    log.about(
+                        "scripted_map_modes",
+                        Kind::Refused,
+                        format_args!("{}.{side}", mode.name),
+                        "colour script is not evaluated",
+                    );
+                }
+            }
+        }
+    }
     const NEEDS_DEFINES: [&str; 4] = [
         "movement",
         "movement.defines",

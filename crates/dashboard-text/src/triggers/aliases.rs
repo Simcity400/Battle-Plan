@@ -175,8 +175,8 @@ impl Evaluator<'_, '_> {
         Ok(targets.into_iter().map(Ok).collect())
     }
 
-    /// Script target selection, shared by aliases and scorers.
-    pub(crate) fn script_target_candidates(
+    /// Script target selection, shared by aliases, scorers and scripted map modes.
+    pub fn script_target_candidates(
         &self,
         targets: &installed_content::country_scorers::ScriptTargets,
         caller: Scopes,

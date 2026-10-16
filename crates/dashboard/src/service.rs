@@ -410,10 +410,18 @@ impl Service {
                 source_id,
                 revision,
                 settings,
+                flip,
             } => {
                 let Some(request) = self.inner.begin(id) else {
                     return;
                 };
+                if settings.is_some() && flip.is_some() {
+                    self.inner.error(
+                        request,
+                        "A map settings request saves settings or flips one, not both".into(),
+                    );
+                    return;
+                }
                 if let Err(error) = target.key("") {
                     self.inner.error(request, error.into());
                     return;
@@ -442,6 +450,7 @@ impl Service {
                     source_id,
                     source,
                     settings,
+                    flip,
                     options: content.options,
                 };
                 self.inner.submit(request, LoadJob::MapSettings(job));

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { bridgeCommand, recordingRequestBody } from '../../browserBridge.ts';
+import { bridgeCommand, mapSettingsCommand, recordingRequestBody } from '../../browserBridge.ts';
 import { MAX_MESSAGE_BYTES } from '../generated/dashboard.ts';
 
 async function* body(...chunks: Buffer[]) { yield* chunks; }
@@ -32,4 +32,18 @@ test('browser bridge commands include the native envelope and newline in their b
   assert.equal(Buffer.byteLength(bridgeCommand(command)), MAX_MESSAGE_BYTES);
   command.request.params.tags[0] += 'x';
   assert.throws(() => bridgeCommand(command), { message: 'Bridge command exceeds its byte budget' });
+});
+
+test('a browser map-settings flip reaches the native bridge with its setting', () => {
+  // The body browserClient.flipMapSetting posts, through the bridge's command and its line framing.
+  const flip = { type: 'mapSettings', sourceId: 's', revision: 'r', settings: null, flip: 'dayNight', target: { scope: 'widget', id: 'w' } };
+  const line = JSON.parse(bridgeCommand({ ...mapSettingsCommand(flip), id: 'request-1' }));
+  assert.deepEqual(line, {
+    type: 'mapSettings', id: 'request-1', sourceId: 's', revision: 'r', settings: null, flip: 'dayNight', target: { scope: 'widget', id: 'w' },
+  });
+  // A save carries its settings and no flip; an older body without either reads.
+  const save = mapSettingsCommand({ type: 'mapSettings', sourceId: 's', revision: 'r', settings: { graphics: {} }, flip: null });
+  assert.deepEqual([save.settings, save.flip, save.target], [{ graphics: {} }, null, { scope: 'campaign' }]);
+  const read = mapSettingsCommand({ type: 'mapSettings', sourceId: 's', revision: 'r' });
+  assert.deepEqual([read.settings, read.flip], [null, null]);
 });

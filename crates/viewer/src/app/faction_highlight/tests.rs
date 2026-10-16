@@ -44,6 +44,7 @@ fn plan() -> FactionHighlight {
             country_colors: Default::default(),
             warnings: vec![],
             strategic_attributes: Default::default(),
+            mode: None,
         },
         &Zone::default(),
         &Default::default(),

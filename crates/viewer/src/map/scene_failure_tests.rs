@@ -97,7 +97,7 @@ impl Fixture {
         )?;
         document.icons.lazy.set_background(false);
         document.frame()?;
-        let names = document.place_names()?;
+        let names = document.place_names(&Default::default())?;
         Ok(Self {
             document,
             state,
@@ -521,5 +521,38 @@ fn production_scene_fatal_encoder_is_not_submitted() -> io::Result<()> {
         assert_eq!(scene.shadows(), control.shadows());
         assert_eq!(scene.last_animation_time, control.last_animation_time);
     }
+    Ok(())
+}
+
+/// The near names cross-fade with the far ones: drawn while the country layer is faded out,
+/// gone once it is in.
+#[test]
+#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+fn near_names_fade_in_as_the_country_names_fade_out() -> io::Result<()> {
+    use viewer_foundation::map::name_draw::next_generation;
+    let fixture = Fixture::load("near-names")?;
+    let mut scene = fixture.scene()?;
+    let names = Placements {
+        country: Vec::new(),
+        warnings: Vec::new(),
+        generation: next_generation(),
+        near: Some(Arc::new(Placements {
+            generation: next_generation(),
+            ..fixture.names.clone()
+        })),
+    };
+    assert!(!fixture.names.country.is_empty());
+    let mut drawn = |layer_alpha| -> io::Result<u32> {
+        let mut request = fixture.request([256, 144]);
+        request.overlay = Overlay {
+            names: Some(&names),
+            layer_alpha,
+            ..request.overlay
+        };
+        fixture.render(&mut scene, request)?;
+        Ok(scene.overlay_counts().0)
+    };
+    assert!(drawn(0.)? > 0, "the near names are not drawn close in");
+    assert_eq!(drawn(1.)?, 0, "the near names stay drawn far out");
     Ok(())
 }

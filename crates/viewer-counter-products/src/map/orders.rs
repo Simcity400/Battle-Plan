@@ -1359,6 +1359,7 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
         country: placed_labels,
         warnings: Vec::new(),
         generation: viewer_foundation::map::name_draw::next_generation(),
+        near: None,
     };
     field.report.refused = refused;
     Ok(field)

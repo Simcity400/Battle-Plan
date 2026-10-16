@@ -1,7 +1,10 @@
 import { useCallback, useSyncExternalStore } from 'react';
 import { errorMessage } from '../shell/api';
 import type { MapBounds } from '../shell/api';
-import type { DashboardClient, DashboardMapState, DashboardMapView } from './client';
+import type { MapOptions } from '../shell/api';
+import type { DashboardClient, DashboardMapState, DashboardMapView, MapOptionsEvent, MapToggle } from './client';
+import { PickerOptions } from './mapPicker';
+export { CAMPAIGN_MAP_VIEW, campaignToggled, toggleMapSetting } from './mapPicker';
 import type { PlaybackController, PlaybackSnapshot } from './playback';
 
 export type MapTarget = Omit<DashboardMapView, 'id' | 'bounds' | 'clip' | 'visible'>;
@@ -32,7 +35,30 @@ export class MapViewsStore {
   private applied = '';
   private active = false;
   private generation = 0;
+  /** What each view's native picker chose, and where its fog toggle goes. */
+  private picker = new PickerOptions();
+  /** Applies a picker toggle the host owns to a view's settings. */
+  onToggle: ((view: DashboardMapView, toggle: MapToggle) => void) | null = null;
+  private lastViews = new Map<string, DashboardMapView>();
   constructor(private client: DashboardClient, private clock: PlaybackController) {}
+
+  /** The options a view shows: the target's, with the map mode and slots its picker set. */
+  viewOptions(id: string, options: MapOptions | undefined): MapOptions | undefined {
+    return this.picker.merge(id, options);
+  }
+
+  /** Keeps what a view's picker chose for its next layouts. */
+  pickerChanged(event: MapOptionsEvent): void { this.picker.changed(event); }
+
+  /** Routes a picker toggle: fog to the view's own switch, the rest to the host's settings. */
+  pickerToggled(viewId: string, toggle: MapToggle): void {
+    if (this.picker.toggled(viewId, toggle)) return;
+    const view = this.lastViews.get(viewId);
+    if (view) this.onToggle?.(view, toggle);
+  }
+
+  /** Lets a view's picker set its fog switch. */
+  onFog(viewId: string, flip: () => void): () => void { return this.picker.onFog(viewId, flip); }
 
   start(viewport: HTMLElement): () => void {
     this.active = true;
@@ -43,6 +69,17 @@ export class MapViewsStore {
     for (const surface of this.surfaces.values()) this.observer.observe(surface.element);
     const stopClock = this.clock.subscribe(this.schedule);
     let stopStates: (() => void) | undefined;
+    let stopOptions: (() => void) | undefined;
+    let stopToggles: (() => void) | undefined;
+    const alive = () => this.active && this.generation === generation;
+    void this.client.onMapOptions?.((event) => {
+      if (!alive()) return;
+      this.pickerChanged(event);
+      this.schedule();
+    }).then((stop) => { if (!alive()) stop(); else stopOptions = stop; });
+    void this.client.onMapToggle?.((event) => {
+      if (alive()) this.pickerToggled(event.viewId, event.toggle);
+    }).then((stop) => { if (!alive()) stop(); else stopToggles = stop; });
     let resolution: MediaQueryList | null = null;
     const watchResolution = () => {
       resolution?.removeEventListener('change', changedResolution);
@@ -75,6 +112,8 @@ export class MapViewsStore {
       this.states.clear();
       stopClock();
       stopStates?.();
+      stopOptions?.();
+      stopToggles?.();
       this.observer?.disconnect();
       this.observer = null;
       if (this.frame) cancelAnimationFrame(this.frame);
@@ -150,7 +189,9 @@ export class MapViewsStore {
       const clip = physicalRect(intersection, dpr);
       const visible = !this.hidden && !document.hidden && !this.states.get(id)?.error
         && bounds.width > 0 && bounds.height > 0 && clip.width > 0 && clip.height > 0;
-      views.push({ id, ...target, bounds, clip, visible });
+      const view = { id, ...target, options: this.viewOptions(id, target.options), bounds, clip, visible };
+      views.push(view);
+      this.lastViews.set(id, view);
     }
     this.pending = views;
     void this.drain();

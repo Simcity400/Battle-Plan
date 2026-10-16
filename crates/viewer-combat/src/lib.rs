@@ -52,6 +52,7 @@ mod naval_surface_detection;
 pub(crate) mod naval_terrain;
 mod naval_trees;
 mod naval_variants;
+pub mod picker;
 mod presentation;
 mod tactics;
 mod template_icons;
@@ -725,6 +726,13 @@ pub struct Drawn {
     tactics_button: Option<[f32; 4]>,
     tactics_close: Option<[f32; 4]>,
     tactics_rect: Option<[f32; 4]>,
+}
+impl Drawn {
+    /// Adds another window's hover regions above this window's, as a later window paints over
+    /// it.
+    pub fn add_hovers(&mut self, other: &Drawn) {
+        self.tooltips.extend(other.tooltips.iter().cloned());
+    }
 }
 
 #[derive(Clone)]

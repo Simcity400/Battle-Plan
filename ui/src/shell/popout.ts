@@ -31,7 +31,10 @@ export const nextPopoutMonitor = (generation: number) => invoke<void>('popout_ne
 export const popoutUnloaded = (path: string, generation: number) => invoke<void>('popout_unloaded', { path, generation });
 export const seekPopout = (generation: number, path: string, revision: string, branch: string, hour: number, playback?: { playing: boolean; seekSequence: number }) =>
   invoke<void>('popout_seek', { generation, path, revision, branch, hour, playback });
-export const configurePopout = (generation: number, options: MapOptions) => invoke<void>('popout_configure', { generation, options });
+/** The pop-out is the map alone: it hides the native map-mode picker, whose keys keep working. */
+export const popoutOptions = (options: MapOptions): MapOptions => ({ ...options, pickerHidden: true });
+export const configurePopout = (generation: number, options: MapOptions) =>
+  invoke<void>('popout_configure', { generation, options: popoutOptions(options) });
 /** Asks pop-out window `generation`'s map to move its camera as `mode`, showing the map's interface in a free
  * mode when `overlays`; its status reports the mode and choice it takes. */
 export const setPopoutCameraMode = (generation: number, mode: CameraMode, overlays: boolean) =>

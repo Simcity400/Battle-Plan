@@ -59,6 +59,7 @@ pub mod script_constants;
 pub mod script_files;
 pub mod scripted_effects;
 pub mod scripted_keys;
+pub mod scripted_map_modes;
 pub mod scripted_triggers;
 pub mod special_projects;
 pub mod static_modifiers;

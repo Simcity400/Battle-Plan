@@ -235,7 +235,7 @@ fn read_file_in(
 /// A number token alone is a packed hexadecimal value, which the port
 /// refuses by name; any other token, a quoted one included, is reported
 /// and changes nothing.
-fn read_color(color: &mut [f32; 4], item: &Item) -> Result<(), String> {
+pub fn read_color(color: &mut [f32; 4], item: &Item) -> Result<(), String> {
     let Some(components) = item.value.items() else {
         if item.number() {
             return Err(format!(

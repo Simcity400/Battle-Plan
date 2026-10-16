@@ -4,7 +4,7 @@ struct Params {
     stride: u32, packed_ids: u32, count: u32, dispatch_stride: u32,
     opacity: u32, no_color: u32, distance_cap: u32, distance_in_b: u32,
 }
-struct Region { color: u32, alpha_offset: u32, alpha_count: u32, radius: u32, attributes: u32 }
+struct Region { color: u32, alpha_offset: u32, alpha_count: u32, radius: u32, attributes: u32, fx: u32, fill: u32 }
 struct Cell { bits: array<u32, 8>, distance: u32 }
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var<storage, read> ids: array<u32>;
@@ -130,6 +130,7 @@ fn sample_pixel(x: u32, y: u32) -> Sample {
         if distance_at(y / 16u * p.columns + x / 16u) <= 1u {
             var sum = vec3<u32>(0u); var count = 0u;
             var fx = vec2<u32>(0u); var gradient = 0u; var has_gradient = false;
+            var opacity = 0u; var pulse = 0u;
             for (var dy = -1; dy <= 1; dy++) {
                 for (var dx = -1; dx <= 1; dx++) {
                     let nx = i32(x) + dx; let ny = i32(y) + dy;
@@ -138,13 +139,15 @@ fn sample_pixel(x: u32, y: u32) -> Sample {
                     if neighbour != 0u {
                         sum += rgb(regions[neighbour].color); count++;
                         let attr = regions[neighbour].attributes;
+                        opacity += regions[neighbour].fx & 255u;
+                        pulse += select(0u, 255u, (regions[neighbour].fx & 256u) != 0u);
                         // accumulates control and contested as bytes.
                         fx = (fx + vec2<u32>(attr & 255u, (attr >> 8u) & 255u)) & vec2<u32>(255u);
                         if (attr & (1u << 24u)) != 0u { gradient += (attr >> 16u) & 255u; has_gradient = true; }
                     }
                 }
             }
-            if count != 0u { return Sample(vec4<u32>(sum / count, select(255u, gradient / count, has_gradient)), vec4<u32>(fx.x / count, p.opacity, 0u, fx.y / count)); }
+            if count != 0u { return Sample(vec4<u32>(sum / count, select(255u, gradient / count, has_gradient)), vec4<u32>(fx.x / count, opacity / count, pulse / count, fx.y / count)); }
         }
         return Sample(vec4<u32>(rgb(p.no_color), 255u), vec4<u32>(0u));
     }
@@ -155,7 +158,12 @@ fn sample_pixel(x: u32, y: u32) -> Sample {
         a = (alpha[region.alpha_offset + squared / 4u] >> ((squared & 3u) * 8u)) & 255u;
     }
     if (region.attributes & (1u << 24u)) != 0u { a = (region.attributes >> 16u) & 255u; }
-    return Sample(vec4<u32>(rgb(region.color), a), vec4<u32>(region.attributes & 255u, p.opacity, 0u, (region.attributes >> 8u) & 255u));
+    // The map mode's fill factor widens or narrows the colour band below the outline bytes.
+    if a < 239u {
+        let band = i32(f32(255u - a) * (1.0 - bitcast<f32>(region.fill)));
+        a = u32(clamp(i32(a) - band, 0, 255));
+    }
+    return Sample(vec4<u32>(rgb(region.color), a), vec4<u32>(region.attributes & 255u, region.fx & 255u, select(0u, 255u, (region.fx & 256u) != 0u), (region.attributes >> 8u) & 255u));
 }
 fn pack(c: vec4<u32>) -> u32 { return c.x | (c.y << 8u) | (c.z << 16u) | (c.w << 24u); }
 @compute @workgroup_size(8, 8)

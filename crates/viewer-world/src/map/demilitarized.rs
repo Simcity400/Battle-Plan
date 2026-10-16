@@ -648,6 +648,7 @@ mod tests {
             country_colors: HashMap::new(),
             warnings: Vec::new(),
             strategic_attributes: Default::default(),
+            mode: None,
         }
     }
 

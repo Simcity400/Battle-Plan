@@ -82,7 +82,12 @@ export const browserDashboardClient: DashboardClient = {
   cancelPreparation: (query, signal) => preparation('cancel', query, signal),
   clearPreparation: (query, signal) => preparation('clear', query, signal),
   async mapSettings(sourceId, revision, settings, signal, target = { scope: 'campaign' }) {
-    const reply = await request<MapSettingsReply>({ type: 'mapSettings', sourceId, revision, settings, target }, signal);
+    const reply = await request<MapSettingsReply>({ type: 'mapSettings', sourceId, revision, settings, flip: null, target }, signal);
+    if (reply.sourceId !== sourceId || reply.revision !== revision) throw new Error('Map settings do not match this campaign');
+    return reply;
+  },
+  async flipMapSetting(sourceId, revision, setting, signal, target) {
+    const reply = await request<MapSettingsReply>({ type: 'mapSettings', sourceId, revision, settings: null, flip: setting, target }, signal);
     if (reply.sourceId !== sourceId || reply.revision !== revision) throw new Error('Map settings do not match this campaign');
     return reply;
   },

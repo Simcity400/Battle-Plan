@@ -69,6 +69,7 @@ fn political_gpu_fallback_naval_attributes_change_shared_fill() {
             ]
             .into_iter()
             .collect(),
+            mode: None,
         })
     };
     let mut a = View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
@@ -447,6 +448,7 @@ fn political_gpu_fallback_exactness() {
             state_of: Vec::new(),
             warnings: Vec::new(),
             strategic_attributes: Default::default(),
+            mode: None,
         })
     };
     let check = |view: &View, regions: &Regions, dispatch: bool, label: &str| {
@@ -638,6 +640,7 @@ fn country_tables(country_of: Vec<u32>) -> Arc<Regions> {
         state_of: Vec::new(),
         warnings: Vec::new(),
         strategic_attributes: Default::default(),
+        mode: None,
     })
 }
 
@@ -1118,4 +1121,19 @@ fn political_gpu_recording() {
         path.display()
     );
     assert!(total > 0);
+}
+
+#[test]
+fn a_second_mode_layer_takes_the_country_layers_place() {
+    // A scripted mode's two layers copy from the mode and country slots.
+    assert_eq!(
+        holders([Source::Mode, Source::Second]),
+        [Held::Mode, Held::Country]
+    );
+    // One layer shown in both channels copies from one slot into both.
+    assert_eq!(
+        holders([Source::Mode, Source::Mode]),
+        [Held::Mode, Held::Mode]
+    );
+    assert_eq!(holders(POLITICAL), [Held::Naval, Held::Country]);
 }

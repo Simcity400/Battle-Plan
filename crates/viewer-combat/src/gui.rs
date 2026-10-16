@@ -31,9 +31,9 @@ pub struct Windows {
     pending: Vec<ScrollAction>,
 }
 
-struct Retained {
+pub(crate) struct Retained {
     name: String,
-    instance: Instance,
+    pub(crate) instance: Instance,
     entries: BTreeMap<String, Retained>,
     pending: Vec<ScrollAction>,
     prepared_generation: Option<u64>,
@@ -48,12 +48,12 @@ struct ScrollAction {
     wheel: bool,
 }
 
-struct Row<'a> {
-    key: String,
-    template: &'a str,
-    values: &'a Values,
+pub(crate) struct Row<'a> {
+    pub(crate) key: String,
+    pub(crate) template: &'a str,
+    pub(crate) values: &'a Values,
     /// Runtime size and optional explicit pixels; None pixels use authored grid slots.
-    explicit: Option<(Option<[f32; 2]>, [f32; 2])>,
+    pub(crate) explicit: Option<(Option<[f32; 2]>, [f32; 2])>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,18 +73,20 @@ impl Row<'_> {
     }
 }
 
-struct Group<'a> {
-    path: String,
-    rows: Vec<Row<'a>>,
+pub(crate) struct Group<'a> {
+    pub(crate) path: String,
+    pub(crate) rows: Vec<Row<'a>>,
 }
 
-struct Prepared {
-    layout: Layout,
-    items: Vec<Vec<Part>>,
-    hovers: Vec<Hover>,
+pub(crate) struct Prepared {
+    pub(crate) layout: Layout,
+    pub(crate) items: Vec<Vec<Part>>,
+    pub(crate) hovers: Vec<Hover>,
+    /// Each placed grid entry's root region in window coordinates: its group path and row key.
+    pub(crate) entries: Vec<(String, String, Region)>,
 }
 
-struct Hover {
+pub(crate) struct Hover {
     order: usize,
     region: Region,
     text: Option<super::HoverText>,
@@ -99,13 +101,13 @@ fn count(refused: &mut BTreeMap<String, usize>, path: &str, why: impl std::fmt::
         .or_default() += 1;
 }
 
-fn template<'a>(windows: &'a NativeWindows, name: &str) -> Result<&'a Element, String> {
+pub(crate) fn template<'a>(windows: &'a NativeWindows, name: &str) -> Result<&'a Element, String> {
     windows
         .gui_type(name.as_bytes())
         .ok_or_else(|| format!("the content stack declares no {name} template"))
 }
 
-fn ensure<'a>(
+pub(crate) fn ensure<'a>(
     kept: &'a mut Option<Retained>,
     name: &str,
     root: &Element,
@@ -217,7 +219,7 @@ impl Retained {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn prepare<'v>(
+    pub(crate) fn prepare<'v>(
         &mut self,
         root: &Element,
         values: &'v Values,
@@ -575,6 +577,7 @@ impl Retained {
             Vec::new()
         };
         let mut items = vec![Vec::new(); layout.holders.len()];
+        let mut entries = Vec::new();
         for (holder_index, holder) in layout.holders.iter().enumerate() {
             let Some(group) = groups.iter().find(|group| {
                 root.path_named(&group.path)
@@ -633,6 +636,17 @@ impl Retained {
                 ) else {
                     continue;
                 };
+                if let Some(region) = prepared
+                    .layout
+                    .regions
+                    .iter()
+                    .find(|region| region.path == entry.path)
+                    && let Some(placed) = holder
+                        .place_regions(*place, std::slice::from_ref(region))
+                        .pop()
+                {
+                    entries.push((group.path.clone(), row.key.clone(), placed));
+                }
                 items[holder_index].extend(
                     holder.place_parts(*place, prepared.layout.composed_parts(&prepared.items)),
                 );
@@ -664,6 +678,7 @@ impl Retained {
             layout,
             items,
             hovers: hovered,
+            entries,
         })
     }
 }
@@ -966,7 +981,7 @@ fn apply(
     }
 }
 
-fn region_rect(region: &Region, origin: [i32; 2]) -> Option<[f32; 4]> {
+pub(crate) fn region_rect(region: &Region, origin: [i32; 2]) -> Option<[f32; 4]> {
     let [mut x, mut y, w, h] = region.rect;
     let mut right = x + w;
     let mut bottom = y + h;
@@ -1303,7 +1318,7 @@ fn naval_row(index: usize, row: &super::binding::NavalEntry) -> Row<'_> {
     }
 }
 
-fn draw_prepared(
+pub(crate) fn draw_prepared(
     layout: &Layout,
     items: &[Vec<Part>],
     origin: [i32; 2],
@@ -1322,7 +1337,7 @@ fn draw_prepared(
     true
 }
 
-fn append_hovers(target: &mut Vec<TooltipHit>, hovers: Vec<Hover>, origin: [i32; 2]) {
+pub(crate) fn append_hovers(target: &mut Vec<TooltipHit>, hovers: Vec<Hover>, origin: [i32; 2]) {
     target.extend(hovers.into_iter().filter_map(|hit| {
         Some(TooltipHit {
             rect: region_rect(&hit.region, origin)?,

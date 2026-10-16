@@ -7,7 +7,7 @@ import { newId } from '../shell/ids.ts';
 import { desktopAvailable } from '../shell/api';
 import type { ContentFolders } from '../shell/api';
 import type { SourceReply } from '../generated/dashboard';
-import type { DashboardClient, DashboardMapState, DashboardSource, HistoryCacheReply, MapSettingsReply, ProductReply, RecorderSettings, ReplayLibrary } from './client';
+import type { DashboardClient, DashboardMapState, MapOptionsEvent, MapToggleEvent, DashboardSource, HistoryCacheReply, MapSettingsReply, ProductReply, RecorderSettings, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
 
 function cancelled(): DOMException {
@@ -82,7 +82,12 @@ export const nativeDashboardClient: DashboardClient = {
   } : {}),
 
   async mapSettings(sourceId, revision, settings, signal, target = { scope: 'campaign' }) {
-    const reply = await request<MapSettingsReply>('dashboard_map_settings', () => ({ sourceId, revision, settings, target }), signal);
+    const reply = await request<MapSettingsReply>('dashboard_map_settings', () => ({ sourceId, revision, settings, flip: null, target }), signal);
+    if (reply.sourceId !== sourceId || reply.revision !== revision) throw new Error('Map settings do not match this campaign');
+    return reply;
+  },
+  async flipMapSetting(sourceId, revision, setting, signal, target) {
+    const reply = await request<MapSettingsReply>('dashboard_map_settings', () => ({ sourceId, revision, settings: null, flip: setting, target }), signal);
     if (reply.sourceId !== sourceId || reply.revision !== revision) throw new Error('Map settings do not match this campaign');
     return reply;
   },
@@ -119,5 +124,15 @@ export const nativeDashboardClient: DashboardClient = {
   async onMapStates(callback) {
     if (!desktopAvailable) return () => {};
     return listen<DashboardMapState[]>('dashboard-map-state', event => callback(event.payload));
+  },
+
+  async onMapOptions(callback) {
+    if (!desktopAvailable) return () => {};
+    return listen<MapOptionsEvent>('dashboard-map-options', event => callback(event.payload));
+  },
+
+  async onMapToggle(callback) {
+    if (!desktopAvailable) return () => {};
+    return listen<MapToggleEvent>('dashboard-map-toggle', event => callback(event.payload));
   },
 };

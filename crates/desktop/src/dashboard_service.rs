@@ -580,9 +580,10 @@ pub async fn dashboard_map_settings(
     source_id: String,
     revision: String,
     settings: Option<dashboard::protocol::CampaignMapSettings>,
+    flip: Option<dashboard::protocol::MapSetting>,
     request_id: String,
 ) -> Result<Response, String> {
-    let saving = settings.is_some();
+    let saving = settings.is_some() || flip.is_some();
     let response = request(
         &window,
         &host,
@@ -594,6 +595,7 @@ pub async fn dashboard_map_settings(
             source_id,
             revision,
             settings,
+            flip,
         },
     )
     .await;

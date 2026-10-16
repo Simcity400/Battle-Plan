@@ -244,6 +244,8 @@ pub struct DashboardMaps {
     /// The map that sounds: the last one the user pressed, dragged or
     /// scrolled, else the first visible map in layout order.
     audio_owner: Option<String>,
+    /// The pickers' messages for the host, by view.
+    view_events: Vec<(String, crate::app::picker::ViewEvent)>,
 }
 
 struct MapLimits {
@@ -335,6 +337,7 @@ impl DashboardMaps {
             diagnostics: false,
             muted: false,
             audio_owner: None,
+            view_events: Vec::new(),
         })
     }
 
@@ -1001,6 +1004,11 @@ impl DashboardMaps {
         }
     }
 
+    /// What the views' pickers told the host since the last call, by view.
+    pub fn take_view_events(&mut self) -> Vec<(String, crate::app::picker::ViewEvent)> {
+        std::mem::take(&mut self.view_events)
+    }
+
     pub fn states(&self) -> Vec<DashboardMapState> {
         self.order
             .iter()
@@ -1070,6 +1078,9 @@ impl DashboardMaps {
                 if view.viewer.interacted {
                     interacted = Some(id.clone());
                 }
+                let events = view.viewer.take_view_events();
+                self.view_events
+                    .extend(events.into_iter().map(|event| (id.clone(), event)));
             } else {
                 map_ui.centered_and_justified(|ui| {
                     ui.spinner();

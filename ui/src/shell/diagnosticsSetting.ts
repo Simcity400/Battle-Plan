@@ -28,7 +28,7 @@ export function useMapDiagnostics() {
   return { enabled, error, set };
 }
 
-/** F3 anywhere in the app toggles map diagnostics, as it does in the native map. */
+/** Ctrl+F3 anywhere in the app toggles map diagnostics, as it does in the native map. */
 export function useDiagnosticsShortcut() {
   useEffect(() => {
     if (!desktopAvailable) return;

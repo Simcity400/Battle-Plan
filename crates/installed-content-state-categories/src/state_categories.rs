@@ -6,6 +6,11 @@
 //! starts valid. Descriptions localise the effect's operand, rather than
 //! the cached name or `local_building_slots`; only declared names are
 //! needed here.
+//!
+//! A category's `color` uses the colour reader ideology groups share
+//! ([`installed_content_core::ideologies::read_color`]): each read updates the state
+//! earlier reads of the same object left, starting from white. A category that
+//! reads none has no colour here; the states map mode refuses its states by name.
 
 use crate::{
     ResolvedLayers,
@@ -24,6 +29,9 @@ use std::io;
 pub struct Database {
     /// First-declaration order and spelling; repeated bodies reuse the object.
     pub names: Vec<Vec<u8>>,
+    /// Each name's colour after every `color` read of its bodies, in [`Self::names`] order;
+    /// `Ok(None)` when no body reads one, `Err` when a read refused.
+    pub colors: Vec<Result<Option<[f32; 4]>, String>>,
     pub notes: Vec<String>,
     gap: Option<String>,
 }
@@ -40,19 +48,79 @@ impl Database {
             .map(Vec::as_slice))
     }
 
-    fn insert(&mut self, name: Vec<u8>) {
-        if !self
+    /// The colour of a declared category, matched like [`Self::find`].
+    pub fn color(&self, name: &[u8]) -> Result<Option<[f32; 4]>, String> {
+        if let Some(why) = &self.gap {
+            return Err(format!("state-category definitions uncertain: {why}"));
+        }
+        let index = self
             .names
             .iter()
-            .any(|entry| entry.eq_ignore_ascii_case(&name))
+            .position(|entry| entry.eq_ignore_ascii_case(c_string(name)))
+            .ok_or_else(|| {
+                format!(
+                    "state category {} is not declared",
+                    String::from_utf8_lossy(name)
+                )
+            })?;
+        self.colors[index].clone()
+    }
+
+    fn insert(&mut self, name: Vec<u8>) -> usize {
+        match self
+            .names
+            .iter()
+            .position(|entry| entry.eq_ignore_ascii_case(&name))
         {
-            self.names.push(name);
+            Some(index) => index,
+            None => {
+                self.names.push(name);
+                self.colors.push(Ok(None));
+                self.names.len() - 1
+            }
+        }
+    }
+
+    /// Applies one body's `color` reads to the named object.
+    fn read_colors(&mut self, index: usize, body: &[crate::parser::Item]) {
+        for field in body.iter().filter(|field| field.keyword_is("color")) {
+            let slot = &mut self.colors[index];
+            if let Ok(state) = slot {
+                let mut color = state.unwrap_or([1.0; 4]);
+                *slot =
+                    installed_content_core::ideologies::read_color(&mut color, field).map(|()| Some(color));
+            }
+        }
+    }
+
+    /// Adds one file's parse. Its colour reads replay over each object's existing colour state,
+    /// as the native object keeps it across files.
+    fn merge(&mut self, parsed: Parsed) {
+        self.notes.extend(parsed.database.notes);
+        for (name, bodies) in parsed.database.names.into_iter().zip(parsed.bodies) {
+            let index = self.insert(name);
+            for body in bodies {
+                self.read_colors(index, &body);
+            }
         }
     }
 }
 
+/// One file's categories and, per category, the bodies whose `color` reads replay in order.
+struct Parsed {
+    database: Database,
+    bodies: Vec<Vec<Vec<crate::parser::Item>>>,
+}
+
 /// Colour, per-building maximums, then shared modifier fields.
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Database> {
+    let parsed = parse_file(input, names)?;
+    let mut database = Database::default();
+    database.merge(parsed);
+    Ok(database)
+}
+
+fn parse_file(input: &[u8], names: &KeyNames) -> io::Result<Parsed> {
     #[derive(Clone, Copy)]
     enum Node {
         File,
@@ -100,6 +168,7 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Database> {
         return Err(invalid(format!("state categories: {cause}")));
     }
     let mut database = Database::default();
+    let mut bodies: Vec<Vec<Vec<crate::parser::Item>>> = Vec::new();
     database
         .notes
         .extend(read.misreads.iter().map(ToString::to_string));
@@ -109,23 +178,22 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Database> {
         .filter(|item| item.keyword_is("state_categories"))
     {
         for item in root.value.items().unwrap_or_default() {
-            database.insert(c_string(item.key.as_deref().unwrap_or_default()).to_vec());
+            let index = database.insert(c_string(item.key.as_deref().unwrap_or_default()).to_vec());
+            if bodies.len() <= index {
+                bodies.resize_with(index + 1, Vec::new);
+            }
+            bodies[index].push(item.value.items().unwrap_or_default().to_vec());
         }
     }
-    Ok(database)
+    Ok(Parsed { database, bodies })
 }
 
 pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     let names = layers.key_names()?;
     let mut database = Database::default();
     for path in script_files::paths(layers, "common/state_category/", Some(".txt")) {
-        match parse(&layers.read(&path)?, &names) {
-            Ok(parsed) => {
-                for name in parsed.names {
-                    database.insert(name);
-                }
-                database.notes.extend(parsed.notes);
-            }
+        match parse_file(&layers.read(&path)?, &names) {
+            Ok(parsed) => database.merge(parsed),
             Err(why) => {
                 let why = format!("State categories unavailable in {path}: {why}");
                 database.gap.get_or_insert_with(|| why.clone());
@@ -162,6 +230,34 @@ mod tests {
             assert_eq!(database.find(b"sYn").unwrap().is_some(), expected.contains(&b"Syn".as_slice()));
             assert!(database.find(b"undefined").unwrap().is_none());
         }
+    }
+
+    #[test]
+    fn state_category_colours_replay_on_the_object() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let database = parse(
+            b"state_categories={Syn={color={1 2 3}} plain={} SYN={color={0.5 0.25 0.125 0.75}} late={color={255 0 0}} LATE={color={0 0}}}",
+            &KeyNames::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            database.color(b"syn").unwrap(),
+            Some([0.5, 0.25, 0.125, 0.75])
+        );
+        assert_eq!(database.color(b"plain").unwrap(), None);
+        // The second body's two components continue from the first body's colour.
+        assert_eq!(database.color(b"late").unwrap(), Some([0.0, 0.0, 0.0, 1.0]));
+        assert!(database.color(b"missing").is_err());
+        let first = parse(
+            b"state_categories={only={color={2 4 6}}}",
+            &KeyNames::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            first.color(b"only").unwrap(),
+            Some([2.0 / 255.0, 4.0 / 255.0, 6.0 / 255.0, 1.0])
+        );
     }
 
     #[test]

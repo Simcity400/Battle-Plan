@@ -456,6 +456,7 @@ pub const WINDOW_TEMPLATES: &[&[u8]] = &[
 fn native_templates(windows: &NativeWindows) -> impl Iterator<Item = &gui::native::Element> {
     WINDOW_TEMPLATES
         .iter()
+        .chain(super::picker::TEMPLATES)
         .filter_map(|name| windows.gui_type(name))
 }
 
@@ -747,6 +748,8 @@ impl Assets {
                     && (name.ends_with(b"_icon_medium") || name.ends_with(b"_icon_medium_black")))
                 || name.starts_with(b"combat_tactic:")
                 || name.starts_with(b"combat_portrait:")
+                // The map mode picker selects scripted modes' button sprites by name.
+                || name.starts_with(b"GFX_mapmode_buttons_")
                 || portrait
                 || [
                     b"GFX_organization_texticon".as_slice(),

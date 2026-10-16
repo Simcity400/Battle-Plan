@@ -272,6 +272,24 @@ impl NativeHost {
                 crate::dashboard_service::receive_data(app, response);
                 return;
             }
+            NativeEvent::MapOptions { view_id, options } => {
+                // The picker changed a view's options; the web interface stores them per view so
+                // its next layout carries them back.
+                drop(inner);
+                let _ = app.emit(
+                    "dashboard-map-options",
+                    serde_json::json!({ "viewId": view_id, "options": options }),
+                );
+                return;
+            }
+            NativeEvent::MapToggle { view_id, toggle } => {
+                drop(inner);
+                let _ = app.emit(
+                    "dashboard-map-toggle",
+                    serde_json::json!({ "viewId": view_id, "toggle": toggle }),
+                );
+                return;
+            }
             NativeEvent::MapStates { mut states } => {
                 let Some(requested) = inner.dashboard_views.as_ref() else {
                     return;

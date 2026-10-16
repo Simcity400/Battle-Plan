@@ -285,8 +285,14 @@ impl Viewer {
                 }
             }
             MapAction::Configure { options } => {
-                self.perspective.country = options.country.map_or(Country::Recorded, Country::Tag);
+                self.perspective.country = options
+                    .country
+                    .clone()
+                    .map_or(Country::Recorded, Country::Tag);
                 self.perspective.fog = options.fog;
+                // The campaign map's picker choices come back here, so a restarted viewer
+                // shows them again.
+                self.apply_host_options(&options);
             }
             MapAction::Export {
                 path,

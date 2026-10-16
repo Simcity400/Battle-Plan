@@ -169,6 +169,33 @@ impl Store {
         settings.visual_mods = Some(mods);
         settings
     }
+    /// `key`'s stored choices with `setting` flipped: the opposite of its value now, its own or
+    /// the one it inherits; every other choice stays as stored. Run under the store's lock, so
+    /// it flips the value an edit or reset made before it, never an older one.
+    pub fn flipped(
+        &self,
+        key: &str,
+        setting: crate::protocol::MapSetting,
+    ) -> Result<CampaignMapSettings, &'static str> {
+        use crate::protocol::MapSetting;
+        let current = self.get(key).graphics;
+        let mut settings = self.preferences(key);
+        match setting {
+            MapSetting::DayNight => settings.graphics.day_night = Some(!current.day_night),
+            MapSetting::AlliedPlans => {
+                settings.graphics.show_allied_plans = Some(!current.show_allied_plans);
+            }
+            MapSetting::Fog => return Err("Fog is the view's own switch, not a map setting"),
+        }
+        Ok(settings)
+    }
+
+    /// Flips `setting` in `key`'s stored choices ([`Self::flipped`]) and saves them.
+    pub fn flip(&mut self, key: String, setting: crate::protocol::MapSetting) -> io::Result<()> {
+        let settings = self.flipped(&key, setting).map_err(crate::invalid)?;
+        self.save(key, settings)
+    }
+
     pub fn save(&mut self, key: String, settings: CampaignMapSettings) -> io::Result<()> {
         self.check().map_err(crate::invalid)?;
         settings.validate().map_err(crate::invalid)?;
@@ -362,6 +389,61 @@ mod tests {
             graphics,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_flip_applies_to_the_value_when_it_runs_and_touches_nothing_else() {
+        use crate::protocol::MapSetting;
+        let mut store = Store::default();
+        store.game.graphics.day_night = true;
+        let widget = "campaign/widget/map-a".to_owned();
+        let audio = MapAudioOverrides {
+            voice: Some(40.0),
+            ..Default::default()
+        };
+        // The widget overrides borders and day/night, and keeps its own audio and mods.
+        store.entries.insert(
+            widget.clone(),
+            CampaignMapSettings {
+                graphics: MapGraphicsOverrides {
+                    borders: Some(false),
+                    day_night: Some(false),
+                    ..Default::default()
+                },
+                audio,
+                visual_mods: Some(Vec::new()),
+                ..Default::default()
+            },
+        );
+        // A picker flip is queued; before it runs, a reset clears the graphics overrides.
+        store.entries.insert(
+            widget.clone(),
+            CampaignMapSettings {
+                audio,
+                visual_mods: Some(Vec::new()),
+                ..Default::default()
+            },
+        );
+        // The flip runs on the value after the reset (inherited on), not the one it was
+        // clicked over, and leaves the reset borders and the other choices as they are.
+        let flipped = store.flipped(&widget, MapSetting::DayNight).unwrap();
+        assert_eq!(flipped.graphics.day_night, Some(false));
+        assert_eq!(flipped.graphics.borders, None);
+        assert_eq!(flipped.audio, audio);
+        assert_eq!(flipped.visual_mods, Some(Vec::new()));
+        // Two flips run in order give the value they started from.
+        store.entries.insert(widget.clone(), flipped);
+        let back = store.flipped(&widget, MapSetting::DayNight).unwrap();
+        assert_eq!(back.graphics.day_night, Some(true));
+        assert_eq!(
+            store
+                .flipped(&widget, MapSetting::AlliedPlans)
+                .unwrap()
+                .graphics
+                .show_allied_plans,
+            Some(!store.get(&widget).graphics.show_allied_plans)
+        );
+        assert!(store.flipped(&widget, MapSetting::Fog).is_err());
     }
 
     #[test]

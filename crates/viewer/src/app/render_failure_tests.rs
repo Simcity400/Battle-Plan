@@ -210,8 +210,8 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
         "{:?}",
         viewer.map_state(&target)
     );
-    let registered = viewer.generation;
-    let texture = viewer.texture;
+    let registered = viewer.presented.generation;
+    let texture = viewer.presented.texture;
     let failed_path = fixture.output.join("failed-redraw.png");
     arm(&mut viewer, failed_path.clone(), request.camera);
     viewer.scene.as_mut().unwrap().test_faults.fatal = Some(Point::Post);
@@ -235,10 +235,10 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
         submissions
     );
     assert_eq!(
-        viewer.generation, registered,
+        viewer.presented.generation, registered,
         "failed target registered with egui"
     );
-    assert_eq!(viewer.texture, texture);
+    assert_eq!(viewer.presented.texture, texture);
     assert!(viewer.scene.as_ref().unwrap().generation() > registered);
 
     let recovered_path = fixture.output.join("recovered.png");
@@ -250,7 +250,7 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
     });
     assert!(recovered_path.exists(), "{:?}", viewer.capture_note);
     assert_eq!(
-        viewer.generation,
+        viewer.presented.generation,
         viewer.scene.as_ref().unwrap().generation()
     );
     let state = viewer.map_state(&target);
@@ -339,5 +339,63 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
     let state = viewer.map_state(&target);
     assert_eq!(state.hour, Some(fixture.input.hour));
     assert_eq!(state.sequence, state.requested_sequence);
+    Ok(())
+}
+
+/// A map retired (as a resize past the resource budget does, freeing its window texture) and
+/// shown again on a new scene registers that scene's target, though the new scene's first target
+/// has the generation the freed one had.
+#[test]
+#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+fn a_retired_map_shown_again_draws_its_new_target() -> std::io::Result<()> {
+    let fixture = Fixture::load("viewer-retired")?;
+    let document = || {
+        Document::from_shared_content(
+            fixture.document.content.clone(),
+            fixture.document.playback.replay_handle(),
+            &InitialHour {
+                branch: Some(fixture.input.branch),
+                hour: Some(fixture.input.hour),
+                hour_fraction: 0.,
+            },
+        )
+    };
+    let request = fixture.request([256, 144]);
+    let mut viewer = Viewer::create(
+        Config::default(),
+        Options::default(),
+        None,
+        Arc::new(Mutex::new(None)),
+        None,
+        Some((fixture.state.device.clone(), fixture.state.queue.clone())),
+    );
+    viewer.dashboard_map = true;
+    viewer.diagnostics = false;
+    viewer.graphics.samples = 1;
+    viewer.camera = Some(Placement::map(request.camera.center, request.camera.height));
+    let ctx = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    frame.wgpu_render_state = Some(fixture.state.clone());
+    let target = target(&fixture);
+    viewer.install_map(document()?, fixture.scene()?, "fixture".into());
+    until(&mut viewer, &ctx, &frame, &target, |v| {
+        v.rendered.is_some() || v.error.is_some() || v.map_error.is_some()
+    });
+    assert!(viewer.error.is_none() && viewer.map_error.is_none());
+    let shown = viewer.presented.generation;
+    viewer.retire_map(&frame, ());
+    assert!(viewer.presented.texture.is_none());
+    viewer.install_map(document()?, fixture.scene()?, "fixture".into());
+    until(&mut viewer, &ctx, &frame, &target, |v| {
+        v.rendered.is_some() || v.error.is_some() || v.map_error.is_some()
+    });
+    assert!(
+        viewer.error.is_none() && viewer.map_error.is_none(),
+        "{:?}",
+        viewer.map_state(&target)
+    );
+    // The new scene reached the freed target's generation and still registered its own.
+    assert_eq!(viewer.scene.as_ref().unwrap().generation(), shown);
+    assert!(viewer.presented.texture.is_some());
     Ok(())
 }

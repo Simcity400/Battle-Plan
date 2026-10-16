@@ -129,6 +129,9 @@ pub enum DataCommand {
         source_id: String,
         revision: String,
         settings: Option<crate::protocol::CampaignMapSettings>,
+        /// Flips this setting of the target's stored choices under the store's lock, the
+        /// opposite of its value when the flip runs; never with `settings`.
+        flip: Option<crate::protocol::MapSetting>,
     },
     /// The [`crate::reply_cache`] folder's size, after clearing it when asked.
     HistoryCache {

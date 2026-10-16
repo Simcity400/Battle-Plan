@@ -124,7 +124,9 @@ fn unit_scale_replay_layers() {
             lap("political", camera_name, at, || {
                 political::build(&document.map, &frame)
             });
-            lap("names", camera_name, at, || hour.place_names());
+            lap("names", camera_name, at, || {
+                hour.place_names(&Default::default())
+            });
             // The land combat flags alone: from the covering index, as the
             // window reads them, and rebuilt as a load (or a dump) does.
             let viewer = hour.vision(&perspective).unwrap().ours();
@@ -246,6 +248,7 @@ fn unit_scale_replay_layers() {
                 behind: 0,
                 playing: true,
                 perspective: perspective.clone(),
+                map_mode: Default::default(),
                 show_allied_plans: false,
                 counters: Default::default(),
                 view: crate::hours::View {

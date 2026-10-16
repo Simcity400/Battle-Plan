@@ -69,6 +69,7 @@ mod embedded;
 mod faction_highlight;
 pub(crate) mod fly;
 mod fly_aircraft;
+pub(crate) mod picker;
 mod presentation;
 mod walk;
 
@@ -116,9 +117,62 @@ fn faction_hover_frame_path_uses_only_prepared_border_inputs() {
 }
 
 #[cfg(test)]
+mod map_mode_fixture_tests;
+#[cfg(test)]
 mod render_failure_tests;
 #[cfg(test)]
 mod fly_render_tests;
+
+/// The egui memory key of the dashboard map that owns keyboard input: the one last pressed.
+const MAP_INPUT_OWNER: &str = "map camera input owner";
+
+/// Whether this map takes the map-mode keys: a lone map always; on a dashboard, the map that
+/// owns keyboard input, or the hovered one while no map owns it.
+fn takes_map_keys(
+    dashboard_map: bool,
+    owner: Option<egui::Id>,
+    me: egui::Id,
+    hovered: bool,
+) -> bool {
+    !dashboard_map || owner.map_or(hovered, |owner| owner == me)
+}
+
+/// The window texture showing the scene's target, and the scene generation it shows.
+#[derive(Debug, Default)]
+struct Presented {
+    texture: Option<egui::TextureId>,
+    generation: u64,
+}
+
+impl Presented {
+    /// Whether the scene's target must be registered or re-pointed: the scene made a new
+    /// target, or the texture was freed with a retired map. A replacement scene counts its
+    /// generations from the start again, so the generation alone cannot tell.
+    fn stale(&self, generation: u64) -> bool {
+        self.texture.is_none() || self.generation != generation
+    }
+
+    /// Gives up the texture for freeing, so the next frame registers the target afresh.
+    fn take(&mut self) -> Option<egui::TextureId> {
+        self.generation = 0;
+        self.texture.take()
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_map_retired_and_shown_again_registers_its_new_target() {
+    let mut presented = Presented::default();
+    assert!(presented.stale(1));
+    presented.texture = Some(egui::TextureId::User(7));
+    presented.generation = 1;
+    assert!(!presented.stale(1));
+    assert!(presented.stale(2));
+    // A resize past the map resource budget retires the map and frees its texture.
+    assert_eq!(presented.take(), Some(egui::TextureId::User(7)));
+    // Resizing back builds a new scene, whose first target is generation 1 again.
+    assert!(presented.stale(1));
+}
 
 /// Per-rebuild CPU laps of one window frame, printed with `BATTLE_PLAN_VIEWER_PROFILE`.
 struct Laps {
@@ -382,8 +436,8 @@ struct Uploaded {
     orders: Option<Arc<viewer_foundation::map::ribbon_content::OrderField>>,
 }
 
-/// Asks the desktop host to show or hide diagnostics; the desktop's web
-/// interface uses the same key.
+/// Asks the desktop host to show or hide diagnostics with Ctrl, since F3 alone selects the air
+/// map mode as in the game; the desktop's web interface uses the same keys.
 const DIAGNOSTICS_KEY: egui::Key = egui::Key::F3;
 
 /// Cycles the full map's camera modes, as the controller's view button does. No interface
@@ -391,7 +445,7 @@ const DIAGNOSTICS_KEY: egui::Key = egui::Key::F3;
 const CAMERA_MODE_KEY: egui::Key = egui::Key::F12;
 
 /// Whether `event` is the diagnostics shortcut: a first press of the key with
-/// no modifier, as the web interface's handler takes it.
+/// Ctrl alone, as the web interface's handler takes it.
 fn is_diagnostics_shortcut(event: &egui::Event) -> bool {
     matches!(
         event,
@@ -401,7 +455,7 @@ fn is_diagnostics_shortcut(event: &egui::Event) -> bool {
             repeat: false,
             modifiers,
             ..
-        } if *key == DIAGNOSTICS_KEY && modifiers.is_none()
+        } if *key == DIAGNOSTICS_KEY && modifiers.matches_exact(egui::Modifiers::CTRL)
     )
 }
 
@@ -728,8 +782,7 @@ pub struct Viewer {
     loading: Option<mpsc::Receiver<Result<LoadedReplay, String>>>,
     error: Option<String>,
     scene: Option<Scene>,
-    texture: Option<egui::TextureId>,
-    generation: u64,
+    presented: Presented,
     map_error: Option<String>,
     camera: Option<Placement>,
     camera_manual: bool,
@@ -774,6 +827,8 @@ pub struct Viewer {
     pub(crate) graphics: dashboard::protocol::MapGraphics,
     /// Whose counters this view draws.
     pub(crate) counter_filter: dashboard::protocol::CounterFilter,
+    /// The picker's player-only counters toggle: only the viewing country's own counters draw.
+    pub(crate) player_counters: bool,
     /// This view's sound volumes. Only the focused map plays sound.
     pub(crate) volumes: dashboard::protocol::MapAudio,
     /// The overlay parts the last overlay draw used, with the counter filter resolved.
@@ -833,7 +888,7 @@ pub struct Viewer {
     raid_tick: Option<f32>,
     // names
     placements: Option<Arc<Placements>>,
-    placements_at: Option<(replay::BranchId, i32)>,
+    placements_at: Option<(replay::BranchId, i32, viewer_world::map::map_mode::MapMode)>,
     /// `None` until the first frame seeds it settled at that frame's own camera
     /// height; see [`Viewer::map`].
     fade: Option<LayerFade>,
@@ -883,6 +938,12 @@ pub struct Viewer {
     /// Which country the counters are drawn for; the host's map options set
     /// it and `Document::perspective` is kept in step with it.
     perspective: Choice,
+    /// The view's map mode; the picker, its shortcuts and the host set it.
+    map_mode: viewer_world::map::map_mode::MapMode,
+    /// The map mode picker drawn over the map, its slots and what it tells the host.
+    picker: picker::PickerState,
+    picker_error: Option<String>,
+    picker_refused: std::collections::BTreeMap<String, usize>,
     // capture
     /// The readback to run once the next frame is drawn; a host export and
     /// `--window-dump` both arm it.
@@ -1103,6 +1164,7 @@ impl Viewer {
         });
         // counters: the perspective starts where the command line put it.
         let perspective = options.perspective.clone();
+        let map_mode = options.map_mode.clone();
         // Replaced with the document's `settings.txt` options when one loads.
         let counter_view = CounterView::new(
             options.counter_settings(viewer_counters::map::counters::CounterSettings::default()),
@@ -1172,6 +1234,7 @@ impl Viewer {
                 ..Default::default()
             },
             counter_filter: Default::default(),
+            player_counters: false,
             volumes: Default::default(),
             overlay_layers: Default::default(),
             counter_owners: Default::default(),
@@ -1188,8 +1251,7 @@ impl Viewer {
             loading: None,
             error,
             scene: None,
-            texture: None,
-            generation: 0,
+            presented: Presented::default(),
             map_error: None,
             playing: false,
             speed: 24,
@@ -1236,6 +1298,10 @@ impl Viewer {
             counter_view,
             unit_selection: Default::default(),
             perspective,
+            map_mode,
+            picker: Default::default(),
+            picker_error: None,
+            picker_refused: Default::default(),
             // capture
             capture,
             capture_note: None,
@@ -1336,7 +1402,7 @@ impl Viewer {
     }
 
     pub(crate) fn retire_map<T: Send + 'static>(&mut self, frame: &eframe::Frame, permit: T) {
-        if let Some(texture) = self.texture.take()
+        if let Some(texture) = self.presented.take()
             && let Some(state) = frame.wgpu_render_state()
         {
             state.renderer.write().free_texture(&texture);
@@ -1418,6 +1484,7 @@ impl Viewer {
             .clone()
             .map_or(Country::Recorded, Country::Tag);
         self.perspective.fog = target.options.fog;
+        self.apply_host_options(&target.options);
         let branch = target
             .branch_id
             .parse::<u64>()
@@ -1532,6 +1599,16 @@ impl Viewer {
         let mut warnings: Vec<_> = tooltip_warning_lines(&self.tooltip_refused).collect();
         warnings.extend(self.counter_report.combat_gap_lines());
         warnings.extend(self.combat.warnings(&document.icons.combat.warnings));
+        warnings.extend(
+            self.picker_error
+                .iter()
+                .map(|error| format!("Map mode picker: {error}")),
+        );
+        warnings.extend(
+            self.picker_refused
+                .iter()
+                .map(|(reason, count)| format!("Map mode picker: {reason} ({count} refused)")),
+        );
         warnings.extend(shown.limitations.lines());
         // The viewer's device, when it lacks a feature some content needs to draw exactly.
         if let Some((device, _)) = &self.gpu {
@@ -1824,7 +1901,7 @@ impl Viewer {
         self.unit_models = None;
         self.unit_field_uploaded = false;
         self.profile_frame = 0;
-        self.generation = 0;
+        self.presented.generation = 0;
         if self.embedded.is_none() {
             self.error = None;
         }
@@ -2496,6 +2573,10 @@ impl Viewer {
             self.counter_view.settings.nato,
             self.unit_selection.ordered_units(),
             &document.playback.replay_handle(),
+            &picker::mode_hover(
+                &self.map_mode,
+                document.map_modes.defines.opinion_thresholds(),
+            ),
             {
                 let ctx = ctx.clone();
                 move || ctx.request_repaint()
@@ -2707,24 +2788,50 @@ impl Viewer {
             .hover_pos()
             .or_else(|| response.interact_pointer_pos())
             .map(|position| to_interface(frame_point(position), ui_scale));
-        if response.drag_started() {
+        // Map-mode keys go to one map: the one that owns keyboard input, as the camera keys do.
+        let owner = ui
+            .ctx()
+            .data(|data| data.get_temp::<egui::Id>(egui::Id::new(MAP_INPUT_OWNER)));
+        if takes_map_keys(self.dashboard_map, owner, response.id, response.hovered()) {
+            self.picker_keys(ui, document, extent);
+        }
+        // The picker's lists take no scrollbar, so the wheel over them does nothing of theirs.
+        let picker_hit = match self.draw_picker(document, extent, false, animation_time, false) {
+            Some(Ok(drawn)) => point.and_then(|point| drawn.control_at(point).cloned()),
+            _ => None,
+        };
+        if let Some(control) = &picker_hit {
+            if response.clicked() {
+                self.picker_click(document, control, false);
+            } else if response.secondary_clicked() {
+                self.picker_click(document, control, true);
+            }
+        } else if response.clicked() && self.picker.open != viewer_combat::picker::Open::None {
+            // A click outside the open list closes it.
+            self.picker.open = viewer_combat::picker::Open::None;
+        }
+        let over_picker = picker_hit.is_some();
+        if response.drag_started() && !over_picker {
             self.combat.start_drag(combat_geometry.as_ref(), point);
         }
         if response.drag_stopped() {
             self.combat.dragging = false;
         }
         let over_combat = self.combat.dragging
+            || over_picker
             || point.is_some_and(|point| {
                 combat_geometry
                     .as_ref()
                     .is_some_and(|window| window.contains(point))
             });
         let popup_click = response.clicked()
+            && !over_picker
             && point
                 .zip(combat_geometry.as_ref())
                 .is_some_and(|(point, drawn)| self.combat.handle_click(drawn, point));
         if response.clicked()
             && !popup_click
+            && !over_picker
             && let Some(point) = point
             && combat_geometry
                 .as_ref()
@@ -2779,7 +2886,7 @@ impl Viewer {
         // mouse button. Ownership is kept in the window's own record, apart from egui's keyboard
         // focus, so Escape or Tab never moves or drops it. The wheel goes to the map under the
         // pointer.
-        let owner = egui::Id::new("map camera input owner");
+        let owner = egui::Id::new(MAP_INPUT_OWNER);
         if response.is_pointer_button_down_on() {
             ui.ctx()
                 .data_mut(|data| data.insert_temp(owner, response.id));
@@ -3110,9 +3217,14 @@ impl Viewer {
             viewport: pixels,
             ui_scale,
         });
-        let names_key = (document.playback.branch(), document.playback.hour());
-        if self.placements_at != Some(names_key) {
-            match now.place_names() {
+        // The map mode's layers choose whose names the map writes.
+        let names_key = (
+            document.playback.branch(),
+            document.playback.hour(),
+            self.map_mode.clone(),
+        );
+        if self.placements_at.as_ref() != Some(&names_key) {
+            match now.place_names(&self.map_mode) {
                 Ok(placements) => {
                     self.placements = Some(Arc::new(placements));
                     self.placements_at = Some(names_key);
@@ -3264,9 +3376,11 @@ impl Viewer {
             }
             laps.lap("overlay_prepare");
             // Display choices only change what the next overlay draw keeps.
+            let ours = self.overlay_tables.as_ref().expect("parsed above").3.ours();
+            let filtered = self.counter_owners.get(now.frame, &self.counter_filter);
             let layers = crate::document::OverlayLayers::shown(
                 &self.graphics,
-                self.counter_owners.get(now.frame, &self.counter_filter),
+                self.shown_counter_owners(filtered, ours),
             );
             if layers != self.overlay_layers {
                 self.overlay_layers = layers;
@@ -3388,8 +3502,36 @@ impl Viewer {
             if self.combat.gui_active() {
                 ui.ctx().request_repaint();
             }
-            let map_hit =
-                self.map_tooltip(document, point.filter(|_| !over_combat), extent, ui.ctx());
+            let picker_drawn = match self.draw_picker(document, extent, true, animation_time, true)
+            {
+                Some(Ok(drawn)) => Some(drawn),
+                Some(Err(error)) => {
+                    self.picker_error = Some(error);
+                    None
+                }
+                None => None,
+            };
+            if let Some(picker_drawn) = &picker_drawn {
+                self.picker_error = None;
+                self.picker_refused.clone_from(&picker_drawn.drawn.refused);
+            }
+            let over_picker = point.is_some_and(|point| {
+                picker_drawn
+                    .as_ref()
+                    .is_some_and(|drawn| drawn.control_at(point).is_some())
+            });
+            let mut drawn = drawn;
+            if let Some(picker_drawn) = &picker_drawn {
+                drawn
+                    .get_or_insert_with(viewer_combat::Drawn::default)
+                    .add_hovers(&picker_drawn.drawn);
+            }
+            let map_hit = self.map_tooltip(
+                document,
+                point.filter(|_| !over_combat && !over_picker),
+                extent,
+                ui.ctx(),
+            );
             let mut tooltip_refused = map_hit
                 .as_ref()
                 .map(|(text, _, _)| text.refused.clone())
@@ -3468,6 +3610,9 @@ impl Viewer {
             }
             if let Some(drawn) = drawn {
                 additions.quads.extend(drawn.batch.quads);
+            }
+            if let Some(picker_drawn) = picker_drawn {
+                additions.quads.extend(picker_drawn.drawn.batch.quads);
             }
             laps.lap("combat_hover");
             (overlay_ms, additions)
@@ -3583,10 +3728,10 @@ impl Viewer {
             audio.release();
         }
         let [animate, overlay_upload, encode, submit] = scene.render_laps();
-        if self.generation != scene.generation() {
+        if self.presented.stale(scene.generation()) {
             let view = scene.view().ok_or("Map target was not created")?;
             let mut egui_renderer = state.renderer.write();
-            if let Some(texture) = self.texture {
+            if let Some(texture) = self.presented.texture {
                 egui_renderer.update_egui_texture_from_wgpu_texture(
                     &state.device,
                     view,
@@ -3594,13 +3739,13 @@ impl Viewer {
                     texture,
                 );
             } else {
-                self.texture = Some(egui_renderer.register_native_texture(
+                self.presented.texture = Some(egui_renderer.register_native_texture(
                     &state.device,
                     view,
                     PRESENTATION_FILTER,
                 ));
             }
-            self.generation = scene.generation();
+            self.presented.generation = scene.generation();
         }
         // capture: the frame is drawn and the scene still holds it, so the
         // readback is the dump's own.
@@ -3696,8 +3841,12 @@ impl Viewer {
         }
         self.map_warnings = warnings;
         self.profile_frame += 1;
+        let texture = self
+            .presented
+            .texture
+            .ok_or("Map target was not registered")?;
         ui.painter().image(
-            self.texture.unwrap(),
+            texture,
             rect,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
             egui::Color32::WHITE,
@@ -3928,8 +4077,32 @@ impl eframe::App for Viewer {
             dashboard.ui(ui, frame);
             if let Some(embedded) = &mut self.embedded {
                 embedded.report_maps(dashboard.states());
+                for (view, event) in dashboard.take_view_events() {
+                    match event {
+                        picker::ViewEvent::Options(options) => {
+                            embedded.report_view_options(&view, options)
+                        }
+                        picker::ViewEvent::Toggle(toggle) => {
+                            embedded.report_view_toggle(&view, toggle)
+                        }
+                    }
+                }
             }
             return;
+        }
+        // The campaign map's picker changes go to the host as a widget's do, under its own view
+        // id, and come back in its Configure options.
+        let events = self.take_view_events();
+        if let Some(embedded) = &self.embedded {
+            for event in events {
+                match event {
+                    picker::ViewEvent::Options(options) => embedded
+                        .report_view_options(dashboard::protocol::CAMPAIGN_MAP_VIEW, options),
+                    picker::ViewEvent::Toggle(toggle) => {
+                        embedded.report_view_toggle(dashboard::protocol::CAMPAIGN_MAP_VIEW, toggle)
+                    }
+                }
+            }
         }
         let waited = if profiling() && self.capture.is_some() {
             pace_profiled_frame()
@@ -5207,7 +5380,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn only_a_bare_first_f3_press_toggles_diagnostics() {
+    fn only_a_first_ctrl_f3_press_toggles_diagnostics() {
         let press = |pressed, repeat, modifiers| egui::Event::Key {
             key: egui::Key::F3,
             physical_key: None,
@@ -5218,27 +5391,28 @@ pub(crate) mod tests {
         assert!(super::is_diagnostics_shortcut(&press(
             true,
             false,
+            egui::Modifiers::CTRL
+        )));
+        // F3 alone selects the air map mode, as in the game.
+        assert!(!super::is_diagnostics_shortcut(&press(
+            true,
+            false,
             egui::Modifiers::NONE
         )));
         assert!(!super::is_diagnostics_shortcut(&press(
             false,
-            false,
-            egui::Modifiers::NONE
-        )));
-        assert!(!super::is_diagnostics_shortcut(&press(
-            true,
-            true,
-            egui::Modifiers::NONE
-        )));
-        assert!(!super::is_diagnostics_shortcut(&press(
-            true,
             false,
             egui::Modifiers::CTRL
         )));
         assert!(!super::is_diagnostics_shortcut(&press(
             true,
+            true,
+            egui::Modifiers::CTRL
+        )));
+        assert!(!super::is_diagnostics_shortcut(&press(
+            true,
             false,
-            egui::Modifiers::SHIFT
+            egui::Modifiers::CTRL | egui::Modifiers::SHIFT
         )));
     }
 

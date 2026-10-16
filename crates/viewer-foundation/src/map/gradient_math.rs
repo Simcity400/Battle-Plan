@@ -24,6 +24,10 @@ pub struct FieldDefines {
     pub optimization_range: f32,
     /// `STRATEGIC_NAVY_COLOR_NEUTRAL` truncated to bytes for layer 1.
     pub navy_neutral: [u8; 3],
+    /// The thickest fixed rule a map mode gives the country channel: the largest of
+    /// `THICKNESS_STATE`, `_DIPLOMACY` and `_RESISTANCE`, so one channel's search reach covers
+    /// every map mode's regions.
+    pub mode_thickness_max: f32,
 }
 
 impl FieldDefines {
@@ -58,6 +62,9 @@ impl FieldDefines {
             strategic_thickness: number("GRADIENT_BORDERS_THICKNESS_STRATEGIC_REGIONS")?,
             optimization_range: number("GRADIENT_BORDERS_OPTIMIZATION_RANGE")?,
             navy_neutral,
+            mode_thickness_max: number("GRADIENT_BORDERS_THICKNESS_STATE")?
+                .max(number("GRADIENT_BORDERS_THICKNESS_DIPLOMACY")?)
+                .max(number("GRADIENT_BORDERS_THICKNESS_RESISTANCE")?),
         })
     }
 
@@ -70,6 +77,7 @@ impl FieldDefines {
         strategic_thickness: 150.0,
         optimization_range: 30.0,
         navy_neutral: [51, 63, 89],
+        mode_thickness_max: 12.0,
     };
 }
 

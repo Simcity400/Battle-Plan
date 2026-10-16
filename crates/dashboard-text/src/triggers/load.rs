@@ -172,12 +172,23 @@ impl<'a> Evaluator<'_, 'a> {
 
     /// A trigger body, evaluated as a conjunction.
     pub fn evaluate(&self, items: &[Item], scopes: Scopes) -> Eval {
+        self.evaluate_seeded(items, scopes, &[])
+    }
+
+    /// [`Self::evaluate`] with temp variables set before the body runs, as a caller that
+    /// initialises its outputs does (fixed5 values).
+    pub fn evaluate_seeded(&self, items: &[Item], scopes: Scopes, seeds: &[(&[u8], i64)]) -> Eval {
         let depth = self.checking.get();
         if depth == 0 && self.description_depth.get() == 0 {
             // Begin a fresh variable-random context for the outer check.
             self.local_temps.borrow_mut().clear();
             self.clear_temp_writer();
             self.initialize_variable_random(scopes);
+        }
+        for (name, value) in seeds {
+            self.local_temps
+                .borrow_mut()
+                .insert(name.to_vec(), Ok(super::variables::Value::Raw(*value)));
         }
         self.checking.set(depth + 1);
         let result = self.all(&self.units(items), scopes);

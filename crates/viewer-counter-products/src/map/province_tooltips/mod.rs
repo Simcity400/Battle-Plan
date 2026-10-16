@@ -6,6 +6,7 @@ use viewer_foundation::tooltip_text::state_name as tooltip_text_state_name;
 mod air_region;
 mod border;
 pub(super) mod clock;
+mod mode_lines;
 mod selected_attack;
 mod selection;
 pub(super) mod units;
@@ -44,6 +45,8 @@ pub struct Content {
     /// `NGame.AIR_LOG_TIMEOUT_HOURS`, the daily prune's window
     /// ([`replay::air_region_derive`]).
     air_log_timeout: Result<i32, String>,
+    /// The `NCountry` resistance and compliance defines the occupation hover reads.
+    occupation: Result<mode_lines::OccupationDefines, String>,
 }
 
 impl Content {
@@ -83,6 +86,7 @@ impl Content {
             air_log_timeout: defines
                 .int32("NGame", "AIR_LOG_TIMEOUT_HOURS")
                 .map_err(|e| e.to_string()),
+            occupation: mode_lines::OccupationDefines::load(defines).map_err(|e| e.to_string()),
         }
     }
 
@@ -142,9 +146,39 @@ impl Content {
     }
 }
 
+/// What a map mode's province hover shows. The game shows the location block, the province's
+/// units and the selection only in the default and states modes; every other mode shows its own
+/// lines alone.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ModeHover {
+    /// The location block, units and selection; `category` adds the state's category line,
+    /// as the states mode does. The category is the state's current one, which play can change
+    /// from its history and recordings do not hold, so the line is refused.
+    Location { category: bool },
+    /// Nothing of the mode's own.
+    Nothing,
+    /// The state's population.
+    Manpower,
+    /// The state, its owner, and the owner's relation to the viewing country, at the content's
+    /// very good and very bad opinion thresholds.
+    Diplomacy { very_good: i32, very_bad: i32 },
+    /// The name of the owner's ruling ideology.
+    Ideology,
+    /// The state's resistance and compliance, the same in both modes.
+    Occupation,
+    /// A scripted mode's `<name>_tooltip` and `<name>_tooltip_delayed`.
+    Scripted(String),
+    /// A mode whose lines the viewer does not build, and why.
+    Unbuilt(String),
+}
+
 /// The province, viewing country and fog setting a tooltip was built for,
-/// and whether NATO counters were on.
-type CacheKey = (u32, u32, bool, bool);
+/// whether NATO counters were on, and the map mode's hover.
+/// Why the states mode's category line is refused.
+pub const STATE_CATEGORY_UNRECORDED: &str =
+    "the state's current category is not recorded (play can change it from its history)";
+
+type CacheKey = (u32, u32, bool, bool, ModeHover);
 type TooltipSources = (
     Arc<counter_content::Content>,
     Arc<DecodedFrame>,
@@ -173,9 +207,10 @@ impl Cache {
         nato: bool,
         selected: &Arc<Vec<Unit>>,
         replay: &Arc<replay::container::Replay>,
+        mode: &ModeHover,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Arc<Tooltip> {
-        let key = (province, vision.ours(), vision.fog(), nato);
+        let key = (province, vision.ours(), vision.fog(), nato, mode.clone());
         if !self
             .rosters
             .as_ref()
@@ -198,7 +233,7 @@ impl Cache {
             return Arc::clone(text);
         }
         let text = Arc::new(build(
-            content, reads, frame, province, vision, nato, selected, rosters,
+            content, reads, frame, province, vision, nato, selected, rosters, mode,
         ));
         self.source = Some((
             Arc::clone(content),
@@ -252,6 +287,7 @@ fn build(
     nato: bool,
     selected: &[Unit],
     rosters: &dyn air_region::Rosters,
+    mode: &ModeHover,
 ) -> Tooltip {
     let mut out = Tooltip::default();
     let provinces = match frame.complete::<tables::Provinces>() {
@@ -287,9 +323,13 @@ fn build(
         countries: CountryNames::read(frame, &content.localisation),
         rosters,
     };
+    let ModeHover::Location { category } = mode else {
+        context.mode_lines(mode, &mut out);
+        return out;
+    };
     // Stateless provinces omit the complete location block; land units remain below.
     if province.state != 0 {
-        context.location(&mut out);
+        context.location(&mut out, *category);
     }
     let composition = content
         .province_hover
@@ -398,7 +438,7 @@ impl Context<'_> {
             },
         )
     }
-    fn location(&self, out: &mut Tooltip) {
+    fn location(&self, out: &mut Tooltip, category: bool) {
         let p = self.province;
         let loc = &self.content.localisation;
         line(
@@ -448,6 +488,14 @@ impl Context<'_> {
             )
         })();
         line(out, "controller", 1, controller);
+        if category {
+            line(
+                out,
+                "state category",
+                1,
+                Err(STATE_CATEGORY_UNRECORDED.to_owned()),
+            );
+        }
         let flags = self
             .frame
             .complete::<tables::StateFlags>()

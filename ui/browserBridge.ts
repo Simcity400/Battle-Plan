@@ -31,6 +31,15 @@ export function bridgeCommand(command: Record<string, unknown>): string {
   return line;
 }
 
+/** The native map-settings command for a browser request: every field the service reads, a save's settings or a
+ * flip's setting included. */
+export function mapSettingsCommand(input: Record<string, any>): Record<string, unknown> {
+  return {
+    type: 'mapSettings', sourceId: input.sourceId, revision: input.revision, settings: input.settings ?? null,
+    flip: input.flip ?? null, target: input.target ?? { scope: 'campaign' },
+  };
+}
+
 export function browserBridge(root: string, recordingsRoot: string, gameDir: string, userDir: string): Plugin {
   const libraryRoot = savedReplayFolder(recordingsRoot).then(folder => { recordingsRoot = folder; });
   let contentConfig: Promise<void> | null = null;
@@ -225,7 +234,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             command = { type: 'open', path: location.target, revision: '' };
           } else if (input.type === 'mapSettings') {
             await requireBridge('crates/dashboard-core/src/map_settings.rs', 'Map settings are unavailable in this server version. The local data bridge needs updating.');
-            command = { type: 'mapSettings', sourceId: input.sourceId, revision: input.revision, settings: input.settings ?? null, target: input.target ?? { scope: 'campaign' } };
+            command = mapSettingsCommand(input);
           } else if (input.type === 'historyCache') {
             if (typeof input.clear !== 'boolean') throw new Error('Invalid history cache request');
             await requireBridge('crates/dashboard/src/reply_cache.rs', 'Widget history is unavailable in this server version. The local data bridge needs updating.');

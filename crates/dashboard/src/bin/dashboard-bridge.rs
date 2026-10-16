@@ -218,7 +218,7 @@ mod folder_command_tests {
         );
         let command = serde_json::from_value::<Command>(serde_json::json!({
             "type": "mapSettings", "id": "settings-1", "target": {"scope": "global"},
-            "sourceId": "", "revision": "", "settings": null
+            "sourceId": "", "revision": "", "settings": null, "flip": null
         }))
         .unwrap();
         assert!(matches!(

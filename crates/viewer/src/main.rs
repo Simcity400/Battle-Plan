@@ -321,6 +321,9 @@ struct Options {
     /// that country; `--fog off` is the game's `fow` console switch. See
     /// `viewer_foundation::map::perspective`.
     perspective: Choice,
+    /// `--map-mode <token>`: the map mode a window opens in and a dump renders, a picker
+    /// mode's token (`default`, `states`, `factions`, ...) or `scripted:<name>`.
+    map_mode: viewer_world::map::map_mode::MapMode,
     /// Viewer-local allied-plan switch for dumps and window dumps.
     allied_plans: Option<bool>,
     /// `--day-night`: the map's day/night lighting for dumps and window dumps;
@@ -603,6 +606,7 @@ impl Options {
                     | "--building-camera"
                     | "--perspective"
                     | "--fog"
+                    | "--map-mode"
                     | "--allied-plans"
                     | "--day-night"
                     | "--free-overlays"
@@ -704,6 +708,11 @@ impl Options {
                         // counters
                         "--perspective" => options.perspective.country = Country::parse(&value)?,
                         "--fog" => options.perspective.fog = Choice::parse_fog(&value)?,
+                        "--map-mode" => {
+                            options.map_mode =
+                                viewer_world::map::map_mode::MapMode::parse(&value)
+                                    .ok_or_else(|| invalid("--map-mode takes a map mode token"))?
+                        }
                         "--allied-plans" | "--day-night" | "--free-overlays" => {
                             let enabled = match value.trim() {
                                 value if value.eq_ignore_ascii_case("on") => true,
@@ -1137,10 +1146,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Warning: {line}");
         }
         // political fill
+        let hour = document.hour()?;
+        if !document.map_modes.knows(&options.map_mode) {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "--map-mode {}: the recording's content declares no such map mode",
+                    options.map_mode.token()
+                ),
+            )));
+        }
+        // A dump is a fresh open: a scripted mode's colour borders start empty.
+        let mode = hour.map_mode_fill(&options.map_mode, &options.perspective, None)?;
+        for line in &mode.warnings {
+            eprintln!("Warning: {line}");
+        }
+        println!("Map mode: {}", options.map_mode.token());
         let layers = political::build_with_naval(
             &document.map,
             document.frame()?,
-            document.hour()?.naval_fill(&options.perspective)?,
+            hour.naval_fill(&options.perspective)?,
+            mode,
         )?;
         let mut omitted = options.layers;
         omitted.borders |= options.debug_borders;
@@ -1219,7 +1245,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // names: a headless render has no frame history, so the fade jumps
         // straight to its settled value.
         let fade = LayerFade::instant(camera);
-        let placements = document.place_names()?;
+        let placements = document.place_names(&options.map_mode)?;
         for warning in &placements.warnings {
             eprintln!("Warning: {warning}");
         }

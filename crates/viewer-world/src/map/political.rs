@@ -71,6 +71,8 @@ pub struct Regions {
     pub warnings: Vec<String>,
     /// Political naval attributes indexed by strategic region id.
     pub strategic_attributes: BTreeMap<u32, super::gradient::Attributes>,
+    /// What the map mode draws in the two channels; `None` draws the political channels.
+    pub mode: Option<Arc<super::map_mode::Draw>>,
 }
 
 impl Regions {
@@ -98,12 +100,24 @@ pub struct FrameKey {
     colors: Vec<(u32, [u32; 3])>,
     colors_complete: bool,
     naval: Option<super::naval_dominance::Fill>,
+    mode: Option<super::map_mode::ModeFill>,
 }
 
 impl FrameKey {
     pub fn with_naval(mut self, naval: &super::naval_dominance::Fill) -> Self {
         self.naval = Some(naval.clone());
         self
+    }
+
+    /// Hours share a fill only when the map mode drew the same country channel.
+    pub fn with_mode(mut self, mode: &super::map_mode::ModeFill) -> Self {
+        self.mode = Some(mode.clone());
+        self
+    }
+
+    /// The map mode fill the key was built with.
+    pub fn mode(&self) -> Option<&super::map_mode::ModeFill> {
+        self.mode.as_ref()
     }
 
     pub fn new(frame: &DecodedFrame) -> io::Result<Self> {
@@ -143,6 +157,7 @@ impl FrameKey {
                 .collect(),
             colors_complete: colors.is_complete(),
             naval: None,
+            mode: None,
         })
     }
 }
@@ -198,6 +213,7 @@ pub fn regions(map: &MapData, frame: &DecodedFrame) -> io::Result<Regions> {
         country_colors: HashMap::new(),
         warnings: Vec::new(),
         strategic_attributes: BTreeMap::new(),
+        mode: None,
     };
     let mut unresolved = Vec::new();
     let mut uncoloured = BTreeSet::new();
@@ -424,16 +440,20 @@ pub fn build(map: &MapData, frame: &DecodedFrame) -> io::Result<PoliticalLayers>
     })
 }
 
-/// Country and perspective-dependent naval fields of one recorded frame.
+/// Country and perspective-dependent naval fields of one recorded frame, and the map mode's
+/// country channel.
 pub fn build_with_naval(
     map: &MapData,
     frame: &DecodedFrame,
     naval: super::naval_dominance::Fill,
+    mode: super::map_mode::ModeFill,
 ) -> io::Result<PoliticalLayers> {
     let mut layers = build(map, frame)?;
     let regions = Arc::make_mut(&mut layers.regions);
     regions.strategic_attributes = naval.attributes;
     regions.warnings.extend(naval.warnings);
+    regions.warnings.extend(mode.warnings);
+    regions.mode = mode.draw.map(Arc::new);
     Ok(layers)
 }
 

@@ -506,6 +506,7 @@ impl Inner {
             source_id,
             source,
             settings,
+            flip,
             options,
         } = job;
         if request.cancelled() {
@@ -558,6 +559,13 @@ impl Inner {
         if let Some(settings) = settings {
             store
                 .save(key.clone(), settings)
+                .map_err(|e| e.to_string())?;
+        }
+        // A flip reads the value it flips here, under the lock every save takes, so an edit or
+        // reset saved before it is what it flips and no other choice is written.
+        if let Some(setting) = flip {
+            store
+                .flip(key.clone(), setting)
                 .map_err(|e| e.to_string())?;
         }
         let replay = source.as_ref().map(|source| source.replay_ref());
@@ -934,6 +942,8 @@ pub(super) struct MapSettingsJob {
     pub(super) source_id: String,
     pub(super) source: Option<Arc<Source>>,
     pub(super) settings: Option<CampaignMapSettings>,
+    /// A setting to flip under the store's lock, the opposite of its value when it runs.
+    pub(super) flip: Option<crate::protocol::MapSetting>,
     pub(super) options: installed_content::ResolveOptions,
 }
 

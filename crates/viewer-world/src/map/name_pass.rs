@@ -26,6 +26,7 @@ use std::{
 use viewer_foundation::map::gpu_contract::DEPTH_FORMAT;
 use viewer_foundation::map::name_draw::{Placements, WorldName, next_generation};
 
+use super::map_mode::GroupLabels;
 use eframe::wgpu;
 use installed_content::{
     ResolvedLayers, adjacencies,
@@ -188,18 +189,26 @@ pub struct PlacementInputs<'a> {
     pub font: &'a text::Font,
 }
 
-/// Places the country names for one decoded hour.
-pub fn place(inputs: &PlacementInputs<'_>, frame: &DecodedFrame) -> io::Result<Placements> {
-    let areas = NameAreas::read(inputs.map, &inputs.content.localisation, frame)?;
+/// Places the country names for one decoded hour; with `groups`, grouped countries carry their
+/// group's name instead.
+pub fn place(
+    inputs: &PlacementInputs<'_>,
+    frame: &DecodedFrame,
+    groups: Option<&Result<GroupLabels, String>>,
+) -> io::Result<Placements> {
+    let areas = NameAreas::read(inputs.map, &inputs.content.localisation, frame, groups)?;
     Ok(place_areas(inputs, &areas, None))
 }
 
 /// Everything [`place`] reads from an hour: each country that controls land,
 /// its tag, the name it resolves to (or why it shows its tag) and the provinces
 /// it controls. Two hours with equal areas place the same names.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct NameAreas {
     countries: Vec<CountryArea>,
+    warnings: Vec<String>,
+    /// The areas named close in, below the country-name cutoff.
+    near: Option<Box<NameAreas>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -207,13 +216,21 @@ struct CountryArea {
     tag: String,
     text: Result<String, String>,
     members: BTreeSet<u32>,
+    /// A group's area (a faction's or a player's), which shows no tag when its name does not
+    /// resolve.
+    faction: bool,
 }
 
 impl NameAreas {
+    /// The hour's name areas. With `groups`, a group's countries form one area under the
+    /// group's name: a faction's members in the factions mode, a player's country in the
+    /// players mode. Countries outside every group keep their own names when the groups say so,
+    /// and carry none otherwise. Groups the recording cannot read leave no names at all.
     pub fn read(
         map: &MapData,
         localisation: &Localisation,
         frame: &DecodedFrame,
+        groups: Option<&Result<GroupLabels, String>>,
     ) -> io::Result<Self> {
         let provinces = core::<tables::Provinces>(frame)?;
         let links = core::<tables::CountryLinks>(frame)?
@@ -238,21 +255,98 @@ impl NameAreas {
             }
         }
         let names = CountryNames::read(frame, localisation);
-        Ok(Self {
-            countries: by_country
-                .into_iter()
-                .filter_map(|(slot, members)| {
-                    let country = countries.get(&slot)?;
-                    Some(CountryArea {
-                        tag: String::from_utf8_lossy(&country.tag).into_owned(),
-                        // The game draws its stored name in its own language;
-                        // the viewer rebuilds it in the reader's.
-                        text: names.name(slot),
-                        members,
+        let warnings = Vec::new();
+        let groups = match groups {
+            Some(Ok(labels)) => Some(labels),
+            // Names the recording cannot group are withheld, not replaced with the countries'.
+            Some(Err(why)) => {
+                return Ok(Self {
+                    countries: Vec::new(),
+                    warnings: vec![format!("The map mode's group names are refused: {why}")],
+                    near: None,
+                });
+            }
+            None => None,
+        };
+        let mut faction_areas: BTreeMap<u64, CountryArea> = BTreeMap::new();
+        let mut areas = Vec::new();
+        for (slot, members) in by_country {
+            if let Some((faction, text)) = groups.and_then(|labels| labels.groups.get(&slot)) {
+                faction_areas
+                    .entry(*faction)
+                    .or_insert_with(|| CountryArea {
+                        tag: format!("group {faction}"),
+                        text: text.clone(),
+                        members: BTreeSet::new(),
+                        faction: true,
                     })
-                })
-                .collect(),
+                    .members
+                    .extend(members);
+                continue;
+            }
+            if groups.is_some_and(|labels| !labels.others_named) {
+                continue;
+            }
+            let Some(country) = countries.get(&slot) else {
+                continue;
+            };
+            areas.push(CountryArea {
+                tag: String::from_utf8_lossy(&country.tag).into_owned(),
+                // The game draws its stored name in its own language;
+                // the viewer rebuilds it in the reader's.
+                text: names.name(slot),
+                members,
+                faction: false,
+            });
+        }
+        areas.extend(faction_areas.into_values());
+        Ok(Self {
+            countries: areas,
+            warnings,
+            near: None,
         })
+    }
+
+    /// The hour's state areas: each state's provinces on the map, under the state's name. A
+    /// state whose name does not resolve carries none.
+    pub fn states(
+        map: &MapData,
+        frame: &DecodedFrame,
+        name: impl Fn(&replay::rows::StateRow) -> Result<String, String>,
+    ) -> io::Result<Self> {
+        let mut members: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+        for province in core::<tables::Provinces>(frame)? {
+            if province.state != 0 && map.definitions.contains_key(&province.id) {
+                members
+                    .entry(province.state)
+                    .or_default()
+                    .insert(province.id);
+            }
+        }
+        let countries = core::<tables::States>(frame)?
+            .iter()
+            .filter_map(|state| {
+                Some(CountryArea {
+                    tag: format!("state {}", state.id),
+                    text: name(state),
+                    members: members.remove(&state.id)?,
+                    faction: true,
+                })
+            })
+            .collect();
+        Ok(Self {
+            countries,
+            warnings: Vec::new(),
+            near: None,
+        })
+    }
+
+    /// These areas far out, and `near` close in.
+    pub fn with_near(self, near: NameAreas) -> Self {
+        Self {
+            near: Some(Box::new(near)),
+            ..self
+        }
     }
 }
 
@@ -387,7 +481,20 @@ pub fn place_areas(
     let mut unplaced: Vec<String> = Vec::new();
     let mut unnamed: Vec<String> = Vec::new();
     let generation = placed.map(PlacedAreas::begin);
-    for CountryArea { tag, text, members } in &areas.countries {
+    result.warnings.extend(areas.warnings.iter().cloned());
+    let mut unnamed_factions: Vec<String> = Vec::new();
+    for CountryArea {
+        tag,
+        text,
+        members,
+        faction,
+    } in &areas.countries
+    {
+        // A faction whose name does not resolve shows none.
+        if *faction && let Err(reason) = text {
+            unnamed_factions.push(format!("{tag}: {reason}"));
+            continue;
+        }
         // An unresolvable name shows the tag.
         let text = match text {
             Ok(text) => match text::unsupported_control(text) {
@@ -432,6 +539,13 @@ pub fn place_areas(
             if unnamed.len() > 8 { "; …" } else { "" }
         ));
     }
+    if !unnamed_factions.is_empty() {
+        result.warnings.push(format!(
+            "{} group names are not drawn ({})",
+            unnamed_factions.len(),
+            unnamed_factions.join("; ")
+        ));
+    }
     if !unplaced.is_empty() {
         unplaced.sort();
         result.warnings.push(format!(
@@ -440,6 +554,11 @@ pub fn place_areas(
             unplaced.iter().take(8).cloned().collect::<Vec<_>>().join(", "),
             if unplaced.len() > 8 { ", …" } else { "" }
         ));
+    }
+    if let Some(near) = &areas.near {
+        let near = place_areas(inputs, near, placed);
+        result.warnings.extend(near.warnings.iter().cloned());
+        result.near = Some(std::sync::Arc::new(near));
     }
     result
 }

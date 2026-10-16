@@ -98,6 +98,8 @@ pub struct Want {
     /// is still being built.
     pub playing: bool,
     pub perspective: perspective::Choice,
+    /// The view's map mode, which chooses the political fill's country channel.
+    pub map_mode: viewer_world::map::map_mode::MapMode,
     pub show_allied_plans: bool,
     /// The window's counter options and memory, which its hours are laid out with.
     pub counters: CounterView,
@@ -135,6 +137,7 @@ impl Want {
         // Their prepared snapshot is checked when installed; pointer motion
         // must not cancel simulation-hour builders or restart their epoch.
         self.perspective != next.perspective
+            || self.map_mode != next.map_mode
             || self.show_allied_plans != next.show_allied_plans
             || self.counters.settings != next.counters.settings
             || !Arc::ptr_eq(&self.counters.presentation, &next.counters.presentation)
@@ -1344,19 +1347,35 @@ impl Coordinator {
             let fill_borders = Fill(Arc::clone(&slots.borders));
             let near_regions = slots_of(&neighbours, |slots| &slots.political);
             let political_perspective = want.perspective.clone();
+            let map_mode = want.map_mode.clone();
             let near_borders = slots_of(&neighbours, |slots| &slots.borders);
+            // A scripted mode's colour borders carry on from the hour before, built before
+            // this one; without it (after a seek, or the first hour shown) they start empty.
+            let previous = self
+                .slots
+                .get(&(branch, hour - 1))
+                .map(|slots| Arc::clone(&slots.political));
             submit(
                 "political",
                 Box::new(move |view| {
                     Part::Political((|| {
                         let naval = view.naval_fill(&political_perspective)?;
-                        let key = FrameKey::new(view.frame)?.with_naval(&naval);
+                        let previous = previous.and_then(|slot| slot.wait());
+                        let colour = previous
+                            .as_ref()
+                            .and_then(|political| political.key.mode())
+                            .and_then(|mode| mode.colour.as_deref());
+                        let mode = view.map_mode_fill(&map_mode, &political_perspective, colour)?;
+                        let key = FrameKey::new(view.frame)?
+                            .with_naval(&naval)
+                            .with_mode(&mode);
                         let near = wait_all(near_regions);
                         let political = match near.iter().find(|near| near.key == key) {
                             Some(same) => Arc::clone(same),
                             None => {
-                                let layers =
-                                    political::build_with_naval(&view.map, view.frame, naval)?;
+                                let layers = political::build_with_naval(
+                                    &view.map, view.frame, naval, mode,
+                                )?;
                                 Arc::new(Political {
                                     id: next_id(),
                                     key,
@@ -1402,10 +1421,11 @@ impl Coordinator {
             );
         }
         let memos = Arc::clone(&self.memos);
+        let names_mode = want.map_mode.clone();
         submit(
             "names",
             Box::new(move |view| {
-                Part::Names(view.name_areas().and_then(|areas| {
+                Part::Names(view.name_areas(&names_mode).and_then(|areas| {
                     memos.names.get_or_insert_with(areas.clone(), || {
                         Ok(Arc::new(view.place_name_areas(&areas, &memos.placed)))
                     })

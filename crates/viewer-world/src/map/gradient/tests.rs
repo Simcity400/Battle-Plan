@@ -16,13 +16,51 @@ fn naval_coastal_attributes_wrap_before_unsigned_neighbor_division() {
     };
     let mut layer = Layer::new(LayerKind::Fixed(5.0), &[0, 1], &colors, &FieldDefines::TEST);
     layer.region_attributes = Some(&attributes);
+    layer.region_opacity = 17;
     let regions = Regions::build(&map, &layer).unwrap();
     let grid = BoundaryGrid::build(&map, &regions);
-    let (color, fx) = sample(&map, 17, &regions, &grid, 1, 1);
+    let (color, fx) = sample(&map, &regions, &grid, 1, 1);
     assert_eq!(color, [10, 20, 30, 255]);
     //255*8 wraps to248;128*8 wraps to0, before division by8.
     assert_eq!(fx, [31, 17, 0, 0]);
-    assert_eq!(sample(&map, 17, &regions, &grid, 2, 2).1, [255, 17, 0, 128]);
+    assert_eq!(sample(&map, &regions, &grid, 2, 2).1, [255, 17, 0, 128]);
+}
+
+#[test]
+fn a_map_mode_style_sets_each_regions_opacity_pulse_and_band() {
+    let mut ids = Vec::new();
+    split_map(&mut ids, 64, 32, 32);
+    let map = ProvinceMap {
+        width: 64,
+        height: 32,
+        ids: &ids,
+    };
+    let style = |key| match key {
+        1 => RegionStyle {
+            alpha: 38,
+            pulse: true,
+            fill: 1.5,
+            thickness: Some(12.0),
+        },
+        _ => RegionStyle::plain(200),
+    };
+    let mut layer = Layer::new(LayerKind::Country, &[0, 1, 2], &colors, &FieldDefines::TEST);
+    layer.region_style = Some(&style);
+    let regions = Regions::build(&map, &layer).unwrap();
+    let grid = BoundaryGrid::build(&map, &regions);
+    // Region 1's own opacity and pulse, region 2's opacity alone.
+    assert_eq!(sample(&map, &regions, &grid, 20, 16).1, [0, 38, 255, 0]);
+    assert_eq!(sample(&map, &regions, &grid, 50, 16).1, [0, 200, 0, 0]);
+    // The fixed thickness replaces the area rule, and the fill factor widens the band.
+    let plain = field_alpha(3.0, 12.0, FieldDefines::TEST.center);
+    assert_eq!(
+        sample(&map, &regions, &grid, 28, 16).0[3],
+        filled_alpha(plain, 1.5)
+    );
+    assert!(filled_alpha(plain, 1.5) > plain);
+    // Outline bytes from 239 keep their value.
+    assert_eq!(filled_alpha(240, 1.5), 240);
+    assert_eq!(filled_alpha(100, 0.5), 100 - (155.0 * 0.5) as u8);
 }
 
 /// Two regions split down the middle of a 64 x 32 map, both reaching the top and bottom edges.

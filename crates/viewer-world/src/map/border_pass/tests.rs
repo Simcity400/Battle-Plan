@@ -205,6 +205,7 @@ fn regions() -> Regions {
         country_colors: Default::default(),
         warnings: Vec::new(),
         strategic_attributes: Default::default(),
+        mode: None,
     }
 }
 

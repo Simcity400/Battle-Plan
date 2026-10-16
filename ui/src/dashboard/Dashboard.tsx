@@ -22,7 +22,7 @@ import type { LayoutLibrary } from './storage';
 import { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import '../widgets';
-import { MapViewsStore } from './geometry';
+import { CAMPAIGN_MAP_VIEW, campaignToggled, MapViewsStore, toggleMapSetting } from './geometry';
 import { useSourceRoles } from './sources';
 import { PlaybackCountryPicker, PlaybackStrip } from './controls';
 import ReplayLibraryMenu from './ReplayLibraryMenu';
@@ -74,6 +74,18 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
   const hasOpened = useRef(false);
   const [mapOptions, setMapOptions] = useState<MapOptions>({ country: null, fog: true });
+  // The campaign map's picker choices, sent back with its options so a restarted viewer keeps them.
+  const [campaignPicked, setCampaignPicked] = useState<Pick<MapOptions, 'mapMode' | 'mapModeSlots'>>({});
+  useEffect(() => {
+    let live = true;
+    const stops: (() => void)[] = [];
+    const keep = (stop: () => void) => { if (live) stops.push(stop); else stop(); };
+    void client.onMapOptions?.((event) => {
+      if (event.viewId === CAMPAIGN_MAP_VIEW) setCampaignPicked({ mapMode: event.options.mapMode ?? null, mapModeSlots: event.options.mapModeSlots ?? [] });
+    }).then(keep);
+    void client.onMapToggle?.((event) => campaignToggled(event, setMapOptions)).then(keep);
+    return () => { live = false; for (const stop of stops) stop(); };
+  }, [client]);
   const template = useMemo(() => {
     const merged = includeCampaigns(draftTemplate, campaigns);
     return { ...merged, roles: merged.roles.map((role) => ({ ...role, selectedTag: selectedCountries[role.id] ?? null })),
@@ -139,6 +151,11 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const roles = useSourceRoles(client);
   const clock = useMemo(() => new PlaybackController(), []);
   const maps = useMemo(() => new MapViewsStore(client, clock), [client, clock]);
+  useEffect(() => {
+    // The native picker's day/night and allied-plan toggles flip the widget's own settings.
+    maps.onToggle = (view, toggle) => { void toggleMapSetting(client, view, toggle).catch(() => undefined); };
+    return () => { maps.onToggle = null; };
+  }, [maps, client]);
   const sourceMap = useMemo(() => new Map(Object.entries(roles.bindings).flatMap(([roleId, binding]) => binding.source ? [[roleId, binding.source] as [string, DashboardSource]] : [])), [roles.bindings]);
   const tracks = useMemo(() => bindTracks(template, sourceMap), [template.tracks, template.roles, template.alignment, sourceMap]);
   const bounds = useMemo(() => clockBounds(tracks), [tracks]);
@@ -173,11 +190,11 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   useEffect(() => {
     if (!mapActive || !mapReady || mapSwitching || defaultLoading || !desktopAvailable) return;
     let current = true;
-    void mapAction({ kind: 'configure', options: { ...mapOptions, country: mapCountry } }).catch(cause => {
+    void mapAction({ kind: 'configure', options: { ...mapOptions, ...campaignPicked, country: mapCountry } }).catch(cause => {
       if (current) onMapError?.(errorMessage(cause));
     });
     return () => { current = false; };
-  }, [mapActive, mapReady, mapSwitching, defaultLoading, mapOptions, mapCountry, onMapError]);
+  }, [mapActive, mapReady, mapSwitching, defaultLoading, mapOptions, campaignPicked, mapCountry, onMapError]);
   // The camera mode and its overlay choice are the viewer's own: the control shows what it reports
   // and asks it to change.
   const chooseCameraMode = useCallback((mode: CameraMode) => {

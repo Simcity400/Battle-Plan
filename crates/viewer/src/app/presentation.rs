@@ -155,6 +155,7 @@ impl Viewer {
             behind,
             playing: self.playing,
             perspective: self.perspective.clone(),
+            map_mode: self.map_mode.clone(),
             show_allied_plans: self.graphics.show_allied_plans,
             counters: self.counter_view.clone(),
             view,
@@ -567,7 +568,7 @@ impl Viewer {
         }
         laps.lap("fog_upload");
         retired.push(self.placements.replace(names));
-        self.placements_at = Some((branch, hour));
+        self.placements_at = Some((branch, hour, self.map_mode.clone()));
         let counter_view = overlay.counter_view().clone();
         retired.push(self.prepared_overlay.replace(overlay));
         // The hours' nuclear impacts start their effects and their map events,

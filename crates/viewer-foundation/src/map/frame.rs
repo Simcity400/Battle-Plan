@@ -199,6 +199,18 @@ pub struct FrameConstants {
 }
 
 impl FrameConstants {
+    /// A map mode's camera-distance override and outline cutoff for each channel; `None` keeps
+    /// the content's strategic or country defines.
+    pub fn with_channels(mut self, channels: [Option<[f32; 2]>; 2]) -> Self {
+        for (index, channel) in channels.into_iter().enumerate() {
+            if let Some([override_distance, cutoff]) = channel {
+                self.gb_cam_dist_override_outline_cutoff[index] = override_distance;
+                self.gb_cam_dist_override_outline_cutoff[index + 2] = cutoff;
+            }
+        }
+        self
+    }
+
     /// Apply the snow/mud presentation fade to every wrapped and actor camera.
     pub fn with_snow_mud_fade(mut self, fade: f32) -> Self {
         self.fow_opacity_time_snow_mud_day_night[2] = fade;

@@ -30,6 +30,7 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu::{self, util::DeviceExt};
 
+use super::map_mode::{Draw, ModeLayer, POLITICAL, Source};
 use super::political::Regions;
 use {
     super::gradient::{self, GRID_CELL, Layer},
@@ -61,6 +62,17 @@ struct Region {
     alpha_count: u32,
     radius: u32,
     attributes: u32,
+    /// Channel-two green (the colour's alpha) and, at bit 8, the pulse.
+    fx: u32,
+    /// The fill factor's f32 bits.
+    fill: u32,
+}
+
+fn style_words(style: gradient::RegionStyle) -> (u32, u32) {
+    (
+        u32::from(style.alpha) | (u32::from(style.pulse) << 8),
+        style.fill.to_bits(),
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -267,6 +279,9 @@ impl Static {
         let naval =
             self.strategic
                 .layer_with(device, &naval_layer, Some(Arc::clone(&self.scratch)))?;
+        let mode = self
+            .strategic
+            .layer_with(device, &layer, Some(Arc::clone(&self.scratch)))?;
         let [width, height] = self.size;
         let textures = ["GradientBorderChannel1", "GradientBorderChannel2"].map(|label| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -302,6 +317,8 @@ impl Static {
             fill: Mutex::new(Fill {
                 gpu,
                 naval,
+                mode,
+                channels: POLITICAL,
                 shown: None,
             }),
         });
@@ -414,7 +431,8 @@ fn same_fill(a: &Regions, b: &Regions) -> bool {
     std::ptr::eq(a, b)
         || (a.country_of == b.country_of
             && a.country_colors == b.country_colors
-            && a.strategic_attributes == b.strategic_attributes)
+            && a.strategic_attributes == b.strategic_attributes
+            && a.mode == b.mode)
 }
 
 /// One displayed political fill: a country layer's compute state and the texture pair it fills.
@@ -424,10 +442,41 @@ pub struct State {
 }
 
 struct Fill {
+    /// The country layer: the political fill or a map mode's variant of it.
     gpu: PoliticalGpu,
     naval: PoliticalGpu,
+    /// A map mode's own layer, or nothing; it also stands for an empty channel.
+    mode: PoliticalGpu,
+    /// What each channel shows.
+    channels: [Source; 2],
     /// The tables the state was last updated to; `None` until its first update.
     shown: Option<Arc<Regions>>,
+}
+
+/// The fill's three layers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Held {
+    Naval,
+    Country,
+    Mode,
+}
+
+/// The layer each channel copies from. An empty channel takes the mode layer when the mode has
+/// no layer of its own, otherwise the country layer, which then holds nothing. A scripted mode's
+/// second layer takes the country layer's place, since it never shows beside the countries.
+fn holders(channels: [Source; 2]) -> [Held; 2] {
+    let empty = if channels.contains(&Source::Mode) {
+        Held::Country
+    } else {
+        Held::Mode
+    };
+    channels.map(|source| match source {
+        Source::Strategic => Held::Naval,
+        Source::Country => Held::Country,
+        Source::Mode => Held::Mode,
+        Source::Second => Held::Country,
+        Source::Empty => empty,
+    })
 }
 
 impl State {
@@ -447,7 +496,7 @@ impl State {
             })
             .sum();
         let fill = self.lock();
-        textures + fill.gpu.own_bytes() + fill.naval.own_bytes()
+        textures + fill.gpu.own_bytes() + fill.naval.own_bytes() + fill.mode.own_bytes()
     }
 }
 
@@ -527,7 +576,44 @@ impl View {
                 None => self.base.state(device, queue)?,
             };
             let mut fill = state.lock();
-            fill.gpu.update_regions(device, queue, regions)?;
+            let channels = regions
+                .mode
+                .as_ref()
+                .map_or(POLITICAL, |draw| draw.channels);
+            if fill.channels != channels {
+                // A layer moving between halves copies its whole field again.
+                fill.gpu.refill();
+                fill.naval.refill();
+                fill.mode.refill();
+                fill.channels = channels;
+            }
+            let held = holders(channels);
+            let empty = vec![0; fill.mode.mapping.len()];
+            let field = self.base.field;
+            let blank = |_| [0; 3];
+            let empty_layer = Layer::new(gradient::LayerKind::Country, &empty, &blank, &field);
+            match regions.mode.as_deref() {
+                Some(Draw {
+                    second: Some(second),
+                    ..
+                }) if channels.contains(&Source::Second) => {
+                    fill.gpu.update_mode(device, queue, second)?
+                }
+                _ if !channels.contains(&Source::Country) && held.contains(&Held::Country) => {
+                    fill.gpu.update(device, queue, &empty_layer)?
+                }
+                Some(Draw {
+                    country: Some(variant),
+                    ..
+                }) => fill.gpu.update_mode(device, queue, variant)?,
+                _ => fill.gpu.update_regions(device, queue, regions)?,
+            }
+            match regions.mode.as_ref().and_then(|draw| draw.layer.as_ref()) {
+                Some(layer) if channels.contains(&Source::Mode) => {
+                    fill.mode.update_mode(device, queue, layer)?
+                }
+                _ => fill.mode.update(device, queue, &empty_layer)?,
+            }
             let navy = |_| self.base.field.navy_neutral;
             let attributes = |id| {
                 regions
@@ -569,11 +655,29 @@ impl View {
         };
         let [first, second] = &state.textures;
         let mut fill = state.lock();
-        let naval = fill.naval.encode(encoder, [first, second], 0);
-        let country = fill
-            .gpu
-            .encode(encoder, [first, second], first.height() / 2);
-        naval || country
+        let held = holders(fill.channels);
+        let half = first.height() / 2;
+        let rows = |layer: Held| {
+            [0, half]
+                .into_iter()
+                .zip(held)
+                .filter_map(|(row, holder)| (holder == layer).then_some(row))
+                .collect::<Vec<_>>()
+        };
+        let fill = &mut *fill;
+        let mut dispatched = false;
+        for (layer, gpu) in [
+            (Held::Naval, &mut fill.naval),
+            (Held::Country, &mut fill.gpu),
+            (Held::Mode, &mut fill.mode),
+        ] {
+            let rows = rows(layer);
+            // A layer no channel shows keeps its update until one does.
+            if !rows.is_empty() {
+                dispatched |= gpu.encode_rows(encoder, [first, second], &rows);
+            }
+        }
+        dispatched
     }
 }
 
@@ -961,14 +1065,57 @@ impl PoliticalGpu {
         })
     }
 
+    /// A map mode's layer: its regions in their styles, at its thickness and constant gradient.
+    pub fn update_mode(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mode: &ModeLayer,
+    ) -> io::Result<()> {
+        let field = self.field;
+        let color = |key| {
+            mode.styles.get(&key).map_or([0, 0, 0], |style| {
+                [style.color[0], style.color[1], style.color[2]]
+            })
+        };
+        let style = |key| {
+            let style = mode.styles.get(&key);
+            gradient::RegionStyle {
+                alpha: style.map_or(0, |style| style.color[3]),
+                pulse: style.is_some_and(|style| style.pulse),
+                fill: style.map_or(1.0, |style| style.fill),
+                thickness: mode.thickness,
+            }
+        };
+        let attributes = |_| gradient::Attributes {
+            gradient: mode.gradient,
+            ..Default::default()
+        };
+        let mut layer = Layer::new(
+            gradient::LayerKind::Country,
+            &mode.region_of,
+            &color,
+            &field,
+        );
+        layer.region_style = Some(&style);
+        layer.region_attributes = Some(&attributes);
+        self.update(device, queue, &layer)
+    }
+
+    /// Makes the next update recompute and copy every cell, for a layer moving to another
+    /// texture half.
+    pub fn refill(&mut self) {
+        self.initialized = false;
+    }
+
     pub fn update_regions(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         regions: &Regions,
     ) -> io::Result<()> {
-        let color = |key| regions.country_color(key);
         let field = self.field;
+        let color = |key| regions.country_color(key);
         let layer = Layer::new(
             gradient::LayerKind::Country,
             &regions.country_of,
@@ -1006,7 +1153,10 @@ impl PoliticalGpu {
                 key == 0
                     || (self.regions[slot].color == rgb((layer.region_color)(key))
                         && self.regions[slot].attributes
-                            == layer.region_attributes.map_or(0, |read| read(key).packed()))
+                            == layer.region_attributes.map_or(0, |read| read(key).packed())
+                        && (self.regions[slot].fx, self.regions[slot].fill)
+                            == style_words(layer.style(key))
+                        && self.thickness[slot] == layer.thickness(key, self.areas[slot]).to_bits())
             })
         {
             self.dispatched_cells = 0;
@@ -1040,8 +1190,8 @@ impl PoliticalGpu {
             )));
         }
         let active_thickness: HashSet<u32> = area_of
-            .values()
-            .map(|&area| layer.kind.thickness(area, layer.field).to_bits())
+            .iter()
+            .map(|(&key, &area)| layer.thickness(key, area).to_bits())
             .collect();
         let reusable = self.alpha_free.len()
             + self
@@ -1137,15 +1287,18 @@ impl PoliticalGpu {
             if slot == 0 {
                 continue;
             }
-            let t = layer.kind.thickness(self.areas[slot], layer.field);
+            let t = layer.thickness(key, self.areas[slot]);
             let radius = search_radius(t, layer.field, self.params.width, self.params.height);
             let alpha_slot = self.alpha_keys[&t.to_bits()];
+            let (fx, fill) = style_words(layer.style(key));
             let region = Region {
                 color: rgb((layer.region_color)(key)),
                 alpha_offset: (alpha_slot * self.alpha_stride / 4) as u32,
                 alpha_count: self.alpha_stride as u32,
                 radius,
                 attributes: layer.region_attributes.map_or(0, |read| read(key).packed()),
+                fx,
+                fill,
             };
             if self.regions[slot] != region {
                 affected[slot] = true;
@@ -1318,6 +1471,22 @@ impl PoliticalGpu {
         true
     }
 
+    /// [`Self::encode`] copying into each of `rows`: one layer shown in both channels.
+    fn encode_rows(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        textures: [&wgpu::Texture; 2],
+        rows: &[u32],
+    ) -> bool {
+        if !self.dispatch(encoder) {
+            return false;
+        }
+        for &row in rows {
+            self.copy(encoder, textures, row, &self.copies);
+        }
+        true
+    }
+
     /// Run the pending update's passes into the output buffer; `false` when nothing was pending.
     fn dispatch(&mut self, encoder: &mut wgpu::CommandEncoder) -> bool {
         if !self.pending {
@@ -1444,8 +1613,10 @@ fn maximum_thickness(kind: gradient::LayerKind, field: &FieldDefines) -> f32 {
     match kind {
         gradient::LayerKind::Country => {
             let [thin, thick] = field.country_thickness;
-            // Bound the actual f32 interpolation, whose rounded endpoint can exceed `thick`.
+            // Bound the actual f32 interpolation, whose rounded endpoint can exceed `thick`, and
+            // every map mode's fixed rule for this channel.
             thin.max(thin + (thick - thin))
+                .max(field.mode_thickness_max)
         }
         gradient::LayerKind::Fixed(t) => t,
     }

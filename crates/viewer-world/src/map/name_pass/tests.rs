@@ -495,8 +495,135 @@ fn named_areas_change_with_control_and_nothing_else() {
     };
     let localisation = Localisation::default();
     let areas =
-        |controllers| NameAreas::read(&map, &localisation, &name_frame(controllers)).unwrap();
+        |controllers| NameAreas::read(&map, &localisation, &name_frame(controllers), None).unwrap();
     assert_eq!(areas([100, 100]), areas([100, 100]));
     // SOV takes province 2: both countries' areas change.
     assert_ne!(areas([100, 100]), areas([100, 101]));
+    // In the factions mode, GER and SOV in one faction form one area under its name; a
+    // country outside every faction keeps its own.
+    let both = GroupLabels {
+        groups: BTreeMap::from([
+            (0, (9, Ok("Axis".to_owned()))),
+            (1, (9, Ok("Axis".to_owned()))),
+        ]),
+        others_named: true,
+    };
+    let factions = NameAreas::read(
+        &map,
+        &localisation,
+        &name_frame([100, 101]),
+        Some(&Ok(both)),
+    )
+    .unwrap();
+    assert_eq!(factions.countries.len(), 1);
+    assert_eq!(factions.countries[0].text, Ok("Axis".to_owned()));
+    assert_eq!(factions.countries[0].members, BTreeSet::from([1, 2]));
+    let one = GroupLabels {
+        groups: BTreeMap::from([(1, (9, Ok("Axis".to_owned())))]),
+        others_named: true,
+    };
+    let mixed =
+        NameAreas::read(&map, &localisation, &name_frame([100, 101]), Some(&Ok(one))).unwrap();
+    assert_eq!(
+        mixed
+            .countries
+            .iter()
+            .map(|area| (area.tag.as_str(), area.faction))
+            .collect::<Vec<_>>(),
+        [("GER", false), ("group 9", true)]
+    );
+    // Group tables the recording lacks withhold the mode's names, saying why, rather than
+    // writing the countries'.
+    let refused = NameAreas::read(
+        &map,
+        &localisation,
+        &name_frame([100, 101]),
+        Some(&Err("no factions".to_owned())),
+    )
+    .unwrap();
+    assert!(refused.countries.is_empty());
+    assert_eq!(
+        refused.warnings,
+        ["The map mode's group names are refused: no factions"]
+    );
+    // In the players mode, a country no player holds carries no name.
+    let player = GroupLabels {
+        groups: BTreeMap::from([(1, (1, Ok("Player".to_owned())))]),
+        others_named: false,
+    };
+    let players = NameAreas::read(
+        &map,
+        &localisation,
+        &name_frame([100, 101]),
+        Some(&Ok(player)),
+    )
+    .unwrap();
+    assert_eq!(players.countries.len(), 1);
+    assert_eq!(players.countries[0].text, Ok("Player".to_owned()));
+    assert_eq!(players.countries[0].members, BTreeSet::from([2]));
+}
+
+#[test]
+fn state_areas_name_each_states_provinces_and_go_close_in() {
+    use replay::frame::TableView;
+    use replay::rows::{StateRow, TableId, TableRows};
+    let map = MapData {
+        width: 3,
+        height: 1,
+        province_ids: vec![1, 2, 3],
+        definitions: [1, 2, 3]
+            .map(|id| {
+                (
+                    id,
+                    installed_content::map::ProvinceDefinition {
+                        id,
+                        rgb: [0; 3],
+                        kind: installed_content::map::ProvinceKind::Land,
+                        continent: 0,
+                    },
+                )
+            })
+            .into(),
+        country_colors: Default::default(),
+    };
+    let mut frame = name_frame([100, 101]);
+    let mut provinces = frame.complete::<tables::Provinces>().unwrap().to_vec();
+    provinces[0].state = 7;
+    provinces[1].state = 8;
+    frame.tables[TableId::Provinces.index()] =
+        TableView::Complete(TableRows::Provinces(provinces.into())).into();
+    frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+        [7, 8, 9]
+            .map(|id| StateRow {
+                id,
+                ..Default::default()
+            })
+            .into(),
+    ))
+    .into();
+    let states = NameAreas::states(&map, &frame, |state| match state.id {
+        7 => Ok("Seven".to_owned()),
+        _ => Err("unnamed".to_owned()),
+    })
+    .unwrap();
+    // A state with no province on the map has no area.
+    let named: Vec<_> = states
+        .countries
+        .iter()
+        .map(|area| (area.tag.as_str(), area.text.clone(), area.members.clone()))
+        .collect();
+    assert_eq!(
+        named,
+        [
+            ("state 7", Ok("Seven".to_owned()), BTreeSet::from([1])),
+            ("state 8", Err("unnamed".to_owned()), BTreeSet::from([2])),
+        ]
+    );
+    // An unnamed state carries no name rather than a tag.
+    assert!(states.countries.iter().all(|area| area.faction));
+    let localisation = Localisation::default();
+    let far = NameAreas::read(&map, &localisation, &frame, None).unwrap();
+    let both = far.clone().with_near(states.clone());
+    assert_eq!(both.near.as_deref(), Some(&states));
+    assert_ne!(both, far);
 }

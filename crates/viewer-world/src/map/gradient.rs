@@ -72,6 +72,42 @@ impl LayerKind {
     }
 }
 
+/// A map mode's presentation of one region beyond its colour: the colour's alpha byte (channel
+/// two's green), whether it pulses (channel two's blue), the fill factor that widens or narrows the
+/// field's colour band, and a fixed thickness replacing the layer's rule.
+///
+/// The field byte of a region pixel, or its constant gradient, below 239 becomes
+/// `clamp(a - trunc((255 - a) * (1 - fill)), 0, 255)`; at 1.0 it is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RegionStyle {
+    pub alpha: u8,
+    pub pulse: bool,
+    pub fill: f32,
+    pub thickness: Option<f32>,
+}
+
+impl RegionStyle {
+    /// The political default: full alpha, no pulse, no fill change, the layer's thickness.
+    pub const fn plain(alpha: u8) -> Self {
+        Self {
+            alpha,
+            pulse: false,
+            fill: 1.0,
+            thickness: None,
+        }
+    }
+}
+
+/// The field byte after the region's fill factor.
+pub fn filled_alpha(alpha: u8, fill: f32) -> u8 {
+    if alpha >= 0xef {
+        return alpha;
+    }
+    let a = i32::from(alpha);
+    let band = ((255 - a) as f32 * (1.0 - fill)) as i32;
+    (a - band).clamp(0, 255) as u8
+}
+
 /// Native per-region FX bytes and optional constant gradient.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Attributes {
@@ -107,6 +143,8 @@ pub struct Layer<'a> {
     /// Channel-two green opacity per layer, defaulting to DEFAULT_REGION_OPACITY unless the content-
     /// selected map mode overrides it.
     pub region_opacity: u8,
+    /// A map mode's per-region style; `None` uses `region_opacity` and the layer's thickness.
+    pub region_style: Option<&'a dyn Fn(u32) -> RegionStyle>,
     /// Channel 1 colour outside a layer's regions: black for layer 2's sea and the configured navy
     /// colour for layer 1's land. Naval control/contested attributes remain independent of this colour.
     ///
@@ -128,8 +166,22 @@ impl<'a> Layer<'a> {
             region_color,
             region_attributes: None,
             region_opacity: DEFAULT_REGION_OPACITY,
+            region_style: None,
             no_region_color: [0, 0, 0],
         }
+    }
+
+    /// The style of one region key.
+    pub fn style(&self, key: u32) -> RegionStyle {
+        self.region_style
+            .map_or(RegionStyle::plain(self.region_opacity), |style| style(key))
+    }
+
+    /// The field thickness of a region of `area_pixels`.
+    pub fn thickness(&self, key: u32, area_pixels: u64) -> f32 {
+        self.region_style
+            .and_then(|style| style(key).thickness)
+            .unwrap_or_else(|| self.kind.thickness(area_pixels, self.field))
     }
 }
 
@@ -279,15 +331,7 @@ pub fn build_layer(map: &ProvinceMap, layer: &Layer) -> io::Result<LayerPlane> {
     channel2.resize(texels, [0; 4]);
     let regions = Regions::build(map, layer)?;
     let grid = BoundaryGrid::build(map, &regions);
-    fill_plane(
-        map,
-        layer.region_opacity,
-        &regions,
-        &grid,
-        width,
-        &mut channel1,
-        &mut channel2,
-    );
+    fill_plane(map, &regions, &grid, width, &mut channel1, &mut channel2);
     Ok(LayerPlane {
         width,
         rows,
@@ -355,6 +399,8 @@ struct Regions {
     /// Map colour per dense index; entry 0 is the unused "no region" slot.
     color: Vec<[u8; 3]>,
     attributes: Vec<Attributes>,
+    /// Map-mode style per dense index.
+    style: Vec<RegionStyle>,
     /// Field thickness `T` per dense index.
     thickness: Vec<f32>,
     field: FieldDefines,
@@ -404,10 +450,12 @@ impl Regions {
                 }
             })
             .collect();
-        let thickness = area
+        let thickness = keys
             .iter()
-            .map(|&pixels| layer.kind.thickness(pixels, layer.field))
+            .zip(&area)
+            .map(|(&key, &pixels)| layer.thickness(key, pixels))
             .collect();
+        let style = keys.iter().map(|&key| layer.style(key)).collect();
         Ok(Self {
             index,
             color,
@@ -423,6 +471,7 @@ impl Regions {
                     }
                 })
                 .collect(),
+            style,
             thickness,
             field: *layer.field,
         })
@@ -655,7 +704,6 @@ fn is_boundary(map: &ProvinceMap, regions: &Regions, width: usize, x: u32, y: u3
 #[cfg(test)]
 fn fill_plane(
     map: &ProvinceMap,
-    opacity: u8,
     regions: &Regions,
     grid: &BoundaryGrid,
     plane_width: u32,
@@ -677,16 +725,7 @@ fn fill_plane(
         {
             let origin = (index * band) as u32;
             scope.spawn(move || {
-                fill_band(
-                    map,
-                    opacity,
-                    regions,
-                    grid,
-                    plane_width,
-                    origin,
-                    first,
-                    second,
-                );
+                fill_band(map, regions, grid, plane_width, origin, first, second);
             });
         }
     });
@@ -696,7 +735,6 @@ fn fill_plane(
 #[cfg(test)]
 fn fill_band(
     map: &ProvinceMap,
-    region_opacity: u8,
     regions: &Regions,
     grid: &BoundaryGrid,
     plane_width: u32,
@@ -722,7 +760,7 @@ fn fill_band(
                 for dy in 0..DIVISOR {
                     let y = plane_row * DIVISOR + dy;
                     let x = column * DIVISOR + dx;
-                    let (texel, covered) = sample(map, region_opacity, regions, grid, x, y);
+                    let (texel, covered) = sample(map, regions, grid, x, y);
                     for (total, channel) in vertical.iter_mut().zip(texel) {
                         *total += u32::from(channel);
                     }
@@ -752,7 +790,6 @@ fn fill_band(
 #[cfg(test)]
 fn sample(
     map: &ProvinceMap,
-    opacity: u8,
     regions: &Regions,
     grid: &BoundaryGrid,
     x: u32,
@@ -770,6 +807,8 @@ fn sample(
         // preventing dark fringes without creating country interior on water.
         let mut sum = [0_u32; 3];
         let mut fx = [0_u8; 2];
+        let mut opacity = 0_u32;
+        let mut pulse = 0_u32;
         let mut gradient = 0_u32;
         let mut has_gradient = false;
         let mut count = 0;
@@ -789,6 +828,9 @@ fn sample(
                         *total += u32::from(channel);
                     }
                     let attr = regions.attributes[neighbour as usize];
+                    let style = regions.style[neighbour as usize];
+                    opacity += u32::from(style.alpha);
+                    pulse += if style.pulse { 255 } else { 0 };
                     // Add these as bytes before unsigned division.
                     fx[0] = fx[0].wrapping_add(attr.control);
                     fx[1] = fx[1].wrapping_add(attr.contested);
@@ -816,8 +858,8 @@ fn sample(
                 ],
                 [
                     (u32::from(fx[0]) / count) as u8,
-                    opacity,
-                    0,
+                    (opacity / count) as u8,
+                    (pulse / count) as u8,
                     (u32::from(fx[1]) / count) as u8,
                 ],
             );
@@ -835,9 +877,20 @@ fn sample(
     };
     let [red, green, blue] = regions.color[region as usize];
     let attr = regions.attributes[region as usize];
+    let style = regions.style[region as usize];
     (
-        [red, green, blue, attr.gradient.unwrap_or(alpha)],
-        [attr.control, opacity, 0, attr.contested],
+        [
+            red,
+            green,
+            blue,
+            filled_alpha(attr.gradient.unwrap_or(alpha), style.fill),
+        ],
+        [
+            attr.control,
+            style.alpha,
+            if style.pulse { 255 } else { 0 },
+            attr.contested,
+        ],
     )
 }
 

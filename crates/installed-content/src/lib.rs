@@ -57,6 +57,7 @@ pub use installed_content_core::script_constants;
 pub use installed_content_core::script_files;
 pub use installed_content_core::scripted_effects;
 pub use installed_content_core::scripted_keys;
+pub use installed_content_core::scripted_map_modes;
 pub use installed_content_core::scripted_triggers;
 pub use installed_content_core::special_projects;
 pub use installed_content_core::static_modifiers;

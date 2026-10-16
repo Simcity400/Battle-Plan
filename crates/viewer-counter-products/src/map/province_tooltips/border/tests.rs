@@ -47,6 +47,7 @@ fn fixture() -> (super::super::Content, DecodedFrame, BTreeMap<u32, u32>) {
             victory: 80_000,
         }),
         air_log_timeout: Err("unused".into()),
+        occupation: Err("unused".into()),
     };
     let links = [(11, 1), (111, 1), (22, 2), (222, 2), (33, 3), (44, 4)]
         .into_iter()

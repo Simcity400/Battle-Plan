@@ -15,6 +15,7 @@ pub mod map {
     pub mod gradient;
     pub mod labels;
     pub mod map_buildings;
+    pub mod map_mode;
     pub mod mapframe;
     pub mod mesh_budget;
     pub mod mesh_effect;

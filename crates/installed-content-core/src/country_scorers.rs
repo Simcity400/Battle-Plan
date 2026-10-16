@@ -149,7 +149,20 @@ impl Database {
 
 fn entry(item: &Item) -> Entry {
     let mut out = Entry::default();
-    for field in item.value.items().unwrap_or_default() {
+    read_fields(item.value.items().unwrap_or_default(), &mut out);
+    out
+}
+
+/// A `targets` block's fields as targeted decisions read them, for other script objects that
+/// select targets the same way (scripted map modes).
+pub fn script_targets(fields: &[Item]) -> ScriptTargets {
+    let mut out = Entry::default();
+    read_fields(fields, &mut out);
+    out.targets
+}
+
+fn read_fields(fields: &[Item], out: &mut Entry) {
+    for field in fields {
         let scalar = || field.value.scalar().unwrap_or_default().to_vec();
         match field.keyword().map(|key| key.folded()).as_deref() {
             Some(b"target_array") => out.targets.arrays.push(scalar()),
@@ -190,7 +203,6 @@ fn entry(item: &Item) -> Entry {
             _ => {}
         }
     }
-    out
 }
 
 pub fn read(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Database> {

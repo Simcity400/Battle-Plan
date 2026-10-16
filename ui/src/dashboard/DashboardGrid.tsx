@@ -11,6 +11,7 @@ import { createWidget, GRID_COLUMNS, widgetAtDefault } from './model';
 import { resolveWidgetCampaign } from './campaigns';
 import { recordingDisplayName, useRecordingNames } from './recordingNames';
 import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './model';
+import { flipFog } from './mapPicker';
 import { widgetDefinition } from './definitions';
 import type { WidgetRuntime } from './definitions';
 import { OptionDraft } from './optionDraft';
@@ -120,6 +121,8 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
     return () => { observer.disconnect(); cancel(); };
   }, [slots]);
   const [mapOptions, setMapOptions] = useState<MapOptions>({ country: null, fog: true });
+  // The native picker's fog click flips this widget's switch, as its control does.
+  useEffect(() => runtime.maps.onFog(widget.id, () => setMapOptions(flipFog)), [runtime.maps, widget.id]);
   const definition = widgetDefinition(widget.kind);
   const optionDraft = useRef(new OptionDraft(widget.options));
   optionDraft.current.sync(widget.options);
