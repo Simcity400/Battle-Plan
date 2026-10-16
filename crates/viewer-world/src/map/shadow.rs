@@ -83,7 +83,11 @@ pub fn light_direction(camera: Camera, frame: &FrameConstants) -> [f32; 3] {
     let eye = camera.eye();
     let look = camera.look_direction();
     let t = (eye[1] / look[1]).abs();
-    let ground = [eye[0] + t * look[0], 0.0, eye[2] + t * look[2]];
+    let ground = match camera.free() {
+        None => [eye[0] + t * look[0], 0.0, eye[2] + t * look[2]],
+        // A free eye can look at the sky; its shadows are the ground around it.
+        Some(_) => [eye[0], 0.0, eye[2]],
+    };
     let sun = frame.virtual_sun_pos;
     let moon = frame.virtual_moon_pos;
     let light = if distance2(eye, [moon[0], moon[1], moon[2]])
@@ -128,7 +132,21 @@ pub fn caster_rect(visible: [f32; 4], light: [f32; 3]) -> [f32; 4] {
 /// a snap boundary.
 ///
 /// `None` when the camera footprint is nonfinite.
+///
+/// A free eye's box is fitted the same way around the part of its view volume within
+/// [`free_shadow_range`] that the terrain occupies, so it covers the receivers near the eye
+/// whatever direction the eye looks in.
 pub fn light_box(camera: Camera, viewport: [u32; 2], light: [f32; 3]) -> Option<LightBox> {
+    if camera.free().is_some() {
+        let points = free_receivers(camera, viewport);
+        if points.is_empty() {
+            return None;
+        }
+        let count = points.len() as f32;
+        let middle: [f32; 3] =
+            std::array::from_fn(|axis| points.iter().map(|point| point[axis]).sum::<f32>() / count);
+        return Some(light_box_from_points(&points, middle, light));
+    }
     let points = [
         [-1.0, 1.0],
         [1.0, 1.0],
@@ -160,6 +178,74 @@ fn water_plane_point(camera: Camera, viewport: [u32; 2], ndc: [f32; 2]) -> [f32;
         WATER_HEIGHT,
         ray[2] * distance + eye[2],
     ]
+}
+
+/// How far from a free eye its shadows reach: the content's `DRAW_SHADOWS_CUTOFF`, the camera
+/// height below which the game's own camera draws them.
+pub fn free_shadow_range(camera: &Camera) -> f32 {
+    camera.defines.shadows[0].min(camera.lens().far)
+}
+
+/// The corners of the part of a free eye's view volume within [`free_shadow_range`] that the
+/// terrain occupies.
+fn free_receivers(camera: Camera, viewport: [u32; 2]) -> Vec<[f32; 3]> {
+    camera.reach_points(
+        viewport,
+        free_shadow_range(&camera),
+        [0.0, viewer_foundation::map::camera::frustum::TERRAIN_TOP],
+    )
+}
+
+/// The ground rectangle whose receivers the shadow map covers: the visible ground for the game's
+/// camera, and the receivers within [`free_shadow_range`] for a free eye.
+pub fn receiver_rect(
+    camera: Camera,
+    viewport: [u32; 2],
+    visible: Option<[f32; 4]>,
+) -> Option<[f32; 4]> {
+    if camera.free().is_none() {
+        return visible;
+    }
+    viewer_foundation::map::camera::frustum::bounds(&free_receivers(camera, viewport))
+}
+
+/// [`light_box_from_footprint`] over any number of receiver points.
+fn light_box_from_points(points: &[[f32; 3]], middle: [f32; 3], light: [f32; 3]) -> LightBox {
+    let centre = [snap10(middle[0]), WATER_HEIGHT, snap10(middle[2])];
+    let fit = normalize([light[0], 0.0, light[2]]);
+    let back = normalize(light).map(|value| -value);
+    let mut distance = f32::MIN;
+    for point in points {
+        distance = native_max(
+            dot(fit.map(|value| -value), subtract(*point, centre)),
+            distance,
+        );
+    }
+    distance += LIGHT_BOX_BACKOFF;
+    let eye: [f32; 3] = std::array::from_fn(|axis| centre[axis] + back[axis] * distance);
+    let raw_forward = subtract(centre, eye);
+    let raw_right = cross([0.0, 1.0, 0.0], raw_forward);
+    let raw_up = cross(raw_forward, raw_right);
+    let basis = [raw_right, raw_up, raw_forward].map(normalize);
+    let translation = basis.map(|axis| -dot(axis, eye));
+    let mut min = [f32::MAX; 3];
+    let mut max = [f32::MIN; 3];
+    for point in points {
+        for axis in 0..3 {
+            let value = point[1] * basis[axis][1]
+                + point[0] * basis[axis][0]
+                + point[2] * basis[axis][2]
+                + translation[axis];
+            min[axis] = native_min(value, min[axis]);
+            max[axis] = native_max(value, max[axis]);
+        }
+    }
+    LightBox {
+        min: min.map(|value| snap10(value - LIGHT_BOX_PAD)),
+        max: max.map(|value| snap10(value + LIGHT_BOX_PAD)),
+        basis,
+        eye,
+    }
 }
 
 fn light_box_from_footprint(corners: [[f32; 3]; 4], middle: [f32; 3], light: [f32; 3]) -> LightBox {
@@ -692,6 +778,7 @@ mod tests {
             height,
             map: MapSize::TEST,
             defines: MapDefines::test(),
+            pose: viewer_foundation::map::camera::Pose::Map,
         }
     }
 
@@ -704,6 +791,7 @@ mod tests {
             height: 163.934,
             map: MapSize::TEST,
             defines: MapDefines::test(),
+            pose: viewer_foundation::map::camera::Pose::Map,
         };
         let frame =
             FrameConstants::try_new(camera, VIEWPORT, DayNight::at_hour(60828490), 0.0, false)
@@ -760,6 +848,54 @@ mod tests {
         }
     }
 
+    /// A free eye looking at the horizon has no water-plane footprint; its box covers the ground
+    /// ahead within the shadow cutoff instead, and nothing like the whole view to the horizon.
+    #[test]
+    fn a_free_eye_fits_its_box_to_the_receivers_near_it() {
+        use viewer_foundation::map::camera::{Free, Lens, Pose};
+        let (reference, frame) = reference();
+        let camera = Camera {
+            center: [3000.0, 1500.0],
+            height: 30.0,
+            pose: Pose::Free(Free::new(
+                0.3,
+                -0.1,
+                Lens {
+                    near: 1.0,
+                    far: 20_000.0,
+                    ..Lens::MAP
+                },
+            )),
+            ..reference
+        };
+        let light = light_direction(camera, &frame);
+        let fitted = light_box(camera, VIEWPORT, light).expect("ground ahead");
+        let matrix = fitted.texture_matrix();
+        let range = free_shadow_range(&camera);
+        assert_eq!(range, MapDefines::test().shadows[0]);
+        let forward = camera.look_direction();
+        let level = [forward[0], 0.0, forward[2]];
+        let norm = (level[0] * level[0] + level[2] * level[2]).sqrt();
+        for distance in [5.0, range * 0.5, range * 0.9] {
+            let ground = [
+                3000.0 + level[0] / norm * distance,
+                WATER_HEIGHT,
+                1500.0 + level[2] / norm * distance,
+            ];
+            let p = transform(matrix, ground);
+            for value in p.into_iter().take(3) {
+                assert!((0.0..=1.0).contains(&value), "{p:?} at {distance}");
+            }
+        }
+        let span = [0, 1].map(|axis| fitted.max[axis] - fitted.min[axis]);
+        assert!(span.iter().all(|side| *side < 3.0 * range), "{span:?}");
+        // The receivers lie within the cutoff's depth: inside the frustum corners at that depth.
+        let rect = receiver_rect(camera, VIEWPORT, None).expect("receivers");
+        let [x0, z0, x1, z1] = rect;
+        assert!(x0 >= 3000.0 - 1.5 * range && x1 <= 3000.0 + 1.5 * range, "{rect:?}");
+        assert!(z0 >= 1500.0 - 1.0 && z1 <= 1500.0 + 1.5 * range, "{rect:?}");
+    }
+
     /// At the reference hour the virtual sun is south of the camera and east of
     /// it, so the light travels north-north-west and the shadows lie that way.
     ///
@@ -813,6 +949,7 @@ mod tests {
             height: 163.934,
             map: MapSize::TEST,
             defines: MapDefines::test(),
+            pose: viewer_foundation::map::camera::Pose::Map,
         };
         let at = |hour| {
             light_direction(

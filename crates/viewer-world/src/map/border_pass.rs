@@ -1072,5 +1072,25 @@ pub fn wrap_offsets(visible: Option<[f32; 4]>, map_width: f32) -> Vec<f32> {
     offsets
 }
 
+/// The world-wrap copies a free eye's reach overlaps, as [`wrap_offsets`] orders them: its own copy
+/// first, then nearer copies before farther ones, west before east. The eye can stand on any copy,
+/// so the offsets are whole map widths from the first copy rather than from the eye's.
+pub fn free_wrap_offsets(reach: Option<[f32; 4]>, map_width: f32) -> Vec<f32> {
+    let Some([x0, _, x1, _]) = reach else {
+        return vec![0.0];
+    };
+    if !(map_width > 0.0 && x0.is_finite() && x1.is_finite()) {
+        return vec![0.0];
+    }
+    let first = (x0 / map_width).floor() as i32;
+    let last = ((x1 / map_width).ceil() as i32 - 1).max(first);
+    let reach = first.unsigned_abs().max(last.unsigned_abs()) as i32;
+    std::iter::once(0)
+        .chain((1..=reach).flat_map(|distance| [-distance, distance]))
+        .filter(|copy| *copy == 0 || (first..=last).contains(copy))
+        .map(|copy| copy as f32 * map_width)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests;

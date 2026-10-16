@@ -429,3 +429,24 @@ fn the_wrap_copies_are_the_ones_the_view_reaches() {
         [0.0, -5632.0, 5632.0]
     );
 }
+
+/// A free eye's reach can run several map widths: every copy it overlaps draws, its own first,
+/// nearer copies before farther ones and west before east, matching the game camera's order.
+#[test]
+fn a_free_reach_takes_every_copy_it_overlaps() {
+    let width = 5632.0;
+    assert_eq!(free_wrap_offsets(None, width), [0.0]);
+    assert_eq!(
+        free_wrap_offsets(Some([-100.0, 0.0, 5700.0, 100.0]), width),
+        wrap_offsets(Some([-100.0, 0.0, 5700.0, 100.0]), width)
+    );
+    assert_eq!(
+        free_wrap_offsets(Some([-12_000.0, 0.0, 15_000.0, 100.0]), width),
+        [0.0, -width, width, -2.0 * width, 2.0 * width, -3.0 * width]
+    );
+    // An eye on a later copy still lists the first copy and the ones it sees.
+    assert_eq!(
+        free_wrap_offsets(Some([6000.0, 0.0, 12_000.0, 100.0]), width),
+        [0.0, width, 2.0 * width]
+    );
+}

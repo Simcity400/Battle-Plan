@@ -32,8 +32,55 @@ impl Grid {
     }
 }
 
-// Allocate 65*65 vertices and 64*64*6 indices per block.
-const SIDE: u32 = 64;
+/// What one frame's terrain draws.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Cover {
+    /// The approved uniform grid, cut into blocks for every wrap view; the game's camera draws it.
+    Uniform(Grid),
+    /// Blocks chosen for a free eye, each on its own map copy, with the edges that meet a coarser
+    /// neighbour snapped to it ([`super::terrain::blocks`]).
+    Blocks(Vec<Block>),
+    /// A free eye over a map the shader's blocks cannot tile, refused by name.
+    Refused(&'static str),
+}
+
+impl Cover {
+    /// The uniform grid, or no grid for a free eye's blocks.
+    pub fn grid(&self) -> Grid {
+        match self {
+            Self::Uniform(grid) => *grid,
+            Self::Blocks(_) | Self::Refused(_) => Grid {
+                origin: [0.0, 0.0],
+                step: 1.0,
+                counts: [0, 0],
+            },
+        }
+    }
+
+    /// Quads the cover draws, before clipping to the map.
+    pub fn quads(&self) -> u64 {
+        match self {
+            Self::Uniform(grid) => u64::from(grid.quads()),
+            Self::Blocks(blocks) => blocks.len() as u64 * u64::from(SIDE * SIDE),
+            Self::Refused(_) => 0,
+        }
+    }
+}
+
+/// One terrain block a free eye draws: 64 by 64 cells at `step` from `origin` in map pixels (cut
+/// at the map's edges), drawn `offset` world units from the map's first copy. `snap` lists its
+/// south, north, west and east edges in the order of the content shader's snap switches; a set
+/// edge meets a neighbour of twice the step, and its odd vertices move onto that neighbour's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Block {
+    pub origin: [u32; 2],
+    pub step: u32,
+    pub offset: f32,
+    pub snap: [bool; 4],
+}
+
+/// Cells along a block's side: 65*65 vertices and 64*64*6 indices per block.
+pub const SIDE: u32 = 64;
 fn refuse(reason: impl Into<String>) -> io::Error {
     io::Error::other(format!(
         "Map shader terrain: 1 refused pass: {}",
@@ -137,6 +184,27 @@ fn validate_grid(grid: Grid, map: [u32; 2]) -> io::Result<()> {
     }
     Ok(())
 }
+/// A free eye's block must start on its own step's block grid inside the map, with a step that
+/// divides the map.
+fn validate_block(patch: Patch, map: [u32; 2]) -> io::Result<()> {
+    let step = patch.step;
+    if step == 0
+        || !step.is_power_of_two()
+        || map.iter().any(|n| !n.is_multiple_of(step))
+        || patch
+            .origin
+            .iter()
+            .any(|origin| !origin.is_multiple_of(SIDE * step))
+        || patch.origin[0] >= map[0]
+        || patch.origin[1] >= map[1]
+    {
+        return Err(refuse(
+            "a terrain block is not on its step's block grid inside the map",
+        ));
+    }
+    Ok(())
+}
+
 /// Select uniform blocks over the approved camera grid, separately for each wrap.
 fn patches(grid: Grid, map: [u32; 2], offset: f32) -> io::Result<Vec<Patch>> {
     if grid.quads() == 0 {
@@ -165,8 +233,9 @@ fn patches(grid: Grid, map: [u32; 2], offset: f32) -> io::Result<Vec<Patch>> {
     }
     Ok(result)
 }
-fn constants(patch: Patch, matrix: [[f32; 4]; 4]) -> Vec<u8> {
-    // All 112 bytes are initialized to zero. Uniform LOD has no snaps.
+fn constants(patch: Patch, matrix: [[f32; 4]; 4], snap: [bool; 4]) -> Vec<u8> {
+    // All 112 bytes are initialized to zero. Uniform LOD has no snaps; a free eye's blocks set
+    // the snap switch of each edge that meets a coarser block.
     let mut data = vec![0; 112];
     data[..64].copy_from_slice(bytemuck::bytes_of(&matrix));
     for (offset, value) in [
@@ -178,8 +247,17 @@ fn constants(patch: Patch, matrix: [[f32; 4]; 4]) -> Vec<u8> {
     ] {
         data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
+    for (edge, snapped) in snap.into_iter().enumerate() {
+        if snapped {
+            let offset = SNAP_SWITCHES + 4 * edge;
+            data[offset..offset + 4].copy_from_slice(&1.0f32.to_le_bytes());
+        }
+    }
     data
 }
+
+/// The byte offset of the four edge snap switches in the block constants.
+const SNAP_SWITCHES: usize = 80;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
     Receiver,
@@ -216,7 +294,7 @@ pub struct Inputs<'a> {
     pub retained: Option<&'a RefCell<super::shader_scene::State>>,
     pub frames: &'a [&'a [u8]],
     pub offsets: &'a [f32],
-    pub grid: Grid,
+    pub cover: &'a Cover,
     pub matrix: [[f32; 4]; 4],
     pub light_grid: [f32; 4],
     pub textures: [&'a wgpu::TextureView; 16],
@@ -361,13 +439,39 @@ impl Terrain {
     pub fn validate_grid(&self, grid: Grid) -> io::Result<()> {
         validate_grid(grid, self.map)
     }
+
+    /// The cover's blocks for one wrap view: the uniform grid's for that offset, or the free
+    /// eye's blocks standing on that copy.
+    fn view_blocks(&self, cover: &Cover, offset: f32) -> io::Result<Vec<(Patch, [bool; 4])>> {
+        match cover {
+            Cover::Uniform(grid) => Ok(patches(*grid, self.map, offset)?
+                .into_iter()
+                .map(|patch| (patch, [false; 4]))
+                .collect()),
+            Cover::Blocks(blocks) => blocks
+                .iter()
+                .filter(|block| block.offset == offset)
+                .map(|block| {
+                    let patch = Patch {
+                        origin: block.origin,
+                        step: block.step,
+                    };
+                    validate_block(patch, self.map)?;
+                    Ok((patch, block.snap))
+                })
+                .collect(),
+            Cover::Refused(reason) => Err(refuse(*reason)),
+        }
+    }
     pub fn prepare(
         &mut self,
         arena: &gpu::Arena,
         mode: Mode,
         inputs: Inputs<'_>,
     ) -> io::Result<Prepared> {
-        self.validate_grid(inputs.grid)?;
+        if let Cover::Uniform(grid) = inputs.cover {
+            self.validate_grid(*grid)?;
+        }
         let device = arena.device();
         let pipeline = self.pipeline(device, mode)?;
         let textures = inputs
@@ -382,7 +486,7 @@ impl Terrain {
             for (value, axis) in matrix[3].iter_mut().zip(inputs.matrix[0]) {
                 *value += axis * offset;
             }
-            for patch in patches(inputs.grid, self.map, *offset)? {
+            for (patch, snap) in self.view_blocks(inputs.cover, *offset)? {
                 self.geometry.entry(patch).or_insert_with(|| {
                     let cells = std::array::from_fn(|axis| {
                         ((self.map[axis] - patch.origin[axis]) / patch.step).min(SIDE)
@@ -405,7 +509,7 @@ impl Terrain {
                         count: indices.len() as u32,
                     }
                 });
-                let b1 = constants(patch, matrix);
+                let b1 = constants(patch, matrix, snap);
                 let mut buffers = BTreeMap::from([
                     (binding(0, Stage::Vertex), frame.to_vec()),
                     (binding(0, Stage::Pixel), frame.to_vec()),
@@ -523,11 +627,38 @@ mod tests {
             origin: [64, 128],
             step: 4,
         };
-        let data = constants(p, [[0.; 4]; 4]);
+        let data = constants(p, [[0.; 4]; 4], [false; 4]);
         let f: &[f32] = bytemuck::cast_slice(&data);
         assert_eq!(
             &f[16..],
             &[64., 128., 4., 0., 0., 0., 0., 0., 0., 0.1, 4., 0.]
         );
+    }
+
+    /// A free eye's block writes each snapped edge's switch, in the shader's edge order, and
+    /// nothing else differs from the uniform grid's constants.
+    #[test]
+    fn snapped_edges_set_their_switches() {
+        let p = Patch {
+            origin: [64, 128],
+            step: 4,
+        };
+        let data = constants(p, [[0.; 4]; 4], [true, false, false, true]);
+        let f: &[f32] = bytemuck::cast_slice(&data);
+        assert_eq!(
+            &f[16..],
+            &[64., 128., 4., 0., 1., 0., 0., 1., 0., 0.1, 4., 0.]
+        );
+    }
+
+    #[test]
+    fn free_blocks_must_lie_on_their_step_grid_inside_the_map() {
+        let map = [256, 128];
+        let block = |origin, step| Patch { origin, step };
+        assert!(validate_block(block([128, 0], 2), map).is_ok());
+        assert!(validate_block(block([64, 0], 2), map).is_err());
+        assert!(validate_block(block([256, 0], 1), map).is_err());
+        assert!(validate_block(block([0, 0], 3), map).is_err());
+        assert!(validate_block(block([0, 0], 256), map).is_err());
     }
 }

@@ -74,6 +74,44 @@ impl HeightField<'_> {
         self.native_height(x + 0.5, z + 0.5)
     }
 
+    /// The height of the surface the terrain pass draws at world `(x, z)`, or the water plane where
+    /// that is higher: one vertex per map pixel at its height byte, each cell split along the
+    /// diagonal the terrain's index pattern chooses (from its south-west corner where the cell's
+    /// column and row sum to an even number, else from its south-east corner). `x` wraps with the
+    /// map and `z` clamps to it. A walker or a camera standing on the drawn ground reads this.
+    pub fn surface_height(&self, x: f32, z: f32) -> f32 {
+        if self.width == 0
+            || self.height == 0
+            || self.values.len() < (self.width * self.height) as usize
+        {
+            return WATER_HEIGHT;
+        }
+        let z = z.clamp(0.0, (self.height - 1) as f32);
+        let (column, bottom) = (x.floor(), z.floor());
+        let (fx, fz) = (x - column, z - bottom);
+        let column = column as i64;
+        let bottom = bottom as i64;
+        let sample = |dx: i64, dz: i64| {
+            let column = (column + dx).rem_euclid(i64::from(self.width)) as usize;
+            let bottom = (bottom + dz).clamp(0, i64::from(self.height) - 1) as usize;
+            let row = self.height as usize - 1 - bottom;
+            f32::from(self.values[row * self.width as usize + column]) * HEIGHT_SCALE
+        };
+        let [a, b, c, d] = [sample(0, 0), sample(1, 0), sample(0, 1), sample(1, 1)];
+        let height = if (column + bottom).rem_euclid(2) == 0 {
+            if fx >= fz {
+                a + (b - a) * fx + (d - b) * fz
+            } else {
+                a + (d - c) * fx + (c - a) * fz
+            }
+        } else if fx + fz <= 1.0 {
+            a + (b - a) * fx + (c - a) * fz
+        } else {
+            d + (c - d) * (1.0 - fx) + (b - d) * (1.0 - fz)
+        };
+        height.max(WATER_HEIGHT)
+    }
+
     /// Bilinear bottom-up height sampling with a half-pixel shift, clamped indices, .1 scaling and a
     /// sea floor. Movement routes supply spline x/z coordinates.
     pub fn native_height(&self, x: f32, z: f32) -> f32 {

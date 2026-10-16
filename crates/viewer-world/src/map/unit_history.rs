@@ -1164,6 +1164,7 @@ pub mod tests {
         let camera = Placement {
             center: [0.0, 0.0],
             height: 50.0,
+            pose: viewer_foundation::map::camera::Pose::Map,
         }
         .on(MapSize::TEST, MapDefines::test());
         let full = h.update(camera, [1024, 768], 120.0, GATES);

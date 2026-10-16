@@ -687,7 +687,7 @@ pub struct TreeFrame<'a> {
     /// World x translations of the wrap copies to submit.
     pub offsets: &'a [f32],
     /// All tree passes use the camera's expanded, outside-positive sides.
-    pub planes: [[f32; 4]; 4],
+    pub planes: viewer_foundation::map::province_admission::Planes,
 }
 
 /// The GPU tree pass.
@@ -1123,7 +1123,11 @@ fn nearest_visible_copy(bucket: &TreeBucket, frame: TreeFrame<'_>) -> Option<(us
 }
 
 /// The four side planes only; native admission has no additional ground rectangle.
-fn visible(bucket: &TreeBucket, offset: f32, planes: &[[f32; 4]; 4]) -> bool {
+fn visible(
+    bucket: &TreeBucket,
+    offset: f32,
+    planes: &viewer_foundation::map::province_admission::Planes,
+) -> bool {
     let (low_x, high_x) = bucket.x_span();
     let (low_z, high_z) = bucket.z_span();
     admits_box(

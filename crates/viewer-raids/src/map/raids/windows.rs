@@ -47,7 +47,7 @@ pub fn prepare(inputs: &RaidInputs<'_>, icons: &RaidIcons) -> PreparedRaids {
             let world = (inputs.anchor)(icon.province)?;
             let projection = inputs
                 .camera
-                .project_map_icon(world, inputs.viewport, viewport);
+                .project_map_icon(world, inputs.viewport, viewport)?;
             Some((
                 projection.depth,
                 Placed {
@@ -334,6 +334,7 @@ mod tests {
             height: 300.,
             map: MapSize::TEST,
             defines: MapDefines::test(),
+            pose: viewer_foundation::map::camera::Pose::Map,
         };
         let key = |id| tooltips::Key::Raid {
             id,

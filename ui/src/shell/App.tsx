@@ -406,7 +406,7 @@ export default function App() {
         <section id="panel-analytics" aria-labelledby="tab-analytics" tabIndex={-1}
           className="analytics-panel" hidden={tab !== 'analytics'}>
           <Suspense fallback={<div className="panel-loading" role="status"><span className="spinner" />Loading overview…</div>}>
-            <Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} onMetadata={setMetadata} onBranch={setBranch} onMapError={setActionError} onUnsaved={setLayoutsUnsaved} pages={pages} playbackHost={playbackHost} />
+            <Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} onMetadata={setMetadata} onBranch={setBranch} onMapError={setActionError} onUnsaved={setLayoutsUnsaved} pages={pages} playbackHost={playbackHost} />
           </Suspense>
         </section>
       </main>

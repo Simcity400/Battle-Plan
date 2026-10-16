@@ -67,7 +67,12 @@ fn no_city() -> CityTerrain<'static> {
 }
 
 fn camera(center: [f32; 2], height: f32) -> Camera {
-    Placement { center, height }.on(MapSize::TEST, MapDefines::test())
+    Placement {
+        center,
+        height,
+        pose: viewer_foundation::map::camera::Pose::Map,
+    }
+    .on(MapSize::TEST, MapDefines::test())
 }
 
 /// Every drawn entity after one frame at `height` over the origin.

@@ -528,11 +528,13 @@ pub(super) fn land_combats(
                 continue;
             }
         };
-        let projection = inputs.camera.project_map_icon(
+        let Some(projection) = inputs.camera.project_map_icon(
             anchor,
             inputs.viewport,
             viewport(inputs.viewport, inputs.ui_scale),
-        );
+        ) else {
+            continue;
+        };
         // Write "?" when unseen.
         let text = match marker.progress {
             Some(value) => progress_text(inputs.localisation, value),

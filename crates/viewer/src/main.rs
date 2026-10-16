@@ -1,6 +1,7 @@
 use std::time::Instant;
 use viewer_foundation::map::camera::MapSize;
 use viewer_foundation::map::camera::Placement;
+use viewer_foundation::map::camera::{Free, Lens, Pose};
 use viewer_foundation::map::frame::shadow_fade_factor;
 use viewer_foundation::map::layers::Omissions;
 use viewer_foundation::map::perspective::Choice;
@@ -16,6 +17,7 @@ use viewer_combat as combat;
 #[cfg(test)]
 mod combat_integration_tests;
 mod compare;
+mod controls;
 mod corpus;
 #[cfg(test)]
 mod counter_integration_tests;
@@ -75,6 +77,9 @@ Options: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is;
          division's counter stands at its settled route point all hour, as the game draws it
          --allow-unverified-content
          --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off
+         --free-camera <x,y,z,yaw,pitch[,roll[,fov[,near[,far]]]]>, a free eye at world (x, y, z)
+           turned by degrees (yaw clockwise from north, pitch up, roll right side down) with a
+           vertical field of view in degrees (default 45) and near/far planes (default 1, 20000)
          --perspective <TAG>|recorded, the viewing country (default recorded)
          --fog on|off, the game's fog-of-war switch (default on)
          --allied-plans on|off, viewer-local allied battle-plan visibility (default off)
@@ -85,7 +90,7 @@ Options: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is;
          --diagnostics, technical stats and data limitations; dumps and captures report the
            limitations either way
 Window dump: --window-dump opens a window, renders through the windowed path at --width/--height
-             and --camera, writes the frame to --out and exits
+             and --camera or --free-camera, writes the frame to --out and exits
              --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>
              sample a deterministic sequence; default is one frame at time zero
 Dump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:
@@ -110,6 +115,38 @@ Dump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, 
 Compare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
+/// `--free-camera`'s value: the eye's world `x,y,z`, then yaw and pitch in degrees, and optionally
+/// roll and the vertical field of view in degrees and the near and far planes.
+fn parse_free_camera(value: &str) -> io::Result<Placement> {
+    const USAGE: &str = "free camera requires x,y,z,yaw,pitch[,roll[,fov[,near[,far]]]]";
+    let values = value
+        .split(',')
+        .map(str::parse::<f32>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| invalid(USAGE))?;
+    if !(5..=9).contains(&values.len()) || !values.iter().all(|value| value.is_finite()) {
+        return Err(invalid(USAGE));
+    }
+    let at = |index: usize, default: f32| values.get(index).copied().unwrap_or(default);
+    let lens = Lens {
+        fov_y: at(6, Lens::MAP.fov_y.to_degrees()).to_radians(),
+        near: at(7, 1.0),
+        far: at(8, 20_000.0),
+    };
+    if !lens.is_valid() {
+        return Err(invalid(
+            "free camera needs a field of view between 0 and 180 degrees and 0 < near < far",
+        ));
+    }
+    let mut pose = Free::new(values[3].to_radians(), values[4].to_radians(), lens);
+    pose.roll = at(5, 0.0).to_radians();
+    Ok(Placement {
+        center: [values[0], values[2]],
+        height: values[1],
+        pose: Pose::Free(pose),
+    })
+}
+
 fn parse_placement(value: &str) -> io::Result<Placement> {
     let values = value
         .split(',')
@@ -122,6 +159,7 @@ fn parse_placement(value: &str) -> io::Result<Placement> {
     Ok(Placement {
         center: [values[0], values[1]],
         height: values[2],
+        pose: Pose::Map,
     })
 }
 
@@ -479,6 +517,7 @@ impl Options {
                     | "--width"
                     | "--height"
                     | "--camera"
+                    | "--free-camera"
                     | "--building-camera"
                     | "--perspective"
                     | "--fog"
@@ -554,7 +593,16 @@ impl Options {
                             options.size[1] =
                                 value.parse().map_err(|_| invalid("invalid height"))?
                         }
-                        "--camera" => options.camera = Some(parse_placement(&value)?),
+                        "--camera" | "--free-camera" => {
+                            if options.camera.is_some() {
+                                return Err(invalid("give one of --camera and --free-camera"));
+                            }
+                            options.camera = Some(if arg == "--camera" {
+                                parse_placement(&value)?
+                            } else {
+                                parse_free_camera(&value)?
+                            });
+                        }
                         "--building-camera" => {
                             options.building_cameras.push(parse_placement(&value)?)
                         }
@@ -994,7 +1042,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let defines = document.map_defines;
         let place = |placement: Placement| {
             let [min, max] = defines.heights;
-            if !(min..=max).contains(&placement.height) {
+            if placement.pose == Pose::Map && !(min..=max).contains(&placement.height) {
                 return Err(invalid(format!(
                     "camera height must be between the content's CAMERA_MIN_HEIGHT {min} \
                      and CAMERA_MAX_HEIGHT {max}"
@@ -1863,6 +1911,52 @@ mod tests {
     }
 
     /// The game's two map controls, and no third.
+    #[test]
+    fn a_free_camera_takes_an_eye_degrees_and_a_lens() {
+        let options = parse(&[
+            "campaign.battleplan",
+            "--free-camera",
+            "3000,25,1500,90,-10",
+        ])
+        .unwrap();
+        let placement = options.camera.unwrap();
+        assert_eq!(placement.center, [3000.0, 1500.0]);
+        assert_eq!(placement.height, 25.0);
+        let Pose::Free(pose) = placement.pose else {
+            panic!("{placement:?}");
+        };
+        assert!((pose.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert!((pose.pitch + 10f32.to_radians()).abs() < 1e-6);
+        assert_eq!(pose.roll, 0.0);
+        assert_eq!((pose.lens.near, pose.lens.far), (1.0, 20_000.0));
+        assert!((pose.lens.fov_y - Lens::MAP.fov_y).abs() < 1e-6);
+        let lens = parse(&[
+            "campaign.battleplan",
+            "--free-camera",
+            "1,2,3,4,5,6,60,0.5,900",
+        ])
+        .unwrap()
+        .camera
+        .unwrap();
+        let Pose::Free(pose) = lens.pose else {
+            panic!("{lens:?}");
+        };
+        assert!((pose.roll - 6f32.to_radians()).abs() < 1e-6);
+        assert!((pose.lens.fov_y - 60f32.to_radians()).abs() < 1e-6);
+        assert_eq!((pose.lens.near, pose.lens.far), (0.5, 900.0));
+        // One camera only, a usable lens and five to nine numbers.
+        for bad in [
+            &["c.battleplan", "--camera", "1,2,300", "--free-camera", "1,2,3,4,5"][..],
+            &["c.battleplan", "--free-camera", "1,2,3,4"],
+            &["c.battleplan", "--free-camera", "1,2,3,4,5,6,7,8,9,10"],
+            &["c.battleplan", "--free-camera", "1,2,3,4,5,0,45,10,5"],
+            &["c.battleplan", "--free-camera", "1,2,3,4,5,0,180"],
+            &["c.battleplan", "--free-camera", "1,2,3,4,nan"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
+    }
+
     #[test]
     fn perspective_and_fog_are_the_two_view_options() {
         let default = parse(&["campaign.battleplan"]).unwrap();

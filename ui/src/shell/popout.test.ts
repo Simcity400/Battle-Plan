@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'vite';
 
-const status = (patch = {}) => ({ running: true, ready: true, visible: true, viewer: { path: null, revision: null, branch: null, hour: null }, error: null, ...patch });
+const status = (patch = {}) => ({ running: true, ready: true, visible: true, viewer: { path: null, revision: null, branch: null, hour: null }, error: null, cameraMode: 'map' as const, ...patch });
 const load = async () => {
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
   return { vite, popout: await vite.ssrLoadModule('/ui/src/shell/popout.ts') as typeof import('./popout') };

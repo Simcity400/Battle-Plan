@@ -14,6 +14,11 @@
 //! frontend; every event carries the window's generation and a sequence number that only grows,
 //! the frontend asks the owner to publish the current state once it listens, and it ignores any
 //! event that is not newer than the last it took.
+//!
+//! The pop-out's map has its own camera mode: the campaign map's controls choose it for window
+//! `generation` ([`popout_camera_mode`]), and the map's own shortcut cycles it in the window. Its
+//! viewer reports it in its status. Controllers reach it while its window is in front
+//! ([`PopOuts::in_front`]).
 mod lifecycle;
 mod shell;
 
@@ -152,7 +157,9 @@ fn mirrored(action: &MapAction) -> Option<Mirror> {
         | MapAction::Configure { .. }
         | MapAction::Export { .. }
         | MapAction::Inspect
-        | MapAction::Folders { .. } => None,
+        | MapAction::Folders { .. }
+        // Each map has its own camera.
+        | MapAction::CameraMode { .. } => None,
     }
 }
 
@@ -224,6 +231,23 @@ impl PopOuts {
         if let Some(host) = self.host() {
             host.set_folders(config);
         }
+    }
+
+    /// The open window's generation when `foreground` is its window: the window in front, which
+    /// Windows.Gaming.Input reports controllers to.
+    pub fn in_front(&self, foreground: usize) -> Option<u64> {
+        self.shared
+            .with(|generation, popout| {
+                (foreground != 0 && popout.shell.hwnd() == foreground).then_some(generation)
+            })
+            .flatten()
+    }
+
+    /// The host of pop-out window `generation` while it is the open one.
+    pub fn host_of(&self, generation: u64) -> Option<NativeHost> {
+        self.shared
+            .current()
+            .and_then(|(current, host)| (current == generation).then_some(host))
     }
 
     /// The open window's generation, captured when a request starts.
@@ -736,6 +760,16 @@ pub fn popout_configure(
     running(&popouts, Some(generation))?.map_action(MapAction::Configure { options })
 }
 
+/// The camera mode of pop-out window `generation`'s map, which the campaign map's controls choose.
+#[tauri::command]
+pub fn popout_camera_mode(
+    popouts: State<'_, PopOuts>,
+    generation: u64,
+    mode: dashboard::protocol::CameraMode,
+) -> Result<(), String> {
+    running(&popouts, Some(generation))?.map_action(MapAction::CameraMode { mode })
+}
+
 /// Exports the map of pop-out window `generation`, captured before the save dialog opened; a
 /// window that closed meanwhile is refused.
 pub fn export(popouts: &PopOuts, generation: Option<u64>, path: String) -> Result<(), String> {
@@ -781,6 +815,9 @@ mod tests {
             MapAction::Folders {
                 game: "g".into(),
                 user: "u".into(),
+            },
+            MapAction::CameraMode {
+                mode: dashboard::protocol::CameraMode::Fly,
             },
         ] {
             assert_eq!(mirrored(&action), None, "{action:?}");

@@ -11,6 +11,7 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 use viewer_foundation::combat_selection::Hit;
 use viewer_foundation::combat_selection::Selection;
+use viewer_foundation::map::camera::MapIconProjection;
 use viewer_foundation::map::gui_resources::GuiAssets;
 use viewer_foundation::map::gui_resources::count_noted;
 use viewer_foundation::map::gui_resources::count_refused;
@@ -572,6 +573,7 @@ pub(super) fn icon_point(
             inputs.viewport,
             gui_resources_viewport(inputs.viewport, inputs.ui_scale),
         )
+        .unwrap_or(MapIconProjection::BEHIND)
         .position;
     let mut point = point(screen, size, 0x12);
     let offset = i32::from_ne_bytes(ordinal.to_ne_bytes()).wrapping_mul(size[1]);

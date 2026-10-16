@@ -7,8 +7,8 @@
 //! only this process's creation-context HWND a child, with host-owned geometry.
 
 use dashboard::protocol::{
-    DashboardMapState, DashboardMapView, EVENT_PREFIX, MAX_MESSAGE_BYTES, NativeCommand,
-    NativeEvent, ViewBounds, ViewerState, validate_map_views,
+    CameraMode, DashboardMapState, DashboardMapView, EVENT_PREFIX, GamepadMessage,
+    MAX_MESSAGE_BYTES, NativeCommand, NativeEvent, ViewBounds, ViewerState, validate_map_views,
 };
 use dashboard::transport::DataEvent;
 use eframe::egui;
@@ -99,6 +99,9 @@ pub struct Pending {
     pub close: bool,
     pub error: Option<String>,
     pub map_views: Option<Vec<DashboardMapView>>,
+    /// The host's controller message, merged with any after it
+    /// ([`GamepadMessage::merge`]).
+    pub gamepad: Option<GamepadMessage>,
     bounds: Option<ViewBounds>,
     visibility: Option<bool>,
 }
@@ -113,6 +116,7 @@ impl Pending {
             && !self.close
             && self.bounds.is_none()
             && self.visibility.is_none()
+            && self.gamepad.is_none()
             && self.error.is_none()
     }
 
@@ -211,6 +215,10 @@ impl Pending {
                 });
                 self.error = None;
             }
+            NativeCommand::Gamepad { message } => {
+                message.validate()?;
+                self.gamepad = Some(GamepadMessage::merge(self.gamepad.take(), message));
+            }
             NativeCommand::Close => {
                 *self = Self {
                     close: true,
@@ -273,6 +281,8 @@ struct Outgoing {
     /// An odd number of diagnostics-shortcut presses not yet sent; two presses
     /// between sends cancel out.
     toggle_diagnostics: bool,
+    /// The full map's camera mode to report; a newer one replaces it.
+    camera_mode: Option<CameraMode>,
 }
 
 impl Outgoing {
@@ -287,8 +297,21 @@ impl Outgoing {
         std::mem::take(&mut self.toggle_diagnostics).then_some(NativeEvent::ToggleDiagnostics)
     }
 
+    /// Records the camera mode to report; a newer one replaces one not yet sent.
+    fn report_camera_mode(&mut self, mode: CameraMode) {
+        self.camera_mode = Some(mode);
+    }
+
+    /// The camera mode event to send, once.
+    fn take_camera_mode(&mut self) -> Option<NativeEvent> {
+        self.camera_mode
+            .take()
+            .map(|mode| NativeEvent::CameraMode { mode })
+    }
+
     fn is_empty(&self) -> bool {
         !self.toggle_diagnostics
+            && self.camera_mode.is_none()
             && self.ready.is_none()
             && self.details.is_none()
             && self.state.is_none()
@@ -551,6 +574,7 @@ impl Parent {
                             .pop_front()
                             .map(|response| NativeEvent::Data { response }),
                         outgoing.take_toggle_diagnostics(),
+                        outgoing.take_camera_mode(),
                     ];
                     drop(outgoing);
                     output.output_space.notify_all();
@@ -696,6 +720,18 @@ impl Controller {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         outgoing.toggle_diagnostics();
+        drop(outgoing);
+        self.shared.output_ready.notify_one();
+    }
+
+    /// Reports the full map's camera mode to the host, whose controls follow it.
+    pub fn report_camera_mode(&self, mode: CameraMode) {
+        let mut outgoing = self
+            .shared
+            .outgoing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        outgoing.report_camera_mode(mode);
         drop(outgoing);
         self.shared.output_ready.notify_one();
     }
@@ -1222,6 +1258,116 @@ mod tests {
         ));
         // Sent once: the press is consumed.
         assert!(outgoing.is_empty() && outgoing.take_toggle_diagnostics().is_none());
+    }
+
+    /// The host hears the latest camera mode once.
+    #[test]
+    fn the_latest_camera_mode_is_reported_once() {
+        let mut outgoing = Outgoing::default();
+        outgoing.report_camera_mode(CameraMode::Fly);
+        outgoing.report_camera_mode(CameraMode::Walk);
+        assert!(!outgoing.is_empty());
+        assert!(matches!(
+            outgoing.take_camera_mode(),
+            Some(NativeEvent::CameraMode {
+                mode: CameraMode::Walk
+            })
+        ));
+        assert!(outgoing.is_empty() && outgoing.take_camera_mode().is_none());
+    }
+
+    /// A take waits with its newest state; a state outside its ranges is refused and the waiting
+    /// message kept; a release queued after a state wins over it; a camera mode passes as a map
+    /// action.
+    #[test]
+    fn controller_messages_wait_merged_and_camera_modes_reach_the_map() {
+        use dashboard::protocol::{CameraMode, GamepadButton, GamepadOwner, GamepadState, MapAction};
+        let owner = GamepadOwner {
+            viewer: 1,
+            handoff: 4,
+        };
+        let state = |x| GamepadState {
+            sticks: [[x, 0.0], [0.0; 2]],
+            ..GamepadState::default()
+        };
+        let mut pending = Pending::default();
+        pending
+            .push(NativeCommand::Gamepad {
+                message: GamepadMessage::Take {
+                    owner,
+                    state: state(0.25),
+                },
+            })
+            .unwrap();
+        for x in [0.5, 0.75] {
+            pending
+                .push(NativeCommand::Gamepad {
+                    message: GamepadMessage::State {
+                        owner,
+                        state: state(x),
+                    },
+                })
+                .unwrap();
+        }
+        assert!(
+            pending
+                .push(NativeCommand::Gamepad {
+                    message: GamepadMessage::State {
+                        owner,
+                        state: GamepadState {
+                            triggers: [2.0, 0.0],
+                            buttons: GamepadButton::South.bit(),
+                            ..GamepadState::default()
+                        },
+                    },
+                })
+                .is_err()
+        );
+        assert_eq!(
+            pending.gamepad,
+            Some(GamepadMessage::Take {
+                owner,
+                state: state(0.75)
+            })
+        );
+        pending
+            .push(NativeCommand::Gamepad {
+                message: GamepadMessage::Release,
+            })
+            .unwrap();
+        pending
+            .push(NativeCommand::Gamepad {
+                message: GamepadMessage::State {
+                    owner,
+                    state: state(0.9),
+                },
+            })
+            .unwrap();
+        assert_eq!(pending.gamepad, Some(GamepadMessage::Release));
+        assert!(!pending.is_empty());
+        pending
+            .push(NativeCommand::MapAction {
+                action: MapAction::CameraMode {
+                    mode: CameraMode::Fly,
+                },
+            })
+            .unwrap();
+        assert!(matches!(
+            pending.actions.back(),
+            Some(MapAction::CameraMode {
+                mode: CameraMode::Fly
+            })
+        ));
+        let line = serde_json::to_string(&NativeCommand::MapAction {
+            action: MapAction::CameraMode {
+                mode: CameraMode::Walk,
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            line,
+            r#"{"command":"map_action","action":{"kind":"cameraMode","mode":"walk"}}"#
+        );
     }
 
     #[test]

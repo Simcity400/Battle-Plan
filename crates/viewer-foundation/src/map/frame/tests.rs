@@ -1,4 +1,5 @@
 use super::*;
+use crate::map::camera::Pose;
 
 const REFERENCE_HOUR: i32 = 60_826_314;
 
@@ -74,6 +75,7 @@ fn invalid_camera_never_gets_identity_inverse_constants() {
         height: super::super::camera::WATER_HEIGHT,
         map: MapSize::TEST,
         defines: MapDefines::test(),
+        pose: Pose::Map,
     };
     camera.defines.tilt_lead = 0.0;
     assert!(
@@ -106,6 +108,7 @@ fn the_constant_buffer_matches_the_reference_frame() {
         height: 310.178,
         map: MapSize::TEST,
         defines: MapDefines::test(),
+        pose: Pose::Map,
     };
     let constants = FrameConstants::try_new(
         camera,
@@ -146,6 +149,7 @@ fn the_capture_frame_constants_are_reproduced() {
         height: 263.493,
         map: MapSize::TEST,
         defines: MapDefines::test(),
+        pose: Pose::Map,
     };
     let constants = FrameConstants::try_new(
         camera,

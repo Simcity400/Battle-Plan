@@ -71,6 +71,7 @@ pub fn typescript_contract() -> String {
         protocol::MapAudio::decl(),
         protocol::MapAudioOverrides::decl(),
         protocol::CounterFilter::decl(),
+        protocol::CameraMode::decl(),
         protocol::CampaignMapSettings::decl(),
         map_settings::RecordedMod::decl(),
         protocol::ResolvedMapSettings::decl(),

@@ -180,6 +180,7 @@ fn main() {
             recorder::start_recorder();
             app.state::<preparation::PreparationMonitor>()
                 .start(app.handle())?;
+            native::start_gamepad(app.handle().clone());
             Ok(())
         })
         .manage(NativeHost::default())
@@ -217,6 +218,7 @@ fn main() {
             popout::popout_publish,
             popout::popout_seek,
             popout::popout_configure,
+            popout::popout_camera_mode,
             dashboard_service::dashboard_open_source,
             dashboard_service::dashboard_product,
             dashboard_service::dashboard_prepared_query,

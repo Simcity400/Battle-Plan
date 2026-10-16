@@ -81,6 +81,7 @@ fn arm(viewer: &mut Viewer, path: PathBuf, camera: Camera) {
             Some(Placement {
                 center: camera.center,
                 height: camera.height,
+                pose: viewer_foundation::map::camera::Pose::Map,
             }),
         )),
         exit: false,
@@ -120,6 +121,7 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
     viewer.camera = Some(Placement {
         center: request.camera.center,
         height: request.camera.height,
+        pose: viewer_foundation::map::camera::Pose::Map,
     });
     viewer.install_map(document, fixture.scene()?, "fixture".into());
     let ctx = egui::Context::default();

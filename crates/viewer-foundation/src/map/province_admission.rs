@@ -5,9 +5,13 @@
 //!
 //! A province's box is its bitmap extent rounded outward to even coordinates ([`province_boxes`]),
 //! standing from the ground to [`BOX_HEIGHT`]. It is admitted when, in any of the camera's seam
-//! views ([`Admission::new`]), no side plane has the whole box outside it: the box's corner
+//! views ([`Admission::new`]), no plane has the whole box outside it: the box's corner
 //! nearest the inside of each plane is tested, and only a strictly
 //! positive distance outside rejects.
+//!
+//! The game's camera tests its four side planes. A free eye also tests its near plane and a far
+//! plane at its [object range](Camera::object_range), so looking at the horizon admits what the
+//! view volume holds near enough to draw rather than every province on the far side of the map.
 //!
 //! The function also keeps, for each admitted province, the admitting view nearest the eye, which
 //! passes on to the province's updates. The viewer places nothing per seam view, so
@@ -15,17 +19,23 @@
 
 use std::collections::BTreeMap;
 
-use {super::camera::Camera, crate::map::province_map::ProvinceMap};
+use {
+    super::camera::{Camera, frustum::OBJECT_TOP},
+    crate::map::province_map::ProvinceMap,
+};
 
 /// the box's height above the ground.
-const BOX_HEIGHT: f32 = 70.0;
+const BOX_HEIGHT: f32 = OBJECT_TOP;
 
-/// Each camera view carries SIDE_MARGIN, including seam copies. Move its four side planes outward by
+/// Each camera view carries SIDE_MARGIN, including seam copies. Move its planes outward by
 /// that margin.
 const SIDE_MARGIN: f32 = 10.0;
 
-/// One view's four side planes, outside positive.
-type Planes = [[f32; 4]; 4];
+/// A plane no box is outside: the game's camera has no near or far test.
+pub const OPEN: [f32; 4] = [0.0, 0.0, 0.0, f32::MIN];
+
+/// One view's planes, outside positive: left, right, top, bottom, near and far.
+pub type Planes = [[f32; 4]; 6];
 
 /// The views of one camera that admit provinces.
 #[derive(Clone, Debug)]
@@ -75,7 +85,14 @@ impl Admission {
 
 /// Preserve carrier order for entity envelopes. Geometry remains canonical: the east copy uses
 /// eye minus map width, then the west copy uses eye plus map width.
+///
+/// A free eye's main view stands on the first map copy, and every other copy its view volume
+/// reaches within its object range adds a view, nearer copies first and the east one of each pair
+/// first.
 pub fn views(mut camera: Camera, viewport: [u32; 2]) -> Vec<Camera> {
+    if camera.free().is_some() {
+        return free_views(camera, viewport);
+    }
     let width = camera.map.x();
     let corners = footprint(camera, viewport);
     let [east, west] = reaches(corners, width);
@@ -95,6 +112,45 @@ pub fn views(mut camera: Camera, viewport: [u32; 2]) -> Vec<Camera> {
         }
     }
     views
+}
+
+/// A free eye's views: the eye moved onto the first map copy, then one view per other copy its
+/// reach overlaps, as the game's seam views shift the camera by whole map widths.
+fn free_views(camera: Camera, viewport: [u32; 2]) -> Vec<Camera> {
+    let mut views = vec![camera];
+    let width = camera.map.x();
+    if width.is_nan() || width <= 0.0 {
+        return views;
+    }
+    let shift = (camera.center[0] / width).floor() * width;
+    views[0].center[0] -= shift;
+    let main = views[0];
+    let range = main.object_range();
+    let Some([x0, _, x1, _]) = main.reach(viewport, range, [0.0, BOX_HEIGHT]) else {
+        return views;
+    };
+    let [x0, x1] = [x0 - SIDE_MARGIN, x1 + SIDE_MARGIN];
+    for copies in seam_copies(x0, x1, width) {
+        let mut view = main;
+        view.center[0] -= copies as f32 * width;
+        views.push(view);
+    }
+    views
+}
+
+/// The other map copies an x range from `x0` to `x1` overlaps, as copy numbers (copy `k` spans
+/// `k * width..(k + 1) * width`): nearer copies first, east before west.
+pub fn seam_copies(x0: f32, x1: f32, width: f32) -> Vec<i32> {
+    if !(width > 0.0 && x0.is_finite() && x1.is_finite()) {
+        return Vec::new();
+    }
+    let first = (x0 / width).floor() as i32;
+    let last = ((x1 / width).ceil() as i32 - 1).max(first);
+    let reach = first.unsigned_abs().max(last.unsigned_abs()) as i32;
+    (1..=reach)
+        .flat_map(|distance| [distance, -distance])
+        .filter(|copy| (first..=last).contains(copy))
+        .collect()
 }
 
 /// Footprint x coordinates in top-left, top-right, bottom-left, bottom-right order, with normalized
@@ -154,14 +210,32 @@ pub(super) fn reaches(
 
 /// Left, right, top and bottom planes from view-projection: normalize, negate so outside is positive,
 /// then expand by SIDE_MARGIN.
+///
+/// The game's camera has no near or far test. A free eye adds its near plane and a far plane at
+/// its [object range](Camera::object_range), each moved out by the same margin.
 pub fn side_planes(camera: Camera, viewport: [u32; 2]) -> Planes {
     let m = camera.view_projection(viewport);
     let plane =
         |column: usize, sign: f32| std::array::from_fn(|row| m[row][3] + sign * m[row][column]);
-    [plane(0, 1.0), plane(0, -1.0), plane(1, -1.0), plane(1, 1.0)].map(|plane| {
-        let [a, b, c, d] = normalize(plane);
-        [-a, -b, -c, -d - SIDE_MARGIN]
-    })
+    let [left, right, top, bottom] = [plane(0, 1.0), plane(0, -1.0), plane(1, -1.0), plane(1, 1.0)]
+        .map(|plane| {
+            let [a, b, c, d] = normalize(plane);
+            [-a, -b, -c, -d - SIDE_MARGIN]
+        });
+    let [near, far] = match camera.free() {
+        None => [OPEN; 2],
+        Some(free) => {
+            let [fx, fy, fz] = camera.look_direction();
+            let eye = camera.eye();
+            let depth = fx * eye[0] + fy * eye[1] + fz * eye[2];
+            let range = camera.object_range();
+            [
+                [-fx, -fy, -fz, depth + free.lens.near - SIDE_MARGIN],
+                [fx, fy, fz, -depth - range - SIDE_MARGIN],
+            ]
+        }
+    };
+    [left, right, top, bottom, near, far]
 }
 
 /// the plane scaled by the reciprocal of its normal's length, unless that is 0.
@@ -251,12 +325,17 @@ pub fn edge_boxes() -> BTreeMap<u32, [f32; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::camera::{MapDefines, MapSize, Placement};
+    use crate::map::camera::{Free, Lens, MapDefines, MapSize, Placement, Pose};
 
     const VIEWPORT: [u32; 2] = [1024, 768];
 
     fn camera(center: [f32; 2], height: f32) -> Camera {
-        Placement { center, height }.on(MapSize::TEST, MapDefines::test())
+        Placement {
+            center,
+            height,
+            pose: Pose::Map,
+        }
+        .on(MapSize::TEST, MapDefines::test())
     }
 
     #[test]
@@ -315,7 +394,7 @@ mod tests {
     fn a_box_stands_seventy_high() {
         let camera = camera([3000.0, 1000.0], 50.0);
         let admission = Admission::new(camera, VIEWPORT);
-        let [_, _, _, [_, down, south, d]] = admission.views[0];
+        let [_, _, _, [_, down, south, d], _, _] = admission.views[0];
         assert!(down < 0.0);
         let top_shows = [2998.0, 956.0, 3000.0, 958.0];
         // Without its height the box's ground corner is outside.
@@ -425,5 +504,56 @@ mod tests {
             reaches([0.0, camera.map.x(), 0.0, camera.map.x()], camera.map.x()),
             [false; 2]
         );
+    }
+
+    /// A free eye at `eye` looking along `yaw` (level), with a far lens.
+    fn free_camera(eye: [f32; 3], yaw: f32) -> Camera {
+        let lens = Lens {
+            far: 20_000.0,
+            near: 1.0,
+            ..Lens::MAP
+        };
+        Placement {
+            center: [eye[0], eye[2]],
+            height: eye[1],
+            pose: Pose::Free(Free::new(yaw, -0.05, lens)),
+        }
+        .on(MapSize::TEST, MapDefines::test())
+    }
+
+    /// A level eye admits what stands ahead within the object range, and nothing behind it or past
+    /// that range, where the game's camera tests no such plane.
+    #[test]
+    fn a_free_eye_admits_within_its_object_range_and_not_behind_it() {
+        let eye = free_camera([3000.0, 30.0, 1000.0], 0.0);
+        let admission = Admission::new(eye, VIEWPORT);
+        let cell = |z: f32| [2999.0, z, 3001.0, z + 2.0];
+        assert!(admission.admits(cell(1500.0)));
+        let range = MapDefines::test().map_objects_cutoff;
+        assert!(admission.admits(cell(1000.0 + range - 20.0)));
+        assert!(!admission.admits(cell(1000.0 + range + 50.0)));
+        assert!(!admission.admits(cell(900.0)));
+        let map = Admission::new(camera([3000.0, 1000.0], 300.0), VIEWPORT);
+        assert_eq!(map.views[0][4], OPEN);
+        assert_eq!(map.views[0][5], OPEN);
+    }
+
+    /// Looking along the seam from beside it, a free eye's views cover both sides, and an eye that
+    /// wandered whole map widths away is moved back onto the first copy.
+    #[test]
+    fn a_free_eye_beside_the_seam_admits_both_edges() {
+        let width = MapSize::TEST.x();
+        let along_east = free_camera([width - 50.0, 30.0, 1000.0], std::f32::consts::FRAC_PI_2);
+        let seen = views(along_east, VIEWPORT);
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].center[0], width - 50.0);
+        assert_eq!(seen[1].center[0], width - 50.0 - width);
+        let admission = Admission::new(along_east, VIEWPORT);
+        assert!(admission.admits([1000.0, 999.0, 1002.0, 1001.0]));
+        let wandered = free_camera([3.0 * width + 10.0, 30.0, 1000.0], 0.0);
+        assert_eq!(views(wandered, VIEWPORT)[0].center[0], 10.0);
+        assert_eq!(seam_copies(-10.0, width + 10.0, width), [1, -1]);
+        assert_eq!(seam_copies(10.0, 2.5 * width, width), [1, 2]);
+        assert!(seam_copies(10.0, width - 10.0, width).is_empty());
     }
 }

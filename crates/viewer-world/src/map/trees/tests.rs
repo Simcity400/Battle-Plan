@@ -396,11 +396,11 @@ fn the_close_cameras_reach_the_detailed_lods_and_the_reference_camera_does_not()
 #[test]
 fn tree_visibility_uses_native_ceiling_and_only_side_planes() {
     let bucket = tile(4, 2);
-    assert!(!visible(&bucket, 0.0, &[[-1.0, 0.0, 0.0, 2000.0]; 4]));
-    assert!(visible(&bucket, 0.0, &[[-1.0, 0.0, 0.0, 0.0]; 4]));
-    assert!(visible(&bucket, 0.0, &[[0.0, -1.0, 0.0, 25.5]; 4]));
-    assert!(!visible(&bucket, 0.0, &[[0.0, -1.0, 0.0, 25.51]; 4]));
-    assert!(visible(&bucket, -MAP_SIZE_X, &[[1.0, 0.0, 0.0, 4000.0]; 4]));
+    assert!(!visible(&bucket, 0.0, &[[-1.0, 0.0, 0.0, 2000.0]; 6]));
+    assert!(visible(&bucket, 0.0, &[[-1.0, 0.0, 0.0, 0.0]; 6]));
+    assert!(visible(&bucket, 0.0, &[[0.0, -1.0, 0.0, 25.5]; 6]));
+    assert!(!visible(&bucket, 0.0, &[[0.0, -1.0, 0.0, 25.51]; 6]));
+    assert!(visible(&bucket, -MAP_SIZE_X, &[[1.0, 0.0, 0.0, 4000.0]; 6]));
 }
 
 #[test]
@@ -411,6 +411,7 @@ fn tree_visibility_keeps_the_camera_side_margin() {
         height: 50.0,
         map: MapSize::TEST,
         defines: MapDefines::test(),
+        pose: viewer_foundation::map::camera::Pose::Map,
     };
     let planes = side_planes(camera, [1024, 768]);
     assert!(visible(&bucket, 0.0, &planes));
@@ -425,11 +426,12 @@ fn one_nearest_visible_wrap_owns_the_tile_and_equal_distance_keeps_first() {
         height: 50.0,
         map: MapSize::TEST,
         defines: MapDefines::test(),
+        pose: viewer_foundation::map::camera::Pose::Map,
     };
     let frame = TreeFrame {
         camera,
         offsets: &[-256.0, 0.0, MAP_SIZE_X],
-        planes: [[0.0, 0.0, 0.0, -1.0]; 4],
+        planes: [[0.0, 0.0, 0.0, -1.0]; 6],
     };
     assert_eq!(nearest_visible_copy(&bucket, frame).unwrap().0, 0);
     assert_eq!(
@@ -448,7 +450,7 @@ fn one_nearest_visible_wrap_owns_the_tile_and_equal_distance_keeps_first() {
         nearest_visible_copy(
             &bucket,
             TreeFrame {
-                planes: [[-1.0, 0.0, 0.0, 1.0]; 4],
+                planes: [[-1.0, 0.0, 0.0, 1.0]; 6],
                 ..frame
             }
         )
@@ -460,7 +462,7 @@ fn one_nearest_visible_wrap_owns_the_tile_and_equal_distance_keeps_first() {
         nearest_visible_copy(
             &bucket,
             TreeFrame {
-                planes: [[0.0, -1.0, 0.0, 30.0]; 4],
+                planes: [[0.0, -1.0, 0.0, 30.0]; 6],
                 ..frame
             }
         ),

@@ -481,6 +481,7 @@ fn unit_models_use_native_camera_admission_at_the_edges() {
     let camera = Placement {
         center: [3000.0, 1000.0],
         height: 50.0,
+        pose: viewer_foundation::map::camera::Pose::Map,
     }
     .on(MapSize::TEST, MapDefines::test());
     history.advance_schedule(camera, [1024, 768]);

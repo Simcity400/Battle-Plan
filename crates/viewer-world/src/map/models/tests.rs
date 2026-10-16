@@ -236,6 +236,7 @@ fn the_sprawl_gate_is_water_relative_and_independent_of_transient_map_objects() 
         Placement {
             center: [0.0, 0.0],
             height,
+            pose: viewer_foundation::map::camera::Pose::Map,
         }
         .on(MapSize::TEST, MapDefines::test())
     };

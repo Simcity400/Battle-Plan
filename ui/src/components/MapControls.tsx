@@ -5,13 +5,15 @@ import type { DashboardClient, DashboardSource } from '../dashboard/client';
 import type { ReactNode } from 'react';
 import { useId, useState } from 'react';
 import { desktopAvailable, errorMessage, exportMap } from '../shell/api';
-import { closePopout, nextPopoutMonitor, openPopout, restartPopout } from '../shell/popout';
+import { closePopout, nextPopoutMonitor, openPopout, restartPopout, setPopoutCameraMode } from '../shell/popout';
+import CameraModeControl from './CameraModeControl';
+import type { CameraMode } from '../generated/dashboard';
 import type { MapOptions, ReplayMetadata } from '../shell/api';
 import { formatDateTime } from '../dashboard/calendar';
 import { Icon } from './Icons';
 import './mapControls.css';
 
-export default function MapControls({ source, client, metadata, branchId, onBranch, options, onOptions, compact = false, viewId, children, onRemove, onReset, poppedOut, popoutGeneration = 0, popoutProblem, popoutStopped }: {
+export default function MapControls({ source, client, metadata, branchId, onBranch, options, onOptions, compact = false, viewId, children, onRemove, onReset, poppedOut, popoutGeneration = 0, popoutProblem, popoutStopped, popoutCameraMode }: {
   compact?: boolean; viewId?: string; children?: ReactNode; onRemove?: () => void; onReset?: () => void;
   /** The campaign map's pop-out window state; widget maps omit it. */
   poppedOut?: boolean;
@@ -19,6 +21,8 @@ export default function MapControls({ source, client, metadata, branchId, onBran
   popoutGeneration?: number;
   /** Why the pop-out shows nothing, and whether its viewer exited and can be restarted. */
   popoutProblem?: string | null; popoutStopped?: boolean;
+  /** The pop-out map's camera mode, as its viewer reports it while it runs. */
+  popoutCameraMode?: CameraMode | null;
   source: DashboardSource | null; client: DashboardClient;
   metadata: ReplayMetadata | null; branchId: string | null; onBranch: (id: string) => void;
   options: MapOptions; onOptions: (options: MapOptions) => void;
@@ -59,6 +63,8 @@ export default function MapControls({ source, client, metadata, branchId, onBran
         <button type="button" className="map-menu-action" disabled={!desktopAvailable || !metadata || busy} data-tooltip={desktopAvailable ? 'Save the rendered map as a PNG image' : 'Available with the native map in the desktop app'} onClick={() => void run(() => exportMap(viewId))}><Icon name="save" />Export map image</button>
         {poppedOut && popoutProblem && <p className="map-menu-error" role="alert">{popoutProblem}</p>}
         {poppedOut && popoutStopped && <button type="button" className="map-menu-action" disabled={busy} onClick={() => void run(() => restartPopout(popoutGeneration))}><Icon name="refresh" />Restart pop-out map</button>}
+        {poppedOut && desktopAvailable && popoutCameraMode && <div className="map-option-row"><span>Pop-out camera</span>
+          <CameraModeControl value={popoutCameraMode} onChange={mode => void setPopoutCameraMode(popoutGeneration, mode).catch(cause => setError(errorMessage(cause)))} /></div>}
         {poppedOut !== undefined && desktopAvailable && (poppedOut ? <>
           <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Save the pop-out window's map as a PNG image" onClick={() => void run(() => exportMap('popout'))}><Icon name="save" />Export pop-out map</button>
           <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Move the pop-out map to the next monitor" onClick={() => void run(() => nextPopoutMonitor(popoutGeneration))}><Icon name="monitor" />Move pop-out to next monitor</button>

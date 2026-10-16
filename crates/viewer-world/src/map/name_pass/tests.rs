@@ -151,6 +151,7 @@ fn camera(center: [f32; 2], height: f32) -> Camera {
         height,
         map: MapSize::TEST,
         defines: MapDefines::test(),
+        pose: viewer_foundation::map::camera::Pose::Map,
     }
 }
 
@@ -296,7 +297,15 @@ fn names_keep_the_camera_side_margin() {
     let m = camera.view_projection(viewport);
     let plane =
         |column: usize, sign: f32| std::array::from_fn(|row| -(m[row][3] + sign * m[row][column]));
-    let raw = [plane(0, 1.), plane(0, -1.), plane(1, 1.), plane(1, -1.)];
+    let open = viewer_foundation::map::province_admission::OPEN;
+    let raw = [
+        plane(0, 1.),
+        plane(0, -1.),
+        plane(1, 1.),
+        plane(1, -1.),
+        open,
+        open,
+    ];
     for (x, expected) in [(3035., 1), (3060., 0)] {
         let (_, names) = static_names(
             &Placements {
@@ -351,6 +360,7 @@ fn the_fade_settles_at_the_content_cutoff_and_takes_one_second() {
         height,
         map: MapSize::TEST,
         defines,
+        pose: viewer_foundation::map::camera::Pose::Map,
     };
     assert_eq!(LayerFade::instant(at(260.0)), LayerFade(1.0));
     let low = LayerFade::instant(at(259.9));

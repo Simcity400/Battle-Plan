@@ -458,11 +458,13 @@ pub fn prepare(
             continue;
         };
         let world = *anchor;
-        let projection = inputs.camera.project_map_icon(
+        let Some(projection) = inputs.camera.project_map_icon(
             world,
             inputs.viewport,
             gui_resources_viewport(inputs.viewport, inputs.ui_scale),
-        );
+        ) else {
+            continue;
+        };
         let allegiance = dot_allegiance(province.controller, links, allegiances);
         let shape = shape_group(capital, victory_points, defines);
         let priority = defines.priority[usize::from(capital)];

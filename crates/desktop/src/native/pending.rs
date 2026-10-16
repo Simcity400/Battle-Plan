@@ -44,6 +44,9 @@ pub(super) struct Pending {
     pub(super) seek: Option<SeekTarget>,
     pub(super) maps: Option<Vec<DashboardMapView>>,
     pub(super) data: VecDeque<(DataCommand, usize)>,
+    /// The controller message waiting for the viewer, merged with any sent after it
+    /// ([`GamepadMessage::merge`](dashboard::protocol::GamepadMessage::merge)).
+    pub(super) gamepad: Option<dashboard::protocol::GamepadMessage>,
     pub(super) close: bool,
 }
 
@@ -104,6 +107,7 @@ impl Pending {
             || !self.data.is_empty()
             || self.bounds.is_some()
             || self.visibility.is_some()
+            || self.gamepad.is_some()
             || (visible && (self.open.is_some() || self.seek.is_some()))
     }
 
@@ -137,6 +141,9 @@ impl Pending {
         }
         if let Some(views) = self.maps.take() {
             commands.push(NativeCommand::MapViews { views });
+        }
+        if let Some(message) = self.gamepad.take() {
+            commands.push(NativeCommand::Gamepad { message });
         }
         // Drain a small amount per pass so another seek/layout can interrupt a
         // batch of history demands. The queue itself has a byte/count ceiling.

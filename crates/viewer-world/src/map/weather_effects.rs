@@ -1151,10 +1151,10 @@ struct Visible<'a> {
     /// Authored map coordinates; the seam's camera supplies the world wrap.
     anchor: [f32; 3],
     alpha: f32,
-    views: u8,
+    views: native::ViewMask,
 }
 
-type ParentView = ([f32; 3], [[f32; 4]; 4]);
+type ParentView = ([f32; 3], viewer_foundation::map::province_admission::Planes);
 
 fn parent_views(cameras: &[Camera], size: [u32; 2]) -> Vec<ParentView> {
     cameras
@@ -1166,9 +1166,9 @@ fn parent_views(cameras: &[Camera], size: [u32; 2]) -> Vec<ParentView> {
 ///Dummy sphere distance/side planes, then the frame's accepted
 ///stamp. A later failed view keeps prior acceptance, without admitting earlier
 ///views. The supported depth-one tree's root bypasses ancestor box admission.
-fn parent_admission(center: [f32; 3], radius: f32, views: &[ParentView]) -> u8 {
+fn parent_admission(center: [f32; 3], radius: f32, views: &[ParentView]) -> native::ViewMask {
     let mut accepted = false;
-    let mut mask = 0;
+    let mut mask = vec![false; views.len()];
     for (view, (eye, planes)) in views.iter().enumerate() {
         let [dx, dy, dz] = std::array::from_fn(|axis| center[axis] - eye[axis]);
         if (dy * dy + dx * dx) + dz * dz < f32::MAX
@@ -1178,11 +1178,9 @@ fn parent_admission(center: [f32; 3], radius: f32, views: &[ParentView]) -> u8 {
         {
             accepted = true;
         }
-        if accepted {
-            mask |= 1 << view;
-        }
+        mask[view] = accepted;
     }
-    mask
+    native::ViewMask::Some(mask)
 }
 
 /// The emitters of `field` the camera sees, in drawing order.
@@ -1219,7 +1217,7 @@ fn visible_emitters<'a>(
                 continue;
             };
             let mask = parent_admission(anchor, radius, views);
-            if mask == 0 {
+            if mask.is_empty() {
                 continue;
             }
             let emitters = &pair.members[member];
@@ -1232,7 +1230,7 @@ fn visible_emitters<'a>(
                         ^ (index as u64 * 257 + ei as u64),
                     anchor,
                     alpha,
-                    views: mask,
+                    views: mask.clone(),
                 });
             }
         }

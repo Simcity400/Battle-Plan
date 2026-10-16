@@ -50,6 +50,7 @@ fn draw(
                     height: 100,
                 },
                 defines: MapDefines::test(),
+                pose: viewer_foundation::map::camera::Pose::Map,
             },
             offsets: &[0., 0.],
             visible: None,

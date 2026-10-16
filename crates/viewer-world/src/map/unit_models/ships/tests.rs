@@ -851,6 +851,7 @@ fn rosters_hide_port_hulls_and_share_one_slot_at_sea() {
     let camera = Placement {
         center: [3246.0, 1749.0],
         height: 112.619_415_283_203_12_f64 as f32,
+        pose: viewer_foundation::map::camera::Pose::Map,
     }
     .on(MapSize::TEST, MapDefines::test());
     for count in [1, 2, 3, 3] {

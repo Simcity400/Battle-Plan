@@ -1,10 +1,12 @@
 //! Hosts the existing native viewer, with a bounded pipe for control messages.
 
+mod gamepad;
 mod job;
 mod lifecycle;
 mod line_reader;
 mod pending;
 
+pub use gamepad::start_gamepad;
 use dashboard::protocol::{
     DashboardMapView, MAX_MESSAGE_BYTES, NativeCommand, ViewBounds, ViewerState, replay_revision,
     validate_map_views,
@@ -26,6 +28,8 @@ pub struct HostStatus {
     pub visible: bool,
     pub viewer: ViewerState,
     pub error: Option<String>,
+    /// The full map's camera mode, as its viewer last reported it.
+    pub camera_mode: dashboard::protocol::CameraMode,
 }
 
 #[derive(Default)]
@@ -239,6 +243,12 @@ impl NativeHost {
         }
         if !inner.status.ready || inner.shutting_down {
             return Err("The native map is not ready".into());
+        }
+        if matches!(action, dashboard::protocol::MapAction::CameraMode { .. }) {
+            // Only the latest camera mode matters, so quick changes never fill the queue.
+            inner.pending.actions.retain(|queued| {
+                !matches!(queued, dashboard::protocol::MapAction::CameraMode { .. })
+            });
         }
         inner.pending.action_room()?;
         if let dashboard::protocol::MapAction::Unload { path } = &action {

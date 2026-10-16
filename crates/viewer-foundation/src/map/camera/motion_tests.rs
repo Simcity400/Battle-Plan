@@ -1,5 +1,5 @@
 use super::*;
-use crate::map::camera::{MapDefines, MapSize};
+use crate::map::camera::{MapDefines, MapSize, Pose};
 
 /// A flat map below the lowest height: the floor is `CAMERA_MIN_HEIGHT`.
 fn flat(_: f32, _: f32) -> f32 {
@@ -12,6 +12,7 @@ fn camera(height: f32) -> Camera {
         height,
         map: MapSize::TEST,
         defines: MapDefines::test(),
+        pose: Pose::Map,
     }
 }
 
@@ -204,6 +205,7 @@ fn heights_stay_within_the_floor_and_the_truncated_highest_height() {
         target: Some(Placement {
             center: [3000.0, -40.0],
             height: 2500.0,
+            pose: Pose::Map,
         }),
         lines: 0.0,
     };
@@ -220,6 +222,7 @@ fn heights_stay_within_the_floor_and_the_truncated_highest_height() {
         target: Some(Placement {
             center: [3000.0, 1500.0],
             height: 100.0,
+            pose: Pose::Map,
         }),
         lines: 0.0,
     };
@@ -251,6 +254,7 @@ fn a_target_beyond_the_boundary_is_reset_to_the_camera() {
         target: Some(Placement {
             center: [3000.0, 0.0],
             height: 1000.0,
+            pose: Pose::Map,
         }),
         lines: 0.0,
     };

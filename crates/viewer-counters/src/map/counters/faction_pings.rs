@@ -279,11 +279,13 @@ pub(super) fn faction_pings(inputs: &CounterInputs<'_>, hour: &HourPins, out: &m
     out.report.faction_ping_limits = hour.report.clone();
     for pin in &hour.pins {
         let world = pin.anchor;
-        let projection = inputs.camera.project_map_icon(
+        let Some(projection) = inputs.camera.project_map_icon(
             world,
             inputs.viewport,
             gui_resources_viewport(inputs.viewport, inputs.ui_scale),
-        );
+        ) else {
+            continue;
+        };
         out.native_pings.placed.push(PlacedPin {
             depth: projection.depth,
             region: pin.first_region,

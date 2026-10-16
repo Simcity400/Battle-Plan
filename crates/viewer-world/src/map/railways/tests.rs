@@ -312,6 +312,7 @@ fn the_rail_fade_settles_first_then_moves_at_the_cutoff_speed() {
         height: 200.0,
         map: MapSize::TEST,
         defines: MapDefines::test(),
+        pose: viewer_foundation::map::camera::Pose::Map,
     };
     camera.defines.railway_cutoff = 300.0;
     camera.defines.railway_cutoff_speed = 3.0;

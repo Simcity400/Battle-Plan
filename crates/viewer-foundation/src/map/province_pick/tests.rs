@@ -1,5 +1,5 @@
 use super::*;
-use crate::map::camera::{MapDefines, MapSize};
+use crate::map::camera::{MapDefines, MapSize, Pose};
 
 fn fixture() -> MapData {
     MapData {
@@ -21,6 +21,7 @@ fn elevated_hover_uses_height_cells_instead_of_the_water_plane() {
         height: 100.0,
         map: MapSize::of(&map),
         defines: MapDefines::test(),
+        pose: Pose::Map,
     };
     let screen = [320.0, 240.0];
     let viewport = [640, 480];
@@ -65,6 +66,7 @@ fn seam_hover_selects_the_same_province_after_one_width_shift() {
         height: 100.0,
         map: MapSize::of(&map),
         defines: MapDefines::test(),
+        pose: Pose::Map,
     };
     let mut east = camera;
     east.center[0] += map.width as f32;
@@ -87,6 +89,7 @@ fn mismatched_rasters_return_a_named_refusal() {
         height: 100.0,
         map: MapSize::of(&map),
         defines: MapDefines::test(),
+        pose: Pose::Map,
     };
     let texels = vec![0; map.province_ids.len()];
     assert!(
@@ -112,6 +115,7 @@ fn the_motion_pick_keeps_the_eye_coordinates_across_both_seams() {
             height: 100.0,
             map: MapSize::of(&map),
             defines: MapDefines::test(),
+            pose: Pose::Map,
         };
         let screen = [320.0, 240.0];
         let viewport = [640, 480];
@@ -124,4 +128,146 @@ fn the_motion_pick_keeps_the_eye_coordinates_across_both_seams() {
             .unwrap();
         assert!((seams[0] - canonical).abs() < 0.5, "{centre}: {seams:?}");
     }
+}
+
+/// A free eye at `eye` looking along `yaw` and `pitch`.
+fn free_camera(map: &MapData, eye: [f32; 3], yaw: f32, pitch: f32) -> Camera {
+    use crate::map::camera::{Free, Lens};
+    Camera {
+        center: [eye[0], eye[2]],
+        height: eye[1],
+        map: MapSize::of(map),
+        defines: MapDefines::test(),
+        pose: Pose::Free(Free::new(
+            yaw,
+            pitch,
+            Lens {
+                near: 0.5,
+                far: 2000.0,
+                ..Lens::MAP
+            },
+        )),
+    }
+}
+
+#[test]
+fn a_free_eye_picks_the_first_cell_its_ray_meets_and_nothing_above_the_horizon() {
+    let map = fixture();
+    // Flat sea with a ridge twenty high across rows 40 and 41.
+    let mut texels = vec![0; 128 * 64];
+    for z in [40, 41] {
+        for x in 0..128 {
+            texels[(63 - z) * 128 + x] = 200;
+        }
+    }
+    let viewport = [640, 480];
+    // A level eye at 15 high in row 20 looking north meets the ridge's south face.
+    let camera = free_camera(&map, [64.5, 15.0, 20.5], 0.0, 0.0);
+    let hit = free_ground(&camera, [320.0, 240.0], viewport, &map, &texels).unwrap();
+    assert!((hit[2] - 40.0).abs() < 1e-3, "{hit:?}");
+    assert_eq!(hit[1], 20.0);
+    assert_eq!(
+        pick(&camera, [320.0, 240.0], viewport, &map, &texels).unwrap(),
+        Some(1)
+    );
+    // Above the horizon there is no ground, where the game's pick would fall back to y = 0.
+    assert_eq!(
+        free_ground(&camera, [320.0, 10.0], viewport, &map, &texels),
+        None
+    );
+    assert_eq!(
+        pick(&camera, [320.0, 10.0], viewport, &map, &texels).unwrap(),
+        None
+    );
+    // Looking down from above the ridge meets the sea at the water height.
+    let down = free_camera(&map, [10.5, 60.0, 10.5], 0.0, -1.569);
+    let sea = free_ground(&down, [320.0, 240.0], viewport, &map, &texels).unwrap();
+    assert_eq!(sea[1], 9.5);
+    assert!(
+        (sea[0] - 10.5).abs() < 1.0 && (sea[2] - 10.5).abs() < 1.0,
+        "{sea:?}"
+    );
+}
+
+#[test]
+fn a_free_eye_picks_across_the_seam_and_stops_past_the_map_edge() {
+    let map = fixture();
+    let mut texels = vec![0; 128 * 64];
+    // A tall column just east of the seam, at column 2 of row 30.
+    texels[(63 - 30) * 128 + 2] = 250;
+    let viewport = [640, 480];
+    let camera = free_camera(&map, [126.5, 20.0, 30.5], std::f32::consts::FRAC_PI_2, 0.0);
+    let hit = free_ground(&camera, [320.0, 240.0], viewport, &map, &texels).unwrap();
+    // The ray keeps its own copy: column 2 of the next copy is world x 130.
+    assert!((hit[0] - 130.0).abs() < 1e-3, "{hit:?}");
+    // The seam pick puts it back on the first copy; the camera's own motion keeps the ray's.
+    let screen = [320.0, 240.0];
+    let seams = ground_point(&camera, screen, viewport, &map, &texels)
+        .unwrap()
+        .unwrap();
+    assert!((seams[0] - 2.0).abs() < 1e-3, "{seams:?}");
+    let own = motion_ground_point(&camera, screen, viewport, &map, &texels)
+        .unwrap()
+        .unwrap();
+    assert!((own[0] - 130.0).abs() < 1e-3, "{own:?}");
+    assert_eq!(
+        pick(&camera, [320.0, 240.0], viewport, &map, &texels).unwrap(),
+        Some(1)
+    );
+    // A level ray leaving the map northwards at the water height meets nothing more.
+    let north = free_camera(&map, [64.5, 10.0, 60.5], 0.0, 0.0);
+    assert_eq!(
+        free_ground(&north, [320.0, 240.0], viewport, &map, &texels),
+        None
+    );
+}
+
+/// The far plane is a forward depth: ground the view shows near its edge, nearer than the far
+/// plane in depth but further along its ray, is still picked.
+#[test]
+fn a_free_eye_picks_visible_ground_out_to_the_far_planes_depth_at_the_edges() {
+    use crate::map::camera::{Free, Lens, WATER_HEIGHT};
+    let map = MapData {
+        width: 256,
+        height: 256,
+        province_ids: vec![1; 256 * 256],
+        definitions: Default::default(),
+        country_colors: Default::default(),
+    };
+    let sea = vec![0; 256 * 256];
+    let viewport = [640, 480];
+    // Twenty above the sea, looking north and down so the centre row meets the water 90 deep.
+    let pitch = -(20.0f32 / 90.0).asin();
+    let camera = Camera {
+        center: [128.5, 10.0],
+        height: WATER_HEIGHT + 20.0,
+        map: MapSize::of(&map),
+        defines: MapDefines::test(),
+        pose: Pose::Free(Free::new(
+            0.0,
+            pitch,
+            Lens {
+                near: 0.5,
+                far: 95.0,
+                ..Lens::MAP
+            },
+        )),
+    };
+    let eye = camera.eye();
+    let along = |point: [f32; 3]| {
+        (0..3)
+            .map(|axis| (point[axis] - eye[axis]).powi(2))
+            .sum::<f32>()
+            .sqrt()
+    };
+    let centre = free_ground(&camera, [320.0, 240.0], viewport, &map, &sea).unwrap();
+    assert!((along(centre) - 90.0).abs() < 2.0, "{centre:?}");
+    // The left edge of that row meets the water about 103 along its ray yet 90 deep: visible,
+    // and picked.
+    let edge = free_ground(&camera, [0.0, 240.0], viewport, &map, &sea).unwrap();
+    assert!(along(edge) > 95.0, "{edge:?}");
+    assert_eq!(
+        pick(&camera, [0.0, 240.0], viewport, &map, &sea).unwrap(),
+        Some(1)
+    );
 }

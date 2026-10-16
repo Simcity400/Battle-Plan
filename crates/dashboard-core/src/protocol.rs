@@ -48,6 +48,13 @@ pub enum NativeCommand {
     Data {
         request: DataCommand,
     },
+    /// The controller the user last touched, for the map whose window is in front. The host reads
+    /// controllers because only the process that owns the foreground window receives their input;
+    /// mouse and keyboard reach the map's own window directly. The host alone decides which
+    /// viewer holds the controller ([`GamepadMessage`]).
+    Gamepad {
+        message: GamepadMessage,
+    },
     Close,
 }
 
@@ -80,6 +87,11 @@ pub enum NativeEvent {
     /// owns the saved choice, so it toggles it and sends the result back as
     /// [`MapAction::Diagnostics`].
     ToggleDiagnostics,
+    /// The full map's camera mode changed, by [`MapAction::CameraMode`] or the map's own
+    /// shortcut; the host's controls follow it.
+    CameraMode {
+        mode: CameraMode,
+    },
 }
 
 /// The manual map interface scales the viewer accepts. `RangeInclusive::contains`
@@ -124,6 +136,167 @@ pub enum MapAction {
     /// The host saved map preferences; the viewer reads them again and reloads
     /// any map whose artwork, quality or anti-aliasing they change.
     MapSettingsSaved,
+    /// How the full map's camera moves: the game's map camera, flying or walking.
+    CameraMode {
+        mode: CameraMode,
+    },
+}
+
+/// How the full map's camera moves.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub enum CameraMode {
+    /// The game's map camera; a controller also orbits and tilts it.
+    #[default]
+    Map,
+    /// A free eye flying over the map.
+    Fly,
+    /// A free eye on the ground.
+    Walk,
+}
+
+impl CameraMode {
+    /// The mode the map's own shortcut moves to: map, fly, walk, then map again.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Map => Self::Fly,
+            Self::Fly => Self::Walk,
+            Self::Walk => Self::Map,
+        }
+    }
+}
+
+/// One handoff of the controller to one viewer: the host's number for that viewer (each viewer it
+/// starts is a new one) and the handoff's own number, which only grows.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GamepadOwner {
+    pub viewer: u64,
+    pub handoff: u64,
+}
+
+/// The host's controller messages to one viewer, in the order it sends them.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum GamepadMessage {
+    /// The viewer holds the controller under `owner` from now on. `state` is what is held: a
+    /// button already down is held, not pressed, so a handoff never presses anything.
+    Take {
+        owner: GamepadOwner,
+        state: GamepadState,
+    },
+    /// The controller held under `owner` changed. A viewer holding it under another handoff, or
+    /// not at all, drops it.
+    State {
+        owner: GamepadOwner,
+        state: GamepadState,
+    },
+    /// The viewer no longer holds the controller: it lets go of everything without pressing or
+    /// releasing anything, and drops later states. The host never releases a viewer after
+    /// handing it the controller again, so a release always applies.
+    Release,
+}
+
+impl GamepadMessage {
+    /// Refuses a state outside its ranges.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::Take { state, .. } | Self::State { state, .. } => state.validate(),
+            Self::Release => Ok(()),
+        }
+    }
+
+    /// The one message to keep when `next` follows `queued` before the receiver reads either. A
+    /// take or a release replaces whatever waits; a state refreshes a waiting take of its owner,
+    /// replaces a waiting state and never follows a waiting release.
+    pub fn merge(queued: Option<Self>, next: Self) -> Self {
+        match (queued, next) {
+            (Some(Self::Take { owner, .. }), Self::State { owner: of, state }) if owner == of => {
+                Self::Take { owner, state }
+            }
+            (Some(waiting @ (Self::Take { .. } | Self::Release)), Self::State { .. }) => waiting,
+            (_, next) => next,
+        }
+    }
+}
+
+/// One controller's state, before dead zones: sticks with `x` right and `y` up within -1..=1,
+/// triggers within 0..=1 and the held buttons as [`GamepadButton`] bits.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GamepadState {
+    /// Left then right stick.
+    pub sticks: [[f32; 2]; 2],
+    /// Left then right trigger.
+    pub triggers: [f32; 2],
+    pub buttons: u32,
+}
+
+impl GamepadState {
+    /// Whether `button` is held.
+    pub fn held(&self, button: GamepadButton) -> bool {
+        self.buttons & button.bit() != 0
+    }
+
+    /// Refuses values outside their ranges or not numbers.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let axes = self.sticks.iter().flatten();
+        if !axes.clone().all(|value| (-1.0..=1.0).contains(value))
+            || !self
+                .triggers
+                .iter()
+                .all(|value| (0.0..=1.0).contains(value))
+            || self.buttons >> GamepadButton::ALL.len() != 0
+        {
+            return Err("Controller state is outside its ranges");
+        }
+        Ok(())
+    }
+}
+
+/// A controller button, named by its position on a standard layout: the face buttons are
+/// south (Xbox A, PlayStation cross), east (B, circle), west (X, square) and north (Y, triangle).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GamepadButton {
+    South,
+    East,
+    West,
+    North,
+    LeftBumper,
+    RightBumper,
+    /// View, Back or Share.
+    Select,
+    /// Menu, Start or Options.
+    Start,
+    LeftStick,
+    RightStick,
+    DpadUp,
+    DpadDown,
+    DpadLeft,
+    DpadRight,
+}
+
+impl GamepadButton {
+    pub const ALL: [Self; 14] = [
+        Self::South,
+        Self::East,
+        Self::West,
+        Self::North,
+        Self::LeftBumper,
+        Self::RightBumper,
+        Self::Select,
+        Self::Start,
+        Self::LeftStick,
+        Self::RightStick,
+        Self::DpadUp,
+        Self::DpadDown,
+        Self::DpadLeft,
+        Self::DpadRight,
+    ];
+
+    pub fn bit(self) -> u32 {
+        1 << self as u32
+    }
 }
 
 impl MapAction {
@@ -158,7 +331,8 @@ impl MapAction {
             Self::Inspect
             | Self::MapSettingsSaved
             | Self::Vsync { .. }
-            | Self::Diagnostics { .. } => {}
+            | Self::Diagnostics { .. }
+            | Self::CameraMode { .. } => {}
         }
         Ok(())
     }
@@ -487,6 +661,85 @@ mod tests {
         }
     }
     use super::*;
+
+    #[test]
+    fn waiting_controller_messages_keep_their_handoffs() {
+        let owner = |handoff| GamepadOwner { viewer: 1, handoff };
+        let state = |x| GamepadState {
+            sticks: [[x, 0.0], [0.0; 2]],
+            ..GamepadState::default()
+        };
+        let take = |handoff, x| GamepadMessage::Take {
+            owner: owner(handoff),
+            state: state(x),
+        };
+        let update = |handoff, x| GamepadMessage::State {
+            owner: owner(handoff),
+            state: state(x),
+        };
+        // A newer state of a waiting take stays a take, so the viewer still takes it.
+        assert_eq!(GamepadMessage::merge(Some(take(3, 0.1)), update(3, 0.5)), take(3, 0.5));
+        assert_eq!(GamepadMessage::merge(Some(update(3, 0.1)), update(3, 0.5)), update(3, 0.5));
+        // A stale state never replaces a release or another handoff's take.
+        assert_eq!(GamepadMessage::merge(Some(GamepadMessage::Release), update(3, 0.5)), GamepadMessage::Release);
+        assert_eq!(GamepadMessage::merge(Some(take(4, 0.1)), update(3, 0.5)), take(4, 0.1));
+        // A release or a take replaces whatever waits.
+        assert_eq!(GamepadMessage::merge(Some(take(4, 0.1)), GamepadMessage::Release), GamepadMessage::Release);
+        assert_eq!(GamepadMessage::merge(Some(GamepadMessage::Release), take(5, 0.2)), take(5, 0.2));
+        assert_eq!(GamepadMessage::merge(None, update(5, 0.2)), update(5, 0.2));
+        let line = serde_json::to_string(&NativeCommand::Gamepad {
+            message: take(2, 0.0),
+        })
+        .unwrap();
+        assert!(line.starts_with(r#"{"command":"gamepad","message":{"kind":"take","owner":{"viewer":1,"handoff":2}"#), "{line}");
+        assert!(GamepadMessage::State { owner: owner(1), state: GamepadState { triggers: [2.0, 0.0], ..GamepadState::default() } }.validate().is_err());
+    }
+
+    #[test]
+    fn controller_states_hold_their_ranges_and_camera_modes_cycle() {
+        let state = GamepadState {
+            sticks: [[1.0, -1.0], [0.0; 2]],
+            triggers: [0.0, 1.0],
+            buttons: GamepadButton::Start.bit() | GamepadButton::DpadRight.bit(),
+        };
+        assert!(state.validate().is_ok());
+        assert!(state.held(GamepadButton::Start) && !state.held(GamepadButton::Select));
+        for bad in [
+            GamepadState {
+                sticks: [[1.01, 0.0], [0.0; 2]],
+                ..GamepadState::default()
+            },
+            GamepadState {
+                triggers: [-0.1, 0.0],
+                ..GamepadState::default()
+            },
+            GamepadState {
+                sticks: [[f32::NAN, 0.0], [0.0; 2]],
+                ..GamepadState::default()
+            },
+            GamepadState {
+                buttons: 1 << GamepadButton::ALL.len(),
+                ..GamepadState::default()
+            },
+        ] {
+            assert!(bad.validate().is_err(), "{bad:?}");
+        }
+        let mut mode = CameraMode::default();
+        let cycle: Vec<_> = (0..3)
+            .map(|_| {
+                mode = mode.next();
+                mode
+            })
+            .collect();
+        assert_eq!(cycle, [CameraMode::Fly, CameraMode::Walk, CameraMode::Map]);
+        assert_eq!(
+            serde_json::to_string(&NativeEvent::CameraMode {
+                mode: CameraMode::Walk
+            })
+            .unwrap(),
+            r#"{"event":"camera_mode","mode":"walk"}"#
+        );
+    }
 
     #[test]
     fn map_controls_validate_country_and_paths_without_renderer_state() {

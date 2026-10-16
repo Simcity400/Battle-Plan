@@ -160,6 +160,18 @@ impl CameraLaw {
         }
     }
 
+    /// Whether a cursor at framebuffer point `cursor` edge-scrolls a map of `viewport` pixels: the
+    /// setting is on and the cursor's whole pixel lies within the edge band.
+    pub fn edge_scrolls(&self, cursor: [f32; 2], viewport: [u32; 2]) -> bool {
+        let [width, height] = viewport.map(|side| side as i32);
+        let [x, y] = cursor.map(|value| value as i32);
+        self.edge_scrolling
+            && (y < EDGE_PIXELS
+                || y >= height - EDGE_PIXELS
+                || x < EDGE_PIXELS
+                || x >= width - EDGE_PIXELS)
+    }
+
     /// The shipped content's defines and default settings, for synthetic fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn test() -> Self {
@@ -315,18 +327,11 @@ impl Motion {
         let toward =
             |point: [i32; 2]| camera.pan_direction([point[0] as f32, point[1] as f32], viewport);
         let mut moved = [0.0f32; 3];
-        if law.edge_scrolling
-            && let Some(cursor) = input.cursor
+        if let Some(cursor) = input.cursor
+            && law.edge_scrolls(cursor, viewport)
         {
-            let [x, y] = cursor.map(|value| value as i32);
-            if y < EDGE_PIXELS
-                || y >= height - EDGE_PIXELS
-                || x < EDGE_PIXELS
-                || x >= width - EDGE_PIXELS
-            {
-                let direction = toward([x, y]);
-                moved = [direction[0] * pan, direction[1] * pan, direction[2] * pan];
-            }
+            let direction = toward(cursor.map(|value| value as i32));
+            moved = [direction[0] * pan, direction[1] * pan, direction[2] * pan];
         }
         if let Some(ground) = input.ground {
             for &notch in input.notches {
@@ -375,6 +380,7 @@ impl Motion {
         self.target = Some(Placement {
             center: [target.center[0] + moved[0], target.center[1] + moved[2]],
             height: target.height + moved[1],
+            pose: target.pose,
         });
         true
     }

@@ -1060,6 +1060,7 @@ fn draw_land_action_fixture_with(
             height: 100.0,
             map: MapSize::TEST,
             defines: MapDefines::test(),
+            pose: viewer_foundation::map::camera::Pose::Map,
         },
         viewport: [400, 400],
         ui_scale: 1.0,
@@ -1459,6 +1460,7 @@ fn a_column_nearer_the_camera_sorts_to_a_smaller_depth_and_draws_on_top() {
         height: 310.13113,
         map: MapSize::TEST,
         defines: MapDefines::test(),
+        pose: viewer_foundation::map::camera::Pose::Map,
     };
     let matrix = camera.view_projection([2048, 1152]);
     let nearer = Camera::map_icon_depth(&matrix, [3092.0, 10.0, 1590.0]);
@@ -2802,6 +2804,7 @@ fn only_provinces_the_camera_admits_offer_unit_sources() {
     let camera = Placement {
         center: [3000.0, 1000.0],
         height: 50.0,
+        pose: viewer_foundation::map::camera::Pose::Map,
     }
     .on(MapSize::TEST, MapDefines::test());
     let bounds = edge_boxes();

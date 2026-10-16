@@ -5,9 +5,9 @@ use std::{
     ops::Range,
 };
 use {
-    crate::map::camera::Camera, crate::map::province_admission::admits_box,
-    crate::map::province_admission::side_planes, crate::map::ribbon_content::Mode,
-    crate::map::ribbon_content::Vertex,
+    crate::map::camera::Camera, crate::map::province_admission::Planes,
+    crate::map::province_admission::admits_box, crate::map::province_admission::side_planes,
+    crate::map::ribbon_content::Mode, crate::map::ribbon_content::Vertex,
 };
 
 #[derive(Debug, PartialEq)]
@@ -22,7 +22,7 @@ pub struct View {
     pub labels: Vec<usize>,
 }
 
-fn offsets(bounds: [[f32; 3]; 2], width: f32, planes: &[[f32; 4]; 4]) -> Vec<f32> {
+fn offsets(bounds: [[f32; 3]; 2], width: f32, planes: &Planes) -> Vec<f32> {
     // Create at most one seam box, negative-X branch first.
     let seam = if bounds[0][0] < 0. {
         Some(width)
@@ -159,7 +159,7 @@ pub fn vertices(
 mod tests {
     use super::*;
     use {
-        crate::map::camera::{MapDefines, MapSize},
+        crate::map::camera::{MapDefines, MapSize, Pose},
         crate::map::ribbon_content::OrderField,
         crate::map::ribbon_mesh::emit,
     };
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn seam_boxes_keep_both_copies_and_use_negative_edge_first() {
-        let all = [[0.; 4]; 4];
+        let all = [[0.; 4]; 6];
         assert_eq!(
             offsets([[-2., 0., 0.], [2., 1., 1.]], 100., &all),
             [0., 100.]
@@ -206,7 +206,14 @@ mod tests {
             offsets([[-2., 0., 0.], [102., 1., 1.]], 100., &all),
             [0., 100.]
         );
-        let near_right = [[-1., 0., 0., 90.], [1., 0., 0., -110.], [0.; 4], [0.; 4]];
+        let near_right = [
+            [-1., 0., 0., 90.],
+            [1., 0., 0., -110.],
+            [0.; 4],
+            [0.; 4],
+            [0.; 4],
+            [0.; 4],
+        ];
         assert_eq!(
             offsets([[-2., 0., 0.], [2., 1., 1.]], 100., &near_right),
             [100.]
@@ -234,6 +241,7 @@ mod tests {
             height: 50.,
             map: MapSize::TEST,
             defines: MapDefines::test(),
+            pose: Pose::Map,
         };
         for (x, expected) in [(3040., 1), (3060., 0)] {
             field.draws[0].bounds = [[x, 0., 999.], [x + 2., 1., 1001.]];
@@ -268,6 +276,7 @@ mod tests {
             height: 300.,
             map: MapSize::TEST,
             defines: MapDefines::test(),
+            pose: Pose::Map,
         };
         let plan = plans(&field.draws, camera, [1920, 1080], &[0., 0.], |_, _| {
             Some(&arrow)

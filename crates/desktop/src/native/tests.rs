@@ -424,3 +424,62 @@ fn a_host_names_the_recording_it_shows_requests_and_seeks() {
     }
     assert_eq!(host.recordings(), ["shown", "opening", "seeking"]);
 }
+
+#[test]
+fn a_waiting_controller_message_wakes_the_writer_even_while_hidden() {
+    use dashboard::protocol::GamepadMessage;
+    let mut pending = Pending::default();
+    assert!(!pending.can_send(true));
+    pending.gamepad = Some(GamepadMessage::Release);
+    // A release must reach a hidden viewer too.
+    assert!(pending.can_send(false));
+    let commands = pending.take_commands(false);
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        NativeCommand::Gamepad {
+            message: GamepadMessage::Release
+        }
+    )));
+    assert!(!pending.can_send(true));
+}
+
+#[test]
+fn only_the_latest_camera_mode_waits_for_the_viewer() {
+    use dashboard::protocol::{CameraMode, MapAction};
+    let host = NativeHost::default();
+    host.shared.0.lock().unwrap().status.ready = true;
+    for mode in [
+        CameraMode::Fly,
+        CameraMode::Walk,
+        CameraMode::Map,
+        CameraMode::Fly,
+    ] {
+        host.map_action(MapAction::CameraMode { mode }).unwrap();
+    }
+    host.map_action(MapAction::Inspect).unwrap();
+    let inner = host.shared.0.lock().unwrap();
+    let queued: Vec<_> = inner
+        .pending
+        .actions
+        .iter()
+        .map(|action| match action {
+            MapAction::CameraMode { mode } => Some(*mode),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(queued, [Some(CameraMode::Fly), None]);
+}
+
+#[test]
+fn the_status_carries_the_camera_mode_for_the_interface() {
+    let status = HostStatus {
+        camera_mode: dashboard::protocol::CameraMode::Walk,
+        ..Default::default()
+    };
+    let value = serde_json::to_value(&status).unwrap();
+    assert_eq!(value["cameraMode"], "walk");
+    assert_eq!(
+        serde_json::to_value(HostStatus::default()).unwrap()["cameraMode"],
+        "map"
+    );
+}

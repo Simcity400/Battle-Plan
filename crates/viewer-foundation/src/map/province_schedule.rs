@@ -224,6 +224,7 @@ impl Schedule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::camera::Pose;
 
     #[test]
     fn selected_province_bypasses_phase_even_after_a_pending_advance() {
@@ -296,6 +297,7 @@ mod tests {
         let camera = super::super::camera::Placement {
             center: [3000.0, 1000.0],
             height: 50.0,
+            pose: Pose::Map,
         }
         .on(
             super::super::camera::MapSize::TEST,
@@ -333,6 +335,7 @@ mod tests {
             height: 300.0,
             map: super::super::camera::MapSize::TEST,
             defines: super::super::camera::MapDefines::test(),
+            pose: Pose::Map,
         };
         schedule.present(&bounds, camera, [64, 64], 1.0);
         let phase = schedule.phase;
@@ -467,6 +470,7 @@ mod tests {
             height: 50.0,
             map: super::super::camera::MapSize::TEST,
             defines: super::super::camera::MapDefines::test(),
+            pose: Pose::Map,
         };
         let mut schedule = Schedule::default();
         schedule.advance_frame(&bounds, bounds.keys().copied(), camera, [1, 64], false);
@@ -533,6 +537,7 @@ mod tests {
             height: 50.0,
             map: super::super::camera::MapSize::TEST,
             defines: super::super::camera::MapDefines::test(),
+            pose: Pose::Map,
         };
         schedule.set_selected(BTreeSet::from([88]));
         schedule.present(&bounds, camera, [64, 64], 1.0);

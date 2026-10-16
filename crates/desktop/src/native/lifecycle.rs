@@ -135,6 +135,10 @@ impl NativeHost {
         inner.status.running = true;
         inner.status.ready = false;
         inner.status.error = None;
+        // A new viewer starts at the game's camera, holding no controller until the host hands
+        // it over; nothing queued for the last one reaches it.
+        inner.status.camera_mode = Default::default();
+        inner.pending.gamepad = None;
         inner.last_diagnostic = None;
         if inner.active_dashboard {
             let views = inner.dashboard_views.clone().unwrap_or_default();
@@ -285,6 +289,7 @@ impl NativeHost {
                 return;
             }
             NativeEvent::Ready { .. } => inner.status.ready = true,
+            NativeEvent::CameraMode { mode } => inner.status.camera_mode = mode,
             NativeEvent::State {
                 path,
                 branch,

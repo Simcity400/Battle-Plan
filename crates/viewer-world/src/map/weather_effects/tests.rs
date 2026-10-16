@@ -3,20 +3,23 @@ use std::collections::BTreeSet;
 
 #[test]
 fn weather_parent_acceptance_is_a_fresh_ordered_prefix_with_plane_contact() {
-    let outside = [[0., 0., 0., 2.]; 4];
-    let contact = [[0., 0., 0., 1.]; 4];
+    let outside = [[0., 0., 0., 2.]; 6];
+    let contact = [[0., 0., 0., 1.]; 6];
     let views = vec![([0.; 3], outside), ([0.; 3], contact), ([0.; 3], outside)];
-    assert_eq!(parent_admission([0.; 3], 1., &views), 0b110);
+    assert_eq!(
+        parent_admission([0.; 3], 1., &views),
+        native::ViewMask::Some(vec![false, true, true])
+    );
     //The previous call does not leave a stamp in a later frame.
-    assert_eq!(parent_admission([0.; 3], 1., &[([0.; 3], outside); 3]), 0);
-    assert_eq!(
-        parent_admission([0.; 3], -1., &[([0.; 3], [[0.; 4]; 4])]),
-        0
-    );
-    assert_eq!(
-        parent_admission([f32::MAX, 0., 0.], 1., &[([0.; 3], contact)]),
-        0
-    );
+    assert!(parent_admission([0.; 3], 1., &[([0.; 3], outside); 3]).is_empty());
+    assert!(parent_admission([0.; 3], -1., &[([0.; 3], [[0.; 4]; 6])]).is_empty());
+    assert!(parent_admission([f32::MAX, 0., 0.], 1., &[([0.; 3], contact)]).is_empty());
+    // A free camera's frame can hold more views than eight: the mask has one per view.
+    let mut many = vec![([0.; 3], outside); 8];
+    many.extend([([0.; 3], contact), ([0.; 3], outside)]);
+    let mask = parent_admission([0.; 3], 1., &many);
+    assert!((0..8).all(|view| !mask.contains(view)));
+    assert!(mask.contains(8) && mask.contains(9));
 }
 use viewer_foundation::map::presentation::Continuity;
 

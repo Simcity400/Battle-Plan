@@ -115,6 +115,7 @@ impl Fixture {
             camera: Placement {
                 center: [x, z],
                 height,
+                pose: viewer_foundation::map::camera::Pose::Map,
             }
             .on(MapSize::of(&self.document.map), self.document.map_defines),
             day_night: DayNight::at_hour(self.input.hour),

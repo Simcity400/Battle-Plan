@@ -371,8 +371,8 @@ fn buckets_use_first_inclusive_match_and_native_edge_extensions() {
         Some(0)
     );
     assert!(!contains(b[0], [0., -100.01, 0.]));
-    assert!(admits_box(b[0], 0., &[[-1., 0., 0., 101.]; 4]));
-    assert!(!admits_box(b[0], 0., &[[-1., 0., 0., 102.]; 4]));
+    assert!(admits_box(b[0], 0., &[[-1., 0., 0., 101.]; 6]));
+    assert!(!admits_box(b[0], 0., &[[-1., 0., 0., 102.]; 6]));
 }
 
 #[test]
@@ -381,10 +381,7 @@ fn ambient_buckets_keep_the_camera_side_margin() {
 
     let bounds = buckets([MapSize::TEST.width, MapSize::TEST.height])[5];
     for (distance, expected) in [(84., 1), (104., 0)] {
-        let camera = CameraPlacement {
-            center: [bounds[0][0] - distance, bounds[1][2]],
-            height: 50.,
-        }
+        let camera = CameraPlacement::map([bounds[0][0] - distance, bounds[1][2]], 50.)
         .on(MapSize::TEST, MapDefines::test());
         let mut presentation = Presentation {
             placements: vec![Placement {

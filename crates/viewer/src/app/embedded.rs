@@ -100,6 +100,10 @@ impl Viewer {
                 }
             }
         }
+        if let Some(message) = pending.gamepad {
+            self.input.gamepad(message);
+            ctx.request_repaint();
+        }
         let actions = pending.actions;
         // The web shell owns these controls and changes the map's own state.
         for action in actions {
@@ -222,10 +226,13 @@ impl Viewer {
                 self.started += now.duration_since(hidden);
                 self.last_step = now;
                 self.last_frame = now;
+                self.input.restart_clock();
                 ctx.request_repaint();
             }
         } else if self.hidden_since.is_none() {
             self.hidden_since = Some(now);
+            self.input.release();
+            self.grab_pointer(ctx);
         }
         // Invalid input arrives after any earlier coalesced work. Retain its
         // failure until a later successful open/seek or native user action.
@@ -331,6 +338,7 @@ impl Viewer {
                 }
             }
             MapAction::Inspect => self.report_map_details(),
+            MapAction::CameraMode { mode } => self.set_camera_mode(mode, ctx),
         }
         ctx.request_repaint();
     }

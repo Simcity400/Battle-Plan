@@ -51,11 +51,13 @@ impl PreparedBases {
         anchor: [f32; 3],
         state: State,
     ) {
-        let projected = inputs.camera.project_map_icon(
+        let Some(projected) = inputs.camera.project_map_icon(
             anchor,
             inputs.viewport,
             gui_resources_viewport(inputs.viewport, inputs.ui_scale),
-        );
+        ) else {
+            return;
+        };
         self.placed[family as usize].push(Placed {
             id,
             province,

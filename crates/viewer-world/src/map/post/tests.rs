@@ -9,6 +9,7 @@ fn camera(center: [f32; 2], height: f32) -> Camera {
         height,
         map: MapSize::TEST,
         defines: MapDefines::test(),
+        pose: viewer_foundation::map::camera::Pose::Map,
     }
 }
 

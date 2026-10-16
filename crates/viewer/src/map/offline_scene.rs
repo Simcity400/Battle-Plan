@@ -259,6 +259,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
                 camera: camera::Placement {
                     center: [x, z],
                     height,
+                    pose: viewer_foundation::map::camera::Pose::Map,
                 }
                 .on(map, camera_defines),
                 day_night: frame::DayNight::at_hour(input.hour),

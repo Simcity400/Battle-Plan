@@ -94,6 +94,7 @@ fn unit_scale_replay_layers() {
         let camera = Placement {
             center: [3009.9868, 1537.9652],
             height,
+            pose: viewer_foundation::map::camera::Pose::Map,
         }
         .on(MapSize::of(&document.map), document.map_defines);
         for offset in 0..9 {

@@ -76,6 +76,16 @@ fn ground(
     if screen.iter().any(|value| !value.is_finite()) {
         return Ok(None);
     }
+    if camera.free().is_some() {
+        // A free eye finds no ground above the horizon; the seam pick keeps x on the map's first
+        // copy, the camera's own motion keeps the ray's copy.
+        return Ok(
+            free_ground(camera, screen, viewport, map, heightmap).map(|[x, y, z]| match mode {
+                Views::Seams => [x.rem_euclid(camera.map.x()), y, z],
+                Views::Own => [x, y, z],
+            }),
+        );
+    }
     let views = match mode {
         Views::Seams => views(*camera, viewport),
         Views::Own => [Some(*camera), None, None],
@@ -114,6 +124,117 @@ fn ground(
     Ok(Some(best.unwrap_or_else(|| {
         plane_pick(camera, screen, viewport, mode)
     })))
+}
+
+/// The first ground a free eye's ray through `screen` meets: the same height cells the game's pick
+/// reads, walked in order along the ray from the eye out to the far plane (a forward depth, so
+/// further along the rays towards the view's edges), the map wrapping in `x` and ending in `z`.
+/// `None` when the ray passes above every cell, as it does above the horizon.
+/// The point's `x` stays on the ray's own map copy. `heightmap` holds one byte per map pixel.
+pub fn free_ground(
+    camera: &Camera,
+    screen: [f32; 2],
+    viewport: [u32; 2],
+    map: &MapData,
+    heightmap: &[u8],
+) -> Option<[f32; 3]> {
+    let count = (map.width as usize).checked_mul(map.height as usize)?;
+    if count == 0 || heightmap.len() != count {
+        return None;
+    }
+    let origin = camera.eye();
+    let direction = camera.pick_ray(screen, viewport);
+    let forward = camera.look_direction();
+    let depth = direction[0] * forward[0] + direction[1] * forward[1] + direction[2] * forward[2];
+    if depth.is_nan() || depth <= 0.0 {
+        return None;
+    }
+    march(origin, direction, camera.lens().far / depth, map, heightmap)
+}
+
+/// Walks the height cells a ray crosses within `far`, nearest first; see [`free_ground`].
+fn march(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    far: f32,
+    map: &MapData,
+    heightmap: &[u8],
+) -> Option<[f32; 3]> {
+    const TOP: f32 = super::camera::frustum::TERRAIN_TOP;
+    let [ox, oy, oz] = origin;
+    let [dx, dy, dz] = direction;
+    // The part of the ray inside the band the terrain occupies.
+    let mut start = 0.0f32;
+    let mut end = far;
+    if oy > TOP {
+        if dy >= 0.0 {
+            return None;
+        }
+        start = start.max((oy - TOP) / -dy);
+    } else if dy > 0.0 {
+        end = end.min((TOP - oy) / dy);
+    }
+    if start.is_nan() || end.is_nan() || start >= end {
+        return None;
+    }
+    let width = map.width as i64;
+    let rows = map.height as i64;
+    let at = |t: f32| [ox + dx * t, oy + dy * t, oz + dz * t];
+    let [x, _, z] = at(start);
+    let mut cell = [x.floor() as i64, z.floor() as i64];
+    let step = [dx.signum() as i64, dz.signum() as i64];
+    // Ray distance to cross one cell along each axis, and to the next cell boundary.
+    let delta = [1.0 / dx.abs(), 1.0 / dz.abs()];
+    let next = |position: f32, cell: i64, direction: f32, delta: f32| {
+        if direction > 0.0 {
+            (cell as f32 + 1.0 - position) * delta
+        } else if direction < 0.0 {
+            (position - cell as f32) * delta
+        } else {
+            f32::INFINITY
+        }
+    };
+    let mut boundary = [
+        start + next(x, cell[0], dx, delta[0]),
+        start + next(z, cell[1], dz, delta[1]),
+    ];
+    let mut entered = start;
+    // Every cell is crossed at most once; the bound guards against a degenerate direction.
+    let limit = ((end - start) * 2.0) as u64 + 4;
+    for _ in 0..limit {
+        let exit = boundary[0].min(boundary[1]).min(end);
+        if (0..rows).contains(&cell[1]) {
+            let column = cell[0].rem_euclid(width) as usize;
+            let row = (rows - 1 - cell[1]) as usize;
+            let height = (f32::from(heightmap[row * map.width as usize + column]) * 0.1).max(9.5);
+            let [_, low_entry, _] = at(entered);
+            let [_, low_exit, _] = at(exit);
+            if low_entry.min(low_exit) <= height {
+                let t = if low_entry <= height {
+                    entered
+                } else {
+                    (oy - height) / -dy
+                };
+                let [px, _, pz] = at(t);
+                return Some([px, height, pz]);
+            }
+        } else if (cell[1] < 0 && dz <= 0.0) || (cell[1] >= rows && dz >= 0.0) {
+            // Past the map's top or bottom edge and moving away: nothing more to meet.
+            return None;
+        }
+        if exit >= end {
+            return None;
+        }
+        entered = exit;
+        if boundary[0] <= boundary[1] {
+            cell[0] += step[0];
+            boundary[0] += delta[0];
+        } else {
+            cell[1] += step[1];
+            boundary[1] += delta[1];
+        }
+    }
+    None
 }
 
 /// Seam flags and the single-width recenter are , shared with admission.

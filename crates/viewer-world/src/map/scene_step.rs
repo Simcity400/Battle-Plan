@@ -297,11 +297,8 @@ mod tests {
         }
 
         fn step(&mut self, graphics: &MapGraphics, time: f32) {
-            let camera = Placement {
-                center: [3000.0, 1000.0],
-                height: 50.0,
-            }
-            .on(MapSize::TEST, MapDefines::test());
+            let camera =
+                Placement::map([3000.0, 1000.0], 50.0).on(MapSize::TEST, MapDefines::test());
             self.unit_history.advance_schedule(camera, [1024, 768]);
             Presentation {
                 graphics,

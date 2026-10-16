@@ -302,6 +302,7 @@ combat: number,
 voice: number, };
 export type MapAudioOverrides = { master: number | null, ambient: number | null, units: number | null, combat: number | null, voice: number | null, };
 export type CounterFilter = { "kind": "all" } | { "kind": "players" } | { "kind": "countries", tags: Array<string>, };
+export type CameraMode = "map" | "fly" | "walk";
 export type CampaignMapSettings = { graphics: MapGraphicsOverrides, audio: MapAudioOverrides,
 /**
  * None inherits the parent's counter filter.

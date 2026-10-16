@@ -1009,6 +1009,7 @@ mod tests {
         let camera = Placement {
             center: [10.0, 10.0],
             height: 60.0,
+            pose: viewer_foundation::map::camera::Pose::Map,
         }
         .on(MapSize::TEST, MapDefines::test());
         let instance = scene.cities[0].instance;

@@ -470,7 +470,7 @@ impl Player {
         targets: &Targets,
         caller: &mut shader_scene::State,
         matrix: &[[f32; 4]; 4],
-        planes: &[[f32; 4]; 4],
+        planes: &viewer_foundation::map::province_admission::Planes,
         visible: bool,
     ) -> bool {
         // Hidden arrows still bind and prepare everything they would, so the models drawn after
@@ -626,7 +626,10 @@ impl Bounds {
         }
     }
 
-    fn offsets(self, planes: &[[f32; 4]; 4]) -> impl Iterator<Item = f32> {
+    fn offsets(
+        self,
+        planes: &viewer_foundation::map::province_admission::Planes,
+    ) -> impl Iterator<Item = f32> {
         [Some(0.0), self.companion]
             .into_iter()
             .flatten()

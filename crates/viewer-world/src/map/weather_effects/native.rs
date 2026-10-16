@@ -25,12 +25,35 @@ pub struct Inputs<'a> {
     pub retained: &'a mut crate::map::shader_scene::State,
 }
 
+/// The wrap views a packet draws in, one flag a view in the frame's order, as many as the frame
+/// has: a free camera can reach any number of map copies.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ViewMask {
+    /// Every view.
+    All,
+    /// Whether each view draws the packet; views past the end do not.
+    Some(Vec<bool>),
+}
+
+impl ViewMask {
+    pub(super) fn contains(&self, view: usize) -> bool {
+        match self {
+            Self::All => true,
+            Self::Some(views) => views.get(view).copied().unwrap_or(false),
+        }
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        matches!(self, Self::Some(views) if !views.contains(&true))
+    }
+}
+
 pub(super) struct DrawPacket {
     page: usize,
     registration: usize,
     pub actor: [usize; 4],
     /// Prepared admission in the frame's ordered native camera envelopes.
-    pub views: u8,
+    pub views: ViewMask,
     pub(super) descriptor: RenderDescriptor,
     constants: Packet,
     pub instances: Vec<Instance>,
@@ -74,7 +97,7 @@ impl DrawPacket {
             page: e.page,
             registration: e.registration,
             actor: [0; 4],
-            views: u8::MAX,
+            views: ViewMask::All,
             descriptor: e.render.clone(),
             constants: Packet {
                 world: matrix(world),
@@ -274,7 +297,7 @@ impl EntitySimulations {
 fn submission_order(packets: &[DrawPacket], view: usize) -> Vec<&DrawPacket> {
     let mut ordered: Vec<_> = packets
         .iter()
-        .filter(|packet| packet.views & (1 << view) != 0)
+        .filter(|packet| packet.views.contains(view))
         .collect();
     // Submit each actor's ordinary packets before that actor's trails.
     ordered.sort_by_key(|packet| (packet.registration, packet.actor, packet.descriptor.trail));
@@ -776,6 +799,7 @@ mod tests {
             height: 600.,
             map: MapSize::TEST,
             defines: MapDefines::test(),
+            pose: viewer_foundation::map::camera::Pose::Map,
         };
         let anchor = [camera.map.x() - 5., 10., 400.];
         for local in [false, true] {
@@ -909,16 +933,18 @@ mod tests {
     fn view_admission_filters_actors_before_registration_and_trail_order() {
         let mut emitter = super::super::tests::activation_test_emitter();
         let mut packets = Vec::new();
+        let second = ViewMask::Some(vec![false, true]);
+        let third = ViewMask::Some(vec![false, false, true]);
         for (reference, trail, views, time) in [
-            (0, true, 0b010, 1.),
-            (0, false, 0b010, 2.),
-            (1, true, 0b100, 3.),
-            (1, false, 0b100, 4.),
+            (0, true, &second, 1.),
+            (0, false, &second, 2.),
+            (1, true, &third, 3.),
+            (1, false, &third, 4.),
         ] {
             emitter.render.trail = trail;
             let mut packet = DrawPacket::new(&emitter, 1., Transform::IDENTITY, time);
             packet.actor = [0, 0, 0, reference];
-            packet.views = views;
+            packet.views = views.clone();
             packets.push(packet);
         }
         assert!(submission_order(&packets, 0).is_empty());
@@ -938,8 +964,26 @@ mod tests {
         );
         //Packet masks, identities and populations remain immutable across views.
         assert_eq!(
-            packets.iter().map(|p| p.views).collect::<Vec<_>>(),
-            [2, 2, 4, 4]
+            packets.iter().map(|p| p.views.clone()).collect::<Vec<_>>(),
+            [second.clone(), second, third.clone(), third]
         );
+    }
+
+    /// A free camera's frame can have more views than any fixed mask holds.
+    #[test]
+    fn view_masks_hold_any_number_of_views() {
+        let mut views = vec![false; 12];
+        views[9..].fill(true);
+        let mask = ViewMask::Some(views);
+        assert!(!mask.contains(8) && mask.contains(9) && mask.contains(11));
+        assert!(!mask.contains(12) && !mask.is_empty());
+        assert!(ViewMask::Some(vec![false; 3]).is_empty() && ViewMask::Some(Vec::new()).is_empty());
+        assert!(ViewMask::All.contains(1_000) && !ViewMask::All.is_empty());
+        let emitter = super::super::tests::activation_test_emitter();
+        let mut packet = DrawPacket::new(&emitter, 1., Transform::IDENTITY, 1.);
+        packet.views = mask;
+        let packets = [packet];
+        assert!(submission_order(&packets, 8).is_empty());
+        assert_eq!(submission_order(&packets, 10).len(), 1);
     }
 }

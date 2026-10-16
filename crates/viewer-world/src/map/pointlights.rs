@@ -224,6 +224,7 @@ mod tests {
                 height: 300.0,
                 map: MapSize::TEST,
                 defines: MapDefines::test(),
+                pose: viewer_foundation::map::camera::Pose::Map,
             },
             &lights,
         );
@@ -240,6 +241,7 @@ mod tests {
                     height: 100,
                 },
                 defines: MapDefines::test(),
+                pose: viewer_foundation::map::camera::Pose::Map,
             },
             &lights,
         );

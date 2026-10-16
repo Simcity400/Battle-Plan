@@ -47,7 +47,7 @@ use {
     crate::map::borders::BorderMeshes, crate::map::demilitarized::DemilitarizedPass,
     crate::map::demilitarized::Zone, crate::map::political::Regions,
     crate::map::shadow::ShadowPass, crate::map::terrain::Grid, crate::map::terrain::MARGIN,
-    crate::map::terrain::grid_for, crate::map::water::WaterPass,
+    crate::map::water::WaterPass,
     viewer_foundation::map::camera::Camera, viewer_foundation::map::frame::DayNight,
     viewer_foundation::map::frame::FrameConstants, viewer_foundation::map::textures::Bound,
     viewer_foundation::map::textures::ColorSpace, viewer_foundation::map::textures::data_texture,
@@ -212,6 +212,8 @@ pub struct Scene {
     detail_laps: CpuLaps,
     pub targets: Option<Targets>,
     grid: Grid,
+    /// The terrain the frame draws: the uniform grid, or a free eye's blocks.
+    cover: crate::map::terrain::Cover,
     generation: u64,
     // borders
     /// Kept so the border pass can be built after the scene, once the document has traced it.
@@ -672,6 +674,7 @@ impl Scene {
                 step: 1.0,
                 counts: [0, 0],
             },
+            cover: crate::map::terrain::Cover::Blocks(Vec::new()),
             generation: 0,
             // borders
             borders: None,
@@ -1663,7 +1666,8 @@ impl Scene {
         // Receiver and blur stay backbuffer-sized, even when the
         // scene is half size. Camera projection/culling and GUI also retain size.
         self.shadow.resize(device, size);
-        self.grid = grid_for(camera, size);
+        self.cover = crate::map::terrain::cover_for(camera, size);
+        self.grid = self.cover.grid();
         // trees: the same rectangle the wrap offsets come from, which the tree pass culls its
         // buckets against.
         let visible = camera.visible_ground(size, MARGIN);
@@ -1745,7 +1749,19 @@ impl Scene {
         // The world-wrap copies the visible rectangle reaches. Every layer cut
         // at the x seam takes the same list: the rivers and border meshes
         // below, and the name layer, which needs it before the encoder starts.
-        let offsets = wrap_offsets(visible, camera.map.x());
+        // A free eye's terrain reaches the horizon, so its world layers take
+        // every copy its far plane reaches.
+        let offsets = match camera.free() {
+            None => wrap_offsets(visible, camera.map.x()),
+            Some(free) => crate::map::border_pass::free_wrap_offsets(
+                camera.reach(
+                    size,
+                    free.lens.far,
+                    [0.0, viewer_foundation::map::camera::frustum::TERRAIN_TOP],
+                ),
+                camera.map.x(),
+            ),
+        };
         let native_frames = offsets.iter().map(|offset| {
                     // Upload each world-wrap camera's scene block;
                     // the native vertex stays at its original world position.
@@ -1839,7 +1855,7 @@ impl Scene {
                         retained: None,
                         frames: &native_frame_bytes,
                         offsets: &offsets,
-                        grid: self.grid,
+                        cover: &self.cover,
                         matrix: [[0.; 4]; 4],
                         light_grid: globals.light_grid,
                         textures: [
@@ -1887,10 +1903,13 @@ impl Scene {
         match (shadow_prepared, visible) {
             (Some(shadow_prepared), Some(visible)) => {
                 if shadow_casters {
-                    let casters = Some(crate::map::shadow::caster_rect(
-                        visible,
-                        crate::map::shadow::light_direction(camera, &globals.frame),
-                    ));
+                    let casters = crate::map::shadow::receiver_rect(camera, size, Some(visible))
+                        .map(|receivers| {
+                            crate::map::shadow::caster_rect(
+                                receivers,
+                                crate::map::shadow::light_direction(camera, &globals.frame),
+                            )
+                        });
                     let caster_frame = |alpha| ModelFrame {
                         camera,
                         offsets: &offsets,
@@ -2104,7 +2123,7 @@ impl Scene {
                             retained: None,
                             frames: &native_frame_bytes,
                             offsets: &offsets,
-                            grid: self.grid,
+                            cover: &self.cover,
                             matrix: shadow_prepared.texture_matrix,
                             light_grid: globals.light_grid,
                             textures: [
@@ -2187,7 +2206,7 @@ impl Scene {
                         retained: Some(&retained_scene),
                         frames: view_frames,
                         offsets: view_offsets,
-                        grid: self.grid,
+                        cover: &self.cover,
                         matrix: [[0.; 4]; 4],
                         light_grid: globals.light_grid,
                         textures: [

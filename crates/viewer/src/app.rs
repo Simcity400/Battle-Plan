@@ -1,4 +1,5 @@
 use crate::map_views::CounterView;
+use dashboard::protocol::CameraMode;
 use std::path::Path;
 use std::sync::OnceLock;
 use viewer_combat as combat;
@@ -378,6 +379,10 @@ struct Uploaded {
 /// interface uses the same key.
 const DIAGNOSTICS_KEY: egui::Key = egui::Key::F3;
 
+/// Cycles the full map's camera modes, as the controller's view button does. No interface
+/// shortcut in the game's content binds it.
+const CAMERA_MODE_KEY: egui::Key = egui::Key::F12;
+
 /// Whether `event` is the diagnostics shortcut: a first press of the key with
 /// no modifier, as the web interface's handler takes it.
 fn is_diagnostics_shortcut(event: &egui::Event) -> bool {
@@ -681,6 +686,16 @@ pub struct Viewer {
     camera_manual: bool,
     /// The game's zoom: its target camera and the wheel's part notch.
     zoom: Motion,
+    /// How the full map's camera moves, as the host's control sets it.
+    camera_mode: CameraMode,
+    /// Keyboard, mouse and controller input for the camera controllers.
+    input: crate::controls::Input,
+    /// The controller's heading and tilt around the map camera.
+    orbit: crate::controls::orbit::Orbit,
+    /// The free eye of the flying and walking modes, placed when one starts.
+    observer: Option<crate::controls::observer::Observer>,
+    /// Whether the window hides and confines the cursor for looking around.
+    pointer_grabbed: bool,
     playing: bool,
     speed: u32,
     last_step: Instant,
@@ -1050,6 +1065,11 @@ impl Viewer {
             camera: options.camera,
             camera_manual: options.camera.is_some(),
             zoom: Motion::default(),
+            camera_mode: CameraMode::Map,
+            input: crate::controls::Input::default(),
+            orbit: crate::controls::orbit::Orbit::default(),
+            observer: None,
+            pointer_grabbed: false,
             // colour: `--postfx off` reaches the window too, so a window and a
             // dump of the same state can be the same frame.
             postfx: options.postfx,
@@ -1694,6 +1714,8 @@ impl Viewer {
         self.camera = self.options.camera;
         self.camera_manual = self.options.camera.is_some();
         self.zoom.reset();
+        self.orbit.reset();
+        self.observer = None;
         // names
         self.placements = None;
         self.placements_at = None;
@@ -2381,6 +2403,32 @@ impl Viewer {
             |placement| placement.on(map_size, defines),
         );
         let camera = &mut camera;
+        // One frame of keyboard, mouse and controller input for the camera controllers. A
+        // capture's pinned camera takes none.
+        let controls = if pinned.is_some() {
+            crate::controls::Frame::default()
+        } else {
+            let (events, focused, modifiers) =
+                ui.input(|input| (input.events.clone(), input.focused, input.modifiers));
+            self.input.frame(crate::controls::Window {
+                events: &events,
+                focused,
+                modifiers,
+                now: Instant::now(),
+            })
+        };
+        // The map's own shortcut and the controller's view button cycle the camera modes, so a
+        // window without the host's controls can change them too.
+        if pinned.is_none()
+            && !self.dashboard_map
+            && (controls.pressed.contains(&CAMERA_MODE_KEY)
+                || controls
+                    .pad
+                    .pressed(dashboard::protocol::GamepadButton::Select))
+        {
+            self.set_camera_mode(self.camera_mode.next(), ui.ctx());
+        }
+        let free_mode = self.camera_mode != CameraMode::Map && pinned.is_none();
         // Pointer and drag deltas reach the camera in framebuffer pixels.
         let scale = ui.ctx().pixels_per_point() / raster.stretch;
         let frame_point = |position: egui::Pos2| {
@@ -2514,21 +2562,28 @@ impl Viewer {
         let window_focused = ui.input(|input| input.focused);
         let focused = window_focused && (!self.dashboard_map || owns);
         let pointed = response.hovered() && !over_combat;
+        // A free mode takes the pointer for looking around when the map is clicked.
+        if free_mode && (response.clicked() || response.drag_started()) {
+            self.input.capture();
+        }
         // Drag panning is the viewer's own addition (the game has none): the middle button moves
-        // the shown camera directly, and the target with it.
-        if response.dragged_by(egui::PointerButton::Middle)
+        // the shown camera directly, and the target with it. Through an orbiting view it keeps
+        // the ground point under the pointer.
+        if !free_mode
+            && response.dragged_by(egui::PointerButton::Middle)
             && !over_combat
             && let Some(pointer) = response.interact_pointer_pos()
         {
             self.camera_manual = true;
             let delta = response.drag_delta();
             let to = frame_point(pointer);
+            let from = [to[0] - delta.x * scale, to[1] - delta.y * scale];
             let before = camera.center;
-            camera.pan(
-                [to[0] - delta.x * scale, to[1] - delta.y * scale],
-                to,
-                pixels,
-            );
+            if self.orbit.is_native() {
+                camera.pan(from, to, pixels);
+            } else {
+                self.orbit.pan(camera, from, to, pixels);
+            }
             self.zoom
                 .shift([camera.center[0] - before[0], camera.center[1] - before[1]]);
         }
@@ -2571,13 +2626,17 @@ impl Viewer {
             };
             (lines, zoom_keys, keys)
         });
-        if focused {
+        // The game's law takes the keyboard and the wheel while the view is the game's own. An
+        // orbiting view takes the arrow keys, edge scrolling and the wheel through the orbit, and
+        // a free mode leaves the map camera where it was; the zoom keys always set the height.
+        let native = !free_mode && self.orbit.is_native();
+        if focused && !free_mode {
             for zoom_in in zoom_keys {
                 self.camera_manual = true;
                 self.zoom.key(camera, law, zoom_in, &floor);
             }
         }
-        let notches = if pointed {
+        let notches = if pointed && native {
             self.zoom.wheel_events(lines)
         } else {
             Vec::new()
@@ -2591,12 +2650,17 @@ impl Viewer {
             }
             _ => None,
         };
-        let keys = if focused { keys } else { Pan::default() };
+        let held = if focused && !free_mode {
+            keys
+        } else {
+            Pan::default()
+        };
+        let edge = pointer.filter(|&point| focused && pointed && law.edge_scrolls(point, pixels));
         let input = MotionInput {
-            cursor: pointer.filter(|_| focused && pointed),
+            cursor: pointer.filter(|_| focused && pointed && native),
             notches: &notches,
             ground,
-            keys,
+            keys: if native { held } else { Pan::default() },
         };
         let stepped = self
             .zoom
@@ -2607,14 +2671,79 @@ impl Viewer {
             self.camera_manual = true;
             ui.ctx().request_repaint();
         }
+        // The controller orbits the map camera; in the free modes it moves the free eye.
+        if !free_mode {
+            let mut orbited = false;
+            let mut push = [0.0f32; 2];
+            if !self.orbit.is_native() {
+                let axis = |low: bool, high: bool| f32::from(i8::from(high) - i8::from(low));
+                push = [axis(held.left, held.right), axis(held.down, held.up)];
+                if let Some([x, y]) = edge {
+                    let toward = [x - pixels[0] as f32 * 0.5, pixels[1] as f32 * 0.5 - y];
+                    let length = toward[0].hypot(toward[1]);
+                    if length > 0.0 {
+                        push = [push[0] + toward[0] / length, push[1] + toward[1] / length];
+                    }
+                }
+                let scroll = ui.input(|input| input.smooth_scroll_delta.y);
+                if pointed
+                    && scroll != 0.0
+                    && let Some(point) = pointer
+                {
+                    self.orbit
+                        .zoom(camera, (scroll * crate::controls::orbit::WHEEL_ZOOM).exp(), point, pixels);
+                    orbited = true;
+                }
+            }
+            orbited |= self.orbit.update(&controls, camera, push);
+            if orbited {
+                // The controller takes over from the game's target, as a camera placed afresh.
+                self.zoom.reset();
+                self.camera_manual = true;
+                ui.ctx().request_repaint();
+            }
+        }
         self.camera = Some(camera.placement());
-        let camera = match pinned {
-            Some((size, camera)) => camera.map_or_else(
-                || Camera::fit(map_size, defines, size),
-                |placement| placement.on(map_size, defines),
-            ),
-            None => *camera,
+        // The camera the map draws with, and the one its interface is laid out for: the free
+        // modes draw from the free eye, and keep the map's interface laid out for the map camera
+        // it left, without drawing it.
+        let (camera, overlay_camera) = match pinned {
+            Some((size, camera)) => {
+                let camera = camera.map_or_else(
+                    || Camera::fit(map_size, defines, size),
+                    |placement| placement.on(map_size, defines),
+                );
+                (camera, camera)
+            }
+            None => {
+                let map = self.orbit.view(*camera);
+                if free_mode {
+                    let texels = document.assets.heightmap_texels();
+                    let field = viewer_foundation::map::province_map::HeightField {
+                        width: document.map.width,
+                        height: document.map.height,
+                        values: texels,
+                    };
+                    let floor = |x: f32, z: f32| field.surface_height(x, z);
+                    // Flying starts where the view looks from; walking starts on the ground the
+                    // view looks at, facing the way it faces.
+                    let observer = self.observer.get_or_insert_with(|| {
+                        use crate::controls::observer::Observer;
+                        if self.camera_mode == CameraMode::Walk {
+                            let forward = map.look_direction();
+                            Observer::walking(camera.center, forward[0].atan2(forward[2]), &floor)
+                        } else {
+                            Observer::flying(&map)
+                        }
+                    });
+                    observer.update(&controls, map, &floor);
+                    (observer.camera(map, &floor), map)
+                } else {
+                    (map, map)
+                }
+            }
         };
+        self.grab_pointer(ui.ctx());
         let scene = self.scene.as_mut().expect("created above");
         // A `--window-dump` settles unit models for its camera, as `--dump`
         // does; a host export keeps the live history.
@@ -2685,6 +2814,7 @@ impl Viewer {
             now.frame,
         );
         self.counter_view.selected = Arc::clone(self.unit_selection.units());
+        let point = point.filter(|_| !free_mode);
         self.counter_view.hovered = point.filter(|_| !over_combat).and_then(|point| {
             let MapHit::Unit(index) = self.map_hit(point)? else {
                 return None;
@@ -2692,7 +2822,7 @@ impl Viewer {
             self.counter_report.unit_hits[index].units().next()
         });
         self.last_view = Some(hours::View {
-            camera,
+            camera: overlay_camera,
             viewport: pixels,
             ui_scale,
         });
@@ -2712,7 +2842,7 @@ impl Viewer {
         let overlay_key = OverlayKey {
             branch: document.playback.branch(),
             hour: document.playback.hour(),
-            camera,
+            camera: overlay_camera,
             pixels,
             ui_scale,
             perspective: self.perspective.clone(),
@@ -2794,7 +2924,14 @@ impl Viewer {
                 let drawn = (self.overlay_fraction == Some(document.hour_fraction))
                     .then_some(self.overlay.as_mut())
                     .flatten();
-                prepared.replace_raids(&now, camera, pixels, ui_scale, &tables.raids(), drawn);
+                prepared.replace_raids(
+                    &now,
+                    overlay_camera,
+                    pixels,
+                    ui_scale,
+                    &tables.raids(),
+                    drawn,
+                );
             }
             if layout_changed || (raids_only && self.prepared_overlay.is_none()) {
                 let tables_key = (
@@ -2830,7 +2967,7 @@ impl Viewer {
                 let tables = &self.overlay_tables.as_ref().expect("parsed above").3;
                 self.prepared_overlay = Some(
                     now.prepare_overlay_cached(
-                        camera,
+                        overlay_camera,
                         pixels,
                         ui_scale,
                         tables,
@@ -2871,7 +3008,7 @@ impl Viewer {
                 prepared
                     .draw_into(
                         &now,
-                        camera,
+                        overlay_camera,
                         pixels,
                         ui_scale,
                         &self.overlay_layers,
@@ -2892,11 +3029,12 @@ impl Viewer {
                 ui.ctx().request_repaint();
             }
             if raids_only && check_overlay() {
-                self.check_overlay(&now, camera, pixels, ui_scale, animation_time)?;
+                self.check_overlay(&now, overlay_camera, pixels, ui_scale, animation_time)?;
             }
             // Resolve clicks against this hour and camera's newly rebuilt hit regions.
             if response.clicked()
                 && !over_combat
+                && !free_mode
                 && let Some(point) = point
             {
                 match self.map_hit(point) {
@@ -3081,10 +3219,11 @@ impl Viewer {
                     // shadows: the window always draws them, as the game does.
                     no_shadows: false,
                     // names
+                    // The free modes draw no map interface: it cannot yet stand behind hills.
                     overlay: Overlay {
                         names: self.placements.as_deref(),
                         layer_alpha: fade.0,
-                        sprites: Some(label_batch),
+                        sprites: (!free_mode).then_some(label_batch),
                         ui_scale,
                     },
                     // trees
@@ -3205,6 +3344,41 @@ impl Viewer {
             fraction: document.hour_fraction,
         });
         Ok(())
+    }
+}
+
+impl Viewer {
+    /// Switches how the full map's camera moves. Leaving a free mode gives the pointer back and
+    /// returns to the map camera it left; entering one starts its free eye where the map camera
+    /// looks from.
+    pub(crate) fn set_camera_mode(&mut self, mode: CameraMode, ctx: &egui::Context) {
+        if mode == self.camera_mode {
+            return;
+        }
+        self.camera_mode = mode;
+        self.observer = None;
+        self.input.release();
+        if let Some(embedded) = &self.embedded {
+            embedded.report_camera_mode(mode);
+        }
+        // The free modes draw no map interface, so no window of it stays open to take clicks.
+        self.combat.close();
+        self.grab_pointer(ctx);
+    }
+
+    /// Hides and confines the cursor while the map holds the pointer, and gives it back after.
+    fn grab_pointer(&mut self, ctx: &egui::Context) {
+        let captured = self.input.captured() && self.camera_mode != CameraMode::Map;
+        if captured == self.pointer_grabbed {
+            return;
+        }
+        self.pointer_grabbed = captured;
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(if captured {
+            egui::CursorGrab::Confined
+        } else {
+            egui::CursorGrab::None
+        }));
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(!captured));
     }
 }
 
