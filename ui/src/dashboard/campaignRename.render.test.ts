@@ -37,6 +37,7 @@ test('display names leave dashboard campaign paths, source metadata and layout t
     '/dashboard/geometry.ts': 'export class MapViewsStore { schedule() {} setHidden() {} }',
     '/components/Popover.tsx': 'export const usePopover = () => ({ open: false, popup: { current: null }, trigger: { current: null } }); export const Popover = () => null;',
     '/shell/api.ts': 'export const desktopAvailable = false; export const errorMessage = String; export const recordingName = path => path.split("/").pop(); export const seekMap = () => {}; export const mapAction = () => {};',
+    '/shell/popout.ts': 'export const usePopout = () => ({ generation: 0, sequence: 0, viewer: 0, open: false, status: null, error: null }); export const popoutClockKey = () => null; export const popoutConfigKey = () => null; export const popoutProblem = () => null; export const popoutStopped = () => false; export const popoutUnloaded = async () => {}; export const seekPopout = async () => {}; export const configurePopout = async () => {};',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'recording-rename-fixture', enforce: 'pre',

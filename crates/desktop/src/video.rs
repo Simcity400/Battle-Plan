@@ -243,6 +243,11 @@ pub fn video_settings(
                 enabled: game.vsync,
             })?;
         }
+        window
+            .state::<crate::popout::PopOuts>()
+            .mirror(&dashboard::protocol::MapAction::Vsync {
+                enabled: game.vsync,
+            });
         settings = inherit_game(&settings, game);
         *stored = Ok(settings.clone());
     }
@@ -285,7 +290,13 @@ pub fn set_video_settings(
             })?;
             host.map_action(settings.map_ui_scale_action())?;
         }
-        save(&settings)
+        save(&settings)?;
+        let popouts = window.state::<crate::popout::PopOuts>();
+        popouts.mirror(&dashboard::protocol::MapAction::Vsync {
+            enabled: settings.vsync,
+        });
+        popouts.mirror(&settings.map_ui_scale_action());
+        Ok(())
     })();
     if let Err(error) = result {
         let _ = apply_scale(&window, &previous);
@@ -356,6 +367,8 @@ pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<
     // Sent before the lock is released, so two changes reach the viewer in the
     // order they were saved.
     app.state::<NativeHost>().set_diagnostics(enabled);
+    app.state::<crate::popout::PopOuts>()
+        .mirror(&dashboard::protocol::MapAction::Diagnostics { enabled });
     drop(stored);
     let _ = app.emit("map-diagnostics", enabled);
     Ok(enabled)

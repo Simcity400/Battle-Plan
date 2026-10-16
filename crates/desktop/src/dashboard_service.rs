@@ -263,6 +263,9 @@ pub async fn set_content_folders(
     .map_err(|error| error.to_string())??;
     service.runtime(window.app_handle())?;
     host.set_folders(&config);
+    window
+        .state::<crate::popout::PopOuts>()
+        .set_folders(&config);
     Ok(ContentFolders::of(&config))
 }
 
@@ -599,6 +602,9 @@ pub async fn dashboard_map_settings(
     // which costs nothing when it did not change.
     if saving {
         host.map_settings_saved();
+        window
+            .state::<crate::popout::PopOuts>()
+            .mirror(&dashboard::protocol::MapAction::MapSettingsSaved);
     }
     response
 }

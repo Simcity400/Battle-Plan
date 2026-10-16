@@ -340,3 +340,87 @@ fn folders_applied_before_a_viewer_starts_are_kept_for_its_launch() {
     // No viewer runs, so nothing is queued for one.
     assert!(inner.pending.actions.is_empty());
 }
+
+#[test]
+fn display_choices_sent_while_no_viewer_runs_are_kept_for_its_launch() {
+    use dashboard::protocol::MapAction;
+    let host = NativeHost::popout(1, Arc::new(|| ()));
+    host.set_display(MapAction::Vsync { enabled: true });
+    host.set_display(MapAction::Vsync { enabled: false });
+    host.set_display(MapAction::UiScale { scale: Some(1.5) });
+    let inner = host.shared.0.lock().unwrap();
+    // Nothing runs yet, so nothing is queued; the latest of each kind is kept instead.
+    assert!(inner.pending.actions.is_empty());
+    assert_eq!(
+        format!("{:?}", inner.display),
+        format!(
+            "{:?}",
+            [
+                MapAction::Vsync { enabled: false },
+                MapAction::UiScale { scale: Some(1.5) }
+            ]
+        )
+    );
+    // A pop-out host shows the campaign map and reports through its owner.
+    assert!(inner.pending.campaign_map);
+    assert!(inner.popout.as_ref().is_some_and(|window| window.parent == 1));
+    assert!(NativeHost::default().shared.0.lock().unwrap().popout.is_none());
+}
+
+#[test]
+fn moving_the_view_never_starts_a_viewer() {
+    let host = NativeHost::popout(1, Arc::new(|| ()));
+    let bounds = ViewBounds {
+        x: 0,
+        y: 0,
+        width: 800,
+        height: 600,
+    };
+    host.set_bounds(bounds).unwrap();
+    let inner = host.shared.0.lock().unwrap();
+    // No viewer runs and none is started; the next one started takes the bounds at launch.
+    assert!(inner.process.is_none());
+    assert!(!inner.status.running);
+    assert_eq!(inner.bounds, Some(bounds));
+    assert_eq!(inner.pending.bounds, None);
+}
+
+#[test]
+fn a_display_choice_sent_while_a_viewer_starts_replaces_its_launch_read() {
+    use dashboard::protocol::MapAction;
+    // Read at launch, then VSync changed before the child was installed.
+    let read = vec![
+        MapAction::Vsync { enabled: true },
+        MapAction::UiScale { scale: None },
+    ];
+    let sent = [MapAction::Vsync { enabled: false }];
+    let debug = |actions: &[MapAction]| format!("{actions:?}");
+    assert_eq!(
+        debug(&launch_display(read.clone(), &sent)),
+        debug(&[
+            MapAction::UiScale { scale: None },
+            MapAction::Vsync { enabled: false }
+        ])
+    );
+    // Nothing sent leaves the launch read as it is.
+    assert_eq!(debug(&launch_display(read.clone(), &[])), debug(&read));
+}
+
+#[test]
+fn a_host_names_the_recording_it_shows_requests_and_seeks() {
+    let host = NativeHost::popout(1, Arc::new(|| ()));
+    assert!(host.recordings().is_empty());
+    {
+        let mut inner = host.shared.0.lock().unwrap();
+        inner.status.viewer.path = Some("shown".into());
+        inner.requested_path = Some("opening".into());
+        inner.requested_seek = Some(SeekTarget {
+            path: "seeking".into(),
+            revision: "1".into(),
+            branch: "1".into(),
+            hour: 0,
+            playback: None,
+        });
+    }
+    assert_eq!(host.recordings(), ["shown", "opening", "seeking"]);
+}

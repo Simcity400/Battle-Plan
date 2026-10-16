@@ -4,6 +4,7 @@ import { newId } from '../shell/ids.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { desktopAvailable, errorMessage, recordingName, seekMap, mapAction } from '../shell/api';
+import { configurePopout, popoutClockKey, popoutConfigKey, popoutProblem, popoutStopped, popoutUnloaded, seekPopout, usePopout } from '../shell/popout';
 import type { MapOptions, ReplayMetadata } from '../shell/api';
 import MapControls from '../components/MapControls';
 import { Icon } from '../components/Icons';
@@ -148,7 +149,16 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     maps.schedule();
   }, [clock, maps, bounds, primaryIdentity, template.alignment, tracks, defaultRoleId]);
 
-  useLayoutEffect(() => { if (!active && !mapActive) clock.stop(); }, [active, mapActive, clock]);
+  const popout = usePopout();
+  const popoutOpen = useRef(false);
+  popoutOpen.current = popout.open;
+  // The pop-out window shown now, which a request captures when it starts.
+  const popoutGeneration = useRef(0);
+  popoutGeneration.current = popout.generation;
+  const popoutIssue = popoutProblem(popout);
+  useEffect(() => { if (popoutIssue) onMapError?.(popoutIssue); }, [popoutIssue, onMapError]);
+  // A pop-out map keeps following the clock from any page.
+  useLayoutEffect(() => { if (!active && !mapActive && !popout.open) clock.stop(); }, [active, mapActive, popout.open, clock]);
   const mapCountry = defaultRoleId ? selectedCountries[defaultRoleId] ?? null : null;
   useEffect(() => {
     if (!mapActive || !mapReady || mapSwitching || defaultLoading || !desktopAvailable) return;
@@ -167,11 +177,29 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       onMapError?.(error == null ? null : errorMessage(error));
     });
   }, [clock, tracks, defaultRoleId, defaultLoading, mapActive, mapSwitching, onMapError]);
+  // Keyed on the window's generation, so every new pop-out window is sent the options and the
+  // clock even when it opens in the same render that closed the previous one.
+  const popoutConfig = popoutConfigKey(popout);
+  useEffect(() => {
+    if (popoutConfig == null || defaultLoading) return;
+    let current = true;
+    void configurePopout(popout.generation, { ...mapOptions, country: mapCountry }).catch(cause => { if (current) onMapError?.(errorMessage(cause)); });
+    return () => { current = false; };
+  }, [popoutConfig, popout.generation, defaultLoading, mapOptions, mapCountry, onMapError]);
+  const popoutClock = popoutClockKey(popout);
+  useLayoutEffect(() => {
+    const reference = tracks.find(track => track.roleId === defaultRoleId);
+    if (popoutClock == null || defaultLoading || !reference) return;
+    const generation = popout.generation;
+    const seek: Parameters<typeof followMapPlayback>[2] = (path, revision, branch, hour, playback) => seekPopout(generation, path, revision, branch, hour, playback);
+    return followMapPlayback(clock, reference, seek, error => { if (error != null) onMapError?.(errorMessage(error)); });
+  }, [clock, tracks, defaultRoleId, defaultLoading, popoutClock, popout.generation, onMapError]);
   useLayoutEffect(() => active && viewport.current ? maps.start(viewport.current) : undefined, [maps, active]);
   useLayoutEffect(() => { maps.setHidden(nativeHidden || hasMapOverlay()); maps.schedule(); }, [maps, nativeHidden, template.layouts]);
   useEffect(() => {
     mounted.current = true;
-    const visibility = () => { if (document.hidden) clock.setPlaying(false); };
+    // A minimised app keeps playing while the pop-out map shows the campaign.
+    const visibility = () => { if (document.hidden && !popoutOpen.current) clock.setPlaying(false); };
     const beforeToggle = (event: Event) => {
       if ('newState' in event && event.newState === 'open' && isMapOverlay(event.target)) maps.setHidden(true);
     };
@@ -350,7 +378,9 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     setCampaigns(campaignsRef.current);
     const source = roles.bindings[id]?.source;
     if (desktopAvailable && source) {
-      try { await mapAction({ kind: 'unload', path: source.path }); }
+      // The pop-out window shown when the unload started; a later window is not this unload's.
+      const shownPopout = popoutGeneration.current;
+      try { await mapAction({ kind: 'unload', path: source.path }); await popoutUnloaded(source.path, shownPopout); }
       catch (cause) {
         if (mounted.current && campaignsRef.current.includes(retiring)) {
           campaignsRef.current = campaignsRef.current.map(item => item === retiring ? campaign : item);
@@ -439,7 +469,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     <div className="header-workspace-tools">
     {mapActive && <MapControls source={defaultSource ?? null} client={client} metadata={defaultSource?.metadata ?? null} branchId={tracks.find(track => track.roleId === defaultRoleId)?.branch.id ?? null}
       onBranch={id => { const track = tracks.find(track => track.roleId === defaultRoleId); if (track) onMapBranch(track.id, id); }}
-      options={mapOptions} onOptions={setMapOptions} />}
+      options={mapOptions} onOptions={setMapOptions} poppedOut={popout.open} popoutGeneration={popout.generation} popoutProblem={popoutIssue} popoutStopped={popoutStopped(popout)} />}
     {active && <>
       {/* The layout picker and the editing tools share one slot, so the bar never shifts or grows. */}
       <div className="toolbar-swap" data-editing={editing || dirty || undefined}>

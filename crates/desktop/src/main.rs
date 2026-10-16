@@ -3,6 +3,7 @@
 mod dashboard_service;
 mod game_process;
 mod native;
+mod popout;
 mod preparation;
 mod recorder;
 mod replay_library;
@@ -39,17 +40,30 @@ fn select_native_view(host: State<'_, NativeHost>, dashboard: bool) -> Result<()
 #[tauri::command]
 fn map_action(
     host: State<'_, NativeHost>,
+    popouts: State<'_, popout::PopOuts>,
     action: dashboard::protocol::MapAction,
 ) -> Result<(), String> {
     // The host saves folders first and sends the viewer what it saved.
     if matches!(action, dashboard::protocol::MapAction::Folders { .. }) {
         return Err("Set the content folders in Settings".into());
     }
-    host.map_action(action)
+    host.map_action(action.clone())?;
+    // A user unload closes the pop-out through `popout_unloaded`; reconnecting a recording
+    // unloads it too, and the pop-out follows the reopened one instead.
+    popouts.mirror(&action);
+    Ok(())
 }
 
 #[tauri::command]
-async fn export_map(host: State<'_, NativeHost>, view_id: Option<String>) -> Result<(), String> {
+async fn export_map(
+    host: State<'_, NativeHost>,
+    popouts: State<'_, popout::PopOuts>,
+    view_id: Option<String>,
+) -> Result<(), String> {
+    // The pop-out window to export is the one open when the request starts, not after the dialog.
+    let popout = (view_id.as_deref() == Some(popout::VIEW_ID))
+        .then(|| popouts.current_generation())
+        .flatten();
     let path = tauri::async_runtime::spawn_blocking(|| {
         rfd::FileDialog::new()
             .set_title("Export campaign map")
@@ -60,10 +74,11 @@ async fn export_map(host: State<'_, NativeHost>, view_id: Option<String>) -> Res
     .await
     .map_err(|e| e.to_string())?;
     if let Some(path) = path {
-        host.map_action(dashboard::protocol::MapAction::Export {
-            path: path.to_string_lossy().into_owned(),
-            view_id,
-        })?;
+        let path = path.to_string_lossy().into_owned();
+        if view_id.as_deref() == Some(popout::VIEW_ID) {
+            return popout::export(&popouts, popout, path);
+        }
+        host.map_action(dashboard::protocol::MapAction::Export { path, view_id })?;
     }
     Ok(())
 }
@@ -168,6 +183,7 @@ fn main() {
             Ok(())
         })
         .manage(NativeHost::default())
+        .manage(popout::PopOuts::default())
         .manage(DashboardService::default())
         .invoke_handler(tauri::generate_handler![
             video::video_settings,
@@ -193,6 +209,14 @@ fn main() {
             recorder::set_campaign_flag,
             open_replay,
             seek_map,
+            popout::popout_open,
+            popout::popout_close,
+            popout::popout_restart,
+            popout::popout_unloaded,
+            popout::popout_next_monitor,
+            popout::popout_publish,
+            popout::popout_seek,
+            popout::popout_configure,
             dashboard_service::dashboard_open_source,
             dashboard_service::dashboard_product,
             dashboard_service::dashboard_prepared_query,
@@ -215,6 +239,7 @@ fn main() {
         ) {
             app.state::<preparation::PreparationMonitor>().shutdown(app);
             app.state::<DashboardService>().shutdown();
+            app.state::<popout::PopOuts>().close(app);
             app.state::<NativeHost>().shutdown();
         }
     });

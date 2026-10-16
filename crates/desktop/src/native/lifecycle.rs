@@ -83,9 +83,22 @@ impl NativeHost {
                 executable.display()
             ));
         }
-        let parent = window.hwnd().map_err(|e| e.to_string())?.0 as usize;
+        let parent = match &inner.popout {
+            Some(window) => window.parent,
+            None => window.hwnd().map_err(|e| e.to_string())?.0 as usize,
+        };
+        // A pop-out shows only what the app sends it; the app's own command line (a recording,
+        // an hour, a camera) belongs to the main viewer.
+        let forwarded: Vec<std::ffi::OsString> = if inner.popout.is_some() {
+            std::env::args_os()
+                .skip(1)
+                .filter(|argument| argument == "--allow-unverified-content")
+                .collect()
+        } else {
+            std::env::args_os().skip(1).collect()
+        };
         let mut child = Command::new(&executable)
-            .args(std::env::args_os().skip(1))
+            .args(forwarded)
             .args(folders)
             .env("BATTLE_PLAN_VIEWER_PARENT", parent.to_string())
             .stdin(Stdio::piped())
@@ -130,6 +143,8 @@ impl NativeHost {
             inner.pending.bounds = inner.bounds;
             inner.pending.visibility = Some(inner.status.visible);
         }
+        // A display choice sent after the read above has already reached `set_display`.
+        let display = super::launch_display(display, &inner.display);
         inner.pending.actions.extend(display);
         inner
             .pending
@@ -203,10 +218,12 @@ impl NativeHost {
                         generation,
                         app,
                     );
-                    crate::dashboard_service::disconnected(
-                        app,
-                        "The native data connection closed",
-                    );
+                    if !self.is_popout() {
+                        crate::dashboard_service::disconnected(
+                            app,
+                            "The native data connection closed",
+                        );
+                    }
                     return;
                 }
                 if close {
@@ -231,6 +248,8 @@ impl NativeHost {
                 }
                 return;
             }
+            // A pop-out's viewer serves no data requests.
+            NativeEvent::Data { .. } if inner.popout.is_some() => return,
             NativeEvent::Data { response } => {
                 drop(inner);
                 crate::dashboard_service::receive_data(app, response);
@@ -302,7 +321,7 @@ impl NativeHost {
         }
         // Publish while holding the state lock so reader and exit notifications
         // reach the frontend in mutation order.
-        let _ = app.emit("viewer-state", inner.status.clone());
+        inner.publish(app);
     }
 
     fn monitor(&self, generation: u64, app: &AppHandle) {
@@ -335,7 +354,7 @@ impl NativeHost {
                                 None => reason,
                             });
                         }
-                        let _ = app.emit("viewer-state", inner.status.clone());
+                        inner.publish(app);
                         if let Some(views) = &inner.dashboard_views {
                             let states: Vec<_> = views
                                 .iter()
@@ -351,13 +370,24 @@ impl NativeHost {
                     }
                 }
             };
-            crate::dashboard_service::disconnected(
-                app,
-                "The native data runtime exited. Reopen the recording to restore its sources.",
-            );
+            if !self.is_popout() {
+                crate::dashboard_service::disconnected(
+                    app,
+                    "The native data runtime exited. Reopen the recording to restore its sources.",
+                );
+            }
             self.shared.1.notify_all();
             return;
         }
+    }
+
+    fn is_popout(&self) -> bool {
+        self.shared
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .popout
+            .is_some()
     }
 
     pub fn shutdown(&self) {

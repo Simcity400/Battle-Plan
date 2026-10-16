@@ -5,13 +5,20 @@ import type { DashboardClient, DashboardSource } from '../dashboard/client';
 import type { ReactNode } from 'react';
 import { useId, useState } from 'react';
 import { desktopAvailable, errorMessage, exportMap } from '../shell/api';
+import { closePopout, nextPopoutMonitor, openPopout, restartPopout } from '../shell/popout';
 import type { MapOptions, ReplayMetadata } from '../shell/api';
 import { formatDateTime } from '../dashboard/calendar';
 import { Icon } from './Icons';
 import './mapControls.css';
 
-export default function MapControls({ source, client, metadata, branchId, onBranch, options, onOptions, compact = false, viewId, children, onRemove, onReset }: {
+export default function MapControls({ source, client, metadata, branchId, onBranch, options, onOptions, compact = false, viewId, children, onRemove, onReset, poppedOut, popoutGeneration = 0, popoutProblem, popoutStopped }: {
   compact?: boolean; viewId?: string; children?: ReactNode; onRemove?: () => void; onReset?: () => void;
+  /** The campaign map's pop-out window state; widget maps omit it. */
+  poppedOut?: boolean;
+  /** The generation of the pop-out window shown, which its restart and close name. */
+  popoutGeneration?: number;
+  /** Why the pop-out shows nothing, and whether its viewer exited and can be restarted. */
+  popoutProblem?: string | null; popoutStopped?: boolean;
   source: DashboardSource | null; client: DashboardClient;
   metadata: ReplayMetadata | null; branchId: string | null; onBranch: (id: string) => void;
   options: MapOptions; onOptions: (options: MapOptions) => void;
@@ -50,6 +57,13 @@ export default function MapControls({ source, client, metadata, branchId, onBran
       </div>}
       <div className="map-menu-section">
         <button type="button" className="map-menu-action" disabled={!desktopAvailable || !metadata || busy} data-tooltip={desktopAvailable ? 'Save the rendered map as a PNG image' : 'Available with the native map in the desktop app'} onClick={() => void run(() => exportMap(viewId))}><Icon name="save" />Export map image</button>
+        {poppedOut && popoutProblem && <p className="map-menu-error" role="alert">{popoutProblem}</p>}
+        {poppedOut && popoutStopped && <button type="button" className="map-menu-action" disabled={busy} onClick={() => void run(() => restartPopout(popoutGeneration))}><Icon name="refresh" />Restart pop-out map</button>}
+        {poppedOut !== undefined && desktopAvailable && (poppedOut ? <>
+          <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Save the pop-out window's map as a PNG image" onClick={() => void run(() => exportMap('popout'))}><Icon name="save" />Export pop-out map</button>
+          <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Move the pop-out map to the next monitor" onClick={() => void run(() => nextPopoutMonitor(popoutGeneration))}><Icon name="monitor" />Move pop-out to next monitor</button>
+          <button type="button" className="map-menu-action" disabled={busy} onClick={() => void run(() => closePopout(popoutGeneration))}><Icon name="close" />Close pop-out map</button>
+        </> : <button type="button" className="map-menu-action" disabled={!metadata || busy} data-tooltip="Show this map alone in its own window, following this app's clock and settings" onClick={() => void run(async () => { await openPopout(); })}><Icon name="monitor" />Pop out map</button>)}
       </div>
       {open && children}
       {!desktopAvailable && <p className="map-menu-note">Map display options apply in the desktop app.</p>}
